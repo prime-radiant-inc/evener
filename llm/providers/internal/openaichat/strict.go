@@ -12,7 +12,7 @@ import "sort"
 // The rewrite force-requires every property, so callers must gate it on
 // StrictExpressible: a schema that leaves a declared property optional
 // cannot be projected into strict mode without making that argument
-// mandatory (#6200).
+// mandatory.
 //
 // It matches a literal "object"/"array" string type only, and it resolves no
 // $ref and does not descend into $defs or definitions. A node in one of those
@@ -34,13 +34,13 @@ func StrictifyJSONSchema(in map[string]any) map[string]any {
 // every property, which is lossless only for a schema whose every object
 // already lists all of its properties as required. For any other schema the
 // projection makes a documented-optional argument mandatory, so a caller
-// must send the tool non-strict instead (#6200).
+// must send the tool non-strict instead.
 //
 // The walk accepts only what the rewrite provably projects or what is already
 // strict-valid, and answers inexpressible for everything it cannot verify. A
 // false "inexpressible" costs strict mode on that one tool; a false
 // "expressible" sends a strict tool whose optional argument is still optional,
-// which OpenAI rejects for the whole request (#6200).
+// which OpenAI rejects for the whole request.
 //
 // Two shapes need care, because StrictifyJSONSchema does not touch them:
 //
@@ -113,10 +113,17 @@ func strictlyExpressibleNode(m map[string]any, visited bool) bool {
 		if !transformed && m["additionalProperties"] != false {
 			return false
 		}
+		// Where it does transform, the rewrite closes the object. That is
+		// lossless only if the object did not allow other keys.
+		if transformed && !allKeysDeclared(m) {
+			return false
+		}
 		for _, child := range props {
 			childMap, ok := child.(map[string]any)
 			if !ok {
-				continue
+				// The rewrite skips an unreadable child, so its contents are
+				// never verified either.
+				return false
 			}
 			if !strictlyExpressibleNode(childMap, visited && literal == "object") {
 				return false
@@ -159,10 +166,32 @@ func strictlyExpressibleNode(m map[string]any, visited bool) bool {
 		for _, it := range arr {
 			child, ok := it.(map[string]any)
 			if !ok {
-				continue
+				return false
 			}
 			if !strictlyExpressibleNode(child, visited) {
 				return false
+			}
+		}
+	}
+	// A branch may require a key this node never declares. Closing the object
+	// then forbids that key, so the projection can satisfy neither branch.
+	if transformed {
+		declared, _ := m["properties"].(map[string]any)
+		for _, comb := range []string{"anyOf", "oneOf"} {
+			arr, ok := m[comb].([]any)
+			if !ok {
+				continue
+			}
+			for _, it := range arr {
+				branch, ok := it.(map[string]any)
+				if !ok {
+					continue
+				}
+				for name := range requiredNamesOf(branch["required"]) {
+					if _, has := declared[name]; !has {
+						return false
+					}
+				}
 			}
 		}
 	}
@@ -254,6 +283,41 @@ func allPropertiesRequired(props map[string]any, required any) bool {
 		return false
 	}
 	return true
+}
+
+// A node the rewrite transforms may not permit keys it does not declare.
+// Strict mode requires additionalProperties: false there, so the projection
+// closes the object, and a schema that explicitly allows other keys — true, or
+// a schema for their values — would end up accepting none of them. Only an
+// absent key, or false, is lossless under the rewrite.
+func allKeysDeclared(m map[string]any) bool {
+	raw, has := m["additionalProperties"]
+	if !has || raw == nil {
+		return true
+	}
+	allowed, ok := raw.(bool)
+	return ok && !allowed
+}
+
+// requiredNamesOf reads a node's required list in either of the shapes the
+// builders and decoded provider schemas use.
+func requiredNamesOf(raw any) map[string]bool {
+	var out map[string]bool
+	switch list := raw.(type) {
+	case []string:
+		out = make(map[string]bool, len(list))
+		for _, name := range list {
+			out[name] = true
+		}
+	case []any:
+		out = make(map[string]bool, len(list))
+		for _, v := range list {
+			if name, ok := v.(string); ok {
+				out[name] = true
+			}
+		}
+	}
+	return out
 }
 
 func strictifyJSONSchemaInPlace(m map[string]any) {

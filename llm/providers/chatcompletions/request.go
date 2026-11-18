@@ -66,7 +66,7 @@ func buildBody(req llm.Request, res registry.Resolved, stream bool) (out map[str
 				// Strict mode force-requires every property, which is lossless
 				// only for a schema that already requires them all. A tool with
 				// a documented-optional argument has no legal strict form, so it
-				// keeps its advertised schema and is sent non-strict (#6200).
+				// keeps its advertised schema and is sent non-strict.
 				// A tool carrying no parameters map has nothing to force, so it
 				// stays strict as before.
 				if params, ok := fn["parameters"].(map[string]any); ok && !openaichat.StrictExpressible(params) {

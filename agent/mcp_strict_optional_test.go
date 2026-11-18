@@ -131,7 +131,7 @@ func projectedStrictSchema(t *testing.T, def llm.ToolDefinition) map[string]any 
 // switch_tab selected. The schema the model sees decides whether that call is
 // even expressible: under strict projection every property is required, so an
 // omitting call is invalid and every call carries an explicit index that
-// overrides the sticky selection (#6200).
+// overrides the sticky selection.
 //
 // This is the issue's own reproduction, driven through the projection and the
 // real MCP executor rather than a browser session: the projected schema must

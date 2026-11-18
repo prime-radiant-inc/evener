@@ -157,7 +157,7 @@ func TestBuildBody_ReasoningGates(t *testing.T) {
 func TestBuildBody_CapsShapeStructure(t *testing.T) {
 	t.Parallel()
 	// Every property is required: a tool that leaves one optional has no legal
-	// strict projection and is sent non-strict instead (#6200).
+	// strict projection and is sent non-strict instead.
 	schema := map[string]any{
 		"type":       "object",
 		"properties": map[string]any{"a": map[string]any{"type": "string"}},

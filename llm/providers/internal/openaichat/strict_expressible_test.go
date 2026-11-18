@@ -5,7 +5,7 @@ import "testing"
 // StrictExpressible decides whether a schema may be projected into OpenAI
 // strict mode without making a documented-optional argument mandatory. Strict
 // mode requires every property of every object to be present and listed in
-// required, so only a schema that already does so is expressible (#6200).
+// required, so only a schema that already does so is expressible.
 func TestStrictExpressible(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -106,7 +106,7 @@ func TestStrictExpressible(t *testing.T) {
 		},
 		// A nullable object spelled as a type list is the shape the
 		// rewrite cannot match, so an optional property behind it would
-		// reach OpenAI intact while the tool was certified strict (#6200).
+		// reach OpenAI intact while the tool was certified strict.
 		{
 			name: "nullable object type list leaves a property optional",
 			in: map[string]any{
@@ -326,6 +326,99 @@ func TestStrictExpressible(t *testing.T) {
 				},
 			},
 			want: false,
+		},
+		// The rewrite sets additionalProperties: false on every object it
+		// transforms. An object that explicitly allows other keys — with
+		// true, or with a schema for their values — would be narrowed to
+		// accepting none of them.
+		{
+			name: "transformed object allows additional keys with true",
+			in: map[string]any{
+				"type":                 "object",
+				"additionalProperties": true,
+				"properties":           map[string]any{"a": map[string]any{"type": "string"}},
+				"required":             []string{"a"},
+			},
+			want: false,
+		},
+		{
+			name: "transformed object allows additional keys by value schema",
+			in: map[string]any{
+				"type":                 "object",
+				"additionalProperties": map[string]any{"type": "string"},
+				"properties":           map[string]any{"a": map[string]any{"type": "string"}},
+				"required":             []string{"a"},
+			},
+			want: false,
+		},
+		{
+			name: "nested transformed object allows additional keys by value schema",
+			in: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"headers": map[string]any{
+						"type":                 "object",
+						"additionalProperties": map[string]any{"type": "string"},
+					},
+				},
+				"required": []string{"headers"},
+			},
+			want: false,
+		},
+		// A property child the walk cannot read is not verified, and the
+		// rewrite skips it too, so it must not be certified.
+		{
+			name: "property child is not a schema map",
+			in: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{"options": []byte(`{"type":"object"}`)},
+				"required":   []string{"options"},
+			},
+			want: false,
+		},
+		{
+			name: "combinator entry is not a schema map",
+			in: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{"a": map[string]any{"type": "string"}},
+				"required":   []string{"a"},
+				"anyOf":      []any{[]byte(`{"type":"object"}`)},
+			},
+			want: false,
+		},
+		// Closing an object to additionalProperties: false forbids every key
+		// it does not declare, so a branch requiring an undeclared key can
+		// no longer be satisfied by the projection.
+		{
+			name: "branch requires a key the closed parent never declares",
+			in: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties":           map[string]any{},
+				"anyOf": []any{
+					map[string]any{"type": "object", "required": []string{"id"}},
+					map[string]any{"type": "object", "required": []string{"name"}},
+				},
+			},
+			want: false,
+		},
+		{
+			name: "branch requires a key the parent declares",
+			in: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"id":   map[string]any{"type": "string"},
+					"name": map[string]any{"type": "string"},
+				},
+				"required": []string{"id", "name"},
+				"anyOf": []any{
+					map[string]any{"type": "object", "required": []string{"id"}},
+					map[string]any{"type": "object", "required": []string{"name"}},
+				},
+			},
+			want: true,
 		},
 	}
 

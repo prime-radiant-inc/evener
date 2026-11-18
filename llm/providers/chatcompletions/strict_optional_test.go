@@ -32,7 +32,7 @@ func requiredNames(t *testing.T, schema map[string]any) []string {
 // Chat Completions carries the same strict-mode rule as Responses: every
 // property of every object must be present and listed in required. A tool with
 // a documented-optional argument therefore has no legal strict projection, and
-// the adapter must not set strict on it (#6200).
+// the adapter must not set strict on it.
 func TestChatStrictToolsKeepOptionalArgumentsOmittable(t *testing.T) {
 	t.Parallel()
 	req := userReq("hi")

@@ -410,7 +410,7 @@ func FuzzResponsesBuildBody(f *testing.F) {
 			// Strict mode force-requires every property, so the per-tool
 			// override can only be honored for a schema that already requires
 			// them all. A schema with an optional property is projected
-			// non-strict instead of made mandatory (#6200).
+			// non-strict instead of made mandatory.
 			wantStrict := sel&1 == 1 && openaichat.StrictExpressible(schema)
 			if len(toolRows) == 0 || toolRows[0]["strict"] != wantStrict {
 				t.Fatalf("tools[0].strict = %#v, want %v (override %v, expressible %v)", toolRows, wantStrict, sel&1 == 1, openaichat.StrictExpressible(schema))

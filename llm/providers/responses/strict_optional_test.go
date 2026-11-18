@@ -42,7 +42,7 @@ func requiredNames(t *testing.T, schema map[string]any) []string {
 // which OpenAI answers by rejecting the whole request ("Invalid schema for
 // function ...: 'required' ... Missing 'limit'") rather than just the tool.
 // The projection must send both non-strict with the advertised required sets
-// intact (#6200).
+// intact.
 func TestStrictToolProjectionRejectsShapesTheRewriteCannotReach(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -115,7 +115,7 @@ func TestStrictToolProjectionRejectsShapesTheRewriteCannotReach(t *testing.T) {
 // A tool whose documented arguments include an optional one has no legal
 // OpenAI strict projection: strict mode requires every property to be present
 // and listed in required, so projecting it would force every call to invent a
-// value for an argument the documentation says may be omitted (#6200). The
+// value for an argument the documentation says may be omitted. The
 // projection must keep the declared required set and send the tool non-strict.
 func TestStrictToolProjectionKeepsOptionalArgumentsOmittable(t *testing.T) {
 	t.Parallel()

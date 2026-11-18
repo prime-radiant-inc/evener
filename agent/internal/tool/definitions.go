@@ -78,7 +78,7 @@ func DefReadFile() llm.ToolDefinition {
 		// documented as optional (vision_prompt applies to images and PDFs
 		// only), and OpenAI strict mode requires every property to be present
 		// and non-null. Projecting this schema strictly would force a value for
-		// each on every read (#6200).
+		// each on every read.
 		Strict: &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",

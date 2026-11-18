@@ -161,7 +161,7 @@ var weatherTool = llm.ToolDefinition{Name: "weather", Description: "Current weat
 // required. Rows whose provider sets strict_tools can only project a schema
 // that already requires every property: OpenAI strict mode force-requires
 // them all, so a schema that leaves one optional is sent non-strict instead
-// (#6200). The rewrites agree, so these rows record the same wire schema as
+// The rewrites agree, so these rows record the same wire schema as
 // before.
 var strictWeatherTool = llm.ToolDefinition{Name: "weather", Description: "Current weather", Parameters: map[string]any{
 	"type":       "object",

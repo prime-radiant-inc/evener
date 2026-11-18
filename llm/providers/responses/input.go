@@ -61,7 +61,7 @@ func toResponsesTools(tools []llm.ToolDefinition, strict bool) []map[string]any 
 				// That force-requiring is lossless only when the schema already
 				// requires every property. A tool with a documented-optional
 				// argument has no legal strict form: projecting it would make
-				// that argument mandatory on every call (#6200). Such a tool
+				// that argument mandatory on every call. Such a tool
 				// keeps its advertised schema and is sent non-strict.
 				if !openaichat.StrictExpressible(params) {
 					toolStrict = false

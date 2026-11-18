@@ -886,7 +886,7 @@ func TestDefReadFileSliceParamsDocumented(t *testing.T) {
 	// offset, limit and vision_prompt are documented optional (vision_prompt
 	// applies to images and PDFs only). OpenAI strict mode requires every
 	// property present and non-null, so the tool opts out rather than forcing
-	// a value for each on every read (#6200).
+	// a value for each on every read.
 	if def.Strict == nil || *def.Strict {
 		t.Fatalf("read_file Strict = %v, want false because offset, limit and vision_prompt are optional", def.Strict)
 	}
