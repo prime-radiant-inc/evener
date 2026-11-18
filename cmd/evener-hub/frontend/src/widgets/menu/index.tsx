@@ -171,8 +171,15 @@ function firstEnabledIndex(items: MenuEntry[]): number {
 function revealRow(popup: HTMLElement, row: HTMLElement): void {
   const rowTop = row.offsetTop;
   const rowBottom = rowTop + row.offsetHeight;
+  const portHeight = popup.offsetHeight;
   if (rowTop < popup.scrollTop) popup.scrollTop = rowTop;
-  else if (rowBottom > popup.scrollTop + popup.offsetHeight) popup.scrollTop = rowBottom - popup.offsetHeight;
+  else if (rowBottom > popup.scrollTop + portHeight) {
+    // A row taller than the scrollport cannot be shown whole, and the least
+    // scroll that puts its END inside takes its BEGINNING out - the label of
+    // the action the reader's Enter would invoke. Prefer the start and let
+    // them scroll the rest, which is the direction they would read it anyway.
+    popup.scrollTop = row.offsetHeight > portHeight ? rowTop : rowBottom - portHeight;
+  }
 }
 
 /** What the reveal question is asked of: the row's place in the popup's scroll

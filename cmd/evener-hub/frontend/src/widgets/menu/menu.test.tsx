@@ -2136,17 +2136,21 @@ test("a wrap that brings part of a hidden row into view leaves the reader's scro
 });
 
 // A row can go from fully in sight to clipped while SHOWING MORE of itself.
-// Overview sits at the very bottom of a capped popup with 48px of room: at
-// 44px it fits with 4 to spare. An activity count arrives and its label wraps,
-// so the row is 60px at the same offset - it now shows 48 pixels instead of 44,
-// and 12 pixels of the action the reader is on are past the edge. A guard that
-// compares visible pixels alone calls that an improvement and says nothing.
+// Archive sits near the bottom of a capped popup: at 44px it fits with room to
+// spare. An activity count arrives and its label wraps, so the row is 56px -
+// it now shows 52 pixels instead of 44, and 4 pixels of the action the reader's
+// Enter would invoke are past the edge. A guard that compares visible pixels
+// alone calls that an improvement and says nothing. The row still fits the
+// scrollport, so revealing it can put the whole action back on screen.
 test("a focused row that wraps until it is clipped is revealed", async () => {
   const user = userEvent.setup();
+  const originalInnerWidth = Object.getOwnPropertyDescriptor(window, "innerWidth");
   const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
   Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
-  const PORT = 48;
-  let firstHeight = 44;
+  const PORT = 56;
+  // Archive, the row holding focus, is the second one: 44px, or 56px once its
+  // label wraps onto a second line.
+  let archiveHeight = 44;
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     if (this.tagName === "BUTTON") return box(100, 300, 40, 28);
     if (this.tagName === "UL") return box(0, 0, 160, PORT);
@@ -2155,7 +2159,7 @@ test("a focused row that wraps until it is clipped is revealed", async () => {
   vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
     if (this.tagName === "UL") return PORT;
     if (this.tagName !== "LI" || !this.parentElement) return 0;
-    return Array.prototype.indexOf.call(this.parentElement.children, this) === 0 ? firstHeight : 44;
+    return Array.prototype.indexOf.call(this.parentElement.children, this) === 1 ? archiveHeight : 44;
   });
   vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
     return this.tagName === "UL" ? 160 : 0;
@@ -2163,7 +2167,9 @@ test("a focused row that wraps until it is clipped is revealed", async () => {
   vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function (this: HTMLElement) {
     if (this.tagName !== "LI" || !this.parentElement) return 0;
     const index = Array.prototype.indexOf.call(this.parentElement.children, this);
-    return index === 0 ? 0 : firstHeight + (index - 1) * 44;
+    let top = 0;
+    for (let i = 0; i < index; i += 1) top += i === 1 ? archiveHeight : 44;
+    return top;
   });
   const { flush } = captureFrames();
   const four: MenuItem[] = [
@@ -2175,24 +2181,96 @@ test("a focused row that wraps until it is clipped is revealed", async () => {
   try {
     render(<Menu trigger="Actions" items={four} />);
     await user.click(screen.getByRole("button", { name: "Actions" }));
-    const first = screen.getByRole("menuitem", { name: "Overview" });
+    const focused = screen.getByRole("menuitem", { name: "Archive" });
+    focused.focus();
     const popup = screen.getByRole("menu");
-    expect(document.activeElement).toBe(first);
-    // 44px of row in 48px of scrollport: fully visible, 4px to spare.
-    expect(popup.scrollTop).toBe(0);
+    expect(document.activeElement).toBe(focused);
+    // The reader scrolls to 40. Archive spans 44..88 in a 56px scrollport from
+    // 40, which ends at 96: fully visible, 8px to spare.
+    popup.scrollTop = 40;
+    expect(popup.scrollTop).toBe(40);
 
-    // The label wraps. The row is 60px at the same offset, so 12px of it now
-    // sit past the scrollport - and the pixels showing went UP, 44 to 48.
-    firstHeight = 60;
+    // The label wraps. Archive is 44..100 at the same offset, so 4px of it now
+    // sit past the scrollport - and the pixels showing went UP, 44 to 52.
+    archiveHeight = 56;
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 600 });
     fireEvent(window, new Event("resize"));
     flush();
 
-    // Revealed: the reader sees the whole action their Enter would invoke.
-    expect(popup.scrollTop).toBe(12); // 60 - PORT
-    expect(document.activeElement).toBe(first);
+    // Revealed by the least scroll that fits the whole row: 100 - 56.
+    expect(popup.scrollTop).toBe(44);
+    expect(document.activeElement).toBe(focused);
   } finally {
     vi.restoreAllMocks();
+    if (originalInnerWidth) Object.defineProperty(window, "innerWidth", originalInnerWidth);
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
+// A row can wrap taller than the whole scrollport, and then no offset shows all
+// of it. The least scroll that fits its END takes its BEGINNING - the label of
+// the action the reader's Enter would invoke - off the top. The start is what a
+// reader reads first and what the focus ring lands on, so that is what the
+// reveal keeps: the row's own top, with the rest reachable by scrolling.
+test("a focused row taller than the scrollport keeps its start in view", async () => {
+  const user = userEvent.setup();
+  const originalInnerWidth = Object.getOwnPropertyDescriptor(window, "innerWidth");
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  const PORT = 56;
+  let archiveHeight = 44;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, 300, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 160, PORT);
+    return box(0, 0, 0, 0);
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "UL") return PORT;
+    if (this.tagName !== "LI" || !this.parentElement) return 0;
+    return Array.prototype.indexOf.call(this.parentElement.children, this) === 1 ? archiveHeight : 44;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
+    return this.tagName === "UL" ? 160 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName !== "LI" || !this.parentElement) return 0;
+    const index = Array.prototype.indexOf.call(this.parentElement.children, this);
+    let top = 0;
+    for (let i = 0; i < index; i += 1) top += i === 1 ? archiveHeight : 44;
+    return top;
+  });
+  const { flush } = captureFrames();
+  const four: MenuItem[] = [
+    { id: "overview", label: "Overview", onSelect: vi.fn() },
+    { id: "archive", label: "Archive", onSelect: vi.fn() },
+    { id: "rename", label: "Rename", onSelect: vi.fn() },
+    { id: "delete", label: "Delete", onSelect: vi.fn() },
+  ];
+  try {
+    render(<Menu trigger="Actions" items={four} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    const focused = screen.getByRole("menuitem", { name: "Archive" });
+    focused.focus();
+    const popup = screen.getByRole("menu");
+    expect(document.activeElement).toBe(focused);
+    // Archive spans 44..88 inside a scrollport from 40 to 96: fully in sight.
+    popup.scrollTop = 40;
+    expect(popup.scrollTop).toBe(40);
+
+    // The label wraps and the row is 100px - taller than the scrollport. Its
+    // start is at 44 and its end at 144, so no offset can show it whole.
+    archiveHeight = 100;
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 600 });
+    fireEvent(window, new Event("resize"));
+    flush();
+
+    // The START is on screen. Fitting the end (144 - 56 = 88) would put the
+    // label at -44, above the scrollport, so the row's own top wins.
+    expect(popup.scrollTop).toBe(44);
+    expect(document.activeElement).toBe(focused);
+  } finally {
+    vi.restoreAllMocks();
+    if (originalInnerWidth) Object.defineProperty(window, "innerWidth", originalInnerWidth);
     if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
   }
 });
