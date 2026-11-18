@@ -839,11 +839,20 @@ func TestAcceptedAttentionTurnIsInHistoryBeforeItsMarker(t *testing.T) {
 		t.Fatalf("accept the late frame: %v", err)
 	}
 
+	// The request, not the history: this is the composition the model call
+	// builds its turns from, so a turn a hold keeps out of it is a report the
+	// model never reads even though the marker landed. Asserting on history
+	// alone would pass with the report filtered out of the request.
+	projection, holds := sess.delegateAttentionModelProjection()
+	requested, _ := filterHeldDelegateAttentionTurns(projection.turns, holds)
+	if indexOfAttentionTurn(requested, lateID) < 0 {
+		t.Fatal("the request that settles this generation does not carry the frame: the marker landed on a report the model never reads")
+	}
 	sess.mu.Lock()
 	history := append([]schema.Turn(nil), sess.history...)
 	sess.mu.Unlock()
 	if indexOfAttentionTurn(history, lateID) < 0 {
-		t.Fatal("acceptance wrote the consumed marker without the frame's turn in history: the request that settles this generation cannot carry the report")
+		t.Fatal("acceptance wrote the consumed marker without the frame's turn in history")
 	}
 	// And the marker did land, so the row is not left pending forever.
 	fold, err := sess.readDelegateAttentionFold(sess.TranscriptPath(), sess.id)
