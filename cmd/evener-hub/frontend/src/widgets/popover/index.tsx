@@ -61,16 +61,18 @@ export interface PopoverProps {
  * can't cut it off. The placement math (flip-then-clamp) lives in
  * computePosition.ts, shared verbatim with widgets/menu.
  *
- * Behavior it shares with Menu: reopening always re-measures rather than
- * trusting a stale position; a scroll anywhere (capture-phase, so a
- * scrollable ancestor's own scroll counts too) closes it, and an outside
- * click or Escape closes it. Built on FocusScope with trap so Tab/Shift+Tab
- * cycle within the panel while open, matching Menu.
+ * Reopening always re-measures rather than trusting a stale position, and an
+ * outside click or Escape closes it - as with Menu. Built on FocusScope with
+ * trap so Tab/Shift+Tab cycle within the panel while open, also as with Menu.
  *
- * Where it differs, and why: a viewport resize closes Popover, whereas Menu
- * re-anchors and stays open - opening Menu can itself dismiss the software
- * keyboard, and that resize is not the reader dismissing anything (#6337).
- * See "Menu" in the widget reference.
+ * Its own dismissal rules, which Menu does not share, because Popover never
+ * repositions after opening: ANY scroll (capture-phase, so a scrollable
+ * ancestor's own scroll counts too) closes it, and so does a viewport resize.
+ * Menu instead closes only on a scroll that can actually move its trigger,
+ * and re-anchors rather than closing when the viewport resizes - opening Menu
+ * can itself dismiss the software keyboard, and that resize is not the reader
+ * dismissing anything. A caller that needs a panel to survive those
+ * passes `closeOnScroll={false}`. See "Menu" in the widget reference.
  */
 export function Popover({
   open,
@@ -180,9 +182,12 @@ export function Popover({
     onDismiss: onClose,
   });
 
-  // A scroll anywhere (capture-phase) or a viewport resize closes the popover -
-  // simpler than continuously repositioning, matching Menu. Consumers whose
-  // panel content scrolls opt out with closeOnScroll={false}.
+  // A scroll anywhere (capture-phase) or a viewport resize closes the popover.
+  // Popover never repositions after opening, so a scroll it cannot follow is a
+  // popover detached from its trigger - closing is the honest answer. Menu
+  // decides this differently: it closes only on a scroll that can move its own
+  // trigger, and re-anchors on a resize (see "Menu" in the widget reference).
+  // Consumers whose panel content scrolls opt out with closeOnScroll={false}.
   useEffect(() => {
     if (!open || !closeOnScroll) return;
     if (!panelWindow) return;

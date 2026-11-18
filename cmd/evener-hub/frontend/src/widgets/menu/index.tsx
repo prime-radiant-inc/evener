@@ -170,8 +170,8 @@ function stepEnabledIndex(items: MenuEntry[], from: number, delta: 1 | -1): numb
  * it to the trigger's new rect instead of closing: the resize that matters
  * most is the software keyboard leaving when this menu's own FocusScope
  * takes focus out of the editor that opened it, and closing there would
- * swallow the tap that opened the menu (#6337 - see the resize handler
- * below). A scroll anywhere else - the session transcript scrolling beside
+ * swallow the tap that opened the menu (see the resize handler below). A
+ * scroll anywhere else - the session transcript scrolling beside
  * its own chrome's "..." menu, an unrelated pane - leaves the trigger's rect
  * exactly where it was, so the menu stays open (kata: the session's "..."
  * menu must survive transcript scrolling).
@@ -267,6 +267,32 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     setOrigin(transformOriginFor(triggerRect, placed));
   }, [ownerDocument]);
 
+  // Re-measure ONCE on the next frame, never synchronously. A resize event is
+  // not the moment the trigger has finished moving: Dockview defers its own
+  // layout to a frame too, and its rAF was queued by the same event dispatch
+  // before this one, so measuring here reads the layout Dockview has already
+  // settled rather than the one the resize caught mid-flight. Coalesced
+  // through one pending frame, so a burst of
+  // notifications - a resize, a visual-viewport change and an observation
+  // together - re-measures once.
+  const frameRef = useRef<number | null>(null);
+  const placeAfterLayout = useCallback(() => {
+    if (frameRef.current !== null) return;
+    const ownerWindow = ownerDocument.defaultView ?? window;
+    frameRef.current = ownerWindow.requestAnimationFrame(() => {
+      frameRef.current = null;
+      placeMenu();
+    });
+  }, [ownerDocument, placeMenu]);
+  // A menu that leaves mid-frame must not place itself afterwards.
+  useEffect(() => {
+    return () => {
+      if (frameRef.current === null) return;
+      (ownerDocument.defaultView ?? window).cancelAnimationFrame(frameRef.current);
+      frameRef.current = null;
+    };
+  }, [ownerDocument]);
+
   // The measuring pass above is a layout effect, so it - and the re-render
   // its setPosition call causes - both complete before the browser's next
   // paint, in the same commit as the mount itself: nothing ever visibly
@@ -311,8 +337,14 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // recovers. A focus that has moved to a real control (the person tabbed
     // away, a Dialog took it) is theirs, not ours to reclaim.
     if (focused !== null && focused !== ownerDocument.body) return;
-    const node = itemRefs.current[indexOfActive()];
-    node?.focus();
+    const index = indexOfActive();
+    if (index === -1) return;
+    // focusIndex, not node.focus(): the replacement BECOMES the active item.
+    // Focusing it without adopting it leaves activeId naming the entry that
+    // left, so a caller that brings that entry back re-points activeId at a
+    // row the person is no longer on - and the id would then name the
+    // action while focus names a different row.
+    focusIndex(index);
   }, [isOpen, ownerDocument, itemIds]);
 
   function focusIndex(index: number) {
@@ -321,6 +353,17 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     if (isSeparator(entry)) return;
     setActiveId(entry.id);
     itemRefs.current[index]?.focus();
+  }
+
+  // The index of the item that actually holds DOM focus, or -1 when focus is
+  // not on one of this popup's items. This is the only truthful answer to
+  // "which item is this keypress about": activeId can name an entry that has
+  // left the list, and an item can become disabled in place while focus stays
+  // on it, and neither of those is visible from the id alone.
+  function focusedIndex(): number {
+    const focused = ownerDocument.activeElement;
+    if (focused === null) return -1;
+    return itemRefs.current.findIndex((node) => node !== null && node === focused);
   }
 
   function selectItem(item: MenuEntry) {
@@ -369,7 +412,8 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // focused, resolved against the list as it is NOW - not from a stored
     // index. See activeId's own comment: an index written before the caller
     // changed `items` names a different entry after the change.
-    const current = indexOfActive();
+    const focused = focusedIndex();
+    const current = focused === -1 ? indexOfActive() : focused;
     switch (event.key) {
       case "ArrowDown":
         event.preventDefault();
@@ -460,13 +504,21 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // index.html's `interactive-widget=resizes-content` grew the layout
     // viewport back by the keyboard's height - a window `resize` with no
     // pointer behind it. Closing on that swallowed the very tap that opened
-    // the menu (#6337). A reader's dismissal is a press, and a press outside
+    // the menu. A reader's dismissal is a press, and a press outside
     // the menu still closes it at the press (useDismissOnOutsidePress above);
     // it does not arrive as a resize. A real layout change (a window drag, a
     // rotation) therefore keeps the menu open and correctly attached instead
     // of making it vanish.
-    return watchViewport(rootRef.current, onScrollCapture, placeMenu);
-  }, [isOpen, closeMenu, ownerDocument, placeMenu]);
+    // Measure now (so the popup is never a frame behind the event) AND once
+    // more after layout (so it also lands on wherever Dockview's deferred
+    // layout put the trigger - see placeAfterLayout above). It still never
+    // closes: a resize is not a press.
+    const placeNowAndAfterLayout = () => {
+      placeMenu();
+      placeAfterLayout();
+    };
+    return watchViewport(rootRef.current, onScrollCapture, placeNowAndAfterLayout);
+  }, [isOpen, closeMenu, ownerDocument, placeMenu, placeAfterLayout]);
 
   // A resize event is not the only thing that moves the trigger, and the
   // resize itself is not the moment the trigger has finished moving:
@@ -492,28 +544,29 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   useEffect(() => {
     if (!isOpen) return;
     const ownerWindow = ownerDocument.defaultView ?? window;
-    // One pending frame at a time, so a burst of notifications re-measures
-    // once, after the layout that moved the trigger rather than during it.
-    let frame: number | null = null;
-    const placeAfterLayout = () => {
-      if (frame !== null) return;
-      frame = ownerWindow.requestAnimationFrame(() => {
-        frame = null;
-        placeMenu();
-      });
-    };
     const visualViewport = ownerWindow.visualViewport;
     visualViewport?.addEventListener("resize", placeAfterLayout);
     const Observer = ownerWindow.ResizeObserver;
     const observer = typeof Observer === "undefined" ? null : new Observer(placeAfterLayout);
+    // The trigger's box covers a trigger that resized; the POPUP's box covers
+    // a caller that changed the item set, which changes the popup's height
+    // without touching the trigger at all - adding "Find in session..." to an
+    // upward-opening popup would otherwise keep its old top and overlap the
+    // trigger. Popover observes its own panel for the same reason. A pure
+    // translation of a fixed-size trigger fires neither, which is why the
+    // resize path also measures on the frame after layout instead of trusting
+    // an event to say the trigger has finished moving.
     const triggerEl = triggerRef.current;
-    if (observer !== null && triggerEl !== null) observer.observe(triggerEl);
+    const popupEl = popupRef.current;
+    if (observer !== null) {
+      if (triggerEl !== null) observer.observe(triggerEl);
+      if (popupEl !== null) observer.observe(popupEl);
+    }
     return () => {
-      if (frame !== null) ownerWindow.cancelAnimationFrame(frame);
       visualViewport?.removeEventListener("resize", placeAfterLayout);
       observer?.disconnect();
     };
-  }, [isOpen, ownerDocument, placeMenu]);
+  }, [isOpen, ownerDocument, placeAfterLayout]);
 
   const iconOnly = label !== undefined;
   const triggerClassName = [
