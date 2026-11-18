@@ -102,11 +102,19 @@ active execution from answer links without discarding the resolution evidence.
 Unfenced input and legacy records retain whole-set behavior. An accepted
 interrupt and session close also retain their explicit whole-set clear behavior.
 
-An answer's observation carries that capture to clients as
-`resolvedAskCalls:[{turnId,callId}]`, beside the turn-granular
-`answerToTurnIds`. The link alone cannot say which of several calls in one
-execution a reply answered, so a client matching a settled ask to its answer
-reads the calls and compares the ask row's own `(turnId, callId)`.
+An answer's observation carries that capture to clients as two fields:
+`resolvedAskCalls:[{turnId,callId}]` and `resolvedAskLegacyCount`. The link
+alone cannot say which of several calls in one execution a reply answered, so
+a client matching a settled ask to its answer reads the calls and compares the
+ask row's own `(turnId, callId)`. The legacy count names how many consumed
+questions admission could not name at all; their headers never reach the wire,
+so a nonzero count makes a header-keyed pairing unattributable.
+
+The projection emits both fields only when the answer has a recorded turn
+link, so an inline steer answering only its own running execution and a fenced
+answer consuming only legacy questions retain their evidence in the transcript
+and project no stamp. A client that finds no stamp reads the reply the way it
+did before the fields existed.
 
 A client reads that stamp to REFUSE, not to construct: where a reply carries
 one, it allows a recap only when the call has exactly one question, it is the
