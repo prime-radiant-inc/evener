@@ -317,7 +317,7 @@ func EscapeModelAuthoredFrames(text string) string {
 		}
 		inBlock := fence.StepInBlockIn(content, container)
 		if !inBlock && !indentedCode(content, container) && !isQuotedLine(content) {
-			if escaped, ok := escapeFrameOpener(content); ok {
+			if escaped, ok := escapeFrameOpener(content, text[pos+len(line):]); ok {
 				out = escaped + line[len(content):]
 			}
 		}
@@ -350,13 +350,25 @@ func EscapeModelAuthoredFrames(text string) string {
 // two-digit ordered item reaches the item's content column, so it is prose to
 // the code check and only a tab is left ahead of the frame. Skipping spaces
 // alone left the tab in place and passed the frame through unescaped (#6493).
-func escapeFrameOpener(content string) (string, bool) {
+//
+// rest is the text after this line. It is read only for the answer marker, which
+// the client reads out of a reply with a note appended to the marker line as
+// long as numbered answer lines follow: parseAskAnswerLines takes the answers
+// from that text and linkedReplyAnswersThisCall admits it, while the stricter
+// composedReplyCoversCall declines it and keeps the raw row. A marker alone on
+// its line opens a block whether or not answers follow; a marker carrying a note
+// is a frame only in that shape, so a sentence that merely mentions the marker
+// stays prose.
+func escapeFrameOpener(content, rest string) (string, bool) {
 	trimmed := strings.TrimLeft(content, " \t")
 	if trimmed == "" {
 		return "", false
 	}
 	indent := len(content) - len(trimmed)
 	if isModelAuthoredMarkerLine(strings.TrimRight(trimmed, " \t")) {
+		return content[:indent] + "&#91;" + trimmed[1:], true
+	}
+	if isAnswerMarkerWithNote(trimmed, rest) {
 		return content[:indent] + "&#91;" + trimmed[1:], true
 	}
 	for _, tag := range modelAuthoredTagOpeners {
@@ -367,6 +379,56 @@ func escapeFrameOpener(content string) (string, bool) {
 		return content[:indent] + "&lt;" + trimmed[1:], true
 	}
 	return "", false
+}
+
+// answerMarker is the bracket the harness writes ahead of a composed answer
+// reply. It is also the whole-line marker in modelAuthoredMarkerLines, and it is
+// named here because this shape checks a prefix of the line rather than the
+// whole of it.
+const answerMarker = "[answers]"
+
+// isAnswerMarkerWithNote reports whether line starts with the answer marker and
+// carries a note after it, and rest begins with numbered answer lines.
+//
+// The client reads an edited reply as `[answers] <note>` followed by answer
+// lines, and treats that as the composed reply's own content. A bare mention of
+// the marker in a sentence does not qualify: the shape needs the marker at the
+// line's start, a note after it, and at least one answer line under it.
+func isAnswerMarkerWithNote(line, rest string) bool {
+	note, ok := strings.CutPrefix(line, answerMarker)
+	if !ok || strings.TrimSpace(note) == "" {
+		return false
+	}
+	for next := range strings.Lines(rest) {
+		trimmed := strings.TrimSpace(next)
+		if trimmed == "" {
+			continue
+		}
+		return isAnswerLine(trimmed)
+	}
+	return false
+}
+
+// isAnswerLine reports whether line is one numbered answer line in the client's
+// composed form: an ordinal, a full stop, a space, a bracketed header and the
+// arrow the client writes before the resolution text.
+func isAnswerLine(line string) bool {
+	i := 0
+	for i < len(line) && line[i] >= '0' && line[i] <= '9' {
+		i++
+	}
+	if i == 0 || i+1 >= len(line) || line[i] != '.' || line[i+1] != ' ' {
+		return false
+	}
+	rest, ok := strings.CutPrefix(line[i+2:], "[")
+	if !ok {
+		return false
+	}
+	header, after, ok := strings.Cut(rest, "]")
+	if !ok || header == "" {
+		return false
+	}
+	return strings.Contains(after, "→")
 }
 
 // isModelAuthoredMarkerLine reports whether line, trimmed, is exactly one of
@@ -462,7 +524,12 @@ func (l *listContainer) step(content string) int {
 	if marker, ok := mdfence.ListMarker(rest); ok {
 		after := rest[marker:]
 		spaces := len(after) - len(strings.TrimLeft(after, " "))
-		if spaces >= 1 && spaces <= 4 {
+		// A marker opens an item only within three columns of the enclosing
+		// item's content. Further in it is indented code, and a marker-shaped
+		// line inside code is example text rather than structure: treating it as
+		// an item invented a scope whose content column then classified the
+		// code's own frame lines as prose and rewrote the quoted example.
+		if spaces >= 1 && spaces <= 4 && indent-l.current() <= 3 {
 			// The content starts after the marker and its following spaces, at
 			// this line's own indentation, and the item it opens sits inside
 			// whichever item the line still fits in.
