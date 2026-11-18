@@ -110,7 +110,18 @@
    * affordance a column of whitespace away from the name it opens. The meta
    * segments own the right edge via their own margin-left:auto. */
   flex: 0 1 auto;
-  min-width: 0;
+  /* An independent minimum visible-name budget. Shrinking distributes the
+   * deficit by content width, so a 200-character intent (a ~1200px flex base)
+   * kept ~97% of the row and left the name a sliver narrower than its own
+   * ellipsis. The floor is the name's claim on the row: the meta yields first,
+   * and only a row with less than this much left after its fixed chrome can
+   * push the name below it. Two `ch` is the width of a glyph and the ellipsis
+   * that follows it - the smallest prefix that still reads as a name - and it
+   * grows with --font-scale, so a larger text preference earns a wider
+   * prefix. It sits just under 16px at the default 13px UI size, so every row
+   * the intent already left a readable name on keeps its exact current
+   * geometry. */
+  min-width: 2ch;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

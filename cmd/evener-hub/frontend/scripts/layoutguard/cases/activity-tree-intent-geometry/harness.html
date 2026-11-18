@@ -86,9 +86,14 @@ function measureFrame({ spec, frame }) {
     });
   }
   return {
+    id: spec.id,
     width: spec.width,
     viewport: { width: win.innerWidth, height: win.innerHeight },
-    pane: box(doc.querySelector(".panelColumn")),
+    pane: { ...box(doc.querySelector(".panelColumn")),
+      clientWidth: doc.querySelector(".panelColumn").clientWidth,
+      scrollWidth: doc.querySelector(".panelColumn").scrollWidth,
+      overflowX: win.getComputedStyle(doc.querySelector(".panelColumn")).overflowX,
+    },
     rows: rows.map((row) => {
       const name = row.querySelector(".denseName");
       const button = row.querySelector("[data-open-shell] button");

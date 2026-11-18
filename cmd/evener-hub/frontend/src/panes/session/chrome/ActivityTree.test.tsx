@@ -922,6 +922,20 @@ describe("ActivityTree", () => {
     expect(activityPanelCss).toMatch(/\.denseMeta\s*\{[^}]*text-overflow:\s*ellipsis/);
   });
 
+  test("a near-limit intent cannot shrink the name below its own readable prefix", () => {
+    // The 60% cap above only holds while the meta's proportional share still
+    // reaches it. Past that - narrower panes and deeper nested groups, where
+    // each .indentGuide takes 19px - proportional shrink hands the intent the
+    // row by content width (~1200px of flex base) and leaves the name a
+    // sliver narrower than its own ellipsis. The name therefore carries an
+    // independent, text-relative floor: the meta yields to min-width:0 first.
+    expect(activityPanelCss).toMatch(/\.denseName\s*\{[^}]*min-width:\s*2ch/);
+    // ch, not px: the floor is a prefix of the row's OWN text, so it grows
+    // with the reader's font-scale preference instead of shrinking relative
+    // to it. A px floor would keep its width while the glyphs grew.
+    expect(activityPanelCss).not.toMatch(/\.denseName\s*\{[^}]*min-width:\s*[0-9.]+px/);
+  });
+
   test("dense-row open targets keep hit width but never overhang the row, so neighbors' targets can't overlap", () => {
     // A target taller than the ~23.5px row pitch would overlap both
     // neighbors' targets; where boxes overlap the LATER row wins and a tap in

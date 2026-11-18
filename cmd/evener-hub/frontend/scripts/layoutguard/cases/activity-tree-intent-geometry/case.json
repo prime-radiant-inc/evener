@@ -1,6 +1,6 @@
 {
   "name": "activity-tree-intent-geometry",
-  "description": "A 200-character intent cannot starve a short delegate name or hide its own Open control. Real phone Sheet insets, 360/390/430px viewports, and nested activity rows through four groups exercise the shipped denseMeta cap and ellipsis without product CSS overrides.",
+  "description": "A 200-character intent cannot starve a short delegate name or hide its own Open control. Real phone Sheet insets at the issue's 320/360/390/430px viewports through eight nested groups, plus a wide 900px row whose full name and 60% meta cap must be untouched by the name floor.",
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",
@@ -12,16 +12,74 @@
     "widgets/iconbutton/iconbutton.module.css",
     "widgets/openbutton/openbutton.module.css"
   ],
-  "viewport": { "width": 1200, "height": 1100, "deviceScaleFactor": 1, "mobile": false },
+  "viewport": {
+    "width": 1200,
+    "height": 4400,
+    "deviceScaleFactor": 1,
+    "mobile": false
+  },
   "widthMatrix": [
-    { "width": 360, "depth": 0 },
-    { "width": 390, "depth": 2 },
-    { "width": 430, "depth": 4 }
+    {
+      "id": "320-0",
+      "width": 320,
+      "depth": 0
+    },
+    {
+      "id": "320-1",
+      "width": 320,
+      "depth": 1
+    },
+    {
+      "id": "360-0",
+      "width": 360,
+      "depth": 0
+    },
+    {
+      "id": "360-3",
+      "width": 360,
+      "depth": 3
+    },
+    {
+      "id": "390-2",
+      "width": 390,
+      "depth": 2
+    },
+    {
+      "id": "390-8",
+      "width": 390,
+      "depth": 8
+    },
+    {
+      "id": "430-0",
+      "width": 430,
+      "depth": 0
+    },
+    {
+      "id": "430-4",
+      "width": 430,
+      "depth": 4
+    },
+    {
+      "id": "430-8",
+      "width": 430,
+      "depth": 8
+    },
+    {
+      "id": "900-0",
+      "width": 900,
+      "depth": 0
+    }
   ],
   "mutation": {
-    "declaration": "activitypanel.module.css: remove only .denseMeta's max-width: 60%",
-    "verified": "2026-10-23",
+    "declaration": "activitypanel.module.css: remove only .denseName's min-width: 2ch",
+    "verified": "2026-11-18",
     "expect": "fail",
-    "note": "Chrome exited 1: all nine names fell below 16px (6.84-9.61px) and every meta exceeded 60% of row content width. The 430px root also lost its full name. Stylesheet restored byte-for-byte before the passing runs."
+    "note": "Chrome exited 1 on the restored pre-floor baseline of this same case: 320px/depth 1 dropped the name to 5.03px, 320px/depth 0 to 5.70px, 360px/depth 3 to 5.11px, 390px/depth 8 to 2.81px and 430px/depth 8 to 4.23px - all under the guard's 16px readable floor. The 430px root and the 900px row kept their full names (45.23px) in both runs, which is the comfortable-width half of the contract. Stylesheet restored byte-for-byte before the passing run.",
+    "previous": {
+      "declaration": "activitypanel.module.css: remove only .denseMeta's max-width: 60%",
+      "verified": "2026-10-23",
+      "expect": "fail",
+      "note": "Chrome exited 1: all nine names fell below 16px (6.84-9.61px) and every meta exceeded 60% of row content width. The 430px root also lost its full name. Stylesheet restored byte-for-byte before the passing runs."
+    }
   }
 }
