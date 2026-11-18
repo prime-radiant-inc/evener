@@ -83,15 +83,16 @@ func TestFinalizationDrainPresentsPendingWatchAttention(t *testing.T) {
 
 	ran := make(chan EntryKind, 4)
 	process := func(ctx context.Context, _ string, _ []ImageAttachment, kind EntryKind) (string, error) {
-		ran <- kind
 		// Present the row the way a leased attention turn does: the request
 		// stages it and turn-end resolution retires it.
 		sess.stagePresentedAttentionCoverage(ctx, currentHistory(t, sess), nil)
 		sess.promoteStagedAttentionCoverage(llm.Request{})
-		if err := sess.finishAttentionTurn(nil, nil); err != nil {
-			return "", err
-		}
-		return "", nil
+		err := sess.finishAttentionTurn(nil, nil)
+		// Signal only after settlement. Sending the kind first let the drain
+		// goroutine read a row this shim had not retired yet, so a correct
+		// implementation failed on a race between the two goroutines.
+		ran <- kind
+		return "", err
 	}
 
 	done := make(chan error, 1)
