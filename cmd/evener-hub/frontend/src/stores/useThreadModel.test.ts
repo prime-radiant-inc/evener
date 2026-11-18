@@ -6,9 +6,10 @@
 // releases it.
 
 import "fake-indexeddb/auto";
-import type { ThreadReadResponse } from "@evener/appwire-client";
+import { type ThreadReadResponse, WireError } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { beforeEach, expect, test, vi } from "vitest";
 import {
   refreshPendingTurnsProjection,
@@ -16,11 +17,23 @@ import {
 } from "../panes/session/composer/queue/pendingTurnsStore";
 import { withRecoveryDestinationClaim } from "../panes/session/composer/submitProtocol";
 import { resetConnectionStoreForTests } from "./connection";
+import {
+  entryTranscriptRoute,
+  productionEntryTranscriptForTests,
+  setProductionEntryCacheForTests,
+} from "./entryTranscriptRoutes";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { deleteMutationDatabase } from "./mutationOutboxTestUtils";
+import { SessionEntryCache } from "./sessionEntryCache";
 import { pumpIndexedDBUntil } from "./testing/indexedDBPump";
 import { foregroundHolds } from "./threadOwners";
-import { resendRecoveryMutation, resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "./threads";
+import {
+  installHydrationRetrySchedulerForTests,
+  resendRecoveryMutation,
+  resetThreadsStoreForTests,
+  setMutationStorageForTests,
+  threadsStore,
+} from "./threads";
 import {
   connectMutationClient,
   mutationReceipt,
@@ -129,6 +142,161 @@ test("the lease owns exactly one count, and a ref-keyed release cannot spend it"
   expect(foregroundHolds("ref_dest"), "a lease releases once").toBe(paneHolds - 1);
   await vi.waitFor(() => expect(threadsStore.getState().threads.has("ref_dest")).toBe(false));
 });
+
+// A lease is a claim that the destination is routable. A hub that answers the
+// read with a deletion fence has confirmed it is not, so the acquisition must
+// reject - and reject without leaving its count behind. A pane keeps its
+// deleted-session state; that is a display, not a claim.
+test("a claim on a destination the hub reports deleted rejects and drops its hold", async () => {
+  const fake = connectMutationClient();
+  let reads = 0;
+  fake.on("thread/read", () => {
+    reads += 1;
+    throw new WireError("target has been deleted: local:claim-deleted", -32001, {
+      evenerErrorInfo: "actionUnavailable",
+      mutationOutcome: "targetDeleted",
+      retryDisposition: "none",
+    });
+  });
+  const holdsBefore = foregroundHolds("local:claim-deleted");
+  await expect(acquireUnreadThreadClaim("local:claim-deleted")).rejects.toThrow();
+  // The hub's fence is what made the acquisition fail, and the read that
+  // carried it ran exactly once: the claim did not retry an unrecoverable
+  // destination. The rollback then released exactly the hold this acquisition
+  // took, so no count is stranded. The fence itself is the pane's display
+  // state and retires with the model, so it is not asserted here.
+  expect(reads, "the claim read the destination once and did not retry").toBe(1);
+  expect(foregroundHolds("local:claim-deleted"), "a rejected acquisition leaves no count behind").toBe(holdsBefore);
+}, 20_000);
+
+// The pane face of the same read, unchanged: a pane acquisition returns and
+// shows the deleted-session state rather than rejecting.
+test("a pane acquisition over a deleted destination still returns", async () => {
+  const fake = connectMutationClient();
+  fake.on("thread/read", () => {
+    throw new WireError("target has been deleted: local:pane-deleted", -32001, {
+      evenerErrorInfo: "actionUnavailable",
+      mutationOutcome: "targetDeleted",
+      retryDisposition: "none",
+    });
+  });
+  await expect(threadsStore.getState().ensureThread("local:pane-deleted")).resolves.toBeUndefined();
+  expect(threadsStore.getState().deletedRefs.has("local:pane-deleted")).toBe(true);
+}, 20_000);
+
+// The claim's answer is verified routing state, and the certification open is
+// the pane's work. A claim that ran it would attach a reader and read the
+// transcript cache before its caller could write, so an unopened destination's
+// claim must leave no route reader of its own behind. The pane that opens the
+// same destination afterwards still performs its own open.
+test("a claim on an unopened destination verifies without opening a transcript", async () => {
+  const fake = connectMutationClient();
+  fake.on("thread/read", () => readResponse("local:claim-unopened"));
+  const lease = await acquireUnreadThreadClaim("local:claim-unopened");
+  // No pane body owner exists, so the claim's read published routing state and
+  // left the transcript open to the pane that eventually opens the ref.
+  const claimed = productionEntryTranscriptForTests("local:claim-unopened");
+  expect(claimed.reader, "a claim is not a pane open").toBeUndefined();
+  expect(claimed.lastLocalOpenStatus, "a claim owes no cached open").toBeUndefined();
+  lease.release();
+}, 20_000);
+
+// A cached shell advertises neither Send nor Queue. A resend that joined a read
+// which failed after a connection replacement must not accept that shell as
+// verification: it waits for the re-arm to verify on the replacement.
+test("a failed read after a replacement does not verify a routing claim from the shell", async () => {
+  const first = connectMutationClient();
+  const ref = "local:shell-dest";
+  first.on("thread/read", () => readResponse(ref));
+  await threadsStore.getState().ensureThread(ref);
+  // The resident model is a cached shell: its source read has not confirmed it.
+  // A shell publishes neither Send nor Queue, so it is not routing state.
+  const route = entryTranscriptRoute(ref);
+  if (!route) throw new Error("expected an entry route");
+  route.cachedUnverified = true;
+  // The read is still in flight when the connection is replaced, so the
+  // failure is judged against a client that is no longer the wired one: that
+  // is the branch a shell could be accepted on.
+  const stalled = deferred<ThreadReadResponse>();
+  let firstReads = 0;
+  first.on("thread/read", () => {
+    firstReads += 1;
+    return stalled.promise;
+  });
+  const claim = acquireUnreadThreadClaim(ref);
+  await flushUntil(() => firstReads > 0);
+  // The connection is replaced while the claim's read is still in flight, then
+  // that read rejects: the shell standing in the store is all the old path
+  // would have.
+  const second = connectMutationClient();
+  let replacementReads = 0;
+  second.on("thread/read", () => {
+    replacementReads += 1;
+    return readResponse(ref);
+  });
+  stalled.reject(new Error("transport died"));
+  // Sampled at the instant the claim settles, not after: a resolution on the
+  // shell would be followed by the retry's own read regardless, so a later
+  // count cannot tell the two paths apart. Only a claim that waited for the
+  // re-arm has a read behind it when it hands its lease back.
+  let readsWhenResolved = -1;
+  const lease = await claim.then((settled) => {
+    readsWhenResolved = replacementReads;
+    return settled;
+  });
+  // Accepting the shell would have resolved at zero reads: a destination that
+  // advertises no Send, handed to the resend as verified.
+  expect(readsWhenResolved, "the shell was not accepted as verification").toBeGreaterThan(0);
+  lease.release();
+}, 20_000);
+
+// A retry that no pane opened behind must register as a routing read. If it
+// registers as pane-backed, the first pane to open skips its cached lookup and
+// paints loading over a usable cached transcript.
+test("a pane opening over a retry still restores its cached transcript", async () => {
+  const ref = "local:cached-pane";
+  const cache = new SessionEntryCache({
+    indexedDB: new IDBFactory(),
+    keyRange: IDBKeyRange,
+    databaseName: `cached-pane-${crypto.randomUUID()}`,
+  });
+  setProductionEntryCacheForTests(cache);
+  // The one question M4 asks: did the pane spend its own bounded local
+  // lookup? A retry registered as pane-backed makes the pane skip it.
+  const lookup = vi.spyOn(cache, "getSessionForRequestedRef");
+  const fake = connectMutationClient();
+  let failReads = true;
+  fake.on("thread/read", () => {
+    if (failReads) throw new Error("transport died");
+    return readResponse(ref);
+  });
+  // The retry the claim arms is machinery's, and M4 is about the registration
+  // that retry leaves behind. Capture the retry callback instead of waiting out
+  // its backoff, then fire it while the pane is opening.
+  let fireRetry: (() => void) | undefined;
+  const restoreScheduler = installHydrationRetrySchedulerForTests((_attempt, run) => {
+    fireRetry = run;
+    return () => {};
+  });
+  void acquireUnreadThreadClaim(ref).catch(() => {});
+  await flushUntil(() => fake.calls.some((call) => call.method === "thread/read"));
+  await flushUntil(() => fireRetry !== undefined);
+  // The retry's own read stays in flight and publishes nothing, so the pane
+  // meets that pending registration - the window M4 names.
+  const retryRead = deferred<ThreadReadResponse>();
+  failReads = false;
+  fake.on("thread/read", () => retryRead.promise);
+  fireRetry?.();
+  await flushUntil(() => fake.calls.filter((call) => call.method === "thread/read").length > 1);
+  // The first pane opens over the pending retry, with no model published.
+  const pane = threadsStore.getState().ensureThread(ref);
+  for (let turn = 0; turn < 20; turn += 1) await nextMacrotask();
+  expect(lookup, "the pane still owes its own cached lookup").toHaveBeenCalled();
+  retryRead.resolve(readResponse(ref));
+  await pane;
+  restoreScheduler();
+  cache.close();
+}, 20_000);
 
 // The issue's exact scenario end to end: the destination is open in another
 // pane, and that pane unmounts while the resend's durable write is still in

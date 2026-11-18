@@ -120,9 +120,9 @@ export function foregroundHoldStanding(h: ForegroundHold): boolean {
   return h.attached && !h.released;
 }
 
-/** Takes a foreground hold without handing the caller a handle. The handle is
- * still the thing released: this is the shorthand for a holder whose release is
- * its own paired call in the same frame, never for one that outlives it. */
+/** Takes a foreground hold and returns the handle that names it. It is the one
+ * way a foreground count is minted and attached, so no caller can attach a
+ * hold it cannot later release by handle. */
 export function holdForeground(ref: string, routing = false): ForegroundHold {
   const handle = mintForegroundHold(ref, routing);
   attachForegroundHold(handle);

@@ -162,7 +162,6 @@ import type { SessionEntryCache } from "./sessionEntryCache";
 import { ShardedMap, shardedMap } from "./shardedMap";
 import { resetTasksPanelStoreForTests } from "./tasksPanel";
 import {
-  attachForegroundHold,
   backgroundHeldRefs,
   backgroundHolds,
   backgroundLeaseSequence,
@@ -178,10 +177,10 @@ import {
   heldCountsAtStore,
   holdBackground,
   holdBodyOwnership,
+  holdForeground,
   holdHistory,
   isFinalReleaseOwner,
   isMutationPinned,
-  mintForegroundHold,
   mutationPinnedRefs,
   nextBackgroundLeaseSequence,
   ownedOnlyByMutationPin,
@@ -7567,7 +7566,16 @@ async function refreshTrackedThreadNow(
   // caller until a sufficient model has actually published.
   const trackForActiveLifecycle = !hasPublishedModel && (previous !== undefined || targetedResync);
   if (trackForActiveLifecycle) {
-    inflightHydrates.start(ref, hydration, client, epoch);
+    // This registration is machinery's, not a pane's: a retry or a reconnect
+    // re-read that began for a ref with no pane behind it (a routing claim's
+    // retry is the routing case). It never opened the cache, so it must not
+    // stand in for a pane's open: registered as pane-backed, the first pane to
+    // open over it skips its own lookup and paints loading over a usable
+    // cached transcript. Body owners are the pane signal - every pane
+    // acquisition takes one - so a ref with none registers as a routing read,
+    // and the pane that arrives still restores its cache while joining this
+    // same source read.
+    inflightHydrates.start(ref, hydration, client, epoch, false, bodyOwners(ref) === 0);
   }
   try {
     const model = await hydration;
@@ -8309,8 +8317,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // hydration fails each name the same hold, so whichever runs second finds it
     // already released and drops nothing. That is why no exit has to ask "is the
     // standing count mine" - by construction it can only be this handle's.
-    const hold = mintForegroundHold(ref, routingOnly);
-    attachForegroundHold(hold);
+    const hold = holdForeground(ref, routingOnly);
     // The one question every post-await exit below asks. The ref's count cannot
     // answer it: a routing lease keeps the count positive after the pane that
     // took it has left, so a retired pane would pass a count check and go on
@@ -8482,6 +8489,25 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         try {
           const model = await inflight;
           if (model) {
+            // A routing hold's answer is verified routing state, and a read
+            // that published a model has given it exactly that. The
+            // certification open below is the PANE's: it attaches a reader and
+            // reads the transcript cache, so a stalled cache would delay a
+            // resend's outbox write until the opening backstop for a
+            // destination already verified. The read's success alone is not
+            // the answer - a deletion can land between its snapshot and this
+            // fulfilment - so ask the shared question, and reject rather than
+            // hand back a lease the caller would resend on.
+            if (routingOnly) {
+              if (threadsStore.getState().deletedRefs.has(ref)) {
+                throw new Error("The destination was deleted before its routing state was verified");
+              }
+              // A published model whose route still reads unverified is not
+              // routable either: the read behind it did not settle the cache
+              // authority it answered against.
+              if (!routingStateVerified(ref)) throw new Error("The destination was not verified for routing");
+              return;
+            }
             // A display the claim's publication already completed has no
             // pruned publication for the certification open's consumer gate
             // to protect — its local read can only add bodies the pane is
@@ -8528,9 +8554,30 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           // Durable deletion is the other terminal: return the result of the
           // lifecycle scheduleOwnedHydrationRetry already retired (see the
           // `deletedRefs` field doc) instead of re-arming another read.
-          if (threadsStore.getState().deletedRefs.has(ref)) return;
+          //
+          // A routing hold has no deleted-session face to show: returning
+          // successfully would hand the caller a lease for a destination the
+          // hub has confirmed is gone, and its resend would write a row at it.
+          // The rejection reaches the acquisition's own rollback, which drops
+          // exactly the hold this call took. A pane keeps returning: laying out
+          // the deleted-session state is its job.
+          if (threadsStore.getState().deletedRefs.has(ref)) {
+            if (routingOnly) throw new Error("The destination was deleted before its routing state was verified");
+            return;
+          }
           if (getWiredClient() !== inflightClient || getReadyEpoch() !== inflightEpoch) {
-            if (threadsStore.getState().threads.has(ref)) return;
+            // A resident model is enough for a pane: its display is folded over
+            // the read that is arming behind it. It is NOT enough for a routing
+            // hold. The model standing here after a superseded read can be the
+            // cached shell, which advertises neither Send nor Queue - returning
+            // on it refuses a resend the refreshed destination would accept. A
+            // verified model is the answer; a shell waits for the re-arm below
+            // to verify it on the current connection.
+            if (routingOnly) {
+              if (threadsStore.getState().threads.has(ref) && routingStateVerified(ref)) return;
+            } else if (threadsStore.getState().threads.has(ref)) {
+              return;
+            }
             // requireReadyClient re-reads the CURRENT client on the way out,
             // so a client captured before the wait is never stamped onto a
             // hydration that outlived it. Same shape as the re-arm below and
