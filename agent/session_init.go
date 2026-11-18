@@ -228,16 +228,8 @@ func (s *Session) initEnvContext(history []schema.Turn) {
 	probes := envctx.DefaultProbes()
 	if s.cfg.testOnly.envProbes != nil {
 		probes = *s.cfg.testOnly.envProbes
-	} else {
+	} else if !s.cfg.testOnly.skipGitSnapshot {
 		probes.GitBranch = func(cwd string) (string, bool) {
-			// Mirrors initSessionState's own skipGitSnapshot gate around
-			// snapshotGit: tests below the git-snapshot layer must not shell
-			// out here either, and this probe runs on every user turn (unlike
-			// snapshotGit, which runs once at session launch), so honoring the
-			// same knob matters more, not less.
-			if s.cfg.testOnly.skipGitSnapshot {
-				return "", false
-			}
 			return snapshotGitBranch(s.currentEnv(), cwd)
 		}
 	}
@@ -1250,6 +1242,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	s.retirementController.Store(cfg.spawn.retirementController)
 	// The environment turn is durable before meta.EnvContext is checkpointed.
 	s.initEnvContext(resumeHistory)
+	s.restoreLastGitObservation(restoredTranscriptHeader.WorkingDir, transcriptEntries)
 	if err := s.bootstrapDelegateResources(); err != nil {
 		return nil, err
 	}

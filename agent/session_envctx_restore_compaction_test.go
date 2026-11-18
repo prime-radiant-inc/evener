@@ -19,6 +19,7 @@ import (
 
 func TestRestoreEnvironmentReconcilesCompactionWithStaleMetadata(t *testing.T) {
 	t.Run("checkout in the launch prompt", testCompactedLaunchBranch)
+	t.Run("inconclusive checkout after fold", testCompactedGitObservation)
 	for _, retained := range []string{"none", "full", "diff"} {
 		t.Run(retained, func(t *testing.T) {
 			now := envctxFixedTime
@@ -140,6 +141,74 @@ func TestRestoreEnvironmentReconcilesCompactionWithStaleMetadata(t *testing.T) {
 			want := envctx.NewCollector(*probes).Collect(envctx.Inputs{Cwd: cwd, Sandbox: restored.cfg.Sandbox})
 			if got := restored.envTracker.State(); !got.HasSent || got.Last != want {
 				t.Fatalf("restored environment state = %+v, want complete %+v", got, want)
+			}
+		})
+	}
+}
+
+func testCompactedGitObservation(t *testing.T) {
+	const launch, feature, recovery = "launch-79", "feature-41", "recovered-23"
+	for _, mode := range []string{"warm", "cold", "cleared then cold"} {
+		t.Run(mode, func(t *testing.T) {
+			cwd, stateDir := evalSyms(t, t.TempDir()), t.TempDir()
+			copyWorktreeBaseRepo(t, cwd)
+			gittest.Run(t, cwd, "checkout", "-b", launch)
+			s := newScriptedSummaryCompactSession(t, "env-fold-observation", func(llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nWork retained\n[END SUMMARY]")}
+			}, withDir(cwd), withStateDir(stateDir), withEnvironmentSnapshot())
+			prompt := s.cachedSystemPrompt
+			gittest.Run(t, cwd, "checkout", "-b", feature)
+			want := feature
+			gitDir, parked := filepath.Join(cwd, ".git"), filepath.Join(t.TempDir(), "repo")
+			if mode == "cleared then cold" {
+				want = ""
+				if err := os.Rename(gitDir, parked); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := s.maybeAppendEnvironmentContext(); err != nil {
+				t.Fatal(err)
+			}
+			seedNumberedSessionHistory(t, s, 8)
+			s.contextMgr.PreserveRecentTurns = 1
+			if err := s.Compact(t.Context()); err != nil || countEnvironmentTurns(s) != 0 {
+				t.Fatalf("fold retained %d environment turns, err %v", countEnvironmentTurns(s), err)
+			}
+			if want == "" {
+				if err := os.Rename(parked, gitDir); err != nil {
+					t.Fatal(err)
+				}
+			}
+			gittest.Run(t, cwd, "checkout", "--orphan", recovery)
+			if mode != "warm" {
+				s.Close()
+				restored, err := RestoreSessionFromMetaWithConfig(s.client, s.profile, execenv.NewLocalExecutionEnvironment(cwd), loadMetaForTest(t, s), RestoreSessionConfig{StateDir: stateDir})
+				if err != nil {
+					t.Fatal(err)
+				}
+				s = restored
+				t.Cleanup(s.Close)
+			}
+			for round, branch := range []string{want, recovery, recovery} {
+				if round == 1 {
+					gittest.Run(t, cwd, "commit", "--allow-empty", "-m", "first")
+				}
+				_, _, _, req, _, _, err := s.prepareModelRequestWithError(t.Context(), round, &events.RoundTimings{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				model := envctx.NewTracker(envctx.State{Last: envctx.Snapshot{GitBranch: launch}})
+				for _, message := range req.Messages {
+					if message.Role == llm.RoleUser {
+						model.ReplayBlock(message.Text())
+					}
+				}
+				if got := model.State().Last.GitBranch; got != branch || req.Messages[0].Text() != prompt {
+					t.Errorf("request %d presents branch %q, want %q, prompt identical %t", round, got, branch, req.Messages[0].Text() == prompt)
+				}
+				if turns := countEnvironmentTurns(s); turns != min(round+1, 2) {
+					t.Errorf("request %d has %d environment updates", round, turns)
+				}
 			}
 		})
 	}

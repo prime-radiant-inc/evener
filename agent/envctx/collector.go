@@ -33,6 +33,12 @@ type cachedProbe struct {
 	hasRun bool
 }
 
+// GitObservation belongs to the checkout that produced it. It remains useful
+// if a fold removes the environment turn which reported the branch.
+type GitObservation struct {
+	Cwd, Branch string
+}
+
 // Collector assembles Snapshots, rate-limiting the pressure probes.
 type Collector struct {
 	p               Probes
@@ -44,6 +50,21 @@ func NewCollector(p Probes) *Collector {
 		p.Now = time.Now
 	}
 	return &Collector{p: p}
+}
+
+// ReconcileGitBranch retains a definitive probe and supplies the last
+// confirmed value on an inconclusive one. It reports whether to probe again.
+// The caller serializes this step with workspace changes and publication.
+func (c *Collector) ReconcileGitBranch(snap *Snapshot, last *GitObservation) (retry bool) {
+	if !snap.gitBranchUnknown {
+		*last = GitObservation{Cwd: snap.Cwd, Branch: snap.GitBranch}
+		return false
+	}
+	if last.Cwd != "" && last.Cwd == snap.Cwd {
+		snap.GitBranch = last.Branch
+		snap.gitBranchUnknown = false
+	}
+	return c.p.GitBranch != nil
 }
 
 // refresh serves cp's cached value until its key changes or probeInterval

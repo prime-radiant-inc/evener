@@ -88,6 +88,27 @@ func (s *Session) rehydrateEnvironmentContext(history []schema.Turn) {
 	}
 }
 
+// The durable transcript includes observations a fold removed from the model's
+// history. Fold copies repeat old facts. Only an original environment turn
+// that explicitly reports a branch or its absence updates this observation.
+func (s *Session) restoreLastGitObservation(cwd string, entries []transcript.Entry) {
+	for _, entry := range entries {
+		turn := entry.Turn
+		if turn.Kind != schema.TurnEnvironment || turn.OriginalOrdinal != nil {
+			continue
+		}
+		block := envctx.NewTracker(envctx.State{Last: envctx.Snapshot{Cwd: cwd}, GitBranchUnknown: true})
+		if !block.ReplayBlock(turn.Message.Text()) {
+			continue
+		}
+		state := block.State()
+		cwd = state.Last.Cwd
+		if !state.GitBranchUnknown {
+			s.lastGitObservation = envctx.GitObservation{Cwd: cwd, Branch: state.Last.GitBranch}
+		}
+	}
+}
+
 func installedScratchDir(env execenv.ExecutionEnvironment) string {
 	if local, ok := env.(*execenv.LocalExecutionEnvironment); ok && local != nil {
 		return local.SessionScratchDir()

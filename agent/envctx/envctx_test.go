@@ -66,16 +66,13 @@ func TestRenderDiffNoChangeRendersNothing(t *testing.T) {
 	}
 }
 
-func TestRenderDiffSingleFieldChange(t *testing.T) {
+func TestRenderDiffWorkspaceChangeReportsCheckout(t *testing.T) {
 	tr := NewTracker(State{Last: fullSnap(), HasSent: true})
 	cur := fullSnap()
 	cur.Cwd = "/Users/jesse/work/.worktrees/lane"
-	got := tr.RenderDiff(cur)
-	want := "<environment_context>\n" +
-		"cwd: \"/Users/jesse/work/.worktrees/lane\"\n" +
-		"</environment_context>"
-	if got != want {
-		t.Fatalf("cwd change:\ngot  %q\nwant %q", got, want)
+	var delta Tracker
+	if !delta.ReplayBlock(tr.RenderDiff(cur)) || delta.State().Last != (Snapshot{Cwd: cur.Cwd, GitBranch: cur.GitBranch}) {
+		t.Fatalf("workspace update = %+v", delta.State())
 	}
 }
 
@@ -205,6 +202,32 @@ func TestReplayBlockFollowsRenderedChanges(t *testing.T) {
 		}
 		if repeat := writer.RenderDiff(observed); repeat != "" {
 			t.Fatal("an unchanged checkout repeated its correction")
+		}
+	})
+
+	t.Run("branch observation follows its checkout", func(t *testing.T) {
+		for _, inconclusive := range []bool{false, true} {
+			start := fullSnap()
+			writer := NewTracker(State{Last: start, HasSent: true})
+			next := start
+			next.Cwd += "/other"
+			next.gitBranchUnknown = inconclusive
+			first := writer.RenderDiff(next)
+			projection := NewTracker(State{Last: start, HasSent: true})
+			if !projection.ReplayBlock(first) || projection.State().Last.Cwd != next.Cwd || projection.State().GitBranchUnknown != inconclusive {
+				t.Errorf("checkout changed with inconclusive=%t, model state %+v", inconclusive, projection.State())
+			}
+			next.gitBranchUnknown = false
+			second := writer.RenderDiff(next)
+			if second != "" {
+				projection.ReplayBlock(second)
+			}
+			reported := NewTracker(State{GitBranchUnknown: true})
+			reported.ReplayBlock(first)
+			reported.ReplayBlock(second)
+			if st := reported.State(); st.Last.Cwd != next.Cwd || st.GitBranchUnknown || st.Last.GitBranch != next.GitBranch || projection.State() != writer.State() {
+				t.Errorf("the durable updates did not associate branch %q with checkout %q", next.GitBranch, next.Cwd)
+			}
 		}
 	})
 }

@@ -29,6 +29,7 @@ type Snapshot struct {
 	Sandbox           string   `json:"sandbox,omitempty"`         // always populated; "off" included
 	ScratchDir        string   `json:"scratch_dir,omitempty"`
 	WritableRoots     string   `json:"writable_roots,omitempty"`
+	FileToolWrites    string   `json:"file_tool_writes,omitempty"`
 	GitBranch         string   `json:"git_branch,omitempty"` // "" outside a git repo
 	gitBranchUnknown  bool     // Applies to an observation, never to the retained state.
 	Pressure          Pressure `json:"pressure,omitzero"`
@@ -44,9 +45,6 @@ type Snapshot struct {
 	CommitTrailer     string   `json:"commit_trailer,omitempty"`
 	OmitCommitTrailer bool     `json:"omit_commit_trailer,omitempty"` // explicit cancellation of a prior directive
 }
-
-// GitBranchKnown reports whether the probe confirmed a branch or its absence.
-func (s Snapshot) GitBranchKnown() bool { return !s.gitBranchUnknown }
 
 // State is the Tracker's persistable form, stored in session meta so resume
 // stays silent when nothing changed across a restart.
@@ -73,6 +71,9 @@ const ReportToParent = "parent agent"
 const scratchDirPrefix = "writable scratch directory: "
 const writableRootsPrefix = "writable roots: "
 const hostWritableRoots = writableRootsPrefix + "host filesystem permissions govern spawned commands"
+const FileWritesHost = "host filesystem permissions"
+const FileWritesScratch = "session scratch only"
+const FileWritesSandbox = "sandbox-granted paths and session scratch"
 const executionModePrefix = "execution mode: "
 const OneShotMode = "one-shot"
 const DaemonMode = "daemon"
@@ -106,7 +107,8 @@ func (t *Tracker) ReplayBlock(block string) bool {
 	if !ok {
 		return false
 	}
-	var cwd, date, sandbox bool
+	previousCwd := t.st.Last.Cwd
+	var cwd, date, sandbox, branch bool
 	for line := range strings.SplitSeq(body, "\n") {
 		line = strings.TrimSpace(line)
 		switch {
@@ -135,6 +137,7 @@ func (t *Tracker) ReplayBlock(block string) bool {
 				t.st.WritableRootsUnknown = false
 			}
 		case strings.HasPrefix(line, "git branch: "):
+			branch = true
 			value := strings.TrimPrefix(line, "git branch: ")
 			if value == "(not in a git repository)" {
 				value = ""
@@ -177,6 +180,9 @@ func (t *Tracker) ReplayBlock(block string) bool {
 			t.st.Last.Pressure.Disk = pressureValue(line, "disk")
 		}
 	}
+	if !branch && previousCwd != "" && previousCwd != t.st.Last.Cwd {
+		t.st.GitBranchUnknown = true
+	}
 	// Compaction may retain a changed-field block while removing its full
 	// baseline. Such a tail still needs a full emission before the next input.
 	t.st.HasSent = t.st.HasSent || (cwd && date && sandbox)
@@ -197,7 +203,9 @@ func pressureValue(line, name string) string {
 // is nothing to say. A non-empty return updates the tracker state, so the
 // caller must deliver the rendered block to the model.
 func (t *Tracker) RenderDiff(cur Snapshot) string {
-	resolveBranch := t.st.GitBranchUnknown && !cur.gitBranchUnknown
+	moved := t.st.Last.Cwd != "" && cur.Cwd != t.st.Last.Cwd
+	branchUnreported := t.st.GitBranchUnknown || moved
+	resolveBranch := branchUnreported && !cur.gitBranchUnknown
 	if cur.gitBranchUnknown {
 		cur.GitBranch = t.st.Last.GitBranch
 		cur.gitBranchUnknown = false
@@ -315,7 +323,7 @@ func (t *Tracker) RenderDiff(cur Snapshot) string {
 	if len(lines) == 0 {
 		return ""
 	}
-	t.st = State{Last: cur, HasSent: true, GitBranchUnknown: t.st.GitBranchUnknown && !resolveBranch}
+	t.st = State{Last: cur, HasSent: true, GitBranchUnknown: branchUnreported && !resolveBranch}
 	return "<environment_context>\n" + strings.Join(lines, "\n") + "\n</environment_context>"
 }
 

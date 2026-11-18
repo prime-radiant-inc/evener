@@ -231,8 +231,9 @@ func testRestoredNotificationWorkspace(t *testing.T) {
 		{git: []string{"checkout", "-b", changed}, actual: changed, reported: changed, blocks: 5, timeout: true, wantProbes: []int{1, 1}},
 		{actual: changed, reported: changed, blocks: 5, sameSession: true, wantProbes: []int{0, 0}},
 		{git: []string{"checkout", observed}, actual: observed, reported: observed, blocks: 6, timeout: true, userInput: "continue", wantProbes: []int{1, 1}},
-		{actual: "outside", blocks: 7, removeRepo: true},
-		{actual: "outside", blocks: 7},
+		{git: []string{"checkout", changed}, actual: changed, reported: changed, blocks: 7, sameSession: true, timeout: true, userInput: "continue after external checkout", wantProbes: []int{1, 1}},
+		{actual: "outside", blocks: 8, removeRepo: true},
+		{actual: "outside", blocks: 8},
 	} {
 		kind := EntryUserInput
 		jobID := fmt.Sprintf("job_checkout_%d", i)
