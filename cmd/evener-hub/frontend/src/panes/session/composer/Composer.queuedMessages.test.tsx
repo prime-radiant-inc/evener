@@ -1,6 +1,7 @@
 import type { InputItem, Thread } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
@@ -106,6 +107,24 @@ function mount(fake: FakeClient, source = createTestComposerSource("root")) {
     </ClientProvider>,
   );
   return { source, ...view };
+}
+
+// A press that takes focus off the editor leaves the composer settling on work
+// it schedules itself: handleFollowUpBlur's animation frame, which writes
+// followUpFocused and then, through reconcileEditorEngagement, editorEngaged.
+// jsdom services requestAnimationFrame on one shared ~16.7ms interval, so a
+// loaded host brings that frame due inside one of the test's own bare awaits -
+// a durable read, or user-event's internal wait between a press's events -
+// where React's act() scope cannot see the write and the console guard fails
+// the case on React's "not wrapped in act(...)" warning. Yield from inside
+// act() so the press's deferred work settles where act() can see it. Same
+// reason and shape as Composer.controls.test.tsx's waitForMacrotaskInActScope
+// (#5748).
+async function settleComposerAfterPress(): Promise<void> {
+  await act(async () => {
+    await nextMacrotask();
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  });
 }
 
 function recoveryCompositionRevision(record: object): number {
@@ -648,6 +667,7 @@ test.each([false, true])("queuedEditsPreserveDraftAndSendOnce, Stop=%s", async (
   await flushPendingTurnsProjectionForTests();
   const user = userEvent.setup();
   await user.click(screen.getAllByRole("button", { name: "Edit message" })[0] as HTMLElement);
+  await settleComposerAfterPress();
   await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(first.clientMutationId));
   await flushPendingTurnsProjectionForTests();
   expect(await reopened.getOutbox(first.clientMutationId)).toBeUndefined();
@@ -662,6 +682,7 @@ test.each([false, true])("queuedEditsPreserveDraftAndSendOnce, Stop=%s", async (
   const row = screen.getByRole("button", { name: "Remove from queue" }).closest("li");
   if (!row) throw new Error("missing local queue row");
   await user.click(within(row).getByRole("button", { name: "Remove from queue" }));
+  await settleComposerAfterPress();
   await flushPendingTurnsProjectionForTests();
   expect(await reopened.getOutbox(second.clientMutationId)).toBeUndefined();
   const editor = screen.getByRole("textbox", { name: "Message" });
@@ -677,6 +698,7 @@ test.each([false, true])("queuedEditsPreserveDraftAndSendOnce, Stop=%s", async (
   const restored = mount(fake).source;
   await flushPendingTurnsProjectionForTests();
   await user.click(screen.getByRole("button", { name: "Edit message" }));
+  await settleComposerAfterPress();
   await waitFor(() => expect(restored.getSnapshot().activeRecoveryId).toBe(first.clientMutationId));
   selectEditorText(screen.getByRole("textbox", { name: "Message" }), restored.getSnapshot().text.length);
   await user.keyboard("revised ");
@@ -700,6 +722,7 @@ test.each([false, true])("queuedEditsPreserveDraftAndSendOnce, Stop=%s", async (
   });
   const send = screen.getByRole("button", { name: "Send" });
   await user.click(send);
+  await settleComposerAfterPress();
   // The Send control is Tooltip-wrapped; hover/focus starts its 300ms show
   // timer. Let it fire inside act instead of during the waits below.
   await act(async () => {

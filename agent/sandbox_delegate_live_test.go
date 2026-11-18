@@ -85,48 +85,38 @@ func TestReadOnlyRoleDelegateUsesRealWriteBlockedBoundary(t *testing.T) {
 		}
 	}
 
-	childAdapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(liveDelegateToolCall("read", "read_file", map[string]any{
-					"file_path": readPath,
-				}))
-			},
-			func(req llm.Request) llm.Response {
-				result, ok := liveDelegateToolResult(req, "read")
-				if !ok || result.IsError || !strings.Contains(fmt.Sprint(result.Content), "readable sentinel") {
-					record(fmt.Sprintf("read_file did not succeed: %#v", result))
-				}
-				return agenttest.ToolCallResponse(liveDelegateToolCall("modify", "shell", map[string]any{
-					"command": "printf changed > " + shellquote.Literal(modifyPath),
-				}))
-			},
-			func(req llm.Request) llm.Response {
-				expectShellFailure(req, "modify")
-				return agenttest.ToolCallResponse(liveDelegateToolCall("create", "shell", map[string]any{
-					"command": "mkdir " + shellquote.Literal(createPath),
-				}))
-			},
-			func(req llm.Request) llm.Response {
-				expectShellFailure(req, "create")
-				return agenttest.ToolCallResponse(liveDelegateToolCall("delete", "shell", map[string]any{
-					"command": "rm " + shellquote.Literal(modifyPath),
-				}))
-			},
-			func(req llm.Request) llm.Response {
-				expectShellFailure(req, "delete")
-				return agenttest.ToolCallResponse(liveDelegateToolCall("scratch", "shell", map[string]any{
-					"command": `printf scratch > "$EVENER_SCRATCH_DIR/report.txt"`,
-				}))
-			},
-			func(req llm.Request) llm.Response {
-				expectShellSuccess(req, "scratch")
-				childFinished <- struct{}{}
-				return communicateWithDefaultOutput("checked the read-only boundary")
-			},
-		},
-	}
+	childAdapter := newFakeAdapter("openai", func(llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(liveDelegateToolCall("read", "read_file", map[string]any{
+			"file_path": readPath,
+		}))
+	}, func(req llm.Request) llm.Response {
+		result, ok := liveDelegateToolResult(req, "read")
+		if !ok || result.IsError || !strings.Contains(fmt.Sprint(result.Content), "readable sentinel") {
+			record(fmt.Sprintf("read_file did not succeed: %#v", result))
+		}
+		return agenttest.ToolCallResponse(liveDelegateToolCall("modify", "shell", map[string]any{
+			"command": "printf changed > " + shellquote.Literal(modifyPath),
+		}))
+	}, func(req llm.Request) llm.Response {
+		expectShellFailure(req, "modify")
+		return agenttest.ToolCallResponse(liveDelegateToolCall("create", "shell", map[string]any{
+			"command": "mkdir " + shellquote.Literal(createPath),
+		}))
+	}, func(req llm.Request) llm.Response {
+		expectShellFailure(req, "create")
+		return agenttest.ToolCallResponse(liveDelegateToolCall("delete", "shell", map[string]any{
+			"command": "rm " + shellquote.Literal(modifyPath),
+		}))
+	}, func(req llm.Request) llm.Response {
+		expectShellFailure(req, "delete")
+		return agenttest.ToolCallResponse(liveDelegateToolCall("scratch", "shell", map[string]any{
+			"command": `printf scratch > "$EVENER_SCRATCH_DIR/report.txt"`,
+		}))
+	}, func(req llm.Request) llm.Response {
+		expectShellSuccess(req, "scratch")
+		childFinished <- struct{}{}
+		return communicateWithDefaultOutput("checked the read-only boundary")
+	})
 	childClient := llm.NewClient()
 	childClient.Register(childAdapter)
 	registerTestSessionNamer(childClient)

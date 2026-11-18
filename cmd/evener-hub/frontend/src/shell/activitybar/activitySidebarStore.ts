@@ -25,7 +25,6 @@ export interface ActivityScrollAnchor {
 
 export interface ActivityCategoryView {
   anchor?: ActivityScrollAnchor;
-  shown?: number;
 }
 
 interface ActivitySessionView {
@@ -43,8 +42,6 @@ function parseView(raw: unknown): ActivitySessionView | undefined {
       const value = (raw.categories as Record<string, unknown>)[tab];
       if (!value || typeof value !== "object") continue;
       const view: ActivityCategoryView = {};
-      if ("shown" in value && typeof value.shown === "number" && Number.isSafeInteger(value.shown) && value.shown > 0)
-        view.shown = value.shown;
       if ("anchor" in value && value.anchor && typeof value.anchor === "object") {
         const anchor = value.anchor;
         if (
@@ -254,20 +251,14 @@ export const activitySidebarStore = createStore<ActivitySidebarState>()((set, ge
       const previous = state.views.get(ref) ?? { open: false, tab, categories: {} };
       const before = previous.categories[tab];
       const category = { ...before, ...patch };
-      if (
-        category.shown === before?.shown &&
-        category.anchor?.id === before?.anchor?.id &&
-        category.anchor?.offset === before?.anchor?.offset
-      )
-        return;
+      if (category.anchor?.id === before?.anchor?.id && category.anchor?.offset === before?.anchor?.offset) return;
       const view = {
         ...previous,
         categories: { ...previous.categories, [tab]: category },
       };
       const views = rememberView(state.views, ref, view);
       set({ views });
-      if (patch.shown !== undefined) saveViews(views);
-      else scheduleSave();
+      scheduleSave();
     },
   };
 });

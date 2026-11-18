@@ -158,6 +158,52 @@ func TestDelegateResourceSupervision_AttentionFollowUpRequiresReport(t *testing.
 	}
 }
 
+// TestDelegateResourceSupervision_FinalTurnFinalizesWithNoRootWake pins the
+// half of the finalization contract that would be a defect if it failed: a
+// delegate whose final turn completes with nothing outstanding reaches its
+// terminal phase on its own. It supplies no wake and installs no root wake
+// consumer — it never calls serveSupervisionRootWakes, never runs a root turn,
+// and arms no attention that a root retry would have to drive. Nothing but the
+// run's own completion can move the row, so a green result here says
+// finalization does not wait for an unrelated event.
+//
+// It also shows why the report's own wake is not the trigger: the report is
+// delivered to a root that is never woken, and the row is terminal anyway.
+// The run's tail holds finalization open only while the delegate owns
+// outstanding work (drainForFinalization, agent/subagents.go); with no jobs
+// there is nothing to hold it, so the tail reaches RunFinished directly. A
+// tail that waited on a root wake instead would leave sub.finalizing set, and
+// waitForStableSupervisionRun would refuse until its tripwire.
+func TestDelegateResourceSupervision_FinalTurnFinalizesWithNoRootWake(t *testing.T) {
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("final report") },
+	})
+	root := restoreSupervisionRoot(t, fixture, nil)
+	// Unserved: the warm run IS the terminal run under test, so there is no
+	// attention arm here for the root's retry to own.
+	warmDelegateUnservedRoot(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	// Non-vacuity: the turn ran and answered terminally. A row that finalized
+	// without ever reaching the provider would satisfy the phase check for the
+	// wrong reason.
+	if got := supervisionRequestCount(fixture.adapter); got != 1 {
+		t.Fatalf("provider requests = %d, want the final turn's single request", got)
+	}
+	finished := latestDelegateControllerRunFinished(t, root.delegateController, fixture.delegateID)
+	if finished.Generation != 1 || finished.Disposition != delegatestore.DispositionReported || finished.DeliveryID == "" {
+		t.Fatalf("final turn finish = %#v, want generation 1's reported delivery", finished)
+	}
+	aggregate := delegateAggregateSnapshot(t, root.delegateController, fixture.delegateID)
+	if aggregate.CurrentRunOpen || aggregate.Phase != delegatestore.PhaseIdle {
+		t.Fatalf("finalized row = phase:%s current_run_open:%t, want the terminal idle row with no run open", aggregate.Phase, aggregate.CurrentRunOpen)
+	}
+	if aggregate.LatestPacket == nil || aggregate.LatestPacket.Kind != delegatestore.PacketReported {
+		t.Fatalf("finalized row packet = %#v, want the delivered report", aggregate.LatestPacket)
+	}
+}
+
 // TestDelegateResourceSupervision_CommittedAttentionStartRefusesASecondTurn
 // pins the attention start hand-off. Between the committed start and the run
 // goroutine that takes the generation over, sub.running is still false, the

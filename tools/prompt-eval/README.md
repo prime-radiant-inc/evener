@@ -141,6 +141,71 @@ lunarouter rate-limits concurrent requests: 10 on the regular pool, shared with 
 
 A run refuses an `--out` that already holds results, so give each run its own directory, or add new version labels into an existing one. Results land under `tools/prompt-eval/results/`, which git ignores. Each fixture runs as its own project: the runner turns Go workspaces off and stops git from looking above the fixture, for the task's own checks and for the agent's commands. Use absolute paths for `--out`, since each result records where its sessions live.
 
+## The prompt-arm harness
+
+`run_all_experiments.py` is a separate, narrower experiment: it runs the
+prompt-edit arms in its `ARMS` registry against one Terminal-Bench task and
+records what each run did after the task's own check first passed.
+
+```bash
+python3 tools/prompt-eval/run_all_experiments.py --list
+python3 tools/prompt-eval/run_all_experiments.py --task overfull-hbox --reps 3 --out /tmp/all-arms
+python3 tools/prompt-eval/run_all_experiments.py --report /tmp/all-arms
+python3 tools/prompt-eval/run_all_experiments.py --reanalyse /tmp/all-arms
+```
+
+It has four external prerequisites that this repository does not carry. A
+default run walks the whole `ARMS` registry in order and stops at the first arm
+whose prerequisite is missing. `k02-completion-checkpoint` is the third arm in
+the registry, so a fresh clone with the fixture and doctrine in place runs
+`baseline` and `k01` and then stops at `k02`.
+
+- **The terminal-bench task fixture** under the `TASKS` cache path
+  (`~/.cache/harbor/tasks/packages/terminal-bench/overfull-hbox/...`). Without
+  it no arm runs at all: `build_workspace` fails before the first trial.
+- **The captured doctrine** at `<out>/doctrine-vanilla.txt`. Every arm stops at
+  `render_doctrine` until that file exists. `--capture-doctrine` records it from
+  a throwaway run, or an existing matrix's copy can be placed there.
+- **Hook plugins** for the three hook-delivered arms (`k02`, `a10`, `c02`).
+  These need a `build_hook_plugins.py` that lives outside this repository; it
+  writes `<out>/hookplugins/<arm>/hooks/hooks.json`. Without them the run fails
+  at the first hook arm and names the missing path.
+- **A patched evener binary** for the two schema arms (`c01`, `c09`), set in
+  `EVENER_EXPERIMENT_BIN`. Those arms need a build that reads
+  `EVENER_EXPERIMENT_INTENT_APPEND` / `EVENER_EXPERIMENT_COMMUNICATE_APPEND`,
+  and that patch is not in this repository. With plain `evener` the run fails
+  at the first schema arm.
+
+`--arms` runs only the arms you name, so it is how you skip the arms whose
+prerequisites you lack. Any arm not in the hook or schema list runs with only
+the fixture and the doctrine:
+
+```bash
+python3 tools/prompt-eval/run_all_experiments.py \
+  --arms baseline,a04-tool-warrant,k04-subtractive \
+  --task overfull-hbox --reps 3 --out /tmp/all-arms
+```
+
+`--reanalyse` re-reads each run's transcript so the tail metrics reflect the
+current acceptance pattern. It recomputes the pass verdict only for a run whose
+workdir still exists (`--keep`), and otherwise carries the recorded verdict
+through, marking which happened in `verdict_source`. It never clears a verdict
+it cannot recompute.
+
+In the report, a tail share of `-` with a non-zero `unmeas` count means
+acceptance was never detected for that run, so the share is unknown rather than
+zero. The `tail` column's median covers only the runs whose share was measured.
+Read `unmeas` before comparing arms on tail share: an arm whose runs were never
+observed finishing has no measured tail at all.
+
+The baseline header covers every baseline rep, and says which bucket each one
+fell in: a measured share, an `unmeasured` count for a graded run with no
+detected acceptance, and a `timed out` count for a rep killed at the cap. Those
+three buckets add up to the `baseline pass` denominator, so a short share list
+is explained rather than reading as a smaller baseline. Treat the spread across
+the shares as the reference: a bimodal baseline (15% to 85% across three reps)
+means an n=3 arm comparison is a screening pass at best.
+
 ## Counting the prose
 
 Tic counts are a proxy. They can tell you a version dropped its em dashes or its bare identifiers; they cannot tell you the writing got better; a version can improve every count here and still write badly, and one that is worse on every count can still be the one you want (the blind read below is what settles that).

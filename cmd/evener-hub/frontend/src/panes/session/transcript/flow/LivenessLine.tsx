@@ -17,11 +17,12 @@
 // that activity stops.
 
 import type { ModelRetryState } from "@evener/appwire-client";
+import { quotaResumeRemainingMs } from "@evener/appwire-client/state/navigation";
 import { useSubagentCounts } from "../../../../stores/sessionActivity";
 import { useThreadsStore } from "../../../../stores/threads";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { turnScopeKey, useRunningSubagentCount } from "../tools/subagentModuleStore";
-import { describeLiveness, type RetryWait } from "./liveness";
+import { describeLiveness, type QuotaWait, type RetryWait } from "./liveness";
 import styles from "./livenessline.module.css";
 
 export interface LivenessLineProps {
@@ -62,6 +63,16 @@ export function LivenessLine({ lastFrameAt, now, active, sessionRef, turnId, ret
     if (sessionRef === undefined) return undefined;
     return (s.threads.get(sessionRef) ?? s.watchedThreads.get(sessionRef))?.delegates;
   });
+  // The instant a usage-limit wait resumes comes from the thread read
+  // (ThreadModel.quotaResumesAt), so it is here after a reload with no live
+  // frame to have announced it. Read from the same store lookup as the
+  // delegates above rather than added to this component's props: the caller
+  // already passes the model's other liveness inputs, and this one is
+  // model-sourced in a way the ephemeral `retry` prop is not.
+  const quotaResumesAt = useThreadsStore((s) => {
+    if (sessionRef === undefined) return undefined;
+    return (s.threads.get(sessionRef) ?? s.watchedThreads.get(sessionRef))?.quotaResumesAt;
+  });
   const turnRunning = useRunningSubagentCount(
     turnId === undefined ? undefined : turnScopeKey(sessionRef, turnId),
     delegates,
@@ -85,7 +96,49 @@ export function LivenessLine({ lastFrameAt, now, active, sessionRef, turnId, ret
     groupElapsedMs: retry.groupElapsedMs,
     inProgress: lastFrameAt > retry.receivedAt || now - retry.receivedAt >= retry.delayMs,
   };
-  const { level, text } = describeLiveness(now - lastFrameAt, active, runningSubagents, retryWait);
+  // The countdown rule is the shared one the rail row uses, so both surfaces
+  // agree on when a wait is over; a wait whose instant has passed explains
+  // nothing and leaves the ordinary decision below.
+  const fromRead = quotaResumeRemainingMs(quotaResumesAt, now);
+  // A pane OPEN when the limit hits gets only the live retry, and that
+  // notification never invalidates history, so no read has set an instant for
+  // it (ThreadModel.quotaResumesAt is snapshot-only). Without this the wait
+  // would still render as the retry line's seconds countdown and then as
+  // unexplained silence - the very reading this issue is about - for the whole
+  // wait, until something happened to force a reload. `delayMs` is how long
+  // the call waits from `receivedAt`, both on this client's clock, so the
+  // distance to `now` needs no daemon clock and is off only by delivery
+  // latency. The read-sourced instant wins while it is still ahead: it is
+  // absolute, where this is a countdown from a message a reconnect could have
+  // delivered hours late. A read instant already past says that wait is over,
+  // which leaves a later retry free to speak for itself.
+  //
+  // The wait ends on the retry's OWN facts: its own countdown running out, or
+  // the reducer replacing it with the daemon's no-delay retry. It must NOT end
+  // on `lastFrameAt`, which is RetryWait's rule for a short backoff but wrong
+  // here: a six-hour wait sees frames that have nothing to do with the waiting
+  // call, and every thread-scalar frame restamps lastFrameAt (a finished
+  // background job, a delegate row update, a queue change - reducer.ts's
+  // THREAD_SCALAR_ONLY_METHODS). Keying on it would drop the chip the moment
+  // any of those landed and fall back to the retry text and then to silence,
+  // which is the reading this issue forbids.
+  //
+  // A retry outlives its turn (modelRetry is not cleared on Stop), so the
+  // guard against showing a dead turn's wait is the retry's own turn identity
+  // rather than any frame clock: only a retry naming THIS pane's running turn
+  // speaks for it.
+  const liveRemaining =
+    retry !== undefined &&
+    retry.errorClass === "quota_exceeded" &&
+    retry.delayMs > 0 &&
+    retry.turnId !== undefined &&
+    retry.turnId === turnId &&
+    now - retry.receivedAt < retry.delayMs
+      ? retry.delayMs - (now - retry.receivedAt)
+      : undefined;
+  const remaining = fromRead ?? (liveRemaining !== undefined && liveRemaining > 0 ? liveRemaining : null);
+  const quotaWait: QuotaWait | undefined = remaining === null ? undefined : { remainingMs: remaining };
+  const { level, text } = describeLiveness(now - lastFrameAt, active, runningSubagents, retryWait, quotaWait);
   if (level === "none" || text === null) return null;
 
   return (

@@ -124,31 +124,23 @@ func newOwnedJobDrainFixture(t *testing.T) *ownedJobDrainFixture {
 	shellHandled := make(chan struct{})
 	freshHandled := make(chan struct{})
 	drainClock := newOwnedJobDrainClock()
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(llm.ToolCallData{
-					ID:        "owned-shell",
-					Name:      "shell",
-					Arguments: json.RawMessage(`{"command":"owned shell","mode":"background"}`),
-					Type:      "function",
-				})
-			},
-			func(llm.Request) llm.Response {
-				close(idleReported)
-				return agenttest.FinalResponse("waiting for owned shell")
-			},
-			func(llm.Request) llm.Response {
-				close(shellHandled)
-				return agenttest.FinalResponse("owned shell handled")
-			},
-			func(llm.Request) llm.Response {
-				close(freshHandled)
-				return agenttest.FinalResponse("fresh notification handled")
-			},
-		},
-	}
+	adapter := newFakeAdapter("openai", func(llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(llm.ToolCallData{
+			ID:        "owned-shell",
+			Name:      "shell",
+			Arguments: json.RawMessage(`{"command":"owned shell","mode":"background"}`),
+			Type:      "function",
+		})
+	}, func(llm.Request) llm.Response {
+		close(idleReported)
+		return agenttest.FinalResponse("waiting for owned shell")
+	}, func(llm.Request) llm.Response {
+		close(shellHandled)
+		return agenttest.FinalResponse("owned shell handled")
+	}, func(llm.Request) llm.Response {
+		close(freshHandled)
+		return agenttest.FinalResponse("fresh notification handled")
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 	env := newHeldJobEnvironment(t.TempDir())
@@ -505,24 +497,18 @@ func TestSubagentRunPreservesStructuredResultAcrossLateNotification(t *testing.T
 	releaseInitial := make(chan struct{})
 	var releaseOnce sync.Once
 	t.Cleanup(func() { releaseOnce.Do(func() { close(releaseInitial) }) })
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response {
-				<-releaseInitial
-				return communicateWithStructured("original delegate result", map[string]any{
-					"message": "original delegate result",
-					"summary": "original structured result",
-				})
-			},
-			func(llm.Request) llm.Response {
-				return communicateWithStructured("late notification handled", map[string]any{
-					"message": "late notification handled",
-					"summary": "late structured overwrite",
-				})
-			},
-		},
-	}
+	adapter := newFakeAdapter("openai", func(llm.Request) llm.Response {
+		<-releaseInitial
+		return communicateWithStructured("original delegate result", map[string]any{
+			"message": "original delegate result",
+			"summary": "original structured result",
+		})
+	}, func(llm.Request) llm.Response {
+		return communicateWithStructured("late notification handled", map[string]any{
+			"message": "late notification handled",
+			"summary": "late structured overwrite",
+		})
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 	var child *subagent

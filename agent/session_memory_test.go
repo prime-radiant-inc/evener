@@ -743,7 +743,7 @@ func TestMemoryContextLifecycle(t *testing.T) {
 		}
 		return agenttest.FinalResponse("root observed indexes")
 	}
-	s.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{assertIndexes, assertIndexes}})
+	s.client.Register(newFakeAdapter("openai", agenttest.RepeatSteps(assertIndexes, 2)...))
 	if _, err := s.ProcessInput(context.Background(), "startup", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -776,13 +776,13 @@ func TestMemoryContextLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer r.Close()
-	r.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
+	r.client.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
 		state, body, _ := memoryRequestIndex(t, req, "personal")
 		if state != "current" || body != wantRestored {
 			t.Fatalf("restored state=%s body=%q", state, body)
 		}
 		return agenttest.FinalResponse("restored result")
-	}}})
+	}))
 	if _, err := r.ProcessInput(context.Background(), "resume", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -801,13 +801,13 @@ func TestMemoryContextLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer r2.Close()
-	r2.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
+	r2.client.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
 		state, body, _ := memoryRequestIndex(t, req, "personal")
 		if state != "missing" || body != "" {
 			t.Fatalf("restore after deletion state=%s body=%q", state, body)
 		}
 		return agenttest.FinalResponse("missing index observed")
-	}}})
+	}))
 	if _, err := r2.ProcessInput(context.Background(), "resume missing", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -896,7 +896,7 @@ func TestMemoryContextLifecycleDelegate(t *testing.T) {
 	s := newScriptedSummaryCompactSession(t, "memory-child-summary", func(llm.Request) llm.Response {
 		return llm.Response{Message: llm.Assistant("## Progress\nopaque-child-summary-403")}
 	}, withDir(workspace), withConfig(SessionConfig{StateDir: history, MemoryStateRoot: root, MemoryProjectID: project.ID, Project: project, MaxSubagentDepth: 2, AcquireSessionOwnership: func(string) error { return nil }, testOnly: testConfig{disableDelegateIdleRelease: true}}))
-	s.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{step, step}})
+	s.client.Register(newFakeAdapter("openai", agenttest.RepeatSteps(step, 2)...))
 	res := s.createDelegate(context.Background(), delegateArgs{Task: "fixture enabled child", AgentType: "explorer", DelegationAllowance: new(0)})
 	if res.Err != nil {
 		t.Fatal(res.Err)
@@ -925,7 +925,7 @@ func TestMemoryContextLifecycleDelegate(t *testing.T) {
 		t.Fatal(err)
 	}
 	want = memoryExpectedIndex(t, root, "memory")
-	s.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{step}})
+	s.client.Register(newFakeAdapter("openai", step))
 	sent := (delegateRuntime{owner: s}).send(context.Background(), res.DelegateID, "cold child recall", 0).result
 	if sent.Err != nil {
 		t.Fatal(sent.Err)
@@ -1522,7 +1522,7 @@ func TestMemoryDelegateRestore(t *testing.T) {
 			}
 			// project-adopted also spawns a fresh child, which takes the second step.
 			finished := func(llm.Request) llm.Response { return agenttest.FinalResponse("restored child finished") }
-			r.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{finished, finished}})
+			r.client.Register(newFakeAdapter("openai", agenttest.RepeatSteps(finished, 2)...))
 			accesses.Store(0)
 			projectAccesses.Store(0)
 			send := (delegateRuntime{owner: r}).send(context.Background(), result.DelegateID, "restore older child", 0).result
@@ -1972,7 +1972,7 @@ func TestMemoryDisableResumeAndCompaction(t *testing.T) {
 			if len(r.history) >= 12 {
 				t.Fatal("real compaction did not fold history")
 			}
-			r.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return agenttest.FinalResponse("ordinary work") }}})
+			r.client.Register(newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse("ordinary work") }))
 			if _, err := r.ProcessInput(context.Background(), "ordinary input", nil); err != nil {
 				t.Fatal(err)
 			}

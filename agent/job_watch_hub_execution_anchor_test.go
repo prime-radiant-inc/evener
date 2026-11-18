@@ -17,9 +17,7 @@ import (
 // transcript index; it has no network or model I/O.
 func TestManagerWatchModelSwitchExecutionAnchor(t *testing.T) {
 	t.Parallel()
-	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "execution A completed") },
-	}}
+	adapter := newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "execution A completed") })
 	sess := newSession(t,
 		withProfile(NewOpenAIProfile("gpt-5.4")),
 		withAdapter(adapter),

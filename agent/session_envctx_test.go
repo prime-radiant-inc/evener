@@ -538,7 +538,7 @@ func TestRestoredSessionWithMatchingEnvContextStaysSilent(t *testing.T) {
 	testCfg := testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true, envProbes: probes}
 
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai", steps: repeatFinalResponse(2, "ok")})
+	c.Register(newFakeAdapter("openai", repeatFinalResponse(2, "ok")...))
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir: dir,
 		testOnly: testCfg,
@@ -560,7 +560,7 @@ func TestRestoredSessionWithMatchingEnvContextStaysSilent(t *testing.T) {
 	}
 
 	c2 := llm.NewClient()
-	c2.Register(&fakeAdapter{name: "openai", steps: repeatFinalResponse(2, "ok")})
+	c2.Register(newFakeAdapter("openai", repeatFinalResponse(2, "ok")...))
 	restored, err := RestoreSessionFromMetaWithConfig(c2, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{
 		StateDir: dir,
 		testOnly: testCfg,
@@ -592,7 +592,7 @@ func TestRestoredSessionReconcilesDurableEnvironmentAfterStaleMeta(t *testing.T)
 	testCfg := testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true, envProbes: probes}
 
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai", steps: repeatFinalResponse(1, "ok")})
+	c.Register(newFakeAdapter("openai", repeatFinalResponse(1, "ok")...))
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir: dir,
 		testOnly: testCfg,
@@ -614,7 +614,7 @@ func TestRestoredSessionReconcilesDurableEnvironmentAfterStaleMeta(t *testing.T)
 	sess.Close()
 
 	c2 := llm.NewClient()
-	c2.Register(&fakeAdapter{name: "openai", steps: repeatFinalResponse(1, "ok")})
+	c2.Register(newFakeAdapter("openai", repeatFinalResponse(1, "ok")...))
 	restored, err := RestoreSessionFromMetaWithConfig(c2, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{
 		StateDir: dir,
 		testOnly: testCfg,
@@ -659,7 +659,7 @@ func TestRestoredSessionWithNilEnvContextReemitsFullBlock(t *testing.T) {
 	}
 
 	c2 := llm.NewClient()
-	c2.Register(&fakeAdapter{name: "openai", steps: repeatFinalResponse(1, "ok")})
+	c2.Register(newFakeAdapter("openai", repeatFinalResponse(1, "ok")...))
 	restored, err := RestoreSessionFromMetaWithConfig(c2, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{
 		StateDir: dir,
 		testOnly: testCfg,

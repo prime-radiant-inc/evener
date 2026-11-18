@@ -1011,14 +1011,9 @@ func TestSession_TranscriptRecordsTurns(t *testing.T) {
 	stateDir := t.TempDir()
 
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("hello back")
-			},
-		},
-	})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return agenttest.FinalResponse("hello back")
+	}))
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir: stateDir,
@@ -1227,55 +1222,50 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 
 	// Adapter: first call returns a read_file tool call, second call returns "done".
 	// This pattern repeats for each ProcessInput.
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			// Round 1, input 1: read a big file.
-			func(req llm.Request) llm.Response {
-				return llm.Response{
-					Usage: llm.Usage{InputTokens: window * 91 / 100},
-					Message: llm.Message{
-						Role: llm.RoleAssistant,
-						Content: []llm.ContentPart{
-							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-								ID:        "c1",
-								Name:      "read_file",
-								Arguments: json.RawMessage(`{"file_path":"big.txt"}`),
-							}},
-						},
+	secondReadDone := func(req llm.Request) llm.Response { return agenttest.FinalResponse("done with second read") }
+	steps := []func(llm.Request) llm.Response{
+		// Round 1, input 1: read a big file.
+		func(req llm.Request) llm.Response {
+			return llm.Response{
+				Usage: llm.Usage{InputTokens: window * 91 / 100},
+				Message: llm.Message{
+					Role: llm.RoleAssistant,
+					Content: []llm.ContentPart{
+						{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+							ID:        "c1",
+							Name:      "read_file",
+							Arguments: json.RawMessage(`{"file_path":"big.txt"}`),
+						}},
 					},
-				}
-			},
-			// Round 1, after tool result: finish.
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("finished reading")
-			},
-			// Round 2, input 2: read again.
-			func(req llm.Request) llm.Response {
-				return llm.Response{
-					Message: llm.Message{
-						Role: llm.RoleAssistant,
-						Content: []llm.ContentPart{
-							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-								ID:        "c2",
-								Name:      "read_file",
-								Arguments: json.RawMessage(`{"file_path":"big.txt"}`),
-							}},
-						},
-					},
-				}
-			},
-			// Round 2, after tool result: finish.
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("done with second read")
-			},
-			// Some context-management paths can trigger one more completion round
-			// after compaction before returning the final answer.
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("done with second read")
-			},
+				},
+			}
 		},
-	})
+		// Round 1, after tool result: finish.
+		func(req llm.Request) llm.Response {
+			return agenttest.FinalResponse("finished reading")
+		},
+		// Round 2, input 2: read again.
+		func(req llm.Request) llm.Response {
+			return llm.Response{
+				Message: llm.Message{
+					Role: llm.RoleAssistant,
+					Content: []llm.ContentPart{
+						{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+							ID:        "c2",
+							Name:      "read_file",
+							Arguments: json.RawMessage(`{"file_path":"big.txt"}`),
+						}},
+					},
+				},
+			}
+		},
+		// Round 2, after tool result: finish.
+		secondReadDone,
+		// Some context-management paths can trigger one more completion round
+		// after compaction before returning the final answer.
+		secondReadDone,
+	}
+	c.Register(newFakeAdapter("openai", steps...))
 
 	// Write a big file that will fill a small context window.
 	bigContent := strings.Repeat("line of content\n", 200)
@@ -1459,14 +1449,9 @@ func TestSession_StateDirSessionsPathConflictFailsClosedAtDelegateBootstrap(t *t
 	}
 
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("first")
-			},
-		},
-	})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return agenttest.FinalResponse("first")
+	}))
 
 	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
 	cfg := SessionConfig{StateDir: stateDir}
@@ -2306,12 +2291,12 @@ func TestReadSessionTranscriptAPILogPageSurfacesCorruptionInItsWindow(t *testing
 	// own page, so the corrupt record falls before, inside, or after the
 	// window [10, 10].
 	for _, tc := range []struct {
-		name        string
-		corruptAt   int
-		wantErrLine string
+		name      string
+		corruptAt int
+		wantFail  bool
 	}{
 		{name: "corruption before the page is stepped over", corruptAt: 2},
-		{name: "corruption at the page start fails the page", corruptAt: 10, wantErrLine: "API log line 11 at offset"},
+		{name: "corruption at the page start fails the page", corruptAt: 10, wantFail: true},
 		{name: "corruption after the page is stepped over", corruptAt: 20},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2334,7 +2319,7 @@ func TestReadSessionTranscriptAPILogPageSurfacesCorruptionInItsWindow(t *testing
 
 			deps := &toolDeps{stateDir: dir, sessionID: sessionID}
 			result := executeReadSessionTranscript(t, deps, map[string]any{"source": apiLogSource, "range": "10-10"})
-			if tc.wantErrLine == "" {
+			if !tc.wantFail {
 				if result.IsError {
 					t.Fatalf("page read failed on corruption outside its window: %s", result.Output)
 				}
@@ -2351,8 +2336,20 @@ func TestReadSessionTranscriptAPILogPageSurfacesCorruptionInItsWindow(t *testing
 				}
 				return
 			}
-			if !result.IsError || !strings.Contains(result.Output, tc.wantErrLine) {
-				t.Fatalf("page read on corruption inside its window = %q, want error containing %q", result.Output, tc.wantErrLine)
+			// The read must fail on the decoder's own rejection of the record,
+			// not on the phrasing the decoder wraps it in. decodeAPILogPage
+			// wraps decodeRecord's json error through apiLogPageScanError with
+			// %w, so the *json.SyntaxError the corrupt record raises is
+			// reachable from the result's Err.
+			if !result.IsError {
+				t.Fatalf("page read on corruption inside its window succeeded: %q", result.Output)
+			}
+			var syntaxErr *json.SyntaxError
+			if !errors.As(result.Err, &syntaxErr) {
+				t.Fatalf("page read error = %v, want it to wrap *json.SyntaxError", result.Err)
+			}
+			if syntaxErr.Offset == 0 {
+				t.Fatalf("syntax error carries no byte offset: %+v", syntaxErr)
 			}
 		})
 	}
@@ -3687,9 +3684,28 @@ func TestReadSessionTranscriptRejectsUnknownExpansionTurn(t *testing.T) {
 	}
 	saveFindMeta(t, dir, findMetaSpec{id: sessionID, updated: time.Now().UTC()})
 
-	result := executeReadSessionTranscript(t, &toolDeps{stateDir: dir, sessionID: sessionID}, map[string]any{"expand_turn": float64(9)})
-	if !result.IsError || !strings.Contains(result.Output, "expand_turn 9") {
-		t.Fatalf("unknown expansion result = error:%v output:%q", result.IsError, result.Output)
+	deps := &toolDeps{stateDir: dir, sessionID: sessionID}
+	// The one turn in this transcript is the positive control: expanding it
+	// must succeed, so a refusal below is the pin falling outside the
+	// transcript rather than expansion being unavailable in this session.
+	existing := executeReadSessionTranscript(t, deps, map[string]any{"expand_turn": float64(0)})
+	if existing.IsError {
+		t.Fatalf("expanding the transcript's only turn failed: %s", existing.Output)
+	}
+	if !strings.Contains(existing.Output, `"expansion"`) {
+		t.Fatalf("expanding turn 0 emitted no expansion envelope: %s", existing.Output)
+	}
+
+	// Ask the tool itself, not the helper: the helper copies err.Error() into
+	// Output, so a message that mentions expansion and a payload returned
+	// alongside an error would look the same there. A refusal is an error with
+	// no value.
+	value, err := execReadSessionTranscript(context.Background(), deps, map[string]any{"expand_turn": float64(9)})
+	if err == nil {
+		t.Fatalf("expanding nonexistent turn 9 succeeded: value=%#v", value)
+	}
+	if value != nil {
+		t.Fatalf("refused expansion returned a value: %#v", value)
 	}
 }
 
@@ -3798,7 +3814,13 @@ func TestReadSessionTranscriptJSONLRejectsHeaderLargerThanHardOutputCap(t *testi
 	if !result.IsError {
 		t.Fatalf("oversized JSONL header succeeded with %d output bytes", len(result.Output))
 	}
-	if len(result.Output) > 1024 || !strings.Contains(result.Output, "transcript header exceeds") {
-		t.Fatalf("oversized JSONL header error is not bounded and clear: len=%d output=%q", len(result.Output), result.Output)
+	// The refusal must be a bounded error that carries no transcript payload:
+	// the header alone is over hardCapChars, so emitting any of it would mean
+	// the cap was not what stopped the read.
+	if len(result.Output) > 1024 {
+		t.Fatalf("oversized JSONL header error is not bounded: len=%d output=%q", len(result.Output), result.Output)
+	}
+	if strings.Contains(result.Output, "wwwwwwww") {
+		t.Fatalf("oversized JSONL header error carried the oversized header: %q", result.Output)
 	}
 }

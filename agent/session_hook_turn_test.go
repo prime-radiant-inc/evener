@@ -164,10 +164,7 @@ func TestMidSessionHookPersistsHookCompletedTurn(t *testing.T) {
 	}
 
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name:  "openai",
-		steps: []func(req llm.Request) llm.Response{func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") }},
-	})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") }))
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:   dir,
 		PluginDirs: []string{pluginDir},
@@ -289,23 +286,17 @@ func TestPreToolUseHookDoesNotDuplicateResultInNextModelRequest(t *testing.T) {
 	const callID = "call_with_pre_tool_hook"
 	dir := t.TempDir()
 	var requestErr error
-	adapter := &fakeAdapter{
-		name: "anthropic",
-		steps: []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(llm.ToolCallData{
-					ID:        callID,
-					Name:      "hook_probe",
-					Type:      "function",
-					Arguments: json.RawMessage(`{}`),
-				})
-			},
-			func(req llm.Request) llm.Response {
-				requestErr = validateSingleSuccessfulToolResult(req.Messages, callID)
-				return agenttest.FinalResponse("done")
-			},
-		},
-	}
+	adapter := newFakeAdapter("anthropic", func(llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(llm.ToolCallData{
+			ID:        callID,
+			Name:      "hook_probe",
+			Type:      "function",
+			Arguments: json.RawMessage(`{}`),
+		})
+	}, func(req llm.Request) llm.Response {
+		requestErr = validateSingleSuccessfulToolResult(req.Messages, callID)
+		return agenttest.FinalResponse("done")
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 	sess, err := NewSession(

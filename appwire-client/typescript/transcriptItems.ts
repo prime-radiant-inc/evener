@@ -603,6 +603,11 @@ export function threadFields(resp: ThreadReadResponse, ref: string, now: number)
     // Passed straight through, undefined and all: absent is "nobody counted"
     // and must not become a 0 that reads as "nothing failed".
     failedToolCalls: thread.evener.failedToolCalls,
+    // The one failure field a snapshot carries that the pane needs to explain a
+    // WORKING session's silence: a call waiting out a usage limit names when it
+    // resumes (EvenerThread.Failure.ResumesAt). Every other failure field is
+    // read-only context the transcript's error row already holds.
+    quotaResumesAt: epochMsToISO(thread.evener.failure?.resumesAt),
     ...(thread.evener.access ? { access: { ...thread.evener.access } } : {}),
     workMillis: thread.evener.workMillis ?? 0,
     activeTurnStartedAt: epochMsToISO(thread.evener.activeTurnStartedAt),

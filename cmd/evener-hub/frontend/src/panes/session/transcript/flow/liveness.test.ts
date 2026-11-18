@@ -1,10 +1,12 @@
 // @vitest-environment node
 import { STUCK_AFTER_MS } from "@evener/appwire-client";
+import { waitingForQuotaText } from "@evener/appwire-client/state/navigation";
 import { expect, test } from "vitest";
 import {
   describeLiveness,
   formatExactGap,
   formatQuietBucket,
+  formatRetryCause,
   formatSubagentCount,
   QUIET_THRESHOLD_MS,
   type RetryWait,
@@ -380,4 +382,70 @@ test("describeLiveness: attemptCap 0 renders the attempt number without a denomi
   expect(describeLiveness(30_000, true, 0, retry).text).toBe(
     "provider error — attempt 3 — retrying in 5s — 5s on this call",
   );
+});
+
+// --- a usage-limit wait (issue #6657) ---------------------------------------
+//
+// A call waiting out a usage limit that named its reset is a wait the daemon
+// stated outright, and the pane holds its instant from the thread read. It is
+// NOT the retry line: that one counts a delay in seconds ("retrying in
+// 21600s"), which for a multi-hour reset reads as a wedged session. The quota
+// level says the shared "resumes in" words instead, in the units a person
+// would say them.
+
+test("describeLiveness: a known usage-limit wait explains the silence with the shared wait words", () => {
+  const { level, text } = describeLiveness(30_000, true, 0, undefined, { remainingMs: 21_600_000 });
+  expect(level).toBe("quota");
+  expect(text).toBe(waitingForQuotaText(21_600_000));
+});
+
+// The quiet gate exists for silence nobody explained. A wait that named its
+// reset is explained, so it must not wait 20 seconds to be visible - and it
+// must be visible in the first place, where a first-attempt retry is not.
+test("describeLiveness: a known usage-limit wait shows below the quiet threshold", () => {
+  expect(describeLiveness(0, true, 0, undefined, { remainingMs: 60_000 }).level).toBe("quota");
+  expect(describeLiveness(19_999, true, 0, undefined, { remainingMs: 60_000 }).level).toBe("quota");
+});
+
+// A wait of hours is not a concern to escalate: past the stuck threshold the
+// quota words stand alone, with no "no updates for 3h" bolted on - that is the
+// reading this issue is about.
+test("describeLiveness: a known usage-limit wait never appends the silence that would read as a stall", () => {
+  const { level, text } = describeLiveness(STUCK_AFTER_MS * 2, true, 0, undefined, { remainingMs: 21_600_000 });
+  expect(level).toBe("quota");
+  expect(text).not.toContain(formatExactGap(STUCK_AFTER_MS * 2));
+});
+
+// The wait outranks a subagent count for the same reason a retry does: it is
+// the more specific explanation of why this session's own call is not moving.
+test("describeLiveness: a known usage-limit wait pre-empts the subagent wait", () => {
+  expect(describeLiveness(30_000, true, 3, undefined, { remainingMs: 60_000 }).level).toBe("quota");
+});
+
+// An inactive thread shows nothing whatever it holds, the same gate every
+// other level honours.
+test("describeLiveness: a known usage-limit wait on an inactive thread still shows nothing", () => {
+  expect(describeLiveness(30_000, false, 0, undefined, { remainingMs: 60_000 })).toEqual({
+    level: "none",
+    text: null,
+  });
+});
+
+// The caller only passes a quota wait while its instant is still ahead
+// (quotaResumeRemainingMs returns null past it), so an absent one is the
+// ordinary decision, unchanged.
+test("describeLiveness: no quota wait leaves the ordinary quiet decision untouched", () => {
+  expect(describeLiveness(30_000, true, 0).level).toBe("quiet");
+});
+
+// A quota_exceeded retry reaching the retry line (a daemon whose generic retry
+// loop announces one) must not read as a provider fault: the call is waiting
+// on an allowance, not on a broken provider. Asserted as the distinction the
+// cause draws, never as the words it draws it with - the wording is copy, and
+// a test that pinned it would fail on a rephrase that kept the behaviour.
+test("formatRetryCause: a quota_exceeded class reads apart from a provider fault", () => {
+  const quota = formatRetryCause("quota_exceeded");
+  expect(quota).not.toBe(formatRetryCause(undefined));
+  expect(quota).not.toBe(formatRetryCause("server_error"));
+  expect(quota).not.toBe(formatRetryCause("rate_limit"));
 });

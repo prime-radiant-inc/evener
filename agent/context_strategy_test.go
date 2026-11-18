@@ -60,28 +60,20 @@ func TestSession_ContextStrategy_SpyHooks(t *testing.T) {
 	spy := &spyStrategy{}
 
 	c := llm.NewClient()
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			// Round 1: model issues a tool call.
-			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Message{
-					Role: llm.RoleAssistant,
-					Content: []llm.ContentPart{
-						{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-							ID:        "call_1",
-							Name:      "read_file",
-							Arguments: []byte(`{"file_path": "` + dir + `/test.txt"}`),
-						}},
-					},
-				}}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return llm.Response{Message: llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+					ID:        "call_1",
+					Name:      "read_file",
+					Arguments: []byte(`{"file_path": "` + dir + `/test.txt"}`),
+				}},
 			},
-			// Round 2: model gives a final text response.
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("done")
-			},
-		},
-	}
+		}}
+	}, func(req llm.Request) llm.Response {
+		return agenttest.FinalResponse("done")
+	})
 	c.Register(f)
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{

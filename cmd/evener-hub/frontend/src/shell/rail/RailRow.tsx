@@ -906,7 +906,12 @@ function BandRow({ node, info }: { node: BandRailNode; info: TreeRowInfo }) {
         </span>
       </span>
       <span className={CLASS.bandCount} data-testid="rail-row-band-count">
-        <Badge count={node.children.length} tone={node.band === "needsYou" ? "attention" : undefined} />
+        {/* The count is sessions in the band. A band's own "+N older" row
+            stands for rows beyond it, so it is not one of them. */}
+        <Badge
+          count={node.children.filter((child) => child.kind === "session").length}
+          tone={node.band === "needsYou" ? "attention" : undefined}
+        />
       </span>
     </span>
   );
@@ -949,6 +954,13 @@ function HostGlyph({ className, testId }: { className: string; testId: string })
 // maxSidebarSessionsPerTier). Its text starts at the same x as every other
 // row's, with no dot or chevron of its own. Project overflow rows activate a
 // bounded fetch for the capped-away tier rows.
+//
+// A row that renders away from the list it pages (node.scope set) names that
+// list too: it can end up beside another capped list's row with the same
+// count, and the two controls must not read the same. Inside a fold the
+// surrounding rows already say which list it speaks for, so it stays compact.
+// The name is the row's content, so this is both what a reader sees and what
+// assistive tech announces.
 function OverflowRow({ node, info }: { node: OverflowRailNode; info: TreeRowInfo }) {
   return (
     <span className={CLASS.railRow}>
@@ -956,11 +968,9 @@ function OverflowRow({ node, info }: { node: OverflowRailNode; info: TreeRowInfo
           the visible affordance usable with a mouse as well. */}
       {/* biome-ignore lint/a11y/noStaticElementInteractions: treeitem owns keyboard activation and accessible semantics */}
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: treeitem owns keyboard activation */}
-      <span
-        data-testid="rail-row-overflow"
-        className={CLASS.overflow}
-        onClick={info.activate}
-      >{`+${node.count} older`}</span>
+      <span data-testid="rail-row-overflow" className={CLASS.overflow} onClick={info.activate}>
+        {node.scope ? `${BAND_LABEL[node.scope]} · +${node.count} older` : `+${node.count} older`}
+      </span>
     </span>
   );
 }

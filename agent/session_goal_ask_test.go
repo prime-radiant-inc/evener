@@ -35,16 +35,10 @@ import (
 func TestGoalHoldsAwaiting_ContinuationEndsViaAsk(t *testing.T) {
 	t.Parallel()
 	ask := askUserCall("ask1", askUserArgsValid())
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) },
-			func(req llm.Request) llm.Response {
-				t.Fatalf("should not reach a second LLM call: a continuation that asks must end the turn at the ask boundary, and the goal hold must not kick a further continuation")
-				return llm.Response{}
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) }, func(req llm.Request) llm.Response {
+		t.Fatalf("should not reach a second LLM call: a continuation that asks must end the turn at the ask boundary, and the goal hold must not kick a further continuation")
+		return llm.Response{}
+	})
 	sess := newSession(t, withAdapter(f))
 
 	kicks := 0
@@ -91,22 +85,10 @@ func TestGoalHoldsAwaiting_DeferredContinuationHeldPastNotificationAsk(t *testin
 	ask := askUserCall("ask1", askUserArgsValid())
 	enqueueNotif := llm.ToolCallData{ID: "notif1", Name: "enqueue_test_notification_goal", Arguments: json.RawMessage(`{}`), Type: "function"}
 	comm := communicateCall("c1", "made some progress")
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			// Turn A: the continuation's own turn — makes progress (folding and
-			// deferring a further continuation), enqueues a notification mid-round
-			// (simulating a job finishing during this turn), and ends normally
-			// (not an ask) via communicate.
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(enqueueNotif, comm) },
-			// Turn B: the interleaved notification's own turn asks a question.
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) },
-			func(req llm.Request) llm.Response {
-				t.Fatalf("should not reach a third LLM call: the continuation deferred before the notification interleaved must not run past the notification turn's own unanswered ask")
-				return llm.Response{}
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(enqueueNotif, comm) }, func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) }, func(req llm.Request) llm.Response {
+		t.Fatalf("should not reach a third LLM call: the continuation deferred before the notification interleaved must not run past the notification turn's own unanswered ask")
+		return llm.Response{}
+	})
 	sess := newSession(t, withAdapter(f))
 	sess.registerTool("enqueue_test_notification_goal",
 		"test-only: enqueues a job notification mid-round, simulating a job finishing during the goal's own continuation turn",
@@ -296,14 +278,7 @@ func TestGoalHoldsAwaiting_NoProgressBreakerUnaffected(t *testing.T) {
 	ask := askUserCall("ask1", askUserArgsValid())
 	completeGoal := llm.ToolCallData{ID: "ug1", Name: "update_goal", Arguments: json.RawMessage(`{"status":"complete"}`), Type: "function"}
 	comm := communicateCall("c1", "goal complete")
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) },
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("thanks, going with Postgres") },
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(completeGoal, comm) },
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) }, func(req llm.Request) llm.Response { return agenttest.FinalResponse("thanks, going with Postgres") }, func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(completeGoal, comm) })
 	sess := newSession(t, withAdapter(f))
 	sess.getOrCreateGoalStore().Set("ship the feature", time.Now())
 
@@ -364,12 +339,7 @@ func TestGoalHoldsAwaiting_NoProgressBreakerUnaffected(t *testing.T) {
 // rest state.
 func TestSetGoal_KicksOnNeedsResponseRestNoPendingAsk(t *testing.T) {
 	t.Parallel()
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return endReasonResponse("here is my answer", "needs_response") },
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return endReasonResponse("here is my answer", "needs_response") })
 	sess := newSession(t, withAdapter(f), withImmediateRest())
 
 	var kicked []string

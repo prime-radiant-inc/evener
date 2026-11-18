@@ -557,12 +557,7 @@ func TestSessionEnd_PromptInputExitNeedsAnIdleShutdown(t *testing.T) {
 			// A blocking job stands in for the shutdown: the turn is cancelled
 			// the way a SIGTERM cancels it, and ProcessInput settles idle.
 			trigger := llm.ToolCallData{ID: "interrupt1", Name: "trigger_interrupt", Arguments: json.RawMessage(`{}`), Type: "function"}
-			f := &fakeAdapter{
-				name: "openai",
-				steps: []func(llm.Request) llm.Response{
-					func(llm.Request) llm.Response { return agenttest.ToolCallResponse(trigger) },
-				},
-			}
+			f := newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.ToolCallResponse(trigger) })
 			s.client.Register(f)
 
 			ctx, cancel := context.WithCancel(context.Background())

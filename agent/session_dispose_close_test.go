@@ -17,12 +17,7 @@ func newDisposeCloseTestSession(t *testing.T) *Session {
 	t.Helper()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
-		},
-	})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") }))
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)

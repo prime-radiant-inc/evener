@@ -70,6 +70,10 @@ func FuzzParseSSE(f *testing.F) {
 		[]byte(": just a comment\n\n"),
 		[]byte("data:[DONE]\n\n"),
 		[]byte("data: a\r\nevent: b\r\n\r\n"),
+		// A bare CR is a line terminator too, so these two bodies frame two
+		// lines each and must not parse as one long line.
+		[]byte("data: a\rdata: b\n\n"),
+		[]byte("data: a\r\rdata: b\r\r"),
 		[]byte("event:no-space\ndata:packed\n\n"),
 		[]byte("garbage without newline"),
 		[]byte("\n\n\n"),
