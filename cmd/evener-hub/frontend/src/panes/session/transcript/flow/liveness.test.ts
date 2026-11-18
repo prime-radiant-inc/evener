@@ -376,6 +376,38 @@ test("formatRetryWait: the instant's snapshot form keeps the pending countdown",
   expect(snapshot).toBe(formatRetryWait({ ...quotaWaitFrom(resumesIn), groupElapsedMs: 0 }));
 });
 
+// The wake event carries the model of the request that FAILED, not the one
+// the retry runs on (the daemon applies a queued model switch before
+// emitting the wake), so the progress line renders no model tag at all: a
+// tag here would label the resumed request with the old model and make the
+// switch look ineffective. Ordinary fallback retries keep their tag.
+test("formatRetryWait: the quota wake's progress line names no model, while an ordinary retry keeps its tag", () => {
+  const running = formatRetryWait(
+    retryWait({
+      attempt: 1,
+      attemptCap: 1,
+      delayMs: 0,
+      errorClass: "quota_exceeded",
+      model: "provider/old-model",
+      groupElapsedMs: 60 * 60_000,
+      inProgress: true,
+    }),
+  );
+  expect(running).not.toContain("old-model");
+  const ordinary = formatRetryWait(
+    retryWait({
+      attempt: 3,
+      attemptCap: 11,
+      delayMs: 30_000,
+      errorClass: "server",
+      model: "provider/new-model",
+      groupElapsedMs: 60_000,
+      inProgress: true,
+    }),
+  );
+  expect(ordinary).toContain("new-model");
+});
+
 test("describeLiveness: a retry is never stuck while a subagent runs", () => {
   const retry = retryWait({ attempt: 9, attemptCap: 11, delayMs: 60_000, errorClass: "rate_limit" });
   expect(describeLiveness(STUCK_AFTER_MS * 2, true, 1, retry).level).toBe("retrying");

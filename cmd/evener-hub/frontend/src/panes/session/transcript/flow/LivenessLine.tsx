@@ -116,9 +116,21 @@ export function LivenessLine({
     resetPassed: retry.errorClass === "quota_exceeded" && retry.delayMs > 0 && now - retry.receivedAt >= retry.delayMs,
   };
   // The snapshot's resume instant is the pane's own quota source; a live
-  // quota-class retry carries its delay inside retryWait.
+  // quota-class retry carries its delay inside retryWait. A snapshot whose
+  // deadline has passed is still evidence of a pending wait: the daemon
+  // keeps the wait while the retry queues behind other work, so the expired
+  // instant renders as overdue (no countdown, no invented elapsed time)
+  // until the wake, a turn boundary, or a fresh read clears the wait.
+  const quotaOverdueFromSnapshot = quotaResumesAt !== undefined && quotaResumesAt <= now;
   const quotaRemainingMs = quotaResumesAt !== undefined && quotaResumesAt > now ? quotaResumesAt - now : undefined;
-  const { level, text } = describeLiveness(now - lastFrameAt, active, runningSubagents, retryWait, quotaRemainingMs);
+  const { level, text } = describeLiveness(
+    now - lastFrameAt,
+    active,
+    runningSubagents,
+    retryWait,
+    quotaRemainingMs,
+    quotaOverdueFromSnapshot,
+  );
   if (level === "none" || text === null) return null;
 
   return (

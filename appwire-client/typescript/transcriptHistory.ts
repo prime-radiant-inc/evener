@@ -1013,8 +1013,21 @@ export function applyReadResponse<M extends ThreadModel>(
   // over whatever runs next. The wake's own zero-delay announcement already
   // cleared a wait that survived into the same turn; this is the reconnect
   // half, where the snapshot speaks for a turn the client never watched end.
+  // A read that names a DIFFERENT running turn retires the old turn's retry
+  // metadata even while the new turn waits its own wait: the snapshot's new
+  // deadline is real, but the retained retry (its elapsed time, its model)
+  // belongs to the old turn's call and would dress the new wait in the old
+  // call's history. The new wait renders from its deadline alone until a
+  // matching live announcement arrives.
+  const readRunningTurnId = runningTurn(resp.thread).runningTurnId;
+  const quotaRetryFromAnotherTurn =
+    base.modelRetry?.errorClass === "quota_exceeded" &&
+    base.modelRetry.turnId !== undefined &&
+    readRunningTurnId !== undefined &&
+    readRunningTurnId !== base.modelRetry.turnId;
   const clearedQuotaRetry =
-    fields.quotaResumesAt === undefined && base.modelRetry?.errorClass === "quota_exceeded"
+    (fields.quotaResumesAt === undefined || quotaRetryFromAnotherTurn) &&
+    base.modelRetry?.errorClass === "quota_exceeded"
       ? { modelRetry: undefined }
       : {};
   let next = withDisplay(
@@ -1196,8 +1209,18 @@ export function applyReadModel<M extends ThreadModel>(
     fresh.scratchDir === undefined && model.scratchDir !== undefined ? { scratchDir: undefined } : {};
   const clearedQuotaWait =
     fresh.quotaResumesAt === undefined && model.quotaResumesAt !== undefined ? { quotaResumesAt: undefined } : {};
+  // Same cross-turn rule as applyReadResponse: a read naming a different
+  // running turn retires the old turn's retry metadata even while the new
+  // turn waits its own wait - the new deadline renders alone until a
+  // matching live announcement arrives.
+  const quotaRetryFromAnotherTurn =
+    base.modelRetry?.errorClass === "quota_exceeded" &&
+    base.modelRetry.turnId !== undefined &&
+    freshRunningTurnId !== undefined &&
+    freshRunningTurnId !== base.modelRetry.turnId;
   const clearedQuotaRetry =
-    fresh.quotaResumesAt === undefined && model.modelRetry?.errorClass === "quota_exceeded"
+    (fresh.quotaResumesAt === undefined || quotaRetryFromAnotherTurn) &&
+    model.modelRetry?.errorClass === "quota_exceeded"
       ? { modelRetry: undefined }
       : {};
   let next = withDisplay(

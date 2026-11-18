@@ -232,16 +232,20 @@ export function applyNotification<M extends ThreadModel>(
   // announcement (the same round's text, or a previous round's tool
   // result - which projects as a commandExecution, the same type as the
   // model's own tool call). No history item proves the WAITING call has
-  // resumed, so a quota wait survives every item completion and clears
-  // only on the wake (the zero-delay announcement that the request went
-  // out), a turn boundary, or an authoritative read whose thread no
-  // longer waits.
+  // resumed, so a PENDING wait - one whose deadline is still held -
+  // survives every item completion and clears only on the wake (the
+  // zero-delay announcement that the request went out), a turn boundary,
+  // or an authoritative read whose thread no longer waits. The wake's own
+  // progress state is the resumed request itself, so it retires on the
+  // resumed call's completed output exactly as an ordinary retry does:
+  // without this, a resumed request that starts a quiet foreground tool
+  // keeps the completed retry labeled in progress while the tool runs.
   const modelOutputCompleted =
     n.method === "history/updated" &&
     next.history?.turns !== model.history?.turns &&
     (n.params.items ?? []).some((item) => MODEL_OUTPUT_ITEM_TYPES.has(item.type));
-  const quotaWaitHeld = next.quotaResumesAt !== undefined || next.modelRetry?.errorClass === "quota_exceeded";
-  if (!modelOutputCompleted || quotaWaitHeld) return publicModel<M>(next);
+  const quotaWaitPending = next.quotaResumesAt !== undefined;
+  if (!modelOutputCompleted || quotaWaitPending) return publicModel<M>(next);
   const cleared = { ...next };
   delete cleared.modelRetry;
   delete cleared.quotaResumesAt;

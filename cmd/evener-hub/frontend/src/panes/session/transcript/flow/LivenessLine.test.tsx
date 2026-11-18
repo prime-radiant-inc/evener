@@ -199,12 +199,32 @@ test("a quota wait known from the thread snapshot renders immediately and never 
   expect(hoursIn.getAttribute("data-level")).toBe("retrying");
 });
 
-test("a quota wait whose resume time has passed renders nothing and lets the ordinary liveness decision speak", () => {
+// A snapshot whose deadline has passed is still evidence of a pending wait:
+// the daemon keeps the wait while the retry queues behind other work, so a
+// pane opened during that interval (a reload, a cold visit) reads the
+// expired instant as overdue rather than falling back to ordinary liveness
+// - which would report a stall for a wait the snapshot itself names. The
+// snapshot knows no elapsed time, so none renders. (Until round 7 the
+// expired instant was discarded outright and the pane fell to quiet/stall.)
+test("an expired snapshot deadline renders the overdue wait, never a stall", () => {
   render(
-    <LivenessLine lastFrameAt={0} now={30_000} active={true} sessionRef="s1" turnId="turn_0" quotaResumesAt={10_000} />,
+    <LivenessLine
+      lastFrameAt={0}
+      now={STUCK_AFTER_MS * 3}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      quotaResumesAt={10_000}
+    />,
   );
   const el = screen.getByTestId("liveness-line");
-  expect(el.getAttribute("data-level")).toBe("quiet");
+  expect(el.getAttribute("data-level")).toBe("retrying");
+  // Overdue, not the silence-derived states: the line explains the wait the
+  // snapshot names, distinct from every state derived from the gap.
+  const overdueText = el.textContent ?? "";
+  expect(overdueText).not.toBe(describeLiveness(STUCK_AFTER_MS * 3, true, 0).text);
+  // No elapsed time: the snapshot alone cannot know one.
+  expect(overdueText).not.toContain("on this call");
 });
 
 // A live quota wait keeps counting down while unrelated activity lands: a

@@ -219,6 +219,44 @@ test("a read whose thread no longer waits drops the quota retry with the deadlin
   expect(next.modelRetry?.errorClass ?? "cleared").not.toBe("quota_exceeded");
 });
 
+// A reconnect can land mid-wait of a DIFFERENT turn: the browser left during
+// turn_1's quota wait and returns after turn_2 entered its own wait. The
+// read installs turn_2's deadline, but the retained retry metadata belongs
+// to turn_1's call - its elapsed time and model would dress the new wait in
+// the old call's history for the entire new wait. The new deadline renders
+// alone until a matching live announcement arrives.
+test("a read that names a different running turn retires the old turn's quota retry even while the new turn waits", () => {
+  const resumesAt = 4_102_400_000;
+  let model = hydrateThread(
+    read([turn("turn_1", 1)], { activeTurnId: "turn_1", quotaWaitResumesAt: resumesAt }),
+    REF,
+    NOW,
+  );
+  model = {
+    ...model,
+    modelRetry: {
+      attempt: 1,
+      maxAttempts: 1,
+      delayMs: resumesAt - NOW,
+      errorClass: "quota_exceeded",
+      turnId: "turn_1",
+      groupElapsedMs: 5_000,
+      attemptCap: 1,
+      receivedAt: NOW,
+    },
+  };
+  const freshResumesAt = resumesAt + 60 * 60_000;
+  const fresh = hydrateThread(
+    read([turn("turn_2", 1)], { activeTurnId: "turn_2", quotaWaitResumesAt: freshResumesAt }),
+    REF,
+    NOW + 1,
+  );
+  const next = applyReadModel(model, fresh);
+  // The new turn's deadline installs; the old turn's retry metadata clears.
+  expect(next.quotaResumesAt).toBe(freshResumesAt);
+  expect(next.modelRetry).toBeUndefined();
+});
+
 function page(turns: Turn[], options: Snapshot & { authoritative?: boolean } = {}): ThreadTurnsListResponse {
   return {
     data: turns,

@@ -159,11 +159,12 @@ export function formatRetryWait(retry: RetryWait | QuotaWait): string {
     // line describes the resumed request as motion, and the wait label
     // above stays reserved for the pending countdown - a cause that says
     // "waiting" over a running call is the mislabel this branch exists to
-    // avoid. The wait may have ended for a reset, a steer or a model
-    // switch, so the copy claims none of them; the model tag still names a
-    // switch when the announcement carries one.
-    const modelTag = "model" in retry && retry.model ? ` (${retry.model})` : "";
-    return `quota wait ended${modelTag} — in progress — ${formatExactGap(retry.groupElapsedMs)} on this call`;
+    // avoid. No model tag: the wake event carries the model of the request
+    // that FAILED, not the one the retry runs on - the daemon applies a
+    // queued model switch before emitting the wake - so a tag here would
+    // label the resumed request with the old model and make the switch
+    // look ineffective.
+    return `quota wait ended — in progress — ${formatExactGap(retry.groupElapsedMs)} on this call`;
   }
   const modelTag = "model" in retry && retry.model ? ` (${retry.model})` : "";
   const attempt =
@@ -232,6 +233,7 @@ export function describeLiveness(
   runningSubagents: number,
   retry?: RetryWait,
   quotaRemainingMs?: number,
+  quotaOverdueFromSnapshot?: boolean,
 ): LivenessInfo {
   if (!active) return { level: "none", text: null };
   // A quota wait is known information the same way a retry past its first
@@ -244,6 +246,13 @@ export function describeLiveness(
   // is the read snapshot's (a pane that re-hydrated, with no notification);
   // the retry form is the live announcement, whose delay runs to the reset.
   const liveQuotaWait = retry !== undefined && retry.errorClass === "quota_exceeded" && !retry.inProgress;
+  // A snapshot whose deadline has passed is still evidence of a pending
+  // wait: the daemon keeps the wait while the retry queues behind other
+  // work. The overdue line never invents the elapsed time the snapshot
+  // cannot know, and never reads as a stall for a wait the snapshot names.
+  if (quotaOverdueFromSnapshot && !liveQuotaWait) {
+    return { level: "retrying", text: formatRetryWait({ ...quotaWaitFrom(0), resetPassed: true }) };
+  }
   // A live quota retry and the instant its reducer stamped name the same
   // wait. The instant's remaining time is the honest countdown (measured
   // from this render's now, while the retry's delayMs was measured when the
