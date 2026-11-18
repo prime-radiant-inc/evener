@@ -478,7 +478,25 @@ func testHubRelayInterruptedRead(t *testing.T, disconnect bool) {
 	}()
 	awaitActivityRelaySignal(f.ctx, t, f.gateEntered, "read did not acquire the upstream subscription gate")
 	if disconnect {
+		// The note has to be in the read's pending capture before the socket
+		// closes, or the relay never sees it and the stale-note assertions
+		// below can pass without the condition they exist to catch. A frame
+		// written to the transport proves nothing about when the session
+		// consumed it, so wait for the capture append itself.
+		captured := make(chan appwire.Notification, 1)
+		restoreAppend := installAtomicObserver(&appsource.ObserveRelayCaptureAppend, func(note appwire.Notification) {
+			select {
+			case captured <- note:
+			default:
+			}
+		})
+		t.Cleanup(restoreAppend)
 		f.daemon.RecordAppEvent(events.SessionEvent{Kind: events.EventNotesUpdated, SessionID: rootID, Data: events.NotesUpdatedData{HumanNote: "old-epoch"}})
+		select {
+		case <-captured:
+		case <-f.ctx.Done():
+			t.Fatal("the relay never captured the old epoch's note before the upstream closed")
+		}
 		f.closeUpstream()
 	} else {
 		cancelRead()
