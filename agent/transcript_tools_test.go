@@ -1507,6 +1507,218 @@ func TestFind_ProjectName_OwnerRestoreLaneDoesNotInheritEnclosingRepo(t *testing
 	}
 }
 
+// TestFind_ProjectName_SharedOverrideNamedSessions covers a shared override
+// whose own path spells a session-owned layout: --state-dir /srv/sessions/shared
+// makes shared/worktrees/<projectID>/<lane> look like a delegate lane of "shared"
+// under /srv. The managed reading is the real one, and the project its path
+// records is evidence even though the checkout is gone.
+func TestFind_ProjectName_SharedOverrideNamedSessions(t *testing.T) {
+	root := t.TempDir()
+	shared := filepath.Join(root, "sessions", "shared")
+	if err := os.MkdirAll(filepath.Join(shared, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir shared override: %v", err)
+	}
+
+	repo := newNamedCheckout(t, "shared-repo")
+	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repo))
+	parent := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	parent.EnvInfo.GitOriginURL = "git@github.com:owner/shared-repo.git"
+	parent.EnvInfo.WorkingDir = repo
+	if err := schema.SaveSessionMeta(shared, parent); err != nil {
+		t.Fatal(err)
+	}
+
+	// The deleted managed lane sits directly under the validated bucket.
+	row := schema.SessionMeta{ParentSessionID: parent.ID}
+	row.EnvInfo.WorkingDir = filepath.Join(shared, "worktrees", project.ID, "dlg_shared")
+	if got, want := projectName(row, shared), "shared-repo"; got != want {
+		t.Fatalf("projectName(deleted managed lane under a bucket named sessions/shared) = %q, want %q (the managed layout is the real one)", got, want)
+	}
+}
+
+// TestFind_ProjectName_VerifiedParentOriginSurvivesItsCheckout covers a deleted
+// session-owned lane in another bucket whose parent is verified by matching the
+// owner in the lane path, while that parent's own checkout is also gone. The
+// parent's saved Git origin names the repository without needing anything on
+// disk, so it must still answer.
+func TestFind_ProjectName_VerifiedParentOriginSurvivesItsCheckout(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	repoA := newNamedCheckout(t, "repo-a")
+	projectA := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repoA))
+	bucketA, err := RuntimeDirForProjectWithStateHome(projectA, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucketA, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+	// A second bucket under the same root, so the lane's state dir differs from
+	// the bucket the row was discovered in.
+	repoB := newNamedCheckout(t, "repo-b")
+	projectB := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repoB))
+	bucketB, err := RuntimeDirForProjectWithStateHome(projectB, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucketB, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket B: %v", err)
+	}
+
+	// The parent is verified by being the owner encoded in the lane path, and its
+	// own checkout is gone: only its saved origin survives. Its own lane is
+	// session-owned, so its path records no managed project ID — the case where
+	// reading only the checkout leaves no evidence at all.
+	parentID := identifier.MustNewSessionID()
+	parent := schema.SessionMeta{ID: parentID}
+	parent.EnvInfo.GitOriginURL = "git@github.com:owner/repo-b.git"
+	parent.EnvInfo.WorkingDir = filepath.Join(bucketB, "sessions", identifier.MustNewSessionID(), "worktrees", "dlg_parent_lane")
+	if err := schema.SaveSessionMeta(bucketA, parent); err != nil {
+		t.Fatal(err)
+	}
+
+	row := schema.SessionMeta{ParentSessionID: parentID}
+	row.EnvInfo.WorkingDir = filepath.Join(bucketB, "sessions", parentID, "worktrees", "dlg_child")
+	if got, want := projectName(row, bucketA), "repo-b"; got != want {
+		t.Fatalf("projectName(deleted session lane in bucket B whose verified parent's checkout is gone) = %q, want its saved origin %q", got, want)
+	}
+}
+
+// TestFind_ProjectName_LiveSiblingPointerNamesTheRepository covers a deleted
+// managed lane with no usable parent, where the only record of the matching
+// repository is a live sibling worktree carrying no saved origin or restore
+// root. Its Git pointer still names the main checkout, and that is evidence.
+func TestFind_ProjectName_LiveSiblingPointerNamesTheRepository(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	repo := newNamedCheckout(t, "pointer-repo")
+	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repo))
+	bucket, err := RuntimeDirForProjectWithStateHome(project, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+
+	// The sibling's own worktree still exists, with a real Git pointer, and its
+	// metadata records no origin and no restore root.
+	siblingLane := filepath.Join(bucket, "worktrees", project.ID, "dlg_live_sibling")
+	gittest.Run(t, repo, "worktree", "add", "-q", siblingLane, "-b", "live-sibling")
+	sibling := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	sibling.EnvInfo.WorkingDir = siblingLane
+	if err := schema.SaveSessionMeta(bucket, sibling); err != nil {
+		t.Fatal(err)
+	}
+
+	row := schema.SessionMeta{}
+	row.EnvInfo.WorkingDir = filepath.Join(bucket, "worktrees", project.ID, "dlg_deleted")
+	if got, want := projectName(row, bucket), "pointer-repo"; got != want {
+		t.Fatalf("projectName(deleted lane whose only evidence is a live sibling pointer) = %q, want %q", got, want)
+	}
+}
+
+// TestFind_ProjectName_DanglingGitSymlinkLeavesOriginEligible covers a sibling
+// that recorded /repo/pkg, where /repo/.git is now a dangling symlink. The walk
+// stops at the refused entry, which must not be read as "pkg is a non-Git
+// project of its own": that would name a different project than the sibling's
+// saved origin and reject the origin as conflicting evidence.
+func TestFind_ProjectName_DanglingGitSymlinkLeavesOriginEligible(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	repo := newNamedCheckout(t, "repo")
+	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repo))
+	bucket, err := RuntimeDirForProjectWithStateHome(project, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+
+	// A subdirectory of the recorded checkout, with the checkout's .git replaced
+	// by a symlink that resolves to nothing.
+	pkg := filepath.Join(repo, "pkg")
+	if err := os.MkdirAll(pkg, 0o755); err != nil {
+		t.Fatalf("mkdir pkg: %v", err)
+	}
+	if err := os.RemoveAll(filepath.Join(repo, ".git")); err != nil {
+		t.Fatalf("remove .git: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(repo, "gone-git"), filepath.Join(repo, ".git")); err != nil {
+		t.Fatalf("symlink .git: %v", err)
+	}
+
+	sibling := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	sibling.EnvInfo.GitOriginURL = "git@github.com:owner/repo.git"
+	sibling.EnvInfo.WorkingDir = pkg
+	if err := schema.SaveSessionMeta(bucket, sibling); err != nil {
+		t.Fatal(err)
+	}
+
+	row := schema.SessionMeta{}
+	row.EnvInfo.WorkingDir = filepath.Join(bucket, "worktrees", project.ID, "dlg_dangling")
+	if got, want := projectName(row, bucket), "repo"; got != want {
+		t.Fatalf("projectName(deleted lane whose sibling records a checkout with a dangling .git) = %q, want its saved origin %q", got, want)
+	}
+}
+
+// TestFind_ProjectName_BucketDecodedOnceAcrossRows covers the cost the review
+// measured: several originless deleted lanes from one bucket. Every row needs
+// the bucket's session metadata to look for a sibling label, and rereading it
+// per row decodes the same directory once per result. The snapshot discovery
+// already took is what the resolver must use.
+func TestFind_ProjectName_BucketDecodedOnceAcrossRows(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	repo := newNamedCheckout(t, "once-repo")
+	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repo))
+	bucket, err := RuntimeDirForProjectWithStateHome(project, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+	// A sibling that records only an origin: it labels every row, so each row is
+	// resolved through the sibling scan rather than short-circuiting early.
+	sibling := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	sibling.EnvInfo.GitOriginURL = "git@github.com:owner/once-repo.git"
+	if err := schema.SaveSessionMeta(bucket, sibling); err != nil {
+		t.Fatal(err)
+	}
+
+	rows := []findCandidate{}
+	for i := 0; i < 5; i++ {
+		row := schema.SessionMeta{}
+		row.EnvInfo.WorkingDir = filepath.Join(bucket, "worktrees", project.ID, fmt.Sprintf("dlg_row_%d", i))
+		rows = append(rows, findCandidate{meta: row, bucketDir: bucket})
+	}
+
+	// Discovery's snapshot, taken once, is what the resolver is given.
+	metas, err := schema.ListSessionMetas(bucket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := newProjectNameResolver(map[string][]schema.SessionMeta{bucket: metas})
+
+	// Take the bucket's sessions dir away. Any resolver that rereads the bucket
+	// now finds nothing and answers empty; one that uses discovery's snapshot
+	// still labels every row. This is the read count, made observable.
+	if err := os.RemoveAll(filepath.Join(bucket, "sessions")); err != nil {
+		t.Fatalf("remove sessions: %v", err)
+	}
+	for _, c := range rows {
+		if got, want := resolver.projectName(c.meta, bucket), "once-repo"; got != want {
+			t.Fatalf("projectName(row from a supplied snapshot) = %q, want %q (the bucket must be read once, not once per row)", got, want)
+		}
+	}
+}
+
 func TestFind_CatalogTrimmedAndOrdered(t *testing.T) {
 	t.Parallel()
 	dir := newBucket(t)

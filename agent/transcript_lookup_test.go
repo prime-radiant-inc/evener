@@ -1185,7 +1185,7 @@ func TestCollectCandidates_SkipsSymlinkedSessionsDir(t *testing.T) {
 
 	// collectCandidates should return 0 candidates — the symlinked sessions/
 	// points outside the state root.
-	candidates := collectCandidates([]string{bucket}, bucket)
+	candidates, _ := collectCandidates([]string{bucket}, bucket)
 	if len(candidates) != 0 {
 		t.Fatalf("collectCandidates returned %d candidates from symlinked sessions/; should skip", len(candidates))
 	}
