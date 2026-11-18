@@ -254,7 +254,7 @@ func TestResponsesContinuationAnchorRefusesFrameSparedByAnEarlierPartOfItsPhase(
 	// out or the refusal bought nothing. Both parts are separate output_text
 	// items in the request the adapter serializes, so the part is the block that
 	// must be scanned alone (#6493 review).
-	messages := expandHistory(history, replayScope{Protocol: registry.ProtocolOpenAIResponses, Instance: "openai", Model: "gpt-5.4"})
+	messages := dispatchCopyForTarget(history, replayScope{Protocol: registry.ProtocolOpenAIResponses, Instance: "openai", Model: "gpt-5.4"}, false)
 	for _, part := range messages[4].Content {
 		if part.Kind != llm.ContentText {
 			continue

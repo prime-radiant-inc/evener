@@ -79,6 +79,17 @@ func escapeWorkingNote(msg llm.Message) string {
 		}
 		copy(escaped[span[0]:span[1]], pieces)
 	}
+	// A part is also a block of its own on the reading that matters here: the
+	// wire form emits each part separately for Responses, Anthropic and Google,
+	// so a fence left open at the end of one part does not run into the next.
+	// The segment pass above reads same-phase parts as one run, which is the
+	// other reading, and the two disagree exactly where a fence crosses a part
+	// boundary. Applying both leaves no opener raw that either reading exposes,
+	// and the pass below over the flattened note is the third reader — the
+	// summarizer's — which sees the parts as one block again (#6493 review).
+	for k, defused := range sysmsg.EscapePartsIndividually(escaped) {
+		escaped[k] = defused
+	}
 	// Start from every original text part, then put the escaped wire parts back
 	// at their own indexes. A part the wire drops is still in the note, with
 	// the bytes the model wrote.

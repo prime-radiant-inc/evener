@@ -22,6 +22,45 @@ func PhaseSeparatesMessages(protocol string) bool {
 	return protocol == "openai-responses"
 }
 
+// SerializesPartsSeparately reports whether the target emits each text part as
+// its own block on the wire, so that a fence opened in one part does not run
+// into the next.
+//
+// It is a wider question than PhaseSeparatesMessages: Responses splits by
+// Phase, while the Anthropic and Google adapters emit one block per text part
+// and ignore Phase entirely. Both shapes mean the same thing for this scan — a
+// part is a block of its own, and an opener at the start of a part is not
+// sheltered by an unclosed fence in the part before it. Only the Chat
+// Completions adapter joins a turn's text into one body, and there the joined
+// reading is the only one the provider sees (#6493 review).
+func SerializesPartsSeparately(protocol string) bool {
+	switch protocol {
+	case "openai-responses", "anthropic", "google":
+		return true
+	}
+	return false
+}
+
+// EscapePartsIndividually escapes each text part as a block of its own.
+//
+// A reader that emits one block per part has a second reading of fence state
+// that the joined scan cannot reach: a fence left open in one part shelters the
+// next part's opener when the run is read as one block, and a delimiter that
+// closes a fence in the second part reads as a fresh opener when that part is
+// read alone. Each reading spares a frame the other escapes, so a caller runs
+// the joined scan and then this one, and neither can shelter an opener the
+// other sees. Escaping is idempotent and never adds or removes a delimiter, so
+// the second pass cannot re-open what the first closed; an example fenced
+// inside a single part stays fenced under both readings and keeps its bytes
+// (#6493 review).
+func EscapePartsIndividually(texts []string) []string {
+	out := make([]string, len(texts))
+	for i, text := range texts {
+		out[i] = EscapeModelAuthoredFrames(text)
+	}
+	return out
+}
+
 // CarriesWireText reports whether a text part reaches the provider as message
 // text. It is the adapters' inclusion rule, and the frame scan must use it
 // too: a boundary the scan cannot see is a message the scan cannot escape, and
@@ -253,11 +292,19 @@ func EscapeModelAuthoredFrames(text string) string {
 	var b strings.Builder
 	created := false
 	var fence mdfence.Tracker
+	var lists listContainer
 	pos := 0
 	for line := range strings.Lines(text) {
 		content := strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
 		out := line
-		if !fence.StepInBlock(content) && !indentedCode(content) && !isQuotedLine(content) {
+		// List state is read only outside a block: a fence's own content may
+		// look like a list, and what it holds is quoted text, not structure.
+		inBlock := fence.StepInBlock(content)
+		container := 0
+		if !inBlock {
+			container = lists.step(content)
+		}
+		if !inBlock && !indentedCode(content, container) && !isQuotedLine(content) {
 			if escaped, ok := escapeFrameOpener(content); ok {
 				out = escaped + line[len(content):]
 			}
@@ -334,6 +381,57 @@ func isQuotedLine(content string) bool {
 
 // indentedCode reports whether content is Markdown-indented code, whose text is
 // literal content rather than prose.
-func indentedCode(content string) bool {
-	return strings.TrimSpace(content) != "" && mdfence.LeadingColumns(content) >= 4
+//
+// The four columns are measured from the enclosing list item's content
+// indentation, not from the page. A list nested far enough in reaches four
+// columns with its own prose: an ordered list's ten-plus item is `   11. ` at
+// the marker's width, and a frame opener aligned with that item's text sits at
+// four columns while being the item's ordinary continuation text. Measuring
+// from the page exempted that prose and left its opener raw in both replay and
+// checkpoint excerpts, while real code inside the item — four columns past the
+// item's content, which is where Markdown puts it — keeps its bytes (#6493
+// review). container is the item's content indentation, 0 outside a list.
+func indentedCode(content string, container int) bool {
+	if strings.TrimSpace(content) == "" {
+		return false
+	}
+	return mdfence.LeadingColumns(content) >= container+4
+}
+
+// listContainer tracks the content indentation of the Markdown list item the
+// scan is inside, so an item's own text is not mistaken for page-indented code.
+//
+// It models what the escape needs and nothing more: one list container, the way
+// mdfence.Tracker does, because the question is only whether a line's indent
+// reaches four columns past its item. A line indented less than the item's
+// content leaves the item and is read at the top level again; a blank line stays
+// inside it, since a blank line neither ends an item nor opens code.
+type listContainer struct {
+	content int
+}
+
+// step returns the content indentation that applies to line: the item's, taken
+// from a marker line, or 0 when the line sits outside any item.
+func (l *listContainer) step(content string) int {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return l.content
+	}
+	indent := mdfence.LeadingColumns(content)
+	if l.content > 0 && indent < l.content {
+		// Left the item: this line belongs to the enclosing context.
+		l.content = 0
+	}
+	rest := content[mdfence.LeadingSpaces(content):]
+	if marker, ok := mdfence.ListMarker(rest); ok {
+		after := rest[marker:]
+		spaces := len(after) - len(strings.TrimLeft(after, " "))
+		if spaces >= 1 && spaces <= 4 {
+			// The content starts after the marker and its following spaces, at
+			// this line's own indentation.
+			l.content = indent + marker + spaces
+			return l.content
+		}
+	}
+	return l.content
 }

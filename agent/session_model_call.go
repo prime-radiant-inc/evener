@@ -329,9 +329,10 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// The escape covers each target's dispatch copy, never the shared source:
 	// a promoting target rewrites reasoning text, and the fallback source is
 	// written from untrimmedHistory and may be handed to a target that signed
-	// the original bytes (#6493 review). expandHistory escaped the text parts
-	// for this target's boundaries already; this adds the reasoning a
-	// promoting target prepends to the body.
+	// the original bytes (#6493 review). expandHistory's product is the shared
+	// source and carries the model's own bytes, so the escape runs here, on the
+	// copy this target sends, where its text boundaries are the ones the
+	// adapter will assemble.
 	untrimmedHistory := history
 	history = escapeModelAuthoredFramesForTarget(history, profile.Protocol(), promotesReasoningToText(profile))
 	history = projectThinkingForTarget(profile, history)
@@ -399,8 +400,12 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			// fallback source take them so a fallback sees the reloaded
 			// instructions too (#4563, #4217).
 			message := scope.projectTurnMessage(notification, true)
-			history = append(history, message)
 			untrimmedHistory = append(untrimmedHistory, message)
+			// The dispatched copy is escaped, the fallback source is not: these
+			// turns join the history the request was built from AFTER its own
+			// escaping pass, so they reach the wire in the model's bytes unless
+			// they are escaped here (#6493 review).
+			history = append(history, escapeModelAuthoredFramesForTarget([]llm.Message{message}, profile.Protocol(), promotesReasoningToText(profile))[0])
 		}
 		presentedTurns = append(slices.Clip(presentedTurns), appended...)
 		req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort, toolDefsJSONBytes)
@@ -717,6 +722,11 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 		req.Messages = responsesContinuationDeltaMessages(req.Messages, candidate.Delta, func(mediaType string) bool {
 			return !llm.RowSeesToolResultMedia(profile.Resolved(), mediaType)
 		})
+		// The delta is expanded from stored turns, which carry the model's
+		// original bytes, so this rebuilt message list replaced the escaped
+		// dispatch copy above and has to be escaped for this target itself
+		// (#6493 review).
+		req.Messages = escapeModelAuthoredFramesForTarget(req.Messages, profile.Protocol(), promotesReasoningToText(profile))
 		req.Continuation = &llm.ContinuationMetadata{
 			PreviousResponseIDHash:  candidate.Turn.ResponseIDHash,
 			AnchorTurnIndex:         candidate.TurnIndex,
@@ -2266,27 +2276,6 @@ func (rs replayScope) projectThinkingPart(p llm.ContentPart, provenanceKeeps boo
 // is the authority.
 func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Message {
 	t.Message = projectVoicePresentation(t)
-	// A model-authored turn can carry a harness input frame the model
-	// invented on its own round (#6493: an assistant turn wrote
-	// <system-notification> and an [answers] block naming a decision nobody
-	// made, and the next request replayed it verbatim, where the model read it
-	// as input). The user-turn channel is the authorization channel, so the
-	// copy handed to the model must not spell a frame the harness writes. Only
-	// the assistant role is escaped: a user-role turn is the partner speaking,
-	// and their bytes are delivered as typed. The stored turn keeps every
-	// byte; this rewrites the projected copy alone.
-	//
-	// The reasoning is deliberately NOT escaped here even when this target
-	// promotes it. expandHistory's product is the round's shared source, which
-	// a fallback target also reads, and a promoting target's rewrite lands on
-	// the thinking text that a signed-thinking target must replay byte-exact:
-	// Anthropic carries the model's signature over that text and rejects a
-	// continuation whose thinking no longer matches it (#6493 review). Each
-	// target escapes its own dispatch copy instead — see
-	// escapeModelAuthoredFramesForTarget at the primary build and the fallback
-	// chain — so the rewrite lands on the copy that target sends, never on the
-	// source another target may sign.
-	t.Message = escapeModelAuthoredTurnFramesFor(t.Message, rs.Protocol, false)
 	if !rs.active() && !rs.DropThinking {
 		return t.Message
 	}
