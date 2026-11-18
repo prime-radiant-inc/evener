@@ -855,6 +855,80 @@ describe("conversation-owned session controls", () => {
 			expect(refreshed).toBe(refreshes);
 		},
 	);
+	// A pick the hub accepted is confirmed even when the read that follows it
+	// fails on the connection the pick was sent on: the acknowledgement is what
+	// applied it, and the read is catch-up. The live binding still settles its
+	// pending state so nothing reads as in flight afterwards.
+	it("confirms an acknowledged pick whose follow-up read fails", async () => {
+		const applied: string[] = [];
+		let refreshed = 0;
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => ({ data: [{ provider: "two", model: "next" }] }),
+				model: async (provider, model) => {
+					applied.push(`${provider}/${model}`);
+				},
+			}),
+			async () => {
+				refreshed++;
+				throw new Error("The read lost its connection.");
+			},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+		);
+		await controls.loadModels();
+		expect(await controls.changeModel("two", "next")).toBe(true);
+		expect(applied).toEqual(["two/next"]);
+		expect(refreshed).toBe(1);
+		expect(controls.getSnapshot()).toMatchObject({ pending: null, error: null });
+	});
+	// The reader can leave while the pick's refresh is still out. Whoever left
+	// is owed no confirmation on the screen they left, so the pick reports no
+	// change there — including when that refresh itself fails.
+	it.each([{ settle: "resolves" }, { settle: "rejects" }] as const)(
+		"claims no pick for a destination that left while its refresh %s",
+		async ({ settle }) => {
+			let inFront = true;
+			let current = true;
+			const sent = Promise.withResolvers<void>();
+			const ack = Promise.withResolvers<void>();
+			const started = Promise.withResolvers<void>();
+			const reading = Promise.withResolvers<void>();
+			const controls = new SessionControls(
+				await boundary({
+					models: async () => ({ data: [{ provider: "two", model: "next" }] }),
+					model: async () => {
+						sent.resolve();
+						await ack.promise;
+					},
+				}),
+				async () => {
+					started.resolve();
+					await reading.promise;
+				},
+				() => {},
+				(scope) => inFront && (scope === "destination" || current),
+				() => null,
+				() => true,
+			);
+			await controls.loadModels();
+			const pick = controls.changeModel("two", "next");
+			await sent.promise;
+			// The recycle disposes this binding; the session is still in front when
+			// the confirmation read starts.
+			controls.dispose();
+			current = false;
+			ack.resolve();
+			await started.promise;
+			// The reader leaves while that read is out.
+			inFront = false;
+			if (settle === "rejects") reading.reject(new Error("The read lost its connection."));
+			else reading.resolve();
+			expect(await pick).toBe(false);
+		},
+	);
 	it("ignores a catalog that resolves after the controller is disposed", async () => {
 		let resolve!: (value: ModelListResponse) => void;
 		const controls = new SessionControls(

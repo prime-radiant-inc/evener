@@ -197,21 +197,36 @@ export class SessionControls {
 				if (!this.isCurrent("destination")) return false;
 				await this.refresh();
 			}
-			if (this.disposed || !this.isCurrent()) {
-				// A pick on a cold session resumes behind its change, so it recycles
-				// the transport the same way a resume does (#6696). The dispatch was
-				// acknowledged before these controls were disposed: when the
-				// destination is still this session, it owns the refresh and the
-				// confirmation, so the pick reports the change the screen will read.
-				// The refresh is confirmation only, and a pick whose destination left
-				// claims nothing.
-				if (kind !== "changeModel" || !this.isCurrent("destination")) return false;
-				try {
-					await this.refresh();
-				} catch {
-					// The acknowledgement, not the read, is the record that it applied.
+			if (kind === "changeModel") {
+				// A pick reports what its destination sees (#6696). A cold pick
+				// resumes behind its change, and that resume can recycle the
+				// transport and dispose these controls before the acknowledgement
+				// arrives; a read the pick needs can also fail on the connection it
+				// was sent on. Either way the hub acknowledged the pick, and that
+				// acknowledgement — not the read — is the record that it applied, so
+				// the refresh is best effort and one path serves both binding states.
+				let stayed = this.isCurrent("destination");
+				if (stayed) {
+					try {
+						await this.refresh();
+					} catch {
+						// The screen's own read catches up; the pick applied regardless.
+					}
+					// A read can outlast the reader's stay: whoever left while it ran
+					// is owed no confirmation on the screen they left, even when the
+					// read itself failed.
+					stayed = this.isCurrent("destination");
 				}
-				return true;
+				// Any still-live binding settles its action here, so its pending
+				// state never outlives the acknowledgement. The notice belongs to
+				// the destination alone.
+				if (!this.disposed) {
+					this.publish({ pending: null, error: null, notice: stayed ? "Model updated." : null });
+				}
+				return stayed;
+			}
+			if (this.disposed || !this.isCurrent()) {
+				return false;
 			}
 			if (kind === "shutdown" || kind === "forceStop") {
 				// A shutdown narrates nothing here: the session's own toast
@@ -238,9 +253,7 @@ export class SessionControls {
 								? "Reasoning effort updated."
 								: kind === "setVisionModel"
 									? "Vision model updated."
-									: kind === "changeModel"
-										? "Model updated."
-										: "Session renamed.",
+									: "Session renamed.",
 			});
 			return true;
 		} catch (cause) {
