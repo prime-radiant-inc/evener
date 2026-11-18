@@ -316,7 +316,7 @@ func TestTranscriptFrontierBindingWorktreeDispose(t *testing.T) {
 	cfg.testOnly.disableDelegateIdleRelease = true
 	cfg.testOnly.minimalWorktreeToolRegistry = false
 	repo := newWorktreeRepoWithConfig(t, cfg)
-	writer, err := repo.s.createTranscript("frontier-dispose-fixture", repo.s.transcriptHeader(repo.s.createdAt))
+	writer, err := repo.s.createTranscript(schema.SessionTranscriptPath(repo.s.stateDir, repo.s.id), "frontier-dispose-fixture", repo.s.transcriptHeader(repo.s.createdAt))
 	if err != nil {
 		t.Fatal(err)
 	}

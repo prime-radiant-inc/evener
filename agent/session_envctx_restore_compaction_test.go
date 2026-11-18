@@ -594,9 +594,7 @@ func testCompactedLaunchBranch(t *testing.T) {
 					meta := loadMetaForTest(t, s)
 					if tc.unrecorded && round == 0 {
 						meta.PromptLaunch.GitBranch = nil
-						if err := schema.SaveSessionMetaForNewPrompt(nil, stateDir, meta); err != nil {
-							t.Fatal(err)
-						}
+						writeRawSessionMeta(t, schema.SessionMetaPath(stateDir, meta.ID), meta)
 					}
 					env, cfg := compactedCheckoutEnvironment(cwd)
 					restored, err := RestoreSessionFromMetaWithConfig(s.client, s.profile, env, meta, RestoreSessionConfig{StateDir: stateDir, testOnly: cfg})

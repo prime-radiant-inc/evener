@@ -1,15 +1,20 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+	"primeradiant.com/evener/agent/envctx"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/tool"
@@ -1110,6 +1115,139 @@ func TestRestoreSessionFromMeta_NoTranscript_StartsClean(t *testing.T) {
 	}
 	if !strings.Contains(header.SystemPrompt, instruction) || reqs[0].Messages[0].Text() != header.SystemPrompt {
 		t.Fatal("the replacement transcript must contain the initial prompt sent to the provider")
+	}
+
+	profile := withTestSessionNamer(c, NewOpenAIProfile(meta.Model))
+	restore := func(saved schema.SessionMeta, cfg RestoreSessionConfig) (*Session, error) {
+		return RestoreSessionFromMetaWithConfig(c, profile, execenv.NewLocalExecutionEnvironment(dir), saved, cfg)
+	}
+	for _, closeWinner := range []bool{false, true} {
+		name := "winning writer open"
+		if closeWinner {
+			name = "winning writer closed"
+		}
+		t.Run(name, func(t *testing.T) {
+			stateDir := t.TempDir()
+			if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+				t.Fatal(err)
+			}
+			cfg := RestoreSessionConfig{StateDir: stateDir, ForceRealIO: true, testOnly: testConfig{skipGitSnapshot: true, noSyncJobStore: true}}
+			contenderCfg := cfg
+			contenderCfg.TurnEndsProcess = true
+			entered, resume := make(chan struct{}), make(chan struct{})
+			release := sync.OnceFunc(func() { close(resume) })
+			defer release()
+			contenderCfg.testOnly.sessionInitFault = func(point string) error {
+				if point == "builtin_agents" {
+					close(entered)
+					<-resume
+				}
+				return nil
+			}
+			type result struct {
+				session *Session
+				err     error
+			}
+			finished := make(chan result, 1)
+			go func() {
+				s, err := restore(meta, contenderCfg)
+				finished <- result{s, err}
+			}()
+			select {
+			case <-entered:
+			case r := <-finished:
+				t.Fatalf("contender exited before prompt initialization: %v", r.err)
+			}
+			winner, err := restore(meta, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(winner.Close)
+			if _, err := winner.ProcessInput(t.Context(), "winning input", nil); err != nil {
+				t.Fatal(err)
+			}
+			path := schema.SessionTranscriptPath(stateDir, meta.ID)
+			prefix, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			winnerPrompt := winner.transcript.Header().SystemPrompt
+			if closeWinner {
+				winner.Close()
+			}
+			release()
+			r := <-finished
+			if r.session != nil {
+				r.session.Close()
+			}
+			if !errors.Is(r.err, os.ErrExist) {
+				t.Errorf("contending publisher returned %v, want the existing transcript", r.err)
+			}
+			winner.Close()
+			current := loadMetaForTest(t, winner)
+			if mode := current.PromptLaunch.TurnEndsProcess; mode == nil || *mode {
+				t.Error("one-shot contender replaced the winning daemon's launch facts")
+			}
+			cfg.TurnEndsProcess = true
+			cold, err := restore(current, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cold.Close()
+			if _, err := cold.ProcessInput(t.Context(), "cold input", nil); err != nil {
+				t.Fatal(err)
+			}
+			requests := adapter.Requests()
+			prompt, history := responsesInstructionsAndHistory(responsesPromptBody(t, requests[len(requests)-1], cold.profile.Resolved()))
+			var observations envctx.Tracker
+			for _, msg := range history {
+				observations.ReplayBlock(msg)
+			}
+			if prompt != winnerPrompt || observations.State().Last.ExecutionMode != envctx.OneShotMode {
+				t.Error("cold one-shot request lost the daemon prompt or its current job-lifetime guidance")
+			}
+			all, err := os.ReadFile(path)
+			if err != nil || !bytes.HasPrefix(all, prefix) {
+				t.Errorf("winning transcript prefix lost on restore: %v", err)
+			}
+		})
+	}
+	for _, failure := range []string{"metadata write", "header write"} {
+		t.Run("retry after "+failure, func(t *testing.T) {
+			cfg := RestoreSessionConfig{StateDir: t.TempDir(), ForceRealIO: true, testOnly: testConfig{skipGitSnapshot: true, noSyncJobStore: true}}
+			if err := schema.SaveSessionMeta(cfg.StateDir, meta); err != nil {
+				t.Fatal(err)
+			}
+			failedCfg, failedMeta := cfg, meta
+			switch failure {
+			case "metadata write":
+				failedCfg.testOnly.metaFS = &notesRenameFailureFS{Fs: afero.NewOsFs(), fail: true, err: os.ErrPermission}
+			case "header write":
+				failedMeta.CreatedAt = time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
+			}
+			failed, err := restore(failedMeta, failedCfg)
+			if err == nil {
+				failed.Close()
+				t.Fatal("restore unexpectedly succeeded")
+			}
+			var marshalErr *json.MarshalerError
+			if failure == "metadata write" && !errors.Is(err, os.ErrPermission) || failure == "header write" && !errors.As(err, &marshalErr) {
+				t.Fatalf("restore did not reach the intended %s failure: %v", failure, err)
+			}
+			if _, err := os.Stat(schema.SessionTranscriptPath(cfg.StateDir, meta.ID)); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("failed publication left a transcript at the recovery path: %v", err)
+			}
+			cfg.TurnEndsProcess = true
+			recovered, err := restore(meta, cfg)
+			if err != nil {
+				t.Fatalf("retry: %v", err)
+			}
+			defer recovered.Close()
+			current := loadMetaForTest(t, recovered)
+			if mode := current.PromptLaunch.TurnEndsProcess; mode == nil || !*mode || recovered.transcript.Header().SystemPrompt != recovered.cachedSystemPrompt {
+				t.Error("retry did not publish its own prompt and launch facts")
+			}
+		})
 	}
 }
 

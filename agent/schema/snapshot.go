@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/afero"
 	"primeradiant.com/evener/agent/envctx"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/execsupport/fsatomic"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -570,28 +571,69 @@ func SaveSessionMeta(dir string, meta SessionMeta) error {
 // in-memory or sandboxed filesystem to exercise persistence without touching
 // real disk.
 func SaveSessionMetaWithFS(fs afero.Fs, dir string, meta SessionMeta) error {
-	return saveSessionMeta(fs, dir, meta, false)
+	return withSessionMetaWriteLock(fs, dir, meta.ID, func() error {
+		return writeSessionMetaLocked(fs, dir, meta, false)
+	})
 }
 
-// SaveSessionMetaForNewPrompt publishes the launch facts for a replacement
-// transcript before its header is created. A nil filesystem uses the OS.
-func SaveSessionMetaForNewPrompt(fs afero.Fs, dir string, meta SessionMeta) error {
+// PublishReplacementTranscript pairs a missing transcript with its new launch
+// facts. The header becomes visible only after it and the metadata are
+// complete. Concurrent recoveries cannot replace a published transcript.
+func PublishReplacementTranscript(fs afero.Fs, dir string, meta SessionMeta, writeHeader func(string) error) error {
 	if fs == nil {
 		fs = sessionMetaFS
 	}
-	return saveSessionMeta(fs, dir, meta, true)
+	return withSessionMetaWriteLock(fs, dir, meta.ID, func() error {
+		path := SessionTranscriptPath(dir, meta.ID)
+		sessionsDir := filepath.Dir(path)
+		if _, err := os.Lstat(path); err == nil {
+			return &os.PathError{Op: "recover transcript", Path: path, Err: os.ErrExist}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		// The transcript uses the OS even when a caller injects a metadata FS.
+		if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
+			return err
+		}
+		staging, err := os.MkdirTemp(sessionsDir, ".prompt-*")
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(staging)
+		header := filepath.Join(staging, filepath.Base(path))
+		if err := writeHeader(header); err != nil {
+			return err
+		}
+		if err := writeSessionMetaLocked(fs, dir, meta, true); err != nil {
+			return fmt.Errorf("save replacement prompt launch facts: %w", err)
+		}
+		// A crash may leave replacement facts without a header. A retry can
+		// replace those facts. A visible header must already have its facts.
+		metadata, err := fs.OpenFile(SessionMetaPath(dir, meta.ID), os.O_RDWR, 0)
+		if err != nil {
+			return err
+		}
+		if err := errors.Join(metadata.Sync(), metadata.Close()); err != nil {
+			return fmt.Errorf("sync replacement prompt launch facts: %w", err)
+		}
+		if err := fsatomic.SyncDir(sessionsDir); err != nil {
+			return err
+		}
+		if err := os.Rename(header, path); err != nil {
+			return err
+		}
+		return fsatomic.SyncDir(sessionsDir)
+	})
 }
 
-func saveSessionMeta(fs afero.Fs, dir string, meta SessionMeta, newPrompt bool) error {
-	if err := ValidateSessionID(meta.ID); err != nil {
+func withSessionMetaWriteLock(fs afero.Fs, dir, id string, fn func() error) error {
+	if err := ValidateSessionID(id); err != nil {
 		return err
 	}
-	lock := sessionMetaWriteLock(meta.ID)
+	lock := sessionMetaWriteLock(id)
 	lock.Lock()
 	defer lock.Unlock()
-	return withSessionMetaCrossProcessLock(fs, dir, meta.ID, func() error {
-		return writeSessionMetaLocked(fs, dir, meta, newPrompt)
-	})
+	return withSessionMetaCrossProcessLock(fs, dir, id, fn)
 }
 
 // AppendSessionObservedBy records a deduplicated observer UI relationship
@@ -601,16 +643,10 @@ func AppendSessionObservedBy(dir, workerSessionID, observerSessionID string) err
 }
 
 func appendSessionObservedByWithFS(fs afero.Fs, dir, workerSessionID, observerSessionID string) error {
-	if err := ValidateSessionID(workerSessionID); err != nil {
-		return err
-	}
-	lock := sessionMetaWriteLock(workerSessionID)
-	lock.Lock()
-	defer lock.Unlock()
 	// The load must happen under the cross-process lock too: loading first and
 	// saving later would write this process's stale copy of every other field
 	// over a concurrent writer's newer one.
-	return withSessionMetaCrossProcessLock(fs, dir, workerSessionID, func() error {
+	return withSessionMetaWriteLock(fs, dir, workerSessionID, func() error {
 		meta, err := loadSessionMetaFS(fs, dir, workerSessionID)
 		if err != nil {
 			return err

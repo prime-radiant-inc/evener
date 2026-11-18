@@ -248,9 +248,7 @@ func testRestoredNotificationWorkspace(t *testing.T) {
 		if tc.legacy {
 			meta := loadMetaForTest(t, s)
 			meta.PromptLaunch = schema.PromptLaunchFacts{}
-			if err := schema.SaveSessionMetaForNewPrompt(nil, stateDir, meta); err != nil {
-				t.Fatal(err)
-			}
+			writeRawSessionMeta(t, schema.SessionMetaPath(stateDir, meta.ID), meta)
 		}
 		if tc.removeRepo {
 			if err := os.Rename(filepath.Join(dir, ".git"), filepath.Join(t.TempDir(), "saved-git")); err != nil {

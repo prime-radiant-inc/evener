@@ -363,15 +363,14 @@ func (s *Session) transcriptHeader(createdAt time.Time) transcript.Header {
 
 // createTranscript creates this session's transcript file, failing at the
 // named init fault point when a test injects one.
-func (s *Session) createTranscript(faultPoint string, hdr transcript.Header) (*transcript.Writer, error) {
+func (s *Session) createTranscript(path, faultPoint string, hdr transcript.Header) (*transcript.Writer, error) {
 	if fault := s.sessionInitFault(faultPoint); fault != nil {
 		return nil, fault
 	}
-	tpath := schema.SessionTranscriptPath(s.stateDir, s.id)
 	if testSpeedIO(s.cfg) {
-		return transcript.NewWriterNoSync(tpath, hdr)
+		return transcript.NewWriterNoSync(path, hdr)
 	}
-	return transcript.NewWriter(tpath, hdr)
+	return transcript.NewWriter(path, hdr)
 }
 
 // installContextStrategy selects the configured context strategy and registers
@@ -673,7 +672,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		}
 		hdr.AgentTasks = agentTasks
 		var twErr error
-		tw, twErr = s.createTranscript("new_transcript", hdr)
+		tw, twErr = s.createTranscript(schema.SessionTranscriptPath(s.stateDir, s.id), "new_transcript", hdr)
 		if twErr != nil {
 			// Buffered, not emitted directly (kata et0x): SESSION_START has not
 			// fired yet at this point in construction, and every other
@@ -1479,19 +1478,16 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if s.stateDir != "" {
 		tw = resumeTranscript
 		if tw == nil {
-			// With no transcript to resume, a new header will own the newly
-			// rendered prompt. Publish its launch facts while a retry can
-			// still recover by rendering from the current environment.
 			meta.PromptLaunch = s.promptLaunch
-			if err := schema.SaveSessionMetaForNewPrompt(s.cfg.testOnly.metaFS, s.stateDir, meta); err != nil {
-				return nil, fmt.Errorf("save replacement prompt launch facts: %w", err)
+			err := schema.PublishReplacementTranscript(s.cfg.testOnly.metaFS, s.stateDir, meta, func(path string) error {
+				var err error
+				resumeTranscript, err = s.createTranscript(path, "restore_new_transcript", s.transcriptHeader(meta.CreatedAt))
+				return err
+			})
+			if err != nil {
+				return nil, fmt.Errorf("create transcript for resume: %w", err)
 			}
-			var twErr error
-			tw, twErr = s.createTranscript("restore_new_transcript", s.transcriptHeader(meta.CreatedAt))
-			if twErr != nil {
-				return nil, fmt.Errorf("create transcript for resume: %w", twErr)
-			}
-			resumeTranscript = tw
+			tw = resumeTranscript
 		}
 		if tw != nil {
 			tw.SyncInterval = 1 * time.Second
