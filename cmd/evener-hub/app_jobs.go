@@ -70,7 +70,7 @@ func hubJobRead[T any](
 	sources *appsource.Registry,
 	ref, jobID string,
 	live func(source appsource.Source) (T, error),
-	past func(stateDir, sessionID, jobID string) (T, bool, error),
+	past func(stateDir, sessionID, jobID string, fence agent.OwnerDeletionFence) (T, bool, error),
 ) (T, error) {
 	var zero T
 	source, err := sourceForThreadWithDeletionFence(ctx, cfg, sources, ref, "")
@@ -88,7 +88,7 @@ func hubJobRead[T any](
 	if !ok {
 		return zero, err
 	}
-	out, found, pastErr := past(entry.StateDir, entry.Meta.ID, jobID)
+	out, found, pastErr := past(entry.StateDir, entry.Meta.ID, jobID, savedJobOwnerFence(cfg))
 	if pastErr != nil {
 		return zero, pastErr
 	}
@@ -98,14 +98,44 @@ func hubJobRead[T any](
 	return out, nil
 }
 
+// savedJobOwnerFence adapts the hub's configured deletion store into the fence
+// the saved-job readers apply. It is the SAME record every other hub read is
+// fenced by (deletionFenceError, app_sources.go): a deletion records its fence
+// before the target's on-disk tombstone lands, so a reader that consults only
+// the tombstone serves a session the hub has already committed to deleting.
+//
+// The readers apply it to the owner they RESOLVE, not just to the ref that was
+// asked about — a forwarded copy in an ancestor's journal points at a descendant
+// that may be the fenced one. An unfinished generation whose cleanup was refused
+// is abandoned (DeletionStore.Abandon), which drops the record; this lookup then
+// reports no fence and reads resume.
+//
+// A nil deletion store yields a nil fence rather than a permissive one: nil is
+// the agent package's "no durable record to consult" contract, and the readers
+// fall back to the tombstone alone.
+func savedJobOwnerFence(cfg hubcore.WebConfig) agent.OwnerDeletionFence {
+	if cfg.DeletionStore == nil {
+		return nil
+	}
+	return func(sessionID string) (bool, error) {
+		// A fence stored under the local ref is the one that governs a local
+		// session; TargetState normalizes an empty ref into exactly that ref. Any
+		// retained state is a standing fence, which is the predicate the hub's own
+		// deletionFenceError applies: the state distinguishes a finished deletion
+		// from one still in progress, and neither is servable.
+		_, ok := cfg.DeletionStore.TargetState("", sessionID)
+		return ok, nil
+	}
+}
+
 // hubJobsOutput answers evener/jobs/output through hubJobRead.
 func hubJobsOutput(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
 	return hubJobRead(ctx, cfg, sources, params.Ref, params.JobID,
 		func(source appsource.Source) (appwire.JobsOutputResponse, error) {
 			return source.JobOutput(ctx, params)
 		},
-		func(stateDir, sessionID, jobID string) (appwire.JobsOutputResponse, bool, error) {
-			tail, found, err := agent.LoadSessionJobOutputPage(stateDir, sessionID, jobID, params.BeforeBytes, params.MaxBytes)
+		func(stateDir, sessionID, jobID string, fence agent.OwnerDeletionFence) (appwire.JobsOutputResponse, bool, error) {
+			tail, found, err := agent.LoadSessionJobOutputPage(stateDir, sessionID, jobID, params.BeforeBytes, params.MaxBytes, fence)
 			return appwire.JobsOutputResponse{Data: tail}, found, err
 		})
 }
@@ -116,8 +146,8 @@ func hubJobsGet(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.R
 		func(source appsource.Source) (appwire.JobsGetResponse, error) {
 			return source.JobGet(ctx, params)
 		},
-		func(stateDir, sessionID, jobID string) (appwire.JobsGetResponse, bool, error) {
-			job, found, err := agent.LoadSessionJobGet(stateDir, sessionID, jobID)
+		func(stateDir, sessionID, jobID string, fence agent.OwnerDeletionFence) (appwire.JobsGetResponse, bool, error) {
+			job, found, err := agent.LoadSessionJobGet(stateDir, sessionID, jobID, fence)
 			return appwire.JobsGetResponse{Data: job}, found, err
 		})
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -690,11 +691,80 @@ func TestHubJobsGetLiveDaemon(t *testing.T) {
 		t.Fatalf("hubJobsGet: %v", err)
 	}
 	job := resp.Data
-	if job != liveJob {
+	// JobActivityJob carries a Diagnostics slice, so it is not comparable with
+	// ==. A structural comparison is what this assertion always meant: every
+	// field of the live response must come back unchanged, past unconsulted.
+	if !reflect.DeepEqual(job, liveJob) {
 		t.Fatalf("resp.Data = %#v (%T), want the live job %+v (past must not be consulted)", resp.Data, resp.Data, liveJob)
 	}
 	if source.getParams.JobID != "job_x" || source.getParams.Ref != "local:"+sessionID {
 		t.Fatalf("live params = %+v", source.getParams)
+	}
+}
+
+// TestHubJobsGetFencesDurablyDeletedOwner is the round-4 medium-2 regression.
+// The ancestor holds a forwarded copy of a descendant's job, so the job IS in
+// the requested session's scope — but the hub has durably recorded the
+// DESCENDANT's deletion and its on-disk tombstone has not landed yet. The
+// configured deletion store is the only fence that knows, and it must be applied
+// to the owner the read resolves, not just to the ref that was asked about.
+// Without that, the saved-job path serves metadata the hub has committed to
+// deleting.
+func TestHubJobsGetFencesDurablyDeletedOwner(t *testing.T) {
+	cfg, rootSession, stateDir := seedPastSessionWithJobs(t, nil)
+	ownerSession, err := identifier.NewSessionID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobID, err := identifier.NewJobID(ownerSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1700000000, 0).UTC()
+
+	// The requested session's journal holds only the FORWARDED start: the
+	// descendant's job as the ancestor saw it. That proves scope.
+	forwarded := `{"kind":"job_started","seq":1,"ts":"` + now.Format(time.RFC3339) +
+		`","job_id":"` + jobID + `","type":"shell","status":"running","owner_session_id":"` + ownerSession +
+		`","visible_to_session_id":"` + rootSession + `","started_at":"` + now.Format(time.RFC3339) + `"}`
+	rootDir := filepath.Join(stateDir, "sessions", rootSession)
+	if err := os.MkdirAll(rootDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rootDir, "jobs.jsonl"), []byte(forwarded+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The descendant's own journal holds the authoritative completed job, which
+	// is what the read would follow the encoded owner to serve.
+	ownerDir := filepath.Join(stateDir, "sessions", ownerSession)
+	if err := os.MkdirAll(ownerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	finished := `{"kind":"job_finished","seq":2,"ts":"` + now.Format(time.RFC3339) +
+		`","job_id":"` + jobID + `","status":"completed","ended_at":"` + now.Format(time.RFC3339) + `","terminal_generation":"gen"}`
+	if err := os.WriteFile(filepath.Join(ownerDir, "jobs.jsonl"), []byte(forwarded+"\n"+finished+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Durable fence on the DESCENDANT only, with no tombstone on disk.
+	store, err := hubcore.NewDeletionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.BeginSession("project-jobs-0000000000", hubcore.DeletionTarget{
+		Ref: localAppRef(ownerSession), ThreadID: ownerSession,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg.DeletionStore = store
+
+	_, err = hubJobsGet(context.Background(), cfg, newExitedLocalRegistry(), appwire.JobsGetParams{
+		Ref: localAppRef(rootSession), JobID: jobID,
+	})
+	wire := requireWireError(t, err, appwire.CodeInvalidParams)
+	if want := "job not found: " + jobID; wire.Message != want {
+		t.Fatalf("err message = %q, want %q: the descendant is durably deleted, so its job is not servable through the ancestor",
+			wire.Message, want)
 	}
 }
 

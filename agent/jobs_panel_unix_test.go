@@ -32,7 +32,7 @@ func TestLoadSessionJobGetRejectsFIFOJournal(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, found, err := LoadSessionJobGet(dir, sessionID, "job_x")
+		_, found, err := LoadSessionJobGet(dir, sessionID, "job_x", nil)
 		if found {
 			err = errors.New("FIFO journal was read as a job")
 		}

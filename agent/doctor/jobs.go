@@ -416,6 +416,7 @@ func RenderJobs(r JobReport) string {
 	if len(r.Jobs) == 0 && len(r.Delegates) == 0 && len(r.Failures) == 0 {
 		b.WriteString(emptyJobsMessage(r.Filtered))
 		b.WriteString("\n")
+		renderJobDiagnostics(&b, r.Diagnostics)
 		return b.String()
 	}
 	for _, j := range r.Jobs {
@@ -455,7 +456,21 @@ func RenderJobs(r JobReport) string {
 	for _, failure := range r.Failures {
 		fmt.Fprintf(&b, "\n%s: %s\n", failure.Code, failure.Detail)
 	}
+	renderJobDiagnostics(&b, r.Diagnostics)
 	return b.String()
+}
+
+// renderJobDiagnostics prints what the read could not establish about the
+// journals behind this report. It is the text counterpart of the JSON
+// `diagnostics` field, and it prints in the NO-ROWS case too: a journal whose
+// only content is a torn trailing append folds to zero rows, and without this
+// line that session is indistinguishable from one that never ran a job. The
+// codes are the same ones the JSON carries, so an operator can move between the
+// two outputs without translating.
+func renderJobDiagnostics(b *strings.Builder, diagnostics []string) {
+	for _, d := range diagnostics {
+		fmt.Fprintf(b, "\ndiagnostic: %s\n", d)
+	}
 }
 
 // jobStateLabel is the parenthetical state a job block leads with: the status,

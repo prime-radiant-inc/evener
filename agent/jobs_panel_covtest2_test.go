@@ -44,7 +44,7 @@ func TestLoadSessionJobOutputPage_TerminalRecordMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, found, err := LoadSessionJobOutputPage(dir, sessionID, "job_mismatch", nil, 4)
+	_, found, err := LoadSessionJobOutputPage(dir, sessionID, "job_mismatch", nil, 4, nil)
 	if err == nil {
 		t.Fatal("expected error for terminal record mismatch")
 	}
@@ -83,7 +83,7 @@ func TestLoadSessionJobOutputPage_OutputIsDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, found, err := LoadSessionJobOutputPage(dir, sessionID, "job_dir", nil, 4)
+	_, found, err := LoadSessionJobOutputPage(dir, sessionID, "job_dir", nil, 4, nil)
 	if err == nil {
 		t.Fatal("expected error for directory-as-output")
 	}
@@ -118,7 +118,7 @@ func TestLoadSessionJobOutputPage_NoOutputFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tail, found, err := LoadSessionJobOutputPage(dir, sessionID, "job_missing", nil, 4)
+	tail, found, err := LoadSessionJobOutputPage(dir, sessionID, "job_missing", nil, 4, nil)
 	var wire appwire.WireError
 	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
 		t.Fatalf("missing output error = %v, want unavailable", err)
@@ -160,7 +160,7 @@ func TestLoadSessionJobOutputPage_EmptyOutputPath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tail, found, err := LoadSessionJobOutputPage(dir, sessionID, "job_default", nil, 5)
+	tail, found, err := LoadSessionJobOutputPage(dir, sessionID, "job_default", nil, 5, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

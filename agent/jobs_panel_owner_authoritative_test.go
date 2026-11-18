@@ -66,7 +66,7 @@ func TestLoadSessionJobGetPreferOwnerCompletedOverForwardedRunning(t *testing.T)
 	// Read the job from the ANCESTOR's session: that is where a hub past-session
 	// fallback lands when it is pointed at the wrong branch of the tree, and it
 	// is where the stale copy lives.
-	job, found, err := LoadSessionJobGet(stateDir, rootSession, jobID)
+	job, found, err := LoadSessionJobGet(stateDir, rootSession, jobID, nil)
 	if err != nil {
 		t.Fatalf("LoadSessionJobGet: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestLoadsessionJobRecordDiagnostics_OwnerAvailableHasNoFallback(t *testing.
 	})
 	closeJobJournal(t, ownerStore)
 
-	read, err := loadSessionJobRecord(stateDir, rootSession, jobID)
+	read, err := loadSessionJobRecord(stateDir, rootSession, jobID, nil)
 	if err != nil {
 		t.Fatalf("loadSessionJobRecord: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestLoadSessionJobRecordFallsBackToForwardedCopyWhenOwnerUnavailable(t *tes
 	closeJobJournal(t, rootStore)
 	// The owner session never materialized a journal at all.
 
-	read, err := loadSessionJobRecord(stateDir, rootSession, jobID)
+	read, err := loadSessionJobRecord(stateDir, rootSession, jobID, nil)
 	if err != nil {
 		t.Fatalf("loadSessionJobRecord: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestLoadSessionJobRecordOwnerJournalTornTailIsReported(t *testing.T) {
 		`{"kind":"job_finished","seq":2,`,
 	)
 
-	read, err := loadSessionJobRecord(stateDir, sessionID, jobID)
+	read, err := loadSessionJobRecord(stateDir, sessionID, jobID, nil)
 	if err != nil {
 		t.Fatalf("loadSessionJobRecord: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestLoadSessionJobRecordOrphanFinishIsReported(t *testing.T) {
 		`{"kind":"job_finished","seq":1,"job_id":"`+jobID+`","status":"completed","terminal_generation":"gen"}`+"\n",
 	)
 
-	read, err := loadSessionJobRecord(stateDir, sessionID, jobID)
+	read, err := loadSessionJobRecord(stateDir, sessionID, jobID, nil)
 	if err != nil {
 		t.Fatalf("loadSessionJobRecord must report damage, not fail: %v", err)
 	}
@@ -303,7 +303,7 @@ func TestLoadSessionJobRecordContradictoryAncestorRowIsNotAuthoritative(t *testi
 	})
 	closeJobJournal(t, ownerStore)
 
-	read, err := loadSessionJobRecord(stateDir, rootSession, jobID)
+	read, err := loadSessionJobRecord(stateDir, rootSession, jobID, nil)
 	if err != nil {
 		t.Fatalf("loadSessionJobRecord: %v", err)
 	}
@@ -353,7 +353,7 @@ func TestLoadSessionJobRecordKeepsOwnerDiagnosticWhenOwnerWins(t *testing.T) {
 		`{"kind":"job_finished","seq":1,"job_id":"`+jobID+`","status":"completed","terminal_generation":"gen"}`+"\n",
 	)
 
-	read, err := loadSessionJobRecord(stateDir, rootSession, jobID)
+	read, err := loadSessionJobRecord(stateDir, rootSession, jobID, nil)
 	if err != nil {
 		t.Fatalf("loadSessionJobRecord: %v", err)
 	}
@@ -406,7 +406,7 @@ func TestLoadSessionJobRecordKeepsLocalDamageWhenOwnerWins(t *testing.T) {
 	})
 	closeJobJournal(t, ownerStore)
 
-	read, err := loadSessionJobRecord(stateDir, rootSession, jobID)
+	read, err := loadSessionJobRecord(stateDir, rootSession, jobID, nil)
 	if err != nil {
 		t.Fatalf("loadSessionJobRecord: %v", err)
 	}
@@ -440,7 +440,7 @@ func TestLoadSessionJobGetRoutesLegacyEmptyOwnerToItsJournal(t *testing.T) {
 			`","started_at":"`+started.Format(time.RFC3339)+`"}`+"\n",
 	)
 
-	job, found, err := LoadSessionJobGet(stateDir, sessionID, jobID)
+	job, found, err := LoadSessionJobGet(stateDir, sessionID, jobID, nil)
 	if err != nil {
 		t.Fatalf("LoadSessionJobGet: %v", err)
 	}
@@ -487,7 +487,7 @@ func TestLoadSessionJobGetRequiresRequestedScope(t *testing.T) {
 	// not merely an absent session: it has no claim on this job.
 	writeJobJournalLines(t, jobsDir(stateDir, askedSession), "")
 
-	job, found, err := LoadSessionJobGet(stateDir, askedSession, jobID)
+	job, found, err := LoadSessionJobGet(stateDir, askedSession, jobID, nil)
 	if err != nil {
 		t.Fatalf("LoadSessionJobGet: %v", err)
 	}
@@ -531,7 +531,7 @@ func TestLoadSessionJobGetHonorsOwnerTombstone(t *testing.T) {
 		t.Fatalf("tombstone owner session: %v", err)
 	}
 
-	job, found, err := LoadSessionJobGet(stateDir, rootSession, jobID)
+	job, found, err := LoadSessionJobGet(stateDir, rootSession, jobID, nil)
 	if err != nil {
 		t.Fatalf("LoadSessionJobGet: %v", err)
 	}
@@ -577,7 +577,7 @@ func TestLoadSessionJobGetEchoesRequestedRef(t *testing.T) {
 	})
 	closeJobJournal(t, ownerStore)
 
-	job, found, err := LoadSessionJobGet(stateDir, rootSession, jobID)
+	job, found, err := LoadSessionJobGet(stateDir, rootSession, jobID, nil)
 	if err != nil {
 		t.Fatalf("LoadSessionJobGet: %v", err)
 	}
@@ -632,7 +632,7 @@ func TestLoadSessionJobGetUsesDamagedPrefixAsScope(t *testing.T) {
 	})
 	closeJobJournal(t, ownerStore)
 
-	job, found, err := LoadSessionJobGet(stateDir, rootSession, jobID)
+	job, found, err := LoadSessionJobGet(stateDir, rootSession, jobID, nil)
 	if err != nil {
 		t.Fatalf("LoadSessionJobGet must use the decoded prefix as scope, got error: %v", err)
 	}
@@ -682,7 +682,7 @@ func TestLoadSessionJobGetResolvesLegacyIDByOwnerHint(t *testing.T) {
 	})
 	closeJobJournal(t, ownerStore)
 
-	job, found, err := LoadSessionJobGet(stateDir, rootSession, jobID)
+	job, found, err := LoadSessionJobGet(stateDir, rootSession, jobID, nil)
 	if err != nil {
 		t.Fatalf("LoadSessionJobGet: %v", err)
 	}
@@ -716,7 +716,7 @@ func TestLoadSessionJobGetRejectsUncorroboratedLegacyHint(t *testing.T) {
 	closeJobJournal(t, rootStore)
 	// The named owner never materialized a journal.
 
-	read, err := loadSessionJobRecord(stateDir, rootSession, jobID)
+	read, err := loadSessionJobRecord(stateDir, rootSession, jobID, nil)
 	if err != nil {
 		t.Fatalf("loadSessionJobRecord: %v", err)
 	}
@@ -751,7 +751,7 @@ func TestLoadSessionJobGetSurfacesDiagnostics(t *testing.T) {
 	closeJobJournal(t, rootStore)
 	// The owner's journal is gone, so this row is a forward-only fallback.
 
-	job, found, err := LoadSessionJobGet(stateDir, rootSession, jobID)
+	job, found, err := LoadSessionJobGet(stateDir, rootSession, jobID, nil)
 	if err != nil {
 		t.Fatalf("LoadSessionJobGet: %v", err)
 	}
@@ -764,6 +764,145 @@ func TestLoadSessionJobGetSurfacesDiagnostics(t *testing.T) {
 	}
 	if !slices.Contains(job.Diagnostics, "owner_unavailable") {
 		t.Fatalf("Diagnostics = %v, want owner_unavailable", job.Diagnostics)
+	}
+}
+
+// TestLoadSessionJobGetReportsScanDamageNotHealthyRunning is the round-4
+// medium-3 regression. The owner's journal holds a valid start followed by a
+// newline-terminated line that cannot be decoded — so the scan returns the
+// decoded start AND a parse error, and the finish may be the very line that was
+// lost. The read used to drop the error the moment the prefix held a matching
+// row and report an apparently healthy running job that never reached its
+// finish. It must report what it could not establish instead.
+func TestLoadSessionJobGetReportsScanDamageNotHealthyRunning(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	sessionID := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(sessionID)
+	started := time.Date(2026, 11, 18, 22, 0, 0, 0, time.UTC)
+
+	writeJobJournalLines(t, jobsDir(stateDir, sessionID),
+		jobStartedLine(jobID, sessionID, started)+"\n",
+		"{this is not json}\n",
+	)
+
+	job, found, err := LoadSessionJobGet(stateDir, sessionID, jobID, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet must still serve the surviving prefix, got error: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the best-effort record from the decoded prefix")
+	}
+	if !slices.Contains(job.Diagnostics, "journal_scan_incomplete") {
+		t.Fatalf("Diagnostics = %v, want journal_scan_incomplete: the journal stopped at durable corruption, so the running row is not a settled state",
+			job.Diagnostics)
+	}
+}
+
+// TestLoadSessionJobGetKeepsForwardedTerminalOverDamagedOwnerPrefix is the other
+// half of medium 3, and the half a naive "return the error" fix would get wrong.
+// The owner's journal holds a start and then durable corruption, so its decoded
+// prefix cannot say whether the job finished. The ancestor's forwarded copy is
+// complete and terminal: it observed the finish. The damaged owner prefix must
+// not displace that settled answer — an unreadable journal past the start is not
+// evidence that the job is still running.
+func TestLoadSessionJobGetKeepsForwardedTerminalOverDamagedOwnerPrefix(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 18, 22, 30, 0, 0, time.UTC)
+	ended := started.Add(2 * time.Minute)
+	exit := 2
+
+	// The owner's journal: a valid start, then a durably corrupt line. The
+	// finish it may have held is unreachable.
+	writeJobJournalLines(t, jobsDir(stateDir, ownerSession),
+		jobStartedLine(jobID, ownerSession, started)+"\n",
+		"{this is not json}\n",
+	)
+
+	// The ancestor's journal holds the complete observed lifecycle.
+	rootStore := openJobJournal(t, jobsDir(stateDir, rootSession))
+	appendJobEvent(t, rootStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: ownerSession, VisibleToSession: rootSession,
+		StartedAt: &started,
+	})
+	appendJobEvent(t, rootStore, jobstore.Event{
+		Kind: jobstore.EventJobFinished, TS: ended, JobID: jobID,
+		Status: jobstore.StatusCommandExitedNonzero, Reason: "exit_nonzero", ExitCode: &exit,
+		EndedAt: &ended, TerminalGen: "gen_forwarded",
+	})
+	closeJobJournal(t, rootStore)
+
+	job, found, err := LoadSessionJobGet(stateDir, rootSession, jobID, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the forwarded terminal observation")
+	}
+	if job.Status != string(jobstore.StatusCommandExitedNonzero) {
+		t.Fatalf("status = %q, want %q: an unreadable owner tail cannot overrule an observed finish",
+			job.Status, jobstore.StatusCommandExitedNonzero)
+	}
+	if job.ExitCode == nil || *job.ExitCode != exit {
+		t.Fatalf("exitCode = %v, want %d from the forwarded finish", job.ExitCode, exit)
+	}
+}
+
+// TestLoadSessionJobOutputPageRoutesByValidatedOwner is the round-4 medium-4
+// regression. The job ID encodes session A, but the retained start claims
+// session B. With no explicit OutputPath the log lives under A's job directory,
+// because A is the session that ran it and the validated identifier is what says
+// so. Routing by the record's claim looked in B's directory and lost a readable
+// log.
+func TestLoadSessionJobOutputPageRoutesByValidatedOwner(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	ownerSession := identifier.MustNewSessionID()
+	claimingSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 18, 23, 0, 0, 0, time.UTC)
+
+	// The owner's journal: a start whose owner claim CONTRADICTS the job ID.
+	// No OutputPath, so the reader must derive the default log location.
+	writeJobJournalLines(t, jobsDir(stateDir, ownerSession),
+		`{"kind":"job_started","seq":1,"ts":"`+started.Format(time.RFC3339)+
+			`","job_id":"`+jobID+`","type":"shell","status":"running","owner_session_id":"`+claimingSession+
+			`","visible_to_session_id":"`+ownerSession+`","started_at":"`+started.Format(time.RFC3339)+`"}`+"\n",
+	)
+
+	// The log sits where the session that ran the job writes it.
+	logPath := filepath.Join(jobsDir(stateDir, ownerSession), "jobs", jobID+".log")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logPath, []byte("owner log"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A same-named log under the claiming session belongs to a different job, so a
+	// read routed there would return another job's bytes.
+	decoyPath := filepath.Join(jobsDir(stateDir, claimingSession), "jobs", jobID+".log")
+	if err := os.MkdirAll(filepath.Dir(decoyPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(decoyPath, []byte("decoy log"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	page, found, err := LoadSessionJobOutputPage(stateDir, ownerSession, jobID, nil, 64, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobOutputPage: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the owner's log")
+	}
+	if page.Data != "owner log" {
+		t.Fatalf("data = %q, want %q: the default log path follows the validated owner, not the record's claim",
+			page.Data, "owner log")
 	}
 }
 

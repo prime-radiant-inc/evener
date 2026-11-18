@@ -69,9 +69,13 @@ type JobActivityJob struct {
 	// record is a forwarded copy returned because its owner's journal held no
 	// record, owner_unavailable that the owner's journal could not be read,
 	// journal_torn_tail that the journal ended in an unterminated append, and
-	// incomplete_lifecycle that its events do not describe a whole job. Live
-	// reads leave it empty. Clients render or ignore it, but a stale forwarded
-	// row is no longer indistinguishable from a live running one.
+	// incomplete_lifecycle that its events do not describe a whole job. A fifth
+	// code, journal_scan_incomplete, means the journal stopped at durable
+	// corruption: the row is the best reconstruction of the intact prefix, and a
+	// non-terminal status there is not a settled state because the finish may be
+	// the line that could not be decoded. Live reads leave it empty. Clients
+	// render or ignore it, but a stale forwarded row is no longer
+	// indistinguishable from a live running one.
 	Diagnostics []string `json:"diagnostics,omitempty"`
 }
 

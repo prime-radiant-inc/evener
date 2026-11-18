@@ -463,6 +463,37 @@ func TestJobs_JobTreeRootSessionIDRedirect(t *testing.T) {
 
 // A delegates journal ending in a torn, unterminated batch still loads, and
 // the report carries a diagnostic for the ignored tail.
+// TestJobs_RenderReportsDiagnosticsWithNoRows is the round-4 low regression.
+// A journal whose only content is a torn trailing append folds to zero rows, so
+// the JSON carries a diagnostic while the default text output said "no jobs
+// recorded" — an ordinary empty history for a journal that is in fact damaged.
+// The text report must name the diagnosis, in the no-rows case too.
+func TestJobs_RenderReportsDiagnosticsWithNoRows(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	writeSession(t, bucket, sidA)
+	// Nothing but an unterminated append: no event survives, and the read knows
+	// why.
+	writeFile(t, filepath.Join(bucket, "sessions", sidA, "jobs.jsonl"), `{"kind":"job_started","seq":1,"job_id":"job_torn`)
+
+	r, err := Jobs(t.Context(), base, sidA, JobOpts{})
+	if err != nil {
+		t.Fatalf("Jobs: %v", err)
+	}
+	if len(r.Jobs) != 0 {
+		t.Fatalf("Jobs = %d, want 0 from a journal holding only a torn append", len(r.Jobs))
+	}
+	if len(r.Diagnostics) == 0 {
+		t.Fatal("Diagnostics is empty, want the torn-tail diagnostic the JSON carries")
+	}
+	out := RenderJobs(r)
+	for _, diagnostic := range r.Diagnostics {
+		if !strings.Contains(out, diagnostic) {
+			t.Errorf("render missing diagnostic %q; got:\n%s", diagnostic, out)
+		}
+	}
+}
+
 func TestJobs_DelegateDiagnosticsTornTail(t *testing.T) {
 	base := t.TempDir()
 	bucket := stateHomeBucket(base, hash1)

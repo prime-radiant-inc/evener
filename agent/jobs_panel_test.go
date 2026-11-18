@@ -59,7 +59,7 @@ func TestProjectActivityJobFields(t *testing.T) {
 func TestLoadSessionJobOutputPageRejectsUnsafeSessionID(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	_, found, err := LoadSessionJobOutputPage(dir, "../escaped", "job_x", nil, 4)
+	_, found, err := LoadSessionJobOutputPage(dir, "../escaped", "job_x", nil, 4, nil)
 	if !errors.Is(err, schema.ErrInvalidSessionID) {
 		t.Fatalf("LoadSessionJobOutputPage(%q) error = %v, want schema.ErrInvalidSessionID", "../escaped", err)
 	}
@@ -96,7 +96,7 @@ func TestLoadSessionJobOutputPagePagesBackwards(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	page, found, err := LoadSessionJobOutputPage(dir, sessionID, "job_x", nil, 4)
+	page, found, err := LoadSessionJobOutputPage(dir, sessionID, "job_x", nil, 4, nil)
 	if err != nil || !found {
 		t.Fatalf("tail: found=%v err=%v", found, err)
 	}
@@ -104,7 +104,7 @@ func TestLoadSessionJobOutputPagePagesBackwards(t *testing.T) {
 		t.Fatalf("tail page: %+v, want 6789 at 6 with earlier pages", page)
 	}
 
-	page, found, err = LoadSessionJobOutputPage(dir, sessionID, "job_x", &page.OffsetBytes, 4)
+	page, found, err = LoadSessionJobOutputPage(dir, sessionID, "job_x", &page.OffsetBytes, 4, nil)
 	if err != nil || !found {
 		t.Fatalf("middle page: found=%v err=%v", found, err)
 	}
@@ -112,7 +112,7 @@ func TestLoadSessionJobOutputPagePagesBackwards(t *testing.T) {
 		t.Fatalf("middle page: %+v, want 2345 at 2 with earlier pages", page)
 	}
 
-	page, found, err = LoadSessionJobOutputPage(dir, sessionID, "job_x", &page.OffsetBytes, 4)
+	page, found, err = LoadSessionJobOutputPage(dir, sessionID, "job_x", &page.OffsetBytes, 4, nil)
 	if err != nil || !found {
 		t.Fatalf("head page: found=%v err=%v", found, err)
 	}
@@ -149,7 +149,7 @@ func TestLoadSessionJobOutputPagePreservesMultiByteWindow(t *testing.T) {
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
 	}
-	tail, found, err := LoadSessionJobOutputPage(dir, sessionID, "job_e", nil, 6)
+	tail, found, err := LoadSessionJobOutputPage(dir, sessionID, "job_e", nil, 6, nil)
 	if err != nil || !found {
 		t.Fatalf("tail: found=%v err=%v", found, err)
 	}
@@ -181,7 +181,7 @@ func TestLoadSessionJobOutputPageMissingOutputFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	// No output file was ever written: the default <jobs>/<id>.log is absent.
-	tail, found, err := LoadSessionJobOutputPage(dir, sessionID, "job_y", nil, 0)
+	tail, found, err := LoadSessionJobOutputPage(dir, sessionID, "job_y", nil, 0, nil)
 	var wire appwire.WireError
 	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable || !found {
 		t.Fatalf("missing output file: found=%v err=%v", found, err)
@@ -279,7 +279,7 @@ func TestLoadSessionJobGetReturnsUntruncatedCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	job, found, err := LoadSessionJobGet(dir, sessionID, "job_x")
+	job, found, err := LoadSessionJobGet(dir, sessionID, "job_x", nil)
 	if err != nil || !found {
 		t.Fatalf("LoadSessionJobGet: found=%v err=%v", found, err)
 	}
@@ -313,9 +313,9 @@ func TestLoadSessionJobGetNotFound(t *testing.T) {
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
 	}
-	_, found, err := LoadSessionJobGet(dir, sessionID, "job_missing")
+	_, found, err := LoadSessionJobGet(dir, sessionID, "job_missing", nil)
 	if err != nil || found {
-		t.Fatalf("LoadSessionJobGet(missing): found=%v err=%v, want found=false err=nil", found, err)
+		t.Fatalf("LoadSessionJobGet(missing, nil): found=%v err=%v, want found=false err=nil", found, err)
 	}
 }
 
@@ -348,9 +348,9 @@ func TestLoadSessionJobGetRejectsUnsafeJournal(t *testing.T) {
 		if err := os.Symlink(outside, filepath.Join(journalDir, "jobs.jsonl")); err != nil {
 			t.Fatal(err)
 		}
-		_, found, err := LoadSessionJobGet(dir, sessionID, "job_x")
+		_, found, err := LoadSessionJobGet(dir, sessionID, "job_x", nil)
 		if found {
-			t.Fatalf("LoadSessionJobGet(symlink) followed external journal: err=%v", err)
+			t.Fatalf("LoadSessionJobGet(symlink, nil) followed external journal: err=%v", err)
 		}
 	})
 }
@@ -360,12 +360,12 @@ func TestLoadSessionJobGetRejectsUnsafeJournal(t *testing.T) {
 func TestLoadSessionJobGetRejectsUnsafeSessionID(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	_, found, err := LoadSessionJobGet(dir, "../escaped", "job_x")
+	_, found, err := LoadSessionJobGet(dir, "../escaped", "job_x", nil)
 	if !errors.Is(err, schema.ErrInvalidSessionID) {
-		t.Fatalf("LoadSessionJobGet(%q) error = %v, want schema.ErrInvalidSessionID", "../escaped", err)
+		t.Fatalf("LoadSessionJobGet(%q, nil) error = %v, want schema.ErrInvalidSessionID", "../escaped", err)
 	}
 	if found {
-		t.Errorf("LoadSessionJobGet(%q) found = true, want false", "../escaped")
+		t.Errorf("LoadSessionJobGet(%q, nil) found = true, want false", "../escaped")
 	}
 }
 
