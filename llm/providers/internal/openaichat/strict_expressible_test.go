@@ -696,8 +696,12 @@ func TestStrictExpressibleAgreesWithTheProjection(t *testing.T) {
 // reading makes the first assertion fail.
 func TestOmittedAdditionalPropertiesIsNotCertified(t *testing.T) {
 	t.Parallel()
+	// The root is explicitly closed and only the nested object omits the
+	// keyword, so the refusal has to come from inspecting that child. Leaving
+	// the root open would refuse the schema at the top before descending.
 	schema := map[string]any{
-		"type": "object",
+		"type":                 "object",
+		"additionalProperties": false,
 		"properties": map[string]any{
 			"metadata": map[string]any{"type": "object"},
 		},

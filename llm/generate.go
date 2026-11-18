@@ -392,6 +392,11 @@ func prepareTools(tools []Tool) (map[string]Tool, []ToolDefinition, error) {
 		if err := ValidateToolName(name); err != nil {
 			return nil, nil, err
 		}
+		// A definition that declares no parameters keeps its nil: the adapters
+		// distinguish "this tool takes no arguments" from "this tool advertises
+		// the open empty object", and only the first is strict-expressible.
+		// Validate and compile against the default without writing it back.
+		declared := t.Definition.Parameters
 		if t.Definition.Parameters == nil {
 			t.Definition.Parameters = defaultToolParameters()
 		}
@@ -402,6 +407,7 @@ func prepareTools(tools []Tool) (map[string]Tool, []ToolDefinition, error) {
 		if err != nil {
 			return nil, nil, err
 		}
+		t.Definition.Parameters = declared
 		t.schema = s
 		idx[name] = t
 		defs = append(defs, t.Definition)

@@ -252,3 +252,68 @@ func TestStrictToolProjectionKeepsParameterlessToolsClosed(t *testing.T) {
 		t.Fatalf("required = %v, want empty", got)
 	}
 }
+
+// A schema the gate refuses must reach the wire as advertised, so its size
+// cannot grow with nesting no matter what an adapter does while building. The
+// measurement has to be of the emitted parameters, not of the input fixture:
+// serializing the fixture would still pass if the builder expanded the schema.
+// This is the emitted half of
+// TestRefusedSchemaProjectionDoesNotGrowWithNesting, which can only see the
+// gate's verdict from inside the adapter package.
+func TestRefusedNestingSchemaIsEmittedUnchanged(t *testing.T) {
+	t.Parallel()
+	nesting := func(depth int) map[string]any {
+		var inner map[string]any
+		for range depth {
+			node := map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"a": map[string]any{"type": "string"},
+					"b": map[string]any{"type": "string"},
+				},
+				"required": []string{"a", "b"},
+				"anyOf": []any{
+					map[string]any{"type": "object", "required": []string{"a"}},
+					map[string]any{"type": "object", "required": []string{"b"}},
+				},
+			}
+			if inner != nil {
+				node["properties"].(map[string]any)["inner"] = inner
+				node["required"] = []string{"a", "b", "inner"}
+			}
+			inner = node
+		}
+		return inner
+	}
+
+	sizes := make([]int, 0, 6)
+	fixtureSizes := make([]int, 0, 6)
+	for _, depth := range []int{1, 2, 4, 8, 16, 32} {
+		schema := nesting(depth)
+		req := userReq("hi")
+		req.Tools = []llm.ToolDefinition{{Name: "job_status", Parameters: schema}}
+
+		body := build(t, req, resolved(strictCaps))
+		tool := body["tools"].([]map[string]any)[0]
+		if tool["strict"] != false {
+			t.Fatalf("depth %d: strict = %#v, want false: a property-less combinator branch is not certifiable", depth, tool["strict"])
+		}
+		// The schema on the wire must be the advertised one, byte for byte.
+		if got, want := jsonOf(t, tool["parameters"]), jsonOf(t, schema); got != want {
+			t.Fatalf("depth %d: the emitted schema is not the advertised one\n got: %s\nwant: %s", depth, got, want)
+		}
+		sizes = append(sizes, len(jsonOf(t, tool["parameters"])))
+		fixtureSizes = append(fixtureSizes, len(jsonOf(t, schema)))
+	}
+	// The emitted size tracks the advertised size exactly, so doubling the
+	// depth may at most double what goes on the wire.
+	for i := 1; i < len(sizes); i++ {
+		if sizes[i] > 2*sizes[i-1]+64 {
+			t.Fatalf("emitted schema size %d at step %d exceeds twice the previous %d: growth is not linear", sizes[i], i, sizes[i-1])
+		}
+		if sizes[i] != fixtureSizes[i] {
+			t.Fatalf("step %d: emitted %d bytes, advertised %d: the builder changed the schema", i, sizes[i], fixtureSizes[i])
+		}
+	}
+}

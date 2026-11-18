@@ -67,8 +67,19 @@ func buildBody(req llm.Request, res registry.Resolved, stream bool) (out map[str
 				// only for a schema that already requires them all. A tool with
 				// a documented-optional argument has no legal strict form, so it
 				// keeps its advertised schema and is sent non-strict.
-				// A tool carrying no parameters map has nothing to force, so it
-				// stays strict as before.
+				// A tool that declares no parameters keeps its nil through
+				// preparation rather than advertising the open empty object, so
+				// the closed empty object is supplied here: strict mode needs a
+				// schema to validate against, and this is the one shape that
+				// takes an empty argument set.
+				if _, has := fn["parameters"]; !has {
+					fn["parameters"] = map[string]any{
+						"type":                 "object",
+						"additionalProperties": false,
+						"properties":           map[string]any{},
+						"required":             []string{},
+					}
+				}
 				if params, ok := fn["parameters"].(map[string]any); ok && !openaichat.StrictExpressible(params) {
 					continue
 				}

@@ -136,3 +136,33 @@ func TestChatStrictToolsStillStrictifyFullyRequiredSchemas(t *testing.T) {
 		t.Fatalf("additionalProperties = %#v, want false (strictified)", params["additionalProperties"])
 	}
 }
+
+// The chat adapter carries the same parameterless-tool rule as Responses. A
+// definition that declares no parameters keeps its nil through preparation, so
+// the adapter has to supply the closed empty object itself: omitting
+// "parameters" entirely would send strict mode a function with no schema, and
+// advertising the open empty object would drop the tool to non-strict.
+func TestChatStrictToolsKeepParameterlessToolsClosed(t *testing.T) {
+	t.Parallel()
+	req := userReq("hi")
+	req.Tools = []llm.ToolDefinition{{Name: "current_time"}}
+
+	body := build(t, req, resolved(func(c *registry.Caps) { c.StrictTools = new(true) }))
+	fn := body["tools"].([]map[string]any)[0]["function"].(map[string]any)
+	if fn["strict"] != true {
+		t.Fatalf("strict = %#v, want true: a parameterless tool has nothing to force", fn["strict"])
+	}
+	params, ok := fn["parameters"].(map[string]any)
+	if !ok {
+		t.Fatalf("parameters = %#v, want a closed empty object: strict mode needs a schema to validate against", fn["parameters"])
+	}
+	if params["additionalProperties"] != false {
+		t.Fatalf("additionalProperties = %#v, want false", params["additionalProperties"])
+	}
+	if props, ok := params["properties"].(map[string]any); !ok || len(props) != 0 {
+		t.Fatalf("properties = %#v, want an empty object", params["properties"])
+	}
+	if got := requiredNames(t, params); len(got) != 0 {
+		t.Fatalf("required = %v, want empty", got)
+	}
+}
