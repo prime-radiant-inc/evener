@@ -2170,6 +2170,89 @@ func TestLoadSessionJobGetStopsRechecksWhenEverySourceIsPermanent(t *testing.T) 
 	}
 }
 
+// TestLoadSessionJobGetRechecksWhenOnlyTheLoserIsPermanentlyDamaged: the owner's
+// journal holds a valid start and then durable corruption, and the requested
+// ancestor's journal holds a forwarded start and then a torn finish. Both rows
+// are unconfirmed, the owner wins on authority, and the selected record is the
+// owner's — whose own scan error is the durable damage.
+//
+// The recheck must stay ON anyway. "This record's scan cannot go further" is
+// only a permanent answer when this record is the only source that could settle
+// the job. Here the ancestor is the other source: its append is still in flight,
+// and completing it produces a terminal observation that outranks the owner's
+// running prefix on the next read. Gating the recheck on the SELECTED branch's
+// scan error declares the job unanswerable while a consulted journal is still
+// holding the answer.
+//
+// The second half is what makes the first half mean anything: a predicate that
+// only returned true would not show that the read a recheck issues can ever reach
+// the finish.
+func TestLoadSessionJobGetRechecksWhenOnlyTheLoserIsPermanentlyDamaged(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 20, 13, 0, 0, 0, time.UTC)
+	ended := started.Add(time.Minute)
+	exit := 9
+
+	// The ancestor's journal: a valid forwarded start, then a torn finish — an
+	// append that has landed without its newline and can still complete.
+	writeJobJournalLines(t, jobsDir(stateDir, rootSession),
+		jobStartedLine(jobID, ownerSession, started)+"\n",
+		`{"kind":"job_finished","seq":2,"job_id":"`+jobID+`","status":"command_exited_nonzero"`,
+	)
+	// The owner's journal: its own start, then a newline-terminated malformed
+	// line, which is durable corruption the scan cannot read past.
+	writeJobJournalLines(t, jobsDir(stateDir, ownerSession),
+		jobStartedLine(jobID, ownerSession, started)+"\n",
+		`{"kind":"job_finished","seq":2,"status":`+"\n",
+	)
+
+	first, found, err := LoadSessionJobGet(stateDir, rootSession, jobID, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet (owner corrupt): %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the owner's running prefix")
+	}
+	if !first.StatusUnconfirmed {
+		t.Fatalf("StatusUnconfirmed = false (diagnostics %v): neither journal settled the job's state",
+			first.Diagnostics)
+	}
+	if !first.StatusRecheckable {
+		t.Fatalf("StatusRecheckable = false (diagnostics %v): the owner's own scan cannot go further, "+
+			"but the ancestor's torn append can complete into a terminal record that outranks it",
+			first.Diagnostics)
+	}
+
+	// The repair a resumed writer performs: the ancestor's append finishes.
+	writeJobJournalLines(t, jobsDir(stateDir, rootSession),
+		jobStartedLine(jobID, ownerSession, started)+"\n",
+		`{"kind":"job_finished","seq":2,"ts":"`+ended.Format(time.RFC3339)+
+			`","job_id":"`+jobID+`","status":"command_exited_nonzero","reason":"exit_nonzero","exit_code":`+
+			strconv.Itoa(exit)+`,"ended_at":"`+ended.Format(time.RFC3339)+`","terminal_generation":"gen_real"}`+"\n",
+	)
+
+	// The read a recheck issues. No refresh, no reconnect: the same call the
+	// reader makes on its slow cadence.
+	second, found, err := LoadSessionJobGet(stateDir, rootSession, jobID, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet (ancestor completed): %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the ancestor's completed record")
+	}
+	if !second.Terminal {
+		t.Fatalf("terminal = false (status %q, diagnostics %v): the ancestor's completed append "+
+			"states the finish the owner's corrupt line hid", second.Status, second.Diagnostics)
+	}
+	if second.ExitCode == nil || *second.ExitCode != exit {
+		t.Fatalf("exitCode = %v, want the ancestor's %d", second.ExitCode, exit)
+	}
+}
+
 // TestLoadSessionJobGetKeepsRecheckableWhileOwnerIsMerelyUnreadable: the ancestor
 // holds a valid forwarded start before a corrupt line, and the owner's journal is
 // not readable on THIS read. The row is unconfirmed, and the recheck must stay

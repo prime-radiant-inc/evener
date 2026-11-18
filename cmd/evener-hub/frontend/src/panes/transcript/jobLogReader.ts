@@ -132,6 +132,14 @@ export class JobLogReader {
    * An unconfirmed row is the exception — no amount of retrying makes its
    * journal able to state the status — so a failure there clears this. */
   private liveRetryOwed = false;
+  /** Whether the most recent LIVE tail attempt FAILED, cleared by the next one
+   * that succeeds. `liveRetryOwed` cannot answer this: an unconfirmed row's
+   * failure deliberately leaves it clear, because the retry is owed only once
+   * metadata says the row is recheckable. Reconciliation needs the failure
+   * itself, though — re-arming on every successful slow recheck would fetch
+   * another output page and repeat the journal scans on every slow tick for a
+   * pane whose tail already loaded. */
+  private liveTailFailed = false;
   /** The metadata request whose reply a refresh is waiting for, as a sequence
    * number. A refresh asks to see the row afresh, and a request already in
    * flight when the person pressed it answers a question about the row BEFORE
@@ -288,7 +296,13 @@ export class JobLogReader {
     //
     // Only a permanently blocked row drops it, because only there does reading
     // again ask a question no source can answer.
-    if (job !== null && !job.terminal && jobStatusUnconfirmed(job)) this.liveRetryOwed = statusRecheckable(job);
+    // Re-arming is conditioned on a tail having FAILED, not on the row merely
+    // being unconfirmed: a tail that landed has delivered its bytes, and asking
+    // again on every slow metadata tick would re-read output nobody asked for.
+    // A row that is unconfirmed AND recheckable keeps a FAILED tail owed — that
+    // is the case the re-arm exists for.
+    if (job !== null && !job.terminal && jobStatusUnconfirmed(job))
+      this.liveRetryOwed = this.liveTailFailed && statusRecheckable(job);
     // An owed one-shot read is a demand, not a poll. It keeps the slot due until
     // it is served, so unconfirmed metadata stops the RECURRING cadence without
     // cancelling the read a person asked for.
@@ -438,16 +452,26 @@ export class JobLogReader {
       })
       .catch((error: unknown) => {
         if (!current()) return;
-        // A failed BACKGROUND read backs off at the cadence it was
-        // scheduled on. Retrying an unconfirmed row's recheck once a
-        // second turns a server that is failing those reads into a load
-        // problem, and it cannot produce the status any sooner than the
-        // recheck that was already scheduled. Refresh and reconnect set
-        // their own deadline, so a person asking again is still immediate.
-        this.metadataDueAt =
-          this.snapshot.job !== null && this.snapshot.job.statusUnconfirmed === true
-            ? Date.now() + UNCONFIRMED_RECHECK_MS
-            : Date.now() + READ_INTERVAL_MS;
+        // A stale reply is not evidence about the schedule, for the same reason
+        // its success is not: it answers a question about the row BEFORE the
+        // press, and the person is waiting on a request issued after it. Backing
+        // off on its failure would hand the newer request a free slot and a
+        // fifteen-second wait, so leave the deadline due and let the post-press
+        // read settle the schedule.
+        if (this.metadataRefreshWanted > sequence) {
+          this.metadataDueAt = Date.now();
+        } else {
+          // A failed BACKGROUND read backs off at the cadence it was
+          // scheduled on. Retrying an unconfirmed row's recheck once a
+          // second turns a server that is failing those reads into a load
+          // problem, and it cannot produce the status any sooner than the
+          // recheck that was already scheduled. Refresh and reconnect set
+          // their own deadline, so a person asking again is still immediate.
+          this.metadataDueAt =
+            this.snapshot.job !== null && this.snapshot.job.statusUnconfirmed === true
+              ? Date.now() + UNCONFIRMED_RECHECK_MS
+              : Date.now() + READ_INTERVAL_MS;
+        }
         this.publish({ metadataError: messageOf(error) });
       })
       .finally(() => {
@@ -487,6 +511,7 @@ export class JobLogReader {
           // The bytes arrived: the range a previous attempt failed to deliver has
           // now been read, so the obligation that carried it is discharged.
           this.liveRetryOwed = false;
+          this.liveTailFailed = false;
           this.historyServedSinceLive = false;
           if (
             drainPending &&
@@ -560,6 +585,7 @@ export class JobLogReader {
         if (kind === "live") {
           const job = this.snapshot.job;
           const unconfirmed = job !== null && !job.terminal && jobStatusUnconfirmed(job);
+          this.liveTailFailed = true;
           this.liveRetryOwed = !unconfirmed;
           if (unconfirmed) this.liveDueAt = Number.POSITIVE_INFINITY;
           else this.liveDueAt = Date.now();

@@ -705,13 +705,32 @@ func statusRecheckableOnWire(read sessionJobRecordRead) bool {
 	if read.diagnostics.ForwardedFallback || read.diagnostics.OwnerUnavailable {
 		return true
 	}
-	// Branch-local, deliberately: this record's OWN scan failing is the durable
-	// corruption that no later read gets past, and with no owner to consult it is
-	// the only source this row has. The merged aggregate's ScanIncomplete also
-	// counts an ANCESTOR's damage, and cancelling the recheck on that is the same
-	// mistake as reading the status confidence off the aggregate — the row rests
-	// on readable bytes that a resume can extend.
-	return read.scanErr == nil
+	// A clean scan means the journal that supplied this row was readable to its
+	// end, so a later read can still extend it.
+	if read.scanErr == nil {
+		return true
+	}
+	// This record's own scan stopped at durable corruption. That is a permanent
+	// answer only when this record is the ONLY source the read consulted: with no
+	// owner to consult and nothing else readable, no later read gets behind the
+	// bad line. It is not permanent when another consulted journal is still
+	// holding an append in flight, because completing that append can produce a
+	// terminal observation that OUTRANKS this unconfirmed row on the next read.
+	//
+	// The load-bearing fact is that TornTail and scanErr are mutually exclusive
+	// for one journal: ScanEventsWithDiagnostics sets TornTail only on the
+	// unterminated-final-line break, which returns a nil error. So while THIS
+	// branch's scan error is non-nil, this branch's own TornTail is false, and a
+	// torn flag in the merged aggregate can only have come from the other journal
+	// the read consulted. Reading the aggregate here is therefore reading a fact
+	// about the OTHER source — the opposite of the mistake this predicate was
+	// fixed for, where an ancestor's damage was taken as evidence against an
+	// intact owner record.
+	//
+	// ScanIncomplete is deliberately NOT consulted: it says some journal had
+	// durable corruption, but not which one, so it can neither confirm nor deny
+	// that another source is still growable.
+	return read.diagnostics.TornTail
 }
 
 // mergeIntegrity folds another read's damage report into d. Diagnostics are not

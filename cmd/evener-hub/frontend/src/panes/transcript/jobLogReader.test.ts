@@ -789,6 +789,34 @@ test("a successful slow recheck re-arms a tail that failed on a recheckable row"
   expect(recovered.windows.live?.rows.length).toBeGreaterThan(0);
 });
 
+// A successful slow recheck re-arms only a tail that FAILED. The row stays
+// unconfirmed and recheckable, so reconciliation runs on every slow tick, but
+// the tail that already delivered its bytes is not owed again: re-arming it
+// would fetch another output page and repeat the journal scans on every tick for
+// a pane with nothing new to show.
+test("a slow recheck does not re-arm a tail that already loaded", async () => {
+  peer.reply(await peer.request(META), {
+    ...metadata(false),
+    statusUnconfirmed: true,
+    statusRecheckable: true,
+  });
+  peer.reply(await peer.request(OUTPUT), page());
+  await observed((snapshot) => snapshot.windows.live !== null && snapshot.outputError === null);
+  const loaded = peer.requests(OUTPUT).length;
+
+  // Two slow rechecks land, both still provisional and recheckable.
+  for (let tick = 1; tick <= 2; tick += 1) {
+    await vi.advanceTimersByTimeAsync(UNCONFIRMED_RECHECK_MS);
+    peer.reply(await peer.request(META, peer.requests(META).length - 1), {
+      ...metadata(false),
+      statusUnconfirmed: true,
+      statusRecheckable: true,
+    });
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(peer.requests(OUTPUT)).toHaveLength(loaded);
+  }
+});
+
 // A background recheck that FAILS must stay on the cadence it was scheduled at.
 // Escalating to the live rate because the requests are failing turns a server
 // error into a load problem, and it cannot produce the status any sooner than
@@ -896,6 +924,39 @@ test("an in-flight metadata reply does not settle a refresh that started after i
   peer.reply(fresh, metadata(true));
   const snapshot = await observed((state) => state.job?.terminal === true);
   expect(snapshot.job?.statusUnconfirmed).not.toBe(true);
+});
+
+// The same rule holds when the stale reply FAILS. A slow recheck issued before
+// the press answers a question about the row before it, so its failure must not
+// replace the refresh's deadline with the fifteen-second recheck backoff: the
+// slot is free and the person is waiting on a request that has not been sent
+// yet. Only an unattended recheck backs off.
+test("a stale failed metadata reply does not delay the refreshed request", async () => {
+  // The row is provisional, so its rechecks run on the slow cadence and a
+  // failure there is the case that backs off for fifteen seconds.
+  peer.reply(await peer.request(META), {
+    ...metadata(false),
+    statusUnconfirmed: true,
+    statusRecheckable: true,
+  });
+  peer.reply(await peer.request(OUTPUT), page());
+  await observed((snapshot) => snapshot.job?.statusUnconfirmed === true && snapshot.windows.live !== null);
+
+  // The slow recheck is in flight when Refresh is pressed.
+  await vi.advanceTimersByTimeAsync(UNCONFIRMED_RECHECK_MS);
+  const inFlight = await peer.request(META, 1);
+  reader.refresh();
+
+  peer.fail(inFlight, "metadata unavailable");
+  // The post-press request is due as soon as the slot frees. One live interval
+  // is enough to reach it — the recheck backoff is fifteen seconds away, so a
+  // failure that backed off would still be waiting here.
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(peer.requests(META).length).toBe(3);
+  const fresh = await peer.request(META, 2);
+  expect(fresh.method).toBe(META);
+  peer.reply(fresh, metadata(true));
+  await observed((state) => state.job?.terminal === true);
 });
 
 // Hiding the pane discards the reply of a tail that was still in flight, and a
