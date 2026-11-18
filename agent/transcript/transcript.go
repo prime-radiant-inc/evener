@@ -334,6 +334,8 @@ func inferPreFlagMachinery(turn *schema.Turn) {
 // error shapes) plus the unknown-member rejection below.
 var strictDecoderOptions = jsonv2.JoinOptions(json.DefaultOptionsV1(), jsonv2.RejectUnknownMembers(true))
 
+var replayOnlyEncoderOptions = jsonv2.JoinOptions(json.DefaultOptionsV1(), jsonv2.WithMarshalers(jsonv2.MarshalToFunc(llm.MarshalToolCallReplay)))
+
 // decodeStrictJSON decodes one line as exactly one JSON value, rejecting
 // unknown members and any trailing value.
 func decodeStrictJSON(line []byte, target any) error {
@@ -840,10 +842,21 @@ func (w *Writer) appendBatchLocked(turns []schema.Turn, place Placement, rollbac
 	batch := make([]Record, len(turns))
 	for i, turn := range turns {
 		start := w.entryBuf.Len()
-		if encErr := enc.Encode(Entry{Kind: "entry", Seq: firstSeq + i, Turn: turn, MachineryFlagged: true}); encErr != nil {
+		entry := Entry{Kind: "entry", Seq: firstSeq + i, Turn: turn, MachineryFlagged: true}
+		if encErr := enc.Encode(entry); encErr != nil {
 			return nil, nil, fmt.Errorf("marshal transcript entry: %w", encErr)
 		}
 		length := w.entryBuf.Len() - start
+		if length-1 > w.maxLineBytes && slices.ContainsFunc(turn.Message.Content, func(part llm.ContentPart) bool {
+			return part.ToolCall != nil && len(part.ToolCall.Arguments) != 0 && part.ToolCall.RawArguments == ""
+		}) {
+			w.entryBuf.Truncate(start)
+			if encErr := jsonv2.MarshalWrite(&w.entryBuf, entry, replayOnlyEncoderOptions); encErr != nil {
+				return nil, nil, fmt.Errorf("marshal transcript entry: %w", encErr)
+			}
+			_ = w.entryBuf.WriteByte('\n')
+			length = w.entryBuf.Len() - start
+		}
 		if length-1 > w.maxLineBytes {
 			return nil, nil, fmt.Errorf("%w: transcript entry of %d bytes exceeds %d", ErrLineTooLong, length-1, w.maxLineBytes)
 		}

@@ -7,24 +7,46 @@ import (
 	"encoding/json"
 	"encoding/json/jsontext"
 	jsonv2 "encoding/json/v2"
+	"errors"
 	"strconv"
 	"unicode/utf8"
 )
 
 type toolCallFields ToolCallData
 
+type toolCallRecord struct {
+	toolCallFields
+	ArgumentBytes    []byte          `json:"arguments_bytes,omitempty"`
+	ArgumentSpelling json.RawMessage `json:"arguments_spelling,omitempty"`
+	ReplayArguments  []byte          `json:"arguments_replay,omitempty"`
+}
+
 // MarshalJSON keeps arguments available as structured JSON. A spelling
 // companion recovers the exact provider input when embedding changes its bytes.
 func (tc ToolCallData) MarshalJSON() ([]byte, error) {
-	record := struct {
-		toolCallFields
-		ArgumentBytes    []byte          `json:"arguments_bytes,omitempty"`
-		ArgumentSpelling json.RawMessage `json:"arguments_spelling,omitempty"`
-	}{toolCallFields: toolCallFields(tc)}
+	record, err := tc.argumentRecord(false)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(record)
+}
+
+// MarshalToolCallReplay is the transcript writer's size fallback. It saves
+// exact replay bytes as the only argument field when that fits more compactly.
+func MarshalToolCallReplay(enc *jsontext.Encoder, tc ToolCallData) error {
+	record, err := tc.argumentRecord(true)
+	if err != nil {
+		return err
+	}
+	return jsonv2.MarshalEncode(enc, record)
+}
+
+func (tc ToolCallData) argumentRecord(allowReplayOnly bool) (toolCallRecord, error) {
+	record := toolCallRecord{toolCallFields: toolCallFields(tc)}
 	if len(tc.Arguments) != 0 && tc.RawArguments == "" {
 		stored, err := json.Marshal(tc.Arguments)
 		if err != nil {
-			return nil, err
+			return toolCallRecord{}, err
 		}
 		if !bytes.Equal(stored, tc.Arguments) {
 			record.ArgumentSpelling = compactArgumentSpelling(stored, tc.Arguments)
@@ -32,8 +54,20 @@ func (tc ToolCallData) MarshalJSON() ([]byte, error) {
 				record.ArgumentBytes = tc.Arguments
 			}
 		}
+		if allowReplayOnly {
+			structuredSize := len(`"arguments":`) + len(stored)
+			if len(record.ArgumentSpelling) != 0 {
+				structuredSize += len(`,"arguments_spelling":`) + len(record.ArgumentSpelling)
+			} else if len(record.ArgumentBytes) != 0 {
+				structuredSize += len(`,"arguments_bytes":""`) + base64.StdEncoding.EncodedLen(len(record.ArgumentBytes))
+			}
+			if replaySize := len(`"arguments_replay":""`) + base64.StdEncoding.EncodedLen(len(tc.Arguments)); replaySize < structuredSize {
+				record.ReplayArguments = tc.Arguments
+				record.Arguments, record.ArgumentBytes, record.ArgumentSpelling = nil, nil, nil
+			}
+		}
 	}
-	return json.Marshal(record)
+	return record, nil
 }
 
 // spellingBytes decodes damaged optional bytes as nil. The enclosing spelling
@@ -173,16 +207,28 @@ func (spelling *argumentSpelling) restore(stored []byte) []byte {
 	return append(original, stored[pos:]...)
 }
 
-// UnmarshalJSONFrom restores the original spelling only for the same structured
-// argument value. A missing or inconsistent companion leaves arguments intact.
+// UnmarshalJSONFrom restores replay-only arguments or recovers the original
+// spelling of a structured value after validating it against the stored value.
 func (tc *ToolCallData) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 	record := struct {
 		*toolCallFields
 		ArgumentBytes    json.RawMessage   `json:"arguments_bytes"`
 		ArgumentSpelling *argumentSpelling `json:"arguments_spelling"`
+		ReplayArguments  json.RawMessage   `json:"arguments_replay"`
 	}{toolCallFields: (*toolCallFields)(tc)}
 	if err := jsonv2.UnmarshalDecode(dec, &record); err != nil {
 		return err
+	}
+	if len(record.ReplayArguments) != 0 && len(tc.Arguments) == 0 && tc.RawArguments == "" {
+		var original []byte
+		if err := json.Unmarshal(record.ReplayArguments, &original); err != nil {
+			return err
+		}
+		if !json.Valid(original) {
+			return errors.New("invalid tool call replay arguments")
+		}
+		tc.Arguments = original
+		return nil
 	}
 	if (len(record.ArgumentBytes) == 0 && record.ArgumentSpelling == nil) || len(tc.Arguments) == 0 || tc.RawArguments != "" {
 		return nil

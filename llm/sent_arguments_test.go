@@ -89,6 +89,18 @@ func TestToolCallDataArgumentBytesRoundTrip(t *testing.T) {
 
 func TestToolCallDataKeepsStructuredArgumentsWithoutMatchingBytes(t *testing.T) {
 	t.Parallel()
+	t.Run("damaged replay-only field", func(t *testing.T) {
+		var call ToolCallData
+		if err := json.Unmarshal([]byte(`{"arguments_replay":"!"}`), &call); err == nil {
+			t.Fatal("damaged sole argument field was accepted")
+		}
+		if err := json.Unmarshal([]byte(`{"arguments":{"x":7},"arguments_replay":"!"}`), &call); err != nil {
+			t.Fatal(err)
+		}
+		if got := call.SentArguments(); got != `{"x":7}` {
+			t.Errorf("structured arguments = %q", got)
+		}
+	})
 	t.Run("changed structured value with the same length", func(t *testing.T) {
 		original := "{ \"path\": \"" + strings.Repeat("a", 1024) + "\" }\n"
 		data, err := json.Marshal(ToolCallData{Arguments: json.RawMessage(original)})

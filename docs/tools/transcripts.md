@@ -313,6 +313,9 @@ comprehension, use markdown; for provider forensics, use `evener doctor apilog <
 Each stored semantic entry can occupy up to 128 MiB before its terminating
 newline. If an entry exceeds that limit, the append reports an error and the
 previously recorded transcript remains readable on resume.
+An entry near the limit can store a tool call's exact JSON argument bytes in
+one encoded field. The transcript reader restores those bytes as the tool
+arguments for the view and for replay.
 
 ```
 { "transcript_ref"?, "format":"jsonl", "content_type":"application/x-ndjson",

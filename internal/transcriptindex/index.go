@@ -29,8 +29,8 @@ const (
 	// formatVersion is the sidecar's layout. projectionID names the projection
 	// its records reproduce; either changing rebuilds every index.
 	formatVersion = 8
-	// The tool-call decoder accepts arguments_bytes through a custom JSON
-	// record. Its fields are outside the reflected schema fingerprint.
+	// Tool-call replay fields use a custom JSON record outside the reflected
+	// schema fingerprint.
 	projectionID = "transcript-read-model-v12"
 
 	// tailBytes is how much of the covered prefix's end validation compares,

@@ -1,9 +1,11 @@
 package transcript
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
@@ -72,6 +74,38 @@ func TestRecordReportsOrdinalSeqAndRecordedLength(t *testing.T) {
 	if w.RecordedLength() != third.Offset+third.Length || resumed.RecordedLength() != w.RecordedLength() {
 		t.Fatalf("writers disagree on the recorded length: %d, %d", w.RecordedLength(), resumed.RecordedLength())
 	}
+	t.Run("exact argument bytes at the record boundary", func(t *testing.T) {
+		writer, path := newRecordWriter(t)
+		writer.maxLineBytes = 7 << 10
+		args := `{ "content": "` + strings.Repeat("<", 1024) + `" }`
+		turn := schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("")}
+		turn.Message.Content = []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+			ID: "call", Name: "write_file", Arguments: json.RawMessage(args),
+		}}}
+		if _, err := writer.AppendBatch([]schema.Turn{steeringTurn("before the call"), turn}); err != nil {
+			t.Fatal(err)
+		}
+		length := writer.RecordedLength()
+		overflow := &llm.ToolCallData{ID: "overflow", Name: "write_file", Arguments: json.RawMessage(`{"content":"` + strings.Repeat("x", 8<<10) + `"}`)}
+		turn.Message.Content = []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: overflow}}
+		if rec, err := writer.Record(turn, RecordOptions{Door: DoorDurable}); !errors.Is(err, ErrLineTooLong) || rec.Recorded || writer.RecordedLength() != length {
+			t.Fatalf("over-limit tool call: recorded %t, err %v, length %d (want %d)", rec.Recorded, err, writer.RecordedLength(), length)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+		cold, entries, err := OpenWriterForSession(path, sharedFileHeader.SessionID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = cold.Close() })
+		if len(entries) != 2 || entries[0].Turn.Message.Text() != "before the call" || len(entries[1].Turn.Message.Content) != 1 {
+			t.Fatalf("restored %d entries, want the earlier input and assistant tool call", len(entries))
+		}
+		if got := entries[1].Turn.Message.Content[0].ToolCall.SentArguments(); got != args {
+			t.Errorf("cold record changed argument bytes (got %d, want %d)", len(got), len(args))
+		}
+	})
 }
 
 func TestRecordOrdinalAfterResumeCountsEntryLines(t *testing.T) {
