@@ -799,13 +799,12 @@ describe("conversation-owned session controls", () => {
 		expect(await request).toBe(true);
 		expect(reads).toBe(1);
 	});
-	// A pick on a cold session resumes behind its change, and that resume
-	// recycles the transport (#6696): the screen's `connected` change disposes
-	// the controls that are mid-pick while the same session stays in front.
-	// The mutation landed, so the pick reports a change — the sheet closes and
-	// the screen confirms it — instead of reading as a pick that never
-	// happened. A pick that did not apply, and one whose screen left, claim
-	// nothing.
+	// An acknowledged pick can outlive the binding that sent it: the screen's
+	// memo disposes the controls that are mid-pick while the same session stays
+	// in front. The mutation landed, so the pick reports a change — the sheet
+	// closes and the screen confirms it — instead of reading as a pick that
+	// never happened. A pick that did not apply, and one whose screen left,
+	// claim nothing.
 	it.each([
 		{ outcome: "applied while the destination stays current", mutate: "apply", destination: true, refreshes: 1 },
 		{ outcome: "applied after the destination left", mutate: "apply", destination: false, refreshes: 0 },
@@ -816,6 +815,9 @@ describe("conversation-owned session controls", () => {
 			const applied: string[] = [];
 			let inFront = true;
 			let current = true;
+			// The binding goes, the transport does not: this is a controller
+			// disposal, not a socket recycle.
+			const ready = true;
 			let refreshed = 0;
 			const sent = Promise.withResolvers<void>();
 			const ack = Promise.withResolvers<void>();
@@ -833,10 +835,10 @@ describe("conversation-owned session controls", () => {
 					refreshed++;
 				},
 				() => {},
-				// The screen's own fence: `inFront` is the session's route still
-				// being the one in front (destination scope), and `current` is the
+				// The screen's fence: `inFront` is the session being the route still
+				// in front, `ready` is the transport, and `current` is this
 				// instance's own binding generation.
-				(scope) => inFront && (scope === "destination" || current),
+				(scope) => (scope === "route" ? inFront : inFront && (scope === "destination" ? ready : current)),
 				() => null,
 				() => true,
 			);
@@ -884,6 +886,42 @@ describe("conversation-owned session controls", () => {
 		expect(refreshed).toBe(1);
 		expect(controls.getSnapshot()).toMatchObject({ pending: null, error: null });
 	});
+	// The hub's acknowledgement, not the read that follows it, is the record
+	// that the pick applied. A phone that reconnects while that read is still
+	// out has not left the session it is looking at, so the pick still reports
+	// the change; the reconnect read is what brings it on screen.
+	it("confirms an acknowledged pick when the transport reconnects before its read settles", async () => {
+		let ready = true;
+		let refreshed = 0;
+		const started = Promise.withResolvers<void>();
+		const reading = Promise.withResolvers<void>();
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => ({ data: [{ provider: "two", model: "next" }] }),
+				model: async () => {},
+			}),
+			async () => {
+				refreshed++;
+				started.resolve();
+				await reading.promise;
+			},
+			() => {},
+			// The screen's fence: presence is route and identity alone, and
+			// `ready` is the transport.
+			(scope) => (scope === "route" ? true : ready),
+			() => null,
+			() => true,
+		);
+		await controls.loadModels();
+		const pick = controls.changeModel("two", "next");
+		await started.promise;
+		// The socket goes away while the confirmation read is still out.
+		ready = false;
+		reading.resolve();
+		expect(await pick).toBe(true);
+		expect(refreshed).toBe(1);
+		expect(controls.getSnapshot()).toMatchObject({ pending: null, error: null });
+	});
 	// The reader can leave while the pick's refresh is still out. Whoever left
 	// is owed no confirmation on the screen they left, so the pick reports no
 	// change there — including when that refresh itself fails.
@@ -892,6 +930,7 @@ describe("conversation-owned session controls", () => {
 		async ({ settle }) => {
 			let inFront = true;
 			let current = true;
+			const ready = true;
 			const sent = Promise.withResolvers<void>();
 			const ack = Promise.withResolvers<void>();
 			const started = Promise.withResolvers<void>();
@@ -909,7 +948,7 @@ describe("conversation-owned session controls", () => {
 					await reading.promise;
 				},
 				() => {},
-				(scope) => inFront && (scope === "destination" || current),
+				(scope) => (scope === "route" ? inFront : inFront && (scope === "destination" ? ready : current)),
 				() => null,
 				() => true,
 			);

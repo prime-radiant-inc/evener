@@ -52,7 +52,7 @@ export class SessionControls {
 			ConversationModelCatalog,
 		private refresh: () => Promise<void>,
 		private stopped: () => void,
-		private isCurrent: (scope?: "destination") => boolean,
+		private isCurrent: (scope?: "destination" | "route") => boolean,
 		private getReasoning: () => Pick<
 			MobileConversation,
 			"supportsReasoning" | "reasoningEffort" | "reasoningEffortLevels"
@@ -198,28 +198,35 @@ export class SessionControls {
 				await this.refresh();
 			}
 			if (kind === "changeModel") {
-				// A pick reports what its destination sees (#6696). A cold pick
-				// resumes behind its change, and that resume can recycle the
-				// transport and dispose these controls before the acknowledgement
-				// arrives; a read the pick needs can also fail on the connection it
-				// was sent on. Either way the hub acknowledged the pick, and that
-				// acknowledgement — not the read — is the record that it applied, so
-				// the refresh is best effort and one path serves both binding states.
-				let stayed = this.isCurrent("destination");
+				// An acknowledged pick can outlive the binding that sent it: a
+				// re-render may dispose these controls, and a read can fail or wait
+				// out a reconnect. The acknowledgement, not the read, is the record
+				// that the change applied, so the follow-up read is best effort and
+				// one path serves every binding state. The reader still being on this
+				// session decides whether the change is announced; the transport
+				// decides only whether it can be read back. A reconnecting phone has
+				// not left the screen it is looking at, and its reconnect read is
+				// what brings the change on screen.
+				let stayed = this.isCurrent("route");
 				if (stayed) {
-					try {
-						await this.refresh();
-					} catch {
-						// The screen's own read catches up; the pick applied regardless.
+					// Readiness is a separate question from the reader's presence: a
+					// transport that is away reads nothing, and the session's own
+					// reconnect read catches the screen up afterwards.
+					if (this.isCurrent("destination")) {
+						try {
+							await this.refresh();
+						} catch {
+							// The screen's own read catches up; the pick applied regardless.
+						}
 					}
 					// A read can outlast the reader's stay: whoever left while it ran
 					// is owed no confirmation on the screen they left, even when the
 					// read itself failed.
-					stayed = this.isCurrent("destination");
+					stayed = this.isCurrent("route");
 				}
 				// Any still-live binding settles its action here, so its pending
-				// state never outlives the acknowledgement. The notice belongs to
-				// the destination alone.
+				// state never outlives the acknowledgement. The notice follows the
+				// reader's presence, which the return value also reports.
 				if (!this.disposed) {
 					this.publish({ pending: null, error: null, notice: stayed ? "Model updated." : null });
 				}

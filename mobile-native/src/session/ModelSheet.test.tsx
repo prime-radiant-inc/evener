@@ -80,6 +80,41 @@ const CATALOG: ModelListResponse = {
 
 const CAPABILITIES = { changeModel: true, changeVisionModel: true } as ThreadCapabilities;
 
+const THREAD: Thread = {
+	id: "thread",
+	sessionId: "session",
+	preview: "",
+	ephemeral: false,
+	modelProvider: "anthropic",
+	createdAt: 1,
+	updatedAt: 1,
+	status: { type: "idle" },
+	cwd: "/test",
+	cliVersion: "test",
+	source: "local",
+	turns: [],
+	evener: {
+		ref: REF,
+		instanceId: "instance",
+		queue: { revision: 0 },
+		capabilities: {
+			send: true,
+			steer: false,
+			interrupt: false,
+			compact: true,
+			clear: false,
+			forkFromTurn: false,
+			shutdown: true,
+			changeModel: true,
+			changeVisionModel: true,
+			sharedNotes: false,
+			queue: false,
+			goal: false,
+			rename: true,
+		},
+	},
+};
+
 function conversation(over: Partial<MobileConversation> = {}): MobileConversation {
 	return {
 		ref: REF,
@@ -251,6 +286,54 @@ describe("choosing a model (spec 8.5)", () => {
 		expect(calls).toEqual(["changeModel"]);
 	});
 
+	it("confirms the pick when the phone reconnects before the read returns", async () => {
+		const session = conversation();
+		const client = new FakeClient("ready");
+		client.on("thread/read", () => ({ thread: THREAD }));
+		client.on("thread/unsubscribe", () => ({}));
+		client.on("thread/model/set", () => ({}));
+		const service = createConversationService(client);
+		await service.open(REF);
+		// The transport readiness the screen's fence reads. It drops between
+		// the hub's acknowledgement and the read that follows it settling,
+		// which is the reconnect a cold pick can outlive.
+		let connected = true;
+		let refreshed = 0;
+		const started = Promise.withResolvers<void>();
+		const reading = Promise.withResolvers<void>();
+		const controls = new SessionControls(
+			service,
+			async () => {
+				refreshed++;
+				started.resolve();
+				await reading.promise;
+			},
+			() => {},
+			// The screen's fence: presence is route and identity alone, and
+			// `connected` is the transport.
+			(scope) => (scope === "route" ? true : connected),
+			() => session,
+			() => true,
+			CATALOG,
+		);
+		onTestFinished(() => {
+			controls.dispose();
+			service.close();
+		});
+		const { host } = provide(session, {}, { controls });
+		const tree = sheet();
+		await act(async () => {
+			pressable(tree, "Claude Haiku 5")?.props.onPress();
+			await started.promise;
+			connected = false;
+			reading.resolve();
+		});
+		await settle();
+		expect(refreshed).toBe(1);
+		expect(navigation.goBack).toHaveBeenCalledTimes(1);
+		expect(host.toast).toHaveBeenCalled();
+	});
+
 	it("searches the models", () => {
 		provide(conversation());
 		const tree = sheet();
@@ -302,42 +385,8 @@ describe.each([
 		async (fontScale) => {
 			viewport.fontScale = fontScale;
 			const session = conversation({ reasoningEffortLevels: ["minimal", "low", "medium", "high", "xhigh"] });
-			const thread: Thread = {
-				id: "thread",
-				sessionId: "session",
-				preview: "",
-				ephemeral: false,
-				modelProvider: "anthropic",
-				createdAt: 1,
-				updatedAt: 1,
-				status: { type: "idle" },
-				cwd: "/test",
-				cliVersion: "test",
-				source: "local",
-				turns: [],
-				evener: {
-					ref: REF,
-					instanceId: "instance",
-					queue: { revision: 0 },
-					capabilities: {
-						send: true,
-						steer: false,
-						interrupt: false,
-						compact: true,
-						clear: false,
-						forkFromTurn: false,
-						shutdown: true,
-						changeModel: true,
-						changeVisionModel: true,
-						sharedNotes: false,
-						queue: false,
-						goal: false,
-						rename: true,
-					},
-				},
-			};
 			const client = new FakeClient("ready");
-			client.on("thread/read", () => ({ thread }));
+			client.on("thread/read", () => ({ thread: THREAD }));
 			client.on("thread/unsubscribe", () => ({}));
 			let response = Promise.withResolvers<Record<string, never>>();
 			client.on(method, () => response.promise);
