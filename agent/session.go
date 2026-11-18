@@ -1581,6 +1581,28 @@ func (s *Session) consumeJobNotification(jobID string) {
 	s.pendingJobNotifsMu.Unlock()
 }
 
+// notifyUnlessHeld wakes the session, or marks the wake deferred when a
+// job-notification hold is in flight.
+//
+// Durable attention arms its wake through this, not s.notify(), because the
+// router delivers a forwarded group under holdJobNotificationWake: one output
+// chunk can match several watches, and each match is appended and armed on its
+// own. A direct notify here let the FIRST match's leased wake start a request
+// while the rest of the same chunk was still unwritten, so the child's turn
+// presented one match and the remainder needed another generation
+// (#2340 review).
+func (s *Session) notifyUnlessHeld() {
+	s.pendingJobNotifsMu.Lock()
+	held := s.notifyWakeHolds > 0
+	if held {
+		s.notifyWakeDeferred = true
+	}
+	s.pendingJobNotifsMu.Unlock()
+	if !held {
+		s.notify()
+	}
+}
+
 // holdJobNotificationWake defers the notification wake until the returned
 // release runs, which then wakes ONCE if anything was queued meanwhile.
 // Notices produced by a single event belong in a single notification turn: an

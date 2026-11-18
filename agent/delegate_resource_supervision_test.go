@@ -655,6 +655,78 @@ func TestDelegateResourceSupervision_FoldLeavesAPresentedTickAlone(t *testing.T)
 	}
 }
 
+// TestDelegateResourceSupervision_ForwardedGroupArmsUnderItsHold pins that a
+// durable arm inside the router's group hold defers its wake (#2340 review).
+//
+// One output chunk can match several watches of one stable receiver. The router
+// delivers the whole group under holdJobNotificationWake and the receiver
+// appends and arms each match on its own. A direct wake on the first arm let a
+// leased request start while the rest of that chunk was still unwritten, so the
+// child presented one match and the remainder needed a second generation for
+// one chunk.
+//
+// The oracle is the wake itself, observed while the hold is up: it must not fire
+// inside the hold, and it must fire exactly once when the hold releases.
+func TestDelegateResourceSupervision_ForwardedGroupArmsUnderItsHold(t *testing.T) {
+	t.Parallel()
+	sess, _ := newCompactableSession(t)
+	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, controller, "dlg_forwarded", "")
+	sess.mu.Lock()
+	ownController := sess.delegateController
+	ownOwner := sess.owningDelegateID
+	sess.delegateController = controller
+	sess.owningDelegateID = "dlg_forwarded"
+	sess.mu.Unlock()
+	t.Cleanup(func() {
+		sess.mu.Lock()
+		sess.delegateController = ownController
+		sess.owningDelegateID = ownOwner
+		sess.mu.Unlock()
+	})
+	if !stableDelegateChild(sess) {
+		t.Fatal("setup: the fixture session is not a stable delegate child, so durable attention is not the ingress")
+	}
+	jm := sess.jobManager
+	if jm == nil {
+		t.Fatal("the fixture session has no job manager")
+	}
+	jm.mu.Lock()
+	ownStableOwner := jm.stableOwner
+	ownStableController := jm.delegateController
+	jm.stableOwner = sess
+	jm.delegateController = controller
+	jm.mu.Unlock()
+	t.Cleanup(func() {
+		jm.mu.Lock()
+		jm.stableOwner = ownStableOwner
+		jm.delegateController = ownStableController
+		jm.mu.Unlock()
+	})
+	var wakes atomic.Int32
+	sess.SetNotifyFunc(func() { wakes.Add(1) })
+
+	// The hold the router takes around one forwarded group.
+	release := sess.holdJobNotificationWake()
+	// One match of that chunk: appended through the production ingress, which
+	// arms it — the same thing the router triggers per match.
+	if !jm.persistStableWatchPendings([]jobNotification{{
+		Kind:        jobNotificationKindWatch,
+		Occurrence:  "reminder:forwarded-group",
+		Reason:      longRunningJobsReason,
+		Description: "forwarded group member",
+	}}) {
+		t.Fatal("the production stable ingress declined the forwarded notice")
+	}
+	if got := wakes.Load(); got != 0 {
+		t.Fatalf("the arm woke the receiver %d time(s) inside the group hold: the first match's leased request can start before the rest of the same chunk is durable, so those matches need a second generation", got)
+	}
+	release()
+	if got := wakes.Load(); got != 1 {
+		t.Fatalf("wakes after the hold released = %d, want exactly 1: the group's single deferred wake is what tells the child the whole chunk is durable", got)
+	}
+}
+
 // TestDelegateResourceSupervision_FailedSupersedeDiscardIsNotReportedLanded pins
 // that a failed discard of a superseded row makes the SURVIVOR's append report
 // OWED rather than durable (#2340 review).

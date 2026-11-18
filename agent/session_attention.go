@@ -754,7 +754,14 @@ func (s *Session) armDelegateAttentionsOnce(attentionIDs []string) error {
 			// receiver synchronously: a hold still in place at the drive's
 			// list read would present the armed row alone and leave the
 			// stopped report for a later generation.
-			s.notify()
+			//
+			// A JOB-NOTIFICATION hold is different: it covers one chunk's
+			// whole group, and the remaining matches of that chunk are
+			// appended and armed after this one. Waking inside it let the
+			// first match start a leased request before its siblings were
+			// durable, so they needed a second generation for one chunk
+			// (#2340 review).
+			s.notifyUnlessHeld()
 		}
 		return nil
 	}
