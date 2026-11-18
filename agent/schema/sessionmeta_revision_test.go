@@ -94,7 +94,8 @@ func TestSessionMetaRevisionInitializesAndIncrements(t *testing.T) {
 	const id = "02wMz5Txv1C3Hut0M8GCeB"
 	launch := PromptLaunchFacts{
 		KnowledgeCutoff: new(""), GitBranch: new("launch"), ScratchDir: new("/scratch"), WritableRoots: new(""),
-		FileToolWrites: "launch-boundary", TurnEndsProcess: new(false), HasAskUser: new(true), HasEndReason: new(true),
+		FileToolWrites: "launch-boundary", ShellNetwork: "blocked", DetachedShell: "unavailable",
+		TurnEndsProcess: new(false), HasAskUser: new(true), HasEndReason: new(true),
 	}
 	if err := SaveSessionMeta(dir, SessionMeta{ID: id, PromptLaunch: launch, UpdatedAt: time.Unix(1_700_000_000, 0)}); err != nil {
 		t.Fatalf("first save: %v", err)
@@ -108,7 +109,8 @@ func TestSessionMetaRevisionInitializesAndIncrements(t *testing.T) {
 	}
 
 	// A partial checkpoint can carry another runtime's observation.
-	got.PromptLaunch = PromptLaunchFacts{GitBranch: new(""), ScratchDir: new("/other-runtime"), FileToolWrites: "current-boundary", HasAskUser: new(false), HasEndReason: new(false)}
+	got.PromptLaunch = PromptLaunchFacts{GitBranch: new(""), ScratchDir: new("/other-runtime"), FileToolWrites: "current-boundary",
+		ShellNetwork: "allowed", DetachedShell: "available", HasAskUser: new(false), HasEndReason: new(false)}
 	if err := SaveSessionMeta(dir, got); err != nil {
 		t.Fatalf("second save: %v", err)
 	}

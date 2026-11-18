@@ -77,6 +77,8 @@ func (s *Session) rehydrateEnvironmentContext(history []schema.Turn) {
 	if roots := s.promptLaunch.WritableRoots; roots != nil {
 		baseline.Last.WritableRoots = *roots
 	}
+	baseline.Last.ShellNetwork = s.promptLaunch.ShellNetwork
+	baseline.Last.DetachedShell = s.promptLaunch.DetachedShell
 	s.envTracker = envctx.NewTracker(baseline)
 	s.envContextState = nil
 	var retained bool
@@ -146,6 +148,20 @@ func installedFileToolWrites(env execenv.ExecutionEnvironment) string {
 	return envctx.FileWritesSandbox
 }
 
+// The installed wrapper decides policy even when an embedding supplied it
+// independently of the session config. The advertised shell owns its modes.
+func (s *Session) shellCapabilities() (network, detached string) {
+	network = envctx.NetworkAllowed
+	if w := s.sandboxWrapper(); w != nil && !w.Policy().Network {
+		network = envctx.NetworkBlocked
+	}
+	detached = envctx.DetachUnavailable
+	if s.canInstructDetachedShell(s.env) {
+		detached = envctx.DetachAvailable
+	}
+	return network, detached
+}
+
 // setEnvironmentIdentity supplies only facts that need to supersede the launch
 // prompt or an earlier environment block. The session lock protects the profile.
 func (s *Session) setEnvironmentIdentity(snap *envctx.Snapshot, last envctx.Snapshot) {
@@ -172,6 +188,7 @@ func (s *Session) setEnvironmentIdentity(snap *envctx.Snapshot, last envctx.Snap
 	if fileWrites != s.promptLaunch.FileToolWrites || last.FileToolWrites != "" {
 		snap.FileToolWrites = fileWrites
 	}
+	snap.ShellNetwork, snap.DetachedShell = s.shellCapabilities()
 	cutoff := s.profile.KnowledgeCutoff()
 	// When a saved prompt has no recorded cutoff, publish the current catalog
 	// fact once. Retained model updates then own the cutoff across restores.

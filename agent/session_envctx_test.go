@@ -96,6 +96,11 @@ func (s *Session) maybeAppendEnvironmentContext() error {
 }
 
 func requestEnvironment(req llm.Request) (envctx.Snapshot, int) {
+	state, blocks := requestEnvironmentState(req)
+	return state.Last, blocks
+}
+
+func requestEnvironmentState(req llm.Request) (envctx.State, int) {
 	var tracker envctx.Tracker
 	blocks := 0
 	for _, msg := range req.Messages {
@@ -103,7 +108,7 @@ func requestEnvironment(req llm.Request) (envctx.Snapshot, int) {
 			blocks++
 		}
 	}
-	return tracker.State().Last, blocks
+	return tracker.State(), blocks
 }
 
 func TestFirstUserTurnIsPrecededByEnvironmentContext(t *testing.T) {

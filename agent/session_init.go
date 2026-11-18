@@ -237,6 +237,10 @@ func (s *Session) initEnvContext(launchCwd string, history []schema.Turn, entrie
 	s.promptWorkingDir = launchCwd
 	s.restoreGitObservations(entries)
 	s.rehydrateEnvironmentContext(history)
+	if probes.GitBranch != nil && s.envTracker.State().GitBranchUnknown {
+		// An autonomous request can precede the first user input.
+		s.worktreeContextPending = true
+	}
 }
 
 // An unborn HEAD or an interrupted Git probe supplies no branch observation.
@@ -1893,12 +1897,15 @@ func (s *Session) initSessionState(runSessionStartHooks bool, savedHeader *trans
 		s.promptSourceLog = []promptSource{{Label: "transcript:system_prompt", Size: len(savedHeader.SystemPrompt)}}
 	} else {
 		warning, failed := s.initializeSystemPrompt(env)
+		network, detached := s.shellCapabilities()
 		s.promptLaunch = schema.PromptLaunchFacts{
 			KnowledgeCutoff: new(s.profile.KnowledgeCutoff()),
 			GitBranch:       observedGitBranch(s.envInfo),
 			ScratchDir:      new(installedScratchDir(env)),
 			WritableRoots:   new(s.workspaceWritableRoots),
 			FileToolWrites:  installedFileToolWrites(env),
+			ShellNetwork:    network,
+			DetachedShell:   detached,
 			TurnEndsProcess: new(s.cfg.TurnEndsProcess),
 			HasAskUser:      new(s.canInstructTool(askUserToolName)),
 			HasEndReason:    new(s.resultAcceptsEndReason()),

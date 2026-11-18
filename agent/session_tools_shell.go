@@ -513,6 +513,10 @@ func detachSupportedBy(env execenv.ExecutionEnvironment) bool {
 	return ok && reporter.DetachSupported()
 }
 
+func (s *Session) canInstructDetachedShell(env execenv.ExecutionEnvironment) bool {
+	return s.canInstructTool("shell") && detachSupportedBy(env)
+}
+
 // shellToolForDiagnostics returns the shell tool whose repair and schema-error
 // prose preparation renders. Validation still uses the registry's compiled
 // schema, so a mode:"detached" call passes preparation and reaches

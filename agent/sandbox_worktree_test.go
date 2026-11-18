@@ -103,14 +103,14 @@ func TestEnterExitWorktreeReRootsAndRestores(t *testing.T) {
 	probes := testConfig{skipGitSnapshot: true, envProbes: &envctx.Probes{Now: func() time.Time { return envctxFixedTime }}, sandboxProber: sandbox.FakeProber{Facts: facts}}
 	policy := sbxResolve(t, facts, laneA, sandbox.ModeWorkspaceWrite)
 	launchRoots := writableRootsSummary(*policy)
-	launch := func(t *testing.T, mode string) (*Session, *agenttest.ScriptedAdapter) {
+	launch := func(t *testing.T, mode string, installed *sandbox.ResolvedPolicy) (*Session, *agenttest.ScriptedAdapter) {
 		t.Helper()
 		env := execenv.NewLocalExecutionEnvironment(laneA)
 		cfg := SessionConfig{Sandbox: mode, StateDir: t.TempDir(), testOnly: probes}
 		if err := PickFreshSessionID(env, &cfg); err != nil {
 			t.Fatal(err)
 		}
-		if err := env.EnableSandbox(policy); err != nil {
+		if err := env.EnableSandbox(installed); err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
@@ -153,20 +153,40 @@ func TestEnterExitWorktreeReRootsAndRestores(t *testing.T) {
 	t.Run("old launch grants without an active sandbox", func(t *testing.T) {
 		// An embedding may supply its own sandbox directly. An empty config
 		// does not request sandbox installation on a plain environment at resume.
-		s, adapter := launch(t, "")
+		netOff, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite, Network: new(false)}, facts, laneA)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s, adapter := launch(t, "", &netOff)
 		first := adapter.Requests()[0]
-		if last, _ := requestEnvironment(first); last.Sandbox != "off" || !strings.Contains(first.Messages[0].Text(), launchRoots) {
+		launchState, _ := requestEnvironment(first)
+		if launchState.Sandbox != "off" || !strings.Contains(first.Messages[0].Text(), launchRoots) {
 			t.Fatal("expected launch grants from the installed environment and an off configuration")
+		}
+		if launchState.ShellNetwork != "" || launchState.DetachedShell != "" || first.WebSearch {
+			t.Fatal("launch repeated its shell capabilities or enabled provider web search under network-off")
+		}
+		requireShellModeEnum(t, s, "embedded sandbox", "foreground", "background")
+		requireDetachUnsupported(t, s)
+		if egressDeniedByNet(s.currentEnv(), "web_fetch") == nil {
+			t.Fatal("the installed launch sandbox permitted network egress")
 		}
 		s.Close()
 		meta := loadMetaForTest(t, s)
 		meta.PromptLaunch.WritableRoots = nil
 		s = restore(t, s, meta)
+		requireShellModeEnum(t, s, "restored plain shell", "foreground", "background", "detached")
+		if d := fileToolCall(t, s, "shell", map[string]string{"command": "exec true", "mode": "detached"}); d.isError {
+			t.Fatalf("the restored shell refused its advertised detached mode: %s", d.output)
+		}
+		if err := egressDeniedByNet(s.currentEnv(), "web_fetch"); err != nil {
+			t.Fatalf("the restored plain environment denied egress: %v", err)
+		}
 		outside := fileToolCall(t, s, "write_file", map[string]string{"file_path": filepath.Join(laneB, "unconfined"), "content": s.ID()})
 		if outside.isError {
 			t.Fatalf("resumed file tool denied a path outside the launch roots: %s", outside.output)
 		}
-		check := func() {
+		check := func(prefixIntact bool) {
 			t.Helper()
 			sendOneUserInput(t, s, "continue")
 			reqs := adapter.Requests()
@@ -174,14 +194,32 @@ func TestEnterExitWorktreeReRootsAndRestores(t *testing.T) {
 			if got := updates(last, ""); got != 1 || last.Messages[0].Text() != first.Messages[0].Text() {
 				t.Errorf("request carried %d explicit withdrawals of the frozen launch roots, want one", got)
 			}
+			if prefixIntact && (len(last.Messages) < len(first.Messages) || !reflect.DeepEqual(last.Messages[:len(first.Messages)], first.Messages)) {
+				t.Error("restoring the plain shell rewrote the provider's launch prefix")
+			}
+			if !last.WebSearch {
+				t.Error("the restored provider request disabled its available web search")
+			}
+			var shellUpdates int
+			for _, m := range last.Messages {
+				var tracker envctx.Tracker
+				if m.Role == llm.RoleUser && tracker.ReplayBlock(m.Text()) {
+					if state := tracker.State().Last; state.ShellNetwork == envctx.NetworkAllowed && state.DetachedShell == envctx.DetachAvailable {
+						shellUpdates++
+					}
+				}
+			}
+			if shellUpdates != 1 {
+				t.Errorf("restored request carried %d observations of the installed network policy and detachable shell, want one", shellUpdates)
+			}
 		}
-		check()
-		check()
+		check(true)
+		check(true)
 		fold(t, s)
-		check()
+		check(false)
 	})
 
-	s, adapter := launch(t, sandbox.ModeWorkspaceWrite.String())
+	s, adapter := launch(t, sandbox.ModeWorkspaceWrite.String(), policy)
 	first := adapter.Requests()[0]
 	if !strings.Contains(first.Messages[0].Text(), launchRoots) {
 		t.Fatal("the startup prompt did not report the installed sandbox roots")

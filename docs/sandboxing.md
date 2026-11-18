@@ -181,6 +181,9 @@ spawned commands run with the host's filesystem permissions.
 File-tool write access is reported independently. When an ordinary aside
 resumes a delegate that could write only in scratch, its first request tells
 the model that file tools can edit the workspace under host permissions.
+When the installed sandbox or shell changes, the next request reports any
+change to shell network policy or detached mode. A detached command can
+outlive the session.
 
 The same rule governs it: every line is read from the resolved policy, quoted
 from a ruling recorded here, or measured at session start — through the

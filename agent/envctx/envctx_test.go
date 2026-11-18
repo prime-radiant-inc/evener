@@ -120,6 +120,8 @@ func TestReplayBlockFollowsRenderedChanges(t *testing.T) {
 	initial.ScratchDir = "/tmp/parent's \"scratch\""
 	initial.WritableRoots = "/work/\"project\"\nline two"
 	initial.FileToolWrites = FileWritesSandbox
+	initial.ShellNetwork = NetworkBlocked
+	initial.DetachedShell = DetachUnavailable
 	initial.Pressure.Load = "load pressure: warn level"
 	initial.Pressure.Memory = "memory pressure: warn level"
 	initial.Pressure.Disk = "disk pressure: 5% free"
@@ -138,6 +140,8 @@ func TestReplayBlockFollowsRenderedChanges(t *testing.T) {
 	changed.ScratchDir = "/tmp/child"
 	changed.WritableRoots = ""
 	changed.FileToolWrites = FileWritesHost
+	changed.ShellNetwork = NetworkAllowed
+	changed.DetachedShell = DetachAvailable
 	changed.Pressure = Pressure{}
 	changed.Model = "provider/m2"
 	changed.ExecutionMode = DaemonMode
@@ -208,6 +212,21 @@ func TestReplayBlockFollowsRenderedChanges(t *testing.T) {
 		}
 		if repeat := writer.RenderDiff(observed); repeat != "" {
 			t.Fatal("an unchanged checkout repeated its correction")
+		}
+	})
+
+	t.Run("branch-only record retained without its checkout", func(t *testing.T) {
+		cur := fullSnap()
+		cur.GitBranch, cur.gitBranchUnknown = "", true
+		model := NewTracker(State{Last: Snapshot{Cwd: cur.Cwd}, GitBranchUnknown: true})
+		// A saved branch-only block can outlive the turn that named its checkout.
+		model.ReplayBlock("<environment_context>\ngit branch: linked-branch\n</environment_context>")
+		writer := NewTracker(model.State())
+		if !model.ReplayBlock(writer.RenderDiff(cur)) || model.State().Last.GitBranch != "" || !model.State().GitBranchUnknown || model.State() != writer.State() {
+			t.Fatalf("the retained branch escaped its checkout: model %+v, writer %+v", model.State(), writer.State())
+		}
+		if block := writer.RenderDiff(cur); block != "" {
+			t.Error("a second inconclusive probe repeated the correction")
 		}
 	})
 

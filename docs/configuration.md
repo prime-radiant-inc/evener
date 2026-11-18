@@ -197,6 +197,10 @@ session was stopped, the first resumed request reports the newly observed
 branch, including when a job notification wakes the session. A fold before
 dispatch reuses the branch observation from the same request. Installing
 another workspace before dispatch requires an observation of that checkout.
+If the launch branch is unknown and a Git probe is available, the first request
+samples it even when an idle goal starts before any user input. Branch updates
+name their working directory so a retained update still identifies its checkout
+after a fold.
 If a Git probe encounters an unborn HEAD or fails, the current request keeps
 the last confirmed branch for this checkout. A checkout with no confirmed
 observation reports its branch as unconfirmed. Evener recovers each checkout’s

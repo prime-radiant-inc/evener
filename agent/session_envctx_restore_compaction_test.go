@@ -23,6 +23,72 @@ import (
 func TestRestoreEnvironmentReconcilesCompactionWithStaleMetadata(t *testing.T) {
 	t.Run("checkout in the launch prompt", testCompactedLaunchBranch)
 	t.Run("inconclusive checkout after fold", testCompactedGitObservation)
+	t.Run("branch retained from a removed worktree", func(t *testing.T) {
+		const launchBranch = "launch-unborn"
+		const linkedBranch = "linked-update"
+		root, linked := gittest.NewLinkedWorktree(t)
+		root, linked = evalSyms(t, root), evalSyms(t, linked)
+		gittest.Run(t, root, "checkout", "--orphan", launchBranch)
+		s := newScriptedSummaryCompactSession(t, "fold-worktree", func(llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nSaved work summary\n[END SUMMARY]")}
+		}, withDir(root), withStateDir(t.TempDir()), withEnvironmentSnapshot())
+		prompt := s.transcript.Header().SystemPrompt
+		if err := s.enterWorktree(linked, false); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.maybeAppendEnvironmentContext(); err != nil {
+			t.Fatal(err)
+		}
+		seedNumberedSessionHistory(t, s, 8)
+		gittest.Run(t, linked, "checkout", "-b", linkedBranch)
+		if err := s.maybeAppendEnvironmentContext(); err != nil {
+			t.Fatal(err)
+		}
+		changedID := s.history[len(s.history)-1].StableTurnID
+		s.contextMgr.PreserveRecentTurns = 2
+		if err := s.Compact(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if retained := historyEnvironmentTurnIDs(s); !slices.Equal(retained, []string{changedID}) {
+			t.Fatalf("fold retained environment turns %v, want only branch update %s", retained, changedID)
+		}
+		for _, turn := range s.history {
+			if turn.StableTurnID == changedID {
+				var update envctx.Tracker
+				update.ReplayBlock(turn.Message.Text())
+				if got := update.State().Last; got.Cwd != linked || got.GitBranch != linkedBranch {
+					t.Errorf("retained update identifies cwd %q and branch %q, want %q on %q", got.Cwd, got.GitBranch, linked, linkedBranch)
+				}
+			}
+		}
+		s.Close()
+		meta := loadMetaForTest(t, s)
+		if meta.WorktreePath != linked || meta.WorktreeRestoreRoot != root || meta.PromptLaunch.GitBranch != nil {
+			t.Fatalf("persisted checkout %q, restore root %q, launch branch %v", meta.WorktreePath, meta.WorktreeRestoreRoot, meta.PromptLaunch.GitBranch)
+		}
+		gittest.Run(t, root, "worktree", "remove", linked)
+		restored, err := RestoreSessionFromMetaWithConfig(s.client, s.profile, execenv.NewLocalExecutionEnvironment(root), meta, RestoreSessionConfig{StateDir: s.stateDir})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(restored.Close)
+		adapter := &agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response { return agenttest.FinalResponse("ack") }}
+		restored.client.Register(adapter)
+		for round, want := range []string{"", launchBranch} {
+			if round == 1 {
+				gittest.Run(t, root, "commit", "--allow-empty", "-m", "first")
+			}
+			enqueueCompletedJobNotification(t, restored, fmt.Sprintf("job_checkout_%d", round))
+			if _, err := restored.ProcessInputKind(t.Context(), "", nil, EntryNotification); err != nil {
+				t.Fatal(err)
+			}
+			req := adapter.Requests()[round]
+			state, _ := requestEnvironmentState(req)
+			if state.Last.Cwd != root || state.Last.GitBranch != want || state.GitBranchUnknown != (round == 0) || req.Messages[0].Text() != prompt {
+				t.Errorf("restored request %d saw cwd %q and branch %q, unknown %t, original prompt %t", round, state.Last.Cwd, state.Last.GitBranch, state.GitBranchUnknown, req.Messages[0].Text() == prompt)
+			}
+		}
+	})
 	for _, retained := range []string{"none", "full", "diff"} {
 		t.Run(retained, func(t *testing.T) {
 			now := envctxFixedTime
@@ -142,6 +208,7 @@ func TestRestoreEnvironmentReconcilesCompactionWithStaleMetadata(t *testing.T) {
 				t.Fatalf("resumed environment turns = %d, want %d", got, wantCount)
 			}
 			want := envctx.NewCollector(*probes).Collect(envctx.Inputs{Cwd: cwd, Sandbox: restored.cfg.Sandbox})
+			want.ShellNetwork, want.DetachedShell = meta.PromptLaunch.ShellNetwork, meta.PromptLaunch.DetachedShell
 			if got := restored.envTracker.State(); !got.HasSent || got.Last != want {
 				t.Fatalf("restored environment state = %+v, want complete %+v", got, want)
 			}

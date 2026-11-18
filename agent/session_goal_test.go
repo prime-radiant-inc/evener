@@ -9,11 +9,13 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/envctx"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/goal"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/gittest"
 	"primeradiant.com/evener/llm"
 )
 
@@ -279,6 +281,52 @@ func TestSetGoalRejectsEmpty(t *testing.T) {
 // started=true.
 func TestSetGoalIdleKicks(t *testing.T) {
 	t.Parallel()
+	t.Run("first request on an unborn checkout", func(t *testing.T) {
+		const branch = "goal-checkout"
+		dir := t.TempDir()
+		gittest.Run(t, dir, "init", "-b", branch)
+		env := execenv.NewLocalExecutionEnvironment(dir)
+		var probes int
+		observations := &envctx.Probes{
+			Now: func() time.Time { return envctxFixedTime },
+			GitBranch: func(cwd string) (string, bool) {
+				probes++
+				return snapshotGitBranch(env, cwd)
+			},
+		}
+		s := newSession(t, withEnv(env), withEnvironmentSnapshot(), withConfig(SessionConfig{StateDir: t.TempDir(), testOnly: testConfig{envProbes: observations}}))
+		prompt := s.transcript.Header().SystemPrompt
+		var round int
+		s.client.Register(&agenttest.ScriptedAdapter{Provider: "openai", Responder: func(req llm.Request) llm.Response {
+			round++
+			state, _ := requestEnvironmentState(req)
+			if probes != round || state.Last.Cwd != dir || req.Messages[0].Text() != prompt {
+				t.Errorf("request %d saw %d Git probes, cwd %q, original prompt %t", round, probes, state.Last.Cwd, req.Messages[0].Text() == prompt)
+			}
+			if round == 1 {
+				if !state.GitBranchUnknown || state.Last.GitBranch != "" {
+					t.Errorf("first request reported %q, unknown %t", state.Last.GitBranch, state.GitBranchUnknown)
+				}
+				gittest.Run(t, dir, "commit", "--allow-empty", "-m", "first")
+				return agenttest.ToolCallResponse(llm.ToolCallData{ID: "tasks", Name: "task_list", Arguments: []byte(`{}`)})
+			}
+			if state.GitBranchUnknown || state.Last.GitBranch != branch {
+				t.Errorf("after the first commit the model received %q, unknown %t", state.Last.GitBranch, state.GitBranchUnknown)
+			}
+			if err := s.ClearGoal(); err != nil {
+				t.Fatal(err)
+			}
+			return agenttest.FinalResponse("done")
+		}})
+		var kick string
+		s.SetKickFunc(func(prompt string) { kick = prompt })
+		if started, err := s.SetGoal(t.Context(), "inspect the checkout"); err != nil || !started || kick == "" {
+			t.Fatalf("SetGoal started %t, kick delivered %t, err %v", started, kick != "", err)
+		}
+		if _, err := s.ProcessInputKind(t.Context(), kick, nil, EntryContinuation); err != nil || round != 2 {
+			t.Fatalf("idle goal continuation made %d requests, err %v", round, err)
+		}
+	})
 	sess := newGoalMethodSession(t)
 	defer sess.Close()
 

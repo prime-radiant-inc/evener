@@ -30,6 +30,8 @@ type Snapshot struct {
 	ScratchDir        string   `json:"scratch_dir,omitempty"`
 	WritableRoots     string   `json:"writable_roots,omitempty"`
 	FileToolWrites    string   `json:"file_tool_writes,omitempty"`
+	ShellNetwork      string   `json:"shell_network,omitempty"`
+	DetachedShell     string   `json:"detached_shell,omitempty"`
 	GitBranch         string   `json:"git_branch,omitempty"` // "" outside a git repo
 	gitBranchUnknown  bool     // Applies to an observation, never to the retained state.
 	Pressure          Pressure `json:"pressure,omitzero"`
@@ -77,6 +79,12 @@ const fileToolWritesPrefix = "file-tool writes: "
 const FileWritesHost = "host filesystem permissions"
 const FileWritesScratch = "session scratch only"
 const FileWritesSandbox = "sandbox-granted paths and session scratch"
+const shellNetworkPrefix = "shell network policy: "
+const NetworkAllowed = "allowed"
+const NetworkBlocked = "blocked"
+const detachedShellPrefix = "detached shell commands: "
+const DetachAvailable = "available"
+const DetachUnavailable = "unavailable"
 const executionModePrefix = "execution mode: "
 const OneShotMode = "one-shot"
 const DaemonMode = "daemon"
@@ -143,6 +151,10 @@ func (t *Tracker) ReplayBlock(block string) bool {
 			}
 		case line == fileToolWritesPrefix+FileWritesHost, line == fileToolWritesPrefix+FileWritesScratch, line == fileToolWritesPrefix+FileWritesSandbox:
 			t.st.Last.FileToolWrites = strings.TrimPrefix(line, fileToolWritesPrefix)
+		case line == shellNetworkPrefix+NetworkAllowed, line == shellNetworkPrefix+NetworkBlocked:
+			t.st.Last.ShellNetwork = strings.TrimPrefix(line, shellNetworkPrefix)
+		case line == detachedShellPrefix+DetachAvailable, line == detachedShellPrefix+DetachUnavailable:
+			t.st.Last.DetachedShell = strings.TrimPrefix(line, detachedShellPrefix)
 		case strings.HasPrefix(line, "git branch: "):
 			branch = true
 			value := strings.TrimPrefix(line, "git branch: ")
@@ -218,17 +230,15 @@ func (t *Tracker) RenderDiff(cur Snapshot) string {
 	first := !t.st.HasSent
 	prev := t.st.Last
 	moved := prev.Cwd != "" && cur.Cwd != prev.Cwd
-	branchUnreported := t.st.GitBranchUnknown || moved
-	resolveBranch := branchUnreported && !cur.gitBranchUnknown
-	reportUnconfirmed := cur.gitBranchUnknown && (moved || (first && prev.Cwd != "" && t.st.GitBranchUnknown))
-	if cur.gitBranchUnknown {
+	// The collector already consulted this checkout's observations. An
+	// unqualified branch in retained history may belong to another checkout.
+	unknown := cur.gitBranchUnknown
+	if unknown {
 		cur.GitBranch = ""
-		if !reportUnconfirmed {
-			cur.GitBranch = prev.GitBranch
-		}
 		cur.gitBranchUnknown = false
 	}
-	if !first && cur == t.st.Last && !resolveBranch && !t.st.ScratchDirUnknown && !t.st.WritableRootsUnknown {
+	reportBranch := moved || cur.GitBranch != prev.GitBranch || unknown != t.st.GitBranchUnknown || (first && unknown && prev.Cwd != "")
+	if !first && cur == prev && !reportBranch && !t.st.ScratchDirUnknown && !t.st.WritableRootsUnknown {
 		return ""
 	}
 
@@ -238,7 +248,8 @@ func (t *Tracker) RenderDiff(cur Snapshot) string {
 			lines = append(lines, line)
 		}
 	}
-	add(cur.Cwd != prev.Cwd, fmt.Sprintf("cwd: %q", cur.Cwd))
+	// Compaction may retain this branch update by itself.
+	add(cur.Cwd != prev.Cwd || reportBranch, fmt.Sprintf("cwd: %q", cur.Cwd))
 	add(cur.LocalDateHour != prev.LocalDateHour, "date: "+cur.LocalDateHour)
 	add(cur.Sandbox != prev.Sandbox, "sandbox: "+cur.Sandbox)
 	if cur.ScratchDir != prev.ScratchDir || t.st.ScratchDirUnknown {
@@ -254,11 +265,24 @@ func (t *Tracker) RenderDiff(cur Snapshot) string {
 	if cur.FileToolWrites != "" && cur.FileToolWrites != prev.FileToolWrites {
 		lines = append(lines, fileToolWritesPrefix+cur.FileToolWrites)
 	}
-	if reportUnconfirmed {
-		lines = append(lines, "git branch: "+unconfirmedBranch)
-	} else if cur.GitBranch != prev.GitBranch || resolveBranch {
+	if cur.ShellNetwork != "" && cur.ShellNetwork != prev.ShellNetwork {
+		lines = append(lines, shellNetworkPrefix+cur.ShellNetwork)
+	}
+	if cur.DetachedShell != prev.DetachedShell {
+		switch cur.DetachedShell {
+		case DetachAvailable:
+			lines = append(lines, detachedShellPrefix+DetachAvailable,
+				"Use detached mode for a process that should outlive this session. Give it absolute paths outside session scratch.")
+		case DetachUnavailable:
+			lines = append(lines, detachedShellPrefix+DetachUnavailable,
+				"Shell jobs started in background mode belong to this session and end when it exits.")
+		}
+	}
+	if reportBranch {
 		branch := cur.GitBranch
-		if branch == "" {
+		if unknown {
+			branch = unconfirmedBranch
+		} else if branch == "" {
 			branch = outsideWorktree
 		}
 		lines = append(lines, "git branch: "+branch)
@@ -348,7 +372,7 @@ func (t *Tracker) RenderDiff(cur Snapshot) string {
 	if len(lines) == 0 {
 		return ""
 	}
-	t.st = State{Last: cur, HasSent: true, GitBranchUnknown: branchUnreported && !resolveBranch}
+	t.st = State{Last: cur, HasSent: true, GitBranchUnknown: unknown}
 	return "<environment_context>\n" + strings.Join(lines, "\n") + "\n</environment_context>"
 }
 
