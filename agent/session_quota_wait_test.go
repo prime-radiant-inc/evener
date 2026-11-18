@@ -1342,3 +1342,103 @@ func TestAWaitEndingAnnouncesTheRetry(t *testing.T) {
 	close(answer)
 	run.awaitEnd(t, trip, "the retry finishes the turn")
 }
+
+// quotaWaitAnnouncements collects the wait's own announcements — the
+// ModelRetry events a quota wait emits (its start, and the zero-delay
+// retry that ends it) — through the session's one authoritative consumer.
+type quotaWaitAnnouncements struct {
+	mu      sync.Mutex
+	retries []events.ModelRetryData
+}
+
+func (a *quotaWaitAnnouncements) consume(ev events.SessionEvent) {
+	if data, ok := ev.Data.(events.ModelRetryData); ok && data.WaitStartedAt != 0 {
+		a.mu.Lock()
+		a.retries = append(a.retries, data)
+		a.mu.Unlock()
+	}
+}
+
+func (a *quotaWaitAnnouncements) snapshot() []events.ModelRetryData {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]events.ModelRetryData(nil), a.retries...)
+}
+
+// A quota wait carries a daemon-issued identity on every producer: the
+// start announcement and the zero-delay retry that ends it carry the same
+// stamp, the thread read's failure summary carries it too, and a second
+// wait of the same turn — a steer that wakes the first and meets the limit
+// again — carries a strictly greater one even though both waits began at
+// the same fake-clock instant (a wall clock would collide here). The
+// start announcement's ResumesAt is the same instant the read summary
+// carries; the wake names none.
+func TestQuotaWaitAnnouncementsCarryTheWaitIdentity(t *testing.T) {
+	s, clk, _, adapter := newAttentionLivelockSession(t, usageLimitError(t, "openai", quotaResetAt))
+	var announcements quotaWaitAnnouncements
+	s.ConsumeEventsLossless(announcements.consume, func() {})
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	trip := tripwireCtx(t).Done()
+	run := startInput(context.Background(), s, "start the work", EntryUserInput)
+	run.awaitQuotaWait(t, s)
+
+	failure := s.RestingFailure()
+	if failure == nil {
+		t.Fatal("no failure summary while the call waits")
+	}
+	started := announcements.snapshot()
+	if len(started) != 1 {
+		t.Fatalf("wait start announcements = %+v, want one", started)
+	}
+	if started[0].ResumesAt != failure.ResumesAt {
+		t.Fatalf("start announcement resumes at %d, want the read summary's %d", started[0].ResumesAt, failure.ResumesAt)
+	}
+	if failure.WaitStartedAt != started[0].WaitStartedAt {
+		t.Fatalf("read summary stamp %d, want the start announcement's %d", failure.WaitStartedAt, started[0].WaitStartedAt)
+	}
+
+	// A steer wakes the first wait; the provider still meets the limit, so
+	// the call waits again within the same turn.
+	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "steer-rewaits",
+		Input:            []appwire.InputItem{{Type: "text", Text: "is the quota back"}},
+	}); err != nil {
+		t.Fatalf("steer: %v", err)
+	}
+	testwait.Until(t, "the steer retries the call", func() bool { return streamCalls(adapter) == 2 })
+	run.awaitQuotaWait(t, s)
+
+	second := s.RestingFailure()
+	if second == nil || second.ResumesAt != failure.ResumesAt {
+		t.Fatalf("second wait's summary = %+v, want it to resume at the same reset %d", second, failure.ResumesAt)
+	}
+	got := announcements.snapshot()
+	if len(got) != 3 {
+		t.Fatalf("wait announcements = %+v, want the first's start and wake and the second's start", got)
+	}
+	// The wake for wait 1 carries wait 1's stamp: a client can tell which
+	// wait the retry belongs to.
+	if got[1].WaitStartedAt != started[0].WaitStartedAt {
+		t.Fatalf("the wake carried stamp %d, want the wait it ended's %d", got[1].WaitStartedAt, started[0].WaitStartedAt)
+	}
+	if got[1].ResumesAt != 0 {
+		t.Fatalf("the wake carried resumesAt %d, want none: the retry installs no deadline", got[1].ResumesAt)
+	}
+	// The second wait's start carries a strictly greater stamp than the
+	// first's, though both began at the same wall-clock instant.
+	if got[2].WaitStartedAt <= started[0].WaitStartedAt {
+		t.Fatalf("the second wait's stamp %d does not compare greater than the first's %d", got[2].WaitStartedAt, started[0].WaitStartedAt)
+	}
+	if second.WaitStartedAt != got[2].WaitStartedAt {
+		t.Fatalf("second read summary stamp %d, want the second start's %d", second.WaitStartedAt, got[2].WaitStartedAt)
+	}
+	if got[2].ResumesAt != failure.ResumesAt {
+		t.Fatalf("second start resumes at %d, want the read summary's %d", got[2].ResumesAt, failure.ResumesAt)
+	}
+
+	recoverProvider(adapter)
+	reachReset(clk)
+	run.awaitEnd(t, trip, "the call resumes at the reset")
+}

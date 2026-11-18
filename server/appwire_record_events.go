@@ -279,6 +279,9 @@ func (s *Server) finishProcessing() {
 		// SESSION_END will state the resting state, and until then idle
 		// stands in for it rather than the rest from before the turn.
 		awaitingTurnEnd := s.appActiveTurnID != "" && !s.appTurnEndStated
+		// The fallback frame below names the turn this input ran, so the id
+		// is captured before endProcessingLocked clears it.
+		endedTurnID := s.appActiveTurnID
 		s.endProcessingLocked()
 		threadID, ref := s.appRootIdentityLocked()
 		var pending []pendingAppNotification
@@ -315,7 +318,12 @@ func (s *Server) finishProcessing() {
 				threadID: threadID,
 				ref:      ref,
 				method:   appwire.NotifyThreadStatusChanged,
-				params:   appwire.ThreadStatusChangedParams{ThreadID: threadID, Ref: ref, Status: appwire.ThreadStatus{Type: status}},
+				params: appwire.ThreadStatusChangedParams{
+					ThreadID:    threadID,
+					Ref:         ref,
+					Status:      appwire.ThreadStatus{Type: status},
+					EndedTurnID: endedTurnID,
+				},
 			})
 		}
 		s.mu.Unlock()

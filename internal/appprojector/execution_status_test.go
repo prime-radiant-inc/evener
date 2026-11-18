@@ -49,6 +49,51 @@ func TestProjectorPublishesExecutionsAsThreadStatus(t *testing.T) {
 	}
 }
 
+// The turn a terminal status ends rides the frame as EndedTurnID, so a
+// client can tell a Stop for the turn its snapshot still shows running from
+// one for an older turn the snapshot already replaced. The execution's end
+// names the ended turn from the event itself; a session end while one runs
+// names the turn the projector still held before it cleared it — a closing
+// session's own EXECUTION_ENDED may never arrive, and on the root it is
+// suppressed before SESSION_END is projected, so the projector must still
+// remember it.
+func TestProjectorTerminalStatusNamesTheEndedTurn(t *testing.T) {
+	p := NewAppEventProjector("th_1", "local:th_1")
+	status := func(out []AppNotification) appwire.ThreadStatusChangedParams {
+		t.Helper()
+		if len(out) != 1 || out[0].Method != appwire.NotifyThreadStatusChanged {
+			t.Fatalf("notifications = %+v, want one thread/status/changed", out)
+		}
+		return out[0].Params.(appwire.ThreadStatusChangedParams)
+	}
+
+	projectEvent(p, events.ExecutionStartedData{TurnID: "t_1"})
+	if got := status(projectEvent(p, events.ExecutionEndedData{TurnID: "t_1", Status: "completed"})); got.EndedTurnID != "t_1" {
+		t.Fatalf("execution end = %+v, want it to name the ended turn t_1", got)
+	}
+
+	projectEvent(p, events.ExecutionStartedData{TurnID: "t_2"})
+	// No EXECUTION_ENDED arrives — the root suppresses it, and a closing
+	// session stops emitting — but the session end must still name t_2.
+	if got := status(projectEvent(p, events.SessionEndData{State: appwire.ThreadStatusIdle})); got.EndedTurnID != "t_2" {
+		t.Fatalf("session end = %+v, want it to name the ended turn t_2", got)
+	}
+
+	// An end with no running execution names no turn: an older-daemon
+	// client treats absence as "no answer", never infers ownership.
+	projectEvent(p, events.ExecutionStartedData{TurnID: "t_3"})
+	projectEvent(p, events.ExecutionEndedData{TurnID: "t_3", Status: "completed"})
+	if got := status(projectEvent(p, events.SessionEndData{State: appwire.ThreadStatusIdle})); got.EndedTurnID != "" {
+		t.Fatalf("session end after the execution ended = %+v, want no ended turn named", got)
+	}
+
+	// An end for an execution another one replaced says nothing at all.
+	projectEvent(p, events.ExecutionStartedData{TurnID: "t_4"})
+	if out := projectEvent(p, events.ExecutionEndedData{TurnID: "t_0", Status: "completed"}); len(out) != 0 {
+		t.Fatalf("a replaced execution's end = %+v, want nothing", out)
+	}
+}
+
 // History reaches clients from recorded entries and live unrecorded state from
 // the overlay: the projector emits neither, and mints no turn or item ids.
 func TestProjectorEmitsNoHistory(t *testing.T) {
@@ -131,5 +176,39 @@ func TestProjectModelRetryEmitsThreadScopedNotice(t *testing.T) {
 	}
 	if got.AttemptCap != 4 {
 		t.Errorf("AttemptCap = %d, want 4", got.AttemptCap)
+	}
+}
+
+// A quota wait's announcement carries the wait's identity: the same
+// WaitStartedAt on the start and the zero-delay retry that ends it, and
+// ResumesAt only on the start. The projector passes the daemon's values
+// through untouched — it cannot invent them.
+func TestProjectModelRetryCarriesTheWaitIdentity(t *testing.T) {
+	p := NewAppEventProjector("th_1", "local:th_1")
+	projectEvent(p, events.ExecutionStartedData{TurnID: "t_wait"})
+
+	retryParams := func(data events.ModelRetryData) appwire.ThreadModelRetryParams {
+		t.Helper()
+		out := projectEvent(p, data)
+		if len(out) != 1 || out[0].Method != appwire.NotifyEvenerThreadModelRetry {
+			t.Fatalf("model retry = %+v, want one %s", out, appwire.NotifyEvenerThreadModelRetry)
+		}
+		return out[0].Params.(appwire.ThreadModelRetryParams)
+	}
+
+	start := retryParams(events.ModelRetryData{
+		Attempt:       1,
+		DelayMS:       7_200_000,
+		ErrorClass:    "quota_exceeded",
+		Model:         "k3",
+		WaitStartedAt: 4,
+		ResumesAt:     1_800_000_000_000,
+	})
+	if start.WaitStartedAt != 4 || start.ResumesAt != 1_800_000_000_000 {
+		t.Fatalf("wait start = %+v, want the daemon's stamp 4 and resume instant", start)
+	}
+	wake := retryParams(events.ModelRetryData{Attempt: 1, DelayMS: 0, WaitStartedAt: 4})
+	if wake.WaitStartedAt != 4 || wake.ResumesAt != 0 {
+		t.Fatalf("wait wake = %+v, want the wait's stamp 4 and no resume instant", wake)
 	}
 }

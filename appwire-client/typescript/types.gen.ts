@@ -4858,6 +4858,7 @@ export interface ThreadFailure {
   title?: string;
   cause?: DiagnosticCause;
   resumesAt?: number;
+  waitStartedAt?: number;
 }
 
 export interface ThreadForceStopParams {
@@ -5197,6 +5198,8 @@ export interface ThreadModelRetryParams {
   model?: string;
   groupElapsedMs: number;
   attemptCap: number;
+  waitStartedAt?: number;
+  resumesAt?: number;
 }
 
 export interface ThreadModelSetParams {
@@ -5501,6 +5504,16 @@ export interface ThreadStatusChangedParams {
    * EvenerThread.ActiveTurnID.
    */
   activeTurnId?: string;
+  /**
+   * EndedTurnID is the turn a terminal status ended, so a client can tell
+   * a Stop for the turn its snapshot still shows running from one for an
+   * older turn the snapshot already replaced. Set on the frames that end a
+   * running turn: the execution's end, the session's end while one runs,
+   * and the root's settlement of a published turn. ABSENT MEANS "NO
+   * ANSWER" (an older daemon omits it): a client must then preserve the
+   * snapshot's running turn rather than infer what the frame ended.
+   */
+  endedTurnId?: string;
 }
 
 export interface ThreadTranscriptListParams {

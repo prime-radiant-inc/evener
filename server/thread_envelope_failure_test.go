@@ -73,7 +73,9 @@ func TestThreadSnapshotsCarryAQuotaWaitWhileWorking(t *testing.T) {
 	}
 	srv.SetState(appwire.ThreadStatusActive)
 
-	waiting := &appwire.ThreadFailure{Title: "Usage limit reached", Cause: &appwire.DiagnosticCause{Kind: "provider", Provider: "openai", Status: 429}, ResumesAt: 1_800_000_000_000}
+	// The summary carries the wait's stamp beside its resume instant, so a
+	// client can order two waits of one turn that share a reset.
+	waiting := &appwire.ThreadFailure{Title: "Usage limit reached", Cause: &appwire.DiagnosticCause{Kind: "provider", Provider: "openai", Status: 429}, ResumesAt: 1_800_000_000_000, WaitStartedAt: 4}
 	for _, ended := range []events.EventData{
 		// The retry that ends the wait is announced as it goes out, so the
 		// row drops the wait before the retry's response streams.

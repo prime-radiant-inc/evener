@@ -159,6 +159,13 @@ type CommunicatePreviewResetData struct {
 // first attempt (one model call, spanning every retry within it), so a
 // client can render how long the current call has been running rather than
 // just an attempt count.
+//
+// WaitStartedAt and ResumesAt name a usage-limit wait, never an ordinary
+// retry: the wait's identity (a strictly increasing session-local
+// sequence, not a wall-clock instant — a later wait of the same turn
+// always compares greater) and the absolute epoch-ms instant the call
+// resumes. The zero-delay retry that ends a wait carries the same
+// WaitStartedAt and no ResumesAt.
 type ModelRetryData struct {
 	Attempt        int    `json:"attempt"`
 	MaxAttempts    int    `json:"max_attempts"`
@@ -169,6 +176,8 @@ type ModelRetryData struct {
 	Model          string `json:"model,omitempty"`
 	GroupElapsedMS int64  `json:"group_elapsed_ms"`
 	AttemptCap     int    `json:"attempt_cap"`
+	WaitStartedAt  uint64 `json:"wait_started_at,omitempty"`
+	ResumesAt      int64  `json:"resumes_at,omitempty"`
 }
 
 // ReasoningSummaryDeltaData is the payload for an EventReasoningSummaryDelta
