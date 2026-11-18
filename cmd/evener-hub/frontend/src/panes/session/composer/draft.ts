@@ -30,7 +30,7 @@ const COMPOSER_SEAT_PREFIX = "evener.composer.seat.v1.";
 // rather than inside it. A recovery row takes ownership of the draft TEXT into
 // IndexedDB and the localStorage record is then cleared, so a fact that rode
 // only that record would be lost exactly when the person reopens the draft
-// (review 51880 finding 3). This side record outlives the draft record for the
+// This side record outlives the draft record for the
 // same reason the recovery row does: it describes the ref's composition, not
 // one storage location's copy of it.
 const IMAGE_PROVENANCE_PREFIX = "evener.composer.imageProvenance.v1.";
@@ -256,17 +256,13 @@ export function writeComposerDraft(
   imageMarkers?: readonly number[],
 ): string | undefined {
   markDraftEdited(ref);
-  // Provenance is written even when the record itself is not: an empty draft
-  // clears the text record, but the ref's composition still says which anchors
-  // its images are gone from. This is what lets a draft that moved into a
-  // recovery row come back tagged (review 51880 finding 3).
-  if (imageMarkers !== undefined) writeComposerImageMarkers(ref, imageMarkers);
-  try {
-    if (isBlankDraft(value)) {
-      localStorage.removeItem(composerDraftStorageKey(ref));
-      localStorage.removeItem(draftStorageKey(ref));
-      return undefined;
-    } else {
+  const revisionId = (() => {
+    try {
+      if (isBlankDraft(value)) {
+        localStorage.removeItem(composerDraftStorageKey(ref));
+        localStorage.removeItem(draftStorageKey(ref));
+        return undefined;
+      }
       // The one choke point every persisted draft edit goes through, so the stamp
       // is the draft's actual last-write time.
       const revisionId = createSecureUUID();
@@ -285,12 +281,17 @@ export function writeComposerDraft(
         // The structured snapshot is committed and takes precedence on read.
       }
       return revisionId;
+    } catch {
+      // Best-effort: a full quota or Safari private-mode must never be fatal
+      // to the composer itself, only to draft persistence across reloads.
+      return undefined;
     }
-  } catch {
-    // Best-effort: a full quota or Safari private-mode must never be fatal
-    // to the composer itself, only to draft persistence across reloads.
-    return undefined;
-  }
+  })();
+  // Only after the draft write has settled. A failed write must leave the
+  // previous draft AND the provenance that describes it untouched, or a
+  // reload would pair the old text with a newer marker list.
+  if (imageMarkers !== undefined) writeComposerImageMarkers(ref, imageMarkers);
+  return revisionId;
 }
 
 export function readComposerDraftRevisionId(ref: string): string | undefined {
@@ -302,23 +303,30 @@ export function readComposerDraftRevisionId(ref: string): string | undefined {
  * them, in the same record readComposerDraftSnapshot just returned.
  *
  * This is the one fact an adopting composer needs to honour the invariant
- * that a marker and its bytes are committed together (issue #4826): a marker
- * listed here had an image, localStorage kept no bytes, so the adopter owns
- * an anchor with nothing behind it and must refuse to send it. A marker NOT
- * listed here is literal prose the person typed, which sends as text.
+ * that a marker and its bytes are committed together: a marker listed here
+ * had an image, localStorage kept no bytes, so the adopter owns an anchor
+ * with nothing behind it and must refuse to send it. A marker NOT listed here
+ * is literal prose the person typed, which sends as text.
+ *
+ * The draft record is authoritative for its OWN text, and the side record is
+ * consulted only when there is no draft record to describe. Text and its
+ * marker list are one fact, so a write that fails to store the text must not
+ * leave a newer list describing the older text: reading both from the same
+ * record is what keeps a failed replacement from enabling a stale anchor.
+ * The side record exists for the one case the draft record cannot cover - a
+ * text that has moved into a recovery row and cleared its local copy.
  */
 export function readComposerDraftImageMarkers(ref: string): number[] {
-  const side = readImageProvenance(ref);
-  if (side !== undefined) return side;
   try {
     const structured = localStorage.getItem(composerDraftStorageKey(ref));
-    if (structured === null) return [];
-    const parsed: unknown = JSON.parse(structured);
-    if (!isStoredComposerDraft(parsed)) return [];
-    return parsed.imageMarkers ?? [];
+    if (structured !== null) {
+      const parsed: unknown = JSON.parse(structured);
+      if (isStoredComposerDraft(parsed)) return parsed.imageMarkers ?? [];
+    }
   } catch {
-    return [];
+    // Fall through to the side record, which is also best-effort.
   }
+  return readImageProvenance(ref) ?? [];
 }
 
 // The ref's missing-image markers as recorded by the most recent write, or

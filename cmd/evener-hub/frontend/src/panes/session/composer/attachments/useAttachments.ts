@@ -242,7 +242,7 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
         operationTokens.set(item, token);
         return item;
       });
-      // Bytes first, then the text that names them (issue #4826). The editor
+      // Bytes first, then the text that names them. The editor
       // write is the commit point: a source persists its draft on that call,
       // recording exactly the markers its attachment store holds at that
       // instant. Writing the marker first would persist an anchor the record

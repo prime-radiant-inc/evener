@@ -361,7 +361,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     reconcileRecoveryTarget(record?.targetRef ?? ref);
     state.setState({ activeRecoveryId });
   }
-  // The invariant of issue #4826 at its write site: every anchor the text
+  // The invariant at its write site: every anchor the text
   // names travels WITH the text, whether this source holds its bytes or
   // adopted it without them. localStorage never holds image bytes, so a
   // record without this list cannot say whether a later reader's "[image N]"
@@ -370,11 +370,11 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   //
   // The union is what makes provenance survive a rewrite. Writing only the
   // store's markers would drop an adopted marker on the first edit after a
-  // reload, and a second reload would then send it as literal text (review
-  // 51880 finding 1). The adopted half is already filtered to markers the
-  // text still spells, so a reference the person deleted leaves the record
-  // for good: an undo that restores the text does not restore the tag,
-  // because text alone cannot tell a restored anchor from retyped prose.
+  // reload, and a second reload would then send it as literal text. The
+  // adopted half is already filtered to markers the text still spells, so a
+  // reference the person deleted leaves the record for good: an undo that
+  // restores the text does not restore the tag, because text alone cannot tell
+  // a restored anchor from retyped prose.
   function recordedMarkerNumbers(): number[] {
     const staged = operations.items.map((item) => item.marker);
     return [...new Set([...staged, ...adoptedUnbackedMarkers])].sort((left, right) => left - right);
@@ -447,15 +447,18 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   // An anchor keeps its tag while its reference survives, and only while it
   // survives: once the person deletes "[image N]" the adoption no longer
   // covers anything, so a later typing of that same spelling is literal prose
-  // and must send (review 51880 finding 4 - retiring on absence is what
-  // separates "this anchor lost its bytes" from "this text mentions the
-  // format").
+  // and must send. Retiring on absence is what separates "this anchor lost its
+  // bytes" from "this text merely mentions the format".
+  //
+  // A blank text retires every tag, which is right for both ways a composition
+  // ends: a send finished it, or a recovery row took it. The row is not a loss
+  // of provenance, because opening a row adopts the markers its own text
+  // spells without bytes; nothing needs carrying across the clear.
   //
   // A locally staged image never rescues an adopted marker, even when the
   // numbers match. An adopted text belongs to another draft, so bytes staged
   // beside it in this source are a different image; letting them satisfy the
-  // anchor would pair unrelated bytes with the adopted text (review 51880
-  // finding 2).
+  // anchor would pair unrelated bytes with the adopted text.
   function refreshUnbackedImageMarkers(): void {
     const present = new Set(markerNumbersIn(textRef.current));
     adoptedUnbackedMarkers = new Set([...adoptedUnbackedMarkers].filter((marker) => present.has(marker)));
@@ -775,6 +778,21 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
           updateSkillNames(restoredSkillNames(latest));
           updateSelectionMeta(latest);
           operations.replaceWithSettled(latest.attachments);
+          // Opening a row is an adoption like the mount read and the rebind:
+          // the restored text is not this source's typing, and the images the
+          // row could not carry have no bytes here. The record that described
+          // the draft before the row took it still names those markers, and it
+          // names only markers that had bytes - so a "[image N]" the person
+          // typed as prose is not in it and is never adopted. Filter to what
+          // the ROW's text spells (never the local text the merge appended)
+          // and to what the row did not restore bytes for.
+          const restoredMarkers = new Set(recovered.attachments.map((item) => item.marker));
+          const rowMarkers = new Set(markerNumbersIn(recovered.text));
+          adoptUnbackedImageMarkers(
+            readComposerDraftImageMarkers(ref).filter(
+              (marker) => rowMarkers.has(marker) && !restoredMarkers.has(marker),
+            ),
+          );
           markRestore();
           committedRecoveryComposition = recoveryCompositionFingerprint({
             text: merged.text,
@@ -989,8 +1007,8 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
         // A rebind can land on a PEER's newer draft while this source already
         // holds staged work of its own. Marker numbers are not identity: the
         // peer's "[image 1]" is a different image, and the local bytes staged
-        // under that number must not be read as backing for it (review 51880
-        // finding 2). The local work is preserved; it simply does not satisfy
+        // under that number must not be read as backing for it. The local
+        // work is preserved; it simply does not satisfy
         // the adopted text.
       }
       markRestore();

@@ -1,4 +1,4 @@
-import { type ComposerMention, NO_ACTIVE_TURN, sessionActionError } from "@evener/appwire-client";
+import { type ComposerMention, markerPattern, NO_ACTIVE_TURN, sessionActionError } from "@evener/appwire-client";
 import { ownPendingSend } from "@evener/appwire-client/state/mutation";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { controlsFor, liveThreadModel, pressLocalRecoveryFenced, pressRefusal } from "../../../stores/liveControls";
@@ -447,7 +447,15 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     const submittedMentions = selectionMetaRef.current.mentions;
     const submittedRevision = draftEditRevisionRef.current;
     const submittedDraftRevision = readDraftRevision(ref);
-    const payload = attachments.toInputAttachments();
+    // An image ships only when the submitted text still names it. Staging an
+    // attachment writes "[image N]" into the text, so this drops nothing on an
+    // ordinary send; what it excludes is work that is staged here but no
+    // longer referenced - notably a peer's attachments this pane kept when it
+    // rebound to that peer's draft. Marker numbers are not identity, so a
+    // number match between our store and their text would otherwise send an
+    // unrelated image under their anchor.
+    const spelledMarkers = new Set(Array.from(submittedText.matchAll(markerPattern()), (match) => Number(match[1])));
+    const payload = attachments.toInputAttachments().filter((item) => spelledMarkers.has(item.marker));
     const submittedLease = recoveryOwnerLeaseRef.current;
     const submittedRecoveryId = submittedLease?.clientMutationId ?? null;
     let releaseRecoveryInFlight: (() => void) | null = null;

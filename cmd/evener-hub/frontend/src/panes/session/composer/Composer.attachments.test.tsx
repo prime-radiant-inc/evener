@@ -759,7 +759,7 @@ test("a photo taken on Android is staged like any picked image", async () => {
   await waitFor(() => expect(screen.getByRole("button", { name: /remove/i })).toBeTruthy());
 });
 
-// Issue #4826: a reader that adopts a persisted draft's "[image N]" marker
+// A reader that adopts a persisted draft's "[image N]" marker
 // owns no bytes for it - bytes never enter localStorage, so a remounted
 // reader gets the anchor and an empty attachment store. Sending then ships
 // the marker as literal text with no image item, telling the model about an
@@ -806,6 +806,44 @@ test("a draft adopted with a marker but no bytes refuses to send and says why in
   expect(editor.textContent).toBe("Cascade reader draft[image 1]");
   expect(readComposerDraft(ref)).toEqual({ text: "Cascade reader draft[image 1]", skillNames: [] });
   expect(submitButton().disabled).toBe(true);
+  // The reason reaches assistive technology with the draft, not only as a
+  // warning somewhere else in the document.
+  expect(editor.getAttribute("aria-describedby")).toBe(screen.getByTestId("composer-unbacked-image").id);
+});
+
+// An image the submitted text does not name must not ride the send. This is
+// the rebind shape at its narrowest: a pane can hold staged bytes whose marker
+// the text in front of it no longer spells - a peer's draft replaced ours, or
+// the person deleted the reference and kept the tile. Marker numbers are not
+// identity, so shipping the store would send an image under someone else's
+// anchor.
+test("a staged image whose marker left the text does not ride the send", async () => {
+  installCanvasStubs();
+  const ref = "ref_a";
+  const fake = await mountComposer(ref);
+  const delivered: unknown[] = [];
+  fake.on("turn/start", (params) => {
+    delivered.push(params.input);
+    return {
+      receipt: appliedReceipt(params.clientMutationId, "thread_a"),
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+
+  pastePngInto(textarea(), "orphan.png");
+  await screen.findByRole("button", { name: "View orphan.png" });
+  expect(textarea().textContent).toBe("[image 1]");
+
+  // Delete the reference but leave the tile staged: the bytes are still in
+  // this composer, and the text no longer names them.
+  replaceEditorText(textarea(), "just prose");
+  await waitFor(() => expect(textarea().textContent).toBe("just prose"));
+
+  await userEvent.setup().click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  expect(delivered).toHaveLength(1);
+  const input = delivered[0] as Array<{ type: string }>;
+  expect(input.filter((item) => item.type === "image")).toEqual([]);
 });
 
 test("an image this reader staged keeps its marker sendable with no refusal", async () => {
@@ -871,7 +909,7 @@ test("a marker the person typed stays sendable after a reload", async () => {
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
 });
 
-// Review 51880, finding 1: the tag must live in the persisted record, not only
+// The tag must live in the persisted record, not only
 // in the adopting source's memory. An adopted marker survives the edit that
 // rewrites the draft, so a SECOND reload still refuses. A write that recorded
 // only the live attachment store would drop the marker on that first edit and
@@ -923,7 +961,7 @@ test("an adopted missing image stays refused through an edit and a second reload
   expect(delivered).toEqual([]);
 }, 30_000);
 
-// Review 51880, finding 4: deleting the reference retires the tag. Retyping
+// Deleting the reference retires the tag. Retyping
 // the same spelling afterwards is prose the person wrote, and it sends.
 test("deleting an adopted reference retires its refusal for later prose", async () => {
   installCanvasStubs();

@@ -431,7 +431,7 @@ test("writeComposerDraft never throws when localStorage throws", () => {
   expect(() => writeComposerDraft("local:01AAA", { text: "some text", skillNames: ["pkg:probe"] })).not.toThrow();
 });
 
-// Review 51880, finding 3. A recovery row takes ownership of the draft TEXT and
+// A recovery row takes ownership of the draft TEXT and
 // the localStorage record is then cleared, so provenance that rode only that
 // record would be lost exactly when the person reopens the draft.
 test("image provenance outlives the draft record a recovery row takes over", () => {

@@ -277,6 +277,14 @@ function ComposerWithSubmission({
   // the person looks up. The send gate and every control that can reach it
   // read this one value, so none of them can disagree with it.
   const unbackedImageMarkers = unbackedMarkersIn(text, unbackedImageMarkersFromSource);
+  // The same fact as a boolean, for callers that must not re-render on every
+  // keystroke. `unbackedMarkersIn` returns a fresh array even when it is empty,
+  // so an array in a memo's dependency list makes that memo run on every
+  // render - which would rebuild the session chrome on ordinary typing.
+  const missingImage = unbackedImageMarkers.length > 0;
+  // One notice per composer, so two panes on the same ref do not describe
+  // their editors with the same element id.
+  const unbackedImageNoticeId = useId();
   const restoredRecoveryRef = useRef(activeRecoveryId);
   useLayoutEffect(() => {
     if (restoredRecoveryRef.current === activeRecoveryId) return;
@@ -564,15 +572,15 @@ function ComposerWithSubmission({
     if (available.steer && narrow) {
       items.steer = {
         onSelect: () => steerClickRef.current(),
-        // Same missing-image gate as the Send button (review 51880 finding 7):
-        // Steer would otherwise look available and then do nothing, because
-        // the submit guard refuses the press. Stop stays available - it is
+        // Send and Steer share one missing-image gate: a steer would
+        // otherwise look available and then do nothing, because the
+        // submit guard refuses the press. Stop stays available - it is
         // how the person stops the running turn, missing image or not.
-        disabled: actionPending || unbackedImageMarkers.length > 0,
+        disabled: actionPending || missingImage,
       };
     }
     return items;
-  }, [narrow, model, actionPending, unbackedImageMarkers]);
+  }, [narrow, model, actionPending, missingImage]);
 
   // The composer's own single command line (2026-08-14: "the composer is
   // where you act on this session"): the session-scoped BUILT-IN registry
@@ -1374,7 +1382,7 @@ function ComposerWithSubmission({
               Send's own disabled state carries is enough, and a fresh alert
               on every re-render would interrupt for nothing. */}
           {unbackedImageMarkers.length > 0 && (
-            <InlineNotice tone="danger" live="off" data-testid="composer-unbacked-image">
+            <InlineNotice id={unbackedImageNoticeId} tone="danger" live="off" data-testid="composer-unbacked-image">
               {`The attached image for ${unbackedImageMarkers
                 .map((marker) => `[image ${marker}]`)
                 .join(
@@ -1424,6 +1432,12 @@ function ComposerWithSubmission({
                     onPaste={handlePaste}
                     aria-controls={slashActiveId ? slashListboxId : undefined}
                     aria-activedescendant={slashActiveId ?? undefined}
+                    // The refusal reason is an ordinary description of the
+                    // draft, so it reaches assistive technology with the
+                    // editor rather than only as a warning somewhere earlier
+                    // in the document. Absent when there is nothing to say,
+                    // which is the ordinary case.
+                    aria-describedby={missingImage ? unbackedImageNoticeId : undefined}
                     minLines={minLines}
                     onBlur={handleEditorBlur}
                     placeholder={ended ? "Send a follow-up…" : "Message the agent…"}
@@ -1509,9 +1523,8 @@ function ComposerWithSubmission({
                           // the button keeps focus and hover and that reason
                           // stays reachable.
                           aria-disabled={steerRecoveryFenced || undefined}
-                          // Matches the Send button's missing-image gate (review
-                          // 51880 finding 7): a steer would reach the same
-                          // submit guard and silently do nothing.
+                          // The Send button's missing-image gate: a steer would
+                          // reach the same submit guard and silently do nothing.
                           disabled={actionPending || unbackedImageMarkers.length > 0}
                         >
                           Steer
