@@ -332,13 +332,28 @@ func (c GHClient) run(ctx context.Context, args ...string) ([]byte, error) {
 			}
 			return nil, fmt.Errorf("%w: %w", ErrOutcomeUnknown, err)
 		}
+		// A whole JSON body that is not a GraphQL refusal is not an observation
+		// about the queue either. `gh` prints the response body on stdout
+		// whatever the status, and not every body it prints is GitHub answering
+		// the request: a gateway in front of the API answers 502 with its own
+		// JSON diagnostic -- `{"message":"Server Error","status":"502"}` -- and
+		// the CLI copies it to stdout and exits non-zero exactly as it does for a
+		// real reply. That body is decodable, which is why the drain bound does
+		// not call it cut off, and it names no error, which is why graphqlRefusal
+		// does not call it a refusal. Reading the exit status as the answer
+		// reported the enqueue failed for a mutation the request may already have
+		// performed, and skipped the read that would have found it.
+		//
+		// So the body's presence is not the test; the refusal is. Anything short
+		// of GitHub saying no leaves the outcome unknown, and unknown is read
+		// back.
 		if detail != "" {
-			// The call ended without a result. Its stderr is still the diagnostic a
-			// reader needs, so it is carried, and the error itself stays wrapped so
+			// The diagnostic is still carried: it is what the operator needs
+			// when the read-back finds nothing. The error itself stays wrapped so
 			// errors.Is still sees the termination cause.
-			return nil, fmt.Errorf("%w: %s", err, detail)
+			return nil, fmt.Errorf("%w: %w: %s", ErrOutcomeUnknown, err, detail)
 		}
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", ErrOutcomeUnknown, err)
 	}
 	return stdout.Bytes(), nil
 }

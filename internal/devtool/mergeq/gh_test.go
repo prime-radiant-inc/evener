@@ -113,12 +113,19 @@ func fixtureBaseCandidates() []string {
 //     about replacing the components of a path this test has already resolved,
 //     which sticky does prevent. Sticky therefore settles an other-writable
 //     component, which is exactly /tmp.
+//   - `other` is read from the mode and is independent of any ACL: no ACL can
+//     widen it, and an ACL that shows a read-only owning group says nothing about
+//     it. A world-writable directory with no sticky bit is replaceable however
+//     tidy its ACL looks.
 //   - An extended ACL is read with getfacl when one is present, because on Linux
 //     the mode's group bits are the ACL MASK rather than the owning group's
 //     permission. Reading the mode there refuses a directory the ACL shows nobody
 //     can write, and on a runner where that directory is the only executable
 //     candidate every fixture then fails at setup. The owning group's own
-//     permission is the `group::` line, capped by the mask.
+//     permission is the `group::` line, capped by the mask, and a named user or
+//     named group entry counts too: its effective permission is its own bits AND
+//     the mask, so a named rwx under a writable mask is a grant even though the
+//     mode's group position is the only place the mask is visible.
 //   - Anything that cannot be read is untrusted. "The check failed" and "the
 //     answer is no" are different facts and only one is safe to act on.
 func fixtureChainTrusted(t *testing.T, path string) (reason string) {
@@ -157,17 +164,27 @@ func fixtureComponentReplaceable(t *testing.T, component string) string {
 		// user created, so a component already resolved under it is safe.
 		return ""
 	}
-	if acl, ok := fixtureReadACL(t, component); ok {
-		if granted, readable := aclOwningGroupMayWrite(acl); readable {
-			if granted {
-				return component + " has an ACL whose owning group may write, so another member of that group can replace entries in it"
-			}
-			return ""
-		}
-	}
+	// `other` first, and from the mode only: no ACL can widen it, and an ACL whose
+	// group question reads clean says nothing about it. Asking the ACL first and
+	// returning on its answer skipped this check entirely, which accepted a
+	// world-writable directory carrying a restrictive ACL.
 	perm := info.Mode().Perm()
 	if perm&0o002 != 0 {
 		return component + " is writable by other users and has no sticky bit, so another user can replace entries in it"
+	}
+	if acl, ok := fixtureReadACL(t, component); ok {
+		switch granted, readable := aclForeignWrite(acl); {
+		case !readable:
+			// The ACL is unreadable, so nothing about it can be shown to grant
+			// nothing. That is a refusal, not a pass.
+			return component + " has an access ACL this fixture could not read, so no entry in it can be shown to be harmless"
+		case granted != "":
+			return component + " has an access ACL entry that may write: " + granted + ", so another local user can replace entries in it"
+		default:
+			// No foreign entry is effective, so the ACL cannot be used to replace an
+			// entry here whatever the mode's group position says.
+			return ""
+		}
 	}
 	if perm&0o020 != 0 {
 		return fmt.Sprintf("%s is writable by group %d with no sticky bit, so another member of that group can replace entries in it", component, stat.Gid)
@@ -204,48 +221,98 @@ func fixtureReadACL(t *testing.T, component string) (string, bool) {
 	if !strings.Contains(string(listed), "+") {
 		return "", false
 	}
-	acl, err := exec.Command("getfacl", "-p", "-c", component).Output()
+	acl, err := exec.Command("getfacl", "-n", "-p", "-c", component).Output()
 	if err != nil {
 		return "", false
 	}
 	return string(acl), true
 }
 
-// aclOwningGroupMayWrite reads getfacl output and reports whether the owning
-// group may write through it, plus whether the ACL could be read.
+// aclForeignWrite reads numeric getfacl output and names the first entry that
+// lets some user other than this one or root replace an entry in the directory,
+// plus whether the ACL could be read at all.
 //
-// The mode's group position is the MASK when an access ACL is present, so the
-// owning group's permission has to come from `group::` and be capped by the
-// mask. The mask is what bounds every entry, so a mask without write caps the
-// group at read-only however its own line reads.
-func aclOwningGroupMayWrite(acl string) (granted, readable bool) {
-	var group string
-	var seenGroup, seenMask, maskWrite bool
-	for _, line := range strings.Split(acl, "\n") {
+// An entry may replace an entry in the directory when it holds BOTH write and
+// search: write alone cannot see or remove a name, and search alone cannot create
+// one. The effective permission is the entry's bits AND the mask, because the mask
+// caps every named entry and the owning group; a named `rwx` under a read-only
+// mask cannot write at all, and refusing that would refuse a directory nobody can
+// tamper with.
+//
+// `user::`, `group::` and `other::` are not consulted: those are the owner,
+// alongside the named ones. `other::` is deliberately absent because it lives in
+// the mode and the caller checks it first: no ACL can widen it.
+//
+// A missing mask is not a pass. Without a mask the named entries cannot be shown
+// to be limited, and the convention here is that an answer that cannot be shown
+// is unsafe.
+func aclForeignWrite(acl string) (entry string, readable bool) {
+	var mask string
+	var seenMask bool
+	type aclEntry struct {
+		kind string
+		name string
+		perm string
+	}
+	var entries []aclEntry
+	for line := range strings.SplitSeq(acl, "\n") {
 		fields := strings.Split(line, ":")
 		if len(fields) < 3 {
 			continue
 		}
 		switch fields[0] {
-		case "group":
-			if fields[1] == "" {
-				group = fields[2]
-				seenGroup = true
-			}
 		case "mask":
 			seenMask = true
-			maskWrite = strings.Contains(fields[2], "w")
+			mask = fields[2]
+		case "user", "group":
+			entries = append(entries, aclEntry{kind: fields[0], name: fields[1], perm: fields[2]})
 		}
 	}
-	if !seenGroup {
-		return false, false
+	if len(entries) == 0 {
+		return "", false
 	}
-	if !strings.Contains(group, "w") {
-		return false, true
+	mayReplace := func(perm string) bool {
+		return strings.Contains(perm, "w") && strings.Contains(perm, "x")
 	}
-	// A write bit with no mask line cannot be shown to be limited, so it is a
-	// grant: the convention here is that an unreadable answer is unsafe.
-	return !seenMask || maskWrite, true
+	for _, e := range entries {
+		if e.name == "" {
+			// `user::` is the owner, whose grant is this user's own and cannot be
+			// used against them. `group::` is the owning group, whose own permission
+			// the mode's group position does NOT report once an ACL is present: that
+			// position is the mask. It is the one base entry that has to be checked
+			// here rather than from the mode.
+			if e.kind == "user" {
+				continue
+			}
+			if !mayReplace(e.perm) {
+				continue
+			}
+			if seenMask && !mayReplace(mask) {
+				continue
+			}
+			return "group::" + e.perm, true
+		}
+		// A named entry. One naming this user or root is this user's own grant, and
+		// cannot be used to replace an entry out from under the fixture. It is
+		// skipped rather than counted, because refusing it would fail every fixture
+		// on a host that grants the operator access to their own TMPDIR.
+		if e.kind == "user" && (e.name == strconv.Itoa(os.Getuid()) || e.name == "0") {
+			continue
+		}
+		if _, err := strconv.ParseUint(e.name, 10, 32); err != nil {
+			// getfacl -n prints numeric ids; anything else is not an entry this
+			// function can reason about, so it is not counted as a grant.
+			continue
+		}
+		if !mayReplace(e.perm) {
+			continue
+		}
+		if seenMask && !mayReplace(mask) {
+			continue
+		}
+		return e.kind + ":" + e.name + ":" + e.perm, true
+	}
+	return "", true
 }
 
 // execDirUnder returns a private, exec-capable directory under base, or "" and
@@ -630,6 +697,83 @@ func TestGHDrainWithoutAReplyIsNotSuccess(t *testing.T) {
 	}
 	if len(out) == 0 {
 		t.Fatal("the complete reply was discarded")
+	}
+}
+
+// TestGHGatewayBodyIsNotAnAnswerToTheMutation pins that a whole JSON body on a
+// non-zero exit is not, by itself, GitHub's answer.
+//
+// The three endings are refused, succeeded and unknown, and only GitHub's reply
+// separates them. A reply is not the same thing as a body: `gh` prints whatever
+// it received on stdout, and a gateway in front of the API answers a failed
+// request with its own JSON diagnostic -- `{"message":"Server Error","status":
+// "502"}` -- which is valid JSON with no `errors` array, so it is neither cut
+// off nor a refusal.
+//
+// The client used to read a decodable body as "the call ended without a result"
+// and report a plain failure. That is the misreport this PR is named for: the
+// exit status is not an observation about the queue, the 502 establishes nothing
+// about whether GitHub applied the mutation, and reporting a failure skipped the
+// read that would have found the PR queued.
+//
+// Driven through Execute with a real gh on PATH, because the classification is
+// only worth anything if the run acts on it: the enqueue's gateway error has to
+// reach the read-back and let it decide.
+func TestGHGatewayBodyIsNotAnAnswerToTheMutation(t *testing.T) {
+	t.Parallel()
+	dir := fixtureExecDir(t)
+	// One gh, three different calls: the two status reads around the mutation
+	// answer properly, and the enqueue answers with a gateway body and exits 1.
+	// The reply is chosen by the arguments, which is what makes the mutation the
+	// call that fails.
+	gh := filepath.Join(dir, "gh")
+	writeExecutable(t, gh, `#!/usr/bin/env bash
+for arg in "$@"; do
+	if [[ "$arg" == query=*enqueuePullRequest* ]]; then
+		printf '%s' '{"message":"Server Error","status":"502"}'
+		printf 'gh: Server Error\n' >&2
+		exit 1
+	fi
+done
+reads=$(dirname "$0")/status-reads
+count=$(cat "$reads" 2>/dev/null | wc -l)
+printf 'x\n' >>"$reads"
+if [ "$count" -eq 0 ]; then
+	printf '%s' '{"data":{"repository":{"pullRequest":{"id":"PR_6499","state":"OPEN","baseRefName":"main","mergeQueueEntry":null}}}}'
+else
+	printf '%s' '{"data":{"repository":{"pullRequest":{"id":"PR_6499","state":"OPEN","baseRefName":"main","mergeQueueEntry":{"position":3,"state":"QUEUED"}}}}}'
+fi
+`)
+	c := GHClient{GH: gh, GroupFile: filepath.Join(dir, "group")}
+
+	// The client's own classification, before the run acts on it.
+	enqueueErr := c.Enqueue(context.Background(), "prime-radiant-inc/evener", "PR_6499", false)
+	if enqueueErr == nil {
+		t.Fatal("an enqueue that exited 1 was reported as success")
+	}
+	var refusal *RefusalError
+	if errors.As(enqueueErr, &refusal) {
+		t.Fatalf("error = %v, reported as a refusal: a gateway's 502 body is not GitHub declining the mutation", enqueueErr)
+	}
+	if !errors.Is(enqueueErr, ErrOutcomeUnknown) {
+		t.Fatalf("error = %v, want ErrOutcomeUnknown: a whole JSON body that names no error is no answer at all, and calling it a failure is what reported an accepted enqueue as refused", enqueueErr)
+	}
+	if !strings.Contains(enqueueErr.Error(), "Server Error") {
+		t.Fatalf("error = %v, want the gateway's own diagnostic carried: the operator needs to read what answered", enqueueErr)
+	}
+
+	// And the run reconciles it rather than reporting a refusal. --wait 0 keeps
+	// this to the confirmation read: the mutation is unknown, the confirmation
+	// finds the entry, and the outcome is the position.
+	if err := os.WriteFile(filepath.Join(dir, "status-reads"), nil, 0o600); err != nil {
+		t.Fatalf("reset the status-read counter: %v", err)
+	}
+	out, exitErr := Execute(context.Background(), opts(0), c, SystemClock)
+	if exitErr != nil {
+		t.Fatalf("Execute: %v, want the queue's entry reported: the gateway body left the outcome unknown, so the read decides and it found the PR queued", exitErr)
+	}
+	if out.Kind != Queued || out.Position != 3 {
+		t.Fatalf("outcome = %+v, want Queued at position 3", out)
 	}
 }
 
@@ -1105,6 +1249,95 @@ func TestMergEQFixtureBaseIsTrustedAndExecutable(t *testing.T) {
 		}
 		if got, reason := execDirUnder(t, dir); reason == "" {
 			t.Fatalf("execDirUnder(%s) returned %s under a group-writable ancestor: the fixture would execute a program from a path another member of the group can swap", dir, got)
+		}
+	})
+	t.Run("a named grant on a private directory is refused", func(t *testing.T) {
+		t.Parallel()
+		// The mode says 0700, so a rule that reads the mode alone calls this
+		// directory private. The ACL says otherwise: one named user holds rwx, and
+		// the mask carries write so the grant is effective. That user can replace
+		// entries in this directory, and the fixture executes scripts through it --
+		// the mode's other and group bits never see a named entry at all.
+		if _, err := exec.LookPath("setfacl"); err != nil {
+			t.Skipf("setfacl is not installed, so a POSIX access ACL cannot be manufactured here: %v", err)
+		}
+		if _, err := exec.LookPath("getfacl"); err != nil {
+			t.Skipf("getfacl is not installed, so the ACL could not be read either: %v", err)
+		}
+		dir := widenedFixtureDir(t, "named-grant")
+		if err := os.Chmod(dir, 0o700); err != nil {
+			t.Fatalf("make %s private: %v", dir, err)
+		}
+		// nobody, so the grantee is a real uid that is neither this user nor root.
+		if err := exec.Command("setfacl", "-m", "u:65534:rwx", dir).Run(); err != nil {
+			t.Skipf("could not grant a named user rwx on %s (%v): the filesystem may not support POSIX ACLs", dir, err)
+		}
+		t.Cleanup(func() { _ = exec.Command("setfacl", "-b", dir).Run() })
+		// The premise, checked rather than assumed: no base entry other than the
+		// named user grants write, and the mask lets the named grant through.
+		//
+		// The `other` field is read from the mode, which is the only place it lives.
+		// The owning group's own permission is NOT: `setfacl` writes the mask into
+		// the mode's group position, so the mode here reads 0770 because `mask::rwx`,
+		// not because `group::` can write. That is the same interaction the
+		// ACL-mask case above is about, and reading the mode for the group answer
+		// here would skip this case on the very hosts it applies to.
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatalf("stat %s: %v", dir, err)
+		}
+		if perm := info.Mode().Perm(); perm&0o007 != 0 {
+			t.Skipf("%s came back %04o, so another user may write through its mode and this case would not isolate the named grant", dir, perm)
+		}
+		acl, err := exec.Command("getfacl", "-n", "-p", "-c", dir).Output()
+		if err != nil {
+			t.Fatalf("read the ACL of %s: %v", dir, err)
+		}
+		text := string(acl)
+		if !strings.Contains(text, "user:65534:rwx") ||
+			!strings.Contains(text, "mask::rwx") ||
+			!strings.Contains(text, "group::---") {
+			t.Skipf("the ACL came back as %q, which is not the effective named grant this case needs", strings.TrimSpace(text))
+		}
+		if reason := replaceableAncestor(t, dir); reason == "" {
+			t.Fatalf("%s is 0700 but its ACL grants uid 65534 rwx through a writable mask, and the fixture rule accepted it: that user can replace an entry, and the suite executes scripts from this path", dir)
+		}
+		if got, reason := execDirUnder(t, dir); reason == "" {
+			t.Fatalf("execDirUnder(%s) returned %s under a named rwx grant: the fixture would execute a program from a path another local user can swap", dir, got)
+		}
+	})
+	t.Run("a world-writable directory is refused even behind a restrictive ACL", func(t *testing.T) {
+		t.Parallel()
+		// The other direction, and the one that skips a check rather than missing a
+		// grant: a directory whose owning group and mask are read-only still has
+		// `other::rwx`, so any local user can replace entries in it. Reading the ACL
+		// first and returning on the group question never asks about `other` at all.
+		//
+		// No ACL can widen `other`; it is the mode's own field, which is why the
+		// world check is independent of the ACL group question.
+		if _, err := exec.LookPath("setfacl"); err != nil {
+			t.Skipf("setfacl is not installed, so a POSIX access ACL cannot be manufactured here: %v", err)
+		}
+		dir := widenedFixtureDir(t, "world-writable-restrictive-acl")
+		if err := os.Chmod(dir, 0o777); err != nil {
+			t.Fatalf("make %s world-writable: %v", dir, err)
+		}
+		if err := exec.Command("setfacl", "-m", "g::r-x", "-m", "m::r-x", dir).Run(); err != nil {
+			t.Skipf("could not set the ACL on %s (%v): the filesystem may not support POSIX ACLs", dir, err)
+		}
+		t.Cleanup(func() { _ = exec.Command("setfacl", "-b", dir).Run() })
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatalf("stat %s: %v", dir, err)
+		}
+		if info.Mode()&os.ModeSticky != 0 {
+			t.Skipf("%s came back sticky, so it is not the replaceable base this case needs", dir)
+		}
+		if perm := info.Mode().Perm(); perm&0o002 == 0 {
+			t.Skipf("%s came back %04o, so it is not world-writable and this case has no premise", dir, perm)
+		}
+		if reason := replaceableAncestor(t, dir); reason == "" {
+			t.Fatalf("%s is world-writable with no sticky bit, and the fixture rule accepted it because the ACL's group question came back clean: another user can replace entries in it", dir)
 		}
 	})
 	t.Run("an exec-capable base is accepted", func(t *testing.T) {

@@ -322,7 +322,7 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 	// afterwards sees Canceled and calls an expired allowance a cancellation.
 	startExpired := errors.Is(startCtx.Err(), context.DeadlineExceeded)
 	stopStart()
-	if exitErr = startupEnding(ctx, startExpired, exitErr); exitErr != nil {
+	if exitErr := startupEnding(ctx, startExpired, exitErr); exitErr != nil {
 		return Outcome{}, exitErr
 	}
 	if st.State == mergedState {
@@ -514,11 +514,23 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 			return known.ending()
 		}
 		if exitErr != nil {
-			// Same rule as the loop's poll: a transient failure here costs the run a
-			// newer observation, and the confirmed position is still this instant's
-			// queue as far as the run can tell. A connection reset must not stop the
-			// documented repeat-on-timeout workflow for a run that already read the
-			// position.
+			// The operator's stop outranks the confirmed position. The position is
+			// real, but the run did not reach a verdict: it was ended. Reporting
+			// `MERGEQ timeout` at exit 1 there tells a caller to repeat a wait they
+			// just cancelled, and the two codes mean different things to it --
+			// "the queue ended this" versus "I stopped it". It also disagrees with
+			// every other interrupt path, which returns 130.
+			if exitErr.Kind == Interrupted {
+				return Outcome{}, exitErr
+			}
+			// Same rule as the loop's poll for a failure the invocation survived: a
+			// transient failure here costs the run a newer observation, and the
+			// confirmed position is still this instant's queue as far as the run can
+			// tell. A connection reset must not stop the documented
+			// repeat-on-timeout workflow for a run that already read the position.
+			//
+			// An allowance that ran out is the other surviving ending, and it does not
+			// reach here: observe() reports it as expired, handled above.
 			if known.answered {
 				return known.ending()
 			}
@@ -870,8 +882,7 @@ func remainingAllowance(opts Options, clock Clock, deadline time.Time) time.Dura
 // client. It used to be indistinguishable from a failure the call stated, and the
 // run reported GitHub having accepted an enqueue as a refusal.
 func outcomeUnknown(err error, expired bool) bool {
-	var refusal *RefusalError
-	if errors.As(err, &refusal) {
+	if _, ok := errors.AsType[*RefusalError](err); ok {
 		return false
 	}
 	return errors.Is(err, ErrOutcomeUnknown) || errors.Is(err, ErrIncompleteReply) || expired

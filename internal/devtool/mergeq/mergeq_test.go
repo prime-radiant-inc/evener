@@ -893,6 +893,48 @@ func TestWaitBudgetBoundsTheReadsItMakes(t *testing.T) {
 // entry another operator made for the same pull request then turns a refused
 // `--jump` into reported success -- the truthfulness bug this is about, not a
 // timeout one. The refusal outranks the expired context.
+// TestAWrappedRefusalIsStillAnAnswer pins the shape outcomeUnknown's type test
+// has to keep, now that it asks with errors.AsType.
+//
+// The refusal is what decides whether the run reconciles, and a refusal reaches
+// it wrapped: Run's clients wrap client errors with the call that failed, and so
+// does the gh client itself for the detail it carries. A type test that only saw
+// an unwrapped *RefusalError would classify a wrapped refusal as an unknown
+// outcome, spend a read looking for this invocation's work, and find another
+// operator's queue entry for the same pull request -- reporting a refused --jump
+// as this invocation's success. That is the exact misreport the discriminated
+// error types exist to prevent, so matching through wrapping is load-bearing and
+// is pinned here rather than left to the errors.AsType rewrite's reputation.
+func TestAWrappedRefusalIsStillAnAnswer(t *testing.T) {
+	t.Parallel()
+	refusal := &RefusalError{Detail: "the pull request is already in the merge queue, so --jump was refused"}
+	if outcomeUnknown(refusal, false) {
+		t.Fatal("a bare refusal was classified as an unknown outcome")
+	}
+	for _, wrapped := range []error{
+		fmt.Errorf("enqueue: %w", refusal),
+		fmt.Errorf("enqueue: %w: exit status 1", refusal),
+		fmt.Errorf("outer: %w", fmt.Errorf("inner: %w", refusal)),
+	} {
+		if outcomeUnknown(wrapped, false) {
+			t.Fatalf("error = %v, classified as an unknown outcome: the refusal is wrapped, not absent, and reconciling it is what reports another operator's queue entry as this invocation's work", wrapped)
+		}
+		// And the expiry flag does not override it: the two are true at once when
+		// a refusal arrives just before the allowance runs out.
+		if outcomeUnknown(wrapped, true) {
+			t.Fatalf("error = %v with an expired allowance, classified as an unknown outcome: the call answered no before its budget ran out, and the answer is an answer", wrapped)
+		}
+	}
+	// The other direction still holds, so this test cannot be satisfied by a
+	// classifier that calls everything an answer.
+	if !outcomeUnknown(ErrOutcomeUnknown, false) {
+		t.Fatal("ErrOutcomeUnknown was not classified as an unknown outcome")
+	}
+	if !outcomeUnknown(fmt.Errorf("enqueue: %w", ErrOutcomeUnknown), false) {
+		t.Fatal("a wrapped ErrOutcomeUnknown was not classified as an unknown outcome")
+	}
+}
+
 func TestARefusalAcrossTheDeadlineIsStillARefusal(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
@@ -1222,7 +1264,7 @@ func (c *spentAllowanceClient) Status(ctx context.Context, repo, pr string) (Sta
 func TestAStalledRecheckKeepsTheConfirmedPosition(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
-	c := &stallAfterFirstPostDeadlineClient{fakeClient: fakeClient{statuses: []Status{{ID: "PR_6499", State: "OPEN", Entry: queueEntry(4)}}}}
+	c := &stallAfterFirstPostDeadlineClient{statuses: []Status{{ID: "PR_6499", State: "OPEN", Entry: queueEntry(4)}}}
 	c.now = &now
 	clock := Clock{
 		Now: func() time.Time { return now },
@@ -1250,7 +1292,7 @@ func TestAStalledRecheckKeepsTheConfirmedPosition(t *testing.T) {
 func TestAFailedRecheckKeepsTheConfirmedPosition(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
-	c := &failingRecheckClient{fakeClient: fakeClient{statuses: []Status{{ID: "PR_6499", State: "OPEN", Entry: queueEntry(4)}}}}
+	c := &failingRecheckClient{statuses: []Status{{ID: "PR_6499", State: "OPEN", Entry: queueEntry(4)}}}
 	c.now = &now
 	clock := Clock{
 		Now: func() time.Time { return now },
@@ -1289,6 +1331,68 @@ func (c *failingRecheckClient) Status(ctx context.Context, repo, pr string) (Sta
 	return c.fakeClient.Status(ctx, repo, pr)
 }
 
+// TestAnInterruptedRecheckIsNotATimeout pins that the operator's stop outranks a
+// position the run confirmed after the deadline.
+//
+// The first post-deadline poll confirms the PR is still queued at a known
+// position. The recheck after it is interrupted -- a SIGINT, the operator ending
+// the wait -- and the run has that position in hand. The fallback below the
+// interrupt check reports the confirmed position and exits 1, which the
+// documented workflow tells the caller to repeat by running the command again.
+// That is the wrong instruction for a wait the operator just cancelled: they
+// ended it, they did not ask to be told to run it. Exit 130 is the code that
+// says the wait was stopped rather than lost, and every other interrupt path
+// already returns it.
+//
+// The fallback is still right for the two endings beside this one: a recheck
+// that FAILS or runs out while the invocation is genuinely live leaves the run
+// with the confirmed position and no newer answer, which is a timeout.
+func TestAnInterruptedRecheckIsNotATimeout(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c := &interruptedRecheckClient{statuses: []Status{{ID: "PR_6499", State: "OPEN", Entry: queueEntry(4)}}}
+	c.now = &now
+	c.cancel = cancel
+	clock := Clock{
+		Now: func() time.Time { return now },
+		// The sleep spends the wait, so the next read is a post-deadline poll.
+		Sleep: func(_ context.Context, d time.Duration) bool { now = now.Add(d); c.waited = true; return true },
+	}
+	var stdout, stderr strings.Builder
+	if code := Run(ctx, opts(time.Second), c, clock, &stdout, &stderr); code != InterruptedExit {
+		t.Fatalf("Run = exit %d (stdout %q, stderr %q), want %d: the operator stopped the final recheck, and reporting a timeout at exit 1 tells the caller to repeat a wait they cancelled", code, stdout.String(), stderr.String(), InterruptedExit)
+	}
+	if strings.Contains(stdout.String(), "timeout") {
+		t.Fatalf("stdout %q reports a timeout: the run did not time out, it was stopped, and the confirmed position must not be printed as one", stdout.String())
+	}
+}
+
+// interruptedRecheckClient answers the post-deadline poll and then cancels the
+// run's context during the recheck, which is what a signal landing there does.
+type interruptedRecheckClient struct {
+	fakeClient
+	now *time.Time
+	// waited says the run has entered its wait, so the reads being seen are the
+	// ones the finding is about rather than the starting lookup.
+	waited   bool
+	answered bool
+	cancel   context.CancelFunc
+}
+
+func (c *interruptedRecheckClient) Status(ctx context.Context, repo, pr string) (Status, error) {
+	if !c.waited {
+		return c.fakeClient.Status(ctx, repo, pr)
+	}
+	if c.answered {
+		c.cancel()
+		return Status{}, context.Canceled
+	}
+	c.answered = true
+	return c.fakeClient.Status(ctx, repo, pr)
+}
+
 // stallAfterFirstPostDeadlineClient answers the post-deadline poll, then reports
 // its allowance as spent on every read after it, which is a recheck that never
 // completes.
@@ -1316,10 +1420,10 @@ type stallAfterFirstPostDeadlineClient struct {
 func TestAPostDeadlineConfirmationKeepsItsPosition(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
-	c := &stallAfterConfirmationClient{fakeClient: fakeClient{statuses: []Status{
+	c := &stallAfterConfirmationClient{statuses: []Status{
 		{ID: "PR_6499", State: "OPEN"},
 		{ID: "PR_6499", State: "OPEN", Entry: queueEntry(7)},
-	}}}
+	}}
 	c.now = &now
 	// The mutation spends the whole wait, so the confirmation is a post-deadline
 	// read -- the shape the finding names. It answers with position 7.
@@ -1354,10 +1458,10 @@ func TestAPostDeadlineConfirmationKeepsItsPosition(t *testing.T) {
 func TestAConfirmationThatAnswersAfterTheDeadlineIsThisInstantsQueue(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
-	c := &slowConfirmationClient{fakeClient: fakeClient{statuses: []Status{
+	c := &slowConfirmationClient{statuses: []Status{
 		{ID: "PR_6499", State: "OPEN"},
 		{ID: "PR_6499", State: "OPEN", Entry: queueEntry(5)},
-	}}}
+	}}
 	c.now = &now
 	// The confirmation answers position 5 and takes long enough that the clock is
 	// past the deadline when it does.
@@ -1473,10 +1577,10 @@ func (c *stallAfterFirstPostDeadlineClient) Status(ctx context.Context, repo, pr
 func TestAPollThatAnswersAfterTheDeadlineIsThisInstantsQueue(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
-	c := &slowPollClient{fakeClient: fakeClient{statuses: []Status{
+	c := &slowPollClient{statuses: []Status{
 		{ID: "PR_6499", State: "OPEN"},
 		{ID: "PR_6499", State: "OPEN", Entry: queueEntry(9)},
-	}}}
+	}}
 	c.now = &now
 	clock := Clock{
 		Now: func() time.Time { return now },
