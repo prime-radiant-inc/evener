@@ -490,9 +490,10 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 					if params.DelayMS > 0 {
 						resumesAt := time.Now().UTC().Add(time.Duration(params.DelayMS) * time.Millisecond)
 						projection.thread.Evener.Failure = &appwire.ThreadFailure{
-							Title:     appwire.Excerpt(usageLimitFailureTitle, appwire.MaxFailureTitleRunes),
-							ResumesAt: resumesAt.UnixMilli(),
-							Cause:     &appwire.DiagnosticCause{Kind: "provider", Status: params.StatusCode},
+							Title:         appwire.Excerpt(usageLimitFailureTitle, appwire.MaxFailureTitleRunes),
+							ResumesAt:     resumesAt.UnixMilli(),
+							WaitStartedAt: params.WaitStartedAt,
+							Cause:         &appwire.DiagnosticCause{Kind: "provider", Status: params.StatusCode},
 						}
 					} else {
 						projection.thread.Evener.Failure = nil

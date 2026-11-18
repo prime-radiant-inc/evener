@@ -671,6 +671,7 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
           ...(params.model ? { model: params.model } : {}),
           groupElapsedMs: params.groupElapsedMs,
           attemptCap: params.attemptCap,
+          ...(params.waitStartedAt ? { waitStartedAt: params.waitStartedAt } : {}),
           receivedAt: now,
         },
       };

@@ -461,6 +461,14 @@ type ThreadModelRetryParams struct {
 	Model          string `json:"model,omitempty"`
 	GroupElapsedMS int64  `json:"groupElapsedMs"`
 	AttemptCap     int    `json:"attemptCap"`
+	// WaitStartedAt is the epoch-ms instant this quota wait began, issued by
+	// the daemon that owns the wait and shared by the thread snapshot's
+	// failure summary (ThreadFailure.WaitStartedAt). It identifies the wait
+	// across its two wire routes: a read that carries the same stamp names
+	// THIS wait (its elapsed time is this call's), a different stamp or a
+	// missing one names another. Zero on an older daemon and on every
+	// non-quota retry, which never survive a read anyway.
+	WaitStartedAt int64 `json:"waitStartedAt,omitempty"`
 }
 
 // ThreadStartedParams is the params shape for the thread/started

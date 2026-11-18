@@ -54,7 +54,12 @@ const CAPABILITIES: ThreadCapabilities = {
   quotaWaitSnapshot: true,
 };
 
-function thread(turns: Turn[], activeTurnId?: string, quotaWaitResumesAt?: number): Thread {
+function thread(
+  turns: Turn[],
+  activeTurnId?: string,
+  quotaWaitResumesAt?: number,
+  quotaWaitStartedAt?: number,
+): Thread {
   return {
     id: THREAD_ID,
     sessionId: "sess_h",
@@ -73,7 +78,14 @@ function thread(turns: Turn[], activeTurnId?: string, quotaWaitResumesAt?: numbe
       capabilities: CAPABILITIES,
       queue: { revision: 0 },
       ...(activeTurnId ? { activeTurnId } : {}),
-      ...(quotaWaitResumesAt === undefined ? {} : { failure: { resumesAt: quotaWaitResumesAt } }),
+      ...(quotaWaitResumesAt === undefined
+        ? {}
+        : {
+            failure: {
+              resumesAt: quotaWaitResumesAt,
+              ...(quotaWaitStartedAt === undefined ? {} : { waitStartedAt: quotaWaitStartedAt }),
+            },
+          }),
     },
   };
 }
@@ -119,10 +131,11 @@ function read(
     olderCursor?: string;
     activeTurnId?: string;
     quotaWaitResumesAt?: number;
+    quotaWaitStartedAt?: number;
   } = {},
 ): ThreadReadResponse {
   return {
-    thread: thread(turns, options.activeTurnId, options.quotaWaitResumesAt),
+    thread: thread(turns, options.activeTurnId, options.quotaWaitResumesAt, options.quotaWaitStartedAt),
     requestGeneration: options.requestGeneration ?? 1,
     bootGeneration: options.bootGeneration ?? "1",
     epoch: options.epoch ?? 0,
@@ -302,19 +315,23 @@ test("a read that moves the deadline within the same turn retires the earlier ca
 });
 
 // An older daemon announces a quota wait live but cannot report it in the
-// read snapshot (no quotaWaitSnapshot capability): the absent field is by
-// design, not a statement that the wait ended. A refresh or reconnect during
-// the same multi-hour wait must keep the countdown - erasing it would report
-// a stall for a wait the daemon announced and never ended.
+// read snapshot (no quotaWaitSnapshot capability, and its reads never carried
+// a summary): the absent field is by design, not a statement that the wait
+// ended. A refresh or reconnect during the same multi-hour wait must keep the
+// countdown - erasing it would report a stall for a wait the daemon announced
+// and never ended. The wait is live-announced only: the pane's own reads have
+// never carried a wait summary (the older delegate route), which is what
+// makes the read's absent field non-authoritative.
 test("a read from a source that cannot report the wait keeps a known live wait", () => {
   const resumesAt = 4_102_400_000;
-  let model = hydrateThread(
-    read([turn("turn_1", 1)], { activeTurnId: "turn_1", quotaWaitResumesAt: resumesAt }),
-    REF,
-    NOW,
-  );
+  // This pane hydrated from a summary-less read once already, so the model
+  // carries no read-reported wait evidence, then received the live
+  // announcement.
+  let model = hydrateThread(read([turn("turn_1", 1)], { activeTurnId: "turn_1" }), REF, NOW);
+  model.capabilities = { ...model.capabilities, quotaWaitSnapshot: false };
   model = {
     ...model,
+    quotaResumesAt: resumesAt,
     modelRetry: {
       attempt: 1,
       maxAttempts: 1,
@@ -396,6 +413,107 @@ test("a read naming a different running turn clears the wait even from a source 
   const next = applyReadModel(model, fresh);
   expect(next.quotaResumesAt).toBeUndefined();
   expect(next.modelRetry).toBeUndefined();
+});
+
+// A base-revision root daemon predates the quotaWaitSnapshot bit but its
+// reads DO carry the wait summary (a resumesAt key). A pane that opens during
+// a wait on such a daemon has the read's own summary as evidence the source
+// reports waits, so a reconnect after the wake clears the wait - the missing
+// bit must not preserve a canceled countdown.
+test("a source whose read once carried a wait summary clears the wait on a later read without the bit", () => {
+  const resumesAt = 4_102_400_000;
+  // The pane opens into the wait: the read carries the summary (and no
+  // capability bit, being a base-revision daemon).
+  let model = hydrateThread(
+    read([turn("turn_1", 1)], { activeTurnId: "turn_1", quotaWaitResumesAt: resumesAt }),
+    REF,
+    NOW,
+  );
+  model.capabilities = { ...model.capabilities, quotaWaitSnapshot: false };
+  model = {
+    ...model,
+    modelRetry: {
+      attempt: 1,
+      maxAttempts: 1,
+      delayMs: resumesAt - NOW,
+      errorClass: "quota_exceeded",
+      turnId: "turn_1",
+      groupElapsedMs: 5_000,
+      attemptCap: 1,
+      receivedAt: NOW,
+    },
+  };
+  // The wake happened while this pane was away: the reconnect's read carries
+  // no summary (the wait ended) and no bit - but the pane's own first read
+  // reported the wait, which is the evidence.
+  const fresh = hydrateThread(read([turn("turn_1", 1)], { activeTurnId: "turn_1" }), REF, NOW + 1);
+  fresh.capabilities = { ...fresh.capabilities, quotaWaitSnapshot: false };
+  const next = applyReadModel(model, fresh);
+  expect(next.quotaResumesAt).toBeUndefined();
+  expect(next.modelRetry).toBeUndefined();
+});
+
+// The wait's identity is its daemon-issued start stamp, shared by the
+// announcement and the snapshot: a refresh during the SAME wait keeps the
+// live retry's elapsed time even though the reducer-stamped deadline (receipt
+// time plus delay) and the snapshot's reset instant differ by the delivery
+// delay. Two waits sharing one reset instant (a same-turn re-wait at the same
+// provider window) still retire the old retry's metadata: their stamps
+// differ.
+test("a read names the same wait by its stamp, not its deadline: elapsed time survives a refresh", () => {
+  const resumesAt = 4_102_400_000;
+  const waitStartedAt = 4_000_000_000;
+  let model = hydrateThread(
+    read([turn("turn_1", 1)], { activeTurnId: "turn_1", quotaWaitResumesAt: resumesAt }),
+    REF,
+    NOW,
+  );
+  model = {
+    ...model,
+    modelRetry: {
+      attempt: 1,
+      maxAttempts: 1,
+      // The reducer stamped the deadline at receipt time: delivery delay makes
+      // this differ from the snapshot's instant.
+      delayMs: resumesAt - NOW + 2_000,
+      errorClass: "quota_exceeded",
+      turnId: "turn_1",
+      waitStartedAt,
+      groupElapsedMs: 14 * 60_000,
+      attemptCap: 1,
+      receivedAt: NOW,
+    },
+  };
+  // The refresh's snapshot carries the SAME wait's stamp and the provider's
+  // own reset instant.
+  const fresh = hydrateThread(
+    read([turn("turn_1", 1)], {
+      activeTurnId: "turn_1",
+      quotaWaitResumesAt: resumesAt,
+      quotaWaitStartedAt: waitStartedAt,
+    }),
+    REF,
+    NOW + 1,
+  );
+  const next = applyReadModel(model, fresh);
+  // Same wait: the retry metadata (and its elapsed time) survives.
+  expect(next.modelRetry?.errorClass).toBe("quota_exceeded");
+  expect(next.modelRetry?.groupElapsedMs).toBe(14 * 60_000);
+
+  // A second wait sharing the same reset instant has a different stamp: the
+  // old call's metadata retires.
+  const secondWait = hydrateThread(
+    read([turn("turn_1", 1)], {
+      activeTurnId: "turn_1",
+      quotaWaitResumesAt: resumesAt,
+      quotaWaitStartedAt: waitStartedAt + 60 * 60_000,
+    }),
+    REF,
+    NOW + 2,
+  );
+  const moved = applyReadModel(next, secondWait);
+  expect(moved.quotaResumesAt).toBe(resumesAt);
+  expect(moved.modelRetry).toBeUndefined();
 });
 
 function page(turns: Turn[], options: Snapshot & { authoritative?: boolean } = {}): ThreadTurnsListResponse {

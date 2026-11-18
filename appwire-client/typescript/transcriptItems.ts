@@ -553,8 +553,16 @@ export function threadFields(resp: ThreadReadResponse, ref: string, now: number)
     // thread (ThreadFailure.ResumesAt). Present-and-undefined clears it, the
     // same rule as artifactsDir below: a read whose thread no longer waits
     // must drop a stale instant, or a pane would keep announcing a wait that
-    // ended.
+    // ended. WaitStartedAt is the same wait's daemon-issued identity, which a
+    // read merge correlates a live retry against instead of comparing reset
+    // instants (two waits can share a reset; a stamp is unique to one).
     quotaResumesAt: thread.evener.failure?.resumesAt,
+    quotaWaitStartedAt: thread.evener.failure?.waitStartedAt,
+    // Whether THIS read's failure summary carried a wait at all (a resumesAt
+    // key, positive or absent): a source whose read once reported a wait
+    // reports waits, whatever its capability bit says - the bit postdates the
+    // base revision's root reads, which carried ResumesAt with no bit.
+    quotaReadReportsWaits: thread.evener.failure?.resumesAt !== undefined,
     ...(thread.evener.diagnostics
       ? {
           diagnostics: {
@@ -607,5 +615,7 @@ export function threadFields(resp: ThreadReadResponse, ref: string, now: number)
   if (fields.artifactsDir === undefined) delete fields.artifactsDir;
   if (fields.scratchDir === undefined) delete fields.scratchDir;
   if (fields.quotaResumesAt === undefined) delete fields.quotaResumesAt;
+  if (fields.quotaWaitStartedAt === undefined) delete fields.quotaWaitStartedAt;
+  if (fields.quotaReadReportsWaits === false) delete fields.quotaReadReportsWaits;
   return fields;
 }

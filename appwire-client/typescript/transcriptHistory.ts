@@ -935,6 +935,20 @@ export function readDisposition(held: HistoryState, resp: ReadDispositionSignal)
  * always the response's, and a successful read ends a failed-history state.
  * A discarded response returns model itself.
  */
+// quotaWaitStampMoved reports whether the wait a read names is not the wait a
+// retained quota retry announced, by the daemon-issued WaitStartedAt stamps
+// both routes carry. Undefined when either side predates the stamp (an older
+// daemon), so the caller falls back to the moved-deadline comparison there.
+function quotaWaitStampMoved(
+  read: Pick<ThreadModel, "quotaResumesAt" | "quotaWaitStartedAt">,
+  model: Pick<ThreadModel, "modelRetry">,
+): boolean {
+  const retryStamp = model.modelRetry?.waitStartedAt;
+  const readStamp = read.quotaWaitStartedAt;
+  if (retryStamp === undefined || readStamp === undefined) return false;
+  return retryStamp !== readStamp;
+}
+
 export function applyReadResponse<M extends ThreadModel>(
   model: M,
   resp: ThreadReadResponse,
@@ -1012,11 +1026,16 @@ export function applyReadResponse<M extends ThreadModel>(
   // design, not authoritatively empty) never clears a known wait - the live
   // announcement is the only wait evidence there is, and a refresh during a
   // multi-hour wait would otherwise erase the countdown and report a stall.
-  // The one exception is turn ownership: a read that names a DIFFERENT
-  // running turn than the wait's is proof the wait's turn ended, on any
-  // source - the running turn is the read's own fact, not the quota
-  // field's - so the wait and its chip clear together there.
-  const quotaSnapshotAuthoritative = fields.capabilities?.quotaWaitSnapshot === true;
+  // Two facts prove a source CAN speak for the wait despite a missing bit:
+  // the capability itself, and the model's own quotaReadReportsWaits - set
+  // only by a prior READ's failure summary, so its presence means this
+  // source's reads already reported a wait once (a base-revision daemon
+  // predating the bit). The one further exception is turn ownership: a read
+  // that names a DIFFERENT running turn than the wait's is proof the wait's
+  // turn ended, on any source - the running turn is the read's own fact, not
+  // the quota field's - so the wait and its chip clear together there.
+  const quotaSnapshotAuthoritative =
+    fields.capabilities?.quotaWaitSnapshot === true || base.quotaReadReportsWaits === true;
   const readRunningTurnId = runningTurn(resp.thread).runningTurnId;
   // A read that shows no wait is authoritative that the wait ended: the chip
   // goes with the deadline, or the canceled turn's "waiting for quota" reads
@@ -1032,23 +1051,32 @@ export function applyReadResponse<M extends ThreadModel>(
     fields.quotaResumesAt === undefined && (quotaSnapshotAuthoritative || waitTurnReplaced)
       ? { quotaResumesAt: undefined }
       : {};
+  // The report-capability evidence is sticky: a source that once reported a
+  // wait keeps reporting waits (its base revision attached the summary
+  // unconditionally), so a later no-wait read does not unsay it.
+  const keptQuotaReadReportsWaits =
+    base.quotaReadReportsWaits || fields.quotaReadReportsWaits ? { quotaReadReportsWaits: true } : {};
   // A read that names a DIFFERENT running turn retires the old turn's retry
   // metadata even while the new turn waits its own wait: the snapshot's new
   // deadline is real, but the retained retry (its elapsed time, its model)
   // belongs to the old turn's call and would dress the new wait in the old
   // call's history. The new wait renders from its deadline alone until a
   // matching live announcement arrives.
-  // So does a read that MOVES the deadline within the SAME turn: the turn
-  // can wait twice (the first wait ended by a steer, the retry hit the limit
-  // again), and matching turn ids are not evidence the two waits share a
-  // call - the moved deadline names a new wait whose elapsed time the
-  // retained metadata does not carry. The moved-deadline rule needs the
-  // capability (the absent field on the same turn is otherwise meaningless);
-  // the replaced-turn rule does not, for the same reason as above.
+  // So does a read that names a DIFFERENT WAIT within the same turn: the
+  // daemon stamps each wait with the instant it began (WaitStartedAt),
+  // shared by the announcement and the snapshot, so a retry whose stamp the
+  // read's does not match belongs to a wait that ended - a steer ended the
+  // first, the retry hit the limit again - and its elapsed time must not
+  // dress the new wait. The stamp, not the reset instant, is the correlation:
+  // two waits can share a reset, a stamp is unique to one. Where either side
+  // predates the stamp (an older daemon) the moved-deadline comparison is the
+  // fallback, gated on the capability as before.
   const quotaRetryFromAnotherCall =
     base.modelRetry?.errorClass === "quota_exceeded" &&
     base.modelRetry.turnId !== undefined &&
-    (waitTurnReplaced || (quotaSnapshotAuthoritative && fields.quotaResumesAt !== model.quotaResumesAt));
+    (waitTurnReplaced ||
+      quotaWaitStampMoved(fields, model) ||
+      (quotaSnapshotAuthoritative && fields.quotaResumesAt !== model.quotaResumesAt));
   const clearedQuotaRetry =
     (quotaSnapshotAuthoritative || waitTurnReplaced) &&
     (fields.quotaResumesAt === undefined || quotaRetryFromAnotherCall) &&
@@ -1063,6 +1091,7 @@ export function applyReadResponse<M extends ThreadModel>(
       ...clearedScratch,
       ...clearedQuotaWait,
       ...clearedQuotaRetry,
+      ...keptQuotaReadReportsWaits,
       ...runningTurn(resp.thread),
       olderCursor,
       olderFrontier,
@@ -1234,11 +1263,15 @@ export function applyReadModel<M extends ThreadModel>(
     fresh.scratchDir === undefined && model.scratchDir !== undefined ? { scratchDir: undefined } : {};
   // Same snapshot-support rule as applyReadResponse: a source without
   // quotaWaitSnapshot cannot speak for the wait, so its read never clears
-  // one the live announcements recorded - except by turn ownership, the
+  // one the live announcements recorded - except by the capability, by the
+  // model's own quotaReadReportsWaits (only a prior READ's failure summary
+  // sets it, so its presence means this source's reads already reported a
+  // wait: a base-revision daemon predating the bit), or by turn ownership, the
   // read's own fact: a read naming a DIFFERENT running turn than the wait's
   // is proof the wait's turn ended on any source, and clears wait and chip
   // together.
-  const quotaSnapshotAuthoritative = fresh.capabilities?.quotaWaitSnapshot === true;
+  const quotaSnapshotAuthoritative =
+    fresh.capabilities?.quotaWaitSnapshot === true || base.quotaReadReportsWaits === true;
   const waitTurnReplaced =
     base.modelRetry?.errorClass === "quota_exceeded" &&
     base.modelRetry.turnId !== undefined &&
@@ -1250,21 +1283,26 @@ export function applyReadModel<M extends ThreadModel>(
     model.quotaResumesAt !== undefined
       ? { quotaResumesAt: undefined }
       : {};
-  // Same cross-turn and moved-deadline rules as applyReadResponse: a read
-  // naming a different running turn, or moving the deadline within the same
-  // turn, retires the retained retry metadata - the new deadline renders
-  // alone until a matching live announcement arrives. The moved-deadline
-  // rule needs the capability; the replaced-turn rule does not.
+  // Same cross-turn, wait-stamp and moved-deadline rules as applyReadResponse:
+  // a read naming a different running turn, or a different wait within the
+  // same turn, retires the retained retry metadata - the new deadline renders
+  // alone until a matching live announcement arrives.
   const quotaRetryFromAnotherCall =
     base.modelRetry?.errorClass === "quota_exceeded" &&
     base.modelRetry.turnId !== undefined &&
-    (waitTurnReplaced || (quotaSnapshotAuthoritative && fresh.quotaResumesAt !== model.quotaResumesAt));
+    (waitTurnReplaced ||
+      quotaWaitStampMoved(fresh, model) ||
+      (quotaSnapshotAuthoritative && fresh.quotaResumesAt !== model.quotaResumesAt));
   const clearedQuotaRetry =
     (quotaSnapshotAuthoritative || waitTurnReplaced) &&
     (fresh.quotaResumesAt === undefined || quotaRetryFromAnotherCall) &&
     model.modelRetry?.errorClass === "quota_exceeded"
       ? { modelRetry: undefined }
       : {};
+  // Sticky, as in applyReadResponse: a source that once reported a wait keeps
+  // reporting waits, so a later no-wait read does not unsay it.
+  const keptQuotaReadReportsWaits =
+    base.quotaReadReportsWaits || fresh.quotaReadReportsWaits ? { quotaReadReportsWaits: true } : {};
   let next = withDisplay(
     {
       ...base,
@@ -1273,6 +1311,7 @@ export function applyReadModel<M extends ThreadModel>(
       ...clearedScratch,
       ...clearedQuotaWait,
       ...clearedQuotaRetry,
+      ...keptQuotaReadReportsWaits,
       ...(freshRunningTurnId ? { runningTurnId: freshRunningTurnId } : {}),
       olderCursor,
       olderFrontier,

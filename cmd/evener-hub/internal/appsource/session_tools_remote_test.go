@@ -21,7 +21,7 @@ func TestSessionToolsRemoteQualifiedInputCapabilities(t *testing.T) {
 		CommandInput: true, Shutdown: true, Interrupt: true, Compact: true,
 		Clear: true, ForkFromTurn: true, ChangeModel: true, ChangeVisionModel: true,
 		Goal: true, SharedNotes: true, Rename: true, StopSubagent: true,
-		WindowRead: true,
+		WindowRead: true, QuotaWaitSnapshot: true,
 	}
 	if got := maskRemoteThreadCapabilities(full, forwardedRemoteThreadCapabilities(appwire.FeatureSet{TurnStart: true, TurnSteer: true, ThreadClear: true, ForkFromTurn: true, ThreadShutdown: true})); got != want {
 		t.Fatalf("qualified input mask = %+v, want %+v", got, want)
@@ -31,6 +31,7 @@ func TestSessionToolsRemoteQualifiedInputCapabilities(t *testing.T) {
 		Interrupt: true, Compact: true, ChangeModel: true, ChangeVisionModel: true,
 		Queue: true, Goal: true, SharedNotes: true, Rename: true,
 		SkillInput: true, CommandInput: true, StopSubagent: true, WindowRead: true,
+		QuotaWaitSnapshot: true,
 	}
 	if got := maskRemoteThreadCapabilities(full, forwardedRemoteThreadCapabilities(appwire.FeatureSet{})); got != wantWithoutFeatures {
 		t.Fatalf("negotiated feature refusal not preserved: got %+v, want %+v", got, wantWithoutFeatures)

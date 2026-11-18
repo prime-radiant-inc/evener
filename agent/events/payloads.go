@@ -169,6 +169,11 @@ type ModelRetryData struct {
 	Model          string `json:"model,omitempty"`
 	GroupElapsedMS int64  `json:"group_elapsed_ms"`
 	AttemptCap     int    `json:"attempt_cap"`
+	// WaitStartedAt is the epoch-ms instant a quota wait began, issued by the
+	// daemon that owns the wait and shared with the thread snapshot's failure
+	// summary, so the wait's two wire routes name the same wait by it. Zero on
+	// older daemons and on every non-quota retry.
+	WaitStartedAt int64 `json:"wait_started_at,omitempty"`
 }
 
 // ReasoningSummaryDeltaData is the payload for an EventReasoningSummaryDelta

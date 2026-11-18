@@ -200,6 +200,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			Model:          data.Model,
 			GroupElapsedMS: data.GroupElapsedMS,
 			AttemptCap:     data.AttemptCap,
+			WaitStartedAt:  data.WaitStartedAt,
 		})}
 	case events.EventQueueChanged:
 		data := eventData[events.QueueChangedData](event.Data)

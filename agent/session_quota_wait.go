@@ -117,7 +117,15 @@ func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model st
 	// the session waiting sees a wait whose reset will end it.
 	timer := s.sclock().NewTimer(resetAt.Sub(now))
 	defer timer.Stop()
-	wait := &quotaWait{failure: quotaWaitFailure(callErr, model, resetAt), wake: make(chan struct{}, 1)}
+	// WaitStartedAt is the wait's daemon-issued identity, shared by its two
+	// wire routes: the announcement below and the failure summary a read
+	// serves. A client correlating the two names the same wait by it, never
+	// by a reset instant two waits can share.
+	waitStartedAt := now.UnixMilli()
+	wait := &quotaWait{
+		failure: quotaWaitFailure(callErr, model, resetAt, waitStartedAt),
+		wake:    make(chan struct{}, 1),
+	}
 	drive := driveTurnFor(ctx, s)
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
@@ -147,7 +155,7 @@ func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model st
 	defer end()
 
 	s.noteParentJobActivity(jobPhaseModelRetrying)
-	s.emitQuotaRetry(callErr, model, resetAt.Sub(now), callStart)
+	s.emitQuotaRetry(callErr, model, resetAt.Sub(now), callStart, waitStartedAt)
 	select {
 	case <-ctx.Done():
 		return false, ctx.Err()
@@ -172,7 +180,7 @@ func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model st
 	// event re-samples the session's failure summary (now clear), so a list
 	// row stops saying the session waits as soon as the retry goes out,
 	// not when its response ends.
-	s.emitQuotaRetry(callErr, model, 0, callStart)
+	s.emitQuotaRetry(callErr, model, 0, callStart, waitStartedAt)
 	s.injectDrainedSteering()
 	return true, nil
 }
@@ -198,10 +206,11 @@ func (s *Session) applyModelSwitchPickedDuringWait() {
 // quotaWaitFailure is the row summary of a call waiting out callErr: the
 // failure's headline and cause, as a failed turn's summary carries them, and
 // when the call resumes by itself.
-func quotaWaitFailure(callErr error, model string, resetAt time.Time) appwire.ThreadFailure {
+func quotaWaitFailure(callErr error, model string, resetAt time.Time, waitStartedAt int64) appwire.ThreadFailure {
 	failure := appwire.ThreadFailure{
-		Title:     appwire.Excerpt(errorDataFromError(callErr).Title, appwire.MaxFailureTitleRunes),
-		ResumesAt: resetAt.UnixMilli(),
+		Title:         appwire.Excerpt(errorDataFromError(callErr).Title, appwire.MaxFailureTitleRunes),
+		ResumesAt:     resetAt.UnixMilli(),
+		WaitStartedAt: waitStartedAt,
 	}
 	if cause := providerCauseFromError(callErr, model); cause != nil {
 		failure.Cause = &appwire.DiagnosticCause{Kind: cause.Kind, Provider: cause.Provider, Model: cause.Model, Status: cause.Status}
@@ -215,7 +224,7 @@ func quotaWaitFailure(callErr error, model string, resetAt time.Time) appwire.Th
 // goes out. Like a wall-budgeted rate limit, it counts no attempts against a
 // budget, so every announcement says attempt 1 and clients read only its
 // delay.
-func (s *Session) emitQuotaRetry(callErr error, model string, delay time.Duration, callStart time.Time) {
+func (s *Session) emitQuotaRetry(callErr error, model string, delay time.Duration, callStart time.Time, waitStartedAt int64) {
 	data := events.ModelRetryData{
 		Attempt:        1,
 		DelayMS:        delay.Milliseconds(),
@@ -223,6 +232,7 @@ func (s *Session) emitQuotaRetry(callErr error, model string, delay time.Duratio
 		Message:        callErr.Error(),
 		Model:          model,
 		GroupElapsedMS: s.sclock().Now().Sub(callStart).Milliseconds(),
+		WaitStartedAt:  waitStartedAt,
 	}
 	if le, ok := errors.AsType[llm.Error](callErr); ok {
 		data.StatusCode = le.StatusCode()

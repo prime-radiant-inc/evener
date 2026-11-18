@@ -231,6 +231,12 @@ export interface ModelRetryState {
   // Rendering maxAttempts once the two diverge promises retries the early-
   // stop rule won't spend.
   attemptCap: number;
+  // The daemon-issued identity of the quota wait this retry announced (the
+  // epoch-ms instant the wait began), shared with the thread snapshot's
+  // failure summary: a read merge correlates the two by it, never by a reset
+  // instant two waits can share. Absent on older daemons and every non-quota
+  // retry.
+  waitStartedAt?: number;
   // Client stamp (the reducer's own `now`) of when this notification was
   // processed - not wire data. LivenessLine.tsx compares it against
   // lastFrameAt/now to tell "still waiting" from "in progress" without a new
@@ -464,6 +470,21 @@ export interface ThreadModel {
   // turn boundary, and by an authoritative read whose thread no longer
   // waits (a source whose snapshot cannot report the wait never clears it).
   quotaResumesAt?: number;
+  // The snapshot's own name for the wait its quotaResumesAt deadline belongs
+  // to: ThreadFailure.WaitStartedAt, the daemon-issued instant the wait
+  // began. A read merge correlates a live retry against THIS stamp rather
+  // than comparing deadlines, so the same wait keeps its elapsed time across
+  // a refresh and a different wait (a same-turn second wait) retires the old
+  // retry's metadata even when the two share a reset instant. Absent on a
+  // source that names no wait and on older daemons.
+  quotaWaitStartedAt?: number;
+  // Whether the read that last wrote quotaResumesAt carried a wait summary
+  // at all (a resumesAt key, set or not): a source whose read once reported
+  // a wait reports waits, whatever its quotaWaitSnapshot capability bit
+  // says - the bit postdates base-revision root reads, which carried
+  // ResumesAt with no bit. A read merge treats this as the authority a
+  // missing bit would otherwise deny.
+  quotaReadReportsWaits?: boolean;
   // The turn a boundary ended a quota wait on, held only so a retry event
   // queued for that turn cannot restamp the wait after the boundary. Cleared
   // by the next quota wait (which retires its own turn) and never read for

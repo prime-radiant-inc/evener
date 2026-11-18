@@ -4732,6 +4732,7 @@ Underlying Go kind: `string` (no struct fields).
 | `title` | string | yes |  |
 | `cause` | \*[appwire.DiagnosticCause](#diagnosticcause) | yes |  |
 | `resumesAt` | int64 | yes |  |
+| `waitStartedAt` | int64 | yes |  |
 
 
 ### `ThreadForceStopParams`
@@ -4898,6 +4899,7 @@ Underlying Go kind: `string` (no struct fields).
 | `model` | string | yes |  |
 | `groupElapsedMs` | int64 |  |  |
 | `attemptCap` | int |  |  |
+| `waitStartedAt` | int64 | yes |  |
 
 
 ### `ThreadModelSetParams`

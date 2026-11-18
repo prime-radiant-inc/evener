@@ -134,9 +134,12 @@ func (s *RemoteHubSource) fromRemoteThreadStartError(err error) error {
 // PageBefore stays off: the controller cannot yet join a remote page to its
 // paging window (#3176). VoicePresentationContextV1 stays off too: turn forwarding
 // reaches the peer's public hub input, which cannot accept this controller's
-// journal-backed voice transport identity. Every field starts masked, so a
-// capability added to appwire.ThreadCapabilities later stays invisible until
-// this policy names the method that answers for it.
+// journal-backed voice transport identity. QuotaWaitSnapshot rides the remote
+// daemon's own claim like the featureless actions: the remote's read snapshot
+// is what a client re-hydrates from, so a pane reconnecting after a same-turn
+// wake needs the remote's word for whether the wait ended. Every field starts
+// masked, so a capability added to appwire.ThreadCapabilities later stays
+// invisible until this policy names the method that answers for it.
 func forwardedRemoteThreadCapabilities(features appwire.FeatureSet) appwire.ThreadCapabilities {
 	return appwire.ThreadCapabilities{
 		Send:              features.TurnStart,
@@ -157,6 +160,7 @@ func forwardedRemoteThreadCapabilities(features appwire.FeatureSet) appwire.Thre
 		AskFence:          true,
 		StopSubagent:      true,
 		WindowRead:        true,
+		QuotaWaitSnapshot: true,
 	}
 }
 
@@ -204,6 +208,7 @@ func maskRemoteThreadCapabilities(remote, forwarded appwire.ThreadCapabilities) 
 		AskFence:          remote.AskFence && forwarded.AskFence,
 		StopSubagent:      remote.StopSubagent && forwarded.StopSubagent,
 		WindowRead:        remote.WindowRead && forwarded.WindowRead,
+		QuotaWaitSnapshot: remote.QuotaWaitSnapshot && forwarded.QuotaWaitSnapshot,
 	}
 }
 

@@ -367,10 +367,17 @@ type SubagentTally struct {
 // with ResumesAt is the waiting call's limit rather than a failed turn's, and
 // it travels on a working thread. It is absent for any other failure, for a
 // usage limit with no known reset, and once the wait ends.
+//
+// WaitStartedAt is the same wait's daemon-issued identity: the epoch-ms
+// instant the wait began, shared with the evener/thread/modelRetry
+// announcement that opened it. A read whose summary carries the same stamp
+// names THIS wait, so a live retry's elapsed time survives the refresh; a
+// different stamp (or a missing one, on an older daemon) names another wait.
 type ThreadFailure struct {
-	Title     string           `json:"title,omitempty"`
-	Cause     *DiagnosticCause `json:"cause,omitempty"`
-	ResumesAt int64            `json:"resumesAt,omitempty"`
+	Title         string           `json:"title,omitempty"`
+	Cause         *DiagnosticCause `json:"cause,omitempty"`
+	ResumesAt     int64            `json:"resumesAt,omitempty"`
+	WaitStartedAt int64            `json:"waitStartedAt,omitempty"`
 }
 
 // PendingQuestion is the first question of a session's pending ask (S1b): what

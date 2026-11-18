@@ -37,6 +37,7 @@ func allRemoteThreadCapabilities() appwire.ThreadCapabilities {
 		PageBefore:                 true,
 		VoiceArm:                   true,
 		WindowRead:                 true,
+		QuotaWaitSnapshot:          true,
 	}
 }
 
@@ -85,6 +86,7 @@ func TestForwardedRemoteThreadCapabilitiesPolicy(t *testing.T) {
 			CommandInput:      true,
 			StopSubagent:      true,
 			WindowRead:        true,
+			QuotaWaitSnapshot: true,
 		}
 		if got != want {
 			t.Fatalf("effective capabilities = %+v, want %+v", got, want)
@@ -112,6 +114,7 @@ func TestForwardedRemoteThreadCapabilitiesPolicy(t *testing.T) {
 			CommandInput:      true,
 			StopSubagent:      true,
 			WindowRead:        true,
+			QuotaWaitSnapshot: true,
 		}
 		if got != want {
 			t.Fatalf("effective capabilities = %+v, want %+v", got, want)
@@ -278,6 +281,15 @@ func TestRemoteHubCapabilitiesMatchForwardedMethods(t *testing.T) {
 		// claim: the masked set leaves it to applyHubCapabilities, which stamps it
 		// on every projection of the remote thread this hub serves.
 		{"VoiceArm", nil},
+		// QuotaWaitSnapshot rides the remote daemon's own claim: the remote's
+		// read snapshot is what a client re-hydrates from, and the thread/read
+		// forward is the route that carries it.
+		{"QuotaWaitSnapshot", map[string]func() error{
+			"ReadThread": func() error {
+				_, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: "host:thread"})
+				return err
+			},
+		}},
 	}
 
 	masked := maskRemoteThreadCapabilities(allRemoteThreadCapabilities(), forwardedThreadCapabilitiesForTests())

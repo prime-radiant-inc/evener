@@ -4752,6 +4752,7 @@ export interface ThreadFailure {
   title?: string;
   cause?: DiagnosticCause;
   resumesAt?: number;
+  waitStartedAt?: number;
 }
 
 export interface ThreadForceStopParams {
@@ -5091,6 +5092,16 @@ export interface ThreadModelRetryParams {
   model?: string;
   groupElapsedMs: number;
   attemptCap: number;
+  /**
+   * WaitStartedAt is the epoch-ms instant this quota wait began, issued by
+   * the daemon that owns the wait and shared by the thread snapshot's
+   * failure summary (ThreadFailure.WaitStartedAt). It identifies the wait
+   * across its two wire routes: a read that carries the same stamp names
+   * THIS wait (its elapsed time is this call's), a different stamp or a
+   * missing one names another. Zero on an older daemon and on every
+   * non-quota retry, which never survive a read anyway.
+   */
+  waitStartedAt?: number;
 }
 
 export interface ThreadModelSetParams {
