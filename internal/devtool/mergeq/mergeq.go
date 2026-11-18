@@ -37,6 +37,15 @@ const (
 	mergedState = "MERGED"
 	// pollInterval bounds how long one wait sleeps at a time.
 	pollInterval = 30 * time.Second
+	// finalObservationAllowance bounds the observation made after the wait's
+	// budget has run out. The loop's reads are bounded by what is left of the
+	// budget, so the read that catches a merge landing just after the deadline has
+	// none left to inherit; it gets the same allowance a poll gets, because that
+	// is this client's existing notion of how long one read may take. A bound is
+	// what makes the wait's limit a limit: without it a stalled gh call holds the
+	// run for as long as GitHub takes to answer, past the --wait the caller asked
+	// for.
+	finalObservationAllowance = pollInterval
 	// stalenessWindow is how old a queue removal event may be and still
 	// explain the drop it is read for. An older one is a prior drop's event,
 	// not this drop's reason.
@@ -343,32 +352,59 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 		if !clock.Sleep(ctx, min(left, pollInterval)) {
 			return Outcome{}, &ExitError{Kind: Interrupted, Detail: ctx.Err().Error()}
 		}
-		if out, merged, exitErr := mergedOutcome(ctx, opts, c); exitErr != nil {
+		// The reads that follow share what is left of the wait. A poll that
+		// stalls past it is the queue not being readable within the budget the
+		// caller set, and the loop treats that as the budget being spent rather
+		// than as an answer: the observation after the loop has its own
+		// allowance and is the one that decides.
+		out, merged, read, exitErr, expired := observe(ctx, opts, c, deadline.Sub(clock.Now()))
+		if expired {
+			break
+		}
+		if exitErr != nil {
 			return Outcome{}, exitErr
-		} else if merged {
+		}
+		if merged {
 			return out, nil
 		}
-		if st, exitErr = readStatus(ctx, opts, c); exitErr != nil {
-			return Outcome{}, exitErr
-		}
+		st = read
 		if st.State == mergedState {
 			return Outcome{Kind: Merged, SHA: st.MergeSHA()}, nil
 		}
 		if st.Entry == nil {
+			// The run's own context, not the wait's budget: observing the drop is
+			// what ended the wait, so there is no budget left for it to spend. What
+			// decides the reason read is dropOutcome, which reads the context to tell
+			// "the operator stopped asking" from "GitHub said this".
 			return dropOutcome(ctx, opts, st, c, clock.Now)
 		}
 	}
 	// The loop's last read lands on the deadline, and the queue can finish in
 	// the moment after it. A timeout verdict printed from that read reports a
 	// merge that already happened, so observe once more before calling it.
-	if out, merged, exitErr := mergedOutcome(ctx, opts, c); exitErr != nil {
+	//
+	// That observation gets an allowance of its own, because the wait's budget
+	// has nothing left to lend it: a read that inherits a spent budget is not an
+	// observation at all.
+	out, merged, read, exitErr, expired := observe(ctx, opts, c, finalObservationAllowance)
+	if expired {
+		// The timeout verdict states a queue position and state, and a read that
+		// did not complete supplies neither: printing the last position seen
+		// would report this instant's queue from an earlier one. What the run
+		// knows is that the queue could not be read, which is the lookup failure
+		// the exit code 2 is for.
+		return Outcome{}, &ExitError{
+			Kind:   LookupFailed,
+			Detail: "the final observation of the queue did not complete within the wait's allowance, so whether the pull request is still queued was not read",
+		}
+	}
+	if exitErr != nil {
 		return Outcome{}, exitErr
-	} else if merged {
+	}
+	if merged {
 		return out, nil
 	}
-	if st, exitErr = readStatus(ctx, opts, c); exitErr != nil {
-		return Outcome{}, exitErr
-	}
+	st = read
 	if st.State == mergedState {
 		return Outcome{Kind: Merged, SHA: st.MergeSHA()}, nil
 	}
@@ -378,12 +414,61 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 	return Outcome{Kind: TimedOut, Position: st.Entry.Position, QueueState: st.Entry.State}, nil
 }
 
+// observe makes one bounded pass over the pull request: whether it has merged,
+// and its queue status when it has not.
+//
+// budget bounds BOTH reads, so the wait's limit is a limit. The production
+// context is cancelled by a signal and carries no deadline of its own, and the
+// drain bound does not start while the child is still running under a live
+// context, so an unbounded read is a gh call that holds the run for however long
+// GitHub takes to answer -- past the --wait the caller asked for, with the
+// timeout the caller is waiting for arriving late or not at all.
+//
+// The run's own context is asked AGAIN after the reads, before any of what they
+// returned is interpreted. A cancelled run that received a complete reply has
+// still been cancelled: a descendant holding the output pipe open makes the
+// reply land up to a drain grace after the signal, and a queue verdict printed
+// from that reply tells the operator a wait they stopped ran to its own
+// conclusion. The read is allowed to finish; the answer to it is not used.
+//
+// expired reports that a read ended because its budget ran out rather than
+// because the operator cancelled. The two are different endings and the caller
+// is what knows which one this point in the wait can act on.
+func observe(ctx context.Context, opts Options, c Client, budget time.Duration) (out Outcome, merged bool, st Status, exitErr *ExitError, expired bool) {
+	readCtx, stop := context.WithTimeout(ctx, budget)
+	defer stop()
+	out, merged, exitErr = mergedOutcome(readCtx, opts, c)
+	if exitErr == nil && !merged {
+		st, exitErr = readStatus(readCtx, opts, c)
+	}
+	if err := ctx.Err(); err != nil {
+		return Outcome{}, false, Status{}, &ExitError{Kind: Interrupted, Detail: err.Error()}, false
+	}
+	// refusalFor answered an interrupt from the read's context. With the run's
+	// own context still live, that context is this function's budget, so the
+	// ending is the budget's and not the operator's.
+	if exitErr != nil && exitErr.Kind == Interrupted {
+		return Outcome{}, false, Status{}, nil, true
+	}
+	return out, merged, st, exitErr, false
+}
+
 // readStatus reads the status, turning a failed read into the run-ending
 // refusal the script reported.
+//
+// The context is asked after the read and before the status is interpreted, on
+// the success path as well as the failure one. gh writes its reply, exits, and
+// leaves a descendant holding the output pipe open until the drain bound, so a
+// cancelled read still returns a complete, valid answer -- and printing
+// "MERGEQ queued position=1" for a wait the operator stopped tells them the run
+// reached its own conclusion. The status is thrown away with the context.
 func readStatus(ctx context.Context, opts Options, c Client) (Status, *ExitError) {
 	st, err := c.Status(ctx, opts.Repo, opts.PR)
 	if err != nil {
 		return Status{}, refusalFor(ctx, LookupFailed, err)
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return Status{}, &ExitError{Kind: Interrupted, Detail: ctxErr.Error()}
 	}
 	return st, nil
 }
@@ -407,6 +492,12 @@ func refusalFor(ctx context.Context, kind ErrorKind, err error) *ExitError {
 // read that follows surfaces as a real failure).
 func mergedOutcome(ctx context.Context, opts Options, c Client) (Outcome, bool, *ExitError) {
 	sha, merged, err := c.MergedCommit(ctx, opts.Repo, opts.PR)
+	// Asked before the answer is used, for the reason readStatus gives: a
+	// cancelled read can still deliver the complete reply it received before the
+	// signal, and a merge reported from it ends a wait the operator stopped.
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return Outcome{}, false, &ExitError{Kind: Interrupted, Detail: ctxErr.Error()}
+	}
 	if err != nil || !merged {
 		// A cancelled probe must not fall through to a queue verdict: the run
 		// would report "queued position=N" (exit 0) for a PR whose state it

@@ -214,6 +214,39 @@ func replaceableAncestorByMode(path string) string {
 	return ""
 }
 
+// widenedFixtureDir creates a directory under the trusted fixture base and
+// returns it, for a case that is about to WIDEN it to a mode another user could
+// write through.
+//
+// The widening is the hazard, so the entry that gets widened has to be one this
+// test already owns. `t.TempDir()` descends from the ambient TMPDIR, and on a
+// TMPDIR whose ancestor another local user can replace, that user can swap the
+// entry between the mkdir and the chmod: the chmod then lands on their target,
+// and a test run changes the permissions of a directory the operator owns. The
+// fixture would be performing the hazard it exists to describe.
+//
+// The base is the same one every other fixture here uses, so it is established
+// rather than inherited: a private directory under a chain the launcher's own
+// rule accepts, on a filesystem that can execute. The ancestry is asked about
+// again after the create, because a base is only as good as what it resolved to.
+func widenedFixtureDir(t *testing.T, name string) string {
+	t.Helper()
+	base := fixtureExecDir(t)
+	dir := filepath.Join(base, name)
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatalf("create %s: %v", dir, err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	created, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", dir, err)
+	}
+	if reason := replaceableAncestor(t, created); reason != "" {
+		t.Fatalf("%s was created under %s, which the launcher's own rule does not trust: this case is about to widen that directory, so the widening has to land on an entry this test owns (%s)", created, base, reason)
+	}
+	return dir
+}
+
 // pathComponents lists path's components from the root down.
 func pathComponents(path string) []string {
 	var components []string
@@ -741,15 +774,16 @@ func TestMergEQFixtureBaseIsTrustedAndExecutable(t *testing.T) {
 	// Not parallel itself: the last subtest sets TMPDIR for the process.
 	t.Run("a replaceable ancestor is refused", func(t *testing.T) {
 		t.Parallel()
-		// Not under t.TempDir(): the parent has to be replaceable for the case to
-		// mean anything, and the point is to hand execDirUnder a base whose chain
-		// is wrong. The directory is created inside this case's own temp space so
-		// cleanup is the test's, then opened up to the mode the ancestor rule
-		// exists for.
-		dir := filepath.Join(t.TempDir(), "replaceable")
-		if err := os.Mkdir(dir, 0o777); err != nil {
-			t.Fatalf("create %s: %v", dir, err)
-		}
+		// The directory has to be replaceable for the case to mean anything, and
+		// it has to be created somewhere this test owns before it is made so. It
+		// is therefore a child of the trusted fixture base, not of t.TempDir():
+		// t.TempDir() descends from the ambient TMPDIR, and on a TMPDIR whose
+		// ancestor another user can replace, the entry this call creates can be
+		// swapped between the mkdir and the chmod. The chmod would then land on
+		// that user's target, which is an operator-owned directory made writable
+		// by a test run -- the hazard this case exists to describe, performed by
+		// the case itself.
+		dir := widenedFixtureDir(t, "replaceable")
 		if err := os.Chmod(dir, 0o777); err != nil {
 			t.Fatalf("make %s replaceable: %v", dir, err)
 		}
@@ -781,10 +815,10 @@ func TestMergEQFixtureBaseIsTrustedAndExecutable(t *testing.T) {
 		// and can rename or delete the fixture's entry and put their own script
 		// where the test will execute it. The launcher refuses it, so the fixtures
 		// have to as well.
-		dir := filepath.Join(t.TempDir(), "group-writable")
-		if err := os.Mkdir(dir, 0o770); err != nil {
-			t.Fatalf("create %s: %v", dir, err)
-		}
+		// Under the trusted fixture base for the same reason as the case above:
+		// the directory is deliberately widened, so the entry that is widened has
+		// to be an entry this test already owns.
+		dir := widenedFixtureDir(t, "group-writable")
 		if err := os.Chmod(dir, 0o770); err != nil {
 			t.Fatalf("make %s group-writable: %v", dir, err)
 		}
@@ -849,10 +883,12 @@ func TestMergEQFixtureBaseIsTrustedAndExecutable(t *testing.T) {
 			t.Fatalf("could not establish the fallback this case needs: %s", reason)
 		}
 		t.Setenv("XDG_RUNTIME_DIR", fallback)
-		dir := filepath.Join(t.TempDir(), "replaceable-tmp")
-		if err := os.Mkdir(dir, 0o777); err != nil {
-			t.Fatalf("create %s: %v", dir, err)
-		}
+		// Under the trusted fixture base, not t.TempDir(): this directory is
+		// widened to 0777, so the entry that gets widened must be one this test
+		// already owns. Under an ambient TMPDIR another user could replace the
+		// entry between the mkdir and the chmod and the chmod would land on a
+		// directory of theirs.
+		dir := widenedFixtureDir(t, "replaceable-tmp")
 		if err := os.Chmod(dir, 0o777); err != nil {
 			t.Fatalf("make %s replaceable: %v", dir, err)
 		}
@@ -871,6 +907,54 @@ func TestMergEQFixtureBaseIsTrustedAndExecutable(t *testing.T) {
 		}
 		if reason := replaceableAncestor(t, got); reason != "" {
 			t.Fatalf("fixtureExecDir fell back to %s, which the launcher would not build under (%s): passing over the replaceable TMPDIR is only a fix if what replaces it is trusted", got, reason)
+		}
+	})
+	t.Run("a widened fixture is created where this user owns the entry", func(t *testing.T) {
+		// The high: a case that widens a directory to 0777 must widen an entry it
+		// already owns. `t.TempDir()` descends from the ambient TMPDIR, so on a
+		// TMPDIR whose ancestor another local user can replace, that user can swap
+		// the entry between the mkdir and the chmod -- and the chmod lands on their
+		// target, which can be a directory the operator owns, made world-writable by
+		// a test run. The case would be performing the hazard it describes.
+		//
+		// The premise is manufactured rather than assumed, because on a host whose
+		// TMPDIR is already trusted (1777 root-owned /tmp is the ordinary case) the
+		// pre-fix shape lands somewhere safe by accident and the case would pass
+		// against it. TMPDIR is pointed at a directory this user owns with 0777, so
+		// t.TempDir() below it is under a replaceable ancestor for real, and the
+		// fixture's own base is not.
+		//
+		// Not parallel: it sets TMPDIR for the process, and t.Setenv panics in a
+		// parallel test.
+		replaceable := widenedFixtureDir(t, "replaceable-tmpdir-for-widening")
+		if err := os.Chmod(replaceable, 0o777); err != nil {
+			t.Fatalf("make %s replaceable: %v", replaceable, err)
+		}
+		if info, err := os.Stat(replaceable); err != nil {
+			t.Fatalf("stat %s: %v", replaceable, err)
+		} else if info.Mode()&os.ModeSticky != 0 {
+			t.Skipf("%s came back sticky, so it is not the replaceable TMPDIR this case needs", replaceable)
+		}
+		if reason := replaceableAncestor(t, replaceable); reason == "" {
+			t.Skipf("%s still reads as trusted on this host, so a directory beneath it is not replaceable and the case has no premise (%s is the base it descends from)", replaceable, fixtureExecDir(t))
+		}
+		t.Setenv("TMPDIR", replaceable)
+		// What the fixture does when it widens a directory under a replaceable
+		// TMPDIR. The pre-fix shape reached for t.TempDir() here, and the helper
+		// asks the question the finding is about: is the entry this test is about
+		// to widen one it already owns?
+		dir := widenedFixtureDir(t, "widened-under-a-replaceable-tmpdir")
+		// The assertion is the ancestry, not a path prefix: t.TempDir() gives a
+		// numbered sibling under the test's own space rather than a child of the
+		// TMPDIR the test just set, so "is it under the replaceable directory" is
+		// the wrong question and answers no on both the fixed and the broken shape.
+		// What the finding is about is whether another user can replace the entry
+		// this call is about to widen, which is exactly what the chain is asked for.
+		if reason := replaceableAncestor(t, dir); reason != "" {
+			t.Fatalf("widenedFixtureDir returned %s, whose ancestry another user can replace, with TMPDIR set to %s: the entry this case is about to widen is not one it owns, so the chmod lands wherever that user pointed (%s)", dir, replaceable, reason)
+		}
+		if err := os.Chmod(dir, 0o777); err != nil {
+			t.Fatalf("widen %s: %v", dir, err)
 		}
 	})
 }

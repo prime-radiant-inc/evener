@@ -528,6 +528,48 @@ func runLauncherFuncStdin(t *testing.T, funcs, expr, stdin string, args ...strin
 	return cmd.Run()
 }
 
+// runLauncherFuncWithoutGetfacl is runLauncherFunc with getfacl removed from the
+// predicate's PATH, standing in for a Linux host that does not have the tool
+// installed.
+//
+// It takes a tool off PATH rather than putting a stand-in on it: nothing here
+// answers in getfacl's place. What is left is the rest of the tools the
+// predicate genuinely uses, linked by name into a fixture directory under the
+// trusted base, so the only difference from the ordinary run is that one tool is
+// missing -- which is the condition being tested.
+func runLauncherFuncWithoutGetfacl(t *testing.T, funcs, expr string, args ...string) error {
+	t.Helper()
+	bin := filepath.Join(fixtureScratchBase(t), "path-without-getfacl")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatalf("create the restricted PATH: %v", err)
+	}
+	for _, tool := range []string{"awk", "find", "grep", "id", "ls", "sed", "stat", "uname"} {
+		path, err := exec.LookPath(tool)
+		if err != nil {
+			t.Skipf("%s is not installed, so the predicate cannot run with it on PATH: this case needs the tool list to be available and only getfacl absent", tool)
+		}
+		link := filepath.Join(bin, tool)
+		if target, err := os.Readlink(link); err == nil && target == path {
+			continue
+		}
+		if err := os.Symlink(path, link); err != nil {
+			t.Fatalf("link %s into the restricted PATH: %v", tool, err)
+		}
+	}
+	if _, err := exec.LookPath("getfacl"); err == nil {
+		// The premise: this machine has one, so removing it is a real removal.
+		if _, err := os.Stat(filepath.Join(bin, "getfacl")); err == nil {
+			t.Fatalf("%s holds a getfacl, so the restricted PATH is not restricted", bin)
+		}
+	}
+	argv := append([]string{"bash", "-c",
+		`eval "$(sed -n '` + funcs + `' "$1")"; ` + expr,
+		"bash", mergeEnqueueLauncher}, args...)
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Env = envOverride(cmd.Env, "PATH="+bin)
+	return cmd.Run()
+}
+
 func launcherTrustsPath(t *testing.T, path string) bool {
 	t.Helper()
 	return runLauncherFunc(t, validatorFuncsWithWalk, `scratch_path_is_trusted "$2"`, path) == nil
@@ -1880,7 +1922,13 @@ func TestMergeEnqueueLauncherDoesNotBuildUnderAReplaceableRoot(t *testing.T) {
 		// 2, nothing running, nothing minted. Waiting for a build to appear would
 		// only ever pass against the accepting behaviour this case exists to
 		// exclude, and it would spend the launcher's whole deadline doing it.
-		shared := filepath.Join(resolvePath(t, t.TempDir()), "shared")
+		// A child of the trusted fixture base rather than of t.TempDir(). This
+		// directory is widened to 0777 below, and t.TempDir() descends from the
+		// ambient TMPDIR: on a TMPDIR whose ancestor another user can replace, the
+		// entry created here can be swapped between the mkdir and that chmod, and
+		// the chmod would then widen an operator-owned directory. The test would be
+		// performing the hazard it exists to describe.
+		shared := filepath.Join(fixtureScratchBase(t), "shared")
 		if err := os.MkdirAll(shared, 0o755); err != nil {
 			t.Fatalf("create the shared ancestor: %v", err)
 		}
@@ -2266,6 +2314,78 @@ scratch_path_is_trusted "$2"`
 		}
 	})
 
+	t.Run("a Linux host without getfacl still reads the ACL it can", func(t *testing.T) {
+		// The other half of "read the ACL": what to do when the tool that would
+		// read it is not installed. `ls -de` is a BSD option, and GNU ls rejects
+		// it (`ls: invalid option -- 'e'`), so reaching for the Darwin reader here
+		// answered "grants" for every ACL-marked ancestor: a 0700 directory with a
+		// read-only POSIX ACL was refused, and if it was the only candidate the
+		// launcher exited 2 before it reached GitHub.
+		//
+		// What Linux can still be asked is the mask, which the kernel keeps in the
+		// mode's group position whenever an access ACL is present, plus `other`,
+		// which no ACL widens. Neither granting write means no ACL can, so the
+		// answer is available without the tool.
+		probe := filepath.Join(resolvePath(t, fixtureScratchBase(t)), "acl-no-getfacl")
+		if err := os.MkdirAll(probe, 0o700); err != nil {
+			t.Fatalf("create %s: %v", probe, err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(probe) })
+		setfacl, err := exec.LookPath("setfacl")
+		if err != nil {
+			t.Skip("setfacl is not installed: this machine cannot mark a directory with an ACL, so the case has no premise")
+		}
+		if _, err := exec.LookPath("getfacl"); err != nil {
+			t.Skip("getfacl is not installed, so this machine is already the condition the case tests; the case needs to remove a tool that is present")
+		}
+		// A read-only grant to another user, with `other` at r-x and the owning
+		// group at r-x. `ls -l` shows a `+` because the ACL exists, which is what
+		// sends the reader down this path at all.
+		if err := os.Chmod(probe, 0o750); err != nil {
+			t.Fatalf("set a known mode: %v", err)
+		}
+		if err := exec.Command(setfacl, "-m", "u:nobody:r-x", probe).Run(); err != nil {
+			t.Skipf("could not grant a read-only ACL (%v): this machine cannot manufacture the condition", err)
+		}
+		t.Cleanup(func() { _ = exec.Command("setfacl", "-b", probe).Run() })
+		// The premise: marked, and read-only for the named user, with neither the
+		// group position nor `other` granting write. Read back from the tools so a
+		// case that never set what it claims cannot pass.
+		listing, err := exec.Command("ls", "-ldn", probe).Output()
+		if err != nil {
+			t.Fatalf("read the listing: %v", err)
+		}
+		mode := strings.Fields(string(listing))[0]
+		if !strings.Contains(mode, "+") {
+			t.Fatalf("%s reads %q with no ACL marker, so the reader would not be asked about its ACL at all", probe, mode)
+		}
+		if len(mode) < 10 || strings.Contains(mode[4:7], "w") || strings.Contains(mode[7:10], "w") {
+			t.Fatalf("%s reads %q, and this case needs neither the group position nor other to grant write: the point is that the mask rules the ACL out without a tool", probe, mode)
+		}
+		if err := runLauncherFuncWithoutGetfacl(t, validatorFuncs, `dir_acl_grants_foreign_write "$2"`, probe); err == nil {
+			t.Fatalf("%s carries a read-only ACL, its mask and other bits grant no write, and getfacl is absent: the reader reported a foreign write, which refuses an otherwise usable scratch root and exits 2", probe)
+		}
+		// And the other direction, so the fix is not "answer no whenever getfacl is
+		// missing": a grant the mode does leave open has to be read as a grant.
+		if err := exec.Command(setfacl, "-m", "u:nobody:rwx", probe).Run(); err != nil {
+			t.Fatalf("grant a write ACL: %v", err)
+		}
+		if err := exec.Command(setfacl, "-m", "m::rwx", probe).Run(); err != nil {
+			t.Fatalf("widen the mask: %v", err)
+		}
+		widened, err := exec.Command("ls", "-ldn", probe).Output()
+		if err != nil {
+			t.Fatalf("read the widened listing: %v", err)
+		}
+		widenedMode := strings.Fields(string(widened))[0]
+		if len(widenedMode) < 7 || !strings.Contains(widenedMode[4:7], "w") {
+			t.Fatalf("%s reads %q, and this half needs the mask to grant write so the unread ACL is what could name a grantee", probe, widenedMode)
+		}
+		if err := runLauncherFuncWithoutGetfacl(t, validatorFuncs, `dir_acl_grants_foreign_write "$2"`, probe); err != nil {
+			t.Fatalf("%s has a write mask and no getfacl to say whether a named user holds it: an ACL this script cannot read is a permission it cannot vouch for, and the reader called it safe (%v)", probe, err)
+		}
+	})
+
 	// macOS has no getfacl. `ls -lde` is the only thing that prints an ACL there,
 	// so the Darwin reader is what decides whether a Mac's scratch ancestor is
 	// trusted -- and a reader that answered "grants" for everything would refuse
@@ -2366,6 +2486,24 @@ scratch_path_is_trusted "$2"`
 			{
 				name: "a named user granted add_file",
 				acl:  " 1: user:nobody allow list,add_file,search\n",
+				want: true,
+			},
+			{
+				// `delete_child` removes an entry already in the directory, which is
+				// the entire question here: the entry this launcher created is what a
+				// grantee would remove. It is not a synonym the parser gets for free
+				// from `delete` or `write` -- Darwin lists it on its own -- so a list
+				// without it accepts a 0755 directory a trustee can empty.
+				name: "a delete_child grant is a replaceable directory",
+				acl:  " 0: user:nobody allow list,delete_child\n",
+				want: true,
+			},
+			{
+				// The inherited spelling of the same permission, since Darwin moves
+				// the action along by a field there and the two forms take separate
+				// branches of the field assignment.
+				name: "an inherited delete_child grant is a replaceable directory",
+				acl:  " 0: user:nobody inherited allow list,delete_child\n",
 				want: true,
 			},
 		}
@@ -3877,8 +4015,17 @@ func TestMergeEnqueueLauncherFixturesDoNotChmodThroughAReplaceableParent(t *test
 	// ordering is therefore correct by construction and unproven here, which the
 	// PR body says rather than implying this case covers it.
 	outside := filepath.Join(resolvePath(t, fixtureScratchBase(t)), "outside-target")
-	if err := os.MkdirAll(outside, 0o700); err != nil {
+	// 0755, and deliberately not the mode the guard would apply. A target that
+	// already carries 0700 cannot show anything: "chmod through the link did not
+	// happen" and "chmod through the link happened and agreed" are the same
+	// observation, so an assertion on 0700 passes against a guard that does
+	// nothing at all.
+	const outsideMode, chmodThroughMode = 0o755, 0o700
+	if err := os.MkdirAll(outside, outsideMode); err != nil {
 		t.Fatalf("create the link target: %v", err)
+	}
+	if err := os.Chmod(outside, outsideMode); err != nil {
+		t.Fatalf("set the link target's mode: %v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(outside) })
 	link := filepath.Join(resolvePath(t, fixtureScratchBase(t)), "planted-link")
@@ -3889,15 +4036,30 @@ func TestMergeEnqueueLauncherFixturesDoNotChmodThroughAReplaceableParent(t *test
 	if reason := privateChainRefusal(link); reason == "" {
 		t.Fatalf("%s is a symlink and the chain guard accepted it, so the chmod that follows would change the mode of %s instead", link, outside)
 	}
+	// The assertion this case was missing: the target still carries the mode it
+	// had BEFORE the guard was asked. Reading it only after a deliberate chmod
+	// below says nothing about whether refusing the link left it alone.
+	beforeInfo, err := os.Stat(outside)
+	if err != nil {
+		t.Fatalf("stat the link target: %v", err)
+	}
+	before := beforeInfo.Mode().Perm()
+	if before != outsideMode {
+		t.Fatalf("refusing the link left %s at %#o, want %#o: the refusal is what keeps a chmod off the target, so a different mode here means the guard reported the link and changed it anyway", outside, before, outsideMode)
+	}
 	// The fault is real, not hypothetical: chmod through the link does change the
 	// target, which is why the guard exists.
-	if err := os.Chmod(link, 0o700); err != nil {
+	if err := os.Chmod(link, chmodThroughMode); err != nil {
 		t.Fatalf("chmod through the link: %v", err)
 	}
-	if info, err := os.Stat(outside); err != nil || info.Mode().Perm() != 0o700 {
-		t.Fatalf("chmod through a symlink did not reach its target, so this machine cannot show the hazard: %v %v", info, err)
+	afterInfo, err := os.Stat(outside)
+	if err != nil {
+		t.Fatalf("stat the link target after chmod: %v", err)
 	}
-	if err := os.Chmod(outside, 0o755); err != nil {
+	if after := afterInfo.Mode().Perm(); after != chmodThroughMode {
+		t.Fatalf("chmod through a symlink reached its target with %#o, want %#o, so this machine cannot show the hazard the guard exists for", after, chmodThroughMode)
+	}
+	if err := os.Chmod(outside, outsideMode); err != nil {
 		t.Fatalf("restore the target: %v", err)
 	}
 	// And the selector still refuses the untrusted base itself.

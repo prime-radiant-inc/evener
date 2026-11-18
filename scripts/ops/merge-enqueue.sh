@@ -296,8 +296,12 @@ acl_ls_e_grants_foreign_write() {
     # directory, directly or by way of another permission. `write` on a
     # directory is the Darwin name for add_file plus add_subdirectory plus delete,
     # and the three it stands for are listed beside it for ACLs that spell them
-    # out. `writesecurity` is a grant of the same thing one step removed: it lets
-    # the grantee rewrite the ACL of this directory, and an ACL it writes can give it
+    # out. `delete_child` is the one that removes an entry already in the
+    # directory -- the whole question here, since the entry this launcher created
+    # is what a grantee would remove -- and Darwin renders it on its own line for
+    # an inherited entry, so a list without it accepts a 0755 directory a
+    # trustee can empty. `writesecurity` grants the same thing one step removed:
+    # it lets the grantee rewrite the ACL of this directory, and an ACL it writes can give it
     # add_file and delete. Reading that as an attribute permission would accept a
     # 0755 directory another user can take over, which is exactly the entry
     # replacement being asked about. `writeattr` and `writeextattr` only change
@@ -324,7 +328,7 @@ acl_ls_e_grants_foreign_write() {
       action = ($3 == "inherited") ? $4 : $3
       perms  = ($3 == "inherited") ? $5 : $4
       if (action == "allow" &&
-          perms ~ /(^|,)(writesecurity|write|add_file|add_subdirectory|delete|append)(,|$)/) { found = 1 }
+          perms ~ /(^|,)(writesecurity|write|add_file|add_subdirectory|delete|delete_child|append)(,|$)/) { found = 1 }
     }
     END { exit found ? 0 : 1 }
   '
@@ -376,6 +380,27 @@ dir_acl_grants_foreign_write() {
     [ -n "$acl" ] || return 0
     printf '%s\n' "$acl" | acl_getfacl_grants_foreign_write
     return $?
+  fi
+  # No getfacl, so the reader is chosen by PLATFORM rather than by which tool
+  # happened to be found. `ls -de` is a BSD option and GNU ls rejects it, so
+  # reaching for it here on Linux answered "grants" for every ACL-marked
+  # ancestor -- and a root-owned directory with a read-only POSIX ACL was then
+  # refused, taking the launcher to exit 2 on a machine where the ACL granted
+  # nobody anything.
+  #
+  # What Linux can still be asked without the tool is the mask. With an access
+  # ACL present the kernel keeps the mask in the mode's group position, and no
+  # named entry can exceed it; `other` is never widened by an ACL at all. So when
+  # neither of those positions grants write, no ACL can, and the answer is a
+  # refusal-free no. When either of them does, the ACL is the only thing that
+  # can say whether a named user is the grantee -- and an ACL this script cannot
+  # read is an answer it cannot give, which the convention above settles.
+  if [ "$(uname -s)" != Darwin ]; then
+    if [ -z "$(find "$dir" -maxdepth 0 -perm -0020 -print 2>/dev/null)" ] &&
+      [ -z "$(find "$dir" -maxdepth 0 -perm -0002 -print 2>/dev/null)" ]; then
+      return 1
+    fi
+    return 0
   fi
   acl=$(ls -lde "$dir" 2>/dev/null) || return 0
   [ -n "$acl" ] || return 0

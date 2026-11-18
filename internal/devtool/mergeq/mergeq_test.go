@@ -750,6 +750,162 @@ func TestWaitSleepsAtMostThePollInterval(t *testing.T) {
 	}
 }
 
+// TestWaitBudgetBoundsTheReadsItMakes pins the half of the wait a sleep bound
+// cannot cover: the reads.
+//
+// `--wait 60` promises the run is over in about a minute. Bounding only the
+// sleeps spends that promise on the polling cadence and leaves each gh call free
+// to hold the run for as long as GitHub takes -- the production context carries
+// no deadline of its own, and the drain bound does not start while the child is
+// still running under a live context. So a read stalled at the end of the budget
+// kept the run past its own limit, and the timeout the caller was waiting for
+// arrived late or not at all.
+//
+// The assertion is on the budget each read RECEIVES, not on waiting one out: a
+// read that carries a deadline is bounded, and one that carries none is the
+// unbounded call this finding is about. Waiting for a stalled read to expire
+// would make the case cost the allowance it is checking.
+func TestWaitBudgetBoundsTheReadsItMakes(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+	c := &deadlineRecordingClient{status: Status{ID: "PR_6499", State: "OPEN", Entry: queueEntry(1)}}
+	clock := Clock{
+		Now: func() time.Time { return now },
+		// The sleep spends the whole budget, so a poll that follows has nothing
+		// left of it: the reads must still be bounded by what the wait allows.
+		Sleep: func(_ context.Context, d time.Duration) bool {
+			now = now.Add(d)
+			c.waited = true
+			return true
+		},
+	}
+	var stdout, stderr strings.Builder
+	// The run's own context is never cancelled and carries no deadline, which is
+	// the production shape: a signal cancels it, nothing else does.
+	_ = Run(context.Background(), opts(60*time.Second), c, clock, &stdout, &stderr)
+	// Only the reads made DURING the wait are the claim. The read that places the
+	// PR in the queue happens before the budget exists and has nothing to be
+	// bounded by, so it is not part of the finding.
+	if len(c.duringWait) == 0 {
+		t.Fatalf("no read was made during the wait, so this case did not reach the path it exists to test (reads %d, stdout %q)", c.reads, stdout.String())
+	}
+	for i, had := range c.duringWait {
+		if !had {
+			t.Fatalf("poll read %d of %d was issued with a context carrying no deadline: the wait's budget bounds only the sleeps, so one stalled gh call holds the run past the --wait the caller asked for", i+1, len(c.duringWait))
+		}
+	}
+	if c.overBudget {
+		t.Fatal("a read was given a budget reaching past the end of the wait, so the limit the caller set is not the limit the reads obey")
+	}
+}
+
+// deadlineRecordingClient records the budget every read is given, and answers as
+// a PR that stays queued.
+type deadlineRecordingClient struct {
+	status Status
+	reads  int
+	// waited is set once the run has entered its wait, so the reads recorded
+	// after it are the ones the wait makes.
+	waited bool
+	// duringWait records, per read made after the wait began, whether that read
+	// carried a deadline.
+	duringWait []bool
+	overBudget bool
+}
+
+func (c *deadlineRecordingClient) record(ctx context.Context) {
+	c.reads++
+	if !c.waited {
+		return
+	}
+	deadline, ok := ctx.Deadline()
+	c.duringWait = append(c.duringWait, ok)
+	// A budget reaching past what the wait has left is not the wait's budget: it
+	// is the absence of one wearing a deadline.
+	if ok && time.Until(deadline) > 2*pollInterval {
+		c.overBudget = true
+	}
+}
+
+func (c *deadlineRecordingClient) Status(ctx context.Context, _, _ string) (Status, error) {
+	c.record(ctx)
+	return c.status, nil
+}
+
+func (c *deadlineRecordingClient) MergedCommit(ctx context.Context, _, _ string) (string, bool, error) {
+	c.record(ctx)
+	return "", false, nil
+}
+
+func (c *deadlineRecordingClient) Enqueue(context.Context, string, string, bool) error { return nil }
+
+func (c *deadlineRecordingClient) QueueDrop(context.Context, string, string) (*DropEvent, error) {
+	return nil, nil
+}
+
+func (c *deadlineRecordingClient) MergeGroupRuns(context.Context, string) ([]GroupRun, error) {
+	return nil, nil
+}
+
+// TestACompleteReplyAfterTheSignalIsNotAQueueVerdict pins the other half: a
+// cancelled wait whose reply did arrive.
+//
+// gh writes its JSON and exits, and a descendant it left behind holds the output
+// pipe open until the drain bound. The reply is complete and valid, so a run that
+// interprets it reports the verdict it describes -- here, a merge -- for a wait
+// the operator stopped, while the launcher reports 130 for the same invocation.
+// The read is allowed to finish, and the answer to it is not used.
+func TestACompleteReplyAfterTheSignalIsNotAQueueVerdict(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+	clock := Clock{
+		Now: func() time.Time { return now },
+		// The sleep spends the budget, so the read that follows is the last
+		// observation and the one whose reply decides the run.
+		Sleep: func(_ context.Context, d time.Duration) bool { now = now.Add(d); return true },
+	}
+	c := &lateReplyClient{cancel: cancel}
+	var stdout, stderr strings.Builder
+	if code := Run(ctx, opts(30*time.Second), c, clock, &stdout, &stderr); code != InterruptedExit {
+		t.Fatalf("Run = exit %d, want %d: the reply arrived after the operator cancelled, and reporting its verdict says a wait they stopped reached its own conclusion (stdout %q)", code, InterruptedExit, stdout.String())
+	}
+	if !c.replied {
+		t.Fatal("the client never delivered its reply, so this case did not reach the path it exists to test")
+	}
+	if strings.Contains(stdout.String(), "MERGEQ ") {
+		t.Fatalf("a cancelled wait printed an outcome line: %q", stdout.String())
+	}
+}
+
+// lateReplyClient cancels the run and then answers in full, saying the PR merged
+// -- the verdict a run that trusted the late reply would print.
+type lateReplyClient struct {
+	cancel  context.CancelFunc
+	replied bool
+}
+
+func (c *lateReplyClient) Status(context.Context, string, string) (Status, error) {
+	c.replied = true
+	c.cancel()
+	return Status{ID: "PR_6499", State: mergedState, MergeCommit: new(string)}, nil
+}
+
+func (c *lateReplyClient) MergedCommit(context.Context, string, string) (string, bool, error) {
+	return "", false, nil
+}
+
+func (c *lateReplyClient) Enqueue(context.Context, string, string, bool) error { return nil }
+
+func (c *lateReplyClient) QueueDrop(context.Context, string, string) (*DropEvent, error) {
+	return nil, nil
+}
+
+func (c *lateReplyClient) MergeGroupRuns(context.Context, string) ([]GroupRun, error) {
+	return nil, nil
+}
+
 // TestRunExitCodes pins the contract the launcher's callers depend on: 0 for
 // queued and merged, 1 for drop and timeout, 2 for every refusal.
 func TestRunExitCodes(t *testing.T) {
