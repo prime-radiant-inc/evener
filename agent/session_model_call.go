@@ -2489,6 +2489,46 @@ func (d *rejectedDocumentProjection) omit(tr *llm.ToolResultData) bool {
 	return true
 }
 
+// reasoningEndpoint identifies the receiving deployment for native history.
+// Older Gemini turns may identify their configured operation only through
+// the issuing model's URL or its model-expanded route digest.
+func (rs replayScope) reasoningEndpoint(t *schema.Turn, configured string) string {
+	endpoint := t.ReasoningEndpoint()
+	target := rs.destination
+	if target == nil || target.Protocol != registry.ProtocolGoogle {
+		return cmp.Or(endpoint, configured)
+	}
+	if t.ResponseProvider != "" && t.ResponseProvider != target.Instance || t.ResponseProtocol != "" && t.ResponseProtocol != target.Protocol {
+		return llm.UnknownServingOrigin
+	}
+	if endpoint == configured || (endpoint == "" && t.ResponseReasoningRoute == "") {
+		return configured
+	}
+	issuer := *target
+	matchedRoute := t.ResponseReasoningRoute == ""
+	var previousModel string
+	for _, model := range [...]string{t.ResponseWireModel, t.ResponseRequestModel, t.ResponseModel, target.WireID} {
+		if model == "" || model == previousModel {
+			continue
+		}
+		previousModel = model
+		issuer.WireID = model
+		if t.ResponseReasoningRoute != "" && t.ResponseReasoningRoute != issuer.ReasoningReplayRoute() {
+			continue
+		}
+		matchedRoute = true
+		if endpoint == "" || llm.RecordedServingRecipient(endpoint, issuer) == configured {
+			return configured
+		}
+	}
+	// A saved path omits the query. It cannot override a known change in
+	// the configured operations, even when the display path still matches.
+	if !matchedRoute && (endpoint == "" || endpoint != t.ResponseServingOrigin) {
+		return llm.UnknownServingOrigin
+	}
+	return endpoint
+}
+
 // expandHistory flattens conversation turns into the per-message slice sent to
 // the model: steering/checkpoint/summary turns pass through as-is, aggregated
 // tool-result turns are expanded into individual tool-result messages, and
@@ -2502,11 +2542,8 @@ func (d *rejectedDocumentProjection) omit(tr *llm.ToolResultData) bool {
 // outgoing request while staying untouched in the stored transcript.
 func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message {
 	history := make([]llm.Message, 0, len(historyTurns))
-	// A legacy turn without serving provenance can replay to its configured origin.
+	// A turn with no serving evidence can replay to the configured deployment.
 	var configuredEndpoint string
-	if scope.destination != nil {
-		configuredEndpoint = llm.SanitizeEndpointURL(scope.destination.Transport.BaseURL)
-	}
 	pendingToolCalls := map[string]struct{}{}
 	var deferredSteering []llm.Message
 
@@ -2580,7 +2617,14 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 		case schema.TurnAssistant:
 			endToolRound()
 			message := scope.projectTurnMessage(t, inFlight)
-			message = message.BindReasoningEndpoint(cmp.Or(t.ReasoningEndpoint(), configuredEndpoint))
+			if message.HasNativeReasoning() {
+				if configuredEndpoint == "" && scope.destination != nil && scope.destination.Transport.BaseURL != "" {
+					configuredEndpoint = llm.ConfiguredServingRecipient(*scope.destination)
+				}
+				if endpoint := scope.reasoningEndpoint(&t, configuredEndpoint); endpoint != "" {
+					message.ReasoningEndpoint = endpoint
+				}
+			}
 			history = append(history, message)
 			startToolRound(message)
 		case schema.TurnCheckpoint, schema.TurnSummary:

@@ -17,11 +17,18 @@ const UnknownServingOrigin = "unknown"
 
 // ReasoningEndpoint returns transport evidence or the recorded legacy URL.
 func (r Response) ReasoningEndpoint() string {
-	if r.ServingOrigin != "" {
-		return r.ServingOrigin
-	}
 	endpoint, _ := r.Raw["endpoint_url"].(string)
-	return SanitizeEndpointURL(endpoint)
+	return RecordedReasoningEndpoint(r.ServingOrigin, endpoint)
+}
+
+// RecordedReasoningEndpoint retains a saved path alongside an origin-only
+// stamp when they name the same HTTP origin. A fully identified deployment
+// or an explicitly unknown recipient needs no display URL.
+func RecordedReasoningEndpoint(proof, endpoint string) string {
+	if proof == "" || (endpoint != "" && !strings.Contains(proof, "/") && parseServingURL(endpoint).origin == proof) {
+		return SanitizeEndpointURL(endpoint)
+	}
+	return proof
 }
 
 // HasReasoningEndpoints reports whether the HTTP recipient affects this request.
@@ -72,6 +79,9 @@ func ConfiguredServingRecipient(res registry.Resolved) string {
 	if origin == "" {
 		return UnknownServingOrigin
 	}
+	if res.Protocol == registry.ProtocolGoogle {
+		return origin + "/google:" + res.GoogleToolDeployment()
+	}
 	return origin + "/configured:" + res.ReasoningReplayRoute()
 }
 
@@ -79,9 +89,27 @@ func ConfiguredServingRecipient(res registry.Resolved) string {
 // a previously computed proof. Outside the row's configured operation set,
 // the escaped path and query identify the recipient without storing URL text.
 func ServingRecipient(endpoint string, res registry.Resolved) string {
+	return servingRecipient(endpoint, res, false)
+}
+
+// RecordedServingRecipient can recognize the path of a configured operation
+// whose query was removed when its response URL was saved.
+func RecordedServingRecipient(endpoint string, res registry.Resolved) string {
+	return servingRecipient(endpoint, res, true)
+}
+
+func servingRecipient(endpoint string, res registry.Resolved, recorded bool) string {
 	recipient := endpoint
+	matchPathOnly := false
 	if !strings.HasPrefix(endpoint, "sha256:") {
-		recipient = parseServingURL(endpoint).exactRecipient()
+		u := parseServingURL(endpoint)
+		matchPathOnly = recorded && !strings.Contains(u.resource, "?")
+		recipient = u.exactRecipient()
+	} else if res.Protocol == registry.ProtocolGoogle && strings.Contains(recipient, "/configured:") {
+		origin := parseServingURL(res.Transport.BaseURL).origin
+		if origin != "" && recipient == origin+"/configured:"+res.ReasoningReplayRoute() {
+			return ConfiguredServingRecipient(res)
+		}
 	}
 	if res.Transport.BaseURL == "" || !strings.Contains(recipient, "/endpoint:") {
 		return recipient
@@ -89,32 +117,31 @@ func ServingRecipient(endpoint string, res registry.Resolved) string {
 	for _, path := range [...]string{res.Transport.Endpoint, res.Transport.StreamEndpoint, res.Transport.CountTokensEndpoint} {
 		if path != registry.EndpointUnsupported {
 			configured := parseServingURL(res.RequestURL(path))
+			if matchPathOnly {
+				configured.resource, _, _ = strings.Cut(configured.resource, "?")
+			}
 			if configured.exactRecipient() == recipient {
-				return configured.origin + "/configured:" + res.ReasoningReplayRoute()
+				return ConfiguredServingRecipient(res)
 			}
 		}
 	}
 	return recipient
 }
 
-// Older history can carry only a serving origin or a display URL. Its
-// best-effort origin proof remains usable by that origin's deployments.
+// An old digest without a recorded URL establishes only the serving origin.
+// A recorded operation path or a deployment stamp gives a narrower owner.
 func ownsServingState(recipient, source string, res registry.Resolved) bool {
-	if recipient == UnknownServingOrigin || source == UnknownServingOrigin {
+	if recipient == UnknownServingOrigin || source == UnknownServingOrigin || source == "" {
 		return false
 	}
-	if strings.HasPrefix(source, "sha256:") {
-		if recipient == source || strings.Contains(recipient, "/configured:") && recipient == ServingRecipient(source, res) {
-			return true
-		}
-	} else {
-		source = parseServingURL(source).origin
+	if recipient == source {
+		return true
 	}
-	if source == "" {
-		return false
+	if strings.HasPrefix(source, "sha256:") && !strings.Contains(source, "/") {
+		origin, _, _ := strings.Cut(recipient, "/")
+		return origin == source
 	}
-	origin, _, _ := strings.Cut(recipient, "/")
-	return origin == source
+	return recipient == RecordedServingRecipient(source, res)
 }
 
 // HistoryModeForEndpoint describes the history a receiving deployment can consume.
@@ -170,9 +197,14 @@ func carriesNativeReasoning(p ContentPart) bool {
 		(p.Kind == ContentToolCall && p.ToolCall != nil && p.ToolCall.ThoughtSignature != "")
 }
 
+// HasNativeReasoning reports whether a message contains state bound to its producer.
+func (m Message) HasNativeReasoning() bool {
+	return slices.ContainsFunc(m.Content, carriesNativeReasoning)
+}
+
 // BindReasoningEndpoint ties surviving native state to the origin that issued it.
 func (m Message) BindReasoningEndpoint(endpoint string) Message {
-	if endpoint != "" && slices.ContainsFunc(m.Content, carriesNativeReasoning) {
+	if endpoint != "" && m.HasNativeReasoning() {
 		m.ReasoningEndpoint = endpoint
 	}
 	return m

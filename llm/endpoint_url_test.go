@@ -33,6 +33,9 @@ func TestRequestProjectsReasoningForEachServingOrigin(t *testing.T) {
 		return m
 	}
 	first := turn("https://One.Example.invalid:443/v1/stream", "one")
+	row := registry.Resolved{Protocol: registry.ProtocolOpenAIResponses, Transport: registry.Transport{
+		BaseURL: "https://one.example.invalid", Endpoint: "/complete", StreamEndpoint: "/v1/stream?alt=sse", CountTokensEndpoint: "/count",
+	}}
 	// A transcript can hold only the original HTTPS origin digest for two.example.invalid.
 	second := turn("sha256:7c4d5aac60e263bd15762dfaf711cea1651d025ae55888c2df3811ba80a2d260", "two")
 	full := []Message{System("context"), first, ToolResult("one", "ok", false), second, User("next")}
@@ -45,11 +48,15 @@ func TestRequestProjectsReasoningForEachServingOrigin(t *testing.T) {
 		firstOwns, secondOwns bool
 	}{
 		{"https://one.example.invalid/complete", true, false},
+		{"https://one.example.invalid/count", true, false},
+		{"https://one.example.invalid/v1/stream?alt=sse", true, false},
+		{"https://one.example.invalid/another/deployment", false, false},
+		{"https://one.example.invalid/v1/stream?tenant=29", false, false},
 		{"https://two.example.invalid:443/complete", false, true},
 		{"http://one.example.invalid/complete", false, false},
 		{"https://one.example.invalid:9443/complete", false, false},
 	} {
-		got, changed := req.ForReasoningEndpoint(tc.target, registry.Resolved{Protocol: registry.ProtocolOpenAIResponses})
+		got, changed := req.ForReasoningEndpoint(tc.target, row)
 		if !changed || len(got.Messages) != len(full) {
 			t.Fatalf("projection for %s lost conversation", tc.target)
 		}
@@ -79,9 +86,13 @@ func TestRequestProjectsReasoningForEachServingOrigin(t *testing.T) {
 	if !delta.HasReasoningEndpoints() {
 		t.Fatal("delta lost the issuing origin")
 	}
-	same, changed := delta.ForReasoningEndpoint("https://one.example.invalid/responses", registry.Resolved{})
+	same, changed := delta.ForReasoningEndpoint(row.RequestURL(row.Transport.Endpoint), row)
 	if changed || !reflect.DeepEqual(same, delta) {
 		t.Fatal("issuer lost its original delta")
+	}
+	sibling, changed := delta.ForReasoningEndpoint(row.Transport.BaseURL+"/another/deployment", row)
+	if !changed || sibling.PreviousResponseID != "" || len(sibling.Messages) != len(full) || sibling.Messages[1].Content[1].ToolCall.ThoughtSignature != "" {
+		t.Fatal("another deployment on the same host needs the ordinary conversation")
 	}
 	other, changed := delta.ForReasoningEndpoint(second.ReasoningEndpoint, registry.Resolved{})
 	if !changed || other.PreviousResponseID != "" || other.HistoryMode != HistoryModeFullHistoryFallback || len(other.Messages) != len(full) || other.Messages[1].Content[1].ToolCall.ThoughtSignature != "" || !reflect.DeepEqual(other.Messages[3], second) {

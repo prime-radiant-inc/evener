@@ -316,14 +316,30 @@ func (r Resolved) BodyModelOverride(builtModel any) (any, bool) {
 // Listing URLs, authentication headers, and other request settings do not route
 // history. A profile without a transport has no route to identify.
 func (r Resolved) ReasoningReplayRoute() string {
+	return r.replayRoute(false)
+}
+
+// GoogleToolDeployment identifies the instance and operation templates that
+// share Gemini tool-call signatures across model changes.
+func (r Resolved) GoogleToolDeployment() string {
+	return r.replayRoute(true)
+}
+
+func (r Resolved) replayRoute(googleDeployment bool) string {
 	if r.Transport.BaseURL == "" {
 		return ""
 	}
 	sum := sha256.New()
+	if googleDeployment {
+		_, _ = fmt.Fprintf(sum, "%d:%s", len(r.Instance), r.Instance)
+	}
 	for _, template := range [...]string{r.Transport.Endpoint, r.Transport.StreamEndpoint, r.Transport.CountTokensEndpoint} {
 		var destination string
 		if template != EndpointUnsupported {
-			destination, _, _ = strings.Cut(r.RequestURL(template), "#")
+			if !googleDeployment {
+				template = r.RequestPath(template)
+			}
+			destination, _, _ = strings.Cut(strings.TrimRight(r.Transport.BaseURL, "/")+template, "#")
 			if strings.Contains(destination, "@") {
 				if u, err := url.Parse(destination); err == nil && u.User != nil {
 					u.User = nil

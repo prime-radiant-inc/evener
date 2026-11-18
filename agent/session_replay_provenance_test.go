@@ -9,6 +9,7 @@ package agent
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
@@ -229,6 +230,84 @@ func TestExpandHistory_Google_SameProviderDifferentModel_ThinkingReplays(t *test
 	if !hasContentKind(out, llm.ContentThinking) {
 		t.Fatal("google enforces same-provider only; same-provider thinking must replay across models")
 	}
+	t.Run("stored signed tool continuation", func(t *testing.T) {
+		issuer := registry.Resolved{
+			Instance: "google", ModelID: "gemini-a", WireID: "gemini-a", Protocol: registry.ProtocolGoogle,
+			Transport: registry.Transport{
+				BaseURL: "https://google.invalid/project/17", Endpoint: "/models/{model}:generateContent",
+				StreamEndpoint: "/models/{model}:streamGenerateContent?alt=sse", CountTokensEndpoint: "/models/{model}:countTokens",
+			},
+		}
+		next := issuer
+		next.ModelID, next.WireID = "gemini-b", "gemini-b"
+		otherProject, otherInstance, otherQuery := next, next, issuer
+		otherProject.Transport.BaseURL = "https://google.invalid/project/29"
+		otherInstance.Instance = "other-google"
+		otherQuery.Transport.StreamEndpoint += "&deployment=29"
+		original := schema.NewTurn(schema.TurnAssistant, llm.Assistant("answer-17"))
+		original.Message.Content = append(original.Message.Content, llm.ContentPart{
+			Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call-17", Name: "read", Arguments: json.RawMessage(`{}`), ThoughtSignature: "fixture-17"},
+		})
+		original.ResponseProvider = issuer.Instance
+		original.ResponseRequestModel = issuer.ModelID
+		original.ResponseModel = issuer.WireID
+		original.ResponseProtocol = issuer.Protocol
+		original.ResponseEndpoint = llm.SanitizeEndpointURL(issuer.RequestURL(issuer.Transport.StreamEndpoint))
+		result := schema.NewTurn(schema.TurnTool, llm.ToolResult("call-17", "result-17", false))
+		served := llm.ServingRecipient(issuer.RequestURL(issuer.Transport.StreamEndpoint), issuer)
+		origin, _, _ := strings.Cut(served, "/")
+		for _, stored := range []struct{ name, proof string }{
+			{"deployment", served},
+			{"model-expanded deployment", origin + "/configured:" + issuer.ReasoningReplayRoute()},
+			{"origin and path", origin},
+			{"path only", ""},
+		} {
+			original.ResponseServingOrigin = stored.proof
+			original.ResponseReasoningRoute = ""
+			original.ResponseWireModel = ""
+			if stored.proof != "" {
+				original.ResponseReasoningRoute = issuer.ReasoningReplayRoute()
+				original.ResponseWireModel = issuer.OutboundModelSelector()
+			}
+			data, err := json.Marshal([]schema.Turn{original, result})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var history []schema.Turn
+			if err := json.Unmarshal(data, &history); err != nil {
+				t.Fatal(err)
+			}
+			for _, destination := range []struct {
+				name string
+				row  registry.Resolved
+				owns bool
+			}{
+				{"issuing model", issuer, true},
+				{"another model", next, true},
+				{"another project", otherProject, false},
+				{"another instance", otherInstance, false},
+				{"changed operation query", otherQuery, stored.proof == ""},
+			} {
+				target := destination.row
+				scope := replayScope{Instance: target.Instance, Model: target.ModelID, Protocol: target.Protocol, InFlightFrom: 0, destination: &target, reasoningRoute: target.ReasoningReplayRoute()}
+				req := llm.Request{Messages: expandHistory(history, scope)}
+				for _, path := range []string{target.Transport.Endpoint, target.Transport.StreamEndpoint, target.Transport.CountTokensEndpoint, "/another/deployment"} {
+					got, _ := req.ForReasoningEndpoint(target.RequestURL(path), target)
+					if len(got.Messages) != 2 || got.Messages[1].ToolCallID != "call-17" {
+						t.Fatalf("%s, %s, %s: lost the tool exchange", stored.name, destination.name, path)
+					}
+					calls := assistantToolCalls(got.Messages[0])
+					wantSignature := ""
+					if path != "/another/deployment" && destination.owns {
+						wantSignature = "fixture-17"
+					}
+					if len(calls) != 1 || calls[0].ID != "call-17" || calls[0].ThoughtSignature != wantSignature {
+						t.Errorf("%s, %s, %s: wanted the original call with signature %q", stored.name, destination.name, path, wantSignature)
+					}
+				}
+			}
+		}
+	})
 }
 
 func TestExpandHistory_Google_DifferentProvider_ThinkingAbsent(t *testing.T) {

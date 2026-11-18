@@ -638,10 +638,7 @@ func (t *Turn) HasRecordedEndpoint() bool {
 // ReasoningEndpoint returns the recorded issuer, including an explicitly
 // unverified HTTP origin. Older transcripts may carry only a serving URL.
 func (t *Turn) ReasoningEndpoint() string {
-	if t.ResponseServingOrigin != "" {
-		return t.ResponseServingOrigin
-	}
-	return t.ResponseEndpoint
+	return llm.RecordedReasoningEndpoint(t.ResponseServingOrigin, t.ResponseEndpoint)
 }
 
 func (t *Turn) matchesReasoningRoute(res *registry.Resolved, route string) bool {

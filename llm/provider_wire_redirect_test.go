@@ -428,7 +428,7 @@ func testRedirectedReasoningHistory(t *testing.T) {
 			for i, host := range []string{first, second} {
 				m := llm.Assistant(fmt.Sprintf("answer-%d", i))
 				if tc.bound && (i == 0 || tc.name == "mixed issuers") {
-					m.ReasoningEndpoint = "https://" + host + "/responses"
+					m.ReasoningEndpoint = "https://" + host + "/route"
 					m.Content = append(m.Content, llm.ContentPart{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{EncryptedContent: fmt.Sprintf("fixture-%d", i)}})
 				}
 				req.Messages = append(req.Messages, m)
@@ -437,10 +437,11 @@ func testRedirectedReasoningHistory(t *testing.T) {
 				req.HistoryMode = llm.HistoryModeResponsesDelta
 				req.PreviousResponseID = "fixture-response"
 				delta := llm.User("delta-17")
-				req.Continuation = &llm.ContinuationMetadata{AnchorEndpoint: "https://" + first + "/responses", FullHistory: append(req.Messages, delta)}
+				req.Continuation = &llm.ContinuationMetadata{AnchorEndpoint: "https://" + first + "/route", FullHistory: append(req.Messages, delta)}
 				req.Messages = []llm.Message{delta}
 			}
 			var hops [][]byte
+			var endpoints []string
 			client := &http.Client{Transport: transporttest.RoundTripFunc(func(r *http.Request) (*http.Response, error) {
 				i := len(hops)
 				if i >= len(tc.hosts) || r.URL.Host != tc.hosts[i] {
@@ -468,26 +469,28 @@ func testRedirectedReasoningHistory(t *testing.T) {
 					}
 				}
 				hops = append(hops, body)
+				endpoint := r.URL.String()
+				endpoints = append(endpoints, endpoint)
 				if tc.status == http.StatusSeeOther && i > 0 {
 					if r.Method != http.MethodGet || len(body) != 0 || r.GetBody != nil {
 						t.Error("bodyless redirect restored a request body")
 					}
 				} else {
-					if req.Continuation != nil && (bytes.Contains(body, []byte(req.PreviousResponseID)) != (r.URL.Host == first) ||
-						bytes.Contains(body, []byte("answer-0")) != (r.URL.Host != first)) {
+					if req.Continuation != nil && (bytes.Contains(body, []byte(req.PreviousResponseID)) != (endpoint == req.Continuation.AnchorEndpoint) ||
+						bytes.Contains(body, []byte("answer-0")) != (endpoint != req.Continuation.AnchorEndpoint)) {
 						t.Errorf("hop %d selected the wrong conversation history", i)
 					}
 					for index, message := range req.Messages[1:] {
 						if !bytes.Contains(body, []byte(message.Text())) {
 							t.Errorf("hop %d omitted ordinary assistant message %d", i, index)
 						}
-						want := message.ReasoningEndpoint == "https://"+r.URL.Host+"/responses"
+						want := message.ReasoningEndpoint == endpoint
 						if bytes.Contains(body, []byte(fmt.Sprintf("fixture-%d", index))) != want {
 							t.Errorf("hop %d selected the wrong native history for message %d", i, index)
 						}
 					}
 					for prior := range i {
-						if tc.hosts[prior] == r.URL.Host && !bytes.Equal(hops[prior], body) {
+						if endpoints[prior] == endpoint && !bytes.Equal(hops[prior], body) {
 							t.Errorf("returning to hop %d changed its request bytes", prior)
 						}
 					}
@@ -515,7 +518,7 @@ func testRedirectedReasoningHistory(t *testing.T) {
 			for i, record := range sink.attempts {
 				if req.Continuation != nil {
 					want := llm.HistoryModeFullHistoryFallback
-					if tc.hosts[i] == first {
+					if endpoints[i] == req.Continuation.AnchorEndpoint {
 						want = llm.HistoryModeResponsesDelta
 					}
 					if record.Request.HistoryMode != string(want) {

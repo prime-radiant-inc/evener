@@ -570,7 +570,7 @@ func TestImageRecoveryManagedThenProfileFree(t *testing.T) {
 		req := recoveryRequest(recoveryWithProfile(recoveryNoisyJPEG(t), profile))
 		padding := llm.Assistant("visible answer")
 		padding.Content = append(padding.Content, llm.ContentPart{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: strings.Repeat("x", 64<<10)}})
-		req.Messages = append(req.Messages, padding.BindReasoningEndpoint(front))
+		req.Messages = append(req.Messages, padding.BindReasoningEndpoint(res.RequestURL(res.Transport.Endpoint)))
 		var frontSizes, modelSizes []int
 		client := &http.Client{Transport: transporttest.RoundTripFunc(func(r *http.Request) (*http.Response, error) {
 			body, err := io.ReadAll(r.Body)

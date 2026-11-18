@@ -516,8 +516,10 @@ select a different model from its `wire_id`. Changing the selected model
 or endpoint under the same name starts a separate reasoning history.
 For older turns Evener uses the issuer information available in the
 transcript. A saved endpoint still identifies the serving host and path
-even when the turn predates route digests. Moving that route keeps its
-reasoning at the original endpoint. The visible conversation carries over.
+even when the turn predates route digests. A saved operation path can
+identify a configured streaming or completion URL whose query was removed
+for storage. An older digest with no saved path identifies only the origin.
+The visible conversation carries over when the deployment changes.
 When a gateway redirects a request, each serving deployment receives the native
 reasoning and Responses continuation handles it issued. The configured model,
 streaming and token-counting endpoints share one deployment. For other URLs,
@@ -525,6 +527,9 @@ the HTTP origin, escaped path and query identify the deployment. Evener saves
 that identity as a digest independently of the display URL. Returning to the
 same deployment preserves its bytes through a cold resume. Another deployment
 receives the full visible conversation.
+Gemini models on one provider instance can continue each other’s signed
+tool calls through the same configured operation templates. A different
+project or an unconfigured redirect has its own deployment identity.
 An Anthropic fallback keeps its own signed thinking through tool calls and
 cold resumes. If a tool continuation moves to a different instance, model,
 or endpoint, the visible answer, tool call, and result follow it. The
@@ -659,7 +664,11 @@ call keeps its literal path and file contents, including XML.
   dispatch the tool and return its result under that ID. A response can
   repeat the same call at another index or in its final output. Evener
   executes it once. If a later frame changes the item ID of that call,
-  Evener keeps the first confirmed item ID. An event naming an issued call
+  Evener keeps the first confirmed item ID. If two completed items share
+  an item ID but issue different call IDs, each call keeps its own
+  arguments. A terminal entry with only an item ID can supply fields
+  before or after its call ID appears when the item has one owner across
+  the response. An event naming an issued call
   delivers its arguments to that call even if its item ID or output index
   points to another tool. The `id` on an argument event can identify an
   issued call or a provisional item. When it names two different records,
