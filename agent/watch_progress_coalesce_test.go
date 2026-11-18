@@ -35,6 +35,7 @@ type coalesceHarness struct {
 func newCoalesceHarness(t *testing.T) *coalesceHarness {
 	t.Helper()
 	jm := newTestJM(t)
+	cleanupJobManager(t, jm)
 	h := &coalesceHarness{jm: jm, start: time.Unix(1_700_000_000, 0).UTC()}
 	// The fake clock leaves the watch's background progress timer parked; every
 	// tick below does exactly the work that goroutine would do.
@@ -63,6 +64,20 @@ func newCoalesceHarness(t *testing.T) *coalesceHarness {
 	}
 	h.key, h.cfg = key, cfg
 	return h
+}
+
+// cleanupJobManager tears a test job manager down in the order the package
+// relies on: abandon the running jobs (closing their output files and their done
+// channels, which retires any progress ticker still parked on a frozen clock)
+// before closing the manager and its store. Tests that leave a job running
+// without this leak file descriptors and parked goroutines into the rest of the
+// test binary.
+func cleanupJobManager(t *testing.T, jm *jobManager) {
+	t.Helper()
+	t.Cleanup(func() {
+		jm.abandonRunningJobs()
+		_ = jm.close()
+	})
 }
 
 // tick fires one progress tick at start+seconds and reports whether the ticker
@@ -255,6 +270,7 @@ func TestDecideProgressTickTransitionIsNeverCoalesced(t *testing.T) {
 func TestProgressTickSendRailCoalescesWithNoNewOutput(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
+	cleanupJobManager(t, jm)
 	start := time.Unix(1_700_000_000, 0).UTC()
 	jm.clock = agenttest.NewFakeClockAt(start)
 	freezeClockAt(jm, start)
@@ -283,15 +299,35 @@ func TestProgressTickSendRailCoalescesWithNoNewOutput(t *testing.T) {
 	if !tick(1) {
 		t.Fatal("the first send tick retired the watch")
 	}
-	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
+	pending := loadWatchSendRecord(t, jm).Pending
+	if len(pending) != 1 {
 		t.Fatalf("pending sends after the first tick = %d, want 1", len(pending))
+	}
+	// The frame's update sequence, not the pending count, is what proves a quiet
+	// tick recorded nothing: a redundant tick would REPLACE the frame under the
+	// same key, so a count of one survives a tick that rebuilds it. The sequence
+	// only advances when a new frame is minted (watchSendSnapshot), so holding it
+	// fixed across the empty ticks pins that no frame was minted at all.
+	var firstSeq uint64
+	for _, frame := range pending {
+		firstSeq = frame.UpdateSeq
+	}
+	if firstSeq == 0 {
+		t.Fatal("the first tick minted no update sequence, want a first frame")
 	}
 	for _, second := range []int{2, 3} {
 		if !tick(second) {
 			t.Fatalf("the send tick at +%ds retired the watch", second)
 		}
-		if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
+		pending := loadWatchSendRecord(t, jm).Pending
+		if len(pending) != 1 {
 			t.Fatalf("pending sends after the empty tick at +%ds = %d, want 1", second, len(pending))
+		}
+		for _, frame := range pending {
+			if frame.UpdateSeq != firstSeq {
+				t.Fatalf("the empty tick at +%ds rewrote the pending frame: update sequence %d, want the first frame's %d",
+					second, frame.UpdateSeq, firstSeq)
+			}
 		}
 	}
 }

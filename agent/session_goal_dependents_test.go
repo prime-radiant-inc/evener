@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -233,6 +235,129 @@ func TestGoalHoldRunningBackgroundJobHolds(t *testing.T) {
 	}
 	if snap := goalSnapshot(t, sess); snap.Status != goal.StatusActive {
 		t.Fatalf("goal status = %q, want active while a watched background job runs", snap.Status)
+	}
+}
+
+// seedProgressWatchState installs a progress-interval watch on a job with the
+// delivery state given, which is what decides whether its next tick can still
+// wake the session: a watch that never delivered, or one that delivered with
+// output still to report, can; one that delivered over a target that has
+// written nothing since cannot, because its next tick coalesces.
+func seedProgressWatchState(t *testing.T, sess *Session, jobID string, tickFired bool, lastTickOutputBytes int64) {
+	t.Helper()
+	jm := sess.jobManager
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	jm.watches[watchKey{VisibleSessionID: sess.ID(), Target: jobID}] = &watchConfig{
+		target:              jobID,
+		progressIntervalMS:  120000,
+		tickFired:           tickFired,
+		lastTickOutputBytes: lastTickOutputBytes,
+	}
+}
+
+// seedJobOutputBytes gives a seeded running job an output stream holding n
+// bytes, the length runOutputBytesLocked reports and a progress tick compares
+// against its delivered baseline.
+func seedJobOutputBytes(t *testing.T, sess *Session, jobID string, n int) {
+	t.Helper()
+	jm := sess.jobManager
+	output, err := jobstore.OpenOutputNoSync(filepath.Join(t.TempDir(), jobID+".log"), maxJobOutputRetentionBytes)
+	if err != nil {
+		t.Fatalf("open output for %s: %v", jobID, err)
+	}
+	if _, err := output.Append(bytes.Repeat([]byte("x"), n)); err != nil {
+		t.Fatalf("append %d bytes to %s: %v", n, jobID, err)
+	}
+	jm.mu.Lock()
+	run := jm.running[jobID]
+	if run == nil {
+		jm.mu.Unlock()
+		t.Fatalf("precondition: job %s is not running", jobID)
+	}
+	run.output = output
+	jm.mu.Unlock()
+}
+
+// TestGoalHoldQuietDeliveredProgressWatchDoesNotHold pins the contract the
+// coalescing change made load-bearing: the hold must depend on an actual future
+// wake, not on a job existing. A progress watch that already delivered its
+// first tick over a target that has written nothing since has no tick left that
+// reaches the model — every later tick coalesces — so holding the goal on it
+// would park the goal with the no-progress breaker unreachable until the job
+// exits on its own. The gate must fold and re-arm instead, so the breaker stays
+// reachable.
+func TestGoalHoldQuietDeliveredProgressWatchDoesNotHold(t *testing.T) {
+	t.Parallel()
+	sess := newGoalMethodSession(t)
+	defer sess.Close()
+	wireKickAndNotify(sess)
+	seedRunningBackgroundJob(t, sess, "job_quiet")
+	seedProgressWatchState(t, sess, "job_quiet", true, 0)
+
+	if got := sess.jobManager.hasSupervisedRunningJobs(); got {
+		t.Fatal("a delivered progress watch over a silent job reported a guaranteed wake")
+	}
+	sess.getOrCreateGoalStore().Set("wait for the build", time.Now())
+	if _, ok := sess.armGoalContinuation(true, true); !ok {
+		t.Fatal("progressed continuation should keep the goal active")
+	}
+	if _, ok := sess.armGoalContinuation(false, true); !ok {
+		t.Fatal("non-progressed continuation with only a quiet delivered watch must fold and re-arm (no hold)")
+	}
+	snap := goalSnapshot(t, sess)
+	if snap.Iterations != 2 || snap.NoProgressStreak != 1 {
+		t.Fatalf("snapshot = %+v, want the no-progress turn folded (streak 1)", snap)
+	}
+}
+
+// The boundary in the other direction: a watch that already delivered still
+// holds while its target has output it has not reported yet, because that
+// tick is certain to fire. Without this, the narrowed hold would drop goals
+// that are genuinely waiting on the next tick.
+func TestGoalHoldUndeliveredOutputStillHolds(t *testing.T) {
+	t.Parallel()
+	sess := newGoalMethodSession(t)
+	defer sess.Close()
+	wireKickAndNotify(sess)
+	seedRunningBackgroundJob(t, sess, "job_output")
+	seedJobOutputBytes(t, sess, "job_output", 32)
+	seedProgressWatchState(t, sess, "job_output", true, 8)
+
+	if !sess.jobManager.hasSupervisedRunningJobs() {
+		t.Fatal("a watch with output it has not delivered reported no guaranteed wake")
+	}
+	sess.getOrCreateGoalStore().Set("wait for the build", time.Now())
+	if _, ok := sess.armGoalContinuation(true, true); !ok {
+		t.Fatal("progressed continuation should keep the goal active")
+	}
+	for i := range goal.NoProgressLimit + 1 {
+		if prompt, ok := sess.armGoalContinuation(false, true); ok || prompt != "" {
+			t.Fatalf("gate %d with undelivered output = (%q, %v), want held", i, prompt, ok)
+		}
+	}
+	if snap := goalSnapshot(t, sess); snap.Status != goal.StatusActive {
+		t.Fatalf("goal status = %q, want active while a watch still has output to report", snap.Status)
+	}
+}
+
+// A target in transition is a state change the watch never coalesces, so the
+// hold survives a delivered and otherwise quiet watch when the job is stopping.
+// This is the case where the job genuinely owes the session one more wake.
+func TestGoalHoldStoppingTargetStillHolds(t *testing.T) {
+	t.Parallel()
+	sess := newGoalMethodSession(t)
+	defer sess.Close()
+	wireKickAndNotify(sess)
+	seedRunningBackgroundJob(t, sess, "job_stopping")
+	seedProgressWatchState(t, sess, "job_stopping", true, 0)
+	jm := sess.jobManager
+	jm.mu.Lock()
+	jm.running["job_stopping"].stopStatus = jobstore.StatusCancelled
+	jm.mu.Unlock()
+
+	if !sess.jobManager.hasSupervisedRunningJobs() {
+		t.Fatal("a stopping target reported no guaranteed wake, want the transition tick")
 	}
 }
 

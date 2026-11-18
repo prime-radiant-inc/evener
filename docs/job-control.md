@@ -1083,7 +1083,13 @@ identical arguments. To replace a timer, clear its `watch_id` and create another
   are not folded; each queues one. A progress tick that carries no new output
   and no state change since the previous delivered tick is coalesced instead:
   it keeps the cadence and the armed watch but delivers no notification, so it
-  counts no delivery. As a backstop, the condition delivery that
+  counts no delivery. Because a coalesced tick is not a wake, a progress watch
+  that has already delivered and whose target has written nothing since does not
+  hold an active goal as waiting on a future wake; the goal's continuation and
+  its no-progress breaker run, and the next tick that does carry output still
+  wakes the session. A watch that has not delivered its first tick, one whose
+  target has output it has not reported, and a target that is stopping or
+  finalizing all still hold. As a backstop, the condition delivery that
   takes a watch past 60 within the last hour (for a send watch, delivered frames,
   so matches folded into one frame count once, and the notice rides whichever
   frame survives to delivery) carries a

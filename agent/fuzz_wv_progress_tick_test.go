@@ -37,6 +37,9 @@ func FuzzWvProgressTick(f *testing.F) {
 	f.Add(false, false, false, false, false, false, false, false, false, false, int64(0), int64(0), "")
 	// The coalescing shape: a quiet job-targeted tick that has already delivered.
 	f.Add(false, true, false, true, false, false, false, false, true, false, int64(64), int64(64), "job_x")
+	// The same quiet shape after its target vanished: the liveness gate answers
+	// first, so the tick is gated out rather than coalesced.
+	f.Add(false, true, false, false, false, false, false, false, true, false, int64(64), int64(64), "job_x")
 
 	f.Fuzz(func(t *testing.T, closing, stillRegistered, sessionTarget, targetRunning, hasSend, oneShot, firedPendingEnd, timer, tickFired, targetTransitioning bool, targetOutputBytes, lastTickOutputBytes int64, target string) {
 		snap := progressTickSnapshot{
@@ -73,9 +76,14 @@ func FuzzWvProgressTick(f *testing.F) {
 		}
 		// Coalescing is licensed ONLY by the quiet job-targeted shape. Anything
 		// else that coalesced would be the #499 failure returning: a tick that had
-		// something to say and went silent anyway.
+		// something to say and went silent anyway. targetRunning is part of the
+		// license rather than a detail of the code: a tick whose concrete target is
+		// gone is gated out by the liveness check, which runs before the coalescing
+		// gate — the watch has no target left to report on, so it neither coalesces
+		// nor fires, and this oracle must not license a decision the code never
+		// makes.
 		wantCoalesce := stillRegistered && !closing && !retrying &&
-			!timer && !sessionTarget && !targetTransitioning && tickFired &&
+			targetRunning && !timer && !sessionTarget && !targetTransitioning && tickFired &&
 			targetOutputBytes <= lastTickOutputBytes
 		if dec.coalesce != wantCoalesce {
 			t.Fatalf("coalesce = %t, want %t for this snapshot: %+v", dec.coalesce, wantCoalesce, snap)
