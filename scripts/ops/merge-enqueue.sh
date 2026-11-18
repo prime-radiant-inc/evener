@@ -252,9 +252,27 @@ acl_getfacl_grants_foreign_write() {
 # on a Mac are, into a launcher that will not build.
 acl_ls_e_grants_foreign_write() {
   awk '
-    /^[[:space:]]*[0-9]+:[[:space:]]*(user|group):/ && /[[:space:]]allow[[:space:]]/ {
-      if ($0 ~ /(write|add_file|add_subdirectory|delete|append)/) { found = 1 }
-    }
+    # Fields, not the line. ` 0: user:nobody allow read,write` splits as
+    # $1="0:", $2="user:nobody", $3="allow", $4="read,write", so the permission
+    # list is its own field. Matching the whole line instead reads a *group name*
+    # as a permission: `group:writers allow list,search` grants search and nothing
+    # else, and a substring match calls that directory replaceable. Refusing a
+    # harmless grant stops the launcher on an ordinary Mac.
+    #
+    # Only the permissions that change what is IN the directory count: `write`
+    # (macOS defines it on a directory as add_file plus add_subdirectory plus
+    # delete) and the three it stands for. `writeattr`, `writeextattr` and
+    # `writesecurity` change the attributes of the directory itself and are not a
+    # way to replace an entry, so they stay out of the list for the same reason
+    # the read-only ones do.
+    #
+    # $2 requires a name after the colon, which excludes `user::` and `group::` --
+    # the owner and owning group, whose bits the caller has already read from the
+    # mode. Each permission is matched as a whole comma-separated item for the
+    # same reason as the field split: a permission list is not prose, and a group
+    # called `appendage` is not a grant.
+    $2 ~ /^(user|group):[^:]/ && $3 == "allow" &&
+      $4 ~ /(^|,)(write|add_file|add_subdirectory|delete|append)(,|$)/ { found = 1 }
     END { exit found ? 0 : 1 }
   '
 }
@@ -575,6 +593,44 @@ $(process_descendants "$member")"
     done
   } | sort -u
 }
+# helper_group_leaves_survivors GROUP — true when any process is still running in
+# the recorded helper group.
+#
+# The question this answers is not "did the tracked child exit" but "is anything
+# the child started still going". A wrapper that starts the helper in the
+# background and exits zero leaves the helper in the group the launcher recorded
+# at launch, so the group has members after the child is gone. A wrapper that
+# execs the helper, or waits for it, leaves an empty group: the helper was the
+# group's leader, and a group whose leader has exited and whose members are all
+# gone names nothing.
+#
+# A group id survives its leader's death and is recycled afterwards, so this is
+# only asked immediately after the child was reaped, while the id still means
+# what it meant. It is not used anywhere the answer could be stale.
+#
+# A zombie counts as gone for the same reason child_running treats one that way:
+# the helper's own exit this script has not reaped yet is not a running helper.
+helper_group_leaves_survivors() {
+  local group="$1" pid state own_group
+  case "$group" in
+    '' | *[!0-9]*) return 1 ;;
+  esac
+  [ "$group" -gt 1 ] || return 1
+  # This script's own group always has members -- itself -- so counting it would
+  # report a survivor on every run. It is excluded for the same reason
+  # helper_call_groups excludes it: it must never be treated as a helper group.
+  own_group=$(ps -o pgid= -p "$$" 2>/dev/null | tr -d ' ')
+  [ "$group" != "$own_group" ] || return 1
+  for pid in $(ps -axo pid=,pgid= 2>/dev/null | awk -v group="$group" '$2 == group { print $1 }'); do
+    [ "$pid" = "$$" ] && continue
+    state=$(ps -o stat= -p "$pid" 2>/dev/null) || continue
+    case "$state" in
+      '' | Z*) continue ;;
+    esac
+    return 0
+  done
+  return 1
+}
 # stop_helper_tree <pid> — the forced stop for a helper that did not act on
 # TERM. stop_command alone stops the helper's own group, and the helper's `gh`
 # is not in it: a live enqueue call would outlive a launcher that already
@@ -859,6 +915,28 @@ start_helper() {
   wait "$child" || status=$?
   child=""
   child_is_helper=false
+  # The child's exit is not the queue's answer. An EVENER_DEV_BIN wrapper is
+  # allowed to start the real helper in the background and exit 0 at once, and
+  # then `wait` returns before the helper has said anything about the PR: the
+  # launcher would report 0 -- "your PR is in the queue" -- while the helper is
+  # still polling, or still submitting, and while the EXIT trap below removes the
+  # group file it is publishing into. A false success is worse than the window it
+  # hides: the operator is told the PR is queued by a run that never saw a queue
+  # answer.
+  #
+  # The override contract is therefore "exec the helper, or wait for it and
+  # forward its status". A wrapper that does neither is detected rather than
+  # trusted: the recorded group is still populated after the child is gone, which
+  # is exactly the shape of a wrapper that left its helper running.
+  #
+  # Only on a zero exit. A non-zero status is the wrapper's own answer about a run
+  # that failed, and replacing it with "the helper outlived its wrapper" would
+  # report a different defect than the one that happened.
+  if [ "$status" -eq 0 ] && helper_group_leaves_survivors "$helper_group"; then
+    echo "merge-enqueue: the helper exited without reporting a queue outcome, but the process group it started is still running; an EVENER_DEV_BIN wrapper must exec the helper or wait for it and forward its status" >&2
+    stop_helper_tree "" "$helper_group"
+    return 2
+  fi
   # 126 and 127 are the shell's "found but could not execute" and "not found".
   # A noexec mount produces the first after a successful build, and neither is
   # a decision the helper made: the helper's own codes are 0, 1, 2 and 130.
@@ -933,13 +1011,26 @@ build_helper() {
           ;;
       esac
     fi
+    # GOOS and GOARCH go with GOFLAGS, for the same reason and a sharper one: the
+    # helper this builds is executed by this script, on this host, a few lines
+    # later. A developer who saves a cross-build target -- GOOS=linux on a Mac,
+    # which is an ordinary thing to have in a go env file -- would get a helper
+    # the kernel cannot run, and the launcher would exit 2 before asking GitHub
+    # anything. The saved cache, proxy and toolchain settings are still kept: this
+    # build does not fight the developer's environment, it removes the three keys
+    # that are this script's to decide.
+    #
+    # The environment is pinned below as well as the file filtered here, because
+    # either one alone is not enough: an empty GOOS in the environment means "the
+    # host" to the go command, but a GOOS line in the file would still apply, and
+    # a filtered file would still lose to an exported GOOS.
     case "$goenv" in
       '' | off)
         goenv=off
         ;;
       *)
         if [ -r "$goenv" ]; then
-          grep -v '^GOFLAGS=' "$goenv" > "$work/go-env" 2>/dev/null || true
+          grep -v -e '^GOFLAGS=' -e '^GOOS=' -e '^GOARCH=' "$goenv" > "$work/go-env" 2>/dev/null || true
         else
           : > "$work/go-env"
         fi
@@ -955,7 +1046,7 @@ build_helper() {
     # belong in the scratch that was chosen and checked, not in a variable the
     # caller happens to have set. The caller's Go configuration is otherwise
     # left alone.
-    env GOFLAGS= GOENV="$goenv" GOTMPDIR="$work" go build -o "$out" ./cmd/evener-dev/bin
+    env GOFLAGS= GOOS= GOARCH= GOENV="$goenv" GOTMPDIR="$work" go build -o "$out" ./cmd/evener-dev/bin
   ) &
   set +m
   child=$!
@@ -1019,11 +1110,21 @@ scratch_root=""
 # former alone, and a caller who supplied their own helper keeps a noexec TMPDIR.
 scratch_must_execute=true
 [ -n "${EVENER_DEV_BIN:-}" ] && scratch_must_execute=false
+# Why each candidate was passed over, kept so a refusal can name the real reason.
+# The distinction is not cosmetic: "another user can replace it" tells the
+# operator to move TMPDIR somewhere private, and "it cannot execute a program"
+# tells them to mount it exec. A single message naming only the first sends an
+# operator on a noexec host to look for a trust problem that is not there, and
+# the two candidates that do have trusted ancestry look like they were rejected
+# for a reason they were not.
+scratch_rejected=""
+scratch_rejected_untrusted=0
+scratch_rejected_noexec=0
 for scratch_candidate in "${TMPDIR:-/tmp}" "${XDG_RUNTIME_DIR:-}" "${HOME:+$HOME/.cache/evener-scratch}"; do
   [ -n "$scratch_candidate" ] || continue
   case "$scratch_candidate" in
     /*) ;;
-    *) continue ;;
+    *) scratch_rejected="$scratch_rejected; $scratch_candidate is not an absolute path"; continue ;;
   esac
   if [ ! -d "$scratch_candidate" ]; then
     # $TMPDIR and $XDG_RUNTIME_DIR are the caller's to provide. A missing one is
@@ -1037,17 +1138,32 @@ for scratch_candidate in "${TMPDIR:-/tmp}" "${XDG_RUNTIME_DIR:-}" "${HOME:+$HOME
     # Compared as a string, not as a case pattern: $HOME can hold characters a
     # pattern would read as wildcards, and this test decides whether the script
     # creates a directory.
-    [ "$scratch_candidate" = "${HOME:-/nonexistent}/.cache/evener-scratch" ] || continue
-    (umask 077 && mkdir -p "$scratch_candidate") 2>/dev/null || continue
+    if [ "$scratch_candidate" != "${HOME:-/nonexistent}/.cache/evener-scratch" ]; then
+      scratch_rejected="$scratch_rejected; $scratch_candidate does not exist"
+      continue
+    fi
+    if ! (umask 077 && mkdir -p "$scratch_candidate") 2>/dev/null; then
+      scratch_rejected="$scratch_rejected; $scratch_candidate cannot be created"
+      continue
+    fi
   fi
-  [ -w "$scratch_candidate" ] || continue
+  if [ ! -w "$scratch_candidate" ]; then
+    scratch_rejected="$scratch_rejected; $scratch_candidate is not writable by this user"
+    continue
+  fi
   # Resolved before the check, and the resolved value is what gets kept. The
   # candidate was named by the caller or by $HOME and may be a symlink; the
   # destination is what every later step must use, so it is resolved here rather
   # than trusted in one spelling and used in another.
-  scratch_resolved=$(scratch_resolve "$scratch_candidate" 2>/dev/null) || continue
-  [ -n "$scratch_resolved" ] || continue
-  scratch_path_is_trusted "$scratch_resolved" || continue
+  if ! scratch_resolved=$(scratch_resolve "$scratch_candidate" 2>/dev/null) || [ -z "$scratch_resolved" ]; then
+    scratch_rejected="$scratch_rejected; $scratch_candidate cannot be resolved"
+    continue
+  fi
+  if ! scratch_path_is_trusted "$scratch_resolved"; then
+    scratch_rejected="$scratch_rejected; $scratch_resolved can be replaced by another user"
+    scratch_rejected_untrusted=$((scratch_rejected_untrusted + 1))
+    continue
+  fi
   # And it has to be able to run what will be written to it. A noexec mount is
   # writable, trusted and useless for this: selection would pick it, the build
   # would succeed, and the exec probe further down would then exit 2 with a
@@ -1055,7 +1171,11 @@ for scratch_candidate in "${TMPDIR:-/tmp}" "${XDG_RUNTIME_DIR:-}" "${HOME:+$HOME
   # program this script writes and runs, so it happens after the chain check and
   # never before it.
   if [ "$scratch_must_execute" = true ]; then
-    gate_scratch_root_executes "$scratch_resolved" || continue
+    if ! gate_scratch_root_executes "$scratch_resolved"; then
+      scratch_rejected="$scratch_rejected; $scratch_resolved cannot execute a program (a noexec mount?)"
+      scratch_rejected_noexec=$((scratch_rejected_noexec + 1))
+      continue
+    fi
   fi
   scratch_root="$scratch_resolved"
   break
@@ -1102,7 +1222,11 @@ fi
 # here -- so an operator who supplies their own helper still works on a host with
 # no trusted root; only building one needs the isolation.
 if [ -z "$scratch_root" ]; then
-  launcher_failed "no scratch root this user controls: TMPDIR, \$XDG_RUNTIME_DIR and \$HOME/.cache/evener-scratch all sit under a directory another user can replace; point TMPDIR at a private directory, or set EVENER_DEV_BIN to a helper you have built"
+  scratch_advice="point TMPDIR at a private directory on an exec-capable filesystem, or set EVENER_DEV_BIN to a helper you have built"
+  if [ "$scratch_rejected_noexec" -gt 0 ] && [ "$scratch_rejected_untrusted" -eq 0 ]; then
+    scratch_advice="a trusted root was found but it cannot execute a program (a noexec mount?); point TMPDIR at an exec-capable directory, or set EVENER_DEV_BIN to a helper you have built"
+  fi
+  launcher_failed "no usable scratch root for building the helper: ${scratch_rejected#; }; $scratch_advice"
 fi
 scratch_dir work merge-enqueue
 # The inode of the directory scratch_dir minted, read once here and compared
