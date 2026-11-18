@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
@@ -12,6 +13,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/rendezvous"
 )
 
 // TestBlockedUnknownMutationError covers the error construction function.
@@ -138,6 +140,60 @@ func dispatchThreadReadOver(t *testing.T, cfg hubcore.WebConfig, sources *appsou
 	return err
 }
 
+// TestPastFallbackRouteMissWithIncompatibleOwnerStampsOwnerUnknown pins the case
+// the review found half-done. A local "thread not found" is a route miss: the
+// local source's lookup admits only daemons at this protocol whose status is not
+// restartRequired, so it skips an owner the roster has confirmed as running but
+// incompatible. That is not absence, and the stamp must say so.
+func TestPastFallbackRouteMissWithIncompatibleOwnerStampsOwnerUnknown(t *testing.T) {
+	const sessionID = "02wMz5Txv5aIxgf9yVdd0N"
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		Entry:     rendezvous.Entry{PID: 4242, Protocol: "evener-appwire-v4", ThreadID: sessionID, SessionID: sessionID},
+		SessionID: sessionID,
+		Status:    appwire.ThreadStatusRestartRequired,
+	})
+	if roster.DaemonOwnershipAbsent() {
+		t.Fatal("fixture does not hold a confirmed running owner")
+	}
+	stamp := savedHistoryStampFor(hubcore.WebConfig{Roster: roster}, appwire.ThreadReadParams{Ref: "local:" + sessionID}, appwire.SessionUnavailable(threadNotFoundMessagePrefix+sessionID))
+	err := stamp(appwire.TranscriptHistoryFailed(0))
+	requireSavedHistoryFailureStamp(t, err, appwire.UnknownOwnerBootGeneration)
+}
+
+// TestPastFallbackIncompleteDiscoveryStampsOwnerUnknown pins the second half of
+// that finding: when the roster's scan is incomplete, a route miss proves
+// nothing about ownership either, so the failure must not claim absence.
+func TestPastFallbackIncompleteDiscoveryStampsOwnerUnknown(t *testing.T) {
+	const sessionID = "02wMz5Txv5aIxgf9yVdd0N"
+	runDir := t.TempDir()
+	// An unparseable claim makes the roster's own scan incomplete.
+	if err := os.WriteFile(filepath.Join(runDir, "424242.json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	roster := hubcore.NewRoster(runDir, nil).SetProcessAlive(func(int) bool { return true })
+	roster.Refresh()
+	if roster.OwnershipError() == nil {
+		t.Fatal("fixture does not hold an incomplete scan")
+	}
+	stamp := savedHistoryStampFor(hubcore.WebConfig{Roster: roster}, appwire.ThreadReadParams{Ref: "local:" + sessionID}, appwire.SessionUnavailable(threadNotFoundMessagePrefix+sessionID))
+	err := stamp(appwire.TranscriptHistoryFailed(0))
+	requireSavedHistoryFailureStamp(t, err, appwire.UnknownOwnerBootGeneration)
+}
+
+// TestPastFallbackRosterAbsenceStampsDaemonless is the third case: the roster
+// answered and nobody owns the thread, so the same route miss is real absence
+// and keeps the daemonless stamp.
+func TestPastFallbackRosterAbsenceStampsDaemonless(t *testing.T) {
+	const sessionID = "02wMz5Txv5aIxgf9yVdd0N"
+	roster := hubcore.NewRoster("", nil)
+	if !roster.DaemonOwnershipAbsent() {
+		t.Fatal("fixture does not hold established absence")
+	}
+	stamp := savedHistoryStampFor(hubcore.WebConfig{Roster: roster}, appwire.ThreadReadParams{Ref: "local:" + sessionID}, appwire.SessionUnavailable(threadNotFoundMessagePrefix+sessionID))
+	err := stamp(appwire.TranscriptHistoryFailed(0))
+	requireSavedHistoryFailureStamp(t, err, appwire.DaemonlessBootGeneration)
+}
+
 // TestPastFallbackAfterLiveFailureStampsOwnerUnknown pins the read issue #6815
 // names. A browser refresh of a thread it already holds sends subscribe:false,
 // so the hub tries saved history after a live read fails even though the daemon
@@ -184,4 +240,39 @@ func TestPastFallbackWithoutServingSourceStampsDaemonless(t *testing.T) {
 		Ref: "local:" + entry.Meta.ID, IncludeTurns: true, ItemLimit: 40, RequestGeneration: 1,
 	})
 	requireSavedHistoryFailureStamp(t, err, appwire.DaemonlessBootGeneration)
+}
+
+// TestSuccessfulSavedFallbackAfterRelayOutageStaysDaemonless is the case that
+// keeps the fix honest. A relay outage leaves ownership unresolved, but the
+// saved read SUCCEEDS: the fallback must still be taken, and the response must
+// still carry daemonless, because that is what a client already treats as a
+// served-from-transcript answer. A fix that stamped unknown-owner everywhere
+// would turn an honesty change into a reliability regression.
+func TestSuccessfulSavedFallbackAfterRelayOutageStaysDaemonless(t *testing.T) {
+	cfg, entry, _ := seedIndexedPastSession(t,
+		execution("turn_m1", schema.NewTurn(schema.TurnUserInput, llm.User("question"))),
+	)
+	sources := appsource.NewRegistry()
+	// The source is registered and bound, and its live read fails with an
+	// outage that names no absence.
+	sources.Add(&pastFallbackRelaySource{readErr: appwire.RetryableSessionUnavailable("relay connection ended before route publication")})
+
+	server := newHubAppServer(cfg, sources)
+	value, err := server.Router().Dispatch(context.Background(), appwire.Request{
+		ID: appwire.NewIntID(1), Method: appwire.MethodThreadRead,
+		Params: mustPagingJSON(t, appwire.ThreadReadParams{Ref: "local:" + entry.Meta.ID, IncludeTurns: true, ItemLimit: 40}),
+	})
+	if err != nil {
+		t.Fatalf("saved fallback after a relay outage was refused: %v", err)
+	}
+	response, ok := value.(appwire.ThreadReadResponse)
+	if !ok {
+		t.Fatalf("thread/read response = %T", value)
+	}
+	if len(response.Thread.Turns) == 0 {
+		t.Fatal("saved fallback answered no turns")
+	}
+	if response.BootGeneration != appwire.DaemonlessBootGeneration {
+		t.Fatalf("successful saved fallback boot generation = %q, want %q", response.BootGeneration, appwire.DaemonlessBootGeneration)
+	}
 }

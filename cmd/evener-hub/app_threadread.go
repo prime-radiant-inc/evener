@@ -247,16 +247,56 @@ func stampSavedHistoryReadError(err error, bootGeneration string) error {
 }
 
 // savedHistoryStampFor picks the token for a saved read that answered another
-// read's failure. Only two answers establish absence: the daemon naming the
-// session dead, and the ref naming a source this hub does not serve, since a
-// daemon the hub cannot route to cannot be serving the thread. A relay outage,
-// a protocol refusal, or a deadline says the read failed, not that its owner is
-// gone, so those keep the owner unknown.
-func savedHistoryStampFor(readErr error) func(error) error {
-	if isDeadSessionError(readErr) || errors.Is(readErr, appsource.ErrSourceNotFound) {
+// read's failure, given what that failure established about the owner.
+//
+// A local "thread not found" is not proof of absence: the local source's route
+// lookup admits only daemons at this protocol whose status is not
+// restartRequired, so an incompatible owner that the roster has confirmed is
+// skipped and reads as a route miss. The roster therefore decides — it answered
+// that nobody owns the thread, or it could not answer. ErrSourceNotFound is
+// absence on its own, because a daemon the hub cannot route to by ref cannot be
+// serving that thread. Everything else (a relay outage, a protocol refusal, a
+// deadline) says the read failed, not that its owner is gone.
+func savedHistoryStampFor(cfg hubcore.WebConfig, params appwire.ThreadReadParams, readErr error) func(error) error {
+	switch {
+	case errors.Is(readErr, appsource.ErrSourceNotFound):
 		return daemonlessReadError
+	case isDeadSessionError(readErr) || daemonOwnershipMayHaveChanged(readErr):
+		if rosterEstablishesAbsence(cfg, params) {
+			return daemonlessReadError
+		}
 	}
 	return unknownOwnerReadError
+}
+
+// rosterEstablishesAbsence reports whether the roster answered that no daemon
+// owns the thread. An incomplete scan, an unverified claim, a live process, or
+// a confirmed incompatible owner all leave ownership unresolved, which is not
+// the same fact as absence.
+func rosterEstablishesAbsence(cfg hubcore.WebConfig, params appwire.ThreadReadParams) bool {
+	if cfg.Roster == nil {
+		return false
+	}
+	if cfg.Roster.OwnershipError() != nil || len(cfg.Roster.UnconfirmedEntries()) != 0 {
+		return false
+	}
+	threadID := params.ThreadID
+	if params.Ref != "" {
+		ref, err := appwire.ParseRef(params.Ref)
+		if err != nil || ref.SourceID != appwire.LocalSourceID {
+			return false
+		}
+		threadID = ref.ThreadID
+	}
+	for _, entry := range hubRosterList(cfg.Roster) {
+		if entry.Crashed {
+			continue
+		}
+		if threadID != "" && (entry.SessionID == threadID || entry.ThreadID == threadID || localSpawnWorkspaceRef(entry.Entry) == localAppRef(threadID)) {
+			return false
+		}
+	}
+	return true
 }
 
 func pastThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, bool, error) {

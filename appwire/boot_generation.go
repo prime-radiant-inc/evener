@@ -5,21 +5,34 @@ import (
 	"strings"
 )
 
-// DaemonlessBootGeneration is the boot generation the hub stamps on a read it
-// serves from the transcript with no daemon running for the session. It is a
-// positive claim of absence: the hub answered from the persisted transcript
-// because no daemon was there to answer. A read that failed without
-// establishing that absence carries UnknownOwnerBootGeneration instead.
+// DaemonlessBootGeneration is the boot generation of a read the hub answers
+// from the persisted transcript rather than from a daemon for the session.
+//
+// On a failed read it is a positive claim of absence: the hub established that
+// no daemon serves the thread — the roster answered that nobody owns it, or the
+// ref names a source this hub does not serve. A failed read that could not
+// establish that carries UnknownOwnerBootGeneration instead, because a read
+// that failed is no evidence about who would have served it.
+//
+// A successful saved read carries this token even when ownership was never
+// resolved: the hub fell back to the transcript after a live read failed for
+// some reason that says nothing about the owner (a relay outage, a protocol
+// refusal, a deadline). Clients must not read this token, on a success, as
+// proof that the daemon is gone.
 const DaemonlessBootGeneration = "daemonless"
 
 // UnknownOwnerBootGeneration is the boot generation the hub stamps on a failed
 // history read whose serving daemon it never established: the saved-history
-// fallback that answered the read failed, and the live read that made the
-// fallback necessary said nothing about who was serving the thread. It is not
-// a claim that no daemon runs — a failed read must never claim a daemon is
-// gone, because the only evidence it has is that it failed. It is no counter
-// either: CompareBootGeneration applies it to itself and replaces any other
-// token.
+// fallback that answered the read failed, and the evidence that made the
+// fallback necessary did not establish who was serving the thread. That covers
+// a live read that failed for a reason naming no absence, and a local route
+// miss the roster could not resolve to either an owner's absence or a
+// confirmed owner — an incompatible daemon, or an incomplete scan.
+//
+// It is not a claim that no daemon runs. A failed read must never claim a
+// daemon is gone, because the only evidence it has is that it failed. It is no
+// counter either: CompareBootGeneration applies it to itself and replaces any
+// other token.
 const UnknownOwnerBootGeneration = "unknown-owner"
 
 // BootGeneration spells a daemon's boot counter as the wire carries it for
