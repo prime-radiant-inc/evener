@@ -378,6 +378,58 @@ async function repositoryWithPage() {
   return { fixture, owner, reader, rows };
 }
 
+// RoboRev 53685/53688 (Medium 4). `acceptRead` installs the source the
+// accepted read established, and `acceptBeforeReadCut` then folds the frames
+// buffered before that response. A pre-response frame still carrying the
+// RETIRED source's token used to fold verbatim: the reducer accepted it as a
+// takeover, cleared the live hold the accepted read's source supplied, and
+// invalidated the snapshot the read had just installed. Its content is still
+// recorded evidence, so it folds bootless instead.
+it("folds a pre-response frame from the retired source without letting it reclaim ownership", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const baseline = readMany(3);
+  baseline.bootGeneration = "1@other";
+  baseline.snapshot = { incarnation: identity.incarnation, length: 3 };
+  expect(owner.acceptRead(baseline, { lifetime: 1, readId: "cut-seed", boundary: "cut-seed" })).toBe(true);
+  await owner.settled();
+  const installed = owner.getSnapshot();
+  expect(installed?.history?.bootGeneration).toBe("1@other");
+
+  // The frame that was in flight while that read was outstanding: produced by
+  // the source it replaced.
+  owner.acceptBeforeReadCut(
+    [
+      {
+        method: "history/updated",
+        params: {
+          ref,
+          threadId,
+          bootGeneration: "5@root",
+          epoch: 3,
+          snapshot: { incarnation: identity.incarnation, length: 4 },
+        },
+      } as AnyNotification,
+    ],
+    { lifetime: 1 },
+  );
+
+  const after = owner.getSnapshot();
+  // The accepted read's source still owns the transcript. The harm the finding
+  // names is the reducer accepting the retired token as a TAKEOVER, so these
+  // are the two fields that answers: the installed boot survives, and the
+  // retired source never becomes the recorded owner.
+  expect(after?.history?.bootGeneration).toBe("1@other");
+  expect(after?.history?.holdOwner).not.toBe("5@root");
+  // RoboRev 53764 (Medium 2): a blanked token would itself be a boot change -
+  // the reducer reads "" as a different generation, invalidates the fresh
+  // snapshot and records an empty awaited boot. The accepted snapshot must
+  // therefore stay VALID and settleable, and the source it installed must still
+  // be able to merge its own next frame.
+  expect(after?.history?.invalidatedAtGeneration).toBeUndefined();
+});
+
 it("persists the page observation snapshot rather than the latest completeness watermark", async () => {
   const { fixture, owner, reader, rows } = await repositoryWithPage();
   try {
@@ -1001,6 +1053,41 @@ it("does not repair a refused page extent beyond a bounded replacement's upper e
     owner.dispose();
     cache.close();
   }
+});
+
+// A discarded page certifies no range, even when it carries a hold hand-off.
+//
+// While the repository holds a history diagnostic, a page that identifies a
+// replacement is DISCARDED for content - but the shared merge still returns a
+// new model carrying the ownership change. Inferring acceptance from that
+// object identity wrote a coverage certificate and cursor for a range the page
+// never merged, and later paging then trusted the certificate and skipped the
+// missing turns entirely.
+it("does not certify a discarded page's range even though the hand-off returns a new model", async () => {
+  const { fixture, owner } = await repositoryWithPage();
+  expect(owner.getSnapshot()?.history?.failed).toBeUndefined();
+  // The read fails for boot "2", so the repository holds a diagnostic while
+  // boot 1's samples are retired.
+  owner.acceptReadFailure("thread history failed at entry 7", 0, { lifetime: 1, bootGeneration: "2" });
+  const failed = owner.getSnapshot();
+  expect(failed?.history?.failed).toBeDefined();
+  // A page of the source that now owns the sequence is discarded for content
+  // while its hand-off still returns a new model.
+  const page = updatedPage(130, [3, 5, 7], "discarded");
+  page.bootGeneration = "3";
+  const accepted = owner.acceptPage(page, {
+    lifetime: 1,
+    readId: "discarded-page",
+    boundary: "discarded-page",
+    authority: owner.getBaselineIdentity(),
+    before: { entry: 8, item: 0 },
+  });
+  await owner.settled().catch(() => {});
+  // Refused as content, so no certificate speaks for a range it never merged.
+  expect(accepted).toBe(false);
+  expect(await fixture.cache.getCoverage(historyKey, "page:discarded-page:discarded-page")).toBeUndefined();
+  // The diagnostic the repository held is still the one it publishes.
+  expect(owner.getSnapshot()?.history?.failed).toBe(failed?.history?.failed);
 });
 
 it("keeps coverage current when a delayed page is already covered by a newer committed page on this baseline", async () => {

@@ -2046,3 +2046,29 @@ describe("current transcript checkpoints", () => {
     expect(resumed.turns.flatMap((turn) => turn.items).map((item) => item.text)).toEqual(["alpha"]);
   });
 });
+
+// A checkpoint must survive the owner a replacement records. validCurrentHistory
+// rejects unknown keys, so a history carrying holdOwner failed validation and
+// decodeCurrentTranscriptState returned undefined for the WHOLE checkpoint — a
+// restored session lost its current transcript state entirely, which is worse
+// than the stale hold this record exists to fix. Tested through the public
+// encode/decode pair, not by spreading a key.
+describe("a checkpoint carryies the recorded hold owner", () => {
+  it("round-trips the owner instead of discarding the transcript state", () => {
+    const read = currentRead("local:owner");
+    const model = hydrateThread(read, "local:owner", 1);
+    const history = model.history;
+    if (history === undefined) throw new Error("hydrated model has no history");
+    const owned = { ...model, history: { ...history, holdOwner: "6" } };
+
+    const encoded = currentTranscriptState(owned);
+    const value = JSON.parse(JSON.stringify(encoded));
+    const decoded = decodeCurrentTranscriptState(value);
+
+    expect(decoded).toBeDefined();
+    expect(decoded?.history.holdOwner).toBe("6");
+    // The rest of the state is intact, not just the one key.
+    expect(decoded?.history.length).toBe(history.length);
+    expect(decoded?.history.bootGeneration).toBe(history.bootGeneration);
+  });
+});

@@ -2,9 +2,10 @@
 // stable-delegate helpers, and the wire-to-model item conversions. A leaf over
 // model types, identity validation and generated wire types.
 
+import { type BootTokenEvidence, confirmedBootReplacement } from "./bootGeneration";
 import { pendingTextJoined } from "./chunkview";
 import { historyServingFacts } from "./historyServing";
-import type { ItemImage, ItemModel, ThreadModel, TurnModel } from "./model";
+import type { HistoryState, ItemImage, ItemModel, ThreadModel, TurnModel } from "./model";
 import { joinDelegateState, revisionOf } from "./stableDelegate";
 import { isValidTranscriptRef } from "./steeringNotifications";
 import { isRecord } from "./transcriptValidators";
@@ -74,6 +75,137 @@ export function upsertStableDelegate(
   const merged = mergeStableDelegate(current, incoming);
   if (merged === current) return delegates as EvenerDelegateInfo[];
   return delegates.map((delegate, delegateIndex) => (delegateIndex === index ? merged : delegate));
+}
+
+/** Retires every held hold sample when the source owning the sequence is replaced.
+ *
+ * The hold orders by `holdSequence` within one source epoch, and a replacement
+ * daemon numbers its samples from its own start. A model that kept a retired
+ * row would let the old daemon's larger sequence beat the replacement's first
+ * unheld frame, and the transcript would carry a wait that has ended into any
+ * checkpoint taken before a full read replaces the model. Dropping the samples
+ * and keeping every durable field leaves the row exactly as a durable-first
+ * merge would: the replacement's first frame supplies the hold, having nothing
+ * to lose to. */
+export function retireStableDelegateHolds(
+  delegates: EvenerDelegateInfo[] | undefined,
+): EvenerDelegateInfo[] | undefined {
+  if (delegates === undefined || delegates.length === 0) return delegates;
+  if (!delegates.some((delegate) => delegate.holdSequence !== undefined)) return delegates;
+  return delegates.map((delegate) => {
+    if (delegate.holdSequence === undefined) return delegate;
+    const {
+      drainHeldByJobs: _held,
+      runningJobCount: _count,
+      oldestRunningJobStartedAt: _oldest,
+      ...durable
+    } = delegate;
+    return { ...durable, holdSequence: undefined };
+  });
+}
+
+// holdOwnerOf resolves the boot token that OWNS the hold samples on a history.
+//
+// This is the one place that question is answered. `awaited` is an ORDERING
+// field: it advances on every invalidating signal, including a resync whose
+// bare token may be another name for the owner that is still sampling, and a
+// structured read failure drops it entirely. Neither may decide ownership, so
+// `holdOwner` - written only where a signal confirmed a replacement - wins,
+// and only a model that has never recorded one falls back to the identity the
+// last applied read left.
+export function holdOwnerOf(held: HistoryState): string {
+  return held.holdOwner ?? held.bootGeneration;
+}
+
+// retireReplacedSourceHoldOnModel is THE hold-retirement rule, for every site
+// that folds a source-identity change into a transcript model.
+//
+// History validity and hold ownership are different questions. A notification
+// that only bumps the epoch or the incarnation leaves the owning daemon's
+// delegate controller sampling, so its hold survives; an unchanged hold emits
+// no update of its own, so dropping it there would lose the wait for good.
+// Only a different boot generation names a different source, and only that
+// source numbers its sequences from its own start — so only that retires the
+// samples, and a model that kept them would let the retired daemon's larger
+// sequence outrank the replacement's first unheld frame.
+//
+// Ownership is decided by holdOwnerOf, never by `awaited`: `awaited` is
+// history-ordering state that advances on every invalidating signal, and a
+// structured read failure drops it, while holdOwner records only a signature
+// that confirmed a replacement. history.bootGeneration keeps naming the retired
+// boot until a read applies. A bootless signal names no source and retires
+// nothing.
+//
+// Returns undefined when nothing was retired, so a caller can publish only a
+// real change.
+export function retireReplacedSourceHoldOnModel<M extends ThreadModel>(
+  model: M,
+  bootGeneration: string | undefined,
+  evidence: BootTokenEvidence = "resync",
+): M | undefined {
+  if (!bootGeneration) return undefined;
+  const held = model.history;
+  if (!held) return undefined;
+  const owner = holdOwnerOf(held);
+  // A CONFIRMED replacement, never merely a name mismatch: an older daemon
+  // stamps a descendant's worktree-change resync with a bare "5" while its
+  // reads name the same controller "5@root", and that difference retires a
+  // hold nothing replaced. An unchanged hold emits no update to restore one.
+  if (!confirmedBootReplacement(owner, bootGeneration, evidence)) return undefined;
+  const delegates = retireStableDelegateHolds(model.delegates);
+  if (delegates === undefined || delegates === model.delegates) return undefined;
+  return { ...model, delegates };
+}
+
+// recordSourceOwnerOnModel is the OTHER HALF of the same hand-off, and the
+// rule is incomplete without it: a replacement must become the recorded owner
+// even when there was nothing to clear. Otherwise the next notification from
+// that same boot compares against the retired one, reads as another
+// replacement, and clears a hold the new source has since published — which
+// emits no update of its own to restore.
+//
+// The record is `holdOwner`, the field holdOwnerOf reads ownership from;
+// `awaited` stays history-ordering state and is never consulted here. Callers
+// that already invalidate history through `invalidated()` record it there and
+// need this only where no invalidation fold runs.
+export function recordSourceOwnerOnModel<M extends ThreadModel>(
+  model: M,
+  bootGeneration: string | undefined,
+  evidence: BootTokenEvidence = "resync",
+): M | undefined {
+  if (!bootGeneration) return undefined;
+  const held = model.history;
+  if (!held) return undefined;
+  const owner = holdOwnerOf(held);
+  // Same confirmation as the retire: an uninterpretable token must not become
+  // the recorded owner, or the next well-formed token for that same controller
+  // reads as another replacement.
+  if (!confirmedBootReplacement(owner, bootGeneration, evidence)) return undefined;
+  return { ...model, history: { ...held, holdOwner: bootGeneration } };
+}
+
+// handOffReplacedSource is the WHOLE rule on a model whose history is not being
+// invalidated in the same step: retire the replaced source's hold samples, then
+// record the incoming source as the owner of whatever arrives next.
+//
+// A fold that runs only the retire leaves the incoming boot unrecorded, so that
+// boot's own next notification compares against the boot it replaced, reads as a
+// fresh replacement, and erases the live hold it just published — with no update
+// of its own to restore it.
+//
+// Order matters: retire is decided against the owner still recorded, so recording
+// first would make the same token compare as an apply and retire nothing.
+//
+// A fold that DOES invalidate does not need this: `invalidated` records the owner
+// itself, at the single place `holdOwner` and `awaited` are written.
+export function handOffReplacedSource<M extends ThreadModel>(
+  model: M,
+  bootGeneration: string | undefined,
+  evidence: BootTokenEvidence = "resync",
+): M | undefined {
+  const retired = retireReplacedSourceHoldOnModel(model, bootGeneration, evidence);
+  const owned = recordSourceOwnerOnModel(retired ?? model, bootGeneration, evidence);
+  return owned ?? retired;
 }
 
 export function epochMsToISO(ms: number | undefined): string | undefined {

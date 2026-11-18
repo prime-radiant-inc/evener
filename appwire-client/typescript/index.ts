@@ -105,7 +105,13 @@ export {
 export type { MarkerAttachment } from "./attachmentMarkers";
 export { translateAttachmentMarkers } from "./attachmentMarkers";
 export type { BootGenerationAction } from "./bootGeneration";
-export { compareBootGeneration, DAEMONLESS_BOOT_GENERATION } from "./bootGeneration";
+export {
+  type BootTokenEvidence,
+  compareBootGeneration,
+  confirmedBootReplacement,
+  DAEMONLESS_BOOT_GENERATION,
+  isConfirmedAbsence,
+} from "./bootGeneration";
 export type { BuiltinMatch } from "./builtinInvocation";
 export { findBuiltinArgument, matchBuiltinInvocation } from "./builtinInvocation";
 export { slashCommandInvocation, visibleCatalogCommands } from "./catalogCommands";
@@ -286,6 +292,7 @@ export {
   sessionActionError,
   sessionActionHeadline,
   storeErrorText,
+  transcriptHistoryFailedBootGeneration,
   WireError,
   wireRejectionPayload,
 } from "./errors";
@@ -303,7 +310,12 @@ export type { FrameworkFreeStore, StoreListener } from "./frameworkFreeStore";
 export { createFrameworkFreeStore } from "./frameworkFreeStore";
 export { HistoryPaging, type HistoryPagingState } from "./historyPaging";
 export type { HistoryServingFacts } from "./historyServing";
-export { historyFallback, historyReplacesWindow, historyServingFacts } from "./historyServing";
+export {
+  historyAnsweredLive,
+  historyFallback,
+  historyReplacesWindow,
+  historyServingFacts,
+} from "./historyServing";
 export type {
   EditableHostField,
   HostMutationPair,
@@ -897,9 +909,11 @@ export {
   frontierFromCursor,
   hydrateThread,
   ITEM_OMISSION_TOLERANT_FIELDS,
+  invalidated,
   invalidateHistory,
   issueLatestWindowRead,
   mergeOlderItemPage,
+  mergeOlderPage,
   mergeSavedViewPage,
   mergeTailTurns,
   mergeTranscriptItemVersioned,
@@ -915,6 +929,8 @@ export {
 } from "./transcriptHistory";
 export {
   copyItemTextPresence,
+  handOffReplacedSource,
+  holdOwnerOf,
   imageSessionRouteForSession,
   isToolCallItemId,
   isToolResultItemId,
@@ -923,6 +939,9 @@ export {
   joinedReasoningParagraphs,
   markItemIdentityOnly,
   markItemTextOmitted,
+  recordSourceOwnerOnModel,
+  retireReplacedSourceHoldOnModel,
+  retireStableDelegateHolds,
 } from "./transcriptItems";
 export type {
   ProjectedAnchor,

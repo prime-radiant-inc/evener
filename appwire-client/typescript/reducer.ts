@@ -23,7 +23,7 @@ import {
   withDisplay,
   withoutNewerPageOmissions,
 } from "./transcriptHistory";
-import { upsertStableDelegate } from "./transcriptItems";
+import { handOffReplacedSource, upsertStableDelegate } from "./transcriptItems";
 import type {
   AnyNotification,
   HistoryUpdatedParams,
@@ -39,15 +39,53 @@ import { foldWarningParams } from "./warningFold";
 function applyHistoryUpdated<M extends ThreadModel>(model: M, params: HistoryUpdatedParams, now: number): M {
   const held = model.history ?? EMPTY_HISTORY;
   const live = { ...model, lastFrameAt: now };
-  if (held.failed !== undefined) return live;
+  if (held.failed !== undefined) {
+    // A failed history stops merges, not the ownership question: while the
+    // diagnostic stands, no successful read has replaced the model yet, so a
+    // frame from a different source still carries sequences numbered from its
+    // own start. Retire the old samples and keep the diagnostic and the
+    // recovery behaviour exactly as they were — this is not an exemption.
+    // No invalidation fold runs here, so the hand-off supplies both halves: the
+    // retire of the replaced source's samples and the record of the incoming
+    // owner. The diagnostic and the recovery behaviour stay as they were.
+    return handOffReplacedSource(live, params.bootGeneration, "authoritative") ?? live;
+  }
   const signal: HistorySignal = {
     bootGeneration: params.bootGeneration,
     epoch: params.epoch,
     incarnation: params.snapshot.incarnation,
+    // The serving daemon's own frame, qualified by its root for a descendant:
+    // a bare counter here names that daemon serving the thread as its own root.
+    bootEvidence: "authoritative",
   };
   const action = classifySignal(held, signal);
-  if (action === "invalidate") return { ...live, history: invalidated(held, signal) };
-  if (action === "ignore" || held.invalidatedAtGeneration !== undefined) return live;
+  // History validity and hold ownership are different questions. Invalidating
+  // the history says nothing about who owns the hold sequence, so only the
+  // second question retires a hold: a notification from a different source
+  // (a different boot generation) numbers its samples from its own start, and
+  // the retired sequences must not outrank them. A same-source epoch or
+  // incarnation change invalidates the transcript index and leaves the hold
+  // alone — that daemon's delegate controller is still sampling, and an
+  // unchanged hold emits no update of its own to restore what we dropped.
+  //
+  // The hand-off runs HERE, before any branch below returns, and that
+  // placement is the rule rather than a convenience. It is decided by the
+  // frame's OWN boot generation against the recorded owner, which is a
+  // question about who serves the ref - not about whether this frame's
+  // content can merge into the history it lands on. An earlier bare resync
+  // can leave `awaited` naming a source whose owner was never recorded, so
+  // the frame that finally identifies that source arrives as a plain "apply"
+  // and the invalidated-model guard would return before ownership was ever
+  // decided. A hold retired behind a guard is a hold that outlives its owner.
+  const handed = handOffReplacedSource(live, params.bootGeneration, "authoritative");
+  if (action === "invalidate") {
+    const history = invalidated(held, signal);
+    // `invalidated` recorded the incoming owner at the one place awaited is
+    // written; the hand-off above already retired against the owner it
+    // replaced.
+    return { ...(handed ?? live), history };
+  }
+  if (action === "ignore" || held.invalidatedAtGeneration !== undefined) return handed ?? live;
   // A notification projected after the page that omitted one of its identities
   // must not put it back: the page's observation still wins.
   const fragment = withoutNewerPageOmissions(
@@ -56,8 +94,16 @@ function applyHistoryUpdated<M extends ThreadModel>(model: M, params: HistoryUpd
     params.snapshot.length,
   );
   const turns = mergeHistory(held.turns, fragment);
-  if (turns === held.turns) return live;
-  return withDisplay(live, { ...held, turns }, model.overlay ?? {});
+  if (turns === held.turns) return handed ?? live;
+  // Build the merged history from the HANDED-OFF model's history, not the
+  // pre-handoff one: `handed` is where this frame recorded its source as the
+  // hold owner, and spreading the pre-handoff history here would drop that
+  // record while keeping the retired samples cleared. The root that just took
+  // ownership would then compare against the boot it replaced on its own next
+  // content-bearing update, read it as another replacement, and clear the live
+  // hold it published — which emits no update of its own to restore it.
+  const base = (handed ?? live).history ?? held;
+  return withDisplay(handed ?? live, { ...base, turns }, model.overlay ?? {});
 }
 
 // Versioned resync invalidates history. A hub's epochless hint only requests
@@ -69,7 +115,16 @@ function applyResync<M extends ThreadModel>(model: M, params: ThreadResyncParams
   const live = { ...model, lastFrameAt: now };
   if (!params.bootGeneration && params.epoch === undefined) return live;
   const signal: HistorySignal = { bootGeneration: params.bootGeneration || undefined, epoch: params.epoch };
-  return classifySignal(held, signal) === "invalidate" ? { ...live, history: invalidated(held, signal) } : live;
+  if (classifySignal(held, signal) !== "invalidate") return live;
+  const history = invalidated(held, signal);
+  // This is the shared resync path the mobile client runs. `invalidated`
+  // recorded the incoming boot as the hold owner, so this call is the retire
+  // alone — and that record is what stops a second resync from the same boot
+  // from comparing against the boot it replaced and erasing its live hold.
+  // A same-boot epoch bump or a bootless resync records nothing and retires
+  // nothing: that daemon is still sampling its own sequence.
+  const retired = handOffReplacedSource(live, params.bootGeneration);
+  return { ...(retired ?? live), history };
 }
 
 // overlay/delta appends to one stream, preview or tool item. Only the display

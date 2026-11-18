@@ -3,8 +3,8 @@
 // `turnHistoryMerge` and `transcriptItems`; the notification folds that drive
 // these live in `reducer.ts`.
 
-import { compareBootGeneration } from "./bootGeneration";
-import { historyFallback, historyReplacesWindow, historyServingFacts } from "./historyServing";
+import { type BootTokenEvidence, compareBootGeneration, confirmedBootReplacement } from "./bootGeneration";
+import { historyAnsweredLive, historyFallback, historyReplacesWindow, historyServingFacts } from "./historyServing";
 import type { HistoryState, ItemModel, OlderFrontier, ThreadModel, TurnModel } from "./model";
 import { comparePositions, SYSTEM_PRELUDE_TURN_ID } from "./model";
 import { frontierFromCursor, olderFrontierOf, withOlderFrontier } from "./olderFrontier";
@@ -14,12 +14,15 @@ export { frontierFromCursor, olderFrontierOf, olderHistoryExhausted, withOlderFr
 
 import {
   copyItemTextPresence,
+  handOffReplacedSource,
+  holdOwnerOf,
   imageSessionRouteForSession,
   itemIsIdentityOnly,
   itemTextPresence,
   markItemIdentityOnly,
   markItemTextOmitted,
   outputImagesToItemImages,
+  retireReplacedSourceHoldOnModel,
   threadFields,
   wireImageSessionId,
   wireItemToModel,
@@ -49,12 +52,30 @@ export function mergeSavedViewPage(model: ThreadModel, resp: ThreadTurnsListResp
   return model.history ? withDisplay(model, { ...model.history, turns }, model.overlay ?? {}) : { ...model, turns };
 }
 
-// mergeOlderItemPage folds one thread/turns/list backfill page into the model.
+// What a backfill page did to the model, separately from the model itself.
+//
+// `applied` is whether the page's CONTENT merged. It is NOT `model !== before`:
+// a discarded page can still hand off hold ownership, so it returns a new
+// model carrying an authoritative transition the caller must publish — while
+// contributing no content and, therefore, no coverage. A caller that inferred
+// acceptance from object identity would certify a range it never merged.
+export interface OlderPageMerge<M extends ThreadModel = ThreadModel> {
+  model: M;
+  applied: boolean;
+}
+
+// mergeOlderPage folds one thread/turns/list backfill page into the model.
 // A v6 page into a model holding versioned history merges by version under
 // the snapshot rules below; anything else takes the unversioned merge.
-export function mergeOlderItemPage(model: ThreadModel, resp: ThreadTurnsListResponse): ThreadModel {
+export function mergeOlderPage(model: ThreadModel, resp: ThreadTurnsListResponse): OlderPageMerge {
   if (model.history && resp.snapshot) return mergeVersionedPage(model, model.history, resp, true);
-  return mergeOlderItemPageWithFolds(model, resp).model;
+  return { model: mergeOlderItemPageWithFolds(model, resp).model, applied: true };
+}
+
+// mergeOlderItemPage is mergeOlderPage's model alone, for callers that fold a
+// page purely for its content.
+export function mergeOlderItemPage(model: ThreadModel, resp: ThreadTurnsListResponse): ThreadModel {
+  return mergeOlderPage(model, resp).model;
 }
 
 // ---------------------------------------------------------------------------
@@ -90,6 +111,69 @@ function retainedReadIdentity(identity: ReadIdentity | undefined, held: ReadIden
     incarnation: identity?.incarnation ?? held.incarnation,
     length: identity?.length ?? held.length,
   };
+}
+
+// retainedHistoryIdentity is retainedReadIdentity plus the one field that is
+// not identity at all and must not be dropped with it: the recorded HOLD
+// OWNER.
+//
+// History validity and hold ownership are different questions, and a read that
+// names no source answers only the first. A saved-index fallback read names no
+// boot at all, and a read with no snapshot keeps held's identity exactly; in
+// both cases rebuilding the history from the four identity fields alone drops
+// `holdOwner`. The model then names history.bootGeneration again while the
+// daemon that actually owns the hold samples is a DIFFERENT, newer boot - and
+// that boot's own next resync compares against the stale one, reads as a second
+// replacement, and clears the live hold it just published. An unchanged hold
+// emits no update of its own to restore it.
+//
+// The owner changes only where the read's OWN token confirms it replaced the
+// recorded one (confirmedBootReplacement, the same single comparison every
+// other hand-off uses). `readBoot` is that token and nothing else: passing the
+// retained bootGeneration instead would let the identity this merge is
+// deliberately keeping decide an ownership question it just declined to
+// answer. A read that names no source, or names one that did not replace the
+// recorded owner, preserves the record - it cannot show that the owner
+// changed, and an owner dropped here is an ownership comparison lost on the
+// very next frame.
+//
+// The comparison runs against `holdOwnerOf`, not `held.holdOwner`. An ORDINARY
+// read leaves `holdOwner` unset and owns implicitly through
+// `history.bootGeneration`; skipping that case meant a boot-1 model whose
+// first evidence of a boot-2 replacement is this very response kept boot 1 as
+// the owner while the response installed boot 2's samples, so boot 2's next
+// update compared against boot 1, read as another replacement, and cleared the
+// live hold it had just published.
+//
+// Where it DOES confirm, the incoming boot is recorded explicitly rather than
+// left to `holdOwnerOf`'s fallback. An accepted replacement that leaves the
+// owner unrecorded is the M1 shape: the next frame from that same boot
+// compares against the boot it replaced and clears the hold it just published.
+function retainedHistoryIdentity(
+  identity: ReadIdentity | undefined,
+  held: HistoryState,
+  readBoot: string | undefined,
+): ReadIdentity & { holdOwner?: string } {
+  const retained = retainedReadIdentity(identity, held);
+  const recordedOwner = holdOwnerOf(held);
+  // No live ownership evidence on this response: keep the record as it stands.
+  // A saved-index fallback names no source, and dropping the owner for it is
+  // the same loss this function exists to prevent.
+  if (readBoot === undefined) {
+    // An EMPTY owner is not an owner. A model with no recorded history (an
+    // unversioned held model adopting its first versioned read) owns nothing
+    // yet, and writing `holdOwner: ""` records that explicitly - which then
+    // MASKS the adopted boot in `holdOwnerOf`, because an explicit empty string
+    // is not a fallback. `confirmedBootReplacement` answers false for an empty
+    // held token in every direction, so no later replacement could retire
+    // samples through the shared hand-off. Absent is the honest spelling, and
+    // it leaves the adopted boot as the implicit owner.
+    return recordedOwner === "" || recordedOwner === retained.bootGeneration
+      ? retained
+      : { ...retained, holdOwner: recordedOwner };
+  }
+  if (confirmedBootReplacement(recordedOwner, readBoot, "authoritative")) return { ...retained, holdOwner: readBoot };
+  return recordedOwner === "" ? retained : { ...retained, holdOwner: recordedOwner };
 }
 
 export function readIdentity(resp: {
@@ -809,6 +893,15 @@ export interface HistorySignal {
   bootGeneration?: string;
   epoch?: number;
   incarnation?: string;
+  /**
+   * Which producer named `bootGeneration`. Only a hold OWNER record consults
+   * it: a bare counter from a resync hint may be another name for the owner
+   * that is still sampling, while a bare counter on the serving daemon's own
+   * authoritative frame names that daemon taking the thread as its own root.
+   * Defaults to "resync", the cautious reading: a signal that does not say
+   * which it is may not confirm a replacement.
+   */
+  bootEvidence?: BootTokenEvidence;
 }
 
 // What a signal does to held history. It compares against what an invalid
@@ -842,10 +935,38 @@ export function invalidated(history: HistoryState, signal: HistorySignal = {}): 
   // Epochs count again from zero in each boot generation.
   const sameBoot = compareBootGeneration(awaited.bootGeneration, bootGeneration) === "apply";
   const newIncarnation = signal.incarnation !== undefined && signal.incarnation !== history.incarnation;
+  // The ownership record lives HERE, at the one place `awaited` is written, so
+  // no caller can advance the awaited identity without also recording who owns
+  // the hold samples. Recording it at each fold was tried twice and missed a
+  // site both times; a fourth caller must not be able to miss it.
+  //
+  // Only a replaced source takes ownership, and only evidence that names one
+  // may record it: the signal's OWN boot token. Never the fallback above.
+  //
+  // `bootGeneration` falls back to the awaited identity when a caller supplies
+  // no token, which is correct for invalidating history and wrong for
+  // recording an owner. A descendant that switches from its parent daemon at
+  // "5@root" to its own at "1" records "1"; a reconnect in that window calls
+  // invalidateHistory with no token, the fallback resolves to "5@root", and
+  // writing that back as the owner lets the next resync from "1" erase the
+  // hold that daemon still owns.
+  //
+  // A same-boot or bootless invalidation therefore leaves the recorded owner
+  // alone: that daemon's delegate controller is still sampling, and an
+  // unchanged hold emits no update of its own to restore one dropped here.
+  const explicit = signal.bootGeneration || undefined;
+  const owner = holdOwnerOf(history);
+  // Confirmed replacement, not a bare token mismatch: an older daemon names a
+  // descendant's controller "5" on a worktree-change resync and "5@root" on
+  // its reads, and recording that "5" as the owner makes the next read's
+  // well-formed token for the SAME controller read as another replacement.
+  const record =
+    explicit !== undefined && confirmedBootReplacement(owner, explicit, signal.bootEvidence) ? explicit : undefined;
   return {
     ...history,
     invalidatedAtGeneration: history.issuedGeneration,
     awaited: { bootGeneration, epoch: signal.epoch ?? (sameBoot ? awaited.epoch : 0) },
+    ...(record ? { holdOwner: record } : {}),
     ...(newIncarnation ? { pendingIncarnation: signal.incarnation } : {}),
   };
 }
@@ -1029,8 +1150,23 @@ export function applyReadResponse<M extends ThreadModel>(
     }
   }
   const generation = resp.requestGeneration ?? 0;
+  // A saved-index fallback names no source for the ROWS: it keeps held's
+  // identity and passes no read token, so nothing it carries can stand as
+  // evidence of a replacement.
+  //
+  // An enriched `live-read-empty` is the exception, and it is why the token and
+  // the rows are separate questions. A daemon answered that read and supplied
+  // the transcript identity; only the rows came from the saved index
+  // (`fallbackHistoryIdentity` keeps `live.BootGeneration`). Passing its token
+  // as the read's evidence of ownership is what keeps that daemon's own next
+  // history update from clearing the live hold its read just supplied. Every
+  // other fallback - `live-read-failed` included - passes nothing and preserves
+  // the recorded owner.
+  const fallbackReadsLive = historyFallback(resp) && historyAnsweredLive(resp);
   const history: HistoryState = {
-    ...(historyFallback(resp) ? retainedReadIdentity(undefined, held) : readIdentity(resp)),
+    ...(historyFallback(resp)
+      ? retainedHistoryIdentity(undefined, held, fallbackReadsLive ? resp.bootGeneration : undefined)
+      : readIdentity(resp)),
     appliedGeneration: generation,
     issuedGeneration: Math.max(held.issuedGeneration, generation),
     deferredPages: [],
@@ -1071,7 +1207,7 @@ export function applyReadResponse<M extends ThreadModel>(
   );
   for (const deferred of held.deferredPages) {
     if (deferred.snapshot?.incarnation === history.incarnation) {
-      next = mergeVersionedPage(next, next.history, deferred, false);
+      next = mergeVersionedPage(next, next.history, deferred, false).model;
     }
   }
   return publicModel<M>(next);
@@ -1208,7 +1344,19 @@ export function applyReadModel<M extends ThreadModel>(
     // preserved. Only the four identity fields carry over — never
     // invalidatedAtGeneration/awaited/pendingIncarnation/failed, which this
     // merge (a non-discard disposition) already resolved.
-    ...retainedReadIdentity(identity, held),
+    // The boot token this merge may record as an owner. Every fallback
+    // suppresses the token for HISTORY VALIDITY - the rows came from the saved
+    // index, so they cannot stand as evidence about the source. On an enriched
+    // `live-read-empty` response the token is still the answering daemon's own
+    // account of itself, and it is the only evidence a client has about who
+    // owns the hold - so the suppression is for the validity question only,
+    // and ownership keeps it. `live-read-failed` names no owner and stays
+    // suppressed in both.
+    ...retainedHistoryIdentity(
+      identity,
+      held,
+      fallback && !historyAnsweredLive(fresh.servingFacts) ? undefined : freshHistory?.bootGeneration,
+    ),
     appliedGeneration: held.appliedGeneration,
     issuedGeneration: held.issuedGeneration,
     deferredPages: [],
@@ -1246,7 +1394,7 @@ export function applyReadModel<M extends ThreadModel>(
   );
   for (const deferred of held.deferredPages) {
     if (deferred.snapshot?.incarnation === history.incarnation) {
-      next = mergeVersionedPage(next, next.history, deferred, false);
+      next = mergeVersionedPage(next, next.history, deferred, false).model;
     }
   }
   return publicModel<M>(next);
@@ -1274,20 +1422,61 @@ function mergeVersionedPage<M extends ThreadModel>(
   held: HistoryState,
   resp: ThreadTurnsListResponse,
   takeCursor: boolean,
-): M {
+): OlderPageMerge<M> {
+  // Hold OWNERSHIP is a different question from whether this page's content can
+  // be applied. A page that is discarded or deferred still came from the source
+  // named on its own frame, and an authoritative frame naming a different boot
+  // is evidence that the source which numbered the held samples was replaced.
+  // Deciding that only on the branches that keep the content let a retired
+  // daemon's larger sequence outrank the replacement's updates while the
+  // latest-window reread is pending, and for good if that reread fails.
+  //
+  // So run the hand-off first, and let each branch keep its own history: the
+  // hold-only change is the model the branch would have returned, plus the
+  // retire and the recorded owner.
+  // A saved-index FALLBACK page is not the serving daemon's account of itself:
+  // the hub answered it from the transcript after a live read failed or came
+  // back empty, and the daemon may still be running the thread. Its
+  // `daemonless` token is therefore no evidence that the owner was replaced -
+  // recording it would make the live daemon's next versioned update read as a
+  // takeover and clear a hold it is still sampling. A saved-index page WITHOUT
+  // fallback provenance is authoritative and may retire as usual.
+  const handed = historyFallback(resp) ? undefined : handOffReplacedSource(model, resp.bootGeneration, "authoritative");
+  // The hand-off may have recorded a new hold owner. Every branch that keeps
+  // the held history must spread THAT history, or the branch's own history
+  // literal silently drops the owner the hand-off just recorded - the same
+  // loss as not running the hand-off at all, one line later.
+  const owned = handed?.history ?? held;
   switch (pageDisposition(held, resp)) {
     case "discard":
-      return model;
+      // The page's content does not apply, so it certifies no range - but the
+      // hand-off is still an authoritative transition the caller must publish.
+      return { model: handed ?? model, applied: false };
     case "defer":
-      return { ...model, history: { ...held, deferredPages: [...held.deferredPages, resp] } };
+      return {
+        model: {
+          ...(handed ?? model),
+          history: { ...owned, deferredPages: [...held.deferredPages, resp] },
+        },
+        applied: false,
+      };
     case "invalidate": {
       // A page of the incarnation it just announced waits for that
       // incarnation's latest window.
-      const history = invalidated(held, readIdentity(resp));
+      const history = invalidated(held, {
+        ...readIdentity(resp),
+        bootEvidence: "authoritative",
+      });
       const deferred = history.pendingIncarnation === resp.snapshot?.incarnation;
+      // `invalidated` recorded the incoming source as the hold owner; this is
+      // the retire, decided against the model that still names the old owner.
+      const retired = retireReplacedSourceHoldOnModel(model, resp.bootGeneration, "authoritative");
       return {
-        ...model,
-        history: deferred ? { ...history, deferredPages: [...history.deferredPages, resp] } : history,
+        model: {
+          ...(retired ?? model),
+          history: deferred ? { ...history, deferredPages: [...history.deferredPages, resp] } : history,
+        },
+        applied: false,
       };
     }
     case "merge": {
@@ -1304,8 +1493,15 @@ function mergeVersionedPage<M extends ThreadModel>(
           );
       // A page that names no successor cursor names the end of older history
       // for the range it serves (#5585).
+      // The merged model is built from the hand-off's model, not the original:
+      // `owned` gives history the incoming owner, but spreading `model` here
+      // rebuilt the result from the PRE-hand-off delegates, so a page that
+      // retired the held samples published the new owner beside the retired
+      // wait - visible until a latest-window read succeeded, and for good if
+      // that read failed.
+      const merged = handed ?? model;
       const next = {
-        ...(takeCursor ? withOlderFrontier(model, resp.nextCursor) : model),
+        ...(takeCursor ? withOlderFrontier(merged, resp.nextCursor) : merged),
         ...(servingFacts ? { servingFacts } : {}),
       };
       // The held length never advances from a page: a page's snapshot length
@@ -1321,25 +1517,28 @@ function mergeVersionedPage<M extends ThreadModel>(
       // held. pageDisposition still requires a page's length to be at least
       // held's to merge, comparing against that one true, latest-window
       // watermark - never one a page pushed forward.
-      return withDisplay(
-        next,
-        {
-          ...held,
-          ...(observed
-            ? {
-                replacementScopes: observePageRange(
-                  held.replacementScopes,
-                  range[0],
-                  range[1],
-                  snapshot,
-                  servedCutOrdinal(fresh),
-                ),
-              }
-            : {}),
-          turns,
-        },
-        model.overlay ?? {},
-      );
+      return {
+        model: withDisplay(
+          next,
+          {
+            ...owned,
+            ...(observed
+              ? {
+                  replacementScopes: observePageRange(
+                    held.replacementScopes,
+                    range[0],
+                    range[1],
+                    snapshot,
+                    servedCutOrdinal(fresh),
+                  ),
+                }
+              : {}),
+            turns,
+          },
+          model.overlay ?? {},
+        ),
+        applied: true,
+      };
     }
   }
 }

@@ -182,6 +182,7 @@ export function decodeCurrentTranscriptState(value: unknown): CurrentTranscriptS
     "issuedGeneration",
     "invalidatedAtGeneration",
     "awaited",
+    "holdOwner",
     "pendingIncarnation",
     "deferredPages",
     "replacementScopes",

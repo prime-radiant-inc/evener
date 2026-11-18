@@ -21,6 +21,7 @@
 
 import type {
 	AnyNotification,
+	HistoryState,
 	InputItem,
 	MutationReceipt,
 	ThreadItemPosition,
@@ -35,12 +36,14 @@ import {
 	deriveSendQueueAvailability,
 	historyFallback,
 	historyServingFacts,
+	handOffReplacedSource,
 	isStaleCursorError,
-	mergeOlderItemPage,
+	mergeOlderPage,
 	mergeSavedViewPage,
 	notificationTargetsThread,
 	notificationTouchesTranscript,
 	sessionControls,
+	transcriptHistoryFailedBootGeneration,
 	WireError,
 } from "@evener/appwire-client";
 import type { PendingTurnEntry } from "@evener/appwire-client/state/mutation";
@@ -544,6 +547,37 @@ function savedViewRecord(conversation: MobileConversation | null | undefined): S
 	const facts = conversation?.servingFacts;
 	if (facts?.servedFrom !== "saved-index" || facts.fallbackReason === undefined) return null;
 	return { identity: savedViewIdentity(conversation), exhausted: false };
+}
+
+/**
+ * The hold hand-off an invalidating page merge already decided, in the shape
+ * the phone store can publish without adopting the merge's history.
+ *
+ * A page that first confirms a new boot runs `invalidated()`, which records the
+ * incoming source as the hold owner, and then retires the outgoing source's
+ * samples. The phone's invalidate branch discards that merged model - it only
+ * schedules a reread - so without this the phone keeps the retired daemon's
+ * `holdSequence`, which can outrank the replacement's own updates while the
+ * reread is pending, and forever if it fails. The hold is not rendered on the
+ * phone today; it is still state that decides which sample wins.
+ *
+ * Only the two hold-bearing fields are taken: everything else the branch must
+ * keep (turns, cursor, the invalidated history it does not adopt) stays with
+ * the model already published.
+ */
+function handOffPageHold(
+	held: ThreadModel,
+	heldHistory: HistoryState,
+	merged: ThreadModel,
+	mergedHistory: HistoryState,
+): Partial<ThreadModel> | undefined {
+	const ownerChanged = mergedHistory.holdOwner !== heldHistory.holdOwner;
+	const delegatesChanged = merged.delegates !== held.delegates;
+	if (!ownerChanged && !delegatesChanged) return undefined;
+	return {
+		...(delegatesChanged ? { delegates: merged.delegates } : {}),
+		...(ownerChanged ? { history: { ...heldHistory, holdOwner: mergedHistory.holdOwner } } : {}),
+	};
 }
 
 export function trimBoundary(
@@ -2112,9 +2146,21 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						entryMutationRev === mutationOwnerRev &&
 						entryErrorRev === errorOwnerRev
 					) {
+						// A structured history failure is the FIRST reply to name the
+						// replacement boot after a bootless resync. Without the shared
+						// hand-off the retired sequence stays in the model, where a
+						// larger one outranks the replacement's own updates. The
+						// hand-off retires only a CONFIRMED replacement and records the
+						// incoming owner, so the replacement's wait survives; the error,
+						// the visible turns and the paging cursor are untouched.
+						const failureOwner = transcriptHistoryFailedBootGeneration(err);
+						const held = get().conversation;
+						const handed =
+							failureOwner && held ? (handOffReplacedSource(held, failureOwner, "authoritative") ?? held) : held;
 						set({
 							error: err instanceof Error ? err.message : String(err),
 							latestReadState: "error",
+							...(handed && handed !== held ? { conversation: handed } : {}),
 						});
 					} else {
 						markLatest("error");
@@ -2246,20 +2292,49 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						const pageFallback = savedView === null && historyFallback(pageFacts);
 						const effectiveSavedView: SavedViewPaging | null =
 							savedView ?? (pageFallback ? { identity: savedViewIdentity(currentConv), exhausted: false } : null);
-						const versionedMerge =
+						// The paging DECISION is `applied`, not model identity. A page the
+						// versioned merge discards can still publish an authoritative hold
+						// hand-off, so it returns a NEW model (see OlderPageMerge's own
+						// comment) while its rows and cursor must stay exactly where they
+						// were. Judging by `!== currentConv` let such a page take the
+						// merge path below, report "loaded", and advance to the
+						// DISCARDED page's successor cursor - skipping the rows it did not
+						// carry. A saved-view page is the engine's unversioned merge and
+						// always applies, so its own path is unchanged.
+						const pageMerge =
 							effectiveSavedView !== null
-								? mergeSavedViewPage(currentConv, result.turnsPage)
-								: mergeOlderItemPage(currentConv, result.turnsPage);
-						if (versionedMerge === currentConv) {
-							// A real discard (pageDisposition's "discard" branch, or a
-							// stale-model race) returns the model UNCHANGED — the exact
-							// object passed in. This is strictly narrower than comparing
-							// `.turns` by reference: mergeHistory and withDisplay's
-							// displayTurns also return the held turns array by reference
-							// on a genuine "merge" disposition whose page turns out to
-							// carry nothing newer than what is already held, so `.turns`
-							// equality alone cannot tell a no-op merge apart from a
-							// discard — see the no-op-merge test below.
+								? { model: mergeSavedViewPage(currentConv, result.turnsPage), applied: true }
+								: mergeOlderPage(currentConv, result.turnsPage);
+						const versionedMerge = pageMerge.model;
+						// A page whose merge left history invalid is NOT a plain discard:
+						// "defer" and "invalidate" both owe the recovering reread below,
+						// and they publish their own hand-off there. Only the remaining
+						// `applied: false` outcomes — a shorter same-incarnation page, a
+						// failed history, a stale-model race — are discards in the paging
+						// sense: the rows were never carried, so they must not certify.
+						if (!pageMerge.applied && versionedMerge.history?.invalidatedAtGeneration === undefined) {
+							// A discard did not apply this page's
+							// CONTENT. What it may still carry — an authoritative hold
+							// hand-off — must still be published, or the retired
+							// daemon's sequence outranks the replacement's own updates
+							// while the reread is pending and forever if it fails. Same
+							// publication as the invalidate branch below, and the same
+							// restriction to hold-bearing fields: the cursor and the
+							// visible turns stay exactly where they were, because the
+							// rows were not carried and certifying the page would skip
+							// them.
+							// Both sides must exist for a hand-off to mean anything: a
+							// discard has no incoming history to read an owner from, and
+							// a held model with no history has no held samples either.
+							// The guard above tests `.invalidatedAtGeneration`, which
+							// does not narrow `history` itself.
+							const heldHistory = currentConv.history;
+							const pageHistory = versionedMerge.history;
+							const retired =
+								heldHistory === undefined || pageHistory === undefined
+									? undefined
+									: handOffPageHold(currentConv, heldHistory, versionedMerge, pageHistory);
+							if (retired) set({ conversation: { ...currentConv, ...retired } });
 							set({ loadingOlder: false });
 							return { status: "ignored" };
 						}
@@ -2292,6 +2367,24 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 							// real epoch/incarnation to a newer one) entirely. Compare the
 							// signal that actually changes instead.
 							const newlyInvalidated = historyNewlyInvalidated(heldHistory, mergedHistory);
+							// The page's merge already decided the hold hand-off: a page
+							// that first confirms a new boot clears the outgoing source's
+							// samples and records the incoming owner on the model it
+							// returned. This branch DISCARDS that model and only schedules
+							// a reread, so without publishing the hand-off the phone keeps
+							// the retired daemon's sequence, which can outrank the
+							// replacement's own updates while the reread is pending - and
+							// forever if it fails.
+							//
+							// Only the hold-bearing fields move: the invalidated history and
+							// the pending incarnation are the reread's business, and
+							// installing them here would adopt a model this branch
+							// deliberately does not.
+							const retired =
+								heldHistory === undefined
+									? undefined
+									: handOffPageHold(currentConv, heldHistory, versionedMerge, mergedHistory);
+							if (retired) set({ conversation: { ...currentConv, ...retired } });
 							if (newlyInvalidated) {
 								requestRehydrate(currentConv.ref);
 							} else if (get().latestReadState === "ready") {
@@ -2332,7 +2425,18 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						// base taken from currentConv alone would drop it and let a
 						// later fallback re-add a row this page omitted.
 						const mergedModel = withSyncedHistoryTurns(
-							{ ...currentConv, history: versionedMerge.history ?? currentConv.history, turns: strippedPageTurns },
+							{
+								...currentConv,
+								history: versionedMerge.history ?? currentConv.history,
+								// The page's merge can also confirm a hold hand-off, and a
+								// history adopted without its delegates records the INCOMING
+								// owner beside the OUTGOING sequence: the retired daemon's
+								// larger hold then outranks the replacement's first samples.
+								// `versionedMerge` carries both halves of that hand-off, so
+								// take its delegates whenever it took its history.
+								delegates: versionedMerge.history === undefined ? currentConv.delegates : versionedMerge.delegates,
+								turns: strippedPageTurns,
+							},
 							strippedPageTurns,
 						);
 						// The page merge projects at the user's display config, exactly

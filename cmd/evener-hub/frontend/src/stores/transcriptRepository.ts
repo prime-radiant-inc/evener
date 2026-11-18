@@ -9,6 +9,7 @@ import {
   decodeTranscriptItem,
   encodeTranscriptItem,
   type HistoryState,
+  handOffReplacedSource,
   historyFallback,
   historyReplacesWindow,
   hydrateThread,
@@ -16,7 +17,7 @@ import {
   invalidateHistory,
   itemIsIdentityOnly,
   itemTextPresence,
-  mergeOlderItemPage,
+  mergeOlderPage,
   mergeSavedViewPage,
   mergeTranscriptItemVersioned,
   mergeTranscriptReaderWindow,
@@ -848,11 +849,19 @@ export class TranscriptRepository {
   }
 
   /** Adopt a source failure under the same captured lifetime as a read. */
-  acceptReadFailure(message: string, generation: number, context: { lifetime: number }): void {
+  acceptReadFailure(message: string, generation: number, context: { lifetime: number; bootGeneration?: string }): void {
     if (!this.#acceptsLifetime(context.lifetime) || !this.#model) return;
     const failed = applyHistoryReadFailure(this.#model, message, generation);
     if (failed === this.#model) return;
-    this.#model = failed;
+    // A failed read still names the source it read (the hub stamps
+    // appwire.HistoryReadErrorData on it). Run the same hand-off every other
+    // fold runs: a CONFIRMED replacement retires the old samples and records
+    // the incoming owner, and an unconfirmed one leaves both alone. The
+    // diagnostic `applyHistoryReadFailure` just set is carried untouched.
+    const handed = context.bootGeneration
+      ? handOffReplacedSource(failed, context.bootGeneration, "authoritative")
+      : undefined;
+    this.#model = handed ?? failed;
     this.#advanceSourceRevision();
     this.#recoveryNeeded = true;
     this.#publish();
@@ -1132,8 +1141,27 @@ export class TranscriptRepository {
    */
   acceptBeforeReadCut(notifications: readonly AnyNotification[], context: { lifetime: number }): void {
     const responseOverlayKeys = new Set(Object.keys(this.#model?.overlay ?? {}));
+    // The source the ACCEPTED read established is the authority here. A
+    // history frame buffered before that read's response carries the source it
+    // was produced under, and if that source is not the one the read installed
+    // it may not reassert itself: folding `5@root` onto a model boot 1 now
+    // serves lets the reducer accept it as a takeover, which clears the live
+    // hold boot 1 supplied and invalidates the snapshot the read just
+    // installed.
+    //
+    // It is EXCLUDED, not blanked. Blanking its token is itself a boot change -
+    // the reducer reads `""` as a different generation, invalidates the fresh
+    // snapshot and records an empty awaited boot - so the "fix" reintroduced
+    // the harm it was meant to prevent, one field over. The accepted read is
+    // the newest recorded form of everything this frame reports, so dropping it
+    // loses nothing that is still true. Other methods from the same interval
+    // (a queue change, an overlay the response did not cover) are not history
+    // authority and still replay below.
+    const readSource = this.#model?.history?.bootGeneration ?? "";
     for (const notification of notifications) {
       if (notification.method === "history/updated") {
+        const boot = notification.params.bootGeneration;
+        if (readSource !== "" && boot !== undefined && boot !== "" && boot !== readSource) continue;
         this.accept(notification, context);
       } else if (
         notification.method === "thread/queueChanged" &&
@@ -1162,6 +1190,29 @@ export class TranscriptRepository {
   acceptResponseFields(fields: Partial<Pick<ThreadModel, "goal" | "humanNote">>): void {
     if (this.#disposed || this.#sealed || !this.#model) return;
     this.#model = { ...this.#model, ...fields };
+    this.#publish();
+  }
+
+  /**
+   * Applies the shared hold-retirement rule to the model this repository owns.
+   *
+   * The store starts its targeted read before folding the boot-changing resync
+   * that caused it, so the repository's model is what the pane keeps showing
+   * (and what a later publication hands back to the store) until that read
+   * settles. A retired daemon's larger hold sequence outranks the
+   * replacement's first unheld frame in that window, and a failed read leaves
+   * the finished wait standing. Same-source and bootless resyncs retire
+   * nothing: only a different boot generation owns a different sequence.
+   */
+  retireHoldForReplacedSource(bootGeneration: string | undefined): void {
+    if (this.#disposed || this.#sealed) return;
+    const model = this.#model;
+    if (!model) return;
+    // The whole hand-off, unchanged from the reducer's folds: retirement FIRST
+    // and the incoming owner recorded even when there was nothing to clear.
+    const handed = handOffReplacedSource(model, bootGeneration);
+    if (handed === undefined) return;
+    this.#model = handed;
     this.#publish();
   }
 
@@ -1279,15 +1330,22 @@ export class TranscriptRepository {
     // A saved view's exhaustion is its own fact: an empty page ends it, any
     // other page (or a read that installs a new view) starts it again.
     this.#savedViewExhausted = savedPage && (response.data ?? []).length === 0;
-    const merged = savedPage ? mergeSavedViewPage(current, response) : mergeOlderItemPage(current, response);
+    const page = savedPage ? undefined : mergeOlderPage(current, response);
+    const merged = savedPage ? mergeSavedViewPage(current, response) : (page?.model ?? current);
     // A saved fallback page belongs to the saved projection: it cannot speak
     // for the live continuation, which stays available for recovery.
     const candidate =
       savedView && merged !== current
         ? { ...merged, olderCursor: current.olderCursor, olderFrontier: current.olderFrontier }
         : merged;
+    // A page's acceptance is the disposition the merge reports, never
+    // `candidate !== current`: a discarded page still hands off hold ownership
+    // and so returns a new model, and inferring acceptance from that identity
+    // certified a range the page never merged - later paging then trusted the
+    // certificate and skipped the missing turns entirely.
+    const applied = page === undefined ? candidate !== current : page.applied;
     // A discarded page leaves the model in place.
-    if (candidate === current) return false;
+    if (!applied && candidate === current) return false;
     // An invalidating/deferring page establishes no certified returned range,
     // so it may not carry coverage. But the shared reducer's invalidation is a
     // source-authority transition that belongs to this acceptance owner: adopt
@@ -1296,6 +1354,7 @@ export class TranscriptRepository {
     // fallback invalidates, and a later repository publication could push the
     // old valid authority back over that store-only invalidation.
     if (
+      !applied ||
       candidate.history?.invalidatedAtGeneration !== undefined ||
       (candidate.history?.deferredPages?.length ?? 0) > (current.history?.deferredPages?.length ?? 0)
     ) {

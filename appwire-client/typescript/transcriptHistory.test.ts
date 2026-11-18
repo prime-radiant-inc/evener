@@ -19,6 +19,7 @@ import {
   applyReadResponse,
   frontierFromCursor,
   hydrateThread,
+  invalidateHistory,
   issueLatestWindowRead,
   mergeOlderItemPage,
   mergeSavedViewPage,
@@ -26,8 +27,15 @@ import {
   mergeTranscriptTurnVersioned,
   olderFrontierOf,
 } from "./transcriptHistory";
-import { markItemTextOmitted } from "./transcriptItems";
-import type { OverlayItem, ThreadHistoryTurnsListResponse, ThreadReadResponse, Turn } from "./types.gen";
+import { handOffReplacedSource, holdOwnerOf, markItemTextOmitted } from "./transcriptItems";
+import type {
+  AnyNotification,
+  EvenerDelegateInfo,
+  OverlayItem,
+  ThreadHistoryTurnsListResponse,
+  ThreadReadResponse,
+  Turn,
+} from "./types.gen";
 
 // A v6 read response for the standard test thread. `olderCursor` absent is a
 // source read that named no older history; a value is the opaque continuation.
@@ -191,6 +199,234 @@ test("a disjoint fallback window keeps the held live continuation", () => {
   expect(next.turns.flatMap((turn) => turn.items).map((item) => item.id)).toEqual(["entry-1", "entry-5", "entry-6"]);
   expect(next.olderCursor).toBe("before-5");
   expect(olderFrontierOf(next)).toBe("before-5");
+});
+
+// A read that names no source answers a question about history, not about who
+// owns the hold samples. The fixture is the one the finding describes: a resync
+// recorded boot 2 as the owner while history still named boot 1, and then a
+// saved-index fallback read - which names no boot at all - put history's
+// identity back on boot 1. Rebuilding history from the four identity fields
+// alone drops the record, so boot 2's own next resync compares against boot 1,
+// reads as a SECOND replacement, and clears the live hold boot 2 just
+// published. That hold emits no update of its own, so the wait is simply gone.
+//
+// Asserted at the harm, not at the field: the hold must still be there after
+// the owner's own resync. A field-only assertion would pass while the
+// comparison that actually erases the wait still used the wrong token.
+for (const viaApplyReadModel of [false, true] as const) {
+  test(`a read naming no source keeps the owner of a live hold (applyReadModel=${viaApplyReadModel})`, () => {
+    const base = hydrateThread(
+      {
+        thread: testThread(),
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 100 },
+      },
+      "ref_t",
+      1000,
+    );
+    // Boot 2 replaced boot 1 and owns the samples; history still names boot 1
+    // because no read has applied since. This is the record a resync made.
+    let model: ThreadModel = { ...base, history: base.history && { ...base.history, holdOwner: "2" } };
+
+    // A saved-index fallback: it names no source of its own, and it keeps the
+    // identity history already had - boot 1, the boot that was REPLACED. That
+    // is exactly what makes the dropped record harmful: the identity left
+    // behind is the retired boot's, so the live owner's next frame compares
+    // against its predecessor.
+    const fallback = {
+      ...historyRead(),
+      thread: testThread({ turns: [versionedFragmentTurn([1])] }),
+      bootGeneration: "1",
+      snapshot: { incarnation: "inc-1", length: 100 },
+      servedFrom: "saved-index",
+      fallbackReason: "live-read-failed",
+      asOf: "2026-11-08T00:00:00Z",
+    } as ThreadReadResponse;
+    model = viaApplyReadModel
+      ? applyReadModel(model, hydrateThread(fallback, "ref_t", 1001))
+      : applyReadResponse(model, fallback, 1002);
+    // Boot 2 publishes its live hold - after the read, because a read is the
+    // authority on which waits are still running and rebuilds the list.
+    model = applyNotification(
+      model,
+      {
+        method: "evener/delegate/updated",
+        params: { ref: "ref_t", delegate: heldDelegate(900, 3) },
+      } as AnyNotification,
+      2500,
+    );
+    expect(model.delegates?.[0]?.holdSequence).toBe(900);
+
+    // Boot 2's OWN next resync. It is not a replacement of itself, so the live
+    // hold must survive it. Without the retained owner this compares against
+    // boot 1, confirms a replacement, and the wait disappears.
+    model = applyNotification(
+      model,
+      {
+        method: "evener/thread/resync",
+        params: { threadId: base.threadId, ref: "ref_t", bootGeneration: "2", epoch: 2 },
+      } as AnyNotification,
+      3000,
+    );
+    // Asserted at the harm: the wait is still there. A field-only assertion
+    // would pass while the comparison that actually erases the wait read the
+    // wrong token, so it is checked after the frame that harms it.
+    expect(model.delegates?.[0]?.holdSequence).toBe(900);
+    expect(holdOwnerOf(model.history!)).toBe("2");
+  });
+}
+
+// RoboRev 53574 (Medium 2): the enriched `live-read-empty` is the OTHER way a
+// saved-index fallback can answer, and it is not the same ownership answer.
+// There a daemon DID answer: it supplied the transcript identity and only the
+// rows came from the saved index (`fallbackHistoryIdentity` keeps
+// `live.BootGeneration`, cmd/evener-hub/app_rpc.go:372-380). Suppressing that
+// token along with the fallback left the RECORDED owner stale, so the
+// answering daemon's own next frame compared against its predecessor and
+// cleared the live hold its read had just supplied.
+test("an enriched live-read-empty takes the answering daemon as the hold owner", () => {
+  const base = hydrateThread(
+    {
+      thread: testThread(),
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 100 },
+    },
+    "ref_t",
+    1000,
+  );
+  // A resync recorded boot 1 as the owner, and no read has applied since. This
+  // is the record whose staleness the finding describes.
+  let model: ThreadModel = { ...base, history: base.history && { ...base.history, holdOwner: "1" } };
+
+  // The live read succeeded and returned no items; the saved index supplied
+  // the rows. Boot 2 is the daemon that ANSWERED, so its token is the only
+  // evidence of who owns the samples.
+  const enriched = {
+    ...historyRead(),
+    thread: testThread({ turns: [versionedFragmentTurn([1])] }),
+    bootGeneration: "2",
+    snapshot: { incarnation: "inc-1", length: 100 },
+    servedFrom: "saved-index",
+    fallbackReason: "live-read-empty",
+    asOf: "2026-11-08T00:00:00Z",
+  } as ThreadReadResponse;
+  model = applyReadResponse(model, enriched, 1002);
+  expect(holdOwnerOf(model.history!)).toBe("2");
+
+  // Boot 2 publishes its live hold...
+  model = applyNotification(
+    model,
+    {
+      method: "evener/delegate/updated",
+      params: { ref: "ref_t", delegate: heldDelegate(900, 3) },
+    } as AnyNotification,
+    2500,
+  );
+  expect(model.delegates?.[0]?.holdSequence).toBe(900);
+
+  // ...and its OWN next resync must not read as a fresh replacement.
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/resync",
+      params: { threadId: base.threadId, ref: "ref_t", bootGeneration: "2", epoch: 2 },
+    } as AnyNotification,
+    3000,
+  );
+  expect(model.delegates?.[0]?.holdSequence).toBe(900);
+  expect(holdOwnerOf(model.history!)).toBe("2");
+});
+
+// RoboRev 53656 (Medium 2): the enriched response is the first evidence of the
+// replacement, and the owner it must replace is an IMPLICIT one. An ordinary
+// boot-1 read leaves `holdOwner` unset and owns through the recorded
+// `bootGeneration`; a fold that reads only the explicit field sees "no owner to
+// replace", keeps boot 1, and installs boot 2's samples under it. Boot 2's very
+// next frame then compares against boot 1, reads as a fresh replacement, and
+// clears the live hold it published.
+test("an enriched live-read-empty replaces an IMPLICIT hold owner with the answering daemon", () => {
+  const base = hydrateThread(
+    {
+      thread: testThread(),
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 100 },
+    },
+    "ref_t",
+    1000,
+  );
+  // The M2 condition: no explicit record. Ownership is implicit in the
+  // recorded boot generation, which is how an ordinary read leaves it.
+  expect(base.history?.holdOwner).toBeUndefined();
+  let model: ThreadModel = base;
+
+  const enriched = {
+    ...historyRead(),
+    thread: testThread({ turns: [versionedFragmentTurn([1])] }),
+    bootGeneration: "2",
+    snapshot: { incarnation: "inc-1", length: 100 },
+    servedFrom: "saved-index",
+    fallbackReason: "live-read-empty",
+    asOf: "2026-11-08T00:00:00Z",
+  } as ThreadReadResponse;
+  model = applyReadResponse(model, enriched, 1002);
+  // The answering daemon is recorded, not left implicit under the boot it
+  // replaced.
+  expect(holdOwnerOf(model.history!)).toBe("2");
+
+  model = applyNotification(
+    model,
+    {
+      method: "evener/delegate/updated",
+      params: { ref: "ref_t", delegate: heldDelegate(1, 3) },
+    } as AnyNotification,
+    2500,
+  );
+  expect(model.delegates?.[0]?.holdSequence).toBe(1);
+
+  // Boot 2's OWN next resync. Asserted at the harm: the wait is still there
+  // after the frame that would erase it.
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/resync",
+      params: { threadId: base.threadId, ref: "ref_t", bootGeneration: "2", epoch: 2 },
+    } as AnyNotification,
+    3000,
+  );
+  expect(model.delegates?.[0]?.holdSequence).toBe(1);
+});
+
+// RoboRev 53685 (Low): `applyReadModel` merges the first versioned read into
+// an UNVERSIONED held model - no recorded history, so no recorded owner.
+// Writing `holdOwner: ""` there records that explicitly, and an explicit empty
+// string is not a fallback in `holdOwnerOf`: it MASKS the boot the merge just
+// adopted, and `confirmedBootReplacement` answers false for an empty held token
+// in every direction, so no later replacement can retire samples through the
+// shared hand-off. Absent is the honest spelling.
+test("the first versioned read leaves ownership implicit rather than recording an empty owner", () => {
+  // A model with NO recorded history: the unversioned shape applyReadModel
+  // adopts its first versioned read into. Built from a real hydration so the
+  // model carries every field, then stripped of the history it recorded.
+  const hydrated = hydrateThread({ thread: testThread() }, "ref_t", 1000);
+  const unversioned: ThreadModel = { ...hydrated, history: undefined };
+  const fresh = hydrateThread(
+    {
+      thread: testThread({ turns: [versionedFragmentTurn([1])] }),
+      bootGeneration: "2",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 100 },
+    },
+    "ref_t",
+    1000,
+  );
+  const model = applyReadModel(unversioned, fresh);
+  // The adopted boot IS the owner. Nothing was written to mask it.
+  expect(model.history?.bootGeneration).toBe("2");
+  expect(model.history?.holdOwner).toBeUndefined();
+  expect(holdOwnerOf(model.history!)).toBe("2");
 });
 
 for (const facts of ["legacy", "unavailable"] as const) {
@@ -1589,4 +1825,433 @@ test("a read carries scratchDir into the model and a withdrawn root clears it", 
     2000,
   );
   expect(withdrawn.scratchDir).toBeUndefined();
+});
+
+function heldDelegate(holdSequence: number, projectionRevision: number): EvenerDelegateInfo {
+  return {
+    runGeneration: 1,
+    delegateId: "dlg_held",
+    ownerSessionId: "sess_owner",
+    rootSessionId: "sess_root",
+    childSessionId: "sess_child",
+    transcriptRef: "local:01dlg_held",
+    type: "delegate",
+    lifecycle: "stable",
+    phase: "working",
+    status: "running",
+    outcome: "pending",
+    terminal: false,
+    resumable: true,
+    needsAttention: false,
+    projectionRevision,
+    drainHeldByJobs: true,
+    holdSequence,
+    runningJobCount: 2,
+    oldestRunningJobStartedAt: "2026-01-03T00:00:00Z",
+  };
+}
+
+// A descendant served by its parent daemon at "5@root" switches to a daemon
+// serving it as its own root, at "1@other". Both tokens name their root, so the
+// hand-off is a CONFIRMED replacement: it retires "5@root"'s samples and records
+// the incoming owner. A reconnect inside that window then invalidates history
+// with NO boot token, and the invalidation's fallback identity ("5@root", right
+// for deciding history validity) is not evidence naming a replacement. Writing
+// it back as the owner would make the next resync from "1@other" compare against
+// "5@root", read as another replacement, and erase the hold that daemon
+// published — which emits no update of its own to restore it.
+test("a bootless reconnect keeps the hold owner a replacement recorded", () => {
+  const base = hydrateThread(
+    { thread: testThread(), bootGeneration: "5@root", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 } },
+    "ref_t",
+    1000,
+  );
+  // The retired daemon's sample: 900 outranks any sequence the replacement
+  // reaches first, which is why the hand-off has to drop it.
+  let model = applyNotification(
+    base,
+    { method: "evener/delegate/updated", params: { ref: "ref_t", delegate: heldDelegate(900, 3) } } as AnyNotification,
+    2000,
+  );
+  expect(model.delegates?.[0]?.holdSequence).toBe(900);
+
+  // The browser's hand-off when the new root takes over: retire the old
+  // samples and record the incoming owner, with no invalidation fold.
+  const handed = handOffReplacedSource(model, "1@other");
+  if (!handed) throw new Error("the hand-off retired nothing");
+  model = handed;
+  expect(model.delegates?.[0]?.holdSequence).toBeUndefined();
+  expect(model.history?.holdOwner).toBe("1@other");
+
+  // The replacement publishes its own live hold while no read has succeeded.
+  model = applyNotification(
+    model,
+    { method: "evener/delegate/updated", params: { ref: "ref_t", delegate: heldDelegate(1, 4) } } as AnyNotification,
+    2500,
+  );
+  expect(model.delegates?.[0]?.holdSequence).toBe(1);
+
+  // A reconnect inside that window. No boot token is named, so this is not a
+  // source replacement and must not become the recorded owner.
+  model = invalidateHistory(model);
+
+  // The same source's own resync, a newer epoch: its hold stands.
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/resync",
+      params: { threadId: base.threadId, ref: "ref_t", bootGeneration: "1@other", epoch: 3 },
+    } as AnyNotification,
+    3000,
+  );
+  expect(model.delegates?.[0]?.holdSequence).toBe(1);
+  expect(model.delegates?.[0]?.drainHeldByJobs).toBe(true);
+  expect(model.delegates?.[0]?.runningJobCount).toBe(2);
+  // The mechanism, pinned after the harm it causes: the reconnect never became
+  // the recorded owner, so the source's resync compares against its own boot.
+  expect(model.history?.holdOwner).toBe("1@other");
+});
+
+// The other direction of the same rule: a bare counter does not say whose
+// counter it is, so it cannot confirm a replacement. An older daemon stamps a
+// descendant's worktree-change resync with "5" while its reads name the same
+// controller "5@root"; treating the mismatch as a takeover erases a hold
+// nothing replaced, and an unchanged hold emits no update to restore it.
+test("an uninterpretable boot token preserves the hold instead of retiring it", () => {
+  const base = hydrateThread(
+    { thread: testThread(), bootGeneration: "5@root", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 } },
+    "ref_t",
+    1000,
+  );
+  let model = applyNotification(
+    base,
+    { method: "evener/delegate/updated", params: { ref: "ref_t", delegate: heldDelegate(900, 3) } } as AnyNotification,
+    2000,
+  );
+  expect(model.delegates?.[0]?.holdSequence).toBe(900);
+
+  // The older daemon's worktree-change resync, and then its following epoch
+  // bump from the same bare counter. Neither names a root, so neither confirms
+  // anything — and the second one in particular must not read the first's
+  // absence of a record as a replacement.
+  for (const epoch of [3, 4]) {
+    model = applyNotification(
+      model,
+      {
+        method: "evener/thread/resync",
+        params: { threadId: base.threadId, ref: "ref_t", bootGeneration: "5", epoch },
+      } as AnyNotification,
+      3000,
+    );
+    expect(model.delegates?.[0]?.holdSequence).toBe(900);
+    expect(model.delegates?.[0]?.drainHeldByJobs).toBe(true);
+    expect(model.delegates?.[0]?.runningJobCount).toBe(2);
+  }
+  // History still invalidates, as it must: the epoch moved.
+  expect(model.history?.invalidatedAtGeneration).toBeDefined();
+  // And no owner was recorded from the uninterpretable token.
+  expect(model.history?.holdOwner).toBeUndefined();
+});
+
+test("a legacy bare resync preserves the hold, and the root's next reboot retires it", () => {
+  // Both halves over ONE fixture, because they are one property: the legacy
+  // hint must not be mistaken for a replacement, AND it must not leave the
+  // ownership question answered by an ambiguous token either. A daemon
+  // served by its root at "5@root" publishes a hold of 900. Its older
+  // daemon's worktree-change resync spells the same controller "5".
+  const base = hydrateThread(
+    { thread: testThread(), bootGeneration: "5@root", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 } },
+    "ref_t",
+    1000,
+  );
+  let model = applyNotification(
+    base,
+    { method: "evener/delegate/updated", params: { ref: "ref_t", delegate: heldDelegate(900, 3) } } as AnyNotification,
+    2000,
+  );
+  expect(model.delegates?.[0]?.holdSequence).toBe(900);
+
+  // FIRST HALF: the bare "5" names the controller that is still sampling, so
+  // the hold survives and nothing is recorded from a token that names no root.
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/resync",
+      params: { threadId: base.threadId, ref: "ref_t", bootGeneration: "5", epoch: 3 },
+    } as AnyNotification,
+    3000,
+  );
+  expect(model.delegates?.[0]?.holdSequence).toBe(900);
+  expect(model.history?.holdOwner).toBeUndefined();
+  // `awaited` still advanced - it is the ordering field and history validity
+  // depends on it. That is exactly why ownership must not be read from it.
+  expect(model.history?.awaited?.bootGeneration).toBe("5");
+
+  // SECOND HALF: that awaited "5" is ambiguous. When the root reboots to
+  // "6@root" before any read succeeds, the comparison must be against the
+  // QUALIFIED owner "5@root" - so the reboot is a confirmed replacement and
+  // the retired sequence is cleared, rather than 900 outranking the new
+  // source's first sample at 1.
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/resync",
+      params: { threadId: base.threadId, ref: "ref_t", bootGeneration: "6@root", epoch: 4 },
+    } as AnyNotification,
+    4000,
+  );
+  expect(model.delegates?.[0]?.holdSequence).toBeUndefined();
+  // The durable fields survive the retirement, and so does the wait's shape.
+  expect(model.delegates?.[0]?.delegateId).toBe("dlg_held");
+  expect(model.delegates?.[0]?.lifecycle).toBe("stable");
+  expect(model.history?.holdOwner).toBe("6@root");
+});
+
+test("an authoritative update at the epoch a bare resync recorded still retires", () => {
+  // A descendant moves from its root's daemon at "5@root" to its own daemon at
+  // "1". The bare resync records that source in `awaited` but names no owner,
+  // so no hold hand-off happens there. The new daemon's first authoritative
+  // `history/updated` then arrives at the SAME epoch the resync already
+  // recorded: the history action is "apply", and the invalidated-model guard
+  // returns. If the hold hand-off lives behind that guard, the retired 900 is
+  // never cleared and outranks this daemon's first sample at 1 forever.
+  const base = hydrateThread(
+    { thread: testThread(), bootGeneration: "5@root", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 } },
+    "ref_t",
+    1000,
+  );
+  let model = applyNotification(
+    base,
+    { method: "evener/delegate/updated", params: { ref: "ref_t", delegate: heldDelegate(900, 3) } } as AnyNotification,
+    2000,
+  );
+  expect(model.delegates?.[0]?.holdSequence).toBe(900);
+
+  // The bare resync: it sets awaited to the bare "1" and records no owner.
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/resync",
+      params: { threadId: base.threadId, ref: "ref_t", bootGeneration: "1", epoch: 2 },
+    } as AnyNotification,
+    3000,
+  );
+  expect(model.delegates?.[0]?.holdSequence).toBe(900);
+  expect(model.history?.holdOwner).toBeUndefined();
+
+  // The same daemon's authoritative frame at that same epoch and incarnation.
+  // History content may merge or not; ownership is a separate question.
+  model = applyNotification(
+    model,
+    {
+      method: "history/updated",
+      params: {
+        ref: "ref_t",
+        threadId: base.threadId,
+        bootGeneration: "1",
+        epoch: 2,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [],
+        items: [],
+      },
+    } as AnyNotification,
+    4000,
+  );
+  expect(model.delegates?.[0]?.holdSequence).toBeUndefined();
+  expect(model.delegates?.[0]?.delegateId).toBe("dlg_held");
+});
+
+test("a standalone daemon's bare history update retires the root-served hold", () => {
+  // A descendant served by its root at "5@root" switches to its own daemon.
+  // That daemon's authoritative `history/updated` carries a BARE counter,
+  // because it serves the thread as its own root - the hub qualifies only a
+  // descendant it serves on a root's behalf. The old hold at 900 would beat
+  // that daemon's first sample at 1 forever.
+  const base = hydrateThread(
+    { thread: testThread(), bootGeneration: "5@root", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 } },
+    "ref_t",
+    1000,
+  );
+  let model = applyNotification(
+    base,
+    { method: "evener/delegate/updated", params: { ref: "ref_t", delegate: heldDelegate(900, 3) } } as AnyNotification,
+    2000,
+  );
+  expect(model.delegates?.[0]?.holdSequence).toBe(900);
+
+  model = applyNotification(
+    model,
+    {
+      method: "history/updated",
+      params: {
+        ref: "ref_t",
+        threadId: base.threadId,
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-2", length: 1 },
+        turns: [],
+        items: [],
+      },
+    } as AnyNotification,
+    3000,
+  );
+  // The takeover is confirmed by the frame's own identity, so the retired
+  // sequence is gone and the durable row remains.
+  expect(model.delegates?.[0]?.holdSequence).toBeUndefined();
+  expect(model.delegates?.[0]?.delegateId).toBe("dlg_held");
+  expect(model.history?.holdOwner).toBe("1");
+});
+
+test("a saved-index fallback page records no hold owner and retires nothing", () => {
+  // The hub answers a fallback page from the transcript after a live read
+  // failed or came back empty, and the daemon may still be running the thread.
+  // Its `daemonless` token is no evidence that the owner was replaced, so
+  // treating it as authoritative records `daemonless` as the hold owner and
+  // keeps the samples - and the live daemon's next versioned update then reads
+  // as a takeover and clears a hold it is still sampling.
+  const held = mergeOlderItemPage(pageOrderingModel(), normalHistoryPage(120, []));
+  const withHold = {
+    ...held,
+    history: { ...held.history!, holdOwner: "7" },
+    delegates: [heldDelegate(900, 3)],
+  };
+  const fallbackPage: ThreadHistoryTurnsListResponse = {
+    ...normalHistoryPage(130, []),
+    bootGeneration: "daemonless",
+    epoch: 1,
+    snapshot: { incarnation: "inc-1", length: 130 },
+    servedFrom: "saved-index",
+    fallbackReason: "live-read-failed",
+  };
+
+  const merged = mergeOlderItemPage(withHold, fallbackPage);
+
+  // The saved content still merges, and the live daemon still owns its hold.
+  expect(holdOwnerOf(merged.history!)).toBe("7");
+  expect(merged.delegates?.[0]?.holdSequence).toBe(900);
+});
+
+test("a saved-index page WITHOUT fallback provenance may retire on daemonless", () => {
+  // The other direction: a saved page that is not a fallback names a definite
+  // absence, so it retires the previous owner's hold as any authoritative
+  // daemonless answer does.
+  const held = mergeOlderItemPage(pageOrderingModel(), normalHistoryPage(120, []));
+  const withHold = {
+    ...held,
+    history: { ...held.history!, holdOwner: "7" },
+    delegates: [heldDelegate(900, 3)],
+  };
+  const savedPage: ThreadHistoryTurnsListResponse = {
+    ...normalHistoryPage(130, []),
+    bootGeneration: "daemonless",
+    epoch: 1,
+    snapshot: { incarnation: "inc-1", length: 130 },
+    servedFrom: "saved-index",
+  };
+
+  const merged = mergeOlderItemPage(withHold, savedPage);
+
+  expect(holdOwnerOf(merged.history!)).toBe("daemonless");
+  expect(merged.delegates?.[0]?.holdSequence).toBeUndefined();
+});
+
+test("a deferred page from a replacement still retires the retired source's hold", () => {
+  // Hold ownership is not decided by whether a page's CONTENT can be applied.
+  // Here the history is invalidated and the page belongs to a different
+  // incarnation, so its content is deferred until that incarnation's latest
+  // window lands. The page's own boot token still says the source that
+  // numbered the held samples was replaced, and deciding that only on the
+  // branches that keep content left the retired daemon's larger sequence able
+  // to outrank the replacement's updates - for good if the reread failed.
+  const pageTurn = (version: number): Turn => ({
+    id: "tool-turn",
+    status: "completed",
+    version,
+    itemsView: "fragment",
+    items: [
+      {
+        id: "tool",
+        turnId: "tool-turn",
+        type: "commandExecution",
+        callId: "call",
+        status: "completed",
+        output: `output-${version}`,
+        version,
+        position: { entry: 10, item: 0 },
+      },
+    ],
+  });
+  const held = mergeOlderItemPage(pageOrderingModel(), normalHistoryPage(120, [pageTurn(120)]));
+  const withHold = {
+    ...held,
+    history: {
+      ...held.history!,
+      // The bare resync already moved `awaited` to the descendant's own boot,
+      // so this page is at the awaited identity and its content is deferred.
+      // Ownership is still recorded against the daemon that numbered the hold.
+      awaited: { bootGeneration: "1", epoch: 1 },
+      invalidatedAtGeneration: 3,
+      pendingIncarnation: "inc-2",
+      holdOwner: "5@root",
+    },
+    delegates: [heldDelegate(900, 3)],
+  };
+  const deferredPage: ThreadHistoryTurnsListResponse = {
+    ...normalHistoryPage(130, [pageTurn(130)]),
+    bootGeneration: "1",
+    snapshot: { incarnation: "inc-2", length: 130 },
+  };
+
+  const merged = mergeOlderItemPage(withHold, deferredPage);
+
+  // The content is deferred, exactly as before.
+  expect(merged.history?.deferredPages).toHaveLength((withHold.history?.deferredPages ?? []).length + 1);
+  // The retired source's sample is gone and the replacement is the recorded
+  // owner, so its own later frames keep their hold.
+  expect(merged.delegates?.[0]?.holdSequence).toBeUndefined();
+  expect(merged.delegates?.[0]?.delegateId).toBe("dlg_held");
+  expect(holdOwnerOf(merged.history!)).toBe("1");
+});
+
+test("a merged page that records the incoming owner does not keep the retired source's wait", () => {
+  // RoboRev 53429 (Medium 5): the MERGE branch. `owned` handed the incoming
+  // owner to history, but the merged model was rebuilt from the ORIGINAL
+  // `model` (`withOlderFrontier(model, ...)` and `withDisplay(next, ...)`), so
+  // the page published the new owner beside the retired daemon's 900. A newer
+  // boot then reads as a takeover against an owner it already is, and - worse
+  // - the wait stays visible until a latest-window read happens to succeed.
+  // The merge must build from the hand-off's model.
+  // The held model is a saved read: its history identity is the fallback's,
+  // while the recorded hold OWNER is the live daemon still sampling. The
+  // incoming page shares the held identity, so its content MERGES (a differing
+  // boot would take the invalidate branch, which retires on its own).
+  const held = mergeOlderItemPage(
+    pageOrderingModel(),
+    normalHistoryPage(120, [positionedFragmentTurn("older", [["older-item", 10]])]),
+  );
+  const withHold = {
+    ...held,
+    history: { ...held.history!, bootGeneration: "1", holdOwner: "5@root" },
+    delegates: [heldDelegate(900, 3)],
+  };
+  const replacementPage: ThreadHistoryTurnsListResponse = {
+    // Longer than the held 120: a shorter same-incarnation page is a
+    // "discard", which is the sibling branch, and this test is the MERGE one.
+    ...normalHistoryPage(130, [positionedFragmentTurn("older", [["older-item", 10]])]),
+    bootGeneration: "1",
+    epoch: 1,
+    snapshot: { incarnation: "inc-1", length: 130 },
+  };
+
+  const merged = mergeOlderItemPage(withHold, replacementPage);
+
+  // The page's CONTENT merged (its own row joined the held one).
+  expect(merged.history?.turns.length).toBeGreaterThan(1);
+  // The page named a replacement, so the incoming boot is the recorded owner...
+  expect(holdOwnerOf(merged.history!)).toBe("1");
+  // ...and the retired source's wait is not still on the model beside it.
+  // Reverting the merge to `model` leaves 900 here, which outranks every
+  // sequence the replacement numbering from its own start will reach.
+  expect(merged.delegates?.[0]?.holdSequence).toBeUndefined();
+  expect(merged.delegates?.[0]?.delegateId).toBe("dlg_held");
 });

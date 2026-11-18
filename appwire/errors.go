@@ -895,6 +895,68 @@ func WithReadBootGeneration(err WireError, bootGeneration string) WireError {
 	return withReadIdentity(err, bootGeneration, nil)
 }
 
+// NormalizeForwardedHistoryError makes a FORWARDED history read's ownership
+// evidence honest. A hub too old to carry the `unknown-owner`/live-identity
+// split (#6828) stamps DaemonlessBootGeneration on a failed saved-history read
+// whether or not a daemon still runs the thread, and a forwarding layer passes
+// that error through unchanged.
+//
+// The ambiguity is a property of the PEER, not of the wire, so it is resolved
+// where the forwarding is known - here - rather than by changing the protocol
+// or by teaching every client to distrust a token it cannot qualify. A legacy
+// peer cannot name an owner it never established, so its `daemonless` becomes
+// UnknownOwnerBootGeneration: the read failed, which is not a claim that nobody
+// serves the thread.
+//
+// A genuine absence read from a legacy peer is therefore indistinguishable from
+// an unresolved one, and it stays preserved on the client. That is the
+// recoverable direction: an unchanged hold emits no update of its own, so
+// clearing one on a token that may lie loses a live wait for its whole
+// duration, while preserving one that really ended is corrected by the next
+// successful read.
+//
+// The token is read from whichever shape the error's data arrived in. A
+// FORWARDED error reached this process over the wire, so its Data is almost
+// always the generic map the JSON decoder produced rather than the typed
+// struct - asserting only to HistoryReadErrorData would miss the real payload
+// and leave the browser with the legacy stamp. The map is rewritten in place
+// with every other field preserved.
+//
+// An error that carries no history identity, or carries any other token, is
+// returned unchanged.
+func NormalizeForwardedHistoryError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var wire WireError
+	if !errors.As(err, &wire) {
+		return err
+	}
+	switch data := wire.Data.(type) {
+	case HistoryReadErrorData:
+		if data.BootGeneration != DaemonlessBootGeneration {
+			return err
+		}
+		wire.Data = HistoryReadErrorData{
+			ErrorData:      data.ErrorData,
+			BootGeneration: UnknownOwnerBootGeneration,
+			Epoch:          data.Epoch,
+		}
+		return wire
+	case map[string]any:
+		token, _ := data["bootGeneration"].(string)
+		if token != DaemonlessBootGeneration {
+			return err
+		}
+		updated := maps.Clone(data)
+		updated["bootGeneration"] = UnknownOwnerBootGeneration
+		wire.Data = updated
+		return wire
+	default:
+		return err
+	}
+}
+
 func withReadIdentity(err WireError, bootGeneration string, epoch *uint64) WireError {
 	if data, ok := err.Data.(ErrorData); ok {
 		err.Data = HistoryReadErrorData{ErrorData: data, BootGeneration: bootGeneration, Epoch: epoch}

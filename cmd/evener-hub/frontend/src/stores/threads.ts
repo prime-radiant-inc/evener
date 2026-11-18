@@ -45,12 +45,16 @@ import {
   canonicalSkillNames,
   collectAuthoritativeMutationIds,
   compareBootGeneration,
+  confirmedBootReplacement,
   errorText,
   frontierFromCursor,
+  handOffReplacedSource,
   historyFallback,
+  holdOwnerOf,
   hydrateThread,
   type InputAttachment,
   invalidateHistory,
+  isConfirmedAbsence,
   isStaleCursorError,
   issueLatestWindowRead,
   isTranscriptHistoryFailedError,
@@ -61,9 +65,12 @@ import {
   olderHistoryExhausted,
   pruneBackgroundHistoryBodies,
   resolvePendingEscalation,
+  retireReplacedSourceHoldOnModel,
+  retireStableDelegateHolds,
   retireThreadSubscriptions,
   SHUT_DOWN_STATUSES,
   type ThreadSubscriptionLease,
+  transcriptHistoryFailedBootGeneration,
   WireError,
   wireThreadSubscriptions,
 } from "@evener/appwire-client";
@@ -4427,22 +4434,156 @@ async function readThreadHydration(
     // this hydration's own base model (superseded generations are ignored by
     // applyHistoryReadFailure itself).
     if (isTranscriptHistoryFailedError(err) && pending.baseModel) {
-      const failedModel = applyHistoryReadFailure(pending.baseModel, errorText(err), pending.requestGeneration ?? 0);
+      // The failure is applied FIRST, to this hydration's own base model, and
+      // the buffered updates are then replayed onto the failed model. The order
+      // is load-bearing in both directions:
+      //
+      // Last, a buffered `history/updated` from the replacement boot is compared
+      // against the OLD boot still in history, so it invalidates at this read's
+      // own generation - and `applyHistoryReadFailure` then reads its own
+      // failure as superseded (`requestGeneration <= invalidatedAtGeneration`)
+      // and drops the diagnostic. The store would publish invalidated history
+      // with no diagnostic, and that publication is not the live invalidation
+      // path that schedules a follow-up read.
+      //
+      // First, the failed model makes every replay take reducer.ts's
+      // failed-history branch, which keeps the diagnostic, retires only a
+      // CONFIRMED replacement, and records the incoming owner - so a hold the
+      // replacement published while the read was pending survives, which an
+      // unchanged hold could never restore on its own.
+      //
+      // Superseded generations are still ignored: the failure is applied to
+      // this hydration's own base model, and the ownership checks above still
+      // decide whether anything is published at all.
+      const failedBase = applyHistoryReadFailure(pending.baseModel, errorText(err), pending.requestGeneration ?? 0);
+      // A failed read is still EVIDENCE about who serves the thread: the hub
+      // stamps it with the identity it read (appwire.HistoryReadErrorData), a
+      // daemon's own token or "daemonless" for the hub's transcript-only
+      // answer. Without a successful read there is nothing else to confirm a
+      // replacement, so a hold the replaced source still carries would outlive
+      // its owner for the whole duration of the wait. The hand-off is the same
+      // rule every other fold runs - retire a CONFIRMED replacement's samples
+      // and record the incoming owner - and it leaves the diagnostic, the
+      // recorded history, and any still-unconfirmed hold exactly as they are.
+      //
+      // ORDER: the hand-off runs BEFORE the buffered updates replay, and that
+      // order is load-bearing. After a bootless recovery resync a replacement
+      // can publish its delegate hold before any history frame identifies its
+      // boot, so the buffer holds a live sample of the INCOMING source.
+      // Replaying first folds that sample onto the old owner, and the hand-off
+      // then retires it along with the outgoing source's samples - clearing a
+      // wait that had only just started, with no update of its own to restore
+      // it. Retiring first leaves the replay's own frame as the first sample
+      // of the source that now owns the sequence.
+      const failureOwner = transcriptHistoryFailedBootGeneration(err);
+      // The source the failure RETIRES is the one this read's model held BEFORE
+      // the hand-off, not the failure's own token - the token names the
+      // replacement. Captured here, while it is still the pre-hand-off owner.
+      const preFailureOwner = failedBase.history === undefined ? "" : holdOwnerOf(failedBase.history);
+      const handedBase = failureOwner
+        ? (handOffReplacedSource(failedBase, failureOwner, "authoritative") ?? failedBase)
+        : failedBase;
+      // The buffer is NOT filtered by the failure's own token. A buffered
+      // delegate frame carries no source identity (EvenerDelegateParams is ref,
+      // threadId and delegate), so the client cannot tell which source published
+      // a sample - and the token itself is not trustworthy evidence: the hub
+      // stamps `daemonless` on a failed saved-history fallback even while a
+      // daemon runs (#6815). Filtering on it would strip the only copy of a LIVE
+      // hold, and an unchanged hold emits no update of its own to restore it, so
+      // the buffer folds in whole and the retired source's samples are cleared
+      // by the hand-off above instead.
+      const published = replayHydrationNotifications(
+        handedBase,
+        pending.notifications,
+        failureOwner,
+        preFailureOwner,
+      ).model;
       const entry = tracked ? existingEntryRoute(ref) : undefined;
       if (!tracked) {
-        putWatchedThreadModel(ref, failedModel);
+        putWatchedThreadModel(ref, published);
       } else if (entry?.repository) {
         if (
           pending.client === getWiredClient() &&
           pending.epoch === getReadyEpoch() &&
           pendingThreadHydrations.get(ref) === pending
         ) {
+          // Captured BEFORE the failure is accepted: acceptReadFailure runs the
+          // same hand-off, so asking afterwards whether a hold was retired
+          // always answers no. This snapshot is the only place the outgoing
+          // samples are still visible.
+          const beforeFailure = entry.repository.getSnapshot();
+          const preFailureOwner = beforeFailure?.history === undefined ? "" : holdOwnerOf(beforeFailure.history);
           entry.repository.acceptReadFailure(errorText(err), pending.requestGeneration ?? 0, {
             lifetime: entry.lifetime,
+            bootGeneration: failureOwner,
           });
+          // Same ordering as the watched model, on the repository's own copy:
+          // the repository accepted the replacement's frames LIVE while the
+          // read was pending, so a hand-off that ran only inside
+          // acceptReadFailure would clear that live sample as if it belonged to
+          // the source being retired. Replaying the buffer through the same
+          // hand-off puts the retire first and the replacement's frames after
+          // it. The second hand-off is a no-op once the owner is recorded.
+          const repositoryModel = entry.repository.getSnapshot();
+          if (repositoryModel) {
+            replayEntryHydrationNotifications(
+              entry.repository,
+              entry.lifetime,
+              repositoryModel,
+              pending.notifications,
+              false,
+              failureOwner,
+              preFailureOwner,
+            );
+            // The guard above still skips frames this repository accepted LIVE,
+            // which is right for recorded content but wrong for the hold: the
+            // hand-off cleared the hold facet, so the replacement's own sample
+            // must fold back or the wait it published disappears. Only the
+            // hold-bearing method is re-offered, and only after the retire.
+            //
+            // Only when the hand-off RETIRED something. If it retired nothing,
+            // the repository still holds its own current sample, and re-folding
+            // an older buffered one would let that sample's larger sequence
+            // outrank the replacement's and mask its later updates. Measure the
+            // retire rather than inferring it from the frame's presence.
+            // The re-offer exists for ONE situation: the replacement published
+            // its sample while the read was pending, the repository accepted it
+            // LIVE, and the failure's hand-off then cleared it together with
+            // the samples it was replacing. Folding it back restores a wait the
+            // hand-off over-cleared.
+            //
+            // It must NOT fire when the failure's own token says the sample's
+            // source is GONE. A buffered delegate frame names no publisher
+            // (EvenerDelegateParams is threadId, ref, delegate — #6815), so the
+            // buffer cannot prove the sample is the incoming source's; but the
+            // FAILURE's token can prove it is not. After a bootless recovery
+            // resync, a daemon exits and the read fails with a CONFIRMED
+            // `daemonless`: the hand-off correctly clears the hold, and
+            // re-offering the buffered sample put it straight back, leaving a
+            // wait visible after the daemon that owned it had exited.
+            //
+            // `daemonless` is now trustworthy for this: the hub distinguishes a
+            // confirmed absence from `unknown-owner` (#6828/#6815), and this
+            // branch's `liveEnrichmentReadError` stamps the answering daemon's
+            // own token rather than `daemonless` on a live enrichment failure.
+            // `unknown-owner` needs no clause of its own: it parses as no boot,
+            // so confirmedBootReplacement already refuses it and the retire
+            // below measures nothing. Only a CONFIRMED absence changes the
+            // answer here.
+            const restoredByHandOff =
+              beforeFailure !== undefined &&
+              !isConfirmedAbsence(failureOwner) &&
+              retireReplacedSourceHoldOnModel(beforeFailure, failureOwner, "authoritative") !== undefined;
+            if (restoredByHandOff) {
+              for (const update of pending.notifications) {
+                if (update.notification.method !== "evener/delegate/updated") continue;
+                entry.repository.accept(update.notification, { lifetime: entry.lifetime });
+              }
+            }
+          }
         }
       } else {
-        putThreadModel(ref, failedModel);
+        putThreadModel(ref, published);
       }
     } else {
       scheduleOwnedHydrationRetry(read.kind, ref, pending);
@@ -5944,9 +6085,51 @@ function beginWatchedHydration(
   model: ThreadModel | undefined,
   epoch: number,
   includeTurns: boolean,
+  // The boot generation the notification that started this read named, when a
+  // resync started it. undefined for a retry or a ready-fan-out read.
+  resyncBootGeneration?: string,
 ): PendingThreadHydration {
   const previousPending = pendingWatchedHydrations.get(ref);
+  // A superseded read's delegate updates survive unless the supersession is a
+  // CONFIRMED replacement. The buffer is the only copy of a hold the
+  // replacement published while the previous read was pending: it was never
+  // folded into a model, so retiring the buffer loses it, and the next read's
+  // failure replay has nothing to publish. When the supersession IS a
+  // confirmed replacement, the buffer belongs to the replaced source and goes
+  // with it.
+  //
+  // A buffer belongs to the CONNECTION that filled it. A replacement client or
+  // a new ready epoch means the frames in it were addressed to a hub session
+  // this read no longer answers to: its delegate samples name daemons that
+  // session was serving, and replaying them here would restore a retired
+  // hold after this read's own failure hand-off cleared it. Same connection
+  // is what makes a buffered sample still evidence; across connections it is
+  // only a stale copy.
+  const carried =
+    previousPending && previousPending.client === client && previousPending.epoch === epoch
+      ? carriedHydrationUpdates(previousPending, resyncBootGeneration)
+      : [];
   if (previousPending) retirePendingHydration(ref, previousPending, pendingWatchedHydrations);
+  // The carried frames are still retained payload, so they are still charged.
+  // Retiring the superseded read above RELEASED their reservation (that record
+  // is gone and its budget belongs back to the pool), and the successor kept
+  // the same updates with `backgroundBytes: 0` - so every supersession left
+  // their bytes uncounted. Repeated resyncs during slow reads retained more
+  // payload than the pending budget allows while `reservePending` answered
+  // true the whole time, because nobody was asking it about these bytes.
+  //
+  // Re-reserve exactly what the carry kept, on the successor record. A
+  // reservation that fails means the budget is already full: the successor
+  // read is the one that must fall back, so drop the carry and let the
+  // established overflow/retry path handle it rather than retaining payload
+  // nobody charged for.
+  // Only charged when the ref is still background-held: `bufferPendingNotification`
+  // charges exactly those frames, so re-charging a foreground ref's carry would
+  // invent a reservation the buffer never made.
+  const carriedBytes = backgroundHolds(ref) > 0 ? carried.reduce((total, update) => total + update.bytes, 0) : 0;
+  const charged = carriedBytes === 0 || transcriptResidency().reservePending(ref, carriedBytes);
+  const retained = charged ? carried : [];
+  const retainedBytes = charged ? carriedBytes : 0;
   // Only a history-requesting read orders the repair-status sequence: a
   // lean watch the hub can answer without touching the transcript index
   // must not advance the shared counter out from under a tracked read's
@@ -5968,8 +6151,8 @@ function beginWatchedHydration(
     client,
     epoch,
     mutationGeneration: mutationStateGenerations.get(ref) ?? 0,
-    notifications: [],
-    backgroundBytes: 0,
+    notifications: [...retained],
+    backgroundBytes: retainedBytes,
     routing: pendingHydrationRouting(ref, baseModel ?? model),
     baseModel,
     requestGeneration,
@@ -5979,6 +6162,168 @@ function beginWatchedHydration(
   };
   pendingWatchedHydrations.set(ref, pending);
   return pending;
+}
+
+// carriedHydrationUpdates decides which of a superseded watched read's buffered
+// updates belong to the source still serving the ref, and returns them.
+//
+// The base model cannot answer this on its own. A bootless relay-recovery
+// resync starts the read from the model it holds, and a REPLACEMENT may then
+// publish its own history/updated and a delegate hold into the buffer before
+// the read settles. Judging the buffer by the base model's owner compares the
+// successor resync against a source the buffer has already moved past, and
+// discards a hold that source still owns.
+//
+// So walk the buffer in order and let its versioned signals say who serves the
+// ref by the end. A history frame is the serving daemon's own account of
+// itself, so a genuine replacement inside the buffer moves the owner there and
+// retires the samples that preceded it, which belong to the source it
+// replaced. A sample published after that frame belongs to the current owner
+// and is carried.
+//
+// Only a CONFIRMED replacement then discards what is left: a same-boot resync,
+// a bootless one, and a token that cannot be interpreted all leave the daemon
+// that published them in charge, and the new read's buffer is the only place
+// its hold exists.
+//
+// KNOWN LIMIT, measured rather than assumed: the delegate delete below is
+// POSITIONAL because a buffered delegate frame names no publisher.
+// EvenerDelegateParams is {threadId, ref, delegate}, and `ref` names the
+// WORKSPACE, which a replacement keeps (server/appwire_identity.go's
+// PrepareAppIdentityForRef). An A/B experiment on identical frame order showed
+// no client-side predicate separates the two cases: retiring by the confirming
+// frame's own hand-off keeps the incoming source's live hold but lets a
+// departed daemon's 901 outrank the replacement ("expected 901 to be
+// undefined"), while deleting positionally retires the departed sample but
+// loses the live one ("expected undefined to be 1"). The separating fact is not
+// on the wire; attaching the publishing boot to evener/delegate/updated is
+// #6815, after which this delete becomes a filter on the frame's own publisher.
+// stripDelegateHold removes the HOLD from a buffered delegate sample while
+// keeping every durable field. A sample whose sequence belongs to a replaced
+// source must not outrank the incoming source's numbering, but its lifecycle,
+// outcome, and revision are not ordered by that sequence: a terminal outcome
+// buffered before the replacement's history frame is the only copy of the
+// completed row, and discarding the whole update left it showing "running".
+//
+// The field list is `retireStableDelegateHolds`'s, not a second copy of it, so
+// a fifth hold field cannot be added in one place and missed in the other.
+function stripDelegateHold(update: PendingTranscriptUpdate): PendingTranscriptUpdate {
+  // The row type comes from the shared rule's own signature, so this helper
+  // cannot drift from the fields that rule strips.
+  type DelegateRows = NonNullable<Parameters<typeof retireStableDelegateHolds>[0]>;
+  const params = update.notification.params as { delegate?: DelegateRows[number] };
+  const delegates = params.delegate ? retireStableDelegateHolds([params.delegate]) : undefined;
+  const stripped = delegates?.[0];
+  if (!stripped || stripped === params.delegate) return update;
+  return {
+    ...update,
+    notification: {
+      ...update.notification,
+      params: { ...update.notification.params, delegate: stripped },
+    } as AnyNotification,
+  };
+}
+
+function carriedHydrationUpdates(
+  pending: PendingThreadHydration,
+  resyncBootGeneration: string | undefined,
+): PendingThreadHydration["notifications"] {
+  const held = pending.baseModel?.history;
+  if (!held) return [];
+  let owner = holdOwnerOf(held);
+  let carried: PendingThreadHydration["notifications"] = [];
+  for (const update of pending.notifications) {
+    const { method } = update.notification;
+    if (method === "history/updated") {
+      const boot = update.notification.params.bootGeneration;
+      if (boot && confirmedBootReplacement(owner, boot, "authoritative")) {
+        // The source being retired here is the one that OWNED the frames
+        // buffered so far - `owner` before this frame advanced it.
+        carried = carriedAcrossReplacement(carried, owner);
+        owner = boot;
+      }
+    }
+    carried.push(update);
+  }
+  if (!resyncBootGeneration) return carried;
+  // RESYNC evidence, never authoritative: the superseding signal is a
+  // `evener/thread/resync` hint, which is a request to re-read rather than the
+  // serving daemon's account of itself. An older daemon stamps a descendant's
+  // worktree-change resync with a bare "5" while its reads name that same
+  // controller "5@root", so an ambiguous hint confirms nothing and the
+  // buffered hold comes along. Only a confirmed replacement discards it.
+  if (!confirmedBootReplacement(owner, resyncBootGeneration, "resync")) return carried;
+  const retiredBoot = owner;
+  // A CONFIRMED replacement takes the buffered samples' HOLD - their sequence
+  // belongs to the replaced source's numbering - but not the updates
+  // themselves. Each update is the only copy of what it changed, and a
+  // terminal outcome buffered before the replacement's confirmation is the
+  // only record that the delegate finished. Dropping the whole buffer left the
+  // row showing "running" for the rest of the wait when the successor read
+  // then failed; the same field list the history-frame branch uses is what
+  // makes the strip and the discard agree.
+  return carriedAcrossReplacement(carried, retiredBoot);
+}
+
+// carriedAcrossReplacement is ONE answer to "what of the outgoing source's
+// buffer survives its replacement", used by both places this walk confirms one
+// (a versioned history frame inside the buffer, and the superseding resync's
+// own token). Two field lists that agree by inspection drift; one function
+// cannot.
+//
+// A delegate update is DURABLE: its row, lifecycle and terminal outcome are not
+// indexed by the replaced source's sequence, and a terminal update buffered
+// before the replacement is the only copy that the delegate finished. Only its
+// HOLD belongs to the departed daemon's numbering, so only the hold is
+// stripped.
+//
+// An overlay frame is SOURCE-LOCAL by contrast: it describes a stream the
+// outgoing daemon was producing (an unfinished assistant message, a running
+// tool's output). Nothing about it outlives its producer, and replaying it onto
+// the replacement's failed model displays work from a daemon that is no longer
+// serving the thread - output that was never published before the hand-off and
+// that the incoming source will not confirm. It goes with the source.
+//
+// Everything else (history/updated, status, metadata) is a statement about the
+// thread that the incoming source's own frames supersede, and replaying it
+// boots the fold on the new source's terms.
+function carriedAcrossReplacement(
+  carried: PendingThreadHydration["notifications"],
+  retiredBoot?: string,
+): PendingThreadHydration["notifications"] {
+  const kept: PendingThreadHydration["notifications"] = [];
+  for (const buffered of carried) {
+    const { method } = buffered.notification;
+    if (method.startsWith("overlay/")) continue;
+    if (method === "evener/delegate/updated") {
+      kept.push(stripDelegateHold(buffered));
+      continue;
+    }
+    // A recorded frame from the RETIRED boot may not carry its identity across
+    // the hand-off. Keeping it whole let a buffered `5@root` history update
+    // survive a supersession by `1@other` and reclaim ownership on replay; the
+    // successor's next frame then read as another replacement and cleared the
+    // live hold the replacement had published. Its CONTENT is still the newest
+    // recorded form of what it changed, so it folds bootless instead - the same
+    // treatment `withoutRetiredSourceToken` gives it on the failure path.
+    if (
+      retiredBoot !== undefined &&
+      retiredBoot !== "" &&
+      method === "history/updated" &&
+      buffered.notification.params.bootGeneration === retiredBoot
+    ) {
+      kept.push({
+        ...buffered,
+        notification: {
+          ...buffered.notification,
+          params: { ...buffered.notification.params, bootGeneration: "" },
+        } as AnyNotification,
+      });
+      continue;
+    }
+    kept.push(buffered);
+  }
+  return kept;
 }
 
 function bufferPendingNotification(
@@ -6017,14 +6362,153 @@ function bufferPendingNotification(
   pending.notifications.push(update);
 }
 
+// A buffered frame can arrive BEFORE the failure that names the replacement, so
+// replaying it afterwards would let the source the failure just retired record
+// itself as the hold owner again: its qualified token compares as a takeover
+// against the incoming one, and the next frame from the replacement then reads
+// as a replacement and clears the live hold it published. The frame's CONTENT
+// is still the newest recorded form of what it changed, so only its source
+// identity is dropped - it folds as a bootless frame, which invalidates
+// nothing and records nothing.
+//
+// WHICH source a frame may be discarded for is the whole question, and both
+// directions of the wrong answer have already shipped here. The failure's own
+// token is the REPLACEMENT; the source it retires is the one the model held
+// BEFORE it, which is why this takes that owner separately.
+//
+// Asking `confirmedBootReplacement(boot, retiredBy)` alone cannot answer it:
+// two qualified tokens from different owners confirm a replacement in BOTH
+// directions, so "the frame's source replaced the failure's" reads the same as
+// "the frame's source IS what the failure replaced". A watched read from a
+// parent daemon at `5@root` that buffers the child's own new daemon at `1` and
+// then fails under `5@root` would blank `1` and let the parent's sequence
+// outrank the child's first sample - the inversion this PR removes.
+// So the discriminator is EQUALITY on the owner, and only against the source
+// the failure retired. A frame whose owner is that source folds as bootless
+// (its content is still the newest recorded form of what it changed, but its
+// identity cannot be allowed to reclaim the sequence). A frame whose owner is a
+// DIFFERENT source is kept whole: it is evidence of a later hand-off this
+// failure knows nothing about, and blanking it would discard the only sample of
+// a wait that is still live.
+function withoutRetiredSourceToken(
+  notification: AnyNotification,
+  retiredBy: string,
+  preFailureOwner: string,
+): AnyNotification {
+  if (notification.method !== "history/updated") return notification;
+  const boot = notification.params.bootGeneration;
+  if (!boot) return notification;
+  // Nothing was retired: a same-boot failure retires nothing, so it may blank
+  // nothing. Without this gate a read that fails under its own boot would drop
+  // its own source's buffered frame and lose the hold it was carrying.
+  if (preFailureOwner === "" || !confirmedBootReplacement(preFailureOwner, retiredBy, "authoritative")) {
+    return notification;
+  }
+  // FULL token equality, not reduced-owner equality. Reducing `5@root` and
+  // `6@root` to their shared `root` would blank a frame from a LATER boot of
+  // the same root - a genuine successive takeover - and leave the retired
+  // boot's sequence in place to win. Two boots of one root are two sources.
+  if (boot !== preFailureOwner) return notification;
+  return {
+    ...notification,
+    params: { ...notification.params, bootGeneration: "" },
+  } as AnyNotification;
+}
+
 function replayHydrationNotifications(
   model: ThreadModel,
   notifications: ReceivedTranscriptUpdate[],
+  retiredBy?: string,
+  preFailureOwner?: string,
 ): { model: ThreadModel; appliedAt: number[] } {
   let hydrated = model;
   const appliedAt: number[] = [];
+  // A CONFIRMED ABSENCE retires every buffered hold sample, not just the ones
+  // the base model still carries. `daemonless` is a definite answer from the
+  // hub - a statement that no daemon runs the thread, so no delegate
+  // controller is sampling - and #6828 is what makes it trustworthy here by
+  // giving the hub a separate `unknown-owner` for "serving daemon never
+  // established" and a separate live-identity stamp for an enrichment failure
+  // after a daemon answered. A hold that arrived while the read was pending
+  // exists ONLY in this buffer, so folding it back puts a wait on screen after
+  // the daemon that owned it exited - the inverse of the defect this PR
+  // removes.
+  //
+  // `unknown-owner` does NOT qualify: it names no owner, which is not a claim
+  // that the owner is gone, and retiring a hold on it would be the same
+  // inversion one token over.
+  //
+  // What survives a departed source is `carriedAcrossReplacement`'s question,
+  // and it is the same answer here: a delegate update keeps its row, lifecycle
+  // and terminal outcome and loses only the hold the departed daemon numbered,
+  // and an overlay frame goes with the producer that was streaming it. Asking
+  // that helper instead of restating the field list is what keeps the two
+  // confirmations - a named replacement and a confirmed absence - from drifting
+  // into two different opinions about the same frame.
+  const absent = isConfirmedAbsence(retiredBy);
+  // A confirmed LIVE replacement retires the outgoing source exactly as an
+  // absence does, so the same frames leave with it. Filtering overlays only
+  // for `daemonless` let a bootless resync carry boot 1's overlay upsert into a
+  // read that then failed under boot 2: the base model handed off, replay kept
+  // folding the open overlay, and a transcript with a structured diagnostic
+  // displayed unfinished output from a daemon that had already been replaced.
+  //
+  // An overlay frame names no source of its own (`threadId`, `ref`, `item`), so
+  // the only usable discriminator is POSITION: overlays buffered before the
+  // first frame that names the INCOMING owner were produced under the outgoing
+  // one and go with it, and overlays after that point belong to the source that
+  // now serves the thread and are kept whole.
+  const liveReplacement =
+    retiredBy !== undefined &&
+    !absent &&
+    preFailureOwner !== undefined &&
+    preFailureOwner !== "" &&
+    confirmedBootReplacement(preFailureOwner, retiredBy, "authoritative");
+  let incomingNamed = false;
   for (const update of notifications) {
-    const folded = foldCanonicalNotification(hydrated, update.notification, update.now);
+    const notification =
+      retiredBy === undefined
+        ? update.notification
+        : withoutRetiredSourceToken(update.notification, retiredBy, preFailureOwner ?? "");
+    if (liveReplacement) {
+      if (notification.method === "history/updated") {
+        const boot = notification.params.bootGeneration;
+        // FULL identity again: `6@root` after `5@root` is a different source,
+        // and reducing both to `root` would treat the outgoing boot's own frame
+        // as naming the incoming one.
+        if (boot !== undefined && boot !== "" && boot === retiredBy) incomingNamed = true;
+      } else if (!incomingNamed && notification.method.startsWith("overlay/")) {
+        // An overlay upsert carries NO source identity
+        // (`OverlayUpsertedParams` is threadId, ref, item), so position is the
+        // only evidence there is - and it is used only in the direction it can
+        // support. An overlay arriving before the replacement has spoken at all
+        // was produced while the retired source was the only writer on this
+        // buffer, so it goes with that source. Once the incoming source names
+        // itself in a history update, later overlays are its own and are kept.
+        //
+        // A delegate update does NOT count as the replacement naming itself.
+        // Keeping an overlay upserted before the incoming source's first
+        // history/updated needs a publisher identity on the wire that
+        // `EvenerDelegateParams` and `OverlayUpsertedParams` do not carry
+        // (#6842), so until that lands position is the whole of the evidence
+        // and it is used in one direction only.
+        continue;
+      }
+    }
+    if (absent) {
+      // What survives a departed source is `carriedAcrossReplacement`'s
+      // question, answered once above for a named replacement and the same
+      // answer here: a delegate update keeps its durable fields and loses only
+      // the hold, and an overlay frame goes with the producer that was
+      // streaming it. A dropped frame folds nothing at all.
+      const [surviving] = carriedAcrossReplacement([{ ...update, notification }]);
+      if (surviving === undefined) continue;
+      const folded = foldCanonicalNotification(hydrated, surviving.notification, update.now);
+      hydrated = folded.model;
+      appliedAt.push(update.now);
+      continue;
+    }
+    const folded = foldCanonicalNotification(hydrated, notification, update.now);
     const updated = folded.model;
     if (updated === hydrated) continue;
     hydrated = updated;
@@ -6039,9 +6523,17 @@ function replayEntryHydrationNotifications(
   model: ThreadModel,
   notifications: PendingTranscriptUpdate[],
   adoptedRead: boolean,
+  handOffBootGeneration?: string,
+  preFailureOwner?: string,
 ): { model: ThreadModel; appliedAt: number[] } {
   let hydrated = model;
   const appliedAt: number[] = [];
+  // The same ordering rule the watched model follows: retire the outgoing
+  // source's samples BEFORE the buffer's frames fold in. A replacement can
+  // publish its delegate hold before any history frame names its boot, so
+  // replaying first folds that live sample onto the old owner and the hand-off
+  // then clears it as one of the retired source's.
+  if (handOffBootGeneration !== undefined) repository.retireHoldForReplacedSource(handOffBootGeneration);
   for (const update of notifications) {
     const acceptedLive = update.acceptedEntry?.repository === repository && update.acceptedEntry.lifetime === lifetime;
     // A discarded read left this owner's live model intact. Only a read that
@@ -6049,7 +6541,17 @@ function replayEntryHydrationNotifications(
     if (!adoptedRead && acceptedLive) continue;
     // The repository owns both recorded ingestion and later publications, so
     // the post-cut tail must join that owner, not a temporary store-only fold.
-    const accepted = repository.accept(update.notification, { lifetime });
+    //
+    // The retired-source check is the SAME one the watched replay runs, not a
+    // second rule: a buffered history frame from the source this failure just
+    // retired would otherwise fold its token back as the owner, and the
+    // replacement's own next frame would clear the live hold it published.
+    const accepted = repository.accept(
+      handOffBootGeneration === undefined
+        ? update.notification
+        : withoutRetiredSourceToken(update.notification, handOffBootGeneration, preFailureOwner ?? ""),
+      { lifetime },
+    );
     // Refused recorded input can still invalidate authority. Preserve that
     // transition without counting the refused frame as accepted content.
     hydrated = repository.getSnapshot() ?? hydrated;
@@ -6820,6 +7322,45 @@ function acceptEntryNotification(
   return accepted;
 }
 
+// retireReplacedSourceHoldBeforeResync applies the reducer's hold-retirement
+// rule to every browser-held model of `ref` before a resync's targeted read
+// starts. A notification naming a different source retires the hold samples on
+// each model that owns one, so the replaced daemon's larger sequence cannot
+// outrank the replacement's first unheld frame while the read is pending — nor
+// survive a read that fails, since nothing else emits an update for an
+// unchanged hold. Same-source and bootless resyncs retire nothing: that
+// daemon's delegate controller is still sampling its own sequence.
+function retireReplacedSourceHoldBeforeResync(ref: string, bootGeneration: string | undefined): void {
+  // The repository publishes its own retirement, which reaches the store model
+  // through the route's subscription. The store passes below then find no hold
+  // sample left and publish nothing; they are what cover a model with no route
+  // (a legacy or watched-only ref), which has no repository to retire. Both
+  // maps are covered in ONE write: a watched transcript is read from
+  // watchedThreads, not threads, so retiring only the latter leaves its hold
+  // standing for the whole of a failed read.
+  // existingEntryRoute, never entryTranscriptRoute: the latter CREATES and
+  // retains a route, and a resync for a ref this browser does not track would
+  // leave an empty one in the map for the life of the page. The resync only
+  // needs to update a repository that already exists.
+  existingEntryRoute(ref)?.repository?.retireHoldForReplacedSource(bootGeneration);
+  const { threads, watchedThreads } = threadsStore.getState();
+  const threadModel = threads.get(ref);
+  const watchedModel = watchedThreads.get(ref);
+  const retiredThread = threadModel && handOffSourceOwnership(threadModel, bootGeneration);
+  const retiredWatched = watchedModel && handOffSourceOwnership(watchedModel, bootGeneration);
+  if (retiredThread || retiredWatched) putThreadModels(ref, retiredThread || undefined, retiredWatched || undefined);
+}
+
+// handOffSourceOwnership completes BOTH halves of a replacement on a model this
+// store owns: it records the incoming source as the hold owner and retires the
+// retired source's samples. The record must happen even when there is nothing
+// to clear — otherwise the incoming source's own next notification compares
+// against the boot it replaced, reads as a fresh replacement, and clears the
+// live hold it just published, which emits no update to restore.
+function handOffSourceOwnership(model: ThreadModel, bootGeneration: string | undefined): ThreadModel | undefined {
+  return handOffReplacedSource(model, bootGeneration);
+}
+
 function handleNotification(n: AnyNotification): void {
   if (n.method === "evener/thread/resync") {
     // A resync always re-reads the named ref, legacy and v6 threads alike:
@@ -6830,8 +7371,19 @@ function handleNotification(n: AnyNotification): void {
     // takes that from the response's own identity, with no separate
     // invalidation step needed. Short-circuits before the generic fold so the
     // invalidation trigger below never double-issues a second read for it.
+    //
+    // The read is started before any fold lands, so the models the pane keeps
+    // showing here are the ones the replacement must not lose to: the
+    // repository's own model (the route's single owner of recorded ingestion,
+    // and what a later publication hands back to the store) and the store
+    // model itself both carry the retired daemon's hold sample until then.
+    // Run the reducer's own retirement rule over each, before the read starts.
+    retireReplacedSourceHoldBeforeResync(n.params.ref, n.params.bootGeneration);
     const client = getWiredClient();
-    if (client) void handleReady(client, getReadyEpoch(), n.params.ref);
+    if (client)
+      void handleReady(client, getReadyEpoch(), n.params.ref, {
+        resyncBootGeneration: n.params.bootGeneration,
+      });
     return;
   }
   if (n.method === "evener/auth/updated") {
@@ -7507,6 +8059,10 @@ async function refreshWatchedThread(
   epoch: number,
   ref: string,
   targetedResync: boolean,
+  // The boot generation the resync that started this read named, so a
+  // superseding read can tell a confirmed replacement from a same-source or
+  // uninterpretable one. undefined for a retry or a ready-fan-out read.
+  resyncBootGeneration?: string,
 ): Promise<void> {
   if ((watchRefCounts.get(ref) ?? 0) <= 0) return;
   const generation = watchGenerations.get(ref) ?? 0;
@@ -7519,6 +8075,7 @@ async function refreshWatchedThread(
     threadsStore.getState().watchedThreads.get(ref),
     epoch,
     includeTurns,
+    resyncBootGeneration,
   );
   // Same as refreshTrackedThread: publishWatchedHydration re-decides this.
   const hydration = readThreadHydration(client, ref, Date.now(), pending, { kind: "watched", includeTurns }).then(
@@ -7579,6 +8136,12 @@ async function handleReady(
     authoritativePublishedRefs?: Set<string>;
     /** The caller's outer replay pass covers this ref. */
     deferReplay?: boolean;
+    /**
+     * The boot generation the notification that requested this refresh named
+     * (a resync push). Passed to the watched read so a superseding read can
+     * tell a confirmed replacement from a same-source or uninterpretable one.
+     */
+    resyncBootGeneration?: string;
   },
 ): Promise<void> {
   const targetedResync = targetRef !== undefined;
@@ -7610,7 +8173,9 @@ async function handleReady(
         },
       }),
     ),
-    ...Array.from(watchRefs, (ref) => refreshWatchedThread(client, epoch, ref, targetedResync)),
+    ...Array.from(watchRefs, (ref) =>
+      refreshWatchedThread(client, epoch, ref, targetedResync, options?.resyncBootGeneration),
+    ),
   ]);
 
   if (
@@ -9718,6 +10283,19 @@ export function backgroundTranscriptSnapshotForTests(): TranscriptResidencySnaps
 
 export function pendingThreadHydrationUpdatesForTests(): readonly ReceivedTranscriptUpdate[] {
   return [...pendingThreadHydrations.values()].flatMap((pending) => pending.notifications);
+}
+
+/** The watched lifecycle's buffered frames, which `pendingThreadHydrationUpdatesForTests`
+ * does not cover: a superseded watched read's carry lives only here. */
+export function pendingWatchedHydrationUpdatesForTests(): readonly ReceivedTranscriptUpdate[] {
+  return [...pendingWatchedHydrations.values()].flatMap((pending) => pending.notifications);
+}
+
+/** The watched lifecycle's own byte reservation. A total-only view cannot tell
+ * a charged carry from one whose bytes another pending record happens to be
+ * holding, which is exactly the accounting this rule is about. */
+export function pendingWatchedHydrationBytesForTests(): number {
+  return [...pendingWatchedHydrations.values()].reduce((total, pending) => total + pending.backgroundBytes, 0);
 }
 
 export function pendingThreadHydrationBaseModelsForTests(): readonly ThreadModel[] {
