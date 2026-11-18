@@ -148,7 +148,7 @@ func (p *Prepared) bindReasoningEndpoints(c *Call, authenticated *http.Request, 
 	atInitial := true
 	p.redirectBody = func(candidate *http.Request) error {
 		// net/http obtains every retained redirect body from the first
-		// request's GetBody. It already has the first deployment's bytes.
+		// request's GetBody. A redirect hook can retarget it after projection.
 		recipient := llm.ServingRecipient(candidate.URL.String(), c.Res)
 		sameRecipient := recipient == initialRecipient
 		if sameRecipient && atInitial {
@@ -160,9 +160,9 @@ func (p *Prepared) bindReasoningEndpoints(c *Call, authenticated *http.Request, 
 			return err
 		}
 		if sameRecipient {
-			// The finalizers now describe this hop again. Keep the first
-			// request's exact bytes and any caller body policy.
-			return nil
+			// The finalizers now describe this hop again. Restore the first
+			// recipient's exact bytes if the hook retargeted the draft.
+			b = p.Body
 		}
 		_ = candidate.Body.Close()
 		setRequestBody(candidate, b)
@@ -272,7 +272,16 @@ func (c *Call) httpClient(p *Prepared) *http.Client {
 	}
 	clientCopy.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		retainedBody := req.Body != nil && req.Body != http.NoBody
+		var inspectedBody io.ReadCloser
+		var inspectedRecipient string
 		if checkRedirect != nil {
+			if p.redirectBody != nil && retainedBody && req.URL != nil {
+				inspectedRecipient = llm.ServingRecipient(req.URL.String(), c.Res)
+				if err := p.redirectBody(req); err != nil {
+					return err
+				}
+				inspectedBody = req.Body
+			}
 			if err := checkRedirect(req, via); err != nil {
 				return err
 			}
@@ -285,6 +294,22 @@ func (c *Call) httpClient(p *Prepared) *http.Client {
 			}
 		}
 		if p.redirectBody != nil && retainedBody && req.Body != nil && req.Body != http.NoBody && req.URL != nil {
+			if inspectedBody != nil {
+				recipient := llm.ServingRecipient(req.URL.String(), c.Res)
+				if recipient == inspectedRecipient {
+					return nil
+				}
+				if req.Body != inspectedBody {
+					// A replacement can carry any part of the inspected
+					// history. Preserve it only if all that history is
+					// still eligible at the recipient chosen by the hook.
+					view, _ := c.Req.ForReasoningEndpoint(inspectedRecipient, c.Res)
+					if _, mustReproject := view.ForReasoningEndpoint(recipient, c.Res); mustReproject {
+						return errors.New("redirect hook body replacement cannot be verified for the changed recipient")
+					}
+					return nil
+				}
+			}
 			return p.redirectBody(req)
 		}
 		return nil

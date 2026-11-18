@@ -531,6 +531,11 @@ The Chat and Responses HTTP adapters bind the serving digest to the configured
 provider instance. Distinct instances sharing operation URLs keep separate
 native history and Responses continuation handles, including after redirects.
 Rotating credentials on the same instance preserves its serving identity.
+An HTTP client's redirect hook sees the request body projected for the announced
+destination. Its replacement body is sent unchanged when that projection
+remains eligible at the final destination. A URL-only retarget projects history
+again for the new destination. If a hook also replaces the body and the retarget
+invalidates its source projection, the redirect stops before dispatch.
 Gemini models on one provider instance can continue each other’s signed
 tool calls through the same configured operation templates. A different
 project or an unconfigured redirect has its own deployment identity.

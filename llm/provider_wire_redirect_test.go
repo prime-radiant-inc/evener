@@ -409,18 +409,24 @@ func testScrubbedServingOrigin(t *testing.T) {
 
 func testRedirectedReasoningHistory(t *testing.T) {
 	const front, first, second = "front.invalid", "first.invalid", "second.invalid"
+	const redacted = `{"redirect":"replacement-body"}`
 	provider := wireProviders()[0]
 	for _, tc := range []struct {
-		name   string
-		hosts  []string
-		status int
-		bound  bool
+		name              string
+		hosts             []string
+		status            int
+		bound             bool
+		redactAt          string
+		rejectRedirection bool
 	}{
-		{"one issuer", []string{front, first, front, first}, http.StatusTemporaryRedirect, true},
-		{"mixed issuers", []string{first, second, front, first}, http.StatusPermanentRedirect, true},
-		{"anchored history", []string{front, first, second, first}, http.StatusTemporaryRedirect, true},
-		{"ordinary history", []string{front, second}, http.StatusTemporaryRedirect, false},
-		{"bodyless redirect", []string{first, second}, http.StatusSeeOther, true},
+		{name: "one issuer", hosts: []string{front, first, front, first}, status: http.StatusTemporaryRedirect, bound: true},
+		{name: "mixed issuers", hosts: []string{first, second, front, first}, status: http.StatusPermanentRedirect, bound: true},
+		{name: "anchored history", hosts: []string{front, first, second, first}, status: http.StatusTemporaryRedirect, bound: true},
+		{name: "ordinary history", hosts: []string{front, second}, status: http.StatusTemporaryRedirect},
+		{name: "bodyless redirect", hosts: []string{first, second}, status: http.StatusSeeOther, bound: true},
+		{name: "redacted issuer-bound redirect", hosts: []string{first, second}, status: http.StatusTemporaryRedirect, bound: true, redactAt: second},
+		{name: "redacted redirect retargeted from a foreign recipient", hosts: []string{first, front}, status: http.StatusPermanentRedirect, bound: true, redactAt: second},
+		{name: "redacted redirect retargeted away from an eligible issuer", hosts: []string{first, second}, status: http.StatusPermanentRedirect, bound: true, redactAt: first, rejectRedirection: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req := providerRequest(provider.name, "test-model")
@@ -442,6 +448,7 @@ func testRedirectedReasoningHistory(t *testing.T) {
 			}
 			var hops [][]byte
 			var endpoints []string
+			redirectChecks := 0
 			client := &http.Client{Transport: transporttest.RoundTripFunc(func(r *http.Request) (*http.Response, error) {
 				i := len(hops)
 				if i >= len(tc.hosts) || r.URL.Host != tc.hosts[i] {
@@ -464,14 +471,24 @@ func testRedirectedReasoningHistory(t *testing.T) {
 					}
 					replay, err := io.ReadAll(copyBody)
 					_ = copyBody.Close()
-					if err != nil || !bytes.Equal(replay, body) || r.ContentLength != int64(len(body)) {
+					// The hook deliberately leaves GetBody pointing at the
+					// projected draft. Capture must use the body actually sent.
+					hookReplacedBody := tc.redactAt != "" && i > 0
+					if err != nil || !hookReplacedBody && !bytes.Equal(replay, body) || r.ContentLength != int64(len(body)) {
 						t.Errorf("hop %d body replay or length mismatch", i)
 					}
 				}
 				hops = append(hops, body)
 				endpoint := r.URL.String()
 				endpoints = append(endpoints, endpoint)
-				if tc.status == http.StatusSeeOther && i > 0 {
+				if tc.redactAt != "" && i > 0 {
+					if tc.rejectRedirection {
+						t.Error("retargeted replacement reached a recipient ineligible for its source projection")
+					}
+					if !bytes.Equal(body, []byte(redacted)) {
+						t.Error("redirect policy's replacement bytes were not sent")
+					}
+				} else if tc.status == http.StatusSeeOther && i > 0 {
 					if r.Method != http.MethodGet || len(body) != 0 || r.GetBody != nil {
 						t.Error("bodyless redirect restored a request body")
 					}
@@ -498,19 +515,46 @@ func testRedirectedReasoningHistory(t *testing.T) {
 				resp := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Request: r, Body: io.NopCloser(strings.NewReader(provider.completeBody))}
 				if i+1 < len(tc.hosts) {
 					resp.StatusCode = tc.status
-					resp.Header.Set("Location", "/route")
+					location := "/route"
+					if tc.redactAt != "" {
+						location = "https://" + tc.redactAt + location
+					}
+					resp.Header.Set("Location", location)
 					resp.Body = http.NoBody
 				}
 				return resp, nil
 			}), CheckRedirect: func(candidate *http.Request, via []*http.Request) error {
+				redirectChecks++
+				if tc.redactAt != "" {
+					projected, err := io.ReadAll(candidate.Body)
+					if err != nil {
+						return err
+					}
+					_ = candidate.Body.Close()
+					if bytes.Contains(projected, []byte("fixture-0")) != (tc.redactAt == first) ||
+						!bytes.Contains(projected, []byte("answer-0")) {
+						t.Error("redirect hook did not receive the announced recipient's history projection")
+					}
+					candidate.Body = io.NopCloser(strings.NewReader(redacted))
+					candidate.ContentLength = int64(len(redacted))
+				}
 				candidate.URL.Host = tc.hosts[len(via)]
 				return nil
 			}}
 			sink := &outcomeSink{}
 			ctx := llm.WithAPIAttemptSink(llm.WithAPIAttemptGroup(t.Context(), llm.NewAPIAttemptGroup("ag_history")), sink)
 			resp, err := provider.wireClient(t, "https://"+tc.hosts[0], client, nil).Complete(ctx, req)
+			if tc.rejectRedirection {
+				if err == nil || len(hops) != 1 || redirectChecks != 1 {
+					t.Fatalf("redirect outcome = %v with %d hops and %d checks, want a pre-dispatch rejection", err, len(hops), redirectChecks)
+				}
+				return
+			}
 			if err != nil || len(hops) != len(tc.hosts) || len(sink.attempts) != len(hops) {
 				t.Fatalf("completion error %v, hops %d, records %d", err, len(hops), len(sink.attempts))
+			}
+			if redirectChecks != len(hops)-1 {
+				t.Errorf("redirect callbacks = %d, want one per redirect", redirectChecks)
 			}
 			if endpoint := resp.Raw["endpoint_url"]; endpoint != "https://"+tc.hosts[len(tc.hosts)-1]+"/route" {
 				t.Errorf("response endpoint = %v, want the final mocked recipient", endpoint)
