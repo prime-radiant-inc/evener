@@ -25,6 +25,14 @@ const (
 	transcriptWindowBudgetFloorBytes            = 16 << 10
 	transcriptWindowMeasuredEnvelopeMarginBytes = 32 << 10
 	transcriptWindowMaximumContentBudget        = managerReadMaxJSONBytes - transcriptWindowMeasuredEnvelopeMarginBytes
+	// transcriptWindowStampLimitBytes bounds the per-call resolution stamp a
+	// single bounded Manager read carries (#6323). The stamp names calls
+	// admission consumed, and the only shape a client may recap from names
+	// exactly one of them, so a healthy stamp is a few dozen bytes; this
+	// leaves room for a generous multi-call stamp while keeping a page of
+	// bounded items from spending its whole budget on metadata the reply
+	// text cannot compete with.
+	transcriptWindowStampLimitBytes = 8 << 10
 )
 
 type transcriptWindowContinuationDirection string
@@ -1344,7 +1352,37 @@ func transcriptWindowBoundItem(item appwire.ThreadItem, previewBytes, messageByt
 		item.Output = transcriptWindowUTF8Prefix(item.Output, previewBytes)
 		truncated = true
 	}
+	item = transcriptWindowBoundStamp(item, transcriptWindowStampLimitBytes)
 	return item, bodyBytes, truncated
+}
+
+// transcriptWindowBoundStamp omits an oversized per-call resolution stamp as
+// a UNIT on a bounded read, keeping the reply and its turn links (#6323). The
+// page budget trims item bodies, and a stamp is not a body: a fenced answer to
+// a pending set of thousands of calls carries more call metadata than a whole
+// page may hold, and leaving it attached makes the packer reject the page that
+// contains the reply. Dropping the call list returns that reply to the client
+// as an unstamped one, which is the pre-stamp matching, so the read loses a
+// recap it could not have attributed anyway. AnswerToTurnIDs and
+// ResolvedAskLegacyCount stay: they are the turn-granular link and the
+// legacy-population refusal, both small and both still load-bearing.
+//
+// The observation is copied before editing so the canonical item the caller
+// retains keeps the full stamp: bounding a read must not rewrite the
+// projection every other read serves.
+func transcriptWindowBoundStamp(item appwire.ThreadItem, limit int) appwire.ThreadItem {
+	observation := item.Observation
+	if observation == nil || len(observation.ResolvedAskCalls) == 0 {
+		return item
+	}
+	encoded, err := json.Marshal(observation.ResolvedAskCalls)
+	if err != nil || len(encoded) <= limit {
+		return item
+	}
+	bounded := *observation
+	bounded.ResolvedAskCalls = nil
+	item.Observation = &bounded
+	return item
 }
 
 func transcriptWindowUTF8Prefix(value string, limit int) string {

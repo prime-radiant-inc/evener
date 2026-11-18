@@ -408,6 +408,79 @@ func TestPackTranscriptItemWindowFiltersAndBoundsBodies(t *testing.T) {
 	}
 }
 
+// TestPackTranscriptItemWindowOmitsOversizedResolvedAskStamp covers the read
+// path #6323 added the stamp to: a bounded Manager read must not fail on the
+// page that contains a fenced answer whose stamp names thousands of calls. The
+// stamp goes as a unit, while the reply text and its turn links stay, so the
+// client falls back to the pre-stamp matching instead of losing the message.
+func TestPackTranscriptItemWindowOmitsOversizedResolvedAskStamp(t *testing.T) {
+	const callCount = 4000
+	calls := make([]appwire.PendingAskCall, callCount)
+	// Real turn and call ids are UUID-width, which is what makes a 4,000-call
+	// stamp larger than a whole Manager page. Short ids here would understate
+	// the page and let the test pass for the wrong reason.
+	const (
+		answerTurn   = "0f1c2b3a-4d5e-4f60-8a91-b2c3d4e5f607"
+		questionTurn = "1a2b3c4d-5e6f-4071-92a3-b4c5d6e7f809"
+	)
+	for i := range calls {
+		calls[i] = appwire.PendingAskCall{TurnID: questionTurn, CallID: fmt.Sprintf("2b3c4d5e-6f70-4182-a3b4-%012x", i)}
+	}
+	reply := appwire.ThreadItem{
+		Type: "userMessage",
+		ID:   "answer",
+		Text: "[answers]\nDeploy? = yes",
+		Observation: &appwire.SessionObservationMetadata{
+			Ref:                    "local:thread",
+			TurnID:                 answerTurn,
+			AnswerToTurnIDs:        []string{questionTurn},
+			ResolvedAskCalls:       calls,
+			ResolvedAskLegacyCount: 2,
+		},
+		Version: 1,
+	}
+	candidates := testWindowTurnCandidates(answerTurn, []appwire.ThreadItem{reply})
+	options := testWindowPackOptions(appwire.ThreadWindowParams{
+		TurnWindow: &appwire.ThreadTurnWindow{Latest: 1},
+	})
+
+	read, err := packThreadReadWindowItemCandidates(testWindowCandidateResult(candidates), nil, options)
+	if err != nil {
+		t.Fatalf("pack window with a %d-call stamp: %v", callCount, err)
+	}
+	encoded, err := json.Marshal(read)
+	if err != nil {
+		t.Fatalf("marshal packed page: %v", err)
+	}
+	if len(encoded) > managerReadMaxJSONBytes {
+		t.Fatalf("packed page encoded to %d bytes, Manager cap %d", len(encoded), managerReadMaxJSONBytes)
+	}
+	items := flattenTestItems(read.Thread.Turns)
+	if len(items) != 1 {
+		t.Fatalf("served item count = %d, want 1", len(items))
+	}
+	if items[0].Text != reply.Text {
+		t.Fatalf("bounded read rewrote the reply text: %q", items[0].Text)
+	}
+	if items[0].Observation == nil {
+		t.Fatal("bounded read dropped the whole observation")
+	}
+	if got := items[0].Observation.ResolvedAskCalls; len(got) != 0 {
+		t.Fatalf("bounded read served %d stamp calls, want the stamp omitted as a unit", len(got))
+	}
+	if got, want := items[0].Observation.AnswerToTurnIDs, []string{questionTurn}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("bounded read turn links = %v, want %v", got, want)
+	}
+	if got := items[0].Observation.ResolvedAskLegacyCount; got != 2 {
+		t.Fatalf("bounded read legacy count = %d, want 2", got)
+	}
+	// The canonical item the caller retains keeps the full stamp: bounding a
+	// read must not rewrite the projection every other read serves.
+	if got := len(candidates[0].Item.Observation.ResolvedAskCalls); got != callCount {
+		t.Fatalf("canonical candidate stamp = %d calls, want %d", got, callCount)
+	}
+}
+
 func TestPackTranscriptItemWindowCapsFiftyItemTurnInOrder(t *testing.T) {
 	items := make([]appwire.ThreadItem, 50)
 	for i := range items {
