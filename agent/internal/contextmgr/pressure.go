@@ -379,7 +379,7 @@ func estimateTokenPartsFor(res registry.Resolved, turns []schema.Turn) llm.Token
 		if t.Kind == schema.TurnAttentionResolution {
 			continue
 		}
-		message := t.Message
+		message := t.ProjectReasoningText(&res)
 		if dropPlainThinking {
 			message = llm.TrimThinkingForReplayMessage(message, true)
 		}

@@ -238,10 +238,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// rather than taking another one. Do not drop the copy above as redundant
 	// work — it is what keeps the boundary paired with the history this round
 	// actually expands (see the G4 note there).
-	scope := replayScope{
-		Instance:     profile.ID(),
-		Model:        profile.Model(),
-		Protocol:     profile.Protocol(),
+	scope := s.replayScopeFor(profile, replayScope{
 		InFlightFrom: inFlightFrom,
 		dropsToolResult: func(tr *llm.ToolResultData) bool {
 			_, rejected := suppressedDocuments[tr.ToolCallID]
@@ -250,9 +247,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		// A dropped document was rejected for delivery, not read successfully;
 		// the request copy says so and the transcript keeps the payload (#4465).
 		annotateDroppedToolResult: true,
-		protocolOf:                s.instanceProtocol,
-		canonicalModel:            func(model string) string { return s.canonicalModelID(profile.ID(), model) },
-	}
+	})
 	// presentedTurns is the history this request projects: a leased delegate
 	// turn projects the controller's own later snapshot, which can hold turns
 	// appended after historyTurns was taken.
@@ -302,31 +297,24 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			}
 			snapshot = filtered
 		}
-		presentedTurns = snapshot
-		history, claimErr = s.delegateController.CompleteModelRequest(claim, snapshot, scope)
+		presentedTurns, claimErr = s.delegateController.CompleteModelRequest(claim, snapshot)
 		if claimErr != nil {
 			_ = s.delegateController.AbortModelRequest(claim)
 			return nil, "", nil, llm.Request{}, nil, "", claimErr
 		}
-	} else {
-		history = expandHistory(historyTurns, scope)
 	}
+	history = expandHistory(presentedTurns, scope)
 
 	t.HistoryExpand = time.Since(tPhaseStart)
 
 	// --- Phase: RequestBuild ---
 	tPhaseStart = s.sclock().Now()
 
-	// The expanded history keeps the target-policy thinking and every
-	// tool-result payload so the fallback chain can apply each target's own
-	// replay and media policy; the primary request is projected for the
-	// primary's wire before it is built and budgeted (#4563, #4217).
-	untrimmedHistory := history
 	history = projectThinkingForTarget(profile, history)
 	history = projectToolResultMediaFor(profile, history)
 
 	req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort, toolDefsJSONBytes)
-	s.setRoundFallbackSource(sys, untrimmedHistory)
+	s.setRoundFallbackSource(roundFallbackSource{system: sys, turns: presentedTurns, scope: scope})
 	req = s.attachFullHistoryInputEstimate(req, historyTurns, len(sys))
 	var budget llm.TokenBudget
 	if req, budget, err = budgetModelDispatchRequestWithBudget(profile, req); err != nil {
@@ -382,24 +370,18 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		// The appended turns land after the in-flight boundary and project
 		// as-is; append them rather than re-running the delegate claim.
 		for _, notification := range appended {
-			// The appended turns carry no replay-sensitive thinking or
-			// tool-result media; both the dispatched history and the unprojected
-			// fallback source take them so a fallback sees the reloaded
-			// instructions too (#4563, #4217).
-			message := scope.projectTurnMessage(notification, true)
-			history = append(history, message)
-			untrimmedHistory = append(untrimmedHistory, message)
+			history = append(history, scope.projectTurnMessage(notification, true))
 		}
 		presentedTurns = append(slices.Clip(presentedTurns), appended...)
 		req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort, toolDefsJSONBytes)
-		s.setRoundFallbackSource(sys, untrimmedHistory)
+		s.setRoundFallbackSource(roundFallbackSource{system: sys, turns: presentedTurns, scope: scope})
 		req = s.attachFullHistoryInputEstimate(req, historyTurns, len(sys))
 		budgetedReq, budgeted, budgetErr := budgetModelDispatchRequestWithBudget(profile, req)
 		if budgetErr != nil {
 			return true, budgetErr
 		}
 		req, budget = budgetedReq, budgeted
-		req, fullHistory, deltaTurns = s.applyResponsesContinuationAnchorPlanning(ctx, profile, req, historyTurns, true, heldDropped)
+		req, fullHistory, deltaTurns = s.applyResponsesContinuationAnchorPlanning(ctx, profile, req, presentedTurns, true, heldDropped)
 		budgetedReq, budgeted, budgetErr = budgetModelDispatchRequestWithBudget(profile, req)
 		if budgetErr != nil {
 			return true, budgetErr
@@ -1074,24 +1056,18 @@ func isProviderTerminalError(err error) bool {
 	return strings.HasPrefix(err.Error(), "provider error: ") && ok
 }
 
-// roundFallbackSource is the round's unprojected request input: the system
-// prompt and the expanded history before the primary target's thinking and
-// media projection. It is kept instead of a built message slice so a round
-// that never falls back does not pay for one (#6442). Only Messages depends on
-// the history a request is built from, so laying it out at the fallback site
-// produces the slice this source would have produced there.
+// roundFallbackSource keeps the exact turns the round presented, including a
+// delegate's admitted steering and any appended skill reloads. Only a fallback
+// needs another expansion for a different target.
 type roundFallbackSource struct {
-	system  string
-	history []llm.Message
+	system string
+	turns  []schema.Turn
+	scope  replayScope
 }
 
-// setRoundFallbackSource records the source the fallback chain lays its own
-// messages out from. The history is this round's own unprojected expansion;
-// the primary's projections replace the slice they return rather than the
-// messages it holds, so this remains the unprojected input either way.
-func (s *Session) setRoundFallbackSource(system string, history []llm.Message) {
+func (s *Session) setRoundFallbackSource(source roundFallbackSource) {
 	s.mu.Lock()
-	s.roundFallbackSource = roundFallbackSource{system: system, history: history}
+	s.roundFallbackSource = source
 	s.roundFallbackSourceSet = true
 	s.mu.Unlock()
 }
@@ -1677,9 +1653,6 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	// Nothing burned a budget there, so "handled by the retry loop" is false for
 	// that error alone. See modelFallbackEligible.
 	if err != nil && len(fallbacks) > 0 && modelFallbackEligible(err, policy) {
-		if hasFallbackSource {
-			fallbackHistory = s.requestMessages(fallbackSource.system, fallbackSource.history)
-		}
 		// requestedEffort is the snapshot taken under lock in prepareModelRequestWithError,
 		// before it was clamped to the primary model. Using the snapshot (rather
 		// than re-reading live session config) keeps a concurrent runtime effort
@@ -1698,6 +1671,18 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 				s.emit(warningDataFromError(
 					fmt.Sprintf("model_fallbacks entry %q could not be resolved; skipping it", fbModel), resolveErr))
 				continue
+			}
+			if hasFallbackSource {
+				// The established protocol-specific replay rules use the round's
+				// scope. A target that replays raw reasoning needs its own issuer
+				// selection on the original turns, including prior user turns.
+				scope := fallbackSource.scope
+				scope.reasoningTextTarget = nil
+				res := fbProfile.Resolved()
+				if res.Caps.ReplaysReasoningText() && (res.Protocol == registry.ProtocolOpenAIChat || res.Protocol == registry.ProtocolOpenAIResponses) {
+					scope = s.replayScopeFor(fbProfile, scope)
+				}
+				fallbackHistory = s.requestMessages(fallbackSource.system, expandHistory(fallbackSource.turns, scope))
 			}
 			fbReq, ok := responsesContinuationModelFallbackRequest(fbProfile.Resolved(), req, fallbackHistory)
 			if !ok {
@@ -1958,22 +1943,17 @@ func (s *Session) forceCompactForModelRecovery(ctx context.Context) {
 	s.maybeAutoSave()
 }
 
-// replayScope carries the outgoing target identity that decides whether
-// provider/model-scoped content — thinking/redacted_thinking and web_search raw
-// blocks — from completed prior turns may replay after a mid-session model
-// switch (spec N4). A zero replayScope (empty Protocol) disables all
-// filtering, so history expansion for a target that keeps its own builder
-// guards (openai Responses, openai-chat) or for the Responses-continuation
-// delta path is byte-identical to before this rule existed.
+// replayScope carries the outgoing target and the history boundary used to
+// project provider-specific content. A zero scope passes messages through.
 type replayScope struct {
 	Instance string // outgoing instance (req.Provider)
 	Model    string // outgoing requested model (req.Model)
 	Protocol string // outgoing wire protocol; empty ⇒ no filtering
 
 	// InFlightFrom is the history index of the first turn belonging to the
-	// in-flight turn. Turns at or after it are exempt from filtering: a
-	// same-protocol fallback round earlier in the current turn keeps its
-	// thinking (N4 exempts in-flight rounds and the fallback path).
+	// in-flight turn. Provider-specific continuation state from those rounds
+	// is exempt from the completed-turn provenance rules. Raw reasoning text
+	// still belongs to its issuing model.
 	InFlightFrom int
 
 	// protocolOf resolves a stored turn's instance to the protocol it speaks
@@ -1983,6 +1963,9 @@ type replayScope struct {
 	// canonicalModel canonicalizes a model id for the ResponseModel fallback
 	// comparison. Nil ⇒ raw (trimmed) string comparison.
 	canonicalModel func(string) string
+	// reasoningTextTarget scopes a raw-replay row's plain text to its issuer,
+	// including earlier tool rounds of the in-flight turn.
+	reasoningTextTarget *registry.Resolved
 	// notesSelfEchoFiltered marks a delta slice whose self-echo TurnNotesContext
 	// turns were already filtered against the full history slice.
 	notesSelfEchoFiltered bool
@@ -2006,6 +1989,17 @@ type replayScope struct {
 	// request assembly never hands an image-blind model bytes it would reject
 	// or ignore (#4217); the result's text still reaches it.
 	dropsToolResultMedia func(mediaType string) bool
+}
+
+func (s *Session) replayScopeFor(profile *provider.Profile, scope replayScope) replayScope {
+	scope.Instance, scope.Model, scope.Protocol = profile.ID(), profile.Model(), profile.Protocol()
+	scope.protocolOf = s.instanceProtocol
+	scope.canonicalModel = func(model string) string { return s.canonicalModelID(profile.ID(), model) }
+	res := profile.Resolved()
+	if res.Caps.ReplaysReasoningText() {
+		scope.reasoningTextTarget = &res
+	}
+	return scope
 }
 
 // active reports whether the scope enforces the N4 replay-provenance rules. An
@@ -2074,17 +2068,14 @@ func (rs replayScope) producerProtocol(t schema.Turn) string {
 // dropsReplayedThinking reports whether the outgoing target takes no replayed
 // assistant thinking, per llm.ReplaysAssistantThinking — the one policy the
 // token estimate also uses, so pressure and compaction size what the request
-// actually carries. An OpenAI-chat target carries no reasoning as protocol
-// state (#4563); the thinking_as_text row is its deliberate exception.
+// actually carries.
 func dropsReplayedThinking(p *provider.Profile) bool {
 	return p != nil && !llm.ReplaysAssistantThinking(p.Resolved())
 }
 
 // projectThinkingForTarget returns messages with the target's thinking-replay
-// policy applied: a target that does not replay assistant thinking drops it,
-// while Anthropic, Google, OpenAI Responses and a thinking_as_text row keep
-// every message as is. The round keeps the untrimmed source so each fallback
-// applies its own policy instead of inheriting the primary's (#4563).
+// policy applied. A chat target that accepts neither raw reasoning nor
+// thinking_as_text keeps only its opaque continuation details.
 func projectThinkingForTarget(profile *provider.Profile, messages []llm.Message) []llm.Message {
 	if !dropsReplayedThinking(profile) {
 		return messages
@@ -2122,13 +2113,17 @@ func projectThinkingForTarget(profile *provider.Profile, messages []llm.Message)
 // tool-call thought signatures regardless of model, and openai Responses
 // carries an opaque encrypted_content blob that only its issuing deployment
 // can decrypt (a cross-deployment replay yields "Encrypted content is not
-// supported"). An openai-chat target never reaches this comparison: its
-// reasoning is display output rather than continuation state, so
-// dropsReplayedThinking strips it for the whole replay (except a
-// thinking_as_text row). Unknown protocols keep their builder guard, so
-// expansion does not strip thinking for them.
+// supported"). Raw chat and Responses reasoning follows the separate issuer
+// check in ProjectReasoningText for both completed and in-flight turns.
 func (rs replayScope) thinkingReplayEligible(t schema.Turn) bool {
 	if strings.TrimSpace(t.ResponseProvider) == "" {
+		return true
+	}
+	// With no transport stamp, a known matching issuer identifies the
+	// model's own protocol override. The instance's default protocol can
+	// differ from the protocol that model uses.
+	if t.ResponseProtocol == "" && rs.Protocol == registry.ProtocolOpenAIResponses &&
+		rs.reasoningTextTarget != nil && t.MatchesReasoningTextTarget(rs.reasoningTextTarget) {
 		return true
 	}
 	producer := rs.producerProtocol(t)
@@ -2195,6 +2190,7 @@ func (rs replayScope) projectThinkingPart(p llm.ContentPart, provenanceKeeps boo
 // N4 exemption but still lose thinking the target does not want.
 // tool_call/tool_result and text/image content is never touched.
 func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Message {
+	t.Message = t.ProjectReasoningText(rs.reasoningTextTarget)
 	t.Message = projectVoicePresentation(t)
 	if !rs.active() && !rs.DropThinking {
 		return t.Message

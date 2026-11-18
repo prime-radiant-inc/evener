@@ -163,6 +163,29 @@ func TestEstimateTokens_BillsUnsignedThinkingByResolvedProtocol(t *testing.T) {
 	if got := responses.estimateTokens(history); got != 0 {
 		t.Fatalf("responses history = %d, want 0: the adapter keeps raw reasoning text for display only", got)
 	}
+	for _, tc := range []struct {
+		protocol string
+		want     int
+	}{
+		{registry.ProtocolOpenAIChat, 2 * text / 4},
+		{registry.ProtocolOpenAIResponses, 2 * (text + len("rs_1")) / 4},
+	} {
+		t.Run(tc.protocol, func(t *testing.T) {
+			row := registry.Resolved{
+				Instance: "gateway", ModelID: "model", Protocol: tc.protocol,
+				Caps: registry.Caps{ReplayReasoningText: new(true)},
+			}
+			cm := NewManager(provider.FromResolved(row, nil), nil, cheapmodel.New(nil))
+			turn := history[0]
+			turn.ResponseProvider, turn.ResponseRequestModel, turn.ResponseProtocol = row.Instance, row.ModelID, tc.protocol
+			turn.Message.Content[0].Thinking.ID = "rs_1"
+			foreign := turn
+			foreign.ResponseProvider = "another-gateway"
+			if got := cm.estimateTokens([]schema.Turn{turn, foreign, turn}); got != tc.want {
+				t.Fatalf("history estimate = %d, want %d for both turns from the issuing gateway", got, tc.want)
+			}
+		})
+	}
 }
 
 func TestEstimateTokens_ImageDataDoesNotScaleWithByteLength(t *testing.T) {
@@ -249,6 +272,19 @@ func TestContextManager_SetProfileInvalidatesMeasurementsOnlyWhenTargetChanges(t
 		}
 	})
 
+	t.Run("replay issuer wire model", func(t *testing.T) {
+		row := resolved
+		row.Caps.ReplayReasoningText = new(true)
+		row.WireID = "served-a"
+		cm := NewManager(profile.WithResolved(row), nil, cheapmodel.New(nil))
+		cm.RecordInputTokens(321, 7)
+		row.WireID = "served-b"
+		cm.SetProfile(profile.WithResolved(row))
+		if got := cm.LastInputTokens(); got != 0 {
+			t.Fatalf("changing the wire model retained a count from the prior issuer: %d", got)
+		}
+	})
+
 	// Reasoning is the estimator's predicate, not the raw capability: a row that
 	// never stated it bills exactly as one that states it permits, so the
 	// measurement stands for that refresh -- and is cleared when the row disables
@@ -283,6 +319,7 @@ func TestContextManager_SetProfileInvalidatesMeasurementsOnlyWhenTargetChanges(t
 		{name: "surface", mutate: func(res *registry.Resolved) { res.Surface = registry.SurfaceAnthropic }},
 		{name: "model family", mutate: func(res *registry.Resolved) { res.Model.Family = "claude" }},
 		{name: "thinking as text", mutate: func(res *registry.Resolved) { res.Caps.ThinkingAsText = new(true) }},
+		{name: "plain reasoning replay", mutate: func(res *registry.Resolved) { res.Caps.ReplayReasoningText = new(true) }},
 		{name: "reasoning", mutate: func(res *registry.Resolved) { res.Caps.Reasoning = new(false) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

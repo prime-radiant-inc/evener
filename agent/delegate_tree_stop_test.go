@@ -286,7 +286,7 @@ func TestDelegateControllerStopDrainsSteeringAndModelClaims(t *testing.T) {
 	if _, err := c.CompleteSteerPersistence(steeringClaim, steeringEntry); err != nil {
 		t.Fatalf("CompleteSteerPersistence for fsynced pre-stop steer: %v", err)
 	}
-	if _, err := c.CompleteModelRequest(modelClaim, modelSnapshot, replayScope{}); !errors.Is(err, errDelegateStaleLease) {
+	if _, err := c.CompleteModelRequest(modelClaim, modelSnapshot); !errors.Is(err, errDelegateStaleLease) {
 		t.Fatalf("CompleteModelRequest after stop error = %v, want stale lease", err)
 	}
 	if _, err := c.Reconcile(emptyDelegateReconcileEvidence(c)); err != nil {

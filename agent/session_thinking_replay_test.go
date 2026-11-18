@@ -1,15 +1,10 @@
 package agent
 
-// Regression tests for #4563: an OpenAI-chat target does not carry replayed
-// reasoning as continuation state, so request assembly drops assistant
-// thinking before it can be billed every round. The transcript keeps it; only
-// the outgoing messages lose it, and a row that declares thinking_as_text (the
-// adapter merges it into assistant text) is the deliberate exception.
-
 import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -47,11 +42,8 @@ func TestExpandHistory_OpenAIChat_DropThinkingStripsPriorAndInFlight(t *testing.
 	}
 }
 
-// TestDropsReplayedThinking pins which targets take replayed thinking. Only an
-// OpenAI-chat target drops it by default; the three protocols whose
-// continuation state lives in the thinking (signature, thought signature,
-// encrypted content) keep their provenance rules, and an explicit
-// thinking_as_text row keeps it too.
+// A chat row can replay reasoning as a wire field or as ordinary content.
+// Without either capability, it keeps only its opaque continuation state.
 func TestDropsReplayedThinking(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -59,7 +51,8 @@ func TestDropsReplayedThinking(t *testing.T) {
 		profile *provider.Profile
 		want    bool
 	}{
-		{"openai-chat", newOpenAICompatProfile("kimi", "kimi-k3", 0), true},
+		{"openai-chat", newOpenAICompatProfile("unknown-gateway", "model-a", 0), true},
+		{"openai-chat raw reasoning", replayGateway("gw", registry.ProtocolOpenAIChat), false},
 		{"openai-chat thinking_as_text", reasoningProfile("glm-5.3", registry.Caps{ThinkingAsText: new(true)}), false},
 		{"anthropic", newAnthropicProfile("claude-opus-4-6"), false},
 		{"openai-responses", NewOpenAIProfile("gpt-5.2"), false},
@@ -79,14 +72,19 @@ func TestDropsReplayedThinking(t *testing.T) {
 // stays.
 func TestSession_ChatTargetRequestCarriesNoReplayedThinking(t *testing.T) {
 	t.Parallel()
-	adapter := &fakeAdapter{name: "lunaroute", steps: []func(req llm.Request) llm.Response{
+	row := replayGateway("gw", registry.ProtocolOpenAIChat).Resolved()
+	row.Caps.ReplayReasoningText = new(false)
+	adapter := &fakeAdapter{name: row.Instance, steps: []func(req llm.Request) llm.Response{
 		func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(communicateCall("c1", "ok")) },
 	}}
-	sess := newSession(t, withProfile(reasoningProfile("glm-5.3", registry.Caps{Reasoning: new(true)})), withAdapter(adapter))
-	sess.appendTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+	sess := newSession(t, withProfile(provider.FromResolved(row, nil)), withAdapter(adapter))
+	prior := llm.Response{Provider: row.Instance, Model: row.WireID, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
 		{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "old chain of thought"}},
 		{Kind: llm.ContentText, Text: "old answer"},
-	}})
+	}}}
+	if err := sess.appendAssistantTurn(prior, ModelAttemptMetadata{Protocol: row.Protocol, RequestModel: row.ModelID}); err != nil {
+		t.Fatal(err)
+	}
 
 	// TRIPWIRE: scripted in-process adapter; 30s only catches a genuine hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -104,6 +102,200 @@ func TestSession_ChatTargetRequestCarriesNoReplayedThinking(t *testing.T) {
 	}
 	if !hasContentKind(req.Messages, llm.ContentText) {
 		t.Fatal("chat provider request lost the answer text")
+	}
+}
+
+func replayGateway(instance, protocol string) *provider.Profile {
+	return provider.FromResolved(registry.Resolved{
+		Instance: instance, ModelID: "reasoner", WireID: "served-reasoner",
+		Protocol: protocol, Surface: registry.SurfaceOpenAI,
+		Caps: registry.Caps{Reasoning: new(true), ReplayReasoningText: new(true)},
+	}, nil)
+}
+
+func withReasoningMarker(resp llm.Response, protocol, marker string) llm.Response {
+	thinking := &llm.ThinkingData{Text: marker}
+	if protocol == registry.ProtocolOpenAIResponses {
+		thinking.ID = "rs_" + marker
+	} else {
+		thinking.Signature = "reasoning_content"
+	}
+	resp.Message.Content = append([]llm.ContentPart{{
+		Kind: llm.ContentThinking, Thinking: thinking,
+	}}, resp.Message.Content...)
+	return resp
+}
+
+func assertReasoningMarkers(t *testing.T, req llm.Request, want ...string) {
+	t.Helper()
+	var got []string
+	for _, m := range req.Messages {
+		for _, p := range m.Content {
+			if p.Kind == llm.ContentThinking && p.Thinking != nil && p.Thinking.Text != "" {
+				got = append(got, p.Thinking.Text)
+			}
+		}
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("%s/%s reasoning = %q, want %q", req.Provider, req.Model, got, want)
+	}
+}
+
+func TestSessionReplaysReasoningAcrossToolRoundsAndTurns(t *testing.T) {
+	for _, profile := range []*provider.Profile{
+		replayGateway("gw", registry.ProtocolOpenAIChat),
+		replayGateway("work", registry.ProtocolOpenAIResponses),
+	} {
+		t.Run(profile.Protocol(), func(t *testing.T) {
+			t.Parallel()
+			adapter := &fakeAdapter{name: profile.ID(), steps: []func(llm.Request) llm.Response{
+				func(llm.Request) llm.Response {
+					return withReasoningMarker(agenttest.ToolCallResponse(
+						llm.ToolCallData{ID: "tool-a", Name: "missing_a", Arguments: []byte(`{}`)}), profile.Protocol(), "r17a")
+				},
+				func(llm.Request) llm.Response {
+					return withReasoningMarker(agenttest.ToolCallResponse(
+						llm.ToolCallData{ID: "tool-b", Name: "missing_b", Arguments: []byte(`{}`)}), profile.Protocol(), "r28b")
+				},
+				func(llm.Request) llm.Response {
+					return withReasoningMarker(agenttest.FinalResponse("done"), profile.Protocol(), "r39c")
+				},
+				func(llm.Request) llm.Response { return agenttest.FinalResponse("done") },
+			}}
+			s := newSession(t, withProfile(profile), withAdapter(adapter))
+			ctx := tripwireCtx(t)
+			for _, input := range []string{"first", "follow-up"} {
+				if _, err := s.ProcessInput(ctx, input, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			requests := adapter.Requests()
+			if len(requests) != 4 {
+				t.Fatalf("got %d requests, want two tools, their continuation and a follow-up", len(requests))
+			}
+			assertReasoningMarkers(t, requests[1], "r17a")
+			assertReasoningMarkers(t, requests[2], "r17a", "r28b")
+			assertReasoningMarkers(t, requests[3], "r17a", "r28b", "r39c")
+		})
+	}
+}
+
+func TestFallbackReplaysOnlyItsIssuersReasoning(t *testing.T) {
+	t.Parallel()
+	primary := replayGateway("work", registry.ProtocolOpenAIResponses)
+	fallback := replayGateway("gw", registry.ProtocolOpenAIChat)
+	primaryAnswered := false
+	primaryAdapter := &agenttest.ScriptedAdapter{
+		Provider: primary.ID(),
+		FaultResponder: func(req llm.Request) error {
+			if primaryAnswered {
+				return llm.ErrorFromHTTPStatus(req.Provider, 404, "missing", nil, nil)
+			}
+			return nil
+		},
+		Responder: func(llm.Request) llm.Response {
+			primaryAnswered = true
+			return withReasoningMarker(agenttest.ToolCallResponse(
+				llm.ToolCallData{ID: "tool-a", Name: "missing_a", Arguments: []byte(`{}`)}), primary.Protocol(), "primary-42")
+		},
+	}
+	fallbackAdapter := &fakeAdapter{name: fallback.ID(), steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response {
+			return withReasoningMarker(agenttest.ToolCallResponse(
+				llm.ToolCallData{ID: "tool-b", Name: "missing_b", Arguments: []byte(`{}`)}), fallback.Protocol(), "fallback-73")
+		},
+		func(llm.Request) llm.Response {
+			return withReasoningMarker(agenttest.FinalResponse("done"), fallback.Protocol(), "fallback-81")
+		},
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("done") },
+	}}
+	s := newSession(t, withProfile(primary), withAdapter(primaryAdapter), withAdapter(fallbackAdapter),
+		withConfig(SessionConfig{
+			ModelFallbacks: []string{"gw/reasoner"},
+			ResolveProfile: func(ref string) (*provider.Profile, error) {
+				if ref == "gw/reasoner" {
+					return fallback, nil
+				}
+				return nil, nil
+			},
+		}))
+	ctx := tripwireCtx(t)
+	for _, input := range []string{"first", "follow-up"} {
+		if _, err := s.ProcessInput(ctx, input, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	primaryRequests, fallbackRequests := primaryAdapter.Requests(), fallbackAdapter.Requests()
+	if len(primaryRequests) != 4 || len(fallbackRequests) != 3 {
+		t.Fatalf("requests = %d primary, %d fallback; want 4 and 3", len(primaryRequests), len(fallbackRequests))
+	}
+	for _, req := range primaryRequests[1:] {
+		assertReasoningMarkers(t, req, "primary-42")
+	}
+	assertReasoningMarkers(t, fallbackRequests[0])
+	assertReasoningMarkers(t, fallbackRequests[1], "fallback-73")
+	assertReasoningMarkers(t, fallbackRequests[2], "fallback-73", "fallback-81")
+}
+
+func TestSessionScopesReasoningTextToTheIssuingModel(t *testing.T) {
+	for _, profile := range []*provider.Profile{
+		replayGateway("gw", registry.ProtocolOpenAIChat),
+		replayGateway("gw", registry.ProtocolOpenAIResponses),
+	} {
+		t.Run(profile.Protocol(), func(t *testing.T) {
+			t.Parallel()
+			adapter := &agenttest.ScriptedAdapter{
+				Provider:  profile.ID(),
+				Responder: func(llm.Request) llm.Response { return agenttest.FinalResponse("done") },
+			}
+			// The instance speaks chat by default. Earlier records can omit the
+			// protocol stamp for a model that overrides it to Responses.
+			instance := testRegistryInstances()["gw"]
+			instance.Models = map[string]registry.Model{
+				"reasoner":  {Protocol: profile.Protocol(), WireID: "served-reasoner", Caps: profile.Resolved().Caps},
+				"different": {Protocol: profile.Protocol(), Caps: profile.Resolved().Caps},
+			}
+			client := registryClient(t, map[string]registry.Provider{"gw": instance}, adapter)
+			s := newSession(t, withProfile(resolveClientProfile(t, client, "gw/reasoner")), withClient(client))
+			for _, turn := range []struct {
+				provider, requested, reported, protocol, marker string
+			}{
+				{profile.ID(), "reasoner", "snapshot", profile.Protocol(), "same-3a"},
+				{profile.ID(), "reasoner", "snapshot", "", "same-4b"},
+				{profile.ID(), "", "served-reasoner", profile.Protocol(), "same-5c"},
+				{profile.ID(), "different", "served-reasoner", profile.Protocol(), "model-6d"},
+				{profile.ID(), "reasoner", "snapshot", registry.ProtocolAnthropic, "protocol-7e"},
+				{"different", "reasoner", "snapshot", profile.Protocol(), "instance-8f"},
+				{"", "", "", "", "unknown-9a"},
+			} {
+				resp := withReasoningMarker(llm.Response{Message: llm.Assistant("answer")}, profile.Protocol(), turn.marker)
+				resp.Provider, resp.Model = turn.provider, turn.reported
+				if err := s.appendAssistantTurn(resp, ModelAttemptMetadata{
+					Protocol: turn.protocol, RequestModel: turn.requested,
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := s.ProcessInput(tripwireCtx(t), "continue", nil); err != nil {
+				t.Fatal(err)
+			}
+			requests := adapter.Requests()
+			if len(requests) != 1 {
+				t.Fatalf("got %d requests, want one follow-up", len(requests))
+			}
+			assertReasoningMarkers(t, requests[0], "same-3a", "same-4b", "same-5c")
+			if err := s.SetModel("different"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.ProcessInput(tripwireCtx(t), "follow-up", nil); err != nil {
+				t.Fatal(err)
+			}
+			requests = adapter.Requests()
+			if len(requests) != 2 || requests[1].Model != "different" {
+				t.Fatalf("expected a follow-up on the selected model, got %d requests", len(requests))
+			}
+			assertReasoningMarkers(t, requests[1], "model-6d")
+		})
 	}
 }
 

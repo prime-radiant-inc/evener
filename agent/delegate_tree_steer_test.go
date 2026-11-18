@@ -351,7 +351,7 @@ func TestDelegateControllerLateSteeringEscalatesOnNextRequest(t *testing.T) {
 	if _, err := c.Steer(context.Background(), rootDelegateActor("root-session"), lease.delegateID, "late steering"); err != nil {
 		t.Fatalf("Steer: %v", err)
 	}
-	if _, err := c.CompleteModelRequest(first, first.runtime.delegateModelHistorySnapshot(), replayScope{}); err != nil {
+	if _, err := c.CompleteModelRequest(first, first.runtime.delegateModelHistorySnapshot()); err != nil {
 		t.Fatalf("CompleteModelRequest first: %v", err)
 	}
 	before, err := c.completionSnapshot(lease)
@@ -419,11 +419,11 @@ func TestDelegateControllerModelSnapshotDefersSteerAcceptedAfterRequestBind(t *t
 	if _, err := c.Steer(context.Background(), rootDelegateActor("root-session"), lease.delegateID, "late accepted steer"); err != nil {
 		t.Fatalf("Steer: %v", err)
 	}
-	current, err := c.CompleteModelRequest(modelClaim, runtime.delegateModelHistorySnapshot(), replayScope{})
+	current, err := c.CompleteModelRequest(modelClaim, runtime.delegateModelHistorySnapshot())
 	if err != nil {
 		t.Fatalf("CompleteModelRequest: %v", err)
 	}
-	if countMessageText(current, parentMessageAttribution+"late accepted steer") != 0 {
+	if countMessageText(expandHistory(current, replayScope{}), parentMessageAttribution+"late accepted steer") != 0 {
 		t.Fatalf("late accepted steer entered already-bound request: %#v", current)
 	}
 	next, err := completeDelegateModelRequest(c, lease)
@@ -585,7 +585,8 @@ func completeDelegateModelRequest(c *delegateTreeController, lease delegateLease
 	if err != nil {
 		return nil, err
 	}
-	return c.CompleteModelRequest(claim, claim.runtime.delegateModelHistorySnapshot(), replayScope{})
+	turns, err := c.CompleteModelRequest(claim, claim.runtime.delegateModelHistorySnapshot())
+	return expandHistory(turns, replayScope{}), err
 }
 
 func TestDelegateControllerBeginToolRejectsStoppingOrStaleLease(t *testing.T) {

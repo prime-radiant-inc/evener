@@ -141,9 +141,8 @@ type Session struct {
 	// longer validate against the new profile). Nil until a switch drops any.
 	// The model-switch marker surfaces it as a warning line.
 	lastDroppedModelFallbacks []string
-	// roundFallbackSource is the round's unprojected request input (system plus
-	// expanded history) kept for the fallback chain, whose targets apply their
-	// own thinking-replay and tool-result media policy (#4563, #4217).
+	// roundFallbackSource is the round's presented turn snapshot, before a
+	// target projects reasoning and tool-result media.
 	// prepareModelRequestWithError writes it and callModelWithFallback takes and
 	// clears it on the same turn goroutine; mu guards the exchange. It holds the
 	// input rather than a built message slice because only Messages depends on

@@ -224,7 +224,7 @@ func (c *delegateTreeController) BeginModelRequest(lease delegateLease) (*delega
 	return claim, nil
 }
 
-func (c *delegateTreeController) CompleteModelRequest(claim *delegateModelRequestClaim, history []schema.Turn, scope replayScope) ([]llm.Message, error) {
+func (c *delegateTreeController) CompleteModelRequest(claim *delegateModelRequestClaim, history []schema.Turn) ([]schema.Turn, error) {
 	defer c.retirementChanged()
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -276,7 +276,7 @@ func (c *delegateTreeController) CompleteModelRequest(claim *delegateModelReques
 	live.pendingSteers = kept
 	c.releaseModelClaimLocked(claim.token)
 	c.evidenceVersion++
-	return expandHistory(history, scope), nil
+	return history, nil
 }
 
 func (c *delegateTreeController) AbortModelRequest(claim *delegateModelRequestClaim) error {

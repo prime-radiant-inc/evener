@@ -2,12 +2,14 @@ package schema
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // TurnKind identifies the category of a Turn in the Session history.
@@ -537,6 +539,46 @@ type Turn struct {
 	Usage                    llm.Usage                         `json:"usage"`
 	VoicePresentation        *appwire.VoicePresentationContext `json:"voice_presentation,omitempty"`
 	VoicePresentationInputID string                            `json:"voice_presentation_input_id,omitempty"`
+}
+
+// ProjectReasoningText keeps raw reasoning for the chat or Responses model
+// that issued it. Opaque continuation items keep their wire-specific rules.
+// A request projection never edits the stored message.
+func (t *Turn) ProjectReasoningText(res *registry.Resolved) llm.Message {
+	msg := t.Message
+	if res == nil || msg.Role != llm.RoleAssistant || !res.Caps.ReplaysReasoningText() ||
+		(res.Protocol != registry.ProtocolOpenAIChat && res.Protocol != registry.ProtocolOpenAIResponses) ||
+		t.MatchesReasoningTextTarget(res) {
+		return msg
+	}
+	if res.Protocol == registry.ProtocolOpenAIChat {
+		return llm.TrimThinkingForReplayMessage(msg, true)
+	}
+	// An encrypted Responses item carries the ciphertext and its summary
+	// together. Only a plain item's text is eligible for the raw replay path.
+	plain := func(p llm.ContentPart) bool {
+		return p.Kind == llm.ContentThinking && p.Thinking != nil && p.Thinking.EncryptedContent == ""
+	}
+	if slices.ContainsFunc(msg.Content, plain) {
+		msg.Content = slices.DeleteFunc(slices.Clone(msg.Content), plain)
+	}
+	return msg
+}
+
+// MatchesReasoningTextTarget compares the recorded issuer with a resolved
+// target, including any protocol or wire-model override on that model's row.
+func (t *Turn) MatchesReasoningTextTarget(res *registry.Resolved) bool {
+	if res.Instance == "" || t.ResponseProvider != res.Instance ||
+		(t.ResponseProtocol != "" && t.ResponseProtocol != res.Protocol) {
+		return false
+	}
+	if requested := strings.TrimSpace(t.ResponseRequestModel); requested != "" {
+		return requested == res.ModelID
+	}
+	// Earlier records can carry just the model the provider reported, which
+	// can be the wire id behind the user's configured model name.
+	reported := strings.TrimSpace(t.ResponseModel)
+	return reported != "" && (reported == res.ModelID || reported == res.WireID)
 }
 
 // NewTurn creates a Turn with the current UTC time.

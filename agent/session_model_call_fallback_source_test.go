@@ -1,12 +1,5 @@
 package agent
 
-// The fallback chain used to receive a message slice built eagerly on every
-// round, whether or not a fallback ever ran (#6442). It now receives the
-// round's unprojected source (system prompt plus expanded history) and lays its
-// messages out when a fallback actually runs. These tests pin the two halves of
-// that equivalence: the layout it produces is the slice the eager build
-// produced, and a round that never falls back records no source at all.
-
 import (
 	"context"
 	"strings"
@@ -14,6 +7,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -112,8 +106,8 @@ func TestCompletedRoundLeavesNoFallbackSource(t *testing.T) {
 func TestRoundWithoutFallbackRecordsNoSource(t *testing.T) {
 	t.Parallel()
 	s, _ := newRequestBuildBenchSession(t)
-	s.setRoundFallbackSource("system prompt", []llm.Message{llm.User("first")})
-	if source, ok := s.takeRoundFallbackSource(); !ok || source.system != "system prompt" || len(source.history) != 1 {
+	s.setRoundFallbackSource(roundFallbackSource{system: "system prompt", turns: []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("first"))}})
+	if source, ok := s.takeRoundFallbackSource(); !ok || source.system != "system prompt" || len(source.turns) != 1 {
 		t.Fatalf("round source did not hold the recorded input: %#v", source)
 	}
 	if source, ok := s.takeRoundFallbackSource(); ok {

@@ -108,8 +108,8 @@ func historyProjectionContractTurns() []schema.Turn {
 // fixture in its history.
 func newHistoryProjectionContractSession(t *testing.T) (*Session, *fakeAdapter) {
 	t.Helper()
-	adapter := &fakeAdapter{name: "kimi"}
-	sess := newSession(t, withProfile(newOpenAICompatProfile("kimi", "kimi-k3", 0)), withAdapter(adapter))
+	adapter := &fakeAdapter{name: "unknown-gateway"}
+	sess := newSession(t, withProfile(newOpenAICompatProfile(adapter.name, "model-a", 0)), withAdapter(adapter))
 	for _, turn := range historyProjectionContractTurns() {
 		sess.appendTurn(turn.Kind, turn.Message)
 	}
@@ -276,7 +276,7 @@ func TestTargetProjectionsSkipUnchangedList(t *testing.T) {
 		t.Fatal("test premise: the fixture target must replay thinking")
 	}
 	// A chat row drops replayed thinking but has none here to drop.
-	dropsThinking := newOpenAICompatProfile("kimi", "kimi-k3", 0)
+	dropsThinking := newOpenAICompatProfile("unknown-gateway", "model-a", 0)
 	if !dropsReplayedThinking(dropsThinking) {
 		t.Fatal("test premise: the chat fixture target must drop replayed thinking")
 	}
