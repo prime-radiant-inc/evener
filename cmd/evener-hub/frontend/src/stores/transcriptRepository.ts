@@ -25,6 +25,7 @@ import {
   modelControlReadInputFromResponse,
   olderHistoryExhausted,
   pruneBackgroundHistoryBodies,
+  readAuthoritySpeaksForHeldModel,
   readDisposition,
   reduceModelControl,
   resolvePendingEscalation,
@@ -863,6 +864,35 @@ export class TranscriptRepository {
     this.#reclaimBackgroundModel();
   }
 
+  /**
+   * Apply a read's model-control envelope when its transcript window was
+   * discarded. Retirement fails a waiting pick and leaves the picker
+   * `recovering`, so a discarded window must not also discard an envelope that
+   * speaks for this repository's own instance and boot. The transcript is left
+   * exactly as it is: this read proved nothing about rows.
+   *
+   * Returns whether the envelope advanced the held model. The caller uses that
+   * only to decide whether anything published.
+   */
+  acceptDiscardedReadModelControl(response: ThreadReadResponse): boolean {
+    if (this.#sealed || this.#model === undefined) return false;
+    return this.#applyReadModelControl(response);
+  }
+
+  #applyReadModelControl(response: ThreadReadResponse): boolean {
+    const model = this.#model;
+    if (model === undefined) return false;
+    const input = modelControlReadInputFromResponse(response);
+    if (input.version !== 1 || input.snapshot === undefined || !readAuthoritySpeaksForHeldModel(model, input.authority))
+      return false;
+    const advanced = reduceModelControl(model, input).model;
+    if (advanced === model) return false;
+    this.#model = advanced;
+    this.#publish();
+    this.#reclaimBackgroundModel();
+    return true;
+  }
+
   /** Accept a complete wire read under its captured reader lifetime. */
   acceptRead(
     response: ThreadReadResponse,
@@ -905,26 +935,20 @@ export class TranscriptRepository {
     }
     if (hydratedCandidate === before) {
       // The transcript window lost its identity race, so the read publishes no
-      // rows — but the read answered from THIS binding (acceptRead refused it
-      // otherwise), and a version-1 envelope whose authority names that same
-      // binding is the binding's own answer about model control. Evaluating
-      // only a held `ready` snapshot dropped a recovery read's envelope while
-      // the pane was `recovering`, leaving the picker disabled with nothing
-      // scheduled to re-enable it. The newer transcript is untouched, and an
-      // envelope for another boot is still refused by the authority guard.
-      const input = modelControlReadInputFromResponse(response);
-      if (
-        input.version === 1 &&
-        input.snapshot !== undefined &&
-        sameModelControlAuthority(input.snapshot.authority, input.authority)
-      ) {
-        const advanced = reduceModelControl(before, input).model;
-        if (advanced !== before) {
-          this.#model = advanced;
-          this.#publish();
-          this.#reclaimBackgroundModel();
-        }
-      }
+      // rows — but a version-1 envelope can still answer about model control,
+      // and evaluating only a held `ready` snapshot dropped a recovery read's
+      // envelope while the pane was `recovering`, leaving the picker disabled
+      // with nothing scheduled to re-enable it.
+      //
+      // That envelope is judged against the model this repository holds, not
+      // against itself: a delayed read from boot N arriving after boot N+1 was
+      // adopted carries a snapshot whose authority matches its own reply-derived
+      // authority, so a self-comparison accepts a retired boot and reinstalls it
+      // as `ready` — showing the retired model and fencing the next pick against
+      // a daemon that can no longer accept it. acceptRead does not stop it;
+      // #matchesRead compares the thread, session, ref and incarnation, never the
+      // boot. The newer transcript is untouched either way.
+      this.#applyReadModelControl(response);
       return false;
     }
     let candidate = hydratedCandidate;

@@ -712,10 +712,26 @@ func (c *Client) ThreadClear(ctx context.Context, params ThreadClearParams) (Thr
 func (c *Client) ThreadModelSet(ctx context.Context, params ThreadModelSetParams) (ThreadModelSetResponse, error) {
 	var out ThreadModelSetResponse
 	if err := c.request(ctx, MethodThreadModelSet, params, &out); err != nil {
-		if decodeErr, ok := errors.AsType[responseDecodeError](err); ok {
-			return ThreadModelSetResponse{}, MutationOutcomeUnknownBlocked(params.ClientMutationID, decodeErr.Error())
+		// A dispatched mutation whose reply this client never read cannot prove
+		// its outcome, so a direct SDK caller must not be handed a bare
+		// transport error and left to guess. Only response decode failures were
+		// classified here; a connection that closed or a deadline that expired
+		// before the reply fell through to the generic error, which is the same
+		// evidence with a different shape.
+		//
+		// The three states stay distinct. A delivered WireError is the peer's
+		// own refusal and keeps its code, message and data. RequestNotSentError
+		// is the one error this client can prove never reached the wire — it is
+		// raised before any byte of the frame is handed over — so its caller may
+		// retry. Everything else got as far as the transport or beyond, which is
+		// exactly the case that must not be replayed automatically.
+		if _, unsent := errors.AsType[RequestNotSentError](err); unsent {
+			return ThreadModelSetResponse{}, err
 		}
-		return out, err
+		if war, delivered := errors.AsType[WireError](err); delivered && !IsTransportFailure(err) {
+			return ThreadModelSetResponse{}, war
+		}
+		return ThreadModelSetResponse{}, MutationOutcomeUnknownBlocked(params.ClientMutationID, err.Error())
 	}
 	if err := ValidateThreadModelSetResponse(out); err != nil {
 		return ThreadModelSetResponse{}, MutationOutcomeUnknownBlocked(params.ClientMutationID, fmt.Sprintf("invalid thread/model/set response: %v", err))

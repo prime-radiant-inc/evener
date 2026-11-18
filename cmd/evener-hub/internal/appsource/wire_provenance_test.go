@@ -31,7 +31,7 @@ func TestLocalDaemonCallErrorPreservesDeliveredInternalError(t *testing.T) {
 
 func TestLocalDaemonMutationCallErrorPreservesDeliveredInternalError(t *testing.T) {
 	delivered := appwire.InternalError("cannot parse transcript: unexpected EOF")
-	mapped := localDaemonMutationCallError("m1", delivered)
+	mapped := localDaemonMutationCallErrorWithDisposition("m1", appwire.RetryDispositionAutomatic, delivered)
 	var wire appwire.WireError
 	if !errors.As(mapped, &wire) {
 		t.Fatalf("got %T=%v", mapped, mapped)
@@ -57,7 +57,7 @@ func TestRemoteHubCallErrorPreservesDeliveredInternalError(t *testing.T) {
 func TestRemoteHubMutationCallErrorPreservesDeliveredInternalError(t *testing.T) {
 	source := NewRemoteHubSource("host", nil, nil)
 	delivered := appwire.InternalError("cannot parse transcript: unexpected EOF")
-	mapped := source.remoteHubMutationCallError("m1", delivered)
+	mapped := source.remoteHubMutationCallErrorWithDisposition("m1", appwire.RetryDispositionAutomatic, delivered)
 	wire, ok := errors.AsType[appwire.WireError](mapped)
 	if !ok || wire.Code != appwire.CodeInternalError || wire.Message != delivered.Message {
 		t.Fatalf("mapped = %T=%+v, want the delivered InternalError unchanged", mapped, mapped)
@@ -73,14 +73,14 @@ func TestRemoteHubMutationCallErrorPreservesDeliveredInternalError(t *testing.T)
 // remote map it identically to mutationOutcomeUnknown with an automatic retry.
 func TestLocalDaemonMutationCallErrorMapsSynthesizedTransportFailure(t *testing.T) {
 	lost := appwire.TransportFailureError{WireError: appwire.InternalError("unexpected EOF")}
-	mapped := localDaemonMutationCallError("m1", lost)
+	mapped := localDaemonMutationCallErrorWithDisposition("m1", appwire.RetryDispositionAutomatic, lost)
 	assertMutationOutcomeUnknownAutomatic(t, mapped, "m1")
 }
 
 func TestRemoteHubMutationCallErrorMapsSynthesizedTransportFailure(t *testing.T) {
 	source := NewRemoteHubSource("host", nil, nil)
 	lost := appwire.TransportFailureError{WireError: appwire.InternalError("unexpected EOF")}
-	mapped := source.remoteHubMutationCallError("m1", lost)
+	mapped := source.remoteHubMutationCallErrorWithDisposition("m1", appwire.RetryDispositionAutomatic, lost)
 	assertMutationOutcomeUnknownAutomatic(t, mapped, "m1")
 }
 

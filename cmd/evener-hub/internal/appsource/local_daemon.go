@@ -1854,10 +1854,6 @@ func localDaemonCallError(err error) error {
 	return appwire.RetryableSessionUnavailable("local daemon unavailable: " + wire.Message)
 }
 
-func localDaemonMutationCallError(clientMutationID string, err error) error {
-	return localDaemonMutationCallErrorWithDisposition(clientMutationID, appwire.RetryDispositionAutomatic, err)
-}
-
 func localDaemonMutationCallErrorWithDisposition(clientMutationID string, disposition appwire.RetryDisposition, err error) error {
 	// A delivered WireError is an application verdict regardless of its data
 	// shape. Retain that provenance before mapping a transport failure to an

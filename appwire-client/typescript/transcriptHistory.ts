@@ -34,6 +34,7 @@ import {
 } from "./transcriptItems";
 import { mergeOlderItemPageWithFolds, mergeToolCallsByCallId, mergeTurnHistory } from "./turnHistoryMerge";
 import type {
+  ModelControlAuthority,
   OverlayItem,
   Thread,
   ThreadItem,
@@ -1287,6 +1288,40 @@ export function modelControlReadInputFromResponse(
       bootGeneration: resp.bootGeneration ?? "",
     },
   };
+}
+
+/**
+ * Whether a read's model-control envelope still speaks for the model this
+ * client holds. A read whose transcript window was discarded proves nothing
+ * about authority, and the envelope it carried must be judged against the
+ * repository's CURRENT binding, never against itself: a delayed read from
+ * boot N arriving after this client adopted boot N+1 is self-consistent —
+ * its snapshot authority and its reply-derived authority name the same
+ * retired instance and boot — so comparing those two to each other accepts
+ * it. That is how a retired boot reinstalls itself as `ready` and fences the
+ * next pick against a daemon that can no longer accept it.
+ *
+ * The held history's awaited boot (what an invalidation is waiting for, else
+ * what the last read established) decides identity. Only a boot this model can
+ * prove is OLDER is refused: `compareBootGeneration`'s `ignore` is an older
+ * counter of the same owner, which is exactly the delayed read. Its `replace`
+ * covers a newer boot and an incomparable one, and the incomparable case is the
+ * ordinary recovery read — a pane that was already `recovering` when the
+ * transcript was adopted may hold no boot of its own, and refusing that answer
+ * would leave the picker disabled with the authority it was waiting for in hand.
+ * The instance must match when the held model names one, because one boot of one
+ * instance is the only daemon whose answer about model control this client can
+ * still use.
+ */
+export function readAuthoritySpeaksForHeldModel(
+  model: ThreadModel,
+  authority: ModelControlAuthority | undefined,
+): boolean {
+  if (authority === undefined) return false;
+  const heldBoot = model.history?.awaited?.bootGeneration ?? model.history?.bootGeneration ?? "";
+  if (compareBootGeneration(heldBoot, authority.bootGeneration) === "ignore") return false;
+  const heldInstance = model.instanceId;
+  return heldInstance === undefined || heldInstance === "" || authority.instanceId === heldInstance;
 }
 
 export function modelControlReadInputFromHydrated(

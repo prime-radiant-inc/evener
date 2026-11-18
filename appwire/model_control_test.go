@@ -2,6 +2,7 @@ package appwire
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -618,5 +619,68 @@ func completeModelControlResponse() ThreadModelSetResponse {
 				Lifecycle:        ModelControlLifecyclePending,
 			},
 		},
+	}
+}
+
+// A model-set whose reply never arrives cannot prove its outcome. The daemon may
+// have applied the pick, so a direct SDK caller must be told that rather than
+// handed the transport's own complaint and left to assume the switch failed —
+// and it must not be offered automatic replay, because a second send would apply
+// a pick the caller was told nothing about.
+func TestClientThreadModelSetClassifiesLostReplyAsBlockedUnknown(t *testing.T) {
+	transport := newMemoryTransport()
+	client := NewClient(transport)
+	ctx := t.Context()
+	client.Start(ctx)
+
+	errCh := make(chan error, 1)
+	go func() {
+		// A deadline the reply never beats stands in for a connection that
+		// closed or a peer that went quiet after the request was written.
+		callCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+		defer cancel()
+		_, err := client.ThreadModelSet(callCtx, ThreadModelSetParams{
+			Ref:                    "local:th_1",
+			ModelProvider:          "work",
+			Model:                  "gpt-5.5",
+			ClientMutationID:       "cm_lost",
+			ExpectedInstanceID:     "instance_1",
+			ExpectedBootGeneration: "7",
+		})
+		errCh <- err
+	}()
+
+	// Prove the request actually reached the transport: a request that was never
+	// sent is a different case and must stay a plain retryable error.
+	select {
+	case <-transport.writes:
+	case <-time.After(time.Second):
+		t.Fatal("model-set request was not written")
+	}
+
+	select {
+	case err := <-errCh:
+		var wire WireError
+		if !errors.As(err, &wire) {
+			t.Fatalf("lost-reply error = %T %v, want a WireError naming the mutation's outcome", err, err)
+		}
+		data, ok := ErrorDataOf(wire.Data)
+		if !ok {
+			t.Fatalf("lost-reply error carries no structured data: %+v", wire)
+		}
+		if data.EvenerErrorInfo != ErrorMutationOutcomeUnknown {
+			t.Fatalf("evenerErrorInfo = %q, want %q", data.EvenerErrorInfo, ErrorMutationOutcomeUnknown)
+		}
+		if data.ClientMutationID != "cm_lost" {
+			t.Fatalf("clientMutationId = %q, want the request's own cm_lost", data.ClientMutationID)
+		}
+		if data.MutationOutcome != MutationOutcomeUnknown {
+			t.Fatalf("mutationOutcome = %q, want %q", data.MutationOutcome, MutationOutcomeUnknown)
+		}
+		if data.RetryDisposition != RetryDispositionBlocked {
+			t.Fatalf("retryDisposition = %q, want %q", data.RetryDisposition, RetryDispositionBlocked)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("model-set never returned after its reply was lost")
 	}
 }

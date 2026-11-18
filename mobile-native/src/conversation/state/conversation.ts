@@ -42,6 +42,7 @@ import {
 	modelControlReadInputFromHydrated,
 	notificationTargetsThread,
 	notificationTouchesTranscript,
+	readAuthoritySpeaksForHeldModel,
 	reduceModelControl,
 	sessionControls,
 	WireError,
@@ -2053,17 +2054,21 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						acceptedRehydrate = { generation: gen };
 						// The transcript window lost its identity race — an in-progress
 						// update advanced the phone's transcript past it — but the read
-						// still answered from the live binding, and its model-control
-						// envelope is that binding's own answer. Dropping it left a
+						// can still answer about model control. Dropping it left a
 						// `recovering` picker with no replacement read scheduled, so the
-						// user had no path back to a model change. The envelope is
-						// evaluated on its own authority; the newer transcript is
-						// untouched, and a read from a RETIRED binding still reduces to
-						// `ignored` because its authority does not match the held one.
-						const readControl = reduceModelControl(
-							currentConvForMerge,
-							modelControlReadInputFromHydrated(conversation),
-						);
+						// user had no path back to a model change.
+						//
+						// The envelope is judged against the conversation this store
+						// holds, not against the reply: a delayed read from boot N that
+						// lands after boot N+1 was adopted carries a hydrated model whose
+						// own instance and boot agree with its own snapshot, so reading
+						// the authority out of the reply accepts a retired boot and
+						// reinstalls it as `ready`. The newer transcript is untouched
+						// either way.
+						const readInput = modelControlReadInputFromHydrated(conversation);
+						const readControl = readAuthoritySpeaksForHeldModel(currentConvForMerge, readInput.authority)
+							? reduceModelControl(currentConvForMerge, readInput)
+							: { model: currentConvForMerge, replacementReadRequired: false };
 						if (readControl.model !== currentConvForMerge) {
 							set({ conversation: { ...readControl.model, items: currentConvForMerge.items } });
 							if (readControl.replacementReadRequired) requestRehydrate(ref);

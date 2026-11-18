@@ -63,6 +63,7 @@ import {
   modelControlAuthority,
   modelControlDisplay,
   modelControlRecoveryInput,
+  modelSetReplyRejected,
   mutationErrorData,
   notificationRoutingKey,
   olderHistoryExhausted,
@@ -4825,6 +4826,22 @@ function supersededModelSetError(response: MethodTypes["thread/model/set"]["resu
   return new ConflictError(`Model was already changed in another client; this session is on ${target}.`);
 }
 
+// The reply carried this exact mutation's desired record already settled as
+// rejected. The disposition still says accepted — admission passed — so the
+// only evidence the switch did not happen is the lifecycle. CodeConflict is the
+// code the superseded path uses too: another state won, this caller did not get
+// the model it asked for.
+function modelSetRejectedError(
+  clientMutationId: string,
+  response: MethodTypes["thread/model/set"]["result"],
+): WireError {
+  return new WireError("The model switch was rejected before it could be applied.", -32013, {
+    clientMutationId,
+    disposition: response.disposition,
+    lifecycle: response.modelControl?.desired?.lifecycle,
+  });
+}
+
 function applyModelControlTransition(
   ref: string,
   input: ModelControlInput,
@@ -6196,6 +6213,31 @@ function issuedGenerationFor(model: ThreadModel | undefined): {
 // against it, would overwrite that with older state.
 function isDiscardedReadResult(pending: PendingThreadHydration, model: ThreadModel): boolean {
   return pending.baseModel !== undefined && model === pending.baseModel;
+}
+
+// A read whose transcript window was discarded proves nothing about rows, but
+// the model-control envelope it carried may still speak for the installed
+// repository's own instance and boot. The repository is the only owner that can
+// install a newer envelope, so hand it over here, before the store returns on
+// `readAccepted === false`. Both refreshes return at that point: the tracked one
+// and the watched one. Skipping this left a recovery read carrying valid
+// same-boot model control with the picker stuck `recovering` because its
+// transcript snapshot was shorter than the held window — and retirement then
+// failed the pick waiting on that read. The repository judges the envelope
+// against its own binding, so a stale boot is still refused there.
+//
+// Settling the waiting read `ready` here is the other half: retirePendingHydration
+// settles every pending binding `failed`, so a pick parked on this read rejects
+// unless this read reports the authority it established. The settle is
+// idempotent, so the retirement that follows leaves it alone.
+function applyDiscardedReadModelControl(
+  ref: string,
+  hydration: ThreadHydration,
+  pending: PendingThreadHydration,
+): void {
+  const accepted = existingEntryRoute(ref)?.repository?.acceptDiscardedReadModelControl(hydration.response) === true;
+  if (!accepted) return;
+  settleModelControlRead(pending.modelControlRead, { kind: "ready" });
 }
 
 function ensureCacheLease(ref: string): void {
@@ -7960,7 +8002,10 @@ async function refreshTrackedThreadNow(
       unwindStopCanceledRefresh(ref, pending.attempt);
       throw error;
     }
-    if (!result.readAccepted) return pending.baseModel ?? null;
+    if (!result.readAccepted) {
+      applyDiscardedReadModelControl(ref, result, pending);
+      return pending.baseModel ?? null;
+    }
     return publishAndReconcileThreadHydration(
       ref,
       pending,
@@ -8015,10 +8060,11 @@ async function refreshWatchedThread(
   );
   // Same as refreshTrackedThread: publishWatchedHydration re-decides this.
   const hydration = readThreadHydration(client, ref, Date.now(), pending, { kind: "watched", includeTurns }).then(
-    (result) =>
-      !result.readAccepted
-        ? (pending.baseModel ?? null)
-        : publishWatchedHydration(ref, pending, result, includeTurns, generation),
+    (result) => {
+      if (result.readAccepted) return publishWatchedHydration(ref, pending, result, includeTurns, generation);
+      applyDiscardedReadModelControl(ref, result, pending);
+      return pending.baseModel ?? null;
+    },
   );
   const hasPublishedModel = threadsStore.getState().watchedThreads.has(ref);
   const hasSufficientPublishedModel =
@@ -9637,6 +9683,13 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // generation while the mutation was in flight.
     if (!modelControlFenceCurrent(targetRef, client, fence)) {
       if (response.disposition === "superseded") throw supersededModelSetError(response);
+      // The fence is not the only thing that decides what this caller is told.
+      // A queued pick can pass admission and then fail deferred validation
+      // before the daemon refreshes the reply's snapshot, so the disposition
+      // still reads accepted while this exact mutation's desired record has
+      // already settled as rejected. A still-`pending` record is queued and may
+      // yet apply, so it stays a success.
+      if (modelSetReplyRejected(response, clientMutationId)) throw modelSetRejectedError(clientMutationId, response);
       return;
     }
     const snapshot = response.modelControl;
@@ -9661,6 +9714,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     if (response.disposition === "superseded") {
       throw supersededModelSetError(response);
     }
+    // Same evidence as the fence-refused branch above: the disposition says
+    // accepted, and the rejected lifecycle is the only sign the switch the
+    // caller was told about did not happen.
+    if (modelSetReplyRejected(response, clientMutationId)) throw modelSetRejectedError(clientMutationId, response);
   },
 
   async setReasoningEffort(ref, level) {

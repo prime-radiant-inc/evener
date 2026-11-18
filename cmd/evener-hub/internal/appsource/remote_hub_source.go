@@ -1964,7 +1964,7 @@ func (s *RemoteHubSource) AdminCall(ctx context.Context, method string, params j
 // becomes ErrorMutationOutcomeUnknown with RetryDispositionBlocked, so the
 // caller is told the outcome is unknown and is not told to retry automatically.
 //
-// It mirrors mutationCall's remoteHubMutationCallError except for that
+// It mirrors mutationCall's remoteHubMutationCallErrorWithDisposition except for that
 // disposition. A forwarded thread mutation carries a clientMutationId the
 // remote dedups on, so the appwire retry-safe-mutation model can call its
 // transport loss "automatic"; an admin forward carries no such id

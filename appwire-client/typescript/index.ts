@@ -934,6 +934,7 @@ export {
   olderHistoryExhausted,
   prependOlderTurns,
   pruneBackgroundHistoryBodies,
+  readAuthoritySpeaksForHeldModel,
   readDisposition,
   readWindowBounds,
   withOlderFrontier,

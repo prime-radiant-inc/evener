@@ -1223,6 +1223,54 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     });
   });
 
+  // A recovery read can carry valid same-boot model control and still be
+  // discarded on its transcript half: a window shorter than the one held, from
+  // the same incarnation, is an identity-race loss and publishes no rows. The
+  // store used to return on `readAccepted === false` before the repository
+  // could reconcile the envelope, so retirement failed the pick parked on that
+  // read and left the picker `recovering` with the transcript and mutation
+  // state intact but no way for the user to change the model.
+  test("a discarded recovery read still settles the waiting pick from its same-boot envelope", async () => {
+    const fake = connectFakeClient();
+    const initial = modelControlSnapshot(1);
+    fake.on("thread/read", () => ({
+      ...capableModelRead("ref_a", initial),
+      snapshot: { incarnation: "inc-1", length: 5 },
+    }));
+    await threadsStore.getState().ensureThread("ref_a");
+    expect(threadsStore.getState().threads.get("ref_a")?.history?.length).toBe(5);
+
+    // The daemon reports a pick it cannot apply, so the store enters recovery
+    // and arms one replacement read.
+    const recovery = deferred<ThreadReadResponse>();
+    fake.on("thread/read", () => recovery.promise);
+    fake.on("thread/model/set", () => {
+      throw new WireError("authority changed", -32602, {
+        evenerErrorInfo: "authorityStale",
+        mutationOutcome: "notAccepted",
+        retryDisposition: "none",
+      });
+    });
+    await expect(threadsStore.getState().setModel("ref_a", "openai", "gpt-5.5")).rejects.toBeInstanceOf(WireError);
+    expect(threadsStore.getState().threads.get("ref_a")?.modelControlState.kind).toBe("recovering");
+
+    // That replacement answers for the SAME boot, and its window is behind the
+    // one held, so the transcript half is discarded.
+    recovery.resolve({
+      ...capableModelRead("ref_a", modelControlSnapshot(2)),
+      snapshot: { incarnation: "inc-1", length: 2 },
+    });
+    await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.modelControlState.kind === "ready");
+
+    expect(threadsStore.getState().threads.get("ref_a")?.modelControlState.kind).toBe("ready");
+    // The held transcript and its mutation state survive the discarded window.
+    expect(threadsStore.getState().threads.get("ref_a")?.history?.length).toBe(5);
+    // And the next pick dispatches under the authority that read established.
+    fake.on("thread/model/set", () => acceptedModelResponse(modelControlSnapshot(3)));
+    await threadsStore.getState().setModel("ref_a", "openai", "gpt-5.5");
+    expect(fake.calls.filter((call) => call.method === "thread/model/set")).toHaveLength(2);
+  });
+
   test("a conflicting equal-revision model response starts recovery without invalidating history", async () => {
     const fake = connectFakeClient();
     const initial = modelControlSnapshot(2);
@@ -1406,6 +1454,89 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
       kind: "ready",
       snapshot: refreshed,
     });
+  });
+
+  // A queued pick can pass admission and then fail deferred validation before
+  // the daemon refreshes the reply's snapshot. The disposition then reads
+  // accepted while this exact mutation's desired record has already settled as
+  // rejected, and the palette toasted success for a switch that did not happen.
+  // A still-pending record is queued and may yet apply, so it stays a success.
+  test("a pick the reply records as rejected rejects instead of confirming", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => capableModelRead("ref_a", modelControlSnapshot(1)));
+    await threadsStore.getState().ensureThread("ref_a");
+    fake.on("thread/model/set", (params) => ({
+      modelControlVersion: 1,
+      disposition: "accepted",
+      modelControl: modelControlSnapshot(2, {
+        desiredProvider: "openai",
+        desiredModel: "gpt-5.5",
+        lifecycle: "rejected",
+        clientMutationId: params.clientMutationId,
+      }),
+    }));
+
+    await expect(threadsStore.getState().setModel("ref_a", "openai", "gpt-5.5")).rejects.toMatchObject({
+      code: -32013,
+    });
+    // The adopted snapshot is the daemon's truth; only the confirmation is
+    // withheld.
+    expect(threadsStore.getState().threads.get("ref_a")?.modelControlState.kind).toBe("ready");
+  });
+
+  test("a pick the reply records as still pending resolves", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => capableModelRead("ref_a", modelControlSnapshot(1)));
+    await threadsStore.getState().ensureThread("ref_a");
+    fake.on("thread/model/set", (params) => ({
+      modelControlVersion: 1,
+      disposition: "accepted",
+      modelControl: modelControlSnapshot(2, {
+        desiredProvider: "openai",
+        desiredModel: "gpt-5.5",
+        lifecycle: "pending",
+        clientMutationId: params.clientMutationId,
+      }),
+    }));
+
+    await threadsStore.getState().setModel("ref_a", "openai", "gpt-5.5");
+  });
+
+  // The phone resolved successfully in this shape because a same-session read
+  // had retired the request's publication fence before the reply arrived. The
+  // fence governs publication only; the validated lifecycle decides what the
+  // caller is told.
+  test("a rejected lifecycle still rejects after a refresh advances the read generation", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => capableModelRead("ref_a", modelControlSnapshot(1)));
+    await threadsStore.getState().ensureThread("ref_a");
+
+    const reply = deferred<ThreadModelSetResponse>();
+    const submitted = deferred<{ clientMutationId: string }>();
+    fake.on("thread/model/set", (params) => {
+      submitted.resolve(params);
+      return reply.promise;
+    });
+    const pick = threadsStore.getState().setModel("ref_a", "openai", "gpt-5.5");
+    await flushUntil(() => fake.calls.some((call) => call.method === "thread/model/set"));
+    const submittedParams = await submitted.promise;
+    fake.on("thread/read", () => capableModelRead("ref_a", modelControlSnapshot(3)));
+    fake.emitStateChange("reconnecting");
+    fake.emitReady();
+    await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.modelControlState.kind === "ready");
+
+    reply.resolve({
+      modelControlVersion: 1,
+      disposition: "accepted",
+      modelControl: modelControlSnapshot(4, {
+        desiredProvider: "openai",
+        desiredModel: "gpt-5.5",
+        lifecycle: "rejected",
+        clientMutationId: submittedParams.clientMutationId,
+      }),
+    });
+
+    await expect(pick).rejects.toMatchObject({ code: -32013 });
   });
 
   test("a replayed switch frame gives the model it advanced to its own default tier", async () => {

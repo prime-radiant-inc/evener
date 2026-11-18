@@ -94,7 +94,7 @@ func TestLocalDaemonThreadIDWithoutSessionID(t *testing.T) {
 
 func TestLocalDaemonMutationCallErrorNonWireError(t *testing.T) {
 	err := errors.New("plain error")
-	mapped := localDaemonMutationCallError("mutation-1", err)
+	mapped := localDaemonMutationCallErrorWithDisposition("mutation-1", appwire.RetryDispositionAutomatic, err)
 	if mapped == nil || mapped.Error() != "plain error" {
 		t.Fatalf("non-wire error should pass through, got %v", mapped)
 	}
@@ -103,7 +103,7 @@ func TestLocalDaemonMutationCallErrorNonWireError(t *testing.T) {
 func TestLocalDaemonMutationCallErrorSessionUnavailable(t *testing.T) {
 	// A delivered application verdict does not establish response loss.
 	err := appwire.SessionUnavailable("session gone")
-	mapped := localDaemonMutationCallError("mutation-1", err)
+	mapped := localDaemonMutationCallErrorWithDisposition("mutation-1", appwire.RetryDispositionAutomatic, err)
 	if !reflect.DeepEqual(mapped, err) {
 		t.Fatalf("delivered SessionUnavailable changed: got %#v, want %#v", mapped, err)
 	}
@@ -145,7 +145,7 @@ func TestLocalDaemonMutationCallErrorPreservesRefusalRegardlessOfDataShape(t *te
 				if wrapped {
 					original = fmt.Errorf("forward turn: %w", original)
 				}
-				got := localDaemonMutationCallError("forwarded-id", original)
+				got := localDaemonMutationCallErrorWithDisposition("forwarded-id", appwire.RetryDispositionAutomatic, original)
 				if !reflect.DeepEqual(got, original) {
 					t.Fatalf("delivered refusal changed: got %#v, want %#v", got, original)
 				}
@@ -165,7 +165,7 @@ func TestLocalDaemonMutationCallErrorMapsTransportFailures(t *testing.T) {
 		{"wrapped marked", fmt.Errorf("read: %w", appwire.TransportFailureError{WireError: appwire.InternalError("response lost")})},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := localDaemonMutationCallError("lost-id", tc.err)
+			err := localDaemonMutationCallErrorWithDisposition("lost-id", appwire.RetryDispositionAutomatic, tc.err)
 			assertMutationOutcomeUnknownAutomatic(t, err, "lost-id")
 		})
 	}
@@ -174,7 +174,7 @@ func TestLocalDaemonMutationCallErrorMapsTransportFailures(t *testing.T) {
 func TestLocalDaemonMutationCallErrorOtherUnavailable(t *testing.T) {
 	// An Unavailable error that is NOT SessionUnavailable should pass through
 	err := appwire.Unavailable(string(appwire.ErrorActionUnavailable))
-	mapped := localDaemonMutationCallError("mutation-1", err)
+	mapped := localDaemonMutationCallErrorWithDisposition("mutation-1", appwire.RetryDispositionAutomatic, err)
 	if mapped == nil {
 		t.Fatal("should not return nil")
 	}

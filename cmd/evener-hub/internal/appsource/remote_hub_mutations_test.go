@@ -1266,7 +1266,7 @@ func TestRemoteHubMutationPreservesWireErrorRegardlessOfDataShape(t *testing.T) 
 				if wrapped {
 					original = fmt.Errorf("forward turn: %w", original)
 				}
-				got := source.remoteHubMutationCallError("forwarded-id", original)
+				got := source.remoteHubMutationCallErrorWithDisposition("forwarded-id", appwire.RetryDispositionAutomatic, original)
 				if !reflect.DeepEqual(got, original) {
 					t.Fatalf("delivered refusal changed: got %#v, want %#v", got, original)
 				}
@@ -1287,7 +1287,7 @@ func TestRemoteHubMutationMapsTransportFailures(t *testing.T) {
 		{"wrapped marked", fmt.Errorf("read: %w", appwire.TransportFailureError{WireError: appwire.InternalError("response lost")})},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := source.remoteHubMutationCallError("lost-id", tc.err)
+			err := source.remoteHubMutationCallErrorWithDisposition("lost-id", appwire.RetryDispositionAutomatic, tc.err)
 			assertMutationOutcomeUnknownAutomatic(t, err, "lost-id")
 		})
 	}

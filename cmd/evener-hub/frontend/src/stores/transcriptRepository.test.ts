@@ -3185,6 +3185,51 @@ it("advances held model control without admitting a stale history read", async (
   owner.dispose();
 });
 
+// A delayed read from boot N can reach this repository after it has adopted
+// boot N+1 for the same thread and transcript incarnation. The transcript
+// merge rejects the old boot, so the read takes the discarded-window path —
+// where the envelope used to be judged against its own reply-derived
+// authority, which a self-consistent boot-N reply always matches. That
+// reinstalled boot N as `ready`: the pane showed the retired model and the
+// next pick was fenced against a daemon that could no longer accept it.
+it("does not reinstall a retired boot from a discarded read's own envelope", () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const control = (boot: string, model: string): ModelControlSnapshot => ({
+    authority: { instanceId: threadId, bootGeneration: boot },
+    revision: 1,
+    active: {
+      modelProvider: "anthropic",
+      model,
+      reasoningEffortLevels: [],
+      supportsReasoning: false,
+    },
+  });
+  const current = read("current", 3);
+  current.bootGeneration = "2";
+  current.thread.evener.instanceId = threadId;
+  current.thread.evener.capabilities = { ...ALL_CAPABILITIES, modelControlVersion: 1 };
+  current.thread.evener.modelControl = control("2", "claude-opus-4-6");
+  expect(owner.acceptRead(current, { lifetime: 1, readId: "current", boundary: "current" })).toBe(true);
+
+  // The delayed boot-1 answer: self-consistent, and behind the held window.
+  const delayed = read("delayed", 1);
+  delayed.bootGeneration = "1";
+  delayed.thread.evener.instanceId = threadId;
+  delayed.thread.evener.capabilities = { ...ALL_CAPABILITIES, modelControlVersion: 1 };
+  delayed.thread.evener.modelControl = control("1", "claude-sonnet-4-5");
+  expect(owner.acceptRead(delayed, { lifetime: 1, readId: "delayed", boundary: "delayed" })).toBe(false);
+
+  // The retired boot did not become the repository's authority...
+  const state = owner.getSnapshot()?.modelControlState;
+  expect(state?.kind === "ready" ? state.snapshot.authority.bootGeneration : "none").toBe("2");
+  expect(state?.kind === "ready" ? state.snapshot.active.model : "none").toBe("claude-opus-4-6");
+  // ...and the newer transcript is untouched.
+  expect(owner.getSnapshot()?.history?.length).toBe(3);
+  owner.dispose();
+});
+
 // A recovery read can capture a valid snapshot before an in-progress history
 // update advances the repository's transcript past it. The shorter window
 // makes applyReadResponse return the held model unchanged, and dropping the

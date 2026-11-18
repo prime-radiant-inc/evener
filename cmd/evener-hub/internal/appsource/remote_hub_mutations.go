@@ -47,15 +47,11 @@ func (s *RemoteHubSource) mutationCallWithDisposition(ctx context.Context, metho
 	return s.translateOut(client, out)
 }
 
-// remoteHubMutationCallError reports a lost mutation response as outcome
-// unknown with automatic replay. A delivered WireError is a semantic verdict,
-// regardless of whether its Data is typed or decoded JSON. Classify that
-// provenance before mapCallError replaces a transport failure with an ordinary
-// SessionUnavailable WireError.
-func (s *RemoteHubSource) remoteHubMutationCallError(clientMutationID string, err error) error {
-	return s.remoteHubMutationCallErrorWithDisposition(clientMutationID, appwire.RetryDispositionAutomatic, err)
-}
-
+// remoteHubMutationCallErrorWithDisposition reports a lost mutation response as
+// outcome unknown under the caller's own retry disposition. A delivered
+// WireError is a semantic verdict, regardless of whether its Data is typed or
+// decoded JSON. Classify that provenance before mapCallError replaces a
+// transport failure with an ordinary SessionUnavailable WireError.
 func (s *RemoteHubSource) remoteHubMutationCallErrorWithDisposition(clientMutationID string, disposition appwire.RetryDisposition, err error) error {
 	if _, delivered := errors.AsType[appwire.WireError](err); delivered && !appwire.IsTransportFailure(err) {
 		return err
