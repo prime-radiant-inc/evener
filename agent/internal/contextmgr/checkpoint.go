@@ -24,15 +24,10 @@ import (
 // as its own block keeps that frame exposed, which is the safe direction: a
 // quoted example is still spared inside its own segment.
 func escapeWorkingNote(msg llm.Message) string {
-	var texts []string
-	var phases []string
-	for _, p := range msg.Content {
-		if !sysmsg.CarriesWireText(p) {
-			continue
-		}
-		texts = append(texts, p.Text)
-		phases = append(phases, p.Phase)
-	}
+	// The note is read as the adapter would send it, so the parts it carries are
+	// the parts CarriesWireText keeps — the same call the replay projection
+	// makes, through one helper (#6493 review).
+	_, texts, phases := sysmsg.WireTextParts(msg)
 	if len(texts) == 0 {
 		return sysmsg.EscapeModelAuthoredFrames(msg.Text())
 	}

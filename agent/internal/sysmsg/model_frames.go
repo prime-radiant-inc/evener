@@ -30,9 +30,35 @@ func PhaseSeparatesMessages(protocol string) bool {
 // An empty part still counts when it carries a Phase, because the Responses
 // adapter emits one message per phase and an empty phase-bearing part is a
 // message of its own. A whitespace-only part with no phase opens no message,
-// so it cannot hide one either.
+// so it cannot hide one either. The test is TrimSpace, not emptiness: the
+// Responses adapter drops a part whose text is only whitespace
+// (responses/input.go's `strings.TrimSpace(p.Text) == "" && p.Phase == ""`),
+// so a scan that kept such a part would split a phase run the adapter joins —
+// resetting fence state where the adapter carries it across, and sparing the
+// frame after the next delimiter (#6493 review).
 func CarriesWireText(p llm.ContentPart) bool {
-	return p.Kind == llm.ContentText && (p.Text != "" || p.Phase != "")
+	return p.Kind == llm.ContentText && (strings.TrimSpace(p.Text) != "" || p.Phase != "")
+}
+
+// WireTextParts returns an assistant message's text parts as EscapePhasedText
+// consumes them: the index, text and phase of every part CarriesWireText keeps,
+// in stored order.
+//
+// It exists so a caller cannot filter with one rule and segment with another.
+// Dropping a part is what makes the surrounding parts one message to the
+// adapter, so the drop and the segmentation have to be the same decision; two
+// callers each writing their own loop is how the scan and the wire drifted
+// apart (#6493 review).
+func WireTextParts(msg llm.Message) (indexes []int, texts, phases []string) {
+	for i, p := range msg.Content {
+		if !CarriesWireText(p) {
+			continue
+		}
+		indexes = append(indexes, i)
+		texts = append(texts, p.Text)
+		phases = append(phases, p.Phase)
+	}
+	return indexes, texts, phases
 }
 
 // TextSegments splits text parts at the message boundaries the given protocol

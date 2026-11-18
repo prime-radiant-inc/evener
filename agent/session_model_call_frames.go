@@ -44,29 +44,26 @@ func escapeModelAuthoredTurnFramesFor(msg llm.Message, protocol string, promotes
 	if msg.Role != llm.RoleAssistant {
 		return msg
 	}
-	var indexes []int
-	var texts []string
-	for i, p := range msg.Content {
-		// A machinery part is content this session manufactured, and escaping
-		// it would rewrite the harness's own note. Every genuine one is
-		// user-role: the constructors that set the flag (llm.UserMachinery,
-		// llm.MachineryText) are used on user-role messages only, so the
-		// early return above already keeps them out of this function.
-		//
-		// On an assistant part the flag cannot be genuine, because nothing in
-		// the tree builds one. It can only come from inferPreFlagMachinery's
-		// decode-time guess for a transcript written before the flag existed,
-		// which classifies any text part shaped like one whole
-		// <system-notification> block — the exact shape a model invents when
-		// it imitates one. Skipping that part would replay the model's
-		// imitation verbatim, so the flag is not consulted here (#6493
-		// review).
-		if !sysmsg.CarriesWireText(p) {
-			continue
-		}
-		indexes = append(indexes, i)
-		texts = append(texts, p.Text)
-	}
+	// A machinery part is content this session manufactured, and escaping it
+	// would rewrite the harness's own note. Every genuine one is user-role: the
+	// constructors that set the flag (llm.UserMachinery, llm.MachineryText) are
+	// used on user-role messages only, so the early return above already keeps
+	// them out of this function.
+	//
+	// On an assistant part the flag cannot be genuine, because nothing in the
+	// tree builds one. It can only come from inferPreFlagMachinery's decode-time
+	// guess for a transcript written before the flag existed, which classifies
+	// any text part shaped like one whole <system-notification> block — the
+	// exact shape a model invents when it imitates one. Skipping that part would
+	// replay the model's imitation verbatim, so the flag is not consulted here
+	// (#6493 review).
+	//
+	// The parts this function reads are the parts the adapter sends, by one
+	// shared rule: a whitespace-only unphased part the adapter drops must not
+	// split the scan's phase run, or a fence one part opens and the next closes
+	// reads as two blocks and the frame after the close is spared (#6493
+	// review).
+	indexes, texts, textPhases := sysmsg.WireTextParts(msg)
 	var reasoningIndexes []int
 	var reasoningTexts []string
 	if promotesReasoning {
@@ -131,10 +128,7 @@ func escapeModelAuthoredTurnFramesFor(msg llm.Message, protocol string, promotes
 	// a closing fence as a fresh opener or lets an example's delimiter close a
 	// fence the adapter does not put in the same message (#6493 review).
 	var parts []llm.ContentPart
-	phases := make([]string, len(texts))
-	for k := range texts {
-		phases[k] = msg.Content[indexes[k]].Phase
-	}
+	phases := textPhases
 	// The scan itself is shared with checkpoint capture, so the two readers
 	// cannot disagree about where a fence is (#6493 review).
 	segments := sysmsg.TextSegments(phases, protocol)
