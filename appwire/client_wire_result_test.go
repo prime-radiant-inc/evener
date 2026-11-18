@@ -1,6 +1,7 @@
 package appwire
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -147,16 +148,28 @@ func TestDecodeFrameBoundRefusesIncompleteModelControlAtEverySize(t *testing.T) 
 
 	frame := []byte(`{"id":1,"result":` + result + `,"pad":"` + pad + `"}`)
 	var storage ThreadReadResponse
-	_, bound, err := decodeFrameBound(frame, func([]byte) any { return &storage })
-	if err == nil {
+	msg, bound, err := decodeFrameBound(frame, func([]byte) any { return &storage })
+	// The bound fast path declines a result it refuses, so the frame leaves as an
+	// ordinary message and the request's own decode reports the refusal. The
+	// caller must not be able to tell which size produced the frame.
+	if err != nil {
+		t.Fatalf("decodeFrameBound reported a receive error for a per-request refusal: %v", err)
+	}
+	if bound != nil {
+		t.Fatalf("refused frame returned bound storage: %+v", bound)
+	}
+	raw, ok := msg.Response.Result.(json.RawMessage)
+	if !ok {
+		t.Fatalf("Response.Result = %T, want the wire bytes for the ordinary decode", msg.Response.Result)
+	}
+	var delivered ThreadReadResponse
+	boundErr := decodeResponseResult(MethodThreadRead, raw, &delivered)
+	if boundErr == nil {
 		t.Fatal("bound decode accepted a version-1 envelope with no supportsReasoning")
 	}
-	// Size picks the decode path, and the caller must not be able to tell which
-	// one refused: the same request reported by a different error class would
-	// make the refusal depend on the size of an unrelated transcript.
 	var boundRefusal, ordinaryRefusal responseDecodeError
-	if !errors.As(err, &boundRefusal) {
-		t.Fatalf("bound refusal = %T %v, want the response decode error class", err, err)
+	if !errors.As(boundErr, &boundRefusal) {
+		t.Fatalf("bound refusal = %T %v, want the response decode error class", boundErr, boundErr)
 	}
 	if !errors.As(ordinaryErr, &ordinaryRefusal) {
 		t.Fatalf("ordinary refusal = %T %v, want the response decode error class", ordinaryErr, ordinaryErr)
@@ -164,11 +177,6 @@ func TestDecodeFrameBoundRefusesIncompleteModelControlAtEverySize(t *testing.T) 
 	if boundRefusal.method != ordinaryRefusal.method {
 		t.Fatalf("bound refusal names method %q, ordinary refusal names %q",
 			boundRefusal.method, ordinaryRefusal.method)
-	}
-	// The caller only ever sees a bound value the read loop copies in, and it
-	// copies nothing when the frame is refused.
-	if bound != nil {
-		t.Fatalf("refused frame returned bound storage: %+v", bound)
 	}
 }
 
@@ -203,5 +211,98 @@ func BenchmarkMessageDecodeLargeResponse(b *testing.B) {
 		if _, ok := msg.Response.Result.(*ThreadReadResponse); !ok {
 			b.Fatalf("Response.Result = %T, want the filled target", msg.Response.Result)
 		}
+	}
+}
+
+// refusingFrameTransport feeds canned frames through the bound decode path, so a
+// test can drive a real Client over the path that decodes a large result while
+// the frame is read.
+type refusingFrameTransport struct {
+	reads  chan []byte
+	writes chan Message
+}
+
+func (b *refusingFrameTransport) Send(_ context.Context, msg Message) error {
+	b.writes <- msg
+	return nil
+}
+
+func (b *refusingFrameTransport) Recv(ctx context.Context) (Message, error) {
+	msg, _, err := b.recvBound(ctx, nil)
+	return msg, err
+}
+
+func (b *refusingFrameTransport) recvBound(ctx context.Context, bind frameBinder) (Message, any, error) {
+	select {
+	case frame := <-b.reads:
+		return decodeFrameBound(frame, bind)
+	case <-ctx.Done():
+		return Message{}, nil, ctx.Err()
+	}
+}
+
+func (b *refusingFrameTransport) Close() error { return nil }
+
+// A refused result belongs to the request that asked for it. The bound decode
+// path reads frames for the whole connection, so reporting its refusal as a
+// receive error would latch the connection closed and fail every other pending
+// call, for a frame the ordinary path reports to one caller alone.
+func TestClientKeepsTheConnectionWhenABoundResultIsRefused(t *testing.T) {
+	pad := strings.Repeat("x", boundFrameMinSize)
+	// A version-1 thread/read missing supportsReasoning, refused at any size.
+	refusedResult := `{"thread":{"id":"t1","evener":{"capabilities":{"modelControlVersion":1},` +
+		`"modelControl":{"authority":{"instanceId":"i1","bootGeneration":"b1"},"revision":3,` +
+		`"active":{"modelProvider":"openai","model":"gpt-5.4","reasoningEffortLevels":["high"]}}}}}`
+
+	transport := &refusingFrameTransport{reads: make(chan []byte, 8), writes: make(chan Message, 8)}
+	client := NewClient(transport)
+	client.Start(t.Context())
+
+	// Two requests are in flight on one connection; the first one's result is
+	// the refused envelope.
+	refused := make(chan error, 1)
+	go func() {
+		_, err := client.ThreadRead(t.Context(), ThreadReadParams{Ref: "local:t1"})
+		refused <- err
+	}()
+	first := <-transport.writes
+
+	other := make(chan error, 1)
+	go func() {
+		_, err := client.ThreadList(t.Context(), ThreadListParams{Limit: 1})
+		other <- err
+	}()
+	second := <-transport.writes
+
+	firstID, err := json.Marshal(first.Request.ID)
+	if err != nil {
+		t.Fatalf("marshal first id: %v", err)
+	}
+	transport.reads <- []byte(`{"id":` + string(firstID) + `,"result":` + refusedResult + `,"pad":"` + pad + `"}`)
+	if err := <-refused; err == nil {
+		t.Fatal("the refused result was delivered as a success")
+	}
+
+	// A notification must still arrive, and the other pending call must still
+	// be answered on the same connection.
+	transport.reads <- []byte(`{"method":"` + NotifyThreadStatusChanged + `","params":{"seq":1}}`)
+	select {
+	case notification, ok := <-client.Notifications():
+		if !ok {
+			t.Fatal("notifications stopped after one refused result")
+		}
+		if notification.Method != NotifyThreadStatusChanged {
+			t.Fatalf("notification = %+v", notification)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("no notification arrived after a refused result; the connection was latched closed")
+	}
+	secondID, err := json.Marshal(second.Request.ID)
+	if err != nil {
+		t.Fatalf("marshal second id: %v", err)
+	}
+	transport.reads <- []byte(`{"id":` + string(secondID) + `,"result":{"data":[]}}`)
+	if err := <-other; err != nil {
+		t.Fatalf("an unrelated pending call failed after a refused result: %v", err)
 	}
 }

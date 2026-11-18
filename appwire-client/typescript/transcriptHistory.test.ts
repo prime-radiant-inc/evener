@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 import type { ItemModel, ThreadModel, TurnModel } from "./model";
+import { modelPickCanSend, reduceModelControl } from "./modelControl";
 import { applyNotification } from "./reducer";
 import { itemAt, turnAt } from "./testing/modelAccessors";
 import {
@@ -433,6 +434,50 @@ for (const entryPoint of ["response", "model"] as const) {
         : applyReadModel(newer, hydrateThread(read, "ref_t", 1001));
     expect(refreshed.history?.length).toBe(110);
     expect(refreshed.turns.flatMap((turn) => turn.items).map((item) => item.id)).not.toContain("omitted");
+  });
+}
+
+// A daemon that exits while its pane is disconnected leaves the client with no
+// model-control authority at all: the reconnect retires it to `uninitialized`.
+// The hub then answers the pane's next read from the saved index, with a
+// `notLoaded` thread whose capabilities still advertise changeModel — a
+// resumable cold session. That saved read authors no model-control authority
+// of its own (a daemonless boot cannot speak for one), so the pick belongs in
+// the cold `unsupported` state: the one state a pick resolves by resuming
+// first. Keeping `uninitialized` would leave the picker disabled with no way
+// for the user to initiate the resume. The transcript pages the client
+// already loaded must survive the same read.
+for (const entryPoint of ["response", "model"] as const) {
+  test(`${entryPoint} saved fallback identifying a resumable cold session offers the resume-first pick`, () => {
+    const liveRead = {
+      ...historyRead(),
+      thread: testThread({ turns: [positionedFragmentTurn("turn_live", [["item_live", 1]])] }),
+      bootGeneration: "boot-1",
+      servedFrom: "live-daemon",
+      asOf: "2026-11-08T00:00:00Z",
+    };
+    const loaded = hydrateThread(liveRead, "ref_t", 1000);
+    expect(loaded.turns.flatMap((turn) => turn.items).map((item) => item.id)).toContain("item_live");
+    const retired = reduceModelControl(loaded, { kind: "connectionRetired" });
+    expect(retired.model.modelControlState.kind).toBe("uninitialized");
+    const coldRead = {
+      ...historyRead(),
+      thread: testThread({
+        status: { type: "notLoaded" },
+        turns: [positionedFragmentTurn("turn_live", [["item_live", 1]])],
+      }),
+      snapshot: { incarnation: "saved-inc", length: 1 },
+      servedFrom: "saved-index",
+      fallbackReason: "live-read-failed",
+      asOf: "2026-11-08T00:00:01Z",
+    };
+    const next =
+      entryPoint === "response"
+        ? applyReadResponse(retired.model, coldRead, 1001)
+        : applyReadModel(retired.model, hydrateThread(coldRead, "ref_t", 1001));
+    expect(next.modelControlState.kind).toBe("unsupported");
+    expect(modelPickCanSend(next)).toBe(true);
+    expect(next.turns.flatMap((turn) => turn.items).map((item) => item.id)).toContain("item_live");
   });
 }
 

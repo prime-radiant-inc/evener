@@ -139,7 +139,11 @@ export function modelChipLabel(
 	// snapshot's, the connection's canonical one, or a recovery's last safe one -
 	// so the qualified id is always available. Qualifying it only in `ready`
 	// shows the provider alone during recovery, which reads as a lost model.
-	const modelProvider = session.modelControlState ? `${target.modelProvider}/${target.model}` : target.modelProvider;
+	// A saved session's legacy read has no separate model id, so its target
+	// holds the same id in both fields; joining those would repeat the id's own
+	// path segments.
+	const qualified = target.modelProvider === target.model ? target.model : `${target.modelProvider}/${target.model}`;
+	const modelProvider = session.modelControlState ? qualified : target.modelProvider;
 	const namesActiveModel = session.modelControlState
 		? target.modelProvider === session.modelProvider && target.model === session.model
 		: target.modelProvider === session.modelProvider;

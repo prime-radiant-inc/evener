@@ -252,6 +252,26 @@ describe("the model chip (spec 8.5)", () => {
 			),
 		).toBe("DeepSeek 4.1 Flash · XHigh");
 	});
+	it("does not double a saved session's id that fills both display fields", () => {
+		// A saved session's legacy read has no separate model id on the wire, so
+		// the shared canonical display puts the same value in both fields. Joining
+		// them would print "anthropic/anthropic/claude-opus-5".
+		const saved = {
+			modelProvider: "anthropic/claude-opus-5",
+			model: "anthropic/claude-opus-5",
+			modelControlState: {
+				kind: "uninitialized" as const,
+				canonicalDisplay: {
+					modelProvider: "anthropic/claude-opus-5",
+					model: "anthropic/claude-opus-5",
+				},
+			},
+			reasoningEffort: "high",
+			reasoningEffortLevels: ["low", "high"],
+			supportsReasoning: true,
+		};
+		expect(modelChipLabel(saved, undefined)).toBe("claude-opus-5 · High");
+	});
 	it("falls back to the model id before the catalog loads, and drops effort a model lacks", () => {
 		expect(
 			modelChipLabel(

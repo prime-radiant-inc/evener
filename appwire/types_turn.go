@@ -1261,24 +1261,36 @@ func validateRawModelControlResponse(method string, raw json.RawMessage) error {
 		if response.ModelControlVersion != nil && *response.ModelControlVersion == ModelControlVersion1 {
 			return validateRequiredModelControlSnapshotJSON(response.ModelControl)
 		}
-	case MethodThreadRead:
+	case MethodThreadRead, MethodThreadHistoryRead:
+		// Read the advertised version while the snapshot is still raw bytes.
+		// Decoding it into version-1 types first would let a newer version's
+		// differently shaped snapshot fail here, before the thread's own decode
+		// can preserve a thread this build cannot interpret; version 1 is the
+		// only contract this build may enforce.
 		var response struct {
 			Thread struct {
 				Evener struct {
 					Capabilities struct {
 						ModelControlVersion *uint `json:"modelControlVersion"`
 					} `json:"capabilities"`
-					ModelControl *requiredModelControlSnapshotJSON `json:"modelControl"`
+					ModelControl json.RawMessage `json:"modelControl"`
 				} `json:"evener"`
 			} `json:"thread"`
 		}
 		if err := json.Unmarshal(raw, &response); err != nil {
 			return err
 		}
-		if response.Thread.Evener.Capabilities.ModelControlVersion != nil &&
-			*response.Thread.Evener.Capabilities.ModelControlVersion == ModelControlVersion1 {
-			return validateRequiredModelControlSnapshotJSON(response.Thread.Evener.ModelControl)
+		if response.Thread.Evener.Capabilities.ModelControlVersion == nil ||
+			*response.Thread.Evener.Capabilities.ModelControlVersion != ModelControlVersion1 {
+			return nil
 		}
+		var snapshot *requiredModelControlSnapshotJSON
+		if len(response.Thread.Evener.ModelControl) > 0 {
+			if err := json.Unmarshal(response.Thread.Evener.ModelControl, &snapshot); err != nil {
+				return err
+			}
+		}
+		return validateRequiredModelControlSnapshotJSON(snapshot)
 	}
 	return nil
 }

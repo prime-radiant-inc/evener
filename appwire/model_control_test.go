@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -202,6 +203,82 @@ func TestThreadReadKeepsAnUnknownModelControlVersionThreadReadable(t *testing.T)
 	var malformed ThreadReadResponse
 	if err := decodeResponseResult(MethodThreadRead, json.RawMessage(versionOne), &malformed); err == nil {
 		t.Fatal("a version-1 read whose snapshot does not decode was accepted")
+	}
+}
+
+// A newer version may change the shape of a member this build knows, not only
+// its scalar types. The presence probe reads the snapshot through version-1
+// types, so it has to check the advertised version first: otherwise a shape
+// conflict is reported as a malformed read and the thread becomes unreadable,
+// which is the outcome the thread's own decode exists to avoid.
+func TestThreadReadKeepsANewerVersionWhoseSnapshotShapeConflicts(t *testing.T) {
+	// Version 1 decodes `active` as an object. Version 2 restates it as the
+	// model's own identifier, so the version-1 shape cannot read it.
+	payload := `{"thread":{"id":"t_shape","evener":{"capabilities":{"modelControlVersion":2},` +
+		`"modelControl":{"revision":4,"active":"openai/gpt-5"}}}}`
+
+	var response ThreadReadResponse
+	if err := decodeResponseResult(MethodThreadRead, json.RawMessage(payload), &response); err != nil {
+		t.Fatalf("a newer version's snapshot shape made the thread unreadable: %v", err)
+	}
+	if response.Thread.ID != "t_shape" {
+		t.Fatalf("thread id = %q, want the read's own thread", response.Thread.ID)
+	}
+	if got := response.Thread.Evener.Capabilities.ModelControlVersion; got != 2 {
+		t.Fatalf("reported model-control version = %d, want the daemon's 2 preserved", got)
+	}
+	if response.Thread.Evener.ModelControl != nil {
+		t.Fatalf("snapshot = %+v, want an unknown version's snapshot left undecoded", response.Thread.Evener.ModelControl)
+	}
+}
+
+// The versioned history read carries the same thread shape and is the route
+// clients prefer, so the version-1 contract has to hold there too. Without it a
+// daemon's omission decodes as false and can be re-emitted as a supplied value.
+func TestHistoryReadRefusesAnIncompleteVersionOneSnapshot(t *testing.T) {
+	omitted := `{"thread":{"id":"t_h","evener":{"capabilities":{"modelControlVersion":1},` +
+		`"modelControl":{"authority":{"instanceId":"i1","bootGeneration":"b1"},"revision":3,` +
+		`"active":{"modelProvider":"openai","model":"gpt-5.4","reasoningEffortLevels":["high"]}}}}}`
+
+	var response ThreadHistoryReadResponse
+	err := decodeResponseResult(MethodThreadHistoryRead, json.RawMessage(omitted), &response)
+	if err == nil {
+		t.Fatal("the history read accepted a version-1 envelope with no supportsReasoning")
+	}
+
+	// An explicitly supplied false is the daemon's own statement and survives.
+	supplied := `{"thread":{"id":"t_h","evener":{"capabilities":{"modelControlVersion":1},` +
+		`"modelControl":{"authority":{"instanceId":"i1","bootGeneration":"b1"},"revision":3,` +
+		`"active":{"modelProvider":"openai","model":"gpt-5.4","reasoningEffortLevels":[],"supportsReasoning":false}}}}}`
+	var suppliedResponse ThreadHistoryReadResponse
+	if err := decodeResponseResult(MethodThreadHistoryRead, json.RawMessage(supplied), &suppliedResponse); err != nil {
+		t.Fatalf("an explicit supportsReasoning=false was refused: %v", err)
+	}
+	snapshot := suppliedResponse.Thread.Evener.ModelControl
+	if snapshot == nil || snapshot.Active.SupportsReasoning {
+		t.Fatalf("snapshot = %+v, want the daemon's explicit false preserved", snapshot)
+	}
+
+	// A history read allocates bound storage for a large frame like any other
+	// read, so the refusal has to hold on that path as well: it declines the fast
+	// path and leaves the frame for the request's own decode.
+	pad := strings.Repeat("x", boundFrameMinSize)
+	storage := ThreadHistoryReadResponse{}
+	frame := []byte(`{"id":1,"result":` + omitted + `,"pad":"` + pad + `"}`)
+	msg, bound, err := decodeFrameBound(frame, func([]byte) any { return &storage })
+	if err != nil {
+		t.Fatalf("the bound history path reported a receive error for a per-request refusal: %v", err)
+	}
+	if bound != nil {
+		t.Fatalf("bound=%v, want the refused frame to decline the fast path", bound != nil)
+	}
+	raw, ok := msg.Response.Result.(json.RawMessage)
+	if !ok {
+		t.Fatalf("Response.Result = %T, want the wire bytes for the request's own decode", msg.Response.Result)
+	}
+	var delivered ThreadHistoryReadResponse
+	if err := decodeResponseResult(MethodThreadHistoryRead, raw, &delivered); err == nil {
+		t.Fatal("the bound history path accepted a version-1 envelope with no supportsReasoning")
 	}
 }
 

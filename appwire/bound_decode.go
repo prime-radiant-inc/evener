@@ -57,10 +57,15 @@ func decodeFrameBound(data []byte, bind frameBinder) (Message, any, error) {
 		if idToken, ok := responseFrameIDToken(data); ok {
 			if storage := bind(idToken); storage != nil {
 				if msg, ok := decodeResponseInto(data, idToken, storage); ok {
-					if err := validateBoundModelControlResponse(storage, data); err != nil {
-						return Message{}, nil, err
+					// A refusal declines the fast path instead of returning from
+					// here. This read decodes frames for the whole connection, so
+					// an error leaves as a receive failure: the client latches
+					// closed and fails every pending call. The ordinary decode
+					// below produces the same refusal for the one request that
+					// asked, which is where the small-frame path reports it.
+					if err := validateBoundModelControlResponse(storage, data); err == nil {
+						return msg, storage, nil
 					}
-					return msg, storage, nil
 				}
 			}
 		}
@@ -89,6 +94,10 @@ func validateBoundModelControlResponse(storage any, data []byte) error {
 	switch storage.(type) {
 	case *ThreadReadResponse:
 		method = MethodThreadRead
+	case *ThreadHistoryReadResponse:
+		// The versioned history read carries the same thread shape, and it is
+		// the route clients prefer, so the contract has to hold there too.
+		method = MethodThreadHistoryRead
 	case *ThreadModelSetResponse:
 		method = MethodThreadModelSet
 	default:

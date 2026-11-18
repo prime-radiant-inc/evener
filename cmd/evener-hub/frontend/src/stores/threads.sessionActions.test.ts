@@ -1315,6 +1315,40 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     expect(fake.calls.filter((call) => call.method === "thread/model/set")).toHaveLength(0);
   });
 
+  test("an equal-revision conflict delivered after the response cut starts one replacement read", async () => {
+    const fake = connectFakeClient();
+    const initial = modelControlSnapshot(2);
+    // A conflicting frame that lands after the read's response was cut but
+    // before its snapshot published is replayed at publish time, not at the
+    // cut. Nothing else in that window schedules the read that resolves it.
+    const cut = { reached: false };
+    const establishing = deferred<ThreadReadResponse>();
+    let recoveryReads = 0;
+    fake.on("thread/read", () => {
+      recoveryReads += 1;
+      return recoveryReads === 1 ? establishing.promise : Promise.resolve(capableModelRead("ref_a", initial));
+    });
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => recoveryReads === 1);
+    establishing.resolve(markResponseCut(capableModelRead("ref_a", initial), cut));
+    await emitAtResponseCut(cut, "ref_a", () =>
+      fake.emitNotification({
+        method: "thread/model/controlChanged",
+        params: {
+          ref: "ref_a",
+          threadId: "thr_ref_a",
+          modelControl: modelControlSnapshot(2, { activeProvider: "google", activeModel: "gemini-3-pro" }),
+        },
+      }),
+    );
+    await ensuring;
+
+    await flushUntil(() => recoveryReads === 2);
+    expect(recoveryReads, "the post-cut conflict started exactly one replacement read").toBe(2);
+    await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.modelControlState.kind === "ready");
+    expect(recoveryReads, "the settled recovery scheduled no further read").toBe(2);
+  });
+
   test("a tracked thread owns model-control recovery shared with a rich watcher", async () => {
     const fake = connectFakeClient();
     const initial = modelControlSnapshot(2);

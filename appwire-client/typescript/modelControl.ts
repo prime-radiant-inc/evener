@@ -111,7 +111,31 @@ export function modelPickCanSend(model: Pick<ThreadModel, "capabilities" | "mode
   // a read lands; and a LIVE `unsupported`, a daemon whose envelope carries no
   // complete snapshot, which nothing resumes and which would fail after the
   // user chose.
-  return kind === "unsupported" && SHUT_DOWN_STATUSES.has(model.status.type);
+  return kind === "unsupported" && coldSessionCanResume(model);
+}
+
+// Whether `model` names a session a model change would have to RESUME first: a
+// shut-down thread the hub still advertises changeModel for. This is exactly
+// the set the hub resumes behind a mutation (see modelPickCanSend above).
+export function coldSessionCanResume(model: Pick<ThreadModel, "capabilities" | "status">): boolean {
+  return model.capabilities?.changeModel === true && SHUT_DOWN_STATUSES.has(model.status.type);
+}
+
+// Whether a saved-view read leaves held model control alone. It normally does:
+// a saved view authors no model-control authority of its own (a daemonless boot
+// cannot speak for one), so a client that held authority keeps it, and a pane
+// whose authority a reconnect retired stays retired until a LIVE read speaks
+// again — the saved view must not upgrade a stale display into evidence.
+//
+// The exception is a read that identifies a session a pick can resume. There
+// the held `uninitialized` is strictly worse than the cold `unsupported` the
+// same read reduces to: neither carries live authority, but only `unsupported`
+// offers the pick, and a pick is the only way the user resumes that session.
+export function savedReadKeepsHeldModelControl(
+  held: Pick<ThreadModel, "modelControlState">,
+  read: Pick<ThreadModel, "capabilities" | "status">,
+): boolean {
+  return held.modelControlState.kind !== "uninitialized" || !coldSessionCanResume(read);
 }
 
 export function projectModelControlSnapshot(model: ThreadModel, snapshot: ModelControlSnapshot): ThreadModel {

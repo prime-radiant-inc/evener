@@ -6622,7 +6622,12 @@ async function publishAndReconcileThreadHydration(
   const adoptedEntryRead = (await acceptEntryTranscriptHydration(ref, pending, hydration)) === true;
   const published = publishThreadHydration(ref, pending, hydration.model, adoptedEntryRead);
   if (!published) return null;
-  if (hydration.modelControlRecoveryRequired) {
+  // A frame delivered after the response cut is replayed onto the read's model
+  // inside the publish above, so the obligation shows up as the transition
+  // between the model the read established and the one that was published. The
+  // pre-cut replay reports its own conflict through modelControlRecoveryRequired;
+  // this is the same obligation for the tail that arrived too late to count there.
+  if (hydration.modelControlRecoveryRequired || modelControlRecoveryEntered(hydration.model, published)) {
     startModelControlReplacementReadForGeneration(ref, pending.client, pending.epoch, pending.modelControlReadSequence);
   }
   pruneConsumedQueueRows(ref, published);
@@ -6936,7 +6941,10 @@ function publishWatchedHydration(
   retirePendingHydration(ref, pending, pendingWatchedHydrations);
   storeWatchedModel(ref, published, includeTurns, generation);
   settleOwnedHydration("watched", ref, published);
-  if (hydration.modelControlRecoveryRequired && !canonicalThreadOwnerActive(ref)) {
+  if (
+    (hydration.modelControlRecoveryRequired || modelControlRecoveryEntered(hydration.model, replayed.model)) &&
+    !canonicalThreadOwnerActive(ref)
+  ) {
     startModelControlReplacementReadForGeneration(ref, pending.client, pending.epoch, pending.modelControlReadSequence);
   }
   return published;
@@ -7605,6 +7613,14 @@ function newlyInvalidatedHistoryRefs(
   return refs;
 }
 
+// The one shape that owes a replacement read: a ready model that this frame
+// moved to recovering. The reducer raises the obligation to a caller that can
+// still ask it, but a fold discards that answer, so both the live fold and the
+// post-cut replay read the same transition off the model they produced.
+function modelControlRecoveryEntered(previous: ThreadModel, next: ThreadModel): boolean {
+  return previous.modelControlState.kind === "ready" && next.modelControlState.kind === "recovering";
+}
+
 function newlyRecoveringModelControlRefs(
   prev: ReadonlyMap<string, ThreadModel>,
   next: ReadonlyMap<string, ThreadModel> | null,
@@ -7613,7 +7629,9 @@ function newlyRecoveringModelControlRefs(
   if (!next) return [];
   const refs: string[] = [];
   for (const ref of candidates) {
-    if (prev.get(ref)?.modelControlState.kind === "ready" && next.get(ref)?.modelControlState.kind === "recovering") {
+    const previous = prev.get(ref);
+    const updated = next.get(ref);
+    if (previous && updated && modelControlRecoveryEntered(previous, updated)) {
       refs.push(ref);
     }
   }
