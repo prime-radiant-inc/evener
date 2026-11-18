@@ -2,10 +2,20 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
 )
+
+// closeDrainBound is the publication context a close drain supplies: a marked
+// bound, and the close-join mark that says its publications are on the path
+// whose reconciliation the close waits for. Both marks are what production
+// stamps in delegate_tree_stop.go, so a test that hand-builds one must build
+// both or it is exercising a context no caller ever produces.
+func closeDrainBound(ctx context.Context) context.Context {
+	return withCloseJoinBound(withPublicationBound(ctx))
+}
 
 // The hold release that precedes a bounded arm takes the receiver's attention
 // lock. On a close drain's retry it ran UNBOUNDED, so a receiver holding that
@@ -121,7 +131,7 @@ func TestBoundedWakeDoesNotParkOnAHeldAttentionLock(t *testing.T) {
 	go func() {
 		defer close(done)
 		_ = root.delegateController.wakeDeliveryReceiver(
-			withPublicationBound(spent), receiver, []string{"delegate:held"})
+			closeDrainBound(spent), receiver, []string{"delegate:held"})
 	}()
 
 	// `done` first and alone, for the reason given in the release test above.
@@ -201,7 +211,7 @@ func TestBoundedArmSpentDoesNotFallBackToAnUnboundedNotify(t *testing.T) {
 	// Synchronous, so the hook's lock and the arm's refusal are ordered by the
 	// call itself; an unbounded fallback here would hang rather than race.
 	_ = root.delegateController.wakeDeliveryReceiver(
-		withPublicationBound(spent), receiver, []string{"delegate:held"})
+		closeDrainBound(spent), receiver, []string{"delegate:held"})
 
 	if !locked {
 		t.Fatal("the hold release never ran: the fixture never reached the arm whose fallback it pins")
@@ -211,5 +221,103 @@ func TestBoundedArmSpentDoesNotFallBackToAnUnboundedNotify(t *testing.T) {
 			"notify takes attentionMu without a bound, so the wake parks past the cutoff the drain " +
 			"supplied -- the committed acknowledgment and the durable row are what carry the row to a " +
 			"later drive")
+	}
+}
+
+// A bound can be spent by REPORTING the arm's error, not only by the arm's own
+// wait -- and the lock can change hands in that gap.
+//
+// The arm here refuses on a transcript read error while attentionMu is free, so
+// it never reaches errDelegateAttentionArmSpent. Publishing that error consumes
+// what is left of the cutoff, and a concurrent environment append then takes the
+// lock. Deciding "the lock was free, so notify" at the earlier moment would wake
+// the receiver into an unbounded wait on the lock it just lost, past the
+// publication cutoff, into the budget the remaining collectible lanes need.
+//
+// So a caller that supplied a bound must not wake the receiver synchronously on
+// ANY arm error. The wake that matters is preserved for the ordinary delivery
+// path, which supplied no bound: TestDelegateAttentionDeliveryArmsTheRootRetryForANonRootReceiver
+// and the ordinary counterpart below pin that side.
+//
+// This test holds no lock on purpose. The claim is about the gate, not about a
+// timing window: with a live bound and an error that is NOT the spent sentinel,
+// the old fallback woke the receiver and this one must not -- which is exactly
+// the mutation that reverts the gate.
+func TestBoundedNonSpentArmErrorDoesNotFallBackToAnUnboundedNotify(t *testing.T) {
+	r := newWorktreeRepo(t)
+	root := r.s
+	if root.delegateController == nil {
+		t.Fatal("fixture session has no delegate controller")
+	}
+
+	receiver := &Session{id: "child-receiver", delegateController: root.delegateController}
+	var notified atomic.Bool
+	receiver.notifyFunc = func() { notified.Store(true) }
+	t.Cleanup(func() {
+		receiver.attentionMu.Lock()
+		receiver.delegateAttentionArmIDs = nil
+		receiver.resetDelegateAttentionArmRetryLocked()
+		receiver.attentionMu.Unlock()
+	})
+
+	// A refusal that is NOT the spent sentinel: the arm gives up on its own read,
+	// with the lock available.
+	var armed atomic.Bool
+	updateSessionTestConfig(receiver, func(cfg *testConfig) {
+		cfg.delegateAttentionArmFault = func() error {
+			armed.Store(true)
+			return errors.New("test: arm refused on a transcript read")
+		}
+	})
+
+	// A live, unspent bound: this is a bounded caller, and the point is that it
+	// still must not wake, so the test cannot lean on the sentinel.
+	bound, cancelBound := context.WithCancel(t.Context())
+	t.Cleanup(cancelBound)
+
+	_ = root.delegateController.wakeDeliveryReceiver(
+		closeDrainBound(bound), receiver, []string{"delegate:held"})
+
+	if !armed.Load() {
+		t.Fatal("the arm fault never ran: the fixture never reached the arm whose fallback it pins")
+	}
+	if notified.Load() {
+		t.Fatal("a bounded caller's arm refused on an error that is not the spent sentinel and the wake " +
+			"still notified synchronously: reporting an error can spend the cutoff, and the notify then " +
+			"waits on attentionMu without a bound -- the lock's availability at the decision is not its " +
+			"availability at the wake")
+	}
+}
+
+// The other side of the same gate: an ordinary delivery, which supplied no
+// bound, keeps its immediate wake on any arm error. Without this, the fix above
+// could be "never notify", which would strand the ordinary path.
+func TestBoundedOrdinaryWakeStillNotifiesImmediately(t *testing.T) {
+	r := newWorktreeRepo(t)
+	root := r.s
+	if root.delegateController == nil {
+		t.Fatal("fixture session has no delegate controller")
+	}
+
+	receiver := &Session{id: "child-receiver", delegateController: root.delegateController}
+	var notified atomic.Bool
+	receiver.notifyFunc = func() { notified.Store(true) }
+	var armed atomic.Bool
+	updateSessionTestConfig(receiver, func(cfg *testConfig) {
+		cfg.delegateAttentionArmFault = func() error {
+			armed.Store(true)
+			return errors.New("test: arm refused")
+		}
+	})
+
+	if err := root.delegateController.wakeDeliveryReceiver(noBound, receiver, []string{"delegate:held"}); err != nil {
+		t.Fatalf("ordinary wake: %v", err)
+	}
+	if !armed.Load() {
+		t.Fatal("the arm fault never ran: the fixture never reached the arm")
+	}
+	if !notified.Load() {
+		t.Fatal("an ordinary delivery that supplied no bound did not wake the receiver on an arm refusal: " +
+			"that wake is the delivery's own and must stay immediate")
 	}
 }

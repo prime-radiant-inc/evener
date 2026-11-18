@@ -951,6 +951,15 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 		// acknowledgment across several subtrees otherwise spends a fresh slice
 		// of the cascade per subtree, and the removals get what is left.
 		evidence.bound = withPublicationBound(pubCtx)
+		if warningsOnly {
+			// This is the CLOSE drain, so the publications it causes are on the
+			// close-join critical path: a synchronous wake for a receiver's
+			// acknowledgment retry would take attentionMu without a bound and
+			// park the reconciliation the close is waiting on. The mark says so
+			// explicitly, because an ordinary stop driver supplies a bound too
+			// and must keep its immediate wake.
+			evidence.bound = withCloseJoinBound(evidence.bound)
+		}
 		plans, err := c.Reconcile(evidence)
 		if plans.retirementRelease != nil {
 			retirementReleases = append(retirementReleases, plans.retirementRelease)

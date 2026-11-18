@@ -488,6 +488,33 @@ func publicationBound(ctx context.Context) (context.Context, bool) {
 	return ctx, true
 }
 
+// closeJoinBoundKey marks a publication context that belongs to the CLOSE-JOIN
+// critical path, as distinct from any other caller that supplied a bound.
+//
+// The distinction earns its own key because "a bound exists" is not the question
+// the wake path needs answered. An ordinary stop driver supplies a bound too, and
+// it must keep waking the receiver whose acknowledgment it just retried: that
+// wake is the delivery's own, it is not on a close join, and nothing is waiting
+// on it to reach worktree disposal. Only the close drain's publications pay the
+// price of being off that join.
+type closeJoinBoundKey struct{}
+
+// withCloseJoinBound marks ctx as belonging to the close-join critical path.
+func withCloseJoinBound(ctx context.Context) context.Context {
+	return context.WithValue(ctx, closeJoinBoundKey{}, true)
+}
+
+// closeJoinBound reports whether ctx is a close-join publication context. An
+// unmarked context -- Background, a turn's, an ordinary stop driver's, the
+// session's -- reports false.
+func closeJoinBound(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	marked, _ := ctx.Value(closeJoinBoundKey{}).(bool)
+	return marked
+}
+
 // emitHookCompleted reports a finished hook on both channels a client can
 // reach it by: the live HOOK_END event, and a TurnHookCompleted transcript
 // entry that survives reload. Both carry the same fields, so the hook line a

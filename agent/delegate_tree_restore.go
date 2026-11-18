@@ -838,21 +838,40 @@ func (c *delegateTreeController) wakeDeliveryReceiver(bound context.Context, rec
 			c.reportDelegateWakeError(bound, err)
 			// The notify func drives the receiver SYNCHRONOUSLY, and its
 			// production callback reads pending attention and takes
-			// attentionMu without a bound of its own. So an arm that gave up
-			// on the caller's bound must not spill into it: the wake would
-			// take the unbounded wait the arm just refused, and the
-			// reconciliation the drain is waiting for would park past the
-			// publication cutoff anyway -- the bound undone one call later.
+			// attentionMu without a bound of its own. A caller that supplied a
+			// bound must not spill into that wait at all.
 			//
-			// Nothing is lost by skipping it. The acknowledgment already
+			// The spent-bound error was the first case of this: the arm gave up
+			// at the cutoff, and waking anyway took the very wait it refused.
+			// But the spent error is not the only way to arrive here late. An
+			// arm can also refuse on a transcript read error while the lock
+			// looked free, and REPORTING that error can then spend what is left
+			// of the cutoff -- after which a concurrent environment append takes
+			// attentionMu and the unbounded notify waits on the same lock the
+			// close is competing with, past the publication cutoff, into the
+			// budget the remaining collectible lanes need to be removed.
+			//
+			// So the question is not which error this was. It is whether the
+			// caller supplied a bound -- and the answer is decided on that, not
+			// on the error and not on whether the lock happened to be free when
+			// the decision was taken: availability now is not availability at
+			// the wake. A bounded caller therefore never wakes the receiver
+			// synchronously here. Nothing is lost -- the acknowledgment already
 			// committed, the row is durable, and the receiver still owes
-			// attention, so a later drive presents them together.
+			// attention, so a later drive presents them together -- and the
+			// root-side paced retry below still arms for the bounded path.
 			//
-			// The immediate fallback stays for every other arm error,
-			// including the ordinary unbounded delivery: a refusal there is
-			// news about a wake that ran out of no time at all, and the
-			// receiver must still be woken.
-			if !errors.Is(err, errDelegateAttentionArmSpent) {
+			// closeJoinBound, not "a bound exists" and not "non-nil".
+			//
+			// The ordinary delivery path passes noBound and keeps today's
+			// behavior. But an ordinary STOP DRIVER also supplies a bound, and it
+			// must keep its immediate wake too: that wake is the delivery's own,
+			// no close join is waiting on it, and silencing it strands the
+			// receiver whose acknowledgment was just retried
+			// (TestDelegateAttention_PrelaunchStopWakesRetriedDeliveryOwner). The
+			// price of skipping the wake is paid only by the CLOSE drain, so only
+			// its publications carry the mark.
+			if !closeJoinBound(bound) {
 				receiver.notify()
 			}
 		}
