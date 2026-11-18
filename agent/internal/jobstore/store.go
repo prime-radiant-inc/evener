@@ -152,7 +152,16 @@ type fileCursor struct {
 	lines  int
 	size   int64
 	mod    time.Time
-	valid  bool
+	// identity is the file the size and modification time above describe. It is
+	// recorded from the sample the store vouched for — the post-sync sample on
+	// an append, the load's own stat on a read — and never from a fresh stat of
+	// the path, because a replacement installed in between would supply its own
+	// numbers and the cursor would trust a prefix decoded from another file.
+	// A nil identity means the cursor was recorded by a path that could not
+	// supply one (a directly constructed store), and the size and time are then
+	// the only evidence, as they were before.
+	identity os.FileInfo
+	valid    bool
 	// disabled is sticky: set when this filesystem proved it cannot tell one of
 	// the store's own writes from no write at all, after which the store always
 	// re-reads the whole file.
@@ -381,7 +390,8 @@ func (s *Store) verifyAppendReachedTheNameLocked(opened os.FileInfo) (os.FileInf
 		// name, and anything left is acknowledged. A store with no sample at all
 		// — a fault-injection fixture, or one constructed around a handle it was
 		// given — has never followed a name and has nothing to reconcile.
-		if retried, retryErr := s.fs.Stat(s.path); retryErr == nil {
+		retried, retryErr := s.fs.Stat(s.path)
+		if retryErr == nil {
 			if !sameJournalFile(opened, retried) {
 				s.journalGen++
 				s.sampled = false
@@ -390,12 +400,24 @@ func (s *Store) verifyAppendReachedTheNameLocked(opened os.FileInfo) (os.FileInf
 			}
 			return retried, nil
 		}
-		// The delayed re-stat failed too. Nothing observed the name reaching
-		// another file, so the append is acknowledged with no new baseline: the
-		// next boundary read samples for itself rather than trusting a
-		// comparison this call could not make. A store that has never followed a
-		// name lands here too, and for the same reason — there is nothing to
-		// compare the bytes against.
+		// The delayed re-stat failed too, and its failure splits in two.
+		//
+		// ABSENT is a definite answer, and it is the rename-aside case: the
+		// journal was moved and its replacement has not been installed yet. The
+		// bytes this append made durable are in the file nobody will open, so
+		// acknowledging loses the event — and a shell finalizer told "written"
+		// stops retrying a completion no reader will ever see. Absence is
+		// retryable precisely because it says where the bytes went.
+		//
+		// Any OTHER failure is inconclusive: no observation has placed the bytes
+		// anywhere a reader will not look. There the append is acknowledged with
+		// no new baseline, so the next boundary read samples for itself rather
+		// than trusting a comparison this call could not make. A store that has
+		// never followed a name lands here too, for the same reason — there is
+		// nothing to compare the bytes against.
+		if os.IsNotExist(retryErr) {
+			return nil, fmt.Errorf("%w: %s: %w", ErrJournalNameUnavailable, s.path, retryErr)
+		}
 		return nil, nil
 	}
 	// The name is compared with ITSELF, sampled before the write under the same
@@ -934,6 +956,7 @@ func (s *Store) refreshCursorLocked() ([]Event, error) {
 	}
 	s.cursor.size = info.Size()
 	s.cursor.mod = info.ModTime()
+	s.cursor.identity = info
 	s.cursor.valid = true
 	return tail, nil
 }
@@ -943,8 +966,26 @@ func (s *Store) refreshCursorLocked() ([]Event, error) {
 // foreign append, which is cheap enough to reread whole — is not accounted for,
 // so the cursor is dropped rather than extended over unverified bytes.
 func (s *Store) cursorTrustedLocked(info os.FileInfo) bool {
-	return s.cursor.valid && !s.cursor.disabled &&
+	return s.cursor.valid && !s.cursor.disabled && s.cursorReachesLocked(info) &&
 		info.Size() == s.cursor.size && info.ModTime().Equal(s.cursor.mod)
+}
+
+// cursorReachesLocked reports whether info still describes the file the cursor's
+// prefix was read from.
+//
+// Length and modification time alone answer "did anything change", and on this
+// filesystem they are the whole answer they can be — but they cannot answer
+// "is this the same file". A replacement of exactly the expected length with a
+// preserved timestamp is indistinguishable from no write at all by those
+// numbers, and the prefix they vouch for was decoded from the file that was
+// moved aside. Identity answers it where the filesystem exposes one, and
+// sameJournalFile inherits the documented length-and-time residual where it
+// does not.
+func (s *Store) cursorReachesLocked(info os.FileInfo) bool {
+	if s.cursor.identity == nil {
+		return true
+	}
+	return sameJournalFile(s.cursor.identity, info)
 }
 
 // sameJournalFile reports whether named is the file handle refers to.
@@ -1032,6 +1073,29 @@ func (s *Store) noteContentBeforeStoreWriteLocked(info os.FileInfo, err error) e
 		return nil
 	}
 	size, mod := info.Size(), info.ModTime()
+	// Reconcile a reported length that still trails a confirmed append BEFORE
+	// asking whether the content changed, exactly as the boundary read does.
+	//
+	// An append records its own end, and a filesystem whose attributes lag
+	// reports less than that for as long as the lag lasts. Comparing that raw
+	// number with the recorded end therefore looks like a rewrite on every
+	// append of the same bytes: the generation would advance each time and a
+	// live session would refold its whole history after every append while the
+	// lag lasts. The order is what fixes it — settle the lag first, then
+	// compare.
+	//
+	// The confirmation is the file's own length, the same arbiter the boundary
+	// uses: attributes trailing the data and a real truncation both report a
+	// smaller number, and only the file can say which one happened. A length
+	// the file contradicts clears the claim, so a genuine truncation still
+	// moves the generation below.
+	if s.laggingAppendEnd > size {
+		if onDisk, haveLength := s.journalRealSizeLocked(); haveLength && onDisk >= s.laggingAppendEnd {
+			size = s.laggingAppendEnd
+		} else {
+			s.laggingAppendEnd = 0
+		}
+	}
 	changed := !s.sampled || size != s.journalSize || !mod.Equal(s.journalMod)
 	if changed {
 		// The file moved since the store last accounted for it. Anything that is
@@ -1140,19 +1204,27 @@ func (s *Store) noteAppendedLocked(startOffset, endOffset int64, verified os.Fil
 		s.cursor.valid = false
 		return
 	}
-	info, err := s.fs.Stat(s.path)
-	if err != nil {
+	// The sample the post-sync check RESOLVED and vouched for is the only one
+	// that may become the cursor's baseline. Statting the path here would ask
+	// the same question a moment later, and a same-length replacement installed
+	// in between would be recorded as this append's own end: the identity would
+	// not move, so the next load would trust a prefix decoded from the file that
+	// was moved aside and parse the replacement's suffix onto it.
+	if verified == nil {
+		// Nothing was verified, so there is no sample that describes the bytes
+		// this cursor's prefix belongs to. Drop it rather than adopt whatever
+		// the path says now.
 		s.cursor.valid = false
 		return
 	}
-	if info.Size() != endOffset {
+	if verified.Size() != endOffset {
 		// The filesystem does not report the bytes just written — stale or cached
 		// metadata, or a concurrent writer. Its numbers cannot be used to decide
 		// what has already been read, so the cursor goes.
 		s.cursor.valid = false
 		return
 	}
-	if endOffset != startOffset && info.ModTime().Equal(s.cursor.mod) {
+	if endOffset != startOffset && verified.ModTime().Equal(s.cursor.mod) {
 		// This append changed the file's length and the filesystem reported the
 		// same modification time as before it: timestamps here cannot resolve a
 		// write, so they cannot be used to tell the store's own bytes from
@@ -1161,8 +1233,9 @@ func (s *Store) noteAppendedLocked(startOffset, endOffset int64, verified os.Fil
 		s.cursor.valid = false
 		return
 	}
-	s.cursor.size = info.Size()
-	s.cursor.mod = info.ModTime()
+	s.cursor.size = verified.Size()
+	s.cursor.mod = verified.ModTime()
+	s.cursor.identity = verified
 }
 
 // advanceCursorLocked decodes the log from the cursor's offset to the file's real
@@ -1248,12 +1321,33 @@ func trimLineTerminator(raw []byte) []byte {
 }
 
 func (s *Store) recoverTrailingPartialLineLocked() (err error) {
-	info, err := s.fs.Stat(s.path)
-	if err != nil {
-		if os.IsNotExist(err) {
+	// Identity FIRST, size second, and both from the file this function is about
+	// to probe and possibly cut.
+	//
+	// Reading the PATH's size and then seeking the HELD handle is what fails on
+	// an empty journal whose name has been replaced by a nonempty one: the
+	// path reports a positive size, the held handle is empty, and the seek to
+	// one byte before the end fails — so a load refuses a perfectly healthy
+	// replacement for a journal it never needed to touch. The two numbers have to
+	// describe the same file, and only the handle describes the file this
+	// function can repair.
+	named, statErr := s.fs.Stat(s.path)
+	if statErr != nil {
+		if os.IsNotExist(statErr) {
 			return nil
 		}
-		return fmt.Errorf("jobstore: stat %s: %w", s.path, err)
+		return fmt.Errorf("%w: %s: %w", ErrJournalNameUnavailable, s.path, statErr)
+	}
+	f := s.f
+	info, handleErr := f.Stat()
+	if handleErr != nil {
+		return fmt.Errorf("jobstore: stat %s: %w", s.path, handleErr)
+	}
+	if !sameJournalFile(info, named) {
+		// The name reaches a different file. This store's tail is not the one a
+		// reader will see, so repairing it would edit a file nobody reads, and
+		// the replacement is someone else's to examine.
+		return nil
 	}
 	if info.Size() == 0 {
 		return nil
@@ -1271,7 +1365,6 @@ func (s *Store) recoverTrailingPartialLineLocked() (err error) {
 	// name is rechecked before the cut: bytes repaired in a file the name no
 	// longer reaches are bytes no reader will ever see, and the replacement
 	// needs examining on its own terms instead.
-	f := s.f
 	if _, err := f.Seek(-1, io.SeekEnd); err != nil {
 		return fmt.Errorf("jobstore: inspect trailing byte: %w", err)
 	}
@@ -1297,18 +1390,12 @@ func (s *Store) recoverTrailingPartialLineLocked() (err error) {
 	if err != nil {
 		return fmt.Errorf("jobstore: read %s: %w", s.path, err)
 	}
-	// The whole tail is now in memory, and the cut below is about to happen.
-	// Confirm the name still reaches this handle: if it does not, this repair
-	// belongs to a file nobody reads, and the replacement is someone else's to
-	// examine.
-	named, statErr := s.fs.Stat(s.path)
-	if statErr != nil {
-		return nil
-	}
-	handle, handleErr := f.Stat()
-	if handleErr != nil || !sameJournalFile(handle, named) {
-		return nil
-	}
+	// The whole tail is now in memory and the cut below is about to happen. The
+	// name was resolved against this handle at the top of this function, and the
+	// handle is the same file it was then: every read above is through it, and
+	// nothing between there and here can move the name onto another file without
+	// that file being a different handle. That single check is what keeps a
+	// second replacement from supplying the evidence for a cut on the first one.
 	cut := bytes.LastIndexByte(raw, '\n')
 	if cut < 0 {
 		return s.recoverTrailingJSONLineLocked(raw, 0)

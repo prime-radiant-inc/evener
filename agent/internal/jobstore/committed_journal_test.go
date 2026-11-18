@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -642,6 +643,45 @@ func TestCommittedJournalRepairsATornTailBeforeReportingIt(t *testing.T) {
 
 }
 
+// TestStoreReadsANonemptyReplacementOverAnEmptyHandle pins the case where a live
+// store holds an empty journal and the name is then replaced by a valid,
+// nonempty one.
+//
+// Recovery inspects the tail of the file it HOLDS, so it has to ask what that
+// file's length is. Asking the PATH instead reports the replacement's positive
+// length, and seeking one byte before the end of the empty handle fails — the
+// reader then refuses a healthy journal it never needed to repair, and keeps
+// refusing until a writer happens to adopt the replacement.
+func TestStoreReadsANonemptyReplacementOverAnEmptyHandle(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "jobs.jsonl")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatalf("seed empty journal: %v", err)
+	}
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	// Another writer moves the empty journal aside and installs a valid one.
+	if err := os.Rename(path, path+".saved"); err != nil {
+		t.Fatalf("rename aside: %v", err)
+	}
+	replacement := []byte(`{"kind":"job_started","seq":1,"job_id":"job_replacement"}` + "\n")
+	if err := os.WriteFile(path, replacement, 0o644); err != nil {
+		t.Fatalf("write replacement: %v", err)
+	}
+
+	events, err := s.LoadEvents()
+	if err != nil {
+		t.Fatalf("LoadEvents over a valid replacement of an empty journal: %v", err)
+	}
+	if len(events) != 1 || events[0].JobID != "job_replacement" {
+		t.Fatalf("LoadEvents = %#v, want the replacement's single event", events)
+	}
+}
+
 // TestCommittedJournalLeavesAReplacedJournalAlone pins what a replacement is:
 // a different file. The store's handle still refers to the journal that was
 // moved aside, and its recovery truncates that handle, so repairing on this
@@ -959,6 +999,68 @@ func TestCommittedJournalReportsAConfirmedAppendPastLaggingMetadata(t *testing.T
 	}
 }
 
+// TestStoreAppendKeepsOneGenerationUnderSustainedLag pins the append half of the
+// lagging-metadata rule.
+//
+// A confirmed append records its own end, and a filesystem whose attributes lag
+// keeps reporting a smaller length for as long as the lag lasts. The next
+// append's pre-write check compares the reported length against the recorded
+// end, so a raw comparison reads "the file changed" on every append during the
+// lag — and each one advances the content generation, which invalidates the
+// fold. A session that appends and refreshes repeatedly therefore refolds its
+// whole history after every append even though its prefix is intact.
+//
+// The boundary read already settles the lag before comparing. The pre-write
+// check has to do the same thing for the same reason: the store's own bytes are
+// not a rewrite.
+func TestStoreAppendKeepsOneGenerationUnderSustainedLag(t *testing.T) {
+	base := afero.NewOsFs()
+	path := filepath.Join(t.TempDir(), "jobs.jsonl")
+	fs := &staleStatFs{Fs: base}
+	s, err := openFs(fs, path)
+	if err != nil {
+		t.Fatalf("openFs: %v", err)
+	}
+	s.disableSync = true
+	t.Cleanup(func() { _ = s.Close() })
+
+	if err := s.Append(Event{Kind: EventJobStarted, JobID: "job_first", Type: JobShell}); err != nil {
+		t.Fatalf("first append: %v", err)
+	}
+	first, err := s.CommittedJournal()
+	if err != nil {
+		t.Fatalf("CommittedJournal: %v", err)
+	}
+	// Freeze the reported attributes where they are: every later append's bytes
+	// are durable, but the path keeps reporting the length it had here.
+	frozen, err := base.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	fs.stale = snapshotInfo(frozen)
+
+	for i := range 3 {
+		jobID := "job_lag_" + strconv.Itoa(i)
+		if err := s.Append(Event{Kind: EventJobStarted, JobID: jobID, Type: JobShell}); err != nil {
+			t.Fatalf("append %d under lagging metadata: %v", i, err)
+		}
+		state, err := s.CommittedJournal()
+		if err != nil {
+			t.Fatalf("CommittedJournal after append %d: %v", i, err)
+		}
+		actual, err := afero.ReadFile(base, path)
+		if err != nil {
+			t.Fatalf("read journal after append %d: %v", i, err)
+		}
+		if state.Size != int64(len(actual)) {
+			t.Fatalf("append %d committed length = %d with %d bytes on disk", i, state.Size, len(actual))
+		}
+		if state.Generation != first.Generation {
+			t.Fatalf("append %d generation = %d, want the %d it had: the store appended its own bytes, and a lagging length is not a rewrite", i, state.Generation, first.Generation)
+		}
+	}
+}
+
 // TestCommittedJournalKeepsOneGenerationAcrossLaggingReads pins M2.
 //
 // An append records its own end, and a filesystem whose attributes lag reports
@@ -1143,6 +1245,10 @@ type renameOnSyncFs struct {
 	from  string
 	to    string
 	armed atomic.Bool
+	// leaveAbsent renames the journal aside during the sync and installs
+	// nothing under the name. That is the window a rename-and-replace leaves
+	// open, and it is the one where the name answers ENOENT after the write.
+	leaveAbsent bool
 }
 
 func (r *renameOnSyncFs) arm() { r.armed.Store(true) }
@@ -1166,6 +1272,9 @@ func (f *renameOnSyncFile) Sync() error {
 			if err := f.fs.Rename(f.fs.from, f.fs.to); err != nil {
 				panic(err)
 			}
+			if f.fs.leaveAbsent {
+				return
+			}
 			// The replacement is a fresh, empty journal under the name the store
 			// was opened with.
 			replace, err := f.fs.OpenFile(f.fs.from, os.O_CREATE|os.O_RDWR, 0o644)
@@ -1176,6 +1285,162 @@ func (f *renameOnSyncFile) Sync() error {
 		})
 	}
 	return f.File.Sync()
+}
+
+// statFailsOnNthFs fails one Stat by ordinal among the Stats made after it was
+// armed. The ordinal is what makes a fixture able to aim at a specific stat:
+// the append path stats the name more than once, and a fault that lands on the
+// first answers a different question than the one under test.
+type statFailsOnceBeforeAppendFs struct {
+	afero.Fs
+	remaining atomic.Int64
+}
+
+// failNthStat arms the fixture to fail the nth Stat from now, counting from 1.
+func (f *statFailsOnceBeforeAppendFs) failNthStat(n int64) { f.remaining.Store(n) }
+
+func (f *statFailsOnceBeforeAppendFs) Stat(name string) (os.FileInfo, error) {
+	if n := f.remaining.Load(); n > 0 {
+		if f.remaining.CompareAndSwap(n, n-1) && n == 1 {
+			return nil, errors.New("transient stat failure")
+		}
+	}
+	return f.Fs.Stat(name)
+}
+
+// TestStoreAppendFailsWhenTheTailRecheckCannotResolve pins H2.
+//
+// A foreign writer leaves a partial record at the end of a live journal. The
+// store's next append notices the change and repairs the tail before writing —
+// and the repair ends with an identity recheck of the name against the handle.
+// When that recheck fails transiently, the function used to return nil, and the
+// append caller read nil as "repaired".
+//
+// It was not. The fragment is still there, so the append joins its JSON onto it
+// and fsyncs one malformed line, reports success, and every later read and
+// reopen fails on that line. An indeterminate recheck is not a confirmation, and
+// it must reach the caller as a retryable error instead.
+func TestStoreAppendFailsWhenTheTailRecheckCannotResolve(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "jobs.jsonl")
+	fs := &statFailsOnceBeforeAppendFs{Fs: afero.NewOsFs()}
+	s, err := openFs(fs, path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	if err := s.Append(Event{Kind: EventJobStarted, JobID: "job_first", Type: JobShell}); err != nil {
+		t.Fatalf("first append: %v", err)
+	}
+
+	// The foreign writer tears the tail. Nothing reads the journal first: the
+	// store's own next append is what arrives next, which is the ordering where
+	// a silent repair failure poisons the file.
+	partial := []byte(`{"kind":"job_started","seq":`)
+	if err := os.WriteFile(path, append(mustReadFile(t, path), partial...), 0o644); err != nil {
+		t.Fatalf("tear the tail: %v", err)
+	}
+	// Aim at the repair's own identity recheck, which is the SECOND stat this
+	// append makes of the name: the first is the pre-write sample every append
+	// takes, and faulting that one answers a different question — it would
+	// refuse the append before the tail was ever examined. Counting from the
+	// append keeps the fixture pinned to the operation it names.
+	fs.failNthStat(2)
+
+	// This append's fsync arms the fault, so the repair's identity recheck is
+	// the stat that fails.
+	err = s.Append(Event{Kind: EventJobStarted, JobID: "job_after_torn", Type: JobShell})
+	if err == nil {
+		t.Fatal("append succeeded although the tail repair's identity recheck failed, so the fragment was left in place for the append to join")
+	}
+	if !errors.Is(err, ErrJournalNameUnavailable) {
+		t.Fatalf("append across an unresolved tail recheck = %v, want a retryable ErrJournalNameUnavailable", err)
+	}
+
+	// The journal must be reopenable: the failed append must not have written
+	// onto the fragment.
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen after the refused append: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	if _, err := reopened.Load(); err != nil {
+		t.Fatalf("fold the reopened journal: %v", err)
+	}
+}
+
+// TestStoreAppendRetriesWhenTheNameIsAbsentAfterSync pins H1.
+//
+// A rename-and-replace is two steps, and between them the name reaches nothing.
+// An append whose fsync lands in that window has made its bytes durable in the
+// file that was moved aside, and both post-sync stats answer ENOENT.
+//
+// Absence is a definite answer and it points at where the bytes went: nowhere a
+// reader of the named journal will look. Reporting success there loses the event
+// silently — a shell completion told "written" stops retrying, and the session
+// never shows it. The append must therefore be RETRYABLE, and once the name is
+// back the retry must land a readable record.
+func TestStoreAppendRetriesWhenTheNameIsAbsentAfterSync(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "jobs.jsonl")
+	saved := filepath.Join(dir, "jobs.jsonl.saved")
+
+	fs := &renameOnSyncFs{Fs: afero.NewOsFs(), from: path, to: saved, leaveAbsent: true}
+	s, err := openFs(fs, path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	if err := s.Append(Event{Kind: EventJobStarted, JobID: "job_first", Type: JobShell}); err != nil {
+		t.Fatalf("first append: %v", err)
+	}
+
+	// The name is renamed aside during this append's fsync and no replacement
+	// is installed, so it answers ENOENT for the rest of the call.
+	fs.arm()
+	err = s.Append(Event{Kind: EventJobStarted, JobID: "job_retry_me", Type: JobShell})
+	if err == nil {
+		t.Fatal("append acknowledged success although the name it should have reached was absent and the bytes went into the journal moved aside")
+	}
+	if !errors.Is(err, ErrJournalNameUnavailable) {
+		t.Fatalf("append across an absent name = %v, want a retryable ErrJournalNameUnavailable", err)
+	}
+	if bytes.Contains(mustReadFile(t, saved), []byte("job_retry_me")) {
+		// The bytes may or may not have landed in the moved-aside file; what
+		// matters is that success was not claimed for them.
+		t.Log("the refused append wrote into the moved-aside journal, which the retry below supersedes")
+	}
+
+	// The path comes back — the replacement half of the rename-and-replace —
+	// carrying the journal that was moved aside. The retry must now succeed and
+	// its record must be readable from the named journal.
+	if err := os.Rename(saved, path); err != nil {
+		t.Fatalf("restore the name: %v", err)
+	}
+	if err := s.Append(Event{Kind: EventJobStarted, JobID: "job_retried", Type: JobShell}); err != nil {
+		t.Fatalf("retry once the name is back: %v", err)
+	}
+	if !bytes.Contains(mustReadFile(t, path), []byte("job_retried")) {
+		t.Fatal("the retried append is not in the named journal, so success did not mean the bytes landed where a reader looks")
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen the named journal: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	records, err := reopened.Load()
+	if err != nil {
+		t.Fatalf("fold the reopened journal: %v", err)
+	}
+	found := false
+	for _, rec := range records {
+		if rec.JobID == "job_retried" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the retried append is not in the reopened journal's fold")
+	}
 }
 
 // TestStoreAppendRefusesWhenTheNameWasReplacedDuringSync pins A1: an append that
@@ -1421,6 +1686,69 @@ func (f *statFailsAfterSyncFile) Sync() error {
 	err := f.File.Sync()
 	f.fs.synced.Store(true)
 	return err
+}
+
+// TestStoreCursorDoesNotTrustAReplacementOfTheSameLength pins the cursor half of
+// the replacement question.
+//
+// A warm cursor keeps the events it decoded and rereads only what was appended
+// since. It decides whether that prefix is still the file's prefix from the
+// sample it recorded, and a replacement that reproduces the recorded length and
+// modification time is indistinguishable from no write at all by those numbers.
+// The prefix it holds was decoded from the file that was moved aside, so serving
+// it returns rows the replacement does not have and omits the ones it does.
+//
+// Identity is what answers this, exactly as it answers the fold's generation.
+// The replacement below is the same length and keeps the original timestamp, so
+// nothing but identity can tell the two files apart.
+func TestStoreCursorDoesNotTrustAReplacementOfTheSameLength(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "jobs.jsonl")
+	first := []byte(`{"kind":"job_started","seq":1,"job_id":"job_original"}` + "\n")
+	if err := os.WriteFile(path, first, 0o644); err != nil {
+		t.Fatalf("seed journal: %v", err)
+	}
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	// Prime the cursor: this read decodes the original and records its sample.
+	if _, err := s.Load(); err != nil {
+		t.Fatalf("prime the cursor: %v", err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat the seeded journal: %v", err)
+	}
+
+	// Replace the journal with a different row of EXACTLY the same length and
+	// restore the original timestamp, so only identity distinguishes them.
+	replacement := []byte(`{"kind":"job_started","seq":1,"job_id":"job_replaced"}` + "\n")
+	if len(replacement) != len(first) {
+		t.Fatalf("fixture replacement is %d bytes, want the %d that keeps the length unchanged", len(replacement), len(first))
+	}
+	if err := os.Rename(path, path+".saved"); err != nil {
+		t.Fatalf("rename aside: %v", err)
+	}
+	if err := os.WriteFile(path, replacement, 0o644); err != nil {
+		t.Fatalf("write replacement: %v", err)
+	}
+	if err := os.Chtimes(path, before.ModTime(), before.ModTime()); err != nil {
+		t.Fatalf("restore the timestamp: %v", err)
+	}
+
+	records, err := s.Load()
+	if err != nil {
+		t.Fatalf("Load over a same-length replacement: %v", err)
+	}
+	if records["job_replaced"] == nil {
+		t.Fatalf("the fold has no job_replaced: the cursor served a prefix decoded from the journal that was moved aside")
+	}
+	if records["job_original"] != nil {
+		t.Fatalf("the fold still has job_original, which the replacement does not contain: the cursor trusted the old file's prefix")
+	}
 }
 
 // TestStoreAppendBooksTheBaselineItVerified pins M4.
