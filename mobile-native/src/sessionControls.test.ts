@@ -35,7 +35,7 @@ import { describe, expect, it, vi } from "vitest";
 import { WireError } from "@evener/appwire-client";
 import type { ModelListResponse, Thread } from "@evener/appwire-client";
 import { type ConversationClientLike, createConversationService } from "./conversation/services/conversation";
-import { SessionControls } from "./sessionControls";
+import { type ControlsSession, SessionControls, type UnreadModel } from "./sessionControls";
 
 async function boundary(actions: {
 	rename?: (name: string) => Promise<void>;
@@ -1131,12 +1131,126 @@ describe("conversation-owned session controls", () => {
 			null,
 			// The read returned normally and the store discarded it: no error,
 			// and no fresh projection either.
-			() => published,
+			{ published: () => published, unread: () => null, record: () => {} },
 		);
 		await controls.loadModels();
 		published = false;
 		expect(await controls.changeModel("two", "next")).toBe(true);
 		expect(controls.getSnapshot().unreadModel).toEqual({ setting: "model", value: "two/next" });
+	});
+	// A cold pick replaces the runtime, so the controls that sent it are gone
+	// before the hub's answer lands on them. A replacement built from the
+	// screen's projection alone starts believing the value the pick has just
+	// invalidated - and tapping that value closes the picker without writing.
+	// The record therefore belongs to the session, and the replacement starts
+	// from it.
+	it("hands a replacement the value the session was acknowledged for", async () => {
+		const session: ControlsSession = {
+			published: () => true,
+			unread: () => ({ setting: "vision", value: "lunaroute/glm-5.3-vision" }),
+			record: () => {},
+		};
+		const replacement = new SessionControls(
+			await boundary({ vision: async () => {} }),
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+			null,
+			session,
+		);
+		expect(replacement.getSnapshot().unreadModel).toEqual({ setting: "vision", value: "lunaroute/glm-5.3-vision" });
+	});
+	// The other direction: the retired set's own answer still has to reach the
+	// session, or the replacement's clean start loses it again.
+	it("records the acknowledged value on the session even when this set was replaced", async () => {
+		let recorded: UnreadModel | null = null;
+		const session: ControlsSession = {
+			published: () => false,
+			unread: () => null,
+			record: (next) => {
+				recorded = next;
+			},
+		};
+		const sent = new SessionControls(
+			await boundary({
+				models: async () => ({ data: [{ provider: "two", model: "next" }] }),
+				model: async () => {},
+			}),
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+			null,
+			session,
+		);
+		await sent.loadModels();
+		const pick = sent.changeModel("two", "next");
+		// The cold pick replaced the runtime: these controls are retired before
+		// the hub's answer lands on them.
+		sent.dispose();
+		await pick;
+		expect(recorded).toEqual({ setting: "model", value: "two/next" });
+	});
+	// A write the hub never answered is not a write it refused. A request that
+	// times out while the phone is reconnecting can still reach the hub, and a
+	// cold set is applied inside the hub's own resume, after the client has
+	// given up. The projection is then showing a value the hub may no longer
+	// hold, exactly as it does after an acknowledged set whose readback never
+	// landed - so the value the unanswered write was for has to be recorded
+	// against the session too, or the picker keeps offering the stale tick and
+	// a tap on it closes the sheet without sending the corrective choice.
+	it("records the value of a vision write that was never answered", async () => {
+		let recorded: UnreadModel | null = null;
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => ({ data: [{ provider: "two", model: "next" }] }),
+				vision: async () => {
+					throw new Error("The connection closed before the hub answered.");
+				},
+			}),
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+			null,
+			{ published: () => true, unread: () => null, record: (next) => void (recorded = next) },
+		);
+		await controls.loadModels();
+		expect(await controls.changeVisionModel("two", "next")).toBe(false);
+		expect(recorded).toEqual({ setting: "vision", value: "two/next" });
+		expect(controls.getSnapshot().unreadModel).toEqual({ setting: "vision", value: "two/next" });
+	});
+	// The other direction, and the reason this is not simply "record on every
+	// failure": a refusal is the hub's answer, so the projection still shows
+	// what the hub holds and a tap on it is a genuine no-op. Recording there
+	// would turn every refused pick into a redundant write.
+	it("records nothing when the hub refused the vision write", async () => {
+		let recorded: UnreadModel | null = null;
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => ({ data: [{ provider: "two", model: "next" }] }),
+				vision: async () => {
+					throw new WireError("vision model is not available", -32000, {
+						evenerErrorInfo: "actionUnavailable",
+					});
+				},
+			}),
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+			null,
+			{ published: () => true, unread: () => null, record: (next) => void (recorded = next) },
+		);
+		await controls.loadModels();
+		expect(await controls.changeVisionModel("two", "next")).toBe(false);
+		expect(recorded).toBeNull();
+		expect(controls.getSnapshot().unreadModel).toBeNull();
 	});
 	// The hub's acknowledgement, not the read that follows it, is the record
 	// that the pick applied. A phone that reconnects while that read is still

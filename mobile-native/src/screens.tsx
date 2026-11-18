@@ -167,7 +167,7 @@ import {
 	sessionRows,
 	withGhostRows,
 } from "./session/transcriptRows";
-import { SessionControls, useControlsState } from "./sessionControls";
+import { SessionControls, type UnreadModel, useControlsState } from "./sessionControls";
 import { useConnectionStatusText } from "./board/connectionStatus";
 import { Composer, ModelChip } from "./session/Composer";
 import { composerRests, composerShowsStop } from "./session/composerSlot";
@@ -870,6 +870,12 @@ function ConversationScreenView({
 	// the model keeps its name across a screen pushed over this one and a
 	// rebinding, while the catalog reads again (audit N6).
 	const knownCatalog = useRef<ModelListResponse | null>(null);
+	// The model or vision value a pick was acknowledged for and never read back.
+	// It is the session's, not this controller's, so it is held here and handed
+	// to every replacement: a cold pick can replace the runtime before its own
+	// answer lands, and a replacement that started from an empty record would
+	// trust the projection the pick is about to invalidate.
+	const unreadModel = useRef<UnreadModel | null>(null);
 	// The last catalog whose read succeeded, kept for naming only: a later
 	// failed read clears the picker's catalog so it offers no stale choices,
 	// but the chip and the Session sheet must keep the model's name rather
@@ -987,7 +993,16 @@ function ConversationScreenView({
 			// read from is the one that read published". The store says which it
 			// is; a discarded read leaves its last accepted projection in place and
 			// never marks a fresh one ready.
-			() => store.getState().latestReadState === "ready",
+			{
+				published: () => store.getState().latestReadState === "ready",
+				// The record belongs to the session: a cold pick replaces this
+				// controller while its answer is still out, and the replacement is
+				// built before that answer lands.
+				unread: () => unreadModel.current,
+				record: (next) => {
+					unreadModel.current = next;
+				},
+			},
 		);
 	}, [
 		entry,

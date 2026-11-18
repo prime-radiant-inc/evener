@@ -19,6 +19,39 @@ type Operation =
 	| "setReasoningEffort"
 	| "setVisionModel"
 	| "changeModel";
+/** The setting a value belongs to, and the value the hub acknowledged. */
+export interface UnreadModel {
+	setting: "model" | "vision";
+	value: string;
+}
+
+/** The facts about one session that outlive any one binding of it.
+ *
+ * A controller is built per binding and thrown away when the screen rebinds -
+ * a restart, a reconnect, a cold pick that replaces the runtime. Anything a
+ * pick's answer has to reach afterwards cannot live on the instance that sent
+ * it, or the replacement starts believing a projection that has not caught up.
+ */
+export interface ControlsSession {
+	/** Whether the session's store has published an authoritative projection.
+	 * `refresh` resolving does not answer that: a read a newer one supersedes is
+	 * discarded without throwing, and a discarded read leaves the projection
+	 * showing the value from before it. */
+	published(): boolean;
+	/** The value the hub acknowledged for a set whose readback never landed. */
+	unread(): UnreadModel | null;
+	/** Records that value, or clears it once a projection has caught up. */
+	record(unread: UnreadModel | null): void;
+}
+
+/** The session facts for a controller whose caller has no store to ask: it has
+ * published everything, and keeps its own record. This is what a read that
+ * returns normally always meant before the store was asked. */
+function detachedSession(): ControlsSession {
+	let unread: UnreadModel | null = null;
+	return { published: () => true, unread: () => unread, record: (next) => void (unread = next) };
+}
+
 export interface ControlsState {
 	pending: Operation | null;
 	lastAction: Operation | null;
@@ -27,13 +60,18 @@ export interface ControlsState {
 	catalog: ModelListResponse | null;
 	loadingModels: boolean;
 	modelError: string | null;
-	/** The model value a set this binding sent was acknowledged for, when the
-	 * read that would have put it on screen could not run or failed. The
-	 * session's projection still shows the value from before that set, and a
-	 * picker may not read a match against it as "already set": that matches the
-	 * stale value, not the one the hub took. Cleared by a read that lands, so
-	 * the comparison is trusted again as soon as the projection catches up. */
-	unreadModel: { setting: "model" | "vision"; value: string } | null;
+	/** The model value a set was acknowledged for, when the read that would have
+	 * put it on screen could not run or failed. The session's projection still
+	 * shows the value from before that set, and a picker may not read a match
+	 * against it as "already set": that matches the stale value, not the one
+	 * the hub took. Cleared by a read that lands, so the comparison is trusted
+	 * again as soon as the projection catches up.
+	 *
+	 * It is the session's fact, not this binding's: the acknowledgement can
+	 * arrive after the controls that sent it were replaced, so the screen
+	 * carries the record into each new set rather than letting it die with the
+	 * instance that observed it. */
+	unreadModel: UnreadModel | null;
 }
 
 /** Own actions for one conversation binding, independently of its sheet. */
@@ -70,16 +108,14 @@ export class SessionControls {
 		// The catalog the screen already knows, from its last binding: the
 		// model's name needs no read to show.
 		catalog: ModelListResponse | null = null,
-		// Whether the session's own store has published an authoritative
-		// projection. `refresh` resolving does not answer that: a read a newer
-		// one supersedes is discarded without throwing, and a discarded read
-		// leaves the projection showing the value from before it. The screen
-		// that owns the store answers; a caller that cannot is treated as
-		// having published, which is what a read that returns normally always
-		// meant before this was asked.
-		private projectionPublished: () => boolean = () => true,
+		// The facts about the session that outlive one binding: what its store
+		// has published, and what a pick was acknowledged for and never read
+		// back. Both belong to the session rather than to this instance - a cold
+		// pick can replace the runtime, and the answer to the pick lands on the
+		// set that is being retired.
+		private session: ControlsSession = detachedSession(),
 	) {
-		this.state = { ...this.state, catalog };
+		this.state = { ...this.state, catalog, unreadModel: session.unread() };
 	}
 	getSnapshot = () => this.state;
 	subscribe = (listener: () => void) => {
@@ -295,7 +331,7 @@ export class SessionControls {
 						// a newer read superseded, and that leaves the projection
 						// showing the value from before this set. Only a published
 						// projection is the readback; the rest keeps the record below.
-						readback = this.projectionPublished();
+						readback = this.session.published();
 					} catch {
 						// The screen's own read catches up; the pick applied regardless.
 					}
@@ -307,16 +343,20 @@ export class SessionControls {
 				// Any still-live binding settles its action here, so its pending
 				// state never outlives the acknowledgement. The notice follows the
 				// reader's presence, which the return value also reports.
+				// The acknowledgement says the hub took the value; the read is what
+				// puts it on screen. Without one the projection still shows what the
+				// hub held before, so the value it answers with is recorded against
+				// the session - a replacement binding has to see it too, and the one
+				// that sent this may be the one being retired right now.
+				const unread: UnreadModel | null = readback
+					? null
+					: { setting: kind === "changeModel" ? "model" : "vision", value };
+				this.session.record(unread);
 				if (!this.disposed) {
 					this.publish({
 						pending: null,
 						error: null,
-						// The acknowledgement says the hub took the value; the read is
-						// what puts it on screen. Without one the projection still shows
-						// what the hub held before, so the value it answers with is
-						// recorded here and a picker stops reading a match against it as
-						// "already set".
-						unreadModel: readback ? null : { setting: kind === "changeModel" ? "model" : "vision", value },
+						unreadModel: unread,
 						notice: stayed ? (kind === "changeModel" ? "Model updated." : "Vision model updated.") : null,
 					});
 				}
@@ -433,6 +473,25 @@ export class SessionControls {
 				} catch {
 					// Preserve the original server rejection; refresh is confirmation only.
 				}
+			}
+			// A write the hub never answered may still have been applied: a
+			// request that timed out while the phone was reconnecting reached the
+			// hub after the client gave up, and a cold set is applied inside the
+			// hub's own resume. A refusal is the hub's answer and leaves the
+			// projection truthful, but an unanswered write does not, so the value
+			// it was for is recorded against the session the same way an
+			// acknowledged one is. Without it a picker keeps offering the value
+			// its stale projection shows as selected, and the reader who taps it
+			// to undo the change closes the sheet without sending anything while
+			// the setting they meant to correct stays in place.
+			if (
+				(kind === "changeModel" || kind === "setVisionModel") &&
+				!(cause instanceof WireError) &&
+				this.isCurrent("session")
+			) {
+				const unread: UnreadModel = { setting: kind === "changeModel" ? "model" : "vision", value };
+				this.session.record(unread);
+				if (!this.disposed) this.publish({ unreadModel: unread });
 			}
 			if (this.ends(failure)) return false;
 			this.publish({
