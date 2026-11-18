@@ -1131,6 +1131,30 @@ func (s *Session) delegateAttentionHeldFromAutomaticDriveLocked(attentionID stri
 	return held
 }
 
+// delegateAttentionAwaitingAdmission reports whether a pending row is a frame
+// whose wake no arm has admitted yet, and which therefore must not present.
+//
+// A frame appended in the window between a generation capturing its pending set
+// and its arm running is in the transcript before anything admitted it. Nothing
+// released the stop it superseded, so presenting it would deliver a report and
+// leave the report that stop quieted waiting for a generation that then never
+// comes: the frame resolves, its wake finds nothing pending, and no release is
+// journalled.
+//
+// A reopened row is exempt because it records a different fact. It is the
+// report a stop deferred, minted by the stop itself, so its eligibility is
+// decided by the release floor — the quiet's own succession — and not by an arm.
+// Withholding it here would silence every report a stop ever deferred.
+func delegateAttentionAwaitingAdmission(attentionID string, admitted map[string]struct{}) bool {
+	if _, admitted := admitted[attentionID]; admitted {
+		return false
+	}
+	if _, _, reopened := cutDelegateAttentionReopenSegment(attentionID); reopened {
+		return false
+	}
+	return true
+}
+
 // delegateAttentionHoldStands reports whether a hold stamped with held still
 // outranks the newest wake admitted at admitted. A hold stands exactly while
 // it is strictly newer than every admitted wake: at equal generations the wake
@@ -1572,16 +1596,52 @@ func (s *Session) automaticDelegateAttentionIDs() ([]string, error) {
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
 	s.reconcileAutomaticDriveHoldsLocked()
-	if len(s.attentionAutomaticDriveHolds) == 0 {
+	admitted := s.admittedDelegateAttentionRows()
+	if len(s.attentionAutomaticDriveHolds) == 0 && admitted == nil {
 		return pending, nil
 	}
 	kept := make([]string, 0, len(pending))
 	for _, id := range pending {
-		if !s.delegateAttentionHeldFromAutomaticDriveLocked(id) {
-			kept = append(kept, id)
+		if s.delegateAttentionHeldFromAutomaticDriveLocked(id) {
+			continue
 		}
+		if delegateAttentionAwaitingAdmission(id, admitted) {
+			continue
+		}
+		kept = append(kept, id)
 	}
 	return kept, nil
+}
+
+// admittedDelegateAttentionRows is the controller's admitted wake and rider set
+// for this session's delegate, or nil when the session owns none. It is the one
+// read the eligibility predicate consults. Callers hold attentionMu.
+func (s *Session) admittedDelegateAttentionRows() map[string]struct{} {
+	controller := s.delegateController
+	if controller == nil || s.owningDelegateID == "" {
+		return nil
+	}
+	return controller.admittedAttentionRows(s.owningDelegateID)
+}
+
+// admitted is the set of rows the controller's arms and riders have claimed. A
+// pending row outside it is a frame no arm has admitted, so it is withheld for
+// the same reason selection withholds it: presenting it would deliver a report
+// whose wake has not run, and the stop that frame superseded would never be
+// released. A nil admitted set withholds nothing, which is the no-delegate case.
+func filterAwaitingDelegateAttentionTurns(turns []schema.Turn, admitted map[string]struct{}) (kept []schema.Turn, droppedAt []int) {
+	if admitted == nil {
+		return turns, nil
+	}
+	kept = make([]schema.Turn, 0, len(turns))
+	for i, turn := range turns {
+		if turn.AttentionID != "" && delegateAttentionAwaitingAdmission(turn.AttentionID, admitted) {
+			droppedAt = append(droppedAt, i)
+			continue
+		}
+		kept = append(kept, turn)
+	}
+	return kept, droppedAt
 }
 
 // filterHeldDelegateAttentionTurns applies an already-captured hold map to an
@@ -1808,6 +1868,18 @@ func (s *Session) retainAdmittedDelegateAttentionTurn(attentionID string) error 
 	}
 	turn, ok := fold.turns[attentionID]
 	if !ok {
+		return nil
+	}
+	// A row this fold already resolved is not this arm's to publish. A cold arm
+	// reads the transcript outside the controller lock, so a concurrent drive can
+	// attach the receiver and consume the frame before the arm's post-commit
+	// callback runs; if the user stops that generation, finalization drops the
+	// original turn and reopens the report under a held ID. The fold still holds
+	// the resolved original, so restoring it here would put a consumed report back
+	// into history, and a later request would present it while the reopened copy
+	// stays quiet. A resolved row's turn belongs to whatever resolved it; the
+	// accepted-trigger path restores those, not this one.
+	if _, resolved := fold.resolutions[attentionID]; resolved {
 		return nil
 	}
 	return s.retainDelegateAttentionTurn(turn)

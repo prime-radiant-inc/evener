@@ -1156,6 +1156,108 @@ func TestDeriveReleasesAReportWhoseRecoveredSuccessorIsOpen(t *testing.T) {
 	}
 }
 
+// A frame appended in the window between a generation capturing its pending set
+// and its arm running is in the transcript before anything admitted it. Nothing
+// released the stop that frame superseded, so presenting it would deliver it and
+// leave that stop's report quiet for a generation that never comes. Both reads
+// that decide what an automatic request may present — selection and the
+// projection — must withhold it until its arm admits it.
+//
+// A reopened row is the contrast in the same test: it records the report a stop
+// deferred, so the release floor decides it, not an arm, and it must present.
+func TestAnUnadmittedFrameIsNotSelectedOrProjected(t *testing.T) {
+	t.Parallel()
+	sess, reopenedID, _ := deriveHeldFixtureWithJournal(t, delegatestore.OutcomeCancelled, "cancelled")
+	journalDeriveHeldRelease(t, sess, 1)
+	// The fresh frame: appended, with no arm behind it. The delegate's admitted
+	// set names only the reopened row, which the stop minted.
+	const freshID = "delegate:dlg_worker/delivery/2"
+	if _, err := sess.appendDelegateNotificationDurably(freshID, "a frame no arm has admitted"); err != nil {
+		t.Fatalf("pend the fresh frame: %v", err)
+	}
+	controller := sess.delegateController
+	controller.mu.Lock()
+	controller.replaceDelegateAttentionLocked("dlg_hold", []string{reopenedID})
+	controller.mu.Unlock()
+
+	ids, err := sess.automaticDelegateAttentionIDs()
+	if err != nil {
+		t.Fatalf("automatic selection: %v", err)
+	}
+	if slices.Contains(ids, freshID) {
+		t.Fatalf("selection offered a frame no arm admitted: %v", ids)
+	}
+	if !slices.Contains(ids, reopenedID) {
+		t.Fatalf("selection withheld a reopened row the release floor freed: %v", ids)
+	}
+
+	projection, holds := sess.delegateAttentionModelProjection()
+	kept, _ := filterHeldDelegateAttentionTurns(projection.turns, holds)
+	for _, turn := range kept {
+		if turn.AttentionID == freshID {
+			t.Fatal("the request carried a frame no arm admitted: presenting it delivers a report whose wake never ran, and the stop it superseded stays quiet")
+		}
+	}
+	present := false
+	for _, turn := range kept {
+		if turn.AttentionID == reopenedID {
+			present = true
+		}
+	}
+	if !present {
+		t.Fatal("the request dropped a reopened row the release floor freed")
+	}
+}
+
+// A cold arm reads the transcript outside the controller lock, so a concurrent
+// drive can attach the receiver and consume the frame before the arm's
+// post-commit callback runs. If the user then stops that generation before
+// presentation, finalization drops the original turn and reopens the report under
+// a held ID. The fold still carries the resolved original, so a retain that keys
+// only on presence would put a consumed report back into history, and a later
+// automatic request would present it while the reopened copy stays quiet.
+func TestColdArmDoesNotRestoreARowItsDriveAlreadyResolved(t *testing.T) {
+	t.Parallel()
+	sess, reopenedID, _ := deriveHeldFixtureWithJournal(t, delegatestore.OutcomeCancelled, "cancelled")
+	// The arm's own row: admitted and then consumed by the drive that attached
+	// during the arm's read, which is the fact the fold records.
+	const consumedID = "delegate:dlg_worker/delivery/2"
+	if _, err := sess.appendDelegateNotificationDurably(consumedID, "a frame the drive consumed"); err != nil {
+		t.Fatalf("pend the row the drive consumes: %v", err)
+	}
+	if err := sess.resolveAttentionDurablyForGeneration([]string{consumedID}, delegateAttentionConsumed, 2); err != nil {
+		t.Fatalf("consume the row on the runtime: %v", err)
+	}
+	// The stop's reopen of that same report is what the quiet belongs to.
+	sess.holdDelegateAttentionFromAutomaticDriveAt(reopenedID, 1)
+	// Finalization's half of the window: the stopped generation's turn for that
+	// row is dropped from live history, while the fold keeps the resolved record
+	// the late arm would read.
+	sess.attentionMu.Lock()
+	sess.dropResidentDelegateAttentionTurnLocked(consumedID)
+	sess.attentionMu.Unlock()
+
+	historyHolds := func() bool {
+		sess.mu.Lock()
+		defer sess.mu.Unlock()
+		for _, turn := range sess.history {
+			if turn.AttentionID == consumedID {
+				return true
+			}
+		}
+		return false
+	}
+	if historyHolds() {
+		t.Fatal("premise broken: the dropped turn is still resident, so the restore below has nothing to resurrect")
+	}
+	if err := sess.retainAdmittedDelegateAttentionTurn(consumedID); err != nil {
+		t.Fatalf("retain the consumed row: %v", err)
+	}
+	if historyHolds() {
+		t.Fatal("the cold arm restored a row its drive already resolved: a later request presents the consumed report while the reopened copy stays quiet")
+	}
+}
+
 func TestAttentionProjectionCapturesTurnsAndHoldsTogether(t *testing.T) {
 	t.Parallel()
 	sess, _ := newCompactableSession(t)
