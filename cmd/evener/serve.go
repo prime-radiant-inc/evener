@@ -1106,7 +1106,11 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		go func() {
 			defer close(retirementLoopDone)
 			_ = retiring.retirement.Run(ctx, retiring.consumeClaim, func(attempt agent.RetirementAttempt) {
-				serveLogf(logOut, live.session().ID(), "%s", retirementAttemptSummary(attempt))
+				// Through the spool for the same reason the input loop's records
+				// are: shutdown joins this loop after the input loop, so a report
+				// that waited on a reader which stopped draining the daemon's
+				// output would hold the exit open after the turns were done.
+				diagnostics.Logf(live.session().ID(), "%s", retirementAttemptSummary(attempt))
 			})
 		}()
 	}

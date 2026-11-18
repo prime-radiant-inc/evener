@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/internal/testwait"
+
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
@@ -206,6 +208,29 @@ func parseServeDiagnostics(t *testing.T, output string) []serveDiagnostic {
 // Each line is identified by the value the fixture owns — its injected error,
 // context.Canceled, or the fixture listener's address — not by the production
 // wording around it. A missing, extra, or foreign diagnostic fails the test.
+// lockedBuffer is a sink the daemon's diagnostic spool writes from its own
+// goroutine and the fixture reads from its own.
+//
+// bytes.Buffer is not safe for that: the spool's worker appends while the
+// assertion reads, and a bare buffer turns the read into a data race that the
+// -race lane reports and a plain run can see as a torn or truncated line.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 func assertServeDiagnostics(t *testing.T, output, sessionID, listenAddr string, injected error) {
 	t.Helper()
 	diagnostics := parseServeDiagnostics(t, output)
@@ -373,7 +398,7 @@ func TestRunServeResidualCoverage(t *testing.T) {
 			client.Register(adapter)
 			return client, func() error { return nil }, nil
 		}
-		var diagnostics bytes.Buffer
+		var diagnostics lockedBuffer
 		d.serveLogOut = &diagnostics
 		// --verbose is part of the fixture's coverage, but its NDJSON is not a
 		// diagnostic under test: keep it out of the sink the assertions read.
@@ -447,6 +472,13 @@ func TestRunServeResidualCoverage(t *testing.T) {
 		if !registered {
 			t.Fatal("injected rendezvous registration failure did not run")
 		}
+		// Spool.Close retires the worker without waiting for a write already in
+		// flight, deliberately: shutdown must not wait on a sink it is leaving
+		// behind. The fixture therefore awaits the last record it is about to
+		// assert on rather than assuming serve's return implies it landed.
+		testwait.Until(t, "the cancellation diagnostic to reach the sink", func() bool {
+			return strings.Contains(diagnostics.String(), context.Canceled.Error())
+		})
 		assertServeDiagnostics(t, diagnostics.String(), sessionID, exactServeListenAddr, registrationErr)
 	})
 

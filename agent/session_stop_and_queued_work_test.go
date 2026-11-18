@@ -725,6 +725,41 @@ func TestQueuedInputWakeKeepsAnEmptyClaimQuietWhenTheSaveFails(t *testing.T) {
 	}
 }
 
+// TestQueuedInputWakeReportsTheQueueRefusalOverAnUnreportedPark is low 3's
+// scenario: a steer parked by an earlier failed attempt, and a queued message
+// whose claim write fails in this wake.
+//
+// The park is reported once, and a wake that has a refusal of its own to
+// report must not spend that one report: the reader would be told about the
+// steer and never about the message this wake could not write, and the park's
+// single line would be gone. The queue's refusal goes first; the park stays
+// unreported for the wake that has nothing else to say.
+func TestQueuedInputWakeReportsTheQueueRefusalOverAnUnreportedPark(t *testing.T) {
+	t.Parallel()
+	sess := newQueuePersistTestSession(t, t.TempDir())
+	defer sess.Close()
+	if err := sess.SteerFromUser("a steer an earlier attempt parked"); err != nil {
+		t.Fatalf("SteerFromUser: %v", err)
+	}
+	queueOneMutation(t, sess, "queued-behind-the-park", "its claim write will fail")
+	sess.parkSteering()
+	sess.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
+		return errors.New("injected: claim write refused")
+	}
+
+	_, ran, outcome, err := sess.ProcessPendingUserInput(context.Background(), nil)
+	if err != nil || ran {
+		t.Fatalf("wake over a park and a refused queue write = ran %v, err %v; want a quiet stand-down", ran, err)
+	}
+	if outcome != PendingInputClaimWriteFailed {
+		t.Fatalf("outcome = %v, want claim-write-failed: the message is the work this wake could not write, and the steer's park is a separate report it must not spend", outcome)
+	}
+	// The park was not consumed, so a later wake still owes it.
+	if got := sess.steeringParkOutcome(); got != PendingInputSteeringParked {
+		t.Fatalf("the park after the queue refusal = %v, want steering-parked: the wake spent the steer's one report on a different finding", got)
+	}
+}
+
 // TestQueuedInputWakeReportsARefusedClaimWriteAsTheWrite pins what the wake
 // says when the store refuses the queue head's claim.
 //

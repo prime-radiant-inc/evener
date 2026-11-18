@@ -401,14 +401,16 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 		// steer's own acceptance wake, held while the input that then ran the
 		// carrier inline was still running. That attempt spent it; the next
 		// wake sender unparks (Session.steeringParked).
-		if outcome := s.steeringParkOutcome(); outcome != PendingInputNothingRunnable {
+		// The queue head's claim ran in this wake too, and a gate it named is
+		// this wake's own finding: a message it could not write is still
+		// queued. That goes first, and the park stays unreported for a wake
+		// with no refusal of its own to report -- consuming it here would
+		// spend the one report the park gets on a wake that had something else
+		// to say.
+		if outcome := queueClaimOutcome(claimSaw); outcome != PendingInputNothingRunnable {
 			return "", false, outcome, nil
 		}
-		// The park is a report this wake does not repeat, but the queue head's
-		// own claim ran in the same wake and may name a gate of its own: a
-		// message it could not write is still queued, and a Stop's hold is
-		// still the user's. Deduplicating the steer must not silence those.
-		return "", false, queueClaimOutcome(claimSaw), nil
+		return "", false, s.steeringParkOutcome(), nil
 	}
 	if !inputHasContent(queued.Text, queued.Images, queued.SkillNames, queued.CommandNames) && s.hasPendingUserSteering() {
 		carrier, carrierSaw, carrierRefusal := s.claimSteeringCarrierInput()
