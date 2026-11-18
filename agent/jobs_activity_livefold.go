@@ -665,6 +665,15 @@ func (f *liveJobFold) run(ctx context.Context, scan *liveJobScan, path string) {
 		// truncation: the journal was rewritten to something this fold's bytes
 		// never described. Refold from zero rather than resume past the end of
 		// content this fold never read.
+		//
+		// The third case is a prefix nothing vouched for. Acceptance refuses to
+		// SERVE such a fold, but a caller that was willing to extend it would
+		// still publish, and publication is what every other request reads: the
+		// next one inherits a list built from a prefix this store cannot show
+		// is the file's, and a rewrite that kept the length is then served as
+		// though it had been read. Refolding here costs this scan the history
+		// once, on a filesystem that already proved it cannot tell a write from
+		// no write, and it makes the published fold's own bytes its evidence.
 		prior = historicalJobFold{}
 	}
 	f.mu.Unlock()
@@ -705,7 +714,22 @@ func (f *liveJobFold) run(ctx context.Context, scan *liveJobScan, path string) {
 
 	f.mu.Lock()
 	superseded := f.built && scan.gen < f.gen
-	if err == nil && !scan.abandoned && !superseded && !scan.stale {
+	// A publication may only be replaced by one at least as new, and a fold is
+	// only valid for the boundary it was built from.
+	//
+	// A request that sampled an OLDER boundary can arrive here after a request
+	// with a later one already published at the same generation. It then holds a
+	// shorter list — it read fewer bytes — and installing it puts back the rows
+	// the longer publication had already dropped or added, under a generation
+	// that says the content is the same. Its own continuation would be fine; the
+	// continuation minted over the longer fold, which other pages are holding,
+	// now addresses a list that no longer exists.
+	//
+	// The boundary is the scan's own attempted offset, and the fold records the
+	// offset it reaches. Comparing them is enough: an equal boundary describes
+	// the same bytes, and a later one is the ordinary append that should win.
+	shorter := f.built && scan.gen == f.gen && toOffset < f.lastSize
+	if err == nil && !scan.abandoned && !superseded && !scan.stale && !shorter {
 		// An abandoned extend publishes nothing: it stopped somewhere its
 		// cancellation chose, and this fold only advances by deltas it can
 		// state completely.
