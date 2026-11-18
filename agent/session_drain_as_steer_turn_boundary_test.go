@@ -843,7 +843,7 @@ func TestCarrierClaimSkipsASteerInFlight(t *testing.T) {
 	}
 	recordSteerWithFailedIncorporation(t, s, "steer-in-flight")
 
-	if carrier, _ := s.claimSteeringCarrierInput(); carrier.SteeringCarrier {
+	if carrier, _, _ := s.claimSteeringCarrierInput(); carrier.SteeringCarrier {
 		t.Fatalf("claimSteeringCarrierInput claimed %q with only an in-flight steer in the store; the carrier would drain nothing and fail", carrier.ClientMutationID)
 	}
 	if got := s.clientMutations.snapshot().ActiveTurnID; got != "" {
@@ -855,7 +855,7 @@ func TestCarrierClaimSkipsASteerInFlight(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("steer: %v", err)
 	}
-	carrier, _ := s.claimSteeringCarrierInput()
+	carrier, _, _ := s.claimSteeringCarrierInput()
 	if !carrier.SteeringCarrier || carrier.ClientMutationID != "steer-queued" {
 		t.Fatalf("claimSteeringCarrierInput = %q ok=%v, want the queued steer behind the in-flight one", carrier.ClientMutationID, carrier.SteeringCarrier)
 	}
@@ -1342,8 +1342,18 @@ func TestRefusedCarrierClaimParksTheSteerForTheNextExternalWake(t *testing.T) {
 	s.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
 		return errors.New("injected: claim write refused")
 	}
-	if _, ran, _, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || ran {
+	_, ran, outcome, err := s.ProcessPendingUserInput(context.Background(), nil)
+	if err != nil || ran {
 		t.Fatalf("the wake with the claim refused: ran=%v err=%v, want a stand-down", ran, err)
+	}
+	// The refused write is what parked the steer, and the wake reports that. It
+	// used to report the active-turn slot, which the claim never saw close: the
+	// store's write failed with the slot still free (#6468).
+	if outcome != PendingInputSteeringParked {
+		t.Fatalf("outcome after a refused carrier claim write = %v, want steering-parked", outcome)
+	}
+	if !outcome.RefusedRunnableInput() {
+		t.Fatal("a steer the claim's own write parked is not reported as runnable input a gate refused")
 	}
 	s.clientMutations.faults.BeforeEffectSnapshotRename = nil
 	snapshot := s.clientMutations.snapshot()

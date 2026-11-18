@@ -33,7 +33,7 @@ func TestFinalizeInterruptHoldsNoSessionLock(t *testing.T) {
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	queueOneMutation(t, sess, "finalize-outside-session-mu", "already recorded")
-	claimed, refusal := sess.popQueueHeadRefusingPoison()
+	claimed, _, refusal := sess.popQueueHeadRefusingPoison()
 	if refusal != nil || claimed.ClientMutationID != "finalize-outside-session-mu" {
 		t.Fatalf("setup: claimed = %#v refusal = %v", claimed, refusal)
 	}
@@ -217,7 +217,7 @@ func TestQueuedRecoveryClaimPoisonedAtTheCommitIsReturned(t *testing.T) {
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	queueOneMutation(t, sess, "queued-recovery-poisoned-at-commit", "runs after the restart")
-	claimed, refusal := sess.popQueueHeadRefusingPoison()
+	claimed, _, refusal := sess.popQueueHeadRefusingPoison()
 	if refusal != nil || claimed.ClientMutationID != "queued-recovery-poisoned-at-commit" {
 		t.Fatalf("setup: claimed = %#v refusal = %v", claimed, refusal)
 	}
@@ -290,7 +290,7 @@ func TestStopReturnsAClaimedQueuedMessageRatherThanLosingIt(t *testing.T) {
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	queueOneMutation(t, sess, "stopped-during-claim", "runs after the Stop")
-	claimed, refusal := sess.popQueueHeadRefusingPoison()
+	claimed, _, refusal := sess.popQueueHeadRefusingPoison()
 	if refusal != nil || claimed.ClientMutationID != "stopped-during-claim" {
 		t.Fatalf("setup: claimed = %#v refusal = %v", claimed, refusal)
 	}
@@ -347,7 +347,7 @@ func TestStopDoesNotRequeueAClaimedQueuedMessageAlreadyInTheTranscript(t *testin
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	queueOneMutation(t, sess, "claimed-and-recorded", "already recorded")
-	claimed, refusal := sess.popQueueHeadRefusingPoison()
+	claimed, _, refusal := sess.popQueueHeadRefusingPoison()
 	if refusal != nil || claimed.ClientMutationID != "claimed-and-recorded" {
 		t.Fatalf("setup: claimed = %#v refusal = %v", claimed, refusal)
 	}
@@ -512,7 +512,7 @@ func TestCompletionDoesNotRequeueAClaimedQueuedMessageAlreadyInTheTranscript(t *
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	queueOneMutation(t, sess, "completion-claimed-recorded", "already recorded")
-	claimed, refusal := sess.popQueueHeadRefusingPoison()
+	claimed, _, refusal := sess.popQueueHeadRefusingPoison()
 	if refusal != nil || claimed.ClientMutationID != "completion-claimed-recorded" {
 		t.Fatalf("setup: claimed = %#v refusal = %v", claimed, refusal)
 	}
@@ -616,8 +616,13 @@ func TestWakeStandsDownWhenAStopParksTheSteerBeforeTheClaim(t *testing.T) {
 	// The stand-down is quiet in its error and its booleans, which is exactly
 	// why the reason has to travel separately: the steer is accepted, runnable,
 	// and a gate refused it (#6468).
-	if outcome != PendingInputCarrierUnaddressable {
-		t.Fatalf("outcome over a steer whose rail closed before the claim = %v, want carrier-unaddressable", outcome)
+	//
+	// The gate is the Stop's hold, and the claim saw that: reporting the
+	// active-turn slot here would name a gate nothing closed -- no turn holds
+	// the slot and no fence is pending -- and send a reader looking for a
+	// running turn instead of the Stop the user set.
+	if outcome != PendingInputStopHeld {
+		t.Fatalf("outcome over a steer a Stop holds = %v, want stop-held", outcome)
 	}
 	if !outcome.RefusedRunnableInput() {
 		t.Fatal("a steer a closed rail refused is not reported as runnable input a gate refused")
@@ -645,7 +650,7 @@ func TestPoisonedTranscriptRefusesTheQueueHeadClaim(t *testing.T) {
 	queueOneMutation(t, sess, "queued-behind-a-dead-transcript", "runs after the restart")
 	poisonSessionTranscript(t, sess)
 
-	claimed, refusal := sess.popQueueHeadRefusingPoison()
+	claimed, _, refusal := sess.popQueueHeadRefusingPoison()
 	if !errors.Is(refusal, transcript.ErrWriterPoisoned) {
 		t.Fatalf("popQueueHeadRefusingPoison refusal = %v, want one wrapping transcript.ErrWriterPoisoned", refusal)
 	}
@@ -693,7 +698,7 @@ func TestClaimSamplesSessionMuOutsideTheStoreSerializer(t *testing.T) {
 	claimDone := make(chan struct{})
 	go func() {
 		defer close(claimDone)
-		_, _ = sess.popQueueHeadRefusingPoison()
+		_, _, _ = sess.popQueueHeadRefusingPoison()
 	}()
 
 	// The entry seam always runs when the claim enters the serializer, so this
@@ -812,7 +817,7 @@ func TestStartClaimRefusesAnIncorporatedQueuedRecoveryWhenPoisoned(t *testing.T)
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	queueOneMutation(t, sess, "incorporated-queued-recovery", "already on disk")
-	queued, refusal := sess.popQueueHeadRefusingPoison()
+	queued, _, refusal := sess.popQueueHeadRefusingPoison()
 	if refusal != nil || queued.ClientMutationID != "incorporated-queued-recovery" {
 		t.Fatalf("setup: claimed = %#v refusal = %v", queued, refusal)
 	}
@@ -848,7 +853,7 @@ func TestRefusedTurnGateReturnsADrainClaimedQueuedMessage(t *testing.T) {
 	queueOneMutation(t, sess, "claimed-then-refused", "runs after the restart")
 
 	// Claim the message the way the drain loop does.
-	claimed, refusal := sess.popQueueHeadRefusingPoison()
+	claimed, _, refusal := sess.popQueueHeadRefusingPoison()
 	if refusal != nil || claimed.ClientMutationID != "claimed-then-refused" {
 		t.Fatalf("setup: claimed = %#v refusal = %v, want the queued message", claimed, refusal)
 	}

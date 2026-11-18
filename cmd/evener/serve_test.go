@@ -406,6 +406,7 @@ func TestQueuedInputStandDownIsReportedOnlyForRunnableWork(t *testing.T) {
 		{"found nothing to run", nil, agent.PendingInputNothingRunnable, false},
 		{"steering parked", nil, agent.PendingInputSteeringParked, true},
 		{"carrier unaddressable", nil, agent.PendingInputCarrierUnaddressable, true},
+		{"steering held by a stop", nil, agent.PendingInputStopHeld, true},
 		{"claim took nothing", nil, agent.PendingInputClaimTookNothing, true},
 		{"returned an error", errors.New("opaque-error"), agent.PendingInputSteeringParked, false},
 	}

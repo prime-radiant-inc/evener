@@ -116,7 +116,7 @@ func TestRunnableNamesTheStartTheClaimTakesWhenAQueueEntryIsAlsoClaimable(t *tes
 	// A queue entry the transcript already holds: queued, claimed through the
 	// queue path, then marked incorporated -- the queue branch's qualifying shape.
 	queueOneMutation(t, sess, "cm-incorporated-queue", "a queued message")
-	queued, refusal := sess.popQueueHeadRefusingPoison()
+	queued, _, refusal := sess.popQueueHeadRefusingPoison()
 	if refusal != nil || queued.ClientMutationID != "cm-incorporated-queue" {
 		t.Fatalf("claim the queued message: queued=%#v refusal=%v", queued, refusal)
 	}

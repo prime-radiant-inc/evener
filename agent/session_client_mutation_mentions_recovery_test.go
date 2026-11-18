@@ -132,7 +132,7 @@ func TestClientMutationMentionsClaimReturn(t *testing.T) {
 	mutations := []string{"mentions-return", "mentions-fifo"}
 	want := []queuedInput{mentionRecoveryWant(), {Text: "FIFO_SENTINEL_318"}}
 	assertMentionRecoveryQueue(t, s, ids, mutations, want)
-	claimed, err := s.popQueueHeadRefusingPoison()
+	claimed, _, err := s.popQueueHeadRefusingPoison()
 	if err != nil || claimed.ClientMutationID != params.ClientMutationID {
 		t.Fatalf("claim = %+v, err = %v", claimed, err)
 	}
@@ -174,7 +174,7 @@ func TestClientMutationMentionsClaimRefusal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	claimed, err := s.popQueueHeadRefusingPoison()
+	claimed, _, err := s.popQueueHeadRefusingPoison()
 	if err != nil || claimed.ClientMutationID != "mentions-refusal" {
 		t.Fatalf("claim = %+v, err = %v", claimed, err)
 	}

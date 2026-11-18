@@ -259,15 +259,22 @@ const (
 	// the steer runnable and the claim refused it.
 	PendingInputSteeringParked
 	// PendingInputCarrierUnaddressable reports pending user steering with no
-	// carrier available: another mutation owns the active-turn slot, or an
-	// interrupt fence is ending one. The probe found the steer runnable and
-	// the claim refused it.
+	// carrier the claim could name: another mutation owns the active-turn slot,
+	// an interrupt fence is ending one, or the claim could not be evaluated at
+	// all. The probe found the steer runnable and the wake addressed no turn to
+	// carry it.
 	PendingInputCarrierUnaddressable
+	// PendingInputStopHeld reports pending user steering a Stop holds: the rail
+	// itself is parked, not another mutation's slot. The probe found the steer
+	// runnable and the claim refused it, and the steer runs when the user asks
+	// for something to run next.
+	PendingInputStopHeld
 	// PendingInputClaimTookNothing reports that the probe called work runnable
-	// and no claim took any of it: the queue gate closed between the two (a
-	// Stop's fence or its hold). A second probe cannot tell this from a wake
-	// that ran out of work -- the gate that closed is still closed to it -- so
-	// the answer comes from what the probe saw at the time it looked.
+	// and the claim could not take the head it was asked for: the queue gate
+	// closed between the two (a Stop's fence or its hold), or the claim could
+	// not evaluate the head at all. Reported from the claim's own observation of
+	// that head, never from a second read of the store: an entry the user queues
+	// after an empty claim has its own wake, and this claim never evaluated it.
 	PendingInputClaimTookNothing
 )
 
@@ -282,7 +289,9 @@ func (o PendingInputOutcome) String() string {
 	case PendingInputSteeringParked:
 		return "steering parked by a failed attempt"
 	case PendingInputCarrierUnaddressable:
-		return "steering carrier unaddressable: an active turn or an interrupt fence owns the slot"
+		return "steering carrier unaddressable: no carrier could be named for the pending steer"
+	case PendingInputStopHeld:
+		return "steering held by a stop"
 	case PendingInputClaimTookNothing:
 		return "probe called work runnable and no claim took it"
 	default:
@@ -299,7 +308,7 @@ func (o PendingInputOutcome) String() string {
 // only has the boolean cannot see it at all.
 func (o PendingInputOutcome) RefusedRunnableInput() bool {
 	switch o {
-	case PendingInputSteeringParked, PendingInputCarrierUnaddressable, PendingInputClaimTookNothing:
+	case PendingInputSteeringParked, PendingInputCarrierUnaddressable, PendingInputStopHeld, PendingInputClaimTookNothing:
 		return true
 	default:
 		return false
@@ -368,7 +377,7 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 	// logged failure for the rest of the session's life; a wake that would
 	// claim a poisoned transcript refuses before announcing a turn it cannot
 	// record.
-	queued, refusal := s.popQueueHeadRefusingPoison()
+	queued, claimSaw, refusal := s.popQueueHeadRefusingPoison()
 	if refusal != nil {
 		return "", false, PendingInputNoOutcome, refusal
 	}
@@ -380,17 +389,19 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 		return "", false, PendingInputSteeringParked, nil
 	}
 	if !inputHasContent(queued.Text, queued.Images, queued.SkillNames, queued.CommandNames) && s.hasPendingUserSteering() {
-		carrier, carrierRefusal := s.claimSteeringCarrierInput()
+		carrier, carrierSaw, carrierRefusal := s.claimSteeringCarrierInput()
 		if carrierRefusal != nil {
 			return "", false, PendingInputNoOutcome, carrierRefusal
 		}
 		if !carrier.SteeringCarrier {
-			// Another mutation already owns the active-turn slot, or an
-			// interrupt fence is ending one: this wake cannot name itself.
-			// Stand down rather than run unaddressable -- the steering stays
-			// queued for whichever turn runs next, the same stand-down
-			// contract mintRunningTurnID's callers rely on.
-			return "", false, PendingInputCarrierUnaddressable, nil
+			// The claim reports why it named no carrier: a failed claim write
+			// parks the steer, a Stop's hold is the rail's own refusal, and
+			// anything else is a slot this wake cannot take. Stand down rather
+			// than run unaddressable -- the steering stays queued for whichever
+			// turn runs next, the same stand-down contract mintRunningTurnID's
+			// callers rely on -- and report the cause the claim observed rather
+			// than a cause this wake guessed (#6468).
+			return "", false, carrierSaw, nil
 		}
 		queued = carrier
 		// The claim is handed back by the run itself, on every exit: the
@@ -455,42 +466,23 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 		}
 		return result, ran, PendingInputClaimed, err
 	}
-	// The probe said runnable and the claim took nothing. The work is still
-	// standing exactly when it is still there; a probe that answered from a
-	// store it had not opened yet is an over-report, not runnable work, and
-	// calling that a refusal would put a standing-work line in the log for an
-	// idle session.
-	if !s.hasUnclaimedUserInput() {
+	// The probe said runnable and the claim took nothing. Whether that is
+	// accepted input standing still or a wake that ran out of work is what the
+	// claim itself saw of the head, not what the store holds now: a message the
+	// user queues after an empty claim is work this claim never evaluated, and
+	// it carries its own wake. Asking the store a second time would report a
+	// refusal for an entry that arrived too late to be refused (#6468).
+	switch claimSaw {
+	case queueClaimQueueEmpty:
+		return "", false, PendingInputNothingRunnable, nil
+	case queueClaimHeadRefused:
+		return "", false, PendingInputClaimTookNothing, nil
+	default:
+		// The claim never reached a claimability decision, so it has nothing to
+		// report about the head. A probe that answered from a store this side had
+		// not opened yet is an over-report, not runnable work.
 		return "", false, PendingInputNothingRunnable, nil
 	}
-	return "", false, PendingInputClaimTookNothing, nil
-}
-
-// hasUnclaimedUserInput reports whether the store holds any user input at all,
-// ignoring every gate: a queued message whatever the queue's gate would decide,
-// or user steering whatever state its rail is in.
-//
-// It is the second half of a stand-down's question. The probe answered
-// "runnable" through the gates and the claim then took nothing, so the gate
-// closed between the two; asking the gates again would just repeat the refusal.
-// This asks the gate-blind question instead, which is the one that separates
-// accepted input left standing from a wake that simply ran out of work.
-//
-// It reads the durable store rather than the in-memory steering mirror: after a
-// restart the mirror is rebuilt from the store, and a steer the store still
-// holds is standing work whether or not the mirror has caught up.
-func (s *Session) hasUnclaimedUserInput() bool {
-	s.clientMutationsInitMu.Lock()
-	store := s.clientMutations
-	s.clientMutationsInitMu.Unlock()
-	if store == nil {
-		return false
-	}
-	pending := false
-	store.read(func(snapshot *clientMutationSnapshot) {
-		pending = len(snapshot.InputQueue) != 0 || len(snapshot.SteeringOrder) != 0
-	})
-	return pending
 }
 
 // claimSteeringCarrierInput reserves the durable turn identity for a turn whose
@@ -501,29 +493,32 @@ func (s *Session) hasUnclaimedUserInput() bool {
 // -- rather than minting a fresh one, so the id returned in that mutation's
 // Applied receipt is the id that actually runs.
 //
-// It returns a zero carrier when nothing is claimable: an interrupt fence is
-// ending a turn, another mutation already holds the active-turn slot, or (a
-// benign race with whatever cleared hasPendingUserSteering's answer between the
+// It returns a zero carrier when nothing is claimable, with a PendingInputOutcome
+// naming what the claim observed: a Stop holds the rail, a failed claim write
+// parked the steer, another mutation holds the active-turn slot, or (a benign
+// race with whatever cleared hasPendingUserSteering's answer between the
 // caller's check and this call) no user steering is left pending. The caller
 // treats every such case the same way -- stand down -- because the steering
 // that prompted the wake, if still queued, stays queued for whichever turn runs
-// next; nothing is lost by waiting.
+// next; nothing is lost by waiting. The cause is reported rather than assumed:
+// a wake that said "an active turn owns the slot" after its own write failed
+// named a gate it never saw refuse (#6468).
 //
 // It returns a refusal instead when it would have claimed on a poisoned
 // transcript. That refusal is decided on the same generation the claim acts on
 // (inside the mutate below), so a poisoning or a Stop that lands after the
 // caller decided the steer was runnable cannot hand the steer to a turn the
 // transcript cannot record.
-func (s *Session) claimSteeringCarrierInput() (queuedInput, error) {
+func (s *Session) claimSteeringCarrierInput() (queuedInput, PendingInputOutcome, error) {
 	release, admissionErr := s.beginRetirementMutation("input")
 	if admissionErr != nil {
 		s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("steering carrier admission failed: %v", admissionErr)})
-		return queuedInput{}, nil
+		return queuedInput{}, PendingInputCarrierUnaddressable, nil
 	}
 	defer release()
 	if err := s.ensureClientMutationStore(); err != nil {
 		s.emit(events.WarningData{Message: fmt.Sprintf("open client mutation store: %v", err)})
-		return queuedInput{}, nil
+		return queuedInput{}, PendingInputCarrierUnaddressable, nil
 	}
 	// Eligibility is decided on one sample: the store as the serializer holds
 	// it, plus the in-flight set taken under s.mu just before -- the serializer
@@ -539,8 +534,16 @@ func (s *Session) claimSteeringCarrierInput() (queuedInput, error) {
 	writer := s.attachedTranscript()
 	answerToTurnIDs := s.pendingAskTurnIDs()
 	var carrier queuedInput
+	unclaimed := PendingInputCarrierUnaddressable
 	err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
 		if !steeringCarrierRailOpen(snapshot) {
+			// The rail is closed. Which gate closed it is the claim's own
+			// observation: a Stop's hold is the user's own refusal and clears
+			// when they ask for something to run, while a slot another mutation
+			// owns clears on that mutation's own settlement.
+			if snapshot.SteeringHeld {
+				unclaimed = PendingInputStopHeld
+			}
 			return nil
 		}
 		if id, turnID := claimableSteeringCarrier(snapshot, inFlight); turnID != "" {
@@ -568,7 +571,7 @@ func (s *Session) claimSteeringCarrierInput() (queuedInput, error) {
 	// A refusal is the transcript's, not the store's: distinguish it from a
 	// claim write that failed, which parks the steer with a warning instead.
 	if transcriptRefusedClaim(err) {
-		return queuedInput{}, err
+		return queuedInput{}, PendingInputNoOutcome, err
 	}
 	if err != nil {
 		// A refused write parks the steer the way a failed append does: it
@@ -576,12 +579,17 @@ func (s *Session) claimSteeringCarrierInput() (queuedInput, error) {
 		// the session from resting), and nothing here arms a wake of its own
 		// -- the next external wake, attach or any accepted client mutation,
 		// claims it again. No paced retry. A closed rail or an occupied slot
-		// returns nil above.
+		// returns nil above. The park is what refuses the steer here, so the
+		// wake reports it as parked: reporting the slot instead would name a
+		// gate this claim never saw close.
 		s.emit(events.WarningData{Message: fmt.Sprintf("claim steering carrier turn failed: %v; the steering stays queued", err)})
 		s.parkSteering()
-		return queuedInput{}, nil
+		return queuedInput{}, PendingInputSteeringParked, nil
 	}
-	return carrier, nil
+	if !carrier.SteeringCarrier {
+		return queuedInput{}, unclaimed, nil
+	}
+	return carrier, PendingInputClaimed, nil
 }
 
 // steeringCarrierRailOpen reports whether the steering rail is open to a claim

@@ -636,6 +636,50 @@ func TestQueuedInputWakeReportsTheQueueGateClosingAfterTheProbe(t *testing.T) {
 	}
 }
 
+// TestQueuedInputWakeKeepsAnEmptyClaimQuiet is the other half of the queue's
+// stand-down: a claim that found nothing must stay quiet even when the store
+// holds input by the time the wake returns.
+//
+// The probed entry is canceled before the claim, and the user queues a fresh
+// message after the claim found the queue empty. The fresh message has its own
+// wake -- its acceptance sends one -- so it is nothing this claim refused. A
+// second read of the store cannot tell the two apart: it sees the fresh entry
+// and reports a stand-down over work the claim never evaluated, which is the
+// same defect as naming a gate that never closed (#6468).
+//
+// The claim's own observation separates them, and the seam below queues the
+// fresh entry at exactly the point the claim has committed its decision.
+func TestQueuedInputWakeKeepsAnEmptyClaimQuiet(t *testing.T) {
+	t.Parallel()
+	sess := newQueuePersistTestSession(t, t.TempDir())
+	defer sess.Close()
+	queueOneMutation(t, sess, "canceled-before-the-claim", "canceled before the claim runs")
+	sess.cfg.testOnly.queueHeadClaimSampled = func() {
+		sess.cfg.testOnly.queueHeadClaimSampled = nil
+		if _, _, err := sess.CancelQueued(context.Background(), 0, ""); err != nil {
+			t.Errorf("cancel the probed entry inside the wake's window: %v", err)
+		}
+	}
+	sess.cfg.testOnly.queueHeadClaimSettled = func() {
+		sess.cfg.testOnly.queueHeadClaimSettled = nil
+		queueOneMutation(t, sess, "queued-after-the-claim", "a fresh message, with its own wake")
+	}
+
+	_, ran, outcome, err := sess.ProcessPendingUserInput(context.Background(), nil)
+	if err != nil || ran {
+		t.Fatalf("wake whose claim found an empty queue = ran %v, err %v; want a quiet stand-down", ran, err)
+	}
+	if outcome != PendingInputNothingRunnable {
+		t.Fatalf("outcome after an empty claim while the user queued fresh input = %v, want nothing-runnable: the claim never evaluated that entry", outcome)
+	}
+	if outcome.RefusedRunnableInput() {
+		t.Fatal("an empty claim is reported as runnable input a gate refused, so the daemon logs a stand-down over work this wake never saw")
+	}
+	if got := sess.queueDepth(); got != 1 {
+		t.Fatalf("QueueDepth after the empty claim = %d, want 1: the fresh message is the user's and its own wake carries it", got)
+	}
+}
+
 func TestAParkedQueueDoesNotMakeTheSessionLookBusy(t *testing.T) {
 	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())

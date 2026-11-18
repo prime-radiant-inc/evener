@@ -778,7 +778,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 						// which covers a poisoning that lands in this window.
 						if refusal := s.refuseBeforeClaimingOnUnhealthyTranscript(); refusal != nil {
 							err = errors.Join(err, refusal)
-						} else if queued, claimRefusal := s.popQueueHeadRefusingPoison(); claimRefusal != nil {
+						} else if queued, _, claimRefusal := s.popQueueHeadRefusingPoison(); claimRefusal != nil {
 							err = errors.Join(err, claimRefusal)
 						} else if inputHasContent(queued.Text, queued.Images, queued.SkillNames, queued.CommandNames) {
 							next = queued.Text
@@ -859,7 +859,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// cannot pop a message for a turn the transcript will refuse. That
 		// refusal ends the input exactly as the check would.
 		var popRefusal error
-		queued, popRefusal = s.popQueueHeadRefusingPoison()
+		queued, _, popRefusal = s.popQueueHeadRefusingPoison()
 		if popRefusal != nil {
 			return strings.Join(outputs, "\n"), s.refuseTurnOnUnhealthyTranscript(processCtx)
 		}
@@ -879,7 +879,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// wake, and this rung is not one. The selector sees the park too
 		// and takes goIdle ahead of the autonomous rungs.
 		if !inputHasContent(queued.Text, queued.Images, queued.SkillNames, queued.CommandNames) && !s.steeringParkedNow() && s.hasPendingUserSteering() {
-			carrier, carrierRefusal := s.claimSteeringCarrierInput()
+			carrier, _, carrierRefusal := s.claimSteeringCarrierInput()
 			if carrierRefusal != nil {
 				return strings.Join(outputs, "\n"), s.refuseTurnOnUnhealthyTranscript(processCtx)
 			}

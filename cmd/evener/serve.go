@@ -965,7 +965,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			// it found. The success and stand-down paths both return a nil
 			// error, so this is the only thing that distinguishes accepted
 			// input a gate refused from a wake that found nothing (#6468).
-			pendingInput := agent.PendingInputNoOutcome
+			// It is declared rather than seeded: PendingInputNoOutcome is the
+			// type's zero value, and an explicit assignment of it is what
+			// ineffassign reads as dead.
+			var pendingInput agent.PendingInputOutcome
 			processed := true
 			if msg.ClientMutationStart {
 				result, processed, processErr = sess.ProcessClientMutationStart(turnCtx, func(turnID string, phase agent.ClientMutationStartPhase) {

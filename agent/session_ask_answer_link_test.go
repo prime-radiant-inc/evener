@@ -282,7 +282,7 @@ func TestAskUser_AnswerLinkJournalCopyIsolation(t *testing.T) {
 	if _, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{ClientMutationID: "copy-link", Input: clientMutationInput("answer", nil, nil)}); err != nil {
 		t.Fatal(err)
 	}
-	claim, err := sess.claimSteeringCarrierInput()
+	claim, _, err := sess.claimSteeringCarrierInput()
 	if err != nil || !claim.SteeringCarrier {
 		t.Fatalf("claim=%+v err=%v", claim, err)
 	}

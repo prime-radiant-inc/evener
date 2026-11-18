@@ -98,6 +98,12 @@ type testConfig struct {
 	// Session.mu work (the transcript writer sample) and is about to enter the
 	// serializer. Nil in production.
 	queueHeadClaimSampled func()
+	// queueHeadClaimSettled observes a queue-head claim that has committed its
+	// decision and returned it -- including the decision to take nothing. Tests
+	// use it to queue fresh input after the claim evaluated the head, which is
+	// the window a second store read would mistake for a refused head. Nil in
+	// production.
+	queueHeadClaimSettled func()
 	// turnGateSampledTranscript observes the turn gate after it sampled the
 	// attached transcript writer and before it decided the refusal. The hook
 	// runs with no session lock held; tests use it to replace and close that

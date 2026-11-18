@@ -510,9 +510,32 @@ func queuedEntryPreviewLine(entry queuedInput) string {
 // turn it claimed -- the wake and the drain loop -- reads the refusing form
 // instead, so no call can announce a turn the transcript cannot record.
 func (s *Session) popQueueHead() queuedInput {
-	queued, _ := s.popQueueHeadRefusingPoison()
+	queued, _, _ := s.popQueueHeadRefusingPoison()
 	return queued
 }
+
+// queueClaimObservation names what a queue-head claim saw of the head when it
+// decided not to take it, so a caller can tell a gate's refusal of standing
+// work from a claim that found nothing -- without asking the store a second
+// time. A second read answers a different question: it sees entries the claim
+// never evaluated, such as one the user queued after the claim found the queue
+// empty, and calling that a refusal reports a cause the claim did not observe
+// (#6468).
+type queueClaimObservation int
+
+const (
+	// queueClaimNotEvaluated is the zero value: the claim never reached a
+	// claimability decision, or it returned an error that is reported as one.
+	queueClaimNotEvaluated queueClaimObservation = iota
+	// queueClaimQueueEmpty reports that the claim read an empty input queue: no
+	// work was standing for a gate to refuse.
+	queueClaimQueueEmpty
+	// queueClaimHeadRefused reports that the claim read a queue head it could not
+	// take -- a Stop's fence or hold, an entry another mutation reserved, or a
+	// write of the claim itself that the store refused. Standing work is the
+	// claim's own finding in every one of those cases.
+	queueClaimHeadRefused
+)
 
 // popQueueHeadRefusingPoison is the queue head's claim: it returns the entry it
 // took, or the poisoned-transcript refusal that stopped it, or neither when the
@@ -522,16 +545,19 @@ func (s *Session) popQueueHead() queuedInput {
 // work and this claim cannot make the refusal and the claim disagree: whenever
 // this would claim, it also refuses a poisoned transcript, and a claimable
 // state that never materializes is quiet rather than an error.
-func (s *Session) popQueueHeadRefusingPoison() (queuedInput, error) {
+//
+// The observation reports what this claim saw of the head when it took nothing,
+// for the caller that has to say whether accepted input is standing.
+func (s *Session) popQueueHeadRefusingPoison() (queuedInput, queueClaimObservation, error) {
 	release, admissionErr := s.beginRetirementMutation("input")
 	if admissionErr != nil {
 		s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("input admission failed: %v", admissionErr)})
-		return queuedInput{}, nil
+		return queuedInput{}, queueClaimNotEvaluated, nil
 	}
 	defer release()
 	if err := s.ensureClientMutationStore(); err != nil {
 		s.emit(events.WarningData{Message: fmt.Sprintf("open client mutation store: %v", err)})
-		return queuedInput{}, nil
+		return queuedInput{}, queueClaimNotEvaluated, nil
 	}
 	// The writer is sampled under s.mu here, before the serializer takes
 	// clientMutations.mu; the claim reads only the writer's own lock inside, so
@@ -541,11 +567,17 @@ func (s *Session) popQueueHeadRefusingPoison() (queuedInput, error) {
 		s.cfg.testOnly.queueHeadClaimSampled()
 	}
 	var queued queuedInput
+	observed := queueClaimNotEvaluated
 	err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
 		if s.cfg.testOnly.queueHeadClaimInSerializer != nil {
 			s.cfg.testOnly.queueHeadClaimInSerializer()
 		}
 		if !queueHeadClaimable(snapshot) {
+			if len(snapshot.InputQueue) == 0 {
+				observed = queueClaimQueueEmpty
+			} else {
+				observed = queueClaimHeadRefused
+			}
 			return nil
 		}
 		// The transcript's refusal is part of the claim decision, read on the
@@ -585,16 +617,21 @@ func (s *Session) popQueueHeadRefusingPoison() (queuedInput, error) {
 	// A refusal is the transcript's, not the store's: distinguish it from a
 	// claim write that failed, which stands down with a warning instead.
 	if transcriptRefusedClaim(err) {
-		return queuedInput{}, err
+		return queuedInput{}, queueClaimNotEvaluated, err
 	}
 	if err != nil {
 		s.emit(events.WarningData{Message: fmt.Sprintf("claim queued input failed: %v", err)})
-		return queuedInput{}, nil
+		// The write is the refusal here, and the message is still queued: the
+		// claim did evaluate standing work and could not move it.
+		return queuedInput{}, queueClaimHeadRefused, nil
 	}
 	if queued.ClientMutationID != "" {
 		s.reflectDurableInputQueue()
 	}
-	return queued, nil
+	if s.cfg.testOnly.queueHeadClaimSettled != nil {
+		s.cfg.testOnly.queueHeadClaimSettled()
+	}
+	return queued, observed, nil
 }
 
 // queueHeadClaimable reports whether the queue head is one popQueueHead may

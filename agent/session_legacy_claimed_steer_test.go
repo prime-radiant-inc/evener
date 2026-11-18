@@ -59,7 +59,7 @@ func TestRestoreQueuesALegacyClaimedSteerOnce(t *testing.T) {
 	if queued != 1 {
 		t.Fatalf("the legacy claimed steer is queued %d time(s) after restore, want once", queued)
 	}
-	if carrier, _ := restored.claimSteeringCarrierInput(); !carrier.SteeringCarrier {
+	if carrier, _, _ := restored.claimSteeringCarrierInput(); !carrier.SteeringCarrier {
 		t.Fatal("the restored steer cannot claim a carrier: it will never reach the model")
 	}
 }
