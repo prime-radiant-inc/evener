@@ -460,13 +460,19 @@ const DenseRowView = memo(function DenseRowView({
 }: DenseRowViewProps): ReactNode {
   const name = row.kind === "job" ? row.job.description : delegateName(row.delegate);
   const statusText = rowStatusText(row);
+  // The row's accessible description keeps the status word so the state stays
+  // reachable, and adds the drain wait when there is one: the wait is the
+  // reason the run is still open, and a screen reader that heard only
+  // "running" would miss it exactly as the visible row would have.
+  const wait = row.kind === "delegate" ? delegateWaitText(row.delegate) : "";
+  const description = wait === "" ? statusText : `${statusText}, ${wait}`;
   const target = transcriptTarget(row);
   return (
     <Fragment>
       <RowShell
         row={row}
         name={name}
-        description={statusText}
+        description={description}
         detailOpen={detailOpen}
         tabIndex={tabIndex}
         onSetDetailOpen={onSetDetailOpen}

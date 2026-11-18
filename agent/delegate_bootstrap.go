@@ -115,10 +115,36 @@ func (s *Session) setDrainHeld(held bool) {
 	if s.drainHeld.Swap(held) == held {
 		return
 	}
+	// Only a delegate row carries the hold. A root session's own drain parks
+	// the same way but has nobody to tell, so the edge above leaves the flag
+	// alone and this publishes nothing.
 	if s.delegateController == nil || s.owningDelegateID == "" {
 		return
 	}
 	s.delegateController.publishDelegateHold(s.ID(), s.owningDelegateID)
+}
+
+// drainTurnHidesHold wraps a drain turn so this delegate's row stops
+// claiming a shell wait while the drain is running a model turn.
+//
+// The drain parks the run on its owned jobs, but it also runs turns to handle
+// their completions and its own announcements. During such a turn the delegate
+// is working: its intent moves and the row must say what it is doing, not that
+// it is waiting on a shell. A fresh read in that window would otherwise replace
+// the delegate's current work with the wait — the same conflation of "a shell
+// exists" with "the run is held" that the count alone had.
+//
+// The parking hold itself is untouched: the drain still waits on every owned
+// job exactly as before. Only the row's claim is suspended for the turn, and
+// restored through the same edge publication, so a client sees the wait resume
+// when the drain parks again.
+func (s *Session) drainTurnHidesHold(process func(context.Context, string, []ImageAttachment, EntryKind) (string, error)) func(context.Context, string, []ImageAttachment, EntryKind) (string, error) {
+	return func(ctx context.Context, input string, images []ImageAttachment, kind EntryKind) (string, error) {
+		prior := s.drainHeld.Load()
+		s.setDrainHeld(false)
+		defer s.setDrainHeld(prior)
+		return process(ctx, input, images, kind)
+	}
 }
 
 func (s *Session) emitDelegateUpdate(plan delegateUpdatePlan) {

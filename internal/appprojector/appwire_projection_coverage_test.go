@@ -93,3 +93,51 @@ func TestMergeAppwireDelegateInfoEmptyCurrent(t *testing.T) {
 		t.Fatal("should use incoming")
 	}
 }
+
+// The drain hold is its own facet, outside the projection-revision ladder:
+// entering or leaving the drain appends no durable delegate event and moves no
+// durable field, and the hold freezes LatestActivityAt for its whole span, so
+// both edges arrive at the revision already recorded. Before this the merge
+// returned changed=false and the projector dropped the frame, which is exactly
+// the update a loaded row needs.
+func TestMergeAppwireDelegateInfoHoldAtUnchangedRevision(t *testing.T) {
+	current := appwire.EvenerDelegateInfo{
+		DelegateID:         "dlg_1",
+		ProjectionRevision: 4,
+		Status:             "running",
+		LatestActivityAt:   "2024-01-01T00:00:00Z",
+	}
+	held := appwire.EvenerDelegateInfo{
+		DelegateID:                "dlg_1",
+		ProjectionRevision:        4,
+		Status:                    "running",
+		LatestActivityAt:          "2024-01-01T00:00:00Z",
+		DrainHeldByJobs:           true,
+		RunningJobCount:           1,
+		OldestRunningJobStartedAt: "2024-01-01T00:00:00Z",
+	}
+	merged, changed := mergeAppwireDelegateInfo(current, held)
+	if !changed {
+		t.Fatal("the hold at an unchanged revision was dropped; a loaded row would never learn the wait")
+	}
+	if !merged.DrainHeldByJobs || merged.RunningJobCount != 1 || merged.OldestRunningJobStartedAt == "" {
+		t.Fatalf("merged hold = %v, count = %d, oldest = %q; want the frame's hold",
+			merged.DrainHeldByJobs, merged.RunningJobCount, merged.OldestRunningJobStartedAt)
+	}
+
+	// The release edge, at the same revision again: the row must stop
+	// claiming the wait rather than keeping the last hold forever.
+	released, changed := mergeAppwireDelegateInfo(merged, current)
+	if !changed {
+		t.Fatal("the release at an unchanged revision was dropped; the row would keep claiming the wait")
+	}
+	if released.DrainHeldByJobs || released.RunningJobCount != 0 || released.OldestRunningJobStartedAt != "" {
+		t.Fatalf("released hold = %v, count = %d, oldest = %q; want all three cleared",
+			released.DrainHeldByJobs, released.RunningJobCount, released.OldestRunningJobStartedAt)
+	}
+
+	// A frame that repeats the hold states nothing new.
+	if _, changed := mergeAppwireDelegateInfo(held, held); changed {
+		t.Fatal("a repeated hold frame published an update")
+	}
+}

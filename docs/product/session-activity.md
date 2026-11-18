@@ -395,6 +395,12 @@ delegate with no hold omits all three, and a client must read that omission as
 never send them. The phone does not render them yet; its delegate row keeps
 showing the stale `latestActivityAt` and thereby nothing new about the wait.
 
+The hold states the wait, not the drain's whole span. The drain also runs turns
+to handle a job completion or its own announcement, and during one the delegate
+is working: the hold is suspended for that turn and restored as the drain parks
+again, so a read in that window reports the work the delegate is doing instead
+of a wait it is not in.
+
 A subagent row's leading mark is the session status dot on every surface, with
 one state the session vocabulary does not have: quiet. An open run shows the
 alive dot while fresh, dims it to quiet ink once its latest activity passes

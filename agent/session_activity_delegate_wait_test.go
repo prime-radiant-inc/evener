@@ -218,14 +218,15 @@ func newDrainHoldFixture(t *testing.T) *drainHoldFixture {
 			}
 		}
 	}()
-	// Cleanups run in reverse of registration: the recorder stops first, then
-	// the held shell is released, then the session closes, and the provider
-	// step stays blocked until the very end. The shell has to be gone before
-	// the session's state directory is removed, and a step unblocked early
-	// would run a turn on a session that is closing.
-	t.Cleanup(f.releaseProviderCall)
+	// Cleanups run in reverse of registration, so the run order is: stop the
+	// recorder, release the blocked provider step, release the held shell,
+	// then close the session. The step must be released before Close or the
+	// delegate's stop spends its join budget on a channel that ignores
+	// cancellation, and the shell must be gone before the session's state
+	// directory is removed.
 	t.Cleanup(parent.Close)
 	t.Cleanup(env.releaseJob)
+	t.Cleanup(f.releaseProviderCall)
 	t.Cleanup(func() { close(f.stop) })
 
 	result := parent.createDelegate(context.Background(), delegateArgs{Task: "run a held background shell"})
@@ -372,4 +373,61 @@ func TestDelegateActivityRowLearnsTheDrainHoldWithoutARepeatRead(t *testing.T) {
 		}
 		return false
 	})
+}
+
+// The drain parks the run on its owned jobs, but it also runs turns to handle a
+// completion or its own announcement. During such a turn the delegate is
+// working, so its row must stop claiming the shell wait and say what the turn
+// is doing; the wait resumes as the drain parks again. Without this a fresh read
+// in that window replaces the delegate's current work with the wait.
+func TestDrainTurnSuspendsTheRowHoldAndRestoresIt(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("idle") },
+	}})
+	session, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
+		StateDir: stateDir,
+		testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(session.Close)
+
+	// The parking hold, as the finalization drain sets it.
+	session.drainHeld.Store(true)
+	seen := make([]bool, 0, 1)
+	wrapped := session.drainTurnHidesHold(func(context.Context, string, []ImageAttachment, EntryKind) (string, error) {
+		seen = append(seen, session.drainHeld.Load())
+		return "turn done", nil
+	})
+	res, err := wrapped(t.Context(), "", nil, EntryNotification)
+	if err != nil {
+		t.Fatalf("the wrapped drain turn failed: %v", err)
+	}
+	if res != "turn done" {
+		t.Fatalf("the wrapped turn returned %q, want the turn's own result", res)
+	}
+	if len(seen) != 1 || seen[0] {
+		t.Fatalf("the hold during the turn = %v, want it suspended for the whole turn", seen)
+	}
+	if !session.drainHeld.Load() {
+		t.Fatal("the hold was not restored after the turn; the row would stop reporting a wait that still holds")
+	}
+
+	// A session that was not parked keeps it clear: the wrapper restores what it
+	// found rather than asserting the hold.
+	session.drainHeld.Store(false)
+	var duringClear bool
+	if _, err := session.drainTurnHidesHold(func(context.Context, string, []ImageAttachment, EntryKind) (string, error) {
+		duringClear = session.drainHeld.Load()
+		return "", nil
+	})(t.Context(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("the wrapped turn failed: %v", err)
+	}
+	if duringClear || session.drainHeld.Load() {
+		t.Fatal("the wrapper set a hold on a session that was not parked")
+	}
 }

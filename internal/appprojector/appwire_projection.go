@@ -547,6 +547,28 @@ func mergeAppwireDelegateInfo(current, incoming appwire.EvenerDelegateInfo) (app
 	if delegateActivityAfter(incoming.LatestActivityAt, current.LatestActivityAt) {
 		merged := appwire.CloneDelegateInfo(current)
 		merged.LatestActivityAt = incoming.LatestActivityAt
+		// The hold moves at a revision the row already holds, so it rides
+		// every forward merge rather than being stranded at the revision it
+		// arrived with.
+		merged.DrainHeldByJobs = incoming.DrainHeldByJobs
+		merged.RunningJobCount = incoming.RunningJobCount
+		merged.OldestRunningJobStartedAt = incoming.OldestRunningJobStartedAt
+		return merged, true
+	}
+	// The drain hold is its own facet, outside the revision ladder. Entering
+	// or leaving the drain appends no durable delegate event and moves no
+	// durable field, and the hold freezes LatestActivityAt for its whole
+	// span, so both edges arrive here at the revision already recorded with
+	// nothing above to carry them. Without this the projector would return
+	// nil and the edge would never reach a loaded row — the one thing the
+	// hold exists to make visible.
+	if current.DrainHeldByJobs != incoming.DrainHeldByJobs ||
+		current.RunningJobCount != incoming.RunningJobCount ||
+		current.OldestRunningJobStartedAt != incoming.OldestRunningJobStartedAt {
+		merged := appwire.CloneDelegateInfo(current)
+		merged.DrainHeldByJobs = incoming.DrainHeldByJobs
+		merged.RunningJobCount = incoming.RunningJobCount
+		merged.OldestRunningJobStartedAt = incoming.OldestRunningJobStartedAt
 		return merged, true
 	}
 	return current, false

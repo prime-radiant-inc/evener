@@ -189,6 +189,18 @@ export class SessionActivityStore {
   /** Latest pushed frame per unknown row identity, applied once a read admits
    * the row so a settle during a later-page read is not dropped. */
   private readonly bufferedUnknownDelegates = new Map<string, EvenerDelegateInfo>();
+  /** The hold freshness of every row identity: a monotonic stamp saying which
+   * of a read's snapshot and a frame's hold is newer. Entering and leaving the
+   * drain move no durable delegate field, so the projection revision cannot
+   * order the hold -- both edges arrive at the revision the row already holds,
+   * and a read that captured its row before the edge can arrive after it. The
+   * stamp is what decides, and it is shared by reads, loaded frames, and
+   * buffered frames so all three arrive at one answer. */
+  private readonly delegateHoldStamps = new Map<string, number>();
+  /** The next hold stamp to hand out. Every frame that applies a hold bumps
+   * it, so a read can compare the stamp it was issued at with the stamp its
+   * rows have since reached. */
+  private holdFreshness = 0;
   /** Whether a buffered frame was evicted before a read could place it. A walk
    * in flight keeps the frames for the rows it will settle, so the recovery read
    * waits for that walk to finish rather than restarting it. */
@@ -468,6 +480,11 @@ export class SessionActivityStore {
       const cursor = root ? undefined : read.cursor;
       let generation = this.generation;
       const releases = read.releases;
+      // The hold as this read will see it: a response captured before a hold
+      // edge and delivered after it must not clear the edge. The mark is taken
+      // at issue, before the request is sent, so any frame that arrives while
+      // this read is in flight is newer than the snapshot it carries.
+      const holdMark = this.holdFreshness;
       // A read is stale once the store is disposed, its context is replaced,
       // or its collection's last observer leaves (even from a listener during
       // one of this read's own publishes): from then on nothing it does lands.
@@ -620,6 +637,7 @@ export class SessionActivityStore {
               rows as readonly SessionDelegate[],
               current.rows as readonly SessionDelegate[],
               new Set(page.rows.map((row) => rowIdentity("delegates", row))),
+              holdMark,
             );
           }
           if (reachedBoundary) {
@@ -993,6 +1011,9 @@ export class SessionActivityStore {
    * so eviction drops the coldest identity rather than one a frame just
    * refreshed. */
   private bufferDelegateFrame(frame: EvenerDelegateInfo, identity: string): void {
+    // A buffered frame is still newer news than any read already in flight:
+    // stamp it on receipt, so the read that admits its row lets its hold stand.
+    this.noteDelegateHold(frame);
     const buffered = this.bufferedUnknownDelegates.get(identity);
     if (buffered) this.bufferedUnknownDelegates.delete(identity);
     this.bufferedUnknownDelegates.set(
@@ -1098,13 +1119,30 @@ export class SessionActivityStore {
     // at the revision the row already carries. A frame is the only ordered
     // carrier of that fact, so it always supplies it -- while every other field
     // keeps the ordering above.
+    // Receipt is the ordering: this frame is newer news than any read already
+    // in flight, so its stamp is what a resolving read compares against.
+    this.noteDelegateHold(frame);
     const held = joinDelegateHold(merged, frame);
     return delegateRowsEqual(held, current) ? current : held;
+  }
+  /** Stamps a frame's hold as the newest known for its row identity. The
+   * publisher fills the whole facet on both edges, so the newest frame is the
+   * current fact, whatever revision it arrived at. */
+  private noteDelegateHold(frame: EvenerDelegateInfo): number {
+    this.holdFreshness += 1;
+    this.delegateHoldStamps.set(delegateIdentityKey(frame.delegateId, frame.childRef ?? ""), this.holdFreshness);
+    return this.holdFreshness;
+  }
+  /** The stamp this row's hold has reached, or 0 when no frame has ever named
+   * it. A read issued before a stamp must not overwrite that frame's hold. */
+  private holdStampOf(row: SessionDelegate): number {
+    return this.delegateHoldStamps.get(delegateIdentityKey(row.delegateId, row.childRef ?? "")) ?? 0;
   }
   private joinDelegateRows(
     incoming: readonly SessionDelegate[],
     previous: readonly SessionDelegate[],
     served: ReadonlySet<string>,
+    holdMark: number,
   ): SessionDelegate[] {
     const previousById = new Map(previous.map((row) => [rowIdentity("delegates", row), row]));
     // A response naming an epoch the ordering has left is late, not news: its
@@ -1136,7 +1174,15 @@ export class SessionActivityStore {
           existing ?? row,
           currentOrdering && revisionOf(row.projectionRevision) >= applied,
         );
-        merged = existing && delegateRowsEqual(candidate, existing) ? existing : candidate;
+        // A snapshot inside a read carries the hold as of the read's issue. A
+        // frame that touched this identity since then is newer news, so the
+        // hold it delivered stands against the snapshot while every other
+        // field keeps the ordering above.
+        const resolved =
+          existing !== undefined && this.holdStampOf(existing) > holdMark
+            ? keepDelegateHold(candidate, existing)
+            : candidate;
+        merged = existing && delegateRowsEqual(resolved, existing) ? existing : resolved;
       }
       // Only a row this response served carries this response's journal: a row
       // it did not serve was retained from an earlier epoch, and recording it
@@ -1587,6 +1633,24 @@ function joinDelegateHold(row: SessionDelegate, frame: EvenerDelegateInfo): Sess
   };
 }
 
+/** A row wearing the hold another row already carries, for the fields the
+ * hold owns. Used where the hold is newer than the snapshot being applied. */
+function keepDelegateHold(row: SessionDelegate, holds: SessionDelegate): SessionDelegate {
+  if (
+    (row.drainHeldByJobs ?? false) === (holds.drainHeldByJobs ?? false) &&
+    row.runningJobCount === holds.runningJobCount &&
+    row.oldestRunningJobStartedAt === holds.oldestRunningJobStartedAt
+  ) {
+    return row;
+  }
+  return {
+    ...row,
+    drainHeldByJobs: holds.drainHeldByJobs,
+    runningJobCount: holds.runningJobCount,
+    oldestRunningJobStartedAt: holds.oldestRunningJobStartedAt,
+  };
+}
+
 /** The frame fields a row merge can apply. The raw report payload and the model
  * preferences a row does not carry are not part of the row, and a buffered frame
  * waits for a read to admit the row, so keeping them would let 128 buffered
@@ -1610,11 +1674,22 @@ function boundedDelegateFrame(frame: EvenerDelegateInfo): EvenerDelegateInfo {
  * greater revision supplies the fields, latestActivityAt is the independent
  * maximum. Mirrors `mergeDelegateFrame` for a row not yet loaded. */
 function mergeDelegateFrames(current: EvenerDelegateInfo, frame: EvenerDelegateInfo): EvenerDelegateInfo {
-  return joinDelegateState(
+  const merged = joinDelegateState(
     frame,
     current,
     revisionOf(frame.projectionRevision) > revisionOf(current.projectionRevision),
   );
+  // Both edges of the drain hold arrive at the revision the row already
+  // carries, so the ladder above leaves the earlier frame's hold standing and
+  // a buffered row would settle holding a wait that has since ended (or miss
+  // one that has since begun). Buffered frames are merged in arrival order, so
+  // the later one's hold facet is the current fact.
+  return {
+    ...merged,
+    drainHeldByJobs: frame.drainHeldByJobs,
+    runningJobCount: frame.runningJobCount,
+    oldestRunningJobStartedAt: frame.oldestRunningJobStartedAt,
+  };
 }
 /** Every field a delegate row carries, as a keyed set: the `Record` type fails
  * to compile while one is missing, so a field added to the wire row cannot be

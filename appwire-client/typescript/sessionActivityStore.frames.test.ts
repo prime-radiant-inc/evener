@@ -1,3 +1,47 @@
+// The buffered half of the same ordering. A row no loaded page can take yet
+// holds its frames; both hold edges arrive at the same revision, so the ladder
+// would settle the buffered pair on the earlier edge and the admitted row would
+// wear a wait that has already ended.
+test("a buffered pre-hold frame cannot outlive the edge that clears it", async () => {
+  const client = pushClient();
+  const admit = deferred<void>();
+  const readStarted = deferred<void>();
+  const context = pushContext();
+  let served = 0;
+  client.on("evener/thread/delegates/list", async ({ scope }) => {
+    served += 1;
+    if (served > 1) {
+      readStarted.resolve();
+      await admit.promise;
+    }
+    return {
+      context,
+      scope: scope ?? "session",
+      page: { complete: true, issues: [] },
+      // The row the buffer's identity names is admitted only by the second
+      // response, so both edges below buffer behind the first.
+      delegates: served > 1 ? [delegateRow({ projectionRevision: 4 })] : [],
+    };
+  });
+  const store = owner(client);
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.complete);
+
+  // Both edges for a row the loaded set does not carry yet.
+  const held = frameInfo({ projectionRevision: 4, drainHeldByJobs: true, runningJobCount: 1 });
+  client.emitNotification(pushedFrame(held));
+  client.emitNotification(pushedFrame(frameInfo({ projectionRevision: 4 })));
+
+  // The read that admits the row arrives after both edges.
+  activityChanged(client, ["delegates"]);
+  await readStarted.promise;
+  admit.resolve();
+  await activityState(store, () => store.getSnapshot().delegates.rows.length === 1);
+  const row = store.getSnapshot().delegates.rows[0];
+  expect(row?.drainHeldByJobs ?? false).toBe(false);
+  expect(row?.runningJobCount ?? 0).toBe(0);
+});
+
 // @vitest-environment node
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { WireError } from "./errors";
@@ -475,6 +519,64 @@ test("clearing the hold at an unchanged revision empties the wait", async () => 
   expect(row?.drainHeldByJobs ?? false).toBe(false);
   expect(row?.runningJobCount ?? 0).toBe(0);
   expect(row?.oldestRunningJobStartedAt ?? "").toBe("");
+});
+
+// The inverse arrival order: a delegates refresh captures a running row just
+// before the drain starts, and its reply lands after the hold frame. At the
+// same revision the read used to clear the hold, and the row then missed the
+// wait for the rest of its duration. The hold carries its own freshness, so
+// the newer frame stands against the older snapshot while every durable field
+// keeps the revision ordering.
+test("a read that predates the hold cannot clear it", async () => {
+  const client = pushClient();
+  const refresh = deferred<void>();
+  const started = deferred<void>();
+  const context = pushContext();
+  let served = 0;
+  client.on("evener/thread/delegates/list", async ({ scope }) => {
+    served += 1;
+    // The first page loads the row; the second is the refresh captured before
+    // the hold, held open until after the frame has landed.
+    if (served > 1) {
+      started.resolve();
+      await refresh.promise;
+    }
+    return {
+      context,
+      scope: scope ?? "session",
+      page: { complete: true, issues: [] },
+      // The refresh's page carries a durable change, so the test can await the
+      // landing it is judging: a read that never arrived would prove nothing.
+      delegates: [delegateRow({ projectionRevision: 4, latestIntent: served > 1 ? "Refreshed." : undefined })],
+    };
+  });
+  const store = owner(client);
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.complete);
+
+  // Ask for the refresh, then deliver the hold before the refresh resolves.
+  activityChanged(client, ["delegates"]);
+  await started.promise;
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({
+        projectionRevision: 4,
+        drainHeldByJobs: true,
+        runningJobCount: 1,
+        oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
+      }),
+    ),
+  );
+  // The frame must have landed before the older snapshot resolves, or the test
+  // is not exercising the ordering it names.
+  await activityState(store, () => store.getSnapshot().delegates.rows[0]?.drainHeldByJobs === true);
+  refresh.resolve();
+  // Wait for the read itself to land. Its durable field is what proves it
+  // arrived; the hold is the fact this test is about.
+  await activityState(store, () => store.getSnapshot().delegates.rows[0]?.latestIntent === "Refreshed.");
+  const row = store.getSnapshot().delegates.rows[0];
+  expect(row?.drainHeldByJobs).toBe(true);
+  expect(row?.runningJobCount).toBe(1);
 });
 
 test("a resume clears the prior report", async () => {
