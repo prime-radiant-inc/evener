@@ -199,8 +199,8 @@ func TestReplayBlockFollowsRenderedChanges(t *testing.T) {
 			t.Fatal("an unrelated observation cleared the saved prompt's unknown branch")
 		}
 		observed.gitBranchUnknown = false
-		clear := reader.RenderDiff(observed)
-		if !model.ReplayBlock(clear) || model.State().Last.GitBranch != "" || !writer.ReplayBlock(clear) || writer.State().GitBranchUnknown {
+		update := reader.RenderDiff(observed)
+		if !model.ReplayBlock(update) || model.State().Last.GitBranch != "" || !writer.ReplayBlock(update) || writer.State().GitBranchUnknown {
 			t.Fatal("the confirmed absence did not clear the branch for both the model and the restored tracker")
 		}
 		if repeat := writer.RenderDiff(observed); repeat != "" {
