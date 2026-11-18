@@ -354,13 +354,6 @@ type preludeMemo struct {
 	epoch   uint64
 	turns   uint64
 	indexed bool
-	// itemCount is how many items the summary that represents the prelude's id
-	// holds, and counted is whether that answer is known for this table state.
-	// A preludeCandidate needs it to report a continuation, and it costs a
-	// record read a lookup away, so it rides in the memo preludeBoundary
-	// already keeps rather than in a second cache of its own.
-	itemCount uint32
-	counted   bool
 }
 
 // preludeStore is where a view keeps its preludeBoundary answer: the handle
