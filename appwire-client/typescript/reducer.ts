@@ -60,6 +60,29 @@ function sourceReplaced(held: HistoryState, bootGeneration: string | undefined):
   return compareBootGeneration(holdOwnerBoot(held), bootGeneration) === "replace";
 }
 
+// retireReplacedSourceHold is THE hold-retirement rule, for every caller that
+// folds a boot-changing notification into a transcript model. History
+// validity and hold ownership are different questions: a notification that
+// only bumps the epoch or incarnation leaves the owning daemon's delegate
+// controller sampling, so its hold survives; only a notification naming a
+// different source (a different boot generation) retires the samples, because
+// that source numbers its sequences from its own start. Callers that hold the
+// model somewhere other than this fold — the web store's entry-backed
+// transcript model, which the resync branch publishes before its targeted read
+// — must run this same rule over that model, or the retired daemon's larger
+// sequence outranks the replacement's first unheld frame while the read is
+// pending, and a failed read leaves the finished wait standing.
+export function retireReplacedSourceHold<M extends ThreadModel>(
+  model: M,
+  bootGeneration: string | undefined,
+): M | undefined {
+  const held = model.history;
+  if (!held || !sourceReplaced(held, bootGeneration)) return undefined;
+  const delegates = retireStableDelegateHolds(model.delegates);
+  if (delegates === undefined || delegates === model.delegates) return undefined;
+  return { ...model, delegates } as M;
+}
+
 // history/updated: the full current form of every recorded item and turn an
 // entry changed, merged by version under the one generation state machine.
 function applyHistoryUpdated<M extends ThreadModel>(model: M, params: HistoryUpdatedParams, now: number): M {
@@ -82,8 +105,9 @@ function applyHistoryUpdated<M extends ThreadModel>(model: M, params: HistoryUpd
   // unchanged hold emits no update of its own to restore what we dropped.
   if (action === "invalidate") {
     const history = invalidated(held, signal);
-    const retired = sourceReplaced(held, params.bootGeneration) ? retireStableDelegateHolds(live.delegates) : undefined;
-    return retired === undefined ? { ...live, history } : { ...live, history, delegates: retired };
+    const retired = retireReplacedSourceHold(live, params.bootGeneration);
+    const base = retired ?? live;
+    return { ...base, history };
   }
   if (action === "ignore" || held.invalidatedAtGeneration !== undefined) return live;
   // A notification projected after the page that omitted one of its identities
@@ -112,8 +136,8 @@ function applyResync<M extends ThreadModel>(model: M, params: ThreadResyncParams
   // a daemon's own transcript index names that same daemon, so its live hold
   // survives; only a different boot generation retires the sample.
   const history = invalidated(held, signal);
-  const retired = sourceReplaced(held, params.bootGeneration) ? retireStableDelegateHolds(live.delegates) : undefined;
-  return retired === undefined ? { ...live, history } : { ...live, history, delegates: retired };
+  const retired = retireReplacedSourceHold(live, params.bootGeneration);
+  return { ...(retired ?? live), history };
 }
 
 // overlay/delta appends to one stream, preview or tool item. Only the display

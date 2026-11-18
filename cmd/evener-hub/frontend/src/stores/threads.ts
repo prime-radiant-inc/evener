@@ -61,6 +61,7 @@ import {
   olderHistoryExhausted,
   pruneBackgroundHistoryBodies,
   resolvePendingEscalation,
+  retireReplacedSourceHold,
   retireThreadSubscriptions,
   SHUT_DOWN_STATUSES,
   type ThreadSubscriptionLease,
@@ -6820,6 +6821,25 @@ function acceptEntryNotification(
   return accepted;
 }
 
+// retireReplacedSourceHoldBeforeResync applies the reducer's hold-retirement
+// rule to every browser-held model of `ref` before a resync's targeted read
+// starts. A notification naming a different source retires the hold samples on
+// each model that owns one, so the replaced daemon's larger sequence cannot
+// outrank the replacement's first unheld frame while the read is pending — nor
+// survive a read that fails, since nothing else emits an update for an
+// unchanged hold. Same-source and bootless resyncs retire nothing: that
+// daemon's delegate controller is still sampling its own sequence.
+function retireReplacedSourceHoldBeforeResync(ref: string, bootGeneration: string | undefined): void {
+  // The repository publishes its own retirement, which reaches the store model
+  // through the route's subscription. The store pass below then finds no hold
+  // sample left and publishes nothing; it is what covers a model with no route
+  // (a legacy or watched-only ref), which has no repository to retire.
+  entryTranscriptRoute(ref)?.repository?.retireHoldForReplacedSource(bootGeneration);
+  const current = threadsStore.getState().threads.get(ref);
+  const retired = current && retireReplacedSourceHold(current, bootGeneration);
+  if (retired) putThreadModel(ref, retired);
+}
+
 function handleNotification(n: AnyNotification): void {
   if (n.method === "evener/thread/resync") {
     // A resync always re-reads the named ref, legacy and v6 threads alike:
@@ -6830,6 +6850,14 @@ function handleNotification(n: AnyNotification): void {
     // takes that from the response's own identity, with no separate
     // invalidation step needed. Short-circuits before the generic fold so the
     // invalidation trigger below never double-issues a second read for it.
+    //
+    // The read is started before any fold lands, so the models the pane keeps
+    // showing here are the ones the replacement must not lose to: the
+    // repository's own model (the route's single owner of recorded ingestion,
+    // and what a later publication hands back to the store) and the store
+    // model itself both carry the retired daemon's hold sample until then.
+    // Run the reducer's own retirement rule over each, before the read starts.
+    retireReplacedSourceHoldBeforeResync(n.params.ref, n.params.bootGeneration);
     const client = getWiredClient();
     if (client) void handleReady(client, getReadyEpoch(), n.params.ref);
     return;

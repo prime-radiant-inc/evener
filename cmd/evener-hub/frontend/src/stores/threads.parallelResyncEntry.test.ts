@@ -7,6 +7,7 @@ import {
 import "fake-indexeddb/auto";
 import type {
   AnyNotification,
+  EvenerDelegateInfo,
   HistoryUpdatedParams,
   Thread,
   ThreadClearResponse,
@@ -100,6 +101,33 @@ function clearResponse(params: { clientMutationId: string }, thread: Thread): Th
       instanceId: thread.evener.instanceId,
       projectionState: "reflected",
     },
+  };
+}
+
+// A stable-delegate row waiting on a shell: the hold sample orders by
+// holdSequence within one source epoch, so 900 is larger than any sequence a
+// replacement daemon numbering from its own start would reach first.
+function heldDelegateRow(): EvenerDelegateInfo {
+  return {
+    runGeneration: 1,
+    delegateId: "dlg_held",
+    ownerSessionId: "sess_owner",
+    rootSessionId: "sess_root",
+    childSessionId: "sess_child",
+    transcriptRef: "local:01dlg_held",
+    type: "delegate",
+    lifecycle: "stable",
+    phase: "working",
+    status: "running",
+    outcome: "pending",
+    terminal: false,
+    resumable: true,
+    needsAttention: false,
+    projectionRevision: 3,
+    drainHeldByJobs: true,
+    holdSequence: 900,
+    runningJobCount: 2,
+    oldestRunningJobStartedAt: "2026-01-03T00:00:00Z",
   };
 }
 
@@ -1258,6 +1286,109 @@ describe("useThreadsStore.ensureThread", () => {
     expect(model?.turns.map((turn) => turn.id)).toEqual(["turn_9"]);
     expect(model?.status).toEqual({ type: "active", activeFlags: ["streaming"] });
     expect(threadsStore.getState().frameTimes.get("ref_a")).toHaveLength(1);
+
+    threadsStore.getState().releaseThread("ref_a");
+  });
+
+  // The resync branch starts its targeted read and returns, so nothing about
+  // the boot-changing notification reaches the models the pane is showing: the
+  // repository's own model and the store copy both keep the retired daemon's
+  // hold sample until the read settles. The hold orders by holdSequence within
+  // one source epoch, and a replacement daemon numbers its samples from its own
+  // start, so the retired sample outranks the replacement's first unheld frame
+  // — and a read that fails emits no update of its own to clear it.
+  test("a boot-changing resync retires the held delegate row before its targeted read settles", async () => {
+    const fake = connectReadyFakeClient();
+    const held = heldDelegateRow();
+    const initial = versionedReadResponse("ref_a", {
+      status: { type: "active" },
+      evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
+    });
+    const replacementRead: { reject: ((error: Error) => void) | null } = { reject: null };
+    let readCount = 0;
+    let rejectReads = false;
+    fake.on("thread/read", (params) => {
+      readCount += 1;
+      if (readCount === 1) return echoRead(initial, params.requestGeneration);
+      if (rejectReads) return Promise.reject(new Error("replacement read failed"));
+      return new Promise<ThreadReadResponse>((_resolve, reject) => {
+        replacementRead.reject = reject;
+      });
+    });
+    await threadsStore.getState().ensureThread("ref_a");
+    fake.emitNotification({
+      method: "evener/delegate/updated",
+      params: { threadId: "thr_ref_a", ref: "ref_a", delegate: held },
+    });
+    await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.delegates?.[0]?.holdSequence === 900);
+
+    fake.emitNotification({
+      method: "evener/thread/resync",
+      params: { threadId: "thr_ref_a", ref: "ref_a", bootGeneration: "2", epoch: 2 },
+    });
+    await flushUntil(() => replacementRead.reject !== null);
+
+    // Both models the pane can serve from must already be retired: the store
+    // copy, and the repository's own model, which a later publication hands
+    // back to the store.
+    expect(threadsStore.getState().threads.get("ref_a")?.delegates?.[0]?.holdSequence).toBeUndefined();
+    expect(
+      productionEntryTranscriptForTests("ref_a").repository?.getSnapshot()?.delegates?.[0]?.holdSequence,
+    ).toBeUndefined();
+    // The durable row survives the retirement: only the hold sample goes.
+    expect(threadsStore.getState().threads.get("ref_a")?.delegates?.[0]).toMatchObject({
+      delegateId: "dlg_held",
+      transcriptRef: "local:01dlg_held",
+      lifecycle: "stable",
+      status: "running",
+      projectionRevision: 3,
+    });
+
+    // A read that fails leaves the retired hold retired: nothing restores it.
+    rejectReads = true;
+    replacementRead.reject?.(new Error("replacement read failed"));
+    await flushUntil(() => readCount > 2);
+    expect(threadsStore.getState().threads.get("ref_a")?.delegates?.[0]?.holdSequence).toBeUndefined();
+    expect(threadsStore.getState().threads.get("ref_a")?.delegates?.[0]?.drainHeldByJobs).toBeUndefined();
+
+    threadsStore.getState().releaseThread("ref_a");
+  });
+
+  test("a same-boot resync preserves the held delegate row and its ordering", async () => {
+    const fake = connectReadyFakeClient();
+    const held = heldDelegateRow();
+    const initial = versionedReadResponse("ref_a", {
+      status: { type: "active" },
+      evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
+    });
+    const replacementRead: { reject: ((error: Error) => void) | null } = { reject: null };
+    let readCount = 0;
+    fake.on("thread/read", (params) => {
+      readCount += 1;
+      if (readCount === 1) return echoRead(initial, params.requestGeneration);
+      return new Promise<ThreadReadResponse>((_resolve, reject) => {
+        replacementRead.reject = reject;
+      });
+    });
+    await threadsStore.getState().ensureThread("ref_a");
+    fake.emitNotification({
+      method: "evener/delegate/updated",
+      params: { threadId: "thr_ref_a", ref: "ref_a", delegate: held },
+    });
+    await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.delegates?.[0]?.holdSequence === 900);
+
+    // The same boot generation bumps its own epoch to rebuild the transcript
+    // index. Its delegate controller is untouched and still sampling, and an
+    // unchanged hold emits no update of its own to restore what we dropped.
+    fake.emitNotification({
+      method: "evener/thread/resync",
+      params: { threadId: "thr_ref_a", ref: "ref_a", bootGeneration: "1", epoch: 2 },
+    });
+    await flushUntil(() => replacementRead.reject !== null);
+
+    expect(threadsStore.getState().threads.get("ref_a")?.delegates?.[0]?.holdSequence).toBe(900);
+    expect(threadsStore.getState().threads.get("ref_a")?.delegates?.[0]?.drainHeldByJobs).toBe(true);
+    expect(threadsStore.getState().threads.get("ref_a")?.delegates?.[0]?.runningJobCount).toBe(2);
 
     threadsStore.getState().releaseThread("ref_a");
   });

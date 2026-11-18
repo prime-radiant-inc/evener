@@ -567,6 +567,7 @@ export {
   notificationTargetsThread,
   notificationTouchesTranscript,
   resolvePendingEscalation,
+  retireReplacedSourceHold,
 } from "./reducer";
 export {
   type RetryEligibility,

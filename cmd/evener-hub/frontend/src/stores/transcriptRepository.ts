@@ -25,6 +25,7 @@ import {
   pruneBackgroundHistoryBodies,
   readDisposition,
   resolvePendingEscalation,
+  retireReplacedSourceHold,
   type SnapshotIdentity,
   type ThreadItem,
   type ThreadItemPosition,
@@ -1162,6 +1163,27 @@ export class TranscriptRepository {
   acceptResponseFields(fields: Partial<Pick<ThreadModel, "goal" | "humanNote">>): void {
     if (this.#disposed || this.#sealed || !this.#model) return;
     this.#model = { ...this.#model, ...fields };
+    this.#publish();
+  }
+
+  /**
+   * Applies the shared hold-retirement rule to the model this repository owns.
+   *
+   * The store starts its targeted read before folding the boot-changing resync
+   * that caused it, so the repository's model is what the pane keeps showing
+   * (and what a later publication hands back to the store) until that read
+   * settles. A retired daemon's larger hold sequence outranks the
+   * replacement's first unheld frame in that window, and a failed read leaves
+   * the finished wait standing. Same-source and bootless resyncs retire
+   * nothing: only a different boot generation owns a different sequence.
+   */
+  retireHoldForReplacedSource(bootGeneration: string | undefined): void {
+    if (this.#disposed || this.#sealed) return;
+    const model = this.#model;
+    if (!model) return;
+    const retired = retireReplacedSourceHold(model, bootGeneration);
+    if (!retired) return;
+    this.#model = retired;
     this.#publish();
   }
 
