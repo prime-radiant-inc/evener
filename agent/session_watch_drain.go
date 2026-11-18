@@ -163,14 +163,23 @@ func (s *Session) driveChildIfNotStopGated(sub *subagent) {
 	if s.driveDelegateAttention(sub) {
 		return
 	}
-	// LIFE-01 (#2340): a stable delegate child has no model-bearing fallback.
-	// driveDelegateAttention above is its ONLY drive, because every model turn it
-	// runs must be an exact generation held under a lease. The notification drive
-	// below launches an UNLEASED EntryNotification turn, which the controller
-	// would report as an idle child making a provider call. A stable child's
-	// notices therefore arrive as durable attention (see
-	// persistStableWatchPendings), and anything left here is not model work.
-	if stableDelegateChild(sub.sess) {
+	// LIFE-01 (#2340): a stable delegate child has no model-bearing fallback for
+	// a WATCH notice. driveDelegateAttention above is the only drive a watch
+	// notice may use, because its ingress made it durable attention whose whole
+	// point is a governed generation; the notification drive below launches an
+	// UNLEASED EntryNotification turn, which the controller would report as an
+	// idle child making a provider call. A watch notice reaching this point was
+	// demoted to the ordinary queue by some path other than production ingress
+	// (persistStableWatchPendings), so it is refused here as well as at
+	// admission rather than run unleased.
+	//
+	// Every OTHER notice keeps this fallback. A terminal shell completion, a
+	// nested delegate's forwarded report and the rest are ordinary queued
+	// notifications with no lease to inherit, and the queue is drained only by an
+	// EntryNotification turn -- so skipping the drive here would strand them
+	// forever instead of closing this issue. That unleased drive turn is a real,
+	// pre-existing defect filed as #6797; #2340 deliberately does not widen to it.
+	if stableDelegateChild(sub.sess) && sub.sess.hasPendingWatchNotification() {
 		return
 	}
 	if s.driveSubagentNotificationTurn(sub) {

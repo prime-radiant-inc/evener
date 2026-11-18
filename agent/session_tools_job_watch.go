@@ -184,10 +184,38 @@ func (s *Session) configureDescendantReceiverWatch(a watchArgs) (watchResult, bo
 	childArgs.Target = a.Target
 	childArgs.ReceiverSessionID = s.ID()
 	childArgs.ReceiverDelegateID = ""
-	childArgs.ReceiverNotify = s.enqueueJobNotificationAndNotify
+	childArgs.ReceiverNotify = s.enqueueReceiverNotification
 	childArgs.ReceiverHoldWake = s.holdJobNotificationWake
 	res, err := ownerJM.configureWatch(childArgs)
 	return res, true, err
+}
+
+// enqueueReceiverNotification is the notify a forwarded watch delivery calls on
+// the RECEIVING session, which asked to watch a descendant's job.
+//
+// It is the ordinary enqueue for an ordinary receiver. For a stable delegate
+// child it is the durable-attention ingress instead, because the notification
+// drive that would otherwise drain the queue launches an UNLEASED
+// EntryNotification turn (LIFE-01, #2340). Going through
+// persistStableWatchAttention keeps the forwarded notice on the same rail as the
+// receiver's own notices, so one rule decides both and the forwarded case cannot
+// become a second, quieter route to an unleased model turn.
+func (s *Session) enqueueReceiverNotification(n jobNotification) {
+	if s == nil {
+		return
+	}
+	if stableDelegateChild(s) && n.isWatch() {
+		owner, controller := s.jobManager.stableWatchOwner()
+		if owner == nil {
+			owner = s
+		}
+		if _, err := persistStableWatchAttention(owner, controller, n); err != nil {
+			s.emit(warningDataFromError("persist forwarded watch attention", err))
+			return
+		}
+		return
+	}
+	s.enqueueJobNotificationAndNotify(n)
 }
 
 func (s *Session) watchListToolResultWithDescendantReceivers(local jobWatchListToolResult) jobWatchListToolResult {

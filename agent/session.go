@@ -1597,6 +1597,75 @@ func (s *Session) hasPendingWatchNotification() bool {
 	return false
 }
 
+// stableChildTurnNeedsLease reports whether THIS turn is the unleased
+// stable-delegate model turn the issue closes: a stable child, with no lease in
+// context, about to carry a watch notice (LIFE-01, #2340).
+//
+// It is the ONE statement of that predicate. Model admission, tool admission
+// and the notification accept all ask it, so a rule that must agree in three
+// places cannot drift between them. A lease in context is not this predicate's
+// business -- admission validates the lease itself against the controller,
+// because a lease can be stale or fenced while still being present.
+func (s *Session) stableChildTurnNeedsLease(ctx context.Context) bool {
+	if s == nil || s.owningDelegateID == "" || s.delegateController == nil {
+		return false
+	}
+	if _, ok := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); ok {
+		return false
+	}
+	return true
+}
+
+// refuseUnleasedWatchNotice reports whether this turn would carry a watch
+// notice without a lease. acceptNotificationInput asks BEFORE it writes the
+// reminder, because the admission gate reads the queue and the drain below
+// empties it first (session_notifications.go).
+func (s *Session) refuseUnleasedWatchNotice(ctx context.Context, jobNotifs []deliverableJobNotification) bool {
+	if !s.stableChildTurnNeedsLease(ctx) {
+		return false
+	}
+	for _, d := range jobNotifs {
+		if d.notification.isWatch() {
+			return true
+		}
+	}
+	return false
+}
+
+// hasPendingWatchAttention reports whether a watch notice is pending on the
+// DURABLE ATTENTION ledger -- the route a stable child's notices take -- as
+// opposed to the ordinary queue hasPendingWatchNotification reads.
+//
+// This is the ONE rule that cannot be one function, and it is the only
+// exception: the question "is a watch notice outstanding for this session" has
+// two answers because the ingress has two stores, and the queue rule above
+// cannot see the attention ledger any more than this can see the queue. What
+// they DO share is the classification -- both ask jobNotification.isWatch() --
+// so a notice cannot be a watch on one route and not the other. Any further
+// rule about what a notice means belongs in the shared helpers the delivery
+// path calls (watchTickDeliverable, deliverableStableWatchAttention,
+// filterDeliverableJobNotifications), not in either predicate.
+//
+// The finalization drain asks this so a notice that arrived as attention is
+// still visible to the pass that decides whether a turn is owed (LIFE-01, #2340
+// review). It reads the same unresolved set the attention drive does, so the
+// drain and the drive cannot disagree about whether a notice is outstanding.
+func (s *Session) hasPendingWatchAttention() bool {
+	if s == nil {
+		return false
+	}
+	ids, err := s.pendingDelegateAttentionIDs()
+	if err != nil {
+		return false
+	}
+	for _, id := range ids {
+		if strings.HasPrefix(id, stableWatchAttentionIDPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // peekNotifications reports how many notifications are still owed to the model
 // WITHOUT draining them: those queued, and those whose reminder no dispatched
 // request has carried yet. The drain-loop tail uses it to decide whether to run

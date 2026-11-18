@@ -1105,3 +1105,80 @@ func TestRootDelegateAttentionMidTurnFoldPreservesArrivalOrderAcrossAnchors(t *t
 		t.Fatalf("Path C fallback history indices = (first=%d, second=%d), want both present with first < second", firstIdx3, secondIdx3)
 	}
 }
+
+// TestStableChildCompactionStopsSpendingAfterAFencedStop pins the second half of
+// LIFE-01 (#2340): automatic compaction reaches a provider TWICE, once in the
+// note elicitor and again in the summarizer, so ONE admission result cannot
+// govern both. A stop recorded while the elicitor runs lands after the first
+// admission and before the summarizer's call, which is exactly the window a
+// shared result cannot see. The summarizer must not spend a request on a
+// generation the user has already stopped.
+//
+// Both assertions are provider CALL COUNTS on two separate adapters, never
+// message text: the elicitor's request happens (so the test cannot pass by never
+// reaching the fold), and the summarizer's must not.
+func TestStableChildCompactionStopsSpendingAfterAFencedStop(t *testing.T) {
+	t.Parallel()
+	var elicited, summarized atomic.Int32
+	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, controller, "dlg_compaction_target", "")
+	main := newFakeAdapter("openai", func(llm.Request) llm.Response {
+		elicited.Add(1)
+		return agenttest.FinalResponse("a pinned note")
+	})
+	cheap := &agenttest.ScriptedAdapter{Provider: "compact-cheap", Responder: func(llm.Request) llm.Response {
+		summarized.Add(1)
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nsummary\n[END SUMMARY]")}
+	}}
+	client := llm.NewClient()
+	client.Register(main)
+	client.Register(cheap)
+	stateDir := t.TempDir()
+	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "compact-cheap/model")
+	sess := newSession(t, withClient(client), withProfile(profile), withDir(stateDir), withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}))
+	sess.delegateController = controller
+	sess.owningDelegateID = "dlg_compaction_target"
+	controller.mu.Lock()
+	controller.live["dlg_compaction_target"].binding.runtime = sess
+	controller.mu.Unlock()
+
+	seedNumberedSessionHistory(t, sess, 12)
+	forcePressureAbove(t, sess, sess.contextMgr.CheckpointThreshold)
+	// Record the stop BETWEEN the two provider admissions: after the elicitor
+	// asks the model, before the summarizer does. PendingStopSeq is the state
+	// admitLeaseLocked refuses on.
+	sess.elicitNoteFn = func(ctx context.Context, turns []schema.Turn) (string, error) {
+		resp, err := sess.client.Complete(ctx, llm.Request{
+			Model:    sess.profile.Model(),
+			Messages: []llm.Message{llm.User("elicit a note")},
+		})
+		controller.mu.Lock()
+		_, appendErr := controller.appendLocked(delegatestore.Event{
+			Kind:       delegatestore.EventDelegateSubtreeStopRequested,
+			DelegateID: "dlg_compaction_target",
+			TS:         time.Unix(20, 0).UTC(),
+			SubtreeStopRequested: &delegatestore.SubtreeStopRequested{
+				TargetDelegateID: "dlg_compaction_target",
+			},
+		})
+		controller.mu.Unlock()
+		if appendErr != nil {
+			t.Errorf("record the stop fence: %v", appendErr)
+			return "", appendErr
+		}
+		if err != nil {
+			return "", err
+		}
+		return resp.Text(), nil
+	}
+
+	lease := delegateLease{delegateID: "dlg_compaction_target", generation: 1}
+	ctx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, lease)
+	sess.foldHistoryBeforeRequest(ctx, 0, 0)
+	if got := elicited.Load(); got != 1 {
+		t.Fatalf("the elicitor made %d provider request(s), want exactly 1: without it the test cannot tell a refused summarizer from a fold that never reached it", got)
+	}
+	if got := summarized.Load(); got != 0 {
+		t.Fatalf("the summarizer spent %d provider request(s) after the stop was recorded, want 0: one admission result was reused for two provider admissions", got)
+	}
+}

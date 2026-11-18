@@ -148,13 +148,16 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 		n := jm.watchNotificationFromWatch(cfg, dec.notifyJobID, reason, root.Provenance)
 		if cfg.timer {
 			n.WatchID, n.Fires, n.IntervalSeconds, n.Terminal = cfg.watchID, 1, cfg.timerSeconds, cfg.oneShot
-			// Each tick is its own occurrence: a repeating timer's ticks share the
-			// watch id, job id and reason, so without this the durable attention
-			// identity would repeat and the second tick would produce no wake
-			// (LIFE-01, #2340). The fire instant is stable on a replay of this
-			// tick and different on the next.
-			n.Occurrence = "tick:" + cfg.watchID + ":" + strconv.FormatInt(cfg.lastClockFire.UnixNano(), 10)
 		}
+		// Each tick is its own occurrence — a repeating timer's AND a
+		// concrete job's progress watch both: their ticks share the watch id,
+		// job id and reason, so without this the durable attention identity
+		// would repeat and the second tick would produce no wake (LIFE-01,
+		// #2340). The fire instant is stable on a replay of this tick and
+		// different on the next. It is stamped for every recorded budget tick,
+		// not only a timer's, because the identity is what wakes the delegate
+		// and a progress watch has nothing else to distinguish its ticks.
+		n.Occurrence = "tick:" + cfg.watchID + ":" + strconv.FormatInt(cfg.lastClockFire.UnixNano(), 10)
 		notifications = append(notifications, n)
 		// A periodic tick is a clock, not a condition fire.
 		jm.countWatchDeliveryLocked(cfg)

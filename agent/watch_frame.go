@@ -58,6 +58,13 @@ func (jm *jobManager) watchNotificationWithDelivery(cfg *watchConfig, jobID, rea
 		visibleSessionID = jm.sessionID
 	}
 	n.Provenance = provenance.WithWatch(root, cfg.watchID, cfg.generation, deliveryID, visibleSessionID, jobID)
+	// A condition fire's delivery id is minted once per fire and reused on a
+	// replay, so it is exactly an occurrence identity: two distinct fires with
+	// identical reasons stay distinct, and replaying one reuses its original
+	// durable attention id instead of appending a second row (LIFE-01, #2340).
+	if deliveryID != "" {
+		n.Occurrence = "delivery:" + deliveryID
+	}
 	if cfg.receiverSessionID != "" {
 		n.receiverSessionID = cfg.receiverSessionID
 		n.receiverNotify = cfg.receiverNotify
@@ -338,6 +345,44 @@ func (jm *jobManager) stableWatchOwner() (*Session, *delegateTreeController) {
 	return jm.stableOwner, jm.delegateController
 }
 
+// deliverableStableWatchAttention applies the queue's delivery rules to a group
+// of watch notices before the stable-attention ingress persists them, so the
+// leased path obeys the SAME rules as the ordinary queue instead of a subset of
+// them (LIFE-01, #2340 review).
+//
+// Two rules are applied here, and both are CALLS, not restatements:
+//
+//   - deliverability. watchTickDeliverable decides whether a tick may still be
+//     delivered, and it is the same predicate filterDeliverableJobNotifications
+//     calls for the ordinary queue. A cleared timer's tick is dropped on both
+//     routes by one implementation.
+//   - folding. Ticks from one watch collapse into a single counted reminder,
+//     exactly as appendOrFoldJobNotificationLocked folds them in the queue. The
+//     attention entry is replaced rather than appended a second time, and its
+//     Fires carry the total, so the reminder says how many ticks it stands for.
+//
+// Deterministic order is kept so replay of the same group persists identically.
+func (s *Session) deliverableStableWatchAttention(notifs []jobNotification) []jobNotification {
+	out := make([]jobNotification, 0, len(notifs))
+	foldedAt := make(map[string]int, len(notifs))
+	for _, n := range notifs {
+		if !s.watchTickDeliverable(n) {
+			continue
+		}
+		if n.WatchID != "" && !n.Terminal {
+			if at, ok := foldedAt[n.WatchID]; ok {
+				p := &out[at]
+				p.Fires += n.Fires
+				p.Provenance = provenance.Union(p.Provenance, n.Provenance)
+				continue
+			}
+			foldedAt[n.WatchID] = len(out)
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
 // persistStableWatchAttention turns a watch notice bound for a stable delegate
 // child into durable stable attention (LIFE-01, #2340).
 //
@@ -385,6 +430,13 @@ func persistStableWatchAttention(owner *Session, controller *delegateTreeControl
 	return attentionID, nil
 }
 
+// stableWatchAttentionIDPrefix names the durable-attention rows this ingress
+// creates for a stable delegate's watch notices. It is a constant because two
+// places must agree on it by construction: the ID builder below, and
+// hasPendingWatchAttention, which decides whether such a row is outstanding
+// (LIFE-01, #2340 review).
+const stableWatchAttentionIDPrefix = "watchdiag:"
+
 // stableWatchDiagnosticAttentionID derives a replay-stable identity for a watch
 // notice from the facts that make it ONE notice.
 //
@@ -405,10 +457,10 @@ func stableWatchDiagnosticAttentionID(n jobNotification) string {
 	}
 	if n.Occurrence != "" {
 		occurrence := sha256.Sum256([]byte(n.Occurrence))
-		return "watchdiag:" + scope + ":" + n.JobID + ":" + hex.EncodeToString(occurrence[:8])
+		return stableWatchAttentionIDPrefix + scope + ":" + n.JobID + ":" + hex.EncodeToString(occurrence[:8])
 	}
 	sum := sha256.Sum256([]byte(n.Reason))
-	return "watchdiag:" + scope + ":" + n.JobID + ":" + hex.EncodeToString(sum[:8])
+	return stableWatchAttentionIDPrefix + scope + ":" + n.JobID + ":" + hex.EncodeToString(sum[:8])
 }
 
 // routeWatchNotifications delivers every watch notification addressed to

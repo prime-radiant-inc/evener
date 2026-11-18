@@ -1620,6 +1620,17 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 	sub.driveCancel = driveCancel
 	childSess := sub.sess
 	sub.mu.Unlock()
+
+	// A stable child's drive still runs an UNLEASED EntryNotification turn, which
+	// is a real defect filed as #6797 rather than fixed here. The drive admits an
+	// INPUT, not a generation -- admitIdleRuntimeInput only bumps inputsInFlight --
+	// so the child calls its provider as an idle session the controller never
+	// leased, and normal generation accounting, stop admission and result
+	// settlement do not cover that turn. A lease cannot be bootstrapped at this
+	// point: ReserveStart refuses target_busy for a delegate whose previous
+	// generation is still finalizing (delegate_tree_start.go), and that is exactly
+	// the delegate a drive serves. #2340 narrows its gate so that only WATCH
+	// notices are refused without a lease, which leaves this path reachable.
 	if hook := s.cfg.testOnly.driveLaunching; hook != nil {
 		hook()
 	}
@@ -1641,7 +1652,13 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 			s.redriveChildIfAttentionRemains(driveCtx, sub, childSess)
 		}()
 		defer drive.end()
-		_, err := childSess.ProcessInputKind(withDriveTurn(driveCtx, drive), "", nil, EntryNotification)
+		var err error
+		// The turn is NOT routed through sub.run: a drive is a maintenance turn on
+		// a delegate whose own run has already finished, and run's supervision and
+		// completion decision is about settling DELIVERED WORK, which would
+		// short-circuit this turn before it dispatched a request and deliver
+		// nothing.
+		_, err = childSess.ProcessInputKind(withDriveTurn(driveCtx, drive), "", nil, EntryNotification)
 		// A Stop of the delegate (stopDrive) cancelled the turn: that is the
 		// ordinary nonfatal end of a stopped run, so the work the delegate
 		// owns is left alone.

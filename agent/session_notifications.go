@@ -40,6 +40,20 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 	s.enqueueOwnCallerWatchSendTokens()
 	jobNotifs, retryJobNotifs, injectedJobNotifs := s.filterDeliverableJobNotifications(s.drainJobNotifications())
 	jobNotifs, injectedJobNotifs = s.withoutAwaitingRequest(jobNotifs), s.withoutAwaitingRequest(injectedJobNotifs)
+	// This turn must not write a watch reminder it is not allowed to carry. The
+	// gate in prepareModelRequestWithError reads the QUEUE, and everything below
+	// drains it: a watch notice has no terminal generation, so awaitRequestFor-
+	// JobNotifications settles it before the first request is prepared and the
+	// queue is empty by the time admission looks. The reminder would then ride
+	// the transcript into an unleased turn that admission had no evidence left
+	// to refuse (LIFE-01, #2340). So the refusal happens here, while the notice
+	// is still in hand, and the notice goes back to the queue untouched.
+	if s.refuseUnleasedWatchNotice(ctx, jobNotifs) {
+		s.requeueJobNotifications(append(jobNotifications(jobNotifs), retryJobNotifs...))
+		s.requeueJobNotifications(jobNotifications(injectedJobNotifs))
+		s.finishNotificationNoop()
+		return false
+	}
 	if sessionLifecycleFault(ctx, "inject_watch_notification") != nil {
 		jobNotifs = append(jobNotifs, deliverableJobNotification{
 			notification: jobNotification{Kind: jobNotificationKindWatch, JobID: "injected-watch", Status: jobNotificationEventWatch},
@@ -358,8 +372,8 @@ func (s *Session) filterDeliverableJobNotifications(raw []jobNotification) ([]de
 			continue
 		}
 		if n.isWatch() {
-			if n.WatchID != "" && !n.Terminal && !s.timerWatchIsLive(n.WatchID) {
-				continue // the timer was cleared after this tick was built
+			if !s.watchTickDeliverable(n) {
+				continue
 			}
 			survivors = append(survivors, deliverableJobNotification{notification: n})
 			continue
@@ -389,6 +403,22 @@ func (s *Session) filterDeliverableJobNotifications(raw []jobNotification) ([]de
 	durableSurvivors, injected := classifyDurableNotifications(durableRaw, recs, alreadyInjected)
 	survivors = append(survivors, durableSurvivors...)
 	return survivors, nil, injected
+}
+
+// watchTickDeliverable is the ONE statement of whether a watch tick may still
+// be delivered. A repeat tick is built when the timer fires; by the time it is
+// presented the delegate may have cleared the watch, and a cleared watch's
+// tick must not reach the model. A terminal notice is always deliverable.
+//
+// Both routes ask this: the ordinary queue through
+// filterDeliverableJobNotifications, and the stable-attention ingress through
+// deliverableStableWatchAttention. It is a predicate, not a copy, precisely so
+// the two cannot drift (LIFE-01, #2340 review).
+func (s *Session) watchTickDeliverable(n jobNotification) bool {
+	if n.WatchID == "" || n.Terminal {
+		return true
+	}
+	return s.timerWatchIsLive(n.WatchID)
 }
 
 // timerWatchIsLive reports whether the timer with this id is still installed.

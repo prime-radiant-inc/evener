@@ -1957,16 +1957,73 @@ func (jm *jobManager) persistStableWatchPendings(notifs []jobNotification) bool 
 			return false
 		}
 	}
+	notifs = owner.deliverableStableWatchAttention(notifs)
+	if len(notifs) == 0 {
+		return true
+	}
 	var failures error
+	var retry []jobNotification
 	for _, n := range notifs {
 		if _, err := persistStableWatchAttention(owner, controller, n); err != nil {
 			failures = errors.Join(failures, err)
+			// Keep the notice for a paced retry under its ORIGINAL identity. A
+			// failed append is the only firing this notice will ever have: a
+			// one-shot timer has already ended, so nothing will produce it again,
+			// and reporting it handled here drops the delivery for good. The
+			// producer-supplied Occurrence makes the retry reuse the same durable
+			// attention id, so a retry that finds a row the writer did append
+			// refolds instead of duplicating (LIFE-01, #2340 review).
+			retry = append(retry, n)
 		}
 	}
 	if failures != nil {
 		owner.emit(warningDataFromError("persist stable watch attention", failures))
 	}
+	if len(retry) > 0 {
+		owner.scheduleStableWatchAttentionRetry(retry)
+		return true
+	}
 	return true
+}
+
+// scheduleStableWatchAttentionRetry re-persists notices whose durable append
+// failed, under their original occurrence identity, so the firing survives a
+// transient writer failure instead of being dropped.
+//
+// It rides the session's clock seam (sclock().AfterFunc), not a wall-clock
+// goroutine, so a test's frozen clock controls it and teardown cancels it with
+// the session. The pace is the job notifications' own backoff policy. Each
+// attempt re-runs the ordinary ingress, so a row the failed attempt had in fact
+// appended is folded by appendDelegateNotificationDurably's own identity check
+// rather than duplicated (LIFE-01, #2340 review).
+func (s *Session) scheduleStableWatchAttentionRetry(notifs []jobNotification) {
+	if s == nil || len(notifs) == 0 {
+		return
+	}
+	var attempt func([]jobNotification, time.Duration)
+	attempt = func(pending []jobNotification, delay time.Duration) {
+		s.sclock().AfterFunc(delay, func() {
+			owner, controller := s.jobManager.stableWatchOwner()
+			if owner == nil || owner.owningDelegateID == "" {
+				return
+			}
+			var failed []jobNotification
+			for _, n := range pending {
+				if _, err := persistStableWatchAttention(owner, controller, n); err != nil {
+					failed = append(failed, n)
+				}
+			}
+			if len(failed) == 0 {
+				return
+			}
+			next := delay * 2
+			if next > jobNotificationRetryMaxDelay {
+				next = jobNotificationRetryMaxDelay
+			}
+			attempt(failed, next)
+		})
+	}
+	attempt(notifs, jobNotificationRetryInitialDelay)
 }
 
 func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) error {

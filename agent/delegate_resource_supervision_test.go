@@ -501,6 +501,70 @@ func TestDelegateResourceSupervision_StableChildWatchDiagnosticRunsLeased(t *tes
 	}
 }
 
+// TestDelegateResourceSupervision_StableAttentionObeysQueueDeliveryRules pins the
+// restructure that stops the leased path re-implementing a subset of the
+// queue's delivery rules (#2340 review). Those rules now have ONE
+// implementation and the attention ingress CALLS them:
+//
+//   - a tick whose watch the delegate cleared is not persisted at all, exactly as
+//     filterDeliverableJobNotifications drops it from the queue;
+//   - two pending ticks from ONE watch become a single counted presentation, not
+//     two rows, exactly as appendOrFoldJobNotificationLocked folds them.
+//
+// Both cases are the review's own: without the shared predicate a cleared tick
+// still reached the model, and without the fold a repeat timer's ticks wrote
+// separate undelivered rows where the queue wrote one counted reminder.
+func TestDelegateResourceSupervision_StableAttentionObeysQueueDeliveryRules(t *testing.T) {
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
+	})
+	root := restoreSupervisionRoot(t, fixture, nil)
+	sub := warmStableSupervisionDelegate(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	// A repeat timer that is INSTALLED, then cleared. Its tick is built while the
+	// timer is live and presented after the clear, which is the dropped case.
+	jm := sub.sess.jobManager
+	if jm == nil {
+		t.Fatal("the stable child has no job manager")
+	}
+	liveID := "watch:life-01-cleared"
+	jm.mu.Lock()
+	jm.watches[watchKey{VisibleSessionID: jm.sessionID, Target: "self", Slot: liveID}] = &watchConfig{watchID: liveID, target: "self", timer: true}
+	jm.mu.Unlock()
+	clearedTick := jobNotification{
+		Kind:     jobNotificationKindWatch,
+		WatchID:  liveID,
+		Fires:    1,
+		Reason:   "repeat",
+		Status:   jobNotificationEventWatch,
+		Terminal: false,
+	}
+	jm.mu.Lock()
+	delete(jm.watches, watchKey{VisibleSessionID: jm.sessionID, Target: "self", Slot: liveID})
+	jm.mu.Unlock()
+
+	if got := sub.sess.deliverableStableWatchAttention([]jobNotification{clearedTick}); len(got) != 0 {
+		t.Fatalf("a cleared timer's tick survived the shared deliverability rule: %d notice(s), want 0", len(got))
+	}
+
+	// Two ticks from ONE still-installed watch fold into one counted reminder.
+	foldID := "watch:life-01-fold"
+	jm.mu.Lock()
+	jm.watches[watchKey{VisibleSessionID: jm.sessionID, Target: "self", Slot: foldID}] = &watchConfig{watchID: foldID, target: "self", timer: true}
+	jm.mu.Unlock()
+	first := jobNotification{Kind: jobNotificationKindWatch, WatchID: foldID, Fires: 1, Reason: "repeat", Status: jobNotificationEventWatch}
+	second := jobNotification{Kind: jobNotificationKindWatch, WatchID: foldID, Fires: 1, Reason: "repeat", Status: jobNotificationEventWatch}
+	folded := sub.sess.deliverableStableWatchAttention([]jobNotification{first, second})
+	if len(folded) != 1 {
+		t.Fatalf("two ticks from one watch became %d notices, want 1 folded reminder", len(folded))
+	}
+	if folded[0].Fires != 2 {
+		t.Fatalf("the folded reminder counts %d fires, want 2: the ticks were not folded, one was dropped", folded[0].Fires)
+	}
+}
+
 // TestDelegateResourceSupervision_StableChildMustHaveALeaseForModelTurns pins
 // the admission half of LIFE-01 (#2340): a stable delegate child REFUSES a model
 // call and a tool call that carry no lease, instead of presenting them as an
@@ -571,12 +635,25 @@ func TestDelegateResourceSupervision_StableChildMustHaveALeaseForModelTurns(t *t
 	if elicited != 0 {
 		t.Fatalf("note elicitation ran %d time(s) for an unleased round, want 0: the refusal came after request preparation", elicited)
 	}
-	// Tool admission: same rule. A refused tool is reported as a skipped, errored
-	// result with no execution, so the assertion is on that behavior rather than on
-	// the refusal's copy (error-text assertions are not allowed).
-	res := sub.sess.execTool(context.Background(), llm.ToolCallData{Name: "communicate", ID: "call:leak", Arguments: json.RawMessage(`{"message":"x"}`)}, "")
+	// Tool admission: same rule, and the case must be one the guard alone can
+	// refuse. A malformed call is useless as evidence: ordinary validation returns
+	// an errored result for it whether or not the lease guard exists, so the guard
+	// is never exercised. The call here is VALID and has an observable effect --
+	// a non-terminal communicate records that the delegate reached its parent
+	// (s.comm.updated, session_execution.go:497-501). A refusal must therefore
+	// leave that effect ABSENT, which a valid call makes discriminating and the
+	// old bare-error assertion did not.
+	before := sub.sess.communicateUpdate()
+	res := sub.sess.execTool(context.Background(), llm.ToolCallData{
+		Name:      "communicate",
+		ID:        "call:leak",
+		Arguments: json.RawMessage(`{"message":"unleased leak","end_turn":false}`),
+	}, "")
 	if !res.IsError || res.CallID != "call:leak" {
 		t.Fatalf("unleased tool call on the stable child = %+v, want a skipped errored result for its call id", res)
+	}
+	if after := sub.sess.communicateUpdate(); after != before {
+		t.Fatalf("the unleased communicate took effect: communicateUpdate went %v -> %v, want unchanged: the tool ran despite the refusal", before, after)
 	}
 
 	// The non-delegate carve-out: a root session is not governed by a generation,
