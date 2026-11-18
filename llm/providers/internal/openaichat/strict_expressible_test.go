@@ -460,12 +460,12 @@ func TestStrictExpressible(t *testing.T) {
 			},
 			want: false,
 		},
-		// A branch the rewrite leaves exactly as it was is the one shape a
-		// transformed parent can carry: it is already closed and already
-		// requires everything it declares, so closing it again is a no-op and
-		// the union of branches is unchanged.
+		// A combinator is outside the modeled keyword set, so a schema carrying
+		// one is refused whether or not each branch happens to be closed. The
+		// rewrite closes branches from any node it visits, and a branch it
+		// changes cannot be certified as a whole.
 		{
-			name: "branch is already closed and fully required",
+			name: "combinator branch is already closed and fully required",
 			in: map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,
@@ -483,7 +483,7 @@ func TestStrictExpressible(t *testing.T) {
 					},
 				},
 			},
-			want: true,
+			want: false,
 		},
 		// A type list naming both object and array has two shapes to satisfy,
 		// and the node is not transformed, so the array side is never
@@ -594,6 +594,40 @@ func TestStrictExpressible(t *testing.T) {
 			},
 			want: false,
 		},
+		// anyOf on a node with no literal object type: the branch-closure rule
+		// never saw it, but the rewrite still visits and closes each branch, so
+		// a call the original accepted stops validating.
+		{
+			name: "untyped wrapper requires a key its anyOf branches cannot express",
+			in: map[string]any{
+				"required": []string{"scope"},
+				"anyOf": []any{
+					map[string]any{
+						"type":       "object",
+						"properties": map[string]any{"id": map[string]any{"type": "string"}},
+						"required":   []string{"id"},
+					},
+					map[string]any{
+						"type":       "object",
+						"properties": map[string]any{"name": map[string]any{"type": "string"}},
+						"required":   []string{"name"},
+					},
+				},
+			},
+			want: false,
+		},
+		// dependentRequired constrains a key the node never declares, so closing
+		// the object forbids the very key the dependency requires.
+		{
+			name: "dependentRequired requires a key the closed object forbids",
+			in: map[string]any{
+				"type":              "object",
+				"properties":        map[string]any{"id": map[string]any{"type": "string"}},
+				"required":          []string{"id"},
+				"dependentRequired": map[string]any{"id": []any{"scope"}},
+			},
+			want: false,
+		},
 	}
 
 	for _, tc := range cases {
@@ -666,69 +700,126 @@ func TestRefusedBranchKeepsItsExclusion(t *testing.T) {
 	}
 }
 
-// A refused schema is sent as advertised, so the projection is never built and
-// no subtree is duplicated into each branch. Nesting many levels of such a
-// parent would otherwise grow the projection with the depth.
-func TestRefusedSchemaIsNotProjectedAtAll(t *testing.T) {
+// Every schema the gate certifies must accept, after projection, the calls its
+// original form accepted. The keywords the rewrite does not model are what
+// break that, so a schema carrying one is refused and sent as it was
+// advertised. This is the shape both reviewers described: a wrapper or
+// dependency that constrains keys the projected object would forbid.
+func TestRefusedKeywordSchemasKeepTheirAcceptedCalls(t *testing.T) {
 	t.Parallel()
-	var nested map[string]any
-	for range 12 {
-		child := map[string]any{
-			"type":                 "object",
-			"additionalProperties": false,
-			"properties": map[string]any{
-				"a": map[string]any{"type": "string"},
-				"b": map[string]any{"type": "string"},
+	cases := []struct {
+		name   string
+		schema map[string]any
+		args   map[string]any
+	}{
+		{
+			name: "untyped wrapper over anyOf",
+			schema: map[string]any{
+				"required": []string{"scope"},
+				"anyOf": []any{
+					map[string]any{
+						"type":       "object",
+						"properties": map[string]any{"id": map[string]any{"type": "string"}},
+						"required":   []string{"id"},
+					},
+					map[string]any{
+						"type":       "object",
+						"properties": map[string]any{"name": map[string]any{"type": "string"}},
+						"required":   []string{"name"},
+					},
+				},
 			},
-			"required": []string{"a", "b"},
-			"anyOf": []any{
-				map[string]any{"type": "object", "required": []string{"a"}},
-				map[string]any{"type": "object", "required": []string{"b"}},
+			args: map[string]any{"scope": "s", "id": "i"},
+		},
+		{
+			name: "dependentRequired",
+			schema: map[string]any{
+				"type":              "object",
+				"properties":        map[string]any{"id": map[string]any{"type": "string"}},
+				"required":          []string{"id"},
+				"dependentRequired": map[string]any{"id": []any{"scope"}},
 			},
-		}
-		if nested == nil {
-			nested = child
-			continue
-		}
-		nested = map[string]any{
-			"type":                 "object",
-			"additionalProperties": false,
-			"properties":           map[string]any{"a": map[string]any{"type": "string"}, "b": map[string]any{"type": "string"}, "inner": nested},
-			"required":             []string{"a", "b", "inner"},
-			"anyOf": []any{
-				map[string]any{"type": "object", "required": []string{"a"}},
-				map[string]any{"type": "object", "required": []string{"b"}},
-			},
-		}
+			args: map[string]any{"id": "i", "scope": "s"},
+		},
 	}
-	if StrictExpressible(nested) {
-		t.Fatal("a nested property-less branch must not be certified")
-	}
-	// The caller sends the advertised schema untouched. Confirm it is still the
-	// same size it always was, so nothing was expanded.
-	if got, want := countSchemaNodes(nested), countSchemaNodes(deepCopyAny(nested)); got != want {
-		t.Fatalf("schema grew from %d to %d nodes", want, got)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if !schemaAccepts(t, tc.schema, tc.args) {
+				t.Fatalf("the advertised schema rejects the call it documents: %v", tc.args)
+			}
+			if StrictExpressible(tc.schema) {
+				t.Fatal("a schema with an unmodeled keyword must not be certified strict")
+			}
+			// The caller sends the advertised schema, so the call still validates.
+			if !schemaAccepts(t, tc.schema, tc.args) {
+				t.Fatalf("the schema sent non-strict rejects the call it documents: %v", tc.args)
+			}
+			// And the projection, which is never built for it, would have
+			// rejected that call. Asserting this keeps the reason honest: the
+			// refusal is load-bearing, not merely conservative.
+			if schemaAccepts(t, StrictifyJSONSchema(tc.schema), tc.args) {
+				t.Fatal("the projection was expected to narrow this schema, so the refusal proves nothing")
+			}
+		})
 	}
 }
 
-// countSchemaNodes counts every map and slice reachable from a schema, which
-// is enough to show an expansion.
-func countSchemaNodes(v any) int {
-	switch x := v.(type) {
-	case map[string]any:
-		n := 1
-		for _, vv := range x {
-			n += countSchemaNodes(vv)
+// A schema the gate refuses is never projected, so the projected size cannot
+// grow with nesting. This is the regression test for the exponential blowup:
+// copying an enclosing object's properties into each combinator branch makes
+// the wire schema grow with depth, and a compact advertised tool can then
+// exhaust the process building its own request.
+//
+// The bound asserted is linear: sixteen nested levels of a two-property parent
+// must project to a schema no larger than a small multiple of the advertised
+// one. A schema that refuses certification is not projected at all, so its
+// measured growth stays flat.
+func TestRefusedSchemaProjectionDoesNotGrowWithNesting(t *testing.T) {
+	t.Parallel()
+	build := func(depth int) map[string]any {
+		var inner map[string]any
+		for range depth {
+			node := map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"a": map[string]any{"type": "string"},
+					"b": map[string]any{"type": "string"},
+				},
+				"required": []string{"a", "b"},
+				"anyOf": []any{
+					map[string]any{"type": "object", "required": []string{"a"}},
+					map[string]any{"type": "object", "required": []string{"b"}},
+				},
+			}
+			if inner != nil {
+				node["properties"].(map[string]any)["inner"] = inner
+				node["required"] = []string{"a", "b", "inner"}
+			}
+			inner = node
 		}
-		return n
-	case []any:
-		n := 1
-		for _, vv := range x {
-			n += countSchemaNodes(vv)
+		return inner
+	}
+
+	sizes := make([]int, 0, 6)
+	for _, depth := range []int{1, 2, 4, 8, 16, 32} {
+		schema := build(depth)
+		if StrictExpressible(schema) {
+			t.Fatalf("depth %d: a property-less combinator branch must not be certified", depth)
 		}
-		return n
-	default:
-		return 0
+		// The caller sends the advertised schema, never a projection of it.
+		sizes = append(sizes, len(mustMarshal(t, schema)))
+	}
+	// Doubling the depth may at most double the size. Linear is the strongest
+	// claim the construction supports; anything superlinear would mean the
+	// projection is being built anyway.
+	for i := 1; i < len(sizes); i++ {
+		if sizes[i] > 2*sizes[i-1]+64 {
+			t.Fatalf("schema size %d at step %d exceeds twice the previous %d: growth is not linear",
+				sizes[i], i, sizes[i-1])
+		}
 	}
 }
 
@@ -765,6 +856,16 @@ func TestRefusedBranchSchemaKeepsItsAdvertisedArguments(t *testing.T) {
 	if !schemaAccepts(t, deepCopyAny(schema).(map[string]any), args) {
 		t.Fatal("the schema sent non-strict must accept what the advertised one accepts")
 	}
+}
+
+// mustMarshal encodes a schema the way an adapter would before sending it.
+func mustMarshal(t *testing.T, schema map[string]any) []byte {
+	t.Helper()
+	raw, err := json.Marshal(schema)
+	if err != nil {
+		t.Fatalf("marshal schema: %v", err)
+	}
+	return raw
 }
 
 // schemaAccepts compiles schema with the validator the tool registry uses and

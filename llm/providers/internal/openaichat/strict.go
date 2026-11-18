@@ -1,9 +1,6 @@
 package openaichat
 
-import (
-	"encoding/json"
-	"sort"
-)
+import "sort"
 
 // StrictifyJSONSchema returns a deep copy of a tool parameter schema
 // rewritten for OpenAI strict mode: every object gets
@@ -39,55 +36,44 @@ func StrictifyJSONSchema(in map[string]any) map[string]any {
 // projection makes a documented-optional argument mandatory, so a caller
 // must send the tool non-strict instead.
 //
-// The walk accepts only what the rewrite provably projects or what is already
-// strict-valid, and answers inexpressible for everything it cannot verify. A
-// false "inexpressible" costs strict mode on that one tool; a false
-// "expressible" sends a strict tool whose optional argument is still optional,
-// which OpenAI rejects for the whole request.
+// The rule that decides it is modeledKeywords: a schema is certified only when
+// every keyword in it is one StrictifyJSONSchema either rewrites or provably
+// leaves alone. A keyword outside that set is refused wherever it appears,
+// rather than modelled case by case — combinators, dependentRequired,
+// prefixItems, patternProperties and the rest all constrain which keys an
+// object may carry, so closing the object can silently start rejecting calls
+// the advertised schema accepted. Refusing the keyword keeps the tool's whole
+// argument set, at the cost of strict mode on that one tool.
 //
-// Two shapes need care, because StrictifyJSONSchema does not touch them:
+// Under that rule the walk still has to establish two things. A node the
+// rewrite transforms gets its required list and additionalProperties from the
+// projection, so what it advertised must already be equivalent: every property
+// required, no undeclared key allowed, and required naming only declared keys.
+// A node the rewrite never visits — including a nullable type list such as
+// ["object", "null"], and any descendant below one — keeps exactly what it
+// advertised, so it must already be strict-valid on its own terms.
 //
-//   - A type list such as ["object", "null"] — JSON Schema's way of spelling a
-//     nullable object, and OpenAI's documented way of spelling an optional
-//     field under strict mode. The rewrite matches only a literal "object"
-//     string type, so such a node keeps its own required list and its own
-//     additionalProperties, and everything below it is left untouched too.
-//   - $ref, and the $defs/definitions table it points into. The rewrite never
-//     resolves a reference and never descends into the definitions, so a
-//     schema using either cannot be certified: certifying the referenced
-//     target would certify a projection the rewrite does not perform, and the
-//     referenced object would reach OpenAI with its optional property intact.
-//     Such a schema is refused rather than resolved.
-//
-// So the walk tracks whether the rewrite will visit a node. A visited node
-// with a literal "object" or "array" string type is transformed, and the
-// projection supplies its required list and additionalProperties. Any other
-// node — one the rewrite never visits, or one whose type list it does not
-// match — keeps exactly what it advertises, so it must already satisfy strict
-// mode itself: every property required and additionalProperties false. The
-// same rule applies to every descendant of such a node, since nothing below it
-// is rewritten either.
-//
-// Finally, a container the walk cannot read is refused rather than trusted.
-// properties, items and the combinator lists reach this package either as
-// decoded JSON (map[string]any and []any) or as a Go caller's typed values
-// (map[string]map[string]any, []map[string]any). The rewrite type-asserts the
-// same way, so an unreadable properties map would be replaced with an empty
-// one — dropping every advertised argument — and an unreadable combinator list
-// would keep its optional properties. Neither is certifiable.
+// A container the walk cannot read is refused rather than trusted. properties
+// and items reach this package either as decoded JSON (map[string]any) or as a
+// Go caller's typed values (map[string]map[string]any). The rewrite
+// type-asserts the same way, so an unreadable properties map would be replaced
+// with an empty one, dropping every advertised argument.
 func StrictExpressible(schema map[string]any) bool {
 	return strictlyExpressibleNode(schema, true)
 }
 
-// strictlyExpressibleNode walks one node. visited reports whether
-// StrictifyJSONSchema will call into this node: the root is visited, a
-// property or items subschema is visited only when its parent is visited and
-// carries the literal object or array type the rewrite matches, and combinator
-// branches are visited whenever the node itself is.
+// strictlyExpressibleNode walks one node of a schema already known to use only
+// modeled keywords. visited reports whether StrictifyJSONSchema will call into
+// this node: the root is visited, and a property or items subschema is visited
+// only when its parent is visited and carries the literal object or array type
+// the rewrite matches.
 func strictlyExpressibleNode(m map[string]any, visited bool) bool {
 	if m == nil {
 		return true
 	}
+	// The rewrite resolves no reference and never descends into a definitions
+	// table, so a schema using either cannot be certified at any node, whether
+	// or not the rewrite transforms it.
 	if _, ok := m["$ref"]; ok {
 		return false
 	}
@@ -101,6 +87,12 @@ func strictlyExpressibleNode(m map[string]any, visited bool) bool {
 	// Only a visited node whose type is the literal string the rewrite matches
 	// is transformed. Everything else keeps what it advertises.
 	transformed := visited && (literal == "object" || literal == "array")
+	// The rewrite descends into a node whether or not it transforms that node,
+	// so a keyword it does not model is unsound at any position — not only on
+	// the objects it closes.
+	if !keywordsModeled(m) {
+		return false
+	}
 	// A type list may name both shapes at once, as in ["object", "array"].
 	// Both are then constraints on the same node, and the rewrite — which
 	// matches only a literal type string — transforms neither, so every one of
@@ -137,14 +129,6 @@ func strictlyExpressibleNode(m map[string]any, visited bool) bool {
 				}
 			}
 		}
-		// Closing the object forbids every key it does not declare, and it
-		// requires every key it does, so the projection admits exactly
-		// len(props) keys. A declared minimum above that cannot be met.
-		if transformed {
-			if minKeys, ok := numericKeyword(m["minProperties"]); ok && int(minKeys) > len(props) {
-				return false
-			}
-		}
 		for _, child := range props {
 			childMap, ok := child.(map[string]any)
 			if !ok {
@@ -158,12 +142,6 @@ func strictlyExpressibleNode(m map[string]any, visited bool) bool {
 		}
 	}
 	if isArray {
-		// The rewrite descends into items only, so a tuple's prefixItems
-		// reaches the provider as advertised. An object there keeps its
-		// optional property, which strict mode rejects.
-		if _, has := m["prefixItems"]; has {
-			return false
-		}
 		if raw, has := m["items"]; has && raw != nil {
 			items, ok := raw.(map[string]any)
 			if !ok {
@@ -183,68 +161,6 @@ func strictlyExpressibleNode(m map[string]any, visited bool) bool {
 		}
 		if _, has := m["items"]; has {
 			return false
-		}
-	}
-	// The rewrite strictifies combinators from any node it visits, whatever the
-	// node's own type, so branches stay reachable.
-	for _, comb := range []string{"anyOf", "oneOf", "allOf"} {
-		raw, ok := m[comb]
-		if !ok || raw == nil {
-			continue
-		}
-		arr, ok := raw.([]any)
-		if !ok {
-			// Present but unreadable: the rewrite skips it, so any optional
-			// property inside would reach the provider unchanged.
-			return false
-		}
-		for _, it := range arr {
-			child, ok := it.(map[string]any)
-			if !ok {
-				return false
-			}
-			if !strictlyExpressibleNode(child, visited) {
-				return false
-			}
-			if !transformed {
-				continue
-			}
-			// The rewrite closes each branch against the branch's own
-			// properties. A branch that declares none then accepts only {}, while
-			// this node requires every property it declares, so no branch would be
-			// satisfiable. Giving the branch this node's properties instead is not
-			// available either: it widens a branch that admitted a narrower set,
-			// and copying a nested subtree into every branch grows the projection
-			// with nesting. So a branch is certified only when closing it changes
-			// nothing — it is already closed and already requires all it declares —
-			// which leaves the union exactly what it advertised.
-			if !branchClosureIsNoOp(child) {
-				return false
-			}
-		}
-	}
-	// A branch may require a key this node never declares. Closing the object
-	// then forbids that key, so the projection can satisfy neither branch.
-	if transformed {
-		declared, _ := m["properties"].(map[string]any)
-		// allOf is included: a branch there also constrains the same object, so
-		// a key it requires must stay reachable once the node is closed.
-		for _, comb := range []string{"anyOf", "oneOf", "allOf"} {
-			arr, ok := m[comb].([]any)
-			if !ok {
-				continue
-			}
-			for _, it := range arr {
-				branch, ok := it.(map[string]any)
-				if !ok {
-					continue
-				}
-				for name := range requiredNamesOf(branch["required"]) {
-					if _, has := declared[name]; !has {
-						return false
-					}
-				}
-			}
 		}
 	}
 	return true
@@ -351,46 +267,6 @@ func allKeysDeclared(m map[string]any) bool {
 	return ok && !allowed
 }
 
-// branchClosureIsNoOp reports whether closing a combinator branch to
-// additionalProperties: false and required = its own property names leaves it
-// admitting exactly what it admitted before. A branch that is already closed
-// and already requires everything it declares is unchanged by the rewrite,
-// which is the only branch a transformed parent can carry faithfully.
-//
-// A branch declaring no properties is not a no-op: it admitted the same
-// objects as before only while additionalProperties was absent, and closing it
-// narrows it to {}. It is therefore refused here rather than closed.
-func branchClosureIsNoOp(branch map[string]any) bool {
-	props, ok := inspectProperties(branch)
-	if !ok || len(props) == 0 {
-		return false
-	}
-	if branch["additionalProperties"] != false {
-		return false
-	}
-	return allPropertiesRequired(props, branch["required"])
-}
-
-// numericKeyword reads a numeric schema keyword in either of the shapes a
-// decoded schema or a Go caller supplies.
-func numericKeyword(raw any) (float64, bool) {
-	switch n := raw.(type) {
-	case float64:
-		return n, true
-	case float32:
-		return float64(n), true
-	case int:
-		return float64(n), true
-	case int64:
-		return float64(n), true
-	case json.Number:
-		f, err := n.Float64()
-		return f, err == nil
-	default:
-		return 0, false
-	}
-}
-
 // requiredNamesOf reads a node's required list in either of the shapes the
 // builders and decoded provider schemas use.
 func requiredNamesOf(raw any) map[string]bool {
@@ -410,6 +286,72 @@ func requiredNamesOf(raw any) map[string]bool {
 		}
 	}
 	return out
+}
+
+// modeledKeywords lists every JSON Schema keyword StrictifyJSONSchema either
+// rewrites or provably leaves alone.
+//
+// The list is the whole certification. A node the rewrite closes admits
+// exactly the keys it declares, so a keyword whose effect depends on keys
+// outside that set — or on the object staying open — cannot survive the
+// projection. Rather than test those keywords one at a time, a node carrying
+// one is refused strict mode outright and the tool is sent as advertised.
+//
+// Each entry says which of the two it is:
+//
+//   - rewritten: the projection supplies it, so whatever the schema advertised
+//     for it is replaced. type, properties, required and
+//     additionalProperties on an object; type and items on an array.
+//     description, enum, default and the scalar bounds belong.
+//
+// Adding a keyword to the rewrite without adding it here makes the gate refuse
+// schemas the rewrite does handle — a visible loss of strictness, not a silent
+// unsoundness. Adding one here without teaching the rewrite about it would be
+// the reverse, and is the mistake this list exists to prevent.
+var modeledKeywords = map[string]bool{
+	// Rewritten on objects and arrays.
+	"type":                 true,
+	"properties":           true,
+	"required":             true,
+	"additionalProperties": true,
+	"items":                true,
+
+	// Unaffected: annotations and scalar bounds, which closing an object
+	// cannot narrow. These are the keywords a tool builder uses to describe a
+	// value it accepts.
+	"description": true,
+	"enum":        true,
+	"default":     true,
+	"examples":    true,
+	"title":       true,
+	"const":       true,
+	"format":      true,
+	"pattern":     true,
+	"minimum":     true,
+	"maximum":     true,
+	"minLength":   true,
+	"maxLength":   true,
+	"minItems":    true,
+	"maxItems":    true,
+	"uniqueItems": true,
+}
+
+// keywordsModeled reports whether every keyword on a node is one the
+// projection accounts for.
+//
+// The check is unconditional rather than limited to the nodes the rewrite
+// transforms, because the rewrite descends past the nodes it does not
+// transform: an untyped wrapper carrying anyOf still has every branch closed,
+// and a wrapper carrying dependentRequired or minProperties still constrains
+// keys its own closure forbids. Refusing the keyword wherever it appears is
+// what makes this a property of the schema rather than of one node's type.
+func keywordsModeled(m map[string]any) bool {
+	for keyword := range m {
+		if !modeledKeywords[keyword] {
+			return false
+		}
+	}
+	return true
 }
 
 func strictifyJSONSchemaInPlace(m map[string]any) {
