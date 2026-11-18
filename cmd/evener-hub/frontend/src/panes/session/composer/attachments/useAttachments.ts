@@ -140,7 +140,7 @@ export interface UseAttachmentsResult {
    * restart at 1 only when the result is empty (mirrors composer-
    * attachments.js's resetMarkerCounter, called only when
    * clearSubmittedComposerItems empties the list). */
-  clearSubmitted(submittedMarkers: Set<number>): void;
+  clearSubmitted(retire: Set<number>, strip?: Set<number>): void;
 }
 
 export function createAttachmentStore() {
@@ -283,9 +283,19 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
             if (removedWhilePendingRef.current.delete(token)) return;
             const currentItem = store.getState().items.find((item) => operationToken(item) === token);
             if (currentItem) {
-              const current = editor.read();
-              const stripped = stripMarker(current.text, current.cursor, currentItem.marker);
-              editor.write(stripped.value, stripped.cursor ?? current.cursor, "cleanup");
+              // Strip only a number this tile alone bears. Markers are unique
+              // within a composition, so a second tile with the same number
+              // means a merge or rebind brought one in - and the reference in
+              // the text may be that tile's, whose prose and missing-image tag
+              // must survive. A renumbered tile keeps its own number unique and
+              // still strips, because the merge moved its reference with it.
+              const numberIsMine =
+                store.getState().items.filter((item) => item.marker === currentItem.marker).length === 1;
+              if (numberIsMine) {
+                const current = editor.read();
+                const stripped = stripMarker(current.text, current.cursor, currentItem.marker);
+                editor.write(stripped.value, stripped.cursor ?? current.cursor, "cleanup");
+              }
               setItems((prev) => prev.filter((item) => operationToken(item) !== token));
             }
             onRejected(`${file.name || "unknown"} (image decode failed)`);
@@ -324,13 +334,22 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
     editor.write(stripped.value, stripped.cursor ?? current.cursor);
   };
 
-  const clearSubmitted = (submittedMarkers: Set<number>) => {
-    if (submittedMarkers.size > 0) {
+  /** Retire submitted tiles, editing the text only for references this
+   * composition still owns.
+   *
+   * `retire` is every tile this press is done with. `strip` is the subset whose
+   * `[image N]` the text should lose - a tile the composition kept after a
+   * rebind is staged here but its number in the new text is the adopted draft's
+   * reference, so stripping it would erase prose the person never wrote and
+   * clear a missing-image tag. Retirement is identity's business; the text edit
+   * is the composition's. */
+  const clearSubmitted = (retire: Set<number>, strip: Set<number> = retire) => {
+    if (strip.size > 0) {
       // Each write describes one exact splice, so atoms between removed
       // markers retain their identities. Live editor refs update synchronously.
       // A marker already removed by a concurrent edit remains a safe no-op.
       let { text, cursor } = editor.read();
-      for (const marker of submittedMarkers) {
+      for (const marker of strip) {
         const stripped = stripMarker(text, cursor, marker);
         text = stripped.value;
         cursor = stripped.cursor ?? cursor;
@@ -338,7 +357,7 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
       }
     }
     setItems((prev) => {
-      const next = prev.filter((item) => !submittedMarkers.has(item.marker));
+      const next = prev.filter((item) => !retire.has(item.marker));
       if (next.length === 0) {
         // Restarting numbering at 1 lets a later attachment reuse marker 1.
         // Any retired marker still recorded in removedWhilePendingRef must not

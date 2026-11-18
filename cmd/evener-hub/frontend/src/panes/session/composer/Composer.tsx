@@ -938,7 +938,14 @@ function ComposerWithSubmission({
     restored: restoredImageIds,
   });
   const hasAttachments = attachments.items.length > 0;
-  const hasContent = hasText || sendable.length > 0 || skillNames.length > 0 || selectionMeta.commandNames.length > 0;
+  // A tile still decoding has no bytes to judge yet, so it is not excluded from
+  // the draft - its marker may simply not have been typed into the text this
+  // instant. Counting it keeps Send for a draft whose image is still settling.
+  // A SETTLED tile with no reference is different: the request would not carry
+  // it, so it is not content and the composer offers Stop instead.
+  const decoding = attachments.items.some((item) => item.pending);
+  const hasContent =
+    hasText || sendable.length > 0 || decoding || skillNames.length > 0 || selectionMeta.commandNames.length > 0;
   const inlineStop = !!model && controlsFor(model).stop && !hasContent;
   const inlineStopReady = useInlineStopReady(ref, !model || askPending ? null : inlineStop ? "stop" : "send");
 

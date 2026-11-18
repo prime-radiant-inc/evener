@@ -21,6 +21,7 @@ import {
   writeComposerDraft,
 } from "./draft";
 import { resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
+import { mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recovery/recoveryDraft";
 import { sendableAttachments } from "./submitProtocol";
 
 beforeEach(() => {
@@ -38,6 +39,26 @@ afterEach(() => {
 
 function image(name = "source.png") {
   return new File([new Uint8Array([1, 2, 3])], name, { type: "image/png" });
+}
+
+// A rejected recovery row exactly as the outbox stores it. No composer
+// snapshot means the record cannot say which `[image N]` its bytes belonged
+// to - the shape the high describes.
+function recoveryRecord(input: InputItem[]): MutationRecoveryRecord {
+  return {
+    version: 1,
+    clientMutationId: "mutation-1",
+    intentSequence: 1,
+    createdAt: 1,
+    targetRef: "root",
+    threadId: "thread-a",
+    method: "turn/start",
+    payload: { ref: "root", input },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input },
+    state: "submitting",
+    recoveryKind: "rejected",
+  };
 }
 
 test("source restoration retains mixed atom identity and inert prose", () => {
@@ -607,6 +628,51 @@ test("explicit Edit beside a staged image sends both images and keeps literal pr
 // The high: editing a second recovery row into a composer that already holds
 // an exempt image must not drop the first image's exemption. The tile is still
 // staged and still exempt, so the resend that consumes the row must carry it.
+// The high: a row with no composer snapshot cannot say which `[image N]` its
+// bytes belonged to, so its text may spell the image's number as a literal the
+// merge then renumbers away. Reading that prose as the answer would leave the
+// renumbered tile unexempt, and the next autosave would write the row without
+// the image's bytes - data loss before anyone even presses Send.
+test("a restored image from a row without recorded references stays eligible after a renumbering merge", async () => {
+  const source = createTestComposerSource("root");
+  try {
+    const staged = {
+      id: "staged",
+      marker: 1,
+      name: "current.png",
+      mediaType: "image/png",
+      data: "CURRENT",
+      pending: false,
+    };
+    source.attachments.setState({ items: [staged] });
+    source.editor.write("current [image 1]", 15);
+
+    const row = recoveryComposerDraft(
+      recoveryRecord([
+        { type: "text", text: "legacy [image 1] stays literal" },
+        { type: "image", mediaType: "image/png", data: "LEGACY", name: "legacy.png" },
+      ]),
+    );
+    const merged = mergeRecoveryComposerDraft(source.editor.read().text, source.attachments.getState().items, row);
+
+    // The merge gave the recovered image marker 2, while the record's own prose
+    // still spells 1 - the literal the person sees.
+    expect(merged.attachments.map((item) => item.marker)).toEqual([2, 3]);
+    source.attachments.setState({ items: merged.attachments });
+    source.adoptRecoveredImageFacts(row);
+
+    // Whatever number the merge chose, the bytes the row carried are sendable.
+    const snapshot = source.getSnapshot();
+    const sendable = sendableAttachments(source.attachments.getState().items, merged.text, {
+      foreign: snapshot.foreignImageIds,
+      restored: snapshot.restoredImageIds,
+    });
+    expect(sendable.map((item) => item.data)).toEqual(expect.arrayContaining(["LEGACY"]));
+  } finally {
+    source.dispose();
+  }
+});
+
 test("an exemption survives a second recovery adoption while its tile stays staged", async () => {
   const source = createTestComposerSource("root");
   try {
@@ -826,6 +892,78 @@ test.each([
   expect(getToasts()).toEqual([]);
 });
 
+// The high: a pane holding its own image 1 adopts a peer's newer draft that
+// spells "[image 1]" as literal prose. Marker numbers are not identity, so the
+// retained tile is a DIFFERENT image and the peer's reference never meant it.
+// Editing a recovery row on top used to merge the whole staged bag, renumber
+// the retained tile to dodge the collision and rewrite the peer's prose into a
+// reference carrying the wrong bytes - then commit that tile as the row's own,
+// so a reopen before the next autosave sent it.
+//
+// The selection that decides what a send would carry must therefore apply
+// BEFORE the merge and before the durable write. The tile stays staged in the
+// pane; it simply is not this composition's image.
+test("a retained foreign image cannot enter a recovery merge or its durable row", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  try {
+    // The row's own text spells "[image 1]" as literal prose. That collision is
+    // what makes a bare merge renumber the retained tile and rewrite the text.
+    const queuedText = "queued [image 1] prose";
+    const original = await storage.enqueueIntent({
+      targetRef: "root",
+      method: "turn/start",
+      payload: { ref: "root", input: [{ type: "text", text: queuedText }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: queuedText }] },
+    });
+    await storage.transferToRecovery(original.clientMutationId, "rejected");
+    const row = await storage.getRecovery(original.clientMutationId);
+    if (!row) throw new Error("missing recovery fixture");
+
+    // This pane mounts on its own draft and stages its own image 1...
+    writeComposerDraft("root", { text: "local [image 1]", skillNames: [] });
+    const source = createTestComposerSource("root");
+    try {
+      source.attachments.setState({
+        items: [{ id: "retained", marker: 1, name: "old.png", mediaType: "image/png", data: "OLD", pending: false }],
+      });
+      // ...then a peer writes a NEWER draft that spells "[image 1]" as prose.
+      // The mount's own draft is now stale, so binding the editor adopts the
+      // peer's text and records everything already staged as foreign.
+      const peerText = "peer [image 1] prose";
+      writeComposerDraft("root", { text: peerText, skillNames: [] });
+      source.bindEditor({
+        read: () => source.getSnapshot().text,
+        write: (text: string) => source.updateText(text),
+        focus: () => {},
+        setSelection: () => {},
+        getSelection: () => ({ start: 0, end: 0 }),
+      } as never);
+      expect(source.getSnapshot().text).toBe(peerText);
+
+      await expect(source.activateRecovery(row)).resolves.toBe(true);
+
+      // The peer's prose is still prose: the merge did not renumber the
+      // retained tile around it and turn its number into a reference.
+      expect(source.getSnapshot().text).toContain("peer [image 1] prose");
+      expect(source.getSnapshot().text).toContain("queued [image 1] prose");
+      const saved = await storage.getRecovery(original.clientMutationId);
+      // Nothing durable claims the retained tile: it is not this row's image,
+      // and a reopen before the follow-up autosave must not find it eligible.
+      const durableInput = (saved?.payload as { input?: InputItem[] } | undefined)?.input ?? [];
+      const durableImages = durableInput.flatMap((item) => (item.type === "image" ? [item.data] : []));
+      expect(durableImages).not.toContain("OLD");
+      // The tile is still staged in the pane - preserved, not destroyed.
+      expect(source.attachments.getState().items.map((item) => item.id)).toContain("retained");
+    } finally {
+      source.dispose();
+    }
+  } finally {
+    storage.close();
+  }
+});
+
 test.each(["success", "failure"] as const)(
   "an old detached encode %s cannot claim a newer same-ref draft",
   async (outcome) => {
@@ -850,3 +988,74 @@ test.each(["success", "failure"] as const)(
     );
   },
 );
+
+// The high: a missing image adopted from a persisted draft is an anchor with no
+// bytes. When an Edit merges that draft into a recovery row, the row owns the
+// text - and its own attachment list holds only tiles that still have bytes, so
+// a marker whose bytes were already gone has no entry to describe it. If the
+// tag does not travel with the composition, the reopen reads the row's text
+// with nothing declaring the anchor and Send delivers it as literal prose, with
+// no image and no refusal. The person sees a broken image and the model gets a
+// sentence.
+//
+// The tag must therefore be filed against the composition the row now owns,
+// before the local draft that held it is cleared, and restored when the row is
+// opened again - explicitly here, and automatically on mount by the same call.
+test("a missing-image tag merged into a recovery row survives the reopen", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  try {
+    const original = await storage.enqueueIntent({
+      targetRef: "root",
+      threadId: "thread-a",
+      method: "turn/start",
+      payload: { ref: "root", input: [{ type: "text", text: "queued prose" }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "queued prose" }] },
+    });
+    await storage.transferToRecovery(original.clientMutationId, "rejected");
+    const row = await storage.getRecovery(original.clientMutationId);
+    if (!row) throw new Error("missing recovery fixture");
+
+    // A draft on disk whose record names marker 1 as having had bytes - the
+    // shape a reload of an image-bearing draft leaves behind. No source holds
+    // those bytes any more.
+    const draftText = "look [image 1] here";
+    writeComposerDraft("root", { text: draftText, skillNames: [] }, [1]);
+
+    const source = createTestComposerSource("root");
+    try {
+      // The mount read adopts the anchor: the record says marker 1 was an
+      // image, so this source holds a reference with no bytes behind it.
+      expect(source.getSnapshot().unbackedImageMarkers).toEqual([1]);
+      // Edit merges the draft into the row...
+      await expect(source.activateRecovery(row)).resolves.toBe(true);
+      // ...and the follow-up autosave commits that composition, then clears the
+      // local draft it incorporated. This is the window the high describes: the
+      // row owns the text and the tag has to have been filed with it already.
+      await source.queueRecoveryPersistence(original.clientMutationId, source.getSnapshot().text, [], []);
+      await source.flushRecoveryWrites();
+    } finally {
+      source.dispose();
+    }
+
+    // The local draft is gone; the row owns the text.
+    expect(readComposerDraft("root").text).toBe("");
+    expect(readComposerDraftRevisionId("root")).toBeUndefined();
+
+    const reopened = createTestComposerSource("root");
+    try {
+      const saved = await storage.getRecovery(original.clientMutationId);
+      if (!saved) throw new Error("missing saved recovery row");
+      await expect(reopened.activateRecovery(saved)).resolves.toBe(true);
+      expect(reopened.getSnapshot().text).toContain("[image 1]");
+      // The anchor is still an anchor: the row restored the text, and nothing
+      // restored bytes, so the reference must still refuse to send as prose.
+      expect(reopened.getSnapshot().unbackedImageMarkers).toEqual([1]);
+    } finally {
+      reopened.dispose();
+    }
+  } finally {
+    storage.close();
+  }
+});

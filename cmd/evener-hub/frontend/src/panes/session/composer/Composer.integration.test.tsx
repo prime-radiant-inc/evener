@@ -318,8 +318,11 @@ test.each([399, 400])("pending and restored image-only drafts keep Send until re
   await mountComposer("root", {}, source);
   const encoding = installControlledImageEncoding();
   selectImageFile(new File([new Uint8Array([1, 2, 3])], "source.png", { type: "image/png" }));
-  act(() => replaceEditorText(screen.getByRole("textbox", { name: "Message" }), ""));
-  expect(source.getSnapshot().text).toBe("");
+  // An image-only draft is one whose text is just the image reference. Clearing
+  // the text as well deletes that reference, which is the different state the
+  // request deliberately excludes: its bytes would not ship, so Send is not
+  // offered for it (see "removing the last reference" cases below).
+  expect(source.getSnapshot().text).toBe("[image 1]");
   expect(source.attachments.getState().items[0]?.pending).toBe(true);
   expect(screen.queryByTestId("composer-stop")).toBeNull();
   expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();
@@ -653,9 +656,22 @@ test.each([
       skillNames: ["skill-2"],
       activeRecoveryId: replacementRecoveryId,
     });
-    expect(replacementSource.attachments.getState().items).toEqual([
-      { marker: 1, name: "replacement.png", mediaType: "image/png", pending: false, data: "AQID", width: 8, height: 4 },
+    const retained = replacementSource.attachments.getState().items;
+    expect(retained).toEqual([
+      {
+        id: expect.any(String),
+        marker: 1,
+        name: "replacement.png",
+        mediaType: "image/png",
+        pending: false,
+        data: "AQID",
+        width: 8,
+        height: 4,
+      },
     ]);
+    // The identity is minted per attachment, so it is asserted as present and
+    // non-empty rather than against a literal the writer would have to fake.
+    expect(retained.at(0)?.id.length ?? 0).toBeGreaterThan(0);
     if (pending === "recovery edit") {
       expect(await storage.getRecovery(original.clientMutationId)).toMatchObject({
         clientMutationId: original.clientMutationId,
@@ -779,7 +795,18 @@ test.each([
     expect.soft(readComposerDraft("root")).toEqual({ text: persistedText, skillNames: [] });
     expect(source.attachments.getState().items).toEqual(
       action === "paste"
-        ? [{ marker: 1, name: "source.png", mediaType: "image/png", pending: false, data: "AQID", width: 8, height: 4 }]
+        ? [
+            {
+              id: expect.any(String),
+              marker: 1,
+              name: "source.png",
+              mediaType: "image/png",
+              pending: false,
+              data: "AQID",
+              width: 8,
+              height: 4,
+            },
+          ]
         : [],
     );
     expect(fake.calls.filter((call) => call.method === "turn/start" || call.method === "turn/steer")).toEqual([]);

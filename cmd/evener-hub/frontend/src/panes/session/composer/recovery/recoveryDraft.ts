@@ -31,6 +31,18 @@ export function recoveryDeclaredMarkers(draft: RecoveredComposerDraft): number[]
   return declaredImageMarkers.get(draft) ?? [];
 }
 
+/** Whether the record could not say which `[image N]` its bytes belonged to.
+ *
+ * An "unavailable" row carries bytes and a text that may spell their numbers as
+ * literal prose, and there is no fact left that separates the two. Adoption must
+ * then keep those bytes eligible rather than reading the prose as the answer:
+ * the merge may renumber a restored image, and a prose match would attribute the
+ * row's spelling to the tile's new number and drop its exemption.
+ */
+export function recoveryImageReferencesUnavailable(draft: RecoveredComposerDraft): boolean {
+  return unavailableImageReferences.has(draft);
+}
+
 // The shared recovery owns portable record decoding: composer text and marker
 // metadata identify associations, while payload input owns image bytes. This
 // browser wrapper converts those images to settled PendingAttachment tiles and
