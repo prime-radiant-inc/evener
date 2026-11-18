@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -85,10 +87,10 @@ func TestLoadSessionJobGetPreferOwnerCompletedOverForwardedRunning(t *testing.T)
 	}
 }
 
-// TestLoadSessionJobRecordDiagnostics_OwnerAvailableHasNoFallback pins the
+// TestLoadsessionJobRecordDiagnostics_OwnerAvailableHasNoFallback pins the
 // diagnostics on the same fixture: when the owner's record wins, the read must
 // not also claim it fell back to a forwarded copy.
-func TestLoadSessionJobRecordDiagnostics_OwnerAvailableHasNoFallback(t *testing.T) {
+func TestLoadsessionJobRecordDiagnostics_OwnerAvailableHasNoFallback(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	rootSession := identifier.MustNewSessionID()
@@ -117,17 +119,17 @@ func TestLoadSessionJobRecordDiagnostics_OwnerAvailableHasNoFallback(t *testing.
 	})
 	closeJobJournal(t, ownerStore)
 
-	rec, found, diagnostics, err := LoadSessionJobRecordWithDiagnostics(stateDir, rootSession, jobID)
+	read, err := loadSessionJobRecord(stateDir, rootSession, jobID)
 	if err != nil {
-		t.Fatalf("LoadSessionJobRecordWithDiagnostics: %v", err)
+		t.Fatalf("loadSessionJobRecord: %v", err)
 	}
-	if !found || rec == nil {
+	if !read.found || read.record == nil {
 		t.Fatal("found = false, want the owner's completed record")
 	}
-	if diagnostics.ForwardedFallback {
+	if read.diagnostics.ForwardedFallback {
 		t.Fatal("ForwardedFallback = true although the owner record was available")
 	}
-	if diagnostics.OwnerUnavailable {
+	if read.diagnostics.OwnerUnavailable {
 		t.Fatal("OwnerUnavailable = true although the owner journal was readable")
 	}
 }
@@ -154,20 +156,20 @@ func TestLoadSessionJobRecordFallsBackToForwardedCopyWhenOwnerUnavailable(t *tes
 	closeJobJournal(t, rootStore)
 	// The owner session never materialized a journal at all.
 
-	rec, found, diagnostics, err := LoadSessionJobRecordWithDiagnostics(stateDir, rootSession, jobID)
+	read, err := loadSessionJobRecord(stateDir, rootSession, jobID)
 	if err != nil {
-		t.Fatalf("LoadSessionJobRecordWithDiagnostics: %v", err)
+		t.Fatalf("loadSessionJobRecord: %v", err)
 	}
-	if !found || rec == nil {
+	if !read.found || read.record == nil {
 		t.Fatal("found = false, want the forwarded copy as a fallback")
 	}
-	if rec.OwnerSessionID != ownerSession {
-		t.Fatalf("OwnerSessionID = %q, want the descendant owner %q", rec.OwnerSessionID, ownerSession)
+	if read.record.OwnerSessionID != ownerSession {
+		t.Fatalf("OwnerSessionID = %q, want the descendant owner %q", read.record.OwnerSessionID, ownerSession)
 	}
-	if !diagnostics.ForwardedFallback {
+	if !read.diagnostics.ForwardedFallback {
 		t.Fatal("ForwardedFallback = false, want true: the owner journal held no record")
 	}
-	if !diagnostics.OwnerUnavailable {
+	if !read.diagnostics.OwnerUnavailable {
 		t.Fatal("OwnerUnavailable = false, want true: the owner journal was absent")
 	}
 }
@@ -187,14 +189,14 @@ func TestLoadSessionJobRecordOwnerJournalTornTailIsReported(t *testing.T) {
 		`{"kind":"job_finished","seq":2,`,
 	)
 
-	rec, found, diagnostics, err := LoadSessionJobRecordWithDiagnostics(stateDir, sessionID, jobID)
+	read, err := loadSessionJobRecord(stateDir, sessionID, jobID)
 	if err != nil {
-		t.Fatalf("LoadSessionJobRecordWithDiagnostics: %v", err)
+		t.Fatalf("loadSessionJobRecord: %v", err)
 	}
-	if !found || rec == nil {
+	if !read.found || read.record == nil {
 		t.Fatal("found = false, want the record folded from the complete leading event")
 	}
-	if !diagnostics.TornTail {
+	if !read.diagnostics.TornTail {
 		t.Fatal("TornTail = false, want true for an unterminated incomplete trailing event")
 	}
 }
@@ -209,23 +211,21 @@ func TestLoadSessionJobRecordOrphanFinishIsReported(t *testing.T) {
 	stateDir := t.TempDir()
 	sessionID := identifier.MustNewSessionID()
 	jobID := identifier.MustNewJobID(sessionID)
-	ended := time.Date(2026, 11, 18, 13, 0, 0, 0, time.UTC)
 
 	writeJobJournalLines(t, jobsDir(stateDir, sessionID),
 		`{"kind":"job_finished","seq":1,"job_id":"`+jobID+`","status":"completed","terminal_generation":"gen"}`+"\n",
 	)
 
-	rec, found, diagnostics, err := LoadSessionJobRecordWithDiagnostics(stateDir, sessionID, jobID)
+	read, err := loadSessionJobRecord(stateDir, sessionID, jobID)
 	if err != nil {
-		t.Fatalf("LoadSessionJobRecordWithDiagnostics must report damage, not fail: %v", err)
+		t.Fatalf("loadSessionJobRecord must report damage, not fail: %v", err)
 	}
-	if !found || rec == nil {
+	if !read.found || read.record == nil {
 		t.Fatal("found = false, want the best-effort record Fold reconstructs")
 	}
-	if !diagnostics.IncompleteLifecycle {
+	if !read.diagnostics.IncompleteLifecycle {
 		t.Fatal("IncompleteLifecycle = false, want true for a finish with no start")
 	}
-	_ = ended
 }
 
 // TestFindLocalJobInProjectRejectsOwnerMismatch pins the owner-identity check
@@ -261,6 +261,282 @@ func TestFindLocalJobInProjectRejectsOwnerMismatch(t *testing.T) {
 	}
 	if errors.Is(err, jobstore.ErrIncompleteLifecycle) {
 		t.Fatal("owner mismatch was reported as a lifecycle error, want the coordinates check's own error")
+	}
+}
+
+// TestLoadSessionJobRecordContradictoryAncestorRowIsNotAuthoritative is the
+// medium-1 regression. A stale ancestor row that declares the ANCESTOR as its
+// owner, while the job ID encodes the descendant, is not authoritative however
+// confidently it names an owner: authority comes from the identifier, not from
+// what the row claims. Such a row must never outrank the matching owner's
+// completed record.
+func TestLoadSessionJobRecordContradictoryAncestorRowIsNotAuthoritative(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 18, 15, 0, 0, 0, time.UTC)
+	ended := started.Add(time.Minute)
+	exit := 0
+
+	// The ancestor's journal holds a running row claiming ROOT as its owner. The
+	// job ID says otherwise, so this row is a contradiction, not an authority.
+	rootStore := openJobJournal(t, jobsDir(stateDir, rootSession))
+	appendJobEvent(t, rootStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: rootSession, VisibleToSession: rootSession,
+		StartedAt: &started,
+	})
+	closeJobJournal(t, rootStore)
+
+	ownerStore := openJobJournal(t, jobsDir(stateDir, ownerSession))
+	appendJobEvent(t, ownerStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: ownerSession, VisibleToSession: ownerSession,
+		StartedAt: &started,
+	})
+	appendJobEvent(t, ownerStore, jobstore.Event{
+		Kind: jobstore.EventJobFinished, TS: ended, JobID: jobID,
+		Status: jobstore.StatusCompleted, ExitCode: &exit, EndedAt: &ended, TerminalGen: "gen_owner",
+	})
+	closeJobJournal(t, ownerStore)
+
+	read, err := loadSessionJobRecord(stateDir, rootSession, jobID)
+	if err != nil {
+		t.Fatalf("loadSessionJobRecord: %v", err)
+	}
+	if !read.found || read.record == nil {
+		t.Fatal("found = false, want the owner's completed record")
+	}
+	if read.record.Status != jobstore.StatusCompleted {
+		t.Fatalf("status = %q, want %q: a row claiming the ancestor cannot outrank the ID's owner",
+			read.record.Status, jobstore.StatusCompleted)
+	}
+	if read.record.OwnerSessionID != ownerSession {
+		t.Fatalf("OwnerSessionID = %q, want the ID's owner %q", read.record.OwnerSessionID, ownerSession)
+	}
+	if read.diagnostics.ForwardedFallback {
+		t.Fatal("ForwardedFallback = true although the authoritative owner record was available")
+	}
+}
+
+// TestLoadSessionJobRecordKeepsOwnerDiagnosticWhenOwnerWins is the low-3
+// regression. A healthy forwarded start sits in the ancestor's journal while the
+// owner's journal holds an orphan finish: the owner's record is the one returned
+// (it is the ID's owner, so it is authoritative), and the owner's integrity
+// signal must be reported with it. The old merge returned the owner's damaged
+// row from its own journal carrying no damage at all.
+func TestLoadSessionJobRecordKeepsOwnerDiagnosticWhenOwnerWins(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 18, 15, 30, 0, 0, time.UTC)
+
+	// A healthy forwarded start in the ancestor's journal, carrying the owner's
+	// own ID exactly as forwardEvent leaves it.
+	rootStore := openJobJournal(t, jobsDir(stateDir, rootSession))
+	appendJobEvent(t, rootStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: ownerSession, VisibleToSession: rootSession,
+		StartedAt: &started,
+	})
+	closeJobJournal(t, rootStore)
+
+	// The owner's journal holds an ORPHAN finish: a terminal event with no start.
+	// Its lifecycle is damaged, and the read must say so even though the damaged
+	// record is not the one returned.
+	writeJobJournalLines(t, jobsDir(stateDir, ownerSession),
+		`{"kind":"job_finished","seq":1,"job_id":"`+jobID+`","status":"completed","terminal_generation":"gen"}`+"\n",
+	)
+
+	read, err := loadSessionJobRecord(stateDir, rootSession, jobID)
+	if err != nil {
+		t.Fatalf("loadSessionJobRecord: %v", err)
+	}
+	if !read.found || read.record == nil {
+		t.Fatal("found = false, want the forwarded copy as the surviving evidence")
+	}
+	// The owner's record won, so this is not a fallback — but its damage still
+	// has to be reported, and it must come from the owner's journal.
+	if read.sourceSessionID != ownerSession {
+		t.Fatalf("sourceSessionID = %q, want the owner %q", read.sourceSessionID, ownerSession)
+	}
+	if read.diagnostics.ForwardedFallback {
+		t.Fatal("ForwardedFallback = true although the returned record is the owner's own")
+	}
+	if !read.diagnostics.IncompleteLifecycle {
+		t.Fatal("IncompleteLifecycle = false, want the owner journal's orphan finish reported")
+	}
+}
+
+// TestLoadSessionJobRecordKeepsLocalDamageWhenOwnerWins covers the other
+// direction of the same merge: the returned record is the owner's, and the
+// FORWARDED journal is the damaged one. Its damage must still reach the caller —
+// either journal being torn or incoherent is something a retained-history read
+// has to say, and dropping it because the healthy branch won would hide it.
+func TestLoadSessionJobRecordKeepsLocalDamageWhenOwnerWins(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 18, 15, 45, 0, 0, time.UTC)
+	ended := started.Add(time.Minute)
+
+	// The ancestor's journal ends in an unterminated append: damaged, but not
+	// enough to hide the forwarded start that precedes it.
+	writeJobJournalLines(t, jobsDir(stateDir, rootSession),
+		jobStartedLine(jobID, ownerSession, started)+"\n",
+		`{"kind":"job_finished","seq":2,`,
+	)
+
+	ownerStore := openJobJournal(t, jobsDir(stateDir, ownerSession))
+	appendJobEvent(t, ownerStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: ownerSession, VisibleToSession: ownerSession,
+		StartedAt: &started,
+	})
+	appendJobEvent(t, ownerStore, jobstore.Event{
+		Kind: jobstore.EventJobFinished, TS: ended, JobID: jobID,
+		Status: jobstore.StatusCompleted, EndedAt: &ended, TerminalGen: "gen_owner",
+	})
+	closeJobJournal(t, ownerStore)
+
+	read, err := loadSessionJobRecord(stateDir, rootSession, jobID)
+	if err != nil {
+		t.Fatalf("loadSessionJobRecord: %v", err)
+	}
+	if !read.found || read.record == nil {
+		t.Fatal("found = false, want the owner's completed record")
+	}
+	if read.sourceSessionID != ownerSession {
+		t.Fatalf("sourceSessionID = %q, want the owner %q", read.sourceSessionID, ownerSession)
+	}
+	if !read.diagnostics.TornTail {
+		t.Fatal("TornTail = false, want the forwarded journal's torn tail reported with the owner's record")
+	}
+}
+
+// TestLoadSessionJobGetRoutesLegacyEmptyOwnerToItsJournal is the medium-2
+// regression. A retained legacy start carries no OwnerSessionID, so the owner
+// ref would be empty — a ref no client can resolve — while the command, terminal
+// status and log all live beside the journal that supplied the record. The read
+// must route to that journal.
+func TestLoadSessionJobGetRoutesLegacyEmptyOwnerToItsJournal(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	sessionID := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(sessionID)
+	started := time.Date(2026, 11, 18, 16, 0, 0, 0, time.UTC)
+
+	// No owner_session_id at all: the pre-owner journal shape.
+	writeJobJournalLines(t, jobsDir(stateDir, sessionID),
+		`{"kind":"job_started","seq":1,"ts":"`+started.Format(time.RFC3339)+
+			`","job_id":"`+jobID+`","type":"shell","visible_to_session_id":"`+sessionID+
+			`","started_at":"`+started.Format(time.RFC3339)+`"}`+"\n",
+	)
+
+	job, found, err := LoadSessionJobGet(stateDir, sessionID, jobID)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the legacy record")
+	}
+	if job.OwnerRef == "" {
+		t.Fatal("OwnerRef is empty: a legacy record must route to the journal that supplied it")
+	}
+	want := appwire.Ref{SourceID: "local", ThreadID: sessionID}.String()
+	if job.OwnerRef != want {
+		t.Fatalf("OwnerRef = %q, want %q (the session whose journal supplied the record)", job.OwnerRef, want)
+	}
+}
+
+// TestLoadSessionJobGetRequiresRequestedScope is the medium-3 regression. The
+// requested session holds no record of the job at all: the request cannot be
+// answered from another session's journal just because the job ID names one.
+// Scope is proven before data is served.
+func TestLoadSessionJobGetRequiresRequestedScope(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	askedSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 18, 17, 0, 0, 0, time.UTC)
+	ended := started.Add(time.Minute)
+
+	// Only the owner has a journal, and it has a complete lifecycle with a
+	// command and an output path.
+	ownerStore := openJobJournal(t, jobsDir(stateDir, ownerSession))
+	appendJobEvent(t, ownerStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: ownerSession, VisibleToSession: ownerSession,
+		Command: "rm -rf /important", StartedAt: &started,
+	})
+	appendJobEvent(t, ownerStore, jobstore.Event{
+		Kind: jobstore.EventJobFinished, TS: ended, JobID: jobID,
+		Status: jobstore.StatusCompleted, EndedAt: &ended, TerminalGen: "gen_owner",
+	})
+	closeJobJournal(t, ownerStore)
+
+	// The asked session is a real session with its own empty journal, so this is
+	// not merely an absent session: it has no claim on this job.
+	writeJobJournalLines(t, jobsDir(stateDir, askedSession), "")
+
+	job, found, err := LoadSessionJobGet(stateDir, askedSession, jobID)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet: %v", err)
+	}
+	if found {
+		t.Fatalf("found = true (status %q, command %q): the asked session holds no record of this job",
+			job.Status, job.Command)
+	}
+}
+
+// TestLoadSessionJobGetHonorsOwnerTombstone is the other half of medium 3: the
+// job IS in the requested session's scope — the forwarded copy is right there —
+// but the owner's deletion fence stands. A deletion that failed after writing
+// the tombstone leaves the owner's work directory behind, so the marker is the
+// evidence, and neither the owner's journal nor the forwarded copy may be
+// served.
+func TestLoadSessionJobGetHonorsOwnerTombstone(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 18, 18, 0, 0, 0, time.UTC)
+
+	rootStore := openJobJournal(t, jobsDir(stateDir, rootSession))
+	appendJobEvent(t, rootStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: ownerSession, VisibleToSession: rootSession,
+		StartedAt: &started,
+	})
+	closeJobJournal(t, rootStore)
+
+	ownerStore := openJobJournal(t, jobsDir(stateDir, ownerSession))
+	appendJobEvent(t, ownerStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: ownerSession, VisibleToSession: ownerSession,
+		StartedAt: &started,
+	})
+	closeJobJournal(t, ownerStore)
+
+	if err := schema.TombstoneSessionMeta(stateDir, ownerSession); err != nil {
+		t.Fatalf("tombstone owner session: %v", err)
+	}
+
+	job, found, err := LoadSessionJobGet(stateDir, rootSession, jobID)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet: %v", err)
+	}
+	if found {
+		t.Fatalf("found = true (status %q): the owner is fenced for deletion, so its job must not be served",
+			job.Status)
 	}
 }
 

@@ -109,7 +109,11 @@ func Jobs(ctx context.Context, stateBase, selector string, opts JobOpts) (JobRep
 	if err != nil {
 		return JobReport{}, err
 	}
-	report := buildJobReport(paths, events, opts)
+	// The rows and the honesty about those rows come from ONE fold: a journal
+	// cannot be folded one way for display and judged another way for its
+	// diagnostics.
+	records, foldErr := jobstore.FoldCheckedOrdered(events)
+	report := buildJobReport(paths, records, opts)
 	delegatesPath, delegates, diagnostics, err := stableDoctorDelegates(ctx, paths)
 	if err != nil {
 		return JobReport{}, err
@@ -123,7 +127,7 @@ func Jobs(ctx context.Context, stateBase, selector string, opts JobOpts) (JobRep
 	if readDiagnostics.TornTail {
 		diagnostics = append(diagnostics, "job_journal_torn_tail: ignored unterminated trailing event")
 	}
-	if _, foldErr := jobstore.FoldChecked(events); foldErr != nil {
+	if foldErr != nil {
 		diagnostics = append(diagnostics, "job_journal_incomplete_lifecycle: "+foldErr.Error())
 	}
 	report.Diagnostics = diagnostics
@@ -131,12 +135,12 @@ func Jobs(ctx context.Context, stateBase, selector string, opts JobOpts) (JobRep
 	return report, nil
 }
 
-func buildJobReport(paths Paths, events []jobstore.Event, opts JobOpts) JobReport {
+func buildJobReport(paths Paths, records []*jobstore.JobRecord, opts JobOpts) JobReport {
 	report := JobReport{SessionID: paths.SessionID, JobsPath: paths.JobsPath, Jobs: []JobView{}}
 	if opts.JobID != "" {
 		report.Filtered = "job:" + opts.JobID
 	}
-	for _, rec := range jobstore.FoldOrdered(events) {
+	for _, rec := range records {
 		if opts.JobID != "" && rec.JobID != opts.JobID {
 			continue
 		}

@@ -10,13 +10,44 @@ import (
 	"primeradiant.com/evener/invariant"
 )
 
+// orderedBySeq returns events in seq order, the durable append order every fold
+// applies them in, without mutating the caller's slice.
+func orderedBySeq(events []Event) []Event {
+	sorted := append([]Event(nil), events...)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Seq < sorted[j].Seq })
+	return sorted
+}
+
 // Fold reconstructs the current JobRecord for each job by applying events in
 // seq order. The first job_finished for a job fixes its terminal_generation and
 // terminal status; later terminal writes do not overwrite them.
 func Fold(events []Event) map[string]*JobRecord {
-	sorted := append([]Event(nil), events...)
-	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Seq < sorted[j].Seq })
+	return foldOrderedEvents(orderedBySeq(events))
+}
 
+// ErrIncompleteLifecycle reports a job history whose events do not describe a
+// whole job: a terminal or notification event with no preceding start, a start
+// with no type, a start whose OwnerSessionID contradicts the owner the job ID
+// encodes, or a job event carrying no job ID at all. Fold accepts these
+// fragments by design — it reconstructs the best record the log supports, and
+// the live runtime repairs what it can — so a reader that must report whether a
+// history is COMPLETE checks this sentinel from FoldChecked instead.
+var ErrIncompleteLifecycle = errors.New("jobstore: incomplete job lifecycle")
+
+// FoldChecked folds events exactly like Fold and additionally reports the first
+// structural gap in the lifecycle the log describes. Both answers come from ONE
+// ordering of the events: the records are Fold's own best-effort reconstruction
+// and are returned even when the error is non-nil, so a caller that must both
+// show retained history and be honest about its damage needs one call rather
+// than folding the same journal twice. Errors wrap ErrIncompleteLifecycle; match
+// them with errors.Is.
+func FoldChecked(events []Event) (map[string]*JobRecord, error) {
+	sorted := orderedBySeq(events)
+	return foldOrderedEvents(sorted), checkJobLifecycles(sorted)
+}
+
+// foldOrderedEvents applies already-ordered events to a record map.
+func foldOrderedEvents(sorted []Event) map[string]*JobRecord {
 	recs := make(map[string]*JobRecord)
 	for _, e := range sorted {
 		applyJobEvent(recs, e)
@@ -24,46 +55,29 @@ func Fold(events []Event) map[string]*JobRecord {
 	return recs
 }
 
-// ErrIncompleteLifecycle reports a job history whose events do not describe a
-// whole job: a terminal event with no preceding start, a start missing the
-// fields a shell job cannot run without, or a start whose OwnerSessionID
-// contradicts the owner the job ID encodes. Fold accepts these fragments by
-// design — it reconstructs the best record the log supports, and the live
-// runtime repairs what it can — so a reader that must report whether a history
-// is COMPLETE checks this sentinel from FoldChecked instead.
-var ErrIncompleteLifecycle = errors.New("jobstore: incomplete job lifecycle")
-
-// FoldChecked folds events exactly like Fold and then reports the first
-// structural gap in the lifecycle the log describes. The returned records are
-// Fold's own, so a caller that wants both the best-effort history and an
-// honest verdict about it needs one pass. Errors wrap ErrIncompleteLifecycle;
-// match them with errors.Is.
-func FoldChecked(events []Event) (map[string]*JobRecord, error) {
-	recs := Fold(events)
-	if err := checkJobLifecycles(events); err != nil {
-		return nil, err
-	}
-	return recs, nil
-}
-
 // checkJobLifecycles reports the first event that leaves a job's lifecycle
 // unaccounted for, in seq order so the report is deterministic. It validates
-// what a reader can prove from the journal alone: a start exists before any
-// terminal or notification event for that job, a start carries the fields a
-// shell job needs (a control-plane job such as a delegate row may omit them),
-// and a start's declared owner agrees with the owner its job ID encodes.
+// what a reader can prove from the journal alone: every job event carries a
+// job ID, a start exists before any terminal or notification event for that
+// job, a start names the type it started, and a start's declared owner agrees
+// with the owner its job ID encodes.
 //
 // An EMPTY owner is accepted: rows written before OwnerSessionID existed fold
 // with it unset, and rejecting them would make every pre-owner journal
 // unreadable rather than merely old.
-func checkJobLifecycles(events []Event) error {
-	sorted := append([]Event(nil), events...)
-	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Seq < sorted[j].Seq })
-
+func checkJobLifecycles(sorted []Event) error {
 	started := make(map[string]bool, len(sorted))
 	for _, e := range sorted {
-		if e.JobID == "" || !IsJobRecordEvent(e.Kind) {
+		if !IsJobRecordEvent(e.Kind) {
 			continue
+		}
+		// A job event with no ID cannot be attributed to any lifecycle, yet it
+		// still folds into an empty-ID row that a forensic surface renders. That
+		// row has no start by construction, so report it rather than letting the
+		// check skip the very event that made it.
+		if e.JobID == "" {
+			return fmt.Errorf("%w: a %s event (seq %d) carries no job ID",
+				ErrIncompleteLifecycle, e.Kind, e.Seq)
 		}
 		if e.Kind == EventJobStarted {
 			if err := checkJobStart(e); err != nil {
@@ -114,9 +128,21 @@ func checkJobStart(e Event) error {
 // sequence sort by which was created first; this is the total order the
 // append-only log defines, independent of any wall-clock field.
 func FoldOrdered(events []Event) []*JobRecord {
-	sorted := append([]Event(nil), events...)
-	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Seq < sorted[j].Seq })
+	return orderedRecords(orderedBySeq(events))
+}
 
+// FoldCheckedOrdered is FoldOrdered plus the lifecycle verdict, from one
+// ordering of the events. It is the read a forensic surface wants: the report's
+// rows and its honesty about those rows come from the same pass, so a journal
+// cannot be folded one way for display and judged another way for diagnostics.
+func FoldCheckedOrdered(events []Event) ([]*JobRecord, error) {
+	sorted := orderedBySeq(events)
+	return orderedRecords(sorted), checkJobLifecycles(sorted)
+}
+
+// orderedRecords folds already-ordered events to records ordered by each job's
+// FIRST event seq — the durable append order.
+func orderedRecords(sorted []Event) []*JobRecord {
 	recs := make(map[string]*JobRecord)
 	order := make([]string, 0, len(sorted))
 	for _, e := range sorted {
@@ -152,11 +178,8 @@ func IsJobRecordEvent(kind EventKind) bool {
 }
 
 func FoldWatches(events []Event) map[string]*WatchRecord {
-	sorted := append([]Event(nil), events...)
-	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Seq < sorted[j].Seq })
-
 	watches := make(map[string]*WatchRecord)
-	for _, e := range sorted {
+	for _, e := range orderedBySeq(events) {
 		applyWatchEvent(watches, e)
 	}
 	return watches
@@ -253,9 +276,7 @@ func applyWatchEvent(watches map[string]*WatchRecord, e Event) {
 
 // FoldWatchSends reconstructs pending watch-send frames from durable events.
 func FoldWatchSends(events []Event) WatchSendRecord {
-	sorted := append([]Event(nil), events...)
-	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Seq < sorted[j].Seq })
-
+	sorted := orderedBySeq(events)
 	rec := WatchSendRecord{Pending: make(map[WatchSendKey]*WatchSendState)}
 	terminalSeq := make(map[WatchSendKey]uint64)
 	for _, e := range sorted {

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 
 	"primeradiant.com/evener/agent/internal/jobstore"
@@ -71,13 +72,13 @@ func jobOutputPageResult(page jobstore.OutputWindowSnapshot, found bool, err err
 	}, true, nil
 }
 
-// SessionJobRecordDiagnostics reports what a cold per-session job read could
+// sessionJobRecordDiagnostics reports what a cold per-session job read could
 // not establish about the history behind the record it returned. It is the
 // structural counterpart of jobstore.ReadDiagnostics and
 // delegatestore.ReadDiagnostics: the same question — is this history whole —
 // answered for the retained job read, with the branch the answer came from
 // named separately.
-type SessionJobRecordDiagnostics struct {
+type sessionJobRecordDiagnostics struct {
 	// TornTail is set when the journal the record was folded from ended in an
 	// unterminated, syntactically incomplete append.
 	TornTail bool
@@ -94,29 +95,90 @@ type SessionJobRecordDiagnostics struct {
 }
 
 // sessionJobRecordRead is one cold per-session job read: the record the read
-// settled on, whether it found one, and what it could not establish.
+// settled on, the journal that supplied it, whether it found one, and what it
+// could not establish.
 type sessionJobRecordRead struct {
-	record      *jobstore.JobRecord
-	found       bool
-	diagnostics SessionJobRecordDiagnostics
+	record *jobstore.JobRecord
+	// sourceSessionID is the session whose journal supplied record. It is the
+	// routing identity for a record that names no owner of its own: the caller
+	// can open the job under the ref it read from, which is where the bytes
+	// actually live.
+	sourceSessionID string
+	found           bool
+	diagnostics     sessionJobRecordDiagnostics
+}
+
+// encodedJobOwner names the owner a job ID encodes, or "" when the ID encodes
+// none (synthetic IDs from tests and older tooling). The validated identifier is
+// the only source of authority: a row's own claim is evidence to be checked
+// against it, never the test itself.
+func encodedJobOwner(jobID string) string {
+	owner, err := identifier.JobOwnerSessionID(jobID)
+	if err != nil {
+		return ""
+	}
+	return owner
+}
+
+// retainedJobAuthority is the ONE authority rule for retained job history, and
+// it takes two facts because either one alone is insufficient. A record is
+// authoritative only when the journal it was read from is the owner the job ID
+// itself encodes, and the record does not contradict that owner by naming
+// another.
+//
+// The journal is load-bearing: a forwarded copy is the owner's event re-encoded
+// in the ancestor's journal, so it carries the owner's own OwnerSessionID and is
+// indistinguishable from the original by its fields. What separates them is
+// where the bytes live. Ranking on the record's claim alone would call both
+// copies authoritative and let the stale one win on arrival order, which is
+// precisely the permanently-running row this read exists to stop returning.
+//
+// A job ID that encodes no owner makes every record non-authoritative, which is
+// the honest answer: there is no identifier to rank against.
+func retainedJobAuthority(jobID, journalSession string, rec *jobstore.JobRecord) bool {
+	if rec == nil {
+		return false
+	}
+	owner := encodedJobOwner(jobID)
+	if owner == "" || journalSession != owner {
+		return false
+	}
+	// An empty claim is a legacy row with no owner field: it states nothing to
+	// contradict, and the journal already proved the ownership.
+	return rec.OwnerSessionID == "" || rec.OwnerSessionID == owner
+}
+
+// ownerSessionTombstoned reports whether sessionID's deletion fence is still
+// standing. A deletion that failed after writing the tombstone can leave a
+// session's work directory in place, so the marker — not the directory's
+// existence — is the evidence that its history must no longer be served.
+func ownerSessionTombstoned(stateDir, sessionID string) bool {
+	_, err := os.Stat(filepath.Join(stateDir, schema.SessionsSubdir, sessionID+schema.SessionMetaTombstoneSuffix))
+	return err == nil
 }
 
 // loadSessionJobRecord reads a job's durable record from the local state
 // directory for the hub's past-session fallback. It is read-only.
 //
-// The record is resolved the way the live recursive path resolves it: the
-// owner's record is authoritative, and a forwarded copy in another session's
-// journal is only a fallback. A forwarded copy is what a descendant's events
-// leave in an ancestor's journal (see forwardEvent), and it can be arbitrarily
-// stale — a forwarded job_started with no terminal forward yet is exactly the
-// permanently-running row the cold readers used to return. The job ID encodes
-// its owner (identifier.JobOwnerSessionID), so the owner's journal is found
-// without a tree walk; the same owner-from-ID resolution
-// findLocalJobInProject already relies on.
+// SCOPE IS PROVEN BEFORE DATA IS SERVED, AND AUTHORITY COMES FROM THE VALIDATED
+// IDENTIFIER. The requested session must itself hold a record of the job — its
+// own, or the forwarded copy a descendant's events left in its journal (see
+// forwardEvent). Only then may the read follow the owner the job ID encodes
+// (identifier.JobOwnerSessionID) to that session's journal, and only after the
+// owner's deletion fence has been checked. A job the requested session has no
+// record of is not in its scope, however well-formed the job ID looks: without
+// that evidence the lookup would serve an unrelated session's data behind the
+// ref the caller asked about.
 //
-// found=false covers a session with no jobs journal, a journal with no such
-// job, and an owner journal that holds no record for a job the requested
-// session also does not hold.
+// Authority is retainedJobAuthority, the single rule: the record naming the
+// encoded owner. A forwarded copy — which is what an ancestor holds, and which
+// can be arbitrarily stale, a forwarded job_started with no terminal forward
+// being exactly the permanently-running row the cold readers used to return —
+// is fallback evidence only, returned and flagged when no authoritative record
+// is available.
+//
+// found=false covers a session with no jobs journal, a journal with no record
+// of the job, and an owner whose deletion fence is standing.
 func loadSessionJobRecord(stateDir, sessionID, jobID string) (sessionJobRecordRead, error) {
 	if err := schema.ValidateSessionID(sessionID); err != nil {
 		return sessionJobRecordRead{}, err
@@ -125,49 +187,62 @@ func loadSessionJobRecord(stateDir, sessionID, jobID string) (sessionJobRecordRe
 	if err != nil {
 		return sessionJobRecordRead{}, err
 	}
-	owner, ownerErr := identifier.JobOwnerSessionID(jobID)
-	if ownerErr != nil || owner == sessionID {
-		// An ID that does not encode an owner carries no second branch to
-		// consult; the requested session's journal is all the evidence there is.
+	// Scope proof: no record here means this session has no claim on the job,
+	// so there is nothing to resolve the encoded owner AGAINST.
+	if !local.found {
 		return local, nil
 	}
-	owned, err := readSessionJobJournal(stateDir, owner, jobID)
-	if err != nil {
-		// The owner branch is unreadable. Its damage must not erase the only
-		// surviving evidence, so the forwarded copy stands — and says so.
-		local.diagnostics.OwnerUnavailable = true
-		if local.found {
-			local.diagnostics.ForwardedFallback = !ownedIsOwner(local.record, sessionID)
+	owner := encodedJobOwner(jobID)
+	if owner == "" || owner == sessionID {
+		// An ID that encodes no owner has no second branch to consult; an ID
+		// naming this session is already the authoritative branch.
+		return local, nil
+	}
+	if ownerSessionTombstoned(stateDir, owner) {
+		// The owner's deletion fence stands. Its journal and log are not
+		// servable, and a forwarded copy of a deleted session's job is not a
+		// substitute for the owner's record either: the job was deleted with
+		// its owner.
+		return sessionJobRecordRead{}, nil
+	}
+	owned, ownerErr := readSessionJobJournal(stateDir, owner, jobID)
+	if ownerErr == nil && owned.found {
+		// Both journals hold a record: apply the live recursive path's own
+		// precedence (jobs_nested.go's keepIncomingDescendantRow) to the authority
+		// this read computed, never to what a row claims about itself.
+		existingIsOwner := retainedJobAuthority(jobID, local.sourceSessionID, local.record)
+		incomingIsOwner := retainedJobAuthority(jobID, owned.sourceSessionID, owned.record)
+		if keepIncomingDescendantRow(local.found, existingIsOwner, incomingIsOwner) {
+			owned.diagnostics.mergeIntegrity(local.diagnostics)
+			owned.diagnostics.ForwardedFallback = !incomingIsOwner
+			owned.diagnostics.OwnerUnavailable = false
+			return owned, nil
+		}
+		// The copy already held outranks the owner journal's. It is still the
+		// best evidence available, so it keeps any integrity signal the owner
+		// branch carried rather than losing the damage report with the race.
+		local.diagnostics.mergeIntegrity(owned.diagnostics)
+		if !existingIsOwner {
+			local.diagnostics.ForwardedFallback = true
 		}
 		return local, nil
 	}
-	if !owned.found {
-		local.diagnostics.OwnerUnavailable = true
-		if local.found {
-			local.diagnostics.ForwardedFallback = !ownedIsOwner(local.record, sessionID)
-		}
-		return local, nil
+	// The owner branch is unreadable or holds nothing. Its absence must not erase
+	// the only surviving evidence, so the forwarded copy stands — and says it is
+	// a fallback rather than passing itself off as the owner's record.
+	local.diagnostics.OwnerUnavailable = true
+	if !retainedJobAuthority(jobID, local.sourceSessionID, local.record) {
+		local.diagnostics.ForwardedFallback = true
 	}
-	// Both journals hold a record. Apply the live recursive path's own rule
-	// rather than a second, weaker one: an owner record beats a forwarded copy,
-	// and between two records of the same authority the one already held wins.
-	incomingIsOwner := ownedIsOwner(owned.record, owner)
-	if !keepIncomingDescendantRow(local.found, ownedIsOwner(local.record, sessionID), incomingIsOwner) {
-		return local, nil
-	}
-	owned.diagnostics.TornTail = owned.diagnostics.TornTail || local.diagnostics.TornTail
-	owned.diagnostics.IncompleteLifecycle = owned.diagnostics.IncompleteLifecycle || local.diagnostics.IncompleteLifecycle
-	owned.diagnostics.ForwardedFallback = !incomingIsOwner
-	owned.diagnostics.OwnerUnavailable = false
-	return owned, nil
+	return local, nil
 }
 
-// ownedIsOwner reports whether rec is the journal session's own record rather
-// than a forwarded copy of a descendant's. It is the same test the live walk
-// applies (rec.OwnerSessionID == jm.sessionID), with a nil record treated as
-// no evidence either way.
-func ownedIsOwner(rec *jobstore.JobRecord, sessionID string) bool {
-	return rec != nil && rec.OwnerSessionID == sessionID
+// mergeIntegrity folds another read's damage report into d. Diagnostics are not
+// a verdict about which branch won: either branch being torn or incoherent is
+// something the caller must still know.
+func (d *sessionJobRecordDiagnostics) mergeIntegrity(other sessionJobRecordDiagnostics) {
+	d.TornTail = d.TornTail || other.TornTail
+	d.IncompleteLifecycle = d.IncompleteLifecycle || other.IncompleteLifecycle
 }
 
 // readSessionJobJournal folds one session's durable jobs.jsonl and reports the
@@ -187,17 +262,28 @@ func readSessionJobJournal(stateDir, sessionID, jobID string) (sessionJobRecordR
 	if err != nil {
 		return sessionJobRecordRead{}, err
 	}
-	diagnostics := SessionJobRecordDiagnostics{TornTail: readDiagnostics.TornTail}
-	recs := jobstore.Fold(events)
-	if _, foldErr := jobstore.FoldChecked(events); foldErr != nil &&
-		errors.Is(foldErr, jobstore.ErrIncompleteLifecycle) {
+	diagnostics := sessionJobRecordDiagnostics{TornTail: readDiagnostics.TornTail}
+	recs, foldErr := jobstore.FoldChecked(events)
+	if foldErr != nil && errors.Is(foldErr, jobstore.ErrIncompleteLifecycle) {
 		diagnostics.IncompleteLifecycle = true
 	}
 	rec := recs[jobID]
 	if rec == nil {
 		return sessionJobRecordRead{diagnostics: diagnostics}, nil
 	}
-	return sessionJobRecordRead{record: rec, found: true, diagnostics: diagnostics}, nil
+	return sessionJobRecordRead{record: rec, sourceSessionID: sessionID, found: true, diagnostics: diagnostics}, nil
+}
+
+// routingJobSession names the session a client should open a read under: the
+// owner the record names when it names one, else the journal that supplied the
+// record. A retained legacy start may carry no OwnerSessionID at all, and an
+// empty ref is one no client can resolve, while the command, terminal status
+// and log all live beside the journal that supplied the record.
+func routingJobSession(read sessionJobRecordRead) string {
+	if read.record != nil && read.record.OwnerSessionID != "" {
+		return read.record.OwnerSessionID
+	}
+	return read.sourceSessionID
 }
 
 // LoadSessionJobOutputPage reads a coherent page from a local saved job.
@@ -215,32 +301,11 @@ func LoadSessionJobOutputPage(stateDir, sessionID, jobID string, beforeBytes *in
 	if outPath == "" {
 		// The log lands beside the journal of the session that ran the job,
 		// which after owner-authoritative resolution need not be the session
-		// that was asked.
-		owner := rec.OwnerSessionID
-		if owner == "" {
-			owner = sessionID
-		}
-		outPath = filepath.Join(jobsDir(stateDir, owner), "jobs", jobID+".log")
+		// that was asked, and need not be named by the record itself.
+		outPath = filepath.Join(jobsDir(stateDir, routingJobSession(read)), "jobs", jobID+".log")
 	}
 	page, err := readJobOutputPageForRecord(outPath, rec, beforeBytes, clampJobPageBytes(maxBytes))
 	return jobOutputPageResult(page, true, err)
-}
-
-// LoadSessionJobRecordWithDiagnostics is the retained job read plus an honest
-// account of the history behind it: the record resolved owner-authoritatively
-// (see loadSessionJobRecord), whether a record was found at all, and what the
-// read could not establish. It is the job-history counterpart of
-// delegatestore.ReadEventsWithDiagnostics: a caller that must not present
-// damaged history as complete reports the diagnostics alongside the record.
-//
-// A nil record with a nil error and no diagnostic set means there is no such
-// job, not that the history is damaged.
-func LoadSessionJobRecordWithDiagnostics(stateDir, sessionID, jobID string) (*jobstore.JobRecord, bool, SessionJobRecordDiagnostics, error) {
-	read, err := loadSessionJobRecord(stateDir, sessionID, jobID)
-	if err != nil {
-		return nil, false, SessionJobRecordDiagnostics{}, err
-	}
-	return read.record, read.found, read.diagnostics, nil
 }
 
 // JobGet resolves one job's record — the running record when the job is live,
@@ -280,7 +345,8 @@ func LoadSessionJobGet(stateDir, sessionID, jobID string) (JobActivityJob, bool,
 	// The ref names the record's owner, not the session that was asked: after
 	// owner-authoritative resolution the two differ exactly when the answer came
 	// from the owner's own journal, and naming the asked session there would
-	// point a client at a session that does not hold the job.
-	ownerRef := appwire.Ref{SourceID: "local", ThreadID: read.record.OwnerSessionID}.String()
+	// point a client at a session that does not hold the job. A record naming no
+	// owner is routed to the journal that supplied it.
+	ownerRef := appwire.Ref{SourceID: "local", ThreadID: routingJobSession(read)}.String()
 	return projectActivityJob(read.record, ownerRef), true, nil
 }

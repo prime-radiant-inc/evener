@@ -152,3 +152,62 @@ func TestFoldChecked_AcceptsLegacyEmptyOwner(t *testing.T) {
 		t.Fatalf("FoldChecked on a legacy owner-empty lifecycle: %v", err)
 	}
 }
+
+// TestFoldChecked_RejectsJobEventWithNoJobID is the low-4 regression. A
+// job_finished with an empty job_id folds into an empty-ID row — a row a
+// forensic surface renders — and that row has no start by construction. The
+// lifecycle check used to skip exactly the events that produced it, so the
+// doctor showed the row without reporting the missing start.
+func TestFoldChecked_RejectsJobEventWithNoJobID(t *testing.T) {
+	t.Parallel()
+	started := diagTime()
+	finished := Event{
+		Kind: EventJobFinished, Seq: 1, TS: started,
+		Status: StatusCompleted, EndedAt: &started, TerminalGen: "gen",
+	}
+	if _, err := FoldChecked([]Event{finished}); !errors.Is(err, ErrIncompleteLifecycle) {
+		t.Fatalf("FoldChecked error = %v, want ErrIncompleteLifecycle for a finish with no job ID", err)
+	}
+}
+
+// TestFoldChecked_IgnoresNonJobKinds keeps the empty-ID rule to job events: a
+// watch or send event carries no job ID legitimately, and reporting one would
+// make every journal that ever registered a watch look damaged.
+func TestFoldChecked_IgnoresNonJobKinds(t *testing.T) {
+	t.Parallel()
+	started := diagTime()
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	events := []Event{
+		{Kind: EventJobStarted, Seq: 1, TS: started, JobID: jobID, Type: JobShell, OwnerSessionID: owner, StartedAt: &started},
+		{Kind: EventWatchCleared, Seq: 2, TS: started, WatchID: "w_1"},
+		{Kind: EventJobFinished, Seq: 3, TS: started, JobID: jobID, Status: StatusCompleted, EndedAt: &started, TerminalGen: "gen"},
+	}
+	if _, err := FoldChecked(events); err != nil {
+		t.Fatalf("FoldChecked on a journal with a non-job event: %v", err)
+	}
+}
+
+// TestFoldChecked_ReturnsRecordsWithDamage is the low-1 contract: validation
+// finding damage must not withhold the best-effort fold. A retained-history
+// caller shows the row AND reports the damage from one call, rather than
+// folding the same events twice.
+func TestFoldChecked_ReturnsRecordsWithDamage(t *testing.T) {
+	t.Parallel()
+	started := diagTime()
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	// A whole start for one job and an orphan finish for another: the log is
+	// damaged, and the healthy job is still foldable.
+	events := []Event{
+		{Kind: EventJobStarted, Seq: 1, TS: started, JobID: jobID, Type: JobShell, OwnerSessionID: owner, StartedAt: &started},
+		{Kind: EventJobFinished, Seq: 2, TS: started, JobID: identifier.MustNewJobID(owner), Status: StatusCompleted, EndedAt: &started, TerminalGen: "gen"},
+	}
+	recs, err := FoldChecked(events)
+	if !errors.Is(err, ErrIncompleteLifecycle) {
+		t.Fatalf("FoldChecked error = %v, want ErrIncompleteLifecycle", err)
+	}
+	if rec := recs[jobID]; rec == nil || rec.Status != StatusRunning {
+		t.Fatalf("recs[%s] = %+v, want the best-effort running record alongside the damage", jobID, rec)
+	}
+}
