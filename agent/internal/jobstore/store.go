@@ -251,9 +251,19 @@ func (s *Store) reconcilePendingLocked() error {
 			return nil
 		}
 	}
-	// The record is not in the journal readers see, so the retry must carry the
-	// same sequence: it is the number this journal has not yet used.
-	if s.seq >= pending.firstSeq {
+	// The record is not in the journal readers see, so the retry has to write it
+	// — and it must not take a number that journal already uses.
+	//
+	// Rewinding to the failed attempt's own number is right only while nothing
+	// else claims it, which is exactly `s.seq < pending.firstSeq`. A replacement
+	// seeded by adoption carries its OWN sequences, and one can be at or beyond
+	// the refused write's first number: rewinding below it would put two records
+	// on one number, and a retried finish assigned below a finish the replacement
+	// already holds becomes the FIRST finish in the fold and changes the recorded
+	// outcome. When the journal has moved past the reservation, leaving the
+	// high-water mark where it stands allocates the retry above every record
+	// present, which is the only safe allocation.
+	if s.seq < pending.firstSeq {
 		s.seq = pending.firstSeq - 1
 	}
 	return nil

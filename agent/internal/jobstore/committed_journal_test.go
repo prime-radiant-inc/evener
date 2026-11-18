@@ -1361,6 +1361,89 @@ func (f *renameOnSyncFile) Sync() error {
 // armed. The ordinal is what makes a fixture able to aim at a specific stat:
 // the append path stats the name more than once, and a fault that lands on the
 // first answers a different question than the one under test.
+// TestStoreAppendRetryAllocatesAboveTheAdoptedSequences pins High 4.
+//
+// A write is refused during a rotation, so its sequence is reserved and the
+// event is left with the caller. The replacement that follows is adopted, and
+// adoption seeds the store's sequence from that journal's own records.
+//
+// Rewinding to the refused write's number is correct only while nothing else
+// claims it. When the adopted journal already holds a record at or beyond that
+// number, the rewind hands the retry a sequence the journal uses — two records
+// share one number, and the fold keeps whichever it meets first. A retried
+// finish assigned BELOW an existing finish becomes the first finish in the fold
+// and changes the recorded outcome of the job.
+//
+// The assertion is the journal's own ordering: every record keeps its own
+// number and the retry's is above all of them.
+func TestStoreAppendRetryAllocatesAboveTheAdoptedSequences(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "jobs.jsonl")
+	saved := filepath.Join(dir, "jobs.jsonl.saved")
+	fs := &renameOnSyncFs{Fs: afero.NewOsFs(), from: path, to: saved}
+	s, err := openFs(fs, path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	if err := s.Append(Event{Kind: EventJobStarted, JobID: "job_first", Type: JobShell}); err != nil {
+		t.Fatalf("first append: %v", err)
+	}
+
+	// The name is rotated away while this append syncs, so the event is durable
+	// only in the file that was moved aside. The append reports a retryable
+	// replacement and reserves the sequence it used.
+	fs.arm()
+	if err := s.Append(Event{Kind: EventJobFinished, JobID: "job_first", Status: StatusCompleted}); !errors.Is(err, ErrJournalReplaced) {
+		t.Fatalf("append across a rotation = %v, want a retryable ErrJournalReplaced", err)
+	}
+
+	// The replacement is a journal of its own, already carrying sequence numbers
+	// past the refused write's. Adoption seeds the store from them.
+	const adoptedSeq = 7
+	replacement := []byte(`{"seq":` + strconv.FormatInt(adoptedSeq, 10) + `,"kind":"job_finished","job_id":"job_replacement"}` + "\n")
+	if err := os.WriteFile(path, replacement, 0o644); err != nil {
+		t.Fatalf("write the replacement: %v", err)
+	}
+
+	if err := s.Append(Event{Kind: EventJobFinished, JobID: "job_first", Status: StatusCompleted}); err != nil {
+		t.Fatalf("retry after adoption: %v", err)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen the adopted journal: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	raw := mustReadFile(t, path)
+	for _, want := range []string{"job_replacement", "job_first"} {
+		if !bytes.Contains(raw, []byte(want)) {
+			t.Fatalf("the adopted journal does not hold %q: %q", want, raw)
+		}
+	}
+	// Every line keeps its own number, and the retry's is the highest: a rewind
+	// would have put it at or below the number the replacement already uses.
+	var seqs []int64
+	for _, line := range bytes.Split(bytes.TrimSuffix(raw, []byte("\n")), []byte("\n")) {
+		var rec struct {
+			Seq   int64  `json:"seq"`
+			JobID string `json:"job_id"`
+		}
+		if err := json.Unmarshal(line, &rec); err != nil {
+			t.Fatalf("decode %q: %v", line, err)
+		}
+		seqs = append(seqs, rec.Seq)
+	}
+	if len(seqs) != 2 {
+		t.Fatalf("the adopted journal holds %d records, want the replacement's one plus the retry: %q", len(seqs), raw)
+	}
+	if seqs[0] != adoptedSeq {
+		t.Fatalf("the replacement's record moved to sequence %d, want the %d it arrived with", seqs[0], adoptedSeq)
+	}
+	if seqs[1] <= adoptedSeq {
+		t.Fatalf("the retry took sequence %d, want one above the %d the adopted journal already uses: two records sharing or inverting a number makes the fold keep whichever it meets first", seqs[1], adoptedSeq)
+	}
+}
+
 type statFailsOnceBeforeAppendFs struct {
 	afero.Fs
 	remaining atomic.Int64
