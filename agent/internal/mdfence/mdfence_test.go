@@ -56,6 +56,10 @@ func TestStepInBlockInOpensInTheItemScope(t *testing.T) {
 	type line struct {
 		text      string
 		container int
+		// enclosing is the item that contains this line's item, which the
+		// caller resolves after the line's dedent and before its own item
+		// opens. It is the scope a fence opened on the line belongs to.
+		enclosing int
 	}
 
 	for _, tc := range []struct {
@@ -89,11 +93,11 @@ func TestStepInBlockInOpensInTheItemScope(t *testing.T) {
 			openText:  "    - ~~~text",
 			frameText: "      [answers]",
 			lines: []line{
-				{"- outer", 2},
-				{"    - ~~~text", 6},
-				{"      quoted", 0},
-				{"      ~~~", 0},
-				{"      [answers]", 6},
+				line{text: "- outer", container: 2},
+				line{text: "    - ~~~text", container: 6, enclosing: 2},
+				line{text: "      quoted"},
+				line{text: "      ~~~"},
+				line{text: "      [answers]", container: 6},
 			},
 		},
 	} {
@@ -102,21 +106,21 @@ func TestStepInBlockInOpensInTheItemScope(t *testing.T) {
 			lines := tc.lines
 			if lines == nil {
 				lines = []line{
-					{"1. ~~~text", 3},
-					{"   quoted", 0},
-					{"   ~~~", 0},
-					{"   1. inner item", 6},
-					{"      ~~~text", 6},
-					{"      quoted", 0},
+					line{text: "1. ~~~text", container: 3},
+					line{text: "   quoted"},
+					line{text: "   ~~~"},
+					line{text: "   1. inner item", container: 6},
+					line{text: "      ~~~text", container: 6},
+					line{text: "      quoted"},
 				}
 			}
 			if tc.closing != "" {
-				lines = append(lines, line{tc.closing, 0})
+				lines = append(lines, line{text: tc.closing})
 			}
 			if tc.lines == nil {
 				lines = append(lines,
-					line{"   back to the outer item", 3},
-					line{"   [answers]", 3},
+					line{text: "   back to the outer item", container: 3},
+					line{text: "   [answers]", container: 3},
 				)
 			}
 
@@ -133,7 +137,7 @@ func TestStepInBlockInOpensInTheItemScope(t *testing.T) {
 				if l.text == tc.openText && fence.container == 0 {
 					t.Fatalf("fixture cannot reach the defect: container is 0 before the nested fence opens")
 				}
-				inBlock := fence.StepInBlockIn(l.text, l.container)
+				inBlock := fence.StepInBlockIn(l.text, l.container, l.enclosing)
 
 				switch {
 				case l.text == tc.openText:

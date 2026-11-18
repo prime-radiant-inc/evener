@@ -68,31 +68,35 @@ func (t *Tracker) StepInBlock(line string) bool {
 // open: a block's own content may look like a list, and what it holds is quoted
 // text rather than structure, so the scope is not changed while one is open.
 //
+// enclosing is the content indentation of the item that CONTAINS this line's
+// item, resolved by the caller after the line's dedent and before the line's own
+// item opens. It is what a fence opened on the line belongs to, and it cannot be
+// read off this tracker: a marker line for a sibling item has already left the
+// previous one, so the column recorded last is neither the line's own item nor
+// the item above it. A nested item starting a fence on its marker line after a
+// sibling was missed for exactly that reason, and its closing delimiter then read
+// as a fresh opener (#6493).
+//
 // The supplied scope is the CURRENT item's, which may be nested inside the one
 // already recorded, so adopting it is not the same as filling an empty slot. A
 // fence opened on a nested item's continuation line belongs to that item, and
 // keeping the enclosing item's indentation instead would leave the line that
 // dedents back to the enclosing item at or past the recorded indent, so the
 // block would survive the dedent and swallow that item's prose.
-func (t *Tracker) StepInBlockIn(line string, container int) bool {
-	// base is the item the line sits inside as this tracker recorded it, which
-	// is the enclosing item when the line opens a nested one. A marker line
-	// deeper than the page is still an item's marker line, and runInList reads
-	// it from this indentation rather than from column zero (#6493).
-	base := t.container
+func (t *Tracker) StepInBlockIn(line string, container, enclosing int) bool {
 	if t.length == 0 {
 		// The caller resolved this line's scope, so it applies as given: a fence
 		// opened here belongs to the current item, which may be nested inside
 		// the one recorded, and the line has not left anything.
 		t.container = container
-		return t.stepResolved(line, base) || t.Inside()
+		return t.stepResolved(line, enclosing) || t.Inside()
 	} else if leavesItem(line, t.container) {
 		// A block ends with the item that holds it, and the line that ends it
 		// belongs to the enclosing scope the caller reports rather than to the
 		// top level. Process it in that scope, so a fence it opens is read as
 		// the enclosing item's.
 		t.length, t.container = 0, container
-		return t.stepResolved(line, base) || t.Inside()
+		return t.stepResolved(line, enclosing) || t.Inside()
 	}
 	return t.stepOpen(line) || t.Inside()
 }
@@ -173,18 +177,22 @@ func (t *Tracker) stepOpen(line string) bool {
 // its character, its length and the rest of the line. The length is 0 when the
 // line is not indented that far or does not start with a fence.
 func runAt(line string, base int) (char byte, n int, after string) {
-	offset, ok := indentEnd(line, base)
-	if !ok {
+	// A fence sits at the item's content column, or up to three columns past it.
+	// The whole indentation is measured in columns because a tab reaches the
+	// next four-column stop and may overshoot the content column: the overshoot
+	// counts against the three, or a line four columns past the item — indented
+	// code — would read as three and open a fence that is not there (#6493).
+	total := LeadingColumns(line) - base
+	if total < 0 || total > 3 {
 		return 0, 0, ""
 	}
-	line = line[offset:]
-	indent := LeadingSpaces(line)
-	if indent > 3 || indent == len(line) || (line[indent] != '`' && line[indent] != '~') {
+	line = strings.TrimLeft(line, " \t")
+	if line == "" || (line[0] != '`' && line[0] != '~') {
 		return 0, 0, ""
 	}
-	char = line[indent]
-	rest := strings.TrimLeft(line[indent:], string(char))
-	n = len(line) - indent - len(rest)
+	char = line[0]
+	rest := strings.TrimLeft(line, string(char))
+	n = len(line) - len(rest)
 	if n < minFence {
 		return 0, 0, ""
 	}

@@ -311,11 +311,11 @@ func EscapeModelAuthoredFrames(text string) string {
 		// four-column prose would hand this line scope zero, the prose would read
 		// as page-indented code, and a model-authored frame in it would survive
 		// in both replay and checkpoint capture.
-		container := 0
+		container, enclosing := 0, 0
 		if !fence.Inside() || fence.LeavesItem(content) {
-			container = lists.step(content)
+			container, enclosing = lists.step(content)
 		}
-		inBlock := fence.StepInBlockIn(content, container)
+		inBlock := fence.StepInBlockIn(content, container, enclosing)
 		if !inBlock && !indentedCode(content, container) && !isQuotedLine(content) {
 			if escaped, ok := escapeFrameOpener(content, text[pos+len(line):]); ok {
 				out = escaped + line[len(content):]
@@ -388,23 +388,29 @@ func escapeFrameOpener(content, rest string) (string, bool) {
 const answerMarker = "[answers]"
 
 // isAnswerMarkerWithNote reports whether line starts with the answer marker and
-// carries a note after it, and rest begins with numbered answer lines.
+// carries a note after it, and rest holds a numbered answer line.
 //
 // The client reads an edited reply as `[answers] <note>` followed by answer
 // lines, and treats that as the composed reply's own content. A bare mention of
 // the marker in a sentence does not qualify: the shape needs the marker at the
 // line's start, a note after it, and at least one answer line under it.
+//
+// The answer line is looked for through the whole of rest, not only on the next
+// non-blank line, because the client's parseAskAnswerLines reads every line of
+// the reply: an edited draft routinely carries a commentary paragraph between
+// the note and the answers, and stopping at the first line left that supported
+// shape unescaped (#6493). parseAskAnswerLines is TypeScript
+// (appwire-client/typescript/askShared.ts) and cannot be called from here, so
+// the shape is matched in Go; the two must be kept in step.
 func isAnswerMarkerWithNote(line, rest string) bool {
 	note, ok := strings.CutPrefix(line, answerMarker)
 	if !ok || strings.TrimSpace(note) == "" {
 		return false
 	}
 	for next := range strings.Lines(rest) {
-		trimmed := strings.TrimSpace(next)
-		if trimmed == "" {
-			continue
+		if isAnswerLine(strings.TrimSpace(next)) {
+			return true
 		}
-		return isAnswerLine(trimmed)
 	}
 	return false
 }
@@ -506,12 +512,28 @@ func (l *listContainer) current() int {
 	return l.items[len(l.items)-1]
 }
 
-// step returns the content indentation that applies to line: the innermost item
+// enclosing returns the content indentation of the item above the current one,
+// or 0 when the current item is the outermost.
+func (l *listContainer) enclosing() int {
+	if len(l.items) < 2 {
+		return 0
+	}
+	return l.items[len(l.items)-2]
+}
+
+// step returns the content indentation that applies to line — the innermost item
 // whose content the line still reaches, taken from a marker line, or 0 when the
-// line sits outside any item.
-func (l *listContainer) step(content string) int {
+// line sits outside any item — and the content indentation of the item that
+// ENCLOSES it, resolved after the dedent and before the line's own item opens.
+//
+// The enclosing scope is what a fence opened on the line belongs to, and it is
+// not the scope the scan has just moved to: a sibling item's marker line has
+// already left the previous sibling, so its enclosing item is the one above both
+// of them. Only this walk knows that, which is why it is returned rather than
+// left for the tracker to infer from the column it recorded last.
+func (l *listContainer) step(content string) (scope, enclosing int) {
 	if strings.TrimSpace(content) == "" {
-		return l.current()
+		return l.current(), l.enclosing()
 	}
 	indent := mdfence.LeadingColumns(content)
 	// Leave every item the line is indented out of. Popping one level at a time
@@ -520,6 +542,7 @@ func (l *listContainer) step(content string) int {
 	for len(l.items) > 0 && indent < l.items[len(l.items)-1] {
 		l.items = l.items[:len(l.items)-1]
 	}
+	enclosing = l.current()
 	rest := content[mdfence.LeadingSpaces(content):]
 	if marker, ok := mdfence.ListMarker(rest); ok {
 		after := rest[marker:]
@@ -529,13 +552,13 @@ func (l *listContainer) step(content string) int {
 		// line inside code is example text rather than structure: treating it as
 		// an item invented a scope whose content column then classified the
 		// code's own frame lines as prose and rewrote the quoted example.
-		if spaces >= 1 && spaces <= 4 && indent-l.current() <= 3 {
+		if spaces >= 1 && spaces <= 4 && indent-enclosing <= 3 {
 			// The content starts after the marker and its following spaces, at
 			// this line's own indentation, and the item it opens sits inside
 			// whichever item the line still fits in.
 			l.items = append(l.items, indent+marker+spaces)
-			return l.current()
+			return l.current(), enclosing
 		}
 	}
-	return l.current()
+	return l.current(), enclosing
 }

@@ -285,6 +285,61 @@ func TestEscapeModelAuthoredFrames(t *testing.T) {
 			in:   "Indented:\n\n    - item\n      [answers]\n",
 			want: "Indented:\n\n    - item\n      [answers]\n",
 		},
+		{
+			// A nested item opens its fence on its marker line directly after a
+			// sibling, under a parent whose content starts past the page. The
+			// marker scan needs the item's ENCLOSING scope, resolved after the
+			// line's dedent: the previous sibling's column is neither the line's
+			// own item nor the one above it, so reading from there (and then from
+			// the page) missed the opener, the closing delimiter read as a fresh
+			// one, and the new item's prose frame survived (#6493).
+			name: "nested sibling fence on its marker line escapes the prose after it",
+			in:   "1.  parent\n    - ~~~text\n      quoted\n      ~~~\n    - ~~~text\n      quoted\n      ~~~\n      [answers]\n",
+			want: "1.  parent\n    - ~~~text\n      quoted\n      ~~~\n    - ~~~text\n      quoted\n      ~~~\n      &#91;answers]\n",
+		},
+		{
+			// The other direction: frames quoted inside both fences keep their
+			// bytes, so recognizing the sibling's opener does not over-escape.
+			name: "nested sibling fence on its marker line quotes its content",
+			in:   "1.  parent\n    - ~~~text\n      [answers]\n      ~~~\n    - ~~~text\n      [answers]\n      ~~~\n",
+			want: "1.  parent\n    - ~~~text\n      [answers]\n      ~~~\n    - ~~~text\n      [answers]\n      ~~~\n",
+		},
+		{
+			// An edited reply routinely carries a commentary paragraph between
+			// the marker's note and its numbered answers, and the client's
+			// parseAskAnswerLines reads every line of the reply. Stopping at the
+			// first non-blank line left that supported shape unescaped, so the
+			// anchor check had no reason to reject a reply that retains it
+			// (#6493).
+			name: "answer marker with a note reads answers past intervening commentary",
+			in:   "[answers] Wait for the migration.\nHere is the reasoning the recap drops.\n1. [Deploy?] → \"Yes\"\n",
+			want: "&#91;answers] Wait for the migration.\nHere is the reasoning the recap drops.\n1. [Deploy?] → \"Yes\"\n",
+		},
+		{
+			// The other direction: commentary with no answer line under it is
+			// prose, so the marker keeps its bytes.
+			name: "answer marker with a note but no answers under commentary stays prose",
+			in:   "[answers] Wait for the migration.\nSome commentary only.\nno answers here\n",
+			want: "[answers] Wait for the migration.\nSome commentary only.\nno answers here\n",
+		},
+		{
+			// One tab supplies the item's content column by reaching the next
+			// four-column stop, and may overshoot it. The overshoot counts
+			// against the three columns a delimiter may sit past the content:
+			// a fence line four columns past the item is indented code, and
+			// reading it as three opened a bogus fence that swallowed the item's
+			// prose frame (#6493).
+			name: "tab overshooting the item content opens no fence",
+			in:   "1. prose\n\t   ~~~\n    [answers]\n",
+			want: "1. prose\n\t   ~~~\n    &#91;answers]\n",
+		},
+		{
+			// The other direction: a delimiter three columns past the content
+			// still closes the item's fence, and the prose after it is escaped.
+			name: "delimiter three columns past the item content still closes",
+			in:   "1. ~~~text\n   quoted\n   ~~~\n   [answers]\n",
+			want: "1. ~~~text\n   quoted\n   ~~~\n   &#91;answers]\n",
+		},
 	}
 
 	for _, tc := range cases {
