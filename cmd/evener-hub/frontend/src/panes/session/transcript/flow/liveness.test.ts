@@ -340,6 +340,50 @@ test("describeLiveness: a passed deadline reads as overdue even while a live quo
   expect(overdue.text).toContain(formatExactGap(14 * 60_000));
 });
 
+// A pane can hold an ordinary retry across the reconnect that installs a
+// quota deadline: it disconnected during a rate-limit backoff and came back
+// after the same turn entered a quota wait, so the read installs the
+// deadline but the merge retains the ordinary retry (its class is not the
+// quota class the clearing rules key on). The snapshot's deadline is the
+// authoritative quota fact: once it passes, the overdue wait line renders,
+// and the ordinary retry's elapsed backoff - which reads as in-progress
+// motion - must not mask it. Only a quota wake (the wait's own zero-delay
+// announcement, in progress) outranks the deadline.
+test("describeLiveness: an authoritative quota deadline renders overdue over a retained ordinary retry whose backoff reads as motion", () => {
+  const ordinary = retryWait({
+    attempt: 3,
+    attemptCap: 11,
+    delayMs: 60_000,
+    errorClass: "rate_limit",
+    groupElapsedMs: 5 * 60_000,
+    inProgress: true,
+  });
+  // The deadline ahead renders the countdown, as before.
+  const counting = describeLiveness(120_000, true, 0, ordinary, 30_000);
+  expect(counting.level).toBe("retrying");
+  expect(counting.text).toContain(compactDuration(30_000));
+  // Once the deadline passes, the overdue wait line renders - the retained
+  // ordinary retry does not turn the pane back into a rate-limit line, and
+  // its elapsed time (another call's history) does not dress the wait.
+  const overdue = describeLiveness(120_000, true, 0, ordinary, undefined, true);
+  expect(overdue.level).toBe("retrying");
+  expect(overdue.text).not.toContain("rate limited");
+  expect(overdue.text).not.toContain(formatExactGap(5 * 60_000));
+  // A quota wake still outranks the deadline: the wait's own zero-delay
+  // announcement in progress is motion, whatever a late read re-installed.
+  const wake = retryWait({
+    attempt: 1,
+    attemptCap: 1,
+    delayMs: 0,
+    errorClass: "quota_exceeded",
+    groupElapsedMs: 5 * 60_000,
+    inProgress: true,
+  });
+  const motion = describeLiveness(120_000, true, 0, wake, undefined, true);
+  expect(motion.text).not.toContain(compactDuration(0));
+  expect(motion.text).toContain(formatExactGap(5 * 60_000));
+});
+
 // A quota wait renders one of three states, and they never read as one
 // another: the pending countdown while the reset is ahead, the overdue line
 // once the reset has passed with no wake yet (the daemon may queue the retry

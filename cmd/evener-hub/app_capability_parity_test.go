@@ -128,6 +128,7 @@ func TestCapabilityProjectionsMatchTheDaemonOracle(t *testing.T) {
 		"PageBefore":                 "the hub's own answer: it pages local and saved transcripts from a before position itself (hubPagesBefore)",
 		"WindowRead":                 "no daemon is running to advertise strict window decoding; saved-index reads are hub-owned and do not need this daemon bit",
 		"VoicePresentationContextV1": "no original daemon has advertised voice support; cold/resume action guarantees are not evidence of that support",
+		"QuotaWaitSnapshot":          "deliberate fail-closed projection policy: a session with no daemon running has no live wait for a read to report, and a future resume's daemon must re-advertise the bit before its reads claim wait reporting",
 	}
 	// The hub's own answer, false for a cold session: the daemon never answers
 	// it, so both sides agree on false without the daemon vouching for it.
@@ -153,6 +154,7 @@ func TestCapabilityProjectionsMatchTheDaemonOracle(t *testing.T) {
 		"AskFence":                   "deliberate fail-closed projection policy: no probe has captured the original daemon's ask fencing; an older daemon could silently ignore the fence",
 		"VoicePresentationContextV1": "no probe has captured the original daemon's voice support; a current-daemon oracle cannot vouch for an unprobed daemon",
 		"WindowRead":                 "no probe has captured whether this daemon strict-decodes window parameters",
+		"QuotaWaitSnapshot":          "no probe has captured whether this daemon reports quota waits in its reads; an unprobed row must not claim wait reporting without the daemon's advertisement",
 	}
 	for _, state := range []string{appwire.ThreadStatusIdle, appwire.ThreadStatusActive, appwire.ThreadStatusClosed} {
 		daemonAt := daemonCapabilitiesAtState(t, state)

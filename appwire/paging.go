@@ -8,8 +8,13 @@ import (
 const TranscriptItemPageLimit = 40
 
 // MaxPendingAskPageLimit bounds a pending-ask page. Its whole Manager response,
-// including the clamped row, is measured against the 256 KiB read cap.
-const MaxPendingAskPageLimit = 3139
+// including the clamped row, is measured against the 256 KiB read cap. The
+// bound is the measured largest page whose whole response fits: wire fields
+// that ride every thread-shaped response (the capabilities set, whose
+// quotaWaitSnapshot bit a daemon-backed session always advertises) consume
+// bytes of that budget, so growing the envelope shrinks the bound - the
+// measurement test re-derives the value and fails when the two disagree.
+const MaxPendingAskPageLimit = 3138
 
 // NormalizeTranscriptItemLimit applies the item-mode default and maximum. A
 // non-positive request means the protocol default; positive values are bounded

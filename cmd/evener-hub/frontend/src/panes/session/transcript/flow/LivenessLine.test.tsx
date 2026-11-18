@@ -352,6 +352,35 @@ test("a live quota wait whose reset has passed without a wake reads as overdue, 
   expect(lateLine.textContent).toContain(formatExactGap(5 * 60_000));
   cleanup();
 
+  // The pane can hold an ordinary retry across the reconnect that installed
+  // the deadline (it disconnected during a rate-limit backoff and returned
+  // after the same turn entered a quota wait). The ordinary retry's elapsed
+  // backoff reads as in-progress motion, but the snapshot's deadline is the
+  // authoritative quota fact: once it passes, the overdue wait line renders,
+  // never the stale rate-limit line.
+  const ordinary = render(
+    <LivenessLine
+      lastFrameAt={0}
+      now={90 * 60_000 + 30_000}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      retry={rawRetry({
+        attempt: 3,
+        attemptCap: 11,
+        delayMs: 60_000,
+        errorClass: "rate_limit",
+        groupElapsedMs: 5 * 60_000,
+        receivedAt: 0,
+      })}
+      quotaResumesAt={90 * 60_000}
+    />,
+  );
+  const overdueOverOrdinary = ordinary.getByTestId("liveness-line");
+  expect(overdueOverOrdinary.getAttribute("data-level")).toBe("retrying");
+  expect(overdueOverOrdinary.textContent).not.toContain("rate limited");
+  cleanup();
+
   const wake = render(
     <LivenessLine
       lastFrameAt={0}

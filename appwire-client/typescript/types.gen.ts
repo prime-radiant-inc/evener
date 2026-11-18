@@ -4716,12 +4716,15 @@ export interface ThreadCapabilities {
   /**
    * QuotaWaitSnapshot advertises that this source's read snapshot reports
    * the quota-wait summary (ThreadFailure.ResumesAt) authoritatively:
-   * present means the thread waits, absent means it does not. An older
-   * daemon omits the capability AND omits the field, and its live
-   * quota announcements are the only wait evidence a client has - so a
-   * read from such a source never clears a wait the announcements
-   * recorded (a refresh or reconnect during a multi-hour wait would
-   * otherwise erase the countdown and report a stall).
+   * present means the thread waits, absent means it does not. Legacy
+   * sources split by route: a daemon-backed session read (a root or a
+   * fork, each served by its own daemon) attached the summary before the
+   * bit existed, so its absent field still speaks for the wait, while a
+   * legacy in-process delegate read omits the summary entirely - there
+   * the live quota announcements are the only wait evidence a client
+   * has, and a read never clears a wait the announcements recorded (a
+   * refresh or reconnect during a multi-hour wait would otherwise erase
+   * the countdown and report a stall).
    */
   quotaWaitSnapshot?: boolean;
 }

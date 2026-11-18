@@ -144,6 +144,7 @@ func TestE2E_ManagerRemoteSharedInput(t *testing.T) {
 		ForkFromTurn: true, Shutdown: true, ChangeModel: true, ChangeVisionModel: true,
 		Queue: true, Goal: true, SharedNotes: true, Rename: true,
 		SkillInput: true, CommandInput: true, StopSubagent: true, WindowRead: true,
+		QuotaWaitSnapshot: true, // the remote daemon's own read snapshot reports quota waits
 	}
 	if caps != wantCaps {
 		t.Fatalf("shared remote operation qualification: %+v", caps)

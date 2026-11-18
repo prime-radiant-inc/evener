@@ -254,11 +254,16 @@ export function describeLiveness(
   // still counts: a stamped announcement can land late (the deadline it
   // names already passed at receipt), and rendering the announcement's
   // delay would jump the pane back to the full original wait. The
-  // announcement's elapsed time survives. An in-progress retry outranks the
-  // deadline anyway - the wake's own announcement cleared the instant, so
-  // the two coexist only when a late read re-installed an ended wait's
-  // summary after the wake, and motion is the truth there.
-  if (quotaOverdueFromSnapshot && !retry?.inProgress) {
+  // announcement's elapsed time survives. Only a QUOTA wake outranks the
+  // deadline: the wait's own zero-delay announcement cleared the instant,
+  // so the two coexist only when a late read re-installed an ended wait's
+  // summary after the wake, and motion is the truth there. An ordinary
+  // retry's in-progress is just its elapsed backoff - a pane can hold one
+  // across the reconnect that installed the deadline (it disconnected during
+  // a rate-limit backoff and returned after the same turn entered a quota
+  // wait), and that stale backoff must not mask the authoritative wait.
+  const quotaWakeInProgress = retry?.errorClass === "quota_exceeded" && retry.inProgress;
+  if (quotaOverdueFromSnapshot && !quotaWakeInProgress) {
     const elapsed = liveQuotaWait ? retry.groupElapsedMs : 0;
     return {
       level: "retrying",

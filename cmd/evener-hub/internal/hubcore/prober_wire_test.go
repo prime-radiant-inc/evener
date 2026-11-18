@@ -282,6 +282,7 @@ func TestStatusProberCarriesDaemonCapabilities(t *testing.T) {
 		Compact: true, Clear: true, Shutdown: true, ChangeModel: true,
 		ChangeVisionModel: true, Rename: true, Goal: true, SharedNotes: true,
 		SkillInput: true, CommandInput: true, StopSubagent: true, WindowRead: true, // ForkFromTurn stays the daemon's hardwired false.
+		QuotaWaitSnapshot: true, // the projection's reads report the quota wait
 	}
 	if got.Capabilities != want {
 		t.Fatalf("capabilities = %+v, want the daemon's idle set %+v", got.Capabilities, want)
