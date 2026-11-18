@@ -218,20 +218,31 @@ type sessionJobRecordRead struct {
 	// a session whose directory was never involved, and routing there hid a
 	// readable log sitting beside the scoped journal.
 	artifactSessionID string
-	found             bool
-	diagnostics       sessionJobRecordDiagnostics
+	// hintedSessionID is a VALIDATED owner hint from a legacy row, carried
+	// separately from artifactSessionID and regardless of whether the owner's
+	// journal corroborated it. It answers a different question: not "where are
+	// the bytes by default", but "which session's data could this read still
+	// reach". A forwarded row can carry an explicit OutputPath pointing into the
+	// owner's directory even when that owner's journal is absent, so the fence
+	// has to cover the hinted session even though routing never names it.
+	hintedSessionID string
+	found           bool
+	diagnostics     sessionJobRecordDiagnostics
 	// scanErr is the durable-corruption error THIS branch's own scan produced,
 	// or nil. It stays branch-local on purpose: mergeIntegrity carries the
 	// damage report forward, but whether one particular record's state can be
 	// stated is a fact about that record's journal alone.
 	scanErr error
 	// statusUnconfirmed is set when THIS record's nonterminal status is not
-	// established: the journal that supplied the record ended in a torn append,
-	// stopped at durable corruption, or described no whole lifecycle — anywhere,
-	// including for another job — or the record is a forwarded copy whose owner
-	// could not be consulted. It stays branch-local for the same reason scanErr
-	// does: mergeIntegrity says what the HISTORY could not establish, this says
-	// what the SELECTED STATUS could not.
+	// established. The evidence against it is specific to this record: the
+	// journal that supplied it ended in a torn append or stopped at durable
+	// corruption, the record itself is a fragment with no status or no start of
+	// its own, its own owner claim contradicts the validated identifier, or it is
+	// a forwarded copy whose owner could not be consulted. A lifecycle gap the
+	// fold reports for ANOTHER job in the same journal is not evidence against
+	// this record and does not set this. It stays branch-local for the same
+	// reason scanErr does: mergeIntegrity says what the HISTORY could not
+	// establish, this says what the SELECTED STATUS could not.
 	//
 	// The two are deliberately separate. A clean owner record that inherited an
 	// ancestor's scan damage is a record whose status IS established — it was
@@ -374,11 +385,16 @@ func loadSessionJobRecord(stateDir, sessionID, jobID string, fence OwnerDeletion
 		// so there is no branch to consult and nothing to retry. The scoped copy
 		// stands, and the two flags below say why it is fallback evidence rather
 		// than the owner's.
-		if schema.ValidateSessionID(hint) != nil {
+		if !hintIsSessionID(hint) {
 			local.diagnostics.OwnerUnavailable = true
 			local.diagnostics.ForwardedFallback = true
 			return local, nil
 		}
+		// Validated from here on, so this read can reach the hinted session's
+		// directory — through a corroborated artifact route, or through an
+		// explicit OutputPath the row already carries. The fence must cover it in
+		// every later check, not only the one made now.
+		local.hintedSessionID = hint
 		if fenced, fenceErr := retainedOwnerFenced(stateDir, hint, fence); fenceErr != nil {
 			return sessionJobRecordRead{}, fenceErr
 		} else if fenced {
@@ -778,6 +794,35 @@ func routingJobSession(jobID string, read sessionJobRecordRead) string {
 	return read.sourceSessionID
 }
 
+// hintIsSessionID reports whether a stored owner hint is a session id. It is a
+// PREDICATE, not a validation step: a claim that is not a session id states
+// nothing this read can corroborate, which is an answer rather than a failure.
+//
+// It exists so no error sits in scope at the caller's `return local, nil`. That
+// return is deliberate — the caller asked about the scoped session, whose record
+// is intact, and the two fallback flags say why the scoped copy is evidence
+// rather than the owner's — but an error-valued variable next to it reads as a
+// swallowed failure, which is exactly what the nilerr check flags.
+func hintIsSessionID(hint string) bool {
+	return schema.ValidateSessionID(hint) == nil
+}
+
+// fencedSessions names every session whose journal OR log this read can carry,
+// for the deletion fence. It is deliberately NOT routingJobSession: routing
+// answers "which single directory does an unset OutputPath fall back to", while
+// the fence has to cover every directory the answer could come from. A legacy
+// row can carry an explicit OutputPath into a hinted owner's directory even when
+// that owner's journal is absent and never corroborated it, and routing never
+// names that session — so a fence built from routing alone would serve those
+// bytes while the owner's deletion is pending.
+func fencedSessions(jobID string, read sessionJobRecordRead, requested string) []string {
+	sessions := []string{requested, routingJobSession(jobID, read)}
+	if read.hintedSessionID != "" {
+		sessions = append(sessions, read.hintedSessionID)
+	}
+	return sessions
+}
+
 // jobReadError translates the reader's structural sentinels into the wire
 // errors a caller can act on. A scope that a torn append left unresolved is
 // UNAVAILABLE, not not-found: the scan could not establish absence, and the
@@ -811,7 +856,7 @@ func LoadSessionJobOutputPage(stateDir, sessionID, jobID string, beforeBytes *in
 	// whose data this page can carry: the one that was asked about and the one
 	// that owns the bytes. A standing fence discards the page, and an abandoned
 	// deletion clears the record, so a later read resumes by itself.
-	if fenced, fenceErr := jobReadFenced(stateDir, fence, sessionID, routingJobSession(jobID, read)); fenceErr != nil {
+	if fenced, fenceErr := jobReadFenced(stateDir, fence, fencedSessions(jobID, read, sessionID)...); fenceErr != nil {
 		return JobOutputPage{}, false, fenceErr
 	} else if fenced {
 		return JobOutputPage{}, false, nil
@@ -833,7 +878,7 @@ func LoadSessionJobOutputPage(stateDir, sessionID, jobID string, beforeBytes *in
 	// leave with data the hub has already committed to removing. A standing
 	// fence discards it; an abandoned deletion clears the record, so the next
 	// request serves the page normally.
-	if fenced, fenceErr := jobReadFenced(stateDir, fence, sessionID, routingJobSession(jobID, read)); fenceErr != nil {
+	if fenced, fenceErr := jobReadFenced(stateDir, fence, fencedSessions(jobID, read, sessionID)...); fenceErr != nil {
 		return JobOutputPage{}, false, fenceErr
 	} else if fenced {
 		return JobOutputPage{}, false, nil
@@ -893,7 +938,7 @@ func LoadSessionJobGet(stateDir, sessionID, jobID string, fence OwnerDeletionFen
 	// session's record and the resolved owner's identity both leave this
 	// process. A standing fence withholds the row; an abandoned deletion clears
 	// the record, so a later read resumes rather than locking out.
-	if fenced, fenceErr := jobReadFenced(stateDir, fence, sessionID, routingJobSession(jobID, read)); fenceErr != nil {
+	if fenced, fenceErr := jobReadFenced(stateDir, fence, fencedSessions(jobID, read, sessionID)...); fenceErr != nil {
 		return JobActivityJob{}, false, fenceErr
 	} else if fenced {
 		return JobActivityJob{}, false, nil

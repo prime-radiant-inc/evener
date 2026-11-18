@@ -102,11 +102,15 @@ type JobActivityJob struct {
 	// aggregate would stop following a healthy running job and miss its finish,
 	// so the decision belongs to this field alone.
 	//
-	// Retained reads set it when the supplying journal ended in an unterminated
-	// append, stopped at durable corruption, described no whole lifecycle, or
-	// when the row is a forwarded copy whose owner could not be consulted.
-	// Terminal rows never set it: the first terminal write is a complete
-	// observation on its own. Live reads never set it either.
+	// Retained reads set it from evidence about THIS record alone: the supplying
+	// journal ended in an unterminated append or stopped at durable corruption,
+	// the record is a fragment the journal named without ever stating its status,
+	// its own owner claim contradicts the validated identifier, or it is a
+	// forwarded copy whose owner could not be consulted. Lifecycle damage the
+	// fold reports for a DIFFERENT job sharing that journal is not evidence
+	// against this row, so it does not set this field. Terminal rows never set
+	// it: the first terminal write is a complete observation on its own. Live
+	// reads never set it either.
 	StatusUnconfirmed bool `json:"statusUnconfirmed,omitempty"`
 }
 

@@ -153,11 +153,11 @@ func TestFoldChecked_AcceptsLegacyEmptyOwner(t *testing.T) {
 	}
 }
 
-// TestFoldChecked_RejectsJobEventWithNoJobID is the low-4 regression. A
-// job_finished with an empty job_id folds into an empty-ID row — a row a
-// forensic surface renders — and that row has no start by construction. The
-// lifecycle check used to skip exactly the events that produced it, so the
-// doctor showed the row without reporting the missing start.
+// TestFoldChecked_RejectsJobEventWithNoJobID: a job_finished with an empty
+// job_id folds into an empty-ID row — a row a forensic surface renders — and
+// that row has no start by construction. The lifecycle check must not skip the
+// events that produced it, or the doctor shows the row without reporting the
+// missing start.
 func TestFoldChecked_RejectsJobEventWithNoJobID(t *testing.T) {
 	t.Parallel()
 	started := diagTime()
@@ -188,10 +188,9 @@ func TestFoldChecked_IgnoresNonJobKinds(t *testing.T) {
 	}
 }
 
-// TestFoldChecked_ReturnsRecordsWithDamage is the low-1 contract: validation
-// finding damage must not withhold the best-effort fold. A retained-history
-// caller shows the row AND reports the damage from one call, rather than
-// folding the same events twice.
+// TestFoldChecked_ReturnsRecordsWithDamage: validation finding damage must not
+// withhold the best-effort fold. A retained-history caller shows the row AND
+// reports the damage from one call, rather than folding the same events twice.
 func TestFoldChecked_ReturnsRecordsWithDamage(t *testing.T) {
 	t.Parallel()
 	started := diagTime()

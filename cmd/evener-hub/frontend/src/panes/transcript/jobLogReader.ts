@@ -83,7 +83,24 @@ export class JobLogReader {
    * flag an older-page request holding the slot would outlive the refresh, and
    * the reconcile that follows the metadata would erase it. */
   private explicitTailOwed = false;
+  /** Whether a LIVE tail read has settled at least once. Until it has, the
+   * reader's initial load is still owed, so nothing about it counts as
+   * recurring. A replacement reader inherits an occupied output slot from the
+   * reader it replaced, and its metadata can report an unconfirmed row before it
+   * has ever sent an output request; parking the deadline then leaves the pane
+   * on its loading indicator, because releasing the inherited slot finds no
+   * work due. Recurring reads may only be suppressed after an attempt to read
+   * has actually finished. */
+  private liveAttempted = false;
   private timeout: ReturnType<typeof setTimeout> | undefined;
+
+  /** Whether a live tail read is owed regardless of the recurring cadence: one a
+   * person asked for (refresh, reconnect), or the initial load that has not
+   * settled yet. An unconfirmed row must never park owed work — that is what
+   * would leave a reader waiting on evidence only that read could produce. */
+  private tailOwed(): boolean {
+    return this.explicitTailOwed || !this.liveAttempted;
+  }
 
   constructor(
     private readonly lifetime: PaneLifetime,
@@ -193,7 +210,7 @@ export class JobLogReader {
     // An owed one-shot read is a demand, not a poll. It keeps the slot due until
     // it is served, so unconfirmed metadata stops the RECURRING cadence without
     // cancelling the read a person asked for.
-    if (livePollingStopped(job) && !drainPending && !this.explicitTailOwed) {
+    if (livePollingStopped(job) && !drainPending && !this.tailOwed()) {
       this.liveDueAt = Number.POSITIVE_INFINITY;
       return;
     }
@@ -261,7 +278,7 @@ export class JobLogReader {
       // An owed tail read is a DEMAND, not a poll: it forces the slot regardless
       // of the cadence, so unconfirmed metadata can stop recurring reads without
       // cancelling the one a person asked for.
-      const liveDue = now >= this.liveDueAt || this.snapshot.drainPending || this.explicitTailOwed;
+      const liveDue = now >= this.liveDueAt || this.snapshot.drainPending || this.tailOwed();
       const pending = this.snapshot.pendingDemand;
       const readHistory = pending !== null && !(liveDue && this.historyServedSinceLive);
       const selection = readHistory && pending !== null ? selectJobLogDemand(this.snapshot.windows, pending) : null;
@@ -278,9 +295,7 @@ export class JobLogReader {
       ? Number.POSITIVE_INFINITY
       : Math.max(
           this.nextReadAt,
-          this.snapshot.pendingDemand !== null || this.snapshot.drainPending || this.explicitTailOwed
-            ? now
-            : this.liveDueAt,
+          this.snapshot.pendingDemand !== null || this.snapshot.drainPending || this.tailOwed() ? now : this.liveDueAt,
         );
     const metadataDue = this.metadataInFlight ? Number.POSITIVE_INFINITY : this.metadataDueAt;
     const next = Math.min(outputDue, metadataDue);
@@ -408,7 +423,13 @@ export class JobLogReader {
         // metadata arrived after this failure. "Do not poll again yet" and "do
         // not read again at all" are different statements, and only the first is
         // true here.
-        const automatic = selection === null && this.snapshot.pendingDemand === null && !this.snapshot.drainPending;
+        // A queued history page is NOT a reason to keep the recurring deadline
+        // alive: it would retry the failing tail ahead of the page that can
+        // succeed. Park the recurring deadline and let the pending page use the
+        // slot once the backoff expires. A terminal drain is different — those
+        // bytes were already written — and a newer explicit refresh or reconnect
+        // re-opens the tail through tailOwed() on its own.
+        const automatic = selection === null && !this.snapshot.drainPending;
         const stop = automatic && livePollingStopped(this.snapshot.job);
         this.nextReadAt = Date.now() + READ_INTERVAL_MS;
         if (stop) this.liveDueAt = Number.POSITIVE_INFINITY;
@@ -428,6 +449,9 @@ export class JobLogReader {
       .finally(() => {
         // Obsolete requests keep this slot until settlement, since the transport
         // has no cancellation and a remount must not start a parallel output read.
+        // A settled LIVE tail is what makes the initial load no longer owed; a
+        // history page says nothing about whether this reader has read its tail.
+        if (kind === "live") this.liveAttempted = true;
         this.outputInFlight = null;
         this.pump();
       });

@@ -265,12 +265,12 @@ func TestFindLocalJobInProjectRejectsOwnerMismatch(t *testing.T) {
 	}
 }
 
-// TestLoadSessionJobRecordContradictoryAncestorRowIsNotAuthoritative is the
-// medium-1 regression. A stale ancestor row that declares the ANCESTOR as its
-// owner, while the job ID encodes the descendant, is not authoritative however
-// confidently it names an owner: authority comes from the identifier, not from
-// what the row claims. Such a row must never outrank the matching owner's
-// completed record.
+// TestLoadSessionJobRecordContradictoryAncestorRowIsNotAuthoritative: a stale
+// ancestor row that declares the ANCESTOR as its owner, while the job ID
+// encodes the descendant, is not authoritative however confidently it names an
+// owner. Authority comes from the validated identifier, not from what the row
+// claims, so such a row must never outrank the matching owner's completed
+// record.
 func TestLoadSessionJobRecordContradictoryAncestorRowIsNotAuthoritative(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
@@ -322,12 +322,12 @@ func TestLoadSessionJobRecordContradictoryAncestorRowIsNotAuthoritative(t *testi
 	}
 }
 
-// TestLoadSessionJobRecordKeepsOwnerDiagnosticWhenOwnerWins is the low-3
-// regression. A healthy forwarded start sits in the ancestor's journal while the
-// owner's journal holds an orphan finish: the owner's record is the one returned
-// (it is the ID's owner, so it is authoritative), and the owner's integrity
-// signal must be reported with it. The old merge returned the owner's damaged
-// row from its own journal carrying no damage at all.
+// TestLoadSessionJobRecordKeepsOwnerDiagnosticWhenOwnerWins: a healthy
+// forwarded start sits in the ancestor's journal while the owner's journal
+// holds an orphan finish. The owner's record is the one returned — it is the
+// ID's owner, so it is authoritative — and the owner's integrity signal must be
+// reported with it; returning that damaged row carrying no damage at all hides
+// which journal was incoherent.
 func TestLoadSessionJobRecordKeepsOwnerDiagnosticWhenOwnerWins(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
@@ -421,11 +421,11 @@ func TestLoadSessionJobRecordKeepsLocalDamageWhenOwnerWins(t *testing.T) {
 	}
 }
 
-// TestLoadSessionJobGetRoutesLegacyEmptyOwnerToItsJournal is the medium-2
-// regression. A retained legacy start carries no OwnerSessionID, so the owner
-// ref would be empty — a ref no client can resolve — while the command, terminal
-// status and log all live beside the journal that supplied the record. The read
-// must route to that journal.
+// TestLoadSessionJobGetRoutesLegacyEmptyOwnerToItsJournal: a retained legacy
+// start carries no OwnerSessionID, so the owner ref would be empty — a ref no
+// client can resolve — while the command, terminal status and log all live
+// beside the journal that supplied the record. The read must route to that
+// journal.
 func TestLoadSessionJobGetRoutesLegacyEmptyOwnerToItsJournal(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
@@ -456,10 +456,10 @@ func TestLoadSessionJobGetRoutesLegacyEmptyOwnerToItsJournal(t *testing.T) {
 	}
 }
 
-// TestLoadSessionJobGetRequiresRequestedScope is the medium-3 regression. The
-// requested session holds no record of the job at all: the request cannot be
-// answered from another session's journal just because the job ID names one.
-// Scope is proven before data is served.
+// TestLoadSessionJobGetRequiresRequestedScope: the requested session holds no
+// record of the job at all, so the request cannot be answered from another
+// session's journal just because the job ID names one. Scope is proven before
+// data is served.
 func TestLoadSessionJobGetRequiresRequestedScope(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
@@ -1817,5 +1817,82 @@ func TestLoadSessionJobGetMarksStatuslessFragmentUnconfirmed(t *testing.T) {
 	}
 	if !job.StatusUnconfirmed {
 		t.Fatal("StatusUnconfirmed = false: the journal named the job without ever stating its status, so that status is not established")
+	}
+}
+
+// TestLoadSessionJobOutputPageFencesUncorroboratedHintWithExplicitPath pins the
+// fence to the sessions this read can actually reach. A legacy forwarded row can
+// carry an explicit OutputPath into the hinted owner's directory. When that
+// owner's journal is absent the hint does not corroborate, so routing names the
+// scoped session — but the row's own OutputPath still points at the owner's log,
+// and the fence must cover the session that path lives in. Scoping the fence to
+// the routed session alone serves bytes from a session whose deletion is pending.
+//
+// The hint is validated before it is carried, so a fence that never hears of it
+// is not a leak of unvalidated input either.
+func TestLoadSessionJobOutputPageFencesUncorroboratedHintWithExplicitPath(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	scopedSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	jobID := "job_legacy_9a8b7c6d"
+	started := time.Date(2026, 11, 19, 15, 0, 0, 0, time.UTC)
+
+	ownerLogDir := filepath.Join(jobsDir(stateDir, ownerSession), "jobs")
+	if err := os.MkdirAll(ownerLogDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ownerLogPath := filepath.Join(ownerLogDir, jobID+".log")
+	if err := os.WriteFile(ownerLogPath, []byte("owner bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The scoped journal holds a forwarded start that names the owner and carries
+	// an explicit output path into that owner's directory. The owner's journal
+	// does not exist, so nothing corroborates the hint.
+	writeJobJournalLines(t, jobsDir(stateDir, scopedSession),
+		`{"kind":"job_started","seq":1,"ts":"`+started.Format(time.RFC3339)+
+			`","job_id":"`+jobID+`","type":"shell","status":"running","owner_session_id":"`+ownerSession+
+			`","visible_to_session_id":"`+scopedSession+`","started_at":"`+started.Format(time.RFC3339)+
+			`","output_path":"`+ownerLogPath+`"}`+"\n",
+	)
+
+	// The deletion becomes durable AFTER the hint's first fence check: clean on
+	// the first consultation of the owner, fenced from the second onward. A check
+	// made only before the scan therefore sees a clean owner and serves the log.
+	var consulted []string
+	ownerConsultations := 0
+	fence := func(sessionID string) (bool, error) {
+		consulted = append(consulted, sessionID)
+		if sessionID != ownerSession {
+			return false, nil
+		}
+		ownerConsultations++
+		return ownerConsultations > 1, nil
+	}
+
+	page, found, err := LoadSessionJobOutputPage(stateDir, scopedSession, jobID, nil, 64, fence)
+	if err != nil {
+		t.Fatalf("LoadSessionJobOutputPage: %v", err)
+	}
+	if found || page.Data != "" {
+		t.Fatalf("found = %v, data = %q: the owner's log must not be served while its deletion is durable",
+			found, page.Data)
+	}
+	if !slices.Contains(consulted, ownerSession) {
+		t.Fatalf("fence consulted %v, want the hinted owner: the row's explicit OutputPath reaches that directory",
+			consulted)
+	}
+
+	// An abandoned deletion clears the fence, and the read resumes rather than
+	// locking the job out forever.
+	page, found, err = LoadSessionJobOutputPage(stateDir, scopedSession, jobID, nil, 64,
+		func(string) (bool, error) { return false, nil })
+	if err != nil {
+		t.Fatalf("LoadSessionJobOutputPage after abandonment: %v", err)
+	}
+	if !found || page.Data != "owner bytes" {
+		t.Fatalf("found = %v, data = %q: an abandoned deletion must not make the job permanently unreadable",
+			found, page.Data)
 	}
 }
