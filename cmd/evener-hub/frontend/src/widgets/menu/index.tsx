@@ -22,6 +22,7 @@ import { watchViewport } from "../internal/viewportWatch";
 // byte-identical to the pre-extraction Menu.
 import {
   computePopoverPosition as computeMenuPosition,
+  EDGE_MARGIN,
   type PopoverPosition as MenuPosition,
   TRIGGER_GAP,
   transformOriginFor,
@@ -306,6 +307,17 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
       top: triggerRect.top - visible.top,
       bottom: triggerRect.bottom - visible.top,
     } as DOMRect;
+    // The stylesheet caps the popup at 100dvh minus both margins, which is the
+    // LAYOUT viewport. After a pinch zoom the visible area can be half of that,
+    // so the popup keeps a height it cannot show: it is placed at the visible
+    // top edge and still runs past the visible bottom, and its own scrollport
+    // ends out there too, so the lower actions cannot be scrolled to at all.
+    // Capping to the visible height fixes the box AND the scrollport, and it is
+    // written before the measurement below so offsetHeight reports the capped
+    // box in a browser. Not a dismissal: a shorter popup scrolls, and the menu
+    // stays open.
+    const maxBlockSize = `${Math.max(0, visible.height - 2 * EDGE_MARGIN)}px`;
+    if (popupEl.style.maxBlockSize !== maxBlockSize) popupEl.style.maxBlockSize = maxBlockSize;
     const placed = computeMenuPosition(
       localTriggerRect,
       { width: popupEl.offsetWidth, height: popupEl.offsetHeight },
@@ -319,7 +331,11 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     setPosition((current) =>
       current !== null && current.left === next.left && current.top === next.top ? current : next,
     );
-    setOrigin(transformOriginFor(triggerRect, placed));
+    // The origin is read against the trigger's rect, so it takes the same
+    // translated position: `placed` is in the visual viewport's coordinates,
+    // and comparing it with a layout-coordinate trigger picks the wrong edge
+    // once the visual viewport is panned far enough to cross the trigger.
+    setOrigin(transformOriginFor(triggerRect, next));
   }, [ownerDocument]);
 
   // Re-measure ONCE on the next frame. A resize event is not the moment the

@@ -1102,6 +1102,122 @@ test("a placement frame queued by a resize cannot re-place the popup during its 
   }
 });
 
+// A popup can be TALLER than the area the reader can see. Its stylesheet caps
+// it at 100dvh - two edge margins, which is the LAYOUT viewport: after a
+// trackpad pinch zoom the visible area can be half that, so the popup is placed
+// against the visible top edge and still extends past the visible bottom. Its
+// internal scrollport then ends below the visible area too, so the lower
+// actions cannot be scrolled to at all - they are offscreen no matter what the
+// reader does inside the popup. The cap has to be the visible height.
+test("a popup taller than the visible viewport is capped to it so its last action can scroll in", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  // A 900px layout viewport, a 300px visible one: 3x zoom.
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 900 });
+  const fakeViewport = new EventTarget() as EventTarget & {
+    width: number;
+    height: number;
+    offsetLeft: number;
+    offsetTop: number;
+  };
+  fakeViewport.width = 800;
+  fakeViewport.height = 300;
+  fakeViewport.offsetLeft = 0;
+  fakeViewport.offsetTop = 0;
+  vi.stubGlobal("visualViewport", fakeViewport);
+  const box = (left: number, top: number, width: number, height: number) =>
+    ({
+      left,
+      top,
+      right: left + width,
+      bottom: top + height,
+      width,
+      height,
+      x: left,
+      y: top,
+      toJSON: () => ({}),
+    }) as DOMRect;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, 100, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 160, 400);
+    return box(0, 0, 0, 0);
+  });
+  // A 400px popup against a 300px visible viewport. It is a real element whose
+  // height and its own cap both come from the widget, so this stubs the natural
+  // size only: whatever the widget caps it to is what gets measured.
+  stubPopupLayoutBox(window, 160, 400);
+  try {
+    render(<Menu trigger="Actions" items={items()} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+
+    const popup = screen.getByRole("menu");
+    // 300 - 2*8: inside the visible area with its own edge margins, which is
+    // what makes the bottom of its scrollport reachable.
+    expect(popup.style.maxBlockSize).toBe("284px");
+  } finally {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
+// The popup grows out of the corner nearest its trigger, so the motion reads as
+// coming from the control that opened it. That corner is decided by comparing
+// the placed position with the trigger's rect - and with a panned visual
+// viewport those two are in DIFFERENT coordinate spaces unless the placed
+// position is translated back. Panned 60px down, a popup below its trigger
+// looks like it is above it: 260 against a trigger at 300, so it would grow
+// from the wrong edge and appear to come out of the trigger's top.
+test("a panned visual viewport still grows the popup out of its trigger's edge", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  const fakeViewport = new EventTarget() as EventTarget & {
+    width: number;
+    height: number;
+    offsetLeft: number;
+    offsetTop: number;
+  };
+  fakeViewport.width = 800;
+  fakeViewport.height = 800;
+  fakeViewport.offsetLeft = 0;
+  fakeViewport.offsetTop = 60;
+  vi.stubGlobal("visualViewport", fakeViewport);
+  const box = (left: number, top: number, width: number, height: number) =>
+    ({
+      left,
+      top,
+      right: left + width,
+      bottom: top + height,
+      width,
+      height,
+      x: left,
+      y: top,
+      toJSON: () => ({}),
+    }) as DOMRect;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, 300, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  try {
+    render(<Menu trigger="Actions" items={items()} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+
+    const popup = screen.getByRole("menu");
+    // Placed below the trigger in layout coordinates (332), which is 272 in the
+    // visible viewport's. Either way it is below 300, so it grows from its top
+    // left corner, not its bottom.
+    expect(popup.style.top).toBe("332px");
+    expect(popup.style.transformOrigin).toBe("left top");
+  } finally {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
 // --- a layout change above the trigger moves it without resizing anything ---
 // The rail's Live section grows when a session appears inside it, and the pinned
 // section below it - the trigger's own section - slides down. Nothing changes
