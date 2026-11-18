@@ -15,43 +15,19 @@ import {
   resetPendingTurnsStoreForTests,
 } from "../panes/session/composer/queue/pendingTurnsStore";
 import { withRecoveryDestinationClaim } from "../panes/session/composer/submitProtocol";
-import { ALL_CAPABILITIES, testThread } from "../threadTestUtils";
 import { resetConnectionStoreForTests } from "./connection";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { deleteMutationDatabase } from "./mutationOutboxTestUtils";
 import { pumpIndexedDBUntil } from "./testing/indexedDBPump";
 import { resendRecoveryMutation, resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "./threads";
-import { connectMutationClient, mutationReceipt, nextHandledRequest } from "./threadsSessionActionsTestUtils";
+import {
+  connectMutationClient,
+  mutationReceipt,
+  nextHandledRequest,
+  readResponse,
+  resumeOnlySnapshot,
+} from "./threadsSessionActionsTestUtils";
 import { acquireUnreadThreadClaim } from "./useThreadModel";
-
-// A local session the hub has fenced behind a resume: Send is its single
-// recovery action, so the resend must drive the resume itself.
-function sendResumesResponse(ref: string): ThreadReadResponse {
-  return {
-    thread: testThread(ref, {
-      status: { type: "notLoaded" },
-      evener: {
-        ref,
-        capabilities: { ...ALL_CAPABILITIES, send: false },
-        mutationStateAuthoritative: false,
-        resumeRequired: true,
-        queue: { revision: 0 },
-      },
-    }),
-    bootGeneration: "1",
-    epoch: 1,
-    snapshot: { incarnation: "inc-1", length: 0 },
-  };
-}
-
-function idleResponse(ref: string): ThreadReadResponse {
-  return {
-    thread: testThread(ref),
-    bootGeneration: "1",
-    epoch: 1,
-    snapshot: { incarnation: "inc-1", length: 0 },
-  };
-}
 
 beforeEach(async () => {
   resetConnectionStoreForTests();
@@ -87,7 +63,7 @@ test("a failed destination claim acquisition releases no claim another reader ho
   // A replacement connection answers the destination read, and the first
   // connection's stalled read dies with it.
   const second = connectMutationClient();
-  second.on("thread/read", () => idleResponse("ref_dest"));
+  second.on("thread/read", () => readResponse("ref_dest"));
   rejectRead?.(new Error("transport died"));
   await otherReader;
   // The other reader's claim survived the failed acquisition: it re-arms on
@@ -105,7 +81,7 @@ test("a failed destination claim acquisition releases no claim another reader ho
 // what finally retires it - no leak, and no bare check-then-act.
 test("a tracked destination is held by count until the lease releases", async () => {
   const fake = connectMutationClient();
-  fake.on("thread/read", () => sendResumesResponse("ref_dest"));
+  fake.on("thread/read", () => resumeOnlySnapshot("ref_dest"));
   await threadsStore.getState().ensureThread("ref_dest");
   expect(threadsStore.getState().threads.has("ref_dest")).toBe(true);
   const lease = await acquireUnreadThreadClaim("ref_dest");
@@ -136,9 +112,9 @@ test("a resend to a tracked destination still dispatches when that pane unmounts
   const ref = "local:resend-held";
   const fake = connectMutationClient();
   fake.on("thread/read", (params) => {
-    if (params.ref === ref) return sendResumesResponse(ref);
+    if (params.ref === ref) return resumeOnlySnapshot(ref);
     if (params.ref === undefined) throw new Error("thread/read test request requires ref");
-    return idleResponse(params.ref);
+    return readResponse(params.ref);
   });
   // The dispatch the fix is proven by: the resent row's own id on the wire,
   // recorded from the handler rather than read back off the call log.
@@ -185,8 +161,8 @@ test("a resend to a tracked destination still dispatches when that pane unmounts
       // The resume landed: the destination is no longer fenced, so its
       // post-resume refresh publishes an unfenced model and the parked row's
       // gate opens.
-      fake.on("thread/read", () => idleResponse(ref));
-      resume.resolve(idleResponse(ref));
+      fake.on("thread/read", () => readResponse(ref));
+      resume.resolve(readResponse(ref));
     },
   });
   expect(started, "the resent row must dispatch without anyone reopening the destination").toBe(true);
