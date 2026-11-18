@@ -461,6 +461,11 @@ type delegateMutationPlans struct {
 	attentionFinalization *delegateSettlementClaim
 	shellRepairs          []delegateShellRepairPlan
 	warnings              []events.WarningData
+	// ackWakeGeneration is the settled generation the acknowledgment this batch
+	// committed superseded, sampled under the controller lock where its release
+	// was journaled. The post-commit wake releases against this sample so a stop
+	// that settles in between is not cleared by a delivery older than it.
+	ackWakeGeneration uint64
 }
 
 func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTreeController, error) {

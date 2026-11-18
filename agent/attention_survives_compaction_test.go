@@ -734,6 +734,63 @@ func TestDeriveHeldDelegateAttentionFromOutcome(t *testing.T) {
 	})
 }
 
+// A released report whose own turn a compaction marker cut from the resumed
+// history must be back in history before the automatic drive can select it. The
+// marker leaves the fold listing the row pending while resume keeps only the
+// marker and what follows, so the row is presentable with no turn behind it:
+// the drive claims it, the request carries no report, and the row is durably
+// consumed with the model never having read it.
+func TestReleasedReportSurvivesACompactionMarkerBeforeSelection(t *testing.T) {
+	t.Parallel()
+	sess, reopenedID, journalPath := deriveHeldFixtureWithJournal(t, delegatestore.OutcomeCancelled, "cancelled")
+	// The newer event: a fresh row is admitted, which journals the release that
+	// ends the stopped generation's quiet.
+	const freshID = "delegate:dlg_worker/delivery/2"
+	if _, err := sess.appendDelegateNotificationDurably(freshID, acceptedTriggerText); err != nil {
+		t.Fatalf("append the fresh row: %v", err)
+	}
+	if _, _, err := openDelegateAttentionForTest(sess.delegateController, "dlg_hold", freshID); err != nil {
+		t.Fatalf("admit the fresh wake: %v", err)
+	}
+	sess.releaseAutomaticDriveHolds(delegateHoldReleaseArm, settledGeneration(t, sess))
+	// The compaction: the summarizer folds everything the transcript holds,
+	// including the released report's own turn, and every later request resumes
+	// from the marker it writes. The fold still lists the row pending.
+	appendCompactionMarkerAfterReopenedRow(t, sess.TranscriptPath(), sess.id)
+	// The resumed history a cold restore builds for this transcript: everything
+	// from the last compaction marker on, so the released report's turn is gone
+	// while the fold still lists its row pending.
+	data, err := readTranscriptFull(context.Background(), sess.TranscriptPath(), sess.stateDir)
+	if err != nil {
+		t.Fatalf("read the transcript: %v", err)
+	}
+	resumed, _ := resumeHistoryIndexed(data.Entries)
+	if indexOfTurnText(resumed, acceptedTriggerText) >= 0 {
+		t.Fatal("premise broken: the resumed history still holds the released report's turn")
+	}
+	restored := coldRestoredDeriveSession(t, sess, journalPath)
+	restored.mu.Lock()
+	restored.history = slices.Clone(resumed)
+	restored.mu.Unlock()
+	restored.deriveHeldDelegateAttentionFromOutcome()
+	// The report must be presentable...
+	ids, err := restored.automaticDelegateAttentionIDs()
+	if err != nil {
+		t.Fatalf("read the drive-side rows: %v", err)
+	}
+	if !slices.Contains(ids, reopenedID) {
+		t.Fatalf("the released report is not offered to the drive: %v", ids)
+	}
+	// ...and the request that presents it must carry the report, which a turn
+	// the resumed history dropped cannot.
+	history := currentHistory(t, restored)
+	if at := indexOfTurnText(history, acceptedTriggerText); at < 0 {
+		t.Fatal("the released report was presentable with no turn in the resumed history: the drive would consume a row the model never saw")
+	} else if at != len(history)-1 {
+		t.Fatalf("the released report resumed at %d of %d, want the tail so the presenting request ends on it", at, len(history)-1)
+	}
+}
+
 // Once a settled round of the active turn has presented a delegate attention
 // turn, a mid-turn compaction must fold it away rather than re-injecting it
 // after the summary, while still preserving any later attention item that
@@ -1122,8 +1179,7 @@ func TestRootDelegateAttentionMidTurnFoldPreservesArrivalOrderAcrossAnchors(t *t
 }
 
 // The release floor: a quiet stands only while the durable release floor is
-// below the row's own settled generation. These helpers and tests are #5713's
-// evidence.
+// below the row's own settled generation.
 
 // deriveHeldFixtureWithJournal is deriveHeldFixture plus the fixture's journal
 // path, for a case that restores a controller from it.
@@ -1131,9 +1187,6 @@ func deriveHeldFixtureWithJournal(t *testing.T, outcome delegatestore.OutcomeSta
 	t.Helper()
 	return deriveHeldFixtureWithJournalTrigger(t, delegatestore.TriggerAttention, outcome, reason)
 }
-
-// deriveHeldFixtureWithJournalTrigger is deriveHeldFixtureWithJournal with the
-// settled generation's own run trigger chosen by the caller.
 
 // deriveHeldFixtureWithJournalTrigger is deriveHeldFixtureWithJournal with the
 // settled generation's own run trigger chosen by the caller.
@@ -1207,16 +1260,6 @@ func deriveHeldFixtureWithJournalTrigger(t *testing.T, trigger delegatestore.Run
 	return sess, reopenedID, journalPath
 }
 
-// journalDeriveHeldStop journals the attention generation a user's stop
-// settled: run started at generation 1, then the run finished with the given
-// outcome and the terminal error packet a stop settles. The finish's delivery
-// is acknowledged in the same batch, so the aggregate rests with no pending
-// delivery and no teardown waits on one. The stop's own hold is not written
-// here — the derivation is what rebuilds it from this evidence.
-// journalDeriveHeldStopWithTrigger journals a settled generation whose run
-// trigger the caller chooses: a send that committed the recycled generation
-// owes no attention quiet, and only the run's own trigger says so.
-
 // deriveSendSettledFixture is deriveHeldFixtureWithJournal's shape with the
 // settled generation's own run trigger set to a send: a busy refusal reopened
 // the source at the recycled generation, and an explicit send — not an
@@ -1235,15 +1278,14 @@ func deriveSendSettledFixture(t *testing.T) (*Session, string) {
 // quiet and presents the FIRST report on a stale wake that never released it.
 // Each reopened row is ordered against its own settled stop.
 
-// journalDeriveHeldStop journals the attention generation a user's stop
-// settled: run started at generation 1, then the run finished with the given
-// outcome and the terminal error packet a stop settles. The finish's delivery
+// journalDeriveHeldStopWithTrigger journals a settled generation whose run
+// trigger the caller chooses: run started at generation 1, then the run finished
+// with the given outcome and the terminal error packet a stop settles. The
+// trigger matters because a send that committed the recycled generation owes no
+// attention quiet, and only the run's own trigger says so. The finish's delivery
 // is acknowledged in the same batch, so the aggregate rests with no pending
 // delivery and no teardown waits on one. The stop's own hold is not written
 // here — the derivation is what rebuilds it from this evidence.
-// journalDeriveHeldStopWithTrigger journals a settled generation whose run
-// trigger the caller chooses: a send that committed the recycled generation
-// owes no attention quiet, and only the run's own trigger says so.
 func journalDeriveHeldStopWithTrigger(t *testing.T, controller *delegateTreeController, trigger delegatestore.RunTrigger, outcome delegatestore.OutcomeStatus, reason string) {
 	t.Helper()
 	const delegateID = "dlg_hold"
@@ -1496,10 +1538,6 @@ func TestFreshWakeJournalsAReleasePastALaterSendSettle(t *testing.T) {
 // settledGeneration reads the generation sess's delegate rests at, sampled the
 // way the controller samples it when it admits a wake — the value a hold's
 // stamp and a release's admitted generation are both ordered against.
-
-// settledGeneration reads the generation sess's delegate rests at, sampled the
-// way the controller samples it when it admits a wake — the value a hold's
-// stamp and a release's admitted generation are both ordered against.
 func settledGeneration(t *testing.T, sess *Session) uint64 {
 	t.Helper()
 	sess.mu.Lock()
@@ -1513,12 +1551,6 @@ func settledGeneration(t *testing.T, sess *Session) uint64 {
 	defer controller.mu.Unlock()
 	return controller.attentionWakeGenerationLocked(owningDelegateID)
 }
-
-// A wake admitted while a run is still open supersedes only the generation
-// before that run: the run has not settled, so its own generation names no
-// quiet yet, and the stop its settle records afterwards must keep standing.
-// Sampling the open run's own generation instead would let the arm admit a
-// release for a quiet the settle had not yet installed.
 
 // journalDeriveHeldRelease journals the release an admitted wake records for
 // generation: the durable floor a hold's install is ordered against. It writes
@@ -1544,19 +1576,6 @@ func journalDeriveHeldRelease(t *testing.T, sess *Session, generation uint64) {
 		t.Fatalf("journal the hold release at generation %d: %v", generation, err)
 	}
 }
-
-// coldRestoredDeriveSession rebuilds the durable side of a session the idle
-// release reclaimed: a controller over the same journal path, folded from disk
-// exactly as a restart folds it, and a session that owns the same delegate and
-// reads the same transcript. Everything the released runtime held only in
-// memory — the holds map, the controller's wake set — is gone by construction,
-// which is the state the derivation must decide from.
-//
-// The restored session is built with the reopened controller and the released
-// transcript identity from the start, so it opens no journal of its own: one
-// store per journal, closed by the one cleanup that owns it. A fixture that
-// opened a second journal and swapped the field would strand an open store, and
-// a leaked store is the same defect class as a test that cannot fail.
 
 // coldRestoredDeriveSession rebuilds the durable side of a session the idle
 // release reclaimed: a controller over the same journal path, folded from disk
@@ -1646,3 +1665,17 @@ func openDelegateAttentionForTest(c *delegateTreeController, delegateID, attenti
 // the compaction marker every later request resumes from — the shape in which a
 // pending row's turn falls behind the anchor while the fold still lists the row
 // pending.
+func appendCompactionMarkerAfterReopenedRow(t *testing.T, path, sessionID string) {
+	t.Helper()
+	writer, _, err := transcript.OpenWriterForSession(path, sessionID)
+	if err != nil {
+		t.Fatalf("open the attention transcript: %v", err)
+	}
+	marker := schema.NewTurn(schema.TurnSummary, llm.User("[CONTEXT SUMMARY]\nfolded after the released report\n[END SUMMARY]"))
+	if _, err := writer.Record(marker, transcript.RecordOptions{Door: transcript.DoorSynced}); err != nil {
+		t.Fatalf("append the compaction marker: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close the attention transcript: %v", err)
+	}
+}

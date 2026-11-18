@@ -1480,14 +1480,37 @@ func (s *Session) deriveHeldDelegateAttentionFromOutcome() {
 	controller.mu.Lock()
 	generation := uint64(0)
 	released := uint64(0)
+	// restoreErr carries a released turn that could not be put back in history
+	// out to the warning emit below, which must run with attentionMu released.
+	var restoreErr error
 	if aggregate := controller.durable[s.owningDelegateID]; aggregate != nil {
 		generation = aggregate.Generation
 		released = aggregate.AttentionHoldReleasedGeneration
 	}
 	// Each row's own generation decides its quiet, so the evidence is read per
-	// generation here, in the same locked snapshot as the aggregate.
-	runStarts := maps.Clone(controller.runStarts)
-	runOutcomes := maps.Clone(controller.runOutcomes)
+	// generation here, in the same locked snapshot as the aggregate. Only the
+	// generations this delegate's own pending reopens name are read: the run
+	// indexes are tree-wide, and cloning them would copy every other delegate's
+	// history under the lock on every cold reconstruction.
+	runStarts := make(map[delegateLease]delegatestore.RunTrigger)
+	runOutcomes := make(map[delegateLease]delegatestore.Outcome)
+	for _, attentionID := range fold.pendingIDs() {
+		source, _, ok := cutDelegateAttentionReopenSegment(attentionID)
+		if !ok {
+			continue
+		}
+		claimed := fold.resumeGenerations[source]
+		if claimed == 0 {
+			continue
+		}
+		lease := delegateLease{delegateID: s.owningDelegateID, generation: claimed}
+		if trigger, indexed := controller.runStarts[lease]; indexed {
+			runStarts[lease] = trigger
+		}
+		if outcome, indexed := controller.runOutcomes[lease]; indexed {
+			runOutcomes[lease] = outcome
+		}
+	}
 	var noted map[string]struct{}
 	if state := controller.attention[s.owningDelegateID]; state != nil {
 		noted = maps.Clone(state.wakeIDs)
@@ -1536,9 +1559,39 @@ func (s *Session) deriveHeldDelegateAttentionFromOutcome() {
 		releasedRows = append(releasedRows, row.attentionID)
 	}
 	if len(releasedRows) != 0 {
+		// A release makes the row presentable, so its turn must be in history
+		// before the automatic drive can select and durably consume it. The
+		// restore that rebuilt this session anchored on the last compaction
+		// marker, so a reopened row recorded before that marker has no turn in
+		// history even though the fold still lists the row pending. Consuming a
+		// row whose turn is missing attaches a request with no report in it, and
+		// a successful run leaves the row consumed with the model never having
+		// read it. The retain is ID-keyed and idempotent, so a turn the resumed
+		// history already holds is replaced in place rather than duplicated.
+		releasedTurns := make([]schema.Turn, 0, len(releasedRows))
+		for _, attentionID := range fold.order {
+			if !slices.Contains(releasedRows, attentionID) {
+				continue
+			}
+			if turn, ok := fold.turns[attentionID]; ok {
+				releasedTurns = append(releasedTurns, turn)
+			}
+		}
+		for i, turn := range releasedTurns {
+			if err := s.retainDelegateAttentionTurn(turn, releasedTurns[i+1:]...); err != nil {
+				// The warning is emitted after attentionMu is released: emit
+				// reads the session mutex, and holding both here would invert
+				// the order the rest of the session takes them in.
+				restoreErr = err
+				break
+			}
+		}
 		s.moveHeldDelegateAttentionTurnsToTail(releasedRows)
 	}
 	s.attentionMu.Unlock()
+	if restoreErr != nil {
+		s.emit(warningDataFromError("restore a released delegate attention turn", restoreErr))
+	}
 	for _, attentionID := range rearmedRows {
 		s.clearDelegateAttentionHold(attentionID)
 	}
@@ -1594,6 +1647,15 @@ func (s *Session) automaticDelegateAttentionIDs() ([]string, error) {
 // each drop strictly before it.
 func (s *Session) dropHeldDelegateAttentionTurns(turns []schema.Turn) (kept []schema.Turn, droppedAt []int) {
 	s.attentionMu.Lock()
+	// An arm that admitted a wake journals its release before it publishes
+	// anything, so a hold the journal already superseded is not current
+	// evidence against this request. Only the drive-side ID list reconciled
+	// until now, which left this projection filtering on the raw map: a request
+	// built between the arm and its release callback dropped the report that
+	// same release freed while the fresh row it admitted presented alone.
+	// Reconciling here asks the same evidence the drive-side read asks, in the
+	// same order — attentionMu, then the controller lock.
+	s.reconcileAutomaticDriveHoldsLocked()
 	// The holds map can be written on a live runtime while this projection
 	// iterates outside the lock, so the iteration walks a clone taken under
 	// the lock: the snapshot is race-free by construction.

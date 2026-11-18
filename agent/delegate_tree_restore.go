@@ -352,7 +352,7 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 		wakeAfterUnlock = func() error {
 			var wakeErrs []error
 			for _, wake := range deliveryWakes {
-				wakeErrs = append(wakeErrs, c.wakeDeliveryReceiver(wake.receiver, wake.attentionIDs))
+				wakeErrs = append(wakeErrs, c.wakeDeliveryReceiverAt(wake.receiver, wake.attentionIDs, wake.wakeGeneration))
 			}
 			return errors.Join(wakeErrs...)
 		}
@@ -506,6 +506,13 @@ func (c *delegateTreeController) reconcileRecoveryRequiredStopLocked() (delegate
 type delegateDeliveryWake struct {
 	receiver     delegateDeliveryReceiver
 	attentionIDs []string
+	// wakeGeneration is the newest settled generation the acknowledgments
+	// grouped into this wake superseded, sampled under the controller lock when
+	// each wake was journaled. The callback releases against this sample rather
+	// than reading the generation again after the acknowledgment landed: a stop
+	// that settles in between is newer evidence than this delivery, and
+	// re-sampling would let the older delivery clear that newer quiet.
+	wakeGeneration uint64
 }
 
 // acknowledgeRetryableStopDeliveriesLocked retries the durable acknowledgment
@@ -530,6 +537,7 @@ func (c *delegateTreeController) acknowledgeRetryableStopDeliveriesLocked(stop *
 	var lost []events.WarningData
 	liveOrder := make([]*Session, 0)
 	liveIDs := make(map[*Session][]string)
+	liveGenerations := make(map[*Session]uint64)
 	cold := false
 	buildPlans := func() delegateMutationPlans {
 		plans := c.deliveryAckPlansLocked(
@@ -542,7 +550,11 @@ func (c *delegateTreeController) acknowledgeRetryableStopDeliveriesLocked(stop *
 	buildWakes := func() []delegateDeliveryWake {
 		wakes := make([]delegateDeliveryWake, 0, len(liveOrder)+1)
 		for _, receiver := range liveOrder {
-			wakes = append(wakes, delegateDeliveryWake{receiver: receiver, attentionIDs: liveIDs[receiver]})
+			wakes = append(wakes, delegateDeliveryWake{
+				receiver:       receiver,
+				attentionIDs:   liveIDs[receiver],
+				wakeGeneration: liveGenerations[receiver],
+			})
 		}
 		if cold {
 			wakes = append(wakes, delegateDeliveryWake{receiver: coldDelegateDeliveryReceiver{}})
@@ -623,6 +635,9 @@ func (c *delegateTreeController) acknowledgeRetryableStopDeliveriesLocked(stop *
 					liveOrder = append(liveOrder, receiver)
 				}
 				liveIDs[receiver] = append(liveIDs[receiver], delegateAttentionID(token.deliveryID))
+				if ack.wakeGeneration > liveGenerations[receiver] {
+					liveGenerations[receiver] = ack.wakeGeneration
+				}
 			case coldDelegateDeliveryReceiver:
 				cold = true
 			}
@@ -722,7 +737,29 @@ func (c *delegateTreeController) reportDelegateWakeError(err error) {
 
 // wakeDeliveryReceiver reproduces deliverDelegatePacket's post-commit wake for
 // an acknowledgment the stop retried itself. It runs outside c.mu.
+//
+// It is wakeDeliveryReceiverAt for a caller that holds no journaled sample: it
+// reads the delegate's newest settled generation itself. Every caller that
+// committed an acknowledgment passes the generation the wake funnel sampled
+// instead, because a stop that settles between the acknowledgment and this wake
+// is newer evidence than the delivery and must keep its quiet.
 func (c *delegateTreeController) wakeDeliveryReceiver(receiver delegateDeliveryReceiver, attentionIDs []string) error {
+	generation := uint64(0)
+	if session, ok := receiver.(*Session); ok && session != nil {
+		session.mu.Lock()
+		owningDelegateID := session.owningDelegateID
+		session.mu.Unlock()
+		c.mu.Lock()
+		generation = c.attentionWakeGenerationLocked(owningDelegateID)
+		c.mu.Unlock()
+	}
+	return c.wakeDeliveryReceiverAt(receiver, attentionIDs, generation)
+}
+
+// wakeDeliveryReceiverAt posts the wake for attentionIDs, releasing the
+// receiver's automatic-drive holds against the generation the acknowledgment's
+// release superseded.
+func (c *delegateTreeController) wakeDeliveryReceiverAt(receiver delegateDeliveryReceiver, attentionIDs []string, wakeGeneration uint64) error {
 	switch receiver := receiver.(type) {
 	case *Session:
 		if receiver == nil {
@@ -740,15 +777,12 @@ func (c *delegateTreeController) wakeDeliveryReceiver(receiver delegateDeliveryR
 		// list read would present the delivered row alone and leave
 		// the stopped report for a later generation.
 		//
-		// The generation is the same one the wake funnel samples when it
-		// journals a release: the delegate's newest settled generation, which
-		// is the newest quiet this wake supersedes.
-		receiver.mu.Lock()
-		owningDelegateID := receiver.owningDelegateID
-		receiver.mu.Unlock()
-		c.mu.Lock()
-		wakeGeneration := c.attentionWakeGenerationLocked(owningDelegateID)
-		c.mu.Unlock()
+		// The generation was sampled by the wake funnel when it journaled this
+		// acknowledgment's release: the delegate's newest settled generation,
+		// which is the newest quiet the delivery supersedes. Sampling it here
+		// would read the generation after the acknowledgment landed, so a stop
+		// that settled in that interval would be cleared by a delivery older
+		// than it.
 		receiver.releaseAutomaticDriveHolds(delegateHoldReleaseDelivery, wakeGeneration)
 		// A non-root receiver gets the same durable arm the root gets
 		// (#6330): armDelegateAttentions opens the receiver's attention
