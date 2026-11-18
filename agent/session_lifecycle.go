@@ -266,14 +266,48 @@ func classifyRoundContent(txt string, callCount int, content []llm.ContentPart, 
 	if strings.TrimSpace(txt) != "" || callCount != 0 {
 		return roundContentClass{}
 	}
-	responses := target != nil && target.Protocol() == registry.ProtocolOpenAIResponses
-	replayPlain := responses && target.Resolved().ReplaysRawReasoning()
+	var res registry.Resolved
+	if target != nil {
+		res = target.Resolved()
+	}
 	for _, p := range content {
-		if p.Phase != "" || (responses && replayableEmptyResponsesPart(p, replayPlain)) {
+		if p.Phase != "" ||
+			(res.Protocol == registry.ProtocolOpenAIResponses && replayableEmptyResponsesPart(p, res.ReplaysRawReasoning())) ||
+			(res.Protocol == registry.ProtocolOpenAIChat && replayableEmptyChatPart(p, res.Caps)) {
 			return roundContentClass{NoContent: true}
 		}
 	}
 	return roundContentClass{NoContent: true, SkipHistory: true}
+}
+
+// A Chat reply can carry a continuation even when its answer is empty. Keep
+// only sources the answering row can use in a subsequent assistant message.
+func replayableEmptyChatPart(p llm.ContentPart, caps registry.Caps) bool {
+	t := p.Thinking
+	if p.Kind != llm.ContentThinking || t == nil || t.Redacted {
+		return false
+	}
+	asText := registry.BoolValue(caps.ThinkingAsText)
+	if t.EncryptedContent != "" {
+		return llm.IsOpenAICompatEncryptedReasoning(t.EncryptedContent) &&
+			(!caps.ReasoningDisabled() || (asText && t.Text != ""))
+	}
+	scalar, field := t.ChatReplayScalar()
+	if !llm.IsOpenAICompatReasoningField(field) && len(t.ChatDetails) == 0 {
+		return false
+	}
+	if asText {
+		return t.Text != ""
+	}
+	if !caps.ReplaysReasoningText() {
+		return false
+	}
+	if registry.StringValue(caps.ReasoningField) == "reasoning_details" {
+		for range llm.ChatNativeReasoningDetails([]llm.ContentPart{p}) {
+			return true
+		}
+	}
+	return scalar != ""
 }
 
 // The Responses input encoder always accepts its own ciphertext and refusals.

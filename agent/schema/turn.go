@@ -586,11 +586,13 @@ func (t *Turn) ProjectReasoningText(res *registry.Resolved, route string) llm.Me
 	return msg
 }
 
-// DropsResponsesReasoning reports a recorded route change that makes both
-// plaintext and ciphertext ineligible for this Responses deployment.
+// DropsResponsesReasoning reports a known issuer or route mismatch. A Responses
+// deployment can receive its own ciphertext across models on the same route.
 func (t *Turn) DropsResponsesReasoning(res *registry.Resolved, route string) bool {
 	return res.Protocol == registry.ProtocolOpenAIResponses && t.Message.Role == llm.RoleAssistant &&
-		t.ResponseReasoningRoute != "" && t.ResponseReasoningRoute != route
+		((t.ResponseProvider != "" && t.ResponseProvider != res.Instance) ||
+			!t.matchesReasoningProtocol(res.Protocol) ||
+			(t.ResponseReasoningRoute != "" && t.ResponseReasoningRoute != route))
 }
 
 // MatchesRecordedModelRoute checks the serving route and outbound model when
@@ -604,31 +606,9 @@ func (t *Turn) MatchesRecordedModelRoute(res *registry.Resolved, route string) b
 // target, including the request route and wire-model overrides on the row.
 func (t *Turn) MatchesReasoningTextTarget(res *registry.Resolved, route string) bool {
 	if res.Instance == "" || t.ResponseProvider != res.Instance ||
-		(t.ResponseProtocol != "" && t.ResponseProtocol != res.Protocol) ||
+		!t.matchesReasoningProtocol(res.Protocol) ||
 		!t.MatchesRecordedModelRoute(res, route) {
 		return false
-	}
-	if t.ResponseProtocol == "" {
-		// An unstamped turn can still identify its protocol through the
-		// reasoning item's wire fields, including after a route change.
-		for _, part := range t.Message.Content {
-			d := part.Thinking
-			if d == nil {
-				continue
-			}
-			switch {
-			case len(d.ChatDetails) != 0, llm.IsOpenAICompatReasoningField(d.Signature), llm.IsOpenAICompatEncryptedReasoning(d.EncryptedContent):
-				if res.Protocol != registry.ProtocolOpenAIChat {
-					return false
-				}
-			case d.Signature != "":
-				return false
-			case d.ID != "" || len(d.ResponsesTextParts) != 0 || d.EncryptedContent != "":
-				if res.Protocol != registry.ProtocolOpenAIResponses {
-					return false
-				}
-			}
-		}
 	}
 	if requested := strings.TrimSpace(t.ResponseRequestModel); requested != "" {
 		return requested == res.ModelID
@@ -637,6 +617,33 @@ func (t *Turn) MatchesReasoningTextTarget(res *registry.Resolved, route string) 
 	// can be the wire id behind the user's configured model name.
 	reported := strings.TrimSpace(t.ResponseModel)
 	return reported != "" && (reported == res.ModelID || reported == res.OutboundModelSelector())
+}
+
+// Unstamped turns can still identify their protocol through the native
+// reasoning fields, independently of the model selector on the request.
+func (t *Turn) matchesReasoningProtocol(protocol string) bool {
+	if t.ResponseProtocol != "" {
+		return t.ResponseProtocol == protocol
+	}
+	for _, part := range t.Message.Content {
+		d := part.Thinking
+		if d == nil {
+			continue
+		}
+		switch {
+		case len(d.ChatDetails) != 0, llm.IsOpenAICompatReasoningField(d.Signature), llm.IsOpenAICompatEncryptedReasoning(d.EncryptedContent):
+			if protocol != registry.ProtocolOpenAIChat {
+				return false
+			}
+		case d.Signature != "":
+			return false
+		case d.ID != "" || len(d.ResponsesTextParts) != 0 || d.EncryptedContent != "":
+			if protocol != registry.ProtocolOpenAIResponses {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // NewTurn creates a Turn with the current UTC time.

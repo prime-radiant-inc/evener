@@ -525,7 +525,10 @@ On Chat and Responses, Evener preserves the original string of a valid
 function-call argument object, including its whitespace, key order and
 escapes. The first replay and a replay from a saved transcript therefore
 use the same bytes for the tool call. A transcript written before Evener
-saved the original spelling can replay only the bytes still on disk.
+saved the original spelling can replay only the bytes still on disk. During
+Chat tool execution, a field whose schema rejects a supplied string may
+recover an encoded object, array or XML parameter. A string field such as
+`write_file.content` keeps its literal file bytes.
 
 - On `openai-chat`, `reasoning_field` selects the assistant message field
   the gateway reads. A row can set it even when the gateway emits a different
@@ -545,18 +548,24 @@ saved the original spelling can replay only the bytes still on disk.
   constructs a text item from the available reasoning. A trailing
   signature can omit its index. Evener keeps it with
   its identified or uniquely matching text block. A signed detail on its own
-  supplies only that detail.
+  supplies only that detail. When a Chat reply contains reasoning and no
+  visible answer or tool call, Evener retries within its empty-answer limit.
+  It saves the reasoning that the answering row can replay for the next
+  attempt and for a cold resume.
 - On `openai-responses`, an encrypted reasoning item takes precedence on
-  its originating deployment. A known change of serving endpoint omits that
-  ciphertext from the request and keeps it in the original transcript. When
+  its originating deployment. A fallback receives its own ciphertext on
+  every subsequent turn and cold resume, including when the model selector
+  changes on that same deployment. A different provider instance, protocol,
+  or serving endpoint leaves the ciphertext in the original transcript. When
   the row opts in and an item has raw `content`, Evener returns its
   `reasoning_text` parts in order with the item's ID when supplied. Evener
   saves the type and byte boundaries of each text part, including display-only
   parts. It preserves whitespace in raw parts, item IDs and summaries, and
   keeps separate assistant messages and their `output_text` and `refusal`
   parts in order. A final response that selects only a refusal or a provider-run
-  file search withdraws earlier streamed tool calls. A reference to a completed
-  refusal preserves its message. An empty final output can recover an issued call.
+  file search withdraws earlier streamed tool calls. A message reference can
+  inherit a refusal finalized at its content index, even when the stream omits
+  the completed message. An empty final output can recover an issued call.
   When the final response repeats only part of a streamed item, Evener keeps
   the matching call's argument bytes, completed message phase, indexed
   answer and reasoning text, and ciphertext from the stream. A reasoning
@@ -573,7 +582,8 @@ saved the original spelling can replay only the bytes still on disk.
   provider must supply a `call_id` before Evener can dispatch the tool and
   return its result under that ID. Reasoning shown only as deltas remains
   visible in the transcript, including when the response ends with an
-  answer. Only native reasoning parts supply replay text.
+  answer. A streamed summary that differs from the item's settled text stays
+  visible in the transcript. Only native reasoning parts supply replay text.
   Older transcripts can contain an item ID and joined text without
   part types. On an opted-in route, Evener sends that text as one reasoning
   part for the issuing model. Any display text already joined into that old

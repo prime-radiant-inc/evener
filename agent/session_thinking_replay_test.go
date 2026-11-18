@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -181,6 +182,165 @@ func TestSessionReplaysReasoningAcrossToolRoundsAndTurns(t *testing.T) {
 		t.Run("enrolled", func(t *testing.T) { testResponsesEmptyAnswerReplay(t, true) })
 		t.Run("strict", func(t *testing.T) { testResponsesEmptyAnswerReplay(t, false) })
 	})
+	t.Run("empty Chat answers", func(t *testing.T) {
+		for _, mode := range []string{"scalar", "array", "strict", "disabled", "assistant text"} {
+			t.Run(mode, func(t *testing.T) { testChatEmptyAnswerReplay(t, mode) })
+		}
+		t.Run("no Chat source", func(t *testing.T) {
+			t.Parallel()
+			profile := replayGateway("gw", registry.ProtocolOpenAIChat)
+			reply := llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "display-53"}},
+				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{ID: "rs_a", Text: "display-16", EncryptedContent: "cipher-62"}},
+				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "t-24", Signature: "sig-43"}},
+			}}}
+			adapter := newFakeAdapter(profile.ID(), fixedStep(reply), fixedStep(agenttest.FinalResponse("recovered")))
+			s := newSession(t, withProfile(profile), withAdapter(adapter))
+			if answer, err := s.ProcessInput(tripwireCtx(t), "start", nil); err != nil || answer != "recovered" {
+				t.Fatalf("retry returned %q with %v", answer, err)
+			}
+			requests := adapter.Requests()
+			if len(requests) != 2 || slices.ContainsFunc(requests[1].Messages, func(m llm.Message) bool { return m.Role == llm.RoleAssistant }) {
+				t.Fatal("an assistant turn without a Chat continuation entered the retry history")
+			}
+		})
+	})
+}
+
+func testChatEmptyAnswerReplay(t *testing.T, mode string) {
+	t.Parallel()
+	const plain = " \tλ<&>19\r\n"
+	field, value := "reasoning_text", any(plain)
+	if mode == "array" {
+		field, value = "reasoning_details", []any{
+			map[string]any{"type": "reasoning.text", "id": "r-9", "index": 7, "format": "f9", "text": plain},
+			map[string]any{"type": "reasoning.text", "index": 2, "text": " second-41 "},
+		}
+	}
+	raw := map[string]any{field: value}
+	sealed := []any{
+		map[string]any{"type": "reasoning.encrypted", "id": "s-3", "data": "opaque-23"},
+		map[string]any{"type": "reasoning.text", "index": 4, "signature": "signed-43"},
+	}
+	outputs := []map[string]any{raw, {"reasoning_details": sealed}, {}, raw}
+	history := make(chan json.RawMessage, 8)
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/chat/completions") {
+			http.NotFound(w, r)
+			return
+		}
+		var req struct {
+			Model    string
+			Messages json.RawMessage
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Error(err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if req.Model == "unavailable" {
+			http.NotFound(w, r)
+			return
+		}
+		select {
+		case history <- req.Messages:
+		case <-r.Context().Done():
+			return
+		}
+		n := int(calls.Add(1)) - 1
+		delta, finish := map[string]any{}, "stop"
+		if n < len(outputs) {
+			delta = outputs[n]
+		} else {
+			final := agenttest.CommunicateCall("c-done", "recovered")
+			delta["tool_calls"] = []any{map[string]any{"index": 0, "id": final.ID, "type": "function", "function": map[string]any{"name": final.Name, "arguments": string(final.Arguments)}}}
+			finish = "tool_calls"
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeSSE(t, w, nil, "message", map[string]any{"choices": []any{map[string]any{"index": 0, "delta": delta, "finish_reason": finish}}})
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	t.Cleanup(srv.Close)
+	dir := t.TempDir()
+	enrolled := mode == "scalar" || mode == "array"
+	caps := registry.Caps{Reasoning: new(mode != "disabled"), ReplayReasoningText: new(enrolled), ThinkingAsText: new(mode == "assistant text")}
+	if mode == "array" {
+		caps.ReasoningField = new(field)
+	}
+	instance := registry.Provider{Base: "openai-compatible", APIKey: "test", Transport: registry.Transport{BaseURL: srv.URL}, Models: map[string]registry.Model{
+		"answering":   {Caps: caps},
+		"unavailable": {Caps: registry.Caps{ReplayReasoningText: new(!enrolled)}},
+		"other":       {Caps: registry.Caps{ReplayReasoningText: new(true)}},
+	}}
+	client := registryClientAt(t, dir, map[string]registry.Provider{"gw": instance}, []string{"gw"})
+	profile := resolveClientProfile(t, client, "gw/unavailable")
+	fallbacks := []string{"answering"}
+	tc := testConfig{minimalSystemPrompt: true, skipGitSnapshot: true}
+	s := newSession(t, withClient(client), withProfile(profile), withConfig(SessionConfig{StateDir: dir, ModelFallbacks: fallbacks, testOnly: tc}))
+	if answer, err := s.ProcessInput(tripwireCtx(t), "start", nil); answer != "" || !errors.Is(err, errEmptyResponseExhausted) || int(calls.Load()) != len(outputs) {
+		t.Fatalf("empty answer recovery returned %q after %d attempts with %v", answer, calls.Load(), err)
+	}
+	s.Close()
+	cold, err := RestoreSessionFromMetaWithConfig(client, profile, execenv.NewLocalExecutionEnvironment(s.currentEnv().WorkingDirectory()), loadMetaForTest(t, s), RestoreSessionConfig{
+		StateDir: dir, ModelFallbacks: fallbacks, testOnly: sharingHostProbe(tc),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cold.Close)
+	if answer, err := cold.ProcessInput(tripwireCtx(t), "resume", nil); err != nil || answer != "recovered" || int(calls.Load()) != len(outputs)+1 {
+		t.Fatalf("cold retry returned %q after %d attempts with %v", answer, calls.Load(), err)
+	}
+	var prior json.RawMessage
+	var want []string
+	for n := 0; n <= len(outputs); n++ {
+		wire := <-history
+		if n > 0 && !bytes.HasPrefix(wire, append(bytes.Clone(bytes.TrimSuffix(prior, []byte("]"))), ',')) {
+			t.Errorf("request %d rewrote the previously sent Chat messages", n+1)
+		}
+		prior = wire
+		var items []json.RawMessage
+		if err := json.Unmarshal(wire, &items); err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, item := range items {
+			var m struct{ Role string }
+			if err := json.Unmarshal(item, &m); err != nil {
+				t.Fatal(err)
+			}
+			if m.Role == "assistant" {
+				got = append(got, string(item))
+			}
+		}
+		if !slices.Equal(got, want) {
+			t.Errorf("request %d assistant messages = %v, want %v", n+1, got, want)
+		}
+		msg := map[string]any{"role": "assistant", "content": ""}
+		switch {
+		case n == 1 && mode != "disabled":
+			msg["reasoning_details"] = sealed
+		case (n == 0 || n == 3) && enrolled:
+			msg[field] = value
+		case (n == 0 || n == 3) && mode == "assistant text":
+			msg["content"] = plain
+		default:
+			continue
+		}
+		want = append(want, mustJSON(t, msg))
+	}
+	if mode == "array" {
+		if err := cold.SetModel("gw/other"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := cold.ProcessInput(tripwireCtx(t), "different issuer", nil); err != nil || int(calls.Load()) != len(outputs)+2 {
+			t.Fatalf("switched model ended after %d total requests with %v", calls.Load(), err)
+		}
+		if wire := <-history; bytes.Contains(wire, []byte("second-41")) || !bytes.Contains(wire, []byte("opaque-23")) {
+			t.Error("the other Chat model received foreign plaintext or lost the Chat continuation")
+		}
+	}
 }
 
 func testResponsesEmptyAnswerReplay(t *testing.T, enrolled bool) {
@@ -344,6 +504,7 @@ func testFallbackReasoningIssuer(t *testing.T, protocol string) {
 		fixedStep(firstFallback),
 		fixedStep(withReasoningMarker(agenttest.FinalResponse("done"), fallback.Protocol(), "fallback-81")),
 		fixedStep(agenttest.FinalResponse("done")),
+		fixedStep(agenttest.FinalResponse("cold reply")),
 		fixedStep(agenttest.FinalResponse("wire-model reply")),
 		fixedStep(agenttest.FinalResponse("deployment reply")),
 		fixedStep(agenttest.FinalResponse("body-model reply")),
@@ -377,10 +538,10 @@ func testFallbackReasoningIssuer(t *testing.T, protocol string) {
 		return registryClient(t, instances, primaryAdapter, fallbackAdapter)
 	}
 	client := clientFor("-declared", "deployment-1", "-wire-1", "s1", true)
-	checkIssuedItems := func(req llm.Request, eligible, encrypted bool) {
+	checkIssuedItems := func(req llm.Request, plain, encrypted bool) []byte {
 		t.Helper()
 		if protocol != registry.ProtocolOpenAIResponses {
-			return
+			return nil
 		}
 		row := resolveClientProfile(t, client, req.Provider+"/"+req.Model).Resolved()
 		body, err := responses.DefaultProtocol.BuildBody(llm.ShapeRequest(req, row), row)
@@ -394,17 +555,14 @@ func testFallbackReasoningIssuer(t *testing.T, protocol string) {
 				got = append(got, item)
 			}
 		}
-		if eligible {
-			mixed := map[string]any{"type": "reasoning", "id": mixedID, "summary": []any{map[string]any{"type": "summary_text", "text": "s73"}}}
-			if encrypted {
-				mixed["encrypted_content"] = sealed
-			} else {
-				mixed["content"] = []any{map[string]any{"type": "reasoning_text", "text": fallbackMarker}}
-			}
-			want = []any{mixed, map[string]any{"type": "reasoning", "id": emptyID, "summary": []any{}, "content": []any{map[string]any{"type": "reasoning_text", "text": ""}}}}
-			if encrypted {
-				want = append(want, map[string]any{"type": "reasoning", "id": legacyID, "summary": []any{}, "encrypted_content": legacyCipher})
-			}
+		if encrypted {
+			want = append(want, map[string]any{"type": "reasoning", "id": mixedID, "summary": []any{map[string]any{"type": "summary_text", "text": "s73"}}, "encrypted_content": sealed})
+		}
+		if plain {
+			want = append(want, map[string]any{"type": "reasoning", "id": emptyID, "summary": []any{}, "content": []any{map[string]any{"type": "reasoning_text", "text": ""}}})
+		}
+		if encrypted {
+			want = append(want, map[string]any{"type": "reasoning", "id": legacyID, "summary": []any{}, "encrypted_content": legacyCipher})
 		}
 		if eq, a, b := jsonEqual(t, got, want); !eq {
 			t.Errorf("%s native reasoning items = %s, want %s", req.Provider, a, b)
@@ -413,6 +571,17 @@ func testFallbackReasoningIssuer(t *testing.T, protocol string) {
 			if estimate := llm.EstimateInputTokensForResolved(row, req).Tokens; req.FullHistoryInputTokensEstimate != estimate {
 				t.Errorf("fallback estimate = %d, projected request costs %d", req.FullHistoryInputTokensEstimate, estimate)
 			}
+		}
+		input, err := json.Marshal(body["input"])
+		if err != nil {
+			t.Fatal(err)
+		}
+		return input
+	}
+	assertPrefix := func(before, after []byte) {
+		t.Helper()
+		if len(before) > 0 && !bytes.HasPrefix(after, append(bytes.Clone(bytes.TrimSuffix(before, []byte("]"))), ',')) {
+			t.Error("the next Responses fallback request rewrote its previously sent input")
 		}
 	}
 	resolve := func(ref string) (*provider.Profile, error) { return provider.Resolve(client.Registry(), ref) }
@@ -442,9 +611,12 @@ func testFallbackReasoningIssuer(t *testing.T, protocol string) {
 		inFlight = append(inFlight, legacyDisplay)
 	}
 	assertReasoningMarkers(t, fallbackRequests[1], inFlight...)
-	checkIssuedItems(fallbackRequests[1], true, true)
-	assertReasoningMarkers(t, fallbackRequests[2], fallbackMarker, "fallback-81")
-	checkIssuedItems(fallbackRequests[2], true, false)
+	toolInput := checkIssuedItems(fallbackRequests[1], true, true)
+	if protocol == registry.ProtocolOpenAIChat {
+		assertReasoningMarkers(t, fallbackRequests[2], fallbackMarker, "fallback-81")
+	}
+	followupInput := checkIssuedItems(fallbackRequests[2], true, true)
+	assertPrefix(toolInput, followupInput)
 
 	meta, env := s.Meta(), s.currentEnv()
 	s.Close()
@@ -452,6 +624,7 @@ func testFallbackReasoningIssuer(t *testing.T, protocol string) {
 		wire, deployment, body, stream  string
 		enrolled, wantPlain, wantCipher bool
 	}{
+		{"-declared", "deployment-1", "-wire-1", "s1", true, true, true},
 		{"-wire-2", "deployment-1", "", "s1", true, false, true},
 		{"-declared", "deployment-2", "-wire-1", "s1", true, false, false},
 		{"-declared", "deployment-1", "-wire-3", "s1", true, false, true},
@@ -477,8 +650,14 @@ func testFallbackReasoningIssuer(t *testing.T, protocol string) {
 			t.Fatalf("redirect %+v made %d primary and %d fallback requests", redirect, len(primaryRequests), len(fallbackRequests))
 		}
 		for _, req := range []llm.Request{primaryRequests[4+i], fallbackRequests[3+i]} {
-			checkIssuedItems(req, req.Provider == fallback.ID() && redirect.wantPlain, false)
+			isFallback := req.Provider == fallback.ID()
+			input := checkIssuedItems(req, isFallback && redirect.wantPlain, isFallback && redirect.wantCipher)
+			if i == 0 && isFallback {
+				assertPrefix(followupInput, input)
+			}
 			switch {
+			case isFallback && protocol == registry.ProtocolOpenAIResponses:
+				// The input encoder selects ciphertext over its accompanying display.
 			case !redirect.wantPlain:
 				assertReasoningMarkers(t, req)
 			case req.Provider == primary.ID():
