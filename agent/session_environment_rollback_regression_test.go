@@ -1044,8 +1044,11 @@ func TestPoisonedWriterDoesNotPopAQueuedMessage(t *testing.T) {
 // transcript door is released, a concurrent fold can take that door in between,
 // commit its compaction markers and flush its own events, so a live reader sees
 // the compaction ahead of the environment block while the transcript holds them
-// the other way round. The projector reads an environment event as a turn
-// boundary, so live then splits or closes a turn cold replay does not.
+// the other way round. The entry is in history before the event exists, so no
+// reader observes the event ahead of the transcript that explains it, and what
+// that order keeps fresh is the thread envelope's context facet: the event
+// refreshes it from the session's context state, so publishing under the door
+// places that refresh after the entry it describes.
 //
 // The door is the statement: while it is held, no fold can publish, so live
 // order is transcript order. A publication that can take the door is a
