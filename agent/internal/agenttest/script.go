@@ -114,6 +114,25 @@ func (s *Script[T]) Cursor() int {
 	return s.i
 }
 
+// TryState reports the cursor and the step count together without waiting for
+// a writer. ok is false when a replacement holds the mutex, which tells a
+// reader that must never block to treat the script as busy and try again.
+func (s *Script[T]) TryState() (cursor, steps int, ok bool) {
+	if !s.mu.TryLock() {
+		return 0, 0, false
+	}
+	defer s.mu.Unlock()
+	return s.i, len(s.steps), true
+}
+
+// HoldForTest takes the script's mutex and holds it until release runs, so a
+// test can stand for the replacement whose hold a reader that must not block
+// has to report instead of wait on. Test seam only: no shipping code calls it.
+func (s *Script[T]) HoldForTest() (release func()) {
+	s.mu.Lock()
+	return s.mu.Unlock
+}
+
 // RepeatSteps returns n copies of step, for a script that answers the same way
 // several times in a row. Passing the result with ... keeps the call site from
 // repeating one closure textually n times, which is what gocritic's dupOption

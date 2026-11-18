@@ -736,16 +736,24 @@ func TestProgressTimerFiresPeriodically(t *testing.T) {
 	fired := make(chan struct{}, 16)
 	jm.enqueue = func(jobNotification) { fired <- struct{}{} }
 
-	rec, _ := jm.createShell(createShellOpts{Command: "x"})
-	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, ProgressIntervalMS: minWatchProgressIntervalMS}); err != nil {
+	// A repeating timer, not a concrete-job progress watch: this test pins that
+	// the ticker itself is periodic, and a timer's cadence is time rather than
+	// output, so every tick delivers. A concrete-job progress tick with no new
+	// output deliberately coalesces (see watch_progress_coalesce_test.go), so it
+	// could not prove periodicity through delivered notifications.
+	res, err := jm.configureWatch(watchArgs{Target: "caller", Source: "self", RepeatSeconds: 60})
+	if err != nil {
 		t.Fatalf("configure: %v", err)
 	}
-	// configureWatch clamps progress_interval_ms to minWatchProgressIntervalMS (1 s);
-	// bypass that floor by restarting the goroutine directly at 10 ms so the test
-	// does not depend on wall-clock seconds.
-	key := watchKey{VisibleSessionID: jm.sessionID, Target: rec.JobID}
 	jm.mu.Lock()
-	cfg := jm.watches[key]
+	key, cfg, ok := jm.watchConfigByIDLocked(res.WatchID)
+	if !ok {
+		jm.mu.Unlock()
+		t.Fatalf("timer %s was not registered", res.WatchID)
+	}
+	// configureWatch enforces a 60 s repeat floor; bypass it by restarting the
+	// goroutine directly at 10 ms so the test does not depend on wall-clock
+	// seconds.
 	closeWatchConfig(cfg)          // stop the slow goroutine; resets cfg.progressStop
 	cfg.progressIntervalMS = 10    // 10 ms test-scoped interval
 	stop := cfg.initProgressStop() // new stop channel

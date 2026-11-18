@@ -321,6 +321,15 @@ type watchConfig struct {
 	// fired yet. Restored and detached configs never schedule, so they leave it
 	// zero exactly as they leave createdAt zero.
 	lastClockFire time.Time
+	// tickFired reports whether a progress-interval tick of this watch has
+	// already delivered - and with it, whether the model has heard from this
+	// watch at all. A tick never coalesces while it is false, so the first
+	// value is unconditional. lastTickOutputBytes is the target's lifetime
+	// output length at the most recent delivered tick, the baseline the next
+	// tick compares against to answer "did the target produce anything since
+	// the model last heard from this watch". Both are stamped under jm.mu.
+	tickFired           bool
+	lastTickOutputBytes int64
 }
 
 type watchArgs struct {

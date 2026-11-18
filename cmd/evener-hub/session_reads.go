@@ -122,7 +122,12 @@ func (o *sessionOperations) turns(ctx context.Context, p appwire.ThreadTurnsList
 		o.retainCanonicalWindowOptions(options)
 	})
 	if pastErr != nil {
-		return appwire.ThreadTurnsListResponse{}, pastErr
+		// A failed saved continuation inherits this read's own evidence about
+		// ownership, exactly as the plain listing above does. Without the stamp
+		// it carries the typed diagnostic and no boot generation at all, so a
+		// caller cannot tell established absence from unknown ownership — and a
+		// window-bearing cursor request is the one form that lands here.
+		return appwire.ThreadTurnsListResponse{}, savedHistoryStampFor(ctx, o.cfg, appwire.ThreadReadParams{Ref: p.Ref, ThreadID: p.ThreadID}, err)(pastErr)
 	}
 	if ok {
 		if liveAttempted && page.ServingFacts != nil {
@@ -584,4 +589,110 @@ func managerReadWithinCap(response appwire.SessionOperationResponse) error {
 		return appwire.InvalidRequest("Manager read exceeds bounded result; no data returned")
 	}
 	return nil
+}
+
+// fitManagerReadUnderCap measures the completed Manager response and, when it
+// exceeds the cap while carrying per-call ask evidence, retries with those call
+// lists omitted (#6323).
+//
+// This belongs on the finished response, not inside a packer: a Manager read
+// reaches the cap through the window packer, the saved-history packer and the
+// continuation path, and only the completed response is common to all three.
+// The evidence is optional metadata; the reply, its turn links, its legacy
+// count, its paging cursor and every envelope field are what the reader asked
+// for, so those stay. The daemon's own read has a wider soft limit and is not
+// trimmed here.
+// managerReadFitUnderCap fits the response and reports the cap refusal. An
+// ordinary under-cap read is serialized once; only a response that actually
+// overran is serialized again to check the stripped copy.
+func managerReadFitUnderCap(response appwire.SessionOperationResponse) (appwire.SessionOperationResponse, error) {
+	raw, err := json.Marshal(response)
+	if err != nil {
+		return response, err
+	}
+	if len(raw) <= managerReadMaxJSONBytes {
+		return response, nil
+	}
+	if !responseCarriesResolvedAskCalls(response) {
+		return response, appwire.InvalidRequest("Manager read exceeds bounded result; no data returned")
+	}
+	// Mutate copies rather than rebuilding the structs field by field: a
+	// hand-copied envelope silently drops every field a later reader adds.
+	trimmed := response
+	// Only the turns route can carry transcript items on a Manager read:
+	// SessionOperationRequest.Validate refuses Read.IncludeTurns
+	// (appwire/session_tools.go), so a status read has no items to strip and a
+	// transcript read that fits the cap arrives as Turns. Stripping a Read
+	// would be trimming a shape Invoke cannot produce.
+	if trimmed.Turns != nil {
+		turns := *trimmed.Turns
+		turns.Data = stripResolvedAskCallsFromThread(appwire.Thread{Turns: turns.Data}).Turns
+		trimmed.Turns = &turns
+	}
+	if err := managerReadWithinCap(trimmed); err != nil {
+		return trimmed, err
+	}
+	return trimmed, nil
+}
+
+// stripResolvedAskCallsFromThread returns the thread with every call list
+// omitted, leaving each item's other fields — text, turn links, legacy count —
+// untouched. The turns and items are copied so the caller's canonical items
+// keep their full stamps.
+func stripResolvedAskCallsFromThread(thread appwire.Thread) appwire.Thread {
+	// Copy once, and only for a turn that actually carries a list: a page can
+	// exceed the cap because of one reply, and copying every other turn's items
+	// would do work the strip cannot change.
+	copied := false
+	var turns []appwire.Turn
+	for i := range thread.Turns {
+		if !turnCarriesResolvedAskCalls(thread.Turns[i]) {
+			continue
+		}
+		if !copied {
+			copied = true
+			turns = make([]appwire.Turn, len(thread.Turns))
+			copy(turns, thread.Turns)
+		}
+		items := make([]appwire.ThreadItem, len(thread.Turns[i].Items))
+		copy(items, thread.Turns[i].Items)
+		for j := range items {
+			items[j] = boundTranscriptItemStamp(items[j], 0)
+		}
+		turns[i].Items = items
+	}
+	if !copied {
+		return thread
+	}
+	thread.Turns = turns
+	return thread
+}
+
+// turnCarriesResolvedAskCalls reports whether any item in turn has a call list
+// the strip would remove.
+func turnCarriesResolvedAskCalls(turn appwire.Turn) bool {
+	for i := range turn.Items {
+		observation := turn.Items[i].Observation
+		if observation != nil && len(observation.ResolvedAskCalls) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func responseCarriesResolvedAskCalls(response appwire.SessionOperationResponse) bool {
+	// Only the turns route is examined, because it is the only route the fitter
+	// strips: Validate refuses Read.IncludeTurns, so a status read carries no
+	// items and a transcript read arrives as Turns. Checking a route the strip
+	// cannot touch would accept a retry that cannot change the page.
+	if response.Turns != nil {
+		for _, turn := range response.Turns.Data {
+			for _, item := range turn.Items {
+				if item.Observation != nil && len(item.Observation.ResolvedAskCalls) > 0 {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }

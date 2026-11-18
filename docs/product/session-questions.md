@@ -107,6 +107,39 @@ active execution from answer links without discarding the resolution evidence.
 Unfenced input and legacy records retain whole-set behavior. An accepted
 interrupt and session close also retain their explicit whole-set clear behavior.
 
+An answer's observation carries that capture to clients as two fields:
+`resolvedAskCalls:[{turnId,callId}]` and `resolvedAskLegacyCount`. The turn
+link alone cannot say which of several calls in one execution a reply answered,
+so `resolvedAskCalls` names the calls admission captured, each identified by the
+ask row's own `(turnId, callId)`. It is the captured set,
+not a record of what this reply cleared: two fenced replies admitted against the
+same pending revision can carry the same capture, and the first to settle clears
+those calls. Using that identity to choose which recap a settled ask displays is
+a client display decision and is not settled here; until it is, clients keep
+selecting recaps from the turn link and the reply text as they do today.
+`resolvedAskLegacyCount` names the captured questions admission
+could not attribute to a call at all: they are
+restored from records that predate call ids, so their headers never reach the
+wire and no client can tell whether one of them shares a header an answer line
+names. `answerToTurnIds` and the composed `[answers]` text shape remain the
+turn-granular fallback for unfenced whole-set answers and for records stamped
+before the call list existed.
+
+A bounded read may omit `resolvedAskCalls` as a unit while keeping
+`answerToTurnIds` and `resolvedAskLegacyCount`, so a large capture cannot
+displace the reply it belongs to. Omitting the call list leaves the reply and
+the other observation fields intact; the usual preview and paging limits still
+apply to bodies, so a bounded read may shorten them for its own reasons.
+
+The projection emits both fields only when the answer has a recorded turn link.
+An inline steer answering only its own still-running execution and a fenced
+answer consuming only legacy questions keep their evidence in the transcript
+and project no stamp, so a client that finds none reads the reply the way it
+did before these fields existed.
+
+How a client renders a recap from this evidence is a separate decision, tracked
+in #6765. This guide states the contract only.
+
 A ref-addressed `thread/read` carrying the expected pair, `offset` and `limit`
 returns `pendingAskPage:{composites,total,nextOffset,calllessCount}`. Any page
 key selects this grammar, which requires the pair and refuses subscriptions,
