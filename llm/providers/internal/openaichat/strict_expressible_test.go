@@ -2158,7 +2158,7 @@ func TestEnumReadsAPointerReceiverEncoderPerElement(t *testing.T) {
 	t.Parallel()
 	for name, enum := range map[string]any{
 		"slice of values":   []pointerlyInt{pointerlyFast, pointerlySafe},
-		"slice of pointers": []*pointerlyInt{ptr(pointerlyFast), ptr(pointerlySafe)},
+		"slice of pointers": []*pointerlyInt{new(pointerlyFast), new(pointerlySafe)},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -2181,8 +2181,6 @@ func TestEnumReadsAPointerReceiverEncoderPerElement(t *testing.T) {
 		})
 	}
 }
-
-func ptr[T any](v T) *T { return &v }
 
 // properties constrains object instances only, and the rewrite closes only a
 // node whose type is the literal "object". On an array node the keyword reaches

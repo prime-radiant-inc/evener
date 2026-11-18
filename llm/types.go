@@ -515,7 +515,7 @@ func MarkPreparedTools(req Request) Request {
 // validator reads "any object". A direct call never went through preparation,
 // so its nil is the caller's own no-argument declaration and must reach the
 // adapter unchanged.
-func (r Request) PreparedTools() bool { return r.preparedTools }
+func (req Request) PreparedTools() bool { return req.preparedTools }
 
 // FinishReason holds a canonical finish reason alongside the raw provider value.
 type FinishReason struct {
