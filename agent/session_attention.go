@@ -1722,7 +1722,7 @@ func (s *Session) acceptDelegateAttention(reservation *delegateStartReservation)
 	// will carry: the marker lands, the row reads delivered, and the model never
 	// saw it. Restoring first orders the two, so a crash between them leaves the
 	// row pending with its turn present rather than consumed with no trace.
-	if err := s.retainSelectedDelegateAttentionTurn(attentionID); err != nil {
+	if err := s.retainSelectedDelegateAttentionTurn(attentionID, reservation.delegateID); err != nil {
 		return err
 	}
 	if err := s.resolveAttentionDurablyForGeneration([]string{attentionID}, delegateAttentionConsumed, generation); err != nil {
@@ -1739,7 +1739,13 @@ func (s *Session) acceptDelegateAttention(reservation *delegateStartReservation)
 	// here and the successor presents it, resolving the row, so the handoff arm
 	// that would have released the older report's quiet finds nothing pending.
 	// That frame's own arm admits its wake and its release together.
-	admitted := s.delegateController.admittedAttentionRows(s.owningDelegateID)
+	// The reservation names the delegate this generation runs for: it is the
+	// controller's own record, resolved from the runtime it was reserved
+	// against. The session's owningDelegateID mirror is not a substitute here:
+	// an unresolved mirror would make the admitted set empty, the capture empty,
+	// and the committed batch would then lower NeedsAttention for rows the wake
+	// never touched.
+	admitted := s.delegateController.admittedAttentionRows(reservation.delegateID)
 	captured := make([]string, 0, len(pendingIDs))
 	for _, pendingID := range pendingIDs {
 		if pendingID == attentionID {
@@ -1838,7 +1844,7 @@ func (s *Session) retainAdmittedDelegateAttentionTurn(attentionID string) error 
 // row it captures, so every captured row's turn is restored here. The retain is
 // ID-keyed, so a turn already resident keeps its position and a missing one is
 // appended.
-func (s *Session) retainSelectedDelegateAttentionTurn(attentionID string) error {
+func (s *Session) retainSelectedDelegateAttentionTurn(attentionID, delegateID string) error {
 	s.attentionMu.Lock()
 	fold, err := s.delegateAttentionFoldLocked()
 	if err != nil {
@@ -1853,7 +1859,7 @@ func (s *Session) retainSelectedDelegateAttentionTurn(attentionID string) error 
 	// generation's request ahead of the gate that admits its wake, so the
 	// successor presents it and resolves the row, and the arm that would have
 	// released the older report's quiet then finds nothing pending.
-	known := s.delegateController.admittedAttentionRows(s.owningDelegateID)
+	known := s.delegateController.admittedAttentionRows(delegateID)
 	pendingTurns := fold.pendingTurns("")
 	for i, turn := range pendingTurns {
 		if turn.AttentionID != attentionID {
