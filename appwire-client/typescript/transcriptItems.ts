@@ -38,7 +38,29 @@ export function cloneStableDelegate(delegate: EvenerDelegateInfo): EvenerDelegat
 function mergeStableDelegate(current: EvenerDelegateInfo, incoming: EvenerDelegateInfo): EvenerDelegateInfo {
   const incomingWins = revisionOf(incoming.projectionRevision) > revisionOf(current.projectionRevision);
   const joined = joinDelegateState(incoming, current, incomingWins);
-  return incomingWins ? cloneStableDelegate(joined) : joined;
+  // Durable fields order by projection revision; the drain hold orders by hold
+  // sequence within the source epoch. See delegateFacetOrder in
+  // internal/appprojector/appwire_projection.go. The hold's edges publish at
+  // the revision the row already carries, so without this a same-revision
+  // clear leaves the checkpoint holding a wait that has ended.
+  // Compare the two original snapshots, never the merged winner against
+  // itself: the winner may be this very incoming row, which can never disagree
+  // with itself.
+  const newer = (incoming.holdSequence ?? 0) >= (current.holdSequence ?? 0) ? incoming : current;
+  const held =
+    (joined.holdSequence ?? 0) === (newer.holdSequence ?? 0) &&
+    (joined.drainHeldByJobs ?? false) === (newer.drainHeldByJobs ?? false) &&
+    joined.runningJobCount === newer.runningJobCount &&
+    joined.oldestRunningJobStartedAt === newer.oldestRunningJobStartedAt
+      ? joined
+      : {
+          ...joined,
+          drainHeldByJobs: newer.drainHeldByJobs,
+          runningJobCount: newer.runningJobCount,
+          oldestRunningJobStartedAt: newer.oldestRunningJobStartedAt,
+          holdSequence: newer.holdSequence,
+        };
+  return incomingWins ? cloneStableDelegate(held) : held;
 }
 
 export function upsertStableDelegate(

@@ -156,15 +156,10 @@ func TestDescribeImage_OmitsEffortWhenProfileDoesNotSupportReasoning(t *testing.
 	t.Parallel()
 	dir := t.TempDir()
 	var sawEffort bool
-	adapter := &fakeAdapter{
-		name: "lunaroute",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				sawEffort = req.ReasoningEffort != nil
-				return llm.Response{Message: llm.Assistant("an image of a cat")}
-			},
-		},
-	}
+	adapter := newFakeAdapter("lunaroute", func(req llm.Request) llm.Response {
+		sawEffort = req.ReasoningEffort != nil
+		return llm.Response{Message: llm.Assistant("an image of a cat")}
+	})
 	c := llm.NewClient()
 	c.Register(adapter)
 

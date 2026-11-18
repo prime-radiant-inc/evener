@@ -36,12 +36,7 @@ func TestAskUser_RejectedInterruptUsesDurableBoundary(t *testing.T) {
 	ask := askUserCall("ask1", askUserArgsValid())
 	cancelCall := llm.ToolCallData{ID: "cancel1", Name: "cancel_tool", Arguments: json.RawMessage(`{}`), Type: "function"}
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask, cancelCall) },
-		},
-	})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask, cancelCall) }))
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{StateDir: dir}))
 
 	markerFailure := errors.New("interrupt marker rejected after clean rollback")

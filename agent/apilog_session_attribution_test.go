@@ -785,26 +785,23 @@ func TestPluginAgentModelListingAttributionThroughTurn(t *testing.T) {
 	var listings atomic.Int64
 	listModels := attemptRecordingLiveModels("openai", "gpt-5.2", "gpt-5.3")
 	var delegateResult string
-	adapter := &fakeAdapter{
-		name: "openai",
-		liveModels: func(ctx context.Context) ([]registry.Model, error) {
-			listings.Add(1)
-			return listModels(ctx)
+	adapter := newFakeAdapter("openai",
+		func(llm.Request) llm.Response {
+			return agenttest.ToolCallResponse(llm.ToolCallData{
+				ID:        "delegate_call",
+				Name:      "delegate",
+				Type:      "function",
+				Arguments: []byte(`{"prompt":"review the change","agent_type":"reviewer","fork_context":true}`),
+			})
 		},
-		steps: []func(req llm.Request) llm.Response{
-			func(llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(llm.ToolCallData{
-					ID:        "delegate_call",
-					Name:      "delegate",
-					Type:      "function",
-					Arguments: []byte(`{"prompt":"review the change","agent_type":"reviewer","fork_context":true}`),
-				})
-			},
-			func(req llm.Request) llm.Response {
-				delegateResult = requestToolResult(req, "delegate_call")
-				return agenttest.ToolCallResponse(communicateCall("c1", "done"))
-			},
+		func(req llm.Request) llm.Response {
+			delegateResult = requestToolResult(req, "delegate_call")
+			return agenttest.ToolCallResponse(communicateCall("c1", "done"))
 		},
+	)
+	adapter.liveModels = func(ctx context.Context) ([]registry.Model, error) {
+		listings.Add(1)
+		return listModels(ctx)
 	}
 	client := registryClient(t, map[string]registry.Provider{
 		"openai": {Base: "openai", APIKey: "k", Models: modelRows("gpt-5.3")},

@@ -687,31 +687,26 @@ func TestLive_Session_PluginAgentsInSystemPrompt(t *testing.T) {
 	workDir := t.TempDir()
 
 	// Use fakeAdapter to inspect the system prompt.
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				// Check system prompt for plugin agents section. Return PASS/FAIL
-				// via a synthetic communicate tool_call so the session intercept
-				// fires and ProcessInput returns the message (the agent loop
-				// rejects bare text responses).
-				sysPrompt := ""
-				for _, msg := range req.Messages {
-					if msg.Role == llm.RoleSystem {
-						sysPrompt = msg.Text()
-						break
-					}
-				}
-				if !strings.Contains(sysPrompt, "live-test:analyzer") {
-					return agenttest.FinalResponse("FAIL: missing live-test:analyzer")
-				}
-				if !strings.Contains(sysPrompt, "live-test:writer") {
-					return agenttest.FinalResponse("FAIL: missing live-test:writer")
-				}
-				return agenttest.FinalResponse("PASS: plugin agents in system prompt")
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		// Check system prompt for plugin agents section. Return PASS/FAIL
+		// via a synthetic communicate tool_call so the session intercept
+		// fires and ProcessInput returns the message (the agent loop
+		// rejects bare text responses).
+		sysPrompt := ""
+		for _, msg := range req.Messages {
+			if msg.Role == llm.RoleSystem {
+				sysPrompt = msg.Text()
+				break
+			}
+		}
+		if !strings.Contains(sysPrompt, "live-test:analyzer") {
+			return agenttest.FinalResponse("FAIL: missing live-test:analyzer")
+		}
+		if !strings.Contains(sysPrompt, "live-test:writer") {
+			return agenttest.FinalResponse("FAIL: missing live-test:writer")
+		}
+		return agenttest.FinalResponse("PASS: plugin agents in system prompt")
+	})
 
 	c := llm.NewClient()
 	c.Register(f)
@@ -820,24 +815,19 @@ func TestLive_Session_RealSuperpowersPlugin(t *testing.T) {
 	}
 
 	// Use fakeAdapter to inspect what the session does with the plugin.
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				sysPrompt := ""
-				for _, msg := range req.Messages {
-					if msg.Role == llm.RoleSystem {
-						sysPrompt = msg.Text()
-						break
-					}
-				}
-				if !strings.Contains(sysPrompt, "superpowers:code-reviewer") {
-					return llm.Response{Message: llm.Assistant("FAIL: superpowers agent not in prompt")}
-				}
-				return llm.Response{Message: llm.Assistant("PASS: superpowers loaded")}
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		sysPrompt := ""
+		for _, msg := range req.Messages {
+			if msg.Role == llm.RoleSystem {
+				sysPrompt = msg.Text()
+				break
+			}
+		}
+		if !strings.Contains(sysPrompt, "superpowers:code-reviewer") {
+			return llm.Response{Message: llm.Assistant("FAIL: superpowers agent not in prompt")}
+		}
+		return llm.Response{Message: llm.Assistant("PASS: superpowers loaded")}
+	})
 
 	c := llm.NewClient()
 	c.Register(f)

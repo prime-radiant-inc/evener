@@ -824,6 +824,31 @@ jobs:
       - name: Prepare enforcing sandbox for root tests
         if: matrix.scope == 'root'
         uses: ./.github/actions/enforcing-sandbox
+
+      # The probe-adoption regression needs a real bwrap and unprivileged user
+      # namespaces, which only this lane provisions; the nonroot lane runs the
+      # agent module but has no bwrap, so the test skips there. This lane's
+      # `make test TEST_SCOPE=root` covers the root module alone, so the agent
+      # package is named directly.
+      - name: Sandbox probe leaves no adopted child
+        if: matrix.scope == 'root'
+        working-directory: agent
+        env:
+          EVENER_TEST_BWRAP_PROBE_REQUIRED: "1"
+        run: |
+          status=0
+          go test ./sandbox -run '^TestBwrapProbeLeavesNoAdoptedChild$' -count=1 -json \
+            > /tmp/probe-adoption.json || status=$?
+          cat /tmp/probe-adoption.json
+          test "$status" -eq 0
+          # -run exits 0 when its selector matches nothing, and the required env
+          # is read inside the test, so a renamed or removed test would leave
+          # this step green without a measurement. Demand its own pass event.
+          # stderr stays out of the file: a cold module cache writes download
+          # notices to it, and they are not JSON.
+          jq -e 'select(.Action == "pass" and .Test == "TestBwrapProbeLeavesNoAdoptedChild")' \
+            /tmp/probe-adoption.json > /dev/null
+
       - name: Retirement timing environment
         if: ${{ matrix.scope == 'root' }}
         run: |

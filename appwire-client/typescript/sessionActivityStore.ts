@@ -189,6 +189,15 @@ export class SessionActivityStore {
   /** Latest pushed frame per unknown row identity, applied once a read admits
    * the row so a settle during a later-page read is not dropped. */
   private readonly bufferedUnknownDelegates = new Map<string, EvenerDelegateInfo>();
+  /* The hold is ordered by `holdSequence`, the source's own monotonic counter,
+   * and by nothing else. Entering and leaving the drain move no durable
+   * delegate field, so the projection revision cannot order the hold: both
+   * edges arrive at the revision the row already holds. Arrival order cannot
+   * order it either, because a publisher that sampled the hold and then paused
+   * can send after a later sample, and a read can be delivered after a frame it
+   * predates. A store-local stamp would only move that mistake into the client.
+   * `holdSequence` rides every row and frame, so the row itself says where its
+   * hold sits and every merge compares the same number the source assigned. */
   /** Whether a buffered frame was evicted before a read could place it. A walk
    * in flight keeps the frames for the rows it will settle, so the recovery read
    * waits for that walk to finish rather than restarting it. */
@@ -1093,7 +1102,23 @@ export class SessionActivityStore {
     // from 1. The frame is first sight for this epoch, as a read's row is.
     const incomingWins = applied === undefined || revisionOf(incoming.projectionRevision) > applied;
     const merged = joinDelegateState(incoming, current, incomingWins);
-    return delegateRowsEqual(merged, current) ? current : merged;
+    // The drain hold is its own facet, outside the revision ladder: entering or
+    // leaving the drain moves no durable delegate field, so both edges arrive
+    // at the revision the row already carries. A frame is the only ordered
+    // carrier of that fact, so it always supplies it -- while every other field
+    // keeps the ordering above.
+    // Its `holdSequence` is the ordering, and it is compared against the row we
+    // are merging into — never against the durable winner, which may be this
+    // very frame: a higher revision does not mean a newer hold sample.
+    //
+    // A retired record means the ordering has left the epoch this row's
+    // sequence was assigned in: a replacement daemon numbers its samples from
+    // its own start, so a larger retired sequence would suppress a real wait,
+    // or keep a finished one visible. The frame is first sight for this epoch,
+    // exactly as it is for the durable fields above.
+    const holdComparable = applied === undefined ? undefined : current;
+    const held = joinDelegateHold(merged, holdComparable, frame);
+    return delegateRowsEqual(held, current) ? current : held;
   }
   private joinDelegateRows(
     incoming: readonly SessionDelegate[],
@@ -1130,7 +1155,21 @@ export class SessionActivityStore {
           existing ?? row,
           currentOrdering && revisionOf(row.projectionRevision) >= applied,
         );
-        merged = existing && delegateRowsEqual(candidate, existing) ? existing : candidate;
+        // A snapshot inside a read carries the hold as of the read's issue, and
+        // a frame that touched this identity since then carries a later one. The
+        // source's sequence decides between them, not the order they arrived
+        // in: the row keeps whichever sample the producer took later.
+        //
+        // Only within one source epoch, though. A retained row's sequence was
+        // assigned by the daemon that has since been replaced, and its numbers
+        // restart at 1, so comparing across the boundary would carry a finished
+        // wait forward — or suppress a real one. A row the ordering no longer
+        // covers contributes no sample.
+        const resolved =
+          existing !== undefined && currentOrdering && (existing.holdSequence ?? 0) > (candidate.holdSequence ?? 0)
+            ? keepDelegateHold(candidate, existing)
+            : candidate;
+        merged = existing && delegateRowsEqual(resolved, existing) ? existing : resolved;
       }
       // Only a row this response served carries this response's journal: a row
       // it did not serve was retained from an earlier epoch, and recording it
@@ -1546,12 +1585,84 @@ function delegateRowFromFrame(row: SessionDelegate, frame: EvenerDelegateInfo): 
         ? frame.latestActivityAt
         : undefined,
     latestIntent: boundedIntent(frame.latestIntent),
+    // The frame carries the same live wait the read row does, so a frame that
+    // wins the merge replaces it with the truth rather than erasing it.
+    drainHeldByJobs: frame.drainHeldByJobs,
+    runningJobCount: frame.runningJobCount,
+    oldestRunningJobStartedAt: frame.oldestRunningJobStartedAt,
+    holdSequence: frame.holdSequence,
     usage: frame.usage,
     worktree: frame.worktree,
   };
 }
 export function isValidActivityTimestamp(value: string): boolean {
   return activityInstant(value) !== null;
+}
+
+/** The drain-hold facet of a row and a frame, ordered by `holdSequence` from
+ * the two original samples. Durable fields order by projection revision; the
+ * hold orders by sequence within the source epoch. Read delegateFacetOrder in
+ * internal/appprojector/appwire_projection.go for why they are separate.
+ *
+ * A newer sequence is a change even when the displayed fields match: a client
+ * that saw an intervening hold needs this sample's sequence to clear it. An
+ * exact duplicate stays suppressed. A producer that predates the field sends
+ * none, and both sides read 0, so its frames keep the old behaviour.
+ *
+ * `previous` is undefined when the row's sample belongs to a retired epoch and
+ * cannot be compared: the frame then supplies its own hold, as it does for
+ * every durable field.
+ *
+ * The sample that wins supplies all four fields, taken from itself alone. A
+ * cleared sample omits the count and the oldest start (`omitempty`), so reading
+ * a missing field from the other side would restore exactly the wait the
+ * sequence just rejected -- and `row` is not a second source here, because the
+ * durable merge may already have made it the losing frame. */
+function joinDelegateHold(
+  row: SessionDelegate,
+  previous: SessionDelegate | undefined,
+  frame: EvenerDelegateInfo,
+): SessionDelegate {
+  const currentSequence = previous?.holdSequence ?? 0;
+  const frameSequence = frame.holdSequence ?? 0;
+  if (previous !== undefined && currentSequence > frameSequence) {
+    return keepDelegateHold(row, previous);
+  }
+  if (
+    (row.drainHeldByJobs ?? false) === (frame.drainHeldByJobs ?? false) &&
+    row.runningJobCount === frame.runningJobCount &&
+    row.oldestRunningJobStartedAt === frame.oldestRunningJobStartedAt &&
+    row.holdSequence === frame.holdSequence
+  ) {
+    return row;
+  }
+  return {
+    ...row,
+    drainHeldByJobs: frame.drainHeldByJobs,
+    runningJobCount: frame.runningJobCount,
+    oldestRunningJobStartedAt: frame.oldestRunningJobStartedAt,
+    holdSequence: frame.holdSequence,
+  };
+}
+
+/** A row wearing the hold another row already carries, for the fields the
+ * hold owns. Used where the hold is newer than the snapshot being applied. */
+function keepDelegateHold(row: SessionDelegate, holds: SessionDelegate): SessionDelegate {
+  if (
+    (row.drainHeldByJobs ?? false) === (holds.drainHeldByJobs ?? false) &&
+    row.runningJobCount === holds.runningJobCount &&
+    row.oldestRunningJobStartedAt === holds.oldestRunningJobStartedAt &&
+    row.holdSequence === holds.holdSequence
+  ) {
+    return row;
+  }
+  return {
+    ...row,
+    drainHeldByJobs: holds.drainHeldByJobs,
+    runningJobCount: holds.runningJobCount,
+    oldestRunningJobStartedAt: holds.oldestRunningJobStartedAt,
+    holdSequence: holds.holdSequence,
+  };
 }
 
 /** The frame fields a row merge can apply. The raw report payload and the model
@@ -1577,11 +1688,26 @@ function boundedDelegateFrame(frame: EvenerDelegateInfo): EvenerDelegateInfo {
  * greater revision supplies the fields, latestActivityAt is the independent
  * maximum. Mirrors `mergeDelegateFrame` for a row not yet loaded. */
 function mergeDelegateFrames(current: EvenerDelegateInfo, frame: EvenerDelegateInfo): EvenerDelegateInfo {
-  return joinDelegateState(
+  const merged = joinDelegateState(
     frame,
     current,
     revisionOf(frame.projectionRevision) > revisionOf(current.projectionRevision),
   );
+  // Both edges of the drain hold arrive at the revision the row already
+  // carries, so the ladder above cannot order them. The source's sequence does:
+  // each buffered frame keeps the sequence it was received with, so a frame
+  // sampled before the buffered one and delivered after it loses rather than
+  // re-stamping itself at settle. The later sequence is carried even when the
+  // displayed fields match, so a client holding an intervening sample can
+  // clear it.
+  const newer = (frame.holdSequence ?? 0) < (current.holdSequence ?? 0) ? current : frame;
+  return {
+    ...merged,
+    drainHeldByJobs: newer.drainHeldByJobs,
+    runningJobCount: newer.runningJobCount,
+    oldestRunningJobStartedAt: newer.oldestRunningJobStartedAt,
+    holdSequence: newer.holdSequence,
+  };
 }
 /** Every field a delegate row carries, as a keyed set: the `Record` type fails
  * to compile while one is missing, so a field added to the wire row cannot be
@@ -1617,6 +1743,10 @@ const delegateRowFields: Record<keyof SessionDelegate, true> = {
   runEndedAt: true,
   latestActivityAt: true,
   latestIntent: true,
+  drainHeldByJobs: true,
+  runningJobCount: true,
+  oldestRunningJobStartedAt: true,
+  holdSequence: true,
   usage: true,
   worktree: true,
 };

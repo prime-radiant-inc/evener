@@ -80,11 +80,9 @@ func TestCommunicate_ProfileOverridesPreservedByResultToolName(t *testing.T) {
 				}
 				args := map[string]any{"message": "visible-sentinel", "end_turn": true, "output": output}
 				rawArgs := mustMarshalJSON(t, args)
-				f := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-					func(llm.Request) llm.Response {
-						return agenttest.ToolCallResponse(llm.ToolCallData{ID: "result-schema", Name: name, Arguments: rawArgs, Type: "function"})
-					},
-				}}
+				f := newFakeAdapter("openai", func(llm.Request) llm.Response {
+					return agenttest.ToolCallResponse(llm.ToolCallData{ID: "result-schema", Name: name, Arguments: rawArgs, Type: "function"})
+				})
 				sess := newSession(t, withAdapter(f), withProfile(p), withConfig(SessionConfig{
 					ResultToolName: name,
 					AgentsDocPath:  filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),

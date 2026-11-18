@@ -108,6 +108,18 @@ func (k TurnKind) PublicTranscript() bool {
 	return k != TurnAttentionResolution && !k.TranscriptOnly()
 }
 
+// InPublicTranscript reports whether this turn occupies a position in the
+// public transcript: the document read_transcript renders, the JSONL it emits,
+// and the turn map doctor transcript numbers. It is PublicTranscript plus the
+// per-entry exclusion that kind alone cannot express: a compaction fold copy
+// (OriginalOrdinal set) repeats the entry its original already supplied, so it
+// holds no position of its own. Every surface that numbers or selects public
+// entries asks this one question, so the number two of them report for the
+// same entry cannot drift apart.
+func (t *Turn) InPublicTranscript() bool {
+	return t.Kind.PublicTranscript() && t.OriginalOrdinal == nil
+}
+
 // TranscriptOnly reports whether entries of this kind are written to the
 // transcript only. They never enter a session's in-memory history, resume
 // skips them, and every other consumer of transcript entries skips them too:

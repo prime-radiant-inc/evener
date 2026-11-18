@@ -50,7 +50,7 @@ func sbxRestrictedTurnSession(t *testing.T, steps ...func(llm.Request) llm.Respo
 	env := execenv.NewLocalExecutionEnvironment(worktree)
 	env.Sandbox = &rp
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai", steps: steps})
+	c.Register(newFakeAdapter("openai", steps...))
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{MaxSubagentDepth: 1})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)

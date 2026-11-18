@@ -46,15 +46,10 @@ func TestServeDrainAbandonsARealStopPendingDelegate(t *testing.T) {
 		release:              make(chan struct{}),
 	}
 	client := llm.NewClient()
-	client.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response {
-				args, _ := json.Marshal(map[string]any{"file_path": "WEDGED-REAL-SERVE"})
-				return agenttest.ToolCallResponse(llm.ToolCallData{ID: "read-1", Name: "read_file", Arguments: args, Type: "function"})
-			},
-		},
-	})
+	client.Register(newFakeAdapter("openai", func(llm.Request) llm.Response {
+		args, _ := json.Marshal(map[string]any{"file_path": "WEDGED-REAL-SERVE"})
+		return agenttest.ToolCallResponse(llm.ToolCallData{ID: "read-1", Name: "read_file", Arguments: args, Type: "function"})
+	}))
 	root, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), wedge, SessionConfig{
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,

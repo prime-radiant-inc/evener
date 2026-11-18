@@ -130,13 +130,7 @@ func TestSession_Enqueue_DrainCarriesImagesIntoUserTurn(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("first reply") },
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("second reply") },
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("first reply") }, func(req llm.Request) llm.Response { return agenttest.FinalResponse("second reply") })
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))

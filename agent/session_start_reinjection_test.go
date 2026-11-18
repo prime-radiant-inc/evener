@@ -80,9 +80,7 @@ func TestSessionStartDispatchOnFreshSessionIsNotFlaggedAsReinjection(t *testing.
 func TestSessionStartDispatchIntoRestoredHistoryIsFlaggedAsReinjection(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	adapter := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
-	}}
+	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") })
 	client := llm.NewClient()
 	client.Register(adapter)
 
@@ -136,9 +134,7 @@ func TestSessionStartDispatchIntoRestoredHistoryIsFlaggedAsReinjection(t *testin
 func TestSessionStartDispatchAfterEmptyRestoreIsNotFlaggedAsReinjection(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	adapter := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
-	}}
+	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") })
 	client := llm.NewClient()
 	client.Register(adapter)
 
@@ -205,9 +201,7 @@ func TestSessionStartDispatchAfterEmptyRestoreIsNotFlaggedAsReinjection(t *testi
 func TestSessionStartDispatchOnNotesContextOnlyHistoryIsNotFlaggedAsReinjection(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	adapter := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
-	}}
+	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") })
 	client := llm.NewClient()
 	client.Register(adapter)
 

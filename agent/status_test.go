@@ -302,10 +302,7 @@ func TestSession_DetailedStatus_CoreTools(t *testing.T) {
 	dir := t.TempDir()
 
 	c := llm.NewClient()
-	f := &fakeAdapter{
-		name:  "openai",
-		steps: []func(req llm.Request) llm.Response{},
-	}
+	f := newFakeAdapter("openai")
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("gpt-5")), withDir(dir), withConfig(SessionConfig{}))
@@ -342,10 +339,7 @@ func TestSession_DetailedStatus_CustomTool(t *testing.T) {
 	dir := t.TempDir()
 
 	c := llm.NewClient()
-	f := &fakeAdapter{
-		name:  "openai",
-		steps: []func(req llm.Request) llm.Response{},
-	}
+	f := newFakeAdapter("openai")
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("gpt-5")), withDir(dir), withConfig(SessionConfig{}))
@@ -389,10 +383,7 @@ description: A test skill
 `), 0o644)
 
 	c := llm.NewClient()
-	f := &fakeAdapter{
-		name:  "openai",
-		steps: []func(req llm.Request) llm.Response{},
-	}
+	f := newFakeAdapter("openai")
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("gpt-5")), withDir(dir), withConfig(SessionConfig{}))
@@ -468,10 +459,7 @@ func TestSession_DetailedStatus_EmptySections(t *testing.T) {
 	dir := t.TempDir()
 
 	c := llm.NewClient()
-	f := &fakeAdapter{
-		name:  "openai",
-		steps: []func(req llm.Request) llm.Response{},
-	}
+	f := newFakeAdapter("openai")
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("gpt-5")), withDir(dir), withConfig(SessionConfig{}))
@@ -525,10 +513,7 @@ func TestSession_DetailedStatus_ConfiguredWorkflowPlugin(t *testing.T) {
 	dir := t.TempDir()
 
 	c := llm.NewClient()
-	f := &fakeAdapter{
-		name:  "openai",
-		steps: []func(req llm.Request) llm.Response{},
-	}
+	f := newFakeAdapter("openai")
 	c.Register(f)
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5"), execenv.NewLocalExecutionEnvironment(dir), coordinatorWorkflowSessionConfig(t, SessionConfig{}))
@@ -709,10 +694,7 @@ func TestSession_DetailedStatus_ToolsSorted(t *testing.T) {
 	dir := t.TempDir()
 
 	c := llm.NewClient()
-	f := &fakeAdapter{
-		name:  "openai",
-		steps: []func(req llm.Request) llm.Response{},
-	}
+	f := newFakeAdapter("openai")
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("gpt-5")), withDir(dir), withConfig(SessionConfig{}))
@@ -754,7 +736,7 @@ func TestDetailedStatus_HookEvents_ExcludesDeadHooks(t *testing.T) {
 
 	dir := t.TempDir()
 	c := llm.NewClient()
-	f := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{}}
+	f := newFakeAdapter("openai")
 	c.Register(f)
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5"),
@@ -805,7 +787,7 @@ func TestDetailedStatus_HookEvents(t *testing.T) {
 
 	dir := t.TempDir()
 	c := llm.NewClient()
-	f := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{}}
+	f := newFakeAdapter("openai")
 	c.Register(f)
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5"),

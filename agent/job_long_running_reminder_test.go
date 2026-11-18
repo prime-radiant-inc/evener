@@ -120,14 +120,7 @@ func TestActiveTurnReceivesLongRunningJobReminder(t *testing.T) {
 	t.Parallel()
 	var r *reminderRig
 	age := llm.ToolCallData{ID: "age", Name: "age_jobs", Arguments: []byte(`{}`), Type: "function"}
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response { return agenttest.ToolCallResponse(age) },
-			func(llm.Request) llm.Response { return agenttest.FinalResponse("noted") },
-			func(llm.Request) llm.Response { return agenttest.FinalResponse("unexpected extra turn") },
-		},
-	}
+	adapter := newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.ToolCallResponse(age) }, func(llm.Request) llm.Response { return agenttest.FinalResponse("noted") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("unexpected extra turn") })
 	r = newReminderRig(t, withAdapter(adapter))
 	jobID := r.startShell(t)
 	r.sess.registerTool("age_jobs", "test-only: let the running job pass the reminder age",

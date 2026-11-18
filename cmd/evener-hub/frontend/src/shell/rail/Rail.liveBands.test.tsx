@@ -10,6 +10,8 @@ import { resetConnectionStoreForTests } from "../../stores/connection";
 import { initNavigation, navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { resetPrefsStoreForTests } from "../../stores/prefs";
 import { resetThreadsStoreForTests } from "../../stores/threads";
+import { resetToastStoreForTests } from "../../widgets/toast/store";
+import { toastKinds } from "../../widgets/toast/toastTestUtils";
 import { resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
 import { ClientProvider } from "../clientContext";
 import { NeedsYouProvider } from "../NeedsYouProvider";
@@ -24,6 +26,7 @@ beforeEach(() => {
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
   resetActivitySidebarStoreForTests();
+  resetToastStoreForTests();
 });
 
 afterEach(() => {
@@ -52,9 +55,11 @@ function session(id: string, overrides: Partial<NavigationSessionSummary> = {}):
 // production code. `hub` is mutable so a test can move a session and announce
 // it the way the hub does.
 // A needs-you section served page by page, offset -> rows and what the hub
-// said was left after them. Absent, every section answers one page with
-// nothing remaining.
-type NeedsYouPages = ReadonlyMap<number, { sessions: NavigationSessionSummary[]; remaining: number }>;
+// said was left after them. `fail` scripts that page's read to be refused by
+// the hub, the way an RPC error arrives. Absent, every section answers one
+// page with nothing remaining.
+type NeedsYouPage = { sessions: NavigationSessionSummary[]; remaining: number; fail?: boolean };
+type NeedsYouPages = ReadonlyMap<number, NeedsYouPage>;
 async function mountRail(
   initial: { live: NavigationSessionSummary[]; needsYou?: NavigationSessionSummary[] },
   props: { revealTarget?: string; onRevealConsumed?: () => void } = {},
@@ -83,6 +88,7 @@ async function mountRail(
       });
     } else if (params.resource === "section") {
       const page = params.section === "needs_you" ? needsYouPages?.get(params.offset ?? 0) : undefined;
+      if (page?.fail) throw new Error("the hub refused the page");
       data = page
         ? { sessions: page.sessions, remaining: page.remaining }
         : { sessions: params.section === "live" ? hub.live : hub.needsYou, remaining: 0 };
@@ -132,23 +138,32 @@ async function mountRail(
     });
     await settled();
   };
-  // A reconnect that carries the hub's latest sequence: the store re-reads
-  // every page it already holds, which is what a dropped socket costs.
-  const reconnect = async () => {
+  // A dropped socket. `whileDown` runs with the client disconnected, which is
+  // where the hub can move on unseen; the reconnect that follows carries the
+  // hub's newer sequence, so the store re-reads every page it already holds
+  // and the rows must show what the hub says now, not what the client kept.
+  const dropConnection = async (whileDown: () => void = () => {}) => {
     await act(async () => {
       client.emitStateChange("reconnecting");
+    });
+    whileDown();
+    revision++;
+    await act(async () => {
       client.emitReady({
         serverInfo: { name: "fake", version: "1" },
         protocolVersion: "evener-appwire-v6",
         sourceId: "fake",
         features: {} as never,
-        navigation: { version: 1, generationId: "generation_test", sequence: revision, readVersions: [3] },
+        // The hub's newest sequence, one behind the revision it stamps - the
+        // same pair announce() emits, so a reconnect looks like any other
+        // forward move of the hub's counter.
+        navigation: { version: 1, generationId: "generation_test", sequence: revision - 1, readVersions: [3] },
       });
     });
     await settled();
   };
   await settled();
-  return { hub, announce, reconnect, view };
+  return { hub, announce, dropConnection, view };
 }
 
 function band(name: "needsYou" | "working" | "idle"): HTMLElement | null {
@@ -381,20 +396,34 @@ test("Needs you offers the sessions its own first page left behind", async () =>
 });
 
 test("a needs-you row from a later page stays in the band across a refresh and a reconnect", async () => {
-  const pages = new Map([
+  const pages: Map<number, NeedsYouPage> = new Map([
     [0, { sessions: [needsYouAsking("a1"), needsYouAsking("a2")], remaining: 2 }],
     [2, { sessions: [needsYouAsking("a3"), needsYouAsking("a4")], remaining: 0 }],
   ]);
-  const { announce, reconnect } = await mountRail({ live: [] }, {}, (rail) => rail, pages);
-  expect(overflowInBand("needsYou")).not.toBeNull();
+  const { announce, dropConnection } = await mountRail({ live: [] }, {}, (rail) => rail, pages);
+  const pageRow = () => overflowInBand("needsYou");
+  // The row the reader would activate to see the rest of the tier.
+  expect(pageRow()).not.toBeNull();
 
-  // Page two, as activating the overflow row loads it.
-  await act(async () => {
-    await navigationStore.getState().loadSection("needs_you", 2, 50);
-  });
+  // A refused read leaves the list as it was and says so through the rail's
+  // one overflow toast: the navigation store resolves with the failure on the
+  // resource instead of rejecting, so the row has to check it. Tested here
+  // because only the rendered row proves its own wiring.
+  pages.set(2, { sessions: [], remaining: 2, fail: true });
+  fireEvent.click(pageRow() as HTMLElement);
+  await act(async () => undefined);
+  expect(toastKinds()).toEqual(["error"]);
+  expect(rowsOf("needsYou")).toEqual(["local:a1", "local:a2"]);
+  // The row is still there, holding the same page: another activation retries.
+  expect(pageRow()).not.toBeNull();
+
+  // The hub recovers; activating the same row again loads page two.
+  pages.set(2, { sessions: [needsYouAsking("a3"), needsYouAsking("a4")], remaining: 0 });
+  fireEvent.click(pageRow() as HTMLElement);
+  await act(async () => undefined);
   expect(rowsOf("needsYou")).toEqual(["local:a1", "local:a2", "local:a3", "local:a4"]);
   // Loaded to the end, the row that stood for the rest is gone.
-  expect(overflowInBand("needsYou")).toBeNull();
+  expect(pageRow()).toBeNull();
   expect(bandCount("needsYou")).toBe("4");
 
   // A page-two row changes class elsewhere: the band keeps it, now as failed,
@@ -404,9 +433,17 @@ test("a needs-you row from a later page stays in the band across a refresh and a
   expect([...rowsOf("needsYou")].sort()).toEqual(["local:a1", "local:a2", "local:a3", "local:a4"]);
   expect(within(rowFor("local:a3")).getByTestId("rail-row-why-text").dataset.hue).toBe("danger");
 
-  // A reconnect re-reads every page the reader had loaded, so the row page
-  // two supplied is still there afterwards - not dropped back to page one.
-  await reconnect();
+  // The socket drops, and the page-two row changes again while the client is
+  // away. A reconnect re-reads every page the reader had loaded, so the fresh
+  // state must arrive - the row is not merely the cached copy, and it is not
+  // dropped back to page one.
+  await dropConnection(() => {
+    pages.set(2, { sessions: [needsYouAsking("a3"), needsYouAsking("a4", { state: "errored" })], remaining: 0 });
+  });
   expect([...rowsOf("needsYou")].sort()).toEqual(["local:a1", "local:a2", "local:a3", "local:a4"]);
-  expect(overflowInBand("needsYou")).toBeNull();
+  expect(within(rowFor("local:a4")).getByTestId("rail-row-why-text").dataset.hue).toBe("danger");
+  // a3 is still a needs-you row for its own reason, but it is no longer the
+  // failed one: the danger hue moved to a4 with the hub's fresh copy.
+  expect(within(rowFor("local:a3")).getByTestId("rail-row-why-text").dataset.hue).not.toBe("danger");
+  expect(pageRow()).toBeNull();
 });

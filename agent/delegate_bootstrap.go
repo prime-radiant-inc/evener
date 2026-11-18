@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/delegatestore"
@@ -94,6 +95,58 @@ func (s *Session) bootstrapDelegateResources() error {
 	return nil
 }
 
+// setDrainHeld records that this session's finalization drain now is (or no
+// longer is) holding its delegate run open, and publishes the delegate update
+// the transition implies.
+//
+// The publication is the point. Entering the drain appends no durable delegate
+// event and moves no delegate field a frame is built from, so a row a client
+// loaded BEFORE its shell started would otherwise never learn the wait until
+// the shell finished — the one window the row exists to describe. Publishing
+// here is what turns the hold into an ordered update a loaded row applies.
+//
+// The transition is idempotent per edge: setting a hold already set (or
+// clearing one already clear) publishes nothing, so a drain that re-enters its
+// loop does not spam frames.
+func (s *Session) setDrainHeld(held bool) {
+	if s == nil {
+		return
+	}
+	if s.drainHeld.Swap(held) == held {
+		return
+	}
+	// Only a delegate row carries the hold. A root session's own drain parks
+	// the same way but has nobody to tell, so the edge above leaves the flag
+	// alone and this publishes nothing.
+	if s.delegateController == nil || s.owningDelegateID == "" {
+		return
+	}
+	s.delegateController.publishDelegateHold(s.ID(), s.owningDelegateID)
+}
+
+// drainTurnHidesHold wraps a drain turn so this delegate's row stops
+// claiming a shell wait while the drain is running a model turn.
+//
+// The drain parks the run on its owned jobs, but it also runs turns to handle
+// their completions and its own announcements. During such a turn the delegate
+// is working: its intent moves and the row must say what it is doing, not that
+// it is waiting on a shell. A fresh read in that window would otherwise replace
+// the delegate's current work with the wait — the same conflation of "a shell
+// exists" with "the run is held" that the count alone had.
+//
+// The parking hold itself is untouched: the drain still waits on every owned
+// job exactly as before. Only the row's claim is suspended for the turn, and
+// restored through the same edge publication, so a client sees the wait resume
+// when the drain parks again.
+func (s *Session) drainTurnHidesHold(process func(context.Context, string, []ImageAttachment, EntryKind) (string, error)) func(context.Context, string, []ImageAttachment, EntryKind) (string, error) {
+	return func(ctx context.Context, input string, images []ImageAttachment, kind EntryKind) (string, error) {
+		prior := s.drainHeld.Load()
+		s.setDrainHeld(false)
+		defer s.setDrainHeld(prior)
+		return process(ctx, input, images, kind)
+	}
+}
+
 func (s *Session) emitDelegateUpdate(plan delegateUpdatePlan) {
 	if s == nil || s.delegateController == nil {
 		return
@@ -110,10 +163,21 @@ func (s *Session) emitDelegateUpdate(plan delegateUpdatePlan) {
 		}
 		ancestors, ancestorRuntimes := s.delegateController.ancestorSubagentRuntimesLocked(ancestry)
 		ownerRuntime := s.delegateController.runtimeForDelegateOwnerLocked(row)
+		// The same live wait the delegate's read row reports, joined from the
+		// delegate's own job manager under the lock already held: a frame that
+		// omitted it would erase the wait from a row the capture had filled,
+		// because a winning frame replaces every mutating field.
+		heldByJobs, runningJobs, oldestRunningJob, holdSequence := s.delegateController.runningJobsForDelegateLocked(row.id)
 		s.delegateController.mu.Unlock()
 		s.publishSessionActivityChanged(logicalOwner, ancestry, appwire.SessionActivityResourceDelegates)
 		data := delegateUpdatedDataFromStatus(delegateFrameStatusInfo(now, rootID, row))
 		data.AncestorSessionIDs = ancestors
+		data.DrainHeldByJobs = heldByJobs
+		data.HoldSequence = holdSequence
+		data.RunningJobCount = runningJobs
+		if heldByJobs && !oldestRunningJob.IsZero() {
+			data.OldestRunningJobStartedAt = oldestRunningJob.UTC().Format(time.RFC3339Nano)
+		}
 		// A subagent's own thread lists its subtree, so each live ancestor
 		// subagent's stream carries the update too. A released ancestor gets
 		// none: forwarding for it would reopen its closed thread's history, and

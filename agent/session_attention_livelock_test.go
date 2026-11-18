@@ -660,7 +660,7 @@ func TestStaleWatchTickDoesNotPhantomOpenTheParkedGate(t *testing.T) {
 func TestParkedRailRunsAJobCarryingWakeAndDeliversItsAttention(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai", steps: repeatFinalResponse(4, "ok")})
+	c.Register(newFakeAdapter("openai", repeatFinalResponse(4, "ok")...))
 	clk := agenttest.NewFakeClock()
 	s := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{
 		StateDir:       dir,
