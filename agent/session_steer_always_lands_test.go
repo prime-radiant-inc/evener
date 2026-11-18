@@ -279,8 +279,15 @@ func TestReattachedSteerAppendsOneEntryPerAcceptedMutation(t *testing.T) {
 	if !ran {
 		t.Fatal("the replacement ran no carrier turn, so the counts below would only prove that nothing was appended")
 	}
+	// The carrier delivers the steer as STEERING and nothing else. A duplicate of
+	// the shape this test exists for is the same message appended a second time
+	// as an untagged USER_INPUT, which the per-mutation counts below cannot see:
+	// its mutation id matches neither claimed mutation.
+	if got := countEntriesOfKind(t, restored, schema.TurnUserInput); got != 0 {
+		t.Fatalf("after the carrier ran, USER_INPUT entries = %d, want 0: the carrier delivers the steer as STEERING, and any second entry carrying it is the duplicate", got)
+	}
 
-	// A fresh turn/start follows, as turn_m2443 did in the report.
+	// A fresh turn/start follows the carrier.
 	if _, err := restored.AcceptClientMutationStart(appwire.TurnStartParams{
 		ClientMutationID: startID,
 		Input:            []appwire.InputItem{{Type: "text", Text: startText}},
@@ -293,6 +300,11 @@ func TestReattachedSteerAppendsOneEntryPerAcceptedMutation(t *testing.T) {
 
 	assertOneEntryPerMutation(t, restored, steerID, schema.TurnSteering, steerText)
 	assertOneEntryPerMutation(t, restored, startID, schema.TurnUserInput, startText)
+	// The start's own entry is the one USER_INPUT now, so the zero above is about
+	// the carrier and not about silencing the start.
+	if got := countEntriesOfKind(t, restored, schema.TurnUserInput); got != 1 {
+		t.Fatalf("after the start ran, USER_INPUT entries = %d, want 1: the start records its own entry, so the carrier's zero cannot come from USER_INPUT being broken", got)
+	}
 
 	// An incorporated steer is only a duplicate if it is appended again. Drive
 	// both ways: another wake in this process, and another replacement.
@@ -358,6 +370,18 @@ func TestSteerDrainedIntoARunningStartAppendsOneEntryPerMutation(t *testing.T) {
 	if steering.OwningTurnID != start.TurnID {
 		t.Fatalf("the steering entry is owned by turn %q, want the start's turn %q: the steer has to be drained into the start's own turn, not delivered on a carrier of its own", steering.OwningTurnID, start.TurnID)
 	}
+}
+
+// countEntriesOfKind counts transcript entries of kind, across every mutation.
+func countEntriesOfKind(t *testing.T, s *Session, kind schema.TurnKind) int {
+	t.Helper()
+	n := 0
+	for _, entry := range transcriptEntries(t, s) {
+		if entry.Turn.Kind == kind {
+			n++
+		}
+	}
+	return n
 }
 
 // assertOneEntryPerMutation fails unless the transcript holds exactly one entry
