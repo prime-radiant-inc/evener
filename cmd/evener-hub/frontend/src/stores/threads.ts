@@ -747,6 +747,15 @@ class InflightHydrations {
   routing(ref: string): boolean {
     return this.#entries.get(ref)?.routing ?? false;
   }
+  // A read is pane-backed once any explicit pane open of the ref stands behind
+  // it. A routing claim's retry is registered by machinery that never opened
+  // the cache, so it carries no pane and must not stand in for one: the pane
+  // opening over it still owes the lookup, and adopts this same read for its
+  // source answer rather than spending a second read beside it.
+  markPaneBacked(ref: string): void {
+    const entry = this.#entries.get(ref);
+    if (entry) entry.routing = false;
+  }
   // The entry leaves when its own read settles, unless a newer read has
   // replaced it since.
   start(
@@ -1409,6 +1418,12 @@ const clearHydrationDemands = new Map<HydrationOwnerKind, Map<string, number>>()
 // replacement does not exist yet. It parks here instead of rejecting, and the
 // read Clear issues wakes it.
 const clearReplacementWaits = new KeyedWaiters<string, () => void>();
+// The read Clear issued for a recorded demand, from the moment it is issued.
+// It registers in inflightHydrates only when it starts, and a background
+// replacement queues behind other hydrations first, so the registry is empty
+// for a window that a waiting claim can land in. Issuing and being joinable
+// are the same fact, so they are recorded together.
+const clearReplacementReads = new Map<string, Promise<ThreadModel | null>>();
 
 function parkForClearReplacement(ref: string): { parked: Promise<void>; cancel: () => void } {
   let wake!: () => void;
@@ -1423,6 +1438,32 @@ function parkForClearReplacement(ref: string): { parked: Promise<void>; cancel: 
       wake();
     },
   };
+}
+
+// The Clear handoff, asked in one place. A claim whose verification read Clear
+// retired must end up on the read Clear issues for that demand, and must never
+// judge the unverified shell in the meantime - so every exit that could settle
+// the claim asks this instead of looking at what is registered.
+//
+// The three answers are the three states the handoff can be in: the read
+// exists, the destination is gone, or no read was ever owed. A demand this ref
+// does not have is "none" so the caller's own verdict stands; a demand with no
+// read yet parks, because Clear issues it only once its transaction settles.
+async function awaitClearReplacement(
+  ref: string,
+): Promise<{ kind: "read"; read: Promise<ThreadModel | null> } | { kind: "deleted" } | { kind: "none" }> {
+  const issued = clearReplacementReads.get(ref);
+  if (issued) return { kind: "read", read: issued };
+  if (clearHydrationDemands.get("thread")?.has(ref) !== true) return { kind: "none" };
+  const parked = parkForClearReplacement(ref);
+  try {
+    await parked.parked;
+  } finally {
+    parked.cancel();
+  }
+  if (threadsStore.getState().deletedRefs.has(ref)) return { kind: "deleted" };
+  const replacement = clearReplacementReads.get(ref);
+  return replacement ? { kind: "read", read: replacement } : { kind: "none" };
 }
 
 // --- Notification routing index ---------------------------------------------
@@ -8606,6 +8647,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // it rather than spending a second local open beside it.
     const routedByClaim = inflightHydrates.has(ref) && inflightHydrates.routing(ref);
     if (!routingOnly && !threadsStore.getState().threads.has(ref) && (!inflightHydrates.has(ref) || routedByClaim)) {
+      // A pane opening over a routing claim's read owns the local lookup that
+      // read never performed. From here the registration has a pane behind it,
+      // so a second pane opening joins it instead of opening the cache again.
+      if (routedByClaim) inflightHydrates.markPaneBacked(ref);
       await openCachedEntryTranscript(ref, generation);
       if (threadsStore.getState().deletedRefs.has(ref)) return endDeletedDestination();
       if (foregroundHolds(ref) === 0 || ensureGenerations.get(ref) !== generation) return;
@@ -8698,6 +8743,17 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
               if (fulfilment.kind === "deleted") return endDeletedDestination();
               if (fulfilment.kind === "join") {
                 inflight = fulfilment.read;
+                continue;
+              }
+              // Nothing is verifying the ref and what stands is a shell. A
+              // Clear that retired this ref's read still owes it a
+              // replacement, and that read is the destination's routing
+              // answer, so the same handoff the tail uses belongs here too:
+              // one question, both exits.
+              const handoff = await awaitClearReplacement(ref);
+              if (handoff.kind === "deleted") return endDeletedDestination();
+              if (handoff.kind === "read") {
+                inflight = handoff.read;
                 continue;
               }
               throw lastReadError ?? new Error("routing state is unverified after the read settled");
@@ -8793,7 +8849,20 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           // scheduled retry for this owner generation, and every concurrent
           // owner waits on that one lifecycle rather than reading again here.
           const owned = ownedThreadHydrations.get(ref);
-          if (owned?.generation !== hydrationOwnerGeneration("thread", ref)) throw err;
+          if (owned?.generation !== hydrationOwnerGeneration("thread", ref)) {
+            // No lifecycle owns a retry here: Clear retired this ref's read
+            // and its own demand is the replacement, not this attempt's
+            // failure. Clear removes the owned record it cancels, so the
+            // absence of one is exactly the handoff's state rather than a
+            // reason to fail the press.
+            const handoff = await awaitClearReplacement(ref);
+            if (handoff.kind === "deleted") return endDeletedDestination();
+            if (handoff.kind === "read") {
+              inflight = handoff.read;
+              continue;
+            }
+            throw err;
+          }
           // Read BEFORE the await: the settlement below removes this record,
           // and the successor it hands over is the read this waiter must adopt
           // when it retires instead of publishing.
@@ -8872,22 +8941,26 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           // waits on a transaction that has not finished. Rejecting here costs
           // the person a second Send for a replacement that is about to
           // succeed, so park until that read exists and then join it.
-          if (clearHydrationDemands.get("thread")?.has(ref) === true) {
-            const parked = parkForClearReplacement(ref);
-            try {
-              await parked.parked;
-            } finally {
-              parked.cancel();
-            }
-            if (foregroundHolds(ref) <= 0) return;
-            const replacement = inflightHydrates.get(ref);
-            if (replacement) {
-              inflight = replacement;
-              continue;
-            }
-            throw lastReadError ?? new Error("routing state is unverified after the read settled");
+          const handoff = await awaitClearReplacement(ref);
+          if (handoff.kind === "deleted") return endDeletedDestination();
+          if (handoff.kind === "read") {
+            inflight = handoff.read;
+            continue;
           }
-          throw lastReadError ?? new Error("routing state is unverified after the read settled");
+          if (foregroundHolds(ref) <= 0) return;
+          const replacement = inflightHydrates.get(ref);
+          if (replacement) {
+            inflight = replacement;
+            continue;
+          }
+          // A Clear handed this ref no read it can join: the demand was
+          // discarded, or the connection has to come back first. Neither may
+          // hold the composer, so re-arm from the top against the current
+          // generation instead of failing the press.
+          client = await requireReadyClient();
+          if (ensureGenerations.get(ref) !== generation || foregroundHolds(ref) <= 0) return;
+          inflight = inflightHydrates.get(ref) ?? startHydration(client, getReadyEpoch());
+          continue;
         }
         if (threadsStore.getState().deletedRefs.has(ref)) return endDeletedDestination();
 
@@ -10063,21 +10136,46 @@ function reconcileClearInput(): void {
   const client = getWiredClient();
   for (const [kind, refs] of demands) {
     for (const [ref, generation] of refs) {
-      if (
-        generation !== hydrationOwnerGeneration(kind, ref) ||
-        !hydrationOwnerActive(kind, ref) ||
-        threadsStore.getState().deletedRefs.has(ref) ||
-        client?.state !== "ready"
-      )
+      // Every way this demand stops short of issuing a read still owes the
+      // parked claim an answer: a wake that is never sent leaves the composer
+      // busy forever, and no later event settles it. A deleted ref and a
+      // retired generation are terminal for the claim; a client that is not
+      // ready is not, because the reconnect re-reads what it tracks and the
+      // claim follows that read like any other generation change.
+      if (generation !== hydrationOwnerGeneration(kind, ref) || !hydrationOwnerActive(kind, ref)) {
+        for (const wake of clearReplacementWaits.take(ref) ?? []) wake();
         continue;
+      }
+      if (threadsStore.getState().deletedRefs.has(ref) || client?.state !== "ready") {
+        // Settle the claim on the state that ended the handoff rather than
+        // leaving it parked: deletion rejects through the acquisition's own
+        // rollback, and a not-ready client hands the claim to the reconnect by
+        // waking it, which re-arms against whatever the current generation
+        // reads.
+        for (const wake of clearReplacementWaits.take(ref) ?? []) wake();
+        continue;
+      }
       // Ordinary refresh preserves publication fences and the held cache
       // lifetime's suppression. Reconnect owns a non-ready client.
       const retry = kind === "watched" ? retryWatchedHydration : retryTrackedHydration;
       const issued = retry(client, getReadyEpoch(), ref);
       void issued.catch(() => {});
+      // The read is joinable from here, before any wake: a background
+      // replacement queues behind other hydrations and so does not register in
+      // inflightHydrates until it starts, which is a window a woken claim would
+      // otherwise look straight through. Recording the issued promise first is
+      // the ordering the wake rests on - issuing and being joinable are the
+      // same fact, so no wake can observe one without the other.
+      if (kind === "thread") {
+        const registered = issued.then(() => null);
+        clearReplacementReads.set(ref, registered);
+        void registered.finally(() => {
+          if (clearReplacementReads.get(ref) === registered) clearReplacementReads.delete(ref);
+        });
+      }
       // A claim that was waiting on this demand when the retired read settled
-      // has nothing registered to join until this read exists. Wake it now, so
-      // it joins the replacement rather than judging the shell it replaced.
+      // now has something to join, so wake it rather than leaving it to judge
+      // the shell the replacement will replace.
       for (const wake of clearReplacementWaits.take(ref) ?? []) wake();
     }
   }
