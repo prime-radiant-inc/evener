@@ -1519,6 +1519,10 @@ const clearDemandOwners = new Map<string, number>();
 // read the newer Clear retired. The epoch stays the write-suppression clock it
 // is; this counter is what names a Clear.
 let clearInvocations = 0;
+// The identity the LAST invocation actually took, which is what a test has to
+// ask about: the counter above is monotonic by construction, so comparing it
+// cannot tell an identity derived from it from one derived from the epoch.
+let lastClearInvocationId = 0;
 // The last terminal history verdict a tracked read ended on, per ref, waiting to
 // be claimed by whoever is owed that answer. A refresh reports failures through
 // the lifecycle rather than by rejecting, so this is the one place the terminal
@@ -4810,7 +4814,13 @@ async function readThreadHydration(
       // publishAndReconcileThreadHydration for why a successful read cannot
       // retire it on its own.
       terminalHydrationErrors.set(ref, err);
-      setThreadHistoryFailed(ref, true);
+      // The pane-facing flag belongs to a pane-owned read. A watched read
+      // carries its diagnostic on the watched model it publishes to
+      // (applyHistoryReadFailure above), and that model has its own reader: a
+      // delegate card's refused watch must not paint a tracked conversation
+      // that is on screen and healthy, which is what a shared per-ref flag let
+      // it do.
+      if (tracked) setThreadHistoryFailed(ref, true);
       settleHydrationReadEnd(read.kind, ref, { kind: "historyFailed", error: err });
     } else {
       scheduleOwnedHydrationRetry(read.kind, ref, pending);
@@ -7746,6 +7756,16 @@ function failOwnedHydration(kind: HydrationOwnerKind, ref: string, error: unknow
 //                    retry, no ready event. Settles as superseded so the claim
 //                    re-arms when a client does return, and a caller that
 //                    cannot wait fails the press instead of hanging on it.
+//   claimBudgetExpired - the routing claim spent its own budget without ever
+//                    seeing verified routing state. Distinct from
+//                    readinessTimedOut because the connection can be perfectly
+//                    READY while this fires: a browser connected to a healthy
+//                    hub whose remote host is offline keeps issuing reads that
+//                    classify as transportDropped, and every one of them re-arms
+//                    the same wait. Nothing keyed on client readiness sees that,
+//                    so the budget is measured from the claim and not from the
+//                    connection. Terminal for the acquisition: the press fails,
+//                    the draft survives, and the composer becomes usable.
 //
 // One more end exists and is deliberately not in this union: an attempt aborted
 // by a release, a client swap, or a newer attempt. Whoever aborts it retires the
@@ -7760,7 +7780,8 @@ type HydrationReadEnd =
   | { kind: "ownerReleased" }
   | { kind: "deleted" }
   | { kind: "clientClosed" }
-  | { kind: "readinessTimedOut" };
+  | { kind: "readinessTimedOut" }
+  | { kind: "claimBudgetExpired" };
 
 // settleHydrationReadEnd is the ONE place a read's end is turned into a
 // settlement of the shared wait. Callers classify the end; they do not decide
@@ -7790,6 +7811,13 @@ function settleHydrationReadEnd(kind: HydrationOwnerKind, ref: string, end: Hydr
       // newer generation owns this, go rejoin it", and re-arming here would put
       // the waiter straight back into the same unbounded wait on the same dead
       // connection. The cause is what lets the waiter fail the press instead.
+      retireOwnedHydration(kind, ref, "readinessTimeout");
+      return "settled";
+    case "claimBudgetExpired":
+      // Same cause as the readiness bound and for the same reason: a waiter
+      // that re-armed on this would spend the budget again on the same
+      // unreachable destination. The cause is what makes the claim fail the
+      // press instead of parking it for another budget.
       retireOwnedHydration(kind, ref, "readinessTimeout");
       return "settled";
     case "transportDropped":
@@ -9104,368 +9132,424 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // routing verdict: a routing hold that finds an unverified model must hand
     // its caller the failure, not the shell's empty capabilities.
     let lastReadError: unknown;
+    // Declared out here so the rollback below can clear it: a claim that fails
+    // must not leave a budget clock running against a released hold.
+    let budgetTimer: ReturnType<typeof setTimeout> | undefined;
     try {
-      for (;;) {
-        const inflightClient = inflightHydrates.client(ref) ?? client;
-        const inflightEpoch = inflightHydrates.epoch(ref) ?? getReadyEpoch();
-        try {
-          const model = await inflight;
-          if (model) {
-            // A routing hold has its answer: the read that was pending has
-            // published verified routing state. The transcript certification
-            // open below is the pane's, and holding a resend across a local
-            // read would put a storage stall in front of its outbox write.
+      // A routing claim's budget, measured from the acquisition to this await
+      // rather than from anything about the connection. A browser can hold a
+      // perfectly ready client to its own hub while the destination's host is
+      // offline: every read then fails as a transport drop, each one re-arms
+      // this same demand, and nothing keyed on readiness ever fires. Without a
+      // budget of its own the press waits forever and never reaches the outbox,
+      // which is the hang this closes. It races only the claim's verification:
+      // the loop's own arms still run while the budget holds, and the timer is
+      // cleared on every exit so a settled press leaves no clock behind.
+      // It RESOLVES rather than rejects: the loser of a race is a promise
+      // nobody awaits afterwards, and a rejection there surfaces as an
+      // unhandled rejection on every press that succeeds first.
+      const budgetExpired: Promise<"expired"> | undefined = routingOnly
+        ? new Promise<"expired">((resolve) => {
+            budgetTimer = setTimeout(() => resolve("expired"), readinessBoundMs());
+          })
+        : undefined;
+      // The budget must outlast the loop's own re-arms, or a destination that
+      // keeps failing takes a fresh budget on every iteration and never
+      // expires. The whole verification loop runs under it.
+      const verifyLoop = async (): Promise<void> => {
+        for (;;) {
+          const inflightClient = inflightHydrates.client(ref) ?? client;
+          const inflightEpoch = inflightHydrates.epoch(ref) ?? getReadyEpoch();
+          try {
+            // The race is per-await, but the BUDGET is one clock for the whole
+            // loop: a rejection here escapes the loop and the wrapper below
+            // ends the claim, so a re-arm cannot renew it.
+            const model = await inflight;
+            if (model) {
+              // A routing hold has its answer: the read that was pending has
+              // published verified routing state. The transcript certification
+              // open below is the pane's, and holding a resend across a local
+              // read would put a storage stall in front of its outbox write.
+              //
+              // The read's own success is not the answer by itself: a deletion
+              // can land between this read's snapshot and this fulfilment, in
+              // which case the model is real and the destination is gone. Asking
+              // the shared question here, rather than re-deriving it, is what
+              // keeps this exit and the tail's from drifting apart.
+              if (routingOnly) {
+                const fulfilment = routingFulfilment(ref);
+                if (fulfilment.kind === "fulfilled") return;
+                if (fulfilment.kind === "deleted") return endDeletedDestination();
+                if (fulfilment.kind === "join") {
+                  inflight = fulfilment.read;
+                  continue;
+                }
+                // Nothing is verifying the ref and what stands is a shell. A
+                // Clear that retired this ref's read still owes it a
+                // replacement, and that read is the destination's routing
+                // answer, so the same handoff the tail uses belongs here too:
+                // one question, both exits.
+                const handoff = await awaitClearReplacement(ref);
+                if (handoff.kind === "deleted") return endDeletedDestination();
+                if (handoff.kind === "read") {
+                  inflight = adoptClearReplacement(handoff.attempt, claimant);
+                  continue;
+                }
+                // A Clear that deferred its replacement owns this ref's next
+                // read, so the failure in hand describes a read Clear already
+                // retired rather than the destination. Re-arm from the top: the
+                // reconnect that deferred the replacement verifies the ref, and
+                // a press fails only if that verification never arrives.
+                if (handoff.kind === "deferred") {
+                  client = await requireReadyClient();
+                  if (!claimStanding()) return;
+                  inflight = inflightHydrates.get(ref) ?? startHydration(client, getReadyEpoch());
+                  continue;
+                }
+                throw lastReadError ?? new Error("routing state is unverified after the read settled");
+              }
+              // A display the claim's publication already completed has no
+              // pruned publication for the certification open's consumer gate
+              // to protect — its local read can only add bodies the pane is
+              // already showing, or miss and arm the recovery chain like any
+              // open. Where that display still has an older frontier, consumers
+              // hold live paging demand for the next accepted page, and the
+              // held gate strands exactly that demand in the window between the
+              // claim and the open's settle — so it certifies quietly: the
+              // open still records its verdict, marker and recovery verdicts,
+              // just without holding consumers. A display with no older
+              // frontier has no demand the gate could strand, and keeps the
+              // established hold-publication contract.
+              //
+              // The open is body work, so it needs a body owner. The ref's
+              // foreground count cannot answer that: a routing lease keeps the
+              // count positive after the last pane released, so a pane that left
+              // mid-read would still look held and would attach a reader to a
+              // transcript nobody displays. A pane superseded by a replacement is
+              // not this case - the replacement owns the bodies, and its parked
+              // open is what this certification establishes over.
+              if (!threadBodyOwned(ref)) return;
+              if (
+                !(await openEntryTranscript(
+                  ref,
+                  false,
+                  // The loop body runs in a closure, so the narrowing that came
+                  // from the await does not reach here; the registration is
+                  // keyed by the read object and absent is the same answer as
+                  // "no registration for it".
+                  inflight === undefined ? undefined : hydrationRegistrations.get(inflight),
+                  holdsCompleteForegroundWindow(model) && olderTranscriptPageKey(ref) != null,
+                ))
+              ) {
+                // The same question after the await: the open settles
+                // asynchronously, and the last body owner can release while it
+                // runs. Arming recovery then would re-read the ref on behalf of a
+                // pane that no longer exists.
+                if (threadBodyOwned(ref)) scheduleEntryOpeningRecovery(ref);
+              }
+              return;
+            }
+          } catch (err) {
+            lastReadError = err;
+            // A routing claim's question is whether verified routing state
+            // exists, not which read produced the failure in front of it. A
+            // read that was superseded while it was in flight answers about the
+            // destination the replacement has already re-read, so its failure
+            // must not end a press the replacement verified. This is checked
+            // before every fence below, including the owner-generation fence:
+            // the replacement's publication is the answer, whoever read it.
             //
-            // The read's own success is not the answer by itself: a deletion
-            // can land between this read's snapshot and this fulfilment, in
-            // which case the model is real and the destination is gone. Asking
-            // the shared question here, rather than re-deriving it, is what
-            // keeps this exit and the tail's from drifting apart.
+            // It goes through the shared decision rather than returning on
+            // presence, because presence alone does not answer it: a verified
+            // model whose destination was deleted fulfils nothing, and swallowing
+            // that here would hand the caller a claim the fence will refuse.
             if (routingOnly) {
               const fulfilment = routingFulfilment(ref);
               if (fulfilment.kind === "fulfilled") return;
               if (fulfilment.kind === "deleted") return endDeletedDestination();
-              if (fulfilment.kind === "join") {
-                inflight = fulfilment.read;
-                continue;
-              }
-              // Nothing is verifying the ref and what stands is a shell. A
-              // Clear that retired this ref's read still owes it a
-              // replacement, and that read is the destination's routing
-              // answer, so the same handoff the tail uses belongs here too:
-              // one question, both exits.
+            }
+            const replacement = inflightHydrates.get(ref);
+            const lifecycleActive = claimStanding();
+            if (lifecycleActive && replacement && replacement !== inflight) {
+              inflight = replacement;
+              continue;
+            }
+            if (lifecycleActive && threadsStore.getState().threads.has(ref) && !routingOnly) {
+              // The held model may be the shell a missed open published after
+              // fencing its local read: a failed source read must not strand a
+              // body-suppressed display on the next successful read. The
+              // chain's own guards make this a no-op for a healthy or already
+              // armed display.
+              scheduleEntryOpeningRecovery(ref);
+              return;
+            }
+            // A routing hold cannot accept presence as verification: the model
+            // standing here may be the shell whose read just failed. It also
+            // cannot fail the press here, which would lose the user's Send even
+            // though the retry below is about to verify the destination. So it
+            // falls through to join that existing retry and resolves only once
+            // verified routing state is published - no second retry of its own.
+            // Release is terminal even when the failed read belongs to an old
+            // connection. A reconnect cannot re-arm a pane that no longer exists.
+            if (!lifecycleActive) return;
+            // Durable deletion is the other terminal: return the result of the
+            // lifecycle scheduleOwnedHydrationRetry already retired (see the
+            // `deletedRefs` field doc) instead of re-arming another read.
+            if (threadsStore.getState().deletedRefs.has(ref)) return endDeletedDestination();
+            if (getWiredClient() !== inflightClient || getReadyEpoch() !== inflightEpoch) {
+              // Presence alone is not verification for a routing hold: the model
+              // standing here may be the shell whose read just failed. A routing
+              // hold that finds an unverified model falls through to the retry
+              // below rather than resolving on the shell's empty capabilities.
+              if (threadsStore.getState().threads.has(ref) && (!routingOnly || routingVerified())) return;
+              // requireReadyClient re-reads the CURRENT client on the way out,
+              // so a client captured before the wait is never stamped onto a
+              // hydration that outlived it. Same shape as the re-arm below and
+              // as both of watchThread's.
+              client = await requireReadyClient();
+              if (!claimStanding()) return;
+              inflight = inflightHydrates.get(ref) ?? startHydration(client, getReadyEpoch());
+              continue;
+            }
+            // Same client, same ready epoch: the read failed in transport, not
+            // because this pane lost the ref. The failed attempt owns one
+            // scheduled retry for this owner generation, and every concurrent
+            // owner waits on that one lifecycle rather than reading again here.
+            const owned = ownedThreadHydrations.get(ref);
+            if (owned?.generation !== hydrationOwnerGeneration("thread", ref)) {
+              // No lifecycle owns a retry here: Clear retired this ref's read
+              // and its own demand is the replacement, not this attempt's
+              // failure. Clear removes the owned record it cancels, so the
+              // absence of one is exactly the handoff's state rather than a
+              // reason to fail the press.
+              //
+              // The verdict is spent once per acquisition. A Clear replacement
+              // that ended on the hub's history diagnostic answers this press,
+              // and re-joining it here would put the same rejected promise back
+              // in front of this same catch: the loop would run on already
+              // settled promises, never yielding to the event loop, leaving Send
+              // pending forever. The second ask is the answer, so the press ends
+              // and this acquisition's rollback releases its hold.
               const handoff = await awaitClearReplacement(ref);
               if (handoff.kind === "deleted") return endDeletedDestination();
               if (handoff.kind === "read") {
+                if (terminalVerdictSpent(handoff.attempt, claimant)) throw err;
                 inflight = adoptClearReplacement(handoff.attempt, claimant);
                 continue;
               }
-              // A Clear that deferred its replacement owns this ref's next
-              // read, so the failure in hand describes a read Clear already
-              // retired rather than the destination. Re-arm from the top: the
-              // reconnect that deferred the replacement verifies the ref, and
-              // a press fails only if that verification never arrives.
-              if (handoff.kind === "deferred") {
-                client = await requireReadyClient();
-                if (!claimStanding()) return;
-                inflight = inflightHydrates.get(ref) ?? startHydration(client, getReadyEpoch());
-                continue;
-              }
-              throw lastReadError ?? new Error("routing state is unverified after the read settled");
+              // Deferred means Clear still owes this ref a read and the
+              // connection has to return before it can be issued: the error in
+              // hand is the transport drop that deferred it, not the
+              // destination's routing answer. Re-arm against the current
+              // generation so the reconnect verifies the ref and the press
+              // proceeds, instead of spending the user's Send.
+              if (handoff.kind === "none") throw err;
+              client = await requireReadyClient();
+              if (!claimStanding()) return;
+              inflight = inflightHydrates.get(ref) ?? startHydration(client, getReadyEpoch());
+              continue;
             }
-            // A display the claim's publication already completed has no
-            // pruned publication for the certification open's consumer gate
-            // to protect — its local read can only add bodies the pane is
-            // already showing, or miss and arm the recovery chain like any
-            // open. Where that display still has an older frontier, consumers
-            // hold live paging demand for the next accepted page, and the
-            // held gate strands exactly that demand in the window between the
-            // claim and the open's settle — so it certifies quietly: the
-            // open still records its verdict, marker and recovery verdicts,
-            // just without holding consumers. A display with no older
-            // frontier has no demand the gate could strand, and keeps the
-            // established hold-publication contract.
+            // Read BEFORE the await: the settlement below removes this record,
+            // and the successor it hands over is the read this waiter must adopt
+            // when it retires instead of publishing.
+            let retriedInto = owned.successor;
+            const settled = await owned.firstHydration;
+            if (!retriedInto) retriedInto = owned.successor;
+            // The one outcome that must not resume: a history diagnostic, which
+            // arms no retry. Handing it back releases the claim so the composer
+            // is usable again and the draft plus cached display survive.
+            if (settled.kind === "terminal") throw settled.error;
+            // A durable deletion has no replacement read to rejoin: the ref is
+            // gone, and the routing hold returns like any other released owner
+            // rather than reading again. This check is why the enumeration
+            // carries the retirement cause instead of leaving every retired
+            // generation to look the same.
+            if (settled.kind === "retired" && settled.cause === "deleted") return endDeletedDestination();
+            // The connection did not come back inside the bound. Re-arming here
+            // is what the superseded cause does below, and it is exactly wrong for
+            // a one-shot claim: it would park the same press on the same dead
+            // connection for another bound, which is the unbounded hang this end
+            // exists to prevent. Fail the press so the composer is usable and the
+            // recovery draft survives.
             //
-            // The open is body work, so it needs a body owner. The ref's
-            // foreground count cannot answer that: a routing lease keeps the
-            // count positive after the last pane released, so a pane that left
-            // mid-read would still look held and would attach a reader to a
-            // transcript nobody displays. A pane superseded by a replacement is
-            // not this case - the replacement owns the bodies, and its parked
-            // open is what this certification establishes over.
-            if (!threadBodyOwned(ref)) return;
-            if (
-              !(await openEntryTranscript(
-                ref,
-                false,
-                hydrationRegistrations.get(inflight),
-                holdsCompleteForegroundWindow(model) && olderTranscriptPageKey(ref) != null,
-              ))
-            ) {
-              // The same question after the await: the open settles
-              // asynchronously, and the last body owner can release while it
-              // runs. Arming recovery then would re-read the ref on behalf of a
-              // pane that no longer exists.
-              if (threadBodyOwned(ref)) scheduleEntryOpeningRecovery(ref);
+            // A pane's demand is not one-shot, so the bound must not spend it. Its
+            // mounted claim never reacquires, and failing it here would release
+            // the hold and leave the pane on Loading until someone reopened it -
+            // a load the reconnect is about to perform. So the bound ends the
+            // press, and only the press: a pane re-arms and waits out the outage.
+            if (settled.kind === "retired" && settled.cause === "readinessTimeout") {
+              if (routingOnly) {
+                throw new Error("The connection did not return before the destination could be verified");
+              }
+              // The pane outlives the bound: take another one, and repeat for as
+              // long as this claim stands. Each iteration waits on a lifecycle the
+              // ready handler retires, so a reconnect costs no polling and the
+              // pane loads from the read that follows it. A connection that never
+              // returns leaves the pane on its Loading state, which is the honest
+              // display for a mounted pane with nothing to read from - not a press
+              // spent and not a hold stranded, since this claim still owns it.
+              let resumed = false;
+              while (claimStanding()) {
+                const parked = openOwnedHydration("thread", ref);
+                armReadinessBound("thread", ref, parked);
+                const end = await parked.firstHydration;
+                if (!claimStanding()) return;
+                if (end.kind === "retired" && end.cause === "readinessTimeout") continue;
+                resumed = true;
+                break;
+              }
+              if (!resumed) return;
+              client = await requireReadyClient();
+              if (!claimStanding()) return;
+              inflight = inflightHydrates.get(ref) ?? startHydration(client, getReadyEpoch());
+              continue;
             }
-            return;
+            // The wait can span a reconnect: the ready handler retires the old
+            // retry and starts a fresh read, so this waiter wakes with the
+            // generation it was waiting on already gone. Rejoining from the top
+            // picks up that read and proceeds when it publishes verified state,
+            // instead of judging the unverified shell the old retry never
+            // replaced.
+            if (getWiredClient() !== inflightClient || getReadyEpoch() !== inflightEpoch) {
+              // Never `continue` on the stale promise: it already rejected, so
+              // re-awaiting it would land back here forever. Re-arm first, the
+              // same way the client-changed branch above does.
+              client = await requireReadyClient();
+              if (!claimStanding()) return;
+              inflight = inflightHydrates.get(ref) ?? startHydration(client, getReadyEpoch());
+              continue;
+            }
+            // Same client and epoch, and the lifecycle retired rather than
+            // publishing: the generation that owned the wait is gone while this
+            // call still holds the ref. Rejoining is the whole point of retiring
+            // instead of hanging, so take the read this lifecycle retired into —
+            // the one issued while it was waiting — or the current one, and
+            // continue. Without this the waiter falls through to the re-arm,
+            // which finds no published model and judges the unverified shell.
+            //
+            // The successor is consulted first and is not the same question as
+            // "is a read in flight": a cached shell counts as published, so the
+            // registry can hold an unrelated read or none, while the successor
+            // is exactly the read that answers the demand this waiter gave up
+            // on. Adopting any read in flight instead would spend work the ref
+            // never owed and could judge a different demand's answer.
+            if (retriedInto) {
+              inflight = retriedInto;
+              continue;
+            }
+            // Fall through to the shared re-arm below: it returns when the claim
+            // is gone or a model published, and otherwise rejoins the newest
+            // attempt on the current client.
           }
-        } catch (err) {
-          lastReadError = err;
-          // A routing claim's question is whether verified routing state
-          // exists, not which read produced the failure in front of it. A
-          // read that was superseded while it was in flight answers about the
-          // destination the replacement has already re-read, so its failure
-          // must not end a press the replacement verified. This is checked
-          // before every fence below, including the owner-generation fence:
-          // the replacement's publication is the answer, whoever read it.
-          //
-          // It goes through the shared decision rather than returning on
-          // presence, because presence alone does not answer it: a verified
-          // model whose destination was deleted fulfils nothing, and swallowing
-          // that here would hand the caller a claim the fence will refuse.
-          if (routingOnly) {
+
+          if (!claimStanding()) return;
+          if (threadsStore.getState().threads.has(ref)) {
+            // A routing hold resolves only on verified routing state. The model
+            // standing here after a failed or superseded read may be the shell
+            // that read never replaced, so the resend gets the failure and stays
+            // available for another press. A pane lets its display stand.
+            if (!routingOnly) return;
+            // The same question the success exit asks, in the same place, so the
+            // two cannot disagree: an attempt that settled without publishing on
+            // a shell must still join the read that is currently verifying the
+            // ref, or the person pays a second Send for a successful replacement.
             const fulfilment = routingFulfilment(ref);
             if (fulfilment.kind === "fulfilled") return;
             if (fulfilment.kind === "deleted") return endDeletedDestination();
-          }
-          const replacement = inflightHydrates.get(ref);
-          const lifecycleActive = claimStanding();
-          if (lifecycleActive && replacement && replacement !== inflight) {
-            inflight = replacement;
-            continue;
-          }
-          if (lifecycleActive && threadsStore.getState().threads.has(ref) && !routingOnly) {
-            // The held model may be the shell a missed open published after
-            // fencing its local read: a failed source read must not strand a
-            // body-suppressed display on the next successful read. The
-            // chain's own guards make this a no-op for a healthy or already
-            // armed display.
-            scheduleEntryOpeningRecovery(ref);
-            return;
-          }
-          // A routing hold cannot accept presence as verification: the model
-          // standing here may be the shell whose read just failed. It also
-          // cannot fail the press here, which would lose the user's Send even
-          // though the retry below is about to verify the destination. So it
-          // falls through to join that existing retry and resolves only once
-          // verified routing state is published - no second retry of its own.
-          // Release is terminal even when the failed read belongs to an old
-          // connection. A reconnect cannot re-arm a pane that no longer exists.
-          if (!lifecycleActive) return;
-          // Durable deletion is the other terminal: return the result of the
-          // lifecycle scheduleOwnedHydrationRetry already retired (see the
-          // `deletedRefs` field doc) instead of re-arming another read.
-          if (threadsStore.getState().deletedRefs.has(ref)) return endDeletedDestination();
-          if (getWiredClient() !== inflightClient || getReadyEpoch() !== inflightEpoch) {
-            // Presence alone is not verification for a routing hold: the model
-            // standing here may be the shell whose read just failed. A routing
-            // hold that finds an unverified model falls through to the retry
-            // below rather than resolving on the shell's empty capabilities.
-            if (threadsStore.getState().threads.has(ref) && (!routingOnly || routingVerified())) return;
-            // requireReadyClient re-reads the CURRENT client on the way out,
-            // so a client captured before the wait is never stamped onto a
-            // hydration that outlived it. Same shape as the re-arm below and
-            // as both of watchThread's.
-            client = await requireReadyClient();
-            if (!claimStanding()) return;
-            inflight = inflightHydrates.get(ref) ?? startHydration(client, getReadyEpoch());
-            continue;
-          }
-          // Same client, same ready epoch: the read failed in transport, not
-          // because this pane lost the ref. The failed attempt owns one
-          // scheduled retry for this owner generation, and every concurrent
-          // owner waits on that one lifecycle rather than reading again here.
-          const owned = ownedThreadHydrations.get(ref);
-          if (owned?.generation !== hydrationOwnerGeneration("thread", ref)) {
-            // No lifecycle owns a retry here: Clear retired this ref's read
-            // and its own demand is the replacement, not this attempt's
-            // failure. Clear removes the owned record it cancels, so the
-            // absence of one is exactly the handoff's state rather than a
-            // reason to fail the press.
-            //
-            // The verdict is spent once per acquisition. A Clear replacement
-            // that ended on the hub's history diagnostic answers this press,
-            // and re-joining it here would put the same rejected promise back
-            // in front of this same catch: the loop would run on already
-            // settled promises, never yielding to the event loop, leaving Send
-            // pending forever. The second ask is the answer, so the press ends
-            // and this acquisition's rollback releases its hold.
+            if (fulfilment.kind === "join") {
+              inflight = fulfilment.read;
+              continue;
+            }
+            // Nothing is verifying the ref and no verified model stands, but a
+            // Clear has already recorded a demand to re-read it: the replacement
+            // it will issue owns this destination's routing state, and issuing it
+            // waits on a transaction that has not finished. Rejecting here costs
+            // the person a second Send for a replacement that is about to
+            // succeed, so park until that read exists and then join it.
             const handoff = await awaitClearReplacement(ref);
             if (handoff.kind === "deleted") return endDeletedDestination();
             if (handoff.kind === "read") {
-              if (terminalVerdictSpent(handoff.attempt, claimant)) throw err;
+              if (terminalVerdictSpent(handoff.attempt, claimant)) {
+                throw lastReadError ?? new Error("routing state is unverified after the read settled");
+              }
               inflight = adoptClearReplacement(handoff.attempt, claimant);
               continue;
             }
-            // Deferred means Clear still owes this ref a read and the
-            // connection has to return before it can be issued: the error in
-            // hand is the transport drop that deferred it, not the
-            // destination's routing answer. Re-arm against the current
-            // generation so the reconnect verifies the ref and the press
-            // proceeds, instead of spending the user's Send.
-            if (handoff.kind === "none") throw err;
-            client = await requireReadyClient();
             if (!claimStanding()) return;
-            inflight = inflightHydrates.get(ref) ?? startHydration(client, getReadyEpoch());
-            continue;
-          }
-          // Read BEFORE the await: the settlement below removes this record,
-          // and the successor it hands over is the read this waiter must adopt
-          // when it retires instead of publishing.
-          let retriedInto = owned.successor;
-          const settled = await owned.firstHydration;
-          if (!retriedInto) retriedInto = owned.successor;
-          // The one outcome that must not resume: a history diagnostic, which
-          // arms no retry. Handing it back releases the claim so the composer
-          // is usable again and the draft plus cached display survive.
-          if (settled.kind === "terminal") throw settled.error;
-          // A durable deletion has no replacement read to rejoin: the ref is
-          // gone, and the routing hold returns like any other released owner
-          // rather than reading again. This check is why the enumeration
-          // carries the retirement cause instead of leaving every retired
-          // generation to look the same.
-          if (settled.kind === "retired" && settled.cause === "deleted") return endDeletedDestination();
-          // The connection did not come back inside the bound. Re-arming here
-          // is what the superseded cause does below, and it is exactly wrong for
-          // a one-shot claim: it would park the same press on the same dead
-          // connection for another bound, which is the unbounded hang this end
-          // exists to prevent. Fail the press so the composer is usable and the
-          // recovery draft survives.
-          //
-          // A pane's demand is not one-shot, so the bound must not spend it. Its
-          // mounted claim never reacquires, and failing it here would release
-          // the hold and leave the pane on Loading until someone reopened it -
-          // a load the reconnect is about to perform. So the bound ends the
-          // press, and only the press: a pane re-arms and waits out the outage.
-          if (settled.kind === "retired" && settled.cause === "readinessTimeout") {
-            if (routingOnly) {
-              throw new Error("The connection did not return before the destination could be verified");
+            const replacement = inflightHydrates.get(ref);
+            if (replacement) {
+              inflight = replacement;
+              continue;
             }
-            // The pane outlives the bound: take another one, and repeat for as
-            // long as this claim stands. Each iteration waits on a lifecycle the
-            // ready handler retires, so a reconnect costs no polling and the
-            // pane loads from the read that follows it. A connection that never
-            // returns leaves the pane on its Loading state, which is the honest
-            // display for a mounted pane with nothing to read from - not a press
-            // spent and not a hold stranded, since this claim still owns it.
-            let resumed = false;
-            while (claimStanding()) {
-              const parked = openOwnedHydration("thread", ref);
-              armReadinessBound("thread", ref, parked);
-              const end = await parked.firstHydration;
-              if (!claimStanding()) return;
-              if (end.kind === "retired" && end.cause === "readinessTimeout") continue;
-              resumed = true;
-              break;
-            }
-            if (!resumed) return;
+            // A Clear handed this ref no read it can join: the demand was
+            // discarded, or the connection has to come back first. Neither may
+            // hold the composer, so re-arm from the top against the current
+            // generation instead of failing the press.
             client = await requireReadyClient();
             if (!claimStanding()) return;
             inflight = inflightHydrates.get(ref) ?? startHydration(client, getReadyEpoch());
             continue;
           }
-          // The wait can span a reconnect: the ready handler retires the old
-          // retry and starts a fresh read, so this waiter wakes with the
-          // generation it was waiting on already gone. Rejoining from the top
-          // picks up that read and proceeds when it publishes verified state,
-          // instead of judging the unverified shell the old retry never
-          // replaced.
-          if (getWiredClient() !== inflightClient || getReadyEpoch() !== inflightEpoch) {
-            // Never `continue` on the stale promise: it already rejected, so
-            // re-awaiting it would land back here forever. Re-arm first, the
-            // same way the client-changed branch above does.
-            client = await requireReadyClient();
-            if (!claimStanding()) return;
-            inflight = inflightHydrates.get(ref) ?? startHydration(client, getReadyEpoch());
-            continue;
-          }
-          // Same client and epoch, and the lifecycle retired rather than
-          // publishing: the generation that owned the wait is gone while this
-          // call still holds the ref. Rejoining is the whole point of retiring
-          // instead of hanging, so take the read this lifecycle retired into —
-          // the one issued while it was waiting — or the current one, and
-          // continue. Without this the waiter falls through to the re-arm,
-          // which finds no published model and judges the unverified shell.
-          //
-          // The successor is consulted first and is not the same question as
-          // "is a read in flight": a cached shell counts as published, so the
-          // registry can hold an unrelated read or none, while the successor
-          // is exactly the read that answers the demand this waiter gave up
-          // on. Adopting any read in flight instead would spend work the ref
-          // never owed and could judge a different demand's answer.
-          if (retriedInto) {
-            inflight = retriedInto;
-            continue;
-          }
-          // Fall through to the shared re-arm below: it returns when the claim
-          // is gone or a model published, and otherwise rejoins the newest
-          // attempt on the current client.
-        }
-
-        if (!claimStanding()) return;
-        if (threadsStore.getState().threads.has(ref)) {
-          // A routing hold resolves only on verified routing state. The model
-          // standing here after a failed or superseded read may be the shell
-          // that read never replaced, so the resend gets the failure and stays
-          // available for another press. A pane lets its display stand.
-          if (!routingOnly) return;
-          // The same question the success exit asks, in the same place, so the
-          // two cannot disagree: an attempt that settled without publishing on
-          // a shell must still join the read that is currently verifying the
-          // ref, or the person pays a second Send for a successful replacement.
-          const fulfilment = routingFulfilment(ref);
-          if (fulfilment.kind === "fulfilled") return;
-          if (fulfilment.kind === "deleted") return endDeletedDestination();
-          if (fulfilment.kind === "join") {
-            inflight = fulfilment.read;
-            continue;
-          }
-          // Nothing is verifying the ref and no verified model stands, but a
-          // Clear has already recorded a demand to re-read it: the replacement
-          // it will issue owns this destination's routing state, and issuing it
-          // waits on a transaction that has not finished. Rejecting here costs
-          // the person a second Send for a replacement that is about to
-          // succeed, so park until that read exists and then join it.
-          const handoff = await awaitClearReplacement(ref);
-          if (handoff.kind === "deleted") return endDeletedDestination();
-          if (handoff.kind === "read") {
-            if (terminalVerdictSpent(handoff.attempt, claimant)) {
+          // The same demand, on a destination no pane has opened: Clear can retire
+          // a routing claim's first read for a ref with no resident model, and
+          // issuing that demand's replacement waits on a transaction that has not
+          // finished. Starting a read here would answer the demand twice - this
+          // claim's read and the Clear's replacement - so join the replacement
+          // instead, where the retired attempt's terminal verdict travels with it.
+          const unopenedHandoff = await awaitClearReplacement(ref);
+          if (unopenedHandoff.kind === "deleted") return endDeletedDestination();
+          if (unopenedHandoff.kind === "read") {
+            if (terminalVerdictSpent(unopenedHandoff.attempt, claimant)) {
               throw lastReadError ?? new Error("routing state is unverified after the read settled");
             }
-            inflight = adoptClearReplacement(handoff.attempt, claimant);
+            inflight = adoptClearReplacement(unopenedHandoff.attempt, claimant);
             continue;
           }
-          if (!claimStanding()) return;
-          const replacement = inflightHydrates.get(ref);
-          if (replacement) {
-            inflight = replacement;
+          if (unopenedHandoff.kind === "deferred") {
+            // The connection owes this demand its read. Re-arm from the top
+            // against whatever generation is current when it returns.
+            client = await requireReadyClient();
+            if (!claimStanding()) return;
+            inflight = inflightHydrates.get(ref) ?? startHydration(client, getReadyEpoch());
             continue;
           }
-          // A Clear handed this ref no read it can join: the demand was
-          // discarded, or the connection has to come back first. Neither may
-          // hold the composer, so re-arm from the top against the current
-          // generation instead of failing the press.
-          client = await requireReadyClient();
-          if (!claimStanding()) return;
-          inflight = inflightHydrates.get(ref) ?? startHydration(client, getReadyEpoch());
-          continue;
-        }
-        // The same demand, on a destination no pane has opened: Clear can retire
-        // a routing claim's first read for a ref with no resident model, and
-        // issuing that demand's replacement waits on a transaction that has not
-        // finished. Starting a read here would answer the demand twice - this
-        // claim's read and the Clear's replacement - so join the replacement
-        // instead, where the retired attempt's terminal verdict travels with it.
-        const unopenedHandoff = await awaitClearReplacement(ref);
-        if (unopenedHandoff.kind === "deleted") return endDeletedDestination();
-        if (unopenedHandoff.kind === "read") {
-          if (terminalVerdictSpent(unopenedHandoff.attempt, claimant)) {
-            throw lastReadError ?? new Error("routing state is unverified after the read settled");
-          }
-          inflight = adoptClearReplacement(unopenedHandoff.attempt, claimant);
-          continue;
-        }
-        if (unopenedHandoff.kind === "deferred") {
-          // The connection owes this demand its read. Re-arm from the top
-          // against whatever generation is current when it returns.
-          client = await requireReadyClient();
-          if (!claimStanding()) return;
-          inflight = inflightHydrates.get(ref) ?? startHydration(client, getReadyEpoch());
-          continue;
-        }
-        if (threadsStore.getState().deletedRefs.has(ref)) return endDeletedDestination();
+          if (threadsStore.getState().deletedRefs.has(ref)) return endDeletedDestination();
 
-        client = await requireReadyClient();
-        if (!claimStanding()) return;
-        // Recheck after the possibly-long ready wait: a deletion fence can
-        // land while this loop is waiting out a reconnect, and a ref known
-        // deleted must not start another read on becoming ready.
-        if (threadsStore.getState().deletedRefs.has(ref)) return endDeletedDestination();
-        inflight = inflightHydrates.get(ref);
-        if (!inflight) inflight = startHydration(client, getReadyEpoch());
+          client = await requireReadyClient();
+          if (!claimStanding()) return;
+          // Recheck after the possibly-long ready wait: a deletion fence can
+          // land while this loop is waiting out a reconnect, and a ref known
+          // deleted must not start another read on becoming ready.
+          if (threadsStore.getState().deletedRefs.has(ref)) return endDeletedDestination();
+          inflight = inflightHydrates.get(ref);
+          if (!inflight) inflight = startHydration(client, getReadyEpoch());
+        }
+      };
+      // The claim's verification, under its own budget. A pane's demand has no
+      // budget: a mounted pane shows its loading face and waits.
+      if (budgetExpired) {
+        const loop = verifyLoop();
+        // The budget is one-shot and the loop is not: when the budget wins,
+        // the loop runs on with nothing awaiting it and its eventual rejection
+        // would surface as an unhandled rejection on a press that already
+        // ended. Its outcome is spent here; the claim's own rejection below is
+        // what the caller observes.
+        loop.catch(() => undefined);
+        const ended = await Promise.race([loop, budgetExpired]);
+        if (ended === "expired") {
+          // The press is over, so the verification it abandoned must end with
+          // it. Retiring through the same decision point every other end uses
+          // stops the loop from re-arming a demand nobody waits on, which is
+          // how a spent press left work running behind it.
+          settleHydrationReadEnd("thread", ref, { kind: "claimBudgetExpired" });
+          throw new Error("The destination could not be verified inside the claim's budget");
+        }
+      } else {
+        await verifyLoop();
       }
+      if (budgetTimer !== undefined) clearTimeout(budgetTimer);
     } catch (err) {
+      if (budgetTimer !== undefined) clearTimeout(budgetTimer);
       // This call's own hold never landed: undo it via the same releaseThread()
       // a caller would otherwise use, so a caller that retries ensureThread()
       // after a failure and then releases exactly once (the normal
@@ -10795,6 +10879,7 @@ export async function clearCachedSessions(): Promise<{ committed: boolean }> {
   // this counter is what names a Clear.
   clearInvocations += 1;
   const clearId = clearInvocations;
+  lastClearInvocationId = clearId;
   // The separately installed entry route retires its publication/persistence
   // claims NOW, synchronously, before either clear transaction resolves: an
   // already-installed reader, subscription or repository must not publish or
@@ -10981,7 +11066,7 @@ export function recordClearDemandForTests(ref: string, clearId: number): void {
 
 /** @internal The Clear identity the last invocation took. */
 export function lastClearInvocationForTests(): number {
-  return clearInvocations;
+  return lastClearInvocationId;
 }
 
 /** @internal Registers a replacement attempt the way a Clear's own issue step

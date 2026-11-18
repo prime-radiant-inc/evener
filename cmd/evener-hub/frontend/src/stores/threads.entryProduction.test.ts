@@ -2106,6 +2106,10 @@ it("a resend whose hub never returns settles on the readiness bound", async () =
     const resent = withRecoveryDestinationClaim("local:a", () =>
       resendRecoveryMutation(row.clientMutationId, "local:a", "send", "retry me", []),
     );
+    // The bound can fire before this test awaits the press, and a rejection
+    // with no handler attached yet is an unhandled rejection rather than the
+    // outcome under test.
+    resent.catch(() => undefined);
     await vi.waitFor(() => expect(fireRetry, "the failed read must schedule a retry").toBeDefined());
     // The socket drops and the hub never answers again: not closed, not ready,
     // just reconnecting forever.
@@ -10744,6 +10748,10 @@ it("an expired readiness bound spends the press but not a mounted pane", async (
     const resent = withRecoveryDestinationClaim("local:a", () =>
       resendRecoveryMutation(row.clientMutationId, "local:a", "send", "retry me", []),
     );
+    // The bound can fire before this test awaits the press, and a rejection
+    // with no handler attached yet is an unhandled rejection rather than the
+    // outcome under test.
+    resent.catch(() => undefined);
     await vi.waitFor(() => expect(fireRetry, "the failed read must schedule a retry").toBeDefined());
     client.emitStateChange("reconnecting");
     fireRetry?.();
@@ -10791,6 +10799,91 @@ it("an expired readiness bound spends the press but not a mounted pane", async (
       .catch(() => undefined);
   }
 }, 25_000);
+
+// Finding 3 (review 53584): the readiness bound is a property of the CONNECTION.
+// A browser can sit on a ready client of its own hub while the destination's
+// host is offline: every read then fails as a transport drop, each schedules
+// another retry, and nothing keyed on readiness ever fires. The press stays on
+// its first read forever and never writes a row, so the person's message is
+// gone and Send is busy for the tab's lifetime.
+//
+// Decision point: the press's own budget, measured from the acquisition. The
+// client never leaves "ready" here, which is the whole finding - a bound keyed
+// on readiness cannot see this case at all.
+it("a routing claim against an offline host spends its own budget while the client stays ready", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const outboxStorage = new MutationOutboxIndexedDB({ indexedDB: factory });
+  setMutationStorageForTests(outboxStorage);
+  const client = connect();
+  const background = acquireBackgroundThread("local:a");
+  await background.ready;
+  await settleEntryTranscriptForTests("local:a");
+  const route = entryTranscriptRoute("local:a");
+  if (!route) throw new Error("expected an entry route");
+  route.cachedUnverified = true;
+  const outbox = await outboxStorage.enqueueIntent({
+    targetRef: "local:a",
+    threadId: "thread-a",
+    method: "turn/start",
+    payload: { ref: "local:a", input: [{ type: "text", text: "retry me" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "retry me" }] },
+  });
+  const row = await outboxStorage.transferToRecovery(outbox.clientMutationId, "rejected");
+  if (!row) throw new Error("expected the recovery row to be durable");
+  // The destination's host never answers. This is a transport drop on a client
+  // that stays ready - the client itself is healthy.
+  client.on("thread/read", () => {
+    throw new Error("host offline");
+  });
+  let fireRetry: (() => void) | undefined;
+  const restoreScheduler = installHydrationRetrySchedulerForTests((_attempt, retry) => {
+    fireRetry = retry;
+    return () => undefined;
+  });
+  const restoreBound = setReadinessBoundForTests(20);
+  try {
+    const resent = withRecoveryDestinationClaim("local:a", () =>
+      resendRecoveryMutation(row.clientMutationId, "local:a", "send", "retry me", []),
+    );
+    // The budget can fire before this test awaits the press, and a rejection
+    // with no handler attached yet is an unhandled rejection rather than the
+    // outcome under test.
+    resent.catch(() => undefined);
+    await vi.waitFor(() => expect(fireRetry, "the failed read must schedule a retry").toBeDefined());
+    // The retry runs against the same offline host and parks again. Without the
+    // claim's own budget the press waits on that park forever.
+    fireRetry?.();
+    // Bounded so a press that never settles reports the hang it is. Each retry
+    // does settle, so timers run: this bound fires on the mutant rather than
+    // being starved by it, and the failure names what a person would see
+    // instead of arriving as a test-timeout.
+    const outcome = await Promise.race([
+      resent.then(
+        () => ({ ok: true as const }),
+        () => ({ ok: false as const }),
+      ),
+      new Promise<"still-busy">((resolve) => setTimeout(() => resolve("still-busy"), 3_000)),
+    ]);
+    if (outcome === "still-busy") {
+      throw new Error("an offline destination must not leave Send busy forever while its host never answers");
+    }
+    // The press is one-shot: the budget ends it so the composer is usable and
+    // the draft survives, rather than holding Send busy with no row.
+    expect(outcome.ok, "an unreachable destination must not hold the press open forever").toBe(false);
+    expect(foregroundHolds("local:a"), "the budgeted press must release exactly its own hold").toBe(0);
+    expect(await outboxStorage.listOutbox("local:a"), "an unverified destination writes no row").toEqual([]);
+    expect(await outboxStorage.getRecovery(row.clientMutationId), "the draft must survive the expiry").toBeDefined();
+    // The client never left "ready": the budget, not readiness, is what ended
+    // this press.
+    expect(client.state, "the budget must fire on a healthy client").toBe("ready");
+  } finally {
+    restoreBound();
+    restoreScheduler();
+    background.release();
+  }
+}, 20_000);
 
 // Finding 5 (review 52989): the post-await fence asked the REF's foreground
 // count, and a routing lease keeps that count positive after the pane that took
@@ -10911,6 +11004,12 @@ it("a Clear that does not own the demand does not answer for it", async () => {
 //
 // Decision point: the identity each invocation takes. Two invocations with the
 // epoch unmoved must differ, which is the property the verdict matching rests on.
+//
+// The first Clear here ABORTS its own transaction, which is what makes the
+// epoch genuinely unmoved: an ordinary Clear commits and advances it, so two
+// ordinary Clears differ under an epoch-derived identity too and would pin
+// nothing. The assertion on the durable epoch is the proof that this fixture is
+// the aborted shape rather than a second committed Clear.
 it("an aborted Clear's identity is not reused by the next Clear", async () => {
   const storage = cache();
   setProductionEntryCacheForTests(storage);
@@ -10919,13 +11018,27 @@ it("an aborted Clear's identity is not reused by the next Clear", async () => {
   await settleEntryTranscriptForTests("local:a");
   await threadsStore.getState().releaseThreadAndWait("local:a");
 
-  await clearCachedSessions();
+  const epochBefore = await storage.getClearEpoch();
+  const originalClear = IDBObjectStore.prototype.clear;
+  const fault = vi.spyOn(IDBObjectStore.prototype, "clear").mockImplementationOnce(function (this: IDBObjectStore) {
+    this.transaction.abort();
+    return originalClear.call(this);
+  });
+  expect(await clearCachedSessions()).toEqual({ committed: false });
+  fault.mockRestore();
   const first = lastClearInvocationForTests();
-  // The epoch the second Clear will compute from is unchanged: the first clear
-  // committed nothing durable here, which is the aborted shape.
+  expect(
+    await storage.getClearEpoch(),
+    "an aborted Clear must leave the durable epoch untouched, or the next invocation is not computing from a still epoch",
+  ).toBe(epochBefore);
+
+  // The epoch the second Clear computes from is the one the first already used.
   await clearCachedSessions();
   const second = lastClearInvocationForTests();
-  expect(second, "a later Clear invocation must take its own identity").toBeGreaterThan(first);
+  expect(
+    second,
+    "a later Clear invocation must take its own identity, even though the epoch never moved",
+  ).toBeGreaterThan(first);
 }, 20_000);
 
 // The certification open belongs to the pane that requested it. A routing lease

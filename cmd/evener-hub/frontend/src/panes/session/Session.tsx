@@ -37,15 +37,25 @@ export interface SessionPaneParams {
 const EMPTY_THREADS = new Map<string, ThreadModel>();
 export const RECOVERY_HINT_DELAY_MS = import.meta.env.MODE === "test" ? 50 : 8_000;
 
-function SessionLoading({
-  sessionRef,
-  repairing,
-  historyFailed,
-}: {
-  sessionRef: string;
-  repairing: boolean;
-  historyFailed: boolean;
-}) {
+// A refused history is not a wait. The hub answered, this client stopped
+// retrying, and nothing on this connection is still running - so an animated
+// grid would promise motion that does not exist, and the pending face's
+// force-shutdown hint would offer to interrupt a process that answered. This
+// face is stationary and offers nothing to press; a later successful read
+// replaces it by giving the seat a model.
+function SessionHistoryUnavailable() {
+  return (
+    <div className={styles.loading} data-loading-state="history-failed">
+      <div role="status" data-testid="session-history-unavailable">
+        <p className={styles.loadingHint}>
+          This session&rsquo;s history could not be read. The pane stays empty until the hub can answer for it.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function SessionLoading({ sessionRef, repairing }: { sessionRef: string; repairing: boolean }) {
   const [showRecovery, setShowRecovery] = useState(false);
   const local = sessionRef.startsWith("local:");
   useEffect(() => {
@@ -54,19 +64,12 @@ function SessionLoading({
     return () => clearTimeout(timer);
   }, [local]);
   // The face's state is a structured fact, not its wording: a caller has to be
-  // able to tell a refused history from an ordinary load without matching the
-  // label's text, because the text can be reworded without changing what the
-  // pane is doing.
+  // able to tell a refusal from an ordinary load without matching the label's
+  // text, because the text can be reworded without changing what the pane is
+  // doing.
   return (
-    <div
-      className={styles.loading}
-      data-loading-state={historyFailed ? "history-failed" : repairing ? "repairing" : "loading"}
-    >
-      <Loader
-        label={
-          repairing ? "Repairing session history" : historyFailed ? "Session history unavailable" : "Loading transcript"
-        }
-      />
+    <div className={styles.loading} data-loading-state={repairing ? "repairing" : "loading"}>
+      <Loader label={repairing ? "Repairing session history" : "Loading transcript"} />
       <div className={styles.loadingSkeleton} data-testid="session-loading-skeleton" aria-hidden="true">
         <Skeleton lines={4} />
       </div>
@@ -131,10 +134,10 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   // loading face says so. Follows the ref's reads — cleared by the next read
   // that does not fail with the code — so it never outlives the repair.
   const repairingRef = useThreadsStore((state) => state.repairingRefs.has(ref));
-  // The same read-scoped face for the hub's other diagnostic: a ref whose
-  // latest read answered the history error has no model to carry it, so the
-  // loading surface says so instead of spinning. Cleared when a read publishes.
-  const historyFailedRef = useThreadsStore((state) => state.historyFailedRefs.has(ref));
+  // The read-scoped refusal is the seat's business: ConversationBody answers
+  // the hub's history diagnostic with the "refused" state only when there is
+  // no model to show, so this pane renders that state and keeps its own
+  // loading face for a read that is still pending.
   const navigation = useNavigationStore();
 
   // Same fallback chain, and same shared resolver, as DockHost's dockview
@@ -241,10 +244,11 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
             </PaneScaffold>
           );
         }
-        // "refused" carries no model either, and it is the state a read ends
-        // in: the loading face with its failure flag is the pane's own answer
-        // to it, so both no-model states share this seat.
-        if (state === "loading" || state === "refused") {
+        // "refused" carries no model either, and it is the state a read ENDS
+        // in: the stationary face is the pane's own answer to it. The
+        // animated loading face and its force-shutdown hint belong to the
+        // pending read only, because only a pending read might still answer.
+        if (state === "refused") {
           return (
             <PaneScaffold
               paneId={paneId}
@@ -253,7 +257,20 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
               title={title}
               edgeFooter={edgeFooter}
             >
-              <SessionLoading key={ref} sessionRef={ref} repairing={repairingRef} historyFailed={historyFailedRef} />
+              <SessionHistoryUnavailable />
+            </PaneScaffold>
+          );
+        }
+        if (state === "loading") {
+          return (
+            <PaneScaffold
+              paneId={paneId}
+              focused={paneFocused}
+              scaffoldMarker={`session:${ref}`}
+              title={title}
+              edgeFooter={edgeFooter}
+            >
+              <SessionLoading key={ref} sessionRef={ref} repairing={repairingRef} />
             </PaneScaffold>
           );
         }

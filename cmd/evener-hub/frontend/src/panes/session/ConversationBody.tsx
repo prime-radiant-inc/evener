@@ -537,11 +537,19 @@ function LiveConversationBody({
   // A deleted ref never hydrates a fresh model and its cached snapshot is
   // stale: the seat's deleted face outranks anything this body could render.
   if (deletedRef) return render({ state: "deleted", content: null, footer: null, cadence: null });
-  // A refused history leaves this seat with no model and no read: reporting
-  // "loading" here is what kept a mounted cascade column spinning after the
-  // read had ended and its retries had stopped.
-  if (historyFailed) return render({ state: "refused", content: null, footer: null, cadence: null });
-  if (!model) return render({ state: "loading", content: null, footer: null, cadence: null });
+  // A refusal outranks a LOAD, never a DISPLAY. When a model stands, the seat
+  // has something to show and a working composer to send with: the refused
+  // read is a refresh diagnostic about what is already on screen, so the
+  // transcript and its controls stay mounted. Replacing them was how a
+  // readable session became an error page over a model the store still held.
+  if (!model) {
+    return render({
+      state: historyFailed ? "refused" : "loading",
+      content: null,
+      footer: null,
+      cadence: null,
+    });
+  }
 
   // A pending row is mounted content even on a turnless transcript: the
   // dormant empty surface yields to the transcript subtree so the pending
@@ -684,6 +692,14 @@ function LiveConversationBody({
           primaryModel={model.model}
         />
         <ConversationRecoveryNotices sessionRef={ref} />
+        {/* A refused refresh is a diagnostic about what is already on screen:
+            it rides next to the transcript and its composer, which stay
+            mounted and usable. */}
+        {historyFailed && (
+          <InlineNotice live="status" data-testid="transcript-history-refused">
+            This session&rsquo;s latest history read failed. The transcript below is the last one the hub answered.
+          </InlineNotice>
+        )}
         {/* Recovery keeps the composer and its menu mounted. Retain the
             fallback for other local snapshots with no Send surface, and for
             remote ones on a phone: the composer never mounts for a

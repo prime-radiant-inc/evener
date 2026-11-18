@@ -304,6 +304,13 @@ test("a first read answered by the history diagnostic shows the failure and stil
   // must not be able to make a plain load look like a refusal.
   await waitFor(() => expect(threadsStore.getState().historyFailedRefs.has("ref_history_failed")).toBe(true));
   await waitFor(() => expect(loadingState()).toBe("history-failed"));
+  // A refused read is not a wait, so the face is stationary: no animated grid
+  // and no force-shutdown affordance, because the hub answered and this client
+  // stopped retrying. Offering to interrupt a process that answered is the
+  // recovery advice this face must not give.
+  expect(screen.getByTestId("session-history-unavailable")).toBeTruthy();
+  expect(screen.queryByTestId("loader-grid")).toBeNull();
+  expect(screen.queryByTestId("session-loading-recovery")).toBeNull();
   // The hub repairs the history on the SAME connection and a resync arrives.
   // That is the case a released hold could not survive: with no owner left, a
   // targeted read skipped the ref and the pane stayed unavailable until
@@ -323,6 +330,62 @@ test("a first read answered by the history diagnostic shows the failure and stil
   ).toBeDefined();
   // The transcript replaces the failure face - structurally, not by its text.
   await waitFor(() => expect(loadingState()).toBeNull());
+  view.unmount();
+});
+
+// A refusal is a diagnostic about a read, not a fact about what is on screen.
+// When the store still holds the published model - a refresh of an ALREADY-OPEN
+// session answered the history diagnostic - the transcript and its composer are
+// readable and usable, and replacing them with an error face takes a working
+// session away from someone who could still read it and still send.
+//
+// Decision point: the seat's model when the refused flag is set. With a model
+// the live surface must stand and the diagnostic rides alongside it.
+test("a refused refresh keeps the readable transcript and its composer mounted", async () => {
+  const fake = connectReadyFakeClient();
+  let failing = false;
+  fake.on("thread/read", () =>
+    failing
+      ? (() => {
+          throw new WireError("thread history failed at entry 9", -32603, {
+            evenerErrorInfo: "transcriptHistoryFailed",
+          });
+        })()
+      : versionedReadResponse("ref_refresh_refused"),
+  );
+  const view = render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_refresh_refused" }} paneId="p_refresh_refused" focused={true} />
+    </ClientProvider>,
+  );
+  // The first read publishes, so the seat has a display model to keep.
+  await waitFor(() => expect(threadsStore.getState().threads.get("ref_refresh_refused")).toBeDefined());
+  await waitFor(() => expect(loadingState()).toBeNull());
+  expect(threadsStore.getState().threads.get("ref_refresh_refused"), "the seat needs a model to keep").toBeDefined();
+
+  // The same session's refresh is refused. The model stays published - the
+  // store does not discard it for a failed refresh - so the snapshot is still
+  // the thing to read.
+  failing = true;
+  await act(async () => {
+    await threadsStore
+      .getState()
+      .refreshThread("ref_refresh_refused")
+      .catch(() => undefined);
+  });
+  await waitFor(() => expect(threadsStore.getState().historyFailedRefs.has("ref_refresh_refused")).toBe(true));
+  // The transcript is still there: the live surface, not the refusal face.
+  expect(loadingState(), "a refused refresh must not replace a readable transcript").toBeNull();
+  expect(
+    screen.queryByTestId("session-history-unavailable"),
+    "the stationary refusal face belongs to a conversation with no model",
+  ).toBeNull();
+  expect(
+    threadsStore.getState().threads.get("ref_refresh_refused"),
+    "the refused refresh must leave the published model in place",
+  ).toBeDefined();
+  // The diagnostic is shown without displacing the content.
+  await waitFor(() => expect(screen.getByTestId("transcript-history-refused")).toBeTruthy());
   view.unmount();
 });
 
