@@ -45,6 +45,7 @@ import {
 	acquireThreadSubscription,
 	applyModelControlNotification,
 	applyNotification,
+	compareBootGeneration,
 	hydrateThread,
 	isStaleCursorError,
 	modelControlAuthority,
@@ -601,6 +602,12 @@ export function createConversationService<ReadLease = unknown>(
 	} | null = null;
 	let capabilities: ThreadCapabilities | null = null;
 	let acceptedModel: ThreadModel | null = null;
+	// The newest boot generation this service has observed, from any frame or
+	// adopted read. beginOpen clears the identity pair but not this: a read
+	// that was already in flight when a newer boot's frame arrived still
+	// answers for the older boot, and certifying its authority would release
+	// picks against a daemon the session no longer runs.
+	let observedBootGeneration: string | null = null;
 	let notificationHandler: ((notification: AnyNotification) => void) | null = null;
 	let modelControlRecoveryHandler: ConversationModelControlRecoveryHandler | null = null;
 	let notificationUnsub: (() => void) | null = null;
@@ -660,6 +667,36 @@ export function createConversationService<ReadLease = unknown>(
 				? { kind: "ready" }
 				: { kind: "failed", error: new Error("ConversationService: read did not establish model-control authority") },
 		);
+	}
+
+	// A frame can announce a boot the client has moved to while a read is
+	// still pending. Keeping the newest token here lets that read be judged
+	// the way the store judges every other read: against the boot the client
+	// holds, not against the reply's own self-consistent fields.
+	function observeBootGeneration(token: string | undefined): void {
+		if (!token) return;
+		if (observedBootGeneration === null || compareBootGeneration(observedBootGeneration, token) === "replace")
+			observedBootGeneration = token;
+	}
+
+	// True when this model's envelope speaks for a boot the client has already
+	// moved past. A newer or different boot replaces normally; only a lower
+	// generation of the same counter is retired.
+	function readsRetiredBoot(model: ThreadModel): boolean {
+		const authority = modelControlAuthority(model);
+		if (authority === undefined || observedBootGeneration === null) return false;
+		return compareBootGeneration(observedBootGeneration, authority.bootGeneration) === "ignore";
+	}
+
+	// A read whose envelope names a boot the client already moved past proves
+	// nothing about model control now. Retire the control instead of adopting
+	// it, so the waiting pick fails rather than dispatching against a daemon
+	// the session no longer runs. The read's transcript is untouched: only the
+	// control state is retired.
+	function holdRetiredReadModelControl(conversation: MobileConversation): MobileConversation {
+		if (!readsRetiredBoot(conversation)) return conversation;
+		const held = reduceModelControl(conversation, { kind: "connectionRetired" }).model;
+		return { ...held, items: conversation.items } as MobileConversation;
 	}
 
 	function failModelControlRead(epoch: number, error: unknown): void {
@@ -976,6 +1013,7 @@ export function createConversationService<ReadLease = unknown>(
 				const hydrated = replayedModelControl.model;
 				const conversation = projectConversation(hydrated, undefined, displayConfig());
 				const caps = extractCapabilities(thread.evener.capabilities);
+				const installed = holdRetiredReadModelControl(conversation);
 				const readModelScope = { harness: thread.source, cwd: thread.cwd };
 				if (openEpoch === epoch) {
 					modelScope = readModelScope;
@@ -983,9 +1021,9 @@ export function createConversationService<ReadLease = unknown>(
 					threadId = response.thread.id;
 					ref = threadRef;
 					capabilities = caps;
-					acceptedModel = conversation;
+					acceptedModel = installed;
 					opening = null;
-					settleModelControlReadFromModel(epoch, conversation);
+					settleModelControlReadFromModel(epoch, installed);
 				}
 				// Reconcile the host's durable dispatch gate only for a read whose
 				// projection actually installed: a failed projection or a stale epoch
@@ -1056,6 +1094,7 @@ export function createConversationService<ReadLease = unknown>(
 				const conversation = projectConversation(hydrated, undefined, displayConfig());
 				const olderCursor = response.olderCursor ?? null;
 				const caps = extractCapabilities(thread.evener.capabilities);
+				const installed = holdRetiredReadModelControl(conversation);
 				const readModelScope = { harness: thread.source, cwd: thread.cwd };
 				if (openEpoch === epoch) {
 					modelScope = readModelScope;
@@ -1063,15 +1102,15 @@ export function createConversationService<ReadLease = unknown>(
 					threadId = response.thread.id;
 					ref = threadRef;
 					capabilities = caps;
-					acceptedModel = conversation;
+					acceptedModel = installed;
 					opening = null;
-					settleModelControlReadFromModel(epoch, conversation);
+					settleModelControlReadFromModel(epoch, installed);
 				}
 				// Reconcile the host's durable dispatch gate only after the projection
 				// installed, so a failed projection or a stale epoch leaves it blocked.
 				if (openEpoch === epoch) await reconcileRead(readLease, response);
 				return {
-					conversation,
+					conversation: installed,
 					changes: response.changes,
 					olderCursor,
 					...(replacedHeldHistory ? { replacedHeldHistory: true } : {}),
@@ -1190,6 +1229,10 @@ export function createConversationService<ReadLease = unknown>(
 					// names the authority the departing daemon reported), which is
 					// why coldSession() checks the status rather than the state.
 					if (committed) foldCommitted(params);
+				}
+				if (notification.method === "history/updated") {
+					const params = notification.params;
+					if (params.ref === ref || params.ref === opening?.ref) observeBootGeneration(params.bootGeneration);
 				}
 				handler(notification);
 			});

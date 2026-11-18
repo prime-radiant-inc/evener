@@ -1705,7 +1705,9 @@ func requestAs[R any](ctx context.Context, client *appwire.Client, method string
 }
 
 func (s *LocalDaemonSource) withClient(ctx context.Context, entry rendezvous.Entry, fn func(context.Context, *appwire.Client) error) error {
-	return s.withClientCallMapper(ctx, entry, fn, localDaemonCallError)
+	// A read has no state to reconcile, so the caller's cancellation is its
+	// whole story: nothing the call reached outranks it.
+	return s.withClientCallMapper(ctx, entry, fn, localDaemonCallError, false)
 }
 
 func (s *LocalDaemonSource) withMutationClient(
@@ -1726,7 +1728,7 @@ func (s *LocalDaemonSource) withMutationClientDisposition(
 ) error {
 	return s.withClientCallMapper(ctx, entry, fn, func(err error) error {
 		return localDaemonMutationCallErrorWithDisposition(clientMutationID, disposition, err)
-	})
+	}, true)
 }
 
 // hasSkillInputItem reports whether an input carries a canonical skill
@@ -1776,6 +1778,7 @@ func (s *LocalDaemonSource) withClientCallMapper(
 	entry rendezvous.Entry,
 	fn func(context.Context, *appwire.Client) error,
 	mapCallError func(error) error,
+	preserveVerdictOnCancel bool,
 ) error {
 	ctx, finish := s.beginDaemonCall(ctx, entry)
 	defer finish()
@@ -1804,11 +1807,31 @@ func (s *LocalDaemonSource) withClientCallMapper(
 	}
 	if err := fn(ctx, client); err != nil {
 		if cerr := ctx.Err(); cerr != nil {
+			// A cancellation may not erase what the mutation already did or may
+			// already have done. A delivered WireError is the peer's own verdict,
+			// and a classified outcome-unknown proves the mutation was dispatched
+			// and its reply lost; either is more than "the caller went away", and
+			// it carries the mutation ID and retry disposition the caller needs to
+			// reconcile. Provably unsent calls and plain transport failures keep
+			// the cancellation, which is all they support.
+			if preserveVerdictOnCancel && localDaemonCallVerdict(err) {
+				return err
+			}
 			return cerr
 		}
 		return mapCallError(err)
 	}
 	return nil
+}
+
+// localDaemonCallVerdict reports whether err is a WireError the call reached
+// rather than a transport failure this client synthesized because its read loop
+// is gone. It covers a refusal the peer delivered and one the local client
+// classified itself, such as thread/model/set's blocked outcome-unknown, which
+// says the mutation was dispatched and its reply lost.
+func localDaemonCallVerdict(err error) bool {
+	_, delivered := errors.AsType[appwire.WireError](err)
+	return delivered && !appwire.IsTransportFailure(err)
 }
 
 // localDaemonDialError maps transport-level failures observed during the
@@ -1858,7 +1881,7 @@ func localDaemonMutationCallErrorWithDisposition(clientMutationID string, dispos
 	// A delivered WireError is an application verdict regardless of its data
 	// shape. Retain that provenance before mapping a transport failure to an
 	// ordinary SessionUnavailable WireError.
-	if _, delivered := errors.AsType[appwire.WireError](err); delivered && !appwire.IsTransportFailure(err) {
+	if localDaemonCallVerdict(err) {
 		return err
 	}
 	mapped := localDaemonCallError(err)

@@ -1719,6 +1719,45 @@ describe("ConversationService", () => {
 			expect(client.calls.filter((call) => call.method === "thread/model/set")).toHaveLength(0);
 		});
 
+		it("refuses a pick on a read whose authority the current boot already retired", async () => {
+			// The client has moved past the boot this read answers for: a
+			// newer-boot frame reached the host while the read was pending. A
+			// pick released from the read's now-retired envelope would dispatch
+			// against a daemon the session no longer runs.
+			const { client, service } = setup({ thread: controlledThread(modelControl(1)) });
+			await service.open("ref-1");
+			service.subscribeNotifications(() => {});
+			client.emitNotification({
+				method: "history/updated",
+				params: {
+					ref: "ref-1",
+					threadId: "thread-1",
+					bootGeneration: MODEL_AUTHORITY_B.bootGeneration,
+					epoch: 0,
+					snapshot: { incarnation: "inc-1", length: 1 },
+					turns: [],
+					items: [],
+				},
+			});
+			let resolveRead!: (response: ThreadReadResponse) => void;
+			client.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => (resolveRead = resolve)));
+			client.on("thread/model/set", () => ({
+				modelControlVersion: 1,
+				disposition: "accepted",
+				modelControl: modelControl(4, { authority: MODEL_AUTHORITY_B, desired: "gpt-5.5" }),
+			}));
+
+			const replacing = service.readProjection("ref-1");
+			await Promise.resolve();
+			const changing = service.changeModel("openai", "gpt-5.5");
+			resolveRead(makeReadResponse(controlledThread(modelControl(2, { authority: MODEL_AUTHORITY_A }))));
+			const projection = await replacing;
+
+			await expect(changing).rejects.toThrow();
+			expect(client.calls.filter((call) => call.method === "thread/model/set")).toHaveLength(0);
+			expect(projection.conversation.modelControlState.kind).not.toBe("ready");
+		});
+
 		it("setReasoningEffort calls thread/reasoning-effort/set", async () => {
 			const { client, service } = setup();
 			client.on("thread/reasoning-effort/set", () => EMPTY_RESPONSE);
