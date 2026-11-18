@@ -1221,6 +1221,22 @@ export class TranscriptRepository {
       if (notification.method === "history/updated") {
         this.accept(notification, context);
       } else if (notification.method === "thread/status/changed") {
+        // A buffered TERMINAL status can be the pane's only evidence of an
+        // end the snapshot predates: a pane opened for an already-watched
+        // delegate issues a non-subscribing read that can capture the turn
+        // mid-wait and lose the race with its Stop. A snapshot that already
+        // reflects the Stop shows no running turn, so a terminal frame
+        // against a model that still runs one is news by construction - the
+        // frame's end postdates the cut. A later buffered frame that
+        // replaces the turn keeps the cut's authority instead.
+        if (
+          notification.params.status.type !== "active" &&
+          this.#model?.runningTurnId !== undefined &&
+          !this.#bufferedTurnReplacedBy(this.#model.runningTurnId, notifications, index)
+        ) {
+          this.accept(notification, context);
+          continue;
+        }
         // A turn's status and the quota announcement for that turn are one
         // fact: dropping the status and keeping the announcement destroys the
         // pairing that made the announcement admissible, because the reducer
@@ -1409,7 +1425,13 @@ export class TranscriptRepository {
       // Nor may a start resurrect a wait the model already watched end.
       return ended !== undefined && stamp !== undefined && stamp <= ended ? "skip" : "apply";
     }
-    if (stamp <= held) return "skip";
+    // An EQUAL stamp is the same wait the read already carries: the
+    // announcement's deadline is the same arithmetic the snapshot's is, so
+    // replaying it fills the chip's metadata - the call's elapsed time and
+    // fallback model - without moving the deadline, and its own receipt
+    // time is what the pane's elapsed advance counts from. Only an OLDER
+    // wait's start is one the model has left behind.
+    if (stamp < held) return "skip";
     return "apply";
   }
 

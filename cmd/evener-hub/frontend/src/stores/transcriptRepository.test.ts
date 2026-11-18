@@ -5854,3 +5854,83 @@ it("does not replay a turn's status and wait past a later active status naming a
   expect(model?.runningTurnId).toBe("turn_B");
   expect(model?.quotaResumesAt).toBeUndefined();
 });
+
+// A pane opened for an already-watched delegate reuses the subscription and
+// issues a non-subscribing read. The read can capture a turn mid-wait and a
+// Stop can land before the response does, so the buffer carries the
+// terminal status the snapshot predates. Dropping it on the assumption that
+// the later cut already reflects the Stop leaves the pane running - and
+// counting down - a turn the daemon canceled, indefinitely: the terminal
+// frame is the pane's only evidence of the end, and replay must apply it
+// when it ends the very turn the adopted snapshot still shows running.
+it("applies a buffered terminal status that ends the turn the adopted snapshot still runs", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  // The snapshot predates the Stop: it still names the turn as running.
+  const response = read("row-1");
+  response.thread.status = { type: "active" };
+  response.thread.evener.activeTurnId = "turn_1";
+  expect(owner.acceptRead(response, { lifetime: 1, readId: "cut", boundary: "cut" })).toBe(true);
+  owner.acceptBeforeReadCut(
+    [
+      {
+        method: "thread/status/changed",
+        params: { threadId, ref, status: { type: "idle" } },
+      } as AnyNotification,
+    ],
+    { lifetime: 1 },
+  );
+  const model = owner.getSnapshot();
+  expect(model?.runningTurnId).toBeUndefined();
+  expect(model?.status?.type ?? "idle").toBe("idle");
+});
+
+// A pane can buffer a stamped quota announcement during hydration while the
+// adopted read already carries the SAME wait's stamp: the deadline is the
+// snapshot's, but the announcement is still the only source of the call's
+// elapsed time and fallback model for that wait. Discarding it as redundant
+// leaves the pane's countdown bare - the metadata must ride, with the
+// announcement's original receipt time preserved so the elapsed sample
+// advances from when the pane actually got it.
+it("replays an equal-stamp buffered announcement to fill the retry metadata the snapshot lacks", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const waitStartedAt = 4_000_000_000;
+  // The read carries the wait's stamp and deadline.
+  const response = read("row-1");
+  response.thread.status = { type: "active" };
+  response.thread.evener.activeTurnId = "turn_1";
+  response.thread.evener.failure = { resumesAt: waitStartedAt + 7_200_000, waitStartedAt };
+  expect(owner.acceptRead(response, { lifetime: 1, readId: "cut", boundary: "cut" })).toBe(true);
+  const before = owner.getSnapshot();
+  expect(before?.quotaResumesAt).toBe(new Date(waitStartedAt + 7_200_000).toISOString());
+  owner.acceptBeforeReadCut(
+    [
+      {
+        method: "evener/thread/modelRetry",
+        params: {
+          threadId,
+          ref,
+          turnId: "turn_1",
+          attempt: 1,
+          maxAttempts: 1,
+          delayMs: 7_200_000,
+          errorClass: "quota_exceeded",
+          model: "gpt-5",
+          groupElapsedMs: 14 * 60_000,
+          attemptCap: 1,
+          waitStartedAt,
+        },
+      } as AnyNotification,
+    ],
+    { lifetime: 1 },
+  );
+  const model = owner.getSnapshot();
+  // The snapshot's deadline stands; the announcement's metadata filled in.
+  expect(model?.quotaResumesAt).toBe(before?.quotaResumesAt);
+  expect(model?.modelRetry?.model).toBe("gpt-5");
+  expect(model?.modelRetry?.groupElapsedMs).toBe(14 * 60_000);
+  expect(model?.modelRetry?.waitStartedAt).toBe(waitStartedAt);
+});

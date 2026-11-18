@@ -922,6 +922,40 @@ test("an unstamped quota wait holds its pending state past the receipt-based cou
   expect(describeLiveness(120_000, true, 0, undefined, { remainingMs: 0, passedReset: true }).level).toBe("quota");
 });
 
+// A legacy snapshot can carry an absolute deadline while its live
+// announcement has no stamp. The receipt-based timer is a fallback for when
+// the model has NO usable deadline: once a known deadline passes, the wait is
+// pending - not resurrected onto a receipt timer that still has time left
+// because the announcement arrived late. One time basis per wait.
+test("a passed read deadline keeps the wait pending rather than falling back to the receipt timer", () => {
+  const now = 1_000_000;
+  // The snapshot's deadline is past; the announcement arrived late, so its
+  // receipt timer still has an hour of runway.
+  reloadWithQuotaWait(-60_000, now);
+  render(
+    <LivenessLine
+      lastFrameAt={0}
+      now={now}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      retry={rawRetry({
+        attempt: 1,
+        attemptCap: 4,
+        delayMs: 2 * 60 * 60_000,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        turnId: "turn_0",
+        receivedAt: now,
+      })}
+    />,
+  );
+  const el = screen.getByTestId("liveness-line");
+  // Pending, not a countdown leaping forward to the late timer's remainder.
+  expect(el.getAttribute("data-level")).toBe("quota");
+  expect(el.textContent ?? "").not.toContain(waitingForQuotaText(2 * 60 * 60_000));
+});
+
 // --- the hub's count (#3797) ------------------------------------------------
 
 // The hub's count of running subagents, known only from the subtree activity

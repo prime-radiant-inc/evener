@@ -104,9 +104,15 @@ export function LivenessLine({ lastFrameAt, now, active, sessionRef, turnId, ret
     inProgress: lastFrameAt > retry.receivedAt || now - retry.receivedAt >= retry.delayMs,
   };
   // The countdown rule is the shared one the rail row uses, so both surfaces
-  // agree on when a wait is over; a wait whose instant has passed explains
-  // nothing and leaves the ordinary decision below.
+  // agree on when a wait is over. A read instant that is still ahead is the
+  // whole countdown; one already PAST says the reset passed, and the wait is
+  // pending until the daemon reports its end - the receipt-based timer below
+  // is a fallback for a model with NO usable deadline, never a second life
+  // for a deadline that already passed: a late-arriving announcement would
+  // otherwise leap the line back to a countdown the daemon's instant
+  // contradicts. One time basis per wait.
   const fromRead = quotaResumeRemainingMs(quotaResumesAt, now);
+  const readNamedADeadline = quotaResumesAt !== undefined;
   // A pane OPEN when the limit hits gets only the live retry, and that
   // notification never invalidates history, so no read has set an instant for
   // it (ThreadModel.quotaResumesAt is snapshot-only). Without this the wait
@@ -183,10 +189,11 @@ export function LivenessLine({ lastFrameAt, now, active, sessionRef, turnId, ret
     !stampedQuotaWait &&
     retry.turnId !== undefined &&
     retry.turnId === turnId &&
+    !readNamedADeadline &&
     now - retry.receivedAt < retry.delayMs
       ? retry.delayMs - (now - retry.receivedAt)
       : undefined;
-  const remaining = fromRead ?? (liveRemaining !== undefined && liveRemaining > 0 ? liveRemaining : null);
+  const remaining = readNamedADeadline ? fromRead : (liveRemaining ?? null);
   // Past the reset the wait does not stop existing. The countdown's time basis
   // is the daemon's deadline, and its lifetime is the daemon's WAIT - not this
   // client's clock crossing a reset. The reset is a fact about the schedule:
