@@ -212,33 +212,17 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// hold of that door, so a snapshot that waits for the door can never
 	// observe the half-committed span between the two. The door-then-session
 	// order is the lock order every transcript writer already follows.
-	// A fold can remove an earlier model or fork attribution. Recheck under
-	// the snapshot locks after appending, since another fold may have won
-	// the door while the environment was being sampled.
-	for {
-		s.attentionMu.Lock()
-		s.mu.Lock()
-		if !s.needsEnvironmentIdentityLocked() {
-			break
-		}
-		observation := s.requestEnvironment
-		s.mu.Unlock()
-		s.attentionMu.Unlock()
-		if err := ctx.Err(); err != nil {
-			return nil, "", nil, llm.Request{}, nil, "", err
-		}
-		if err := s.appendRequestEnvironment(observation); err != nil {
-			return nil, "", nil, llm.Request{}, nil, "", err
-		}
+	if err := s.lockModelRequestHistory(ctx, nil); err != nil {
+		return nil, "", nil, llm.Request{}, nil, "", err
 	}
 	// A Git probe taken for this request can be inconclusive during user
 	// admission or preparation. Schedule its retry after the snapshot settles.
+	observation := s.requestEnvironment
 	s.finishRequestEnvironmentLocked()
-	historyTurns := append([]schema.Turn{}, s.history...)
-	// A request's coverage belongs to its history snapshot. A later fold may
-	// replace a retracted frontier before this request stages its inputs.
-	historyCoverage := s.snapshotConversationCoverageLocked(historyTurns)
-	inFlightFrom := s.turnHistoryBaseline
+	initial := s.modelHistoryProjectionLocked()
+	historyTurns := initial.turns
+	historyCoverage := initial.coverage
+	inFlightFrom := initial.inFlightFrom
 	suppressedDocuments := make(map[string]struct{}, len(s.rejectedToolResultDocuments)+len(s.pendingToolResultDocuments))
 	for id := range s.rejectedToolResultDocuments {
 		suppressedDocuments[id] = struct{}{}
@@ -297,11 +281,18 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		// one: a fold landing in between leaves the earlier boundary indexing
 		// turns this snapshot no longer holds, and an in-flight turn that falls
 		// below it loses the replay exemption that keeps its thinking.
-		projection := s.delegateModelHistorySnapshotWithCoverage()
+		if err := s.lockModelRequestHistory(ctx, observation); err != nil {
+			_ = s.delegateController.AbortModelRequest(claim)
+			return nil, "", nil, llm.Request{}, nil, "", err
+		}
+		s.finishRequestEnvironmentLocked()
+		projection := s.modelHistoryProjectionLocked()
+		s.mu.Unlock()
+		s.attentionMu.Unlock()
 		snapshot := projection.turns
 		historyCoverage = projection.coverage
-		scope.InFlightFrom = projection.inFlightFrom
 		inFlightFrom = projection.inFlightFrom
+		scope.InFlightFrom = inFlightFrom
 		presentedBoundary = len(snapshot)
 		if ctx.Value(delegateAttentionRunContextKey{}) != nil {
 			// An automatic attention drive projects the resident history,
@@ -473,6 +464,31 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	s.stageConversationInputsWithCoverage(presentedTurns, historyCoverage)
 	t.RequestBuild = time.Since(tPhaseStart)
 	return profile, sys, history, req, fullHistory, reasoningEffort, nil
+}
+
+// lockModelRequestHistory holds attentionMu and mu on success.
+// A fold can drop an environment update while a probe or a delegate claim
+// runs. Each capture checks the history it will copy and shares the request's
+// workspace observation until a different workspace requires a new sample.
+func (s *Session) lockModelRequestHistory(ctx context.Context, observation *workspaceObservation) error {
+	for {
+		s.attentionMu.Lock()
+		s.mu.Lock()
+		if !s.needsEnvironmentIdentityLocked() {
+			return nil
+		}
+		if s.requestEnvironment != nil {
+			observation = s.requestEnvironment
+		}
+		s.mu.Unlock()
+		s.attentionMu.Unlock()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := s.appendRequestEnvironment(observation); err != nil {
+			return err
+		}
+	}
 }
 
 // foldHistoryBeforeRequest applies context management ahead of a model request

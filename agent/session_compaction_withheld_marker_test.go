@@ -8,12 +8,15 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/spf13/afero"
 
+	"primeradiant.com/evener/agent/envctx"
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -638,9 +641,35 @@ func TestRequestSnapshotDuringFoldCommitKeepsCoverageKnown(t *testing.T) {
 func TestLeasedRequestSnapshotDuringFoldCommitKeepsCoverageKnown(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	env.PrepareSessionScratch()
+	launchScratch := env.SessionScratchDir()
+	t.Cleanup(func() { _ = env.DisposeSessionScratch() })
+	var probes atomic.Int32
+	cfg := minimalTestSessionConfig(t)
+	cfg.testOnly.minimalSystemPrompt = false
+	cfg.testOnly.envProbes = &envctx.Probes{
+		Now: func() time.Time { return envctxFixedTime },
+		GitBranch: func(string) (string, bool) {
+			probes.Add(1)
+			return "", false
+		},
+	}
 	s := newScriptedSummaryCompactSession(t, "leased-fold-commit-window-cheap", func(llm.Request) llm.Response {
 		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nopaque-leased-fold-commit-window-summary\n[END SUMMARY]")}
-	}, withConfig(minimalTestSessionConfig(t)), withStateDir(dir))
+	}, withEnv(env), withConfig(cfg), withStateDir(dir))
+	prompt := s.cachedSystemPrompt
+	if launchScratch == "" || s.promptLaunch.ScratchDir == nil || *s.promptLaunch.ScratchDir != launchScratch {
+		t.Fatalf("saved scratch %v, want the installed launch path %q", s.promptLaunch.ScratchDir, launchScratch)
+	}
+	if err := env.DisposeSessionScratch(); err != nil {
+		t.Fatal(err)
+	}
+	env.PrepareSessionScratch()
+	scratch := env.SessionScratchDir()
+	if scratch == "" || scratch == launchScratch {
+		t.Fatalf("scratch %q does not supersede the launch path %q", scratch, launchScratch)
+	}
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}
@@ -659,14 +688,10 @@ func TestLeasedRequestSnapshotDuringFoldCommitKeepsCoverageKnown(t *testing.T) {
 	s.mu.Lock()
 	s.strategy = nil
 	s.mu.Unlock()
-	final := func(llm.Request) llm.Response {
+	adapter := &agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response {
 		return agenttest.FinalResponse("opaque-leased-fold-commit-window-result")
-	}
-	steps := make([]func(llm.Request) llm.Response, 0, 4)
-	for range 4 {
-		steps = append(steps, final)
-	}
-	s.client.Register(newFakeAdapter("openai", steps...))
+	}}
+	s.client.Register(adapter)
 	const rounds = 4
 	for i := range rounds {
 		if _, err := s.ProcessInput(context.Background(), fmt.Sprintf("opaque-leased-fold-commit-window-input-%d", i), nil); err != nil {
@@ -676,6 +701,9 @@ func TestLeasedRequestSnapshotDuringFoldCommitKeepsCoverageKnown(t *testing.T) {
 	original := s.ConversationProvenance().AdmittedInputs
 	if len(original) != rounds {
 		t.Fatalf("admitted inputs before the fold = %v, want %d", original, rounds)
+	}
+	if last, blocks := requestEnvironment(adapter.Requests()[rounds-1]); blocks != 1 || last.ScratchDir != scratch {
+		t.Fatalf("before the fold, the provider saw %d environment updates and scratch %q, want %q", blocks, last.ScratchDir, scratch)
 	}
 
 	// The boundary only decides anything when a turn sits at or after it, so
@@ -725,9 +753,13 @@ func TestLeasedRequestSnapshotDuringFoldCommitKeepsCoverageKnown(t *testing.T) {
 	})
 	requestDone := make(chan error, 1)
 	builtReq := make(chan llm.Request, 1)
+	probes.Store(0)
+	if err := s.appendRequestEnvironment(nil); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, lease)
 	go func() {
 		var timings events.RoundTimings
-		ctx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, lease)
 		// Round 1, not 0: round zero initializes the boundary to the current
 		// history length, which would erase the in-flight boundary seeded above
 		// and make the exemption vacuous.
@@ -825,6 +857,27 @@ func TestLeasedRequestSnapshotDuringFoldCommitKeepsCoverageKnown(t *testing.T) {
 	}
 	if at := indexOfTurnText(projection.turns, leasedInFlightText); at != projection.inFlightFrom {
 		t.Fatalf("projection boundary %d does not open at the in-flight turn's position %d", projection.inFlightFrom, at)
+	}
+	if _, _, _, _, err := s.callModelWithFallback(ctx, s.profile, req, nil, "", 1); err != nil {
+		t.Fatal(err)
+	}
+	requests := adapter.Requests()
+	if len(requests) != rounds+1 {
+		t.Fatalf("provider received %d requests, want %d", len(requests), rounds+1)
+	}
+	dispatched := requests[rounds]
+	last, blocks := requestEnvironment(dispatched)
+	if blocks != 1 || last.ScratchDir != scratch || dispatched.Messages[0].Text() != prompt || probes.Load() != 1 {
+		t.Errorf("leased request after fold: %d environment updates, scratch %q (want %q), original prompt %t, workspace probes %d (want 1)", blocks, last.ScratchDir, scratch, dispatched.Messages[0].Text() == prompt, probes.Load())
+	}
+	updateSessionTestConfig(s, func(cfg *testConfig) { cfg.afterModelHistorySnapshot = nil })
+	probes.Store(0)
+	_, _, _, next, _, _, err := s.prepareModelRequestWithError(ctx, 2, &events.RoundTimings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last, blocks := requestEnvironment(next); blocks != 1 || last.ScratchDir != scratch || probes.Load() != 1 {
+		t.Errorf("next leased request has %d environment updates, scratch %q, and %d probes for the inconclusive branch", blocks, last.ScratchDir, probes.Load())
 	}
 }
 

@@ -439,6 +439,12 @@ func (s *Session) delegateModelHistorySnapshotWithCoverage() delegateModelProjec
 	defer s.attentionMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.modelHistoryProjectionLocked()
+}
+
+// Both snapshot locks protect the turns, their conversation coverage, and
+// the in-flight boundary from concurrent fold publication.
+func (s *Session) modelHistoryProjectionLocked() delegateModelProjection {
 	turns := append([]schema.Turn(nil), s.history...)
 	return delegateModelProjection{
 		turns:        turns,
