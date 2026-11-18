@@ -102,6 +102,64 @@ export function parseAskUserQuestions(item: Pick<ItemModel, "argumentsJSON">): A
   return questions.length > 0 ? questions : undefined;
 }
 
+// canonicalAskUserQuestions reads the questions a call ACTUALLY asked, from
+// the successful tool result's recorded state (schema.AskUserState, which the
+// wire carries on the result item's `raw` and a client fold merges onto the
+// call). It exists because argumentsJSON is only what the model SENT: a
+// pre-tool hook may have changed the questions, and the result is the record
+// of what ran (#6323).
+//
+// Three outcomes, and the difference matters to an attribution check:
+//   - no recorded state at all (a daemon that carries none, or a row whose
+//     result the page did not load): undefined, meaning "no better evidence
+//     than the arguments";
+//   - a state whose every question parses: those questions;
+//   - a state this client cannot enumerate - a question that does not parse,
+//     or an empty list where the tool requires at least one: null, meaning the
+//     call's questions are unprovable. A caller must treat that as
+//     unattributable rather than fall back to the arguments, which are exactly
+//     what the state supersedes.
+function canonicalAskUserQuestions(item: Pick<ItemModel, "raw">): AskUserQuestion[] | null | undefined {
+  const raw = item.raw;
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const questions = (raw as { questions?: unknown }).questions;
+  if (!Array.isArray(questions)) return undefined;
+  if (questions.length === 0) return null;
+  // schema.AskUserQuestion's own omitempty rules, not the arguments shape's:
+  // an unset header, detail, why or if_unanswered is ABSENT here, whereas
+  // parseQuestion's arguments-shaped check would read a missing detail as a
+  // malformed option and lose a state the daemon recorded correctly.
+  const parsed = questions.map((question, index) => canonicalAskQuestion(question, index));
+  if (parsed.some((question) => question === undefined)) return null;
+  return parsed.filter((question): question is AskUserQuestion => question !== undefined);
+}
+
+function canonicalAskQuestion(raw: unknown, index: number): AskUserQuestion | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const obj = raw as Record<string, unknown>;
+  const header = typeof obj.header === "string" && obj.header !== "" ? obj.header : `Question ${index + 1}`;
+  if (typeof obj.question !== "string" || !Array.isArray(obj.options) || obj.options.length === 0) return undefined;
+  const options: AskUserOption[] = [];
+  for (const option of obj.options) {
+    if (typeof option !== "object" || option === null) return undefined;
+    const fields = option as Record<string, unknown>;
+    if (typeof fields.label !== "string") return undefined;
+    options.push({
+      label: fields.label,
+      detail: typeof fields.detail === "string" ? fields.detail : "",
+      recommended: fields.recommended === true,
+    });
+  }
+  return {
+    header,
+    question: obj.question,
+    options,
+    multiSelect: obj.multi_select === true,
+    why: typeof obj.why === "string" ? obj.why : undefined,
+    ifUnanswered: typeof obj.if_unanswered === "string" ? obj.if_unanswered : undefined,
+  };
+}
+
 // One line of a composed [answers] reply (appwire-client/typescript/askAnswers.ts's composeAskAnswers,
 // byte-exact format): "N. [Header] → resolution text[ — note: "..."]". Safe
 // headers are raw; headers containing ]/CR/LF are JSON strings, so their
@@ -196,7 +254,12 @@ function composedReplyRepeatsAHeader(text: string): boolean {
 //   - a call the stamp names is not in the loaded items. A transcript page may
 //     split one turn's ask rows, so a partial view undercounts headers and
 //     would attribute a line to the wrong ask. The count is evidence only when
-//     every named call is present with parseable questions;
+//     every named call is present with questions this client can enumerate;
+//   - a call's questions cannot be enumerated from its recorded state: the
+//     result says it asked a question this client cannot parse. Falling back
+//     to the original arguments would count the questions the model SENT,
+//     which is exactly the list a hook may have changed, so the header set is
+//     unprovable and the attribution is refused rather than guessed;
 //   - admission also consumed questions it could NOT name
 //     (resolvedAskLegacyCount). Those are restored from records that predate
 //     call ids, their headers never reach the wire, and one of them may share
@@ -221,7 +284,7 @@ function stampedComposedRecapIsAttributable(items: readonly ItemModel[], reply: 
         isAckedAskCall(candidate) && candidate.turnId === named.turnId && candidate.callId === named.callId,
     );
     if (call === undefined) return false;
-    const questions = parseAskUserQuestions(call);
+    const questions = questionsThisCallAsked(items, call);
     if (questions === undefined) return false;
     for (const question of questions) {
       questionsPerHeader.set(question.header, (questionsPerHeader.get(question.header) ?? 0) + 1);
@@ -231,6 +294,52 @@ function stampedComposedRecapIsAttributable(items: readonly ItemModel[], reply: 
     if (count > 1) return false;
   }
   return true;
+}
+
+// questionsThisCallAsked is the header-count's only source, and it prefers the
+// record of what RAN: the successful result's canonical state. The original
+// arguments are the model's intent, and a pre-tool hook may have replaced the
+// questions after it was sent. Where no state exists at all (an older daemon, a
+// result the page did not load) the arguments stand in, but only when EVERY
+// question in them parses: one that does not could be the question a hook
+// replaced, so the header set is unprovable and the caller refuses the recap
+// rather than guessing (#6323).
+function questionsThisCallAsked(items: readonly ItemModel[], call: ItemModel): AskUserQuestion[] | undefined {
+  const canonical = canonicalAskUserQuestions(call);
+  if (canonical === null) return undefined;
+  if (canonical !== undefined) return canonical;
+  // The fold that merges a result onto its call does not always run (a live
+  // item may arrive as two rows), so look for the recorded state by call id
+  // before concluding the page carries none.
+  for (const candidate of items) {
+    if (candidate === call || candidate.callId !== call.callId) continue;
+    const sibling = canonicalAskUserQuestions(candidate);
+    if (sibling === null) return undefined;
+    if (sibling !== undefined) return sibling;
+  }
+  return everyAskQuestionFromArguments(call);
+}
+
+// everyAskQuestionFromArguments is parseAskUserQuestions with the lossy step
+// removed: parseAskUserQuestions drops a question it cannot parse and returns
+// the rest, which is right for rendering and wrong for counting, because the
+// dropped one is precisely the question whose header the count needs. Any
+// unusable question here means the list is not evidence.
+function everyAskQuestionFromArguments(item: Pick<ItemModel, "argumentsJSON">): AskUserQuestion[] | undefined {
+  const args = parseArgs(item.argumentsJSON);
+  let raw: unknown = args.questions;
+  if (!Array.isArray(raw) && typeof args.question === "string" && Array.isArray(args.options)) {
+    const wrapped: Record<string, unknown> = { question: args.question, options: args.options };
+    if (typeof args.header === "string" && args.header !== "") wrapped.header = args.header;
+    if (typeof args.why === "string" && args.why !== "") wrapped.why = args.why;
+    if (typeof args.if_unanswered === "string" && args.if_unanswered !== "") wrapped.if_unanswered = args.if_unanswered;
+    if (args.multi_select === true) wrapped.multi_select = true;
+    raw = [wrapped];
+  }
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+  const parsed = raw.map((question, index) => parseQuestion(question, index));
+  if (parsed.some((question) => question === undefined)) return undefined;
+  return parsed.filter((question): question is AskUserQuestion => question !== undefined);
 }
 
 function composedReplyCoversCall(

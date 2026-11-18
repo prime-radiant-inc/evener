@@ -109,6 +109,27 @@ execution a reply answered, so a client matching a settled ask to its answer
 reads the calls and compares the ask row's own `(turnId, callId)`. The turn
 link and the composed `[answers]` text shape remain the fallback for unfenced
 whole-set answers and for records stamped before the call list existed.
+When admission also consumed questions it could not name — the restored
+call-less population — the observation carries `resolvedAskLegacyCount` too.
+Those questions' headers never reach the wire, so a client cannot tell whether
+one of them shares the header a composed answer line names: it keeps that reply
+visible in the transcript and shows no attributed recap while the count is
+positive. A reply whose named calls fully account for the resolved questions
+recaps as before.
+A composed recap must also attribute each answer line to exactly one question.
+The client counts headers from the questions each call's successful result
+records — what actually ran, since a pre-tool hook may have changed the
+questions after the model sent them — and keeps the raw reply whenever a header
+appears more than once across the calls a reply names, or whenever a call's
+questions cannot be enumerated and only the original arguments remain with a
+question that does not parse.
+When admission also consumed questions it could not name — the restored
+call-less population — the observation carries `resolvedAskLegacyCount` as
+well. Those questions' headers never reach the wire, so a client cannot tell
+whether one of them shares the header a composed answer line names: it keeps
+that reply visible in the transcript and shows no attributed recap while the
+count is positive. A reply whose named calls fully account for the resolved
+questions recaps as before.
 
 A ref-addressed `thread/read` carrying the expected pair, `offset` and `limit`
 returns `pendingAskPage:{composites,total,nextOffset,calllessCount}`. Any page

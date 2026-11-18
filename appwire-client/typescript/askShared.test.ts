@@ -868,6 +868,80 @@ test("a stamp naming a call the page did not load recaps nothing", () => {
   expect(answeredAskUserReply(model, loaded)).toBeUndefined();
 });
 
+test("a hook-added shared header makes the stamped recap unattributable", () => {
+  // A pre-tool hook added a "Deploy?" question to the SECOND call, so the
+  // recorded result says both calls asked that header while the arguments the
+  // model sent for the second still carry only "Beta". Counting headers from
+  // the arguments would see "Deploy?" once and recap the one answer line under
+  // the first call - pairing it with a question it may not answer. The
+  // recorded state is the record of what ran, so the count sees the header
+  // twice and both calls keep their raw row.
+  const first = item({
+    argumentsJSON: askUserArgs(ONE_QUESTION),
+    turnId: "turn_1",
+    id: "ask_1",
+    callId: "call_1",
+    toolName: "ask_user",
+    status: "completed",
+  });
+  const second = item({
+    argumentsJSON: askUserArgs([
+      { header: "Beta", question: "Which database?", options: [{ label: "Postgres", detail: "ok" }] },
+    ]),
+    turnId: "turn_1",
+    id: "ask_2",
+    callId: "call_2",
+    toolName: "ask_user",
+    status: "completed",
+    raw: {
+      version: 1,
+      questions: [
+        { header: "Beta", question: "Which database?", options: [{ label: "Postgres", detail: "ok" }] },
+        { header: "Deploy?", question: "And deploy it?", options: [{ label: "Yes" }, { label: "No" }] },
+      ],
+    },
+  });
+  const reply = userMessage({
+    text: '[answers]\n1. [Deploy?] → "Yes"',
+    turnId: "turn_2",
+    answerToTurnIds: ["turn_1"],
+    resolvedAskCalls: [
+      { turnId: "turn_1", callId: "call_1" },
+      { turnId: "turn_1", callId: "call_2" },
+    ],
+  });
+  const model = turnsModel([first, second], [reply]);
+  expect(answeredAskUserSuffix(model, first)).toBeUndefined();
+  expect(answeredAskUserSuffix(model, second)).toBeUndefined();
+  expect(answeredAskUserReply(model, first)).toBeUndefined();
+  expect(answeredAskUserReply(model, second)).toBeUndefined();
+});
+
+test("an unparseable question in the recorded state refuses the stamped recap", () => {
+  // The call's result says it asked a question this client cannot enumerate.
+  // The arguments still parse and name one header, but they are what the model
+  // SENT - the state is what ran - so the header set is unprovable. Refusing
+  // beats guessing which call the line belongs to.
+  const call = item({
+    argumentsJSON: askUserArgs(ONE_QUESTION),
+    turnId: "turn_1",
+    id: "ask_1",
+    callId: "call_1",
+    toolName: "ask_user",
+    status: "completed",
+    raw: { version: 1, questions: [{ header: "Deploy?" }] },
+  });
+  const reply = userMessage({
+    text: '[answers]\n1. [Deploy?] → "Yes"',
+    turnId: "turn_2",
+    answerToTurnIds: ["turn_1"],
+    resolvedAskCalls: [{ turnId: "turn_1", callId: "call_1" }],
+  });
+  const model = turnsModel([call], [reply]);
+  expect(answeredAskUserSuffix(model, call)).toBeUndefined();
+  expect(answeredAskUserReply(model, call)).toBeUndefined();
+});
+
 test("a stamp that also consumed an unnamed legacy ask recaps nothing", () => {
   // A fenced reply can consume a NAMED ask and a restored LEGACY ask at once.
   // The legacy question predates call ids, so the wire names only the first
