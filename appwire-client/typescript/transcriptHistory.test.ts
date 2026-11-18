@@ -339,6 +339,66 @@ test("an enriched live-read-empty takes the answering daemon as the hold owner",
   expect(holdOwnerOf(model.history!)).toBe("2");
 });
 
+// RoboRev 53656 (Medium 2): the enriched response is the first evidence of the
+// replacement, and the owner it must replace is an IMPLICIT one. An ordinary
+// boot-1 read leaves `holdOwner` unset and owns through the recorded
+// `bootGeneration`; a fold that reads only the explicit field sees "no owner to
+// replace", keeps boot 1, and installs boot 2's samples under it. Boot 2's very
+// next frame then compares against boot 1, reads as a fresh replacement, and
+// clears the live hold it published.
+test("an enriched live-read-empty replaces an IMPLICIT hold owner with the answering daemon", () => {
+  const base = hydrateThread(
+    {
+      thread: testThread(),
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 100 },
+    },
+    "ref_t",
+    1000,
+  );
+  // The M2 condition: no explicit record. Ownership is implicit in the
+  // recorded boot generation, which is how an ordinary read leaves it.
+  expect(base.history?.holdOwner).toBeUndefined();
+  let model: ThreadModel = base;
+
+  const enriched = {
+    ...historyRead(),
+    thread: testThread({ turns: [versionedFragmentTurn([1])] }),
+    bootGeneration: "2",
+    snapshot: { incarnation: "inc-1", length: 100 },
+    servedFrom: "saved-index",
+    fallbackReason: "live-read-empty",
+    asOf: "2026-11-08T00:00:00Z",
+  } as ThreadReadResponse;
+  model = applyReadResponse(model, enriched, 1002);
+  // The answering daemon is recorded, not left implicit under the boot it
+  // replaced.
+  expect(holdOwnerOf(model.history!)).toBe("2");
+
+  model = applyNotification(
+    model,
+    {
+      method: "evener/delegate/updated",
+      params: { ref: "ref_t", delegate: heldDelegate(1, 3) },
+    } as AnyNotification,
+    2500,
+  );
+  expect(model.delegates?.[0]?.holdSequence).toBe(1);
+
+  // Boot 2's OWN next resync. Asserted at the harm: the wait is still there
+  // after the frame that would erase it.
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/resync",
+      params: { threadId: base.threadId, ref: "ref_t", bootGeneration: "2", epoch: 2 },
+    } as AnyNotification,
+    3000,
+  );
+  expect(model.delegates?.[0]?.holdSequence).toBe(1);
+});
+
 for (const facts of ["legacy", "unavailable"] as const) {
   for (const authoritative of [false, true]) {
     test(`${facts} read preserves its existing authoritative policy: ${authoritative}`, () => {

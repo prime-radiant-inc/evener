@@ -2132,6 +2132,90 @@ describe("useThreadsStore.ensureThread", () => {
     threadsStore.getState().releaseWatchedThread(ref);
   });
 
+  test("a buffered frame from a newer source survives a failure under the owner it replaced", async () => {
+    // The failure names the source that SERVED the read - `5@root`, the owner
+    // this read started under - so the hand-off retires nothing. The buffer
+    // meanwhile holds `6@child`'s history frame and `6@child`'s live hold: a
+    // cross-owner hand-off the failure knows nothing about. Two QUALIFIED
+    // tokens from different roots compare as replacements in BOTH directions,
+    // so testing the buffered frame against the failure's own token blanks
+    // `6@child`, that frame folds bootless and records no owner, and `5@root`'s
+    // sequence 900 survives replay to beat `6@child`'s first sample of 1.
+    const fake = connectReadyFakeClient();
+    const ref = "local:watched";
+    const threadId = `thr_${ref}`;
+    const initial = versionedReadResponse(
+      ref,
+      {
+        status: { type: "active" },
+        evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
+      },
+      0,
+    );
+    initial.bootGeneration = "5@root";
+    const refusedHolder: { reject: ((error: Error) => void) | null } = { reject: null };
+    let readCount = 0;
+    fake.on("thread/read", (params) => {
+      readCount += 1;
+      if (readCount === 1) return echoRead(initial, params.requestGeneration);
+      return new Promise<ThreadReadResponse>((_resolve, reject) => {
+        refusedHolder.reject = reject;
+      });
+    });
+
+    await threadsStore.getState().watchThread(ref, { includeTurns: true });
+    fake.emitNotification({
+      method: "evener/delegate/updated",
+      params: { threadId, ref, delegate: heldDelegateRow() },
+    });
+    await flushUntil(() => threadsStore.getState().watchedThreads.get(ref)?.delegates?.[0]?.holdSequence === 900);
+
+    fake.emitNotification({
+      method: "evener/thread/resync",
+      params: { threadId, ref, epoch: 2 },
+    });
+    await flushUntil(() => refusedHolder.reject !== null);
+
+    // The child's own daemon takes over only through frames that arrive while
+    // this read is pending; the failure itself still names the root.
+    emitHistoryUpdatedFor(fake, ref, threadId, {
+      bootGeneration: "6@child",
+      epoch: 1,
+      snapshot: { incarnation: "inc-2", length: 1 },
+      turns: [],
+      items: [],
+    });
+    fake.emitNotification({
+      method: "evener/delegate/updated",
+      params: {
+        threadId,
+        ref,
+        delegate: { ...heldDelegateRow(), holdSequence: 1, projectionRevision: 4 },
+      },
+    });
+    await Promise.resolve();
+    expect(threadsStore.getState().watchedThreads.get(ref)?.delegates?.[0]?.holdSequence).toBe(900);
+
+    refusedHolder.reject?.(
+      new WireError("thread history failed at entry 7", -32603, {
+        evenerErrorInfo: ErrorTranscriptHistoryFailed,
+        bootGeneration: "5@root",
+      }),
+    );
+    await flushUntil(() => threadsStore.getState().watchedThreads.get(ref)?.history?.failed !== undefined);
+    const published = threadsStore.getState().watchedThreads.get(ref);
+    // `6@child` owns the sequence the buffered sample was numbered in, and the
+    // failure retired nothing, so its frame keeps its identity and its first
+    // sample replaces the retired daemon's 900 rather than losing to it.
+    // The HARM first: the retired daemon's 900 is still on screen, so the
+    // replacement's first sample of 1 loses to a sequence its owner never
+    // numbered. The mechanism (no owner recorded) is the assertion below.
+    expect(published?.delegates?.[0]?.holdSequence).toBe(1);
+    expect(published?.history?.holdOwner).toBe("6@child");
+
+    threadsStore.getState().releaseWatchedThread(ref);
+  });
+
   test("an ambiguous bare resync hint keeps the buffered hold it cannot interpret", async () => {
     // A descendant is served by its root at "5@root". An OLDER daemon's
     // worktree-change resync spells that same controller "5" - a bare counter
@@ -2863,6 +2947,84 @@ describe("useThreadsStore.ensureThread", () => {
     const published = threadsStore.getState().watchedThreads.get(ref);
     expect(published?.history?.failed).toBeDefined();
     // The departed source's stream text is gone with its producer...
+    expect(published?.overlay?.["stream:outgoing"]).toBeUndefined();
+    expect(published?.turns.flatMap((turn) => turn.items).some((item) => item.id === "outgoing-item")).toBe(false);
+
+    threadsStore.getState().releaseWatchedThread(ref);
+  });
+
+  test("an overlay buffered under the outgoing boot is not replayed onto a live replacement", async () => {
+    // RoboRev 53656 (Medium 3): the LIVE-REPLACEMENT sibling. A bootless
+    // resync carries the buffer across, so boot 1's overlay upsert is still
+    // there when the successor read fails naming boot 2. The base model hands
+    // off to boot 2, but replay filtered overlays only for `daemonless`, so the
+    // failed transcript displayed boot 1's unfinished output - work that was
+    // never published before the hand-off and that boot 2 will not confirm.
+    const fake = connectReadyFakeClient();
+    const ref = "local:watched";
+    const threadId = `thr_${ref}`;
+    const initial = versionedReadResponse(
+      ref,
+      {
+        status: { type: "active" },
+        evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
+      },
+      0,
+    );
+    // Boot 1 served by its ROOT: qualified, so the failure below can name a
+    // genuinely DIFFERENT owner rather than a second counter of the same one.
+    initial.bootGeneration = "1@root";
+    const refused: Array<(error: Error) => void> = [];
+    let readCount = 0;
+    fake.on("thread/read", (params) => {
+      readCount += 1;
+      if (readCount === 1) return echoRead(initial, params.requestGeneration);
+      return new Promise<ThreadReadResponse>((_resolve, reject) => {
+        refused.push(reject);
+      });
+    });
+
+    await threadsStore.getState().watchThread(ref, { includeTurns: true });
+
+    // BOOTLESS: starts the read, retires nothing, and keeps the buffer.
+    fake.emitNotification({
+      method: "evener/thread/resync",
+      params: { threadId, ref, epoch: 2 },
+    });
+    await flushUntil(() => refused.length === 1);
+
+    fake.emitNotification({
+      method: "overlay/upserted",
+      params: {
+        ref,
+        threadId,
+        item: {
+          key: "stream:outgoing",
+          kind: "stream",
+          streamId: "outgoing-stream",
+          roundId: "round-outgoing",
+          turnId: "turn_outgoing",
+          item: { id: "outgoing-item", turnId: "turn_outgoing", type: "agentMessage", text: "never published" },
+        },
+      },
+    });
+    await Promise.resolve();
+    // Non-vacuous: the buffer is the only place this overlay exists.
+    expect(threadsStore.getState().watchedThreads.get(ref)?.overlay?.["stream:outgoing"]).toBeUndefined();
+
+    // The successor read fails naming boot 2 - a CONFIRMED live replacement,
+    // not an absence.
+    refused[0]?.(
+      new WireError("thread history failed at entry 7", -32603, {
+        evenerErrorInfo: ErrorTranscriptHistoryFailed,
+        bootGeneration: "2@child",
+      }),
+    );
+    await flushUntil(() => threadsStore.getState().watchedThreads.get(ref)?.history?.failed !== undefined);
+    const published = threadsStore.getState().watchedThreads.get(ref);
+    // The diagnostic stands...
+    expect(published?.history?.failed).toBeDefined();
+    // ...and the departed source's stream text is gone with its producer.
     expect(published?.overlay?.["stream:outgoing"]).toBeUndefined();
     expect(published?.turns.flatMap((turn) => turn.items).some((item) => item.id === "outgoing-item")).toBe(false);
 

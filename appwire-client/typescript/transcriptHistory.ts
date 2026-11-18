@@ -137,6 +137,14 @@ function retainedReadIdentity(identity: ReadIdentity | undefined, held: ReadIden
 // changed, and an owner dropped here is an ownership comparison lost on the
 // very next frame.
 //
+// The comparison runs against `holdOwnerOf`, not `held.holdOwner`. An ORDINARY
+// read leaves `holdOwner` unset and owns implicitly through
+// `history.bootGeneration`; skipping that case meant a boot-1 model whose
+// first evidence of a boot-2 replacement is this very response kept boot 1 as
+// the owner while the response installed boot 2's samples, so boot 2's next
+// update compared against boot 1, read as another replacement, and cleared the
+// live hold it had just published.
+//
 // Where it DOES confirm, the incoming boot is recorded explicitly rather than
 // left to `holdOwnerOf`'s fallback. An accepted replacement that leaves the
 // owner unrecorded is the M1 shape: the next frame from that same boot
@@ -147,10 +155,15 @@ function retainedHistoryIdentity(
   readBoot: string | undefined,
 ): ReadIdentity & { holdOwner?: string } {
   const retained = retainedReadIdentity(identity, held);
-  if (held.holdOwner === undefined) return retained;
-  if (readBoot !== undefined && confirmedBootReplacement(held.holdOwner, readBoot, "authoritative"))
-    return { ...retained, holdOwner: readBoot };
-  return { ...retained, holdOwner: held.holdOwner };
+  const recordedOwner = holdOwnerOf(held);
+  // No live ownership evidence on this response: keep the record as it stands.
+  // A saved-index fallback names no source, and dropping the owner for it is
+  // the same loss this function exists to prevent.
+  if (readBoot === undefined) {
+    return recordedOwner === held.bootGeneration ? retained : { ...retained, holdOwner: recordedOwner };
+  }
+  if (confirmedBootReplacement(recordedOwner, readBoot, "authoritative")) return { ...retained, holdOwner: readBoot };
+  return { ...retained, holdOwner: recordedOwner };
 }
 
 export function readIdentity(resp: {
@@ -1321,7 +1334,19 @@ export function applyReadModel<M extends ThreadModel>(
     // preserved. Only the four identity fields carry over — never
     // invalidatedAtGeneration/awaited/pendingIncarnation/failed, which this
     // merge (a non-discard disposition) already resolved.
-    ...retainedHistoryIdentity(identity, held, fallback ? undefined : freshHistory?.bootGeneration),
+    // The boot token this merge may record as an owner. Every fallback
+    // suppresses the token for HISTORY VALIDITY - the rows came from the saved
+    // index, so they cannot stand as evidence about the source. On an enriched
+    // `live-read-empty` response the token is still the answering daemon's own
+    // account of itself, and it is the only evidence a client has about who
+    // owns the hold - so the suppression is for the validity question only,
+    // and ownership keeps it. `live-read-failed` names no owner and stays
+    // suppressed in both.
+    ...retainedHistoryIdentity(
+      identity,
+      held,
+      fallback && !historyAnsweredLive(fresh.servingFacts) ? undefined : freshHistory?.bootGeneration,
+    ),
     appliedGeneration: held.appliedGeneration,
     issuedGeneration: held.issuedGeneration,
     deferredPages: [],

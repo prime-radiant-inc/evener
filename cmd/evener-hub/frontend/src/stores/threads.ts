@@ -39,6 +39,7 @@ import {
   applyHistoryReadFailure,
   applyNotification,
   applyReadResponse,
+  bootTokenOwner,
   buildComposerInput,
   buildInput,
   ClientNotReadyError,
@@ -4476,6 +4477,10 @@ async function readThreadHydration(
       // it. Retiring first leaves the replay's own frame as the first sample
       // of the source that now owns the sequence.
       const failureOwner = transcriptHistoryFailedBootGeneration(err);
+      // The source the failure RETIRES is the one this read's model held BEFORE
+      // the hand-off, not the failure's own token - the token names the
+      // replacement. Captured here, while it is still the pre-hand-off owner.
+      const preFailureOwner = failedBase.history === undefined ? "" : holdOwnerOf(failedBase.history);
       const handedBase = failureOwner
         ? (handOffReplacedSource(failedBase, failureOwner, "authoritative") ?? failedBase)
         : failedBase;
@@ -4488,7 +4493,12 @@ async function readThreadHydration(
       // hold, and an unchanged hold emits no update of its own to restore it, so
       // the buffer folds in whole and the retired source's samples are cleared
       // by the hand-off above instead.
-      const published = replayHydrationNotifications(handedBase, pending.notifications, failureOwner).model;
+      const published = replayHydrationNotifications(
+        handedBase,
+        pending.notifications,
+        failureOwner,
+        preFailureOwner,
+      ).model;
       const entry = tracked ? existingEntryRoute(ref) : undefined;
       if (!tracked) {
         putWatchedThreadModel(ref, published);
@@ -4503,6 +4513,7 @@ async function readThreadHydration(
           // always answers no. This snapshot is the only place the outgoing
           // samples are still visible.
           const beforeFailure = entry.repository.getSnapshot();
+          const preFailureOwner = beforeFailure?.history === undefined ? "" : holdOwnerOf(beforeFailure.history);
           entry.repository.acceptReadFailure(errorText(err), pending.requestGeneration ?? 0, {
             lifetime: entry.lifetime,
             bootGeneration: failureOwner,
@@ -4523,6 +4534,7 @@ async function readThreadHydration(
               pending.notifications,
               false,
               failureOwner,
+              preFailureOwner,
             );
             // The guard above still skips frames this repository accepted LIVE,
             // which is right for recorded content but wrong for the hold: the
@@ -6330,33 +6342,41 @@ function bufferPendingNotification(
 // identity is dropped - it folds as a bootless frame, which invalidates
 // nothing and records nothing.
 //
-// WHICH direction that comparison runs is the whole question, and running it
-// the wrong way is what this used to do. The buffer entry's own identity
-// decides its fate; the failing read is only the base. A read that starts on
-// boot 1, buffers boot 2's history frame and then boot 2's delegate sample,
-// and finally receives boot 1's failure must NOT blank that frame: boot 2 is
-// NEWER than the failing read's boot, so the buffered frame is evidence of a
-// replacement the failure knows nothing about. Asking
-// `confirmedBootReplacement(retiredBy, boot)` answers "does the buffered frame
-// supersede the failure's boot" - true exactly in that case - and stripping
-// then LEFT boot 1's stale sample in place, free to outrank boot 2's while the
-// buffer itself identified the new source. Only a frame whose own boot is
-// what the failure replaced (an OLDER or equal source, from that source's own
-// mouth) folds as bootless.
-function withoutRetiredSourceToken(notification: AnyNotification, retiredBy: string): AnyNotification {
+// WHICH source a frame may be discarded for is the whole question, and both
+// directions of the wrong answer have already shipped here. The failure's own
+// token is the REPLACEMENT; the source it retires is the one the model held
+// BEFORE it, which is why this takes that owner separately.
+//
+// Asking `confirmedBootReplacement(boot, retiredBy)` alone cannot answer it:
+// two qualified tokens from different owners confirm a replacement in BOTH
+// directions, so "the frame's source replaced the failure's" reads the same as
+// "the frame's source IS what the failure replaced". A watched read from a
+// parent daemon at `5@root` that buffers the child's own new daemon at `1` and
+// then fails under `5@root` would blank `1` and let the parent's sequence
+// outrank the child's first sample - the inversion this PR removes.
+// So the discriminator is EQUALITY on the owner, and only against the source
+// the failure retired. A frame whose owner is that source folds as bootless
+// (its content is still the newest recorded form of what it changed, but its
+// identity cannot be allowed to reclaim the sequence). A frame whose owner is a
+// DIFFERENT source is kept whole: it is evidence of a later hand-off this
+// failure knows nothing about, and blanking it would discard the only sample of
+// a wait that is still live.
+function withoutRetiredSourceToken(
+  notification: AnyNotification,
+  retiredBy: string,
+  preFailureOwner: string,
+): AnyNotification {
   if (notification.method !== "history/updated") return notification;
   const boot = notification.params.bootGeneration;
-  if (!boot || !confirmedBootReplacement(boot, retiredBy, "authoritative")) return notification;
-  // A failure may blank a token only from the source it actually RETIRED.
-  // Cross-owner tokens compare as replacements in both directions - two
-  // qualified owners always do - so `confirmedBootReplacement` alone cannot
-  // tell "the frame's source is what this failure replaced" from "the frame's
-  // source replaced the failure's". A watched read from a parent daemon at
-  // `5@root` can buffer the child's own new daemon at `1` and then fail under
-  // `5@root`; blanking `1` let the parent's high sequence survive replay and
-  // beat the child's first sample, which is the inversion this PR removes.
-  // The buffered frame is later evidence of a cross-owner hand-off the failure
-  // knows nothing about, so it keeps its identity.
+  if (!boot) return notification;
+  const retiredOwner = bootTokenOwner(preFailureOwner);
+  // Nothing was retired: a same-boot failure retires nothing, so it may blank
+  // nothing. Without this gate a read that fails under its own boot would drop
+  // its own source's buffered frame and lose the hold it was carrying.
+  if (retiredOwner === "" || !confirmedBootReplacement(retiredBy, preFailureOwner, "authoritative")) {
+    return notification;
+  }
+  if (bootTokenOwner(boot) !== retiredOwner) return notification;
   return {
     ...notification,
     params: { ...notification.params, bootGeneration: "" },
@@ -6367,6 +6387,7 @@ function replayHydrationNotifications(
   model: ThreadModel,
   notifications: ReceivedTranscriptUpdate[],
   retiredBy?: string,
+  preFailureOwner?: string,
 ): { model: ThreadModel; appliedAt: number[] } {
   let hydrated = model;
   const appliedAt: number[] = [];
@@ -6393,8 +6414,39 @@ function replayHydrationNotifications(
   // confirmations - a named replacement and a confirmed absence - from drifting
   // into two different opinions about the same frame.
   const absent = isConfirmedAbsence(retiredBy);
+  // A confirmed LIVE replacement retires the outgoing source exactly as an
+  // absence does, so the same frames leave with it. Filtering overlays only
+  // for `daemonless` let a bootless resync carry boot 1's overlay upsert into a
+  // read that then failed under boot 2: the base model handed off, replay kept
+  // folding the open overlay, and a transcript with a structured diagnostic
+  // displayed unfinished output from a daemon that had already been replaced.
+  //
+  // An overlay frame names no source of its own (`threadId`, `ref`, `item`), so
+  // the only usable discriminator is POSITION: overlays buffered before the
+  // first frame that names the INCOMING owner were produced under the outgoing
+  // one and go with it, and overlays after that point belong to the source that
+  // now serves the thread and are kept whole.
+  const liveReplacement =
+    retiredBy !== undefined &&
+    !absent &&
+    preFailureOwner !== undefined &&
+    preFailureOwner !== "" &&
+    confirmedBootReplacement(retiredBy, preFailureOwner, "authoritative");
+  const incomingOwner = liveReplacement ? bootTokenOwner(retiredBy) : "";
+  let incomingNamed = false;
   for (const update of notifications) {
-    const notification = retiredBy ? withoutRetiredSourceToken(update.notification, retiredBy) : update.notification;
+    const notification =
+      retiredBy === undefined
+        ? update.notification
+        : withoutRetiredSourceToken(update.notification, retiredBy, preFailureOwner ?? "");
+    if (liveReplacement) {
+      if (notification.method === "history/updated") {
+        const boot = notification.params.bootGeneration;
+        if (boot !== undefined && boot !== "" && bootTokenOwner(boot) === incomingOwner) incomingNamed = true;
+      } else if (!incomingNamed && notification.method.startsWith("overlay/")) {
+        continue;
+      }
+    }
     if (absent) {
       // What survives a departed source is `carriedAcrossReplacement`'s
       // question, answered once above for a named replacement and the same
@@ -6424,6 +6476,7 @@ function replayEntryHydrationNotifications(
   notifications: PendingTranscriptUpdate[],
   adoptedRead: boolean,
   handOffBootGeneration?: string,
+  preFailureOwner?: string,
 ): { model: ThreadModel; appliedAt: number[] } {
   let hydrated = model;
   const appliedAt: number[] = [];
@@ -6448,7 +6501,7 @@ function replayEntryHydrationNotifications(
     const accepted = repository.accept(
       handOffBootGeneration === undefined
         ? update.notification
-        : withoutRetiredSourceToken(update.notification, handOffBootGeneration),
+        : withoutRetiredSourceToken(update.notification, handOffBootGeneration, preFailureOwner ?? ""),
       { lifetime },
     );
     // Refused recorded input can still invalidate authority. Preserve that
