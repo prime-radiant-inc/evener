@@ -82,6 +82,7 @@ const CURRENT_TRANSCRIPT_FIELD_KEYS = [
   "lastFrameAt",
   "modelRetry",
   "quotaResumesAt",
+  "retiredQuotaTurn",
   "goal",
   "humanNote",
   "agentNote",

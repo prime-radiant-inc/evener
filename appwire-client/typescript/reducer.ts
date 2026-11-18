@@ -366,10 +366,16 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
       // whatever runs next.
       const quotaRetryEnded =
         turnEnded && model.modelRetry !== undefined && model.modelRetry.errorClass === "quota_exceeded";
+      // The ended turn's ID stays for as long as its queued deliveries can
+      // land: a late retry event naming it cannot restamp the wait the
+      // boundary ended, while a retry for a turn the model never moved past
+      // still records.
+      const retiredQuotaTurn = quotaRetryEnded ? model.runningTurnId : undefined;
       return {
         ...(rest as M),
         ...(turnEnded ? { quotaResumesAt: undefined } : {}),
         ...(quotaRetryEnded ? { modelRetry: undefined } : {}),
+        ...(retiredQuotaTurn !== undefined ? { retiredQuotaTurn } : {}),
         ...(n.params.activeTurnId ? { runningTurnId: n.params.activeTurnId } : {}),
         status,
         // The work-clock anchor (activeTurnStartedAt) has no live push to
@@ -583,16 +589,16 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
     case "evener/thread/modelRetry": {
       if (!notificationTargetsThread(n, model)) return model;
       const params = n.params;
-      // A retry event for a turn the model already moved past (a queued
-      // delivery landing after the boundary) must not restore the wait the
-      // boundary ended. A notification that names a turn judges against the
-      // running turn outright - a model with no running turn has moved past
-      // every named one - while one that names none is an older daemon's and
-      // keeps its turn-agnostic meaning.
+      // A retry event for the turn a boundary retired (a queued delivery
+      // landing after the boundary) must not restore the wait the boundary
+      // ended. Only a turn the model recorded as retired is judged: a
+      // notification for any other turn - including one the model has no
+      // running turn for yet - records, and one that names no turn is an
+      // older daemon's and keeps its turn-agnostic meaning.
       if (
         params.errorClass === "quota_exceeded" &&
         params.turnId !== undefined &&
-        params.turnId !== model.runningTurnId
+        params.turnId === model.retiredQuotaTurn
       ) {
         return model;
       }
@@ -613,6 +619,10 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
             : params.errorClass === "quota_exceeded"
               ? undefined
               : model.quotaResumesAt,
+        // A newly recorded wait owns the stale-event rule from here on; the
+        // turn the last boundary retired no longer names one.
+        retiredQuotaTurn:
+          params.errorClass === "quota_exceeded" && params.delayMs > 0 ? undefined : model.retiredQuotaTurn,
         // The wake's zero-delay announcement is the request going out: real
         // motion, unlike the wait that preceded it. Restamping here gives the
         // resumed request its own stall clock - otherwise the first ordinary

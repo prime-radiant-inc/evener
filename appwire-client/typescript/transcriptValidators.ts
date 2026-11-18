@@ -64,6 +64,7 @@ export type CurrentTranscriptFields = Pick<
   | "lastFrameAt"
   | "modelRetry"
   | "quotaResumesAt"
+  | "retiredQuotaTurn"
   | "goal"
   | "humanNote"
   | "agentNote"
@@ -849,6 +850,7 @@ export function validCurrentFields(value: unknown): value is CurrentTranscriptFi
   if (value.activeTurnId !== undefined && typeof value.activeTurnId !== "string") return false;
   if (value.runningTurnId !== undefined && typeof value.runningTurnId !== "string") return false;
   if (value.quotaResumesAt !== undefined && !isFiniteNumber(value.quotaResumesAt)) return false;
+  if (value.retiredQuotaTurn !== undefined && typeof value.retiredQuotaTurn !== "string") return false;
   for (const key of [
     "reasoningEffort",
     "defaultReasoningEffort",

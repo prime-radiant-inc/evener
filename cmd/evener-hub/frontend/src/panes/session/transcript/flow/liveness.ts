@@ -124,8 +124,11 @@ export function formatRetryWait(retry: RetryWait | QuotaWait): string {
   // same wall-clock phrasing every other surface gives it (the rail row and
   // the phone Board's compactDuration), with the call's elapsed time beside
   // it so the reader can tell a fresh wait from one hours in.
-  if (retry.errorClass === "quota_exceeded") {
-    const wait = retry.inProgress ? "in progress" : `resumes in ${compactDuration(retry.delayMs)}`;
+  // A quota retry still waiting reads as the wait it is; once the request is
+  // in progress (the wake went out) it reads as motion like any other
+  // in-progress retry, never as a wait that has already ended.
+  if (retry.errorClass === "quota_exceeded" && !retry.inProgress) {
+    const wait = `resumes in ${compactDuration(retry.delayMs)}`;
     // The snapshot's instant knows no elapsed time; inventing "0s on this
     // call" would claim a fresh wait a reload cannot prove. Only a wait
     // that actually reported one renders the elapsed suffix.

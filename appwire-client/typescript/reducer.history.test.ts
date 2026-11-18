@@ -190,6 +190,35 @@ test("a read whose thread carries no quota failure clears a stale resume instant
   expect(applyReadModel(model, fresh).quotaResumesAt).toBeUndefined();
 });
 
+// A reconnect's read is authoritative about the wait: a snapshot whose
+// thread no longer waits (another client stopped the turn and a new one
+// started) must drop the quota deadline AND its chip together - clearing
+// over whatever runs next.
+test("a read whose thread no longer waits drops the quota retry with the deadline", () => {
+  const resumesAt = 4_102_400_000;
+  let model = hydrateThread(
+    read([turn("turn_1", 1)], { activeTurnId: "turn_1", quotaWaitResumesAt: resumesAt }),
+    REF,
+    NOW,
+  );
+  model = {
+    ...model,
+    modelRetry: {
+      attempt: 1,
+      maxAttempts: 1,
+      delayMs: resumesAt - NOW,
+      errorClass: "quota_exceeded",
+      groupElapsedMs: 5_000,
+      attemptCap: 1,
+      receivedAt: NOW,
+    },
+  };
+  const fresh = hydrateThread(read([turn("turn_2", 1)], { activeTurnId: "turn_2" }), REF, NOW + 1);
+  const next = applyReadModel(model, fresh);
+  expect(next.quotaResumesAt).toBeUndefined();
+  expect(next.modelRetry?.errorClass ?? "cleared").not.toBe("quota_exceeded");
+});
+
 function page(turns: Turn[], options: Snapshot & { authoritative?: boolean } = {}): ThreadTurnsListResponse {
   return {
     data: turns,

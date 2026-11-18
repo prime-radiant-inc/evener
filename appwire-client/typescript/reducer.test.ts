@@ -3285,6 +3285,67 @@ test("a turn boundary clears the quota retry, and a stale retry for the old turn
   expect(stale.quotaResumesAt).toBeUndefined();
 });
 
+// A history update that completes a TOOL result belongs to an earlier
+// request, not the waiting call: the wait's announcement arrives after the
+// request that carried it failed, and the tool result for that earlier
+// Clearing the wait on it would spend the rest of a multi-hour pause
+// showing a stall. Only the model's own output items (an assistant message,
+// reasoning, a command execution) come from the waiting call, and only
+// those may clear it.
+test("a history update completing a tool result keeps the quota wait; a model output item clears it", () => {
+  let model = testHydrateV6({ turns: [{ id: "turn_1", status: "inProgress", itemsView: "", items: [] }] });
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: 60 * 60_000,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 500,
+        attemptCap: 1,
+      },
+    },
+    1_000_000,
+  );
+
+  // The tool call's result completes through the history worker while the
+  // next request waits for quota.
+  model = applyHistory(
+    model,
+    {
+      items: [
+        {
+          ...{ type: "toolResult", id: "item_tool", turnId: "turn_1", status: "completed", text: "done" },
+          turnId: "turn_1",
+        },
+      ],
+    },
+    1_050_000,
+  );
+  expect(model.quotaResumesAt).toBeDefined();
+  expect(model.modelRetry?.errorClass).toBe("quota_exceeded");
+
+  model = applyHistory(
+    model,
+    {
+      items: [
+        {
+          ...{ type: "agentMessage", id: "item_msg", turnId: "turn_1", status: "completed", text: "back" },
+          turnId: "turn_1",
+        },
+      ],
+    },
+    1_100_000,
+  );
+  expect(model.quotaResumesAt).toBeUndefined();
+  expect(model.modelRetry).toBeUndefined();
+});
+
 // Component 1 (docs/superpowers/specs/2026-08-07-provider-failure-feedback-
 // design.md): the retry state answers "what is happening now, in this retry
 // group" and must survive ordinary mid-grind progress (deltas, a

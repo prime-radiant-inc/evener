@@ -464,6 +464,11 @@ export interface ThreadModel {
   // delay), by the completion of the model's own output item (the retry
   // succeeded), and by a read whose thread carries no quota failure.
   quotaResumesAt?: number;
+  // The turn a boundary ended a quota wait on, held only so a retry event
+  // queued for that turn cannot restamp the wait after the boundary. Cleared
+  // by the next quota wait (which retires its own turn) and never read for
+  // anything but the stale-event comparison.
+  retiredQuotaTurn?: string;
   // Wave 5 T1: the following are all sourced from thread.evener
   // (appwire/types_thread.go's EvenerThread) and are SNAPSHOT-ONLY -
   // hydrateThread populates them, and applyNotification updates them ONLY

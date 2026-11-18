@@ -1008,6 +1008,15 @@ export function applyReadResponse<M extends ThreadModel>(
   const clearedArtifacts = fields.artifactsDir === undefined ? { artifactsDir: undefined } : {};
   const clearedScratch = fields.scratchDir === undefined ? { scratchDir: undefined } : {};
   const clearedQuotaWait = fields.quotaResumesAt === undefined ? { quotaResumesAt: undefined } : {};
+  // A read that shows no wait is authoritative that the wait ended: the chip
+  // goes with the deadline, or the canceled turn's "waiting for quota" reads
+  // over whatever runs next. The wake's own zero-delay announcement already
+  // cleared a wait that survived into the same turn; this is the reconnect
+  // half, where the snapshot speaks for a turn the client never watched end.
+  const clearedQuotaRetry =
+    fields.quotaResumesAt === undefined && base.modelRetry?.errorClass === "quota_exceeded"
+      ? { modelRetry: undefined }
+      : {};
   let next = withDisplay(
     {
       ...base,
@@ -1015,6 +1024,7 @@ export function applyReadResponse<M extends ThreadModel>(
       ...clearedArtifacts,
       ...clearedScratch,
       ...clearedQuotaWait,
+      ...clearedQuotaRetry,
       ...runningTurn(resp.thread),
       olderCursor,
       olderFrontier,
@@ -1186,6 +1196,10 @@ export function applyReadModel<M extends ThreadModel>(
     fresh.scratchDir === undefined && model.scratchDir !== undefined ? { scratchDir: undefined } : {};
   const clearedQuotaWait =
     fresh.quotaResumesAt === undefined && model.quotaResumesAt !== undefined ? { quotaResumesAt: undefined } : {};
+  const clearedQuotaRetry =
+    fresh.quotaResumesAt === undefined && model.modelRetry?.errorClass === "quota_exceeded"
+      ? { modelRetry: undefined }
+      : {};
   let next = withDisplay(
     {
       ...base,
@@ -1193,6 +1207,7 @@ export function applyReadModel<M extends ThreadModel>(
       ...clearedArtifacts,
       ...clearedScratch,
       ...clearedQuotaWait,
+      ...clearedQuotaRetry,
       ...(freshRunningTurnId ? { runningTurnId: freshRunningTurnId } : {}),
       olderCursor,
       olderFrontier,
