@@ -272,6 +272,8 @@ func TestRestoreSeedsMetricsIntoMeta(t *testing.T) {
 		}{
 			{"same", "wire-a", original, true, true, 90_000},
 			{"same gateway serves another deployment", "wire-a", original, true, true, 0},
+			{"configured deployment after redirect", "wire-a", original, true, true, 90_000},
+			{"compacted configured projection after redirect", "wire-a", original, true, true, 0},
 			{"private result appended after dispatch", "wire-a", original, true, true, 90_000},
 			{"measured after committed fold", "wire-a", original, true, true, 90_000},
 			{"measured after repaired tool result", "wire-a", original, true, true, 90_000},
@@ -287,7 +289,34 @@ func TestRestoreSeedsMetricsIntoMeta(t *testing.T) {
 				state := t.TempDir()
 				report := strings.Repeat("q83x", 4_000)
 				dispatched, release := make(chan struct{}), make(chan struct{})
-				client := clientFor("wire-a", original, tc.before, func(req llm.Request) llm.Response {
+				afterRedirect := tc.name == "configured deployment after redirect" || tc.name == "compacted configured projection after redirect"
+				var row registry.Resolved
+				var steps []func(llm.Request) llm.Response
+				if afterRedirect {
+					steps = append(steps, func(llm.Request) llm.Response {
+						resp := agenttest.FinalResponse("redirected-55")
+						resp.Message.Content = append(llm.Assistant("visible-55").Content, resp.Message.Content...)
+						resp.Message.Content = append(resp.Message.Content, llm.ContentPart{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{EncryptedContent: strings.Repeat("x", 4_000)}})
+						llm.StampEndpointURL(&resp, replacement+"/responses", llm.APILogCredentialMaterial{})
+						return resp
+					})
+				}
+				steps = append(steps, func(req llm.Request) llm.Response {
+					endpoint := row.RequestURL(row.Transport.Endpoint)
+					if afterRedirect {
+						configured, changed := req.ForReasoningEndpoint(endpoint, row)
+						alternate, _ := req.ForReasoningEndpoint(replacement+"/responses", row)
+						configuredNative := hasContentKind(configured.Messages, llm.ContentThinking)
+						alternateNative := hasContentKind(alternate.Messages, llm.ContentThinking)
+						visible := requestCarriesText(configured, "visible-55")
+						if !changed || configuredNative || !alternateNative || !visible {
+							t.Errorf("configured projection changed=%t, native=%t, visible=%t, alternative native=%t", changed, configuredNative, visible, alternateNative)
+						}
+						if all, alt := llm.EstimateInputTokensForResolved(row, req).Tokens, llm.EstimateInputTokensForResolved(row, alternate).Tokens; all < alt {
+							t.Errorf("request estimates %d input tokens, alternative projection needs %d", all, alt)
+						}
+						req = configured
+					}
 					if !requestCarriesText(req, "measured-41") || requestCarriesText(req, report) {
 						t.Error("the measured request must contain the input that preceded the report")
 					}
@@ -300,12 +329,17 @@ func TestRestoreSeedsMetricsIntoMeta(t *testing.T) {
 					resp.Usage = llm.Usage{InputTokens: 90_000, OutputTokens: 10, TotalTokens: 90_010}
 					if tc.name == "same gateway serves another deployment" {
 						llm.StampEndpointURL(&resp, replacement+"/responses", llm.APILogCredentialMaterial{})
+					} else if afterRedirect {
+						llm.StampEndpointURL(&resp, endpoint, llm.APILogCredentialMaterial{})
 					}
 					return resp
 				})
-				s := newSession(t, withClient(client), withStateDir(state), withProfile(resolveClientProfile(t, client, "gw/reasoner")))
+				client := clientFor("wire-a", original, tc.before, steps...)
+				profile := resolveClientProfile(t, client, "gw/reasoner")
+				row = profile.Resolved()
+				s := newSession(t, withClient(client), withStateDir(state), withProfile(profile))
 				ctx := tripwireCtx(t)
-				fold := tc.name == "compacted during dispatch"
+				fold := tc.name == "compacted during dispatch" || tc.name == "compacted configured projection after redirect"
 				if tc.name == "measured after committed fold" {
 					appendPrivate(s)
 				}
@@ -322,6 +356,11 @@ func TestRestoreSeedsMetricsIntoMeta(t *testing.T) {
 				}
 				if tc.name == "measured after repaired tool result" {
 					s.appendTurn(schema.TurnAssistant, agenttest.ToolCallResponse(communicateCall("orphan-31", "result")).Message)
+				}
+				if afterRedirect {
+					if _, err := s.ProcessInput(ctx, "first-55", nil); err != nil {
+						t.Fatal(err)
+					}
 				}
 				done := make(chan struct{})
 				go func() {
@@ -347,6 +386,11 @@ func TestRestoreSeedsMetricsIntoMeta(t *testing.T) {
 				}
 				close(release)
 				waitForTestSignal(t, done, "provider settlement")
+				if afterRedirect {
+					if got := s.contextMgr.LastInputTokens(); got != tc.want {
+						t.Errorf("live measurement after redirect = %d, want %d", got, tc.want)
+					}
+				}
 				s.Close()
 				meta, err := schema.LoadSessionMeta(state, s.id)
 				if err != nil {

@@ -1331,10 +1331,6 @@ func (s *Session) recordResponseUsage(modelResp sessionModelResponse, req llm.Re
 			resolved := resolvedTargetOf(answeringProfile)
 			recipient := llm.ServingRecipient(endpoint, resolved)
 			matchesTarget = recipient != llm.UnknownServingOrigin && recipient == llm.ConfiguredServingRecipient(resolved)
-			if matchesTarget && req.HasReasoningEndpoints() {
-				_, changed := req.ForReasoningEndpoint(recipient, resolved)
-				matchesTarget = !changed
-			}
 		}
 		if !record && matchesTarget {
 			// The response supplied no usable count, but the same recipient still owns the baseline.
@@ -1343,8 +1339,8 @@ func (s *Session) recordResponseUsage(modelResp sessionModelResponse, req llm.Re
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		measured := modelResp.history
+		// The configured deployment measures its own projection of the resident prefix.
 		if !matchesTarget || !measured.matchesPrefix(s.history, s.historyRevision) {
-			// The resident prefix must match what the configured deployment measured.
 			s.contextMgr.RecordInputTokensFor(answeringProfile, 0, 0)
 			return
 		}

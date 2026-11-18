@@ -527,10 +527,10 @@ the HTTP origin, escaped path and query identify the deployment. Evener saves
 that identity as a digest independently of the display URL. Returning to the
 same deployment preserves its bytes through a cold resume. Another deployment
 receives the full visible conversation.
-Chat's HTTP adapter binds the serving digest to the configured provider
-instance. Distinct instances sharing operation URLs keep separate native
-history, including after redirects. Rotating credentials on the same instance
-preserves its serving identity.
+The Chat and Responses HTTP adapters bind the serving digest to the configured
+provider instance. Distinct instances sharing operation URLs keep separate
+native history and Responses continuation handles, including after redirects.
+Rotating credentials on the same instance preserves its serving identity.
 Gemini models on one provider instance can continue each other’s signed
 tool calls through the same configured operation templates. A different
 project or an unconfigured redirect has its own deployment identity.
@@ -542,13 +542,14 @@ round without a recorded endpoint can continue on the session’s primary
 profile using thinking from the same instance. Reasoning recorded on Chat
 or Responses stays on its issuing protocol even when the fallback shares
 the same tools.
-When a gateway can reach several deployments, token admission and context
-pressure count the visible conversation plus the largest amount of private
-reasoning any one deployment can receive. A saved input-token count covers
-the history actually sent to that target under its replay rules. Evener
-estimates later additions, including delegate reports received while the request
-was in flight. If that
-prefix changes during the call, Evener estimates the current history locally.
+When a gateway can reach several deployments, token admission and local context
+estimates count the visible conversation plus the largest amount of private
+reasoning any one deployment can receive. A saved input-token count covers the
+configured deployment's projection, including when an earlier turn contains
+private reasoning that stays with a redirected deployment. Evener estimates
+later additions, including delegate reports received while the request was in
+flight. If that prefix changes during the call, Evener estimates the current
+history locally.
 When an HTTP redirect selects an unconfigured deployment, its token count
 still contributes to billing. Evener estimates context pressure locally until
 the configured deployment measures the conversation again.

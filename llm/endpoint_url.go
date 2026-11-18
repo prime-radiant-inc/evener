@@ -82,15 +82,15 @@ func ConfiguredServingRecipient(res registry.Resolved) string {
 	if res.Protocol == registry.ProtocolGoogle {
 		return origin + "/google:" + res.GoogleToolDeployment()
 	}
-	return bindChatRecipient(origin+"/configured:"+res.ReasoningReplayRoute(), res)
+	return bindInstanceRecipient(origin+"/configured:"+res.ReasoningReplayRoute(), res)
 }
 
-// Bind both configured and redirected Chat recipients to the provider instance.
+// Bind configured and redirected OpenAI protocol recipients to the provider instance.
 // Credential rotation keeps the same instance, and no credential enters the proof.
-func bindChatRecipient(recipient string, res registry.Resolved) string {
+func bindInstanceRecipient(recipient string, res registry.Resolved) string {
 	const instanceTag = "/instance:"
 	_, instance, bound := strings.Cut(recipient, instanceTag)
-	if res.Protocol != registry.ProtocolOpenAIChat || res.Instance == "" {
+	if (res.Protocol != registry.ProtocolOpenAIChat && res.Protocol != registry.ProtocolOpenAIResponses) || res.Instance == "" {
 		if bound {
 			return UnknownServingOrigin
 		}
@@ -136,7 +136,7 @@ func servingRecipient(endpoint string, res registry.Resolved, recorded bool) str
 		}
 	}
 	if res.Transport.BaseURL == "" || !strings.Contains(recipient, "/endpoint:") {
-		return bindChatRecipient(recipient, res)
+		return bindInstanceRecipient(recipient, res)
 	}
 	for _, path := range [...]string{res.Transport.Endpoint, res.Transport.StreamEndpoint, res.Transport.CountTokensEndpoint} {
 		if path != registry.EndpointUnsupported {
@@ -149,7 +149,7 @@ func servingRecipient(endpoint string, res registry.Resolved, recorded bool) str
 			}
 		}
 	}
-	return bindChatRecipient(recipient, res)
+	return bindInstanceRecipient(recipient, res)
 }
 
 // An old digest without a recorded URL establishes only the serving origin.
