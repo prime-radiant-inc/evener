@@ -110,6 +110,7 @@ export {
   compareBootGeneration,
   confirmedBootReplacement,
   DAEMONLESS_BOOT_GENERATION,
+  isConfirmedAbsence,
 } from "./bootGeneration";
 export type { BuiltinMatch } from "./builtinInvocation";
 export { findBuiltinArgument, matchBuiltinInvocation } from "./builtinInvocation";

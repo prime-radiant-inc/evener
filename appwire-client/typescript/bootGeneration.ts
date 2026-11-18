@@ -23,6 +23,29 @@ export const DAEMONLESS_BOOT_GENERATION = "daemonless";
 export const UNKNOWN_OWNER_BOOT_GENERATION = "unknown-owner";
 
 /**
+ * Whether a FAILED history read's token is the hub's positive claim that no
+ * daemon serves the thread (appwire.DaemonlessBootGeneration on a failure).
+ *
+ * This is the one place the client decides that question. A hold retires on a
+ * confirmed replacement, and a confirmed ABSENCE retires it too - no daemon
+ * runs the thread, so no delegate controller is sampling its sequence, and a
+ * buffered sample from the departed source would otherwise put a wait on
+ * screen after the daemon that owned it exited.
+ *
+ * `unknown-owner` is NOT an absence: it says the hub never established who was
+ * serving the thread, which is not a claim that nobody was. Retiring a hold on
+ * it is the same inversion one token over.
+ *
+ * It applies to a FAILED read's token only. On a SUCCESSFUL saved read the hub
+ * stamps `daemonless` even when ownership was never resolved (a relay outage,
+ * a protocol refusal, a deadline after a live read failed), so a client must
+ * not read it there as proof the daemon is gone.
+ */
+export function isConfirmedAbsence(bootGeneration: string | undefined): boolean {
+  return bootGeneration === DAEMONLESS_BOOT_GENERATION;
+}
+
+/**
  * What a client does with a read response or history update, given the boot
  * generation it holds for the thread:
  * - `apply`: the same token as held; apply normally.

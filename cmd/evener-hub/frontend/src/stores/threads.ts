@@ -54,6 +54,7 @@ import {
   hydrateThread,
   type InputAttachment,
   invalidateHistory,
+  isConfirmedAbsence,
   isStaleCursorError,
   issueLatestWindowRead,
   isTranscriptHistoryFailedError,
@@ -4534,7 +4535,35 @@ async function readThreadHydration(
             // an older buffered one would let that sample's larger sequence
             // outrank the replacement's and mask its later updates. Measure the
             // retire rather than inferring it from the frame's presence.
-            if (beforeFailure && retireReplacedSourceHoldOnModel(beforeFailure, failureOwner, "authoritative")) {
+            // The re-offer exists for ONE situation: the replacement published
+            // its sample while the read was pending, the repository accepted it
+            // LIVE, and the failure's hand-off then cleared it together with
+            // the samples it was replacing. Folding it back restores a wait the
+            // hand-off over-cleared.
+            //
+            // It must NOT fire when the failure's own token says the sample's
+            // source is GONE. A buffered delegate frame names no publisher
+            // (EvenerDelegateParams is threadId, ref, delegate — #6815), so the
+            // buffer cannot prove the sample is the incoming source's; but the
+            // FAILURE's token can prove it is not. After a bootless recovery
+            // resync, a daemon exits and the read fails with a CONFIRMED
+            // `daemonless`: the hand-off correctly clears the hold, and
+            // re-offering the buffered sample put it straight back, leaving a
+            // wait visible after the daemon that owned it had exited.
+            //
+            // `daemonless` is now trustworthy for this: the hub distinguishes a
+            // confirmed absence from `unknown-owner` (#6828/#6815), and this
+            // branch's `liveEnrichmentReadError` stamps the answering daemon's
+            // own token rather than `daemonless` on a live enrichment failure.
+            // `unknown-owner` needs no clause of its own: it parses as no boot,
+            // so confirmedBootReplacement already refuses it and the retire
+            // below measures nothing. Only a CONFIRMED absence changes the
+            // answer here.
+            const restoredByHandOff =
+              beforeFailure !== undefined &&
+              !isConfirmedAbsence(failureOwner) &&
+              retireReplacedSourceHoldOnModel(beforeFailure, failureOwner, "authoritative") !== undefined;
+            if (restoredByHandOff) {
               for (const update of pending.notifications) {
                 if (update.notification.method !== "evener/delegate/updated") continue;
                 entry.repository.accept(update.notification, { lifetime: entry.lifetime });
@@ -6288,8 +6317,32 @@ function replayHydrationNotifications(
 ): { model: ThreadModel; appliedAt: number[] } {
   let hydrated = model;
   const appliedAt: number[] = [];
+  // A CONFIRMED ABSENCE retires every buffered hold sample, not just the ones
+  // the base model still carries. `daemonless` is a definite answer from the
+  // hub - a statement that no daemon runs the thread, so no delegate
+  // controller is sampling - and #6828 is what makes it trustworthy here by
+  // giving the hub a separate `unknown-owner` for "serving daemon never
+  // established" and a separate live-identity stamp for an enrichment failure
+  // after a daemon answered. A hold that arrived while the read was pending
+  // exists ONLY in this buffer, so folding it back puts a wait on screen after
+  // the daemon that owned it exited - the inverse of the defect this PR
+  // removes.
+  //
+  // `unknown-owner` does NOT qualify: it names no owner, which is not a claim
+  // that the owner is gone, and retiring a hold on it would be the same
+  // inversion one token over. Only the frame's own kind decides what is
+  // stripped: a delegate update is a hold sample, a history frame is content
+  // and folds normally.
+  const absent = isConfirmedAbsence(retiredBy);
   for (const update of notifications) {
     const notification = retiredBy ? withoutRetiredSourceToken(update.notification, retiredBy) : update.notification;
+    if (absent && notification.method === "evener/delegate/updated") {
+      const stripped = stripDelegateHold({ ...update, notification });
+      const folded = foldCanonicalNotification(hydrated, stripped.notification, update.now);
+      hydrated = folded.model;
+      appliedAt.push(update.now);
+      continue;
+    }
     const folded = foldCanonicalNotification(hydrated, notification, update.now);
     const updated = folded.model;
     if (updated === hydrated) continue;

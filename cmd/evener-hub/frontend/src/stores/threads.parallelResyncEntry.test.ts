@@ -2706,4 +2706,76 @@ describe("useThreadsStore.ensureThread", () => {
 
     threadsStore.getState().releaseWatchedThread(ref);
   });
+
+  test("a hold buffered before a confirmed-absence failure is not replayed back", async () => {
+    // RoboRev 53429 (Medium 1): the sibling of the test above, one frame later
+    // in the buffer's life. There the hold was already PUBLISHED when the
+    // failure retired it. Here the delegate frame is still in the buffer -
+    // it arrived after the bootless recovery resync started the read - so the
+    // hand-off clears nothing on the base model and the replay folds the
+    // buffered 900 straight back in. The wait stays visible after the daemon
+    // that owned it exited.
+    //
+    // `daemonless` is trustworthy for this now: the hub distinguishes a
+    // confirmed absence from `unknown-owner` (#6828), and a live enrichment
+    // failure is stamped with the answering daemon's own token rather than
+    // `daemonless`. So a failure naming an absence is evidence that no
+    // delegate controller is sampling, and its buffer's hold samples are dead.
+    const fake = connectReadyFakeClient();
+    const ref = "local:watched";
+    const threadId = `thr_${ref}`;
+    const initial = versionedReadResponse(
+      ref,
+      {
+        status: { type: "active" },
+        evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
+      },
+      0,
+    );
+    const refusedHolder: { reject: ((error: Error) => void) | null } = { reject: null };
+    let readCount = 0;
+    fake.on("thread/read", (params) => {
+      readCount += 1;
+      if (readCount === 1) return echoRead(initial, params.requestGeneration);
+      return new Promise<ThreadReadResponse>((_resolve, reject) => {
+        refusedHolder.reject = reject;
+      });
+    });
+
+    await threadsStore.getState().watchThread(ref, { includeTurns: true });
+
+    // The daemon exits: a bootless resync retires nothing and starts the read.
+    fake.emitNotification({
+      method: "evener/thread/resync",
+      params: { threadId, ref, epoch: 2 },
+    });
+    await flushUntil(() => refusedHolder.reject !== null);
+
+    // The delegate's hold arrives while that read is pending, so it is the
+    // buffer - not the published model - that carries the only copy of it.
+    fake.emitNotification({
+      method: "evener/delegate/updated",
+      params: { threadId, ref, delegate: heldDelegateRow() },
+    });
+    await Promise.resolve();
+    // Non-vacuous: the published model does not hold this sample.
+    expect(threadsStore.getState().watchedThreads.get(ref)?.delegates?.[0]?.holdSequence).toBeUndefined();
+
+    refusedHolder.reject?.(
+      new WireError("thread history failed at entry 7", -32603, {
+        evenerErrorInfo: ErrorTranscriptHistoryFailed,
+        bootGeneration: DAEMONLESS_BOOT_GENERATION,
+      }),
+    );
+    await flushUntil(() => threadsStore.getState().watchedThreads.get(ref)?.history?.failed !== undefined);
+    const published = threadsStore.getState().watchedThreads.get(ref);
+    // The diagnostic publishes, and the buffered hold does not come back.
+    expect(published?.history?.failed).toBeDefined();
+    expect(published?.delegates?.[0]?.holdSequence).toBeUndefined();
+    // The row itself survives: only the hold facet belonged to the dead source.
+    expect(published?.delegates?.[0]?.delegateId).toBe("dlg_held");
+    expect(published?.delegates?.[0]?.projectionRevision).toBe(3);
+
+    threadsStore.getState().releaseWatchedThread(ref);
+  });
 });
