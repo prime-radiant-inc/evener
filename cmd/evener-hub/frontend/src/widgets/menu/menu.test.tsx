@@ -292,6 +292,252 @@ test("a window resize that shortens the rail keeps the menu and clamps it", asyn
   }
 });
 
+// A pinch zoom moves the trigger out of the visual viewport and caps the
+// popup's width in one gesture. The resize path answers it by re-placing, and
+// the cap then changes the POPUP's own box - which the observer also sees.
+// That observation is placement's own consequence, so it can never be the
+// dismissal: judging it by the trigger's visibility closed the menu on a
+// viewport move, which is the class of bug this widget exists to avoid. The
+// trigger was in sight when the popup was placed; the zoom, not layout, took it
+// out.
+test("a pinch zoom that caps the popup leaves the menu open", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 1200 });
+  const fakeViewport = new EventTarget() as EventTarget & {
+    width: number;
+    height: number;
+    offsetLeft: number;
+    offsetTop: number;
+  };
+  fakeViewport.width = 800;
+  fakeViewport.height = 400;
+  fakeViewport.offsetLeft = 0;
+  fakeViewport.offsetTop = 0;
+  vi.stubGlobal("visualViewport", fakeViewport);
+  // The trigger sits at 300, inside the 0..400 the reader sees.
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, 300, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  class FiringResizeObserver {
+    static callback: ResizeObserverCallback | null = null;
+    constructor(callback: ResizeObserverCallback) {
+      FiringResizeObserver.callback = callback;
+    }
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  vi.stubGlobal("ResizeObserver", FiringResizeObserver);
+  const { flush } = captureFrames();
+  try {
+    render(<Menu trigger="Actions" items={items()} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menu")).toBeTruthy();
+
+    // The reader pinches, and the visible region shrinks under the trigger: the
+    // trigger is now past the visible bottom, and the narrow cap makes the
+    // popup wrap. The resize path re-places the popup there.
+    fakeViewport.width = 120;
+    fakeViewport.height = 200;
+    fakeViewport.dispatchEvent(new Event("resize"));
+    flush();
+
+    // The popup's own box changed with the cap, and the observer reports it.
+    const popup = screen.getByRole("menu");
+    act(() => {
+      FiringResizeObserver.callback?.([{ target: popup } as unknown as ResizeObserverEntry], {} as ResizeObserver);
+    });
+    flush();
+
+    // Still open: the viewport moved, and a viewport move re-anchors.
+    expect(screen.getByRole("menu")).toBeTruthy();
+  } finally {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
+// One window resize can reach the widget twice: the observer delivers the rail
+// that shrank, and a second box delivers the popup re-placed beside it. The
+// second delivery must not be read as a fresh layout change - it is the same
+// viewport move, one pass later - or the menu closes on the second half of the
+// resize that kept it open on the first.
+test("a second box delivery from one window resize leaves the menu open", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  const RAIL_TOP = 100;
+  let railHeight = 400;
+  // The trigger keeps its own place while the rail's client area closes over
+  // it, exactly as a rail row does when the window shrinks.
+  const triggerTop = 360;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
+    if (this.getAttribute("data-testid") === "rail-port") return box(0, RAIL_TOP, 300, railHeight);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.getAttribute("data-testid") === "rail-port") return railHeight;
+    return this.tagName === "UL" ? 120 : 0;
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  class FiringResizeObserver {
+    static callback: ResizeObserverCallback | null = null;
+    constructor(callback: ResizeObserverCallback) {
+      FiringResizeObserver.callback = callback;
+    }
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  vi.stubGlobal("ResizeObserver", FiringResizeObserver);
+  const { flush } = captureFrames();
+  try {
+    render(
+      <div data-testid="rail-port" style={{ overflowY: "auto" }}>
+        <Menu trigger="Actions" items={items()} />
+      </div>,
+    );
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menu")).toBeTruthy();
+
+    // The reader shortens the window by 200 and the rail with it, so the row
+    // the trigger is on falls below the rail's client area.
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 600 });
+    railHeight = 200;
+    act(() => {
+      FiringResizeObserver.callback?.([], {} as ResizeObserver);
+    });
+    flush();
+    expect(screen.getByRole("menu")).toBeTruthy();
+
+    // The popup's own box, re-placed beside the shorter rail, is the second
+    // delivery of the same resize.
+    act(() => {
+      FiringResizeObserver.callback?.([], {} as ResizeObserver);
+    });
+    flush();
+    expect(screen.getByRole("menu")).toBeTruthy();
+  } finally {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
+// The dismissal must not scroll the page through a SECOND path. Focusing the
+// trigger with preventScroll makes the scope's later restore a no-op only when
+// the trigger is what the scope recorded. A pointer click on the trigger does
+// not focus it, so the scope records whatever WAS focused - a control that a
+// live layout change can leave offscreen. The scope's plain focus() would then
+// scroll the rail or page to it during a dismissal nobody asked to navigate.
+test("a layout dismissal does not scroll back to a recorded control that left the screen", async () => {
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  let triggerTop = 300;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
+    if (this.getAttribute("data-testid") === "owning-scroller") return box(0, 0, 300, 300);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.getAttribute("data-testid") === "owning-scroller") return 300;
+    return this.tagName === "UL" ? 120 : 0;
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  const callbacks = new Map<Element, MutationCallback>();
+  class CapturingMutationObserver {
+    constructor(private readonly callback: MutationCallback) {}
+    observe(target: Element): void {
+      callbacks.set(target, this.callback);
+    }
+    disconnect(): void {}
+    takeRecords(): MutationRecord[] {
+      return [];
+    }
+  }
+  vi.stubGlobal("MutationObserver", CapturingMutationObserver);
+  const { flush } = captureFrames();
+  try {
+    render(
+      <div data-testid="owning-scroller" style={{ overflowY: "auto" }}>
+        <Button type="button">Remembered control</Button>
+        <Menu trigger="Actions" items={items()} />
+      </div>,
+    );
+    const scroller = screen.getByTestId("owning-scroller");
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 1200 });
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 300 });
+    scroller.scrollTop = 200;
+    scroller.scrollTo = vi.fn();
+
+    // The reader's focus is on another control, not the trigger, exactly as a
+    // pointer click on the trigger leaves it.
+    const remembered = screen.getByRole("button", { name: "Remembered control" });
+    remembered.focus();
+    expect(document.activeElement).toBe(remembered);
+    const rememberedFocus = vi.spyOn(remembered, "focus");
+    const trigger = screen.getByRole("button", { name: "Actions" });
+    // A pointer press on the trigger opens the menu WITHOUT focusing it: the
+    // browser's own focus move is on mousedown, and the widget's portal takes
+    // focus from there, so the scope records the control focus was on before.
+    fireEvent.click(trigger);
+    expect(screen.getByRole("menu")).toBeTruthy();
+    const triggerFocus = vi.spyOn(trigger, "focus");
+
+    // A live insertion pushes the trigger past the scrollport's 300px while the
+    // offset never moves. The dismissal gives focus back - and the control it
+    // was recorded from is one the reader has scrolled past.
+    triggerTop = 500;
+    const onRailChange = callbacks.get(scroller);
+    if (onRailChange === undefined) throw new Error("the menu observed no mutation for the rail scroller");
+    act(() => {
+      const record = { addedNodes: [], removedNodes: [] } as unknown as MutationRecord;
+      Object.defineProperty(record, "target", { value: scroller });
+      onRailChange([record], {} as MutationObserver);
+    });
+    flush();
+    expect(screen.queryByRole("menu")).toBeNull();
+
+    // The trigger takes focus without scrolling, and the recorded control -
+    // possibly offscreen - is restored without scrolling too.
+    expect(triggerFocus).toHaveBeenCalledWith({ preventScroll: true });
+    // Non-vacuous: the scope really did restore to the recorded control, so the
+    // "every call carried preventScroll" below is a statement about a call that
+    // happened, not an empty list.
+    expect(rememberedFocus).toHaveBeenCalled();
+    expect(rememberedFocus.mock.calls.every(([options]) => options?.preventScroll === true)).toBe(true);
+  } finally {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
+// Escape is a deliberate navigation, not a layout event: the reader asked to
+// return, so the ordinary restore - which may scroll the trigger into view -
+// stays exactly as it was. This is the direction that stops the fix from
+// making every restoration silent.
+test("Escape still restores focus with the ordinary restore", async () => {
+  const user = userEvent.setup();
+  render(<Menu trigger="Actions" items={items()} />);
+  const trigger = screen.getByRole("button", { name: "Actions" });
+  await user.click(trigger);
+  expect(screen.getByRole("menu")).toBeTruthy();
+  const focus = vi.spyOn(trigger, "focus");
+  await user.keyboard("{Escape}");
+  expect(screen.queryByRole("menu")).toBeNull();
+  expect(document.activeElement).toBe(trigger);
+  expect(focus.mock.calls.every(([options]) => options?.preventScroll === true)).toBe(false);
+});
+
 // A correction that leaves the trigger off screen still dismisses, and how it
 // restores focus matters there for the same reason it does when layout hides
 // the trigger: the browser has just moved the rail to hold the reader's place,

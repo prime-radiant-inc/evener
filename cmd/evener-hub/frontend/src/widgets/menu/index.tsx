@@ -211,6 +211,18 @@ function triggerMeasurablyHidden(element: HTMLElement, ownerWindow: Window): boo
   return !intersectsRegion(rect, visibleRegionAround(element, ownerWindow, rect));
 }
 
+/** The region placement answers to, as one comparable value. A pinch zoom
+ * changes it WITHOUT changing `innerHeight`, so the window's own height alone
+ * cannot tell an observation "the reader moved the viewport" from "layout
+ * changed while the viewport stood still". */
+function visibleViewportSignature(ownerWindow: Window): string {
+  const viewport = ownerWindow.visualViewport;
+  // Absent rather than null where the platform has no visual viewport: jsdom,
+  // and any engine predating it. There the two viewports are one region.
+  if (!viewport) return `${ownerWindow.innerWidth}x${ownerWindow.innerHeight}`;
+  return `${viewport.offsetLeft},${viewport.offsetTop},${viewport.width}x${viewport.height}`;
+}
+
 // The outermost ancestor inside the body: everything in normal flow that could
 // push the trigger down, and nothing in the body beside it (a portaled sibling
 // subtree is not laid out against this trigger).
@@ -816,6 +828,10 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   // this is deliberately never null and the popup is deliberately never
   // hidden in between - see that same comment for why.
   function openMenu() {
+    // Each open starts in the ordinary restore mode. Only a close that decides
+    // otherwise changes it, so an unmount after a reopen cannot inherit the
+    // previous close's layout mode.
+    restoreWithoutScrollRef.current = false;
     const first = items[firstEnabledIndex(items)];
     setActiveId(first === undefined || isSeparator(first) ? undefined : first.id);
     const triggerRect = triggerRef.current?.getBoundingClientRect();
@@ -836,13 +852,28 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   // re-attaching their listeners on every render: closeMenu closes over
   // nothing but the setIsOpen setter, which React itself guarantees is
   // stable.
-  const closeMenu = useCallback(() => {
-    if (frameRef.current !== null) {
-      (ownerDocument.defaultView ?? window).cancelAnimationFrame(frameRef.current);
-      frameRef.current = null;
-    }
-    setIsOpen(false);
-  }, [ownerDocument]);
+  //
+  // `restoreWithoutScroll` says which kind of close this is, and it is the
+  // whole difference between the two: a LAYOUT close (a chip took height out
+  // of the rail and hid the trigger) must not move the page to put focus
+  // back, while Escape, an outside press, a chosen item and the reader's own
+  // scroll are navigations the reader asked for and keep the ordinary
+  // restore. It is passed to the scope rather than left implicit because the
+  // scope restores to whatever it RECORDED - a pointer click opens a menu
+  // without focusing its trigger, so that is often some other control, and
+  // it is the one a layout change can leave offscreen.
+  const restoreWithoutScrollRef = useRef(false);
+  const closeMenu = useCallback(
+    (restoreWithoutScroll = false) => {
+      restoreWithoutScrollRef.current = restoreWithoutScroll;
+      if (frameRef.current !== null) {
+        (ownerDocument.defaultView ?? window).cancelAnimationFrame(frameRef.current);
+        frameRef.current = null;
+      }
+      setIsOpen(false);
+    },
+    [ownerDocument],
+  );
 
   // Lay the trigger out of sight and the menu must still give focus back to
   // it - the reader was on it a moment ago - but the scope's restore is a
@@ -859,7 +890,10 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   // focused and in view.
   const closeMenuRestoringFocusWithoutScroll = useCallback(() => {
     triggerRef.current?.focus({ preventScroll: true });
-    closeMenu();
+    // The trigger focus above only makes the scope's restore a no-op when the
+    // trigger is what the scope recorded. When it is not, the scope is the
+    // path that would scroll, so it is told not to.
+    closeMenu(true);
   }, [closeMenu]);
 
   // Where the focused row sat the last time this widget looked, and in what
@@ -873,6 +907,21 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   // the open, and a replacement after a list change - and spent by the next
   // placement pass, which is the first moment the popup's box is known.
   const initialRevealPendingRef = useRef(false);
+
+  // Whether the trigger was inside what the reader can see when the popup was
+  // last placed. This is the fact that separates "layout just hid the trigger"
+  // from "the viewport moved and we placed the popup around a trigger it had
+  // already taken": only the first is a dismissal. A container's box shrinking
+  // and a pinch zoom are the same shape of event, and the difference is exactly
+  // this - whether there was ever a placement in which the trigger could be
+  // seen.
+  const triggerVisibleAtLastPlacementRef = useRef(true);
+  // The visible region as it stood at the last placement pass, and as it stood
+  // at the last observation. A pinch zoom changes the visual viewport without
+  // touching `innerHeight`, so the window's height alone would read a zoom as a
+  // layout change whenever the observer's delivery beats the placement frame -
+  // and dismiss the menu for the gesture that was supposed to keep it.
+  const visibleViewportAtPlacementRef = useRef<string | null>(null);
 
   // Where the trigger's rect was at the last placement pass, and whether the
   // window has grown since the pass before it. A scroll of a scroller that
@@ -1231,6 +1280,11 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // so that is the position any later scroll is judged against - see
     // refreshScrollerBaselines.
     refreshScrollerBaselines(triggerEl, ownerWindow, scrollerRecordsRef.current);
+    // What the observer's dismissal question is answered against: a trigger
+    // that was already out of sight here was put there by the viewport, and a
+    // later observation of the same clipping is not layout's doing.
+    triggerVisibleAtLastPlacementRef.current = !triggerMeasurablyHidden(triggerEl, ownerWindow);
+    visibleViewportAtPlacementRef.current = visibleViewportSignature(ownerWindow);
     // The origin is read against the trigger's rect, so it takes the same
     // translated position: `placed` is in the visual viewport's coordinates,
     // and comparing it with a layout-coordinate trigger picks the wrong edge
@@ -1753,19 +1807,54 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     //   reader did, and nothing the resize handler saw, so the menu has no
     //   business staying open with focus on a trigger nothing shows.
     //
-    // The window's own height is what separates them, read rather than
-    // inferred: if it changed since the last observation, a viewport resize
-    // happened, and it owns what the observation shows. The reading is taken
-    // here and nowhere else, so one resize can excuse at most one observation -
-    // the frame after it records the new height, and a chip that arrives later
-    // is judged on its own.
-    const onObservedSize = () => {
+    // Three facts separate them, all read rather than inferred:
+    //
+    //   * the window's own height, if it changed since the last observation;
+    //   * the VISIBLE viewport, if it moved since the last placement - a pinch
+    //     zoom leaves `innerHeight` alone, and iOS's keyboard inset is the same
+    //     shape, so this is the only reading that covers it;
+    //   * whether the trigger was in sight at that placement at all. A trigger
+    //     the viewport had already taken is not one layout just hid, and a
+    //     delivery per re-placement must not turn it into a dismissal.
+    //
+    // The height and the signature are taken here and nowhere else, so one
+    // viewport move can excuse at most one observation - the frame after it
+    // records the new values, and a chip arriving later is judged on its own.
+    // A delivery that names ONLY the popup is placement's own consequence:
+    // the cap written from the visible viewport changes the popup's box in the
+    // same pass that re-anchors it after a zoom. Such a delivery can say the
+    // popup resized; it can never say that layout hid the trigger. (An empty
+    // entry list - a test double, or a browser that batches the callback - is
+    // not this case, so it is judged by the same rule as any other.)
+    const popupOnly = (entries: ResizeObserverEntry[]) =>
+      entries.length > 0 && entries.every((entry) => entry.target === popupRef.current);
+    const onObservedSize = (entries: ResizeObserverEntry[]) => {
       const viewportChanged = ownerWindow.innerHeight !== observedViewportHeightRef.current;
       observedViewportHeightRef.current = ownerWindow.innerHeight;
+      // The visual viewport is the region placement answers to, and it can move
+      // with `innerHeight` untouched: a pinch zoom, or the same keyboard inset
+      // on iOS. An observation that lands between that move and its placement
+      // frame is still the viewport's, never layout's - so the signature taken
+      // at the last placement is the other half of the reading.
+      const viewportMoved = visibleViewportAtPlacementRef.current !== visibleViewportSignature(ownerWindow);
       const el = triggerRef.current;
       if (el !== null && triggerMeasurablyHidden(el, ownerWindow)) {
-        if (!viewportChanged) closeMenuRestoringFocusWithoutScroll();
-        else placeAfterLayout();
+        // A viewport change owns what the observation shows, and so does the
+        // popup's own re-placement. Both keep the menu.
+        if (viewportChanged || viewportMoved || popupOnly(entries)) {
+          placeAfterLayout();
+          return;
+        }
+        // The remaining question is whether LAYOUT just hid the trigger for
+        // the first time. A trigger already out of sight at the last placement
+        // was put there by a viewport move - the case this widget exists to
+        // survive - and one observation per re-placement must not turn it into
+        // a dismissal.
+        if (!triggerVisibleAtLastPlacementRef.current) {
+          placeAfterLayout();
+          return;
+        }
+        closeMenuRestoringFocusWithoutScroll();
         return;
       }
       placeAfterLayout();
@@ -1959,7 +2048,7 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
       {mounted &&
         position &&
         createPortal(
-          <LayerFocusScope trap released={phase === "closing"}>
+          <LayerFocusScope trap released={phase === "closing"} restoreWithoutScroll={restoreWithoutScrollRef}>
             {/* <ul role="menu">/<li role="menuitem"> is the WAI-ARIA APG menu
                 pattern's own example markup (w3.org/WAI/ARIA/apg/patterns/menu),
                 not an interactive role on an arbitrary static element. */}
