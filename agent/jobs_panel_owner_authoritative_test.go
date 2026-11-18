@@ -1003,6 +1003,171 @@ func TestLoadSessionJobOutputPageRoutesLegacyBySupplyingJournal(t *testing.T) {
 	}
 }
 
+// TestLoadSessionJobGetKeepsForwardedTerminalOverTornOwnerTail is the round-6
+// medium-2 regression, and it is the torn-tail half of the same invariant the
+// scan-damage test pins: a record that is not fully established must not outrank
+// one that is. The owner's journal holds a start and then an unterminated append,
+// so the scan returns a NIL error and only the TornTail diagnostic. Treating
+// that nil error as proof of settled state let a running prefix replace the
+// ancestor's observed finish and lose its exit code.
+func TestLoadSessionJobGetKeepsForwardedTerminalOverTornOwnerTail(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 19, 0, 30, 0, 0, time.UTC)
+	ended := started.Add(time.Minute)
+	exit := 7
+
+	// The owner's journal: a valid start, then an append that never terminated.
+	writeJobJournalLines(t, jobsDir(stateDir, ownerSession),
+		jobStartedLine(jobID, ownerSession, started)+"\n",
+		`{"kind":"job_finished","seq":2,"job_id":"`+jobID+`","status":"completed"`,
+	)
+
+	rootStore := openJobJournal(t, jobsDir(stateDir, rootSession))
+	appendJobEvent(t, rootStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: ownerSession, VisibleToSession: rootSession,
+		StartedAt: &started,
+	})
+	appendJobEvent(t, rootStore, jobstore.Event{
+		Kind: jobstore.EventJobFinished, TS: ended, JobID: jobID,
+		Status: jobstore.StatusCommandExitedNonzero, Reason: "exit_nonzero", ExitCode: &exit,
+		EndedAt: &ended, TerminalGen: "gen_forwarded",
+	})
+	closeJobJournal(t, rootStore)
+
+	job, found, err := LoadSessionJobGet(stateDir, rootSession, jobID, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the observed finish")
+	}
+	if job.Status != string(jobstore.StatusCommandExitedNonzero) {
+		t.Fatalf("status = %q, want %q: a torn owner tail is incomplete evidence, not proof of a running job",
+			job.Status, jobstore.StatusCommandExitedNonzero)
+	}
+	if job.ExitCode == nil || *job.ExitCode != exit {
+		t.Fatalf("exitCode = %v, want %d from the observed finish", job.ExitCode, exit)
+	}
+	if !slices.Contains(job.Diagnostics, "journal_torn_tail") {
+		t.Fatalf("Diagnostics = %v, want journal_torn_tail: the owner's damage must still be reported", job.Diagnostics)
+	}
+}
+
+// TestLoadSessionJobGetRejectsContradictoryLegacyHint is the round-6 medium-3
+// regression. The hinted journal contains the job ID but its row names a
+// DIFFERENT owner, so it is a forwarded copy living in another ancestor, not the
+// hinted owner's own record. Treating the mere presence of the job ID as
+// corroboration let that running copy replace the scoped journal's finish and
+// clear the fallback flag.
+func TestLoadSessionJobGetRejectsContradictoryLegacyHint(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	scopedSession := identifier.MustNewSessionID()
+	hintedSession := identifier.MustNewSessionID()
+	thirdSession := identifier.MustNewSessionID()
+	jobID := "job_legacy_c1d2e3f4"
+	started := time.Date(2026, 11, 19, 1, 0, 0, 0, time.UTC)
+	ended := started.Add(time.Minute)
+
+	// The scoped journal: the claimed hint, plus the job's completed lifecycle.
+	scopedStore := openJobJournal(t, jobsDir(stateDir, scopedSession))
+	appendJobEvent(t, scopedStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: hintedSession, VisibleToSession: scopedSession,
+		StartedAt: &started,
+	})
+	appendJobEvent(t, scopedStore, jobstore.Event{
+		Kind: jobstore.EventJobFinished, TS: ended, JobID: jobID,
+		Status: jobstore.StatusCompleted, EndedAt: &ended, TerminalGen: "gen_scoped",
+	})
+	closeJobJournal(t, scopedStore)
+
+	// The hinted journal has a row for this job that names a THIRD owner: it is a
+	// forwarded copy, not the hinted owner's record.
+	hintedStore := openJobJournal(t, jobsDir(stateDir, hintedSession))
+	appendJobEvent(t, hintedStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: thirdSession, VisibleToSession: hintedSession,
+		StartedAt: &started,
+	})
+	closeJobJournal(t, hintedStore)
+
+	job, found, err := LoadSessionJobGet(stateDir, scopedSession, jobID, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the scoped journal's completed record")
+	}
+	if job.Status != string(jobstore.StatusCompleted) {
+		t.Fatalf("status = %q, want %q: a row naming another owner cannot corroborate the hinted one",
+			job.Status, jobstore.StatusCompleted)
+	}
+	if !slices.Contains(job.Diagnostics, "forwarded_fallback") {
+		t.Fatalf("Diagnostics = %v, want forwarded_fallback: corroboration failed, so the scoped copy is fallback evidence",
+			job.Diagnostics)
+	}
+}
+
+// TestLoadSessionJobGetPreservesLaunchFieldsFromScopedStart is the round-6
+// finding the review did not list but the parent did: an owner journal holding
+// ONLY a finish states the job's end and nothing about what was launched. The
+// saved job pane lost the command, type and start time it could previously read.
+// The owner's terminal facts must win, and the launch facts must survive.
+func TestLoadSessionJobGetPreservesLaunchFieldsFromScopedStart(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 19, 2, 0, 0, 0, time.UTC)
+	ended := started.Add(4 * time.Minute)
+	exit := 0
+
+	// The scoped journal holds the launch details.
+	rootStore := openJobJournal(t, jobsDir(stateDir, rootSession))
+	appendJobEvent(t, rootStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: ownerSession, VisibleToSession: rootSession,
+		Command: "make build-everything", Description: "full build", StartedAt: &started,
+	})
+	closeJobJournal(t, rootStore)
+
+	// The owner's journal holds ONLY the finish.
+	ownerStore := openJobJournal(t, jobsDir(stateDir, ownerSession))
+	appendJobEvent(t, ownerStore, jobstore.Event{
+		Kind: jobstore.EventJobFinished, TS: ended, JobID: jobID,
+		Status: jobstore.StatusCompleted, ExitCode: &exit, EndedAt: &ended, TerminalGen: "gen_owner",
+	})
+	closeJobJournal(t, ownerStore)
+
+	job, found, err := LoadSessionJobGet(stateDir, rootSession, jobID, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the owner's finish")
+	}
+	if job.Status != string(jobstore.StatusCompleted) {
+		t.Fatalf("status = %q, want %q from the owner's finish", job.Status, jobstore.StatusCompleted)
+	}
+	if job.Command != "make build-everything" {
+		t.Fatalf("command = %q, want %q from the scoped start: an end alone cannot say what was launched",
+			job.Command, "make build-everything")
+	}
+	if job.Type != string(jobstore.JobShell) {
+		t.Fatalf("type = %q, want %q from the scoped start", job.Type, jobstore.JobShell)
+	}
+	if job.StartedAt == "" {
+		t.Fatal("startedAt is empty, want the scoped start's time")
+	}
+}
+
 // openJobJournal opens a session's jobs.jsonl for a fixture, creating the
 // directory the store lives in.
 func openJobJournal(t *testing.T, dir string) *jobstore.Store {
@@ -1051,4 +1216,47 @@ func jobStartedLine(jobID, ownerSession string, started time.Time) string {
 		`","job_id":"` + jobID + `","type":"shell","owner_session_id":"` + ownerSession +
 		`","visible_to_session_id":"` + ownerSession +
 		`","started_at":"` + started.Format(time.RFC3339) + `"}`
+}
+
+// TestLoadSessionJobGetRejectsMalformedOwnerHint is the round-6 medium-3 half
+// the contradiction test does not reach: the hint is read back OUT of a stored
+// row, so it is untrusted input. A value that is not a session id must not be
+// handed to the deletion fence or turned into a path. The scoped record stands
+// as fallback evidence and the fence only ever hears the requested session.
+func TestLoadSessionJobGetRejectsMalformedOwnerHint(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	scopedSession := identifier.MustNewSessionID()
+	jobID := "job_legacy_b4a1d0c9"
+	started := time.Date(2026, 11, 19, 3, 0, 0, 0, time.UTC)
+	const malformedHint = "not/a/session"
+
+	writeJobJournalLines(t, jobsDir(stateDir, scopedSession),
+		`{"kind":"job_started","seq":1,"ts":"`+started.Format(time.RFC3339)+
+			`","job_id":"`+jobID+`","type":"shell","status":"running","owner_session_id":"`+malformedHint+
+			`","visible_to_session_id":"`+scopedSession+`","started_at":"`+started.Format(time.RFC3339)+`"}`+"\n",
+	)
+
+	var consulted []string
+	fence := func(sessionID string) (bool, error) {
+		consulted = append(consulted, sessionID)
+		return false, nil
+	}
+
+	job, found, err := LoadSessionJobGet(stateDir, scopedSession, jobID, fence)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the scoped journal's start")
+	}
+	if !slices.Contains(job.Diagnostics, "forwarded_fallback") {
+		t.Fatalf("Diagnostics = %v, want forwarded_fallback: a malformed claim corroborates nothing", job.Diagnostics)
+	}
+	for _, sessionID := range consulted {
+		if sessionID == malformedHint {
+			t.Fatalf("deletion fence consulted %q: a stored claim that is not a session id must be validated "+
+				"before the fence or a filesystem lookup sees it", sessionID)
+		}
+	}
 }

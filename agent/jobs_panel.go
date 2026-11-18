@@ -293,24 +293,46 @@ func loadSessionJobRecord(stateDir, sessionID, jobID string, fence OwnerDeletion
 		if hint == "" || hint == sessionID {
 			return local, nil
 		}
+		// The hint comes from a STORED ROW, so it is untrusted input, not an
+		// identifier this read has validated: it is a session id read back out of
+		// a journal. Validate it before it reaches the deletion fence or a
+		// filesystem lookup, so a malformed claim cannot name a path or a session
+		// the fence is never consulted for.
+		if err := schema.ValidateSessionID(hint); err != nil {
+			// A claim that is not a session id cannot corroborate anything. The
+			// scoped record is the surviving evidence and says so.
+			local.diagnostics.OwnerUnavailable = true
+			local.diagnostics.ForwardedFallback = true
+			return local, nil
+		}
 		if fenced, fenceErr := retainedOwnerFenced(stateDir, hint, fence); fenceErr != nil {
 			return sessionJobRecordRead{}, fenceErr
 		} else if fenced {
 			return sessionJobRecordRead{}, nil
 		}
 		corroborated, hintErr := readSessionJobJournal(stateDir, hint, jobID)
-		if hintErr != nil || !corroborated.found {
+		// Corroboration is not merely "the hinted journal mentions this job": the
+		// row it holds must AGREE that the hinted session owns it. A forwarded copy
+		// living in a different ancestor also names the job, and with a contradictory
+		// owner field it would otherwise be treated as the hinted owner's own record
+		// and allowed to replace the scoped finish. An empty owner field is the
+		// pre-owner legacy shape and states nothing to contradict.
+		contradicts := corroborated.record != nil &&
+			corroborated.record.OwnerSessionID != "" &&
+			corroborated.record.OwnerSessionID != hint
+		if hintErr != nil || !corroborated.found || contradicts {
 			// The hinted journal could not corroborate — it was absent, unreadable,
-			// or held no record of this job. That is a fact about the HINT, not a
-			// failure of this read: the caller asked about the scoped session, whose
-			// record is intact, so the scoped copy stands. The hint's damage is not
-			// discarded — it rides the diagnostic, including durable corruption that
-			// made its journal unreadable — and a claim nothing corroborated is not
-			// an owner, so the scoped copy keeps fallback status rather than
-			// pretending to be the owner's.
+			// held no record of this job, or held one naming a different owner. That
+			// is a fact about the HINT, not a failure of this read: the caller asked
+			// about the scoped session, whose record is intact, so the scoped copy
+			// stands. The hint's damage is not discarded — it rides the diagnostic,
+			// including durable corruption that made its journal unreadable — and a
+			// claim nothing corroborated is not an owner, so the scoped copy keeps
+			// fallback status rather than pretending to be the owner's.
 			if hintErr != nil {
 				local.diagnostics.ScanIncomplete = true
 			}
+			local.diagnostics.mergeIntegrity(corroborated.diagnostics)
 			local.diagnostics.OwnerUnavailable = true
 			local.diagnostics.ForwardedFallback = true
 			return local, nil
@@ -352,6 +374,7 @@ func loadSessionJobRecord(stateDir, sessionID, jobID string, fence OwnerDeletion
 			owned.diagnostics.mergeIntegrity(local.diagnostics)
 			owned.diagnostics.ForwardedFallback = !incomingIsOwner
 			owned.diagnostics.OwnerUnavailable = false
+			preserveLaunchFields(owned.record, local.record)
 			return owned, nil
 		}
 		// The copy already held outranks the owner journal's. It is still the
@@ -367,10 +390,54 @@ func loadSessionJobRecord(stateDir, sessionID, jobID string, fence OwnerDeletion
 	// the only surviving evidence, so the forwarded copy stands — and says it is
 	// a fallback rather than passing itself off as the owner's record.
 	local.diagnostics.OwnerUnavailable = true
+	// The owner's OWN damage report still travels: a torn tail or a failed scan
+	// there is a fact about this job's history, and dropping it because no row
+	// survived would present unreadability and corruption as the same thing.
+	local.diagnostics.mergeIntegrity(owned.diagnostics)
 	if !retainedJobAuthority(jobID, local.sourceSessionID, local.record) {
 		local.diagnostics.ForwardedFallback = true
 	}
 	return local, nil
+}
+
+// preserveLaunchFields fills a record's unset launch fields from the same job's
+// scoped copy. An owner journal that holds only a finish describes the job's
+// END, and an end alone cannot say what was launched: the command, the type, the
+// start time and the description all live in the start event, which in this
+// situation only the scoped journal still has. Those are facts, not inferences —
+// they come from the same job's record, and the owner's terminal status, exit
+// code and diagnostics stay exactly as the owner wrote them.
+//
+// Only fields the owner left EMPTY are filled. A field the owner's journal set
+// is the owner's to state.
+func preserveLaunchFields(rec, scoped *jobstore.JobRecord) {
+	if rec == nil || scoped == nil || rec.JobID != scoped.JobID {
+		return
+	}
+	if rec.Type == "" {
+		rec.Type = scoped.Type
+	}
+	if rec.Command == "" {
+		rec.Command = scoped.Command
+	}
+	if rec.Task == "" {
+		rec.Task = scoped.Task
+	}
+	if rec.Description == "" {
+		rec.Description = scoped.Description
+	}
+	if rec.Intent == "" {
+		rec.Intent = scoped.Intent
+	}
+	if rec.StartedAt.IsZero() {
+		rec.StartedAt = scoped.StartedAt
+	}
+	if rec.OutputPath == "" {
+		rec.OutputPath = scoped.OutputPath
+	}
+	if rec.WorkingDir == "" {
+		rec.WorkingDir = scoped.WorkingDir
+	}
 }
 
 // retainedJobReadOutranks reports whether the incoming read replaces the
@@ -387,6 +454,9 @@ func loadSessionJobRecord(stateDir, sessionID, jobID string, fence OwnerDeletion
 //     ending at a running row says nothing about whether the job finished — the
 //     finish may be the very line that failed to decode. The competing forwarded
 //     copy's terminal observation is then the only settled answer there is.
+//
+// The invariant both rules serve, in one sentence: a record that is not fully
+// established must not outrank one that is.
 //
 // The two AUTHORITY inputs come from the caller because the identifier is not
 // always there to consult: an encoded owner is proved by retainedJobAuthority,
@@ -409,18 +479,26 @@ func retainedJobReadOutranks(existingIsOwner bool, existing sessionJobRecordRead
 	return stateEstablished(incoming) || !stateEstablished(existing)
 }
 
-// stateEstablished reports whether a read proves the job's settled state given
-// that its journal may have stopped at damage. A decoded terminal event is a
-// complete observation on its own: the first terminal write fixes the status,
-// end time and exit code, so damage after it can add nothing to that answer. A
-// non-terminal record from a scan that hit durable corruption proves only that
-// the job had not finished by the last intact line — which is not the same as
-// the job still running.
+// stateEstablished reports whether a read proves the job's settled state.
+//
+// A decoded terminal event is a complete observation on its own: the first
+// terminal write fixes the status, end time and exit code, so damage after it
+// can add nothing to that answer.
+//
+// A NON-TERMINAL record is established only when its scan reached a clean record
+// boundary. Both kinds of damage leave the finish unaccounted for, and both are
+// therefore incomplete evidence: durable corruption can be the finish itself,
+// and a torn tail is an append that landed without its newline — the in-flight
+// finish, or one that will never complete. Reading either as "still running"
+// would state the job's state without having seen it.
 func stateEstablished(read sessionJobRecordRead) bool {
 	if read.record == nil {
 		return false
 	}
-	return read.record.Status.IsTerminal() || read.scanErr == nil
+	if read.record.Status.IsTerminal() {
+		return true
+	}
+	return read.scanErr == nil && !read.diagnostics.TornTail
 }
 
 // mergeIntegrity folds another read's damage report into d. Diagnostics are not
