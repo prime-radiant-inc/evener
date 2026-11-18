@@ -869,7 +869,7 @@ func TestPackTranscriptWindowStrippedPageRespectsItsFollowUps(t *testing.T) {
 	)
 	bookkeeping := strings.Repeat("r", 30000)
 	var candidates []appitempaging.TranscriptItemCandidate
-	for t := 0; t < turnCount; t++ {
+	for t := range turnCount {
 		turnID := fmt.Sprintf("turn-%02d", t)
 		calls := make([]appwire.PendingAskCall, callCount)
 		for i := range calls {
@@ -1489,15 +1489,6 @@ func TestPackTranscriptItemWindowKeepsEmptyBoundaryOnServedPage(t *testing.T) {
 	result := testWindowCandidateResult(candidates)
 	result.TurnIDs = []string{"turn-1", "turn-2", "turn-3"}
 	var continuation transcriptWindowContinuation
-	{
-		heavy := candidates[0].Item
-		withStamp, _ := json.Marshal(appwire.Turn{ID: "turn-heavy", Items: []appwire.ThreadItem{heavy}})
-		noStamp := heavy
-		noStamp.Observation = &appwire.SessionObservationMetadata{Ref: heavy.Observation.Ref, TurnID: heavy.Observation.TurnID, AnswerToTurnIDs: heavy.Observation.AnswerToTurnIDs}
-		strippedTurn, _ := json.Marshal(appwire.Turn{ID: "turn-heavy", Items: []appwire.ThreadItem{noStamp}})
-		stampOnly, _ := json.Marshal(heavy.Observation.ResolvedAskCalls)
-		t.Logf("DIAG turnWithStamp=%d turnStripped=%d stamp=%d budget=%d", len(withStamp), len(strippedTurn), len(stampOnly), transcriptWindowMaximumContentBudget)
-	}
 	options := testWindowPackOptions(appwire.ThreadWindowParams{
 		TurnWindow:        &appwire.ThreadTurnWindow{Latest: 3},
 		WindowBudgetBytes: 1,
