@@ -384,11 +384,20 @@ type launcherFixture struct {
 
 // newLauncherFixture writes script as the fake helper and returns its path, the
 // file its handlers append to, and the files its output goes to.
+//
+// Every scratch root the launcher may consult is inside this fixture, and the
+// chain down to it is private. Otherwise a run reads the developer's real
+// $XDG_RUNTIME_DIR and $HOME: the launcher correctly refuses a TMPDIR other
+// users can enter, and the fixture then depends on whichever roots the machine
+// happens to have -- passing where one exists and failing where none does, and
+// creating a cache directory outside the fixture where HOME is usable. A case
+// that wants those roots unavailable sets them explicitly.
 func newLauncherFixture(t *testing.T, script string) launcherFixture {
 	t.Helper()
 	// Resolved, because the launcher canonicalizes the TMPDIR it is handed and
 	// the sweep matches against the path the launcher actually used.
 	dir := resolvePath(t, t.TempDir())
+	requirePrivateChain(t, dir, dir)
 	f := launcherFixture{
 		dir:    dir,
 		path:   filepath.Join(dir, "evener-dev"),
@@ -397,6 +406,8 @@ func newLauncherFixture(t *testing.T, script string) launcherFixture {
 		stderr: filepath.Join(dir, "stderr"),
 	}
 	writeTestFile(t, f.path, []byte(script), 0o755)
+	requirePrivateChain(t, dir, f.runtimeDir())
+	requirePrivateChain(t, dir, f.homeDir())
 	return f
 }
 
@@ -459,6 +470,11 @@ func (f launcherFixture) launcherCmd(t *testing.T, args ...string) *exec.Cmd {
 		// cleanup find a helper whose PID the case never learned -- including
 		// the real one, were a case ever to reach it.
 		"TMPDIR="+f.tmpDir(),
+		// The fallback roots too, for the same reason: a TMPDIR the launcher
+		// rejects must send it to the fixture's own runtime directory, not to
+		// the developer's. A case that wants them unusable overrides these.
+		"XDG_RUNTIME_DIR="+f.runtimeDir(),
+		"HOME="+f.homeDir(),
 	)
 	return cmd
 }
@@ -466,6 +482,12 @@ func (f launcherFixture) launcherCmd(t *testing.T, args ...string) *exec.Cmd {
 // tmpDir is the TMPDIR this fixture's launcher runs under: inside the case's own
 // directory, so the scratch path the launcher mints names the case.
 func (f launcherFixture) tmpDir() string { return filepath.Join(f.dir, "tmp") }
+
+// runtimeDir is the $XDG_RUNTIME_DIR this fixture's launcher falls back to, and
+// homeDir is its $HOME. Both are the fixture's own, so a launcher that rejects
+// TMPDIR stays inside the case instead of consulting the machine.
+func (f launcherFixture) runtimeDir() string { return filepath.Join(f.dir, "runtime") }
+func (f launcherFixture) homeDir() string    { return filepath.Join(f.dir, "home") }
 
 // killGroups KILLs each pid's process group, ignoring ones already gone. It is
 // the cleanup path: it must never fail the case it is cleaning up after.
@@ -509,9 +531,10 @@ func runLauncher(t *testing.T, cmd *exec.Cmd, f launcherFixture, fixturePIDs ...
 	// caller, root included. Creating the path is only for the cases that did
 	// not, and an entry already there is left exactly as the case made it.
 	if _, err := os.Lstat(f.tmpDir()); errors.Is(err, os.ErrNotExist) {
-		if err := os.MkdirAll(f.tmpDir(), 0o755); err != nil {
-			t.Fatalf("mkdir fixture TMPDIR: %v", err)
-		}
+		// 0700, like the rest of the fixture: a group-writable TMPDIR is one the
+		// launcher correctly refuses, and the case would then run out of the
+		// fixture's fallback root instead of the TMPDIR it named.
+		requirePrivateChain(t, f.dir, f.tmpDir())
 	}
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start %s: %v", mergeEnqueueLauncher, err)
@@ -545,6 +568,11 @@ func (f launcherFixture) launcherCmdAt(t *testing.T, script string, args ...stri
 		// cleanup find a helper whose PID the case never learned -- including
 		// the real one, were a case ever to reach it.
 		"TMPDIR="+f.tmpDir(),
+		// The fallback roots too, for the same reason: a TMPDIR the launcher
+		// rejects must send it to the fixture's own runtime directory, not to
+		// the developer's. A case that wants them unusable overrides these.
+		"XDG_RUNTIME_DIR="+f.runtimeDir(),
+		"HOME="+f.homeDir(),
 	)
 	return cmd
 }
@@ -1017,6 +1045,15 @@ while [ ! -e "${EVENER_FIXTURE_LOG}.release" ]; do sleep 0.02; done
 		if dir == f.tmpDir() {
 			t.Fatalf("the group file is %s directly under TMPDIR: its name is predictable, so on a shared TMPDIR that permits symlink traversal another user can plant a link the launcher truncates through", handle)
 		}
+		// Inside the case's own directory, not merely "somewhere else". The
+		// launcher rejects a TMPDIR another user can enter and falls back to
+		// $XDG_RUNTIME_DIR or $HOME/.cache; a fixture that leaves those alone is
+		// reading the machine's, so the same case passes on a host with a usable
+		// runtime directory and fails on one without, and writes a cache outside
+		// the fixture on the way.
+		if !strings.HasPrefix(handle, f.dir+string(filepath.Separator)) {
+			t.Fatalf("the group file is %s, outside the fixture %s: the launcher used a scratch root this case does not own", handle, f.dir)
+		}
 		// Read while the helper is still running: the launcher removes the
 		// directory with the handle, so after exit there is nothing to stat.
 		info, err := os.Stat(dir)
@@ -1286,58 +1323,69 @@ func TestMergeEnqueueLauncherDoesNotBuildUnderAReplaceableRoot(t *testing.T) {
 		// still replace the shared directory above it and move where every path
 		// below resolves -- including the freshly built helper the launcher is
 		// about to execute.
+		//
+		// The oracle is the refusal, not a build. With no usable root anywhere the
+		// launcher must stop before it builds or executes anything and say so: exit
+		// 2, nothing running, nothing minted. Waiting for a build to appear would
+		// only ever pass against the accepting behaviour this case exists to
+		// exclude, and it would spend the launcher's whole deadline doing it.
 		shared := filepath.Join(resolvePath(t, t.TempDir()), "shared")
 		if err := os.MkdirAll(shared, 0o755); err != nil {
 			t.Fatalf("create the shared ancestor: %v", err)
 		}
-		if err := os.Chmod(shared, 0o777); err != nil {
-			t.Fatalf("make the ancestor replaceable: %v", err)
-		}
 		shared = resolvePathAfterCreate(t, shared)
 		c := newFixtureCheckoutNamed(t, filepath.Join(shared, "tmp"), "checkout")
 		c.requireIsolated(t)
+		// After the constructor, not before: it makes the chain private so the
+		// launcher accepts the fixture TMPDIR in the ordinary cases, and a case
+		// that wants the ancestor replaceable has to say so last or it is testing
+		// a directory it made private itself.
+		if err := os.Chmod(shared, 0o777); err != nil {
+			t.Fatalf("make the ancestor replaceable: %v", err)
+		}
 		if err := os.Chmod(c.tmp, 0o700); err != nil {
 			t.Fatalf("make the fixture TMPDIR private: %v", err)
 		}
-		safeRoot := resolvePath(t, t.TempDir())
-		safe := resolvePathAfterCreate(t, filepath.Join(safeRoot, "runtime"))
-		requirePrivateChain(t, safeRoot, safe)
-		f := newLauncherFixture(t, "#!/usr/bin/env bash\nexit 0\n")
+		f := newLauncherFixture(t, "#!/usr/bin/env bash\nprintf 'helper-ran\\n' >> \"$EVENER_FIXTURE_LOG\"\n")
+		// All three candidates denied, so the case is about the ancestor rule and
+		// not about which fallback this machine has: a missing runtime directory,
+		// and a HOME that cannot grow a cache because it is a regular file.
+		denied := filepath.Join(f.dir, "not-a-directory")
+		if err := os.WriteFile(denied, []byte("not a directory\n"), 0o600); err != nil {
+			t.Fatalf("write the denied root: %v", err)
+		}
+		t.Cleanup(func() { assertNoSurvivors(t, c.root) })
+		t.Cleanup(func() { assertNoSurvivors(t, c.tmp) })
+		t.Cleanup(func() { assertNoSurvivors(t, shared) })
 		cmd := f.launcherCmdAt(t, c.script, "--pr", "6499", "--repo", "example.invalid/none")
 		cmd.Env = envOverride(cmd.Env,
-			"TMPDIR="+c.tmp, "XDG_RUNTIME_DIR="+safe,
+			"TMPDIR="+c.tmp,
+			"XDG_RUNTIME_DIR="+filepath.Join(denied, "runtime"),
+			"HOME="+denied,
 			"GOWORK=off", "GOENV=off",
 		)
 		cmd.Env = slices.DeleteFunc(cmd.Env, func(kv string) bool {
 			return strings.HasPrefix(kv, "EVENER_DEV_BIN=")
 		})
-		var buildPID int
-		t.Cleanup(func() { assertNoSurvivors(t, safe) })
-		t.Cleanup(func() { assertNoSurvivors(t, c.root) })
-		t.Cleanup(func() { assertNoSurvivors(t, shared) })
-		t.Cleanup(func() { killGroups(buildPID) })
 		runLauncher(t, cmd, f)
-		testwait.UntilSeen(t, "the fixture build to appear", func() (bool, string) {
-			buildPID, _ = buildIn(t, safe)
-			if buildPID != 0 {
-				return true, ""
+		// Exit 2 is the launcher's "I could not get as far as a decision". It must
+		// arrive promptly: the refusal precedes the build, so nothing blocks.
+		mustExit(t, cmd, f, 2)
+		for _, marker := range []string{c.root, c.tmp, shared} {
+			if survivors := processesNaming(t, marker); len(survivors) > 0 {
+				t.Fatalf("the launcher ran something under a directory another user can replace: %v", survivors)
 			}
-			if pid, _ := buildIn(t, shared); pid != 0 {
-				buildPID = pid
-				return false, "the build ran under the replaceable ancestor, so the leaf's mode was taken as the answer"
-			}
-			return false, "no build names either root yet"
-		})
+		}
 		if entries, err := os.ReadDir(c.tmp); err != nil {
 			t.Fatalf("read the fixture TMPDIR: %v", err)
 		} else if len(entries) != 0 {
 			t.Fatalf("the launcher minted scratch under a directory whose ancestor another user can replace (%v)", entries)
 		}
-		signalLauncher(t, cmd, syscall.SIGTERM)
-		mustExit(t, cmd, f, 130)
-		testwait.Until(t, fmt.Sprintf("build pid %d to terminate", buildPID), func() bool {
-			return pidGone(buildPID)
-		})
+		for _, line := range f.lines(t) {
+			if strings.HasPrefix(line, "helper-ran") {
+				t.Fatalf("the launcher started a helper it had already decided not to build: %v", f.lines(t))
+			}
+		}
 	})
 	t.Run("ownership is part of the question", func(t *testing.T) {
 		// The high this pins: mode bits say what everyone else may do and never
@@ -1391,6 +1439,52 @@ func TestMergeEnqueueLauncherDoesNotBuildUnderAReplaceableRoot(t *testing.T) {
 			t.Fatalf("/tmp (1777, owned by root) was reported replaceable: ordinary hosts must be unaffected")
 		}
 	})
+	t.Run("a component that is not there is not trusted", func(t *testing.T) {
+		// The high, as a rule rather than a race. The predicate answered "not
+		// replaceable" for a directory that was not there at all, and the walk
+		// asked about the ancestors last: an ancestor another user removed after
+		// its child was checked, and restored after its own turn came, was never
+		// asked about again. Both halves come down to one rule -- a component this
+		// script cannot positively vouch for is a refusal -- and the walk has to go
+		// from the root down, so no prefix is accepted before a component of it has
+		// been checked.
+		//
+		// Exercised through the script's own functions, which is the only way to
+		// ask about a path that does not exist: no launcher run can be given a
+		// missing TMPDIR and reach the walk, because the walk is what is under test.
+		trusted := func(path string) error {
+			return exec.Command("bash", "-c",
+				`eval "$(sed -n '/^dir_entry_is_replaceable()/,/^}/p;/^dir_is_owned_by_trusted()/,/^}/p;/^scratch_path_is_trusted()/,/^}/p' "$1")"; scratch_path_is_trusted "$2"`,
+				"bash", mergeEnqueueLauncher, path).Run()
+		}
+		replaceable := func(path string) error {
+			return exec.Command("bash", "-c",
+				`eval "$(sed -n '/^dir_entry_is_replaceable()/,/^}/p;/^dir_is_owned_by_trusted()/,/^}/p' "$1")"; dir_entry_is_replaceable "$2"`,
+				"bash", mergeEnqueueLauncher, path).Run()
+		}
+		root := resolvePath(t, t.TempDir())
+		requirePrivateChain(t, root, root)
+		leaf := resolvePathAfterCreate(t, filepath.Join(root, "leaf"))
+		requirePrivateChain(t, root, leaf)
+		if err := trusted(leaf); err != nil {
+			t.Fatalf("a private directory under a private chain was not trusted: %v", err)
+		}
+		// A missing component: exit 0 from dir_entry_is_replaceable means
+		// "somebody can replace this", which is the answer for a name nobody owns.
+		absent := filepath.Join(root, "absent")
+		if err := replaceable(absent); err != nil {
+			t.Fatalf("%s does not exist, so anyone who can write its parent can create it, and the rule called it safe: %v", absent, err)
+		}
+		if err := trusted(filepath.Join(leaf, "absent")); err == nil {
+			t.Fatalf("%s does not exist; a path with a component that is absent was reported trusted", filepath.Join(leaf, "absent"))
+		}
+		// `/tmp` itself must stay trusted: a root-owned sticky directory protects
+		// its entries from other users, and refusing it would refuse every
+		// ordinary host.
+		if err := trusted("/tmp"); err != nil {
+			t.Fatalf("/tmp (1777, owned by root) was not trusted: ordinary hosts must be unaffected")
+		}
+	})
 	t.Run("no safe root still runs", func(t *testing.T) {
 		f := newLauncherFixture(t, `#!/usr/bin/env bash
 set -uo pipefail
@@ -1404,15 +1498,53 @@ printf 'helper-ran\n' >> "$EVENER_FIXTURE_LOG"
 			t.Fatalf("make the fixture TMPDIR replaceable: %v", err)
 		}
 		cmd := f.launcherCmd(t, "--pr", "6499", "--wait", "570", "--repo", "example.invalid/none")
-		// No safe root to fall back to: an unusable XDG_RUNTIME_DIR and a HOME
-		// whose cache cannot be created either.
+		// No safe root to fall back to, and the premise has to be stated rather
+		// than assumed: a runtime directory that is not there, and a HOME that is a
+		// regular file, so the cache directory cannot be created under it either.
+		// A HOME left inside the fixture would let the launcher create
+		// $HOME/.cache/evener-scratch and this case would be about a fallback it
+		// found rather than about the refusal to build.
+		denied := filepath.Join(f.dir, "not-a-directory")
+		if err := os.WriteFile(denied, []byte("not a directory\n"), 0o600); err != nil {
+			t.Fatalf("write the denied root: %v", err)
+		}
 		cmd.Env = envOverride(cmd.Env,
-			"XDG_RUNTIME_DIR="+filepath.Join(f.dir, "no-such-runtime"),
-			"HOME="+filepath.Join(f.dir, "no-such-home"),
+			"XDG_RUNTIME_DIR="+filepath.Join(denied, "runtime"),
+			"HOME="+denied,
 		)
 		runLauncher(t, cmd, f)
 		mustExit(t, cmd, f, 0)
 		waitForLine(t, f, "helper-ran")
+	})
+	t.Run("a missing TMPDIR is not recreated", func(t *testing.T) {
+		// The low: the selection loop created every candidate that was absent,
+		// not just the cache directory this tool owns. An inherited TMPDIR naming
+		// a sandbox that has since been reaped therefore came back into existence,
+		// held the scratch, and was left behind -- on the prebuilt path too, where
+		// nothing else needs a scratch root at all.
+		f := newLauncherFixture(t, `#!/usr/bin/env bash
+set -uo pipefail
+printf 'handle=%s\n' "${EVENER_MERGEQ_GH_GROUP_FILE:-}" >> "$EVENER_FIXTURE_LOG"
+printf 'helper-ran\n' >> "$EVENER_FIXTURE_LOG"
+`)
+		stale := filepath.Join(f.dir, "reaped-sandbox", "tmp")
+		cmd := f.launcherCmd(t, "--pr", "6499", "--wait", "570", "--repo", "example.invalid/none")
+		cmd.Env = envOverride(cmd.Env, "TMPDIR="+stale)
+		runLauncher(t, cmd, f)
+		mustExit(t, cmd, f, 0)
+		waitForLine(t, f, "helper-ran")
+		if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("the launcher recreated the TMPDIR it was handed (%s): stat returned %v", stale, err)
+		}
+		// It fell through to the fixture's own runtime directory, so the handle is
+		// still somewhere this case owns.
+		handle := logValue(t, f, "handle=")
+		if handle == "" {
+			t.Fatalf("the launcher published no group file: a missing TMPDIR left it with no scratch root at all, but the fixture's $XDG_RUNTIME_DIR is usable; %s", f.output(t))
+		}
+		if !strings.HasPrefix(handle, f.runtimeDir()+string(filepath.Separator)) {
+			t.Fatalf("the group file is %s, want a file under the fixture's runtime directory %s", handle, f.runtimeDir())
+		}
 	})
 }
 
@@ -1913,6 +2045,62 @@ while :; do sleep 0.05; done
 		}
 		t.Fatalf("a process outlived the launcher's forced stop: %d(pgid %d) %s", proc.pid, proc.pgid, proc.cmd)
 	}
+}
+
+// TestMergeEnqueueLauncherBuildsDespiteASavedModfile pins that the helper build
+// is decided by this script and not by the developer's saved go env.
+//
+// `GOFLAGS=` in the environment does not win against the file. The go command
+// skips an empty value and falls back to `go env -w`'s stored one, so a saved
+// `GOFLAGS=-modfile=/some/other/checkout/go.mod` shapes this build: it fails
+// opening a file that belongs to another checkout, and the launcher reports a
+// build failure where the caller should have had a queue answer. The fixture
+// builds in this file already set GOENV=off, which is exactly why they cannot
+// see it -- the production path keeps whatever file the developer has saved.
+//
+// The oracle is the build reaching its FIFO. A build that failed on the module
+// file exits before it reads the package, so no process appears and this case
+// fails on readiness; a build given its own environment blocks there and the
+// case cancels it like the cold-build one.
+func TestMergeEnqueueLauncherBuildsDespiteASavedModfile(t *testing.T) {
+	t.Parallel()
+	c := newFixtureCheckout(t, filepath.Join(t.TempDir(), "tmp"))
+	c.requireIsolated(t)
+	marker := c.tmp
+	f := newLauncherFixture(t, "#!/usr/bin/env bash\nexit 0\n")
+	envFile := filepath.Join(f.dir, "go-env")
+	writeTestFile(t, envFile, []byte("GOFLAGS=-modfile="+filepath.Join(f.dir, "no-such.mod")+"\n"), 0o600)
+	for _, m := range []string{c.root, c.tmp} {
+		t.Cleanup(func() { assertNoSurvivors(t, m) })
+	}
+	cmd := f.launcherCmdAt(t, c.script, "--pr", "6499", "--repo", "example.invalid/none")
+	// GOENV names the saved file rather than being switched off: that is the
+	// developer's state this case is about.
+	cmd.Env = envOverride(cmd.Env,
+		"TMPDIR="+c.tmp,
+		"GOWORK=off",
+		"GOENV="+envFile,
+	)
+	cmd.Env = slices.DeleteFunc(cmd.Env, func(kv string) bool {
+		return strings.HasPrefix(kv, "EVENER_DEV_BIN=")
+	})
+	runLauncher(t, cmd, f)
+	var buildPID, buildGroup int
+	testwait.UntilSeen(t, "the launcher's build to appear", func() (bool, string) {
+		buildPID, buildGroup = buildIn(t, marker)
+		if buildPID == 0 {
+			return false, "no process names the fixture scratch: the build exited before it read the package, so the saved GOFLAGS was used"
+		}
+		return true, ""
+	})
+	if buildGroup != buildPID {
+		t.Fatalf("the build child %d is in group %d: stop_command cannot signal the build's tree by group", buildPID, buildGroup)
+	}
+	signalLauncher(t, cmd, syscall.SIGTERM)
+	mustExit(t, cmd, f, 130)
+	testwait.Until(t, fmt.Sprintf("build pid %d to terminate", buildPID), func() bool {
+		return pidGone(buildPID)
+	})
 }
 
 // TestMergeEnqueueLauncherRefusesANonNumericWaitBeforeBuilding pins that a bad

@@ -196,6 +196,10 @@ export TMPDIR
 # `ls -ldn` prints the numeric owner in field 3 on GNU and on BSD, which is what
 # makes this portable: `find -user` takes a name on BSD and a name or a number on
 # GNU, so a uid passed to it is not the same query on the two.
+#
+# A directory whose owner cannot be read is not owned by anyone this script
+# trusts. "The check failed" and "the answer is no" are different facts, and only
+# one of them is safe to act on, so an unreadable answer is a refusal here.
 dir_is_owned_by_trusted() {
   local owner
   owner=$(ls -ldn "$1" 2>/dev/null | awk '{print $3}') || owner=""
@@ -209,6 +213,13 @@ dir_is_owned_by_trusted() {
 # inside DIR, so DIR is not a place this script may put anything it will later
 # trust.
 #
+# It answers the unsafe way whenever it cannot answer at all. A directory that is
+# not there, or one whose owner or write bits cannot be read, comes back
+# replaceable: a component that is absent is a component somebody else can
+# create, and a component this script cannot inspect is one it cannot vouch for.
+# The other convention -- treating a failed check as "nothing to worry about" --
+# is what let a vanished ancestor count as checked.
+#
 # Ownership is asked FIRST and asked always. A directory whose mode bit for us is
 # `r-x` still lets its OWNER add, rename and delete entries in it: the mode says
 # what everyone else may do, never what the owner may do. So a world-readable
@@ -219,9 +230,9 @@ dir_is_owned_by_trusted() {
 # entries; the sticky bit takes rename and delete back from them.
 dir_entry_is_replaceable() {
   local dir="$1" writable
-  [ -d "$dir" ] || return 1
+  [ -d "$dir" ] || return 0
   dir_is_owned_by_trusted "$dir" || return 0
-  writable=$(find "$dir" -maxdepth 0 \( -perm -0020 -o -perm -0002 \) -print 2>/dev/null) || writable=""
+  writable=$(find "$dir" -maxdepth 0 \( -perm -0020 -o -perm -0002 \) -print 2>/dev/null) || return 0
   [ -n "$writable" ] || return 1
   [ -k "$dir" ] && return 1
   return 0
@@ -247,14 +258,39 @@ scratch_resolve() {
 # Callers pass the resolved path, because that is what they must go on to use;
 # resolving here and handing back only a yes-or-no would leave them holding the
 # spelling that was never checked.
+#
+# The walk goes from the root DOWNWARD, and that direction is the point. Walking
+# up from the leaf asks about the leaf first and about the ancestors last, so an
+# ancestor that another user removes after its child was checked, and restores
+# after its own turn came, is never asked about again -- the path passed while
+# every component above it was under somebody else's control. From the root down
+# no prefix is accepted before a component of it has been checked, and a
+# component that is missing when its turn comes is a component that user can
+# still create, so it ends the walk as a refusal rather than being skipped.
 scratch_path_is_trusted() {
-  local probe="$1"
-  [ -d "$probe" ] || return 1
+  local rest probe component
+  case "$1" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  probe=""
+  rest=${1#/}
   while :; do
+    component=""
+    if [ -n "$rest" ]; then
+      component=${rest%%/*}
+      case "$component" in
+        "$rest") rest="" ;;
+        *) rest=${rest#*/} ;;
+      esac
+    fi
+    probe="$probe/$component"
+    # `/` itself is the first component of every absolute path, and it is checked
+    # like any other: root owns it, so this is cheap and the invariant has no
+    # exception.
+    [ -d "$probe" ] || return 1
     dir_entry_is_replaceable "$probe" && return 1
-    [ "$probe" = "/" ] && break
-    probe=$(dirname -- "$probe")
-    [ -n "$probe" ] || return 1
+    [ -n "$rest" ] || break
   done
   return 0
 }
@@ -296,10 +332,18 @@ for scratch_candidate in "${TMPDIR:-/tmp}" "${XDG_RUNTIME_DIR:-}" "${HOME:+$HOME
     *) continue ;;
   esac
   if [ ! -d "$scratch_candidate" ]; then
-    # Only $HOME/.cache/evener-scratch is ever absent, and it is created 0700
-    # throughout, so only this user can enter it or the directories between it
-    # and $HOME. An existing cache directory is used as its owner left it, and
-    # still has to pass the chain check.
+    # $TMPDIR and $XDG_RUNTIME_DIR are the caller's to provide. A missing one is
+    # unavailable, not an invitation: `mkdir -p` here would recreate a directory
+    # a sandbox removed, put the scratch inside it, and leave it behind for the
+    # next run to treat as real. Only $HOME/.cache/evener-scratch belongs to this
+    # tool, and only it is created -- 0700 throughout, so only this user can
+    # enter it or the directories between it and $HOME. An existing cache
+    # directory is used as its owner left it, and still has to pass the chain
+    # check.
+    # Compared as a string, not as a case pattern: $HOME can hold characters a
+    # pattern would read as wildcards, and this test decides whether the script
+    # creates a directory.
+    [ "$scratch_candidate" = "${HOME:-/nonexistent}/.cache/evener-scratch" ] || continue
     (umask 077 && mkdir -p "$scratch_candidate") 2>/dev/null || continue
   fi
   [ -w "$scratch_candidate" ] || continue
@@ -781,7 +825,29 @@ start_helper() {
 # the one that runs the build, so the group holds the build's whole tree and one
 # TERM reaches all of it. `wait` then reaps the tracked child.
 build_helper() {
-  local out="$1"
+  local out="$1" goenv
+  # `GOFLAGS=` in the environment does not win against a saved GOFLAGS. The go
+  # command skips an empty value and falls back to the file, so a developer with
+  # `go env -w GOFLAGS=-modfile=...` saved for another checkout would have that
+  # -modfile shape this build and fail it before the launcher ever contacts
+  # Github -- a build error standing in for a queue answer. The build therefore
+  # gets the ambient go env file minus its GOFLAGS lines: the cache, proxy and
+  # toolchain settings it needs are kept, and the one setting this script owns is
+  # not the file's to choose.
+  goenv=$(go env GOENV 2>/dev/null) || goenv=""
+  case "$goenv" in
+    '' | off)
+      goenv=off
+      ;;
+    *)
+      if [ -r "$goenv" ]; then
+        grep -v '^GOFLAGS=' "$goenv" > "$work/go-env" 2>/dev/null || true
+      else
+        : > "$work/go-env"
+      fi
+      goenv="$work/go-env"
+      ;;
+  esac
   launching=true
   set -m
   (
@@ -795,7 +861,7 @@ build_helper() {
     # belong in the scratch that was chosen and checked, not in a variable the
     # caller happens to have set. The caller's Go configuration is otherwise
     # left alone.
-    env GOFLAGS= GOTMPDIR="$work" go build -o "$out" ./cmd/evener-dev/bin
+    env GOFLAGS= GOENV="$goenv" GOTMPDIR="$work" go build -o "$out" ./cmd/evener-dev/bin
   ) &
   set +m
   child=$!
