@@ -398,8 +398,17 @@ func (ex *turnExecution) interruptAwaitedCalls() {
 	// completion resolves only the announcements that batch made.
 	var awaitingEntry int
 	// Walk the entries in file order so each completion sees the batch that
-	// was awaiting AT THAT POINT. A reopen clears the batch: the execution is
-	// running again, so its next completion decides on the next attempt.
+	// was awaiting AT THAT POINT.
+	//
+	// A reopen does NOT clear the batch. A crash can land after an announcement
+	// and before its result or the execution's completion, so recovery reopens
+	// a turn whose batch was never answered; the reopen says the turn runs
+	// again, not that the question was answered. Only a later announcing entry
+	// replaces the batch, which is the index's rule too (transcriptindex
+	// stampFold leaves Awaiting in place across a reopen and sets it again from
+	// the next assistant entry; interruptAwaitedCalls interrupts that batch at
+	// completion). Clearing it here left the crashed attempt's call in progress
+	// forever while the index reported it interrupted.
 	//
 	// Control records are transcript-only, so they are NOT in entriesByIndex:
 	// the two ordered sequences are merged here, which is the only place both
@@ -418,8 +427,7 @@ func (ex *turnExecution) interruptAwaitedCalls() {
 		if controlNext && (!entryNext || controls[controlAt].index < entries[entryAt]) {
 			switch controls[controlAt].turn.Kind {
 			case schema.TurnReopen:
-				awaiting = map[string]bool{}
-				awaitingEntry = 0
+				// The batch stays awaiting: nothing has answered it yet.
 			case schema.TurnCompletion:
 				for call := range awaiting {
 					for _, at := range byCall[awaitKey{entry: awaitingEntry, call: call}] {

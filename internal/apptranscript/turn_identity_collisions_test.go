@@ -1397,3 +1397,71 @@ func TestInterruptedExecutionCarriesNoTurnError(t *testing.T) {
 		t.Errorf("execution error = %+v, want none beside an interrupted status: the failure is history, not the turn's diagnostic", turn.Error)
 	}
 }
+
+// TestReopenWithoutAnotherBatchKeepsTheCallAwaiting covers an execution a crash
+// left open after announcing a tool batch and before recording its result or
+// its completion. Recovery reclaims it, so no completion was ever written
+// before the reopen, and the retry ends without announcing another batch. The
+// reopen does not un-ask the question the first attempt asked: the call was
+// still awaiting a result when the run ended, so the completion interrupts it.
+// The index keeps that batch across the reopen and interrupts it
+// (transcriptindex stampFold, interruptAwaitedCalls).
+func TestReopenWithoutAnotherBatchKeepsTheCallAwaiting(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "reopened_before_completion"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := func(turn schema.Turn, place transcript.Placement) {
+		t.Helper()
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: place}); err != nil {
+			t.Fatalf("record %s: %v", turn.Kind, err)
+		}
+	}
+	tc := llm.ToolCallData{ID: "call_lost", Name: "read_file", Arguments: json.RawMessage(`{"path":"a"}`)}
+	reopen := schema.Turn{Kind: schema.TurnReopen}
+	reopen.Format = schema.TurnFormatIdentity
+	reopen.TurnID = "t_crash"
+	reopen.TurnKind = schema.TurnSpanExecution
+
+	w.BeginExecution("t_crash", false)
+	record(schema.NewTurn(schema.TurnUserInput, llm.User("go")), transcript.PlaceSession)
+	// The crash landed after the announcement and before its result or the
+	// execution's completion, so no completion precedes the reopen.
+	record(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &tc}}}}, transcript.PlaceSession)
+	record(reopen, transcript.PlaceVerbatim)
+	// Recovery runs the turn again and it ends without announcing a batch.
+	w.BeginExecution("t_crash", false)
+	record(schema.NewTurn(schema.TurnUserInput, llm.User("again")), transcript.PlaceSession)
+	record(schema.Turn{Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnInterrupted}}, transcript.PlaceCompletion)
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := apptranscript.NewToolCallRegistry()
+	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+		return items
+	})
+	if err != nil {
+		t.Fatalf("ItemTurnsFromFile: %v", err)
+	}
+	var call *appwire.ThreadItem
+	for _, turn := range turns {
+		if turn.ID != "t_crash" {
+			continue
+		}
+		for i := range turn.Items {
+			if turn.Items[i].CallID == "call_lost" {
+				call = &turn.Items[i]
+			}
+		}
+	}
+	if call == nil {
+		t.Fatalf("full read turns = %+v, want the crashed attempt's call", shapesFromTurns(turns))
+	}
+	if call.Status != appwire.TurnStatusInterrupted {
+		t.Errorf("call status = %q, want %q: the reopen did not answer the call the crash left awaiting",
+			call.Status, appwire.TurnStatusInterrupted)
+	}
+}
