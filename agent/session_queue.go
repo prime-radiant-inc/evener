@@ -545,6 +545,17 @@ const (
 	queueClaimWriteFailed
 )
 
+// claimSaveRefusedNothing reports whether a failed claim save refused anything:
+// true only when the claim had selected an entry and was trying to persist it.
+//
+// A save that failed with nothing selected was writing a snapshot the claim had
+// not changed, so its error is about the store, not about the head. Both claims
+// answer that question with this, so neither can overwrite an observation -- an
+// empty queue, or a Stop's hold -- with a write failure that never touched it.
+func claimSaveRefusedNothing(selected string) bool {
+	return selected == ""
+}
+
 // popQueueHeadRefusingPoison is the queue head's claim: it returns the entry it
 // took, or the poisoned-transcript refusal that stopped it, or neither when the
 // head is not claimable at all. The refusal is decided on the same clone the
@@ -631,12 +642,7 @@ func (s *Session) popQueueHeadRefusingPoison() (queuedInput, queueClaimObservati
 	}
 	if err != nil {
 		s.emit(events.WarningData{Message: fmt.Sprintf("claim queued input failed: %v", err)})
-		// A save that failed while this claim had selected nothing was saving
-		// an unchanged snapshot, so it says nothing about the head. The
-		// observation stands: reporting the write would replace an empty or
-		// Stop-held queue with "a message is still queued", which is a
-		// condition this claim never saw.
-		if queued.ClientMutationID == "" {
+		if claimSaveRefusedNothing(queued.ClientMutationID) {
 			return queuedInput{}, observed, nil
 		}
 		// The write is the refusal here, and the message is still queued: the

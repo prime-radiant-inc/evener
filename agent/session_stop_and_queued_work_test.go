@@ -692,6 +692,10 @@ func TestQueuedInputWakeKeepsAnEmptyClaimQuiet(t *testing.T) {
 // error replace the observation turns "the queue was empty" into "a message is
 // still queued", which is a condition this claim never saw -- and the wake then
 // logs a stand-down the daemon reader would chase.
+//
+// The carrier claim answers the same question with the same predicate, so
+// TestWakeReportsTheStopWhenTheCarrierSaveFails covers that site: this one
+// proves the queue's, and claimSaveRefusedNothing is the thing both call.
 func TestQueuedInputWakeKeepsAnEmptyClaimQuietWhenTheSaveFails(t *testing.T) {
 	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())

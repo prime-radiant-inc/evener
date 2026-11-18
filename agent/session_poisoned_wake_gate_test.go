@@ -638,6 +638,48 @@ func TestWakeStandsDownWhenAStopParksTheSteerBeforeTheClaim(t *testing.T) {
 	}
 }
 
+// TestWakeReportsTheStopWhenTheCarrierSaveFails is the same Stop, with the
+// claim's own save refusing the write.
+//
+// The claim selected no carrier, so the save was writing a snapshot it had not
+// changed and its error refused nothing. Reporting the park would tell the
+// reader a steer failed to run when the Stop is what kept it from being tried,
+// and the two need different responses: a park waits for the next wake, a Stop
+// waits for the user.
+func TestWakeReportsTheStopWhenTheCarrierSaveFails(t *testing.T) {
+	t.Parallel()
+	sess := newTestSessionForEnvctx(t)
+	if err := sess.SteerFromUser("held by a stop while the store refuses writes"); err != nil {
+		t.Fatalf("SteerFromUser: %v", err)
+	}
+	sess.cfg.testOnly.steeringCarrierClaiming = func() {
+		sess.cfg.testOnly.steeringCarrierClaiming = nil
+		if err := sess.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+			snapshot.SteeringHeld = true
+			return nil
+		}); err != nil {
+			t.Fatalf("park the steering rail: %v", err)
+		}
+		sess.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
+			return errors.New("injected: carrier claim write refused")
+		}
+	}
+
+	_, ran, outcome, err := sess.ProcessPendingUserInput(t.Context(), nil)
+	if err != nil || ran {
+		t.Fatalf("wake over a Stop-held steer whose save failed = ran %v, err %v; want a quiet stand-down", ran, err)
+	}
+	// Disarmed before the assertions: the fault is the claim's, and a session
+	// closing with it still armed would retry the write in cleanup and hang.
+	sess.clientMutations.faults.BeforeEffectSnapshotRename = nil
+	if outcome != PendingInputStopHeld {
+		t.Fatalf("outcome = %v, want stop-held: the Stop closed the rail, so nothing was tried and nothing was parked", outcome)
+	}
+	if !sess.hasPendingUserSteering() {
+		t.Fatal("the stand-down consumed the Stop-held steer")
+	}
+}
+
 // TestPoisonedTranscriptRefusesTheQueueHeadClaim: the queue head's claim decides
 // the poisoned-transcript refusal on the generation it commits against, so a
 // transcript that has stopped accepting records cannot be handed a durable

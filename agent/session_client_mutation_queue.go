@@ -401,7 +401,14 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 		// steer's own acceptance wake, held while the input that then ran the
 		// carrier inline was still running. That attempt spent it; the next
 		// wake sender unparks (Session.steeringParked).
-		return "", false, s.steeringParkOutcome(), nil
+		if outcome := s.steeringParkOutcome(); outcome != PendingInputNothingRunnable {
+			return "", false, outcome, nil
+		}
+		// The park is a report this wake does not repeat, but the queue head's
+		// own claim ran in the same wake and may name a gate of its own: a
+		// message it could not write is still queued, and a Stop's hold is
+		// still the user's. Deduplicating the steer must not silence those.
+		return "", false, queueClaimOutcome(claimSaw), nil
 	}
 	if !inputHasContent(queued.Text, queued.Images, queued.SkillNames, queued.CommandNames) && s.hasPendingUserSteering() {
 		carrier, carrierSaw, carrierRefusal := s.claimSteeringCarrierInput()
@@ -493,20 +500,25 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 	// user queues after an empty claim is work this claim never evaluated, and
 	// it carries its own wake. Asking the store a second time would report a
 	// refusal for an entry that arrived too late to be refused.
+	return "", false, queueClaimOutcome(claimSaw), nil
+}
+
+// queueClaimOutcome renders what a queue-head claim saw of the head as the
+// outcome the wake reports.
+//
+// An observation the claim never reached reports nothing runnable: the claim
+// could not answer for the head, and a probe that answered from a store this
+// side had not opened yet is an over-report, not runnable work.
+func queueClaimOutcome(claimSaw queueClaimObservation) PendingInputOutcome {
 	switch claimSaw {
-	case queueClaimQueueEmpty:
-		return "", false, PendingInputNothingRunnable, nil
 	case queueClaimStopHeld:
-		return "", false, PendingInputStopHeld, nil
+		return PendingInputStopHeld
 	case queueClaimWriteFailed:
-		return "", false, PendingInputClaimWriteFailed, nil
+		return PendingInputClaimWriteFailed
 	case queueClaimHeadRefused:
-		return "", false, PendingInputClaimTookNothing, nil
+		return PendingInputClaimTookNothing
 	default:
-		// The claim never reached a claimability decision, so it has nothing to
-		// report about the head. A probe that answered from a store this side had
-		// not opened yet is an over-report, not runnable work.
-		return "", false, PendingInputNothingRunnable, nil
+		return PendingInputNothingRunnable
 	}
 }
 
@@ -599,6 +611,9 @@ func (s *Session) claimSteeringCarrierInput() (queuedInput, PendingInputOutcome,
 		return queuedInput{}, PendingInputNoOutcome, err
 	}
 	if err != nil {
+		if claimSaveRefusedNothing(carrier.ClientMutationID) {
+			return queuedInput{}, unclaimed, nil
+		}
 		// A refused write parks the steer the way a failed append does: it
 		// stays accepted and queued, runnable (hasRunnableUserSteering keeps
 		// the session from resting), and nothing here arms a wake of its own

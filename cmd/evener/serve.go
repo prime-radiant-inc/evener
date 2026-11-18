@@ -1038,17 +1038,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			currentCancel()
 			close(runnerDone)
 			bridge.clearMutationRunner(runnerDone)
-			if processErr != nil {
-				serveLogf(logOut, sess.ID(), "error: %s", turnFailureSummary(processErr))
-			}
-			// Reported after runnerDone closes, never before: a Stop that
-			// captured the runner waits on that channel to finalize its fence.
-			// It goes through the spool rather than the sink directly, so a
-			// backed-up output pipe delays this line at most and never the loop
-			// that runs turns. The claim refused, so no turn is waiting on it.
-			if msg.QueuedInput && pendingInputStoodDown(processErr, pendingInput) {
-				diagnostics.Logf(sess.ID(), "queued input stood down: %s", pendingInput)
-			}
+			// After runnerDone closes, never before: a Stop that captured the
+			// runner waits on that channel to finalize its fence.
+			reportTurnOutcome(diagnostics, sess.ID(), processErr, msg.QueuedInput, pendingInput)
 			_ = result
 			return processed
 		}
@@ -1204,6 +1196,29 @@ func closeSupersededSession(sess *agent.Session, shutdownClaimed bool) {
 // carrier rail and the failed-attempt park is a design decision, not this log.
 func pendingInputStoodDown(processErr error, outcome agent.PendingInputOutcome) bool {
 	return processErr == nil && outcome.RefusedRunnableInput()
+}
+
+// reportTurnOutcome writes the records the input loop owes for one turn: the
+// error that failed it and the stand-down of runnable input a gate refused.
+//
+// Both go through the spool rather than the sink directly. The loop is the only
+// goroutine that runs turns and shutdown joins it, so a write that waited on a
+// reader which stopped draining the daemon's output would stop both. A turn
+// error written straight to the sink can consume the last room in a stalled
+// pipe, and the next turn's error then blocks the loop -- the same stall this
+// path exists to remove, arriving one turn later.
+//
+// The spool drops a line that arrives while its one slot is taken, which is the
+// price of never waiting: a lost line is cheaper than a daemon that cannot
+// finish a turn or stop.
+func reportTurnOutcome(diagnostics *serveDiagnosticSpool, sessionID string, processErr error, queuedInput bool, outcome agent.PendingInputOutcome) {
+	if processErr != nil {
+		diagnostics.Logf(sessionID, "error: %s", turnFailureSummary(processErr))
+		return
+	}
+	if queuedInput && pendingInputStoodDown(processErr, outcome) {
+		diagnostics.Logf(sessionID, "queued input stood down: %s", outcome)
+	}
 }
 
 // processNextServeInput gives durable accepted work priority over the
