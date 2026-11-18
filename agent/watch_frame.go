@@ -57,7 +57,16 @@ func watchSendDiagnosticNotification(watchID, jobID, reason string) jobNotificat
 func watchSendDiagnosticForState(state jobstore.WatchSendState, stage string, reason string) jobNotification {
 	n := watchSendDiagnosticNotification(state.Key.WatchID, state.Key.ResolvedWatchedIdentity, reason)
 	if state.DeliveryID != "" {
-		n.Occurrence = "diagnostic:" + stage + ":" + state.DeliveryID
+		// The STAGE is not the only thing that can repeat: one delivery can fail
+		// the same stage twice with different errors (a store returning a new
+		// error on the retry). Without the reason both notices claimed one
+		// identity, the transcript rejected the second content, and its retry kept
+		// the runtime resident forever. The reason is therefore part of the
+		// identity, hashed because it is bounded free text -- and hashing it keeps
+		// a RETRY stable, because a retry re-persists the same notice object and so
+		// renders the same reason (#2340 review).
+		reasonSum := sha256.Sum256([]byte(reason))
+		n.Occurrence = "diagnostic:" + stage + ":" + state.DeliveryID + ":" + hex.EncodeToString(reasonSum[:8])
 	}
 	return n
 }

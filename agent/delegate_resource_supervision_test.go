@@ -5366,6 +5366,18 @@ func TestStableWatchDiagnosticStagesOfOneDeliveryStayDistinct(t *testing.T) {
 	if pendingID == dropID {
 		t.Fatalf("one delivery's %s and %s diagnostics share attention id %q: the second content cannot land", watchSendStagePendingState, watchSendStageDrop, dropID)
 	}
+	// A SECOND failure at the SAME stage, with a different error, is a different
+	// notice: the store can refuse the retry with a new error, and if both share
+	// one identity the transcript rejects the second content and its retry keeps
+	// the runtime resident.
+	sameStageRetry := stableWatchDiagnosticAttentionID(watchSendDiagnosticForState(state, watchSendStageDrop, reason+" (retry 2: connection reset)"))
+	if sameStageRetry == dropID {
+		t.Fatalf("the same stage's second failure reused attention id %q: the transcript rejects its different content, so the final diagnostic never lands and its retry pins the runtime", dropID)
+	}
+	// And that retry's OWN replay is still stable: it is the same failure.
+	if replay := stableWatchDiagnosticAttentionID(watchSendDiagnosticForState(state, watchSendStageDrop, reason+" (retry 2: connection reset)")); replay != sameStageRetry {
+		t.Fatalf("replay of the second failure got %q, want %q", replay, sameStageRetry)
+	}
 	// Each stage's own replay must still fold into its own row, or every retry
 	// would append a second item.
 	if replay := stableWatchDiagnosticAttentionID(watchSendDiagnosticForState(state, watchSendStageDrop, reason)); replay != dropID {
