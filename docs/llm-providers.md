@@ -537,7 +537,13 @@ saved the original spelling can replay only the bytes still on disk.
   `reasoning_details`. An independent scalar retains its original bytes even
   when the gateway also sent display text in details. If the gateway sends
   identical bytes in a scalar and a signed detail, a scalar route replays
-  both fields. A trailing signature can omit its index. Evener keeps it with
+  both fields. On an enrolled `reasoning_details` route, a captured native
+  array supplies the replay items in their original order, with their own
+  field names, indexes, formats, and provider metadata. An independently
+  returned scalar stays on scalar routes. If the response supplied only a
+  scalar or an older transcript saved only display text, an array route
+  constructs a text item from the available reasoning. A trailing
+  signature can omit its index. Evener keeps it with
   its identified or uniquely matching text block. A signed detail on its own
   supplies only that detail.
 - On `openai-responses`, an encrypted reasoning item takes precedence on
@@ -550,7 +556,10 @@ saved the original spelling can replay only the bytes still on disk.
   keeps separate assistant messages and their `output_text` parts in order.
   When the final response repeats only part of a streamed item, Evener keeps
   the matching call's argument bytes, completed message phase, indexed
-  answer and reasoning text, and ciphertext from the stream. Evener uses
+  answer and reasoning text, and ciphertext from the stream. A reasoning
+  item can inherit its announced ID. When it omits its content, a native
+  part announcement and the finalized text for that part establish its
+  type, index and exact bytes. Evener uses
   the stream index and item ID to collect a function's arguments. The
   provider must supply a `call_id` before Evener can dispatch the tool and
   return its result under that ID. Reasoning shown only as deltas remains

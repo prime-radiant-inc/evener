@@ -2270,13 +2270,29 @@ func (rs replayScope) webSearchReplayEligible(t schema.Turn) bool {
 
 // projectThinkingPart keeps opaque continuation state on eligible turns and
 // in-flight rounds. On other turns only native plaintext can return to its
-// issuer. Chat can pack that text and encrypted details into the same part.
+// issuer. Chat and Responses can carry plaintext and opaque data together.
 func (rs replayScope) projectThinkingPart(p llm.ContentPart, provenanceKeeps, keepRaw bool) (llm.ContentPart, bool) {
 	if p.Kind != llm.ContentThinking && p.Kind != llm.ContentRedThinking {
 		return p, false
 	}
 	if !provenanceKeeps {
 		if !keepRaw || p.Kind != llm.ContentThinking || p.Thinking == nil || p.Thinking.Redacted {
+			return p, true
+		}
+		if rs.reasoningTextTarget.Protocol == registry.ProtocolOpenAIResponses {
+			if p.Thinking.EncryptedContent != "" {
+				// Only typed native parts distinguish plaintext from the
+				// display text stored alongside an opaque item.
+				if len(p.Thinking.ResponsesTextParts) == 0 {
+					return p, true
+				}
+				plain := *p.Thinking
+				plain.EncryptedContent = ""
+				p.Thinking = &plain
+			}
+			for range p.Thinking.ResponsesReasoningTextParts() {
+				return llm.TrimThinkingForReplay(p, rs.DropThinking)
+			}
 			return p, true
 		}
 		scalar, field := p.Thinking.ChatReplayScalar()

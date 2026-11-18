@@ -77,21 +77,30 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 	t.Run("completed message phase survives an omitted terminal field", func(t *testing.T) {
 		const commentary = `"phase":"commentary",`
 		const final = `"phase":"final_answer",`
-		message := func(phase, second string) string {
-			return `{"type":"message","id":"m",` + phase + `"content":[{"type":"output_text","text":"a"},{"type":"output_text","text":` + jsonOf(t, second) + `}]}`
+		message := func(phase, first, second string) string {
+			return `{"type":"message","id":"m",` + phase + `"content":[{"type":"output_text","text":` + jsonOf(t, first) + `},{"type":"output_text","text":` + jsonOf(t, second) + `}]}`
 		}
 		const second = " β\t"
-		for _, tc := range []struct{ name, phase, second, want string }{
-			{"recover phase and missing part", "", "", commentary},
-			{"recover phase with repeated parts", "", second, commentary},
-			{"terminal phase wins", final, "", final},
-			{"explicitly cleared phase", `"phase":null,`, "", ""},
+		const null = `"phase":null,`
+		const empty = `"phase":"",`
+		for _, tc := range []struct{ name, completed, terminal, first, second, want string }{
+			{"recover phase and missing part", commentary, "", "a", "", commentary},
+			{"recover phase with repeated parts", commentary, "", "a", second, commentary},
+			{"terminal phase wins", commentary, final, "a", "", final},
+			{"explicitly cleared terminal phase", commentary, null, "a", "", ""},
+			{"completed null clears announcement", null, "", "", "", ""},
+			{"completed empty clears announcement", empty, "", "", "", ""},
+			{"terminal replaces cleared completion", null, final, "", "", final},
+			{"sparse terminal inherits announcement", "", "", "", "", commentary},
+			{"complete terminal owns its unphased message", "", "", "a", second, ""},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
-				want := nextInput(t, recorded(t, `{"output":[`+message(tc.want, second)+`]}`))
+				want := nextInput(t, recorded(t, `{"output":[`+message(tc.want, "a", second)+`]}`))
 				events := []string{
-					`{"type":"response.output_item.done","item":` + message(commentary, second) + `}`,
-					`{"type":"response.completed","response":{"output":[` + message(tc.phase, tc.second) + `]}}`,
+					`{"type":"response.output_item.added","item":` + message(commentary, "", "") + `}`,
+					`{"type":"response.output_item.done","item":` + message(tc.completed, "a", second) + `}`,
+					`{"type":"response.output_item.done","item":` + message("", "a", second) + `}`,
+					`{"type":"response.completed","response":{"output":[` + message(tc.terminal, tc.first, tc.second) + `]}}`,
 				}
 				_, live := responsesEvents(t, events...)
 				saved := recorded(t, "data: "+strings.Join(events, "\n\ndata: ")+"\n\n")
@@ -151,6 +160,14 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 	finalText := func(identity string, index int, text string) string {
 		return fmt.Sprintf(`{"type":"response.reasoning_text.done",%s,"content_index":%d,"text":%s}`, identity, index, jsonOf(t, text))
 	}
+	const declaredItem = `{"type":"response.output_item.added","output_index":1,"item":{"type":"reasoning","id":"r"}}`
+	const summary = `"summary":[{"type":"summary_text","text":" s\t"}]`
+	const absentParts = `{"type":"reasoning","id":"r",` + summary + `}`
+	const nativeParts = `,"content":[{"type":"reasoning_text","text":" λ\t"},{"type":"reasoning_text","text":""},{"type":"reasoning_text","text":"\r\n<&>"}]`
+	const nativeItem = `{"type":"reasoning","id":"r",` + summary + nativeParts + `}`
+	partAdded := func(identity string, index int, kind string) string {
+		return fmt.Sprintf(`{"type":"response.reasoning_part.added",%s,"content_index":%d,"part":{"type":%s,"text":""}}`, identity, index, jsonOf(t, kind))
+	}
 	for _, tc := range []struct {
 		name     string
 		events   []string
@@ -179,6 +196,38 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 			"{" + display + "}", finalText(`"item_id":"r"`, 0, "earlier"), finalText(`"item_id":"r"`, 2, "\t"),
 			`{"type":"response.output_item.done","item":` + reasoning(nil, "") + `}`,
 		}, placeholder + "," + answer, reasoning(nil, "\t") + "," + answer},
+		{"announced reasoning ID fills an omitted terminal ID", []string{"{" + display + "}", declaredItem},
+			answer + `,{"type":"reasoning",` + summary + nativeParts + `},` + tool, answer + "," + nativeItem + "," + tool},
+		{"explicit terminal reasoning ID owns its value", []string{"{" + display + "}", declaredItem},
+			answer + `,{"type":"reasoning","id":"",` + summary + nativeParts + `}`, answer + `,{"type":"reasoning",` + summary + nativeParts + `}`},
+		{"display delta alone cannot supply a native item ID", []string{
+			"{" + display + "}", `{"type":"response.reasoning_text.delta","item_id":"display","output_index":1,"delta":"mirror"}`,
+		}, answer + `,{"type":"reasoning",` + summary + nativeParts + `}`, answer + `,{"type":"reasoning",` + summary + nativeParts + `}`},
+		{"finalized native text identifies its matching declared terminal slot", []string{
+			"{" + display + "}", finalText(`"item_id":"r","output_index":1`, 0, " λ\t"),
+		}, answer + `,{"type":"reasoning",` + summary + `,"content":[{"type":"reasoning_text"}]}`,
+			answer + `,{"type":"reasoning","id":"r",` + summary + `,"content":[{"type":"reasoning_text","text":" λ\t"}]}`},
+		{"announced reasoning slots replay their finalized bytes in index order", []string{
+			"{" + display + "}", partAdded(`"item_id":"r"`, 2, "reasoning_text"), finalText(`"output_index":1`, 2, "\r\n<&>"),
+			partAdded(`"output_index":1`, 0, "reasoning_text"), finalText(`"item_id":"r"`, 0, " λ\t"),
+			declaredItem, partAdded(`"item_id":"r"`, 1, "reasoning_text"), finalText(`"item_id":"r"`, 1, ""),
+			finalText(`"item_id":"r"`, 3, "no declared slot"),
+		}, answer + "," + absentParts + "," + tool, answer + "," + nativeItem + "," + tool},
+		{"empty finalized text keeps a native slot", []string{
+			"{" + display + "}", partAdded(`"item_id":"r"`, 0, "reasoning_text"), finalText(`"item_id":"r"`, 0, ""),
+		}, answer + "," + absentParts, answer + `,{"type":"reasoning","id":"r",` + summary + `,"content":[{"type":"reasoning_text","text":""}]}`},
+		{"typed terminal content owns its declared indexes", []string{
+			"{" + display + "}", partAdded(`"item_id":"r"`, 3, "reasoning_text"), finalText(`"item_id":"r"`, 3, "withdrawn"),
+		}, answer + "," + nativeItem, answer + "," + nativeItem},
+		{"explicit empty terminal content owns its slots", []string{
+			"{" + display + "}", declaredItem, partAdded(`"item_id":"r"`, 0, "reasoning_text"), finalText(`"item_id":"r"`, 0, "withdrawn"),
+		}, answer + `,{"type":"reasoning","id":"r","content":[]}`, answer},
+		{"unknown announced kind cannot use a reasoning text final", []string{
+			"{" + display + "}", partAdded(`"item_id":"r"`, 0, "unknown_text"), finalText(`"item_id":"r"`, 0, "unowned"),
+		}, answer + "," + absentParts, answer},
+		{"reasoning final belongs to a different item than the slot", []string{
+			"{" + display + "}", partAdded(`"item_id":"r","output_index":1`, 0, "reasoning_text"), finalText(`"item_id":"other","output_index":1`, 0, "unowned"),
+		}, answer + "," + absentParts, answer},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			want := nextInput(t, recorded(t, `{"output":[`+tc.complete+`]}`))
@@ -192,6 +241,9 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 				var stored llm.Message
 				if err := json.Unmarshal([]byte(jsonOf(t, result.Message)), &stored); err != nil {
 					t.Fatal(err)
+				}
+				if got := nextInput(t, llm.Response{Message: stored}); got != want {
+					t.Errorf("input after reload = %s, complete response = %s", got, want)
 				}
 				var displays []string
 				for _, part := range stored.Content {

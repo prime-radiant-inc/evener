@@ -175,9 +175,15 @@ func TestSessionReplaysReasoningAcrossToolRoundsAndTurns(t *testing.T) {
 }
 
 func TestFallbackReplaysOnlyItsIssuersReasoning(t *testing.T) {
+	for _, protocol := range []string{registry.ProtocolOpenAIChat, registry.ProtocolOpenAIResponses} {
+		t.Run(protocol, func(t *testing.T) { testFallbackReasoningIssuer(t, protocol) })
+	}
+}
+
+func testFallbackReasoningIssuer(t *testing.T, protocol string) {
 	t.Parallel()
 	primary := replayGateway("work", registry.ProtocolOpenAIResponses)
-	fallback := replayGateway("gw", registry.ProtocolOpenAIChat)
+	fallback := replayGateway("gw", protocol)
 	const ciphertext = "ciphertext-485"
 	primaryAnswered := false
 	primaryAdapter := &agenttest.ScriptedAdapter{
@@ -196,9 +202,28 @@ func TestFallbackReplaysOnlyItsIssuersReasoning(t *testing.T) {
 			return resp
 		},
 	}
+	fallbackMarker := "fallback-73"
+	firstFallback := agenttest.ToolCallResponse(llm.ToolCallData{ID: "tool-b", Name: "missing_b", Arguments: []byte(`{}`)})
+	const mixedID, emptyID, sealed = "rs_mixed", "rs_empty", "ciphertext-f73"
+	const legacyID, legacyCipher, legacyDisplay = "rs_legacy", "ciphertext-f91", "display-f91"
+	if protocol == registry.ProtocolOpenAIResponses {
+		fallbackMarker = " \tλ<&>\r\n"
+		issued, err := responses.ExtractRecordedResponse([]byte(`{"output":[
+			{"type":"reasoning","id":"`+mixedID+`","encrypted_content":"`+sealed+`","summary":[{"type":"summary_text","text":"s73"}],"content":[{"type":"reasoning_text","text":`+mustJSON(t, fallbackMarker)+`}]},
+			{"type":"reasoning","id":"`+emptyID+`","content":[{"type":"reasoning_text","text":""}]}
+		]}`), fallback.Model())
+		if err != nil {
+			t.Fatal(err)
+		}
+		issued.Message.Content = append(issued.Message.Content, llm.ContentPart{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{
+			ID: legacyID, EncryptedContent: legacyCipher, Text: legacyDisplay,
+		}})
+		firstFallback.Message.Content = append(issued.Message.Content, firstFallback.Message.Content...)
+	} else {
+		firstFallback = withReasoningMarker(firstFallback, protocol, fallbackMarker)
+	}
 	fallbackAdapter := newFakeAdapter(fallback.ID(),
-		fixedStep(withReasoningMarker(agenttest.ToolCallResponse(
-			llm.ToolCallData{ID: "tool-b", Name: "missing_b", Arguments: []byte(`{}`)}), fallback.Protocol(), "fallback-73")),
+		fixedStep(firstFallback),
 		fixedStep(withReasoningMarker(agenttest.FinalResponse("done"), fallback.Protocol(), "fallback-81")),
 		fixedStep(agenttest.FinalResponse("done")),
 		fixedStep(agenttest.FinalResponse("wire-model reply")),
@@ -234,6 +259,44 @@ func TestFallbackReplaysOnlyItsIssuersReasoning(t *testing.T) {
 		return registryClient(t, instances, primaryAdapter, fallbackAdapter)
 	}
 	client := clientFor("-declared", "deployment-1", "-wire-1", "s1", true)
+	checkIssuedItems := func(req llm.Request, eligible, encrypted bool) {
+		t.Helper()
+		if protocol != registry.ProtocolOpenAIResponses {
+			return
+		}
+		row := resolveClientProfile(t, client, req.Provider+"/"+req.Model).Resolved()
+		body, err := responses.DefaultProtocol.BuildBody(llm.ShapeRequest(req, row), row)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got, want []any
+		for _, value := range body["input"].([]any) {
+			item := value.(map[string]any)
+			if item["id"] == mixedID || item["id"] == emptyID || item["id"] == legacyID {
+				got = append(got, item)
+			}
+		}
+		if eligible {
+			mixed := map[string]any{"type": "reasoning", "id": mixedID, "summary": []any{map[string]any{"type": "summary_text", "text": "s73"}}}
+			if encrypted {
+				mixed["encrypted_content"] = sealed
+			} else {
+				mixed["content"] = []any{map[string]any{"type": "reasoning_text", "text": fallbackMarker}}
+			}
+			want = []any{mixed, map[string]any{"type": "reasoning", "id": emptyID, "summary": []any{}, "content": []any{map[string]any{"type": "reasoning_text", "text": ""}}}}
+			if encrypted {
+				want = append(want, map[string]any{"type": "reasoning", "id": legacyID, "summary": []any{}, "encrypted_content": legacyCipher})
+			}
+		}
+		if eq, a, b := jsonEqual(t, got, want); !eq {
+			t.Errorf("%s native reasoning items = %s, want %s", req.Provider, a, b)
+		}
+		if req.Provider == fallback.ID() {
+			if estimate := llm.EstimateInputTokensForResolved(row, req).Tokens; req.FullHistoryInputTokensEstimate != estimate {
+				t.Errorf("fallback estimate = %d, projected request costs %d", req.FullHistoryInputTokensEstimate, estimate)
+			}
+		}
+	}
 	resolve := func(ref string) (*provider.Profile, error) { return provider.Resolve(client.Registry(), ref) }
 	stateDir := t.TempDir()
 	s := newSession(t, withProfile(resolveClientProfile(t, client, "work/reasoner")), withClient(client), withStateDir(stateDir),
@@ -253,10 +316,17 @@ func TestFallbackReplaysOnlyItsIssuersReasoning(t *testing.T) {
 	}
 	for _, req := range primaryRequests[1:] {
 		assertReasoningMarkers(t, req, "primary-42")
+		checkIssuedItems(req, false, false)
 	}
 	assertReasoningMarkers(t, fallbackRequests[0])
-	assertReasoningMarkers(t, fallbackRequests[1], "fallback-73")
-	assertReasoningMarkers(t, fallbackRequests[2], "fallback-73", "fallback-81")
+	inFlight := []string{fallbackMarker}
+	if protocol == registry.ProtocolOpenAIResponses {
+		inFlight = append(inFlight, legacyDisplay)
+	}
+	assertReasoningMarkers(t, fallbackRequests[1], inFlight...)
+	checkIssuedItems(fallbackRequests[1], true, true)
+	assertReasoningMarkers(t, fallbackRequests[2], fallbackMarker, "fallback-81")
+	checkIssuedItems(fallbackRequests[2], true, false)
 
 	meta, env := s.Meta(), s.currentEnv()
 	s.Close()
@@ -289,13 +359,14 @@ func TestFallbackReplaysOnlyItsIssuersReasoning(t *testing.T) {
 			t.Fatalf("redirect %+v made %d primary and %d fallback requests", redirect, len(primaryRequests), len(fallbackRequests))
 		}
 		for _, req := range []llm.Request{primaryRequests[4+i], fallbackRequests[3+i]} {
+			checkIssuedItems(req, req.Provider == fallback.ID() && redirect.wantPlain, false)
 			switch {
 			case !redirect.wantPlain:
 				assertReasoningMarkers(t, req)
 			case req.Provider == primary.ID():
 				assertReasoningMarkers(t, req, "primary-42")
 			default:
-				assertReasoningMarkers(t, req, "fallback-73", "fallback-81")
+				assertReasoningMarkers(t, req, fallbackMarker, "fallback-81")
 			}
 			if !requestCarriesText(req, "follow-up") {
 				t.Errorf("%s lost conversation history across the redirect", req.Provider)

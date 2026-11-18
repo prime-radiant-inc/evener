@@ -23,16 +23,37 @@ type responsesToolState struct {
 	args                 responsesOutputText
 }
 
+type responsesMessagePhase struct {
+	value     string
+	order     int
+	completed bool
+}
+
+func (phase *responsesMessagePhase) merge(next responsesMessagePhase) {
+	if next.completed && !phase.completed || next.completed == phase.completed && next.order > phase.order {
+		*phase = next
+	}
+}
+
+func (phase *responsesMessagePhase) observe(message map[string]any, order int, completed bool) {
+	if value, present := message["phase"]; present {
+		text, _ := value.(string)
+		phase.merge(responsesMessagePhase{value: text, order: order, completed: completed})
+	}
+}
+
 type responsesOutputItem struct {
-	kind, id, phase string
-	index           int64
-	done            map[string]any
-	doneOrder       int
-	raw             json.RawMessage
-	text            map[int64]*responsesOutputText
-	tool            *responsesToolState
-	display         responsesFragments
-	displayOnly     bool
+	kind, id    string
+	phase       responsesMessagePhase
+	index       int64
+	done        map[string]any
+	doneOrder   int
+	raw         json.RawMessage
+	text        map[int64]*responsesOutputText
+	tool        *responsesToolState
+	display     responsesFragments
+	displayOnly bool
+	hasNativeID bool // A native item or typed reasoning event supplied this ID.
 }
 
 // Fragments from different provisional items can interleave before the provider
@@ -83,10 +104,12 @@ func (f *responsesFragments) merge(other responsesFragments) {
 }
 
 type responsesOutputText struct {
-	deltas     responsesFragments
-	final      string
-	finalOrder int
-	itemFinal  bool
+	deltas         responsesFragments
+	final          string
+	finalOrder     int
+	itemFinal      bool
+	reasoningType  string // Supplied by reasoning_part.added at this content index.
+	reasoningFinal bool   // reasoning_text.done supplied text, including an explicit empty string.
 }
 
 func (p *responsesOutputText) value() string {
@@ -128,6 +151,8 @@ func (p *responsesOutputText) settle(value string, itemFinal bool, order int) {
 }
 
 func (p *responsesOutputText) merge(other *responsesOutputText) {
+	p.reasoningType = cmp.Or(p.reasoningType, other.reasoningType)
+	p.reasoningFinal = p.reasoningFinal || other.reasoningFinal
 	if other.final != "" {
 		p.settle(other.final, other.itemFinal, other.finalOrder)
 	} else if p.final == "" {
@@ -157,6 +182,16 @@ func (acc *responsesOutputAccumulator) reasoningDisplay(typ string, payload map[
 	}
 	id, _ := payload["item_id"].(string)
 	source := acc.outputItem(payload, "reasoning", id, nil, false)
+	if typ == "response.reasoning_part.added" && (source.id != "" || source.index >= 0) {
+		index := responsesEventIndex(payload, "content_index")
+		part, _ := payload["part"].(map[string]any)
+		if kind, _ := part["type"].(string); index >= 0 && kind != "" {
+			source.textPart(index, false).reasoningType = kind
+			if kind == "reasoning_text" && id != "" && source.id == id {
+				source.hasNativeID = true
+			}
+		}
+	}
 	acc.write(&source.display, delta)
 	if added {
 		if acc.reasoningStarted {
@@ -178,8 +213,13 @@ func (acc *responsesOutputAccumulator) handleReasoningTextDone(payload map[strin
 		return
 	}
 	item := acc.outputItem(payload, "reasoning", id, nil, false)
+	if id != "" && item.id == id {
+		item.hasNativeID = true
+	}
 	acc.order++
-	item.textPart(index, false).settle(text, false, acc.order)
+	part := item.textPart(index, false)
+	part.reasoningFinal = true
+	part.settle(text, false, acc.order)
 }
 
 func newResponsesOutputAccumulator() *responsesOutputAccumulator {
@@ -239,7 +279,8 @@ func (acc *responsesOutputAccumulator) join(item, other *responsesOutputItem) *r
 		item.tool = other.tool
 	}
 	item.id = cmp.Or(item.id, other.id)
-	item.phase = cmp.Or(item.phase, other.phase)
+	item.hasNativeID = item.hasNativeID || other.hasNativeID
+	item.phase.merge(other.phase)
 	item.index = max(item.index, other.index)
 	item.displayOnly = item.displayOnly && other.displayOnly
 	item.display.merge(other.display)
@@ -309,6 +350,7 @@ func (acc *responsesOutputAccumulator) outputItem(payload map[string]any, kind, 
 	}
 	if id != "" {
 		item.id = id
+		item.hasNativeID = item.hasNativeID || native
 		acc.byID[id] = item
 	}
 	if index >= 0 && (item.index < 0 || item.index == index) {
@@ -392,9 +434,7 @@ func (acc *responsesOutputAccumulator) handleTextPartDone(payload map[string]any
 
 // Completion can supply a different subset of parts from the deltas.
 func (item *responsesOutputItem) settleMessage(message map[string]any, order int) {
-	if phase, _ := message["phase"].(string); phase != "" {
-		item.phase = phase
-	}
+	item.phase.observe(message, order, true)
 	parts, _ := message["content"].([]any)
 	for index, entry := range parts {
 		part, _ := entry.(map[string]any)
@@ -453,8 +493,10 @@ func (acc *responsesOutputAccumulator) HandleOutputItemAdded(payload, item map[s
 			}
 		}
 		output := acc.outputItem(payload, kind, itemID, fallback, true)
-		phase, _ := item["phase"].(string)
-		output.phase = cmp.Or(phase, output.phase)
+		if kind == "message" {
+			acc.order++
+			output.phase.observe(item, acc.order, false)
+		}
 		return
 	}
 	callID, _ := item["call_id"].(string)
