@@ -1753,15 +1753,19 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 		});
 		const { tree, hub } = await mount(served);
 
-		// Another conversation opens on the root stack: the pane settles for a
+		// The press lands while the pane is still in front, so the decision is
+		// genuinely dispatched. Another conversation then opens on the root stack
+		// while the hub's reply is still out: the acknowledgement settles for a
 		// reader who cannot see it, and says nothing about it.
+		const pressing = press(tree, "Allow this file only");
 		rootStack.pushed = { key: "conversation-elsewhere", name: "Conversation" };
-		await press(tree, "Allow this file only");
+		await pressing;
 		expect(hub.requests.filter((request) => request.method === "evener/sandbox/escalation/resolve")).toHaveLength(1);
 		expect(toasts(tree)).toEqual([]);
 
-		// Returning, the next approval takes the dock with no error left over
-		// from the decision that settled behind the covering screen.
+		// Returning, the next approval takes the dock from the session's own read,
+		// with no error left over from the decision that settled behind the
+		// covering screen and nothing injected to stand in for that read.
 		rootStack.pushed = null;
 		act(() =>
 			hub.notify({

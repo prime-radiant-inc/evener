@@ -85,10 +85,17 @@ export class SessionControls {
 	 * to a reader who has left is what that fence is for. A binding that moved
 	 * to another conversation publishes nothing at all, which is why this asks
 	 * the session's identity rather than the disposed flag alone. */
+	/** Whether this binding has nothing left to settle. Another conversation
+	 * taking the session ends it; a pane another screen merely covers does not,
+	 * because the binding is still that session's and the reply still belongs
+	 * to it. A failure keeps its report for the reader who comes back, and
+	 * returns before a notice would overwrite it. */
 	private ends(error: string | null = null): boolean {
 		if (this.disposed) return true;
 		if (this.isCurrent()) return false;
-		if (this.isCurrent("session")) this.publish({ pending: null, error });
+		if (!this.isCurrent("session")) return true;
+		if (error === null) return false;
+		this.publish({ pending: null, error });
 		return true;
 	}
 	dispose() {
@@ -130,18 +137,23 @@ export class SessionControls {
 	 * binding moved on from still ends the load, so the next one reads again
 	 * rather than waiting on it forever. */
 	async loadModels() {
-		if (this.disposed || !this.isCurrent() || this.state.loadingModels || this.state.pending) return;
+		// A catalog read is the read the picker is made of, not an action the
+		// reader starts and not a thing anyone is told: it belongs to the live
+		// session and a ready transport. A pane another screen covers has to have
+		// its choices ready when the reader comes back, and a reply from a
+		// replaced binding is the one thing that must be dropped.
+		if (this.disposed || !this.isCurrent("destination") || this.state.loadingModels || this.state.pending) return;
 		// A load is the newest read: a refresh still out answers older.
 		this.catalogReads++;
 		this.publish({ loadingModels: true, modelError: null });
 		try {
 			const catalog = await this.service.models();
 			if (this.disposed) return;
-			this.publish(this.isCurrent() ? { catalog, loadingModels: false } : { loadingModels: false });
+			this.publish(this.isCurrent("destination") ? { catalog, loadingModels: false } : { loadingModels: false });
 		} catch (error) {
 			if (this.disposed) return;
 			this.publish(
-				this.isCurrent()
+				this.isCurrent("destination")
 					? {
 							catalog: null,
 							loadingModels: false,
@@ -167,11 +179,11 @@ export class SessionControls {
 			this.refreshAfterLoad = true;
 			return;
 		}
-		if (this.disposed || !this.isCurrent() || !this.state.catalog) return;
+		if (this.disposed || !this.isCurrent("destination") || !this.state.catalog) return;
 		const read = ++this.catalogReads;
 		try {
 			const catalog = await this.service.models();
-			if (!this.disposed && read === this.catalogReads && this.isCurrent()) this.publish({ catalog });
+			if (!this.disposed && read === this.catalogReads && this.isCurrent("destination")) this.publish({ catalog });
 		} catch {
 			// A failed refresh keeps the catalog on screen.
 		}
@@ -284,11 +296,17 @@ export class SessionControls {
 			if (this.ends()) return false;
 			if (kind !== "resume") await this.refresh();
 			if (this.ends()) return false;
+			// The hub took the action, so this binding settles it here whichever
+			// screen is in front: a covered pane's editor must not stay dirty over
+			// a rename the hub accepted. The notice is the reader's question, and
+			// only a view still in front has one to tell.
+			const stayed = this.isCurrent("route");
 			this.publish({
 				pending: null,
 				error: null,
-				notice:
-					kind === "resume"
+				notice: !stayed
+					? null
+					: kind === "resume"
 						? "Runtime resumed."
 						: kind === "compact"
 							? "Compaction requested. Progress appears in the conversation."

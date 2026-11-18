@@ -984,13 +984,16 @@ describe("conversation-owned session controls", () => {
 		{ name: "a rejected rename", settle: "refuses" },
 	] as const)("settles the in-flight state of a covered controller after $name", async ({ settle }) => {
 		let covered = false;
+		let refreshed = 0;
 		const controls = new SessionControls(
 			await boundary({
 				rename: async () => {
 					if (settle === "refuses") throw new Error("The hub refused the name.");
 				},
 			}),
-			async () => {},
+			async () => {
+				refreshed++;
+			},
 			() => {},
 			// The screen's own fence: the route is still the same session, and
 			// an outer screen covering it is what `current` is not.
@@ -1000,8 +1003,13 @@ describe("conversation-owned session controls", () => {
 		);
 		const rename = controls.rename("New name");
 		covered = true;
-		expect(await rename).toBe(false);
+		// The hub's word is what settles the rename, so a covered editor does not
+		// stay dirty over a name the hub took, and its readback still runs. The
+		// notice is the reader's: nobody in front is owed one.
+		expect(await rename).toBe(settle === "applies");
+		expect(refreshed).toBe(settle === "applies" ? 1 : 0);
 		expect(controls.getSnapshot().pending).toBeNull();
+		expect(controls.getSnapshot().notice).toBeNull();
 	});
 	// The reader can leave while the pick's refresh is still out. Whoever left
 	// is owed no confirmation on the screen they left, so the pick reports no
@@ -1086,6 +1094,38 @@ describe("conversation-owned session controls", () => {
 		expect(await pick).toBe(false);
 		expect(refreshed).toBe(1);
 		expect(controls.getSnapshot()).toMatchObject({ pending: null, notice: null });
+	});
+	it("keeps a covered picker's catalog so its choices are there on return", async () => {
+		let inFront = true;
+		const started = Promise.withResolvers<void>();
+		const reply = Promise.withResolvers<ModelListResponse>();
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => {
+					started.resolve();
+					return await reply.promise;
+				},
+			}),
+			async () => {},
+			() => {},
+			// The picker's first catalog is being read when another screen opens
+			// over it. The session and its transport are still live, so the reply
+			// is this pane's to keep. Both the route question and the plain
+			// "starting an action" fence follow visibility here, the way the
+			// screen answers them.
+			(scope) => (scope === "session" || scope === "destination" ? true : inFront),
+			() => null,
+			() => true,
+		);
+		const loading = controls.loadModels();
+		await started.promise;
+		inFront = false;
+		reply.resolve({ data: [{ provider: "two", model: "next" }] });
+		await loading;
+		// Reading choices back is not an announcement: the reader finds them, and
+		// nothing was said to a reader who is not looking at the sheet.
+		expect(controls.getSnapshot().catalog).toMatchObject({ data: [{ provider: "two", model: "next" }] });
+		expect(controls.getSnapshot().loadingModels).toBe(false);
 	});
 	it("ignores a catalog that resolves after the controller is disposed", async () => {
 		let resolve!: (value: ModelListResponse) => void;
