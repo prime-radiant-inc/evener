@@ -117,6 +117,24 @@ func TestToChatMessages_ReasoningReplay(t *testing.T) {
 	if v, has := out[0]["reasoning_content"]; !has || v != "" {
 		t.Fatalf("empty reasoning_content on assistant turns: %v", out[0])
 	}
+
+	t.Run("reasoning-only history", func(t *testing.T) {
+		projected := llm.Message{Role: llm.RoleAssistant}
+		reasoningOnly := llm.Message{Role: llm.RoleAssistant, Content: signed[0].Content[:1]}
+		off.StripEmptyContent = new(true)
+		out, err := toChatMessages([]llm.Message{llm.User(""), projected, reasoningOnly, llm.Assistant(""), llm.Assistant("answer")}, off, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(out) != 3 || out[0]["role"] != "user" || out[0]["content"] != "" ||
+			out[1]["role"] != "assistant" || out[1]["content"] != "" || out[2]["content"] != "answer" {
+			t.Fatalf("disabled destination received %v, want the three explicitly authored messages", out)
+		}
+		out, err = toChatMessages([]llm.Message{projected}, empty, false)
+		if err != nil || len(out) != 1 || out[0]["reasoning_content"] != "" || out[0]["content"] != "" {
+			t.Fatalf("destination requiring an empty reasoning marker received %v, err = %v", out, err)
+		}
+	})
 }
 
 // chatImageMessage is a user message with a text prompt and one image part

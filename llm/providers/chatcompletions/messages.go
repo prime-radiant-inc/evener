@@ -3,6 +3,7 @@ package chatcompletions
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/llm"
@@ -83,9 +84,7 @@ func toChatMessages(messages []llm.Message, caps registry.Caps, useReasoningDeta
 				})
 			}
 		case llm.RoleAssistant:
-			msg := map[string]any{
-				"role": "assistant",
-			}
+			msg := map[string]any{}
 			text := textFromParts(content)
 			calls := toolCallsFromParts(content)
 			asText := registry.BoolValue(caps.ThinkingAsText)
@@ -139,8 +138,17 @@ func toChatMessages(messages []llm.Message, caps registry.Caps, useReasoningDeta
 					msg["content"] = text
 				}
 			} else {
+				// A reasoning-only reply can lose every part during routing or
+				// encoding. Keep an explicitly authored empty text or a required
+				// reasoning field, both of which carry a wire representation.
+				if text == "" && len(msg) == 0 && !slices.ContainsFunc(m.Content, func(p llm.ContentPart) bool {
+					return p.Kind != llm.ContentThinking && p.Kind != llm.ContentRedThinking
+				}) {
+					continue
+				}
 				msg["content"] = text
 			}
+			msg["role"] = "assistant"
 			out = append(out, msg)
 		case llm.RoleTool:
 			for _, p := range content {

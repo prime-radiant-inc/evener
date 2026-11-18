@@ -272,6 +272,7 @@ func testChatEmptyAnswerReplay(t *testing.T, mode string) {
 		"answering":   {Caps: caps},
 		"unavailable": {Caps: registry.Caps{ReplayReasoningText: new(!enrolled)}},
 		"other":       {Caps: registry.Caps{ReplayReasoningText: new(true)}},
+		"elsewhere":   {Caps: caps, Transport: &registry.Transport{StreamEndpoint: "/elsewhere/chat/completions"}},
 	}}
 	client := registryClientAt(t, dir, map[string]registry.Provider{"gw": instance}, []string{"gw"})
 	profile := resolveClientProfile(t, client, "gw/unavailable")
@@ -331,14 +332,42 @@ func testChatEmptyAnswerReplay(t *testing.T, mode string) {
 		want = append(want, mustJSON(t, msg))
 	}
 	if mode == "array" {
-		if err := cold.SetModel("gw/other"); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := cold.ProcessInput(tripwireCtx(t), "different issuer", nil); err != nil || int(calls.Load()) != len(outputs)+2 {
-			t.Fatalf("switched model ended after %d total requests with %v", calls.Load(), err)
-		}
-		if wire := <-history; bytes.Contains(wire, []byte("second-41")) || !bytes.Contains(wire, []byte("opaque-23")) {
-			t.Error("the other Chat model received foreign plaintext or lost the Chat continuation")
+		for i, model := range []string{"other", "elsewhere"} {
+			if err := cold.SetModel("gw/" + model); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := cold.ProcessInput(tripwireCtx(t), "different issuer", nil); err != nil || int(calls.Load()) != len(outputs)+2+i {
+				t.Fatalf("switched model ended after %d total requests with %v", calls.Load(), err)
+			}
+			wire := <-history
+			if bytes.Contains(wire, []byte("second-41")) || bytes.Contains(wire, []byte("opaque-23")) != (model == "other") {
+				t.Errorf("%s received the wrong native reasoning for its endpoint", model)
+			}
+			var messages []struct {
+				Role, Content    string
+				ReasoningDetails json.RawMessage       `json:"reasoning_details"`
+				ToolCalls        []struct{ ID string } `json:"tool_calls"`
+			}
+			if err := json.Unmarshal(wire, &messages); err != nil {
+				t.Fatal(err)
+			}
+			var blanks, completedCalls int
+			for _, m := range messages {
+				if m.Role != "assistant" {
+					continue
+				}
+				if m.Content == "" && len(m.ReasoningDetails) == 0 && len(m.ToolCalls) == 0 {
+					blanks++
+				}
+				for _, call := range m.ToolCalls {
+					if call.ID == "c-done" {
+						completedCalls++
+					}
+				}
+			}
+			if blanks != 0 || completedCalls != i+1 {
+				t.Errorf("%s received %d blank assistant turns and %d completed calls, want 0 and %d", model, blanks, completedCalls, i+1)
+			}
 		}
 	}
 }
