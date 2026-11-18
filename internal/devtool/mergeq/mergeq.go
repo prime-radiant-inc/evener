@@ -284,7 +284,7 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 	}
 	if st.Entry == nil {
 		if err := c.Enqueue(ctx, opts.Repo, st.ID, opts.Jump); err != nil {
-			return Outcome{}, &ExitError{Kind: EnqueueFailed, Detail: err.Error()}
+			return Outcome{}, refusalFor(ctx, EnqueueFailed, err)
 		}
 		if st, exitErr = readStatus(ctx, opts, c); exitErr != nil {
 			return Outcome{}, exitErr
@@ -359,9 +359,23 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 func readStatus(ctx context.Context, opts Options, c Client) (Status, *ExitError) {
 	st, err := c.Status(ctx, opts.Repo, opts.PR)
 	if err != nil {
-		return Status{}, &ExitError{Kind: LookupFailed, Detail: err.Error()}
+		return Status{}, refusalFor(ctx, LookupFailed, err)
 	}
 	return st, nil
+}
+
+// refusalFor turns a failed client call into the run-ending refusal.
+//
+// A cancelled call is an interrupt, not a failure: `gh` returns whatever its
+// own cancellation looks like, and reporting that as "lookup failed" (exit 2)
+// tells the operator GitHub broke when in fact they stopped the wait. The
+// context is what distinguishes the two, and it is checked here rather than at
+// each call site so every call gets the same answer.
+func refusalFor(ctx context.Context, kind ErrorKind, err error) *ExitError {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return &ExitError{Kind: Interrupted, Detail: ctxErr.Error()}
+	}
+	return &ExitError{Kind: kind, Detail: err.Error()}
 }
 
 // mergedOutcome reports the merged outcome when the pull request's own state

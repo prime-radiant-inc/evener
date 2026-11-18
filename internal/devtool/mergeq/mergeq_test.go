@@ -112,6 +112,52 @@ func queueEntry(position int64) *QueueEntry {
 	return &QueueEntry{Position: position, State: "QUEUED"}
 }
 
+// TestCancelledClientCallIsAnInterruptNotAFailure pins the other half of the
+// interrupt: a signal that lands while `gh` is answering. The call fails with
+// whatever its own cancellation looks like, and reporting that as a lookup
+// failure (exit 2) tells the operator GitHub broke when they stopped the wait.
+// The context decides, so the same error is a failure when nothing cancelled.
+func TestCancelledClientCallIsAnInterruptNotAFailure(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c := &cancellingClient{cancel: cancel}
+	var stdout, stderr strings.Builder
+	code := Run(ctx, opts(time.Minute), c, (&fakeClock{now: time.Now()}).clock(), &stdout, &stderr)
+	if code != InterruptedExit {
+		t.Fatalf("Run = exit %d, want %d (stdout %q, stderr %q)", code, InterruptedExit, stdout.String(), stderr.String())
+	}
+	// The exit code is the whole claim: 130 is the interrupt and 2 is the
+	// refusal, so a cancelled lookup reported as a failure fails above. The
+	// diagnostic's wording is deliberately not asserted here.
+	if stderr.Len() == 0 {
+		t.Fatal("an interrupted run wrote no diagnostic")
+	}
+}
+
+// cancellingClient ends the context the way a delivered signal would, then
+// fails the call the way `gh` does when it is killed.
+type cancellingClient struct{ cancel context.CancelFunc }
+
+func (c *cancellingClient) Status(context.Context, string, string) (Status, error) {
+	c.cancel()
+	return Status{}, errors.New("signal: killed")
+}
+
+func (c *cancellingClient) MergedCommit(context.Context, string, string) (string, bool, error) {
+	return "", false, nil
+}
+
+func (c *cancellingClient) Enqueue(context.Context, string, string, bool) error { return nil }
+
+func (c *cancellingClient) QueueDrop(context.Context, string, string) (*DropEvent, error) {
+	return nil, nil
+}
+
+func (c *cancellingClient) MergeGroupRuns(context.Context, string) ([]GroupRun, error) {
+	return nil, nil
+}
+
 // TestDroppedBranchesNameThisPRsMergeGroupRun pins the defect #6505 fixed and
 // #6514 landed: every drop names the merge-group run the operator should read,
 // resolved by the queue branch prefix because the branch carries the base tip,
@@ -283,6 +329,41 @@ func TestRunListFailureFallsBackToThePrefix(t *testing.T) {
 	}
 }
 
+// TestEmptyRunListFallsBackToThePrefix pins the same fallback for the other
+// way a lookup can name nothing: it succeeded and returned no run for this
+// base tip yet. The queue can drop a PR before its run is listed, and the
+// operator still needs the prefix to find the run once it appears.
+func TestEmptyRunListFallsBackToThePrefix(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+	const prefix = "gh-readonly-queue/main/pr-6499-"
+	c := &fakeClient{
+		statuses: []Status{
+			{ID: "PR_6499", State: "OPEN", Base: "main", Entry: queueEntry(1)},
+			{ID: "PR_6499", State: "OPEN", Base: "main"},
+		},
+		drop: &DropEvent{CreatedAt: now.Add(-time.Minute), Reason: "failed_checks"},
+		// A run list that answered, with another PR's run in it: this PR's
+		// base tip has none yet.
+		runs: []GroupRun{{
+			DatabaseID: 555,
+			URL:        "https://example.invalid/other",
+			Conclusion: "failure",
+			HeadBranch: "gh-readonly-queue/main/pr-6500-deadbeef",
+		}},
+	}
+	out, exitErr := Execute(context.Background(), opts(time.Minute), c, (&fakeClock{now: now}).clock())
+	if exitErr != nil {
+		t.Fatalf("Execute: %v", exitErr)
+	}
+	if out.Run.Group != nil {
+		t.Fatalf("drop resolved another PR's run: %d", out.Run.Group.DatabaseID)
+	}
+	if out.Run.Prefix != prefix {
+		t.Fatalf("drop prefix = %q, want %q", out.Run.Prefix, prefix)
+	}
+}
+
 // TestSecondRunForThisPRIsTheOneNamed pins the most-recent rule: one PR can be
 // queued more than once on different base tips, and the entry that dropped is
 // the newer run's.
@@ -309,6 +390,47 @@ func TestSecondRunForThisPRIsTheOneNamed(t *testing.T) {
 	}
 	if out.Run.Group.DatabaseID == 999888777 {
 		t.Fatalf("drop named the older run 999888777")
+	}
+}
+
+// TestRunWithoutAConclusionStillNamesItsIdentity pins the shape a run has while
+// it is still going: `gh run list` reports no conclusion yet, so the drop names
+// the run's id and URL with no verdict. A lookup that resolved must never fall
+// back to the prefix just because the conclusion is empty.
+func TestRunWithoutAConclusionStillNamesItsIdentity(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+	const (
+		runID  = int64(444555666)
+		runURL = "https://example.invalid/runs/444555666"
+	)
+	c := &fakeClient{
+		statuses: []Status{
+			{ID: "PR_6499", State: "OPEN", Base: "main", Entry: queueEntry(1)},
+			{ID: "PR_6499", State: "OPEN", Base: "main"},
+		},
+		drop: &DropEvent{CreatedAt: now.Add(-time.Minute), Reason: "failed_checks"},
+		runs: []GroupRun{{
+			DatabaseID: runID,
+			URL:        runURL,
+			// Conclusion deliberately empty: the run is still in progress.
+			HeadBranch: "gh-readonly-queue/main/pr-6499-deadbeef",
+		}},
+	}
+	out, exitErr := Execute(context.Background(), opts(time.Minute), c, (&fakeClock{now: now}).clock())
+	if exitErr != nil {
+		t.Fatalf("Execute: %v", exitErr)
+	}
+	if out.Run.Group == nil {
+		t.Fatalf("drop named no run for a matched entry; fallback was %q", out.Run.String())
+	}
+	if out.Run.Group.DatabaseID != runID || out.Run.Group.URL != runURL {
+		t.Fatalf("drop named run %d (%s), want %d (%s)", out.Run.Group.DatabaseID, out.Run.Group.URL, runID, runURL)
+	}
+	// The operator-facing reason must carry the same identity, since that is
+	// what they actually read.
+	if !strings.Contains(out.Reason, runURL) {
+		t.Fatalf("drop reason = %q, want it to name %s", out.Reason, runURL)
 	}
 }
 

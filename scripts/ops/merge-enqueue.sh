@@ -48,20 +48,29 @@ set -euo pipefail
 # reader of this file, not for --help.
 usage() { sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
+# A value-taking option at the end of the line has no value: reading $2 there is
+# an "unbound variable" abort under set -u, which exits 1 -- the code that means
+# "the queue dropped your PR". Refuse it as usage instead.
+need_value() {
+  [ "$#" -ge 2 ] || { echo "$1 requires a value" >&2; usage; }
+}
+
+# wait stays a string all the way to the helper. Bash arithmetic would wrap a
+# value like 18446744073709551616 to 0 and hand the helper a valid no-wait
+# request for a number the operator never meant; the helper's own parser is the
+# one that decides, and it reads leading zeros as decimal (#5304).
 repo="prime-radiant-inc/evener" pr="" wait=0 jump=()
 while [ $# -gt 0 ]; do
   case "$1" in
-    --repo) repo="$2"; shift 2 ;;
-    --pr) pr="$2"; shift 2 ;;
-    --wait) wait="$2"; shift 2 ;;
+    --repo) need_value "$@"; repo="$2"; shift 2 ;;
+    --pr) need_value "$@"; pr="$2"; shift 2 ;;
+    --wait) need_value "$@"; wait="$2"; shift 2 ;;
     --jump) jump=(--jump); shift ;;
     -h|--help) usage ;;
     *) echo "unknown argument: $1" >&2; usage ;;
   esac
 done
 [ -n "$repo" ] && [ -n "$pr" ] || usage
-case "$wait" in ''|*[!0-9]*) echo "--wait takes whole seconds, got: $wait" >&2; usage ;; esac
-wait=$((10#$wait))  # decimal: bash arithmetic reads a leading 0 as octal
 case "$repo" in
   */*) ;;
   *) echo "--repo takes OWNER/NAME, got: $repo" >&2; usage ;;
@@ -73,31 +82,54 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # not something under the checkout root.
 caller_pwd="$PWD"
 
-# Forward a signal to the helper and reap it before this script exits, so a
+# TMPDIR is resolved here for the same reason, and once: a relative TMPDIR such
+# as `tmp` means the caller's `tmp`, but scratch_rm resolves TMPDIR again when
+# it runs, after the script has moved to the checkout root. Left alone, the
+# build would look for `tmp` under the root and cleanup would look for it
+# somewhere else again, silently skipping the scratch it just created. An
+# absolute TMPDIR is unchanged, so an unset or absolute one behaves as before.
+if [ -n "${TMPDIR:-}" ]; then
+  case "$TMPDIR" in
+    /*) ;;
+    *) TMPDIR="$caller_pwd/$TMPDIR" ;;
+  esac
+fi
+export TMPDIR
+
+# Forward a signal to the child and reap it before this script exits, so a
 # SIGTERM at the script's PID stops the poll instead of leaving it running
-# until the wait expires. Ctrl-C already reaches the helper through the
-# terminal's process group; this is what covers a signal sent to the PID.
+# until the wait expires. Ctrl-C already reaches a terminal's children through
+# its process group; this is what covers a signal sent to the PID.
 #
-# The handler ends the script even when no helper has started yet (a signal
-# during the build would otherwise be swallowed), and it always reports 130:
-# the helper's own interrupt exit. Reaping here rather than leaving it to the
-# EXIT trap is what guarantees the helper is gone before scratch is reclaimed.
-helper=""
+# The child is whichever process is in flight: `go build` during a cold build,
+# or the helper while it polls. Bash defers traps until a foreground command
+# returns, so the build runs in the background and is waited for here; a
+# foreground build would not be interrupted at all and the caller would keep
+# its pipes open until it finished.
+#
+# The handler ends the script even when no child has started yet, and it always
+# reports 130: the helper's own interrupt exit. Reaping here rather than leaving
+# it to the EXIT trap is what guarantees the child is gone before scratch is
+# reclaimed.
+child=""
 helper_started=false
+reap_child() {
+  local sig="$1"
+  [ -n "$child" ] || return 0
+  kill -0 "$child" 2>/dev/null || return 0
+  kill -s "$sig" "$child" 2>/dev/null || true
+  # Bounded: a child that ignores the signal must not hang the launcher.
+  local waited=0
+  while kill -0 "$child" 2>/dev/null && [ "$waited" -lt 50 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  kill -s KILL "$child" 2>/dev/null || true
+  wait "$child" 2>/dev/null || true
+}
 interrupted() {
-  local sig="$1" code=130
-  if [ -n "$helper" ] && kill -0 "$helper" 2>/dev/null; then
-    kill -s "$sig" "$helper" 2>/dev/null || true
-    # Bounded: a helper that ignores the signal must not hang the launcher.
-    local waited=0
-    while kill -0 "$helper" 2>/dev/null && [ "$waited" -lt 50 ]; do
-      sleep 0.1
-      waited=$((waited + 1))
-    done
-    kill -s KILL "$helper" 2>/dev/null || true
-    wait "$helper" 2>/dev/null || true
-  fi
-  exit "$code"
+  reap_child "$1"
+  exit 130
 }
 trap 'interrupted TERM' TERM
 trap 'interrupted INT' INT
@@ -132,11 +164,11 @@ start_helper() {
   cd "$root" || return 2
   env GOFLAGS= "$1" dev merge-enqueue \
     --repo "$repo" --pr "$pr" --wait "$wait" ${jump[@]+"${jump[@]}"} &
-  helper=$!
+  child=$!
   helper_started=true
   local status=0
-  wait "$helper" || status=$?
-  helper=""
+  wait "$child" || status=$?
+  child=""
   # 126 and 127 are the shell's "found but could not execute" and "not found".
   # A noexec mount produces the first after a successful build, and neither is
   # a decision the helper made: the helper's own codes are 0, 1, 2 and 130.
@@ -147,6 +179,21 @@ start_helper() {
       return 2
       ;;
   esac
+  return "$status"
+}
+
+# build_helper DEST — build the helper into DEST, as a watched child so a
+# signal interrupts the build instead of waiting for it. Returns the build's
+# own status.
+build_helper() {
+  (
+    cd "$root" || exit 1
+    GOFLAGS= go build -o "$1" ./cmd/evener-dev/bin
+  ) &
+  child=$!
+  local status=0
+  wait "$child" || status=$?
+  child=""
   return "$status"
 }
 
@@ -193,10 +240,7 @@ trap 'finish' EXIT
 scratch_dir work merge-enqueue
 gate_scratch_root_executes "$work" ||
   launcher_failed "scratch $work cannot execute a program (a noexec mount?); point TMPDIR at an exec-capable directory"
-(
-  cd "$root" || exit 1
-  GOFLAGS= go build -o "$work/evener-dev" ./cmd/evener-dev/bin
-) || launcher_failed "building the evener-dev helper failed"
+build_helper "$work/evener-dev" || launcher_failed "building the evener-dev helper failed"
 [ -x "$work/evener-dev" ] || launcher_failed "the built helper is not executable: $work/evener-dev"
 start_helper "$work/evener-dev" || exit $?
 exit 0
