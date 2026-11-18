@@ -166,7 +166,6 @@ import {
   backgroundHolds,
   backgroundLeaseSequence,
   bodyOwners,
-  bodyOwnersAtStore,
   bumpOwnerGeneration,
   canonicalThreadOwnerActive,
   clearFinalReleaseOwner,
@@ -190,6 +189,7 @@ import {
   releaseHistory,
   resetThreadOwnersForTests,
   setFinalReleaseOwner,
+  threadBodyOwned,
   unpinMutation,
 } from "./threadOwners";
 import { appendFrameTime, isStorageFailure, isStorageTimeout, mapConflict, StopCanceledError } from "./threadsErrors";
@@ -804,7 +804,7 @@ async function runEntryHistoryRequest<T>(
     await residency
       .scheduleHydration(
         fixture.ref,
-        bodyOwnersAtStore(fixture.ref) ? "foreground" : "background",
+        threadBodyOwned(fixture.ref) ? "foreground" : "background",
         async (scheduledSignal) => {
           activated = true;
           if (!current() || scheduledSignal.aborted) throw new Error("entry history request was retired");
@@ -1083,7 +1083,7 @@ async function acceptEntryTranscriptHydration(
   const repository = fixture.repository;
   fixture.cachedUnverified = false;
   fixture.unsubscribeRepository ??= repository.subscribe(() => publishEntryTranscriptModel(ref));
-  if (productionRoute && bodyOwnersAtStore(ref) && !fixture.reader) fixture.reader = repository.attachReader();
+  if (productionRoute && threadBodyOwned(ref) && !fixture.reader) fixture.reader = repository.attachReader();
   if (productionRoute && authorities && lifetime?.freshForegroundLifetime) settleCacheLifetimeAfterHydration(ref);
   const adoptedRead = repository.acceptRead(response, {
     lifetime: fixture.lifetime,
@@ -5832,7 +5832,9 @@ function ensureCacheLease(ref: string): void {
 // pre-clear holders release, the next explicit foreground acquisition is fresh;
 // background churn and reconnect never make one.
 function syncCacheLifetimeForeground(ref: string): void {
-  const nowHeld = heldCountsAtStore(ref);
+  // Body-owned, not keep-alive: a routing hold must not look like a pre-Clear
+  // holder whose release opens the next acquisition's fresh lifetime.
+  const nowHeld = threadBodyOwned(ref);
   const wasHeld = cacheLifetimeHeld.get(ref) ?? false;
   cacheLifetimeHeld.set(ref, nowHeld);
   if (wasHeld === nowHeld) return;
@@ -5872,7 +5874,7 @@ function acquireCacheLifetimeForeground(ref: string): void {
 function settleCacheLifetimeAfterHydration(ref: string): void {
   threadsStore.setState((state) => {
     const lifetime = state.cacheLifetimes.get(ref);
-    if (lifetime?.clearSuppressed && lifetime.freshForegroundLifetime && heldCountsAtStore(ref)) {
+    if (lifetime?.clearSuppressed && lifetime.freshForegroundLifetime && threadBodyOwned(ref)) {
       const cacheLifetimes = new Map(state.cacheLifetimes);
       cacheLifetimes.set(ref, { leaseEpoch: observedCacheEpoch() ?? 0 });
       return { cacheLifetimes };
@@ -5888,7 +5890,7 @@ function settleCacheLifetimeAfterHydration(ref: string): void {
 // path is untouched (no clear suppression, no fresh lifetime).
 function needsClearLifetimeReconciliation(ref: string): boolean {
   const lifetime = threadsStore.getState().cacheLifetimes.get(ref);
-  return lifetime?.clearSuppressed === true && lifetime.freshForegroundLifetime === true && heldCountsAtStore(ref);
+  return lifetime?.clearSuppressed === true && lifetime.freshForegroundLifetime === true && threadBodyOwned(ref);
 }
 
 // Final release removes every part of the lifetime, but only after the
@@ -8212,7 +8214,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     const count = foregroundHolds(ref);
     // Read before this acquisition's own hold: another mounted reader owns the
     // live bodies only if it held them before this call.
-    const bodyCount = bodyOwners(ref);
+    const bodyOwned = threadBodyOwned(ref);
     if (count === 0) {
       ensureGenerations.set(ref, (ensureGenerations.get(ref) ?? 0) + 1);
       beginCanonicalThreadClaim(ref, true);
@@ -8225,18 +8227,29 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     syncTranscriptResidencyOwners(ref);
     // Retention alone grants no write permission: only an explicit pane open
     // begins the fresh foreground lifetime that lifts a Clear's suppression.
-    if (count === 0 && !routingOnly) acquireCacheLifetimeForeground(ref);
+    // The body-owned predicate as it stood BEFORE this call's own hold, not the
+    // total foreground count: a routing hold already standing here must not be
+    // what decides this pane's lifetime is not the fresh one a Clear's
+    // suppression waits for.
+    if (!routingOnly && !bodyOwned) acquireCacheLifetimeForeground(ref);
     syncThreadSubscription(ref, client);
+    const lifetime = threadsStore.getState().cacheLifetimes.get(ref);
+    // A routing hold needs verified routing state and nothing else: identity,
+    // status and capabilities from a model whose read has landed. A resident
+    // verified model answers it here - no transcript open, and no post-Clear
+    // reconciliation, both of which are the pane's work.
+    if (
+      routingOnly &&
+      threadsStore.getState().threads.has(ref) &&
+      lifetime?.shell !== true &&
+      entryTranscriptRoute(ref)?.cachedUnverified !== true
+    )
+      return;
     // Already hydrated: no re-read. The exception is a clear-suppressed ref
     // whose new explicit foreground lifetime owes an authoritative hydration
     // even while its stale display model is still resident.
-    if (threadsStore.getState().threads.has(ref) && !needsClearLifetimeReconciliation(ref)) {
-      if (bodyCount > 0) return; // Another mounted reader already owns the live bodies.
-      // A routing hold has the routing state it came for - the resident model
-      // carries identity, status and capabilities - and it owns no bodies, so
-      // it neither waits for a body read nor attaches a reader. A cached shell
-      // is unverified, so it is the exception: it hydrates like any pane.
-      if (routingOnly && threadsStore.getState().cacheLifetimes.get(ref)?.shell !== true) return;
+    if (threadsStore.getState().threads.has(ref) && !needsClearLifetimeReconciliation(ref) && !routingOnly) {
+      if (bodyOwned) return; // Another mounted reader already owns the live bodies.
       if (await openEntryTranscript(ref)) return;
       if (ensureGenerations.get(ref) !== generation || foregroundHolds(ref) <= 0) return;
       // Missing or unwritten backing rows cannot establish the captured view.
@@ -8338,6 +8351,11 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         try {
           const model = await inflight;
           if (model) {
+            // A routing hold has its answer: the read that was pending has
+            // published verified routing state. The transcript certification
+            // open below is the pane's, and holding a resend across a local
+            // read would put a storage stall in front of its outbox write.
+            if (routingOnly) return;
             // A display the claim's publication already completed has no
             // pruned publication for the certification open's consumer gate
             // to protect — its local read can only add bodies the pane is
@@ -8433,7 +8451,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       // its own <=0 guard already makes this safe if a concurrent
       // releaseThread() consumed this exact claim first.
       if (ensureGenerations.get(ref) === generation && foregroundHolds(ref) > 0) {
-        threadsStore.getState().releaseThread(ref);
+        threadsStore.getState().releaseThread(ref, { routingOnly });
       }
       throw err;
     }
@@ -9702,7 +9720,7 @@ function syncTranscriptResidencyOwners(ref: string): void {
   if (!route?.repository) return;
   // A history or mutation hold owns repository retention, not the lifetime of
   // the already-published display. Pane release drops its display separately.
-  if (bodyOwnersAtStore(ref)) route.reader ??= route.repository.attachReader();
+  if (threadBodyOwned(ref)) route.reader ??= route.repository.attachReader();
   else if (route.reader) releaseEntryTranscriptReader(ref);
 }
 

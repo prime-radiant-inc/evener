@@ -56,7 +56,7 @@ import {
 } from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { pumpIndexedDBUntil } from "./testing/indexedDBPump";
-import { isMutationPinned } from "./threadOwners";
+import { bodyOwners, isMutationPinned } from "./threadOwners";
 import {
   acquireBackgroundThread,
   backgroundTranscriptSnapshotForTests,
@@ -1240,6 +1240,97 @@ it("a routing hold after a Clear restores and rewrites nothing", async () => {
   expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads);
   expect(await storage.getLatest(key, 10)).toEqual([]);
   background.release();
+}, 20_000);
+
+// The release a failed routing claim runs takes back its own keep-alive hold
+// and nothing else. A routing acquisition never took a body-ownership count, so
+// spending the standing pane's would leave that pane looking like it has no
+// body owner, and a later hydration would skip the reader it is entitled to.
+it("a routing release leaves the standing pane's body count intact", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const client = connect();
+  client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
+  await threadsStore.getState().ensureThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+  const lease = await acquireUnreadThreadClaim("local:a");
+  // The routing release is exactly what a failed acquisition's rollback runs.
+  threadsStore.getState().releaseThread("local:a", { routingOnly: true });
+  // The pane's body ownership is the pane's alone: the routing release took
+  // back its own keep-alive hold and left this standing.
+  expect(bodyOwners("local:a"), "the pane's body ownership must survive a routing release").toBe(1);
+  // And the ref is still body-owned, so a second pane open defers to it.
+  const reads = client.calls.filter((call) => call.method === "thread/read").length;
+  await threadsStore.getState().ensureThread("local:a");
+  expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads);
+  lease.release();
+  await threadsStore.getState().releaseThreadAndWait("local:a");
+}, 20_000);
+
+// A cached shell is a model nobody has verified: its capabilities are empty
+// until the read that publishes over it lands. A routing claim that returned it
+// would let a Send or Queue be refused against capabilities no one has read, so
+// the claim joins that read instead.
+it("a routing claim does not take a cached shell as verified routing state", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const client = connect();
+  client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
+  const background = acquireBackgroundThread("local:a");
+  await background.ready;
+  await settleEntryTranscriptForTests("local:a");
+  expect(threadsStore.getState().threads.has("local:a")).toBe(true);
+  // The cached model is resident, and its routing state is still unverified:
+  // this is the shell the load seam publishes before its first source read.
+  const route = entryTranscriptRoute("local:a");
+  if (!route) throw new Error("expected an entry route");
+  route.cachedUnverified = true;
+  expect(route.cachedUnverified, "the fixture must leave the resident model's routing state unverified").toBe(true);
+  // The claim cannot accept that model as routing state, so it spends the read
+  // that verifies it rather than returning capabilities nobody has read.
+  const reads = client.calls.filter((call) => call.method === "thread/read").length;
+  const lease = await acquireUnreadThreadClaim("local:a");
+  expect(
+    client.calls.filter((call) => call.method === "thread/read").length,
+    "a routing claim must verify a model whose routing state nobody has read",
+  ).toBeGreaterThan(reads);
+  expect(entryTranscriptRoute("local:a")?.cachedUnverified).toBe(false);
+  lease.release();
+  background.release();
+}, 20_000);
+
+// A routing hold is not a pane: after a Clear, a pane opening on a destination
+// a routing hold already keeps alive still begins the fresh foreground
+// lifetime its read needs to resume cached writes.
+it("a pane opening after a routing hold still begins its fresh cache lifetime", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const client = connect();
+  client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
+  await threadsStore.getState().ensureThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+  // The routing hold is taken while the pane still owns the bodies, so the
+  // model survives the pane's release below.
+  const routingHold = await acquireUnreadThreadClaim("local:a");
+  expect(await clearCachedSessions()).toEqual({ committed: true });
+  const lifetime = () => threadsStore.getState().cacheLifetimes.get("local:a");
+  expect(lifetime()?.clearSuppressed).toBe(true);
+  expect(lifetime()?.suppressionHoldsPreClearHolders).toBe(true);
+  // The pre-Clear pane releases. Its own departure lifts the pre-Clear marker;
+  // the routing hold keeps the model standing and must take nothing else.
+  await threadsStore.getState().releaseThreadAndWait("local:a");
+  expect(threadsStore.getState().threads.has("local:a")).toBe(true);
+  expect(lifetime()?.suppressionHoldsPreClearHolders).toBe(undefined);
+  expect(lifetime()?.freshForegroundLifetime, "a routing hold must not begin a pane's fresh lifetime").toBe(undefined);
+  // The pane opens while the routing hold is still standing, so the total
+  // foreground count is already positive. It is still the first body owner.
+  await threadsStore.getState().ensureThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+  expect(
+    lifetime()?.clearSuppressed,
+    "the pane's acquisition must lift the Clear suppression the routing hold could not",
+  ).toBe(undefined);
+  routingHold.release();
 }, 20_000);
 
 // The reviewer's scenario: the destination is usable routing state held only

@@ -124,11 +124,13 @@ export function heldCountsAtStore(ref: string): boolean {
   return foregroundHolds(ref) > 0 || historyHolds(ref) > 0 || isMutationPinned(ref);
 }
 
-// A holder that owns the live transcript bodies: a mounted pane, a history
-// hold or a mutation pin. This is the question the open and recovery paths
-// ask - whether someone is already showing what a body read would restore -
-// and a routing hold is deliberately not one of them.
-export function bodyOwnersAtStore(ref: string): boolean {
+// The one answer to "is this thread body-owned": a mounted pane, a history
+// hold or a mutation pin owns the live transcript bodies. A routing hold is
+// excluded by construction, not by each caller remembering to exclude it - it
+// takes foregroundCounts alone and never holdBodyOwnership. Every site that
+// asks whether someone is already showing what a body read would restore calls
+// this.
+export function threadBodyOwned(ref: string): boolean {
   return bodyOwners(ref) > 0 || historyHolds(ref) > 0 || isMutationPinned(ref);
 }
 
