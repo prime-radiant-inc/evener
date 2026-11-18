@@ -121,7 +121,10 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     clearSubmittedAttachments,
   } = source;
   const observedAttachments = useAttachments(source.editor, source.attachments);
-  const attachments = useMemo(() => createAttachmentOperations(source.editor, source.attachments), [source]);
+  const attachments = useMemo(
+    () => createAttachmentOperations(source.editor, source.attachments, source.ownsImageReference),
+    [source],
+  );
   const recoveryEntries = useRecoveryEntries(ref);
   // An unresolved durable read is unknown, not empty (useRetryPendingProjection's
   // same rule): mount restoration must not adopt rows from a possibly-stale

@@ -351,7 +351,12 @@ test("removing a remapped pending encode prevents its later completion from resu
 test("a decode failure after a rebind retires its tile without editing the adopted text", async () => {
   const controlled = installControlledImageStub();
   const editor = makeFakeEditor("mine ", 5);
-  const { result } = renderHook(() => useAttachments(editor));
+  // The rebind makes this tile foreign to the adopted composition: the real
+  // source answers "does this tile own the reference the text now spells?" with
+  // `!foreignImageIds.includes(id)`, and it is the ONLY fact that separates the
+  // peer's `[image 1]` from this tile's. Without it the hook can only count
+  // tiles by number and would erase the peer's prose.
+  const { result } = renderHook(() => useAttachments(editor, undefined, () => false));
   const onRejected = vi.fn();
 
   act(() => result.current.ingestFiles([makeFile("mine.png")], onRejected));
@@ -359,16 +364,13 @@ test("a decode failure after a rebind retires its tile without editing the adopt
   const oldTile = result.current.items[0];
   if (!oldTile) throw new Error("missing pending tile fixture");
 
-  // The pane adopts a peer draft that spells marker 1 for a different image.
-  // The merge RETAINS this pane's still-pending tile, which still bears
-  // number 1 - so the failure below finds a tile to retire AND a reference to
-  // strip that now belongs to the peer's prose.
-  act(() => {
-    result.current.replaceWithSettled([
-      oldTile,
-      { id: "peer", marker: 1, name: "peer.png", mediaType: "image/png", data: "PEER", pending: false },
-    ]);
-  });
+  // A real rebind adopts the peer's TEXT over this pane's still-pending tile.
+  // It does not conjure a second tile: the store still holds exactly one, the
+  // one whose encode is in flight. So that tile is the ONLY tile on number 1
+  // while the text now spells 1 for the peer's different image - which is why
+  // counting tiles by number cannot answer "does this tile own the reference?"
+  // It answers yes and strips the peer's prose.
+  expect(result.current.items.map((item) => item.id)).toEqual([oldTile.id]);
   editor.write("peer [image 1] prose", 19);
 
   await act(async () => {
@@ -376,10 +378,10 @@ test("a decode failure after a rebind retires its tile without editing the adopt
     await Promise.resolve();
   });
 
-  await waitFor(() => expect(result.current.items.some((item) => item.id === "peer")).toBe(true));
+  await waitFor(() => expect(result.current.items).toEqual([]));
   expect(editor.getText()).toBe("peer [image 1] prose");
   // The retired tile really was the one whose encode failed.
-  expect(oldTile.id).not.toBe("peer");
+  expect(oldTile.name).toBe("mine.png");
 });
 
 test("removing a retained tile leaves the adopted text's reference alone", () => {

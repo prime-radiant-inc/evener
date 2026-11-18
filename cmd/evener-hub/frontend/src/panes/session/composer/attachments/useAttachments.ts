@@ -154,7 +154,26 @@ export function createAttachmentStore() {
 
 export type AttachmentStore = ReturnType<typeof createAttachmentStore>;
 
-export function createAttachmentOperations(editor: TextEditor, store: AttachmentStore): UseAttachmentsResult {
+/**
+ * Whether the composition in the editor still owns this attachment's reference.
+ *
+ * A rebind can adopt a peer's text while this pane still holds its own tile, so
+ * a completion that started under one composition can settle under another. The
+ * text then belongs to somebody else's image, and a cleanup that edits it erases
+ * prose or a missing-image warning the person never asked it to touch. Identity
+ * answers this, never the number: the peer's "[image 1]" and this pane's image 1
+ * are two different things that share a glyph.
+ *
+ * Absent, a tile is assumed to own its reference - the shape a composer that
+ * never rebinds is in.
+ */
+export type ReferenceOwnership = (item: { id: string; marker: number }) => boolean;
+
+export function createAttachmentOperations(
+  editor: TextEditor,
+  store: AttachmentStore,
+  ownsReference?: ReferenceOwnership,
+): UseAttachmentsResult {
   const setItems = (next: SetStateAction<PendingAttachment[]>) => {
     store.setState((state) => ({ items: typeof next === "function" ? next(state.items) : next }));
   };
@@ -184,11 +203,16 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
     nextMarkerRef.current = nextItems.reduce((highest, item) => Math.max(highest, item.marker), 0);
     // A recovery merge carries existing staged objects alongside new items.
     // Preserve operation identity when the merge remaps a staged item's marker.
-    // Current attachments remain the ordered prefix of the merged composition.
     const previous = store.getState().items;
     setItems(
-      nextItems.map((item, index) => {
-        const original = previous.includes(item) ? item : previous[index];
+      nextItems.map((item) => {
+        // By IDENTITY, not by array position. A recovery replacement can exclude
+        // a tile from the merge and renumber what stays, so an item that is
+        // still decoding can move to a different index; matching it by position
+        // would hand its decode token to whatever now sits there, and the tile
+        // that actually owns the token would never settle - staying `pending`
+        // and blocking submission until the person removed it.
+        const original = previous.includes(item) ? item : previous.find((candidate) => candidate.id === item.id);
         let token: symbol | undefined;
         if (
           original &&
@@ -283,15 +307,15 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
             if (removedWhilePendingRef.current.delete(token)) return;
             const currentItem = store.getState().items.find((item) => operationToken(item) === token);
             if (currentItem) {
-              // Strip only a number this tile alone bears. Markers are unique
-              // within a composition, so a second tile with the same number
-              // means a merge or rebind brought one in - and the reference in
-              // the text may be that tile's, whose prose and missing-image tag
-              // must survive. A renumbered tile keeps its own number unique and
-              // still strips, because the merge moved its reference with it.
-              const numberIsMine =
-                store.getState().items.filter((item) => item.marker === currentItem.marker).length === 1;
-              if (numberIsMine) {
+              // Edit the text only when this tile still OWNS the reference it
+              // bears. Counting tiles by number is not that question: a pane
+              // that rebinds to a peer draft spelling "[image 1]" while its own
+              // image 1 is still decoding leaves that tile the only one on the
+              // number, and a count would then call it the owner and strip the
+              // peer's reference out of the adopted text - erasing their prose
+              // or the missing-image warning that tells them it will not send.
+              // Ownership is a property of the attachment, so the id answers.
+              if (!ownsReference || ownsReference(currentItem)) {
                 const current = editor.read();
                 const stripped = stripMarker(current.text, current.cursor, currentItem.marker);
                 editor.write(stripped.value, stripped.cursor ?? current.cursor, "cleanup");
@@ -399,10 +423,17 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
   };
 }
 
-export function useAttachments(editor: TextEditor, backingStore?: AttachmentStore): UseAttachmentsResult {
+export function useAttachments(
+  editor: TextEditor,
+  backingStore?: AttachmentStore,
+  ownsReference?: ReferenceOwnership,
+): UseAttachmentsResult {
   const [localStore] = useState(() => backingStore ?? createAttachmentStore());
   const store = backingStore ?? localStore;
   const items = useStore(store, (state) => state.items);
-  const operations = useMemo(() => createAttachmentOperations(editor, store), [editor, store]);
+  const operations = useMemo(
+    () => createAttachmentOperations(editor, store, ownsReference),
+    [editor, store, ownsReference],
+  );
   return { ...operations, items, hasPending: items.some((item) => item.pending) };
 }

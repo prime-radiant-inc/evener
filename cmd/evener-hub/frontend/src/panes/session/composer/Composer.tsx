@@ -646,7 +646,7 @@ function ComposerWithSubmission({
       unbind();
     };
   }, [source, textEditor]);
-  const attachments = useAttachments(source.editor, source.attachments);
+  const attachments = useAttachments(source.editor, source.attachments, source.ownsImageReference);
   const attachmentItemsRef = useRef(attachments.items);
   attachmentItemsRef.current = attachments.items;
 

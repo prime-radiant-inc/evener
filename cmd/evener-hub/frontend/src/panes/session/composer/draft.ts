@@ -338,13 +338,40 @@ export function readComposerDraftImageMarkers(ref: string): number[] {
   return readImageProvenance(ref) ?? [];
 }
 
-// The ref's missing-image markers as recorded by the most recent write, or
-// undefined when nothing has recorded any. Undefined and [] differ: [] is a
-// record that says this composition has no images, which is what retires a
-// reference the person removed.
-function readImageProvenance(ref: string): number[] | undefined {
+// A recovery row owns a composition of its own, and that composition can hold
+// a missing image the row's attachment list cannot describe - the list carries
+// only tiles that still have bytes. The tag therefore lives beside the row,
+// keyed by the row's own client mutation id.
+//
+// NOT by ref: several panes share a ref, and a tag filed per ref lets any other
+// pane's draft write replace the row's list - which both drops the row's
+// missing reference (it then sends as prose) and lets the row's numbers block a
+// different pane's literal text. The row is the composition, so the row is the
+// key.
+function recoveryImageProvenanceStorageKey(ref: string, clientMutationId: string): string {
+  return `${IMAGE_PROVENANCE_PREFIX}${ref}.recovery.${clientMutationId}`;
+}
+
+/** The markers a recovery row's composition recorded as having had image bytes. */
+export function readRecoveryImageMarkers(ref: string, clientMutationId: string): number[] {
+  return readMarkerList(recoveryImageProvenanceStorageKey(ref, clientMutationId)) ?? [];
+}
+
+export function writeRecoveryImageMarkers(ref: string, clientMutationId: string, markers: readonly number[]): void {
   try {
-    const raw = localStorage.getItem(imageProvenanceStorageKey(ref));
+    const next = [...new Set(markers)].sort((left, right) => left - right);
+    localStorage.setItem(recoveryImageProvenanceStorageKey(ref, clientMutationId), JSON.stringify(next));
+  } catch {
+    // Best-effort, like every other composer persistence.
+  }
+}
+
+// A stored marker list, or undefined when the key holds nothing usable.
+// Undefined and [] differ: [] is a record that says this composition has no
+// images, which is what retires a reference the person removed.
+function readMarkerList(key: string): number[] | undefined {
+  try {
+    const raw = localStorage.getItem(key);
     if (raw === null) return undefined;
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed) || !parsed.every((marker) => Number.isSafeInteger(marker) && (marker as number) > 0))
@@ -353,6 +380,11 @@ function readImageProvenance(ref: string): number[] | undefined {
   } catch {
     return undefined;
   }
+}
+
+// The ref's missing-image markers as recorded by the most recent draft write.
+function readImageProvenance(ref: string): number[] | undefined {
+  return readMarkerList(imageProvenanceStorageKey(ref));
 }
 
 /** Records this ref's missing-image markers beside its draft.
