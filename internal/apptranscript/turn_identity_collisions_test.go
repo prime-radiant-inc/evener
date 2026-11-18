@@ -372,3 +372,175 @@ func TestLegacySplitPreludeReplaysAsFragments(t *testing.T) {
 		t.Fatalf("full read candidates rejected: %v", err)
 	}
 }
+
+// TestTwoAnnouncementsInOneEntryStayDistinct covers one assistant entry whose
+// message records two tool calls with the SAME provider id. The index keeps
+// every recorded part and settles a result against the first part carrying the
+// id (build.go's applyResults); a full read that merges the second
+// announcement into the first replaces the first call's arguments before
+// either result is applied (#1166 review).
+func TestTwoAnnouncementsInOneEntryStayDistinct(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "same_entry_dup"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := func(turn schema.Turn, place transcript.Placement) {
+		t.Helper()
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: place}); err != nil {
+			t.Fatalf("record %s: %v", turn.Kind, err)
+		}
+	}
+	first := llm.ToolCallData{ID: "call_dup", Name: "read_file", Arguments: json.RawMessage(`{"n":1}`)}
+	second := llm.ToolCallData{ID: "call_dup", Name: "read_file", Arguments: json.RawMessage(`{"n":2}`)}
+	announce := schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+		{Kind: llm.ContentToolCall, ToolCall: &first},
+		{Kind: llm.ContentToolCall, ToolCall: &second},
+	}}}
+	w.BeginExecution("t_exec", false)
+	record(schema.NewTurn(schema.TurnUserInput, llm.User("go")), transcript.PlaceSession)
+	record(announce, transcript.PlaceSession)
+	record(schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("call_dup", "read_file", "out", false)), transcript.PlaceSession)
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := apptranscript.NewToolCallRegistry()
+	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+		return items
+	})
+	if err != nil {
+		t.Fatalf("ItemTurnsFromFile: %v", err)
+	}
+	var args []string
+	for _, turn := range turns {
+		for _, item := range turn.Items {
+			if item.CallID == "call_dup" && item.Type == "commandExecution" {
+				args = append(args, item.ArgumentsJSON)
+			}
+		}
+	}
+	want := []string{`{"n":1}`, `{"n":2}`}
+	if !reflect.DeepEqual(args, want) {
+		t.Errorf("full read call arguments = %v, want %v: each recorded part is its own announcement", args, want)
+	}
+}
+
+// TestSplitExecutionRepeatsOneUsageTotal covers a delivery that splits a
+// stamped execution whose rounds record usage on both sides. The index keeps
+// one summary per turn id and reports the execution's total; a full read that
+// stamps each fragment from its own entries understates the turn on both. Turn
+// metadata is computed per execution, never per fragment (#1166 review).
+func TestSplitExecutionRepeatsOneUsageTotal(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "split_usage"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := func(turn schema.Turn) {
+		t.Helper()
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceVerbatim}); err != nil {
+			t.Fatalf("record %s: %v", turn.Kind, err)
+		}
+	}
+	stamp := func(turn schema.Turn, id string, span schema.TurnSpanKind) schema.Turn {
+		turn.Format = schema.TurnFormatIdentity
+		turn.TurnID = id
+		turn.TurnKind = span
+		return turn
+	}
+	firstRound := schema.NewTurn(schema.TurnUserInput, llm.User("go"))
+	firstRound.Usage = llm.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15}
+	record(stamp(firstRound, "t_exec", schema.TurnSpanExecution))
+	record(stamp(schema.NewTurn(schema.TurnAttentionResolution, llm.System("resolved")), "turn_delivery", schema.TurnSpanDelivery))
+	secondRound := schema.NewTurn(schema.TurnAssistant, llm.Assistant("done"))
+	secondRound.Usage = llm.Usage{InputTokens: 100, OutputTokens: 40, TotalTokens: 140}
+	record(stamp(secondRound, "t_exec", schema.TurnSpanExecution))
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := apptranscript.NewToolCallRegistry()
+	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+		return items
+	})
+	if err != nil {
+		t.Fatalf("ItemTurnsFromFile: %v", err)
+	}
+	// Every fragment of the execution reports the execution's total, as the
+	// index does, so a client reading either one sees the real cost.
+	var fragments int
+	for _, turn := range turns {
+		if turn.ID != "t_exec" {
+			continue
+		}
+		fragments++
+		if turn.Usage == nil {
+			t.Fatalf("turn %q fragment has no usage, want the execution total", turn.ID)
+		}
+		if turn.Usage.InputTokens != 110 || turn.Usage.OutputTokens != 45 {
+			t.Errorf("turn %q usage input=%d output=%d, want input=110 output=45: metadata is per execution, not per fragment",
+				turn.ID, turn.Usage.InputTokens, turn.Usage.OutputTokens)
+		}
+	}
+	if fragments == 0 {
+		t.Fatalf("full read turns = %+v, want the split execution", shapesFromTurns(turns))
+	}
+}
+
+// TestLegacySplitPreludeMarksBothBoundaries covers BOTH continuation flags on a
+// prelude split by a delivery. The first run is not "full" (the turn continues)
+// and the second is not "earlier-less" (the turn started before it). A client
+// reads these flags to decide whether to page further, so a run that omits them
+// advertises completeness it does not have (#1166 review).
+func TestLegacySplitPreludeMarksBothBoundaries(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "split_flags"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := func(turn schema.Turn) {
+		t.Helper()
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceVerbatim}); err != nil {
+			t.Fatalf("record %s: %v", turn.Kind, err)
+		}
+	}
+	stamp := func(turn schema.Turn, id string, span schema.TurnSpanKind) schema.Turn {
+		turn.Format = schema.TurnFormatIdentity
+		turn.TurnID = id
+		turn.TurnKind = span
+		return turn
+	}
+	record(stamp(newHookTurn("SessionStart"), appwire.SystemPreludeTurnID, schema.TurnSpanPrelude))
+	record(stamp(schema.NewTurn(schema.TurnSteering, llm.User("attention")), "turn_delivery", schema.TurnSpanDelivery))
+	record(stamp(schema.NewTurn(schema.TurnModelSwitch, llm.System("switch")), appwire.SystemPreludeTurnID, schema.TurnSpanPrelude))
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := apptranscript.NewToolCallRegistry()
+	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+		return items
+	})
+	if err != nil {
+		t.Fatalf("ItemTurnsFromFile: %v", err)
+	}
+	var runs []appwire.Turn
+	for _, turn := range turns {
+		if turn.ID == appwire.SystemPreludeTurnID {
+			runs = append(runs, turn)
+		}
+	}
+	if len(runs) != 2 {
+		t.Fatalf("prelude runs = %+v, want the id split into two fragments", shapesFromTurns(turns))
+	}
+	if runs[0].ItemsView != appwire.TurnItemsViewFragment || !runs[0].HasLaterItems || runs[0].HasEarlierItems {
+		t.Errorf("first prelude run = %+v, want a fragment with later and no earlier", runs[0])
+	}
+	if runs[1].ItemsView != appwire.TurnItemsViewFragment || !runs[1].HasEarlierItems || runs[1].HasLaterItems {
+		t.Errorf("second prelude run = %+v, want a fragment with earlier and no later", runs[1])
+	}
+}

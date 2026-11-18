@@ -67,19 +67,20 @@ type groupedTurn struct {
 	entries []schema.Turn
 	// items are the group's projected items in arrival order, before merge.
 	items []appwire.ThreadItem
-	// itemEntries is each item's announcing entry index, parallel to items.
-	// In a stamped turn the AWAITING assistant entry is the call-identity
-	// boundary: the index settles a result only against a call of the turn's
-	// awaiting ASSISTANT entry (build.go's applyResults), so a provider that
-	// reuses a call id in a later round is two calls there and must be two
-	// here. Each item carries the index of the assistant entry awaiting when
-	// it was appended, so an announcement and its own results share a key
-	// while a later round's announcement gets a new one.
+	// itemEntries is each item's awaiting-entry key, parallel to items. In a
+	// stamped turn the AWAITING assistant entry is the call-identity boundary:
+	// the index settles a result only against a call of the turn's awaiting
+	// ASSISTANT entry (build.go's applyResults), so a provider that reuses a
+	// call id in a later round is two calls there and must be two here. The key
+	// is the awaiting entry's global index, so it stays the same across runs of
+	// one turn: a delivery that splits the turn must not lose the batch.
 	itemEntries []int
-	// awaiting is the index of the ASSISTANT entry whose calls are awaiting
-	// results, or 0 when the group has none yet. It is the key appended to
-	// itemEntries for every item of that batch.
-	awaiting int
+	// itemAnnounce is true for an item that came from the turn's awaiting
+	// ASSISTANT entry, i.e. an announcement rather than a result. An
+	// announcement never merges into an earlier one: the index keeps every
+	// recorded part and settles a result against the FIRST part carrying the
+	// call id (#1166 review).
+	itemAnnounce []bool
 }
 
 // logicalTurnAccumulator buffers entries across a scan and emits grouped
@@ -91,6 +92,12 @@ type groupedTurn struct {
 type logicalTurnAccumulator struct {
 	turns   []groupedTurn
 	grouper TurnGrouper
+	// awaiting maps a stamped turn id to the global index of the ASSISTANT
+	// entry whose calls are awaiting results. It lives on the accumulator, not
+	// on a group, because a cold writer can put a delivery between an
+	// announcement and its result: the turn then has two runs, and the second
+	// must settle against the batch the first announced (#1166 review).
+	awaiting map[string]int
 }
 
 // TurnGrouper applies the logical-turn grouping rule to entries in file order.
@@ -160,21 +167,27 @@ func (a *logicalTurnAccumulator) appendEntry(entry schema.Turn, entryIndex int, 
 	}
 	last := &a.turns[len(a.turns)-1]
 	last.entries = append(last.entries, entry)
-	// A stamped assistant entry that records tool calls becomes the awaiting
-	// entry: its own items and every following result entry's items key to
-	// it, matching the index, which settles against the turn's awaiting
-	// assistant entry alone.
+	// A stamped assistant entry that records tool calls becomes its TURN's
+	// awaiting entry: its own items and every following result entry's items
+	// key to it, matching the index, which settles against the turn's awaiting
+	// assistant entry alone. Keyed by turn id so a delivery that splits the
+	// turn does not end the batch.
 	if entry.Format == schema.TurnFormatIdentity && hasRecordedToolCall(&entry) {
-		last.awaiting = entryIndex
+		if a.awaiting == nil {
+			a.awaiting = map[string]int{}
+		}
+		a.awaiting[last.turnID] = entryIndex
 	}
+	awaiting := a.awaiting[last.turnID]
 	if len(items) > 0 {
 		last.items = append(last.items, items...)
 		for range items {
-			if last.awaiting != 0 {
-				last.itemEntries = append(last.itemEntries, last.awaiting)
+			if awaiting != 0 {
+				last.itemEntries = append(last.itemEntries, awaiting)
 			} else {
 				last.itemEntries = append(last.itemEntries, entryIndex)
 			}
+			last.itemAnnounce = append(last.itemAnnounce, awaiting != 0 && entryIndex == awaiting)
 		}
 	}
 }
@@ -235,15 +248,52 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 		prelude = p
 		entryOrdinal = 1
 	}
-	preludeMerged := false
-	// emitted tracks which turn ids have already produced a run, so a later
-	// run of one id is emitted as a fragment rather than a second full turn.
-	emitted := make(map[string]bool, len(acc.turns))
+	// A stamped turn's metadata belongs to the TURN, not to each run of it. A
+	// cold delivery can split one turn id into several runs here while the index
+	// keeps one summary for them, so stamping each run from its own entries
+	// would show a pre-delivery run as completed with a share of the usage while
+	// the turn really failed with the total — two readers describing different
+	// turns. The entries of every run of an id are folded ONCE, and that one
+	// result stamps each visible run (#1166 review).
+	type executionStamp struct {
+		entries []schema.Turn
+		first   int
+		last    int
+	}
+	executions := map[string]*executionStamp{}
+	order := make([]string, 0, len(acc.turns))
+	for i := range acc.turns {
+		id := acc.turns[i].turnID
+		if !acc.turns[i].stamped {
+			continue
+		}
+		stamp, seen := executions[id]
+		if !seen {
+			stamp = &executionStamp{first: i, last: i}
+			executions[id] = stamp
+			order = append(order, id)
+		}
+		stamp.entries = append(stamp.entries, acc.turns[i].entries...)
+		stamp.last = i
+	}
+	// The header turn is emitted in file order, so a delivery recorded before
+	// the prelude's first stamped entry keeps its own position ahead of it.
+	// Merging the prompt into a later prelude run would emit the prompt after
+	// the delivery and flatten the positions (#1166 review).
+	preludeEmitted := false
+	emittedAny := false
+	emitPrelude := func() {
+		if prelude == nil || preludeEmitted {
+			return
+		}
+		turns = append(turns, *prelude)
+		preludeEmitted = true
+	}
 	for i := range acc.turns {
 		group := &acc.turns[i]
 		groupOrdinal := entryOrdinal
 		entryOrdinal++
-		items := mergeGroupedItems(group.items, group.itemEntries, group.stamped)
+		items := mergeGroupedItems(group.items, group.itemEntries, group.itemAnnounce, group.stamped)
 		if len(items) == 0 {
 			continue
 		}
@@ -257,52 +307,46 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 		if err != nil {
 			return ItemTurnProjection{}, err
 		}
-		turn := appwire.Turn{ID: group.turnID, Items: positioned, ItemsView: "full", Status: appwire.TurnStatusCompleted}
-		StampGroupedTurn(&turn, group.entries)
-		if prelude != nil && !preludeMerged && group.turnID == appwire.SystemPreludeTurnID {
-			// The header's items and the prelude's stamped entries are ONE
-			// turn: the writer stamps a fresh transcript's pre-execution
-			// entries with the same id the header content is projected
-			// under, so emitting both would show a client two turns with one
-			// id, and a client that keys by turn id would lose one. The
-			// header items hold entry position 0, so they stay FIRST: a
-			// delivery recorded before the prelude's first stamped entry has
-			// a later position, and emitting it ahead of the prompt would
-			// flatten to decreasing positions, which item paging rejects.
-			merged := make([]appwire.ThreadItem, 0, len(prelude.Items)+len(turn.Items))
-			merged = append(merged, prelude.Items...)
-			turn.Items = append(merged, turn.Items...)
-			preludeMerged = true
+		turn := appwire.Turn{ID: group.turnID, Items: positioned, ItemsView: appwire.TurnItemsViewFull, Status: appwire.TurnStatusCompleted}
+		if stamp, ok := executions[group.turnID]; ok {
+			StampGroupedTurn(&turn, stamp.entries)
+		} else {
+			StampGroupedTurn(&turn, group.entries)
 		}
-		// A later run of an id already emitted is a FRAGMENT of that turn, not
-		// a second full turn. AppWire defines the continuation flags for
-		// fragments, and the bounded reader labels these runs "fragment"; a
-		// client told two full turns share one id cannot reconcile them at all
-		// (#1166 review). This survives on replay of transcripts written before
-		// the writer ended the prelude's span at a delivery.
-		if emitted[group.turnID] {
+		if !preludeEmitted && prelude != nil {
+			// The header's items and a LEADING prelude run are ONE turn: the
+			// writer stamps a fresh transcript's pre-execution entries with the
+			// same id the header content is projected under, so emitting both
+			// would show a client two turns with one id. They merge only when
+			// the prelude run is the first thing the read emits. If a visible
+			// delivery comes first, the prompt is emitted at entry position
+			// zero on its own and the later prelude run stays a fragment —
+			// merging across the delivery would put position 0 inside a later
+			// turn and flatten the chronology (#1166 review).
+			if group.turnID == appwire.SystemPreludeTurnID && !emittedAny {
+				merged := make([]appwire.ThreadItem, 0, len(prelude.Items)+len(turn.Items))
+				merged = append(merged, prelude.Items...)
+				turn.Items = append(merged, turn.Items...)
+				preludeEmitted = true
+			} else {
+				emitPrelude()
+			}
+		}
+		// Every run of a split stamped turn is a FRAGMENT: AppWire defines the
+		// continuation flags for fragments, and the bounded reader labels these
+		// runs "fragment". A client told two full turns share one id cannot
+		// reconcile them at all. This survives on replay of transcripts written
+		// before the writer ended the prelude's span at a delivery (#1166
+		// review).
+		if stamp, ok := executions[group.turnID]; ok && stamp.first != stamp.last {
 			turn.ItemsView = appwire.TurnItemsViewFragment
-			turn.HasEarlierItems = true
+			turn.HasEarlierItems = stamp.first != i
+			turn.HasLaterItems = stamp.last != i
 		}
 		turns = append(turns, turn)
-		emitted[group.turnID] = true
+		emittedAny = true
 	}
-	if prelude != nil && !preludeMerged {
-		// No group claimed the prelude id: the header items are the turn.
-		turns = append([]appwire.Turn{*prelude}, turns...)
-	}
-	// Every run but the last of a split id has more of that turn to come, and
-	// the fragment view says so. Without this the earlier run advertises
-	// completeness it does not have, and a client stops paging for the rest.
-	lastRun := make(map[string]int, len(turns))
-	for i := range turns {
-		lastRun[turns[i].ID] = i
-	}
-	for i := range turns {
-		if turns[i].ItemsView == appwire.TurnItemsViewFragment && lastRun[turns[i].ID] != i {
-			turns[i].HasLaterItems = true
-		}
-	}
+	emitPrelude()
 	return ItemTurnProjection{Turns: turns, NextEntry: entryOrdinal}, nil
 }
 
@@ -367,10 +411,11 @@ func hasRecordedToolCall(turn *schema.Turn) bool {
 // result — and merging them by call id alone would overwrite the first call's
 // record with the second's. A legacy group keeps the call-id-wide rule it has
 // always had.
-func mergeGroupedItems(items []appwire.ThreadItem, itemEntries []int, stamped bool) []appwire.ThreadItem {
+func mergeGroupedItems(items []appwire.ThreadItem, itemEntries []int, itemAnnounce []bool, stamped bool) []appwire.ThreadItem {
 	merged := make([]appwire.ThreadItem, 0, len(items))
 	// callIndex is keyed by call id, and for a stamped turn also by the
-	// announcing entry, so the same id from a different entry opens an item.
+	// awaiting entry that announced it, so the same id from a later round
+	// opens an item instead of merging into the earlier round's.
 	type callKey struct {
 		entry int
 		call  string
@@ -383,6 +428,16 @@ func mergeGroupedItems(items []appwire.ThreadItem, itemEntries []int, stamped bo
 				entry = itemEntries[at]
 			}
 			key := callKey{entry: entry, call: item.CallID}
+			if stamped && at < len(itemAnnounce) && itemAnnounce[at] {
+				// An announcement is never a merge target: the index keeps
+				// every recorded part and settles a result against the FIRST
+				// part carrying the call id. Merging a second announcement into
+				// the first would replace the earlier call's arguments before
+				// either result was applied (#1166 review).
+				callIndex[key] = len(merged)
+				merged = append(merged, item)
+				continue
+			}
 			if prev, ok := callIndex[key]; ok {
 				merged[prev] = MergeThreadItems(merged[prev], item)
 				continue
