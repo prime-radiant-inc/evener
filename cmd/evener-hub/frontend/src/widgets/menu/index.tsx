@@ -150,6 +150,10 @@ const NARROW_POPUP_WIDTH = 180;
 // be fractional (a pinch zoom at 2.4x leaves 180.25). A popup within this
 // distance of its cap is at the cap.
 const CAP_ROUNDING = 1;
+// How far a browser's corrected offset may land from the whole-pixel endpoint
+// `scrollHeight - clientHeight` describes and still be that correction. Layout
+// endpoints can be fractional while those two properties report integers.
+const CLAMP_ROUNDING = 1;
 
 function firstEnabledIndex(items: MenuEntry[]): number {
   return items.findIndex(isActionable);
@@ -283,7 +287,15 @@ function classifyScrollerScroll(
   records.set(scroller, { scrollTop: now, contentTop });
   if (previous === undefined) return "scrolled";
   const maximum = scroller.scrollHeight - scroller.clientHeight;
-  if (previous.scrollTop > maximum && now === maximum) return "clamp";
+  // The browser may land a correction a fraction short of the endpoint the
+  // whole-pixel `scrollHeight - clientHeight` describes: 199.5 against 200 is a
+  // clamp, and an exact equality calls it a reader's scroll and closes the
+  // menu. The rounding is allowed only within a pixel - and only as the SECOND
+  // half of the reading. The first half still has to hold: the offset this
+  // scroller last reported pointed PAST the range it now allows. A reader who
+  // scrolls to the end arrives from an offset that was already legal, so the
+  // tolerance cannot turn an ordinary scroll into a correction.
+  if (previous.scrollTop > maximum && Math.abs(now - maximum) <= CLAMP_ROUNDING) return "clamp";
   const moved = now - previous.scrollTop;
   // The offset grew by exactly as much as the trigger moved deeper into the
   // content: what changed is the content above the trigger, not the reader's
@@ -525,7 +537,19 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         // side is clamped to the row's own height: an equally-hidden row stays
         // equal when the scrollport shrinks under it.
         const visiblePixels = (obs: RowObservation) => obs.height - hiddenAbove(obs) - hiddenBelow(obs);
-        if (visiblePixels(now) >= visiblePixels(before)) return;
+        const fullyVisible = (obs: RowObservation) => hiddenAbove(obs) === 0 && hiddenBelow(obs) === 0;
+        // Gaining visible pixels is not the same as being fully in sight. A row
+        // that fit when it was 44px tall and wraps to 60px at the same offset
+        // shows MORE of itself - 48 pixels instead of 44 - while 12 pixels of
+        // it slide out of the scrollport. Counted by pixels alone that is an
+        // improvement, and the row the reader is on goes half out of sight with
+        // nothing said. So the one comparison keeps two ways to fail: fewer
+        // pixels on screen than before, or a row that was fully in sight and is
+        // not any more.
+        if (fullyVisible(now)) return;
+        const lostPixels = visiblePixels(now) < visiblePixels(before);
+        const becameClipped = fullyVisible(before);
+        if (!lostPixels && !becameClipped) return;
       }
       // A row inserted BELOW the focused one moves nothing above it, and the
       // reader's own scroll to the lower actions must survive that: the guards
