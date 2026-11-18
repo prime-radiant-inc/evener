@@ -121,6 +121,11 @@ func (c *Client) planContinuation(ctx context.Context, req Request, res registry
 	if err != nil {
 		return plan, err
 	}
+	// The body hash excludes input. Qualify it when full history replays raw
+	// reasoning so an anchor can only stand in for the same input policy.
+	if res.ReplaysRawReasoning() {
+		fingerprint += ":raw-reasoning"
+	}
 	policy, allowed := responsesStoragePolicy(family, body)
 
 	authSource, credentialValue := "api_key", res.Credential.Source+"\x00"+res.Credential.Value

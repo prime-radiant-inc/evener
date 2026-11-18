@@ -50,9 +50,11 @@ reasoning controls a row disables, clamp effort to the row's ladder, apply
 won't take, gate the prompt-cache fields.
 
 **Continuation planning** (`Client.PlanResponsesContinuation`) decides whether
-a Responses request may continue from a stored `previous_response_id`, and
-under which storage scope, so a session falls back to full history when it
-may not.
+a Responses request may continue from a stored `previous_response_id`. The
+anchor must match the storage scope, request controls and effective raw
+reasoning replay setting. Changing that setting sends full history on the
+next exchange. Its stored response can anchor later requests with the same
+setting.
 
 Routing keys on the instance name, never on a model-string prefix or a
 base-URL guess — a gateway in front of the vendor makes URL sniffing wrong.
