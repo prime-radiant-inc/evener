@@ -3,11 +3,17 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
+	"strings"
 	"testing"
+	"time"
 
+	"primeradiant.com/evener/agent/envctx"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -94,21 +100,137 @@ func TestEnterExitWorktreeReRootsAndRestores(t *testing.T) {
 	t.Parallel()
 	_, laneA, laneB, home := sbxMainAndLanes(t)
 	facts := sbxBwrapFacts(home)
+	probes := testConfig{skipGitSnapshot: true, envProbes: &envctx.Probes{Now: func() time.Time { return envctxFixedTime }}, sandboxProber: sandbox.FakeProber{Facts: facts}}
+	policy := sbxResolve(t, facts, laneA, sandbox.ModeWorkspaceWrite)
+	launchRoots := writableRootsSummary(*policy)
+	launch := func(t *testing.T, mode string) (*Session, *agenttest.ScriptedAdapter) {
+		t.Helper()
+		env := execenv.NewLocalExecutionEnvironment(laneA)
+		cfg := SessionConfig{Sandbox: mode, StateDir: t.TempDir(), testOnly: probes}
+		if err := PickFreshSessionID(env, &cfg); err != nil {
+			t.Fatal(err)
+		}
+		if err := env.EnableSandbox(policy); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+		adapter := &agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response { return agenttest.FinalResponse("done") }}
+		s := newSession(t, withEnv(env), withConfig(cfg), withAdapter(adapter))
+		sendOneUserInput(t, s, "first request")
+		return s, adapter
+	}
+	restore := func(t *testing.T, s *Session, meta schema.SessionMeta) *Session {
+		t.Helper()
+		env := execenv.NewLocalExecutionEnvironment(laneA)
+		t.Cleanup(env.Cleanup)
+		resumed, err := RestoreSessionFromMetaWithConfig(s.client, s.profile, env, meta, RestoreSessionConfig{StateDir: s.stateDir, testOnly: probes})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(resumed.Close)
+		return resumed
+	}
+	updates := func(req llm.Request, roots string) int {
+		count := 0
+		for _, msg := range req.Messages {
+			observed := envctx.NewTracker(envctx.State{WritableRootsUnknown: true})
+			if msg.Role == llm.RoleUser && observed.ReplayBlock(msg.Text()) {
+				if st := observed.State(); !st.WritableRootsUnknown && st.Last.WritableRoots == roots {
+					count++
+				}
+			}
+		}
+		return count
+	}
+	fold := func(t *testing.T, s *Session) {
+		t.Helper()
+		seedNumberedSessionHistory(t, s, 8)
+		s.contextMgr.PreserveRecentTurns = 1
+		if err := s.Compact(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("old launch grants without an active sandbox", func(t *testing.T) {
+		// An embedding may supply its own sandbox directly. An empty config
+		// does not request sandbox installation on a plain environment at resume.
+		s, adapter := launch(t, "")
+		first := adapter.Requests()[0]
+		if last, _ := requestEnvironment(first); last.Sandbox != "off" || !strings.Contains(first.Messages[0].Text(), launchRoots) {
+			t.Fatal("expected launch grants from the installed environment and an off configuration")
+		}
+		s.Close()
+		meta := loadMetaForTest(t, s)
+		meta.PromptLaunch.WritableRoots = nil
+		s = restore(t, s, meta)
+		outside := fileToolCall(t, s, "write_file", map[string]string{"file_path": filepath.Join(laneB, "unconfined"), "content": s.ID()})
+		if outside.isError {
+			t.Fatalf("resumed file tool denied a path outside the launch roots: %s", outside.output)
+		}
+		check := func() {
+			t.Helper()
+			sendOneUserInput(t, s, "continue")
+			reqs := adapter.Requests()
+			last := reqs[len(reqs)-1]
+			if got := updates(last, ""); got != 1 || last.Messages[0].Text() != first.Messages[0].Text() {
+				t.Errorf("request carried %d explicit withdrawals of the frozen launch roots, want one", got)
+			}
+		}
+		check()
+		check()
+		fold(t, s)
+		check()
+	})
 
-	s := sbxWorktreeSession(t)
-	laneAEnv := execenv.NewLocalExecutionEnvironment(laneA)
-	laneAEnv.Sandbox = sbxResolve(t, facts, laneA, sandbox.ModeWorkspaceWrite)
-	if err := s.swapEnvAndRefresh(laneAEnv, nil); err != nil {
-		t.Fatalf("swapEnvAndRefresh: %v", err)
+	s, adapter := launch(t, sandbox.ModeWorkspaceWrite.String())
+	first := adapter.Requests()[0]
+	if !strings.Contains(first.Messages[0].Text(), launchRoots) {
+		t.Fatal("the startup prompt did not report the installed sandbox roots")
+	}
+	if got := updates(first, launchRoots); got != 0 {
+		t.Errorf("first request repeated its launch roots %d times", got)
 	}
 
-	s.enterWorktree(laneB, true)
+	s.Close()
+	s = restore(t, s, loadMetaForTest(t, s))
+	sendOneUserInput(t, s, "resumed worktree")
+	requests := adapter.Requests()
+	if got := updates(requests[len(requests)-1], launchRoots); got != 0 {
+		t.Errorf("cold resume repeated its launch roots %d times", got)
+	}
+	beforeEnter := len(requests)
+	if err := s.enterWorktree(laneB, true); err != nil {
+		t.Fatal(err)
+	}
 	entered := s.currentEnv().(*execenv.LocalExecutionEnvironment)
 	if entered.Sandbox == nil || entered.Sandbox.Git.WorktreeRoot != laneB {
 		t.Errorf("enterWorktree must re-root the sandbox to lane B %q, got %+v", laneB, entered.Sandbox)
 	}
 	if !rootGrantsAny(entered.Sandbox.FileTool.WriteRoots, laneB) || rootGrantsAny(entered.Sandbox.FileTool.WriteRoots, laneA) {
 		t.Errorf("entered sandbox write roots must be lane B only: %v", entered.Sandbox.FileTool.WriteRoots)
+	}
+	for _, dir := range []string{laneB, laneA} {
+		write := fileToolCall(t, s, "write_file", map[string]string{"file_path": filepath.Join(dir, "probe"), "content": s.ID()})
+		if write.isError != (dir == laneA) {
+			t.Fatalf("write in %q after entering %q: error=%v, output=%q", dir, laneB, write.isError, write.output)
+		}
+	}
+	activeRoots := writableRootsSummary(*entered.Sandbox)
+	sendOneUserInput(t, s, "entered worktree")
+	sendOneUserInput(t, s, "same worktree")
+	for _, req := range adapter.Requests()[beforeEnter:] {
+		if got := updates(req, activeRoots); got != 1 {
+			t.Errorf("request after entering worktree has %d updates for installed roots %q, want one", got, activeRoots)
+		}
+		if len(req.Messages) < len(first.Messages) || !reflect.DeepEqual(req.Messages[:len(first.Messages)], first.Messages) {
+			t.Fatal("changing worktrees rewrote the provider's launch prefix")
+		}
+	}
+	fold(t, s)
+	sendOneUserInput(t, s, "after folding")
+	requests = adapter.Requests()
+	afterFold := requests[len(requests)-1]
+	if updates(afterFold, activeRoots) != 1 || first.Messages[0].Text() != afterFold.Messages[0].Text() {
+		t.Error("folded request did not retain the startup prompt and restore the installed roots")
 	}
 
 	root, ok, err := s.exitWorktree()
@@ -121,6 +243,11 @@ func TestEnterExitWorktreeReRootsAndRestores(t *testing.T) {
 	}
 	if restored.SandboxReRootError() != nil {
 		t.Errorf("restoring a saved env must not re-root or error, got %v", restored.SandboxReRootError())
+	}
+	sendOneUserInput(t, s, "restored worktree")
+	requests = adapter.Requests()
+	if got := updates(requests[len(requests)-1], launchRoots); got != 1 {
+		t.Errorf("request after leaving worktree has %d updates for the restored roots, want one", got)
 	}
 }
 

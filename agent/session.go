@@ -261,11 +261,14 @@ type Session struct {
 	// A workspace installation or a fold that removes an observation needs
 	// a fresh sample before the next request, even without a new user turn.
 	worktreeContextPending bool
+	// The installed workspace owns both its sandbox grants and any sample
+	// collected outside mu. A swap invalidates samples still in flight.
+	workspaceRevision      uint64
+	workspaceWritableRoots string
 	// The frozen prompt describes the provider, model and build at launch. A
 	// changed value belongs in the next environment context.
 	promptProvider, promptModel, promptBuild string
-	promptKnowledgeCutoff                    *string
-	promptScratchDir                         *string
+	promptLaunch                             schema.PromptLaunchFacts
 	promptProvenanceOverridden               bool
 	inheritedEnvironmentIdentity             bool
 	// envContextState mirrors envTracker.State() for Meta()/SessionMeta.EnvContext:
@@ -2732,7 +2735,9 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 	if s.envCollector == nil {
 		return nil
 	}
-	env := s.currentEnv()
+	s.mu.RLock()
+	env, revision := s.env, s.workspaceRevision
+	s.mu.RUnlock()
 	snap := s.envCollector.Collect(envctx.Inputs{
 		Cwd:     env.WorkingDirectory(),
 		Sandbox: s.cfg.Sandbox,
@@ -2748,7 +2753,7 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 	// like the two early returns beside this one: the caller is a turn the
 	// close is already ending, and failing it would only make a dying turn
 	// unwind state the close is about to discard.
-	if tracker == nil || s.closingOrClosedLocked() || (s.worktreeContextPending && !sameEnvironment(env, s.env)) {
+	if tracker == nil || s.closingOrClosedLocked() || revision != s.workspaceRevision {
 		s.mu.Unlock()
 		s.attentionMu.Unlock()
 		return nil

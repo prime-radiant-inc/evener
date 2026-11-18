@@ -178,6 +178,13 @@ started sessions. A fork or aside inherits its parent’s exact prompt. A
 delegate starts with its own role and permissions, including when
 `fork_context` copies the parent's conversation into the delegate.
 
+Session metadata records the model’s knowledge cutoff, scratch directory,
+sandbox writable roots, and execution mode when Evener renders the prompt.
+A fork or aside copies those facts with the prompt. A delegate records its
+own launch facts. An empty value is distinct from a fact an older session
+never recorded. On restore or after compaction, retained environment updates
+in the conversation supersede the launch facts.
+
 If a session switches models or working directories, its next request carries
 the new facts in conversation context. A catalog correction to the current
 model’s knowledge cutoff also appears there on resume. A fork receives its

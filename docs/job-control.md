@@ -1869,6 +1869,13 @@ Rules:
   (a one-shot `evener` run, and any session it delegates to), it says instead
   that a job which keeps running is killed at exit rather than reported on
   later, because promising a later report there is simply false.
+- When `evener run` resumes a daemon session, including through `--resume-with`,
+  the first model request carries the one-shot job lifetime and the need to
+  watch a shell job whose result the session still needs. Resuming a one-shot
+  session in the daemon reports that jobs can finish and wake the session
+  after the turn. These updates follow the saved instructions in conversation
+  history. A restore or compaction repeats a needed update only if the model
+  can no longer see it.
 
 Shell terminal delivery keeps its existing durable pending/delivered/consumed
 state and dedupe key. Stable delegate packet delivery is ordered in the

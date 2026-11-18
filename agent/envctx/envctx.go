@@ -28,6 +28,7 @@ type Snapshot struct {
 	LocalDateHour     string   `json:"local_date_hour,omitempty"` // "2026-08-06 14:00 PDT"
 	Sandbox           string   `json:"sandbox,omitempty"`         // always populated; "off" included
 	ScratchDir        string   `json:"scratch_dir,omitempty"`
+	WritableRoots     string   `json:"writable_roots,omitempty"`
 	GitBranch         string   `json:"git_branch,omitempty"` // "" outside a git repo
 	Pressure          Pressure `json:"pressure,omitzero"`
 	SessionID         string   `json:"session_id,omitempty"`
@@ -35,6 +36,7 @@ type Snapshot struct {
 	OrdinarySession   bool     `json:"ordinary_session,omitempty"`
 	Model             string   `json:"model,omitempty"`
 	KnowledgeCutoff   string   `json:"knowledge_cutoff,omitempty"`
+	ExecutionMode     string   `json:"execution_mode,omitempty"` // set when a later observation supplies the job lifetime
 	CommitTrailer     string   `json:"commit_trailer,omitempty"`
 	OmitCommitTrailer bool     `json:"omit_commit_trailer,omitempty"` // explicit cancellation of a prior directive
 }
@@ -44,9 +46,10 @@ type Snapshot struct {
 type State struct {
 	Last    Snapshot `json:"last"`
 	HasSent bool     `json:"has_sent"`
-	// An unrecorded launch path may still be named in the saved prompt.
-	// The next observed path, including an empty one, must supersede it.
-	ScratchDirUnknown bool `json:"scratch_dir_unknown,omitempty"`
+	// Unrecorded launch paths may still be named in the saved prompt.
+	// The next observation, including an empty one, must supersede them.
+	ScratchDirUnknown    bool `json:"scratch_dir_unknown,omitempty"`
+	WritableRootsUnknown bool `json:"writable_roots_unknown,omitempty"`
 }
 
 // Tracker diffs successive Snapshots into rendered context blocks.
@@ -57,6 +60,11 @@ type Tracker struct {
 const ordinaryRole = "session role: ordinary"
 const parentSessionPrefix = "parent session id: "
 const scratchDirPrefix = "writable scratch directory: "
+const writableRootsPrefix = "writable roots: "
+const hostWritableRoots = writableRootsPrefix + "host filesystem permissions govern spawned commands"
+const executionModePrefix = "execution mode: "
+const OneShotMode = "one-shot"
+const DaemonMode = "daemon"
 const commitTrailerPrefix = "For new commits in this session, use this trailer: "
 const omitCommitTrailer = "Omit the Co-authored-by trailer on new commits in this session."
 
@@ -101,6 +109,14 @@ func (t *Tracker) ReplayBlock(block string) bool {
 				t.st.Last.ScratchDir = value
 				t.st.ScratchDirUnknown = false
 			}
+		case line == hostWritableRoots:
+			t.st.Last.WritableRoots = ""
+			t.st.WritableRootsUnknown = false
+		case strings.HasPrefix(line, writableRootsPrefix):
+			if value, err := strconv.Unquote(strings.TrimPrefix(line, writableRootsPrefix)); err == nil {
+				t.st.Last.WritableRoots = value
+				t.st.WritableRootsUnknown = false
+			}
 		case strings.HasPrefix(line, "git branch: "):
 			value := strings.TrimPrefix(line, "git branch: ")
 			if value == "(not in a git repository)" {
@@ -121,6 +137,8 @@ func (t *Tracker) ReplayBlock(block string) bool {
 			if value, err := strconv.Unquote(strings.TrimPrefix(line, "knowledge cutoff: ")); err == nil {
 				t.st.Last.KnowledgeCutoff = value
 			}
+		case line == executionModePrefix+OneShotMode, line == executionModePrefix+DaemonMode:
+			t.st.Last.ExecutionMode = strings.TrimPrefix(line, executionModePrefix)
 		case strings.HasPrefix(line, commitTrailerPrefix):
 			t.st.Last.CommitTrailer = strings.TrimPrefix(line, commitTrailerPrefix)
 			t.st.Last.OmitCommitTrailer = false
@@ -156,7 +174,7 @@ func pressureValue(line, name string) string {
 // caller must deliver the rendered block to the model.
 func (t *Tracker) RenderDiff(cur Snapshot) string {
 	first := !t.st.HasSent
-	if !first && cur == t.st.Last && !t.st.ScratchDirUnknown {
+	if !first && cur == t.st.Last && !t.st.ScratchDirUnknown && !t.st.WritableRootsUnknown {
 		return ""
 	}
 	prev := t.st.Last
@@ -172,6 +190,13 @@ func (t *Tracker) RenderDiff(cur Snapshot) string {
 	add(cur.Sandbox != prev.Sandbox, "sandbox: "+cur.Sandbox)
 	if cur.ScratchDir != prev.ScratchDir || t.st.ScratchDirUnknown {
 		lines = append(lines, scratchDirPrefix+strconv.Quote(cur.ScratchDir))
+	}
+	if cur.WritableRoots != prev.WritableRoots || t.st.WritableRootsUnknown {
+		if cur.WritableRoots == "" {
+			lines = append(lines, hostWritableRoots)
+		} else {
+			lines = append(lines, writableRootsPrefix+strconv.Quote(cur.WritableRoots))
+		}
 	}
 	switch {
 	case cur.GitBranch != "":
@@ -194,6 +219,16 @@ func (t *Tracker) RenderDiff(cur Snapshot) string {
 		}
 		if cur.Model != prev.Model || cur.KnowledgeCutoff != prev.KnowledgeCutoff {
 			lines = append(lines, "knowledge cutoff: "+strconv.Quote(cur.KnowledgeCutoff))
+		}
+	}
+	if cur.ExecutionMode != prev.ExecutionMode {
+		switch cur.ExecutionMode {
+		case OneShotMode:
+			lines = append(lines, executionModePrefix+OneShotMode,
+				"This process exits after the turn's work drains. Before ending the turn, keep any shell job whose result you need under a job_watch with a progress_interval_ms of a few minutes. If the watch tool is unavailable, collect the result before ending the turn. Jobs still running at exit are killed.")
+		case DaemonMode:
+			lines = append(lines, executionModePrefix+DaemonMode,
+				"Shell jobs and delegates keep running after the turn ends. Their completion can wake this session without a progress watch.")
 		}
 	}
 	if cur.CommitTrailer != "" {

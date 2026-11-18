@@ -1061,6 +1061,15 @@ func TestRestoreSessionFromMeta_NoTranscript_StartsClean(t *testing.T) {
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 		TurnCount: 0,
+		PromptLaunch: schema.PromptLaunchFacts{
+			KnowledgeCutoff: new("absent-transcript-cutoff"),
+			TurnEndsProcess: new(true),
+		},
+	}
+	persisted := meta
+	persisted.PinnedNote = "note-saved-after-restore-snapshot"
+	if err := schema.SaveSessionMeta(stateDir, persisted); err != nil {
+		t.Fatal(err)
 	}
 
 	c := llm.NewClient()
@@ -1073,6 +1082,17 @@ func TestRestoreSessionFromMeta_NoTranscript_StartsClean(t *testing.T) {
 	}
 	defer sess.Close()
 
+	replacement, err := schema.LoadSessionMeta(stateDir, meta.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cutoff, mode := replacement.PromptLaunch.KnowledgeCutoff, replacement.PromptLaunch.TurnEndsProcess
+	if cutoff == nil || *cutoff != sess.profile.KnowledgeCutoff() || mode == nil || *mode {
+		t.Errorf("replacement transcript retained the missing prompt's startup facts: %+v", replacement.PromptLaunch)
+	}
+	if replacement.PinnedNote != persisted.PinnedNote {
+		t.Error("publishing the replacement prompt's facts overwrote another metadata change")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "test", nil); err != nil {

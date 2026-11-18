@@ -124,6 +124,7 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 	// forking).
 	newWD := next.WorkingDirectory()
 	ei := s.snapshotEnvironmentInfo(next)
+	writableRoots := installedWritableRoots(next)
 	if !s.cfg.testOnly.skipGitSnapshot {
 		inRepo, branch, mod, untracked, commits, statusKnown, probeFailed := snapshotGit(refreshCtx, next, newWD)
 		ei.GitSnapshotFailed = probeFailed
@@ -169,6 +170,8 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 	prior, _ := s.env.(*execenv.LocalExecutionEnvironment)
 	s.env = next
 	s.envInfo = ei
+	s.workspaceRevision++
+	s.workspaceWritableRoots = writableRoots
 	s.worktreeContextPending = true
 	if record != nil {
 		record()

@@ -123,8 +123,7 @@ func TestS5Cov_SubagentNeedsCommunicateNudge(t *testing.T) {
 }
 
 // uncomparableEnv is an execution environment Go cannot compare with `==`: a
-// struct VALUE carrying a map. Nothing calls its methods; the embedded
-// interface is there to satisfy the type.
+// struct value carrying a map. Its methods delegate to the embedded environment.
 type uncomparableEnv struct {
 	execenv.ExecutionEnvironment
 	roots map[string]string

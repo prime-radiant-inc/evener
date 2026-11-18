@@ -91,6 +91,17 @@ func countEnvironmentTurns(s *Session) int {
 	return n
 }
 
+func requestEnvironment(req llm.Request) (envctx.Snapshot, int) {
+	var tracker envctx.Tracker
+	blocks := 0
+	for _, msg := range req.Messages {
+		if msg.Role == llm.RoleUser && tracker.ReplayBlock(msg.Text()) {
+			blocks++
+		}
+	}
+	return tracker.State().Last, blocks
+}
+
 func TestFirstUserTurnIsPrecededByEnvironmentContext(t *testing.T) {
 	t.Parallel()
 	s := newTestSessionForEnvctx(t)
@@ -683,9 +694,10 @@ func TestRestoredSessionWithNilEnvContextReemitsFullBlock(t *testing.T) {
 
 func TestEnvironmentContextResetIsAtomicWithFoldPublication(t *testing.T) {
 	t.Parallel()
+	env := uncomparableEnv{ExecutionEnvironment: execenv.NewLocalExecutionEnvironment(t.TempDir())}
 	s := newScriptedSummaryCompactSession(t, "env-fold-provider", func(llm.Request) llm.Response {
 		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nSaved work summary\n[END SUMMARY]")}
-	}, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: t.TempDir(), testOnly: testConfig{
+	}, withEnv(env), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: t.TempDir(), testOnly: testConfig{
 		envProbes: &envctx.Probes{Now: func() time.Time { return envctxFixedTime }},
 	}}))
 	if err := s.maybeAppendEnvironmentContext(); err != nil {
@@ -739,11 +751,19 @@ func TestEnvironmentContextResetIsAtomicWithFoldPublication(t *testing.T) {
 	if compactErr != nil {
 		t.Fatal(compactErr)
 	}
+	updateSessionTestConfig(s, func(cfg *testConfig) { cfg.beforeFoldSideEffectsFlush = nil })
 	if err := s.maybeAppendEnvironmentContext(); err != nil {
 		t.Fatal(err)
 	}
 	if got := countEnvironmentTurns(s); got != 1 {
 		t.Fatalf("deferred fold flush reset the fresh tracker: got %d environment turns", got)
+	}
+	_, _, _, req, _, _, err := s.prepareModelRequestWithError(t.Context(), 1, &events.RoundTimings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last, blocks := requestEnvironment(req); blocks != 1 || last.Cwd != env.WorkingDirectory() {
+		t.Fatalf("post-fold request has %d workspace observations at %q, want one at %q", blocks, last.Cwd, env.WorkingDirectory())
 	}
 	data, err := readTranscriptFull(context.Background(), s.TranscriptPath(), "")
 	if err != nil {

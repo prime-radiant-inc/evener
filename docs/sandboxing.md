@@ -174,6 +174,10 @@ resume installs scratch elsewhere, the next request carries the installed path
 in environment context. Forks and asides inherit their parent's startup prompt.
 A delegate that copies the conversation keeps its own startup prompt and
 supersedes any inherited scratch update with its own directory.
+Entering or leaving a worktree reports any change to the installed sandbox's
+writable roots in the next request's environment context. A resumed prompt
+without recorded launch roots gets the current grants once, including when
+spawned commands run with the host's filesystem permissions.
 
 The same rule governs it: every line is read from the resolved policy, quoted
 from a ruling recorded here, or measured at session start — through the

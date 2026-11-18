@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -91,7 +92,8 @@ func TestTombstoneSessionMetaDoesNotCreateMissingSessionsDir(t *testing.T) {
 func TestSessionMetaRevisionInitializesAndIncrements(t *testing.T) {
 	dir := t.TempDir()
 	const id = "02wMz5Txv1C3Hut0M8GCeB"
-	if err := SaveSessionMeta(dir, SessionMeta{ID: id, UpdatedAt: time.Unix(1_700_000_000, 0)}); err != nil {
+	launch := PromptLaunchFacts{KnowledgeCutoff: new(""), ScratchDir: new("/scratch"), WritableRoots: new(""), TurnEndsProcess: new(false)}
+	if err := SaveSessionMeta(dir, SessionMeta{ID: id, PromptLaunch: launch, UpdatedAt: time.Unix(1_700_000_000, 0)}); err != nil {
 		t.Fatalf("first save: %v", err)
 	}
 	got, err := LoadSessionMeta(dir, id)
@@ -102,6 +104,8 @@ func TestSessionMetaRevisionInitializesAndIncrements(t *testing.T) {
 		t.Fatalf("first save Revision = %d, want 1", got.Revision)
 	}
 
+	// A partial checkpoint can carry another runtime's observation.
+	got.PromptLaunch = PromptLaunchFacts{ScratchDir: new("/other-runtime")}
 	if err := SaveSessionMeta(dir, got); err != nil {
 		t.Fatalf("second save: %v", err)
 	}
@@ -120,6 +124,9 @@ func TestSessionMetaRevisionInitializesAndIncrements(t *testing.T) {
 	}
 	if got.Revision != 3 {
 		t.Fatalf("observer append Revision = %d, want 3", got.Revision)
+	}
+	if !reflect.DeepEqual(got.PromptLaunch, launch) {
+		t.Fatalf("launch facts after partial checkpoint and observer append = %+v, want %+v", got.PromptLaunch, launch)
 	}
 }
 

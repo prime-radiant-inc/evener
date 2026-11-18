@@ -6,11 +6,13 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -22,6 +24,7 @@ import (
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
@@ -1614,7 +1617,8 @@ func TestSession_TranscriptHeaderContainsSystemPrompt(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(adapter)
 	profile := withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2"))
-	sess, err := NewSession(c, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	env := execenv.NewLocalExecutionEnvironment(dir)
+	sess, err := NewSession(c, profile, env, SessionConfig{
 		StateDir:           stateDir,
 		SystemPromptFile:   base,
 		SystemPromptAppend: []string{appendFile},
@@ -1623,6 +1627,18 @@ func TestSession_TranscriptHeaderContainsSystemPrompt(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	t.Cleanup(sess.Close)
+	launchMeta, err := schema.LoadSessionMeta(stateDir, sess.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cutoff, scratch := launchMeta.PromptLaunch.KnowledgeCutoff, launchMeta.PromptLaunch.ScratchDir; cutoff == nil || *cutoff != profile.KnowledgeCutoff() || scratch == nil || *scratch != env.SessionScratchDir() {
+		t.Fatalf("initial checkpoint omitted the catalog cutoff or installed scratch: %+v", launchMeta.PromptLaunch)
+	}
+	snapshot := sess.Meta()
+	*snapshot.PromptLaunch.ScratchDir = "/other-snapshot"
+	if !reflect.DeepEqual(sess.Meta().PromptLaunch, launchMeta.PromptLaunch) {
+		t.Error("a metadata reader changed the live session's startup facts")
+	}
 	sendInput := func(t *testing.T, s *Session) string {
 		t.Helper()
 		prior := len(adapter.Requests())
@@ -1662,6 +1678,40 @@ func TestSession_TranscriptHeaderContainsSystemPrompt(t *testing.T) {
 	t.Cleanup(func() { executeSystemPromptTemplate = originalTemplate })
 	for _, tc := range []struct{ name, id string }{{"resume", sess.ID()}, {"fork", child}} {
 		t.Run(tc.name, func(t *testing.T) {
+			// A resident Hub indexes new transcripts with the strict v2 schema
+			// it loaded at startup. Check the writer's actual first line.
+			line := readTranscriptLines(t, schema.SessionTranscriptPath(stateDir, tc.id))[0]
+			var v2 struct {
+				Kind             string      `json:"kind"`
+				FormatVersion    int         `json:"format_version"`
+				SessionID        string      `json:"session_id"`
+				ParentSessionID  string      `json:"parent_session_id"`
+				ParentToolCallID string      `json:"parent_tool_call_id"`
+				Task             string      `json:"task"`
+				CreatedAt        time.Time   `json:"created_at"`
+				ProfileID        string      `json:"profile_id"`
+				Model            string      `json:"model"`
+				WorkingDir       string      `json:"working_dir"`
+				Depth            int         `json:"depth"`
+				BuildVersion     string      `json:"build_version"`
+				SystemPrompt     string      `json:"system_prompt"`
+				AgentTasks       []task.Task `json:"agent_tasks"`
+			}
+			if err := jsonv2.Unmarshal([]byte(line), &v2, json.DefaultOptionsV1(), jsonv2.RejectUnknownMembers(true)); err != nil {
+				t.Errorf("strict v2 header decode: %v", err)
+			}
+			if v2.Kind != "header" || v2.FormatVersion != 2 || v2.SessionID != tc.id || v2.SystemPrompt != launch {
+				t.Error("v2 reader did not receive the session's frozen prompt")
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(line), &fields); err != nil {
+				t.Fatal(err)
+			}
+			for _, field := range []string{"knowledge_cutoff", "scratch_dir"} {
+				if _, ok := fields[field]; ok {
+					t.Errorf("v2 header contains launch metadata %q", field)
+				}
+			}
 			if tc.id == child {
 				if err := os.Remove(base); err != nil {
 					t.Fatal(err)
@@ -1671,11 +1721,18 @@ func TestSession_TranscriptHeaderContainsSystemPrompt(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if !reflect.DeepEqual(meta.PromptLaunch, launchMeta.PromptLaunch) {
+				t.Fatalf("checkpoint changed startup facts: got %+v, want %+v", meta.PromptLaunch, launchMeta.PromptLaunch)
+			}
 			resumed, err := RestoreSessionFromMeta(c, profile, execenv.NewLocalExecutionEnvironment(dir), meta, stateDir)
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer resumed.Close()
+			*meta.PromptLaunch.KnowledgeCutoff = "other-snapshot-cutoff"
+			if !reflect.DeepEqual(resumed.Meta().PromptLaunch, launchMeta.PromptLaunch) {
+				t.Error("the restore caller changed the live session's startup facts")
+			}
 			if got := sendInput(t, resumed); got != launch {
 				t.Fatalf("provider received %d prompt bytes, want the original %d bytes", len(got), len(launch))
 			}

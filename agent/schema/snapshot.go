@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/spf13/afero"
 	"primeradiant.com/evener/agent/envctx"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -137,6 +139,25 @@ func sessionMetaWriteLock(sessionID string) *sync.Mutex {
 	return &sessionMetaWriteMus[hash%sessionMetaWriteStripes]
 }
 
+// PromptLaunchFacts records the environment at the rendering of the saved
+// system prompt. A nil field is unknown; a recorded empty value is meaningful.
+type PromptLaunchFacts struct {
+	KnowledgeCutoff *string `json:"knowledge_cutoff,omitempty"`
+	ScratchDir      *string `json:"scratch_dir,omitempty"`
+	WritableRoots   *string `json:"writable_roots,omitempty"`
+	TurnEndsProcess *bool   `json:"turn_ends_process,omitempty"`
+}
+
+// Clone keeps a metadata snapshot independent of the session's launch facts.
+func (p PromptLaunchFacts) Clone() PromptLaunchFacts {
+	return PromptLaunchFacts{
+		KnowledgeCutoff: appwire.ClonePointer(p.KnowledgeCutoff),
+		ScratchDir:      appwire.ClonePointer(p.ScratchDir),
+		WritableRoots:   appwire.ClonePointer(p.WritableRoots),
+		TurnEndsProcess: appwire.ClonePointer(p.TurnEndsProcess),
+	}
+}
+
 // SessionMeta holds session metadata without the full conversation history.
 // The history is always recovered from the transcript JSONL file.
 type SessionMeta struct {
@@ -152,11 +173,12 @@ type SessionMeta struct {
 	// Manager records that this session was started as a Manager. It is a
 	// launch property the daemon owns, persisted here so a resume keeps it: the
 	// hub never re-asserts it, and nothing disables it.
-	Manager   bool            `json:"manager,omitempty"`
-	Config    ConfigSnapshot  `json:"config"`     // the session's configuration
-	EnvInfo   EnvironmentInfo `json:"env_info"`   // captured environment description
-	CreatedAt time.Time       `json:"created_at"` // when the session was first created
-	UpdatedAt time.Time       `json:"updated_at"` // last time the meta was written
+	Manager      bool              `json:"manager,omitempty"`
+	Config       ConfigSnapshot    `json:"config"`   // the session's configuration
+	EnvInfo      EnvironmentInfo   `json:"env_info"` // captured environment description
+	PromptLaunch PromptLaunchFacts `json:"prompt_launch,omitzero"`
+	CreatedAt    time.Time         `json:"created_at"` // when the session was first created
+	UpdatedAt    time.Time         `json:"updated_at"` // last time the meta was written
 	// Revision is a monotonic per-session counter bumped on every save, so two
 	// revisions that share a timestamp (a fork tag or an ObservedBy append
 	// re-saves without advancing UpdatedAt) can still be ordered. Zero on metas
@@ -533,13 +555,28 @@ func SaveSessionMeta(dir string, meta SessionMeta) error {
 // in-memory or sandboxed filesystem to exercise persistence without touching
 // real disk.
 func SaveSessionMetaWithFS(fs afero.Fs, dir string, meta SessionMeta) error {
+	return saveSessionMeta(fs, dir, meta, false)
+}
+
+// SaveSessionMetaForNewPrompt publishes the launch facts for a replacement
+// transcript before its header is created. A nil filesystem uses the OS.
+func SaveSessionMetaForNewPrompt(fs afero.Fs, dir string, meta SessionMeta) error {
+	if fs == nil {
+		fs = sessionMetaFS
+	}
+	return saveSessionMeta(fs, dir, meta, true)
+}
+
+func saveSessionMeta(fs afero.Fs, dir string, meta SessionMeta, newPrompt bool) error {
 	if err := ValidateSessionID(meta.ID); err != nil {
 		return err
 	}
 	lock := sessionMetaWriteLock(meta.ID)
 	lock.Lock()
 	defer lock.Unlock()
-	return saveSessionMetaLocked(fs, dir, meta)
+	return withSessionMetaCrossProcessLock(fs, dir, meta.ID, func() error {
+		return writeSessionMetaLocked(fs, dir, meta, newPrompt)
+	})
 }
 
 // AppendSessionObservedBy records a deduplicated observer UI relationship
@@ -566,7 +603,7 @@ func appendSessionObservedByWithFS(fs afero.Fs, dir, workerSessionID, observerSe
 		// Only workerSessionID is validated: it names the file being written, while
 		// observerSessionID is persisted as data and never joined into a path here.
 		meta.ObservedBy = stableUnion(meta.ObservedBy, []string{observerSessionID})
-		return writeSessionMetaLocked(fs, dir, meta)
+		return writeSessionMetaLocked(fs, dir, meta, false)
 	})
 }
 
@@ -611,17 +648,6 @@ func ListSessionMetas(dir string) ([]SessionMeta, error) {
 	return metas, err
 }
 
-// saveSessionMetaLocked performs the write with the session's write lock already
-// held. Callers must not re-enter any of the session-meta write entry points
-// from within it: re-entering for the same session self-deadlocks, and now that
-// the lock is striped, re-entering for a different session self-deadlocks only
-// on a stripe collision — a hang that would be rare enough to be untraceable.
-func saveSessionMetaLocked(fs afero.Fs, dir string, meta SessionMeta) error {
-	return withSessionMetaCrossProcessLock(fs, dir, meta.ID, func() error {
-		return writeSessionMetaLocked(fs, dir, meta)
-	})
-}
-
 // withSessionMetaCrossProcessLock runs fn with the session's cross-process meta
 // lock held (and the sessions dir ensured). The caller must already hold the
 // in-process striped lock. The lock covers fn's whole load/merge/increment/write
@@ -664,7 +690,7 @@ func withExistingSessionsDirLock(fs afero.Fs, dir, id string, fn func() error) e
 // writeSessionMetaLocked loads the current meta, unions ObservedBy, bumps
 // Revision, and writes atomically. It assumes the caller holds both locks, so
 // the read-modify-write cannot interleave with another writer.
-func writeSessionMetaLocked(fs afero.Fs, dir string, meta SessionMeta) error {
+func writeSessionMetaLocked(fs afero.Fs, dir string, meta SessionMeta, newPrompt bool) error {
 	// A deleted session's tombstone is written under this same lock; refuse to
 	// recreate the metadata so an in-flight out-of-process autosave cannot
 	// resurrect a session the hub just deleted.
@@ -675,7 +701,18 @@ func writeSessionMetaLocked(fs afero.Fs, dir string, meta SessionMeta) error {
 	}
 	previous, err := loadSessionMetaFS(fs, dir, meta.ID)
 	if err == nil {
-		meta.ObservedBy = stableUnion(previous.ObservedBy, meta.ObservedBy)
+		if newPrompt {
+			previous.PromptLaunch = meta.PromptLaunch
+			meta = previous
+		} else {
+			meta.ObservedBy = stableUnion(previous.ObservedBy, meta.ObservedBy)
+			// The saved prompt owns its first recorded facts across checkpoints.
+			launch := &meta.PromptLaunch
+			launch.KnowledgeCutoff = cmp.Or(previous.PromptLaunch.KnowledgeCutoff, launch.KnowledgeCutoff)
+			launch.ScratchDir = cmp.Or(previous.PromptLaunch.ScratchDir, launch.ScratchDir)
+			launch.WritableRoots = cmp.Or(previous.PromptLaunch.WritableRoots, launch.WritableRoots)
+			launch.TurnEndsProcess = cmp.Or(previous.PromptLaunch.TurnEndsProcess, launch.TurnEndsProcess)
+		}
 		if previous.Revision == math.MaxUint64 {
 			return fmt.Errorf("session meta revision overflow for %s", meta.ID)
 		}

@@ -19,10 +19,6 @@ func (s *Session) setPromptEnvironmentOrigin(header transcript.Header) {
 		}
 	}
 	s.promptProvider, s.promptModel, s.promptBuild = header.ProfileID, header.Model, header.BuildVersion
-	s.promptKnowledgeCutoff = header.KnowledgeCutoff
-	if s.promptKnowledgeCutoff == nil && header.SystemPrompt == "" {
-		s.promptKnowledgeCutoff = new(s.profile.KnowledgeCutoff())
-	}
 	if s.promptProvider == "" || s.promptModel == "" {
 		s.promptProvider, s.promptModel = s.profile.ID(), s.profile.Model()
 	}
@@ -62,11 +58,17 @@ func (s *Session) setPromptEnvironmentOrigin(header transcript.Header) {
 // rehydrateEnvironmentContext reconstructs only the observations visible to
 // the next request. Both restore and a winning fold supply their retained history.
 func (s *Session) rehydrateEnvironmentContext(history []schema.Turn) {
-	// The startup prompt survives every fold. A retained scratch update
-	// supersedes its path, including an update that cleared the path.
-	baseline := envctx.State{ScratchDirUnknown: s.promptScratchDir == nil}
-	if s.promptScratchDir != nil {
-		baseline.Last.ScratchDir = *s.promptScratchDir
+	// The startup prompt survives every fold. Retained sandbox updates
+	// supersede its paths, including an update that cleared a path.
+	baseline := envctx.State{
+		ScratchDirUnknown:    s.cachedSystemPrompt != "" && s.promptLaunch.ScratchDir == nil,
+		WritableRootsUnknown: s.cachedSystemPrompt != "" && s.promptLaunch.WritableRoots == nil,
+	}
+	if scratch := s.promptLaunch.ScratchDir; scratch != nil {
+		baseline.Last.ScratchDir = *scratch
+	}
+	if roots := s.promptLaunch.WritableRoots; roots != nil {
+		baseline.Last.WritableRoots = *roots
 	}
 	s.envTracker = envctx.NewTracker(baseline)
 	s.envContextState = nil
@@ -89,6 +91,13 @@ func installedScratchDir(env execenv.ExecutionEnvironment) string {
 	return ""
 }
 
+func installedWritableRoots(env execenv.ExecutionEnvironment) string {
+	if local, ok := env.(*execenv.LocalExecutionEnvironment); ok && local != nil && local.Sandbox != nil && local.Sandbox.Enforced() {
+		return writableRootsSummary(*local.Sandbox)
+	}
+	return ""
+}
+
 // setEnvironmentIdentity supplies only facts that need to supersede the launch
 // prompt or an earlier environment block. The session lock protects the profile.
 func (s *Session) setEnvironmentIdentity(snap *envctx.Snapshot, last envctx.Snapshot) {
@@ -103,11 +112,15 @@ func (s *Session) setEnvironmentIdentity(snap *envctx.Snapshot, last envctx.Snap
 		snap.OrdinarySession = !s.cfg.Manager
 	}
 	snap.ScratchDir = installedScratchDir(s.env)
+	snap.WritableRoots = s.workspaceWritableRoots
 	cutoff := s.profile.KnowledgeCutoff()
 	// When a saved prompt has no recorded cutoff, publish the current catalog
 	// fact once. Retained model updates then own the cutoff across restores.
-	changedCutoff := s.promptModel != "" && (s.promptKnowledgeCutoff == nil || *s.promptKnowledgeCutoff != cutoff)
-	if fork || changedModel || changedCutoff || last.Model != "" {
+	changedCutoff := s.cachedSystemPrompt != ""
+	if launch := s.promptLaunch.KnowledgeCutoff; launch != nil {
+		changedCutoff = *launch != cutoff
+	}
+	if fork || changedModel || (s.promptModel != "" && changedCutoff) || last.Model != "" {
 		snap.Model = s.profile.ID() + "/" + s.profile.Model()
 		snap.KnowledgeCutoff = cutoff
 	}
@@ -115,6 +128,12 @@ func (s *Session) setEnvironmentIdentity(snap *envctx.Snapshot, last envctx.Snap
 	if overrideTrailer || changedModel || (s.promptBuild != "" && s.promptBuild != BuildVersion) {
 		snap.CommitTrailer = s.commitTrailerPrompt()
 		snap.OmitCommitTrailer = overrideTrailer && snap.CommitTrailer == ""
+	}
+	if launch := s.promptLaunch.TurnEndsProcess; launch == nil || *launch != s.cfg.TurnEndsProcess || last.ExecutionMode != "" {
+		snap.ExecutionMode = envctx.DaemonMode
+		if s.cfg.TurnEndsProcess {
+			snap.ExecutionMode = envctx.OneShotMode
+		}
 	}
 }
 
@@ -129,7 +148,7 @@ func (s *Session) needsEnvironmentIdentityLocked() bool {
 		return true
 	}
 	state := s.envTracker.State()
-	if state.ScratchDirUnknown {
+	if state.ScratchDirUnknown || state.WritableRootsUnknown {
 		return true
 	}
 	last := state.Last

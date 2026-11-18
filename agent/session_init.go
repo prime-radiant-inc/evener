@@ -224,7 +224,7 @@ func escapeInheritedHistory(inherited []transcript.Entry) []schema.Turn {
 
 // initEnvContext installs the collector and restores the tracker from the
 // launch prompt and environment turns the model will see.
-func (s *Session) initEnvContext(history []schema.Turn, promptScratchDir *string) {
+func (s *Session) initEnvContext(history []schema.Turn) {
 	probes := envctx.DefaultProbes()
 	if s.cfg.testOnly.envProbes != nil {
 		probes = *s.cfg.testOnly.envProbes
@@ -242,7 +242,6 @@ func (s *Session) initEnvContext(history []schema.Turn, promptScratchDir *string
 		}
 	}
 	s.envCollector = envctx.NewCollector(probes)
-	s.promptScratchDir = promptScratchDir
 	s.rehydrateEnvironmentContext(history)
 }
 
@@ -347,9 +346,7 @@ func (s *Session) transcriptHeader(createdAt time.Time) transcript.Header {
 		CreatedAt:        createdAt,
 		ProfileID:        s.profile.ID(),
 		Model:            s.profile.Model(),
-		KnowledgeCutoff:  new(s.profile.KnowledgeCutoff()),
 		WorkingDir:       s.envInfo.WorkingDir,
-		ScratchDir:       new(installedScratchDir(s.env)),
 		Depth:            s.cfg.spawn.depth,
 		BuildVersion:     BuildVersion,
 		SystemPrompt:     s.cachedSystemPrompt,
@@ -658,7 +655,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	// just ran had nowhere to write (kata d4es). attachTranscript below is what
 	// releases what they recorded, and it runs on every path, writer or not.
 	hdr := s.transcriptHeader(s.sclock().Now().UTC())
-	s.initEnvContext(s.history, hdr.ScratchDir)
+	s.initEnvContext(s.history)
 	s.setPromptEnvironmentOrigin(hdr)
 	var tw *transcript.Writer
 	if s.stateDir != "" {
@@ -1189,6 +1186,8 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 	s := &Session{
 		id:                       meta.ID,
+		cachedSystemPrompt:       restoredTranscriptHeader.SystemPrompt,
+		promptLaunch:             meta.PromptLaunch.Clone(),
 		skillLifecycle:           schema.SkillLifecycleSnapshot{Inventory: make(map[string]schema.SkillInventoryEntry)},
 		cfg:                      cfg,
 		descendantEvent:          cfg.spawn.descendantEvent,
@@ -1250,11 +1249,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	s.bufferArtifactStoreWarning(artifactStoreErr)
 	s.retirementController.Store(cfg.spawn.retirementController)
 	// The environment turn is durable before meta.EnvContext is checkpointed.
-	promptScratchDir := restoredTranscriptHeader.ScratchDir
-	if restoredTranscriptHeader.SystemPrompt == "" {
-		promptScratchDir = new("")
-	}
-	s.initEnvContext(resumeHistory, promptScratchDir)
+	s.initEnvContext(resumeHistory)
 	if err := s.bootstrapDelegateResources(); err != nil {
 		return nil, err
 	}
@@ -1419,8 +1414,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		return nil, err
 	}
 	if savedHeader == nil {
-		// With no saved prompt, initialization just rendered the installed path.
-		s.promptScratchDir = new(installedScratchDir(s.env))
+		// The replacement prompt was rendered against the installed environment.
 		s.rehydrateEnvironmentContext(s.history)
 	}
 	// The restore twin of NewSession's post-init livelock release: the mint
@@ -1466,6 +1460,13 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if s.stateDir != "" {
 		tw = resumeTranscript
 		if tw == nil {
+			// With no transcript to resume, a new header will own the newly
+			// rendered prompt. Publish its launch facts while a retry can
+			// still recover by rendering from the current environment.
+			meta.PromptLaunch = s.promptLaunch
+			if err := schema.SaveSessionMetaForNewPrompt(s.cfg.testOnly.metaFS, s.stateDir, meta); err != nil {
+				return nil, fmt.Errorf("save replacement prompt launch facts: %w", err)
+			}
 			var twErr error
 			tw, twErr = s.createTranscript("restore_new_transcript", s.transcriptHeader(meta.CreatedAt))
 			if twErr != nil {
@@ -1687,6 +1688,7 @@ func (s *Session) initSessionState(runSessionStartHooks bool, savedHeader *trans
 		}
 	}
 	s.envInfo = ei
+	s.workspaceWritableRoots = installedWritableRoots(env)
 
 	// The capability preamble's measured half, taken once here (see
 	// Session.capabilities). It rides the same testOnly gate as the git
@@ -1878,10 +1880,15 @@ func (s *Session) initSessionState(runSessionStartHooks bool, savedHeader *trans
 
 	s.rebuildToolDefsCache()
 	if savedHeader != nil {
-		s.cachedSystemPrompt = savedHeader.SystemPrompt
 		s.promptSourceLog = []promptSource{{Label: "transcript:system_prompt", Size: len(savedHeader.SystemPrompt)}}
 	} else {
 		warning, failed := s.initializeSystemPrompt(env)
+		s.promptLaunch = schema.PromptLaunchFacts{
+			KnowledgeCutoff: new(s.profile.KnowledgeCutoff()),
+			ScratchDir:      new(installedScratchDir(env)),
+			WritableRoots:   new(s.workspaceWritableRoots),
+			TurnEndsProcess: new(s.cfg.TurnEndsProcess),
+		}
 		if warning != "" {
 			s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{Message: warning})
 		}

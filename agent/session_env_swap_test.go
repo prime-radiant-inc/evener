@@ -22,7 +22,21 @@ import (
 
 func TestSwapEnvAndRefresh_AppendsCurrentEnvironmentToStartupPromptHistory(t *testing.T) {
 	t.Parallel()
-	sess := newSession(t, withEnvironmentSnapshot())
+	base := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	parked, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	var holdNextProbe atomic.Bool
+	probes := &envctx.Probes{
+		Now: func() time.Time { return envctxFixedTime },
+		GitBranch: func(cwd string) string {
+			if holdNextProbe.CompareAndSwap(true, false) {
+				close(parked)
+				<-release
+			}
+			return snapshotGitBranch(base, cwd)
+		},
+	}
+	sess := newSession(t, withEnv(base), withEnvironmentSnapshot(), withConfig(SessionConfig{testOnly: testConfig{envProbes: probes}}))
 
 	oldWD := sess.currentEnv().WorkingDirectory()
 	startup := sess.cachedSystemPrompt
@@ -36,13 +50,21 @@ func TestSwapEnvAndRefresh_AppendsCurrentEnvironmentToStartupPromptHistory(t *te
 	gittest.Run(t, repoDir, "commit", "-m", "initial commit")
 	gittest.Run(t, repoDir, "checkout", "-b", "feature-branch")
 
-	base, ok := sess.currentEnv().(*execenv.LocalExecutionEnvironment)
-	if !ok {
-		t.Fatalf("session env is not *execenv.LocalExecutionEnvironment: %T", sess.currentEnv())
-	}
 	next := base.WithWorkingDirectory(repoDir)
 
-	sess.swapEnvAndRefresh(next, nil)
+	// Hold an observation of the old workspace until the installed workspace
+	// has already been observed and published.
+	holdNextProbe.Store(true)
+	var oldErr error
+	go func() {
+		defer close(done)
+		oldErr = sess.maybeAppendEnvironmentContext()
+	}()
+	t.Cleanup(func() { unblock(); <-done })
+	<-parked
+	if err := sess.swapEnvAndRefresh(next, nil); err != nil {
+		t.Fatal(err)
+	}
 
 	if got := sess.currentEnv().WorkingDirectory(); got != repoDir {
 		t.Fatalf("currentEnv().WorkingDirectory() = %q, want %q", got, repoDir)
@@ -72,8 +94,17 @@ func TestSwapEnvAndRefresh_AppendsCurrentEnvironmentToStartupPromptHistory(t *te
 	if err := sess.maybeAppendEnvironmentContext(); err != nil {
 		t.Fatal(err)
 	}
-	if got := sess.envTracker.State().Last; got.Cwd != repoDir || got.GitBranch != "feature-branch" {
-		t.Errorf("projected environment = %q, %q", got.Cwd, got.GitBranch)
+	unblock()
+	<-done
+	if oldErr != nil {
+		t.Fatal(oldErr)
+	}
+	_, _, _, req, _, _, err := sess.prepareModelRequestWithError(t.Context(), 1, &events.RoundTimings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last, blocks := requestEnvironment(req); blocks != 1 || last.Cwd != repoDir || last.GitBranch != "feature-branch" {
+		t.Errorf("request after overlapping observations has %d updates at %q on %q", blocks, last.Cwd, last.GitBranch)
 	}
 }
 
@@ -107,14 +138,7 @@ func TestWorktreeToolReportsWorkspaceOnNextModelRequest(t *testing.T) {
 		t.Fatalf("worktree creation produced %d requests and cwd %q", len(requests), cwd)
 	}
 	for i, req := range requests {
-		var tracker envctx.Tracker
-		blocks := 0
-		for _, msg := range req.Messages {
-			if msg.Role == llm.RoleUser && tracker.ReplayBlock(msg.Text()) {
-				blocks++
-			}
-		}
-		last := tracker.State().Last
+		last, blocks := requestEnvironment(req)
 		if len(req.Messages) == 0 || req.Messages[0].Text() != s.cachedSystemPrompt {
 			t.Errorf("request %d lost its startup prompt", i)
 		}
@@ -139,15 +163,9 @@ func TestWorktreeToolReportsWorkspaceOnNextModelRequest(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		var tracker envctx.Tracker
-		for _, msg := range req.Messages {
-			if msg.Role == llm.RoleUser {
-				tracker.ReplayBlock(msg.Text())
-			}
-		}
-		last := tracker.State().Last
-		if req.Messages[0].Text() != s.cachedSystemPrompt || last.Cwd != cwd || last.GitBranch != branch || countEnvironmentTurns(s) != 1 {
-			t.Errorf("post-fold request %d carries %d observations and workspace %q on %q", round, countEnvironmentTurns(s), last.Cwd, last.GitBranch)
+		last, blocks := requestEnvironment(req)
+		if req.Messages[0].Text() != s.cachedSystemPrompt || last.Cwd != cwd || last.GitBranch != branch || blocks != 1 {
+			t.Errorf("post-fold request %d carries %d observations and workspace %q on %q", round, blocks, last.Cwd, last.GitBranch)
 		}
 	}
 }

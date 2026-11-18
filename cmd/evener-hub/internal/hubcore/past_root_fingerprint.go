@@ -46,7 +46,7 @@ var notShownMetaFields = []string{
 	"ProfileID", "CheapModel", "VisionModel", "Config", "Revision",
 	"TurnBudgetWarningEmitted", "LastInputTokens", "ContextWindow", "ContextWindowSource", "NameSource", "NameUpdatedAt",
 	"DivergenceTurn", "Goal", "PinnedNote", "Skills", "MemorySaveUnavailable", "HumanNote", "AgentNote",
-	"SessionURLs", "EnvContext", "ReasoningEffortEscalated", "CumulativeUsage",
+	"SessionURLs", "EnvContext", "PromptLaunch", "ReasoningEffortEscalated", "CumulativeUsage",
 	"WorkMillis", "JobTreeRevision", "ScratchTempDir", "ScratchTreeRootID",
 	"ScratchDirSessionID",
 	"EnvInfo.Platform", "EnvInfo.OSVersion", "EnvInfo.Today", "EnvInfo.KnowledgeCutoff",

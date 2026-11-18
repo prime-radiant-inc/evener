@@ -555,11 +555,11 @@ func TestResumeReopensTheSameScratch(t *testing.T) {
 	for _, version := range []string{"recorded", "unrecorded"} {
 		t.Run("unavailable_"+version, func(t *testing.T) {
 			state := t.TempDir()
-			saved := header
+			saved := root2.Meta()
 			if version == "unrecorded" {
-				saved.ScratchDir = nil
+				saved.PromptLaunch.ScratchDir = nil
 			}
-			writer, err := transcript.NewWriter(schema.SessionTranscriptPath(state, meta.ID), saved)
+			writer, err := transcript.NewWriter(schema.SessionTranscriptPath(state, meta.ID), header)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -571,12 +571,20 @@ func TestResumeReopensTheSameScratch(t *testing.T) {
 			if err := writer.Close(); err != nil {
 				t.Fatal(err)
 			}
-			if err := schema.SaveSessionMeta(state, root2.Meta()); err != nil {
+			if err := schema.SaveSessionMeta(state, saved); err != nil {
 				t.Fatal(err)
 			}
 			for round := range 2 {
+				checkpoint, err := schema.LoadSessionMeta(state, meta.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				launchScratch := checkpoint.PromptLaunch.ScratchDir
+				if (launchScratch == nil) != (version == "unrecorded") || (launchScratch != nil && *launchScratch != scratch) {
+					t.Fatalf("checkpoint %d changed the %s launch scratch path", round+1, version)
+				}
 				env := execenv.NewLocalExecutionEnvironment(workspace)
-				restored, err := RestoreSessionFromMetaWithConfig(root1.client, root1.profile, env, meta, RestoreSessionConfig{StateDir: state, testOnly: testConfig{skipGitSnapshot: true}})
+				restored, err := RestoreSessionFromMetaWithConfig(root1.client, root1.profile, env, checkpoint, RestoreSessionConfig{StateDir: state, testOnly: testConfig{skipGitSnapshot: true}})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -601,8 +609,15 @@ func TestResumeReopensTheSameScratch(t *testing.T) {
 		state := t.TempDir()
 		live := newSession(t, withDir(workspace), withConfig(SessionConfig{StateDir: state}), withAdapter(adapter))
 		for round := range 2 {
+			checkpoint, err := schema.LoadSessionMeta(state, live.ID())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if path := checkpoint.PromptLaunch.ScratchDir; path == nil || *path != "" {
+				t.Fatalf("checkpoint %d lost the known empty launch scratch path", round+1)
+			}
 			if round > 0 {
-				live, err = RestoreSessionFromMetaWithConfig(live.client, live.profile, execenv.NewLocalExecutionEnvironment(workspace), live.Meta(), RestoreSessionConfig{StateDir: state, testOnly: testConfig{skipGitSnapshot: true}})
+				live, err = RestoreSessionFromMetaWithConfig(live.client, live.profile, execenv.NewLocalExecutionEnvironment(workspace), checkpoint, RestoreSessionConfig{StateDir: state, testOnly: testConfig{skipGitSnapshot: true}})
 				if err != nil {
 					t.Fatal(err)
 				}

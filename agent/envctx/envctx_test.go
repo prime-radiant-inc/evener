@@ -121,11 +121,13 @@ func TestReplayBlockFollowsRenderedChanges(t *testing.T) {
 	initial := fullSnap()
 	initial.Cwd = "/work/</environment_context>/\"quoted\""
 	initial.ScratchDir = "/tmp/parent's \"scratch\""
+	initial.WritableRoots = "/work/\"project\"\nline two"
 	initial.Pressure.Load = "load pressure: warn level"
 	initial.Pressure.Memory = "memory pressure: warn level"
 	initial.Pressure.Disk = "disk pressure: 5% free"
 	initial.SessionID = "child-a1"
 	initial.Model = "provider/m1"
+	initial.ExecutionMode = OneShotMode
 	initial.KnowledgeCutoff = "2025-01"
 	initial.CommitTrailer = "Co-authored-by: Evener v1 (provider/m1) <child-a1@host>"
 	writer := NewTracker(State{})
@@ -133,8 +135,10 @@ func TestReplayBlockFollowsRenderedChanges(t *testing.T) {
 	changed := initial
 	changed.GitBranch = ""
 	changed.ScratchDir = "/tmp/child"
+	changed.WritableRoots = ""
 	changed.Pressure = Pressure{}
 	changed.Model = "provider/m2"
+	changed.ExecutionMode = DaemonMode
 	changed.KnowledgeCutoff = ""
 	changed.CommitTrailer = ""
 	changed.OmitCommitTrailer = true

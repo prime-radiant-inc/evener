@@ -414,6 +414,7 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 		Config:                   s.cfg.toSnapshot(),
 		ReasoningEffortEscalated: s.loopEffortEscalated,
 		EnvInfo:                  s.envInfo,
+		PromptLaunch:             s.promptLaunch.Clone(),
 		CreatedAt:                s.createdAt,
 		UpdatedAt:                now,
 		TurnCount:                s.modelResponses,
