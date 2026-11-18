@@ -596,6 +596,103 @@ func TestDelegateResourceSupervision_StableAttentionObeysQueueDeliveryRules(t *t
 	}
 }
 
+// TestDelegateResourceSupervision_RecoveryDropOfAStableParentIsDurableAttention
+// pins that the unreachable-child recovery renderer hands its watch-drop
+// diagnostic to the durable ingress when the recovering parent is ITSELF a
+// stable delegate (#2340 review).
+//
+// The ordinary queue is drained only by an EntryNotification turn, and a stable
+// child's notification turn may not carry a watch notice. Queued raw, the
+// diagnostic made the parent's next ordinary turn requeue its whole batch and
+// stand down: an unleased turn that delivered nothing.
+//
+// The fixture holds no live turn on purpose. A warm child is running its own
+// leased turn, which would settle the row between the render and the read and
+// turn this into a race instead of an assertion.
+func TestDelegateResourceSupervision_RecoveryDropOfAStableParentIsDurableAttention(t *testing.T) {
+	t.Parallel()
+	sess, _ := newCompactableSession(t)
+	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, controller, "dlg_recovering", "")
+	sess.mu.Lock()
+	ownController := sess.delegateController
+	ownOwner := sess.owningDelegateID
+	sess.delegateController = controller
+	sess.owningDelegateID = "dlg_recovering"
+	sess.mu.Unlock()
+	t.Cleanup(func() {
+		sess.mu.Lock()
+		sess.delegateController = ownController
+		sess.owningDelegateID = ownOwner
+		sess.mu.Unlock()
+	})
+	jm := sess.jobManager
+	if jm == nil {
+		t.Fatal("the fixture session has no job manager")
+	}
+	jm.mu.Lock()
+	ownStableOwner := jm.stableOwner
+	ownStableController := jm.delegateController
+	jm.stableOwner = sess
+	jm.delegateController = controller
+	jm.mu.Unlock()
+	t.Cleanup(func() {
+		jm.mu.Lock()
+		jm.stableOwner = ownStableOwner
+		jm.delegateController = ownStableController
+		jm.mu.Unlock()
+	})
+	if !stableDelegateChild(sess) {
+		t.Fatal("setup: the fixture session is not a stable delegate child, so the route under test is not taken")
+	}
+	// A pending caller-targeted watch send for a child session that is neither
+	// live nor resumable: the recovery path's own drop case. The state is handed
+	// to the renderer through its loader seam so the fixture does not depend on
+	// a store write the recovery loop would also read.
+	const goneChild = "child-gone-unreachable"
+	const watchedJob = "job_recovery_drop"
+	var state jobstore.WatchSendState
+	for _, event := range restoredWatchSendPendingEvents(goneChild, watchedJob, runtimeMessageAliasCaller, jm.now()) {
+		if event.WatchSend != nil {
+			state = *event.WatchSend
+		}
+	}
+	if state.Key.ResolvedSendTo != runtimeMessageAliasCaller {
+		t.Fatalf("setup: the fixture send is not caller-targeted (sendTo %q)", state.Key.ResolvedSendTo)
+	}
+	if sess.childResumable(goneChild) {
+		t.Fatal("setup: the child session is resumable, so the recovery path skips the drop entirely")
+	}
+
+	sess.renderUnreachableChildPendingsWithLoaders(
+		nil,
+		func() (map[string]*jobstore.JobRecord, error) { return nil, nil },
+		func() (jobstore.WatchSendRecord, error) {
+			return jobstore.WatchSendRecord{Pending: map[jobstore.WatchSendKey]*jobstore.WatchSendState{state.Key: &state}}, nil
+		},
+	)
+
+	if queued := sess.peekNotifications(); queued != 0 {
+		t.Fatalf("the recovery drop for a stable parent was queued on the ordinary rail (%d entr(ies)): that rail is drained only by an EntryNotification turn, which may not carry a watch notice, so the turn would requeue its batch and stand down", queued)
+	}
+	pending, err := sess.pendingDelegateAttentionIDs()
+	if err != nil {
+		t.Fatalf("read pending attention: %v", err)
+	}
+	var rows []string
+	for _, attentionID := range pending {
+		if isStableWatchAttentionID(attentionID) {
+			rows = append(rows, attentionID)
+		}
+	}
+	if len(rows) != 1 {
+		t.Fatalf("the recovery drop left %d durable watch row(s), want 1: the notice has to be durable attention or it is never delivered under a lease (pending=%v)", len(rows), pending)
+	}
+	if _, ok := sess.pendingStableWatchNotice(rows[0]); !ok {
+		t.Fatalf("the durable row %q kept no notice facts, so its delivery cannot be re-applied at presentation", rows[0])
+	}
+}
+
 // TestDelegateResourceSupervision_StableWatchFoldSpansEnqueueBatches pins the
 // cross-batch half of LIFE-01's folding rule (#2340 review M2).
 //

@@ -268,6 +268,14 @@ func (s *Session) renderUnreachableChildPendingsWithLoaders(
 		jm.removeRuntimePendingWatchSend(dropped)
 		n := watchSendDiagnosticForState(*state, watchSendStageDrop, dropped.DiagnosticReason)
 		n.Provenance = provenance.Clone(state.Provenance)
+		// A recovering parent that is ITSELF a stable delegate must hand this
+		// notice to the durable ingress: an EntryNotification turn is the only
+		// drain of the ordinary queue, and such a turn may not carry a watch
+		// notice (LIFE-01, #2340). Queued raw it would requeue the parent's
+		// whole batch and stand down without delivering anything.
+		if stableDelegateChild(s) && jm.persistStableWatchPendings([]jobNotification{n}) {
+			continue
+		}
 		s.enqueueJobNotification(n)
 	}
 }
