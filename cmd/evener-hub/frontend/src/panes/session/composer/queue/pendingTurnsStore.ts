@@ -774,6 +774,9 @@ export function preserveRecoveryPendingTurn(
   localDraftRevisionId?: string,
   imageFacts?: (clientMutationId: string) => string,
   ownImageFacts?: string,
+  // The composition the preserved row owns, when `attachments` is only what it
+  // would send. See `preserveRecoveryMutation`.
+  ownedAttachments?: InputAttachment[],
 ): ReturnType<typeof preserveRecoveryMutation> {
   return trackProjectionWork(
     (async () => {
@@ -789,6 +792,7 @@ export function preserveRecoveryPendingTurn(
         localDraftRevisionId,
         imageFacts,
         ownImageFacts,
+        ownedAttachments,
       );
       void refreshPendingTurnsProjection(ref);
       return preserved;

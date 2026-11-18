@@ -1048,10 +1048,20 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     // so a closed pane or a full quota left a row whose text spells `[image 1]`
     // and nothing saying that reference had no bytes, and a reopen shipped it
     // as prose. Both describe the same revision when both exist.
-    const liveRecord = incomingRowId === null ? undefined : readCompositionImageRecord(incomingRowId);
+    // The row's own anchors come first, from the record committed WITH its
+    // text - and an EMPTY list is an answer, not a missing one. Testing
+    // `length > 0` here read "the merge retired the last reference" as "this row
+    // states nothing" and fell through to the localStorage record, which still
+    // described an older revision. A failed write then let that older record win
+    // and a reopen shipped the missing reference as prose.
     const incomingRecord =
-      liveRecord ??
-      (rowCommittedAnchors(recovered).length > 0 ? { anchors: rowCommittedAnchors(recovered) } : undefined);
+      rowCommittedAnchors(recovered) ??
+      (incomingRowId === null
+        ? undefined
+        : (() => {
+            const liveRecord = readCompositionImageRecord(incomingRowId);
+            return liveRecord === undefined ? undefined : { anchors: liveRecord.anchors };
+          })());
     const restoredMarkers = new Set(recovered.attachments.map((item) => item.marker));
     const declared = new Set(recoveryDeclaredMarkers(recovered));
     const spoken = new Set(markerNumbersIn(recovered.text));
@@ -1083,9 +1093,23 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     // record may also carry is read separately as `declaredAnchors` - that is
     // the one place an offset is authoritative, and duplicating it here as a
     // number would be the second answer this whole change removes.
+    // The row's own copy wins when the row being asked about IS the row this
+    // draft was decoded from - the reopen and activation paths. Reading the live
+    // store there was a second answer to the question `incomingRecord` already
+    // answered: a failed localStorage write left an older revision's numbers,
+    // and a merge that retired its last reference re-stamped the retired one
+    // onto the new text, blocking a Send the person had repaired.
+    //
+    // When they are DIFFERENT rows - a merge into an active row - this must
+    // describe the ACTIVE row's prior tags, which this draft does not carry, so
+    // the live store stays the only source it has.
+    const sameRowAsRecovered = rowId !== null && rowId === incomingRowId;
     const recorded: number[] =
       rowId !== null
-        ? (readCompositionImageRecord(rowId)?.anchors ?? []).map((anchor) => anchor.marker)
+        ? (sameRowAsRecovered
+            ? (rowCommittedAnchors(recovered)?.anchors ?? [])
+            : (readCompositionImageRecord(rowId)?.anchors ?? [])
+          ).map((anchor) => anchor.marker)
         : ownsDraft()
           ? readComposerDraftImageMarkers(ref)
           : [];
@@ -1404,6 +1428,15 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
           compositionOwnerId,
           nextComposerText,
           nextAttachments,
+          // The anchors this text carries, committed in the SAME write. Without
+          // them the row's anchors were only as fresh as the last merge, so an
+          // edit that retired the last missing reference left the old set
+          // standing and a reopen blocked a Send the person had repaired - or,
+          // with the localStorage write failed, restored a reference the merge
+          // had already removed. An EMPTY set is written as such: "nothing is
+          // reserved" is an answer, and skipping the write leaves the previous
+          // answer standing.
+          committedAnchorsForRecord,
         );
         if (!updated) {
           if (!disposed && currentRecoveryId() === clientMutationId) {
@@ -1541,17 +1574,40 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     // are what it actually adopted; the row's stored copy is a second opinion
     // that can now belong to someone else.
     const preservedText = textRef.current;
-    const preservedAttachments = ownedCompositionAttachments(operations.toInputAttachments());
+    // ONE list, two views, resolved by identity - the same split ordinary
+    // recovery autosave uses. The payload is the request the preserved row
+    // would send: a released tile is not in it. The durable list is the
+    // composition: every owned tile, released ones included, so their bytes
+    // survive.
+    //
+    // Writing the owned tiles into the payload as well was the defect. A
+    // reopen whose eligibility record could not be written (full quota, and the
+    // panel closing before the follow-up autosave) found those bytes in
+    // `payload.input`, read them as still-sent, and the next Send carried an
+    // image whose reference the person had deleted.
+    const preservedOwned = ownedCompositionAttachments(operations.toInputAttachments());
+    const preservedSendable = sendableCompositionAttachments(preservedOwned, preservedText);
     // The tiles the record below describes, captured with the text and the
     // bytes it describes them for.
     const preservedTiles = operations.items;
-    const priorAnchors: CompositionImageAnchor[] = liveAdoptedMarkers().map((marker) => ({ marker }));
+    // The live anchors WITH their occurrences, validated against the text being
+    // preserved. Collapsing these to bare numbers discarded which of two
+    // identical spellings the warning was about, so a fork whose second
+    // spelling was the missing one reopened warning about the first. An offset
+    // is kept only while it still spells its marker in this text, which is the
+    // same rule autosave applies, so the two writers cannot disagree.
+    const priorAnchors: CompositionImageAnchor[] = adoptedAnchors.map(({ marker, offset }) =>
+      preservedText.slice(offset, offset + markerText(marker).length) === markerText(marker)
+        ? { marker, offset }
+        : { marker },
+    );
     try {
       const preserved = await preserveRecoveryPendingTurn(
         base,
         ref,
         preservedText,
-        preservedAttachments,
+        // The payload: what this composition would send.
+        preservedSendable,
         skillNamesRef.current,
         selectionMetaRef.current.commandNames,
         selectionMetaRef.current.mentions,
@@ -1562,6 +1618,9 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
         // images as this composition does.
         storedImageFacts,
         compositionImageRecordSnapshot(preservedText, preservedTiles, priorAnchors),
+        // The composition: every owned tile, released ones included, sendable
+        // first so the payload's images keep pairing by index.
+        preservedOwned,
       );
       // The preservation mints a NEW row, and the record travels with it: it is
       // part of the composition, not of the old row. Keying it to the row it

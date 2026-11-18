@@ -4089,13 +4089,17 @@ export async function preserveRecoveryMutation(
   // when that row already says the same thing about its images.
   imageFacts?: (clientMutationId: string) => string,
   ownImageFacts?: string,
+  // The composition this row owns, when `attachments` is only its sendable
+  // subset. Two lists, because "what ships" and "what the person can still see"
+  // are different questions and the preserved row must answer both.
+  ownedAttachments?: InputAttachment[],
 ): Promise<MutationRecoveryRecord | undefined> {
   const runtime = requireMutationRuntime();
   await runtime.start;
   const record = await runtime.storage.preserveRecoveryComposition(
     base,
     buildInput(text, attachments, skillNames, commandNames, mentions),
-    durableAttachments(attachments),
+    durableAttachments(ownedAttachments ?? attachments),
     text,
     mentions,
     compositionOwnerId,

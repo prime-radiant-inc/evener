@@ -1863,6 +1863,75 @@ test("autosave keeps a released tile out of the request without dropping its byt
 // text spells `[image 1]` with nothing saying that reference had no bytes, so
 // a reopen passed the reference through as literal prose and Send shipped it.
 // The anchors now travel in the same transaction as the text they describe.
+// The merge commits its anchors with the text, and that committed set must WIN
+// over a side record that failed to update.
+//
+// The row here is at revision 2 and its committed anchors are EMPTY: the edit
+// retired the last missing reference. The localStorage record still describes
+// revision 1, where `[image 1]` was a missing reference. Reading that record
+// over the row - or reading an empty committed set as "no answer" and falling
+// through to it - resurrects a reference the merge already removed, and the
+// reopen blocks a Send the person had repaired.
+test("a row's committed anchors win over a side record from an older revision", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  try {
+    // The text SPELLS `[image 1]` as prose. That is what makes the stale record
+    // do damage: the tag only sticks to a marker the text actually spells, so a
+    // fixture whose text did not spell it would pass with or without the fix.
+    const seeded = await storage.enqueueIntent({
+      targetRef: "root",
+      threadId: "thread-a",
+      method: "turn/start",
+      payload: { ref: "root", input: [{ type: "text", text: "fixed prose [image 1]" }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "fixed prose [image 1]" }] },
+    });
+    await storage.transferToRecovery(seeded.clientMutationId, "rejected");
+    // The side record describes the PREVIOUS revision, where the reference was
+    // still missing. Revision 2's write never landed.
+    writeCompositionImageRecord(seeded.clientMutationId, {
+      anchors: [{ marker: 1 }],
+      tiles: [],
+      revision: 1,
+    });
+    // The row itself is at revision 2 and states that its text has no missing
+    // reference - an empty set, which is an answer.
+    await storage.updateRecoveryInput(
+      seeded.clientMutationId,
+      [{ type: "text", text: "fixed prose [image 1]" }],
+      undefined,
+      "fixed prose [image 1]",
+      undefined,
+      undefined,
+      undefined,
+      // The durable revision this write is based on. The guard refuses a write
+      // that is not based on the row it read, so the fixture must name it.
+      0,
+      undefined,
+      undefined,
+      undefined,
+      // The text carries no missing reference, and the row states that. An
+      // empty set is an answer, not silence.
+      [],
+    );
+    const row = await storage.getRecovery(seeded.clientMutationId);
+    if (!row) throw new Error("missing recovery fixture");
+    expect((row as { anchors?: unknown[] }).anchors).toEqual([]);
+
+    const source = createTestComposerSource("root");
+    try {
+      await source.activateRecovery(row);
+      // The stale record must not resurrect the reference the row retired.
+      expect(source.getSnapshot().unbackedImageMarkers).toEqual([]);
+    } finally {
+      source.dispose();
+    }
+  } finally {
+    storage.close();
+  }
+});
+
 test("a merge's missing-image anchor is durable when localStorage refuses the write", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);

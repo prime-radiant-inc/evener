@@ -57,11 +57,67 @@ const recoveredTileEligibility = new WeakMap<RecoveredComposerDraft, ReadonlyMap
 // itself, so they arrive HERE with the text they belong to. Same technique as
 // the eligibility map above: a fact the decoder resolved, owned by the draft
 // that resolved it.
-const durableCompositionAnchors = new WeakMap<RecoveredComposerDraft, CompositionImageAnchor[]>();
+const durableCompositionAnchors = new WeakMap<
+  RecoveredComposerDraft,
+  { anchors: CompositionImageAnchor[]; revision?: number }
+>();
 
-/** The anchors committed atomically with this row's text, if it carries any. */
-export function rowCommittedAnchors(draft: RecoveredComposerDraft): CompositionImageAnchor[] {
-  return durableCompositionAnchors.get(draft) ?? [];
+/** The anchors committed atomically with this row's text.
+ *
+ * `undefined` means the row did not state them at all - a row written before
+ * the field existed - and only then may a side record be consulted. An EMPTY
+ * array is a statement ("this text references no missing image") and must be
+ * distinguished from silence: the merge commits exactly what its text spells,
+ * including nothing, and a reader that treated empty as absent would fall back
+ * to a record describing an older revision and resurrect a reference this
+ * composition no longer has.
+ *
+ * The revision travels beside the anchors so a side record can be checked
+ * against the revision it claims to describe rather than assumed to describe
+ * the one being opened.
+ */
+export function rowCommittedAnchors(
+  draft: RecoveredComposerDraft,
+): { anchors: CompositionImageAnchor[]; revision?: number } | undefined {
+  return durableCompositionAnchors.get(draft);
+}
+
+/** THE DERIVATION RULE: which anchors describe the composition being opened.
+ *
+ * Text and bytes are committed to IndexedDB; these facts are committed to
+ * localStorage. The two writes cannot be one transaction, so a full quota or a
+ * closed pane can leave the pair disagreeing. Every finding this rule answers
+ * is the same question asked at a different site: when they disagree, which
+ * one is the answer?
+ *
+ * The answer is the one committed WITH the text being opened, because that is
+ * the only record whose subject is the composition in hand:
+ *
+ *   1. The row's own copy, whenever it states one - EMPTY INCLUDED. It was
+ *      written by the same transaction as the text, so it cannot describe a
+ *      different revision. An empty set is a statement, not silence.
+ *   2. Otherwise the side record, but only when it names the revision being
+ *      opened. A record that names a different revision describes a composition
+ *      that no longer exists here; reading it is how a retired reference came
+ *      back and blocked a Send the person had repaired.
+ *   3. Otherwise nothing. No facts is the withholding answer, and it is the
+ *      only one safe to give when no record describes this revision: a tile
+ *      with no fact is never granted eligibility on the strength of a number.
+ *
+ * Callers must not re-derive this. One rule, read from here, is what keeps a
+ * fourth site from answering the same question a fifth way.
+ */
+export function compositionAnchorsForRevision(
+  draft: RecoveredComposerDraft,
+  clientMutationId: string,
+  compositionRevision?: number,
+): CompositionImageAnchor[] | undefined {
+  const committed = rowCommittedAnchors(draft);
+  if (committed !== undefined) return committed.anchors;
+  const side = readCompositionImageRecord(clientMutationId);
+  if (side === undefined) return undefined;
+  const describesThisRevision = side.revision === undefined || side.revision === (compositionRevision ?? 0);
+  return describesThisRevision ? side.anchors : undefined;
 }
 
 /** Per-tile Send eligibility restored with this draft, keyed by its minted id. */
@@ -170,7 +226,31 @@ export function recoveryComposerDraft(
     storedRecord !== undefined &&
     (storedRecord.revision === undefined || storedRecord.revision === (record.compositionRevision ?? 0));
   const storedTiles = storedRevisionMatches ? storedRecord.tiles : [];
-  const withholdEligibility = storedRecord !== undefined && !storedRevisionMatches;
+  // ELIGIBILITY IS A FACT THE ROW CAN STATE ITSELF, and when it can, it wins over
+  // the side record.
+  //
+  // `payload.input` IS the request: a tile in it is one this composition would
+  // send, and a tile the row owns but its payload omitted is one whose reference
+  // the person removed. The writers that persist those two lists separately stamp
+  // the row with `anchors` in the same transaction - the field this file already
+  // reads - so its presence is what says "this row was written by a writer that
+  // commits its own composition facts". For those rows the payload is the answer
+  // and the side record is ignored: a failed localStorage write leaves an older
+  // revision's facts in place, and reading them over the row either withholds a
+  // tile the composition still sends (the person sees an image Send silently
+  // omits, and a later save can consume its durable copy) or grants one it
+  // released.
+  //
+  // Everything else - a row from before the split, whose payload carried exactly
+  // what it owned and therefore says nothing by membership - keeps reading the
+  // side record, and a mismatch there still withholds.
+  //
+  // NOT dependent on the text: a markerless image is one the payload carries and
+  // the prose does not spell, and the exemption exists precisely so it can be
+  // resent. Filtering on spellings here would make that case unrepresentable.
+  const payloadMarkers = new Set(recovered.attachments.map((item) => item.marker));
+  const statesOwnComposition = Array.isArray((record as { anchors?: unknown }).anchors);
+  const withholdEligibility = storedRecord !== undefined && !storedRevisionMatches && !statesOwnComposition;
   // A tile the row's own request left out is never sendable on restore,
   // whichever record survived. Its reference is gone - that is why the request
   // excluded it - so reading a record that calls it eligible would undo the
@@ -207,6 +287,11 @@ export function recoveryComposerDraft(
       // again. So every reason to withhold writes `false` rather than omitting
       // the entry.
       if (excludedMarkers.has(attachment.marker)) eligibilityById.set(id, false);
+      // The row's own answer first: its payload, read back. Only the withholding
+      // direction is written, because an absent fact is permission - a tile the
+      // row committed as sendable needs no entry, and `true` would merely
+      // restate the default.
+      else if (statesOwnComposition && !payloadMarkers.has(attachment.marker)) eligibilityById.set(id, false);
       else if (stored) eligibilityById.set(id, stored.eligible);
       else if (withholdEligibility) eligibilityById.set(id, false);
       return {
@@ -222,9 +307,19 @@ export function recoveryComposerDraft(
   };
   recoveredTileEligibility.set(draft, eligibilityById);
   // The anchors this row's text carries, committed by the same transaction that
-  // wrote that text. Present on any row a merge created; absent on rows written
-  // before the field existed, where the localStorage record remains the answer.
-  durableCompositionAnchors.set(draft, (record as { anchors?: CompositionImageAnchor[] }).anchors ?? []);
+  // wrote that text. A row a merge created always states them, EMPTY INCLUDED -
+  // "this text references no missing image" is an answer, and reading it as
+  // silence is what let an older side record outlive the composition it
+  // described and resurrect a reference the merge had retired. Only a row
+  // written before the field existed leaves this undefined, and only then does
+  // the side record get a say.
+  const committed = record as { anchors?: CompositionImageAnchor[] };
+  if (Array.isArray(committed.anchors)) {
+    durableCompositionAnchors.set(draft, {
+      anchors: committed.anchors,
+      revision: record.compositionRevision ?? 0,
+    });
+  }
   if (recovered.imageReferences === "unavailable") unavailableImageReferences.add(draft);
   declaredImageMarkers.set(
     draft,

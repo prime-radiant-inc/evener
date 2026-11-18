@@ -1961,9 +1961,11 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
     // caller meant before the distinction existed.
     ownedAttachments?: MutationAttachment[],
     // The missing-image anchors this text carries, committed atomically with
-    // it. Absent means "this write says nothing new about anchors", which is
-    // every non-merge caller: an autosave derives them from the live editor
-    // and does not touch the row's own copy.
+    // it. Absent means "this write says nothing about anchors" and is only
+    // correct for a caller that did not change the text. Every writer that
+    // commits text - the merge and the autosave both - passes the set it
+    // committed, EMPTY INCLUDED: "this text has no missing reference" is an
+    // answer, and omitting it leaves the previous answer standing.
     anchors?: { marker: number; offset?: number }[],
   ): Promise<MutationRecoveryRecord | undefined> {
     const outcome = await this.#write([RECOVERY_STORE, OUTBOX_STORE], "updateRecoveryInput", async (transaction) => {
@@ -2066,6 +2068,13 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
     // anchor. Reusing the row then restores a warning this composition repaired.
     imageFacts?: (clientMutationId: string) => string,
     ownImageFacts?: string,
+    // The missing-image anchors this composition's text carries, committed with
+    // it. A preserved row states its own composition like any other: without
+    // this it was the one writer that did not, so a reader fell back to a side
+    // record describing the row it replaced - and a released tile regained the
+    // markerless-image exemption the moment the pane closed before the
+    // follow-up autosave.
+    anchors?: readonly { marker: number; offset?: number }[],
   ): Promise<MutationRecoveryRecord | undefined> {
     return this.#write(ENQUEUE_STORES, "preserveRecoveryComposition", async (transaction) => {
       const recoveryStore = transaction.objectStore(RECOVERY_STORE);
@@ -2119,6 +2128,9 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         // ref, or the displayed session's tray - which matches recoveries by
         // displayedRef - loses the composition after any reload.
         ...(base.displayedRef === undefined ? {} : { displayedRef: base.displayedRef }),
+        // Stated with the text it belongs to, so a reader never has to consult
+        // a side record that may describe the composition this one replaced.
+        ...(anchors === undefined ? {} : { anchors: [...anchors] }),
         localDraftRevisionId,
         state: "submitting",
         attempted: false,

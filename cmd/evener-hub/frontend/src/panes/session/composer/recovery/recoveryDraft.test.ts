@@ -2,6 +2,11 @@ import { buildComposerInput, type InputItem } from "@evener/appwire-client";
 import { afterEach, expect, test } from "vitest";
 import { installLocalStorage, MemoryStorage } from "../../../../storageTestUtils";
 import type { MutationAttachment, MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
+
+// `anchors` is a field the store's own writers add, so the record fixture types
+// it where it is actually read rather than widening the package's record shape.
+type RecoveryRecordWithAnchors = MutationRecoveryRecord & { anchors?: { marker: number; offset?: number }[] };
+
 import type { PendingAttachment } from "../attachments/useAttachments";
 import { readCompositionImageRecord, writeCompositionImageRecord } from "../draft";
 import {
@@ -49,6 +54,47 @@ test("a record written for another revision withholds the restored-image exempti
   expect(eligibility).toEqual([false]);
 });
 
+// The other direction of the same split: a row that COMMITTED its own
+// composition must not be overridden by a side record that failed to update.
+//
+// A caption edit on a markerless image commits the image in the payload with a
+// text that does not spell it - that absence is what the exemption exists for.
+// The localStorage write then fails (full quota), leaving the PREVIOUS
+// revision's facts, where the tile did not exist yet. Reading those over the row
+// marked the image ineligible: the person saw the tile, Send silently omitted
+// it, and a later save could consume its durable recovery copy - the bytes they
+// kept, lost without a message.
+test("a row that states its own composition is not overridden by a stale side record", () => {
+  installLocalStorage(new MemoryStorage());
+  // The side record is from revision 1 and knows nothing about this tile.
+  writeCompositionImageRecord("mutation-1", {
+    anchors: [],
+    tiles: [],
+    revision: 1,
+  });
+  const record = recoveryRecord(
+    [
+      { type: "text", text: "caption" },
+      { type: "image", mediaType: "image/png", data: "AQID", name: "kept.png" },
+    ],
+    {
+      composerText: "caption",
+      attachments: [durableAttachment(1, "kept.png")],
+      compositionRevision: 2,
+      // The field the split-aware writers stamp in the same transaction as the
+      // text: this row states its own composition, so its payload is the answer.
+      anchors: [],
+    },
+  );
+
+  const draft = recoveryComposerDraft(record);
+
+  // The image is in the payload, so it is sendable: no withholding entry. Before
+  // the fix the mismatch wrote `false` and the tile could never be sent again.
+  expect([...recoveryTileEligibility(draft).values()]).toEqual([]);
+  expect(draft.attachments.map((item) => item.name)).toEqual(["kept.png"]);
+});
+
 test("a record stamped for its own revision is honoured", () => {
   installLocalStorage(new MemoryStorage());
   writeCompositionImageRecord("mutation-1", {
@@ -72,7 +118,7 @@ test("a record stamped for its own revision is honoured", () => {
   expect(readCompositionImageRecord("mutation-1")?.revision).toBe(2);
 });
 
-function recoveryRecord(input: InputItem[], extra: Partial<MutationRecoveryRecord> = {}): MutationRecoveryRecord {
+function recoveryRecord(input: InputItem[], extra: Partial<RecoveryRecordWithAnchors> = {}): RecoveryRecordWithAnchors {
   return {
     version: 1,
     clientMutationId: "mutation-1",

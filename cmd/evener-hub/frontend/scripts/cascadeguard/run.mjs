@@ -3,12 +3,12 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { Driver } from "../skillguard/run.mjs";
 import { evaluate, navigateTo, queryAccessibilityTree, REFUSED_BUTTON_SELECTOR } from "../browserGuardCdp.mjs";
-import { revealControlStep, revealReadyExpr } from "./revealControl.mjs";
-import { retainsNewerReadingPoint } from "./releaseRetained.mjs";
-import { attentionJourney } from "./attention.mjs";
 import { isHistoryReadMethod } from "../lib/historyMethods.mjs";
+import { Driver } from "../skillguard/run.mjs";
+import { attentionJourney } from "./attention.mjs";
+import { retainsNewerReadingPoint } from "./releaseRetained.mjs";
+import { revealControlStep, revealReadyExpr } from "./revealControl.mjs";
 
 const fixture = JSON.parse(readFileSync(0, "utf8"));
 const driver = new Driver(fixture);
@@ -39,8 +39,15 @@ async function assertPaneBodyFlush(label) {
     return { scrollHeight: body.scrollHeight, clientHeight: body.clientHeight, overflowY: getComputedStyle(body).overflowY, padding: getComputedStyle(body).padding };
   })()`);
   assert.ok(["clip", "hidden"].includes(paneBody.overflowY), `${label}: the cascade pane body owns no unit scrollbar`);
-  assert.ok(paneBody.scrollHeight <= paneBody.clientHeight + 1, `${label}: the cascade pane body does not grow with column content`);
-  assert.equal(paneBody.padding, "0px", `${label}: the cascade pane body renders flush around the internally scrolling columns`);
+  assert.ok(
+    paneBody.scrollHeight <= paneBody.clientHeight + 1,
+    `${label}: the cascade pane body does not grow with column content`,
+  );
+  assert.equal(
+    paneBody.padding,
+    "0px",
+    `${label}: the cascade pane body renders flush around the internally scrolling columns`,
+  );
 }
 // The rendered track at full depth, mirroring the shipped rule in
 // src/panes/zoom/intent.ts: the live origin conversation (the fixture's
@@ -55,14 +62,16 @@ const drilledTrack = (level) => {
 };
 const column = (ref) => `${inspectorRoot} [data-testid="cascade-column"][data-scope-ref=${q(ref)}]`;
 const row = (edge) => `[data-activity-anchor=${q(`delegate:${JSON.stringify([edge.childRef, edge.delegateId])}`)}]`;
-const scopeRefs = (testid) => `JSON.stringify([...document.querySelectorAll('[data-testid=${q(testid)}]')].map(node => node.dataset.scopeRef))`;
+const scopeRefs = (testid) =>
+  `JSON.stringify([...document.querySelectorAll('[data-testid=${q(testid)}]')].map(node => node.dataset.scopeRef))`;
 const wait = (expression, label, options = {}) => {
   new Function(`return (${expression})`);
   return driver.waitPage(expression, { label, ...options });
 };
 const read = (expression) => evaluate(driver.send, expression);
 const scope = (ref) => `${inspectorRoot} [data-scope-ref=${q(ref)}]`;
-const peekChip = (ref, kind) => `${scope(ref)} button[aria-label^=${q(`${kind},`)}][aria-label$=${q(`- peek at ${ref}`)}]`;
+const peekChip = (ref, kind) =>
+  `${scope(ref)} button[aria-label^=${q(`${kind},`)}][aria-label$=${q(`- peek at ${ref}`)}]`;
 const scroll = (ref) => `${column(ref)} [data-testid="transcript-virtual-list"] > div`;
 const stagedPNG = 'button[aria-label="View staged.png"] img';
 const errors = [];
@@ -76,7 +85,11 @@ let allowStoplessAncestor = false;
 const stoplessComposerWarning = (params) => {
   if (!allowStoplessAncestor) return false;
   const marker = params.args?.[0]?.value;
-  if (typeof marker !== "string" || !marker.startsWith("[evener 5gdv] composer is showing a working session with no Stop.")) return false;
+  if (
+    typeof marker !== "string" ||
+    !marker.startsWith("[evener 5gdv] composer is showing a working session with no Stop.")
+  )
+    return false;
   const ref = params.args?.[1]?.preview?.properties?.find((property) => property.name === "ref")?.value;
   return ref === fixture.refs[1];
 };
@@ -99,9 +112,18 @@ async function capture(name) {
       rows:[...port.querySelectorAll('[data-index]')].map(node => { const r = node.getBoundingClientRect(); return { index:node.dataset.index, box:box(node), intersects:r.bottom > bounds.top && r.top < bounds.bottom, textLength:node.textContent.length }; }) };
   })`);
   writeFileSync(path.join(fixture.artifactDir, `${name}-paint.json`), JSON.stringify(paint, null, 2));
-  writeFileSync(path.join(fixture.artifactDir, `${name}-native-hits.json`), JSON.stringify(await read('window.__cascadeNativeHits'), null, 2));
-  writeFileSync(path.join(fixture.artifactDir, `${name}-scroll-writers.json`), JSON.stringify(await read('window.__cascadeStartupTrace'), null, 2));
-  writeFileSync(path.join(fixture.artifactDir, `${name}-frames.json`), JSON.stringify(await read('window.__cascadeFrameTrace ?? []'), null, 2));
+  writeFileSync(
+    path.join(fixture.artifactDir, `${name}-native-hits.json`),
+    JSON.stringify(await read("window.__cascadeNativeHits"), null, 2),
+  );
+  writeFileSync(
+    path.join(fixture.artifactDir, `${name}-scroll-writers.json`),
+    JSON.stringify(await read("window.__cascadeStartupTrace"), null, 2),
+  );
+  writeFileSync(
+    path.join(fixture.artifactDir, `${name}-frames.json`),
+    JSON.stringify(await read("window.__cascadeFrameTrace ?? []"), null, 2),
+  );
   writeFileSync(path.join(fixture.artifactDir, `${name}.html`), await read("document.documentElement.outerHTML"));
   const screenshot = await driver.send("Page.captureScreenshot", { format: "png" });
   writeFileSync(path.join(fixture.artifactDir, `${name}.png`), Buffer.from(screenshot.result.data, "base64"));
@@ -109,7 +131,10 @@ async function capture(name) {
 }
 
 async function pinSourceDom() {
-  await wait(`document.querySelector(${q(driver.composerSelector(fixture.rootRef))}) !== null && ${driver.paneScopeExpr(fixture.rootRef)}?.querySelector('[data-testid="transcript-virtual-list"]') != null`, "real source composer and transcript are mounted");
+  await wait(
+    `document.querySelector(${q(driver.composerSelector(fixture.rootRef))}) !== null && ${driver.paneScopeExpr(fixture.rootRef)}?.querySelector('[data-testid="transcript-virtual-list"]') != null`,
+    "real source composer and transcript are mounted",
+  );
   await read(`(() => {
     const scope = ${driver.paneScopeExpr(fixture.rootRef)};
     const editor = document.querySelector(${q(driver.composerSelector(fixture.rootRef))});
@@ -120,13 +145,17 @@ async function pinSourceDom() {
 }
 
 async function assertSourceDom() {
-  assert.equal(await read(`(() => {
+  assert.equal(
+    await read(`(() => {
     const previous = window.__cascadeSourceDom;
     return previous.scope.isConnected && previous.editor.isConnected && previous.reader.isConnected &&
       previous.scope === ${driver.paneScopeExpr(fixture.rootRef)} &&
       previous.editor === document.querySelector(${q(driver.composerSelector(fixture.rootRef))}) &&
       previous.reader === previous.scope.querySelector('[data-testid="transcript-virtual-list"]');
-  })()`), true, "the exact source DOM survives inspection");
+  })()`),
+    true,
+    "the exact source DOM survives inspection",
+  );
 }
 
 const sourceAnchorRowExpr = `(() => {
@@ -223,7 +252,10 @@ function wantedReadingOffset(before, after) {
 function wantedScrollTop(before, after) {
   if (before.width === after.width && before.viewport === after.viewport) return null;
   const start = after.scrollTop + after.offset;
-  return Math.max(0, Math.min(start - wantedReadingOffset(before, after), Math.max(0, after.scrollHeight - after.viewport)));
+  return Math.max(
+    0,
+    Math.min(start - wantedReadingOffset(before, after), Math.max(0, after.scrollHeight - after.viewport)),
+  );
 }
 
 function assertReadingContinuity(before, after, label) {
@@ -236,8 +268,11 @@ function assertReadingContinuity(before, after, label) {
   } else {
     assert.equal(after.entry, before.entry, `${label} preserves the semantic entry`);
     const wantedScroll = wantedScrollTop(before, after);
-    if (wantedScroll !== null) assert.ok(Math.abs(after.scrollTop - wantedScroll) <= 2,
-      `${label} preserves feasible within-entry progress, actual ${after.scrollTop}, wanted ${wantedScroll}`);
+    if (wantedScroll !== null)
+      assert.ok(
+        Math.abs(after.scrollTop - wantedScroll) <= 2,
+        `${label} preserves feasible within-entry progress, actual ${after.scrollTop}, wanted ${wantedScroll}`,
+      );
   }
 }
 
@@ -253,7 +288,8 @@ async function settledReadingPoint(portExpr, label) {
 }
 
 async function settledReadingContinuity(before, portExpr, label) {
-  return wait(`(() => {
+  return wait(
+    `(() => {
     const before = ${q(before)};
     const after = ${readingPointExpr(portExpr)};
     window.__cascadeReadingAttempt = { label:${q(label)}, point:after };
@@ -272,11 +308,14 @@ async function settledReadingContinuity(before, portExpr, label) {
     ${wantedScrollTop.toString()}
     const wantedScroll = wantedScrollTop(before, after);
     return wantedScroll === null || Math.abs(after.scrollTop - wantedScroll) <= 2 ? after : null;
-  })()`, `${label}, actual source reading position finishes restoration`);
+  })()`,
+    `${label}, actual source reading position finishes restoration`,
+  );
 }
 
 async function nativeReaderWheel(portExpr, deltaY) {
-  const point = await wait(`(() => {
+  const point = await wait(
+    `(() => {
     const port = ${portExpr};
     if (!port || port.clientWidth <= 0 || port.clientHeight <= 0) return null;
     const r = port.getBoundingClientRect();
@@ -297,12 +336,17 @@ async function nativeReaderWheel(portExpr, deltaY) {
     return { x:r.x + r.width / 2, y:r.y + r.height / 2, scrollTop:port.scrollTop, eventIndex:window.__cascadeReaderWheels.length,
       portBox:box(port), intendedAtMeasure:port.contains(target), viewport:innerWidth,
       hitSurface:target?.closest('[data-pane-scaffold]')?.dataset.paneScaffold };
-  })()`, "native wheel midpoint actually hits its intended reader");
-  const observation = { kind:"wheel-target", point };
+  })()`,
+    "native wheel midpoint actually hits its intended reader",
+  );
+  const observation = { kind: "wheel-target", point };
   readingPoints.push(observation);
-  await driver.send("Input.dispatchMouseEvent", { type:"mouseMoved", x:point.x, y:point.y });
-  await driver.send("Input.dispatchMouseEvent", { type:"mouseWheel", deltaX:0, deltaY, x:point.x, y:point.y });
-  const observed = await wait(`window.__cascadeReaderWheels[${point.eventIndex}]`, "native wheel event reaches the page");
+  await driver.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y });
+  await driver.send("Input.dispatchMouseEvent", { type: "mouseWheel", deltaX: 0, deltaY, x: point.x, y: point.y });
+  const observed = await wait(
+    `window.__cascadeReaderWheels[${point.eventIndex}]`,
+    "native wheel event reaches the page",
+  );
   observation.observed = observed;
   assert.equal(observed.trusted, true, "reader movement uses genuine native wheel input");
   assert.equal(observed.intended, true, "native wheel targets its intended reader");
@@ -318,12 +362,15 @@ function insideUsefulTallEntry(point) {
 
 async function readInsideTallEntry(portExpr, label) {
   await nativeReaderWheel(portExpr, -900);
-  return wait(`(() => {
+  return wait(
+    `(() => {
     const point = ${readingPointExpr(portExpr)};
     window.__cascadeReadingAttempt = { label:${q(label)}, point };
     ${insideUsefulTallEntry.toString()}
     return point?.useful && insideUsefulTallEntry(point) ? point : null;
-  })()`, `${label}, native wheel selects useful content inside a tall entry`);
+  })()`,
+    `${label}, native wheel selects useful content inside a tall entry`,
+  );
 }
 
 async function widthOnlyReflow(portExpr, width, height, label) {
@@ -338,22 +385,40 @@ async function heightOnlyChange(portExpr, height, label) {
 async function viewportReflow(portExpr, width, height, label, changed) {
   const before = await settledReadingPoint(portExpr, `${label} before`);
   assert.ok(insideUsefulTallEntry(before), `${label} begins inside a tall entry away from the end`);
-  await driver.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor:1, mobile:false });
+  await driver.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
   const portDimension = changed === "width" ? `clientWidth !== ${before.width}` : `clientHeight !== ${before.viewport}`;
-  await wait(`window.innerWidth === ${width} && window.innerHeight === ${height} && (${portExpr})?.${portDimension}`, `${label}, actual reader ${changed} changes`);
+  await wait(
+    `window.innerWidth === ${width} && window.innerHeight === ${height} && (${portExpr})?.${portDimension}`,
+    `${label}, actual reader ${changed} changes`,
+  );
   const after = await settledReadingPoint(portExpr, `${label} after`);
-  readingPoints.push({ kind:`${changed}-only`, label, before, after });
+  readingPoints.push({ kind: `${changed}-only`, label, before, after });
   if (changed === "width") assert.notEqual(after.width, before.width, `${label} observes a width-only transition`);
   else {
-    assert.ok(after.width === before.width && after.viewport !== before.viewport, `${label} observes a height-only transition`);
+    assert.ok(
+      after.width === before.width && after.viewport !== before.viewport,
+      `${label} observes a height-only transition`,
+    );
     // The progress rule would move the line by its progress through the entry
     // times the height change; that shift must be big enough here that keeping
     // the line is a real check, not a near-no-op.
-    const progressShift = (-before.offset / (before.height - before.viewport)) * Math.abs(after.viewport - before.viewport);
-    assert.ok(progressShift > 10, `${label} reads far enough into its entry to tell the rules apart, ${progressShift}px`);
+    const progressShift =
+      (-before.offset / (before.height - before.viewport)) * Math.abs(after.viewport - before.viewport);
+    assert.ok(
+      progressShift > 10,
+      `${label} reads far enough into its entry to tell the rules apart, ${progressShift}px`,
+    );
   }
   assertReadingContinuity(before, after, label);
-  driver.milestone(label, { entry:after.entry, row:after.row, oldWidth:before.width, width:after.width, oldViewport:before.viewport, viewport:after.viewport, offset:after.offset });
+  driver.milestone(label, {
+    entry: after.entry,
+    row: after.row,
+    oldWidth: before.width,
+    width: after.width,
+    oldViewport: before.viewport,
+    viewport: after.viewport,
+    offset: after.offset,
+  });
 }
 
 async function sharedWidthJourney() {
@@ -367,12 +432,20 @@ async function sharedWidthJourney() {
   await drill(fixture.edges[0], 1);
   // The origin conversation never renders in the pane, so the first drill's
   // lone column is itself the cascade column reader under proof.
-  await driver.send("Emulation.setDeviceMetricsOverride", { width:1640, height:900, deviceScaleFactor:1, mobile:false });
+  await driver.send("Emulation.setDeviceMetricsOverride", {
+    width: 1640,
+    height: 900,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
   const portExpr = `document.querySelector(${q(scroll(fixture.refs[1]))})`;
-  await wait(`(() => {
+  await wait(
+    `(() => {
     const port = ${portExpr}, bounds = port?.getBoundingClientRect();
     return port?.clientWidth > 0 && port.clientHeight > 0 && bounds.width > 0 && bounds.height > 0;
-  })()`, "cascade column has a visible native wheel target");
+  })()`,
+    "cascade column has a visible native wheel target",
+  );
   await readInsideTallEntry(portExpr, "cascade column");
   await widthOnlyReflow(portExpr, 2000, 900, "cascade-reader-width-reflow");
   await widthOnlyReflow(portExpr, 1640, 900, "cascade-reader-width-return");
@@ -381,39 +454,56 @@ async function sharedWidthJourney() {
   await assertColumnConversations();
   await capture("shared-reader-width-reflow");
   await returnToSource();
-  await driver.send("Emulation.setDeviceMetricsOverride", { width:1000, height:900, deviceScaleFactor:1, mobile:false });
+  await driver.send("Emulation.setDeviceMetricsOverride", {
+    width: 1000,
+    height: 900,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
   await settledReadingPoint(sourcePortExpr, "ordinary source after shared width proof");
 }
 
 async function openSourceVerbosity() {
-  const menu = await wait(`(() => {
+  const menu = await wait(
+    `(() => {
     const button = ${driver.paneScopeExpr(fixture.rootRef)}?.querySelector('[data-session-actions-ref]')?.closest('button');
     const r = button?.getBoundingClientRect();
     return r?.width > 0 && r.height > 0 ? { x:r.x + r.width / 2, y:r.y + r.height / 2 } : null;
-  })()`, "the original source has a visible Session menu button");
+  })()`,
+    "the original source has a visible Session menu button",
+  );
   await driver.clickAt(menu.x, menu.y);
   // Mounted menu DOM can precede the compositor's scrollbar hit-test update.
-  await driver.send("Page.captureScreenshot", { format:"png" });
-  const verbosity = await wait(`(() => {
+  await driver.send("Page.captureScreenshot", { format: "png" });
+  const verbosity = await wait(
+    `(() => {
     const button = [...document.querySelectorAll('[role="menuitem"]')].find(node => node.textContent.trim() === 'Verbosity…');
     const r = button?.getBoundingClientRect();
     return r?.width > 0 && r.height > 0 ? { x:r.x + r.width / 2, y:r.y + r.height / 2 } : null;
-  })()`, "the actual source menu offers Verbosity");
+  })()`,
+    "the actual source menu offers Verbosity",
+  );
   await driver.clickAt(verbosity.x, verbosity.y);
-  return wait(`(() => {
+  return wait(
+    `(() => {
     const panel = document.querySelector('[data-testid="transcript-detail-control"]');
     const selected = panel?.querySelector('section[aria-label="Transcript detail editor"] [role="radio"][aria-checked="true"]')?.textContent.trim();
     return selected ? { selected, local:panel.textContent.includes('Local Desktop view') } : null;
-  })()`, "the real Verbosity dialog exposes its current preset");
+  })()`,
+    "the real Verbosity dialog exposes its current preset",
+  );
 }
 
 async function clickVerbosityChoice(label, role = "radio") {
-  const point = await wait(`(() => {
+  const point = await wait(
+    `(() => {
     const panel = document.querySelector('[data-testid="transcript-detail-control"]');
-    const button = [...panel?.querySelectorAll(${q(role === "radio" ? '[role="radio"]' : 'button')}) ?? []].find(node => node.textContent.trim() === ${q(label)});
+    const button = [...panel?.querySelectorAll(${q(role === "radio" ? '[role="radio"]' : "button")}) ?? []].find(node => node.textContent.trim() === ${q(label)});
     const r = button?.getBoundingClientRect();
     return r?.width > 0 && r.height > 0 ? { x:r.x + r.width / 2, y:r.y + r.height / 2 } : null;
-  })()`, `the actual Verbosity ${label} control is visible`);
+  })()`,
+    `the actual Verbosity ${label} control is visible`,
+  );
   await driver.clickAt(point.x, point.y);
 }
 
@@ -422,7 +512,8 @@ async function clickVerbosityChoice(label, role = "radio") {
 // reads mean the reader has come to rest.
 async function waitForReaderAtRest(portExpr, label) {
   await read("window.__cascadeRest = { top: null, frames: 0 }");
-  await wait(`(() => {
+  await wait(
+    `(() => {
     const port = ${portExpr};
     if (!port) return null;
     const state = window.__cascadeRest ?? { top: null, frames: 0 };
@@ -433,7 +524,9 @@ async function waitForReaderAtRest(portExpr, label) {
     }
     state.frames += 1;
     return state.frames >= 3 ? { scrollTop: port.scrollTop } : null;
-  })()`, label);
+  })()`,
+    label,
+  );
   return read("window.__cascadeRest.top");
 }
 
@@ -452,12 +545,21 @@ async function releaseQueuedMeasurements() {
 }
 
 async function nativePositioningInterruption(input) {
-  assert.ok(input === "wheel" || input === "pill" || input === "Shift-Space", "the native interruption uses a real reader input");
+  assert.ok(
+    input === "wheel" || input === "pill" || input === "Shift-Space",
+    "the native interruption uses a real reader input",
+  );
   const original = await openSourceVerbosity();
-  assert.ok(["Chat", "Tools"].includes(original.selected), "the native interruption starts from a real Chat or Tools preset");
+  assert.ok(
+    ["Chat", "Tools"].includes(original.selected),
+    "the native interruption starts from a real Chat or Tools preset",
+  );
   if (original.selected !== "Chat") {
     await clickVerbosityChoice("Chat");
-    await wait(`document.querySelector('[data-testid="transcript-detail-control"] section[aria-label="Transcript detail editor"] [role="radio"][aria-checked="true"]')?.textContent.trim() === "Chat"`, "the real source has a Chat baseline before the measurement hold");
+    await wait(
+      `document.querySelector('[data-testid="transcript-detail-control"] section[aria-label="Transcript detail editor"] [role="radio"][aria-checked="true"]')?.textContent.trim() === "Chat"`,
+      "the real source has a Chat baseline before the measurement hold",
+    );
   }
   // The interruption measurement must start inside a tall entry, away from the
   // end. The preceding journeys (and a late reflow) can leave the source at the
@@ -472,8 +574,10 @@ async function nativePositioningInterruption(input) {
     // reader, then reopen it and resample the settled geometry before arming
     // the measurement hold (RoboRev review of #5791).
     await key("Escape", 27);
-    await wait('document.querySelector("[data-testid=transcript-detail-control]") === null',
-      "Verbosity closes before the reader is repositioned");
+    await wait(
+      'document.querySelector("[data-testid=transcript-detail-control]") === null',
+      "Verbosity closes before the reader is repositioned",
+    );
     await readInsideTallEntry(sourcePortExpr, "native interruption before width");
     const reopened = await openSourceVerbosity();
     assert.equal(reopened.selected, "Chat", "the reopened Verbosity keeps the Chat baseline");
@@ -482,9 +586,11 @@ async function nativePositioningInterruption(input) {
     // so re-read it here before it becomes observation.before.
     before = await settledReadingPoint(sourcePortExpr, "native interruption before width");
   }
-  assert.ok(insideUsefulTallEntry(before),
-    "the native interruption starts inside useful tall content away from the end");
-  const observation = { kind:`${input}-interruption`, original, baselinePreset:"Chat", before };
+  assert.ok(
+    insideUsefulTallEntry(before),
+    "the native interruption starts inside useful tall content away from the end",
+  );
+  const observation = { kind: `${input}-interruption`, original, baselinePreset: "Chat", before };
   readingPoints.push(observation);
   await read(`(() => {
     const state = window.__cascadeMeasurements, port = ${sourcePortExpr};
@@ -495,14 +601,29 @@ async function nativePositioningInterruption(input) {
     state.row = row;
   })()`);
   try {
-    await driver.send("Emulation.setDeviceMetricsOverride", { width:920, height:900, deviceScaleFactor:1, mobile:false });
-    await wait(`window.innerWidth === 920 && (${sourcePortExpr})?.clientWidth !== ${before.width}`, "interruption preparation changes actual source width");
+    await driver.send("Emulation.setDeviceMetricsOverride", {
+      width: 920,
+      height: 900,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+    await wait(
+      `window.innerWidth === 920 && (${sourcePortExpr})?.clientWidth !== ${before.width}`,
+      "interruption preparation changes actual source width",
+    );
     const other = "Tools";
     await clickVerbosityChoice(other);
-    await wait(`document.querySelector('[data-testid="transcript-detail-control"] section[aria-label="Transcript detail editor"] [role="radio"][aria-checked="true"]')?.textContent.trim() === ${q(other)}`, "the real source preset change is published");
+    await wait(
+      `document.querySelector('[data-testid="transcript-detail-control"] section[aria-label="Transcript detail editor"] [role="radio"][aria-checked="true"]')?.textContent.trim() === ${q(other)}`,
+      "the real source preset change is published",
+    );
     await key("Escape", 27);
-    await wait('document.querySelector("[data-testid=transcript-detail-control]") === null', "Verbosity closes before input reaches the source port");
-    observation.prepared = await wait(`(() => {
+    await wait(
+      'document.querySelector("[data-testid=transcript-detail-control]") === null',
+      "Verbosity closes before input reaches the source port",
+    );
+    observation.prepared = await wait(
+      `(() => {
       const state = window.__cascadeMeasurements, port = ${sourcePortExpr};
       const row = state?.row, bounds = row?.getBoundingClientRect();
       const entries = state?.queued.flatMap(pending => pending.entries) ?? [];
@@ -513,14 +634,19 @@ async function nativePositioningInterruption(input) {
       return { point, connected:true, index:row.dataset.index, rowWidth:bounds.width, rowHeight:bounds.height,
         entries:entries.map(entry => ({ native:entry instanceof ResizeObserverEntry, connected:entry.target.isConnected,
           index:entry.target.dataset.index, width:entry.contentRect.width, height:entry.contentRect.height })) };
-    })()`, "native input checkpoint has a connected selected row and genuine queued target measurements");
-    assert.ok(Math.abs(observation.prepared.rowHeight - before.rowBox.height) > 1.5,
-      "the prepared virtual row differs from the stable pre-hold measurement beyond committed-geometry tolerance");
+    })()`,
+      "native input checkpoint has a connected selected row and genuine queued target measurements",
+    );
+    assert.ok(
+      Math.abs(observation.prepared.rowHeight - before.rowBox.height) > 1.5,
+      "the prepared virtual row differs from the stable pre-hold measurement beyond committed-geometry tolerance",
+    );
     await capture(`${input}-interruption-prepared`);
     if (input === "wheel") {
       await nativeReaderWheel(sourcePortExpr, -900);
     } else if (input === "Shift-Space") {
-      const target = await wait(`(() => {
+      const target = await wait(
+        `(() => {
         const port = ${sourcePortExpr}, bounds = port?.getBoundingClientRect();
         if (!bounds || bounds.width <= 0 || bounds.height <= 0) return null;
         // The port's centre is the first choice, but transcript content
@@ -542,7 +668,9 @@ async function nativePositioningInterruption(input) {
           tag:event.target.tagName, prevented:event.defaultPrevented
         }), { once:true });
         return { x, y, scrollTop:port.scrollTop, eventIndex:window.__cascadeNativeKeys.length };
-      })()`, "native Shift-Space has a real non-activating transcript target");
+      })()`,
+        "native Shift-Space has a real non-activating transcript target",
+      );
       await driver.clickAt(target.x, target.y);
       observation.keyFocus = await read(`(() => {
         (${sourcePortExpr}).focus({ preventScroll:true });
@@ -551,19 +679,31 @@ async function nativePositioningInterruption(input) {
       })()`);
       assert.equal(observation.keyFocus.intended, true, "the unchanged native viewport accepts keyboard focus");
       for (const type of ["keyDown", "keyUp"]) {
-        await driver.send("Input.dispatchKeyEvent", { type, key:" ", code:"Space", modifiers:8,
-          windowsVirtualKeyCode:32,
-          ...(type === "keyDown" ? { text:" ", unmodifiedText:" " } : {}) });
+        await driver.send("Input.dispatchKeyEvent", {
+          type,
+          key: " ",
+          code: "Space",
+          modifiers: 8,
+          windowsVirtualKeyCode: 32,
+          ...(type === "keyDown" ? { text: " ", unmodifiedText: " " } : {}),
+        });
       }
-      observation.key = await wait(`window.__cascadeNativeKeys[${target.eventIndex}]`, "native Shift-Space reaches its real keyboard target");
+      observation.key = await wait(
+        `window.__cascadeNativeKeys[${target.eventIndex}]`,
+        "native Shift-Space reaches its real keyboard target",
+      );
       assert.equal(observation.key.trusted, true, "Shift-Space uses genuine native input");
       assert.equal(observation.key.intended, true, "Shift-Space targets the actual source reader");
       assert.equal(observation.key.key, " ", "the native event carries Space");
       assert.equal(observation.key.shift, true, "the native event carries Shift");
       assert.equal(observation.key.prevented, false, "the browser receives the native scrolling default");
-      await wait(`(${sourcePortExpr}).scrollTop < ${target.scrollTop}`, "native Shift-Space scrolls the actual reader backward");
+      await wait(
+        `(${sourcePortExpr}).scrollTop < ${target.scrollTop}`,
+        "native Shift-Space scrolls the actual reader backward",
+      );
     } else {
-      const click = await wait(`(() => {
+      const click = await wait(
+        `(() => {
         const pill = ${driver.paneScopeExpr(fixture.rootRef)}?.querySelector('[data-testid="new-content-pill"]');
         const bounds = pill?.getBoundingClientRect();
         if (!bounds || bounds.width <= 0 || bounds.height <= 0) return null;
@@ -576,22 +716,35 @@ async function nativePositioningInterruption(input) {
           focusedPill:document.activeElement === pill
         }), { capture:true, once:true });
         return { x, y, eventIndex:window.__cascadePillClicks.length };
-      })()`, "the real current-state pill has a visible native click target");
+      })()`,
+        "the real current-state pill has a visible native click target",
+      );
       await driver.clickAt(click.x, click.y);
-      observation.command = await wait(`window.__cascadePillClicks[${click.eventIndex}]`, "the native pill click reaches its real command");
+      observation.command = await wait(
+        `window.__cascadePillClicks[${click.eventIndex}]`,
+        "the native pill click reaches its real command",
+      );
       assert.equal(observation.command.trusted, true, "the positioning command uses genuine native input");
       assert.equal(observation.command.intended, true, "the native click reaches the real source pill");
       assert.equal(observation.command.focusedPill, true, "native pill focus identifies the command checkpoint");
-      await wait(`(() => {
+      await wait(
+        `(() => {
         const point = ${sourceReadingPointExpr};
         return point?.useful && point.followingBottom ? point : null;
-      })()`, "the actual pill command reaches useful live content before measurement release");
+      })()`,
+        "the actual pill command reaches useful live content before measurement release",
+      );
     }
     observation.newer = await settledReadingPoint(sourcePortExpr, `native interruption after admitted ${input}`);
-    assert.ok(observation.newer.entry !== before.entry || Math.abs(observation.newer.offset - before.offset) >= 100,
-      "the actual native input distinguishes the newer reading point from the pre-trigger point");
-    assert.ok(observation.newer.entry !== observation.prepared.point.entry || Math.abs(observation.newer.offset - observation.prepared.point.offset) >= 100,
-      "the admitted input meaningfully moves the prepared reader");
+    assert.ok(
+      observation.newer.entry !== before.entry || Math.abs(observation.newer.offset - before.offset) >= 100,
+      "the actual native input distinguishes the newer reading point from the pre-trigger point",
+    );
+    assert.ok(
+      observation.newer.entry !== observation.prepared.point.entry ||
+        Math.abs(observation.newer.offset - observation.prepared.point.offset) >= 100,
+      "the admitted input meaningfully moves the prepared reader",
+    );
     // Late measurements can land any time after the reader's input. Release
     // them once the reader has actually come to rest, never after a fixed
     // delay: the outcome must not depend on where TanStack's isScrolling reset
@@ -600,7 +753,10 @@ async function nativePositioningInterruption(input) {
     // Streaming rows keep arriving while the hold is up, and each arrival may
     // move the reader with the content. The release only has to preserve the
     // reading point as it stands when the release begins.
-    observation.releasePoint = await settledReadingPoint(sourcePortExpr, `native interruption immediately before releasing ${input}`);
+    observation.releasePoint = await settledReadingPoint(
+      sourcePortExpr,
+      `native interruption immediately before releasing ${input}`,
+    );
   } finally {
     await releaseQueuedMeasurements();
     await read(`(() => {
@@ -613,22 +769,31 @@ async function nativePositioningInterruption(input) {
       return { queued:state.queued.length, held:state.port !== null || state.row !== null };
     })()`);
   }
-  assert.deepEqual(observation.released, { queued:0, held:false }, "all genuine queued measurements are released");
+  assert.deepEqual(observation.released, { queued: 0, held: false }, "all genuine queued measurements are released");
   observation.after = await settledReadingPoint(sourcePortExpr, "native interruption after release");
   const { after } = observation;
   const releasePoint = observation.releasePoint;
   const oldOffset = wantedReadingOffset(before, after);
-  const oldTarget = Math.max(0, Math.min(after.scrollTop + after.offset - oldOffset, Math.max(0, after.scrollHeight - after.viewport)));
+  const oldTarget = Math.max(
+    0,
+    Math.min(after.scrollTop + after.offset - oldOffset, Math.max(0, after.scrollHeight - after.viewport)),
+  );
   const retainedNewer = retainsNewerReadingPoint(releasePoint, after);
-  observation.staleReplay = !retainedNewer && after.entry === before.entry && Math.abs(after.scrollTop - oldTarget) <= 2;
+  observation.staleReplay =
+    !retainedNewer && after.entry === before.entry && Math.abs(after.scrollTop - oldTarget) <= 2;
   observation.oldTarget = oldTarget;
   await capture(`${input}-interruption-released`);
-  assert.ok(retainedNewer, observation.staleReplay
-    ? "released measurements replay the obsolete pre-trigger entry/alignment after admitted native input"
-    : "released measurements displace the newer reading point without an obsolete-target replay witness");
-  if (input === "pill") assert.equal(after.followingBottom, true, "released measurements retain the real live command result");
-  driver.milestone(`${input}-interruption-precedence`, { entry:after.entry, offset:after.offset });
-  if (input === "pill") await read(`(() => {
+  assert.ok(
+    retainedNewer,
+    observation.staleReplay
+      ? "released measurements replay the obsolete pre-trigger entry/alignment after admitted native input"
+      : "released measurements displace the newer reading point without an obsolete-target replay witness",
+  );
+  if (input === "pill")
+    assert.equal(after.followingBottom, true, "released measurements retain the real live command result");
+  driver.milestone(`${input}-interruption-precedence`, { entry: after.entry, offset: after.offset });
+  if (input === "pill")
+    await read(`(() => {
     const port = ${sourcePortExpr};
     window.__cascadeCleanupMutations = new MutationObserver(records => {
       window.__cascadeTraceStartup('cleanup-layout-mutation', { records:records.map(record => ({
@@ -642,13 +807,32 @@ async function nativePositioningInterruption(input) {
     window.__cascadeCleanupMutations.observe(port, { subtree:true, childList:true, attributes:true, attributeOldValue:true, attributeFilter:['style'] });
   })()`);
   await openSourceVerbosity();
-  await clickVerbosityChoice(original.local ? original.selected : "Use hub default", original.local ? "radio" : "button");
-  await wait(`document.querySelector('[data-testid="transcript-detail-control"] section[aria-label="Transcript detail editor"] [role="radio"][aria-checked="true"]')?.textContent.trim() === ${q(original.selected)}`, "native UI restores the original source preset");
+  await clickVerbosityChoice(
+    original.local ? original.selected : "Use hub default",
+    original.local ? "radio" : "button",
+  );
+  await wait(
+    `document.querySelector('[data-testid="transcript-detail-control"] section[aria-label="Transcript detail editor"] [role="radio"][aria-checked="true"]')?.textContent.trim() === ${q(original.selected)}`,
+    "native UI restores the original source preset",
+  );
   await key("Escape", 27);
-  await wait('document.querySelector("[data-testid=transcript-detail-control]") === null', "restored Verbosity dialog closes");
-  await driver.send("Emulation.setDeviceMetricsOverride", { width:1000, height:900, deviceScaleFactor:1, mobile:false });
+  await wait(
+    'document.querySelector("[data-testid=transcript-detail-control]") === null',
+    "restored Verbosity dialog closes",
+  );
+  await driver.send("Emulation.setDeviceMetricsOverride", {
+    width: 1000,
+    height: 900,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
   const cleanedUp = await settledReadingPoint(sourcePortExpr, "source after native interruption preparation cleanup");
-  if (input === "pill") assert.equal(cleanedUp.followingBottom, true, "restoring the source preset and width preserves the admitted live command");
+  if (input === "pill")
+    assert.equal(
+      cleanedUp.followingBottom,
+      true,
+      "restoring the source preset and width preserves the admitted live command",
+    );
   await assertSourceDom();
 }
 
@@ -672,14 +856,25 @@ async function assertColumnConversations() {
     };
   })()`);
   assert.ok(snapshot && snapshot.columns.length >= 1, "the inspector hosts readable columns");
-  assert.deepEqual(snapshot.composerRefs, snapshot.columns.map(column => column.ref),
-    "every readable column embeds exactly its own conversation composer and nothing else does");
+  assert.deepEqual(
+    snapshot.composerRefs,
+    snapshot.columns.map((column) => column.ref),
+    "every readable column embeds exactly its own conversation composer and nothing else does",
+  );
   for (const column of snapshot.columns) {
     assert.equal(column.composer, column.ref, `the readable column for ${column.ref} embeds its own conversation`);
     assert.equal(column.editor, true, `the embedded conversation for ${column.ref} mounts its composer editor`);
   }
-  assert.ok(await read(`document.querySelector(${q(driver.composerSelector(fixture.rootRef))})?.querySelector('[role="textbox"]') != null`), "the center keeps its original editor");
-  assert.ok(await read(`${driver.paneScopeExpr(fixture.rootRef)}?.querySelector('input[type="file"]') != null`), "the center keeps its original file picker");
+  assert.ok(
+    await read(
+      `document.querySelector(${q(driver.composerSelector(fixture.rootRef))})?.querySelector('[role="textbox"]') != null`,
+    ),
+    "the center keeps its original editor",
+  );
+  assert.ok(
+    await read(`${driver.paneScopeExpr(fixture.rootRef)}?.querySelector('input[type="file"]') != null`),
+    "the center keeps its original file picker",
+  );
 }
 
 async function returnToSource() {
@@ -694,16 +889,27 @@ async function returnToSource() {
   await driver.clickByText("Return to previous view");
   await read('window.__cascadeTraceSource?.("after-return-click")');
   await wait(`document.querySelector(${q(inspectorRoot)}) === null`, "Return removes only inspection");
-  await wait(`document.querySelector(${q(driver.composerSelector(fixture.rootRef))})?.querySelector('[role="textbox"]')?.contains(document.activeElement) === true`, "Return requests keyboard focus in the exact source editor");
-  const returnedLayout = await wait(`(() => {
+  await wait(
+    `document.querySelector(${q(driver.composerSelector(fixture.rootRef))})?.querySelector('[role="textbox"]')?.contains(document.activeElement) === true`,
+    "Return requests keyboard focus in the exact source editor",
+  );
+  const returnedLayout = await wait(
+    `(() => {
     const saved = ${layoutExpr};
     return saved?.panels[${q(fixture.sourcePaneId)}]?.params?.paneType === 'session' &&
       !saved.panels[${q(removedInspectorId)}] ? saved : null;
-  })()`, "debounced layout records inspector removal and surviving source");
+  })()`,
+    "debounced layout records inspector removal and surviving source",
+  );
   assert.equal(returnedLayout.activeGroup, placement(returnedLayout, fixture.sourcePaneId).group.id);
   assert.equal(await read("document.querySelectorAll('.dv-tab').length"), fixture.sourceTabCount);
   const afterReturnPoint = await settledReadingContinuity(beforeReturnPoint, sourcePortExpr, "Return");
-  readingPoints.push({ kind:"return", before:beforeReturnPoint, after:afterReturnPoint, sourceRow:beforeReturnAnchor });
+  readingPoints.push({
+    kind: "return",
+    before: beforeReturnPoint,
+    after: afterReturnPoint,
+    sourceRow: beforeReturnAnchor,
+  });
   if (beforeReturnPoint.followingBottom) {
     // Read the live port again rather than reusing the wait's own snapshot: a
     // reader who stopped following between the wait and this check must fail.
@@ -711,8 +917,10 @@ async function returnToSource() {
       const port = ${sourcePortExpr};
       return port ? port.scrollHeight - port.clientHeight - port.scrollTop : null;
     })()`);
-    assert.ok(returnedEndGap !== null && returnedEndGap <= 1.5,
-      `Return keeps the source reader following the end, live gap ${returnedEndGap}px`);
+    assert.ok(
+      returnedEndGap !== null && returnedEndGap <= 1.5,
+      `Return keeps the source reader following the end, live gap ${returnedEndGap}px`,
+    );
   } else {
     assert.ok(beforeReturnAnchor, "Return begins with a visible source row");
     assert.equal(await sourceAnchor(), beforeReturnAnchor, "Return preserves the visible source row");
@@ -729,16 +937,27 @@ async function key(key, keyCode) {
     // X11's "r" and a different key on macOS, where this press opened
     // chrome://settings/help in front of the page, hiding it and pausing its
     // animations). The DOM reads key, code and the Windows keyCode.
-    await driver.send("Input.dispatchKeyEvent", { type, key, code: key, windowsVirtualKeyCode: keyCode,
-      ...(key === "Enter" && type === "keyDown" ? { text: "\r", unmodifiedText: "\r" } : {}) });
+    await driver.send("Input.dispatchKeyEvent", {
+      type,
+      key,
+      code: key,
+      windowsVirtualKeyCode: keyCode,
+      ...(key === "Enter" && type === "keyDown" ? { text: "\r", unmodifiedText: "\r" } : {}),
+    });
   }
 }
 
 async function upload(name) {
   const tree = await driver.send("DOM.getDocument");
-  const node = await driver.send("DOM.querySelector", { nodeId: tree.result.root.nodeId, selector: `${driver.composerSelector(fixture.rootRef)} input[type="file"]` });
+  const node = await driver.send("DOM.querySelector", {
+    nodeId: tree.result.root.nodeId,
+    selector: `${driver.composerSelector(fixture.rootRef)} input[type="file"]`,
+  });
   assert.ok(node.result.nodeId, "real source file picker");
-  await driver.send("DOM.setFileInputFiles", { nodeId: node.result.nodeId, files: [path.join(fixture.artifactDir, name)] });
+  await driver.send("DOM.setFileInputFiles", {
+    nodeId: node.result.nodeId,
+    files: [path.join(fixture.artifactDir, name)],
+  });
 }
 
 async function holdCanvasCompletion() {
@@ -762,7 +981,8 @@ async function holdCanvasCompletion() {
 // `buttonExpr` is a page expression evaluating to the button (or null);
 // `inline` is the scrollIntoView inline mode the caller's surface needs.
 async function clickWhenReady(buttonExpr, label, inline) {
-  await wait(`(async () => {
+  await wait(
+    `(async () => {
     const button = await (${buttonExpr});
     if (!button || button.matches(${q(REFUSED_BUTTON_SELECTOR)})) return null;
     button.scrollIntoView({ block: "center", inline: ${q(inline)} });
@@ -770,7 +990,9 @@ async function clickWhenReady(buttonExpr, label, inline) {
     if (!button.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2))) return null;
     button.click();
     return true;
-  })()`, label);
+  })()`,
+    label,
+  );
 }
 
 async function openPeek(ref, kind) {
@@ -787,7 +1009,8 @@ const spineStatus = {
 };
 
 async function assertSpineStatus(ref, ...states) {
-  const { reducedMotion, ...status } = await wait(`(() => {
+  const { reducedMotion, ...status } = await wait(
+    `(() => {
     const spine = document.querySelector('[data-testid="cascade-spine"][data-scope-ref=${q(ref)}]');
     const runtime = spine?.querySelector('[data-runtime-state]');
     if (!runtime || !${q(states)}.includes(runtime.dataset.runtimeState)) return null;
@@ -802,9 +1025,14 @@ async function assertSpineStatus(ref, ...states) {
       exposedImage: runtime.querySelector('[role="img"]') !== null,
       animation: glyph ? getComputedStyle(glyph).animationName : null,
       reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches };
-  })()`, `actual ${states.join(" or ")} ancestor status`);
+  })()`,
+    `actual ${states.join(" or ")} ancestor status`,
+  );
   const { text, glyphState } = spineStatus[status.state];
-  assert.ok(status.width <= 8.5 && status.height <= 8.5, `compact status must fit an 8px indicator, got ${status.width}x${status.height}`);
+  assert.ok(
+    status.width <= 8.5 && status.height <= 8.5,
+    `compact status must fit an 8px indicator, got ${status.width}x${status.height}`,
+  );
   assert.equal(status.title, text, "exact runtime state remains available on hover");
   assert.equal(status.text, text, "exact runtime state remains available to screen readers");
   assert.notEqual(status.hiddenFromAT, "true");
@@ -872,8 +1100,14 @@ async function pendingImage(name, success) {
   await read(`window.__cascadeTraceSource('pending-start', ${q(name)})`);
   await holdCanvasCompletion();
   await upload(name);
-  await wait("window.__cascadeEncode?.encoded && window.__cascadeEncode.release !== null", "native canvas encoded before completion hold");
-  await wait(`document.querySelector('[role="img"][aria-label=${q(`${name} (still processing)`)}]') !== null`, "original pending tile");
+  await wait(
+    "window.__cascadeEncode?.encoded && window.__cascadeEncode.release !== null",
+    "native canvas encoded before completion hold",
+  );
+  await wait(
+    `document.querySelector('[role="img"][aria-label=${q(`${name} (still processing)`)}]') !== null`,
+    "original pending tile",
+  );
   await driver.focusComposer(fixture.rootRef);
   await driver.typeText(fixture.rootRef, ` CASCADE_NEWER_IMAGE_${success ? "SUCCESS" : "FAILURE"}`);
   const newerDraft = await driver.composerState(fixture.rootRef);
@@ -886,13 +1120,27 @@ async function pendingImage(name, success) {
   await read('window.__cascadeTraceSource("after-release")');
   await returnToSource();
   if (success) {
-    await wait(`document.querySelector('button[aria-label=${q(`View ${name}`)}] img')?.src.startsWith('data:image/png;base64,')`, "late real PNG completion in original source");
+    await wait(
+      `document.querySelector('button[aria-label=${q(`View ${name}`)}] img')?.src.startsWith('data:image/png;base64,')`,
+      "late real PNG completion in original source",
+    );
   } else {
-    await wait(`${driver.toastExpr()}.includes(${q(`${name} (image decode failed)` )})`, "explicit native canvas failure toast");
-    assert.equal(await read(`document.querySelector('button[aria-label=${q(`Remove ${name}`)}]') !== null`), false, "failed original tile removed");
+    await wait(
+      `${driver.toastExpr()}.includes(${q(`${name} (image decode failed)`)})`,
+      "explicit native canvas failure toast",
+    );
+    assert.equal(
+      await read(`document.querySelector('button[aria-label=${q(`Remove ${name}`)}]') !== null`),
+      false,
+      "failed original tile removed",
+    );
   }
   const expectedText = success ? newerDraft.text : newerDraft.text.replace(rejectedMarker, "");
-  assert.equal((await driver.composerState(fixture.rootRef)).text, expectedText, "late image completion never rolls back a newer source draft");
+  assert.equal(
+    (await driver.composerState(fixture.rootRef)).text,
+    expectedText,
+    "late image completion never rolls back a newer source draft",
+  );
   driver.milestone(success ? "pending-image-success" : "pending-image-failure", { name, recipient: fixture.rootRef });
 }
 
@@ -929,14 +1177,20 @@ async function providerHeld() {
     // still empty and be the only one delivered (macOS coalesces them, #3808).
     const poll = setInterval(() => check(), 100);
     const timer = setTimeout(() => finish(new Error("real provider never acknowledged its held source input")), 15000);
-    const finish = (error) => { clearTimeout(timer); clearInterval(poll); error ? reject(error) : resolve(); };
+    const finish = (error) => {
+      clearTimeout(timer);
+      clearInterval(poll);
+      error ? reject(error) : resolve();
+    };
     const check = () => {
       if (!existsSync(file)) return;
       try {
         const value = JSON.parse(readFileSync(file, "utf8"));
         assert.deepEqual(value, { role: 0, input: "CASCADE_BUSY_INPUT" });
         finish();
-      } catch (error) { if (!(error instanceof SyntaxError)) finish(error); }
+      } catch (error) {
+        if (!(error instanceof SyntaxError)) finish(error);
+      }
     };
     check();
   });
@@ -998,13 +1252,23 @@ async function sourceMutationJourney() {
   await holdStorageAcknowledgement(ref, busyInput);
   const after = frames.length;
   await driver.clickSubmit(ref, { text: busyInput, chips: [], tiles: 0 });
-  await wait("window.__cascadeStorage.committed && window.__cascadeStorage.release !== null", "real outbox commit with application acknowledgement held");
+  await wait(
+    "window.__cascadeStorage.committed && window.__cascadeStorage.release !== null",
+    "real outbox commit with application acknowledgement held",
+  );
   await providerHeld();
   const held = await read("window.__cascadeStorage.record");
   assert.ok(held?.clientMutationId, "real committed source mutation retains its identity");
-  assert.ok(held.payload.input.some(item => item.text === busyInput), "actual committed record contains the original source input");
+  assert.ok(
+    held.payload.input.some((item) => item.text === busyInput),
+    "actual committed record contains the original source input",
+  );
   assert.equal(held.targetRef, ref);
-  assert.equal(held.method, "turn/start", `the first source submit for ${held.targetRef} must order turn/start; the outbox recorded ${held.method} (input ${JSON.stringify(held.payload.input.map(item => item.text))}), so the source was still busy when it submitted`);
+  assert.equal(
+    held.method,
+    "turn/start",
+    `the first source submit for ${held.targetRef} must order turn/start; the outbox recorded ${held.method} (input ${JSON.stringify(held.payload.input.map((item) => item.text))}), so the source was still busy when it submitted`,
+  );
   await driver.click(sourceAgents);
   await drill(fixture.edges[0], 1);
   await returnToSource();
@@ -1013,7 +1277,14 @@ async function sourceMutationJourney() {
   const newerDraft = await driver.composerState(ref);
   await read("window.__cascadeStorage.release()");
   await providerHeld();
-  await waitFrames(() => sent(after).some(frame => frame.method === "turn/start" && frame.params.clientMutationId === held.clientMutationId && answered(frame)), "original mutation accepted once");
+  await waitFrames(
+    () =>
+      sent(after).some(
+        (frame) =>
+          frame.method === "turn/start" && frame.params.clientMutationId === held.clientMutationId && answered(frame),
+      ),
+    "original mutation accepted once",
+  );
   assert.equal((await driver.composerState(ref)).text, newerDraft.text, "receipt cannot clear a newer returned draft");
   driver.milestone("unresolved-storage-source", { clientMutationId: held.clientMutationId, recipient: ref });
 
@@ -1021,11 +1292,20 @@ async function sourceMutationJourney() {
   await driver.focusComposer(ref);
   await driver.typeText(ref, queueInput);
   await driver.clickSubmit(ref, { text: queueInput, chips: [], tiles: 0 });
-  await wait(`(() => { const strip = ${driver.queueStripExpr(ref)}; return strip?.rows.some(row => row.text.includes('CASCADE_QUEUE_INPUT')); })()`, "real source queue while original provider call is held");
-  await waitFrames(() => sent(after).some(frame => frame.method === "turn/queue" && frame.params.ref === ref && answered(frame)), "real queue acknowledgement");
-  const queued = sent(after).find(frame => frame.method === "turn/queue" && frame.params.ref === ref);
+  await wait(
+    `(() => { const strip = ${driver.queueStripExpr(ref)}; return strip?.rows.some(row => row.text.includes('CASCADE_QUEUE_INPUT')); })()`,
+    "real source queue while original provider call is held",
+  );
+  await waitFrames(
+    () => sent(after).some((frame) => frame.method === "turn/queue" && frame.params.ref === ref && answered(frame)),
+    "real queue acknowledgement",
+  );
+  const queued = sent(after).find((frame) => frame.method === "turn/queue" && frame.params.ref === ref);
   assert.ok(queued.params.clientMutationId && queued.params.clientMutationId !== held.clientMutationId);
-  await wait(`document.querySelector(${q(driver.composerSelector(ref))})?.querySelector('[role="textbox"]').textContent === ''`, "queue receipt clears only the submitted source draft");
+  await wait(
+    `document.querySelector(${q(driver.composerSelector(ref))})?.querySelector('[role="textbox"]').textContent === ''`,
+    "queue receipt clears only the submitted source draft",
+  );
   await driver.focusComposer(ref);
   await driver.typeText(ref, "CASCADE_UNSENT_AFTER_QUEUE");
   await driver.click(sourceAgents);
@@ -1040,9 +1320,15 @@ async function sourceMutationJourney() {
   await driver.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
   await assertSpineStatus(ancestorRef, "idle");
   const screenshotViewport = await read("({ width: innerWidth, height: innerHeight })");
-  await driver.send("Emulation.setDeviceMetricsOverride", { width: 1600, height: 1050, deviceScaleFactor: 1, mobile: false });
+  await driver.send("Emulation.setDeviceMetricsOverride", {
+    width: 1600,
+    height: 1050,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
   await wait(readableGeometrySettled(2), "settled compact-status screenshot geometry");
-  const screenshotTrack = await wait(`(() => {
+  const screenshotTrack = await wait(
+    `(() => {
     const track = document.querySelector('[data-testid="cascade-spine"][data-scope-ref=${q(ancestorRef)}]')?.parentElement;
     if (!track) return null;
     const bounds = track.getBoundingClientRect();
@@ -1053,54 +1339,107 @@ async function sourceMutationJourney() {
       window.__cascadeStatusReveal.wheel = { trusted:event.isTrusted, intended:track.contains(event.target), deltaX:event.deltaX };
     }, { capture:true, once:true, passive:true });
     return { x, y, scrollLeft:track.scrollLeft };
-  })()`, "actual secondary cascade track for compact-status screenshot");
+  })()`,
+    "actual secondary cascade track for compact-status screenshot",
+  );
   if (screenshotTrack.scrollLeft > 0) {
-    await driver.send("Input.dispatchMouseEvent", { type:"mouseWheel", deltaX:-screenshotTrack.scrollLeft, deltaY:0, x:screenshotTrack.x, y:screenshotTrack.y });
-    const wheel = await wait("window.__cascadeStatusReveal.wheel", "native horizontal wheel reaches the secondary cascade");
+    await driver.send("Input.dispatchMouseEvent", {
+      type: "mouseWheel",
+      deltaX: -screenshotTrack.scrollLeft,
+      deltaY: 0,
+      x: screenshotTrack.x,
+      y: screenshotTrack.y,
+    });
+    const wheel = await wait(
+      "window.__cascadeStatusReveal.wheel",
+      "native horizontal wheel reaches the secondary cascade",
+    );
     assert.equal(wheel.trusted, true);
     assert.equal(wheel.intended, true);
   }
-  await wait(`(() => {
+  await wait(
+    `(() => {
     const spine = document.querySelector('[data-testid="cascade-spine"][data-scope-ref=${q(ancestorRef)}]');
     const track = spine?.parentElement;
     if (!track) return false;
     const ancestor = spine.getBoundingClientRect(), viewport = track.getBoundingClientRect();
     return ancestor.left >= viewport.left && ancestor.right <= viewport.right;
-  })()`, "compact ancestor spine visible in replacement screenshot");
-  writeFileSync(path.join(fixture.artifactDir, "compact-spine-status-reveal.json"), JSON.stringify(await read(`(() => {
+  })()`,
+    "compact ancestor spine visible in replacement screenshot",
+  );
+  writeFileSync(
+    path.join(fixture.artifactDir, "compact-spine-status-reveal.json"),
+    JSON.stringify(
+      await read(`(() => {
     const spine = document.querySelector('[data-testid="cascade-spine"][data-scope-ref=${q(ancestorRef)}]');
     const track = spine.parentElement, ancestor = spine.getBoundingClientRect(), viewport = track.getBoundingClientRect();
     return { ...window.__cascadeStatusReveal, after:track.scrollLeft, ancestor:{ left:ancestor.left, right:ancestor.right }, viewport:{ left:viewport.left, right:viewport.right } };
-  })()`), null, 2));
+  })()`),
+      null,
+      2,
+    ),
+  );
   await capture("compact-spine-status");
-  await driver.send("Emulation.setDeviceMetricsOverride", { ...screenshotViewport, deviceScaleFactor: 1, mobile: false });
+  await driver.send("Emulation.setDeviceMetricsOverride", {
+    ...screenshotViewport,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
   await driver.send("Emulation.setEmulatedMedia", { features: [] });
   await observeGeometryAndFocus(ancestorRef);
   const releasedAfter = frames.length;
   driver.control("release-provider");
-  await waitFrames(() => frames.slice(releasedAfter).some(frame => frame.direction === "Network.webSocketFrameReceived" && frame.method === "thread/status/changed" && frame.params.ref === ref && frame.params.status.type === "idle"), "actual source status settles after queued provider delivery");
+  await waitFrames(
+    () =>
+      frames
+        .slice(releasedAfter)
+        .some(
+          (frame) =>
+            frame.direction === "Network.webSocketFrameReceived" &&
+            frame.method === "thread/status/changed" &&
+            frame.params.ref === ref &&
+            frame.params.status.type === "idle",
+        ),
+    "actual source status settles after queued provider delivery",
+  );
   // The queued turn ends on a plain reply, which rests idle. The rendered
   // ancestor spine keeps its exact status through the origin's live change.
   await assertSpineStatus(ancestorRef, "idle");
-  assert.equal(await read("document.activeElement === window.__cascadeFocused"), true, "actual source status changes preserve focused element");
-  assert.deepEqual(await read("window.__cascadeGeometryChanges"), [], "actual provider completion never changes geometry");
+  assert.equal(
+    await read("document.activeElement === window.__cascadeFocused"),
+    true,
+    "actual source status changes preserve focused element",
+  );
+  assert.deepEqual(
+    await read("window.__cascadeGeometryChanges"),
+    [],
+    "actual provider completion never changes geometry",
+  );
   await read("window.__cascadeGeometryObserver.disconnect()");
   driver.milestone("live-status-stable-geometry");
   await returnToSource();
-  await wait(`(() => { const strip = ${driver.queueStripExpr(ref)}; return !strip || strip.rows.length === 0; })()`, "original queue drains");
+  await wait(
+    `(() => { const strip = ${driver.queueStripExpr(ref)}; return !strip || strip.rows.length === 0; })()`,
+    "original queue drains",
+  );
   assert.equal((await driver.composerState(ref)).text, "CASCADE_UNSENT_AFTER_QUEUE");
   for (const mutation of [held, queued.params]) {
-    const requests = sent(after).filter(frame => frame.params?.clientMutationId === mutation.clientMutationId);
+    const requests = sent(after).filter((frame) => frame.params?.clientMutationId === mutation.clientMutationId);
     // A reconnect replay probes the daemon journal with the same identity and
     // gets a replayed receipt back. Count applied requests, not journal probes.
     const applied = requests.filter((request) => {
-      const answer = frames.find((frame) => frame.direction === "Network.webSocketFrameReceived" && frame.id === request.id);
+      const answer = frames.find(
+        (frame) => frame.direction === "Network.webSocketFrameReceived" && frame.id === request.id,
+      );
       return answer?.result?.receipt?.disposition !== "replayed";
     });
     assert.equal(applied.length, 1, "inspection and return never duplicate original mutation identity");
     assert.equal(requests[0].params.ref, ref, "original recipient is retained");
   }
-  driver.milestone("queued-source-single-delivery", { clientMutationId: queued.params.clientMutationId, recipient: ref });
+  driver.milestone("queued-source-single-delivery", {
+    clientMutationId: queued.params.clientMutationId,
+    recipient: ref,
+  });
   await capture("queued-source-single-delivery");
 }
 
@@ -1111,20 +1450,51 @@ async function sourceMutationJourney() {
 async function dottedAncestorStatus(ref) {
   const active = await assertSpineStatus(ref, "active");
   await driver.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
-  assert.equal(await read('matchMedia("(prefers-reduced-motion: reduce)").matches'), true, "reduced motion is actually emulated before the stillness assertion");
+  assert.equal(
+    await read('matchMedia("(prefers-reduced-motion: reduce)").matches'),
+    true,
+    "reduced motion is actually emulated before the stillness assertion",
+  );
   const activeReduced = await assertSpineStatus(ref, "active");
   await driver.send("Emulation.setEmulatedMedia", { features: [] });
   await capture("dotted-ancestor-status");
   await observeGeometryAndFocus(ref);
   const releasedAfter = frames.length;
   driver.control("release-ancestor-provider");
-  await waitFrames(() => frames.slice(releasedAfter).some(frame => frame.direction === "Network.webSocketFrameReceived" && frame.method === "thread/status/changed" && frame.params.ref === ref && frame.params.status.type === "idle"), "actual rendered ancestor settles after its provider release");
+  await waitFrames(
+    () =>
+      frames
+        .slice(releasedAfter)
+        .some(
+          (frame) =>
+            frame.direction === "Network.webSocketFrameReceived" &&
+            frame.method === "thread/status/changed" &&
+            frame.params.ref === ref &&
+            frame.params.status.type === "idle",
+        ),
+    "actual rendered ancestor settles after its provider release",
+  );
   const idle = await assertSpineStatus(ref, "idle");
   allowStoplessAncestor = false;
-  assert.equal(await read("document.activeElement === window.__cascadeFocused"), true, "ancestor status changes preserve focused element");
-  assert.deepEqual(await read("window.__cascadeGeometryChanges"), [], "ancestor provider completion never changes geometry");
+  assert.equal(
+    await read("document.activeElement === window.__cascadeFocused"),
+    true,
+    "ancestor status changes preserve focused element",
+  );
+  assert.deepEqual(
+    await read("window.__cascadeGeometryChanges"),
+    [],
+    "ancestor provider completion never changes geometry",
+  );
   await read("window.__cascadeGeometryObserver.disconnect()");
-  driver.milestone("dotted-ancestor-status", { ref, active: active.state, reducedMotionActive: activeReduced.state, idle: idle.state, glyph: active.glyphState, knownDiagnostics: knownDiagnostics.length });
+  driver.milestone("dotted-ancestor-status", {
+    ref,
+    active: active.state,
+    reducedMotionActive: activeReduced.state,
+    idle: idle.state,
+    glyph: active.glyphState,
+    knownDiagnostics: knownDiagnostics.length,
+  });
   return releasedAfter;
 }
 
@@ -1143,16 +1513,25 @@ async function sourceAnswersReleasedAncestor(ref, releasedAfter) {
     const items = [];
     const completed = new Set();
     for (const frame of frames.slice(releasedAfter)) {
-      if (frame.direction !== "Network.webSocketFrameReceived" || frame.method !== "history/updated" || frame.params.ref !== fixture.rootRef) continue;
+      if (
+        frame.direction !== "Network.webSocketFrameReceived" ||
+        frame.method !== "history/updated" ||
+        frame.params.ref !== fixture.rootRef
+      )
+        continue;
       items.push(...(frame.params.items ?? []));
       for (const turn of frame.params.turns ?? []) if (turn.status === "completed") completed.add(turn.id);
     }
-    const report = items.find(item => item.type === "steering" && item.text?.includes(retained));
-    answer = report ? items.find(item => item.type === "agentMessage" && item.position?.entry > report.position.entry) ?? null : null;
+    const report = items.find((item) => item.type === "steering" && item.text?.includes(retained));
+    answer = report
+      ? (items.find((item) => item.type === "agentMessage" && item.position?.entry > report.position.entry) ?? null)
+      : null;
     return answer !== null && completed.has(answer.turnId);
   }, "the source completes its answer to the released ancestor's final report");
-  await wait(`(${sourcePortExpr})?.querySelector(${q(`[data-view-anchor-id="${answer.id}"]`)}) != null`,
-    "the source reader renders its answer to the released ancestor's final report");
+  await wait(
+    `(${sourcePortExpr})?.querySelector(${q(`[data-view-anchor-id="${answer.id}"]`)}) != null`,
+    "the source reader renders its answer to the released ancestor's final report",
+  );
 }
 
 // Enter once, prove the held ancestor while it is a spine, and release it
@@ -1177,12 +1556,15 @@ async function dottedAncestorJourney() {
   // the end and the reading-point restore that follows it, so require two
   // consecutive at-end samples instead of catching one transient write. A null
   // while short keeps the barrier waiting rather than settling on "not yet".
-  await driver.settleExpression(`(() => {
+  await driver.settleExpression(
+    `(() => {
     const port = ${sourcePortExpr};
     if (!port || port.clientHeight <= 0) return null;
     const gap = port.scrollHeight - port.clientHeight - port.scrollTop;
     return gap <= 4 ? true : null;
-  })()`, { label: "the remounted source reader rests at the end of its transcript" });
+  })()`,
+    { label: "the remounted source reader rests at the end of its transcript" },
+  );
   await returnToSource();
 }
 
@@ -1192,26 +1574,46 @@ async function completeOverlap(ref, kind) {
   const description = `Cascade overlap ${kind} fixture`;
   const point = await wait(driver.slashRowPointExpr(description), `real overlapping ${kind} catalog row`);
   await driver.clickAt(point.x, point.y);
-  await wait(`document.querySelector(${q(driver.composerSelector(ref))})?.querySelector('[data-${kind}-name="cascade-overlap"]') !== null && document.querySelector('[data-testid="composer-slash-menu"]') === null`, `selected overlapping ${kind} atom`);
+  await wait(
+    `document.querySelector(${q(driver.composerSelector(ref))})?.querySelector('[data-${kind}-name="cascade-overlap"]') !== null && document.querySelector('[data-testid="composer-slash-menu"]') === null`,
+    `selected overlapping ${kind} atom`,
+  );
 }
 
 function overlapMentions(text) {
-  const first = text.indexOf('/cascade-overlap');
-  const second = text.indexOf('/cascade-overlap', first + 1);
-  assert.ok(first >= 0 && second > first && text.indexOf('/cascade-overlap', second + 1) > second, 'two atoms plus same-spelling inert prose');
-  return [{ kind: 'command', name: 'cascade-overlap', offset: first }, { kind: 'skill', name: 'cascade-overlap', offset: second }];
+  const first = text.indexOf("/cascade-overlap");
+  const second = text.indexOf("/cascade-overlap", first + 1);
+  assert.ok(
+    first >= 0 && second > first && text.indexOf("/cascade-overlap", second + 1) > second,
+    "two atoms plus same-spelling inert prose",
+  );
+  return [
+    { kind: "command", name: "cascade-overlap", offset: first },
+    { kind: "skill", name: "cascade-overlap", offset: second },
+  ];
 }
 
-// The record stores the marker numbers themselves; the editor text spells them
-// as "[image N]" references.
+// The record stores OCCURRENCES: a marker number, plus the offset of the
+// spelling it meant when the writer could name one.
+//
+// A bare number cannot say which of two identical spellings it was, so the
+// writer keeps whichever occurrence it committed and normalizes the rest to
+// `{ marker }`. The assertion below therefore accepts both shapes and reads the
+// NUMBER from either - the journey cares which markers the draft holds, and the
+// offset is asserted where it is the point (the anchor journeys).
 function markerNumber(reference) {
   return Number(/\[image (\d+)\]/.exec(reference)[1]);
+}
+
+// The marker numbers a persisted `imageMarkers` list names, in order.
+function storedMarkerNumbers(imageMarkers) {
+  return imageMarkers.map((entry) => (typeof entry === "number" ? entry : entry.marker));
 }
 
 async function assertOverlap(ref, text, label, imageMarkers) {
   const state = await driver.composerState(ref);
   assert.equal(state.text, text, `${label}, exact UTF-16 text and inert prose`);
-  assert.deepEqual(state.chips, ['/cascade-overlap'], `${label}, only the selected skill is a skill atom`);
+  assert.deepEqual(state.chips, ["/cascade-overlap"], `${label}, only the selected skill is a skill atom`);
   const atoms = await read(`(() => {
     const editor = ${driver.editorExpr(ref)};
     return [...editor.querySelectorAll('[data-command-name], [data-skill-name]')].map(node => {
@@ -1222,104 +1624,181 @@ async function assertOverlap(ref, text, label, imageMarkers) {
   assert.deepEqual(atoms, overlapMentions(text), `${label}, atom kind and exact text-owned offsets`);
   const stored = await read(`JSON.parse(localStorage.getItem(${q(`evener.composer.draft.v2.${ref}`)}))`);
   const { editedAt, ...record } = stored;
-  assert.deepEqual(record, {
-    text,
-    skillNames:['cascade-overlap'],
-    commandNames:['cascade-overlap'],
-    mentions:overlapMentions(text),
-    // Image provenance travels in the same record as the text: these are the
-    // markers whose bytes this draft holds. An empty list is omitted rather
-    // than written as [], so a text-only draft carries no image field.
-    ...(imageMarkers.length > 0 ? { imageMarkers } : {}),
-    revisionId: record.revisionId,
-  }, `${label}, complete real persisted draft`);
-  assert.equal(typeof record.revisionId, 'string', `${label}, draft record carries its revision identity`);
+  // The numbers this record names, read from either shape. `imageMarkers` is
+  // compared by NUMBER because the journey's claim is which images the draft
+  // holds; an offset here is the writer's own bookkeeping for an older
+  // occurrence, and pinning it would pin an implementation detail the editor
+  // does not promise across a renumbering.
+  // The numbers this record names, read from either shape.
+  const storedNumbers = record.imageMarkers === undefined ? [] : storedMarkerNumbers(record.imageMarkers);
+  assert.deepEqual(storedNumbers, imageMarkers, `${label}, persisted draft names the markers whose bytes it holds`);
+  // Everything else is compared EXACTLY. Only `imageMarkers` is normalized: its
+  // entries may be a bare number or `{ marker, offset }` depending on whether
+  // the writer could name the spelling, and which one it chose is bookkeeping,
+  // not the fact this journey asserts. The marker NUMBER is, and it is checked
+  // on the line above with no normalization of its own.
+  const { imageMarkers: _markers, ...recordRest } = record;
+  assert.deepEqual(
+    {
+      ...recordRest,
+      ...(imageMarkers.length > 0 ? { imageMarkers: storedNumbers } : {}),
+    },
+    {
+      text,
+      skillNames: ["cascade-overlap"],
+      commandNames: ["cascade-overlap"],
+      mentions: overlapMentions(text),
+      // Image provenance travels in the same record as the text: these are the
+      // markers whose bytes this draft holds. An empty list is omitted rather
+      // than written as [], so a text-only draft carries no image field.
+      ...(imageMarkers.length > 0 ? { imageMarkers } : {}),
+      revisionId: record.revisionId,
+    },
+    `${label}, complete real persisted draft`,
+  );
+  assert.equal(typeof record.revisionId, "string", `${label}, draft record carries its revision identity`);
   assert.ok(record.revisionId.length > 0, `${label}, revision identity is non-empty`);
   const priorRevisionId = assertOverlap.revisionIds?.get(ref);
   if (priorRevisionId !== undefined) {
-    assert.notEqual(record.revisionId, priorRevisionId, `${label}, changed persisted draft has a new revision identity`);
+    assert.notEqual(
+      record.revisionId,
+      priorRevisionId,
+      `${label}, changed persisted draft has a new revision identity`,
+    );
   }
   assertOverlap.revisionIds ??= new Map();
   assertOverlap.revisionIds.set(ref, record.revisionId);
-  assert.equal(typeof editedAt, 'number', `${label}, draft record carries its write stamp`);
+  assert.equal(typeof editedAt, "number", `${label}, draft record carries its write stamp`);
 }
 
 async function mixedSourceJourney() {
   const ref = fixture.rootRef;
   await driver.clearComposerDraft(ref);
   await driver.focusComposer(ref);
-  await driver.typeText(ref, '🙂 CASCADE_ROLE_0_SENTINEL CASCADE_MIXED_INPUT ');
-  await upload('mixed-first.png');
-  await wait("document.querySelector('button[aria-label=\"View mixed-first.png\"] img')?.src.startsWith('data:image/png;base64,')", 'first real overlap image');
+  await driver.typeText(ref, "🙂 CASCADE_ROLE_0_SENTINEL CASCADE_MIXED_INPUT ");
+  await upload("mixed-first.png");
+  await wait(
+    "document.querySelector('button[aria-label=\"View mixed-first.png\"] img')?.src.startsWith('data:image/png;base64,')",
+    "first real overlap image",
+  );
   await driver.focusComposer(ref);
-  await driver.typeText(ref, ' /cascade-overlap');
-  await completeOverlap(ref, 'command');
+  await driver.typeText(ref, " /cascade-overlap");
+  await completeOverlap(ref, "command");
   await holdCanvasCompletion();
-  await upload('mixed-failure.png');
-  await wait('window.__cascadeEncode?.encoded && window.__cascadeEncode.release !== null', 'real middle-image native callback held');
+  await upload("mixed-failure.png");
+  await wait(
+    "window.__cascadeEncode?.encoded && window.__cascadeEncode.release !== null",
+    "real middle-image native callback held",
+  );
   await driver.focusComposer(ref);
-  await driver.typeText(ref, ' /cascade-overlap');
-  await completeOverlap(ref, 'skill');
-  await upload('mixed-last.png');
-  await wait("document.querySelector('button[aria-label=\"View mixed-last.png\"] img')?.src.startsWith('data:image/png;base64,')", 'last real overlap image');
+  await driver.typeText(ref, " /cascade-overlap");
+  await completeOverlap(ref, "skill");
+  await upload("mixed-last.png");
+  await wait(
+    "document.querySelector('button[aria-label=\"View mixed-last.png\"] img')?.src.startsWith('data:image/png;base64,')",
+    "last real overlap image",
+  );
   await driver.focusComposer(ref);
-  await driver.typeText(ref, ' /cascade-overlap');
-  await key('Escape', 27);
+  await driver.typeText(ref, " /cascade-overlap");
+  await key("Escape", 27);
   const before = await driver.composerState(ref);
   const markers = before.text.match(/\[image \d+\]/g) ?? [];
-  assert.equal(markers.length, 3, 'each real upload inserted its own marker');
-  assert.equal(new Set(markers).size, 3, 'retained source allocates unique image markers');
+  assert.equal(markers.length, 3, "each real upload inserted its own marker");
+  assert.equal(new Set(markers).size, 3, "retained source allocates unique image markers");
   const [firstMarker, failedMarker, lastMarker] = markers;
   // All three tiles are staged and every one of them has a reference in the
   // text, so the record names all three.
-  await assertOverlap(ref, before.text, 'before mounted image settlement', [firstMarker, failedMarker, lastMarker].map(markerNumber));
-  const imageBytes = await read("['mixed-first.png','mixed-last.png'].map(name => document.querySelector(`button[aria-label=\"View ${name}\"] img`).src)");
+  await assertOverlap(
+    ref,
+    before.text,
+    "before mounted image settlement",
+    [firstMarker, failedMarker, lastMarker].map(markerNumber),
+  );
+  const imageBytes = await read(
+    "['mixed-first.png','mixed-last.png'].map(name => document.querySelector(`button[aria-label=\"View ${name}\"] img`).src)",
+  );
   await driver.click(sourceAgents);
   await drill(fixture.edges[0], 1);
-  await read('window.__cascadeEncode.release(false)');
-  await wait(`${driver.toastExpr()}.includes('mixed-failure.png (image decode failed)')`, 'actual failed decode settles while source editor stays mounted');
+  await read("window.__cascadeEncode.release(false)");
+  await wait(
+    `${driver.toastExpr()}.includes('mixed-failure.png (image decode failed)')`,
+    "actual failed decode settles while source editor stays mounted",
+  );
   await returnToSource();
-  const settledText = before.text.replace(failedMarker, '');
+  const settledText = before.text.replace(failedMarker, "");
   // The failed decode drops its tile and its reference together, so the two
   // surviving images keep their provenance and the removed number is gone.
-  await assertOverlap(ref, settledText, 'after mounted image settlement and Return', [firstMarker, lastMarker].map(markerNumber));
-  assert.equal((await driver.composerState(ref)).tiles, 2, 'only failed middle image is removed');
-  assert.deepEqual(await read("['mixed-first.png','mixed-last.png'].map(name => document.querySelector(`button[aria-label=\"View ${name}\"] img`).src)"), imageBytes, 'exact retained PNG bytes');
-  driver.milestone('mixed-mounted-image-return', { recipient:ref, mentions:overlapMentions(settledText) });
+  await assertOverlap(
+    ref,
+    settledText,
+    "after mounted image settlement and Return",
+    [firstMarker, lastMarker].map(markerNumber),
+  );
+  assert.equal((await driver.composerState(ref)).tiles, 2, "only failed middle image is removed");
+  assert.deepEqual(
+    await read(
+      "['mixed-first.png','mixed-last.png'].map(name => document.querySelector(`button[aria-label=\"View ${name}\"] img`).src)",
+    ),
+    imageBytes,
+    "exact retained PNG bytes",
+  );
+  driver.milestone("mixed-mounted-image-return", { recipient: ref, mentions: overlapMentions(settledText) });
 
   await holdStorageAcknowledgement(ref, settledText);
   const after = frames.length;
-  await driver.clickSubmit(ref, { text:settledText, chips:['/cascade-overlap'], tiles:2 });
-  await wait('window.__cascadeStorage.committed && window.__cascadeStorage.release !== null', 'real mixed native outbox acknowledgement held');
-  const held = await read('window.__cascadeStorage.record');
-  assert.equal(held.targetRef, ref, 'mixed record retains original recipient');
-  assert.equal(held.method, 'turn/start');
+  await driver.clickSubmit(ref, { text: settledText, chips: ["/cascade-overlap"], tiles: 2 });
+  await wait(
+    "window.__cascadeStorage.committed && window.__cascadeStorage.release !== null",
+    "real mixed native outbox acknowledgement held",
+  );
+  const held = await read("window.__cascadeStorage.record");
+  assert.equal(held.targetRef, ref, "mixed record retains original recipient");
+  assert.equal(held.method, "turn/start");
   assert.equal(held.composerText, settledText);
   assert.deepEqual(held.composerMentions, overlapMentions(settledText));
-  assert.deepEqual(held.payload.input.filter(item => ['command','skill'].includes(item.type)).map(({type,name}) => ({type,name})), [{type:'skill',name:'cascade-overlap'}, {type:'command',name:'cascade-overlap'}], 'actual input keeps both identities in public wire order');
-  assert.equal(held.attachments.length, 2, 'actual outbox retains both image payloads');
-  assert.ok(held.clientMutationId, 'native committed mutation has an identity');
+  assert.deepEqual(
+    held.payload.input
+      .filter((item) => ["command", "skill"].includes(item.type))
+      .map(({ type, name }) => ({ type, name })),
+    [
+      { type: "skill", name: "cascade-overlap" },
+      { type: "command", name: "cascade-overlap" },
+    ],
+    "actual input keeps both identities in public wire order",
+  );
+  assert.equal(held.attachments.length, 2, "actual outbox retains both image payloads");
+  assert.ok(held.clientMutationId, "native committed mutation has an identity");
   await driver.click(sourceAgents);
   await drill(fixture.edges[0], 1);
   await returnToSource();
   await driver.focusComposer(ref);
-  await driver.typeText(ref, ' CASCADE_NEWER_MIXED_DRAFT');
+  await driver.typeText(ref, " CASCADE_NEWER_MIXED_DRAFT");
   const newer = await driver.composerState(ref);
   await driver.click(sourceAgents);
   await drill(fixture.edges[0], 1);
-  await read('window.__cascadeStorage.release()');
-  await waitFrames(() => sent(after).some(frame => frame.params?.clientMutationId === held.clientMutationId && answered(frame)), 'mixed original mutation acknowledged exactly once');
+  await read("window.__cascadeStorage.release()");
+  await waitFrames(
+    () => sent(after).some((frame) => frame.params?.clientMutationId === held.clientMutationId && answered(frame)),
+    "mixed original mutation acknowledged exactly once",
+  );
   await returnToSource();
-  await wait(`document.querySelector(${q(driver.composerSelector(ref))})?.querySelectorAll('[data-testid="attachment-tile"]').length === 0`, 'submitted images retire after native acknowledgement');
-  const cleaned = newer.text.replace(firstMarker, '').replace(lastMarker, '');
+  await wait(
+    `document.querySelector(${q(driver.composerSelector(ref))})?.querySelectorAll('[data-testid="attachment-tile"]').length === 0`,
+    "submitted images retire after native acknowledgement",
+  );
+  const cleaned = newer.text.replace(firstMarker, "").replace(lastMarker, "");
   // Submission consumed both images: their tiles retire on acknowledgement, so
   // the surviving draft carries prose only and must name no images at all.
-  await assertOverlap(ref, cleaned, 'after independent submitted marker cleanup and Return', []);
-  const requests = sent(after).filter(frame => frame.params?.clientMutationId === held.clientMutationId);
-  assert.equal(requests.length, 1, 'mixed inspection and Return never duplicate delivery');
+  await assertOverlap(ref, cleaned, "after independent submitted marker cleanup and Return", []);
+  const requests = sent(after).filter((frame) => frame.params?.clientMutationId === held.clientMutationId);
+  assert.equal(requests.length, 1, "mixed inspection and Return never duplicate delivery");
   assert.equal(requests[0].params.ref, ref);
-  driver.milestone('mixed-held-storage-return', { recipient:ref, clientMutationId:held.clientMutationId, mentions:overlapMentions(cleaned) });
-  await capture('mixed-held-storage-return');
+  driver.milestone("mixed-held-storage-return", {
+    recipient: ref,
+    clientMutationId: held.clientMutationId,
+    mentions: overlapMentions(cleaned),
+  });
+  await capture("mixed-held-storage-return");
 }
 
 const layoutExpr = "JSON.parse(localStorage.getItem('evener.workspace.layout.v2') || 'null')";
@@ -1353,7 +1832,8 @@ function placement(layout, id) {
 // with - its prompt or its stated intent, either renders in the row - and
 // only that row's transcript_ref opens this child.
 async function openChildConversationFromDelegateRow() {
-  await clickWhenReady(`(async () => {
+  await clickWhenReady(
+    `(async () => {
     const pane = ${driver.paneScopeExpr(fixture.rootRef)};
     if (!pane) return null;
     const findButton = () => {
@@ -1378,7 +1858,10 @@ async function openChildConversationFromDelegateRow() {
       if (button) return button;
       if (top >= end) return null;
     }
-  })()`, "Open conversation in the actual root delegate row", "nearest");
+  })()`,
+    "Open conversation in the actual root delegate row",
+    "nearest",
+  );
   // Return the reader to the bottom it came from: the scan mounted every
   // paging delegate's card, and each card's child watch queues a slow read
   // at the hub - leaving them mounted would park the just-opened child
@@ -1388,18 +1871,28 @@ async function openChildConversationFromDelegateRow() {
 }
 
 async function activeTabText(scaffold) {
-  return wait(`document.querySelector(${q(scaffold)})?.closest('.dv-groupview')?.querySelector('.dv-active-tab')?.textContent`, "the actual pane group exposes its active tab label");
+  return wait(
+    `document.querySelector(${q(scaffold)})?.closest('.dv-groupview')?.querySelector('.dv-active-tab')?.textContent`,
+    "the actual pane group exposes its active tab label",
+  );
 }
 
 async function assertInspectorFocus(layout) {
   const group = placement(layout, fixture.inspectorPaneId).group;
   assert.equal(layout.activeGroup, group.id, "the saved active group owns inspection");
   assert.equal(group.activeView, fixture.inspectorPaneId, "the saved active tab is the same inspector");
-  assert.equal(await read(`document.querySelector(${q(inspectorRoot)})?.closest('.dv-groupview')?.classList.contains('dv-active-group') === true`), true, "the actual active Dockview group owns inspection");
+  assert.equal(
+    await read(
+      `document.querySelector(${q(inspectorRoot)})?.closest('.dv-groupview')?.classList.contains('dv-active-group') === true`,
+    ),
+    true,
+    "the actual active Dockview group owns inspection",
+  );
 }
 
 async function activateTab(text, scaffold, paneId) {
-  const point = await wait(`(() => {
+  const point = await wait(
+    `(() => {
     const saved = (${findPlacement.toString()})(${layoutExpr}, ${q(paneId)});
     const group = document.querySelector(${q(scaffold)})?.closest('.dv-groupview');
     const tabs = [...(group?.querySelectorAll('.dv-tab') ?? [])];
@@ -1408,12 +1901,15 @@ async function activateTab(text, scaffold, paneId) {
     if (tab?.textContent !== ${q(text)}) return null;
     tab.scrollIntoView({ block:'center', inline:'nearest' });
     const r = tab.getBoundingClientRect(); return { x:r.x + r.width / 2, y:r.y + r.height / 2 };
-  })()`, "the exact observed independent tab is available for native activation");
+  })()`,
+    "the exact observed independent tab is available for native activation",
+  );
   await driver.clickAt(point.x, point.y);
 }
 
 async function installLateAncestryHold() {
-  const installed = await driver.send("Page.addScriptToEvaluateOnNewDocument", { source: `(() => {
+  const installed = await driver.send("Page.addScriptToEvaluateOnNewDocument", {
+    source: `(() => {
     const Native = window.WebSocket;
     const hold = window.__cascadeLate = { active: true, replies: [], requests: new Map() };
     const methods = new Set(['evener/thread/activity/read', 'evener/thread/delegates/list', 'evener/thread/jobs/list', 'evener/thread/watches/list']);
@@ -1435,7 +1931,8 @@ async function installLateAncestryHold() {
       }
       get onmessage() { return super.onmessage; }
     };
-  })()` });
+  })()`,
+  });
   return installed.result.identifier;
 }
 
@@ -1464,11 +1961,11 @@ async function assertRestoredPanel(restored, paneId, expected, label, reloadedAt
       };
     })()`);
     assert.fail(
-      `${label}: pane ${paneId} carries title ${JSON.stringify(actual.title)} where its saved layout had ${JSON.stringify(expected.title)}`
-      + `; every live tab label ${JSON.stringify(observed.tabs)}`
-      + `, mounted session scaffolds ${JSON.stringify(observed.sessionScaffolds)}`
-      + `, their headings ${JSON.stringify(observed.sessionHeadings)}`
-      + `, ${Date.now() - reloadedAt}ms since the reload`,
+      `${label}: pane ${paneId} carries title ${JSON.stringify(actual.title)} where its saved layout had ${JSON.stringify(expected.title)}` +
+        `; every live tab label ${JSON.stringify(observed.tabs)}` +
+        `, mounted session scaffolds ${JSON.stringify(observed.sessionScaffolds)}` +
+        `, their headings ${JSON.stringify(observed.sessionHeadings)}` +
+        `, ${Date.now() - reloadedAt}ms since the reload`,
     );
   }
   assert.deepEqual(actual, expected, label);
@@ -1489,26 +1986,41 @@ async function reloadAndMobileJourney() {
   // inspector's column releases it, so this budget covers one full read under
   // the fixture's 57-session slow-read contention, not just the pane mount;
   // typing needs the editor the same hydration produces.
-  await wait(`(() => {
+  await wait(
+    `(() => {
     const composers = document.querySelectorAll(${q(driver.composerSelector(fixture.childRef))});
     return composers.length === 1 && ${driver.paneScopeExpr(fixture.childRef)}?.contains(composers[0]) === true;
-  })()`, "explicit independent child conversation owns the only mounted composer for its ref", { timeoutMs: 45000 });
+  })()`,
+    "explicit independent child conversation owns the only mounted composer for its ref",
+    { timeoutMs: 45000 },
+  );
   await driver.focusComposer(fixture.childRef);
   await driver.typeText(fixture.childRef, "CASCADE_UNSENT_UNRELATED_DRAFT");
-  const unrelatedId = await read(`${driver.paneScopeExpr(fixture.childRef)}.querySelector('[data-testid="statusbar"] [data-pane-id]').dataset.paneId`);
+  const unrelatedId = await read(
+    `${driver.paneScopeExpr(fixture.childRef)}.querySelector('[data-testid="statusbar"] [data-pane-id]').dataset.paneId`,
+  );
   assert.ok(unrelatedId && unrelatedId !== fixture.sourcePaneId);
   const unrelatedTabText = await activeTabText(`[data-pane-scaffold=${q(`session:${fixture.childRef}`)}]`);
-  assert.equal(await read("document.querySelectorAll('.dv-tab').length"), fixture.sourceTabCount + 2, "explicit Open adds an independent tab beside the inspector");
+  assert.equal(
+    await read("document.querySelectorAll('.dv-tab').length"),
+    fixture.sourceTabCount + 2,
+    "explicit Open adds an independent tab beside the inspector",
+  );
   fixture.sourceTabCount++;
   const removedInspectorId = fixture.inspectorPaneId;
-  await activateTab(openedInspectorTabText, `[data-pane-scaffold=${q(`session:${fixture.childRef}`)}]`, removedInspectorId);
+  await activateTab(
+    openedInspectorTabText,
+    `[data-pane-scaffold=${q(`session:${fixture.childRef}`)}]`,
+    removedInspectorId,
+  );
   // The child conversation is already open as its own ordinary pane, so the
   // delegate row's Open conversation resolves that existing branch: the child
   // pane is focused and the inspection keeps its tab. The original root
   // conversation never rendered in the pane, so the old root-column Open
   // shortcut that closed inspection is gone with the column's link.
   await openChildConversationFromDelegateRow();
-  await wait(`(() => {
+  await wait(
+    `(() => {
     const scope = ${driver.paneScopeExpr(fixture.childRef)};
     // The mounted child scaffold proves the existing pane became its group's
     // active view (inactive tabs unmount); the tab count proves the inspector
@@ -1518,13 +2030,22 @@ async function reloadAndMobileJourney() {
     // sourceTabCount already accounts for the inspector's upcoming Return;
     // here it is still open, so one more tab is present.
     return scope && document.querySelectorAll('.dv-tab').length === ${fixture.sourceTabCount + 1} ? true : null;
-  })()`, "existing-child Open activates the open conversation while its inspection tab survives");
-  await activateTab(openedInspectorTabText, `[data-pane-scaffold=${q(`session:${fixture.childRef}`)}]`, removedInspectorId);
+  })()`,
+    "existing-child Open activates the open conversation while its inspection tab survives",
+  );
+  await activateTab(
+    openedInspectorTabText,
+    `[data-pane-scaffold=${q(`session:${fixture.childRef}`)}]`,
+    removedInspectorId,
+  );
   await returnToSource();
-  const baseline = await wait(`(() => {
+  const baseline = await wait(
+    `(() => {
     const saved = ${layoutExpr};
     return saved?.panels[${q(fixture.sourcePaneId)}]?.params?.paneType === 'session' && saved.panels[${q(unrelatedId)}] && !saved.panels[${q(removedInspectorId)}] ? saved : null;
-  })()`, "native debounce saved both actual ordinary panels");
+  })()`,
+    "native debounce saved both actual ordinary panels",
+  );
   assert.equal(baseline.activeGroup, placement(baseline, fixture.sourcePaneId).group.id);
   assert.equal(await read("document.querySelectorAll('.dv-tab').length"), fixture.sourceTabCount);
   await assertSourceDom();
@@ -1536,19 +2057,35 @@ async function reloadAndMobileJourney() {
   await drill(fixture.edges[0], 1);
   for (let level = 2; level <= 6; level++) await drill(fixture.edges[level - 1], level);
   assert.notEqual(fixture.inspectorPaneId, removedInspectorId, "retired inspection is not reused on fresh entry");
-  const saved = await wait(`(() => {
+  const saved = await wait(
+    `(() => {
     const saved = ${layoutExpr}, panel = saved?.panels[${q(fixture.inspectorPaneId)}];
     return panel?.params?.paneType === 'sessionZoom' && panel.params.paneParams.ref === ${q(fixture.refs[6])} && saved.panels[${q(fixture.sourcePaneId)}]?.params?.paneType === 'session' ? saved : null;
-  })()`, "native debounce persisted selected leaf intent");
+  })()`,
+    "native debounce persisted selected leaf intent",
+  );
   const expectedIntent = {
-    ref: fixture.refs[6], source: { type: "session", params: { ref: fixture.rootRef } },
+    ref: fixture.refs[6],
+    source: { type: "session", params: { ref: fixture.rootRef } },
     edges: fixture.edges.map(({ ownerRef, childRef, delegateId }) => ({ ownerRef, childRef, delegateId })),
     inspection: { origin: { paneId: fixture.sourcePaneId, type: "session", ref: fixture.rootRef } },
   };
-  assert.deepEqual(saved.panels[fixture.inspectorPaneId].params.paneParams, expectedIntent, "saved inspector matches independently supplied real edges and exact original source");
-  assert.deepEqual(saved.panels[fixture.sourcePaneId], sourcePanel, "the saved center remains its original session panel");
+  assert.deepEqual(
+    saved.panels[fixture.inspectorPaneId].params.paneParams,
+    expectedIntent,
+    "saved inspector matches independently supplied real edges and exact original source",
+  );
+  assert.deepEqual(
+    saved.panels[fixture.sourcePaneId],
+    sourcePanel,
+    "the saved center remains its original session panel",
+  );
   const inspectorPlacement = placement(saved, fixture.inspectorPaneId);
-  assert.notEqual(inspectorPlacement.group.id, placement(saved, fixture.sourcePaneId).group.id, "inspection is saved in a separate grid group");
+  assert.notEqual(
+    inspectorPlacement.group.id,
+    placement(saved, fixture.sourcePaneId).group.id,
+    "inspection is saved in a separate grid group",
+  );
   await assertInspectorFocus(saved);
   const inspectorTabText = await activeTabText(inspectorRoot);
   assert.deepEqual(saved.panels[unrelatedId], unrelatedPanel);
@@ -1556,85 +2093,184 @@ async function reloadAndMobileJourney() {
   assert.deepEqual(unrelatedPlacement.path, baselinePlacement.path);
   assert.equal(unrelatedPlacement.size, baselinePlacement.size);
   assert.equal(unrelatedPlacement.group.id, baselinePlacement.group.id);
-  assert.deepEqual(unrelatedPlacement.group.views.filter(id => id !== fixture.inspectorPaneId), baselinePlacement.group.views, "all ordinary tabs keep their order beside inspection");
-  assert.equal(unrelatedPlacement.group.views.at(-1), fixture.inspectorPaneId, "inspection is appended to the existing secondary group");
+  assert.deepEqual(
+    unrelatedPlacement.group.views.filter((id) => id !== fixture.inspectorPaneId),
+    baselinePlacement.group.views,
+    "all ordinary tabs keep their order beside inspection",
+  );
+  assert.equal(
+    unrelatedPlacement.group.views.at(-1),
+    fixture.inspectorPaneId,
+    "inspection is appended to the existing secondary group",
+  );
   assert.equal(JSON.stringify(saved).includes("data:image"), false, "layout never stores source image bytes");
   writeFileSync(path.join(fixture.artifactDir, "before-reload-layout.json"), JSON.stringify(saved, null, 2));
   const holdScriptId = await installLateAncestryHold();
   const reloadedAt = Date.now();
   try {
     await driver.send("Page.reload", { ignoreCache: true });
-    await wait(`document.querySelector(${q(column(fixture.refs[6]))}) !== null && document.querySelector(${q(inspectorRoot)}).textContent.includes('Earlier ancestry is incomplete')`, "saved path paints before actual ancestry delivery");
-    const actualContext = await wait(`window.__cascadeLate.replies.find(reply => reply.context?.ancestryKnown && reply.context.ancestors.length === 6)?.context`, "actual known leaf ancestry reply is held at native message delivery");
-    assert.deepEqual(actualContext.ancestors.map(ancestor => ancestor.ref), fixture.refs.slice(0, 6));
-    await wait("window.__cascadeLate.replies.some(reply => reply.location && reply.response && !reply.error)", "actual successful route location reply is held at native message delivery");
-    assert.deepEqual(await read(`[...document.querySelectorAll(${q(`${inspectorRoot} [data-scope-ref]`)})].map(node => node.dataset.scopeRef)`), renderedRefs, "unknown ancestry preserves the six saved edges above the removed origin");
+    await wait(
+      `document.querySelector(${q(column(fixture.refs[6]))}) !== null && document.querySelector(${q(inspectorRoot)}).textContent.includes('Earlier ancestry is incomplete')`,
+      "saved path paints before actual ancestry delivery",
+    );
+    const actualContext = await wait(
+      `window.__cascadeLate.replies.find(reply => reply.context?.ancestryKnown && reply.context.ancestors.length === 6)?.context`,
+      "actual known leaf ancestry reply is held at native message delivery",
+    );
+    assert.deepEqual(
+      actualContext.ancestors.map((ancestor) => ancestor.ref),
+      fixture.refs.slice(0, 6),
+    );
+    await wait(
+      "window.__cascadeLate.replies.some(reply => reply.location && reply.response && !reply.error)",
+      "actual successful route location reply is held at native message delivery",
+    );
+    assert.deepEqual(
+      await read(
+        `[...document.querySelectorAll(${q(`${inspectorRoot} [data-scope-ref]`)})].map(node => node.dataset.scopeRef)`,
+      ),
+      renderedRefs,
+      "unknown ancestry preserves the six saved edges above the removed origin",
+    );
     assert.equal(await read(inspectorIdExpr), fixture.inspectorPaneId);
     assert.equal(await read("document.querySelectorAll('.dv-tab').length"), fixture.sourceTabCount + 1);
     await pinSourceDom();
     await assertInspectorFocus(await read(layoutExpr));
     await observeGeometryAndFocus(fixture.refs[5]);
-    await read("(() => { const hold = window.__cascadeLate; hold.active = false; for (const reply of hold.replies) reply.release(); hold.replies = []; })()");
-    await wait("!document.querySelector('[data-pane-scaffold=\"cascade\"]').textContent.includes('Earlier ancestry is incomplete')", "actual ancestry and route recovery settle");
-    assert.equal(await read("document.activeElement === window.__cascadeFocused"), true, "late ancestry and location preserve exact focus");
+    await read(
+      "(() => { const hold = window.__cascadeLate; hold.active = false; for (const reply of hold.replies) reply.release(); hold.replies = []; })()",
+    );
+    await wait(
+      "!document.querySelector('[data-pane-scaffold=\"cascade\"]').textContent.includes('Earlier ancestry is incomplete')",
+      "actual ancestry and route recovery settle",
+    );
+    assert.equal(
+      await read("document.activeElement === window.__cascadeFocused"),
+      true,
+      "late ancestry and location preserve exact focus",
+    );
     assert.deepEqual(await read("window.__cascadeGeometryChanges"), [], "late ancestry never animates geometry");
     await assertInspectorFocus(await read(layoutExpr));
     await assertSourceDom();
     driver.milestone("late-ancestry-stable-geometry", { inspectorPaneId: fixture.inspectorPaneId, heldLocation: true });
   } finally {
-    await read("(() => { const hold = window.__cascadeLate; if (!hold) return; hold.active = false; for (const reply of hold.replies) reply.release(); hold.replies = []; window.__cascadeGeometryObserver?.disconnect(); })()");
+    await read(
+      "(() => { const hold = window.__cascadeLate; if (!hold) return; hold.active = false; for (const reply of hold.replies) reply.release(); hold.replies = []; window.__cascadeGeometryObserver?.disconnect(); })()",
+    );
     await driver.send("Page.removeScriptToEvaluateOnNewDocument", { identifier: holdScriptId });
   }
   const restored = await read(layoutExpr);
   assert.deepEqual(restored.panels[fixture.inspectorPaneId].params.paneParams, expectedIntent);
   assert.deepEqual(restored.panels[fixture.sourcePaneId], sourcePanel);
   assert.deepEqual(placement(restored, fixture.inspectorPaneId), inspectorPlacement);
-  assert.deepEqual(await read(`[...document.querySelectorAll(${q(`${inspectorRoot} [data-scope-ref]`)})].map(node => node.dataset.scopeRef)`), renderedRefs);
-  await assertRestoredPanel(restored, unrelatedId, unrelatedPanel, "restored unrelated pane keeps the identity its saved layout had", reloadedAt);
+  assert.deepEqual(
+    await read(
+      `[...document.querySelectorAll(${q(`${inspectorRoot} [data-scope-ref]`)})].map(node => node.dataset.scopeRef)`,
+    ),
+    renderedRefs,
+  );
+  await assertRestoredPanel(
+    restored,
+    unrelatedId,
+    unrelatedPanel,
+    "restored unrelated pane keeps the identity its saved layout had",
+    reloadedAt,
+  );
   assert.deepEqual(placement(restored, unrelatedId), unrelatedPlacement);
   // Inactive secondary tabs retain their work under normal mounting rules.
   // Activate the actual saved tab before observing its recovered composer.
   await activateTab(unrelatedTabText, inspectorRoot, unrelatedId);
-  await wait(`document.querySelector(${q(driver.composerSelector(fixture.childRef))}) !== null`, "restored unrelated pane's composer mounts");
-  assert.equal(await read(`${driver.paneScopeExpr(fixture.childRef)}.querySelector('[data-testid="statusbar"] [data-pane-id]').dataset.paneId`), unrelatedId);
+  await wait(
+    `document.querySelector(${q(driver.composerSelector(fixture.childRef))}) !== null`,
+    "restored unrelated pane's composer mounts",
+  );
+  assert.equal(
+    await read(
+      `${driver.paneScopeExpr(fixture.childRef)}.querySelector('[data-testid="statusbar"] [data-pane-id]').dataset.paneId`,
+    ),
+    unrelatedId,
+  );
   assert.equal((await driver.composerState(fixture.childRef)).text, "CASCADE_UNSENT_UNRELATED_DRAFT");
-  await activateTab(inspectorTabText, `[data-pane-scaffold=${q(`session:${fixture.childRef}`)}]`, fixture.inspectorPaneId);
-  await wait(`document.querySelector(${q(column(fixture.refs[6]))}) !== null && ${inspectorIdExpr} === ${q(fixture.inspectorPaneId)}`, "native tab activation restores the same saved inspector and selected path");
-  const savedGroupExpr = inspectorPlacement.path.reduce((node, index) => `${node}.data[${index}]`, "saved.grid.root") + ".data";
-  const refocused = await wait(`(() => {
+  await activateTab(
+    inspectorTabText,
+    `[data-pane-scaffold=${q(`session:${fixture.childRef}`)}]`,
+    fixture.inspectorPaneId,
+  );
+  await wait(
+    `document.querySelector(${q(column(fixture.refs[6]))}) !== null && ${inspectorIdExpr} === ${q(fixture.inspectorPaneId)}`,
+    "native tab activation restores the same saved inspector and selected path",
+  );
+  const savedGroupExpr =
+    inspectorPlacement.path.reduce((node, index) => `${node}.data[${index}]`, "saved.grid.root") + ".data";
+  const refocused = await wait(
+    `(() => {
     const saved = ${layoutExpr};
     return saved?.activeGroup === ${q(inspectorPlacement.group.id)} && ${savedGroupExpr}.activeView === ${q(fixture.inspectorPaneId)} ? saved : null;
-  })()`, "debounced layout records the native inspector reactivation");
+  })()`,
+    "debounced layout records the native inspector reactivation",
+  );
   await assertInspectorFocus(refocused);
   assert.deepEqual(refocused.panels[fixture.inspectorPaneId].params.paneParams, expectedIntent);
   assert.deepEqual(placement(refocused, unrelatedId), unrelatedPlacement);
-  assert.deepEqual(await read(`[...document.querySelectorAll(${q(`${inspectorRoot} [data-scope-ref]`)})].map(node => node.dataset.scopeRef)`), renderedRefs);
+  assert.deepEqual(
+    await read(
+      `[...document.querySelectorAll(${q(`${inspectorRoot} [data-scope-ref]`)})].map(node => node.dataset.scopeRef)`,
+    ),
+    renderedRefs,
+  );
   await assertSourceDom();
-  driver.milestone("unrelated-pane-reload", { sourcePaneId: fixture.sourcePaneId, inspectorPaneId: fixture.inspectorPaneId, unrelatedPaneId: unrelatedId, selectedRef: fixture.refs[6], edges: expectedIntent.edges });
+  driver.milestone("unrelated-pane-reload", {
+    sourcePaneId: fixture.sourcePaneId,
+    inspectorPaneId: fixture.inspectorPaneId,
+    unrelatedPaneId: unrelatedId,
+    selectedRef: fixture.refs[6],
+    edges: expectedIntent.edges,
+  });
   await capture("unrelated-pane-reload");
   await returnToSource();
   const desktopReturned = await driver.composerState(fixture.rootRef);
   assert.equal(desktopReturned.text, source.text);
   assert.deepEqual(desktopReturned.chips, source.chips);
-  await assertRestoredPanel(await read(layoutExpr), unrelatedId, unrelatedPanel, "returned unrelated pane keeps the identity its saved layout had", reloadedAt);
+  await assertRestoredPanel(
+    await read(layoutExpr),
+    unrelatedId,
+    unrelatedPanel,
+    "returned unrelated pane keeps the identity its saved layout had",
+    reloadedAt,
+  );
   assert.deepEqual(placement(await read(layoutExpr), unrelatedId), baselinePlacement);
   await capture("desktop-source-return-after-reload");
   await driver.click(sourceAgents);
   await drill(fixture.edges[0], 1);
   for (let level = 2; level <= 6; level++) await drill(fixture.edges[level - 1], level);
-  const phoneLayout = await wait(`(() => {
+  const phoneLayout = await wait(
+    `(() => {
     const saved = ${layoutExpr};
     return saved?.panels[${q(fixture.inspectorPaneId)}]?.params?.paneParams.ref === ${q(fixture.refs[6])} ? saved : null;
-  })()`, "the new phone inspector has an actual saved selected-leaf intent");
+  })()`,
+    "the new phone inspector has an actual saved selected-leaf intent",
+  );
   assert.deepEqual(phoneLayout.panels[fixture.inspectorPaneId].params.paneParams, expectedIntent);
   await assertInspectorFocus(phoneLayout);
   await key("Escape", 27);
-  await wait('document.querySelector("[data-testid=activity-sidebar]") === null', "close desktop sidebar before phone scene");
-  await driver.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: false });
-  await wait(`document.querySelectorAll('[data-testid="cascade-column"]').length === 1 && document.querySelector(${q(column(fixture.refs[6]))}) !== null && document.querySelectorAll('[data-testid="cascade-spine"]').length === 0`, "saved phone cascade contains only the selected leaf");
+  await wait(
+    'document.querySelector("[data-testid=activity-sidebar]") === null',
+    "close desktop sidebar before phone scene",
+  );
+  await driver.send("Emulation.setDeviceMetricsOverride", {
+    width: 390,
+    height: 844,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await wait(
+    `document.querySelectorAll('[data-testid="cascade-column"]').length === 1 && document.querySelector(${q(column(fixture.refs[6]))}) !== null && document.querySelectorAll('[data-testid="cascade-spine"]').length === 0`,
+    "saved phone cascade contains only the selected leaf",
+  );
   await wait(cascadeUntitledExpr, "the phone cascade has no path nav and no pane title");
   await assertPaneBodyFlush("phone");
-  await wait(`(() => {
+  await wait(
+    `(() => {
     const col = document.querySelector(${q(column(fixture.refs[6]))});
     if (!col) return null;
     const footer = col.querySelector('[data-testid="cascade-column-footer"]');
@@ -1643,7 +2279,9 @@ async function reloadAndMobileJourney() {
       && col.querySelector('[data-testid="cascade-column-content"]').compareDocumentPosition(footer)
         & Node.DOCUMENT_POSITION_FOLLOWING
       && document.querySelector(${q(inspectorFooter)}) === null;
-  })()`, "the phone column carries no duplicate title, keeps status and the conversation footer at its bottom, and renders no pane footer status bar");
+  })()`,
+    "the phone column carries no duplicate title, keeps status and the conversation footer at its bottom, and renders no pane footer status bar",
+  );
   // env(safe-area-inset-bottom) cannot be emulated through CDP, so drive the
   // shared clearance formula's --keyboard-inset custom property seam with a
   // negative stand-in for a 44px home-indicator band: only the phone media
@@ -1661,7 +2299,10 @@ async function reloadAndMobileJourney() {
     Number.parseFloat(phonePadding) > 44,
     `the phone column's activity controls reserve the home-indicator band (got ${phonePadding})`,
   );
-  await wait(`document.querySelector(${q(column(fixture.refs[6]))}).textContent.includes('CASCADE_ROLE_6_SENTINEL')`, "real selected phone transcript");
+  await wait(
+    `document.querySelector(${q(column(fixture.refs[6]))}).textContent.includes('CASCADE_ROLE_6_SENTINEL')`,
+    "real selected phone transcript",
+  );
   // The composer renders with the live conversation, so this runs after the
   // transcript proved live: the column's bottom bar holds the conversation's
   // own composer with its editable editor mounted.
@@ -1677,36 +2318,64 @@ async function reloadAndMobileJourney() {
   driver.milestone("mobile-saved-cascade");
   await capture("mobile-saved-cascade");
   await driver.clickByText("Return to previous view");
-  await wait(`document.querySelector(${q(inspectorRoot)}) === null && document.querySelector(${q(driver.composerSelector(fixture.rootRef))}) !== null`, "phone Return removes inspection and leaves its original source useful");
-  assert.equal(await read(`${driver.paneScopeExpr(fixture.rootRef)}.querySelector(${q(`[data-session-actions-ref=${q(fixture.rootRef)}]`)})?.dataset.paneId`), fixture.sourcePaneId);
+  await wait(
+    `document.querySelector(${q(inspectorRoot)}) === null && document.querySelector(${q(driver.composerSelector(fixture.rootRef))}) !== null`,
+    "phone Return removes inspection and leaves its original source useful",
+  );
+  assert.equal(
+    await read(
+      `${driver.paneScopeExpr(fixture.rootRef)}.querySelector(${q(`[data-session-actions-ref=${q(fixture.rootRef)}]`)})?.dataset.paneId`,
+    ),
+    fixture.sourcePaneId,
+  );
   fixture.inspectorPaneId = null;
   const returned = await driver.composerState(fixture.rootRef);
   assert.equal(returned.text, source.text);
   assert.deepEqual(returned.chips, source.chips);
   await capture("phone-source-return");
   await key("Escape", 27);
-  await wait('document.querySelector("[data-testid=activity-sidebar]") === null', "dismiss restored source Overview before phone menu gesture");
+  await wait(
+    'document.querySelector("[data-testid=activity-sidebar]") === null',
+    "dismiss restored source Overview before phone menu gesture",
+  );
   await readInsideTallEntry(sourcePortExpr, "phone source");
   await widthOnlyReflow(sourcePortExpr, 430, 844, "phone-reader-width-reflow");
   await widthOnlyReflow(sourcePortExpr, 390, 844, "phone-reader-width-return");
-  await driver.click(`${driver.composerSelector(fixture.rootRef)} [data-testid="session-chrome-inline"] button[aria-haspopup="menu"]`);
-  const overview = await wait(`(() => {
+  await driver.click(
+    `${driver.composerSelector(fixture.rootRef)} [data-testid="session-chrome-inline"] button[aria-haspopup="menu"]`,
+  );
+  const overview = await wait(
+    `(() => {
     const button = [...document.querySelectorAll('[role="menuitem"]')].find(node => node.textContent.trim().startsWith('Overview'));
     if (!button) return null; const r = button.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-  })()`, "existing phone Overview menu action");
+  })()`,
+    "existing phone Overview menu action",
+  );
   await driver.clickAt(overview.x, overview.y);
   await wait(sidebarEntranceSettled, "phone Overview entrance settled before physical row tap");
   const mobileRow = await reveal(fixture.edges[0], '[data-testid="activity-sidebar"]');
   await driver.click(mobileRow);
-  await wait(`(() => {
+  await wait(
+    `(() => {
     const scope = ${driver.paneScopeExpr(fixture.childRef)};
     return document.querySelectorAll("[data-testid=transcript-virtual-list]").length === 1
       && scope?.querySelector(${q(`[data-composer="${fixture.childRef}"] [role="textbox"]`)}) != null
       && document.querySelector("[data-pane-scaffold=cascade]") === null ? true : null;
-  })()`, "the mobile Agents row opens the child's live conversation without a cascade");
+  })()`,
+    "the mobile Agents row opens the child's live conversation without a cascade",
+  );
   await wait("document.body.textContent.includes('CASCADE_ROLE_1_SENTINEL')", "real ordinary phone child transcript");
-  assert.equal(await read('document.querySelectorAll("[data-testid=cascade-column], [data-testid=cascade-spine]").length'), 0);
-  await assertRestoredPanel(await read(layoutExpr), unrelatedId, unrelatedPanel, "phone action retains independent pane identity", reloadedAt);
+  assert.equal(
+    await read('document.querySelectorAll("[data-testid=cascade-column], [data-testid=cascade-spine]").length'),
+    0,
+  );
+  await assertRestoredPanel(
+    await read(layoutExpr),
+    unrelatedId,
+    unrelatedPanel,
+    "phone action retains independent pane identity",
+    reloadedAt,
+  );
   driver.milestone("mobile-agents-transcript", { childRef: fixture.childRef, unrelatedPaneId: unrelatedId });
   await capture("mobile-agents-transcript");
 }
@@ -1730,9 +2399,15 @@ async function reveal(edge, container) {
     // page lands it removes the boundary and the list shifts, so a press
     // measured before it can land on a neighbouring delegate row and drill into
     // it (#3804).
-    const step = await wait(revealControlStep(selector, container, REFUSED_BUTTON_SELECTOR), "real disclosure or direct page boundary");
+    const step = await wait(
+      revealControlStep(selector, container, REFUSED_BUTTON_SELECTOR),
+      "real disclosure or direct page boundary",
+    );
     if (step.revealed) return selector;
-    await wait(`document.querySelector(${q(selector)}) !== null || document.querySelector(${q(container)}).textContent !== ${q(step.before)}`, "direct collection progresses");
+    await wait(
+      `document.querySelector(${q(selector)}) !== null || document.querySelector(${q(container)}).textContent !== ${q(step.before)}`,
+      "direct collection progresses",
+    );
   }
   throw new Error(`real delegate did not become visible through ten boundaries: ${edge.delegateId}`);
 }
@@ -1741,7 +2416,9 @@ async function waitFrames(predicate, label) {
   if (predicate()) return;
   await new Promise((resolve, reject) => {
     const timer = setTimeout(() => finish(new Error(`actual RPC condition did not arrive: ${label}`)), 15000);
-    const check = () => { if (predicate()) finish(); };
+    const check = () => {
+      if (predicate()) finish();
+    };
     const finish = (error) => {
       clearTimeout(timer);
       driver.page.ws.removeEventListener("message", check);
@@ -1772,8 +2449,12 @@ async function reloadDocument() {
   await loaded;
 }
 
-const sent = (after = 0) => frames.slice(after).filter(f => f.direction === "Network.webSocketFrameSent");
-const answered = (request) => frames.some(f => f.direction === "Network.webSocketFrameReceived" && f.id === request.id && Object.hasOwn(f, "result") && !f.error);
+const sent = (after = 0) => frames.slice(after).filter((f) => f.direction === "Network.webSocketFrameSent");
+const answered = (request) =>
+  frames.some(
+    (f) =>
+      f.direction === "Network.webSocketFrameReceived" && f.id === request.id && Object.hasOwn(f, "result") && !f.error,
+  );
 
 // expectRefs is the scene's own set of conversation owners. The cascade calls
 // omit it and keep the strict seven-ref cascade requirement; a later journey
@@ -1791,16 +2472,30 @@ async function reconnect({ expectRefs } = {}) {
     return sockets.length;
   })()`);
   assert.equal(sockets, 1, "one actual shared hub socket is closed");
-  await waitFrames(() => expected.every(ref => sent(after).some(f => isHistoryReadMethod(f.method) && f.params.ref === ref && f.params.subscribe && answered(f))), expectRefs ? `${expected.length} mounted subscription owners recover` : "all seven real subscription owners recover")
-    .catch((error) => {
-      const subscriptions = sent(after).filter((f) => isHistoryReadMethod(f.method) && f.params.subscribe);
-      const observed = [...new Set(subscriptions.map((f) => f.params.ref))];
-      const missing = expected.filter((ref) => !subscriptions.some((f) => f.params.ref === ref && answered(f)));
-      throw new Error(`${error.message}; missing owners ${JSON.stringify(missing)}; observed ${observed.length} subscriptions ${JSON.stringify(observed)}`);
-    });
-  const subscriptions = sent(after).filter(f => isHistoryReadMethod(f.method) && f.params.subscribe);
+  await waitFrames(
+    () =>
+      expected.every((ref) =>
+        sent(after).some(
+          (f) => isHistoryReadMethod(f.method) && f.params.ref === ref && f.params.subscribe && answered(f),
+        ),
+      ),
+    expectRefs
+      ? `${expected.length} mounted subscription owners recover`
+      : "all seven real subscription owners recover",
+  ).catch((error) => {
+    const subscriptions = sent(after).filter((f) => isHistoryReadMethod(f.method) && f.params.subscribe);
+    const observed = [...new Set(subscriptions.map((f) => f.params.ref))];
+    const missing = expected.filter((ref) => !subscriptions.some((f) => f.params.ref === ref && answered(f)));
+    throw new Error(
+      `${error.message}; missing owners ${JSON.stringify(missing)}; observed ${observed.length} subscriptions ${JSON.stringify(observed)}`,
+    );
+  });
+  const subscriptions = sent(after).filter((f) => isHistoryReadMethod(f.method) && f.params.subscribe);
   assert.ok(subscriptions.length >= expected.length);
-  assert.ok(subscriptions.every(f => f.params.replaceSubscription === false), "every admitted thread membership is additive");
+  assert.ok(
+    subscriptions.every((f) => f.params.replaceSubscription === false),
+    "every admitted thread membership is additive",
+  );
   return after;
 }
 
@@ -1810,8 +2505,14 @@ async function drill(edge, level) {
   await driver.click(selector);
   await wait(`document.querySelector(${q(column(edge.childRef))}) !== null`, `selected column at level ${level}`);
   const track = drilledTrack(level);
-  await wait(`${scopeRefs("cascade-column")} === ${q(JSON.stringify(track.columns))} && ${scopeRefs("cascade-spine")} === ${q(JSON.stringify(track.spines))}`, `exact column and spine sets ${level}`);
-  await wait(`document.querySelector(${q(column(edge.childRef))}).textContent.includes(${q(`CASCADE_ROLE_${level}_SENTINEL`)})`, `real retained transcript ${level}`);
+  await wait(
+    `${scopeRefs("cascade-column")} === ${q(JSON.stringify(track.columns))} && ${scopeRefs("cascade-spine")} === ${q(JSON.stringify(track.spines))}`,
+    `exact column and spine sets ${level}`,
+  );
+  await wait(
+    `document.querySelector(${q(column(edge.childRef))}).textContent.includes(${q(`CASCADE_ROLE_${level}_SENTINEL`)})`,
+    `real retained transcript ${level}`,
+  );
   const id = await wait(inspectorIdExpr, "secondary inspector has a committed pane ID");
   assert.notEqual(id, fixture.sourcePaneId, "inspection never replaces the source panel");
   if (fixture.inspectorPaneId) assert.equal(id, fixture.inspectorPaneId, "drill reuses the inspector");
@@ -1822,7 +2523,8 @@ async function drill(edge, level) {
 
 try {
   await driver.start();
-  const measurementScript = await driver.send("Page.addScriptToEvaluateOnNewDocument", { source: `(() => {
+  const measurementScript = await driver.send("Page.addScriptToEvaluateOnNewDocument", {
+    source: `(() => {
     const Native = window.ResizeObserver;
     const state = window.__cascadeMeasurements = {
       Native, port: null, row: null, queued: [],
@@ -1863,7 +2565,8 @@ try {
         super.disconnect();
       }
     };
-  })()` });
+  })()`,
+  });
   measurementScriptId = measurementScript.result.identifier;
   driver.page.ws.addEventListener("message", (event) => {
     const value = JSON.parse(event.data);
@@ -1871,15 +2574,23 @@ try {
     if (value.method === "Runtime.consoleAPICalled") {
       consoleEvents.push(value.params);
       if (["error", "warning"].includes(value.params.type)) {
-        if (value.params.type === "warning" && stoplessComposerWarning(value.params)) knownDiagnostics.push(value.params);
+        if (value.params.type === "warning" && stoplessComposerWarning(value.params))
+          knownDiagnostics.push(value.params);
         else errors.push(value.params);
       }
     }
     if (["Network.webSocketFrameSent", "Network.webSocketFrameReceived"].includes(value.method)) {
-      try { frames.push({ direction: value.method, requestId: value.params.requestId, ...JSON.parse(value.params.response.payloadData) }); } catch {}
+      try {
+        frames.push({
+          direction: value.method,
+          requestId: value.params.requestId,
+          ...JSON.parse(value.params.response.payloadData),
+        });
+      } catch {}
     }
   });
-  await driver.send("Page.addScriptToEvaluateOnNewDocument", { source: `(() => {
+  await driver.send("Page.addScriptToEvaluateOnNewDocument", {
+    source: `(() => {
     const Native = window.WebSocket;
     window.__cascadeSockets = [];
     window.__cascadeNativeHits = [];
@@ -2025,7 +2736,8 @@ try {
         window.__cascadeSockets.push(this);
       }
     };
-  })()` });
+  })()`,
+  });
   await navigateTo(driver.page, fixture.url);
   await driver.openSession(fixture.rootRef);
   fixture.sourcePaneId = await read(`document.querySelector(${q(`${sourceFooter} [data-pane-id]`)})?.dataset.paneId`);
@@ -2034,7 +2746,9 @@ try {
   await dottedAncestorJourney();
   await reloadDocument();
   await driver.openSession(fixture.rootRef);
-  const restoredSourcePaneId = await read(`document.querySelector(${q(`${sourceFooter} [data-pane-id]`)})?.dataset.paneId`);
+  const restoredSourcePaneId = await read(
+    `document.querySelector(${q(`${sourceFooter} [data-pane-id]`)})?.dataset.paneId`,
+  );
   assert.ok(restoredSourcePaneId, "reloaded source has a committed Dockview pane ID");
   assert.equal(restoredSourcePaneId, fixture.sourcePaneId, "reload restores the saved source pane identity");
   const restoredTabCount = await read("document.querySelectorAll('.dv-tab').length");
@@ -2046,7 +2760,10 @@ try {
   await driver.typeText(fixture.rootRef, " /cascade-source");
   await driver.completeSkill(fixture.rootRef, "cascade-source");
   await upload("staged.png");
-  await wait(`document.querySelector(${q(stagedPNG)})?.src.startsWith("data:image/png;base64,")`, "staged real PNG bytes");
+  await wait(
+    `document.querySelector(${q(stagedPNG)})?.src.startsWith("data:image/png;base64,")`,
+    "staged real PNG bytes",
+  );
   const sourcePNG = await read(`document.querySelector(${q(stagedPNG)}).src`);
   const sourceDraft = await driver.composerState(fixture.rootRef);
   assert.deepEqual(sourceDraft.chips, ["/cascade-source"], "skill comes from real daemon catalog");
@@ -2064,10 +2781,13 @@ try {
     return { x:r.x + r.width / 2, y:r.y + r.height / 2, deltaY:Math.min(-200, row.getBoundingClientRect().top - r.top - 100) };
   })()`);
   await driver.send("Input.dispatchMouseEvent", { type: "mouseWheel", deltaX: 0, ...sourcePoint });
-  await wait(`(() => {
+  await wait(
+    `(() => {
     const port = ${driver.paneScopeExpr(fixture.rootRef)}.querySelector('[data-testid="transcript-virtual-list"] > div');
     return port.scrollHeight - port.clientHeight - port.scrollTop > 100 && ${sourceAnchorExpr} !== ${q(bottomAnchor)};
-  })()`, "native source scroll leaves bottom-following for an older visible row");
+  })()`,
+    "native source scroll leaves bottom-following for an older visible row",
+  );
   const beforeEntryAnchor = await sourceAnchor();
   await read('window.__cascadeTraceSource("before-entry")');
   const inspectionAfter = frames.length;
@@ -2085,54 +2805,100 @@ try {
   // restore. Wait on the structured anchor, then keep the assertion.
   await wait(`${sourceAnchorExpr} === ${q(beforeEntryAnchor)}`, "secondary entry restores the visible source row");
   assert.equal(await sourceAnchor(), beforeEntryAnchor, "secondary entry preserves the visible source row");
-  driver.milestone("root-child", { sourcePaneId: fixture.sourcePaneId, inspectorPaneId: fixture.inspectorPaneId, sourceAnchor: beforeEntryAnchor });
+  driver.milestone("root-child", {
+    sourcePaneId: fixture.sourcePaneId,
+    inspectorPaneId: fixture.inspectorPaneId,
+    sourceAnchor: beforeEntryAnchor,
+  });
   for (let level = 2; level <= 6; level++) await drill(fixture.edges[level - 1], level);
-  await wait(`${readableGeometrySettled(2)} && (() => {
+  await wait(
+    `${readableGeometrySettled(2)} && (() => {
     const spines = [...document.querySelectorAll('[data-testid="cascade-spine"]')];
     return spines.length === 4 && spines.every(n => Math.abs(n.getBoundingClientRect().width - 52) < 0.75);
-  })()`, "settled six-edge geometry");
-  const boxes = await read(`([...document.querySelectorAll('[data-testid="cascade-spine"], [data-testid="cascade-column"]')]).map(n => {
+  })()`,
+    "settled six-edge geometry",
+  );
+  const boxes =
+    await read(`([...document.querySelectorAll('[data-testid="cascade-spine"], [data-testid="cascade-column"]')]).map(n => {
     const r = n.getBoundingClientRect(); return { ref: n.dataset.scopeRef, kind: n.dataset.testid, x:r.x, y:r.y, width:r.width, height:r.height };
   })`);
   // The origin root never renders: the settled track is the rendered set.
-  assert.deepEqual(boxes.map(n => n.ref), renderedRefs);
+  assert.deepEqual(
+    boxes.map((n) => n.ref),
+    renderedRefs,
+  );
   await assertSpineStatus(fixture.refs[1], "idle");
-  driver.milestone("six-edges", { boxes, sourcePaneId: fixture.sourcePaneId, inspectorPaneId: fixture.inspectorPaneId, tabs: fixture.sourceTabCount + 1 });
+  driver.milestone("six-edges", {
+    boxes,
+    sourcePaneId: fixture.sourcePaneId,
+    inspectorPaneId: fixture.inspectorPaneId,
+    tabs: fixture.sourceTabCount + 1,
+  });
   const paint = await capture("six-edges");
-  const cascadePaint = paint.filter(view => view.surface === "cascade");
+  const cascadePaint = paint.filter((view) => view.surface === "cascade");
   assert.equal(cascadePaint.length, 2, "inspection has exactly two readable transcript viewports");
-  assert.equal(paint.filter(view => view.surface === `session:${fixture.rootRef}`).length, 1, "the mounted center has its own transcript viewport");
-  assert.ok(cascadePaint[0].chain[0].box.width >= 398.5, `parent transcript fills its readable column, got ${cascadePaint[0].chain[0].box.width}px`);
-  assert.ok(cascadePaint[1].chain[0].box.width >= 439.5, `leaf transcript fills its readable column, got ${cascadePaint[1].chain[0].box.width}px`);
-  assert.ok(paint.every(view => view.rows.some(row => row.intersects && row.box.width > 0 && row.textLength > 0)), "every real transcript viewport contains rendered text rows");
+  assert.equal(
+    paint.filter((view) => view.surface === `session:${fixture.rootRef}`).length,
+    1,
+    "the mounted center has its own transcript viewport",
+  );
+  assert.ok(
+    cascadePaint[0].chain[0].box.width >= 398.5,
+    `parent transcript fills its readable column, got ${cascadePaint[0].chain[0].box.width}px`,
+  );
+  assert.ok(
+    cascadePaint[1].chain[0].box.width >= 439.5,
+    `leaf transcript fills its readable column, got ${cascadePaint[1].chain[0].box.width}px`,
+  );
+  assert.ok(
+    paint.every((view) => view.rows.some((row) => row.intersects && row.box.width > 0 && row.textLength > 0)),
+    "every real transcript viewport contains rendered text rows",
+  );
   // The pane body hosting the spines and columns never scrolls as a unit:
   // its height is the track's own allocation, and each column's transcript
   // viewport scrolls internally instead.
   await assertPaneBodyFlush("desktop");
-  await driver.send("Emulation.setDeviceMetricsOverride", { width: 1000, height: 900, deviceScaleFactor: 1, mobile: false });
+  await driver.send("Emulation.setDeviceMetricsOverride", {
+    width: 1000,
+    height: 900,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
   // A user pop/drill after the resize must reveal the selected leaf. Resizing
   // itself is not a drill and must not move the retained reader's position.
   await wait("window.innerWidth === 1000", "native narrow desktop viewport applied");
-  await wait(`(() => {
+  await wait(
+    `(() => {
     const node = ${driver.paneScopeExpr(fixture.rootRef)};
     if (!node) return false;
     const r = node.getBoundingClientRect(), style = getComputedStyle(node);
     return r.width > 0 && r.height > 0 && r.right > 0 && r.left < innerWidth && style.visibility === 'visible' && style.display !== 'none';
-  })()`, "the original center remains visible on narrow desktop");
+  })()`,
+    "the original center remains visible on narrow desktop",
+  );
   await assertSourceDom();
   const parentCrumb = `${inspectorFooter} [data-session-navigation-ref=${q(fixture.refs[5])}]`;
   await read(`document.querySelector(${q(parentCrumb)}).focus()`);
-  await wait(`document.activeElement === document.querySelector(${q(parentCrumb)})`, "parent breadcrumb owns keyboard focus");
+  await wait(
+    `document.activeElement === document.querySelector(${q(parentCrumb)})`,
+    "parent breadcrumb owns keyboard focus",
+  );
   await key("Enter", 13);
-  await wait(`document.querySelector(${q(`${column(fixture.refs[5])}[data-leaf]`)}) !== null && document.querySelector(${q(column(fixture.refs[6]))}) === null`, "actual narrow-desktop parent pop");
+  await wait(
+    `document.querySelector(${q(`${column(fixture.refs[5])}[data-leaf]`)}) !== null && document.querySelector(${q(column(fixture.refs[6]))}) === null`,
+    "actual narrow-desktop parent pop",
+  );
   await drill(fixture.edges[5], 6);
-  const narrow = await wait(`(() => {
+  const narrow = await wait(
+    `(() => {
     const leaf = document.querySelector(${q(column(fixture.refs[6]))});
     const track = leaf?.parentElement;
     if (!track || track.scrollWidth <= track.clientWidth) return null;
     const a = track.getBoundingClientRect(), b = leaf.getBoundingClientRect();
     return b.right <= a.right + 1 && b.right > a.left ? { width: track.clientWidth, extent: track.scrollWidth, left: track.scrollLeft, leafRight: b.right, trackRight: a.right } : null;
-  })()`, "narrow desktop overflow and selected leaf revealed");
+  })()`,
+    "narrow desktop overflow and selected leaf revealed",
+  );
   // Both columns are virtualized, and under 2-core load a late row-height
   // correction can leave a column a few pixels off the bottom it was pinned
   // to: the app holds the reader's visual position, so the numeric gap never
@@ -2142,38 +2908,66 @@ try {
   // the guard establishes it the same way that check sets its explicit
   // offsets: settle the heights, re-pin both columns, then require the
   // retained-bottom condition to hold on its own.
-  await wait(`(() => {
+  await wait(
+    `(() => {
     const nodes = [${q(scroll(fixture.refs[5]))}, ${q(scroll(fixture.refs[6]))}].map((s) => document.querySelector(s));
     if (nodes.includes(null)) return null;
     const stamp = nodes.map((node) => node.scrollHeight).join(",");
     const settled = window.__cascadeScrollHeights === stamp;
     window.__cascadeScrollHeights = stamp;
     return settled;
-  })()`, "both cascade columns' scroll geometry settled before the independence check");
-  await read(`[${q(scroll(fixture.refs[5]))},${q(scroll(fixture.refs[6]))}].map((s) => { const port = document.querySelector(s); if (port) port.scrollTop = port.scrollHeight; })`);
-  await wait(`${readableGeometrySettled(2)} && (() => {
+  })()`,
+    "both cascade columns' scroll geometry settled before the independence check",
+  );
+  await read(
+    `[${q(scroll(fixture.refs[5]))},${q(scroll(fixture.refs[6]))}].map((s) => { const port = document.querySelector(s); if (port) port.scrollTop = port.scrollHeight; })`,
+  );
+  await wait(
+    `${readableGeometrySettled(2)} && (() => {
     const ports = [${q(scroll(fixture.refs[5]))},${q(scroll(fixture.refs[6]))}].map(selector => document.querySelector(selector));
     return ports.every(port => port && port.clientHeight > 0 && port.scrollHeight > port.clientHeight
       && Math.abs(port.scrollHeight - port.clientHeight - port.scrollTop) <= 1);
-  })()`, "settled readable geometry and retained bottom before independent scrolling");
-  const beforeScroll = await read(`[${q(scroll(fixture.refs[5]))},${q(scroll(fixture.refs[6]))}].map(s => document.querySelector(s).scrollTop)`);
+  })()`,
+    "settled readable geometry and retained bottom before independent scrolling",
+  );
+  const beforeScroll = await read(
+    `[${q(scroll(fixture.refs[5]))},${q(scroll(fixture.refs[6]))}].map(s => document.querySelector(s).scrollTop)`,
+  );
   await read(`document.querySelector(${q(scroll(fixture.refs[5]))}).scrollTop = 200`);
-  await wait(`document.querySelector(${q(scroll(fixture.refs[5]))}).scrollTop === 200`, "parent scrolled independently");
+  await wait(
+    `document.querySelector(${q(scroll(fixture.refs[5]))}).scrollTop === 200`,
+    "parent scrolled independently",
+  );
   assert.equal(await read(`document.querySelector(${q(scroll(fixture.refs[6]))}).scrollTop`), beforeScroll[1]);
   await read(`document.querySelector(${q(scroll(fixture.refs[6]))}).scrollTop = 320`);
   await wait(`document.querySelector(${q(scroll(fixture.refs[6]))}).scrollTop === 320`, "leaf scrolled independently");
   assert.equal(await read(`document.querySelector(${q(scroll(fixture.refs[5]))}).scrollTop`), 200);
   driver.milestone("narrow-independent-scroll", narrow);
 
-  const leafChrome = await read(`({ footer: document.querySelector(${q(inspectorFooter)}).textContent, sidebar: document.querySelector('[data-testid="activity-sidebar"]').textContent })`);
-  await read(`(() => { const node = document.querySelector(${q(column(fixture.refs[5]))}).querySelector('[data-testid="turn-block"]'); const range = document.createRange(); range.selectNodeContents(node); const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range); })()`);
+  const leafChrome = await read(
+    `({ footer: document.querySelector(${q(inspectorFooter)}).textContent, sidebar: document.querySelector('[data-testid="activity-sidebar"]').textContent })`,
+  );
+  await read(
+    `(() => { const node = document.querySelector(${q(column(fixture.refs[5]))}).querySelector('[data-testid="turn-block"]'); const range = document.createRange(); range.selectNodeContents(node); const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range); })()`,
+  );
   assert.ok(await read("window.getSelection().toString().length > 0"));
-  assert.equal(await read('document.querySelector("[data-testid=cascade-column][data-leaf]").dataset.scopeRef'), fixture.refs[6]);
-  assert.deepEqual(await read(`({ footer: document.querySelector(${q(inspectorFooter)}).textContent, sidebar: document.querySelector('[data-testid="activity-sidebar"]').textContent })`), leafChrome);
+  assert.equal(
+    await read('document.querySelector("[data-testid=cascade-column][data-leaf]").dataset.scopeRef'),
+    fixture.refs[6],
+  );
+  assert.deepEqual(
+    await read(
+      `({ footer: document.querySelector(${q(inspectorFooter)}).textContent, sidebar: document.querySelector('[data-testid="activity-sidebar"]').textContent })`,
+    ),
+    leafChrome,
+  );
   driver.milestone("parent-selection-leaf-scope");
 
   await openPeek(fixture.refs[1], "Tasks");
-  await wait('document.querySelector("[data-testid=activity-peek]").textContent.includes("No tasks")', "Tasks is rendered inside ancestor peek");
+  await wait(
+    'document.querySelector("[data-testid=activity-peek]").textContent.includes("No tasks")',
+    "Tasks is rendered inside ancestor peek",
+  );
   await key("Escape", 27);
   await wait('document.querySelector("[data-testid=activity-peek]") === null', "single Escape closes only peek");
   assert.ok(await read('document.querySelector("[data-testid=activity-sidebar]") !== null'));
@@ -2189,21 +2983,52 @@ try {
   const branchRow = await reveal(fixture.branch, '[data-testid="activity-sidebar"]');
   // A retained page may complete before the sidebar opens, so the observed
   // direct history includes it. Any request still in flight gets its reply.
-  const directPageRequests = () => sent(0).filter(f => f.method === 'evener/thread/delegates/list' && f.params.ref === fixture.rootRef && f.params.cursor);
-  await waitFrames(() => directPageRequests().length > 0 && directPageRequests().every(answered), "the observed root collection advances the real direct-page cursor");
+  const directPageRequests = () =>
+    sent(0).filter(
+      (f) => f.method === "evener/thread/delegates/list" && f.params.ref === fixture.rootRef && f.params.cursor,
+    );
+  await waitFrames(
+    () => directPageRequests().length > 0 && directPageRequests().every(answered),
+    "the observed root collection advances the real direct-page cursor",
+  );
   const paging = directPageRequests();
-  assert.ok(paging.length > 0 && paging.every(answered), "the observed root collection advances the real direct-page cursor");
+  assert.ok(
+    paging.length > 0 && paging.every(answered),
+    "the observed root collection advances the real direct-page cursor",
+  );
   await read(`document.querySelector(${q(branchRow)}).focus()`);
-  await wait(`document.activeElement === document.querySelector(${q(branchRow)})`, "real sidebar row owns keyboard focus");
+  await wait(
+    `document.activeElement === document.querySelector(${q(branchRow)})`,
+    "real sidebar row owns keyboard focus",
+  );
   await key("Enter", 13);
-  await wait(`document.querySelector(${q(column(fixture.branch.childRef))}) !== null && document.querySelectorAll(${q(`${inspectorRoot} [data-scope-ref]`)}).length === 1`, "keyboard ancestor branch truncation");
-  assert.deepEqual(await read(`[...document.querySelectorAll(${q(`${inspectorRoot} [data-scope-ref]`)})].map(n => n.dataset.scopeRef)`), [fixture.branch.childRef], "the sibling replaces the old six-edge suffix without the removed origin");
+  await wait(
+    `document.querySelector(${q(column(fixture.branch.childRef))}) !== null && document.querySelectorAll(${q(`${inspectorRoot} [data-scope-ref]`)}).length === 1`,
+    "keyboard ancestor branch truncation",
+  );
+  assert.deepEqual(
+    await read(
+      `[...document.querySelectorAll(${q(`${inspectorRoot} [data-scope-ref]`)})].map(n => n.dataset.scopeRef)`,
+    ),
+    [fixture.branch.childRef],
+    "the sibling replaces the old six-edge suffix without the removed origin",
+  );
   assert.equal(await read('document.querySelectorAll("[data-testid=activity-peek]").length'), 0);
-  assert.equal(await read('document.getAnimations().filter(a => a.effect?.target?.matches("[data-scope-ref]") && a.playState === "running").length'), 0);
+  assert.equal(
+    await read(
+      'document.getAnimations().filter(a => a.effect?.target?.matches("[data-scope-ref]") && a.playState === "running").length',
+    ),
+    0,
+  );
   await driver.click(sourceAgents);
   await drill(fixture.edges[0], 1);
   for (let level = 2; level <= 6; level++) await drill(fixture.edges[level - 1], level);
-  assert.equal(await read('document.getAnimations().filter(a => a.effect?.target?.matches("[data-scope-ref]") && a.playState === "running").length'), 0);
+  assert.equal(
+    await read(
+      'document.getAnimations().filter(a => a.effect?.target?.matches("[data-scope-ref]") && a.playState === "running").length',
+    ),
+    0,
+  );
   driver.milestone("keyboard-branch-reduced-motion");
 
   // The observed root collection recovers its full paged extent across a
@@ -2221,23 +3046,57 @@ try {
   })()`);
   await driver.send("Emulation.setEmulatedMedia", { features: [] });
   const openAfter = await reconnect();
-  await waitFrames(() => sent(openAfter).some(f => f.method === "evener/thread/delegates/list" && f.params.ref === fixture.rootRef && f.params.cursor && answered(f)), "the observed root collection recovers its full observed page extent");
-  assert.ok(await read(`document.querySelector(${q(rootSidebarRow)}) !== null`), "retained older-page row remains useful after reconnect");
-  assert.equal(await read("document.activeElement === window.__cascadeFocused"), true, "reconnect and republished context keep keyboard focus");
-  assert.deepEqual(await read("window.__cascadeGeometryChanges"), [], "reconnect and runtime/context refresh never animate cascade geometry");
+  await waitFrames(
+    () =>
+      sent(openAfter).some(
+        (f) =>
+          f.method === "evener/thread/delegates/list" &&
+          f.params.ref === fixture.rootRef &&
+          f.params.cursor &&
+          answered(f),
+      ),
+    "the observed root collection recovers its full observed page extent",
+  );
+  assert.ok(
+    await read(`document.querySelector(${q(rootSidebarRow)}) !== null`),
+    "retained older-page row remains useful after reconnect",
+  );
+  assert.equal(
+    await read("document.activeElement === window.__cascadeFocused"),
+    true,
+    "reconnect and republished context keep keyboard focus",
+  );
+  assert.deepEqual(
+    await read("window.__cascadeGeometryChanges"),
+    [],
+    "reconnect and runtime/context refresh never animate cascade geometry",
+  );
   await key("Escape", 27);
-  await wait('document.querySelector("[data-testid=activity-sidebar]") === null', "the observed root sidebar closes without changing center demand");
+  await wait(
+    'document.querySelector("[data-testid=activity-sidebar]") === null',
+    "the observed root sidebar closes without changing center demand",
+  );
   const closedRef = fixture.refs[4];
   const closedPeekAfter = frames.length;
   // Closing the sidebar relayouts the panes; the peek clicks below measure
   // chip coordinates, so they wait for the settled geometry first.
   await wait(readableGeometrySettled(2), "settled geometry after closing the observed root sidebar");
   await openPeek(closedRef, "Agents");
-  await waitFrames(() => sent(closedPeekAfter).some(f => f.method === "evener/thread/delegates/list" && f.params.ref === closedRef && answered(f)), "the independent ancestor peek owns a real delegate read");
+  await waitFrames(
+    () =>
+      sent(closedPeekAfter).some(
+        (f) => f.method === "evener/thread/delegates/list" && f.params.ref === closedRef && answered(f),
+      ),
+    "the independent ancestor peek owns a real delegate read",
+  );
   await key("Escape", 27);
-  await wait('document.querySelector("[data-testid=activity-peek]") === null', "independent ancestor peek relinquishes direct collection demand");
+  await wait(
+    'document.querySelector("[data-testid=activity-peek]") === null',
+    "independent ancestor peek relinquishes direct collection demand",
+  );
   // The selected leaf's own sidebar demand resumes for the recovery legs.
-  const recoveryAgentsBox = await wait(`(() => {
+  const recoveryAgentsBox = await wait(
+    `(() => {
     const button = document.querySelector(${q(`${inspectorFooter} button[aria-label^="Agents,"]`)});
     if (!button) return null;
     const r = button.getBoundingClientRect(), x = r.x + r.width / 2, y = r.y + r.height / 2;
@@ -2245,26 +3104,60 @@ try {
     window.__cascadeRecoveryPress = false;
     document.addEventListener('mousedown', event => { window.__cascadeRecoveryPress = event.isTrusted && button.contains(event.target); }, { once:true, capture:true });
     return { x, y };
-  })()`, "selected-leaf Agents control is visible and hit-testable");
+  })()`,
+    "selected-leaf Agents control is visible and hit-testable",
+  );
   // This footer is already visible. Driver.click's centering scroll moves
   // Dockview's overflow viewport and puts its scrollbar over the native hit.
   await driver.clickAt(recoveryAgentsBox.x, recoveryAgentsBox.y);
-  assert.equal(await read('window.__cascadeRecoveryPress'), true, "native recovery press reaches the selected-leaf Agents control");
+  assert.equal(
+    await read("window.__cascadeRecoveryPress"),
+    true,
+    "native recovery press reaches the selected-leaf Agents control",
+  );
   await wait(sidebarEntranceSettled, "selected-leaf sidebar entrance settled before the recovery reconnect");
   const closedAfter = await reconnect();
-  await waitFrames(() => sent(closedAfter).some(f => f.method === "evener/thread/delegates/list" && f.params.ref === fixture.refs[6] && answered(f)), "selected-leaf sidebar resumes its actual direct collection");
-  assert.equal(sent(closedAfter).filter(f => f.method === 'evener/thread/delegates/list' && f.params.ref === closedRef).length, 0, "closed independent peek causes no delegate-page read on recovery");
+  await waitFrames(
+    () =>
+      sent(closedAfter).some(
+        (f) => f.method === "evener/thread/delegates/list" && f.params.ref === fixture.refs[6] && answered(f),
+      ),
+    "selected-leaf sidebar resumes its actual direct collection",
+  );
+  assert.equal(
+    sent(closedAfter).filter((f) => f.method === "evener/thread/delegates/list" && f.params.ref === closedRef).length,
+    0,
+    "closed independent peek causes no delegate-page read on recovery",
+  );
   assert.deepEqual(await read("window.__cascadeGeometryChanges"), []);
   await read("window.__cascadeGeometryObserver.disconnect()");
-  driver.milestone("reconnect-extent-closed-peek", { extent: fixture.rootDelegateCount, closedPeekRef: closedRef, rootDelegateReads: sent(closedAfter).filter(f => f.method === 'evener/thread/delegates/list' && f.params.ref === fixture.rootRef).length, subscriptions: sent(openAfter).filter(f => isHistoryReadMethod(f.method) && f.params.subscribe).length });
+  driver.milestone("reconnect-extent-closed-peek", {
+    extent: fixture.rootDelegateCount,
+    closedPeekRef: closedRef,
+    rootDelegateReads: sent(closedAfter).filter(
+      (f) => f.method === "evener/thread/delegates/list" && f.params.ref === fixture.rootRef,
+    ).length,
+    subscriptions: sent(openAfter).filter((f) => isHistoryReadMethod(f.method) && f.params.subscribe).length,
+  });
 
   const removedInspectorId = await returnToSource();
   assert.equal((await driver.composerState(fixture.rootRef)).text, sourceDraft.text);
   assert.deepEqual((await driver.composerState(fixture.rootRef)).chips, sourceDraft.chips);
-  assert.equal(await read(`document.querySelector(${q(stagedPNG)}).src`), sourcePNG, "exact processed PNG bytes survive inspection");
-  assert.equal(await read(`document.querySelector(${q(`${sourceFooter} [data-pane-id]`)})?.dataset.paneId`), fixture.sourcePaneId);
+  assert.equal(
+    await read(`document.querySelector(${q(stagedPNG)}).src`),
+    sourcePNG,
+    "exact processed PNG bytes survive inspection",
+  );
+  assert.equal(
+    await read(`document.querySelector(${q(`${sourceFooter} [data-pane-id]`)})?.dataset.paneId`),
+    fixture.sourcePaneId,
+  );
   assert.equal(await read("document.querySelectorAll('.dv-tab').length"), fixture.sourceTabCount);
-  assert.deepEqual(sent(inspectionAfter).filter(frame => frame.method?.startsWith("turn/") || frame.method === "thread/clear"), [], "inspection sends no input or control RPC");
+  assert.deepEqual(
+    sent(inspectionAfter).filter((frame) => frame.method?.startsWith("turn/") || frame.method === "thread/clear"),
+    [],
+    "inspection sends no input or control RPC",
+  );
   driver.milestone("return-source", { sourcePaneId: fixture.sourcePaneId, removedInspectorId });
   await capture("return-source");
   await pendingImage("pending-success.png", true);
@@ -2281,8 +3174,22 @@ try {
   // the control existed. From here the real needs_you queue, the floating
   // control and its hops own the browser.
   await attentionJourney({
-    driver, fixture, read, wait, capture, key, frames, sent, answered, reconnect,
-    drill, upload, holdCanvasCompletion, sourcePortExpr, settledReadingPoint, assertReadingContinuity,
+    driver,
+    fixture,
+    read,
+    wait,
+    capture,
+    key,
+    frames,
+    sent,
+    answered,
+    reconnect,
+    drill,
+    upload,
+    holdCanvasCompletion,
+    sourcePortExpr,
+    settledReadingPoint,
+    assertReadingContinuity,
   });
   assert.deepEqual(errors, [], "unexpected browser errors or warnings");
 } catch (error) {
@@ -2293,22 +3200,47 @@ try {
   try {
     if (measurementScriptId) {
       try {
-        await read("(() => { const state = window.__cascadeMeasurements; if (!state) return; state.release(); window.ResizeObserver = state.Native; delete window.__cascadeMeasurements; })()");
+        await read(
+          "(() => { const state = window.__cascadeMeasurements; if (!state) return; state.release(); window.ResizeObserver = state.Native; delete window.__cascadeMeasurements; })()",
+        );
       } finally {
-        await driver.send("Page.removeScriptToEvaluateOnNewDocument", { identifier:measurementScriptId });
+        await driver.send("Page.removeScriptToEvaluateOnNewDocument", { identifier: measurementScriptId });
       }
     }
   } finally {
     try {
       writeFileSync(path.join(fixture.artifactDir, "console.json"), JSON.stringify(consoleEvents, null, 2));
-      writeFileSync(path.join(fixture.artifactDir, "known-diagnostics.json"), JSON.stringify(knownDiagnostics, null, 2));
+      writeFileSync(
+        path.join(fixture.artifactDir, "known-diagnostics.json"),
+        JSON.stringify(knownDiagnostics, null, 2),
+      );
       writeFileSync(path.join(fixture.artifactDir, "rpc-frames.json"), JSON.stringify(frames, null, 2));
       writeFileSync(path.join(fixture.artifactDir, "reading-points.json"), JSON.stringify(readingPoints, null, 2));
-      if (driver.page) writeFileSync(path.join(fixture.artifactDir, "reading-attempt.json"), JSON.stringify(await read('window.__cascadeReadingAttempt ?? null'), null, 2));
-      if (driver.page) writeFileSync(path.join(fixture.artifactDir, "reader-wheels.json"), JSON.stringify(await read('window.__cascadeReaderWheels ?? []'), null, 2));
-      if (driver.page) writeFileSync(path.join(fixture.artifactDir, "reveal-events.json"), JSON.stringify(await read('window.__cascadeRevealEvents ?? []'), null, 2));
-      if (driver.page) writeFileSync(path.join(fixture.artifactDir, "source-scroll-trace.json"), JSON.stringify(await read('window.__cascadeSourceTrace ?? []'), null, 2));
-      if (driver.page) writeFileSync(path.join(fixture.artifactDir, "source-startup-trace.json"), JSON.stringify(await read('window.__cascadeStartupTrace ?? []'), null, 2));
+      if (driver.page)
+        writeFileSync(
+          path.join(fixture.artifactDir, "reading-attempt.json"),
+          JSON.stringify(await read("window.__cascadeReadingAttempt ?? null"), null, 2),
+        );
+      if (driver.page)
+        writeFileSync(
+          path.join(fixture.artifactDir, "reader-wheels.json"),
+          JSON.stringify(await read("window.__cascadeReaderWheels ?? []"), null, 2),
+        );
+      if (driver.page)
+        writeFileSync(
+          path.join(fixture.artifactDir, "reveal-events.json"),
+          JSON.stringify(await read("window.__cascadeRevealEvents ?? []"), null, 2),
+        );
+      if (driver.page)
+        writeFileSync(
+          path.join(fixture.artifactDir, "source-scroll-trace.json"),
+          JSON.stringify(await read("window.__cascadeSourceTrace ?? []"), null, 2),
+        );
+      if (driver.page)
+        writeFileSync(
+          path.join(fixture.artifactDir, "source-startup-trace.json"),
+          JSON.stringify(await read("window.__cascadeStartupTrace ?? []"), null, 2),
+        );
     } finally {
       await driver.stop();
     }
