@@ -181,7 +181,7 @@ func (s *Session) bumpHistoryRevisionLocked() {
 //     deliberate exception is appendEnvironmentContext's EventEnvironment,
 //     which publishes under attentionMu. The door makes it one publication:
 //     the entry is in history before the event exists, so no reader observes
-//     the event ahead of the transcript that explains it, and no fold commits
+//     the event ahead of the entry that explains it, and no fold commits
 //     its markers between those two steps. The bridge samples the thread
 //     envelope's context when it handles the event, so that refresh is a
 //     trigger, not a snapshot the door ordered. It is one emit of known

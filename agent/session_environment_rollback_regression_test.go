@@ -1042,7 +1042,7 @@ func TestPoisonedWriterDoesNotPopAQueuedMessage(t *testing.T) {
 // TestEnvironmentEventPublishesInsideTheTranscriptOrderingBoundary: the entry
 // and the live event that announces it are one publication. The entry is in
 // history before the event exists, so no reader observes the event ahead of
-// the transcript that explains it, and no fold commits its markers between
+// the entry that explains it, and no fold commits its markers between
 // those two steps. The bridge samples the thread envelope's context when it
 // handles the event, so that refresh is a trigger rather than a snapshot the
 // door ordered.
