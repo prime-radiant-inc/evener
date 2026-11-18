@@ -33,6 +33,32 @@ func escapeModelAuthoredTurnFrames(msg llm.Message, protocol string) llm.Message
 	return escapeModelAuthoredTurnFramesFor(msg, protocol, false)
 }
 
+// splitEscapedBlock splits escaped, the escape of strings.Join(originals, "\n"),
+// back into one piece per original, by each original's line count.
+//
+// The escape rewrites a frame's opening character and never adds or removes a
+// line or a line break, so a piece occupies exactly the lines its original did
+// and the split is the join read backwards. ok is false when the escaped text
+// does not have that shape, and the caller then leaves the turn as stored rather
+// than hand back text split somewhere it was not.
+func splitEscapedBlock(escaped string, originals []string) (pieces []string, ok bool) {
+	lines := strings.Split(escaped, "\n")
+	pieces = make([]string, 0, len(originals))
+	at := 0
+	for _, original := range originals {
+		n := strings.Count(original, "\n") + 1
+		if at+n > len(lines) {
+			return nil, false
+		}
+		pieces = append(pieces, strings.Join(lines[at:at+n], "\n"))
+		at += n
+	}
+	if at != len(lines) {
+		return nil, false
+	}
+	return pieces, true
+}
+
 // escapeModelAuthoredTurnFramesFor is escapeModelAuthoredTurnFrames with the
 // target's reasoning policy. When the target renders replayed reasoning as
 // ordinary assistant text, its adapter prepends that reasoning to the message
@@ -93,23 +119,31 @@ func escapeModelAuthoredTurnFramesFor(msg llm.Message, protocol string, promotes
 		if at+1 > len(lines) || lines[at] != "" {
 			return msg
 		}
-		parts := slices.Clone(msg.Content)
-		reasoningPiece := strings.Join(lines[:at], "\n")
-		if reasoningPiece != reasoningTexts[0] {
-			thinking := *msg.Content[reasoningIndexes[0]].Thinking
-			thinking.Text = reasoningPiece
-			parts[reasoningIndexes[0]].Thinking = &thinking
+		// Split the escaped body back the way it was joined: one piece per
+		// reasoning block and one per text part, by each one's own line count.
+		// Writing the whole escaped reasoning body into the first block leaves
+		// the later blocks in place, and the promoting adapter joins every block
+		// again — duplicating the later reasoning and replaying any raw frame it
+		// held in its original spelling (#6493 review).
+		reasoningPieces, ok := splitEscapedBlock(strings.Join(lines[:at], "\n"), reasoningTexts)
+		if !ok {
+			return msg
 		}
-		textLines := lines[at+1:]
-		cursor := 0
-		for k, text := range texts {
-			n := strings.Count(text, "\n") + 1
-			if cursor+n > len(textLines) {
-				return msg
+		textPieces, ok := splitEscapedBlock(strings.Join(lines[at+1:], "\n"), texts)
+		if !ok {
+			return msg
+		}
+		parts := slices.Clone(msg.Content)
+		for k, piece := range reasoningPieces {
+			if piece == reasoningTexts[k] {
+				continue
 			}
-			piece := strings.Join(textLines[cursor:cursor+n], "\n")
-			cursor += n
-			if piece != text {
+			thinking := *msg.Content[reasoningIndexes[k]].Thinking
+			thinking.Text = piece
+			parts[reasoningIndexes[k]].Thinking = &thinking
+		}
+		for k, piece := range textPieces {
+			if piece != texts[k] {
 				parts[indexes[k]].Text = piece
 			}
 		}
@@ -143,25 +177,21 @@ func escapeModelAuthoredTurnFramesFor(msg llm.Message, protocol string, promotes
 		// Escaping rewrites a frame's opening character and never adds or
 		// removes a line break, so the escaped text splits back into the same
 		// per-part line counts it was joined from.
-		lines := strings.Split(escaped, "\n")
-		at := 0
-		for k, text := range segmentTexts {
-			n := strings.Count(text, "\n") + 1
-			if at+n > len(lines) {
+			pieces, ok := splitEscapedBlock(escaped, segmentTexts)
+			if !ok {
 				// The escape changed the line structure; leave the turn as
 				// stored rather than hand back text split somewhere it was not.
 				return msg
 			}
-			piece := strings.Join(lines[at:at+n], "\n")
-			at += n
-			if piece == text {
-				continue
+			for k, piece := range pieces {
+				if piece == segmentTexts[k] {
+					continue
+				}
+				if parts == nil {
+					parts = slices.Clone(msg.Content)
+				}
+				parts[indexes[span[0]+k]].Text = piece
 			}
-			if parts == nil {
-				parts = slices.Clone(msg.Content)
-			}
-			parts[indexes[span[0]+k]].Text = piece
-		}
 	}
 	if parts == nil {
 		return msg

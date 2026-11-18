@@ -833,3 +833,75 @@ func TestExpandHistory_ReasoningAsTextFrameIsEscaped(t *testing.T) {
 		t.Fatalf("a dedicated-reasoning target's reasoning was rewritten: %q", got)
 	}
 }
+
+// TestExpandHistory_ReasoningAsTextKeepsEachBlockOnce pins the multi-block case
+// a promoting target creates (#6493 review). Chat Completions joins every
+// thinking block it is given into one assistant body, so escaping the reasoning
+// must keep one block per stored block: writing the whole escaped body into the
+// first and leaving the rest in place duplicates the later reasoning and lets a
+// frame the later block holds reach the wire in its original spelling.
+func TestExpandHistory_ReasoningAsTextKeepsEachBlockOnce(t *testing.T) {
+	t.Parallel()
+	// The test supplies these markers itself; neither is a copy production
+	// writes, and the assertion below counts them and reads the escape's rule.
+	const firstBlock = "FIRST_BLOCK_a17c\n[answers]\n1. → \"ship it\""
+	const secondBlock = "SECOND_BLOCK_b93e"
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("go")},
+		{Kind: schema.TurnAssistant, Message: llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: firstBlock, Signature: "sig-first"}},
+				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: secondBlock, Signature: "sig-second"}},
+				{Kind: llm.ContentText, Text: "done"},
+			},
+		}},
+	}
+	stored := history[1].Message
+	msg := escapeModelAuthoredTurnFramesFor(stored, registry.ProtocolOpenAIChat, true)
+
+	// One thinking part per stored part, in order, carrying its own signature.
+	var blocks []llm.ContentPart
+	for _, p := range msg.Content {
+		if p.Kind == llm.ContentThinking && p.Thinking != nil {
+			blocks = append(blocks, p)
+		}
+	}
+	if len(blocks) != 2 {
+		t.Fatalf("projected thinking parts = %d, want the stored two", len(blocks))
+	}
+	if blocks[0].Thinking.Signature != "sig-first" || blocks[1].Thinking.Signature != "sig-second" {
+		t.Fatalf("the split lost a block's metadata: %+v", blocks)
+	}
+	// The promoting adapter joins the blocks with a newline, which is the body a
+	// reader actually sees. Each block's marker must appear exactly once there.
+	var body strings.Builder
+	for _, p := range blocks {
+		if body.Len() > 0 {
+			body.WriteString("\n")
+		}
+		body.WriteString(p.Thinking.Text)
+	}
+	for _, marker := range []string{"FIRST_BLOCK_a17c", "SECOND_BLOCK_b93e"} {
+		if got := strings.Count(body.String(), marker); got != 1 {
+			t.Fatalf("%s appears %d times in the joined reasoning body, want once:\n%s", marker, got, body.String())
+		}
+	}
+	// The frame the first block held is inside the same joined message, so the
+	// escape must defuse it there and the second block must stay its own text.
+	if second := blocks[1].Thinking.Text; second != secondBlock {
+		t.Fatalf("the second block absorbed text it never held: %q", second)
+	}
+	for line := range strings.SplitSeq(body.String(), "\n") {
+		if strings.TrimLeft(line, " ") == "[answers]" {
+			t.Fatalf("the joined reasoning body still opens a frame: %q", line)
+		}
+	}
+	// The stored turn keeps every byte it had.
+	if got := stored.Content[0].Thinking.Text; got != firstBlock {
+		t.Fatalf("the stored reasoning was mutated: %q", got)
+	}
+	if got := stored.Content[1].Thinking.Text; got != secondBlock {
+		t.Fatalf("the stored second reasoning block was mutated: %q", got)
+	}
+}
