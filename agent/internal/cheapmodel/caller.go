@@ -39,6 +39,42 @@ var ErrAllModelsRefused = errors.New("all auxiliary models refused")
 // when one was observed, is joined in.
 var ErrSessionModelCannotTakeMedia = errors.New("session model cannot take this request's media")
 
+// ErrAdmissionRefused marks an auxiliary dispatch the caller's admission
+// refused. The summarization layer installs a live admission on the context
+// (contextmgr.WithSummarizeAdmission) and asks it at its own dispatch
+// boundaries, but a cheap-to-session resolution dispatches TWICE inside this
+// package: the cheap probe, and the session-model fallback a route refusal
+// earns. Only the first was fenced, so a subtree stop recorded while the probe
+// was in flight could be bypassed by the fallback that followed it.
+var ErrAdmissionRefused = errors.New("auxiliary dispatch refused by admission")
+
+// WithDispatchAdmission installs a live admission the caller asks before EVERY
+// provider dispatch it makes, including the session-model fallback inside one
+// resolution. A nil admission permits everything, matching the summarization
+// layer's own default.
+//
+// The check runs at the dispatch boundary rather than on a verdict taken
+// earlier, for the same reason contextmgr's does: the thing that changes
+// (a durable stop for this generation) can be recorded between any two
+// dispatches of one resolution (#2340 review).
+func WithDispatchAdmission(ctx context.Context, admit func() bool) context.Context {
+	if admit == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, dispatchAdmissionKey{}, admit)
+}
+
+type dispatchAdmissionKey struct{}
+
+// dispatchAllowed reports whether the caller may dispatch a provider call now.
+func dispatchAllowed(ctx context.Context) bool {
+	admit, _ := ctx.Value(dispatchAdmissionKey{}).(func() bool)
+	if admit == nil {
+		return true
+	}
+	return admit()
+}
+
 // Caller executes cheap-model requests for one session.
 type Caller struct {
 	client *llm.Client
@@ -151,6 +187,11 @@ func (c *Caller) complete(ctx context.Context, profile *provider.Profile, cheap 
 		cheap = active
 	}
 
+	// Every dispatch below is bracketed by the admission: the cheap probe, the
+	// reroute after a latch, and the session-model fallback a refusal earns.
+	if !dispatchAllowed(ctx) {
+		return llm.Response{}, false, nil, ErrAdmissionRefused
+	}
 	var refusedProbe *probeCall
 	var resp llm.Response
 	var err error
@@ -170,6 +211,9 @@ func (c *Caller) complete(ctx context.Context, profile *provider.Profile, cheap 
 			}
 			cheap = active
 			req.Provider, req.Model = active.provider, active.model
+			if !dispatchAllowed(ctx) {
+				return llm.Response{}, false, nil, ErrAdmissionRefused
+			}
 			resp, err = c.client.Complete(ctx, req)
 		}
 	}
@@ -193,6 +237,16 @@ func (c *Caller) complete(ctx context.Context, profile *provider.Profile, cheap 
 		// summarization and web fetch.
 		c.finishProbe(cheap, refusedProbe, true)
 		return llm.Response{}, false, nil, errors.Join(ErrSessionModelCannotTakeMedia, err)
+	}
+	// This is the internal session-model fallback. It is a SECOND provider
+	// admission inside one resolution, and the caller's outer checks cannot see
+	// it: asking before CompleteConfiguredWithProvenance fenced only the probe
+	// (#2340 review).
+	if !dispatchAllowed(ctx) {
+		// The cheap route did refuse; record that learned refusal and do not
+		// run the fallback it would have earned.
+		c.finishProbe(cheap, refusedProbe, true)
+		return llm.Response{}, false, nil, errors.Join(ErrAdmissionRefused, err)
 	}
 	cheapFailure := AttemptFailure{Provider: cheap.provider, Model: cheap.model, Err: err}
 	req.Provider, req.Model = active.provider, active.model

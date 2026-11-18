@@ -177,7 +177,15 @@ func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.
 		return accept(resp)
 	}
 	req := llm.Request{Messages: []llm.Message{llm.User(prompt)}, AdapterTimeout: cm.AdapterTimeout}
-	callCtx, attemptGroupScope := llm.BeginAPIAttemptGroupScope(ctx)
+	// The cheap caller makes TWO dispatches of its own inside one resolution —
+	// the cheap probe and the session-model fallback a route refusal earns — and
+	// neither passes back through this function's checks. Install the same live
+	// admission on the context the cheap caller receives, so its fallback is
+	// fenced exactly as the resamples and the explicit fallback rung below are
+	// (#2340 review).
+	callCtx, attemptGroupScope := llm.BeginAPIAttemptGroupScope(cheapmodel.WithDispatchAdmission(ctx, func() bool {
+		return summarizeAllowed(ctx)
+	}))
 
 	// samplesByRoute budgets each route's samples across the whole resolution.
 	samplesByRoute := make(map[summarizationRoute]int)

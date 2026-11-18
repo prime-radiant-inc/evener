@@ -998,3 +998,53 @@ func TestCompleteRoutedMediaNeverFallsBackToAnInheritedRowProfile(t *testing.T) 
 		t.Fatalf("models = %v, want exactly the routed probe and no session call", got)
 	}
 }
+
+// TestCallerFencesItsInternalSessionModelFallback pins that the admission
+// reaches the SECOND dispatch inside one resolution (#2340 review).
+//
+// The summarization layer asks its admission at its own boundaries, but a
+// cheap-to-session resolution dispatches twice in this package: the cheap probe
+// and the session-model fallback a route refusal earns. Fencing only the outer
+// call let a subtree stop recorded while the probe was in flight be bypassed by
+// the fallback that followed it.
+func TestCallerFencesItsInternalSessionModelFallback(t *testing.T) {
+	t.Parallel()
+	adapter := servesOnly("openai", "main", refusal(400, "The provided model identifier is invalid."))
+	caller := cheapmodel.New(clientWith(adapter))
+	// A cheap rung that is NOT the session model, so the probe refuses and the
+	// internal fallback is the dispatch under test. A profile whose cheap route
+	// IS the session route never falls back at all, which is why the first arm
+	// saw err = nil.
+	profile := provider.WithCheapModel(provider.NewOpenAIProfile("main"), "cheap-does-not-exist")
+
+	// The admission refuses only once the cheap probe has actually been spent,
+	// which is the window the finding names: the stop lands after the probe and
+	// before the fallback it earns. Refusing from the start would prove nothing,
+	// because then no dispatch happens at all.
+	ctx := cheapmodel.WithDispatchAdmission(context.Background(), func() bool {
+		return len(adapter.Models()) == 0
+	})
+
+	_, _, err := caller.CompleteConfigured(ctx, profile, llm.Request{Messages: []llm.Message{llm.User("hi")}})
+	if !errors.Is(err, cheapmodel.ErrAdmissionRefused) {
+		t.Fatalf("err = %v, want ErrAdmissionRefused: the internal session-model fallback dispatched with the admission refusing, so a stop recorded during the cheap probe was bypassed by the fallback it earned", err)
+	}
+	// The cheap probe DID run (it is what the stop raced), and the session model
+	// did NOT: exactly one dispatch, fenced at the second.
+	if got, want := adapter.Models(), []string{"cheap-does-not-exist"}; !slices.Equal(got, want) {
+		t.Fatalf("models = %v, want %v: the fallback reached the session model even though the admission had refused", got, want)
+	}
+
+	// Non-vacuity: with a permitting admission the SAME fixture reaches the
+	// session model, so the arm above is about the fence and not about a fixture
+	// that never falls back.
+	adapter2 := servesOnly("openai", "main", refusal(400, "The provided model identifier is invalid."))
+	caller2 := cheapmodel.New(clientWith(adapter2))
+	profile2 := provider.WithCheapModel(provider.NewOpenAIProfile("main"), "cheap-does-not-exist")
+	if _, _, err := caller2.CompleteConfigured(cheapmodel.WithDispatchAdmission(context.Background(), func() bool { return true }), profile2, llm.Request{Messages: []llm.Message{llm.User("hi")}}); err != nil {
+		t.Fatalf("a permitting admission still failed the fallback: %v", err)
+	}
+	if got, want := adapter2.Models(), []string{"cheap-does-not-exist", "main"}; !slices.Equal(got, want) {
+		t.Fatalf("models = %v, want %v: the fixture does not fall back, so the fenced arm proves nothing", got, want)
+	}
+}
