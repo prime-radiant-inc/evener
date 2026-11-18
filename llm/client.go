@@ -185,6 +185,33 @@ func (c *Client) withHasher(ctx context.Context) context.Context {
 	return ctx
 }
 
+// priceStrictParameterlessSchemas adds the bytes a strict-capable built-in
+// route sends over the open empty schema for each parameterless tool it will
+// send closed, so budget admission prices what the adapter emits.
+//
+// A prepared count is taken over the open empty schema, which is what a route
+// without strict enforcement sends. A strict-capable route substitutes the
+// larger closed object instead, because that is the one shape strict mode
+// accepts for a tool with no arguments. The difference is a property of the two
+// schemas rather than of the catalog, so it is added per affected tool and the
+// count is not re-measured. The override branch keeps the open price: it
+// restores the open schema for the definitions it marshals, so the count it
+// already carries is the one that describes its wire form.
+func priceStrictParameterlessSchemas(req Request, t dispatchTarget) Request {
+	if !t.resolved || !registry.BoolValue(t.res.Caps.StrictTools) || len(req.Tools) == 0 {
+		return req
+	}
+	delta := strictParameterlessByteDelta(req.Tools)
+	if delta == 0 {
+		return req
+	}
+	if req.ToolsJSONBytes <= 0 {
+		req.ToolsJSONBytes = ToolsJSONBytes(asSentToolDefs(req.Tools))
+	}
+	req.ToolsJSONBytes += delta
+	return req
+}
+
 // withOpenParameterlessSchemas restores the open empty schema for a tool that
 // declared no parameters, for the override adapter boundary only.
 //
@@ -207,6 +234,9 @@ func withOpenParameterlessSchemas(req Request) Request {
 	if len(req.Tools) == 0 || !req.preparedTools {
 		return req
 	}
+	// Captured before the rebuild: the stamp describes the list this request
+	// arrived with, not the copy this function is about to make.
+	incoming := identifyToolList(req.Tools)
 	changed := false
 	tools := make([]ToolDefinition, len(req.Tools))
 	copy(tools, req.Tools)
@@ -225,11 +255,16 @@ func withOpenParameterlessSchemas(req Request) Request {
 	// the same definitions. Restoring that schema here reproduces bytes that
 	// were already measured, so re-measuring every dispatch — once per tool
 	// round and once per retry — would repeat a marshal the estimate was built
-	// to avoid. The stamped count is reused only when the list it described is
-	// this one: a caller who replaced the tools or cleared the stamp gets a
-	// fresh measurement, because a stamp over definitions that changed would
-	// price the wrong catalog.
-	if req.ToolsJSONBytes == 0 || !req.preparedToolBytes {
+	// to avoid.
+	//
+	// It is reused only for the exact list the count was measured over. A
+	// middleware that replaced the catalog and refreshed ToolsJSONBytes leaves
+	// the stamp describing a different list, and reusing it would price the
+	// request before this substitution rather than after it: an input cap
+	// between the two prices then admits a request that dispatches larger than
+	// it was billed. A missed reuse costs one marshal, an undercount admits the
+	// request, so the identity has to match rather than merely be present.
+	if req.ToolsJSONBytes == 0 || req.preparedToolList != incoming {
 		req.ToolsJSONBytes = ToolsJSONBytes(tools)
 	}
 	return req
@@ -400,6 +435,9 @@ func (c *Client) Complete(ctx context.Context, req Request) (Response, error) {
 		if t.override != nil {
 			req = withOpenParameterlessSchemas(req)
 		}
+		if t.override == nil {
+			req = priceStrictParameterlessSchemas(req, t)
+		}
 		if t.resolved {
 			var err error
 			req, err = shapeAndApplyTokenBudget(req, t.res)
@@ -447,6 +485,9 @@ func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 		// will be sent. Override branch only, and prepared requests only.
 		if t.override != nil {
 			req = withOpenParameterlessSchemas(req)
+		}
+		if t.override == nil {
+			req = priceStrictParameterlessSchemas(req, t)
 		}
 		if t.resolved {
 			var err error

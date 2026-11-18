@@ -300,3 +300,134 @@ func TestRestoringTheOpenSchemaReusesThePreparedPricing(t *testing.T) {
 		t.Fatalf("remeasured count = %d, want %d", restored.ToolsJSONBytes, want)
 	}
 }
+
+// TestAReplacedCatalogIsRepricedAfterTheOpenSchemaIsRestored covers the stamp
+// that survives a catalog replacement.
+//
+// Middleware may replace a request's Tools and refresh ToolsJSONBytes, as the
+// field's contract allows. The prepared-tools marker stays set, because the
+// request still came from preparation. A count refreshed over the replacement
+// list is measured before the override boundary substitutes the open schema, so
+// reusing it prices the request smaller than what dispatches — and an input cap
+// between the two prices admits a request the budget would have refused.
+//
+// The count is tied to the list it was measured over, so a replacement never
+// matches and is always repriced.
+func TestAReplacedCatalogIsRepricedAfterTheOpenSchemaIsRestored(t *testing.T) {
+	t.Parallel()
+	original := []ToolDefinition{{Name: "parameterless"}}
+	req := Request{Tools: original, preparedTools: true}
+	req.ToolsJSONBytes = ToolsJSONBytes(asSentToolDefs(original))
+	req = MarkPreparedToolBytes(req)
+
+	// Middleware swaps in a larger catalog and refreshes the count over it as
+	// documented, before the open schema is substituted for its parameterless
+	// members.
+	replacement := []ToolDefinition{
+		{Name: "parameterless"},
+		{Name: "also_parameterless"},
+		{Name: "third", Parameters: map[string]any{"type": "object", "properties": map[string]any{}}},
+	}
+	req.Tools = replacement
+	req.ToolsJSONBytes = ToolsJSONBytes(replacement)
+	understated := req.ToolsJSONBytes
+
+	restored := withOpenParameterlessSchemas(req)
+	want := ToolsJSONBytes(asSentToolDefs(replacement))
+	if restored.ToolsJSONBytes != want {
+		t.Fatalf("restored count = %d, want %d: a count refreshed over the replacement catalog was measured "+
+			"before the open schema was substituted, and reusing it prices the request at %d",
+			restored.ToolsJSONBytes, want, understated)
+	}
+	if restored.ToolsJSONBytes <= understated {
+		t.Fatalf("restored count = %d, must exceed the pre-substitution count %d", restored.ToolsJSONBytes, understated)
+	}
+}
+
+// TestStrictCapableRoutePricesTheClosedParameterlessSchema covers the other end
+// of the same undercount.
+//
+// Preparation stamps a parameterless tool over the open empty schema, because
+// that is what a route without strict enforcement sends. A strict-capable
+// built-in route sends the larger closed object instead — the one shape strict
+// mode accepts for a tool with no arguments — so admitting the request on the
+// prepared count prices it smaller than what dispatches. With enough such tools
+// and a cap between the two prices, the request goes out over budget.
+//
+// What this test proves is the price and the capability split: the delta is the
+// two schemas' difference, an opted-out tool does not carry it, and a route
+// without the capability keeps the open price. It does not drive a built-in
+// adapter through dispatch, because the test client here registers an override
+// and the override branch correctly keeps the open price; the call site on the
+// built-in branch is the one line in Complete and StreamGenerate's dispatch
+// that applies this helper.
+func TestStrictCapableRoutePricesTheClosedParameterlessSchema(t *testing.T) {
+	t.Parallel()
+	const toolCount = 24
+	defs := make([]ToolDefinition, toolCount)
+	for i := range defs {
+		defs[i] = ToolDefinition{Name: fmt.Sprintf("probe_%02d", i)}
+	}
+	openBytes := ToolsJSONBytes(asSentToolDefs(defs))
+	closed := make([]ToolDefinition, len(defs))
+	copy(closed, defs)
+	for i := range closed {
+		closed[i].Parameters = strictDefaultToolParameters()
+	}
+	closedBytes := ToolsJSONBytes(closed)
+	if closedBytes <= openBytes {
+		t.Fatalf("fixture does not distinguish the two prices: open=%d closed=%d", openBytes, closedBytes)
+	}
+
+	// An opted-out tool keeps the open schema, so it must not be priced closed.
+	optedOut := make([]ToolDefinition, len(defs))
+	copy(optedOut, defs)
+	optedOut[0].Strict = new(false)
+	perTool := ToolsJSONBytes([]ToolDefinition{{Name: "x", Parameters: strictDefaultToolParameters()}}) -
+		ToolsJSONBytes([]ToolDefinition{{Name: "x", Parameters: defaultToolParameters()}})
+	if got, want := strictParameterlessByteDelta(optedOut), (toolCount-1)*perTool; got != want {
+		t.Fatalf("delta with one opt-out = %d, want %d: an opted-out tool is sent open and must not be "+
+			"priced closed", got, want)
+	}
+	if got, want := strictParameterlessByteDelta(defs), closedBytes-openBytes; got != want {
+		t.Fatalf("delta = %d, want %d", got, want)
+	}
+	if got := strictParameterlessByteDelta(nil); got != 0 {
+		t.Fatalf("delta over an empty catalog = %d, want 0", got)
+	}
+
+	// The prepared-budget row builds on the openai base, which declares strict
+	// tools: the route that sends the closed form.
+	c, res := preparedBudgetClient(t, &preparedBudgetAdapter{}, 1_000_000)
+	if !registry.BoolValue(res.Caps.StrictTools) {
+		t.Fatal("fixture route does not declare strict tools; the priced case needs a strict-capable row")
+	}
+	req := preparedRequest(defs)
+	req.ToolsJSONBytes = openBytes
+	priced := priceStrictParameterlessSchemas(req, mustDispatchTarget(t, c, req))
+	if want := openBytes + closedBytes - openBytes; priced.ToolsJSONBytes != want {
+		t.Fatalf("strict-capable count = %d, want %d: admission must price the closed schema the route emits",
+			priced.ToolsJSONBytes, want)
+	}
+
+	// The control: the same catalog on a route without the capability keeps the
+	// open price, because that is the schema such a route sends.
+	off := mustDispatchTarget(t, c, req)
+	off.res.Caps.StrictTools = nil
+	if got := priceStrictParameterlessSchemas(req, off); got.ToolsJSONBytes != openBytes {
+		t.Fatalf("capability-off count = %d, want %d: a route without strict enforcement sends the open schema",
+			got.ToolsJSONBytes, openBytes)
+	}
+
+}
+
+// mustDispatchTarget resolves req's route through the client, so the test asks
+// the same question the dispatch path asks rather than constructing a stand-in.
+func mustDispatchTarget(t *testing.T, c *Client, req Request) dispatchTarget {
+	t.Helper()
+	target, err := c.dispatchTarget(req)
+	if err != nil {
+		t.Fatalf("dispatchTarget: %v", err)
+	}
+	return target
+}

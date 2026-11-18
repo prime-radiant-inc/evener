@@ -492,14 +492,18 @@ type Request struct {
 	// preparation and must keep passing the nil through untouched.
 	preparedTools bool
 
-	// preparedToolBytes reports that ToolsJSONBytes was measured over the tool
-	// list as the adapters send it, with the open empty schema already
-	// substituted for a parameterless definition. Preparation measures that form
-	// so the estimate prices what is dispatched, and an override boundary that
-	// restores the same substitution over the same list reproduces bytes this
-	// count already describes. Without the marker a stamped count describes the
-	// list before substitution, and rebuilding the list invalidates it.
-	preparedToolBytes bool
+	// preparedToolList names the tool list ToolsJSONBytes was measured over as
+	// the adapters send it, with the schema a parameterless definition is given
+	// already substituted. Preparation measures that form so the estimate prices
+	// what is dispatched, and an override boundary that restores the same
+	// substitution over the same list reproduces bytes this count already
+	// describes.
+	//
+	// Identity rather than a flag: middleware may replace a request's Tools and
+	// refresh ToolsJSONBytes, and a flag would then describe the new count as if
+	// preparation had measured it. The list pointer and its length are what the
+	// count describes, so a replaced list never matches and is always repriced.
+	preparedToolList toolListIdentity
 
 	AdapterTimeout *AdapterTimeout `json:"adapter_timeout,omitempty"`
 }
@@ -512,13 +516,31 @@ func MarkPreparedTools(req Request) Request {
 	return req
 }
 
-// MarkPreparedToolBytes marks req's ToolsJSONBytes as measured over the tool
-// list the adapters send, with the open empty schema already substituted for a
-// parameterless definition. It is the only way to set the marker, so a stamped
-// count is described as substituted only where preparation measured it that
-// way.
+// toolListIdentity names the tool list a prepared count was measured over: the
+// slice's first element and its length. A list that was replaced, resliced or
+// rebuilt has a different identity, so a count stamped for one list is never
+// reused for another.
+type toolListIdentity struct {
+	first  *ToolDefinition
+	length int
+}
+
+// identifyToolList returns the identity of defs. An empty list has no elements
+// to point at, so it reports the zero identity and never matches a live list.
+func identifyToolList(defs []ToolDefinition) toolListIdentity {
+	if len(defs) == 0 {
+		return toolListIdentity{}
+	}
+	return toolListIdentity{first: &defs[0], length: len(defs)}
+}
+
+// MarkPreparedToolBytes records that req's ToolsJSONBytes was measured over the
+// tool list the adapters send, with the schema a parameterless definition is
+// given already substituted, and over which list that measurement was taken. It
+// is the only way to set the stamp, so a count is described as substituted only
+// where preparation measured it that way, and only for the list it measured.
 func MarkPreparedToolBytes(req Request) Request {
-	req.preparedToolBytes = true
+	req.preparedToolList = identifyToolList(req.Tools)
 	return req
 }
 

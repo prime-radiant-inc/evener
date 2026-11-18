@@ -99,6 +99,45 @@ func estimateInputTokens(t targetInfo, req Request) InputTokenCount {
 	}
 }
 
+// strictParameterlessByteDelta returns the bytes a strict-capable route adds
+// over the open empty schema for every parameterless tool it will send closed.
+//
+// The two builders that implement strict mode substitute the same closed empty
+// object — additionalProperties: false with an empty required list — for a
+// definition whose Parameters is nil, unless the definition opted out. A route
+// without strict enforcement substitutes the open empty object instead, which
+// is what a prepared count already prices; the caller decides which of the two
+// it is asking about.
+func strictParameterlessByteDelta(defs []ToolDefinition) int {
+	open := ToolsJSONBytes([]ToolDefinition{{Name: "x", Parameters: defaultToolParameters()}})
+	closed := ToolsJSONBytes([]ToolDefinition{{Name: "x", Parameters: strictDefaultToolParameters()}})
+	delta := 0
+	for _, def := range defs {
+		if def.Parameters != nil {
+			continue
+		}
+		// A tool that opts out is sent with the open schema, so it does not
+		// carry the closed form's extra bytes.
+		if def.Strict != nil && !*def.Strict {
+			continue
+		}
+		delta += closed - open
+	}
+	return delta
+}
+
+// strictDefaultToolParameters returns the closed empty schema a strict-capable
+// builder emits for a parameterless tool: the one shape strict mode accepts,
+// because it admits exactly the empty argument set.
+func strictDefaultToolParameters() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties":           map[string]any{},
+		"required":             []string{},
+	}
+}
+
 // ToolsJSONBytes returns the byte length of defs' serialized form: the length
 // the local estimate bills a tool list by. A caller that builds one tool list
 // and prices many requests over it can measure the list once and stamp

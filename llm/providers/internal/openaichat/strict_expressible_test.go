@@ -1908,24 +1908,45 @@ func TestSupplyDerivedTypesWalksTypedPropertyMaps(t *testing.T) {
 func TestSupplyDerivedTypesReadsAnEmbeddedDialect(t *testing.T) {
 	t.Parallel()
 	const draft4 = "http://json-schema.org/draft-04/schema#"
-	emitted := SupplyDerivedTypes(map[string]any{
-		"$schema":              "https://json-schema.org/draft/2020-12/schema",
-		"type":                 "object",
-		"additionalProperties": false,
-		"properties": map[string]any{
-			"payload": map[string]any{
-				"$schema": draft4,
-				"const":   "fixed",
-			},
-		},
-		"required": []string{"payload"},
-	})
-	payload := emitted["properties"].(map[string]any)["payload"].(map[string]any)
-	if _, has := payload["type"]; has {
-		t.Fatalf("emitted argument type = %#v, want none: const asserts nothing under draft 4, so stating a type would reject values the advertised schema accepts", payload["type"])
-	}
-	if payload["const"] != "fixed" {
-		t.Fatalf("emitted const = %#v, want it preserved", payload["const"])
+	// The declaration reaches this package either as a Go string or as the raw
+	// JSON a caller wrote. Both spellings are the same URI, so they must select
+	// the same dialect: const asserts nothing under draft 4, and stating a type
+	// there would reject the numbers and objects the advertised schema accepts.
+	for _, tc := range []struct {
+		name     string
+		embedded any
+	}{
+		{name: "Go string", embedded: draft4},
+		{name: "raw JSON string", embedded: json.RawMessage(`"` + draft4 + `"`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			emitted := SupplyDerivedTypes(map[string]any{
+				"$schema":              "https://json-schema.org/draft/2020-12/schema",
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"payload": map[string]any{
+						"$schema": tc.embedded,
+						"const":   "fixed",
+					},
+				},
+				"required": []string{"payload"},
+			})
+			payload := emitted["properties"].(map[string]any)["payload"].(map[string]any)
+			if _, has := payload["type"]; has {
+				t.Fatalf("emitted argument type = %#v, want none: const asserts nothing under draft 4, "+
+					"so stating a type would reject values the advertised schema accepts", payload["type"])
+			}
+			if payload["const"] != "fixed" {
+				t.Fatalf("emitted const = %#v, want it preserved", payload["const"])
+			}
+			// The declaration itself is emitted as written, which is what makes
+			// the two spellings differ on the wire while agreeing on meaning.
+			if !reflect.DeepEqual(payload["$schema"], tc.embedded) {
+				t.Fatalf("emitted $schema = %#v, want the advertised value", payload["$schema"])
+			}
+		})
 	}
 }
 
@@ -2452,6 +2473,72 @@ func TestCyclicSchemasAreRefusedRatherThanFollowed(t *testing.T) {
 	}
 	if !StrictExpressible(root) {
 		t.Fatal("a shared acyclic subtree must still be certifiable")
+	}
+}
+
+// A slice header is not an identity. A caller can hand a later branch a shorter
+// prefix of the same backing array that an earlier branch used in full: same
+// start address, fewer elements, so the prefix does not contain the branch that
+// points back at it and the schema is acyclic. Keying cycles by address alone
+// reported one anyway, and both adapters then rejected the whole request even
+// with strict mode off. The key carries the slice length for this reason.
+//
+// The second half is the one that matters more: a detector that stops detecting
+// is worse than a false positive, so the same test pins that a genuine
+// self-reference is still refused.
+func TestASlicePrefixIsNotACycle(t *testing.T) {
+	t.Parallel()
+	// One backing array, two views, and both reachable: the root holds the wide
+	// list, whose third branch holds the shorter prefix of that same array. The
+	// prefix covers branches one and two only, so following it never arrives
+	// back at branch three — the graph is acyclic even though wide[0] and
+	// prefix[0] are the same address.
+	wide := make([]any, 3)
+	prefix := wide[:2]
+	wide[0] = map[string]any{"type": "string"}
+	wide[1] = map[string]any{"type": "integer"}
+	wide[2] = map[string]any{"anyOf": prefix}
+
+	root := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]map[string]any{
+			"payload": {"anyOf": wide},
+		},
+		"required": []string{"payload"},
+	}
+	if CyclicSchema(root) {
+		t.Fatal("a prefix view of a wider slice is a shorter container, not a cycle")
+	}
+	// The copy has to complete with the branches intact: a false cycle would
+	// have replaced the prefix with the empty schema.
+	copied, ok := copySchema(root).(map[string]any)
+	if !ok {
+		t.Fatalf("copy = %#v, want the schema copied", copySchema(root))
+	}
+	payload := copied["properties"].(map[string]any)["payload"].(map[string]any)
+	branches, ok := payload["anyOf"].([]any)
+	if !ok || len(branches) != 3 {
+		t.Fatalf("anyOf = %#v, want all three branches preserved", payload["anyOf"])
+	}
+	nested, ok := branches[2].(map[string]any)["anyOf"].([]any)
+	if !ok || len(nested) != 2 {
+		t.Fatalf("nested anyOf = %#v, want the two-element prefix preserved rather than cut as a cycle",
+			branches[2].(map[string]any)["anyOf"])
+	}
+
+	// The true positive: a slice that really does contain itself through its
+	// own element.
+	loop := make([]any, 1)
+	loop[0] = map[string]any{"anyOf": loop}
+	cyclic := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties":           map[string]any{"payload": map[string]any{"anyOf": loop}},
+		"required":             []string{"payload"},
+	}
+	if !CyclicSchema(cyclic) {
+		t.Fatal("a slice whose element points back at it is a cycle and must still be detected")
 	}
 }
 

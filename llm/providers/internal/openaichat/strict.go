@@ -50,7 +50,12 @@ func dialectOf(schema map[string]any) schemaDialect {
 		// tools that are otherwise expressible.
 		return dialectConst
 	}
-	s, _ := raw.(string)
+	// The declaration arrives either as a Go string or as the json.RawMessage a
+	// caller wrote it as. Both are the same URI and have to select the same
+	// dialect: the answers differ on whether const asserts anything, so reading
+	// only the Go spelling made the emitted schema depend on how the caller
+	// happened to write the value rather than on the value itself.
+	s := dialectURI(raw)
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return dialectConst
@@ -65,6 +70,25 @@ func dialectOf(schema map[string]any) schemaDialect {
 		}
 	}
 	return dialectConst
+}
+
+// dialectURI returns the text of a $schema declaration in either spelling it
+// reaches this package: a Go string, or the raw JSON a caller supplied. A raw
+// value that does not decode to a string yields "", which dialectOf reads as a
+// declaration it cannot place.
+func dialectURI(raw any) string {
+	switch x := raw.(type) {
+	case string:
+		return x
+	case json.RawMessage:
+		var decoded string
+		if err := json.Unmarshal(x, &decoded); err != nil {
+			return ""
+		}
+		return decoded
+	default:
+		return ""
+	}
 }
 
 // StrictifyJSONSchema returns a deep copy of a tool parameter schema
@@ -267,7 +291,7 @@ func CyclicSchema(schema map[string]any) bool {
 	if schema == nil {
 		return false
 	}
-	return containsCycle(schema, map[uintptr]bool{})
+	return containsCycle(schema, map[containerKey]bool{})
 }
 
 // ErrCyclicSchema reports a tool schema whose value contains itself. A request
@@ -276,7 +300,7 @@ var ErrCyclicSchema = errors.New("tool schema contains a cycle")
 
 // containsCycle walks the containers of v, with path holding the identity of
 // every ancestor currently being walked.
-func containsCycle(v any, path map[uintptr]bool) bool {
+func containsCycle(v any, path map[containerKey]bool) bool {
 	key, tracked := containerIdentity(v)
 	if tracked {
 		if path[key] {
@@ -1077,7 +1101,7 @@ func copySchema(v any) any {
 
 // copySchemaValue copies v, with path holding the container identity of every
 // ancestor currently being copied.
-func copySchemaValue(v any, path map[uintptr]bool) any {
+func copySchemaValue(v any, path map[containerKey]bool) any {
 	if key, ok := containerIdentity(v); ok {
 		if path[key] {
 			// The node contains itself. The empty schema is the one value that
@@ -1086,7 +1110,7 @@ func copySchemaValue(v any, path map[uintptr]bool) any {
 			return map[string]any{}
 		}
 		if path == nil {
-			path = map[uintptr]bool{}
+			path = map[containerKey]bool{}
 		}
 		path[key] = true
 		defer delete(path, key)
@@ -1094,39 +1118,58 @@ func copySchemaValue(v any, path map[uintptr]bool) any {
 	return deepCopyWith(v, path)
 }
 
+// containerKey identifies one container occurrence for cycle detection: the
+// address it starts at, and — for a slice — how many elements that particular
+// header covers.
+//
+// The length is part of the key because a slice header is not an identity. A Go
+// caller can reuse the first branches of a wide anyOf list through a shorter
+// prefix slice in a later branch: same start address, fewer elements, and the
+// shorter one therefore does not contain the branch that points back at it. The
+// prefix is acyclic, and telling it apart from the wide slice it aliases is
+// exactly what the length does. A real loop repeats one slice value, so it
+// repeats its header and its length with it, and the shorter view of it is a
+// different container rather than the same one seen twice.
+//
+// Maps carry length -1: their address alone identifies them, and a map has no
+// aliasing view to confuse it with.
+type containerKey struct {
+	addr   uintptr
+	length int
+}
+
 // containerIdentity returns a value that identifies the container v points at,
 // for cycle detection.
 //
 // Slices are tracked as well as maps. A cycle can close through either: a
 // properties map may hold a slice whose element is the map's own schema, which
-// is legal Go and was the case the map-only guard missed. Two distinct
-// containers never share a pointer, so the identity is enough; a zero-length
-// slice is skipped because its data pointer may be nil or shared between
-// unrelated empty slices, and it cannot be part of a cycle anyway.
-func containerIdentity(v any) (uintptr, bool) {
+// is legal Go and was the case the map-only guard missed. A zero-length slice is
+// skipped because its data pointer may be nil or shared between unrelated empty
+// slices, and it cannot be part of a cycle anyway.
+func containerIdentity(v any) (containerKey, bool) {
 	switch x := v.(type) {
 	case map[string]any:
 		if x == nil {
-			return 0, false
+			return containerKey{}, false
 		}
-		return reflect.ValueOf(x).Pointer(), true
+		return containerKey{addr: reflect.ValueOf(x).Pointer(), length: -1}, true
 	case map[string]map[string]any:
 		if x == nil {
-			return 0, false
+			return containerKey{}, false
 		}
-		return reflect.ValueOf(x).Pointer(), true
+		return containerKey{addr: reflect.ValueOf(x).Pointer(), length: -1}, true
 	case []any:
 		if len(x) == 0 {
-			return 0, false
+			return containerKey{}, false
 		}
-		return reflect.ValueOf(x).Pointer(), true
+		return containerKey{addr: reflect.ValueOf(x).Pointer(), length: len(x)}, true
 	case []map[string]any:
 		if len(x) == 0 {
-			return 0, false
+			return containerKey{}, false
 		}
-		return reflect.ValueOf(x).Pointer(), true
+		return containerKey{addr: reflect.ValueOf(x).Pointer(), length: len(x)}, true
 	default:
-		return 0, false
+		return containerKey{}, false
 	}
 }
 
@@ -1135,7 +1178,7 @@ func containerIdentity(v any) (uintptr, bool) {
 //
 // path carries the ancestor chain, so a looping edge is cut rather than
 // recursed into.
-func deepCopyWith(v any, path map[uintptr]bool) any {
+func deepCopyWith(v any, path map[containerKey]bool) any {
 	switch x := v.(type) {
 	case map[string]any:
 		// A typed nil map marshals as JSON null. Rebuilding it as an empty map
