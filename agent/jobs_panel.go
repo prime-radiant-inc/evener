@@ -444,7 +444,10 @@ func loadSessionJobRecord(stateDir, sessionID, jobID string, fence OwnerDeletion
 			local.diagnostics.mergeIntegrity(corroborated.diagnostics)
 			local.diagnostics.OwnerUnavailable = true
 			local.diagnostics.ForwardedFallback = true
-			return local, nil
+			// A hint that cannot be read is a fact about the HINT, not a failure
+			// of this read: the caller asked about the scoped session, whose
+			// record is intact and is what this returns.
+			return local, nil //nolint:nilerr // an unreadable owner hint is a classified fallback state carried on the diagnostics, not an operational failure
 		}
 		// A corroborated legacy owner goes through the SAME precedence the encoded
 		// branch applies — no second authority test. Corroboration makes the hinted

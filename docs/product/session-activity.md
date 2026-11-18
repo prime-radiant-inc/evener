@@ -301,16 +301,21 @@ journal cannot answer.
 
 > Because "cannot say yet" and "cannot ever say" are different answers, the same
 > response carries `statusRecheckable`, set only alongside `statusUnconfirmed`.
-> It is true when a later read could still establish the status, and false when
-> the evidence is already written: this record's own journal stopped at durable
-> corruption, so no append behind the bad line is reachable. A client that stops
-> following an unconfirmed row should keep looking at the slow cadence the field
-> asks for while it stays true — an append that landed without its newline
-> completes, a statusless fragment gains its status, and a forwarded copy's
-> owner becomes consultable, all while the pane is still open — and stop for good
-> when it goes false. A failed background recheck backs off at the cadence it was
-> scheduled on; retrying it once a second cannot produce the status any sooner
-> and turns a failing server into a load problem.
+> It is true when a later read of ANY journal the response consulted could still
+> establish the status, and false only when none of them can: the selected
+> record's own journal stopped at durable corruption, and every other consulted
+> journal is damaged the same way or absent, so no append behind a bad line is
+> reachable in any of them. Damage to the selected journal alone is not enough —
+> an intact ancestor journal that ends at a clean record boundary can still
+> receive the finish as a later append, and that terminal observation outranks
+> the running row on the next read. A client that stops following an unconfirmed
+> row should keep looking at the slow cadence the field asks for while it stays
+> true — an append that landed without its newline completes, a statusless
+> fragment gains its status, a readable journal grows a finish, and a forwarded
+> copy's owner becomes consultable, all while the pane is still open — and stop
+> for good when it goes false. A failed background recheck backs off at the
+> cadence it was scheduled on; retrying it once a second cannot produce the
+> status any sooner and turns a failing server into a load problem.
 
 `evener/jobs/get` answers `unavailable` rather than `job not found` when the
 requested journal ends in an unterminated append and its intact prefix does not

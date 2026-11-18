@@ -2335,14 +2335,20 @@ export interface JobActivityJob {
    * look again on a slow cadence rather than never.
    *
    * It is set only alongside StatusUnconfirmed, and it answers the same
-   * record-scoped question. Almost every cause of doubt is a statement the
-   * journal can still amend while the client is connected: an append that
-   * landed without its newline may complete, a journal that named this job
-   * without stating its status may yet state it, a finish that declared no end
-   * may be followed by a terminal one, and a forwarded copy's owner may become
-   * consultable. Exactly one cause cannot: this record's own journal stopped at
-   * durable corruption, where the scan cannot get past the bad line and the
-   * finish will not be read no matter how long the client waits.
+   * question, asked of every journal the read consulted. Almost every cause of
+   * doubt is a statement some eligible source can still amend while the client
+   * is connected: an append that landed without its newline may complete, a
+   * journal that named this job without stating its status may yet state it, a
+   * finish that declared no end may be followed by a terminal one, a forwarded
+   * copy's owner may become consultable, and a journal whose scan ended at a
+   * clean record boundary may still receive the finish as a later append.
+   *
+   * It is false only when NO eligible source can still answer: this record's
+   * own journal stopped at durable corruption, and any other journal the read
+   * consulted is damaged the same way or does not exist. Damage to the selected
+   * record's journal alone is not enough to make it false — an intact ancestor
+   * journal that can still record the finish keeps the recheck on, and a
+   * terminal observation it writes there outranks this row on the next read.
    *
    * This is deliberately NOT derived from Diagnostics. Those describe every
    * journal the read consulted, so an intact owner record with a torn tail can
