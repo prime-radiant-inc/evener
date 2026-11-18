@@ -1313,7 +1313,12 @@ export function releaseEntryTranscriptReader(ref: string, releaseDisplay = false
   fixture.reader?.dispose();
   fixture.reader = undefined;
   const model = store().getState().threads.get(ref);
-  if (releaseDisplay && model && isEntryTranscriptBackgroundOnly(ref)) {
+  // Reaching here already proved no body owner remains (the guard above), so a
+  // display kept by anything other than a background stream is one a closed
+  // pane rendered. Its bodies go with it: a routing lease keeps the model and
+  // the subscription for a resend to dispatch on, but it never rendered these
+  // turns and has no reader left to serve them. Routing fields are untouched.
+  if (releaseDisplay && model) {
     routeHost().putThreadModel(ref, pruneBackgroundHistoryBodies(model));
   }
 }

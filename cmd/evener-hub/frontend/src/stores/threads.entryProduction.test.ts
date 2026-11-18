@@ -1570,6 +1570,129 @@ it("a routing claim joins the replacement read over a cached shell", async () =>
   }
 }, 20_000);
 
+// Deletion can land after the claim's read captured its snapshot and before
+// the claim is fulfilled, and that read still succeeds: it answers a
+// destination that existed when it was issued. The fulfilment point is where
+// that is decided, so the read's success is not accepted as routing state and
+// the claim rejects while the draft survives.
+it("a deletion during the claim's own read rejects the claim", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const outboxStorage = new MutationOutboxIndexedDB({ indexedDB: factory });
+  setMutationStorageForTests(outboxStorage);
+  const client = connect();
+  client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
+  const background = acquireBackgroundThread("local:a");
+  await background.ready;
+  await settleEntryTranscriptForTests("local:a");
+  const route = entryTranscriptRoute("local:a");
+  if (!route) throw new Error("expected an entry route");
+  route.cachedUnverified = true;
+  const outbox = await outboxStorage.enqueueIntent({
+    targetRef: "local:a",
+    threadId: "thread-a",
+    method: "turn/start",
+    payload: { ref: "local:a", input: [{ type: "text", text: "retry me" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "retry me" }] },
+  });
+  const row = await outboxStorage.transferToRecovery(outbox.clientMutationId, "rejected");
+  if (!row) throw new Error("expected the recovery row to be durable");
+  // The claim's verification read is held, then answers successfully - after
+  // the destination has been deleted underneath it.
+  const claimRead = deferred<ThreadReadResponse>();
+  client.on("thread/read", () => claimRead.promise);
+  try {
+    const resent = withRecoveryDestinationClaim("local:a", () =>
+      resendRecoveryMutation(row.clientMutationId, "local:a", "send", "retry me", []),
+    );
+    await vi.waitFor(() => expect(claimRead, "the claim must spend its verification read").toBeDefined());
+    markCacheSessionsDeleted(["local:a"]);
+    claimRead.resolve({ ...response(), requestGeneration: 0 });
+    const outcome = await resent.then(
+      () => ({ ok: true as const }),
+      () => ({ ok: false as const }),
+    );
+    expect(outcome.ok, "a deleted destination must reject the routing claim").toBe(false);
+    expect(await outboxStorage.listOutbox("local:a"), "a deleted destination must leave the outbox empty").toHaveLength(
+      0,
+    );
+    expect(await outboxStorage.listRecovery("local:a"), "the recovery draft must survive the rejection").toHaveLength(
+      1,
+    );
+  } finally {
+    background.release();
+  }
+}, 20_000);
+
+// A read can end successfully and still publish nothing: a newer attempt
+// retires its pending entry, so the publication fence answers null. That is
+// not a verification of the destination, and it is not the claim's answer
+// either - the replacement the claim can join is. Both exits of the wait ask
+// that one question, so the success exit must not judge the empty result.
+it("a claim whose own read publishes nothing joins the replacement", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const outboxStorage = new MutationOutboxIndexedDB({ indexedDB: factory });
+  setMutationStorageForTests(outboxStorage);
+  const client = connect();
+  client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
+  const background = acquireBackgroundThread("local:a");
+  await background.ready;
+  await settleEntryTranscriptForTests("local:a");
+  const route = entryTranscriptRoute("local:a");
+  if (!route) throw new Error("expected an entry route");
+  route.cachedUnverified = true;
+  const outbox = await outboxStorage.enqueueIntent({
+    targetRef: "local:a",
+    threadId: "thread-a",
+    method: "turn/start",
+    payload: { ref: "local:a", input: [{ type: "text", text: "retry me" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "retry me" }] },
+  });
+  const row = await outboxStorage.transferToRecovery(outbox.clientMutationId, "rejected");
+  if (!row) throw new Error("expected the recovery row to be durable");
+  // The claim's read is held and later answers successfully, but by then a
+  // newer attempt has retired its pending entry so the fence publishes null.
+  const firstRead = deferred<ThreadReadResponse>();
+  const replacementRead = deferred<ThreadReadResponse>();
+  let reads = 0;
+  client.on("thread/read", (params) => {
+    reads += 1;
+    if (reads === 1) return firstRead.promise;
+    if (reads === 2) return replacementRead.promise;
+    return { ...response(), requestGeneration: params.requestGeneration };
+  });
+  try {
+    const resent = withRecoveryDestinationClaim("local:a", () =>
+      resendRecoveryMutation(row.clientMutationId, "local:a", "send", "retry me", []),
+    );
+    await vi.waitFor(() => expect(reads, "the claim must spend its verification read").toBe(1));
+    const resync = threadsStore.getState().refreshThread("local:a");
+    await vi.waitFor(() => expect(reads, "the resync must replace the claim's read").toBe(2));
+    // The superseded read succeeds, and publishes nothing.
+    firstRead.resolve({ ...response(), requestGeneration: 0 });
+    // The replacement verifies the destination and carries the press.
+    replacementRead.resolve({ ...response(), requestGeneration: 0 });
+    const [outcome] = await Promise.all([
+      resent.then(
+        (value) => ({ ok: true as const, value }),
+        (error: unknown) => ({ ok: false as const, error }),
+      ),
+      resync,
+    ]);
+    if (!outcome.ok) throw new Error(`the press rejected: ${String(outcome.error)}`);
+    const landed = outcome.value.status === "sent" ? outcome.value.record.clientMutationId : undefined;
+    expect(
+      (await outboxStorage.listOutbox("local:a")).map((record) => record.clientMutationId),
+      "the replacement's verified state must carry the press to the outbox",
+    ).toContain(landed);
+  } finally {
+    background.release();
+  }
+}, 20_000);
+
 // A terminal diagnostic settles the shared wait only while it is still the
 // attempt that attempt belongs to. A targeted resync replaces the retry a
 // resend is waiting on; the older read's late diagnostic is then a verdict
@@ -1791,6 +1914,16 @@ it("the last pane closing during a resend releases its reader", async () => {
     productionEntryTranscriptForTests("local:a")?.reader,
     "the closed pane's reader must not outlive the last body owner",
   ).toBeUndefined();
+  // The pane rendered bodies; the resend routes on identity. Once the last body
+  // owner is gone the bodies have no reader left to serve, so they are pruned
+  // even though the routing lease keeps the model and the subscription.
+  const standing = threadsStore.getState().threads.get("local:a");
+  const survivingItems = (standing?.history?.turns ?? []).flatMap((turn) => turn.items);
+  expect(
+    survivingItems.map((item) => item.text),
+    "the closed pane's bodies must not outlive it",
+  ).toEqual(survivingItems.map(() => ""));
+  expect(standing?.threadId, "the routing fields must survive for dispatch").toBe("thread-a");
   lease.release();
 }, 20_000);
 

@@ -7459,6 +7459,34 @@ function routingStateVerified(ref: string): boolean {
   );
 }
 
+// The one question a routing claim asks at the point it would be fulfilled, so
+// its two exits cannot answer it differently. The order is the decision:
+//
+//   deleted    - the destination is gone. Whatever a read published, it is not
+//                routable, and a claim that ran would spend the recovery draft
+//                on a session that no longer exists. Checked first because
+//                deletion outranks any state a read can have captured before it
+//                landed.
+//   fulfilled  - a verified resident model is the answer.
+//   join       - the read currently registered for this ref is still verifying
+//                it. This is the read that will establish routing, so the claim
+//                waits for it; a superseded read is never in this slot.
+//   unverified - nothing is verifying the ref and no verified model stands.
+//                Only now is the caller's own failure the answer.
+type RoutingFulfilment =
+  | { kind: "fulfilled" }
+  | { kind: "deleted" }
+  | { kind: "join"; read: Promise<ThreadModel | null> }
+  | { kind: "unverified" };
+
+function routingFulfilment(ref: string): RoutingFulfilment {
+  if (threadsStore.getState().deletedRefs.has(ref)) return { kind: "deleted" };
+  if (threadsStore.getState().threads.has(ref) && routingStateVerified(ref)) return { kind: "fulfilled" };
+  const registered = inflightHydrates.get(ref);
+  if (registered) return { kind: "join", read: registered };
+  return { kind: "unverified" };
+}
+
 // The decision a parked waiter makes when the lifecycle it waited on retired
 // instead of publishing: which read, if any, to adopt and continue on. Its
 // inputs are the whole state of that decision — the read this lifecycle
@@ -8610,7 +8638,22 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
             // published verified routing state. The transcript certification
             // open below is the pane's, and holding a resend across a local
             // read would put a storage stall in front of its outbox write.
-            if (routingOnly) return;
+            //
+            // The read's own success is not the answer by itself: a deletion
+            // can land between this read's snapshot and this fulfilment, in
+            // which case the model is real and the destination is gone. Asking
+            // the shared question here, rather than re-deriving it, is what
+            // keeps this exit and the tail's from drifting apart.
+            if (routingOnly) {
+              const fulfilment = routingFulfilment(ref);
+              if (fulfilment.kind === "fulfilled") return;
+              if (fulfilment.kind === "deleted") return endDeletedDestination();
+              if (fulfilment.kind === "join") {
+                inflight = fulfilment.read;
+                continue;
+              }
+              throw lastReadError ?? new Error("routing state is unverified after the read settled");
+            }
             // A display the claim's publication already completed has no
             // pruned publication for the certification open's consumer gate
             // to protect — its local read can only add bodies the pane is
@@ -8760,7 +8803,18 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           // standing here after a failed or superseded read may be the shell
           // that read never replaced, so the resend gets the failure and stays
           // available for another press. A pane lets its display stand.
-          if (!routingOnly || routingVerified()) return;
+          if (!routingOnly) return;
+          // The same question the success exit asks, in the same place, so the
+          // two cannot disagree: an attempt that settled without publishing on
+          // a shell must still join the read that is currently verifying the
+          // ref, or the person pays a second Send for a successful replacement.
+          const fulfilment = routingFulfilment(ref);
+          if (fulfilment.kind === "fulfilled") return;
+          if (fulfilment.kind === "deleted") return endDeletedDestination();
+          if (fulfilment.kind === "join") {
+            inflight = fulfilment.read;
+            continue;
+          }
           throw lastReadError ?? new Error("routing state is unverified after the read settled");
         }
         if (threadsStore.getState().deletedRefs.has(ref)) return endDeletedDestination();
@@ -8805,7 +8859,16 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     if (opts?.routingOnly !== true) releaseBodyOwnership(ref);
     releaseForeground(ref);
     syncTranscriptResidencyOwners(ref);
-    if (count > 1) return;
+    if (count > 1) {
+      // Another holder keeps the ref alive, so nothing below is this release's
+      // to do — except the bodies. When this was the last body owner, the pane
+      // that owned the display is gone even though a routing lease still holds
+      // the model and the subscription for a resend to dispatch on. Disposing
+      // the reader and pruning keeps the pane's transcript bodies from
+      // outliving the pane that rendered them; the routing fields stay.
+      if (bodyOwners(ref) === 0) releaseEntryTranscriptReader(ref, true);
+      return;
+    }
     const retirement = retireEntryTranscriptIfUnowned(ref);
     if (retirement) {
       releaseSubagentRows(ref);
