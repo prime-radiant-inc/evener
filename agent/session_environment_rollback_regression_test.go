@@ -15,6 +15,7 @@ import (
 
 	"primeradiant.com/evener/agent/envctx"
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -217,16 +218,16 @@ func attachEnvironmentFailureFS(t *testing.T, sess *Session) *environmentSyncFai
 // assertEnvironmentNotReemitted drives the turn after an append whose entry the
 // session could not confirm gone, and requires the transcript to still carry
 // only the entry the failed rollback left behind.
-func assertEnvironmentNotReemitted(t *testing.T, sess *Session, retained []string) {
+func assertEnvironmentNotReemitted(t *testing.T, sess *Session, launch envctx.State, retained []string) {
 	t.Helper()
-	assertEnvironmentTrackerMatchesModelHistory(t, sess)
+	assertEnvironmentTrackerMatchesModelHistory(t, sess, launch)
 	if err := sess.maybeAppendEnvironmentContext(); err != nil {
 		t.Fatal(err)
 	}
 	if got := durableEnvironmentTurnIDs(t, sess); !reflect.DeepEqual(got, retained) {
 		t.Fatalf("durable environment entries after the next turn = %v, want only the entry already in the transcript %v", got, retained)
 	}
-	assertEnvironmentTrackerMatchesModelHistory(t, sess)
+	assertEnvironmentTrackerMatchesModelHistory(t, sess, launch)
 }
 
 // drainPendingEvents takes every event the session has already published,
@@ -290,16 +291,13 @@ func pairLogEnvironmentTurnIDs(sess *Session) []string {
 	return ids
 }
 
-// assertEnvironmentTrackerMatchesModelHistory requires the environment tracker
-// to describe exactly what the model has been shown: replaying the ENVIRONMENT
-// blocks in history has to land on the tracker's own state. A tracker advanced
-// past history renders every later observation as a diff against a baseline the
-// model never received, which reads as a complete environment and is not one.
-func assertEnvironmentTrackerMatchesModelHistory(t *testing.T, sess *Session) {
+// The projection starts with the session's launch facts. Only environment turns
+// that entered model history may advance it from that baseline.
+func assertEnvironmentTrackerMatchesModelHistory(t *testing.T, sess *Session, launch envctx.State) {
 	t.Helper()
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
-	replayed := envctx.NewTracker(envctx.State{})
+	replayed := envctx.NewTracker(launch)
 	for _, turn := range sess.history {
 		if turn.Kind == schema.TurnEnvironment {
 			replayed.ReplayBlock(turn.Message.Text())
@@ -489,6 +487,7 @@ func TestQueuedEnvironmentFailureReturnsRunnableClaimAndWakesRetry(t *testing.T)
 func TestEnvironmentAmbiguousWriteDoesNotDuplicateEntry(t *testing.T) {
 	t.Parallel()
 	sess := newTestSessionForEnvctx(t)
+	launch := sess.envTracker.State()
 	syncFailure := errors.New("environment transcript durability failure")
 	rollbackFailure := errors.New("environment transcript rollback failure")
 	attachEnvironmentAmbiguousWrite(t, sess, syncFailure, rollbackFailure)
@@ -508,7 +507,7 @@ func TestEnvironmentAmbiguousWriteDoesNotDuplicateEntry(t *testing.T) {
 		t.Fatalf("model history environment turns after the confirmed append = %d, want the committed entry", got)
 	}
 
-	assertEnvironmentNotReemitted(t, sess, ambiguous)
+	assertEnvironmentNotReemitted(t, sess, launch, ambiguous)
 	if got := countEnvironmentTurns(sess); got != 1 {
 		t.Fatalf("model history environment turns after the next turn = %d, want no duplicate of the committed entry", got)
 	}
@@ -525,7 +524,10 @@ func TestEnvironmentAmbiguousWriteDoesNotDuplicateEntry(t *testing.T) {
 // forever and fail here.
 func TestEnvironmentRolledBackWriteReemitsEntry(t *testing.T) {
 	t.Parallel()
-	sess := newTestSessionForEnvctx(t)
+	adapter := &agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response { return agenttest.FinalResponse("ok") }}
+	sess := newTestSessionForEnvctx(t, withAdapter(adapter))
+	launch := sess.envTracker.State()
+	header := sess.transcript.Header()
 	syncFailure := errors.New("environment transcript durability failure")
 	seekFailure := errors.New("environment transcript rollback seek failure")
 	attachEnvironmentRolledBackWrite(t, sess, syncFailure, seekFailure)
@@ -543,8 +545,16 @@ func TestEnvironmentRolledBackWriteReemitsEntry(t *testing.T) {
 		t.Fatalf("durable environment entries after the rollback truncated the entry = %v, want none", got)
 	}
 
-	if err := sess.maybeAppendEnvironmentContext(); err != nil {
-		t.Fatal(err)
+	sendOneUserInput(t, sess, "continue")
+	requests := adapter.Requests()
+	if len(requests) != 1 {
+		t.Fatalf("recovery produced %d model requests, want one", len(requests))
+	}
+	if messages := requests[0].Messages; len(messages) == 0 || messages[0].Role != llm.RoleSystem || messages[0].Text() != header.SystemPrompt {
+		t.Fatal("the first successful request lost the saved system prompt")
+	}
+	if state, blocks := requestEnvironment(requests[0]); blocks != 1 || state.Cwd != header.WorkingDir {
+		t.Fatalf("recovery request carries %d environment blocks and cwd %q, want one block for %q", blocks, state.Cwd, header.WorkingDir)
 	}
 	reemitted := durableEnvironmentTurnIDs(t, sess)
 	if len(reemitted) != 1 || reemitted[0] == "" {
@@ -553,7 +563,7 @@ func TestEnvironmentRolledBackWriteReemitsEntry(t *testing.T) {
 	if got := countEnvironmentTurns(sess); got != 1 {
 		t.Fatalf("model-visible environment turns after the retry = %d, want the re-emitted block", got)
 	}
-	assertEnvironmentTrackerMatchesModelHistory(t, sess)
+	assertEnvironmentTrackerMatchesModelHistory(t, sess, launch)
 }
 
 // When the environment append's fsync AND the recovery barrier both fail, the
@@ -566,6 +576,7 @@ func TestEnvironmentRolledBackWriteReemitsEntry(t *testing.T) {
 func TestEnvironmentUnestablishedDurabilityAdoptsTheRetainedRecord(t *testing.T) {
 	t.Parallel()
 	sess := newTestSessionForEnvctx(t)
+	launch := sess.envTracker.State()
 	syncFailure := errors.New("environment transcript durability failure")
 	rollbackFailure := errors.New("environment transcript rollback failure")
 	durabilityFailure := errors.New("environment transcript barrier failure")
@@ -581,7 +592,7 @@ func TestEnvironmentUnestablishedDurabilityAdoptsTheRetainedRecord(t *testing.T)
 	}
 	// Adopted, not rewound: the next turn does not re-render, so the transcript
 	// carries the environment exactly once.
-	assertEnvironmentNotReemitted(t, sess, adopted)
+	assertEnvironmentNotReemitted(t, sess, launch, adopted)
 	if got := countEnvironmentTurns(sess); got != 1 {
 		t.Fatalf("model history environment turns after the next turn = %d, want the one adopted entry", got)
 	}
@@ -612,6 +623,7 @@ func TestEnvironmentUnestablishedDurabilityAdoptsTheRetainedRecord(t *testing.T)
 func TestEnvironmentAmbiguousWriteCommitsConfirmedEntry(t *testing.T) {
 	t.Parallel()
 	sess := newTestSessionForEnvctx(t)
+	launch := sess.envTracker.State()
 	syncFailure := errors.New("environment transcript durability failure")
 	rollbackFailure := errors.New("environment transcript rollback failure")
 	attachEnvironmentAmbiguousWrite(t, sess, syncFailure, rollbackFailure)
@@ -641,7 +653,7 @@ func TestEnvironmentAmbiguousWriteCommitsConfirmedEntry(t *testing.T) {
 		t.Fatalf("persisted environment tracker state = %+v, want the confirmed entry recorded", state)
 	}
 
-	assertEnvironmentNotReemitted(t, sess, confirmed)
+	assertEnvironmentNotReemitted(t, sess, launch, confirmed)
 	if got := historyEnvironmentTurnIDs(sess); !reflect.DeepEqual(got, confirmed) {
 		t.Fatalf("model history environment turns after the next turn = %v, want only the committed entry %v", got, confirmed)
 	}
@@ -660,6 +672,13 @@ func TestEnvironmentAmbiguousWriteCommitsConfirmedEntry(t *testing.T) {
 func TestEnvironmentPoisonedWriterFailsEveryTurnLoudly(t *testing.T) {
 	t.Parallel()
 	sess := newTestSessionForEnvctx(t)
+	launch := sess.envTracker.State()
+	if launch.HasSent || launch.Last.Cwd == "" || launch.Last.Cwd != sess.transcript.Header().WorkingDir {
+		t.Fatalf("before the first input the tracker has cwd %q and HasSent=%t", launch.Last.Cwd, launch.HasSent)
+	}
+	if err := sess.swapEnvAndRefresh(execenv.NewLocalExecutionEnvironment(t.TempDir()), nil); err != nil {
+		t.Fatal(err)
+	}
 	writeFailure := errors.New("environment transcript write failure")
 	rollbackFailure := errors.New("environment transcript rollback failure")
 	attachEnvironmentPoisoningWrite(t, sess, writeFailure, rollbackFailure)
@@ -667,6 +686,9 @@ func TestEnvironmentPoisonedWriterFailsEveryTurnLoudly(t *testing.T) {
 
 	if err := sess.maybeAppendEnvironmentContext(); !errors.Is(err, writeFailure) || !errors.Is(err, rollbackFailure) {
 		t.Fatalf("partial-write append error = %v, want both the write and the rollback failure", err)
+	}
+	if state := sess.envTracker.State(); state != launch {
+		t.Fatalf("the failed workspace update advanced the tracker from %+v to %+v", launch, state)
 	}
 	if err := sess.maybeAppendEnvironmentContext(); !errors.Is(err, transcript.ErrWriterPoisoned) {
 		t.Fatalf("turn after the poisoning = %v, want transcript.ErrWriterPoisoned", err)
@@ -677,7 +699,10 @@ func TestEnvironmentPoisonedWriterFailsEveryTurnLoudly(t *testing.T) {
 	if got := countEnvironmentTurns(sess); got != 0 {
 		t.Fatalf("failed and refused environment appends entered model history %d times", got)
 	}
-	assertEnvironmentTrackerMatchesModelHistory(t, sess)
+	if state := loadMetaForTest(t, sess).EnvContext; state != nil {
+		t.Fatalf("failed environment appends checkpointed %+v", state)
+	}
+	assertEnvironmentTrackerMatchesModelHistory(t, sess, launch)
 
 	warnings := 0
 	for _, event := range drainPendingEvents(sess) {
