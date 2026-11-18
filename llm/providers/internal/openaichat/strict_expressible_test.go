@@ -435,11 +435,13 @@ func TestStrictExpressible(t *testing.T) {
 			},
 			want: false,
 		},
-		// The rewrite gives such a branch the enclosing object's declared
-		// properties before closing it, so the branch still admits the object
-		// the enclosing node requires. A branch carrying its own properties
-		// would instead have those narrowed against the rest, so it is
-		// refused rather than certified.
+		// The gate refuses the combinator rather than certifying it: the rewrite
+		// closes the branch against its own id property, which forbids the name
+		// key the parent requires, so no object satisfies both.
+		// A branch declaring every property the parent declares closes to the
+		// same key set and keeps its meaning, but anyOf as a keyword still goes
+		// non-strict because the rewrite visits branches from nodes it does not
+		// transform.
 		{
 			name: "closed branch declares properties of its own",
 			in: map[string]any{
