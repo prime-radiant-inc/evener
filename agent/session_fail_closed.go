@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -52,6 +53,18 @@ type failClosedState struct {
 	// cancelExecution cancels the running execution's context; nil while none
 	// runs.
 	cancelExecution atomic.Pointer[context.CancelFunc]
+	// settleMu makes "park the copy and release the claim" one step for a
+	// publisher, and "take the claim and lift the copy" one step for the close
+	// retry.
+	//
+	// Without it the two orders could interleave into a silent loss: a failed
+	// send stored its copy and paused, the retry lifted that copy and then lost
+	// the claim to the still-in-flight publisher, and the publisher's own
+	// release left the claim open and nothing pending -- no diagnostic even for
+	// a consumer that resumed inside the close window. It is never held across
+	// a send: only across the pair of atomic updates that move a diagnostic
+	// between the two states.
+	settleMu sync.Mutex
 }
 
 // failClosed stops a served session for cause: the running execution is
@@ -262,8 +275,10 @@ func (s *Session) announceFailClosedOn(bound context.Context) {
 	// is that a failed attempt leaves exactly one copy pending and the claim
 	// OPEN, so the retry still delivers.
 	held := data
+	s.failedClosed.settleMu.Lock()
 	s.failedClosed.pending.Store(&held)
 	s.failedClosed.announced.CompareAndSwap(true, false)
+	s.failedClosed.settleMu.Unlock()
 }
 
 // retryCloseFailClosed publishes a fail-closed diagnostic a bounded send
@@ -277,22 +292,53 @@ func (s *Session) announceFailClosedOn(bound context.Context) {
 // pending and then dropping the send would lose the announcement entirely --
 // the defect the claim-release exists to fix, one call later.
 func (s *Session) retryCloseFailClosed(ctx context.Context) {
-	held := s.failedClosed.pending.Swap(nil)
-	if held == nil {
+	// The claim is taken BEFORE the copy is lifted, and both under settleMu.
+	// Lifting first is what lost a diagnostic: this retry took the parked copy,
+	// then lost the claim to the send that had parked it and was still running,
+	// and returned with the copy already gone. The publisher then released the
+	// claim, leaving the session announced with nothing pending and nothing
+	// sent. In this order a lost claim leaves the copy exactly where its owner
+	// put it.
+	//
+	// Losing the claim to an in-flight publisher is not a reason to give up: if
+	// that send fails, its own release will leave the copy behind, and this is
+	// the close's last chance to deliver it. So the wait is bounded by the
+	// caller's remaining budget and re-tried, rather than assumed settled.
+	for {
+		s.failedClosed.settleMu.Lock()
+		if !s.failedClosed.announced.CompareAndSwap(false, true) {
+			s.failedClosed.settleMu.Unlock()
+			if ctx.Err() != nil || s.failedClosed.pending.Load() == nil {
+				// Either the close has no time left, or there is nothing
+				// parked: an in-flight publisher that SUCCEEDS never stores a
+				// copy, and one that fails stores it before it releases, so a
+				// nil copy under an open claim means the announcement went out.
+				return
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(transcriptLockPollInterval):
+			}
+			continue
+		}
+		if held := s.failedClosed.pending.Swap(nil); held != nil {
+			s.failedClosed.settleMu.Unlock()
+			if _, _, delivered := s.sendEventContext(ctx, *held, s.activeCausalProvenance()); delivered {
+				return
+			}
+			// Undelivered: release the claim and hold the diagnostic again, so
+			// a later path can still announce it rather than the session going
+			// silent.
+			s.failedClosed.settleMu.Lock()
+			if s.failedClosed.announced.CompareAndSwap(true, false) {
+				s.failedClosed.pending.CompareAndSwap(nil, held)
+			}
+			s.failedClosed.settleMu.Unlock()
+			return
+		}
+		s.failedClosed.settleMu.Unlock()
 		return
-	}
-	if !s.failedClosed.announced.CompareAndSwap(false, true) {
-		// Someone else announced while this was parked. That announcement is
-		// the one the session gets; this copy is dropped rather than duplicated.
-		return
-	}
-	if _, _, delivered := s.sendEventContext(ctx, *held, s.activeCausalProvenance()); delivered {
-		return
-	}
-	// Undelivered: release the claim and hold the diagnostic again, so a later
-	// path can still announce it rather than the session going silent.
-	if s.failedClosed.announced.CompareAndSwap(true, false) {
-		s.failedClosed.pending.CompareAndSwap(nil, held)
 	}
 }
 

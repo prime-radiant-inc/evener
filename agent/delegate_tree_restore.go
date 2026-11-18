@@ -82,6 +82,19 @@ type delegateReconcileEvidence struct {
 	// reconcile causes is made on it, so a deadline belongs to the pass that
 	// supplied it and an unrelated delegate's publications are unaffected.
 	bound context.Context
+	// planBound is the bound the PLANS this pass returns carry, or nil for a
+	// plan that must publish on the receiving session's own delivery window.
+	//
+	// It is separate from bound because the two are not the same question. bound
+	// caps the publications this pass makes while it runs -- the wake diagnostic,
+	// the acknowledgment notices -- and every driver supplies one, including an
+	// ordinary stop driver whose cancellation is the join's abandon signal. A
+	// plan, by contrast, is published by a LATER caller into a session that did
+	// not supply the pass's deadline at all, so stamping the driver's
+	// cancellation on it dropped a committed update off a root whose own window
+	// was still open. Only the close drain, whose target is the closing root
+	// sharing that budget, sets this.
+	planBound context.Context
 }
 
 type delegateAttentionTransferPlan struct {
@@ -263,6 +276,7 @@ func (c *delegateTreeController) reconcileRequirementsLocked(stop *delegateStopS
 // the bound of the pass that collected the evidence.
 func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (result delegateMutationPlans, resultErr error) {
 	bound := evidence.bound
+	planBound := evidence.planBound
 	release, err := c.beginRetirementMutation()
 	if err != nil {
 		return delegateMutationPlans{}, err
@@ -272,7 +286,7 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 		// on the error paths too: a repair error still hands back the warnings
 		// and updates it settled. Result is the named return, so this covers
 		// all of them at one place instead of at each return.
-		result = stampBound(bound, result)
+		result = stampBound(planBound, result)
 		if resultErr == nil && (len(result.updates) != 0 || len(result.deliveries) != 0 || len(result.attention) != 0 || len(result.shellRepairs) != 0 || result.attentionFinalization != nil) {
 			result.retirementRelease = release
 		} else {
@@ -861,17 +875,27 @@ func (c *delegateTreeController) wakeDeliveryReceiver(bound context.Context, rec
 			// attention, so a later drive presents them together -- and the
 			// root-side paced retry below still arms for the bounded path.
 			//
-			// closeJoinBound, not "a bound exists" and not "non-nil".
+			// Two conditions, and each covers a case the other cannot.
 			//
-			// The ordinary delivery path passes noBound and keeps today's
-			// behavior. But an ordinary STOP DRIVER also supplies a bound, and it
-			// must keep its immediate wake too: that wake is the delivery's own,
-			// no close join is waiting on it, and silencing it strands the
-			// receiver whose acknowledgment was just retried
-			// (TestDelegateAttention_PrelaunchStopWakesRetriedDeliveryOwner). The
-			// price of skipping the wake is paid only by the CLOSE drain, so only
-			// its publications carry the mark.
-			if !closeJoinBound(bound) {
+			// The close-join mark: the close drain's publications are on the path
+			// whose reconciliation the close waits for, so none of them may wake
+			// the receiver synchronously into an unbounded attentionMu wait.
+			//
+			// The spent sentinel, which must stay even for callers that are not on
+			// a close join: shutdown can abandon an ORDINARY stop driver after it
+			// released the holds but while its arm is still waiting on the lock.
+			// That arm returns this sentinel, the driver is unmarked, and waking
+			// anyway would keep the abandoned driver alive on the same mutex -- and
+			// a driver nobody joins can hold up the delegate store's close. An arm
+			// that already gave up on its own bound must never be re-entered
+			// unbounded, whatever path it came from.
+			//
+			// Everything else keeps today's behavior, including the ordinary
+			// delivery path (noBound) and the ordinary stop driver's other arm
+			// errors: those wakes are the delivery's own, no close join is waiting
+			// on them, and silencing them strands the receiver whose acknowledgment
+			// was just retried (TestDelegateAttention_PrelaunchStopWakesRetriedDeliveryOwner).
+			if !closeJoinBound(bound) && !errors.Is(err, errDelegateAttentionArmSpent) {
 				receiver.notify()
 			}
 		}

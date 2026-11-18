@@ -951,6 +951,19 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 		// acknowledgment across several subtrees otherwise spends a fresh slice
 		// of the cascade per subtree, and the removals get what is left.
 		evidence.bound = withPublicationBound(pubCtx)
+		// The PLANS this pass returns are a different question, and only the
+		// close drain answers it. A plan's bound narrows the send that carries
+		// the update into the RECEIVING session, and an ordinary stop driver
+		// supplies none: its ctx is the join's cancel signal, so when close
+		// abandoned the driver mid-pass the update it was publishing -- and the
+		// activity invalidation with it -- died on that cancellation, leaving an
+		// open view showing a delegate whose acknowledgment had already
+		// succeeded. The receiving session's own delivery window is what governs
+		// an ordinary update, so those plans carry no bound at all.
+		//
+		// The driver's cancellation still governs the reconciliation WAITS above
+		// and the wake below: that is what abandons a driver stuck behind an
+		// uncancellable tool call.
 		if warningsOnly {
 			// This is the CLOSE drain, so the publications it causes are on the
 			// close-join critical path: a synchronous wake for a receiver's
@@ -959,6 +972,7 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 			// explicitly, because an ordinary stop driver supplies a bound too
 			// and must keep its immediate wake.
 			evidence.bound = withCloseJoinBound(evidence.bound)
+			evidence.planBound = evidence.bound
 		}
 		plans, err := c.Reconcile(evidence)
 		if plans.retirementRelease != nil {

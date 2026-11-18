@@ -1106,7 +1106,16 @@ func delegateCreatorSessionID(visibleSessionID, ownerSessionID string) string {
 // closeStableWorktreeResumability atomically revalidates that a direct-owned
 // subtree is quiescent and fsyncs its permanent worktree-disposal closure.
 // allowControllerClose is used only by the already-fenced root close path.
-func (c *delegateTreeController) closeStableWorktreeResumability(owner *Session, delegateID, reason string, allowControllerClose bool) (delegateWorktreeSnapshot, bool, delegateMutationPlans, error) {
+//
+// bound caps the wait for an in-flight attention start's reservation, or is
+// noBound for a caller with no deadline of its own. The wait used to be a bare
+// receive: a start admitted by a journal append that then FAILED keeps its
+// reservation until its retry settles, so a close that had already given up
+// waiting for that reservation still parked here, before the retained-warning
+// retry it had budget left for. A spent bound reports the lane busy instead --
+// the closure is not written, the lane stays intact on disk, and the close
+// moves on to the lanes and the retries it can still run.
+func (c *delegateTreeController) closeStableWorktreeResumability(bound context.Context, owner *Session, delegateID, reason string, allowControllerClose bool) (delegateWorktreeSnapshot, bool, delegateMutationPlans, error) {
 	if c == nil || owner == nil {
 		return delegateWorktreeSnapshot{}, false, delegateMutationPlans{}, errDelegateNotControllable
 	}
@@ -1118,7 +1127,16 @@ func (c *delegateTreeController) closeStableWorktreeResumability(owner *Session,
 		}
 		if blocker := c.attentionStartBlockerLocked(delegateID, true); blocker != nil {
 			c.mu.Unlock()
-			<-blocker
+			// Bounded by the caller's deadline, NOT by the reservation: the
+			// reservation's own lifetime is the failing start's retry, which the
+			// close has no reason to wait out.
+			if err := waitAttentionStartAdmission(bound, blocker); err != nil {
+				// Not a failure: the closure was never attempted, so the lane is
+				// exactly as it was. Reporting it busy is what lets the close
+				// treat this like any other lane it may not collect yet and move
+				// on to the removals and retries it still has budget for.
+				return delegateWorktreeSnapshot{}, true, delegateMutationPlans{}, nil
+			}
 			c.mu.Lock()
 			continue
 		}

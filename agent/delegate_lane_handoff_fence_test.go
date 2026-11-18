@@ -513,7 +513,7 @@ func TestDelegateLaneHandoffAdditionalAdmissions(t *testing.T) {
 		c.mu.Unlock()
 		seedDelegateControllerIdle(t, c, nestedID, parentID)
 		owner := &Session{id: "root-session", delegateController: c}
-		if _, _, _, err := c.closeStableWorktreeResumability(owner, parentID, "test-close", false); err != nil {
+		if _, _, _, err := c.closeStableWorktreeResumability(noBound, owner, parentID, "test-close", false); err != nil {
 			t.Fatalf("close parent resumability: %v", err)
 		}
 		if _, _, err := c.idleDelegateRestoreCommit(nestedID); !errors.Is(err, errDelegateTargetBusy) {

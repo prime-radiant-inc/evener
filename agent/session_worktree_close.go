@@ -238,7 +238,7 @@ func (s *Session) disposeOneDelegateLane(ctx context.Context, local *execenv.Loc
 		return fmt.Sprintf("%s at %s (branch %s, %s, %s)", lane.delegateID, lanePath, lane.branch, ahead, dirty), true, nil
 	}
 
-	_, _, plans, closeErr := s.delegateController.closeStableWorktreeResumability(s, lane.delegateID, stableWorktreeDisposalReason, true)
+	_, _, plans, closeErr := s.delegateController.closeStableWorktreeResumability(ctx, s, lane.delegateID, stableWorktreeDisposalReason, true)
 	if closeErr != nil {
 		s.publishLaneWarning(warn, events.WarningData{Message: fmt.Sprintf("delegate lane resumability closure failed for %s: %v", lane.delegateID, closeErr)})
 		return lane.delegateID + " at " + lanePath + " (resumability closure failed; retained intact)", true, nil

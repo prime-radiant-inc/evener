@@ -190,7 +190,7 @@ func (s *Session) disposeDelegateLane(ctx context.Context, id string, force, for
 		return WorktreeDisposeResult{}, err
 	}
 
-	closedState, already, plans, closeErr := s.delegateController.closeStableWorktreeResumability(s, id, stableWorktreeDisposalReason, false)
+	closedState, already, plans, closeErr := s.delegateController.closeStableWorktreeResumability(noBound, s, id, stableWorktreeDisposalReason, false)
 	if closeErr != nil {
 		if errors.Is(closeErr, errDelegateTargetBusy) {
 			return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: %s became active while disposing; retry once it is idle", id)

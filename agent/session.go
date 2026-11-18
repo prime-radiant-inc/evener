@@ -200,6 +200,15 @@ type Session struct {
 	closeCtx                     context.Context // shared shutdown deadline for blocked authoritative sends
 	closeSignal                  chan struct{}
 	testOnlyBlockedSendEntered   func()
+	// testOnlyBlockedSendObserved, when set, sees the data and the caller's
+	// context of a send that is about to park on a full authoritative stream.
+	// Entered alone cannot answer "did THIS publication inherit a bound it never
+	// supplied": the hook fires before the send consults its bound, and several
+	// publications of different kinds reach it. Seeing the payload and the
+	// context at the park point is what lets a fixture name the row it means.
+	//
+	// nil in production, like the hook above.
+	testOnlyBlockedSendObserved func(data events.EventData, ctx context.Context)
 	// testOnlyCloseWarningRetry, when set, sees the context the close hands its
 	// post-removal warning retry. A retained warning is only worth holding if that
 	// context still has a window, and "which context" is otherwise unobservable
@@ -669,6 +678,15 @@ type Session struct {
 	// these cannot be re-settled: the close gets one retry on the budget left
 	// after the worktree removals, and this is the only place they survive.
 	closeDrainWarnings atomic.Pointer[[]events.WarningData]
+	// deferredCloseHooks holds the Notification dispatches a close-cutoff
+	// declined while their warnings DID reach the stream: the news is
+	// delivered, the configured report of it is not. Retried once after the
+	// worktree removals, on the budget those removals did not need, so a
+	// warning is never published with its hook silently skipped.
+	deferredCloseHooks struct {
+		sync.Mutex
+		pending []deferredCloseHook
+	}
 	// transcriptCreateErr is why the session's transcript could not be
 	// created, nil when it was (or none was wanted). Set once at construction.
 	transcriptCreateErr error
@@ -1663,6 +1681,26 @@ func (s *Session) notify() {
 	if f != nil {
 		f()
 	}
+}
+
+// notifyDeferred wakes the session off the CALLER's goroutine.
+//
+// The production callback reads pending attention and takes attentionMu with no
+// bound of its own, so running it inline puts that acquisition inside whatever
+// the caller is being timed against. That is harmless for an ordinary emission
+// and wrong for a close: the drain waits for the wake, and an environment append
+// that takes the mutex after the final hold release can stall there long after
+// the arm itself finished inside its bound. Deferred, the wake still happens --
+// the IDs are already durable, so nothing depends on the timing -- and the close
+// no longer waits for it.
+func (s *Session) notifyDeferred() {
+	s.mu.Lock()
+	f := s.notifyFunc
+	s.mu.Unlock()
+	if f == nil {
+		return
+	}
+	go f()
 }
 
 // beginJobNotifyCallback retains local ownership of one scheduled notification

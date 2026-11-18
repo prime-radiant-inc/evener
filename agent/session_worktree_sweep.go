@@ -215,7 +215,7 @@ func (s *Session) prepareStableLaneDisposal(delegateID string) error {
 	if s == nil || s.delegateController == nil {
 		return errors.New("stable delegate controller unavailable")
 	}
-	_, _, plans, err := s.delegateController.closeStableWorktreeResumability(s, delegateID, stableWorktreeDisposalReason, true)
+	_, _, plans, err := s.delegateController.closeStableWorktreeResumability(noBound, s, delegateID, stableWorktreeDisposalReason, true)
 	if err != nil {
 		return err
 	}

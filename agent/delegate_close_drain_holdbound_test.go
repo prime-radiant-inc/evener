@@ -302,6 +302,16 @@ func TestBoundedOrdinaryWakeStillNotifiesImmediately(t *testing.T) {
 	receiver := &Session{id: "child-receiver", delegateController: root.delegateController}
 	var notified atomic.Bool
 	receiver.notifyFunc = func() { notified.Store(true) }
+	// The refusal below is retained for the arm's paced retry, and this stub has
+	// no owning delegate ID, so every retry fails and re-arms. Retire the episode
+	// under attentionMu on the way out, exactly as the neighboring test does, or
+	// the timer outlives the test and fires against a torn-down fixture.
+	t.Cleanup(func() {
+		receiver.attentionMu.Lock()
+		receiver.delegateAttentionArmIDs = nil
+		receiver.resetDelegateAttentionArmRetryLocked()
+		receiver.attentionMu.Unlock()
+	})
 	var armed atomic.Bool
 	updateSessionTestConfig(receiver, func(cfg *testConfig) {
 		cfg.delegateAttentionArmFault = func() error {
@@ -319,5 +329,76 @@ func TestBoundedOrdinaryWakeStillNotifiesImmediately(t *testing.T) {
 	if !notified.Load() {
 		t.Fatal("an ordinary delivery that supplied no bound did not wake the receiver on an arm refusal: " +
 			"that wake is the delivery's own and must stay immediate")
+	}
+}
+
+// The spent sentinel must skip the wake even for a caller that is NOT on a close
+// join.
+//
+// This is the direction the close-join mark alone misses, and it is a different
+// driver class: shutdown can abandon an ORDINARY stop driver after its hold
+// release succeeded, while its arm is still waiting on an ungated receiver's
+// attentionMu. That arm returns errDelegateAttentionArmSpent on an unmarked,
+// merely-bounded context. Waking anyway re-enters the same mutex with no bound,
+// keeps the abandoned driver alive, and a driver nobody joins holds up the
+// delegate store's close.
+//
+// The ordering is the abandoned driver's own: the release succeeds, and only
+// then does the bound expire with the lock in someone else's hands. The release
+// hook is where that happens, so no clock and no race decides it -- the hook
+// takes attentionMu and cancels the bound before the arm can run.
+func TestAbandonedStopDriverSpentArmDoesNotBlockOnTheNotify(t *testing.T) {
+	r := newWorktreeRepo(t)
+	root := r.s
+	if root.delegateController == nil {
+		t.Fatal("fixture session has no delegate controller")
+	}
+
+	receiver := &Session{id: "child-receiver", delegateController: root.delegateController}
+	var notified atomic.Bool
+	receiver.notifyFunc = func() { notified.Store(true) }
+	// A user-stop hold gives the release work to do, so it runs and reaches its
+	// hook instead of no-opping past the arm.
+	receiver.attentionAutomaticDriveHolds = map[string]struct{}{"delegate:held": {}}
+
+	// An ordinary stop driver's bound: a real one, with NO close-join mark.
+	bound, cancelBound := context.WithCancel(t.Context())
+	t.Cleanup(cancelBound)
+
+	// The abandoned-driver moment: the release has succeeded, the lock is taken
+	// by an in-flight environment append, and the driver's bound is gone.
+	var hookOnce sync.Once
+	locked := false
+	updateSessionTestConfig(receiver, func(cfg *testConfig) {
+		cfg.delegateAttentionHoldReleased = func(site delegateHoldReleaseSite, released []string) {
+			hookOnce.Do(func() {
+				receiver.attentionMu.Lock()
+				locked = true
+				cancelBound()
+			})
+		}
+	})
+	t.Cleanup(func() {
+		if locked {
+			receiver.attentionMu.Unlock()
+		}
+	})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = root.delegateController.wakeDeliveryReceiver(
+			withPublicationBound(bound), receiver, []string{"delegate:held"})
+	}()
+
+	// The wake must RETURN. An unbounded notify would block on the held lock
+	// forever, so this wait is the assertion, not a duration.
+	awaitCloseFenceSignal(t, done, "the abandoned stop driver's wake returning instead of waiting on the held lock")
+	if !locked {
+		t.Fatal("the release never ran: the fixture never reached the arm whose fallback it pins")
+	}
+	if notified.Load() {
+		t.Fatal("the abandoned driver's arm gave up on its own bound and the wake still notified: the " +
+			"notify waits on the same attentionMu with no bound, so the driver nobody joins never unwinds")
 	}
 }

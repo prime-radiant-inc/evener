@@ -792,7 +792,7 @@ func (s *Session) armDelegateAttentionsOnceBounded(bound context.Context, attent
 			// receiver synchronously: a hold still in place at the drive's
 			// list read would present the armed row alone and leave the
 			// stopped report for a later generation.
-			s.notify()
+			s.wakeAfterDelegateArm(bound)
 		}
 		return nil
 	}
@@ -839,6 +839,29 @@ func (s *Session) armDelegateAttentionOnce(attentionID string) error {
 // the delegate's attention there and outwaiting a racing attention start) and
 // reports whether attentionID was still pending, so the caller decides how the
 // wake fires — once for a batch, or the single-ID arm's own notify.
+// wakeAfterDelegateArm fires the single wake a successful arm owes its
+// receiver, on the caller's bound.
+//
+// On the close join the wake is DEFERRED rather than run here. The arm acquired
+// every lock it touches within its bound, so reaching this point proves it was
+// in time -- but the notify func's production callback reads pending attention
+// and takes attentionMu again with no bound of its own. An environment append
+// that takes that mutex after the final hold release stalls in synchronous
+// descendant forwarding, and the close then waits out the budget reserved for
+// its worktree removals on a wake that had nothing left to prove. Deferred, the
+// wake happens after this pass returns; the attention IDs are durable, so
+// nothing is lost if the process ends first -- the next ordinary drive finds
+// them exactly as it would have.
+//
+// Every other caller keeps today's behavior exactly: no mark, no deferral.
+func (s *Session) wakeAfterDelegateArm(bound context.Context) {
+	if closeJoinBound(bound) {
+		s.notifyDeferred()
+		return
+	}
+	s.notify()
+}
+
 func (s *Session) armDelegateAttentionInController(attentionID string) (armed bool, err error) {
 	// noBound for the same reason as armDelegateAttentions.
 	return s.armDelegateAttentionInControllerBounded(noBound, attentionID)

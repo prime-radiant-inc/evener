@@ -13,11 +13,24 @@ import (
 	"primeradiant.com/evener/internal/testwait"
 )
 
-// siblingSending marks the publishing goroutine while the sibling's send runs,
-// so the blocked-send hook can attribute a park to the sibling alone. A spent
-// plan enters the same hook before it consults its bound; only the marked
-// goroutine's park counts.
-var siblingSending atomic.Bool
+// siblingPublication reports whether data is one of the publications the named
+// sibling's plan makes: its own row update, or the activity invalidation that
+// precedes it.
+func siblingPublication(data events.EventData, siblingID string) bool {
+	switch typed := data.(type) {
+	case events.DelegateUpdatedData:
+		return typed.DelegateID == siblingID
+	case events.SessionActivityChangedData:
+		return true
+	default:
+		return false
+	}
+}
+
+// siblingEmitting marks the publication window of the SIBLING's plan alone, so
+// the blocked-send hook can attribute a park to it. A spent plan enters the same
+// hook before it consults its bound; only the sibling's window counts.
+var siblingEmitting atomic.Bool
 
 // A publication bound belongs to the pass that supplied it. It used to be
 // installed on the controller shared with the live root, so a terminal child
@@ -95,13 +108,17 @@ func TestPublicationBoundDoesNotReachAnUnrelatedSibling(t *testing.T) {
 	root.authoritativeConsumer = true
 	t.Cleanup(func() { root.authoritativeConsumer = false })
 
-	// A sibling-ONLY park signal. The hook fires before the send consults its
-	// bound, so the spent plan enters it too; a shared counter would let the
-	// spent plan's park release the reader and hand it a freshly freed slot,
-	// which is a failure against correct code.
+	// A sibling-ONLY park signal, attributed to the plan actually being emitted.
+	//
+	// A flag set for the whole batch is not attribution: emitDelegateUpdates runs
+	// the plans in order, so while the SPENT plan is parked the sibling flag is
+	// already set, and the spent plan's own park would be read as the sibling's.
+	// Releasing the reader there frees a slot the spent plan then takes -- a
+	// failure against correct code. The marker is therefore set around the
+	// sibling's plan alone, by a publisher that names it.
 	var siblingParked atomic.Bool
 	root.testOnlyBlockedSendEntered = func() {
-		if siblingSending.Load() {
+		if siblingEmitting.Load() {
 			siblingParked.Store(true)
 		}
 	}
@@ -144,12 +161,27 @@ func TestPublicationBoundDoesNotReachAnUnrelatedSibling(t *testing.T) {
 		awaitCloseFenceSignal(t, readerDone, "the fixture's consumer loop stopping")
 	})
 
-	siblingSending.Store(true)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		controller.emitDelegateUpdates(delegateMutationPlans{updates: []delegateUpdatePlan{otherPlan, siblingPlan}})
+		// Emit in order, marking only the sibling's own publication. This is the
+		// same path emitDelegateUpdates takes, with the attribution the batch
+		// helper cannot carry.
+		controller.emitDelegateUpdate(otherPlan)
+		siblingEmitting.Store(true)
+		defer siblingEmitting.Store(false)
+		controller.emitDelegateUpdate(siblingPlan)
 	}()
+	// Join the publisher on EVERY path, including an assertion failure above.
+	// Releasing the consumer and restoring the fixture while this goroutine is
+	// still parked would let it take a slot in a stream the test already
+	// finished measuring, and the failure it reported would name the wrong fact.
+	// Cleanups run last-registered-first, so this join happens before the
+	// consumer loop is released and stopped below.
+	t.Cleanup(func() {
+		openResume()
+		awaitCloseFenceSignal(t, done, "the fixture's publisher returning once the consumer was released")
+	})
 
 	testwait.Until(t, "the sibling's own send to reach the blocked-send boundary", siblingParked.Load)
 	select {
@@ -174,7 +206,6 @@ func TestPublicationBoundDoesNotReachAnUnrelatedSibling(t *testing.T) {
 	// observation above, and letting it run on during teardown is how a later
 	// assertion samples a half-restored world.
 	awaitCloseFenceSignal(t, done, "the publishing pass returning once the consumer freed the slot")
-	siblingSending.Store(false)
 
 	// The stream is FIFO and the other plan sent first, so by the time the
 	// sibling's row arrives any row the other plan managed to publish would
@@ -270,9 +301,36 @@ func TestSiblingUpdateSurvivesAnInFlightBoundedDrain(t *testing.T) {
 	root.authoritativeConsumer = true
 	t.Cleanup(func() { root.authoritativeConsumer = false })
 
-	var siblingParked atomic.Bool
-	root.testOnlyBlockedSendEntered = func() { siblingParked.Store(true) }
-	t.Cleanup(func() { root.testOnlyBlockedSendEntered = nil })
+	// Every publication the sibling's plan makes is recorded WITH the context it
+	// was about to be sent on, and checked while the stream is still full.
+	//
+	// Entered alone is not enough, and neither is watching only the row update.
+	// The activity invalidation that precedes the row is published first and
+	// takes the last slot, so the row's own send never even begins while the
+	// buffer stays full: a fixture that waited for the row's park would time out,
+	// and one that released the reader on WHATEVER parked first would let the row
+	// take a freed slot while still carrying the drain's spent cutoff -- green
+	// with the regression intact.
+	//
+	// Both publications come from the same plan bound and the same per-target
+	// decision in emitDelegateUpdate, so checking the contexts of all of them is
+	// checking the thing the leak would change.
+	var (
+		observedMu   sync.Mutex
+		observedCtxs []context.Context
+	)
+	root.testOnlyBlockedSendObserved = func(data events.EventData, ctx context.Context) {
+		if !siblingPublication(data, siblingID) {
+			return
+		}
+		observedMu.Lock()
+		observedCtxs = append(observedCtxs, ctx)
+		observedMu.Unlock()
+	}
+	t.Cleanup(func() {
+		root.testOnlyBlockedSendObserved = nil
+		root.testOnlyBlockedSendEntered = nil
+	})
 
 	resume := make(chan struct{})
 	var resumeOnce sync.Once
@@ -322,8 +380,12 @@ func TestSiblingUpdateSurvivesAnInFlightBoundedDrain(t *testing.T) {
 			updates: []delegateUpdatePlan{siblingPlan},
 		})
 	}()
-	testwait.Until(t, "the sibling's send to reach the blocked-send boundary during the real drain",
-		siblingParked.Load)
+	testwait.Until(t, "the sibling's publication to reach the blocked-send boundary during the real drain",
+		func() bool {
+			observedMu.Lock()
+			defer observedMu.Unlock()
+			return len(observedCtxs) > 0
+		})
 	select {
 	case <-siblingDone:
 		t.Fatal("the sibling's send returned while a bounded drain was in flight: it was given up on a " +
@@ -334,6 +396,29 @@ func TestSiblingUpdateSurvivesAnInFlightBoundedDrain(t *testing.T) {
 	if got := len(root.events); got != 1 {
 		t.Fatalf("the stream holds %d event(s) while the sibling is parked, want 1: a slot was free, so "+
 			"the sibling's send proves nothing about the drain's bound", got)
+	}
+	// The effective contexts, checked while the stream is still full and the
+	// drain is still in flight: if the drain's spent cutoff reached this plan's
+	// publications, it shows HERE, before any slot is freed.
+	observedMu.Lock()
+	contexts := append([]context.Context(nil), observedCtxs...)
+	observedMu.Unlock()
+	if len(contexts) == 0 {
+		t.Fatal("the sibling published nothing: the fixture never reached the sends it pins")
+	}
+	for _, ctx := range contexts {
+		if ds, marked := publicationBound(ctx); marked {
+			if _, live := ds.Deadline(); !live {
+				t.Fatal("a sibling publication inherited a bound with no deadline left: the drain's " +
+					"spent cutoff reached a publication its own plan never carried")
+			}
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("a sibling publication arrived on an already-cancelled context: the drain's spent " +
+				"cutoff reached a publication its own plan never carried")
+		default:
+		}
 	}
 
 	// The consumer resumes and the sibling's OWN row must arrive.

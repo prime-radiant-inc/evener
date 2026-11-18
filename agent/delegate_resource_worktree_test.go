@@ -249,7 +249,7 @@ func TestDelegateWorktree_ClosureRejectsDurableRunningDescendantWithoutRuntimeCl
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, _, err = r.s.delegateController.closeStableWorktreeResumability(r.s, parentID, stableWorktreeDisposalReason, false)
+	_, _, _, err = r.s.delegateController.closeStableWorktreeResumability(noBound, r.s, parentID, stableWorktreeDisposalReason, false)
 	if !errors.Is(err, errDelegateTargetBusy) {
 		t.Fatalf("parent closure with durable running descendant = %v, want target busy", err)
 	}
@@ -535,7 +535,7 @@ func (r *wtRepo) seedStableIsolationLaneOpts(t *testing.T, branch string) (deleg
 
 func closeStableWorktreeForTest(t *testing.T, owner *Session, id, reason string) {
 	t.Helper()
-	_, _, plans, err := owner.delegateController.closeStableWorktreeResumability(owner, id, reason, false)
+	_, _, plans, err := owner.delegateController.closeStableWorktreeResumability(noBound, owner, id, reason, false)
 	if err != nil {
 		t.Fatalf("seed permanent resumability closure: %v", err)
 	}

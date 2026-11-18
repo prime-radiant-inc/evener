@@ -320,7 +320,13 @@ func (s *Session) emitWithProvenanceContext(ctx context.Context, data events.Eve
 		s.jobManager.onSessionEventContext(ctx, ev)
 	}
 	if events.KindOf(data) == events.EventWarning {
-		s.fireNotificationHookBounded(ctx, warningHookMessage(data), warningHookTitle(data))
+		// Same rule as emitCloseDrainWarnings: a dispatch the cutoff declined is
+		// held for the post-cleanup retry rather than silently dropped, because
+		// the warning itself reached the stream and only its hook did not.
+		message, title := warningHookMessage(data), warningHookTitle(data)
+		if !s.fireNotificationHookBounded(ctx, message, title) && closeJoinBound(ctx) {
+			s.retainDeferredCloseHook(message, title)
+		}
 	}
 }
 
@@ -774,6 +780,9 @@ func (s *Session) sendEventContext(ctx context.Context, data events.EventData, p
 				if observe := s.testOnlyBlockedSendEntered; observe != nil {
 					observe()
 				}
+				if observe := s.testOnlyBlockedSendObserved; observe != nil {
+					observe(data, ctx)
+				}
 				select {
 				case s.events <- ev:
 					delivered = true
@@ -834,6 +843,15 @@ func (s *Session) SetDescendantEventFunc(f func(events.SessionEvent)) {
 	if f != nil && s.delegateController != nil && s.ownsDelegateController {
 		s.delegateController.emitDelegateUpdate(s.delegateController.Snapshot())
 	}
+}
+
+// deferredCloseHook is one Notification dispatch a close cutoff declined: the
+// message and title the hook takes, which are all it needs. See
+// retainDeferredCloseHook for why the dispatch is held separately from the
+// warning it belongs to.
+type deferredCloseHook struct {
+	message string
+	title   string
 }
 
 // ObserveCloseDrainPublication is the context-independent observation seam for a
@@ -900,7 +918,18 @@ func (s *Session) emitCloseDrainWarnings(ctx context.Context, warnings []events.
 			// slot, so on the ordinary path it would wait out the whole cascade.
 			s.jobManager.onSessionEventContext(ctx, ev)
 		}
-		s.fireNotificationHookBounded(ctx, warningHookMessage(data), warningHookTitle(data))
+		message, title := warningHookMessage(data), warningHookTitle(data)
+		if !s.fireNotificationHookBounded(ctx, message, title) {
+			// The warning reached the stream, so it is delivered and must not be
+			// retained -- but its configured hook never STARTED, because the
+			// cutoff had expired by the time the dispatch was reached. Marking
+			// the warning delivered and dropping the hook is how a close lost the
+			// report it was supposed to configure: a consumer that resumes inside
+			// the cascade still has the warning, and never learns the hook for it
+			// was skipped. Hold the DISPATCH, not the warning, for the retry after
+			// cleanup.
+			s.retainDeferredCloseHook(message, title)
+		}
 	}
 }
 
@@ -920,6 +949,28 @@ func (s *Session) forwardsEventsToParent() bool {
 	forward := s.descendantEvent
 	s.mu.Unlock()
 	return forward != nil
+}
+
+// retainDeferredCloseHook holds a Notification hook the cutoff declined, so
+// retryCloseDrainWarnings can dispatch it once on what the cascade has left.
+//
+// It is keyed to its warning's TEXT because the hook is a function of that text
+// alone -- message and title are all it takes -- and a second publication of the
+// same warning must not dispatch a second hook. At-most-once is what the
+// warning already has; the hook inherits it here.
+func (s *Session) retainDeferredCloseHook(message, title string) {
+	s.deferredCloseHooks.Lock()
+	s.deferredCloseHooks.pending = append(s.deferredCloseHooks.pending, deferredCloseHook{message: message, title: title})
+	s.deferredCloseHooks.Unlock()
+}
+
+// takeDeferredCloseHooks drains the deferred dispatch list.
+func (s *Session) takeDeferredCloseHooks() []deferredCloseHook {
+	s.deferredCloseHooks.Lock()
+	held := s.deferredCloseHooks.pending
+	s.deferredCloseHooks.pending = nil
+	s.deferredCloseHooks.Unlock()
+	return held
 }
 
 // retainUndeliveredCloseWarning holds a lost-result warning whose publication
@@ -948,13 +999,23 @@ func (s *Session) retainUndeliveredCloseWarning(warning events.WarningData) {
 // is the same placement as retryCloseFailClosed and for the same reason: the
 // budget it spends must be budget the teardown no longer needs.
 //
-// The retry does NOT redispatch the Notification hook. A hook is a side effect a
-// user configured for the first publication, and running it again from the
-// close's tail would let a warning's own dispatch fail the shutdown it was
-// reported during.
+// The retry does NOT redispatch the Notification hook for a warning that already
+// fired one. A hook is a side effect a user configured for the first publication,
+// and running it again from the close's tail would let a warning's own dispatch
+// fail the shutdown it was reported during. The one exception is a dispatch the
+// cutoff DECLINED: that hook never ran, so firing it here is the first attempt,
+// not a second one -- and it is the reason this retry exists for a warning that
+// already reached the stream.
 func (s *Session) retryCloseDrainWarnings(ctx context.Context) {
 	if observe := s.testOnlyCloseWarningRetry; observe != nil {
 		observe(ctx)
+	}
+	// A declined notification dispatch is retried here, and ONLY here: the
+	// warning it belongs to was already published, so this is a second chance at
+	// the hook, not at the warning. It runs on the remaining budget because the
+	// first attempt was declined by a bound that has since expired.
+	for _, hook := range s.takeDeferredCloseHooks() {
+		s.fireNotificationHookDeferred(ctx, hook.message, hook.title)
 	}
 	held := s.closeDrainWarnings.Swap(nil)
 	if held == nil || len(*held) == 0 {
@@ -1023,10 +1084,10 @@ func (s *Session) fireNotificationHook(message, title string) {
 // its own bound, which stays in force on top of the session's: the delegate
 // close drain publishes on the stop context, and a Notification hook launched
 // there must not outlive it.
-func (s *Session) fireNotificationHookBounded(ctx context.Context, message, title string) {
+func (s *Session) fireNotificationHookBounded(ctx context.Context, message, title string) bool {
 	base := s.notificationHookBaseContext()
 	if base.Err() != nil {
-		return
+		return false
 	}
 	if ctx == nil {
 		ctx = base
@@ -1038,7 +1099,7 @@ func (s *Session) fireNotificationHookBounded(ctx context.Context, message, titl
 	stop := context.AfterFunc(base, cancel)
 	defer stop()
 	if bounded.Err() != nil {
-		return
+		return false
 	}
 	// Marked so the runner's lifecycle publisher, and the output publication
 	// inside runNotificationHook, honour this bound instead of the session's
@@ -1046,6 +1107,28 @@ func (s *Session) fireNotificationHookBounded(ctx context.Context, message, titl
 	// consumer must release it at the stop deadline. Unmarked dispatches -- every
 	// ordinary hook -- are unaffected.
 	s.runNotificationHook(withPublicationBound(bounded), message, title)
+	return true
+}
+
+// fireNotificationHookDeferred runs a Notification hook the cutoff declined,
+// on the budget the close has left after the worktree removals.
+//
+// A warning that reached the stream with its hook skipped is not delivered: the
+// hook is the configured report of it, and the retry that follows a close cannot
+// see that the hook never ran unless the dispatch says so. This is that second
+// chance, and it is deliberately separate from the warning's own publication:
+// the warning is already on the stream exactly once, so only the hook repeats.
+//
+// It runs UNBOUNDED, on the freshly minted close budget of the retry caller,
+// because the whole reason the first attempt declined was that the stop's own
+// bound had expired. Nil in production means "no hook", which is what an
+// unconfigured session has anyway.
+func (s *Session) fireNotificationHookDeferred(ctx context.Context, message, title string) {
+	base := s.notificationHookBaseContext()
+	if base.Err() != nil {
+		return
+	}
+	s.runNotificationHook(base, message, title)
 }
 
 // notificationHookBaseContext is the Notification hook's own bound: the
