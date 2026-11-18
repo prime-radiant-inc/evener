@@ -9,6 +9,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 )
@@ -127,5 +128,56 @@ func TestPlainProjectorCarriesAnnouncementRound(t *testing.T) {
 	if items[0].RoundID != "r_announce" {
 		t.Errorf("announcement round id = %q, want %q: a settled result carries no round of its own",
 			items[0].RoundID, "r_announce")
+	}
+}
+
+// TestDeliveryBeforePreludeKeepsPositionsIncreasing covers a delivery recorded
+// before the header prelude's first stamped entry. The header items hold entry
+// position 0, so a merge that emitted the delivery ahead of them would flatten
+// to decreasing positions, which item paging rejects. It also covers the
+// writer's rule that a delivery ends the prelude's span: every turn id names
+// one contiguous span.
+func TestDeliveryBeforePreludeKeepsPositionsIncreasing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "delivery_first", SystemPrompt: "You are Evener."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := func(turn schema.Turn, place transcript.Placement) {
+		t.Helper()
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: place}); err != nil {
+			t.Fatalf("record %s: %v", turn.Kind, err)
+		}
+	}
+	record(schema.NewTurn(schema.TurnSteering, llm.User("attention")), transcript.PlaceAsync)
+	record(newHookTurn("SessionStart"), transcript.PlaceSession)
+	w.BeginExecution("t_exec", false)
+	record(schema.NewTurn(schema.TurnUserInput, llm.User("go")), transcript.PlaceSession)
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := apptranscript.NewToolCallRegistry()
+	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+		return items
+	})
+	if err != nil {
+		t.Fatalf("ItemTurnsFromFile: %v", err)
+	}
+	candidates, err := appitempaging.CandidatesFromTurns(turns)
+	if err != nil {
+		t.Fatalf("CandidatesFromTurns: %v", err)
+	}
+	if err := appitempaging.ValidateCandidates(candidates); err != nil {
+		t.Fatalf("full read candidates rejected: %v", err)
+	}
+	if len(turns) > 0 && turns[0].ID != appwire.SystemPreludeTurnID {
+		t.Errorf("first turn = %q, want the header prelude %q first", turns[0].ID, appwire.SystemPreludeTurnID)
+	}
+	// The index serves the same history; its candidates must satisfy the same
+	// chronology.
+	if err := appitempaging.ValidateCandidates(indexCandidates(t, path)); err != nil {
+		t.Errorf("bounded index candidates rejected: %v", err)
 	}
 }
