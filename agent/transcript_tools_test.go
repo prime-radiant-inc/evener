@@ -3275,6 +3275,32 @@ func TestFind_ProjectName_MissingSiblingCheckoutProvesNothing(t *testing.T) {
 	}
 }
 
+// symlinkedBucket builds a bucket whose physical directory is reached through a
+// symlink the test makes itself, and returns both spellings: the canonical one
+// session construction records, and the lexical one a launcher may have named.
+//
+// The link is built here instead of inherited from the host's temp prefix. A
+// developer machine whose temp directory sits behind a symlink (macOS's /var)
+// exercises the difference by accident, and a Linux runner never does, so a
+// fixture relying on the host asserts nothing on CI. Requiring the two spellings
+// to differ keeps the trigger live on whatever filesystem runs this.
+func symlinkedBucket(t *testing.T) (canonical, lexical string) {
+	t.Helper()
+	physical := t.TempDir()
+	lexical = filepath.Join(t.TempDir(), "state-link")
+	if err := os.Symlink(physical, lexical); err != nil {
+		t.Skipf("filesystem does not support symlinks: %v", err)
+	}
+	canonical = canonicalStateDir(lexical)
+	if canonical != physical {
+		t.Fatalf("canonicalStateDir(%q) = %q, want the physical target %q", lexical, canonical, physical)
+	}
+	if canonical == lexical {
+		t.Fatalf("fixture has no symlinked prefix: %q is its own canonical form", lexical)
+	}
+	return canonical, lexical
+}
+
 // TestFind_ProjectName_OwnerRestoreSymlinkAliasIsStillALane covers an owner whose
 // restore root is a symlink to a surviving state lane. The structural lookup
 // resolves the alias, recognizes the lane, and answers "no project" — its leaf is
@@ -3282,12 +3308,12 @@ func TestFind_ProjectName_MissingSiblingCheckoutProvesNothing(t *testing.T) {
 // down the ordinary-directory branch, where its basename is offered as a project
 // name ahead of the parent that can still name the repository.
 func TestFind_ProjectName_OwnerRestoreSymlinkAliasIsStillALane(t *testing.T) {
-	// The bucket is canonicalized the way session construction canonicalizes it.
-	// A flat bucket kept in its lexical spelling would differ from the physical
-	// path the lane alias resolves to, and the row would then be labelled from the
-	// alias — passing or failing on whether the temp directory happens to sit under
-	// a symlinked prefix such as macOS's /var.
-	stateDir := canonicalStateDir(t.TempDir())
+	// The bucket is the canonical spelling, which is what session construction
+	// records. The lane below is built under the same spelling and the alias
+	// resolves to it physically, so a fixture that kept the lexical spelling here
+	// would compare a physical lane path against a lexical bucket and label the
+	// row from the alias — on any host, because the link is made here.
+	stateDir, _ := symlinkedBucket(t)
 	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
 		t.Fatalf("mkdir state dir: %v", err)
 	}
@@ -3338,7 +3364,7 @@ func TestFind_ProjectName_OwnerRestoreSymlinkAliasIsStillALane(t *testing.T) {
 // outranks the parent; classified from the structural lookup it is a lane and
 // contributes nothing.
 func TestFind_ProjectName_OwnerHomeSymlinkAliasIsStillALane(t *testing.T) {
-	stateDir := canonicalStateDir(t.TempDir())
+	stateDir, _ := symlinkedBucket(t)
 	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
 		t.Fatalf("mkdir state dir: %v", err)
 	}
