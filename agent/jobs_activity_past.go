@@ -348,11 +348,20 @@ func (f historicalJobFold) extend(ctx context.Context, events []jobstore.Event) 
 				rec = rec.Clone()
 				created[event.JobID] = true
 			}
-			next := jobstore.ApplyJob(rec, event)
 			// The row's own contribution moves with its class and owner. It is
 			// subtracted and re-added here so a warm extension stays O(delta)
 			// yet still notices a change a continuation would feel.
-			pagingSum += foldJobPagingContribution(next) - foldJobPagingContribution(rec)
+			//
+			// ApplyJob updates the record IN PLACE and returns the same pointer,
+			// so its contribution has to be read before the event is applied.
+			// Reading it afterwards reads the new value twice, the difference is
+			// always zero, and a row that changes class — a shell job that
+			// finishes, an owner that starts running — leaves the paging sum
+			// describing the row it used to be. A continuation minted from that
+			// sum then lands a page off.
+			before := foldJobPagingContribution(rec)
+			next := jobstore.ApplyJob(rec, event)
+			pagingSum += foldJobPagingContribution(next) - before
 			return next
 		})
 	}

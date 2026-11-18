@@ -2290,6 +2290,96 @@ func TestLiveActivityBase_RewriteThatChangesACountedRowAdvancesTheEpoch(t *testi
 	}
 }
 
+// TestLiveActivityBase_AppendThatChangesACountedRowKeepsThePagingEpoch pins
+// Medium 4.
+//
+// A warm extension accumulates each row's paging contribution, subtracting the
+// old value and adding the new one so it stays O(delta). ApplyJob updates the
+// record IN PLACE and returns the same pointer, so reading the contribution
+// after it reads the new value twice: the difference is zero and the fold's sum
+// keeps describing the row the event replaced.
+//
+// That sum is what a later verification rebuild is compared against. On a
+// filesystem whose timestamps cannot vouch for the content, a read at an
+// unchanged length refolds to be sure the bytes are the same, and the epoch
+// moves only if the rows or their contributions moved. A sum left describing
+// the old row makes a rebuild that found NOTHING changed look like a change, so
+// the epoch advances and every outstanding continuation is refused — the
+// continuation is invalidated by a read that proved nothing moved.
+//
+// So the assertion is the continuation's: after an append that changes a
+// counted row, a verification read at an unchanged boundary must not advance
+// the epoch.
+func TestLiveActivityBase_AppendThatChangesACountedRowKeepsThePagingEpoch(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "jobs.jsonl")
+	const session = "session-a"
+	original := `{"seq":1,"kind":"job_started","job_id":"job_000001","type":"shell","owner_session_id":"session-a"}` + "\n" +
+		`{"seq":2,"kind":"job_started","job_id":"job_000002","type":"shell","owner_session_id":"session-a"}` + "\n"
+	if err := os.WriteFile(target, []byte(original), 0o644); err != nil {
+		t.Fatalf("write journal: %v", err)
+	}
+	state := func(size int64, gen uint64, vouched bool) jobstore.CommittedJournalState {
+		return jobstore.CommittedJournalState{
+			Path: target, Size: size, Generation: gen,
+			MetadataResolvesWrites: vouched,
+		}
+	}
+
+	var f liveJobFold
+	first, err := f.records(context.Background(), target, state(int64(len(original)), 1, true), nil)
+	if err != nil {
+		t.Fatalf("first read: %v", err)
+	}
+	if got := first.jobs.counts(session).shell; got != 2 {
+		t.Fatalf("first read has %d owned shell rows, want the 2 the journal carries", got)
+	}
+
+	// An append that changes job_000001's class. Nothing is removed and the
+	// order is untouched: every row stays where it was, and only the row's own
+	// contribution moves.
+	delta := `{"seq":3,"kind":"job_started","job_id":"job_000001","type":"other","owner_session_id":"session-a"}` + "\n"
+	file, err := os.OpenFile(target, os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatalf("open for append: %v", err)
+	}
+	if _, err := file.WriteString(delta); err != nil {
+		_ = file.Close()
+		t.Fatalf("append the class change: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close after append: %v", err)
+	}
+
+	extended, err := f.records(context.Background(), target, state(int64(len(original)+len(delta)), 1, true), nil)
+	if err != nil {
+		t.Fatalf("read after the append: %v", err)
+	}
+	if got := extended.jobs.counts(session).shell; got != 1 {
+		t.Fatalf("after the append there are %d owned shell rows, want the 1 the append leaves", got)
+	}
+
+	// The fold's paging sum is its promise that it describes the rows it
+	// published. Recount it from those rows — independently of the arithmetic
+	// the extension used — and the two must agree. A sum left describing the
+	// row the append replaced fails here, and in production it is what a later
+	// rebuild is compared against: the rebuild recounts correctly, the sums
+	// disagree over an unchanged list, the epoch advances, and every
+	// outstanding continuation is refused by a read that proved nothing moved.
+	var recount uint64
+	for rec := range extended.jobs.all() {
+		recount += foldJobPagingContribution(rec)
+	}
+	if got := f.fold.pagingSum; got != recount {
+		t.Fatalf("the extended fold's paging sum = %d, but its published rows recount to %d: the sum still describes the row the append replaced, so a later rebuild over these same rows disagrees and refuses a valid continuation", got, recount)
+	}
+
+	// And the rows themselves are right: the append changed one row's class.
+	if got := extended.jobs.counts(session).shell; got != 1 {
+		t.Fatalf("after the append there are %d owned shell rows, want the 1 the append leaves", got)
+	}
+}
+
 // TestLiveActivityBase_SameLengthRewriteThenAppendOnUnreliableMetadata pins
 // medium 6.
 //
