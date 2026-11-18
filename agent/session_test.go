@@ -40,16 +40,21 @@ type fakeAdapter struct {
 	// listing; an unscripted fake cannot list models at all.
 	liveModels func(ctx context.Context) ([]registry.Model, error)
 
-	// steps is the CONSTRUCTION-TIME script: hundreds of fixtures build it in
-	// the struct literal, before any drive exists. After construction every
-	// read and write goes through the synchronized methods below — a test
-	// reaching for the field mid-drive reopens the race the setters exist to
-	// prevent (the agenttest.FakeAdapter carries the no-field engine version
-	// for adapters whose construction surface is small).
+	// script owns the sequence and its cursor. Every read and write goes
+	// through it, so no fixture can reach the steps slice beside a drive:
+	// construct one with newFakeAdapter and rescript it with setSteps.
+	script agenttest.Script[func(req llm.Request) llm.Response]
+
 	mu       sync.Mutex
 	requests []llm.Request
-	steps    []func(req llm.Request) llm.Response
-	i        int
+}
+
+// newFakeAdapter builds a scripted adapter over steps. The script owns the
+// cursor and its lock, so a test cannot hand-roll a second cursor beside it.
+func newFakeAdapter(name string, steps ...func(req llm.Request) llm.Response) *fakeAdapter {
+	a := &fakeAdapter{name: name}
+	a.script.Replace(steps)
+	return a
 }
 
 func (a *fakeAdapter) Name() string { return a.name }
@@ -67,11 +72,11 @@ func (a *fakeAdapter) Complete(ctx context.Context, req llm.Request) (llm.Respon
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.requests = append(a.requests, req)
-	if a.i >= len(a.steps) {
+	step, ok := a.script.Next()
+	if !ok {
 		return llm.Response{Provider: a.name, Model: req.Model, Message: llm.Assistant("done")}, nil
 	}
-	resp := a.steps[a.i](req)
-	a.i++
+	resp := step(req)
 	// Fill required response fields best-effort.
 	resp.Provider = a.name
 	if resp.Model == "" {
@@ -88,55 +93,46 @@ func (a *fakeAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, 
 
 // setSteps scripts the adapter's response sequence. A retained lane's
 // background drive can call Complete while a test scripts the next turn, so
-// reassignment takes the same mutex Complete reads under; the cursor (i)
-// survives it, which is what lets a test script a turn mid-run.
-// Call it from the test goroutine, never from a scripted step: Complete holds
-// the mutex while it runs the step.
+// reassignment goes through the Script's own mutex; the cursor survives it,
+// which is what lets a test script a turn mid-run.
 func (a *fakeAdapter) setSteps(steps []func(req llm.Request) llm.Response) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.steps = steps
+	a.script.Replace(steps)
 }
 
-// appendSteps adds one step to the end of the script under the same mutex.
-// Like setSteps, it is not callable from a scripted step.
+// appendSteps adds one step to the end of the script under the Script's mutex.
 func (a *fakeAdapter) appendSteps(step func(req llm.Request) llm.Response) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.steps = append(a.steps, step)
+	a.script.Append(step)
 }
 
 // scriptLen reports the scripted turn count for fixtures that key off it.
-// The script is only touched under the mutex, so even a setup-time read goes
-// through here rather than reaching for the field.
 func (a *fakeAdapter) scriptLen() int {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return len(a.steps)
+	return a.script.Len()
 }
 
-// stepAt returns the currently scripted step at index, under the same mutex
-// Complete reads under, pairing with setStepAt for tests that capture a step
-// and wrap it with extra assertions. It panics on an out-of-range index.
+// cursor reports how many steps the drive has consumed for fixtures that
+// diagnose a stalled provider.
+func (a *fakeAdapter) cursor() int {
+	return a.script.Cursor()
+}
+
+// stepAt returns the currently scripted step at index without consuming it,
+// pairing with setStepAt for tests that capture a step and wrap it with extra
+// assertions. It panics on an out-of-range index.
 func (a *fakeAdapter) stepAt(index int) func(req llm.Request) llm.Response {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if index < 0 || index >= len(a.steps) {
+	step, ok := a.script.At(index)
+	if !ok {
 		panic("fakeAdapter: script index out of range")
 	}
-	return a.steps[index]
+	return step
 }
 
-// setStepAt replaces the step at index under the same mutex, so wrapping a
+// setStepAt replaces the step at index under the Script's mutex, so wrapping a
 // step beside a concurrent drive cannot race. It panics on an out-of-range
 // index: a test addressing a position beyond its own script is a fixture bug.
 func (a *fakeAdapter) setStepAt(index int, step func(req llm.Request) llm.Response) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if index < 0 || index >= len(a.steps) {
+	if !a.script.SetAt(index, step) {
 		panic("fakeAdapter: script index out of range")
 	}
-	a.steps[index] = step
 }
 
 func (a *fakeAdapter) Requests() []llm.Request {

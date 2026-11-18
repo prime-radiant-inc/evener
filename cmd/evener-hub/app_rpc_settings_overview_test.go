@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
 )
@@ -831,5 +832,99 @@ mcp_configs = ["`+filepath.Join(repo, ".evener", "evil-mcp.json")+`"]
 	}
 	if !strings.Contains(resp.McpDiscovered.Error, ".evener/launch.local.toml") {
 		t.Errorf("McpDiscovered.Error = %q, want the exclusion note naming the local launch layer", resp.McpDiscovered.Error)
+	}
+}
+
+// TestHubRPCSettingsOverviewReportsOperationStoreQuarantine pins the operation
+// store's quarantine signal as a client-visible health fact: a corrupt store
+// that takes the custody-first quarantine leaves its signal on the handle, and
+// evener/settings/overview carries it so web and native can show it. Before the
+// overview read it, the signal reached only the hub log.
+func TestHubRPCSettingsOverviewReportsOperationStoreQuarantine(t *testing.T) {
+	stateRoot := t.TempDir()
+	storePath := hostops.StorePath(stateRoot)
+	if err := os.MkdirAll(filepath.Dir(storePath), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	// The record set is whole but the store-level sequence sits below the stamp
+	// the terminal record carries, which is the shape §4 quarantines.
+	if err := os.WriteFile(storePath, []byte(quarantineFixtureJSON), 0o600); err != nil {
+		t.Fatalf("write store: %v", err)
+	}
+	store, err := openHostOpsStore(stateRoot, new(strings.Builder), hostops.RetentionPolicy{})
+	if err != nil {
+		t.Fatalf("openHostOpsStore: %v", err)
+	}
+	if store.Quarantine() == nil {
+		t.Fatal("the fixture store took no quarantine, so the overview has no signal to carry")
+	}
+
+	resp := requestSettingsOverview(t, hubcore.WebConfig{
+		StateDir:           t.TempDir(),
+		RemoteHostOpsStore: store,
+		MCPConfigPath:      filepath.Join(t.TempDir(), "no-mcp.json"),
+		MCPDiscoveryDir:    t.TempDir(),
+	})
+
+	if resp.Hub == nil {
+		t.Fatal("Hub = nil, want populated")
+	}
+	got := resp.Hub.OperationStoreQuarantine
+	if got == nil {
+		t.Fatal("Hub.OperationStoreQuarantine = nil, want the store's quarantine signal")
+	}
+	// The reported paths must identify the right files, not merely be non-empty:
+	// a notice that names the live replacement as the corrupt file sends an
+	// operator to a healthy store and reads as "nothing was set aside".
+	if got.QuarantinedFile != storePath {
+		t.Errorf("QuarantinedFile = %q, want the store path %q", got.QuarantinedFile, storePath)
+	}
+	if got.AsideFile == "" {
+		t.Fatal("AsideFile is empty, want the file the corrupt bytes were renamed to")
+	}
+	if got.AsideFile == got.QuarantinedFile {
+		t.Errorf("AsideFile = QuarantinedFile = %q, want the aside path, not the store path", got.AsideFile)
+	}
+	asideBytes, err := os.ReadFile(got.AsideFile)
+	if err != nil {
+		t.Fatalf("read AsideFile %s: %v", got.AsideFile, err)
+	}
+	if string(asideBytes) != quarantineFixtureJSON {
+		t.Errorf("AsideFile %s holds %d bytes that are not the corrupt fixture; the notice names a file that does not hold the quarantined bytes",
+			got.AsideFile, len(asideBytes))
+	}
+	// And the store path now holds the replacement, not the corrupt bytes.
+	if storeBytes, err := os.ReadFile(storePath); err != nil {
+		t.Fatalf("read store path %s: %v", storePath, err)
+	} else if string(storeBytes) == quarantineFixtureJSON {
+		t.Errorf("store path %s still holds the corrupt fixture, so the quarantine did not replace it", storePath)
+	}
+	if got.CustodyFile == "" {
+		t.Error("CustodyFile is empty, want the custody file the quarantine wrote")
+	}
+	if got.QuarantineEpoch != 1 {
+		t.Errorf("QuarantineEpoch = %d, want 1", got.QuarantineEpoch)
+	}
+}
+
+// TestHubRPCSettingsOverviewOmitsQuarantineWithoutASignal pins the absent case:
+// a hub whose store carries no quarantine reports no field at all, so a client
+// cannot mistake a healthy store for a quarantined one.
+func TestHubRPCSettingsOverviewOmitsQuarantineWithoutASignal(t *testing.T) {
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	resp := requestSettingsOverview(t, hubcore.WebConfig{
+		StateDir:           t.TempDir(),
+		RemoteHostOpsStore: store,
+		MCPConfigPath:      filepath.Join(t.TempDir(), "no-mcp.json"),
+		MCPDiscoveryDir:    t.TempDir(),
+	})
+	if resp.Hub == nil {
+		t.Fatal("Hub = nil, want populated")
+	}
+	if resp.Hub.OperationStoreQuarantine != nil {
+		t.Fatalf("Hub.OperationStoreQuarantine = %+v, want absent for a store with no quarantine", resp.Hub.OperationStoreQuarantine)
 	}
 }

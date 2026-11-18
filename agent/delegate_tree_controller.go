@@ -44,6 +44,23 @@ type delegateTreeControllerConfig struct {
 	attentionOpen       delegateAttentionWriterOpener
 }
 
+// delegateHoldSample is one reading of a delegate's drain hold, compared to
+// decide whether the source sequence must advance. It is comparable so an
+// unchanged re-read reuses the sequence it already had, and nothing is
+// published for a sample that did not move.
+type delegateHoldSample struct {
+	held   bool
+	count  int
+	oldest time.Time
+}
+
+// delegateHoldEntry pairs the last sample handed out for a delegate with the
+// sequence that named it.
+type delegateHoldEntry struct {
+	sample   delegateHoldSample
+	sequence uint64
+}
+
 type delegateTreeController struct {
 	mu sync.Mutex
 
@@ -64,6 +81,13 @@ type delegateTreeController struct {
 	activityAdmission  uint64
 	live               map[string]*delegateLiveState
 	rootRuntime        *Session
+	// holdSequences is the source-side order of the pieces of the hold a row
+	// reports (drainHeld, running count, oldest start). Bumped under mu when a
+	// delegate's sampled hold changes, so a receiver can apply the highest
+	// sequence it has seen and reject a sample that arrived late. See
+	// holdSequenceForLocked.
+	holdSequences uint64
+	holdSamples   map[string]delegateHoldEntry
 
 	rootSessionID       string
 	stateDir            string
@@ -897,6 +921,67 @@ func (c *delegateTreeController) delegateOwnerOfSessionLocked(sessionID string) 
 	return ""
 }
 
+// runningJobsForDelegateLocked reports whether the delegate's run is held open
+// by its own finalization drain, and if so how many managed shell jobs that
+// drain is waiting on and when the oldest started.
+//
+// The caller holds c.mu. The hold is two facts together, and neither alone is
+// the answer: the child session must be inside its finalization drain
+// (Session.drainHeld), and one of its own managed shells must still be running
+// (runningOwnedShellJobs, which filters with the drain's own isOwnedDrainJob).
+// A delegate mid-turn that merely started a background shell has the count and
+// no hold — it is still working, and its row must keep saying so.
+//
+// A delegate with no live runtime — a retained read, or a released delegate —
+// is not held, because entering the drain appends no durable event for a
+// retained read to fold. Both callers leave the row's fields at their zero
+// value then, and the wire omits them: "no fact", never "known free".
+//
+// An unstated start time counts as neither the oldest nor zero: a job whose
+// record has no start cannot claim to be the oldest wait.
+func (c *delegateTreeController) runningJobsForDelegateLocked(delegateID string) (bool, int, time.Time, uint64) {
+	if c == nil || delegateID == "" {
+		return false, 0, time.Time{}, 0
+	}
+	live := c.live[delegateID]
+	if live == nil || live.runtime == nil || live.runtime.jobManager == nil {
+		return false, 0, time.Time{}, 0
+	}
+	count, oldest := live.runtime.jobManager.runningOwnedShellJobs()
+	held := live.runtime.drainHeld.Load() && count > 0
+	if !held {
+		count, oldest = 0, time.Time{}
+	}
+	return held, count, oldest, c.holdSequenceForLocked(delegateID, held, count, oldest)
+}
+
+// holdSequenceForLocked returns the sequence number of this delegate's sampled
+// hold, bumping it when the sample differs from the last one handed out.
+//
+// The hold is a per-row fact, but its samples travel through code that can
+// reorder them: a publisher that sampled the hold and then paused can send
+// after a later sample, and a client can receive a page captured before a
+// frame after that frame. Ordering by the projection revision cannot fix that,
+// because both edges of the hold arrive at the revision the row already
+// carries. One counter bumped here — under the same controller lock that
+// guards live state — gives every consumer a single order to obey: apply the
+// highest sequence, ignore anything older.
+//
+// The bump is keyed on the sampled value, so re-reading an unchanged hold
+// returns the same sequence and publishes nothing. The caller holds c.mu.
+func (c *delegateTreeController) holdSequenceForLocked(delegateID string, held bool, count int, oldest time.Time) uint64 {
+	sample := delegateHoldSample{held: held, count: count, oldest: oldest}
+	if prior, ok := c.holdSamples[delegateID]; ok && prior.sample == sample {
+		return prior.sequence
+	}
+	c.holdSequences++
+	if c.holdSamples == nil {
+		c.holdSamples = make(map[string]delegateHoldEntry, len(c.live))
+	}
+	c.holdSamples[delegateID] = delegateHoldEntry{sample: sample, sequence: c.holdSequences}
+	return c.holdSequences
+}
+
 // watchClearAuthority reports whether the calling session may clear a
 // receiver-keyed watch. Clear authority follows receiver direction — a source
 // delegate may NOT clear its ancestor's watch on it, and a sibling may not
@@ -1442,6 +1527,28 @@ func (c *delegateTreeController) emitDelegateUpdates(plans delegateMutationPlans
 
 func (c *delegateTreeController) capturedPlanLocked(id string) delegateUpdatePlan {
 	return delegateUpdatePlan{rows: []delegateSnapshot{c.captureDelegateSnapshotLocked(id)}}
+}
+
+// publishDelegateHold emits one delegate update for delegateID so a loaded row
+// learns that its drain hold just changed. A row loaded before the hold was
+// set has no other signal: the transition moves no durable field, and the
+// client drops a same-revision frame whose mutating fields it cannot order, so
+// a plain notification would not land. The plan is captured under the
+// controller lock and emitted outside it, exactly as the other publications do.
+func (c *delegateTreeController) publishDelegateHold(sessionID, delegateID string) {
+	if c == nil || delegateID == "" {
+		return
+	}
+	c.mu.Lock()
+	if live := c.live[delegateID]; live == nil || live.runtime == nil || live.runtime.ID() != sessionID {
+		// Not this delegate's live runtime: a released or replaced child cannot
+		// hold anything open, and naming its row would resurrect a settled one.
+		c.mu.Unlock()
+		return
+	}
+	plan := c.capturedPlanLocked(delegateID)
+	c.mu.Unlock()
+	c.emitDelegateUpdate(plan)
 }
 
 func (c *delegateTreeController) appendResumabilityClosureLocked(delegateID string, events ...delegatestore.Event) (delegateUpdatePlan, error) {

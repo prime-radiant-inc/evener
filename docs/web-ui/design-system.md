@@ -1352,6 +1352,16 @@ for any pinned actions below it. The field remains the same semantic textarea
 and preserves keyboard submission, attachment, paste, and screen-reader
 behavior across breakpoints.
 
+Safari's text autosizing is also off: `global.css`'s `body` rule pins
+`text-size-adjust: 100%`. While autosizing is active, the engine grows text in
+a block whose measured width it judges too narrow, and its choice can outgrow a
+title in the same row; the pin stops it app-wide, so a size the ramp authored is
+the size that renders. The reader's own scale reaches text through
+`var(--font-scale)`, never through the engine's guess, and since the engine
+decides per block at layout time the pin is document-wide rather than gated on
+the coarse query like the touch rules below. `src/styles/text-autosize.test.ts`
+fails if it goes away.
+
 The touch floor query is `@media (max-width: 899px), (any-pointer: coarse)`.
 `--tap-min`, 44px (decision 4 of 2026-07-30-mobile-session-layout-design.md),
 and the 16px `--font-size-control` floor are declared under it, so both hold

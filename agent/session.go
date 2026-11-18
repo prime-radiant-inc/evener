@@ -122,6 +122,13 @@ type Session struct {
 	delegateRootSessionID  string
 	owningDelegateID       string
 	ownsDelegateController bool
+	// drainHeld is set while this session is inside its delegate finalization
+	// drain (drainForFinalization). It is one half of the hold a delegate's
+	// row reports, the other half being a managed shell still in the job
+	// manager's running map. The count alone cannot say a run is held — a
+	// delegate mid-turn with a background shell has the same count — so the
+	// row states the hold and uses the count only to phrase it.
+	drainHeld atomic.Bool
 	// subagentTallyForTest overrides SubagentTally's answer when set. A fresh
 	// session with no subagents reports the same empty tally as any other, so
 	// a cross-package test that needs to tell two sessions' tally seams apart

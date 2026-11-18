@@ -37,10 +37,13 @@ func SessionLivelockPath(dir, id string) string {
 //     inspection answer an error instead of guessing.
 //
 // The platform arms below carry the same API as lockSessionMetaCrossProcess:
-// unix takes a real flock, windows takes the LockFileEx equivalent, and the
-// remaining GOOS (none of them shipped targets) have no livelock at all —
-// AcquireSessionLivelock reports not-applied and SessionLivelockHeld reports
-// absent, so callers degrade to "unknown" rather than guessing.
+// linux and darwin take a real flock, windows takes the LockFileEx
+// equivalent, and the remaining GOOS (none of them shipped targets) have no
+// livelock at all — AcquireSessionLivelock reports not-applied and
+// SessionLivelockHeld reports absent, so callers degrade to "unknown" rather
+// than guessing. The flock arm is linux || darwin rather than unix because
+// the held-marker it needs exists only for those two; every other Unix takes
+// the no-livelock arm (issue #6796).
 //
 // One automated use is allowed, and it withholds rather than takes: an owner
 // proven live — a HELD livelock, or the liveness oracle's rendezvous

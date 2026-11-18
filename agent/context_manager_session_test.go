@@ -21,14 +21,9 @@ func TestSession_ContextManager_Created(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return wrapCommunicateResponse(llm.Response{Message: llm.Assistant("ok")})
-			},
-		},
-	})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return wrapCommunicateResponse(llm.Response{Message: llm.Assistant("ok")})
+	}))
 
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
@@ -44,22 +39,17 @@ func TestSession_ContextManager_AccumulatesUsage(t *testing.T) {
 	c := llm.NewClient()
 
 	reasoningTokens := 10
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return wrapCommunicateResponse(llm.Response{
-					Message: llm.Assistant("ok"),
-					Usage: llm.Usage{
-						InputTokens:     100,
-						OutputTokens:    50,
-						TotalTokens:     150,
-						ReasoningTokens: &reasoningTokens,
-					},
-				})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return wrapCommunicateResponse(llm.Response{
+			Message: llm.Assistant("ok"),
+			Usage: llm.Usage{
+				InputTokens:     100,
+				OutputTokens:    50,
+				TotalTokens:     150,
+				ReasoningTokens: &reasoningTokens,
 			},
-		},
-	})
+		})
+	}))
 
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
@@ -105,33 +95,25 @@ func TestSession_ContextManager_CompactsWhenNeeded(t *testing.T) {
 
 			// Create an adapter that returns a tool call first, then "ok".
 			callCount := 0
-			c.Register(&fakeAdapter{
-				name: "openai",
-				steps: []func(req llm.Request) llm.Response{
-					// First round: return a read_file tool call with the case's result.
-					func(req llm.Request) llm.Response {
-						callCount++
-						return llm.Response{
-							Usage: llm.Usage{InputTokens: standing},
-							Message: llm.Message{
-								Role: llm.RoleAssistant,
-								Content: []llm.ContentPart{
-									{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-										ID:        "c1",
-										Name:      "read_file",
-										Arguments: readArgs,
-									}},
-								},
-							},
-						}
+			c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
+				callCount++
+				return llm.Response{
+					Usage: llm.Usage{InputTokens: standing},
+					Message: llm.Message{
+						Role: llm.RoleAssistant,
+						Content: []llm.ContentPart{
+							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+								ID:        "c1",
+								Name:      "read_file",
+								Arguments: readArgs,
+							}},
+						},
 					},
-					// Second round: just return text.
-					func(req llm.Request) llm.Response {
-						callCount++
-						return agenttest.FinalResponse("done")
-					},
-				},
-			})
+				}
+			}, func(req llm.Request) llm.Response {
+				callCount++
+				return agenttest.FinalResponse("done")
+			}))
 
 			env := execenv.NewLocalExecutionEnvironment(dir)
 			if _, err := env.WriteFile("big.txt", tc.content); err != nil {
@@ -186,29 +168,23 @@ func TestSession_ContextManager_EmitsEvents(t *testing.T) {
 	}
 
 	// Return a tool call that produces big output, then "done".
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return llm.Response{
-					Usage: llm.Usage{InputTokens: standing},
-					Message: llm.Message{
-						Role: llm.RoleAssistant,
-						Content: []llm.ContentPart{
-							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-								ID:        "c1",
-								Name:      "read_file",
-								Arguments: readArgs,
-							}},
-						},
-					},
-				}
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return llm.Response{
+			Usage: llm.Usage{InputTokens: standing},
+			Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{
+					{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+						ID:        "c1",
+						Name:      "read_file",
+						Arguments: readArgs,
+					}},
+				},
 			},
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("done")
-			},
-		},
-	})
+		}
+	}, func(req llm.Request) llm.Response {
+		return agenttest.FinalResponse("done")
+	}))
 
 	env := execenv.NewLocalExecutionEnvironment(dir)
 	if _, err := env.WriteFile("big.txt", bigContent); err != nil {

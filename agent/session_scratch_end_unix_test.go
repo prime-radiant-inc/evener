@@ -171,13 +171,114 @@ func TestSharedEnvDelegateMetaRecordsTheScratchOwner(t *testing.T) {
 	parent := artifactRestoreMeta(t).ID
 	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
 	env.SetScratchIdentity(rootID, parent)
-	sess, err := RestoreSessionFromMetaWithConfig(newArtifactTestClient(), NewOpenAIProfile("gpt-5.2"), env, delegate, artifactRestoreConfig(t, t.TempDir()))
+	cfg := artifactRestoreConfig(t, t.TempDir())
+	// The live spawn carrier is what makes this the IN-PROCESS restore: with a
+	// parent session named, the restore leaves the handed environment's identity
+	// alone instead of naming it from the meta.
+	cfg.spawn.parentSessionID = parent
+	sess, err := RestoreSessionFromMetaWithConfig(newArtifactTestClient(), NewOpenAIProfile("gpt-5.2"), env, delegate, cfg)
 	if err != nil {
 		t.Fatalf("restore: %v", err)
 	}
 	t.Cleanup(sess.Close)
 	if got := sess.Meta().ScratchDirSessionID; got != parent {
 		t.Errorf("shared-env delegate meta records scratch dir session %q, want the environment owner %q", got, parent)
+	}
+	// The in-process path hands the child the parent's own environment, so the
+	// restore must leave that environment's identity exactly as the parent named
+	// it: adopting the recorded owner belongs to a bare restore, not this one.
+	if root, owner := env.ScratchIdentity(); root != rootID || owner != parent {
+		t.Errorf("in-process delegate restore named the handed environment %s/%s, want the parent's own %s/%s", root, owner, rootID, parent)
+	}
+}
+
+// TestBareRestoreNamesTheRecordedScratchOwner: a restore with no spawn carrier
+// has only the meta to reconstruct a scratch it shared with its parent, so it
+// must name the environment after the RECORDED owner — the session whose
+// directory in the tree the scratch occupies — and not after the session itself:
+// naming it after the session mints a second, empty directory beside the one its
+// transcript names, and the first autosave rewrites the recorded owner as
+// unowned.
+//
+// This is the restore constructor's contract, NOT a CLI capability: a bare
+// `serve --resume` or `run --resume` of a delegate is refused before any restore
+// (refuseBareDelegateResume in cmd/evener/resume_guard.go), and the daemon's own
+// delegate restore always carries a live spawn parent. Every path that does reach
+// this branch therefore arrives through the constructor, so the assertion is made
+// at the seam all of them share.
+func TestBareRestoreNamesTheRecordedScratchOwner(t *testing.T) {
+	rootID := artifactRestoreMeta(t).ID
+	ownerID := artifactRestoreMeta(t).ID
+	delegate := artifactRestoreMeta(t)
+	delegate.IsSubagent = true
+	delegate.ScratchTreeRootID = rootID
+	delegate.ScratchDirSessionID = ownerID
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	sess, err := RestoreSessionFromMetaWithConfig(newArtifactTestClient(), NewOpenAIProfile("gpt-5.2"), env, delegate, artifactRestoreConfig(t, t.TempDir()))
+	if err != nil {
+		t.Fatalf("bare restore: %v", err)
+	}
+	t.Cleanup(sess.Close)
+	if root, owner := env.ScratchIdentity(); root != rootID || owner != ownerID {
+		t.Fatalf("bare restore named its scratch %s/%s, want the recorded %s/%s", root, owner, rootID, ownerID)
+	}
+	// A named scratch is kept at close and TestMain collects it; never remove a
+	// directory reached through filepath.Dir, which is the shared temp root when
+	// allocation fell back to a disposable scratch.
+	scratch := mintRootScratch(t, sess)
+	if got := sandbox.SessionScratchOwnerOf(scratch); got != ownerID {
+		t.Errorf("restored delegate mints the directory of %q, want the recorded owner %q", got, ownerID)
+	}
+	if got := sandbox.SessionScratchTreeRootOf(scratch); got != rootID {
+		t.Errorf("restored delegate mints in tree %q, want the recorded tree %q", got, rootID)
+	}
+	if got := sess.Meta().ScratchDirSessionID; got != ownerID {
+		t.Errorf("meta after the bare restore records scratch dir session %q, want the recorded owner %q", got, ownerID)
+	}
+}
+
+// TestBareRestoreNamesFromTheRecordNotTheCallersCopy: the meta a caller passes
+// can predate the durable record — a daemon that recorded an owner after the
+// caller read the file. The restore must name the environment from the record it
+// reloads under session ownership, not from that stale copy, or it reopens the
+// wrong directory and clears the owner it was supposed to honor. The reload is
+// reached through RestoreSessionConfig's own seam: a StateDir plus
+// AcquireSessionOwnership reloads the meta after ownership is taken.
+func TestBareRestoreNamesFromTheRecordNotTheCallersCopy(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := artifactRestoreMeta(t).ID
+	ownerID := artifactRestoreMeta(t).ID
+	delegate := artifactRestoreMeta(t)
+	delegate.IsSubagent = true
+	// The caller's copy knows the tree but not the owner the record later gained.
+	stale := delegate
+	stale.ScratchTreeRootID = rootID
+	recorded := delegate
+	recorded.ScratchTreeRootID = rootID
+	recorded.ScratchDirSessionID = ownerID
+	if err := schema.SaveSessionMeta(stateDir, recorded); err != nil {
+		t.Fatalf("save the durable record: %v", err)
+	}
+	cfg := artifactRestoreConfig(t, stateDir)
+	cfg.AcquireSessionOwnership = func(string) error { return nil }
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	sess, err := RestoreSessionFromMetaWithConfig(newArtifactTestClient(), NewOpenAIProfile("gpt-5.2"), env, stale, cfg)
+	if err != nil {
+		t.Fatalf("bare restore: %v", err)
+	}
+	t.Cleanup(sess.Close)
+	if root, owner := env.ScratchIdentity(); root != rootID || owner != ownerID {
+		t.Errorf("bare restore named its scratch %s/%s from the caller's copy, want the recorded %s/%s", root, owner, rootID, ownerID)
+	}
+	// The name must decide the DIRECTORY, not only the identity the test read
+	// back: a named scratch keeps it at close and TestMain collects it, so no
+	// cleanup removes a path reached through filepath.Dir.
+	scratch := mintRootScratch(t, sess)
+	if got := sandbox.SessionScratchOwnerOf(scratch); got != ownerID {
+		t.Errorf("restored session mints the directory of %q, want the recorded owner %q", got, ownerID)
+	}
+	if got := sandbox.SessionScratchTreeRootOf(scratch); got != rootID {
+		t.Errorf("restored session mints in tree %q, want the recorded tree %q", got, rootID)
 	}
 }
 

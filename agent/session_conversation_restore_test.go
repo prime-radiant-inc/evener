@@ -37,13 +37,13 @@ func TestConversationProvenance_RestoreContinuesCanonicalLineage(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := llm.NewClient()
-	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
+	client.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
 		if !conversationRequestContains(req, "restore-original-713") || !conversationRequestContains(req, "restore-new-923") {
 			t.Fatal("restore request lost input history")
 		}
 		call := communicateCall("restored-output", "restored result")
 		return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}
-	}}})
+	}))
 	restored, err := RestoreSessionFromMetaWithConfig(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatal(err)

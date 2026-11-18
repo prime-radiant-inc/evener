@@ -16,12 +16,7 @@ func newReadOnlyRoleFloorSession(t *testing.T, lane string, facts sandbox.HostFa
 	t.Helper()
 	parentClient := llm.NewClient()
 	parentClient.Register(&fakeAdapter{name: "openai"})
-	childAdapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response { return communicateWithDefaultOutput("done") },
-		},
-	}
+	childAdapter := newFakeAdapter("openai", func(llm.Request) llm.Response { return communicateWithDefaultOutput("done") })
 	childClient := llm.NewClient()
 	childClient.Register(childAdapter)
 	registerTestSessionNamer(childClient)

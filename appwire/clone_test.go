@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"reflect"
 	"testing"
+
+	"primeradiant.com/evener/agent/provenance"
 )
 
 func TestCloneThreadOwnsNestedMutableState(t *testing.T) {
@@ -329,5 +331,43 @@ func TestClonePointerOwnsItsValue(t *testing.T) {
 	*clone = 2
 	if value != 1 {
 		t.Fatal("mutating the clone changed the source")
+	}
+}
+
+func TestCloneThreadOwnsObservationEvidence(t *testing.T) {
+	original := Thread{Turns: []Turn{{ID: "turn", Items: []ThreadItem{{
+		ID:   "answer",
+		Type: "userMessage",
+		Observation: &SessionObservationMetadata{
+			Ref:                    "local:thread",
+			AnswerToTurnIDs:        []string{"asked-turn"},
+			ResolvedAskCalls:       []PendingAskCall{{TurnID: "asked-turn", CallID: "call-1"}},
+			ResolvedAskLegacyCount: 2,
+			Causal:                 &provenance.Causal{WatchKeys: []provenance.WatchKey{{WatchID: "w", WatchGeneration: "1"}}},
+		},
+	}}}}}
+	clone := CloneThread(original)
+	if !reflect.DeepEqual(clone, original) {
+		t.Fatal("clone changed values while copying")
+	}
+	observation := clone.Turns[0].Items[0].Observation
+	if observation == original.Turns[0].Items[0].Observation {
+		t.Fatal("clone shares the observation with the original")
+	}
+	observation.ResolvedAskCalls[0] = PendingAskCall{TurnID: "other", CallID: "other"}
+	observation.AnswerToTurnIDs[0] = "other"
+	observation.Causal.WatchKeys[0] = provenance.WatchKey{WatchID: "other", WatchGeneration: "9"}
+	held := original.Turns[0].Items[0].Observation
+	if held.ResolvedAskCalls[0].CallID != "call-1" {
+		t.Fatalf("a cloned call pair changed the original: %+v", held.ResolvedAskCalls)
+	}
+	if held.AnswerToTurnIDs[0] != "asked-turn" {
+		t.Fatalf("a cloned turn link changed the original: %v", held.AnswerToTurnIDs)
+	}
+	if held.Causal.WatchKeys[0].WatchID != "w" {
+		t.Fatalf("a cloned causal key changed the original: %+v", held.Causal.WatchKeys)
+	}
+	if CloneSessionObservationMetadata(nil) != nil {
+		t.Fatal("a nil observation cloned to a non-nil one")
 	}
 }

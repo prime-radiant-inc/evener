@@ -656,7 +656,14 @@ function NavigationRail({
       return;
     }
     if (page.section) {
-      await navigationStore.getState().loadSection(page.section, page.offset, page.limit);
+      // A section page's failure is recorded on the resource and returned,
+      // not thrown: the store resolves the request with the errored page so
+      // the rows already loaded stay. Re-throw it here so revealOverflow's
+      // one error path sees it, and the rail reports the failure instead of
+      // looking like the activation did nothing. The page keeps its place in
+      // the row, so the next activation retries it.
+      const loaded = await navigationStore.getState().loadSection(page.section, page.offset, page.limit);
+      if (loaded.error) throw loaded.error;
       return;
     }
     if (page.sectionId) {

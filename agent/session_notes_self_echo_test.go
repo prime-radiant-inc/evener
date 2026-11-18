@@ -87,89 +87,81 @@ func TestAgentNotesAndURLToolsKeepTranscriptRowWhileSuppressingModelSelfEcho(t *
 		labelSentinel     = "opaque-label-702"
 	)
 
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(_ llm.Request) llm.Response {
-				args, _ := json.Marshal(map[string]any{"note": agentNoteSentinel, "intent": "setting agent note"})
-				return llm.Response{
-					Message: llm.Message{
-						Role: llm.RoleAssistant,
-						Content: []llm.ContentPart{{
-							Kind: llm.ContentToolCall,
-							ToolCall: &llm.ToolCallData{
-								ID:        "call-note-1",
-								Name:      "notes_agent_set",
-								Arguments: args,
-							},
-						}},
+	adapter := newFakeAdapter("openai", func(_ llm.Request) llm.Response {
+		args, _ := json.Marshal(map[string]any{"note": agentNoteSentinel, "intent": "setting agent note"})
+		return llm.Response{
+			Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{{
+					Kind: llm.ContentToolCall,
+					ToolCall: &llm.ToolCallData{
+						ID:        "call-note-1",
+						Name:      "notes_agent_set",
+						Arguments: args,
 					},
-				}
+				}},
 			},
-			func(_ llm.Request) llm.Response {
-				args, _ := json.Marshal(map[string]any{"url": urlSentinel, "label": labelSentinel, "intent": "adding url"})
-				return llm.Response{
-					Message: llm.Message{
-						Role: llm.RoleAssistant,
-						Content: []llm.ContentPart{{
-							Kind: llm.ContentToolCall,
-							ToolCall: &llm.ToolCallData{
-								ID:        "call-url-add-2",
-								Name:      "urls_add",
-								Arguments: args,
-							},
-						}},
+		}
+	}, func(_ llm.Request) llm.Response {
+		args, _ := json.Marshal(map[string]any{"url": urlSentinel, "label": labelSentinel, "intent": "adding url"})
+		return llm.Response{
+			Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{{
+					Kind: llm.ContentToolCall,
+					ToolCall: &llm.ToolCallData{
+						ID:        "call-url-add-2",
+						Name:      "urls_add",
+						Arguments: args,
 					},
-				}
+				}},
 			},
-			func(req llm.Request) llm.Response {
-				var addedID string
-				for _, m := range req.Messages {
-					for _, p := range m.Content {
-						if p.Kind == llm.ContentToolResult && p.ToolResult != nil && p.ToolResult.Name == "urls_add" {
-							text, _ := p.ToolResult.Content.(string)
-							addedID = extractNotesLinkID(strings.TrimSpace(text))
-						}
-					}
+		}
+	}, func(req llm.Request) llm.Response {
+		var addedID string
+		for _, m := range req.Messages {
+			for _, p := range m.Content {
+				if p.Kind == llm.ContentToolResult && p.ToolResult != nil && p.ToolResult.Name == "urls_add" {
+					text, _ := p.ToolResult.Content.(string)
+					addedID = extractNotesLinkID(strings.TrimSpace(text))
 				}
-				args, _ := json.Marshal(map[string]any{"id": addedID, "intent": "removing url"})
-				return llm.Response{
-					Message: llm.Message{
-						Role: llm.RoleAssistant,
-						Content: []llm.ContentPart{{
-							Kind: llm.ContentToolCall,
-							ToolCall: &llm.ToolCallData{
-								ID:        "call-url-rm-3",
-								Name:      "urls_remove",
-								Arguments: args,
-							},
-						}},
+			}
+		}
+		args, _ := json.Marshal(map[string]any{"id": addedID, "intent": "removing url"})
+		return llm.Response{
+			Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{{
+					Kind: llm.ContentToolCall,
+					ToolCall: &llm.ToolCallData{
+						ID:        "call-url-rm-3",
+						Name:      "urls_remove",
+						Arguments: args,
 					},
-				}
+				}},
 			},
-			func(_ llm.Request) llm.Response {
-				args, _ := json.Marshal(map[string]any{
-					"message":  "done",
-					"end_turn": true,
-					"output":   map[string]any{"message": "", "data": map[string]any{}, "artifacts": []any{}},
-					"intent":   "finishing turn",
-				})
-				return llm.Response{
-					Message: llm.Message{
-						Role: llm.RoleAssistant,
-						Content: []llm.ContentPart{{
-							Kind: llm.ContentToolCall,
-							ToolCall: &llm.ToolCallData{
-								ID:        "call-comm-4",
-								Name:      "communicate",
-								Arguments: args,
-							},
-						}},
+		}
+	}, func(_ llm.Request) llm.Response {
+		args, _ := json.Marshal(map[string]any{
+			"message":  "done",
+			"end_turn": true,
+			"output":   map[string]any{"message": "", "data": map[string]any{}, "artifacts": []any{}},
+			"intent":   "finishing turn",
+		})
+		return llm.Response{
+			Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{{
+					Kind: llm.ContentToolCall,
+					ToolCall: &llm.ToolCallData{
+						ID:        "call-comm-4",
+						Name:      "communicate",
+						Arguments: args,
 					},
-				}
+				}},
 			},
-		},
-	}
+		}
+	})
 
 	c := llm.NewClient()
 	c.Register(adapter)

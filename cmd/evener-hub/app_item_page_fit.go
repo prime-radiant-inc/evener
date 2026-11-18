@@ -25,6 +25,15 @@ const (
 	transcriptWindowBudgetFloorBytes            = 16 << 10
 	transcriptWindowMeasuredEnvelopeMarginBytes = 32 << 10
 	transcriptWindowMaximumContentBudget        = managerReadMaxJSONBytes - transcriptWindowMeasuredEnvelopeMarginBytes
+	// transcriptReadStampLimitBytes bounds the per-call resolution stamp any
+	// bounded read carries (#6323). The stamp names the ask_user calls
+	// admission consumed, and a pending set can hold thousands of them: one
+	// short fenced reply carrying a 4,000-call stamp measured 392,912 bytes
+	// against the 256 KiB Manager cap, so the read was refused outright at any
+	// item limit. A healthy stamp is a few dozen bytes, so this limit is
+	// generous by orders of magnitude while keeping metadata from displacing
+	// the reply text it belongs to.
+	transcriptReadStampLimitBytes = 8 << 10
 )
 
 type transcriptWindowContinuationDirection string
@@ -1049,6 +1058,23 @@ func packItemCandidates[T any](
 					if turnSize <= effectiveBudget {
 						break
 					}
+					// A stamp passes the per-item bound and still pushes the turn
+					// over its budget. Body trimming cannot shrink it, so a body
+					// elided while the stamp is present is charged for metadata
+					// the reader never asked for - and the reply text is what
+					// pays. Adopt the stamp-free turn whenever one exists, not
+					// only when it alone fits: the body loop must measure what
+					// the reader would actually receive.
+					if omitted, changed := transcriptWindowTurnOmitStamps(turn); changed {
+						turn = omitted
+						omittedSize, omittedErr := transcriptWindowTurnEncodedSize(turn)
+						if omittedErr != nil {
+							return zero, omittedErr
+						}
+						if omittedSize <= effectiveBudget {
+							break
+						}
+					}
 					itemIndex := -1
 					for i := range turn.Items {
 						if !transcriptWindowItemHasBody(turn.Items[i]) {
@@ -1230,6 +1256,51 @@ func packItemCandidates[T any](
 			if contentFits || end-start == 1 {
 				return response, nil
 			}
+			// The combined page overruns while each turn fits alone: optional
+			// call lists are the difference between serving every message and
+			// sending the reader to a continuation for a turn whose bodies
+			// already fit. Try the cheaper omission before withholding a turn.
+			if stripped, changed := transcriptWindowTurnsOmitStamps(turns); changed {
+				stripped := setWindow(build(stripped, ""), windowResult)
+				if enrich != nil {
+					stripped, err = enrich(stripped)
+					if err != nil {
+						return zero, err
+					}
+				}
+				strippedBytes, marshalErr := json.Marshal(contentTurns(stripped))
+				if marshalErr != nil {
+					return zero, fmt.Errorf("marshal transcript window turns: %w", marshalErr)
+				}
+				if len(strippedBytes) <= effectiveBudget {
+					// The content measure does not see per-turn recovery
+					// follow-ups. Without this the stripped page returns here
+					// and the final Manager cap rejects it whole, so the reader
+					// gets no turns and no continuation. The budget above is a
+					// content measure; the page has to survive the response cap
+					// it is finally checked against, follow-ups included.
+					//
+					// Compare against the same limit the unstripped page above
+					// is held to, not the bare response cap: the final
+					// response adds envelope fields after packing, and the
+					// original check reserves that margin. Measuring the
+					// stripped page against the bare cap would accept a page
+					// whose follow-ups and envelope land in the margin band,
+					// and the final fitter would then refuse the whole page
+					// with the call lists already gone.
+					structuredFits := true
+					if windowOptions.StructuredFollowUpParams != nil {
+						structuredBytes, structuredErr := transcriptWindowStructuredPageSize(page(stripped), *windowOptions.StructuredFollowUpParams)
+						if structuredErr != nil {
+							return zero, structuredErr
+						}
+						structuredFits = structuredBytes <= transcriptWindowMaximumContentBudget
+					}
+					if structuredFits {
+						return stripped, nil
+					}
+				}
+			}
 			if direction == transcriptWindowContinuationForward {
 				end--
 				for end > start+1 && len(candidateTurns[end].candidates) == 0 {
@@ -1279,32 +1350,87 @@ func packItemCandidates[T any](
 	// result too large. The nearest item is always retained, even if it alone
 	// exceeds the soft target.
 	selectedStart := len(candidates) - len(selected)
-	for {
-		selected = append([]appitempaging.TranscriptItemCandidate(nil), candidates[selectedStart:]...)
-		dropped := selectedStart
-		older := hasOlder || dropped > 0
-		olderCursor, cursorErr := packedOlderCursor(result, selected[0].Position, older)
-		if cursorErr != nil {
-			return zero, cursorErr
+	// buildPage builds one candidate window. stampLimit bounds the per-call
+	// resolution stamps alone: a page carries every selected item, so several
+	// sub-limit call lists can add up past the soft limit, and costing the
+	// reader an item for metadata it does not need is worse than serving the
+	// page without the lists.
+	buildPage := func(items []appitempaging.TranscriptItemCandidate, stampLimit int) (T, int, bool, error) {
+		page := append([]appitempaging.TranscriptItemCandidate(nil), items...)
+		for i := range page {
+			page[i].Item = boundTranscriptItemStamp(page[i].Item, stampLimit)
 		}
-		var regroupErr error
-		selected = appitempaging.NormalizeProjectedItemCompleteness(selected)
-		turns, regroupErr := appitempaging.RegroupTurnFragments(selected)
+		// Whether THIS built page kept any call list. The caller's candidates
+		// are not the answer: the per-item bound may already have removed a
+		// long list, in which case a stripped rebuild changes nothing.
+		retainedLists := pageCarriesCallLists(page)
+		older := hasOlder || selectedStart > 0
+		olderCursor, cursorErr := packedOlderCursor(result, page[0].Position, older)
+		if cursorErr != nil {
+			return zero, 0, false, cursorErr
+		}
+		page = appitempaging.NormalizeProjectedItemCompleteness(page)
+		turns, regroupErr := appitempaging.RegroupTurnFragments(page)
 		if regroupErr != nil {
-			return zero, fmt.Errorf("regroup transcript item fragments: %w", regroupErr)
+			return zero, 0, false, fmt.Errorf("regroup transcript item fragments: %w", regroupErr)
 		}
 		response := build(turns, olderCursor)
 		if enrich != nil {
-			response, err = enrich(response)
-			if err != nil {
-				return zero, err
+			var enrichErr error
+			response, enrichErr = enrich(response)
+			if enrichErr != nil {
+				return zero, 0, false, enrichErr
 			}
 		}
 		encoded, marshalErr := json.Marshal(contentTurns(response))
 		if marshalErr != nil {
-			return zero, fmt.Errorf("marshal transcript item turns: %w", marshalErr)
+			return zero, 0, false, fmt.Errorf("marshal transcript item turns: %w", marshalErr)
 		}
-		if len(encoded) <= transcriptRPCResultSoftLimit || len(selected) == 1 {
+		return response, len(encoded), retainedLists, nil
+	}
+	for {
+		window := candidates[selectedStart:]
+		response, size, retainedLists, buildErr := buildPage(window, transcriptReadStampLimitBytes)
+		if buildErr != nil {
+			return zero, buildErr
+		}
+		if size <= transcriptRPCResultSoftLimit {
+			return response, nil
+		}
+		// Over budget with the stamps: retry this same window with every call
+		// list omitted before dropping the oldest item. Bodies, turn links and
+		// legacy counts are kept, so a window that fits unstamped costs the
+		// reader nothing.
+		//
+		// Retry only when the page that was just built kept a call list. Asking
+		// the caller's candidates instead would rebuild an identical page when
+		// the per-item bound had already removed the lists, repeating the
+		// enrichment - which can reread and hash file-backed thumbnails on a
+		// local page - for no change at all.
+		var stripped T
+		strippedBuilt := false
+		if retainedLists {
+			omitted, omittedSize, _, omittedErr := buildPage(window, 0)
+			if omittedErr != nil {
+				return zero, omittedErr
+			}
+			if omittedSize <= transcriptRPCResultSoftLimit {
+				return omitted, nil
+			}
+			// The stripped page is still over the target, but it is strictly
+			// smaller than the stamped one. Keep it for the retain-the-nearest
+			// branch below, which must serve something (#6323).
+			stripped, strippedBuilt = omitted, true
+		}
+		// The nearest item is always retained, even alone over the target. Serve
+		// the stripped copy when it exists: it keeps the body, the turn links
+		// and the paging cursor while dropping only optional metadata, so
+		// returning the stamped response here would ship the larger page and
+		// throw away the build that was already paid for.
+		if len(window) == 1 {
+			if strippedBuilt {
+				return stripped, nil
+			}
 			return response, nil
 		}
 		selectedStart++
@@ -1344,6 +1470,7 @@ func transcriptWindowBoundItem(item appwire.ThreadItem, previewBytes, messageByt
 		item.Output = transcriptWindowUTF8Prefix(item.Output, previewBytes)
 		truncated = true
 	}
+	item = boundTranscriptItemStamp(item, transcriptReadStampLimitBytes)
 	return item, bodyBytes, truncated
 }
 
@@ -1376,8 +1503,96 @@ func transcriptWindowItemBodyBytes(item appwire.ThreadItem) int {
 	return size
 }
 
+// boundTranscriptItemStamp omits an oversized per-call resolution stamp as a
+// UNIT on a bounded read, keeping the reply and its turn links (#6323).
+//
+// The stamp is not a body: body trimming cannot shrink it, so a reply carrying
+// thousands of call pairs exceeds the whole Manager read cap no matter which
+// item limit the read asks for, and the read is refused with no data at all.
+// Dropping the call list returns that reply as an unstamped one, which is the
+// pre-stamp matching, so the read loses a recap it could not have attributed
+// anyway. answerToTurnIds and resolvedAskLegacyCount stay: both are small, and
+// both are still load-bearing.
+//
+// The observation is copied before editing. Bounding a read must not rewrite
+// the canonical item the caller retains, so the full stamp survives in the
+// projection every other read serves.
+func boundTranscriptItemStamp(item appwire.ThreadItem, limit int) appwire.ThreadItem {
+	bounded, _ := appitempaging.OmitResolvedAskCalls(item, limit)
+	return bounded
+}
+
 func transcriptWindowItemHasBody(item appwire.ThreadItem) bool {
 	return item.Text != "" || item.Delta != "" || len(item.Images) > 0 || item.ArgumentsJSON != "" || item.Description != "" || item.Output != "" || item.Error != "" || len(item.OutputImages) > 0 || len(item.Raw) > 0
+}
+
+// pageCarriesCallLists reports whether any item in the window still has a
+// per-call resolution stamp the bound would remove. A window with none cannot
+// shrink by omitting them, so the stripped retry is skipped (#6323).
+func pageCarriesCallLists(items []appitempaging.TranscriptItemCandidate) bool {
+	for i := range items {
+		observation := items[i].Item.Observation
+		if observation != nil && len(observation.ResolvedAskCalls) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// transcriptWindowTurnOmitStamps returns the turn with every per-call
+// resolution stamp omitted, reporting whether anything changed (#6323).
+//
+// The turn keeps its items, their bodies, its elision record and its links: a
+// budget overflow caused by optional metadata must not cost the reader the
+// reply text. The items are copied, so the caller's canonical items keep the
+// full stamps.
+func transcriptWindowTurnOmitStamps(turn appwire.Turn) (appwire.Turn, bool) {
+	changed := false
+	var items []appwire.ThreadItem
+	for i := range turn.Items {
+		omitted := boundTranscriptItemStamp(turn.Items[i], 0)
+		if turn.Items[i].Observation == nil || omitted.Observation == nil ||
+			len(omitted.Observation.ResolvedAskCalls) == len(turn.Items[i].Observation.ResolvedAskCalls) {
+			continue
+		}
+		if !changed {
+			// A trimming attempt that removes nothing must not copy, and the
+			// page is retried at every window size. Copy on the first change
+			// so the caller's canonical items keep their full stamps.
+			changed = true
+			items = make([]appwire.ThreadItem, len(turn.Items))
+			copy(items, turn.Items)
+		}
+		items[i] = omitted
+	}
+	if !changed {
+		return turn, false
+	}
+	turn.Items = items
+	return turn, true
+}
+
+// transcriptWindowTurnsOmitStamps applies transcriptWindowTurnOmitStamps across
+// a page, reporting whether any turn carried a call list (#6323).
+func transcriptWindowTurnsOmitStamps(turns []appwire.Turn) ([]appwire.Turn, bool) {
+	changed := false
+	var pageTurns []appwire.Turn
+	for i := range turns {
+		omitted, turnChanged := transcriptWindowTurnOmitStamps(turns[i])
+		if !turnChanged {
+			continue
+		}
+		if !changed {
+			changed = true
+			pageTurns = make([]appwire.Turn, len(turns))
+			copy(pageTurns, turns)
+		}
+		pageTurns[i] = omitted
+	}
+	if !changed {
+		return turns, false
+	}
+	return pageTurns, true
 }
 
 func transcriptWindowBodylessItem(item appwire.ThreadItem, bodyBytes int) appwire.ThreadItem {

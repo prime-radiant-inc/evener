@@ -529,7 +529,7 @@ func restoreWithScriptedModel(t *testing.T, dir, id string) *Session {
 	client := llm.NewClient()
 	// Enough scripted rounds for the session namer and the turn: this restore
 	// has no dedicated namer adapter.
-	client.Register(&fakeAdapter{name: "openai", steps: repeatFinalResponse(4, "carried")})
+	client.Register(newFakeAdapter("openai", repeatFinalResponse(4, "carried")...))
 	restored, err := RestoreSessionFromMetaWithConfig(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
@@ -736,7 +736,7 @@ func TestReleaseRetryWakesTheSteerBehindAStaleSlot(t *testing.T) {
 	// A scripted model, so the carrier the wake runs can complete.
 	dir := t.TempDir()
 	client := llm.NewClient()
-	client.Register(&fakeAdapter{name: "openai", steps: repeatFinalResponse(4, "carried")})
+	client.Register(newFakeAdapter("openai", repeatFinalResponse(4, "carried")...))
 	s, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
