@@ -279,7 +279,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     // must record the same image facts: which markers the row declared and
     // which of those still carry bytes. Skipping it is what let a row's image
     // be dropped from the request that consumed the row.
-    source.adoptRecoveredImageFacts(recovered);
+    source.adoptRecoveredImageFacts(recovered, record.clientMutationId);
     clearPersistedDraft(ref);
   }, [
     activeRecoveryId,

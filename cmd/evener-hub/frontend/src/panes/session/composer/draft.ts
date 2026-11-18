@@ -366,6 +366,35 @@ export function writeRecoveryImageMarkers(ref: string, clientMutationId: string,
   }
 }
 
+// A recovery row can hold tile bytes that its text does not reference. Those
+// bytes must survive a reload - the person never removed the tile - but they
+// must NOT become sendable on reopen. The row's attachment list cannot say
+// which is which: every restored attachment is exempt by default, because a
+// row that carried an image without spelling it is exactly the case that
+// exemption exists for. So the row records the markers it kept WITHOUT that
+// exemption, and adoption withholds it for those.
+function recoveryIneligibleStorageKey(ref: string, clientMutationId: string): string {
+  return `${IMAGE_PROVENANCE_PREFIX}${ref}.recoveryIneligible.${clientMutationId}`;
+}
+
+/** Markers a row keeps staged but must not offer to Send on reopen. */
+export function readRecoveryIneligibleMarkers(ref: string, clientMutationId: string): number[] {
+  return readMarkerList(recoveryIneligibleStorageKey(ref, clientMutationId)) ?? [];
+}
+
+export function writeRecoveryIneligibleMarkers(
+  ref: string,
+  clientMutationId: string,
+  markers: readonly number[],
+): void {
+  try {
+    const next = [...new Set(markers)].sort((left, right) => left - right);
+    localStorage.setItem(recoveryIneligibleStorageKey(ref, clientMutationId), JSON.stringify(next));
+  } catch {
+    // Best-effort, like every other composer persistence.
+  }
+}
+
 // A stored marker list, or undefined when the key holds nothing usable.
 // Undefined and [] differ: [] is a record that says this composition has no
 // images, which is what retires a reference the person removed.

@@ -18,7 +18,9 @@ import {
   readComposerDraft,
   readComposerDraftRevisionId,
   readDraftRevision,
+  readRecoveryImageMarkers,
   writeComposerDraft,
+  writeRecoveryImageMarkers,
 } from "./draft";
 import { resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
 import { mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recovery/recoveryDraft";
@@ -659,7 +661,7 @@ test("a restored image from a row without recorded references stays eligible aft
     // still spells 1 - the literal the person sees.
     expect(merged.attachments.map((item) => item.marker)).toEqual([2, 3]);
     source.attachments.setState({ items: merged.attachments });
-    source.adoptRecoveredImageFacts(row);
+    source.adoptRecoveredImageFacts(row, null);
 
     // Whatever number the merge chose, the bytes the row carried are sendable.
     const snapshot = source.getSnapshot();
@@ -680,14 +682,14 @@ test("an exemption survives a second recovery adoption while its tile stays stag
     source.attachments.setState({ items: [first] });
     source.editor.write("first row", 9);
     await act(async () => {
-      source.adoptRecoveredImageFacts({ text: "first row", attachments: [first], skillNames: [] });
+      source.adoptRecoveredImageFacts({ text: "first row", attachments: [first], skillNames: [] }, null);
     });
     expect(source.getSnapshot().restoredImageIds).toEqual(["first"]);
 
     // A second row is edited in. It declares no images at all, and the merge
     // keeps the first tile staged.
     await act(async () => {
-      source.adoptRecoveredImageFacts({ text: "first row\n\nsecond row", attachments: [], skillNames: [] });
+      source.adoptRecoveredImageFacts({ text: "first row\n\nsecond row", attachments: [], skillNames: [] }, null);
     });
     const snapshot = source.getSnapshot();
     expect(snapshot.restoredImageIds).toEqual(["first"]);
@@ -718,7 +720,7 @@ test("a new image reusing a retired number gets ordinary submission rules", asyn
     source.attachments.setState({ items: [restoredTile] });
     source.editor.write("row prose", 9);
     await act(async () => {
-      source.adoptRecoveredImageFacts({ text: "row prose", attachments: [restoredTile], skillNames: [] });
+      source.adoptRecoveredImageFacts({ text: "row prose", attachments: [restoredTile], skillNames: [] }, null);
     });
     expect(source.getSnapshot().restoredImageIds).toEqual(["first"]);
     expect(
@@ -1001,6 +1003,132 @@ test.each(["success", "failure"] as const)(
 // The tag must therefore be filed against the composition the row now owns,
 // before the local draft that held it is cleared, and restored when the row is
 // opened again - explicitly here, and automatically on mount by the same call.
+// The Medium: a row that owns a missing-image draft must record EVERY committed
+// edit, including the one that deletes the last reference. Skipping the empty
+// answer leaves the previous one standing, so a reopen blocks the same spelling
+// typed later as ordinary prose.
+test("deleting the last missing reference retires the row's tag", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const original = await storage.enqueueIntent({
+    targetRef: "root",
+    threadId: "thread-a",
+    method: "turn/start",
+    payload: { ref: "root", input: [{ type: "text", text: "anchor [image 1]" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "anchor [image 1]" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const row = await storage.getRecovery(original.clientMutationId);
+  if (!row) throw new Error("missing recovery fixture");
+  writeRecoveryImageMarkers("root", original.clientMutationId, [1]);
+
+  const source = createTestComposerSource("root");
+  try {
+    source.setActiveRecoveryId(row);
+    // The person deletes the reference and leaves prose behind.
+    source.updateText("anchor removed");
+    await source.queueRecoveryPersistence(original.clientMutationId, "anchor removed", [], []);
+    await source.flushRecoveryWrites();
+
+    // The tag is retired, not carried: the committed text spells no reference.
+    expect(readRecoveryImageMarkers("root", original.clientMutationId)).toEqual([]);
+  } finally {
+    source.dispose();
+    storage.close();
+  }
+});
+
+// A tile whose reference the person deleted is still theirs: it stays staged,
+// and its BYTES must survive a reload - they never removed the image. What must
+// not survive is their eligibility. Persisting the tile and deciding "sendable,
+// because it exists" are different questions; answering both with one filter
+// is how a released image is lost on one path and sent on the other.
+test("a released image's bytes survive into recovery without becoming sendable", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const original = await storage.enqueueIntent({
+    targetRef: "root",
+    threadId: "thread-a",
+    method: "turn/start",
+    payload: { ref: "root", input: [{ type: "text", text: "caption" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "caption" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const row = await storage.getRecovery(original.clientMutationId);
+  if (!row) throw new Error("missing recovery fixture");
+
+  const source = createTestComposerSource("root");
+  try {
+    source.setActiveRecoveryId(row);
+    // A tile the row restored, whose reference the person replaced with prose.
+    source.attachments.setState({
+      items: [{ id: "kept", marker: 1, name: "kept.png", mediaType: "image/png", data: "KEPT", pending: false }],
+    });
+    source.updateText("caption with no reference");
+
+    await source.queueRecoveryPersistence(original.clientMutationId, "caption with no reference", [], []);
+    await source.flushRecoveryWrites();
+
+    // The bytes are durable: the tile was never removed.
+    const saved = await storage.getRecovery(original.clientMutationId);
+    const savedInput = (saved?.payload as { input?: InputItem[] } | undefined)?.input ?? [];
+    const savedImages = savedInput.flatMap((item) => (item.type === "image" ? [item.data] : []));
+    expect(savedImages).toContain("KEPT");
+  } finally {
+    source.dispose();
+    storage.close();
+  }
+});
+
+// A tile whose reference the person deleted is still theirs: it stays staged.
+// It must NOT be handed a number the merged text spells, because those words
+// are then a reference to it - Send would carry bytes the prose never asked
+// for, and removing the tile would edit words the person typed. The number is
+// a label; reserving only the numbers other TILES hold misses the numbers the
+// TEXT already uses.
+test("a released tile is not renumbered onto a recovery row's literal marker", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const original = await storage.enqueueIntent({
+    targetRef: "root",
+    threadId: "thread-a",
+    method: "turn/start",
+    payload: { ref: "root", input: [{ type: "text", text: "queued [image 1] prose" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "queued [image 1] prose" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const row = await storage.getRecovery(original.clientMutationId);
+  if (!row) throw new Error("missing recovery fixture");
+
+  const source = createTestComposerSource("root");
+  try {
+    // This pane holds its own image 1, whose editor reference the person has
+    // already deleted. The tile is released, not removed.
+    source.attachments.setState({
+      items: [{ id: "released", marker: 1, name: "old.png", mediaType: "image/png", data: "OLD", pending: false }],
+    });
+    source.updateText("");
+    expect(source.getSnapshot().text).toBe("");
+
+    await expect(source.activateRecovery(row)).resolves.toBe(true);
+
+    // The row's text spells "[image 1]" as a literal in the record, and the
+    // released tile is staged on 1. Handing the tile 1 back makes the row's
+    // own words a reference to it, so it must take a free number instead.
+    const items = source.attachments.getState().items;
+    const released = items.find((item) => item.id === "released");
+    if (!released) throw new Error("released tile was destroyed instead of preserved");
+    expect(items.filter((item) => item.marker === 1)).toEqual([]);
+    expect(released.marker).not.toBe(1);
+  } finally {
+    source.dispose();
+    storage.close();
+  }
+});
+
 test("a missing-image tag merged into a recovery row survives the reopen", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
