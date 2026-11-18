@@ -340,6 +340,25 @@ test("removing a remapped pending encode prevents its later completion from resu
   expect(result.current.hasPending).toBe(false);
 });
 
+// A tile retained from the composition an adopted draft replaced does not own
+// the number it now bears, so removing it must drop only its bytes. Stripping
+// the reference would edit prose the person did not write, and would clear a
+// missing-image refusal as though they had deleted that reference themselves.
+test("removing a retained tile leaves the adopted text's reference alone", () => {
+  const editor = makeFakeEditor("[image 1] peer prose", 21);
+  const { result } = renderHook(() => useAttachments(editor));
+
+  act(() => {
+    result.current.replaceWithSettled([
+      { id: "foreign", marker: 1, name: "mine.png", mediaType: "image/png", data: "AQID", pending: false },
+    ]);
+  });
+  act(() => result.current.removeItem(1, { dropReference: false }));
+
+  expect(result.current.items).toEqual([]);
+  expect(editor.getText()).toBe("[image 1] peer prose");
+});
+
 test("ingesting an image synchronously splices its marker into the editor text and flags the item pending", async () => {
   const editor = makeFakeEditor("hello", 5);
   const { result } = renderHook(() => useAttachments(editor));

@@ -546,6 +546,96 @@ test("a recovered image renumbered by the merge stays sendable under its new num
   }
 });
 
+// Opening a row through explicit Edit, with an image already staged, must
+// deliver BOTH images: the row's renumbered one and this draft's own. A
+// renumbering fix that only exempts the recovered tile would silently drop the
+// local one; one that only exempts the local tile would lose the row's bytes
+// when the resend consumes it. Literal marker prose the row carried as text
+// stays text.
+test("explicit Edit beside a staged image sends both images and keeps literal prose", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const input: InputItem[] = [
+    { type: "text", text: "row prose" },
+    { type: "image", mediaType: "image/png", data: "AQID", name: "recovered.png" },
+  ];
+  const original = await storage.enqueueIntent({
+    targetRef: "root",
+    method: "turn/start",
+    payload: { ref: "root", input },
+    attachments: [
+      {
+        presentationId: "presentation-1",
+        marker: 1,
+        name: "recovered.png",
+        mediaType: "image/png",
+        blob: new Blob([Uint8Array.of(1, 2, 3)], { type: "image/png" }),
+      },
+    ],
+    optimisticDisplay: { method: "turn/start", input },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+
+  const source = createTestComposerSource("root");
+  source.attachments.setState({
+    items: [{ id: "local-image", marker: 1, name: "local.png", mediaType: "image/png", data: "BAUG", pending: false }],
+  });
+  source.editor.write("[image 1] local", 9);
+
+  try {
+    await expect(source.activateRecovery(recovery)).resolves.toBe(true);
+    const snapshot = source.getSnapshot();
+    const staged = source.attachments.getState().items;
+    const sendable = sendableAttachments(staged, snapshot.text, {
+      foreign: snapshot.foreignImageIds,
+      restored: snapshot.restoredImageIds,
+    });
+    // Both images travel. The row's tile was renumbered; this draft's tile
+    // keeps its own number and is spelled in the text.
+    expect(sendable.map((item) => item.name).sort()).toEqual(["local.png", "recovered.png"]);
+    // The row's prose is still prose: nothing turned it into a second
+    // reference to the local image.
+    expect(snapshot.text).toContain("row prose");
+  } finally {
+    source.dispose();
+    storage.close();
+  }
+});
+
+// The high: editing a second recovery row into a composer that already holds
+// an exempt image must not drop the first image's exemption. The tile is still
+// staged and still exempt, so the resend that consumes the row must carry it.
+test("an exemption survives a second recovery adoption while its tile stays staged", async () => {
+  const source = createTestComposerSource("root");
+  try {
+    const first = { id: "first", marker: 1, name: "first.png", mediaType: "image/png", data: "AQID", pending: false };
+    source.attachments.setState({ items: [first] });
+    source.editor.write("first row", 9);
+    await act(async () => {
+      source.adoptRecoveredImageFacts({ text: "first row", attachments: [first], skillNames: [] });
+    });
+    expect(source.getSnapshot().restoredImageIds).toEqual(["first"]);
+
+    // A second row is edited in. It declares no images at all, and the merge
+    // keeps the first tile staged.
+    await act(async () => {
+      source.adoptRecoveredImageFacts({ text: "first row\n\nsecond row", attachments: [], skillNames: [] });
+    });
+    const snapshot = source.getSnapshot();
+    expect(snapshot.restoredImageIds).toEqual(["first"]);
+    expect(
+      sendableAttachments(source.attachments.getState().items, snapshot.text, {
+        foreign: snapshot.foreignImageIds,
+        restored: snapshot.restoredImageIds,
+      }).map((item) => item.id),
+    ).toEqual(["first"]);
+  } finally {
+    source.dispose();
+  }
+});
+
 test("a new image reusing a retired number gets ordinary submission rules", async () => {
   const source = createTestComposerSource("root");
   try {

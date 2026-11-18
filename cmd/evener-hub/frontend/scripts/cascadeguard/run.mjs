@@ -1202,7 +1202,13 @@ function overlapMentions(text) {
   return [{ kind: 'command', name: 'cascade-overlap', offset: first }, { kind: 'skill', name: 'cascade-overlap', offset: second }];
 }
 
-async function assertOverlap(ref, text, label) {
+// The record stores the marker numbers themselves; the editor text spells them
+// as "[image N]" references.
+function markerNumber(reference) {
+  return Number(/\[image (\d+)\]/.exec(reference)[1]);
+}
+
+async function assertOverlap(ref, text, label, imageMarkers) {
   const state = await driver.composerState(ref);
   assert.equal(state.text, text, `${label}, exact UTF-16 text and inert prose`);
   assert.deepEqual(state.chips, ['/cascade-overlap'], `${label}, only the selected skill is a skill atom`);
@@ -1221,6 +1227,10 @@ async function assertOverlap(ref, text, label) {
     skillNames:['cascade-overlap'],
     commandNames:['cascade-overlap'],
     mentions:overlapMentions(text),
+    // Image provenance travels in the same record as the text: these are the
+    // markers whose bytes this draft holds. An empty list is omitted rather
+    // than written as [], so a text-only draft carries no image field.
+    ...(imageMarkers.length > 0 ? { imageMarkers } : {}),
     revisionId: record.revisionId,
   }, `${label}, complete real persisted draft`);
   assert.equal(typeof record.revisionId, 'string', `${label}, draft record carries its revision identity`);
@@ -1260,7 +1270,9 @@ async function mixedSourceJourney() {
   assert.equal(markers.length, 3, 'each real upload inserted its own marker');
   assert.equal(new Set(markers).size, 3, 'retained source allocates unique image markers');
   const [firstMarker, failedMarker, lastMarker] = markers;
-  await assertOverlap(ref, before.text, 'before mounted image settlement');
+  // All three tiles are staged and every one of them has a reference in the
+  // text, so the record names all three.
+  await assertOverlap(ref, before.text, 'before mounted image settlement', [firstMarker, failedMarker, lastMarker].map(markerNumber));
   const imageBytes = await read("['mixed-first.png','mixed-last.png'].map(name => document.querySelector(`button[aria-label=\"View ${name}\"] img`).src)");
   await driver.click(sourceAgents);
   await drill(fixture.edges[0], 1);
@@ -1268,7 +1280,9 @@ async function mixedSourceJourney() {
   await wait(`${driver.toastExpr()}.includes('mixed-failure.png (image decode failed)')`, 'actual failed decode settles while source editor stays mounted');
   await returnToSource();
   const settledText = before.text.replace(failedMarker, '');
-  await assertOverlap(ref, settledText, 'after mounted image settlement and Return');
+  // The failed decode drops its tile and its reference together, so the two
+  // surviving images keep their provenance and the removed number is gone.
+  await assertOverlap(ref, settledText, 'after mounted image settlement and Return', [firstMarker, lastMarker].map(markerNumber));
   assert.equal((await driver.composerState(ref)).tiles, 2, 'only failed middle image is removed');
   assert.deepEqual(await read("['mixed-first.png','mixed-last.png'].map(name => document.querySelector(`button[aria-label=\"View ${name}\"] img`).src)"), imageBytes, 'exact retained PNG bytes');
   driver.milestone('mixed-mounted-image-return', { recipient:ref, mentions:overlapMentions(settledText) });
@@ -1298,7 +1312,9 @@ async function mixedSourceJourney() {
   await returnToSource();
   await wait(`document.querySelector(${q(driver.composerSelector(ref))})?.querySelectorAll('[data-testid="attachment-tile"]').length === 0`, 'submitted images retire after native acknowledgement');
   const cleaned = newer.text.replace(firstMarker, '').replace(lastMarker, '');
-  await assertOverlap(ref, cleaned, 'after independent submitted marker cleanup and Return');
+  // Submission consumed both images: their tiles retire on acknowledgement, so
+  // the surviving draft carries prose only and must name no images at all.
+  await assertOverlap(ref, cleaned, 'after independent submitted marker cleanup and Return', []);
   const requests = sent(after).filter(frame => frame.params?.clientMutationId === held.clientMutationId);
   assert.equal(requests.length, 1, 'mixed inspection and Return never duplicate delivery');
   assert.equal(requests[0].params.ref, ref);

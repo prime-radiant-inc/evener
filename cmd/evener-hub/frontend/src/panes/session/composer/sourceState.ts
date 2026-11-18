@@ -44,7 +44,7 @@ import {
   type SkillEditorValue,
   serializeSkillDocument,
 } from "./skillDocument";
-import { pushRecoveryRefusal } from "./submitProtocol";
+import { pushRecoveryRefusal, sendableAttachments } from "./submitProtocol";
 
 type RevisionRef<T> = { current: T };
 export type RecoveryOwnerLease = { clientMutationId: string; compositionRevision: number };
@@ -404,7 +404,12 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   // restores the text does not restore the tag, because text alone cannot tell
   // a restored anchor from retyped prose.
   function recordedMarkerNumbers(): number[] {
-    const staged = operations.items.map((item) => item.marker);
+    // A retained tile from the composition this draft replaced is not this
+    // draft's image, even when the adopted text happens to spell its number:
+    // recording it would make a reload read the peer's literal prose as an
+    // anchor with no bytes and refuse a draft that is complete.
+    const foreign = new Set(state.getState().foreignImageIds);
+    const staged = operations.items.filter((item) => !foreign.has(item.id)).map((item) => item.marker);
     return [...new Set([...staged, ...adoptedUnbackedMarkers])].sort((left, right) => left - right);
   }
   function persistDraft(text: string): void {
@@ -540,14 +545,26 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     // to. Looking up tiles by the row's original number would describe the
     // draft's own image instead and leave the recovered bytes excluded from
     // the very send that consumes the row.
+    //
+    // A merge KEEPS images that were already staged, so an exemption recorded
+    // for one of them survives by identity. Replacing the set instead would
+    // drop the first row's markerless image the moment a second row is edited
+    // into the same composer: the image is still staged, still exempt, and
+    // would then be omitted from the resend that consumes the row.
+    const live = new Set(operations.items.map((item) => item.id));
+    const prior = state.getState();
     state.setState({
-      restoredImageIds: recovered.attachments
-        .filter((item) => !spoken.has(item.marker))
-        .map((item) => item.id)
-        .sort(),
-      // The row owns this composition now, so nothing staged here is foreign
-      // to it in the rebind sense.
-      foreignImageIds: [],
+      restoredImageIds: [
+        ...new Set([
+          ...prior.restoredImageIds.filter((id) => live.has(id)),
+          ...recovered.attachments.filter((item) => !spoken.has(item.marker)).map((item) => item.id),
+        ]),
+      ].sort(),
+      // A retained tile stays foreign while it is staged, whatever number the
+      // merge gives it. Retiring on absence is what clears it, not adoption:
+      // adopting a row must not silently re-enable bytes that belong to the
+      // composition it replaced.
+      foreignImageIds: prior.foreignImageIds.filter((id) => live.has(id)),
     });
   }
 
@@ -568,6 +585,29 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     nextComposerText?: string,
   ): Promise<boolean> {
     if (disposed) return Promise.resolve(false);
+    // The record must describe what a Send from this composer would carry, and
+    // nothing else, using the ONE selection the send path uses.
+    //
+    // Two kinds of tile are staged but not sendable, and persisting either one
+    // makes a reopen misread it as an image the row intentionally kept without
+    // a reference (the exemption that exists for recovery rows whose text never
+    // spelled their bytes):
+    //
+    // - a tile retained from the composition this row replaced, whose number
+    //   the adopted prose may still spell as literal text;
+    // - a tile whose reference the person deleted while editing, which the
+    //   editor already excludes from Send.
+    //
+    // Writing them would then send their bytes on the reopen, under prose that
+    // never asked for them.
+    const snapshot = state.getState();
+    const sendableMarkers = new Set(
+      sendableAttachments(operations.items, nextText, {
+        foreign: snapshot.foreignImageIds,
+        restored: snapshot.restoredImageIds,
+      }).map((item) => item.marker),
+    );
+    nextAttachments = nextAttachments.filter((item) => sendableMarkers.has(item.marker));
     const isEmptyCleanup = compositionIsEmpty({
       text: nextText,
       attachments: nextAttachments,

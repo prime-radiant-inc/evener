@@ -111,8 +111,14 @@ export interface UseAttachmentsResult {
    * as items are added/removed) and strips its "[image N]" text from the
    * composer. Never resets the marker counter - only clearSubmitted does,
    * and only when the result is empty (parity: removing the highest
-   * marker still never reuses it). */
-  removeItem(marker: number): void;
+   * marker still never reuses it).
+   *
+   * `dropReference` says whether the text marker belongs to this tile. A tile
+   * retained from the composition an adopted draft replaced does not own the
+   * number it now bears, so removing it must leave the adopted text alone:
+   * stripping that reference would edit prose the person did not write and
+   * would clear a missing-image refusal as though they had deleted it. */
+  removeItem(marker: number, options?: { dropReference?: boolean }): void;
   /** Maps settled items to the InputAttachment shape stores/threads.ts
    * expects - marker/mediaType/data/name, dropping the UI-only width/height/
    * pending fields. The marker travels so the store can pair text and
@@ -296,7 +302,7 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
     }
   };
 
-  const removeItem = (marker: number) => {
+  const removeItem = (marker: number, options?: { dropReference?: boolean }) => {
     // Recorded unconditionally, whether or not this item is still pending
     // (kata kt4j) - cheap and self-cleaning either way: a pending item's
     // own decode drains this entry the instant it settles (see
@@ -304,6 +310,12 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
     // removal adds an entry no in-flight decode will ever consult again.
     const removed = store.getState().items.find((item) => item.marker === marker);
     if (removed) removedWhilePendingRef.current.add(operationToken(removed));
+    if (options?.dropReference === false) {
+      // The number is not this tile's, so the text's reference describes
+      // something else. Drop only the bytes.
+      setItems((prev) => prev.filter((item) => item.marker !== marker));
+      return;
+    }
     const current = editor.read();
     const stripped = stripMarker(current.text, current.cursor, marker);
     // Same ordering as ingestFiles, for the same reason: the persisted record

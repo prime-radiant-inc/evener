@@ -1114,7 +1114,11 @@ function ComposerWithSubmission({
     }
     const route = decideSteerRoute({
       hasText,
-      hasAttachments,
+      // Sendable images, not staged ones. An excluded tile is not content
+      // submission will carry, so counting it here routes a press to a drain
+      // whose attachment list is empty - which the daemon rejects. Routing and
+      // admission read the same selection.
+      hasAttachments: sendable.length > 0,
       hasSkills: skillNames.length > 0 || selectionMeta.commandNames.length > 0,
       queueDepth: liveThreadModel(ref)?.queue?.depth ?? queueDepth,
     });
@@ -1347,7 +1351,13 @@ function ComposerWithSubmission({
       {hasAttachments && (
         <div className={CLASS.attachments} hidden={askPending} inert={askPending}>
           {attachments.items.map((item) => (
-            <AttachmentTile key={item.marker} item={item} onRemove={() => attachments.removeItem(item.marker)} />
+            <AttachmentTile
+              key={item.marker}
+              item={item}
+              onRemove={() =>
+                attachments.removeItem(item.marker, { dropReference: !foreignImageIds.includes(item.id) })
+              }
+            />
           ))}
         </div>
       )}
