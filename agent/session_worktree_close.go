@@ -65,6 +65,15 @@ func (s *Session) disposeDelegateLanesAtClose(ctx context.Context) {
 
 	var kept []string
 	var tail []string
+	// Closure announcements are collected across lanes and published after the
+	// disposal pass has attempted every one of them. Publishing each inside its
+	// own lane's turn made the announcement a prerequisite for the NEXT lane's
+	// disposal: on a stalled authoritative stream, one undeliverable update spent
+	// the rest of the cascade and left the later lanes on disk for a prune, even
+	// though their own removals were ready to run. Their durable resumability
+	// closures are still appended before their removals, so the order that makes
+	// disk and the durable record agree is unchanged; only the announcement moved.
+	var closureUpdates []delegateUpdatePlan
 	for _, delegate := range delegates {
 		lane := isolationLane{delegateID: delegate.delegateID, path: delegate.descriptor.WorkingDir}
 		// Budget check at the top of each iteration: once the deadline passes,
@@ -77,7 +86,8 @@ func (s *Session) disposeDelegateLanesAtClose(ctx context.Context) {
 			}
 			continue
 		}
-		note, wasKept := s.disposeOneDelegateLane(budgetCtx, local, delegate)
+		note, wasKept, updates := s.disposeOneDelegateLane(budgetCtx, local, delegate)
+		closureUpdates = append(closureUpdates, updates...)
 		// The budget can expire inside a git operation after the top-of-loop
 		// check. Route that lane through the same non-expiring safety tail as all
 		// later lanes so an interrupted lock query or unlock never strands it
@@ -91,6 +101,9 @@ func (s *Session) disposeDelegateLanesAtClose(ctx context.Context) {
 		if wasKept {
 			kept = append(kept, note)
 		}
+	}
+	for _, plan := range closureUpdates {
+		s.delegateController.emitDelegateUpdate(plan)
 	}
 	if len(kept) > 0 {
 		s.emit(events.WarningData{
@@ -112,11 +125,16 @@ func (s *Session) disposeDelegateLanesAtClose(ctx context.Context) {
 // disposeOneDelegateLane applies the existing close-time D0 and lock
 // rules, then fsyncs stable resumability closure before the first destructive
 // worktree operation. A closure failure leaves the lane intact.
-func (s *Session) disposeOneDelegateLane(ctx context.Context, local *execenv.LocalExecutionEnvironment, delegate delegateWorktreeSnapshot) (note string, kept bool) {
+//
+// It returns the updates announcing a durable closure it recorded instead of
+// publishing them itself: the caller publishes after it has attempted every
+// lane, so one undeliverable announcement cannot spend the budget later lanes
+// need to leave the disk.
+func (s *Session) disposeOneDelegateLane(ctx context.Context, local *execenv.LocalExecutionEnvironment, delegate delegateWorktreeSnapshot) (note string, kept bool, updates []delegateUpdatePlan) {
 	lane := isolationLane{delegateID: delegate.delegateID, path: delegate.descriptor.WorkingDir}
 	lanePath := filepath.Clean(lane.path)
 	if lanePath == "" || lanePath == "." {
-		return "", false
+		return "", false, nil
 	}
 	// A mid-tree delegate session closes while the shared controller is still
 	// live: fence its lane's subtree so a descendant cold restore cannot install
@@ -130,27 +148,27 @@ func (s *Session) disposeOneDelegateLane(ctx context.Context, local *execenv.Loc
 		// subtree, so this disposal can proceed without a second fence.
 	default:
 		// Work is in flight in this lane's own subtree; retain it (and its lock).
-		return lane.delegateID + " at " + lanePath + " (descendant admission in flight; retained)", true
+		return lane.delegateID + " at " + lanePath + " (descendant admission in flight; retained)", true, nil
 	}
 	if _, err := os.Stat(filepath.Join(lanePath, ".git")); err != nil {
-		return "", false
+		return "", false, nil
 	}
 	controlEnv, _, done, ok := laneControlEnv(local, lanePath)
 	if !ok {
-		return "", false
+		return "", false, nil
 	}
 	defer done()
 	run := s.newWorktreeGitRunner(ctx, controlEnv)
 	metaDir := metaDirForLane(lanePath)
 	sc, scErr := worktree.ReadSidecar(metaDir, lane.delegateID)
 	if scErr != nil {
-		return "", false
+		return "", false, nil
 	}
 	lane.branch = sc.BranchOrName()
 
 	locked, reason, lockErr := lockStateOf(run, lanePath)
 	if lockErr != nil {
-		return "", false
+		return "", false, nil
 	}
 	st := worktree.Unlocked
 	if locked {
@@ -159,10 +177,10 @@ func (s *Session) disposeOneDelegateLane(ctx context.Context, local *execenv.Loc
 	collectible, evalErr := laneAutoCollectible(run, lanePath, sc.BaseSHA, sc.MergeTarget)
 	if evalErr != nil || !collectible {
 		if !s.unlockLaneIfOwn(run, worktree.EvDisposeChanged, st, lanePath, metaDir, lane.delegateID) {
-			return "", false
+			return "", false, nil
 		}
 		if evalErr != nil {
-			return lane.delegateID + " at " + lanePath + " (state unverifiable)", true
+			return lane.delegateID + " at " + lanePath + " (state unverifiable)", true, nil
 		}
 		dirty := "dirty unknown"
 		if clean, _, cleanErr := worktree.CleanTree(run, lanePath); cleanErr == nil {
@@ -174,34 +192,25 @@ func (s *Session) disposeOneDelegateLane(ctx context.Context, local *execenv.Loc
 				ahead = fmt.Sprintf("%d ahead", count)
 			}
 		}
-		return fmt.Sprintf("%s at %s (branch %s, %s, %s)", lane.delegateID, lanePath, lane.branch, ahead, dirty), true
+		return fmt.Sprintf("%s at %s (branch %s, %s, %s)", lane.delegateID, lanePath, lane.branch, ahead, dirty), true, nil
 	}
 
 	_, _, plans, closeErr := s.delegateController.closeStableWorktreeResumability(s, lane.delegateID, stableWorktreeDisposalReason, true)
 	if closeErr != nil {
 		s.emit(events.WarningData{Message: fmt.Sprintf("delegate lane resumability closure failed for %s: %v", lane.delegateID, closeErr)})
-		return lane.delegateID + " at " + lanePath + " (resumability closure failed; retained intact)", true
+		return lane.delegateID + " at " + lanePath + " (resumability closure failed; retained intact)", true, nil
 	}
 	outcome, cleanupNote := s.disposeUnchangedLaneMechanics(run, st, lane, metaDir, downgradeUnlockKeep, false)
-	// The closure above is already durable, so the updates that announce it are
-	// published only once the lane is off disk. Publishing them first made the
-	// announcement a prerequisite for the removal: on a stalled authoritative
-	// stream an update that could not be delivered spent the rest of the cascade
-	// and left a lane whose durable record said it had been closed -- state on
-	// disk contradicting a durable record, which is worse than a lane that was
-	// never closed at all. Removal first makes the worst case an announcement that
-	// arrives late, with the durable closure and the filesystem already agreeing.
-	s.delegateController.emitDelegateUpdates(plans)
 	if outcome == laneKeptDirty {
-		return cleanupNote + " (resumability closed; retained residue)", true
+		return cleanupNote + " (resumability closed; retained residue)", true, plans.updates
 	}
 	if outcome == laneDeclined {
 		if cleanupNote != "" {
-			return lane.delegateID + " at " + lanePath + " (resumability closed; retained residue: " + cleanupNote + ")", true
+			return lane.delegateID + " at " + lanePath + " (resumability closed; retained residue: " + cleanupNote + ")", true, plans.updates
 		}
-		return lane.delegateID + " at " + lanePath + " (resumability closed; retained residue because the cleanup lock could not be released or ownership changed)", true
+		return lane.delegateID + " at " + lanePath + " (resumability closed; retained residue because the cleanup lock could not be released or ownership changed)", true, plans.updates
 	}
-	return cleanupNote, false
+	return cleanupNote, false, plans.updates
 }
 
 // closeBudgetMintHook is a test-only seam invoked exactly when ensureCloseBudget

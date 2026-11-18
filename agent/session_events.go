@@ -242,18 +242,34 @@ func (s *Session) currentWorkSeedData() *events.CurrentWorkSeedData {
 // the model is informed. Hook-CONFIGURATION diagnostics must NOT run the
 // Notification hook and instead go through emitDiagnosticWarning.
 func (s *Session) emit(data events.EventData) {
-	s.emitContext(nil, data)
-}
-
-// emitContext is emit on a caller's bound. A nil ctx means the ordinary path,
-// which is what every emitter without a bound of its own uses. A caller that
-// launched work under a narrower deadline -- the close drain's Notification hook
-// -- passes it so its publications share that deadline instead of the close
-// cascade's.
-func (s *Session) emitContext(ctx context.Context, data events.EventData) {
 	// Task mutations are emitted by transport-neutral tool handlers. Stamp the
 	// owning session at this Session boundary so shared descendants name the
 	// durable root store without leaking Session into the handler dependency.
+	if update, ok := data.(events.TaskUpdatedData); ok && update.TaskStoreOwnerSessionID == "" {
+		update.TaskStoreOwnerSessionID = s.taskStoreOwnerSessionID()
+		data = update
+	}
+	s.emitWithProvenance(data, s.activeCausalProvenance())
+}
+
+// emitContext is emit on a caller's bound: the same publication, made under a
+// deadline the caller owns rather than the session's. The close drain uses it so
+// the Notification hook it fires -- and that hook's own output -- shares the
+// stop deadline instead of the close cascade's.
+//
+// It is deliberately NOT the body of emit. emit must keep calling
+// activeCausalProvenance and emitWithProvenance must keep calling
+// jobManager.onSessionEvent directly on the emitting goroutine: those calls are
+// what make an emit under Session.mu or jobManager.mu self-deadlock on the spot
+// instead of wedging the daemon silently, and TestEmitReacquiresSessionMu and
+// TestEmitWithProvenanceReacquiresJobManagerMu pin both (see
+// session_emit_lock_guard_test.go). Routing the unbounded path through this
+// bounded one would move both calls behind an extra hop and delete that guard.
+func (s *Session) emitContext(ctx context.Context, data events.EventData) {
+	if ctx == nil {
+		s.emit(data)
+		return
+	}
 	if update, ok := data.(events.TaskUpdatedData); ok && update.TaskStoreOwnerSessionID == "" {
 		update.TaskStoreOwnerSessionID = s.taskStoreOwnerSessionID()
 		data = update
@@ -273,10 +289,21 @@ func (s *Session) emitContext(ctx context.Context, data events.EventData) {
 // sendEventContext for why adoption is the contract and what it costs to
 // copy the stamp a second time.
 func (s *Session) emitWithProvenance(data events.EventData, p *provenance.Causal) {
-	s.emitWithProvenanceContext(nil, data, p)
+	if s == nil || s.events == nil {
+		return
+	}
+	data, ev := s.sendEvent(data, p)
+	if s.jobManager != nil {
+		s.jobManager.onSessionEvent(ev)
+	}
+	if events.KindOf(data) == events.EventWarning {
+		s.fireNotificationHook(warningHookMessage(data), warningHookTitle(data))
+	}
 }
 
-// emitWithProvenanceContext is emitWithProvenance on a caller's bound.
+// emitWithProvenanceContext is emitWithProvenance on a caller's bound. It carries
+// no nil case on purpose: the unbounded path is emitWithProvenance above, which
+// keeps the two lock-re-acquiring calls the guards pin.
 func (s *Session) emitWithProvenanceContext(ctx context.Context, data events.EventData, p *provenance.Causal) {
 	if s == nil || s.events == nil {
 		return
@@ -286,11 +313,7 @@ func (s *Session) emitWithProvenanceContext(ctx context.Context, data events.Eve
 		s.jobManager.onSessionEvent(ev)
 	}
 	if events.KindOf(data) == events.EventWarning {
-		if ctx != nil {
-			s.fireNotificationHookBounded(ctx, warningHookMessage(data), warningHookTitle(data))
-			return
-		}
-		s.fireNotificationHook(warningHookMessage(data), warningHookTitle(data))
+		s.fireNotificationHookBounded(ctx, warningHookMessage(data), warningHookTitle(data))
 	}
 }
 
@@ -366,6 +389,95 @@ func (s *Session) recordTurnFailureWithAsk(data events.ErrorData, steeringCarrie
 	return s.recordTurn(turn, turn)
 }
 
+// installRunnerEventCallback wires the runner's lifecycle events onto the
+// session's stream. It is one function rather than two closures in
+// initSessionState so the policy below is a single thing a test can exercise.
+//
+// A hook dispatched on a publication bound of its own has its lifecycle events
+// published on that bound. ONLY such a dispatch is. The dispatch context an
+// ordinary hook runs under is its turn's, and applying that context here would
+// drop a live completion the moment the turn is interrupted, even though the
+// session stays open and the completion reached the transcript -- a reloaded
+// reader would then see a hook exit no live reader ever saw. So the bound is
+// opt-in, marked by the dispatcher that has one to impose and knows what the
+// loss means: today that is the delegate close drain, which must not hold the
+// teardown budget open on an unresponsive consumer. Every other dispatch takes
+// the unbounded path exactly as it always has.
+func (s *Session) installRunnerEventCallback(runner *hooks.Runner) {
+	// The unbounded route. A completed hook additionally goes to disk (kata
+	// qm9y): a hook exit that exists only as a live event leaves the
+	// transcript's hook-exit toggles governing nothing for any session a reader
+	// comes back to.
+	runner.SetEventCallback(func(kind events.EventKind, data events.EventData) {
+		if end, ok := data.(events.HookEndData); ok && kind == events.EventHookEnd {
+			s.emitHookCompleted(end)
+			return
+		}
+		s.emit(data)
+	})
+	runner.SetEventCallbackContext(s.publishHookLifecycle)
+}
+
+// publishHookLifecycle is the policy described above, as one method: a dispatch
+// that marked a publication bound publishes on it, and every other dispatch
+// takes the session's ordinary delivery path.
+func (s *Session) publishHookLifecycle(ctx context.Context, kind events.EventKind, data events.EventData) {
+	end, isEnd := data.(events.HookEndData)
+	isEnd = isEnd && kind == events.EventHookEnd
+	bounded, ok := publicationBound(ctx)
+	// Recorded at the decision rather than at the send: the send's own outcome
+	// is a select among ready cases, so a test that watched it would agree with
+	// a wrong policy some of the time. This reports which path the policy chose,
+	// which is the thing that must not drift.
+	if observe := s.testOnlyPublicationRoute; observe != nil {
+		observe(ok)
+	}
+	if !ok {
+		if isEnd {
+			s.emitHookCompleted(end)
+			return
+		}
+		s.emit(data)
+		return
+	}
+	if isEnd {
+		s.emitHookCompletedContext(bounded, end)
+		return
+	}
+	s.emitContext(bounded, data)
+}
+
+// publicationBoundKey marks a hook dispatch whose lifecycle and output
+// publications are made on the bound carried in the context, rather than on the
+// session's own delivery path.
+//
+// It exists because the alternative -- applying every dispatch's context to
+// every hook event -- is the defect it replaces. A turn's cancellation is the
+// context an ordinary hook dispatch runs under, and an ordinary hook's
+// completion must reach the stream even when that turn is interrupted: the
+// completion is also recorded in the transcript, so dropping the live event
+// leaves a reloaded session showing a hook exit that live readers never saw.
+// The bound here is therefore supplied only by a caller that has one to impose
+// and knows what to do with the loss, which today is the delegate close drain.
+type publicationBoundKey struct{}
+
+// withPublicationBound marks ctx as a dispatch bound the publisher must honour.
+func withPublicationBound(ctx context.Context) context.Context {
+	return context.WithValue(ctx, publicationBoundKey{}, true)
+}
+
+// publicationBound reports the bound a lifecycle publication must use, and
+// whether the dispatcher supplied one at all.
+func publicationBound(ctx context.Context) (context.Context, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	if bounded, _ := ctx.Value(publicationBoundKey{}).(bool); !bounded {
+		return nil, false
+	}
+	return ctx, true
+}
+
 // emitHookCompleted reports a finished hook on both channels a client can
 // reach it by: the live HOOK_END event, and a TurnHookCompleted transcript
 // entry that survives reload. Both carry the same fields, so the hook line a
@@ -379,7 +491,8 @@ func (s *Session) recordTurnFailureWithAsk(data events.ErrorData, steeringCarrie
 // — turning it on would reveal only hooks that ran afterwards, which is the
 // same "switch that governs nothing" complaint this fixes (kata qm9y).
 func (s *Session) emitHookCompleted(data events.HookEndData) {
-	s.emitHookCompletedContext(nil, data)
+	s.emit(data)
+	s.recordHookCompletion(data, recordDiagnostics{warn: s.emitDiagnosticWarning})
 }
 
 // emitHookCompletedContext is emitHookCompleted on a caller's bound, so a hook a
@@ -387,6 +500,18 @@ func (s *Session) emitHookCompleted(data events.HookEndData) {
 // rather than the full close budget.
 func (s *Session) emitHookCompletedContext(ctx context.Context, data events.HookEndData) {
 	s.emitContext(ctx, data)
+	// The record's own diagnostics are published on the same bound, and as
+	// diagnostics: see recordHookCompletion.
+	s.recordHookCompletion(data, recordDiagnostics{
+		bound: ctx,
+		warn:  func(w events.WarningData) { s.emitDiagnosticWarningContext(ctx, w) },
+	})
+}
+
+// recordHookCompletion writes the completion turn, and is shared by both
+// publication paths above. warn carries the caller's bound and sink for the
+// transcript-write diagnostics this record raises.
+func (s *Session) recordHookCompletion(data events.HookEndData, diag recordDiagnostics) {
 	info := schema.HookInfo{
 		Event:      data.Event,
 		HookType:   data.HookType,
@@ -415,7 +540,14 @@ func (s *Session) emitHookCompletedContext(ctx context.Context, data events.Hook
 	// goroutine keeps firing its hook as usual. The invariant is directional:
 	// the warning path is what dispatches hooks, so the warning path must never
 	// be reachable from a hook's own completion.
-	s.recordTurnTo(turn, turn, s.emitDiagnosticWarning)
+	//
+	// The sink is also the caller's bound. A close drain launched its hook on
+	// the stop context and is waiting for this record to return, so publishing
+	// here on the full close budget is what let a stalled stream spend the
+	// budget reserved for leaving the lane's worktree on disk. The bound is the
+	// caller's, so a responsive consumer still receives the warning and the
+	// record still succeeds.
+	s.recordTurnTo(turn, turn, diag)
 }
 
 // emitDiagnosticWarning emits a hook-configuration/matcher diagnostic so the
@@ -426,7 +558,10 @@ func (s *Session) emitHookCompletedContext(ctx context.Context, data events.Hook
 // (b) — for the invalid-matcher diagnostic — recurse, since the Notification
 // dispatch re-enters the matcher that produced the warning.
 func (s *Session) emitDiagnosticWarning(data events.WarningData) {
-	s.emitDiagnosticWarningContext(nil, data)
+	if s == nil || s.events == nil {
+		return
+	}
+	s.sendEvent(data, s.activeCausalProvenance())
 }
 
 // emitDiagnosticWarningContext is emitDiagnosticWarning on a caller's bound, so a
@@ -449,12 +584,12 @@ func (s *Session) emitDiagnosticWarningContext(ctx context.Context, data events.
 // descriptor, a jobstore event, a transcript entry) pass provenance.Clone of
 // it. See sendEventContext for why adoption is the contract.
 func (s *Session) sendEvent(data events.EventData, p *provenance.Causal) (events.EventData, events.SessionEvent) {
-	return s.sendEventOnContext(nil, data, p)
+	data, ev, _ := s.sendEventContext(context.Background(), data, p)
+	return data, ev
 }
 
-// sendEventOnContext delivers on a caller's bound. A nil ctx keeps the ordinary
-// behaviour: background, so nothing but the session's own close budget bounds the
-// send.
+// sendEventOnContext delivers on a caller's bound, which bounds the send in
+// addition to whatever close budget the session has published.
 func (s *Session) sendEventOnContext(ctx context.Context, data events.EventData, p *provenance.Causal) (events.EventData, events.SessionEvent) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -743,7 +878,12 @@ func (s *Session) fireNotificationHookBounded(ctx context.Context, message, titl
 	if bounded.Err() != nil {
 		return
 	}
-	s.runNotificationHook(bounded, message, title)
+	// Marked so the runner's lifecycle publisher, and the output publication
+	// inside runNotificationHook, honour this bound instead of the session's
+	// delivery path: the drain is waiting on this hook, so an unresponsive
+	// consumer must release it at the stop deadline. Unmarked dispatches -- every
+	// ordinary hook -- are unaffected.
+	s.runNotificationHook(withPublicationBound(bounded), message, title)
 }
 
 // notificationHookBaseContext is the Notification hook's own bound: the

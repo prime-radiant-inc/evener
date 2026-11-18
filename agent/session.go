@@ -200,7 +200,10 @@ type Session struct {
 	closeCtx                     context.Context // shared shutdown deadline for blocked authoritative sends
 	closeSignal                  chan struct{}
 	testOnlyBlockedSendEntered   func()
-	eventsClosed                 bool // set under eventsMu.Lock immediately before close(events)
+	// testOnlyPublicationRoute reports which publication path a hook lifecycle
+	// event took: true when its dispatcher supplied a bound. nil in production.
+	testOnlyPublicationRoute func(bounded bool)
+	eventsClosed             bool // set under eventsMu.Lock immediately before close(events)
 	// descendantEvent is inherited from the spawning root and remains immutable
 	// for this Session's lifetime. Children use it to expose their live event
 	// stream without acquiring an authoritative consumer for their own channel.
@@ -2991,7 +2994,22 @@ func (s *Session) appendPairedTurnVia(kind schema.TurnKind, live, persisted llm.
 // only when a tool exposes explicitly private evidence; every other caller
 // passes the same turn twice. It reports the entry's record.
 func (s *Session) recordTurn(live, persisted schema.Turn) transcript.Record {
-	return s.recordTurnTo(live, persisted, func(w events.WarningData) { s.emit(w) })
+	return s.recordTurnTo(live, persisted, recordDiagnostics{warn: func(w events.WarningData) { s.emit(w) }})
+}
+
+// recordDiagnostics is where a transcript record sends what it discovers about
+// itself: the sink for the write failures it raises, and the bound every one of
+// those publications is made on. A zero bound means the session's own, which is
+// what an unbounded caller keeps; it is a nil context rather than a
+// context.Context so the unbounded case cannot be spelled as a nil Context.
+//
+// The bound is here rather than on recordTurnTo's parameters because the
+// fail-closed diagnostic is not a warning and does not travel through warn: it
+// is an error event on the same call, and it must not outlive the deadline the
+// caller is waiting under either.
+type recordDiagnostics struct {
+	bound context.Context
+	warn  func(events.WarningData)
 }
 
 // recordTurnTo is recordTurn with an explicit sink for the transcript-write
@@ -3001,7 +3019,7 @@ func (s *Session) recordTurn(live, persisted schema.Turn) transcript.Record {
 // fails the same way, spending a shutdown budget one dispatch at a time. Such a
 // caller passes a diagnostic sink, so the failure still reaches every reader of
 // the stream without re-entering the dispatcher that produced it.
-func (s *Session) recordTurnTo(live, persisted schema.Turn, warn func(events.WarningData)) transcript.Record {
+func (s *Session) recordTurnTo(live, persisted schema.Turn, diag recordDiagnostics) transcript.Record {
 	live.SkillState = live.SkillState.Clone()
 	persisted.SkillState = persisted.SkillState.Clone()
 	s.attentionMu.Lock()
@@ -3028,9 +3046,9 @@ func (s *Session) recordTurnTo(live, persisted schema.Turn, warn func(events.War
 	}
 	s.attentionMu.Unlock()
 	if err != nil {
-		warn(events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		diag.warn(events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
-	s.surfaceTranscriptWarningsTo(warn)
+	s.surfaceTranscriptWarningsTo(diag)
 	return rec
 }
 
@@ -3203,14 +3221,14 @@ func (s *Session) drainTranscriptWarnings(sink func(events.WarningData)) {
 // surfaceTranscriptWarnings emits every pending retained-entry diagnostic. Its
 // callers have already released the transcript locks.
 func (s *Session) surfaceTranscriptWarnings() {
-	s.surfaceTranscriptWarningsTo(func(w events.WarningData) { s.emit(w) })
+	s.surfaceTranscriptWarningsTo(recordDiagnostics{warn: func(w events.WarningData) { s.emit(w) }})
 }
 
 // surfaceTranscriptWarningsTo is surfaceTranscriptWarnings with the caller's
 // sink, for the recordTurnTo callers that must not reach the hook dispatcher.
-func (s *Session) surfaceTranscriptWarningsTo(warn func(events.WarningData)) {
-	s.drainTranscriptWarnings(warn)
-	s.announceFailClosed()
+func (s *Session) surfaceTranscriptWarningsTo(diag recordDiagnostics) {
+	s.drainTranscriptWarnings(diag.warn)
+	s.announceFailClosedOn(diag.bound)
 }
 
 func (s *Session) closeAttachedTranscript() error {

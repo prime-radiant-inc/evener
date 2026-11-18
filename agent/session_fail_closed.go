@@ -216,16 +216,40 @@ func (s *Session) failedClosedRefusal() error {
 // announceFailClosed emits the one diagnostic of a session that failed closed.
 // Callers hold no session lock: the event's notification hook takes them.
 func (s *Session) announceFailClosed() {
-	refusal := s.failedClosedRefusal()
-	if refusal == nil || !s.failedClosed.announced.CompareAndSwap(false, true) {
+	if data, ok := s.claimFailClosedDiagnostic(); ok {
+		s.emit(data)
+	}
+}
+
+// announceFailClosedOn is announceFailClosed on a caller's bound, for a caller
+// whose deadline the diagnostic must not outlive. It has no nil case on
+// purpose: the unbounded path is announceFailClosed above, which publishes on
+// the session's own delivery path exactly as it always has.
+func (s *Session) announceFailClosedOn(bound context.Context) {
+	data, ok := s.claimFailClosedDiagnostic()
+	if !ok {
 		return
 	}
-	s.emit(events.ErrorData{
+	// A close drain's terminal drain waits on this call, so an unresponsive
+	// consumer must release it at the drain's deadline rather than hold the
+	// teardown budget behind a session that has already failed closed.
+	s.sendEventOnContext(bound, data, s.activeCausalProvenance())
+}
+
+// claimFailClosedDiagnostic reports the one announcement a failed-closed session
+// gets, and whether this caller is the one that won it. The claim is taken here
+// so both publication paths above share it and neither can announce twice.
+func (s *Session) claimFailClosedDiagnostic() (events.ErrorData, bool) {
+	refusal := s.failedClosedRefusal()
+	if refusal == nil || !s.failedClosed.announced.CompareAndSwap(false, true) {
+		return events.ErrorData{}, false
+	}
+	return events.ErrorData{
 		Error: refusal.Error(),
 		Title: "Session stopped",
 		Hint:  "Its transcript can no longer record new history. Restart the session to continue from what the transcript holds.",
 		Cause: &events.ErrorCause{Kind: failClosedCause},
-	})
+	}, true
 }
 
 // trackExecutionCancel lets failClosed interrupt the execution whose context

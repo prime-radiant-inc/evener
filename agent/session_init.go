@@ -2172,30 +2172,7 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessi
 		})
 	}
 
-	// The runner callback carries hook lifecycle events (HookStart/HookEnd) and
-	// any genuine warnings raised during hook execution; route them through emit.
-	// A completed hook additionally goes to disk (kata qm9y): a hook exit that
-	// exists only as a live event leaves the transcript's hook-exit toggles
-	// governing nothing for any session a reader comes back to.
-	runner.SetEventCallback(func(kind events.EventKind, data events.EventData) {
-		if end, ok := data.(events.HookEndData); ok && kind == events.EventHookEnd {
-			s.emitHookCompleted(end)
-			return
-		}
-		s.emit(data)
-	})
-	// The bound a hook was dispatched under is the bound its lifecycle events are
-	// published on. An ordinary hook runs under the session's own lifetime, which
-	// is what emit already uses; a close drain launches its Notification hook on
-	// the stop context, and that narrower bound must reach the hook's start and
-	// end instead of falling back to the full close budget.
-	runner.SetEventCallbackContext(func(ctx context.Context, kind events.EventKind, data events.EventData) {
-		if end, ok := data.(events.HookEndData); ok && kind == events.EventHookEnd {
-			s.emitHookCompletedContext(ctx, end)
-			return
-		}
-		s.emitContext(ctx, data)
-	})
+	s.installRunnerEventCallback(runner)
 	s.hookRunner = runner
 	// Merge plugin agents on top of built-in agents (plugin agents win on conflict).
 	maps.Copy(s.pluginAgents, allAgents)

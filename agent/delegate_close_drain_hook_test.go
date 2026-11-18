@@ -345,6 +345,8 @@ func TestCloseDrainStopDeadlineDoesNotLeakOntoUnrelatedSends(t *testing.T) {
 
 	select {
 	case <-hookParked:
+	// TRIPWIRE: the send parks in-process as soon as the stream is full, so this
+	// only fires if the drain never launched the hook at all.
 	case <-time.After(10 * time.Second):
 		t.Fatal("TRIPWIRE: the drain never reached a blocked send")
 	}
@@ -361,6 +363,8 @@ func TestCloseDrainStopDeadlineDoesNotLeakOntoUnrelatedSends(t *testing.T) {
 	// the stop deadline -- which is the whole claim under test.
 	select {
 	case <-drained:
+	// TRIPWIRE: the drain returns when its stop bound expires, which is
+	// milliseconds away, so this is a hang guard and not the bound under test.
 	case <-time.After(10 * time.Second):
 		t.Fatal("TRIPWIRE: the drain never returned on its stop bound")
 	}
@@ -368,6 +372,8 @@ func TestCloseDrainStopDeadlineDoesNotLeakOntoUnrelatedSends(t *testing.T) {
 	// deadline. A send that kept the close deadline is still waiting and arrives;
 	// a send that inherited the stop deadline is already gone.
 	delivered := false
+	// TRIPWIRE: the consumer resumes immediately below, so a surviving send
+	// arrives at once. This only fires on a send that was dropped.
 	limit := time.After(5 * time.Second)
 	for !delivered {
 		select {
