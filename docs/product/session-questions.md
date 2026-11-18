@@ -120,16 +120,10 @@ A composed recap must also attribute each answer line to exactly one question.
 The client counts headers from the questions each call's successful result
 records — what actually ran, since a pre-tool hook may have changed the
 questions after the model sent them — and keeps the raw reply whenever a header
-appears more than once across the calls a reply names, or whenever a call's
-questions cannot be enumerated and only the original arguments remain with a
-question that does not parse.
-When admission also consumed questions it could not name — the restored
-call-less population — the observation carries `resolvedAskLegacyCount` as
-well. Those questions' headers never reach the wire, so a client cannot tell
-whether one of them shares the header a composed answer line names: it keeps
-that reply visible in the transcript and shows no attributed recap while the
-count is positive. A reply whose named calls fully account for the resolved
-questions recaps as before.
+appears more than once across the calls a reply names. It also keeps the raw
+reply when a named call's questions cannot be enumerated: when the recorded
+state is present but unreadable, or when no state exists and the original
+arguments hold a question that does not parse.
 
 A ref-addressed `thread/read` carrying the expected pair, `offset` and `limit`
 returns `pendingAskPage:{composites,total,nextOffset,calllessCount}`. Any page
