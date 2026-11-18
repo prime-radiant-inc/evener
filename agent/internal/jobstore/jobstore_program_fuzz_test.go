@@ -922,7 +922,7 @@ func jcpStoreErrorPaths(t *testing.T, root string, r *jcpReader) {
 		raw := jcpOpenAferoFile(t, base, "/recovery.jsonl")
 		test.file.File = raw
 		s := &Store{path: "/recovery.jsonl", fs: base, f: test.file}
-		jcpRequireError(t, test.label, s.recoverTrailingJSONLineLocked(test.line, 0))
+		jcpRequireError(t, test.label, s.recoverTrailingJSONLineLocked(test.line, 0, 1))
 		_ = raw.Close()
 	}
 
