@@ -278,7 +278,7 @@ func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		const signed = `[{"type":"reasoning.text","text":"signed","signature":"sig","index":4}]`
+		const signed = `[{"type":"reasoning.text","text":"signed","signature":"sig","index":0}]`
 		old := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
 			{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "old-scalar", Signature: "reasoning"}},
 			{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "signed", EncryptedContent: signed}},
@@ -288,7 +288,7 @@ func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 			want []map[string]any
 		}{
 			{scalarOnly.Message, []map[string]any{{"type": "reasoning.text", "format": "unknown", "index": 0, "text": "scalar-only"}}},
-			{old, []map[string]any{{"type": "reasoning.text", "format": "unknown", "index": 0, "text": "old-scalar"}, {"type": "reasoning.text", "index": 4, "text": "signed", "signature": "sig"}}},
+			{old, []map[string]any{{"type": "reasoning.text", "format": "unknown", "index": 1, "text": "old-scalar"}, {"type": "reasoning.text", "index": 0, "text": "signed", "signature": "sig"}}},
 		} {
 			msg := build(t, llm.Request{Model: "m", Messages: []llm.Message{tc.msg}}, res)["messages"].([]map[string]any)[0]
 			if got := jsonOf(t, msg["reasoning_details"]); got != jsonOf(t, tc.want) {

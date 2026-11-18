@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,15 +26,19 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 	const first, second = " \tλ<&>\n", "  next\r\n"
 	good, bad := mustJSON(t, valid), mustJSON(t, malformed)
 	const serial = "9007199254740993"
-	chat := `{"choices":[{"message":{
+	const scale = "6.250e+3"
+	unsigned := `{"type":"reasoning.text","id":"part-a","format":"fmt-a","index":7,"text":` + mustJSON(t, first) + `,"serial":` + serial + `},
+		{"type":"reasoning.text","format":"fmt-b","index":2,"text":` + mustJSON(t, second) + `}`
+	encrypted := `{"type":"reasoning.encrypted","id":"sealed","data":"opaque","serial":` + serial + `,"scale":` + scale + `}`
+	chat := func(details ...string) string {
+		return `{"choices":[{"message":{
 		"role":"assistant","reasoning":` + mustJSON(t, first+second) + `,
-		"reasoning_details":[
-			{"type":"reasoning.text","id":"part-a","format":"fmt-a","index":7,"text":` + mustJSON(t, first) + `,"serial":` + serial + `},
-			{"type":"reasoning.text","format":"fmt-b","index":2,"text":` + mustJSON(t, second) + `}],
+		"reasoning_details":[` + strings.Join(details, ",") + `],
 		"tool_calls":[
 			{"id":"c1","type":"function","function":{"name":"f","arguments":` + good + `}},
 			{"id":"c2","type":"function","function":{"name":"f","arguments":` + bad + `}}
 		]},"finish_reason":"tool_calls"}]}`
+	}
 	for _, tc := range []struct {
 		protocol    llm.Protocol
 		field       string
@@ -48,8 +53,8 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 			{"type":"function_call","call_id":"c1","name":"f","arguments":` + good + `},
 			{"type":"function_call","call_id":"c2","name":"f","arguments":` + bad + `}
 		]}`, []string{first, second}},
-		{&chatcompletions.Protocol{}, "messages", "reasoning_content", chat, []string{first + second}},
-		{&chatcompletions.Protocol{}, "messages", "reasoning_details", chat, []string{first, second}},
+		{&chatcompletions.Protocol{}, "messages", "reasoning_content", chat(unsigned, encrypted), []string{first + second}},
+		{&chatcompletions.Protocol{}, "messages", "reasoning_details", chat(unsigned), []string{first, second}},
 	} {
 		name := tc.protocol.ID()
 		if tc.replayField != "" {
@@ -139,14 +144,18 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 				if !slices.Equal(thoughts, tc.thoughts) {
 					t.Errorf("outbound reasoning parts = %q, want %q", thoughts, tc.thoughts)
 				}
-				if tc.replayField == "reasoning_details" {
-					want := []capturedChatDetail{
+				var want []capturedChatDetail
+				switch tc.replayField {
+				case "reasoning_details":
+					want = []capturedChatDetail{
 						{Type: "reasoning.text", ID: "part-a", Format: "fmt-a", Index: 7, Text: first, Serial: json.Number(serial)},
 						{Type: "reasoning.text", Format: "fmt-b", Index: 2, Text: second},
 					}
-					if !slices.Equal(details, want) {
-						t.Errorf("outbound native details = %#v, want %#v", details, want)
-					}
+				case "reasoning_content":
+					want = []capturedChatDetail{{Type: "reasoning.encrypted", ID: "sealed", Data: "opaque", Serial: json.Number(serial), Scale: json.Number(scale)}}
+				}
+				if !slices.Equal(details, want) {
+					t.Errorf("outbound native details = %#v, want %#v", details, want)
 				}
 			}
 			prefix := bytes.TrimSuffix(warm, []byte("]"))
@@ -175,9 +184,9 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 }
 
 type capturedChatDetail struct {
-	Type, ID, Format, Text string
-	Index                  int
-	Serial                 json.Number
+	Type, ID, Format, Text, Data string
+	Index                        int
+	Serial, Scale                json.Number
 }
 
 func capturedToolTurn(t *testing.T, history json.RawMessage) (map[string]string, []string, []capturedChatDetail) {
@@ -205,7 +214,9 @@ func capturedToolTurn(t *testing.T, history json.RawMessage) (map[string]string,
 			reasoning = append(reasoning, item.Reasoning)
 		}
 		for _, detail := range item.ReasoningDetails {
-			reasoning = append(reasoning, detail.Text)
+			if detail.Type != "reasoning.encrypted" {
+				reasoning = append(reasoning, detail.Text)
+			}
 		}
 		details = append(details, item.ReasoningDetails...)
 		if item.Type == "reasoning" {

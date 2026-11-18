@@ -265,8 +265,9 @@ func independentReasoningIndex(details []map[string]any) int {
 	used := make(map[int]bool, len(details))
 	for pos, item := range details {
 		index := pos + 1 // The independent block precedes the provider items.
-		if wireIndex, ok := item["index"].(float64); ok {
-			index = int(wireIndex)
+		wireIndex, _ := item["index"].(json.Number)
+		if n, err := wireIndex.Int64(); err == nil {
+			index = int(n)
 		}
 		used[index] = true
 	}

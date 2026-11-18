@@ -177,6 +177,7 @@ func TestIsOpenAICompatEncryptedReasoning(t *testing.T) {
 		{name: "text plus encrypted", in: `[{"type":"reasoning.text","signature":"S"},{"type":"reasoning.encrypted","id":"a","data":"x"}]`, want: true},
 		{name: "non-reasoning type rejected", in: `[{"type":"reasoning.encrypted","id":"a","data":"x"},{"type":"other"}]`, want: false},
 		{name: "empty array", in: `[]`, want: false},
+		{name: "second array", in: `[{"type":"reasoning.encrypted"}] []`, want: false},
 		{name: "not json", in: "[broken", want: false},
 	}
 	for _, tc := range cases {

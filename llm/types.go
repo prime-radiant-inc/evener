@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"iter"
 	"slices"
 	"strings"
@@ -391,8 +392,13 @@ func OpenAICompatReasoningDetails(s string) []map[string]any {
 	if len(s) == 0 || s[0] != '[' {
 		return nil
 	}
+	decoder := json.NewDecoder(strings.NewReader(s))
+	decoder.UseNumber()
 	var items []map[string]any
-	if err := json.Unmarshal([]byte(s), &items); err != nil || len(items) == 0 {
+	if err := decoder.Decode(&items); err != nil || len(items) == 0 {
+		return nil
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return nil
 	}
 	for _, it := range items {
