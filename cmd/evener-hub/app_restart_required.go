@@ -153,7 +153,7 @@ func lookupDaemonOwnerIn(ctx context.Context, cfg hubcore.WebConfig, view roster
 	if view.unconfirmedFor(jobTreeRootID) {
 		return hubcore.LiveEntry{}, false, fmt.Errorf("cannot verify daemon ownership in job tree %s", jobTreeRootID)
 	}
-	if err := view.snapshot.OwnershipError; err != nil {
+	if err := view.ownershipError(); err != nil {
 		return hubcore.LiveEntry{}, false, &daemonDiscoveryError{err: err}
 	}
 	return hubcore.LiveEntry{}, false, nil
@@ -253,7 +253,7 @@ func (v rosterView) absence() bool {
 	if !v.fromSnapshot {
 		return v.roster != nil && v.roster.DaemonOwnershipAbsent()
 	}
-	if v.snapshot.OwnershipError != nil || len(v.snapshot.Unconfirmed) != 0 {
+	if v.ownershipError() != nil || len(v.snapshot.Unconfirmed) != 0 {
 		return false
 	}
 	for _, entry := range v.snapshot.Live {
@@ -262,6 +262,25 @@ func (v rosterView) absence() bool {
 		}
 	}
 	return true
+}
+
+// ownershipError reports why discovery is incomplete, in whichever mode this
+// view answers from: a live view asks the roster now, a snapshot view reports
+// the error its publication carried.
+//
+// It is an accessor rather than a field read on purpose. The snapshot is
+// zero-valued in a live view, so reaching for the field silently drops the
+// discovery error, and a caller that then reports it as absence or as an
+// unreadable thread turns an incomplete scan into a worse answer than the
+// evidence supports.
+func (v rosterView) ownershipError() error {
+	if !v.fromSnapshot {
+		if v.roster == nil {
+			return nil
+		}
+		return v.roster.OwnershipError()
+	}
+	return v.snapshot.OwnershipError
 }
 
 func (v rosterView) liveForSession(sessionID string) (hubcore.LiveEntry, bool) {

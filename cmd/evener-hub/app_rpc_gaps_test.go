@@ -418,3 +418,112 @@ func TestSuccessfulSavedFallbackAfterRelayOutageStaysDaemonless(t *testing.T) {
 		t.Fatalf("successful saved fallback boot generation = %q, want %q", response.BootGeneration, appwire.DaemonlessBootGeneration)
 	}
 }
+
+// TestThreadReadServesSavedHistoryDuringIncompleteDiscovery pins the other half
+// of the discovery-error contract. A malformed rendezvous record makes the
+// roster's scan incomplete, so the hub cannot say who owns the session. When the
+// roster also cannot be refreshed, that uncertainty must not be reported as an
+// unavailable thread: the saved transcript is readable, and read-only history
+// stays available precisely because the answer is "unknown", not "gone".
+//
+// The failure this guards is subtle. The gate before the read asks the roster
+// for the discovery error and lets the read continue only while that error is
+// still there; the ancestry walk asks again at its end. A live view that
+// answered either question from a zero-valued snapshot reported no error at all,
+// so the read refused instead of falling back — the opposite of what the typed
+// error exists for.
+func TestThreadReadServesSavedHistoryDuringIncompleteDiscovery(t *testing.T) {
+	cfg, entry, _ := seedIndexedPastSession(t,
+		execution("turn_m1", schema.NewTurn(schema.TurnUserInput, llm.User("question"))),
+	)
+	runDir := t.TempDir()
+	// An unparseable claim makes the roster's own scan incomplete.
+	if err := os.WriteFile(filepath.Join(runDir, "424242.json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	roster := hubcore.NewRoster(runDir, nil).SetProcessAlive(func(int) bool { return true })
+	roster.Refresh()
+	if roster.OwnershipError() == nil {
+		t.Fatal("fixture does not hold an incomplete scan")
+	}
+	// A refresh that fails on its own is what makes the read consult the
+	// discovery error instead of simply retrying.
+	previousRefresh := hubRosterRefresh
+	t.Cleanup(func() { hubRosterRefresh = previousRefresh })
+	hubRosterRefresh = func(context.Context, *hubcore.Roster) error {
+		return errors.New("refresh blocked by an unrelated marker")
+	}
+	cfg.RunDir = runDir
+	cfg.Roster = roster
+	// The local source answers the ref and its live read fails for a reason
+	// that names no absence, so the read must fall back to saved history.
+	sources := appsource.NewRegistry()
+	sources.Add(&pastFallbackRelaySource{readErr: appwire.SessionUnavailable("daemon route vanished")})
+	server := newHubAppServer(cfg, sources)
+	value, err := server.Router().Dispatch(context.Background(), appwire.Request{
+		ID: appwire.NewIntID(1), Method: appwire.MethodThreadRead,
+		Params: mustPagingJSON(t, appwire.ThreadReadParams{Ref: "local:" + entry.Meta.ID, IncludeTurns: true, ItemLimit: 40}),
+	})
+	if err != nil {
+		t.Fatalf("read with incomplete discovery refused readable saved history: %v", err)
+	}
+	response, ok := value.(appwire.ThreadReadResponse)
+	if !ok {
+		t.Fatalf("thread/read response = %T", value)
+	}
+	if len(response.Thread.Turns) == 0 {
+		t.Fatal("read during incomplete discovery answered no turns")
+	}
+	// This response is a *successful* saved fallback, and such a read carries
+	// daemonless even when ownership was never resolved — the guide says a
+	// client must not read that token on a success as proof the daemon is gone.
+	// The stamp a *failed* saved read earns is pinned by the fallback tests.
+}
+
+// TestSessionOperationsStampsFailedWindowContinuation pins the second low. A
+// turns-list request carrying both a turn window and a cursor takes the Manager
+// continuation path, which the plain listing's stamp does not cover. When local
+// routing misses and the saved index then rejects the cursor, the continuation
+// used to return the typed diagnostic with no boot generation at all, so a
+// caller could not tell established absence from unknown ownership.
+//
+// The stamp is the same one every other saved fallback uses: the routing error
+// is the evidence, and the history diagnostic survives it.
+func TestSessionOperationsStampsFailedWindowContinuation(t *testing.T) {
+	cfg, entry, _ := seedIndexedPastSession(t,
+		execution("turn_m1", schema.NewTurn(schema.TurnUserInput, llm.User("question"))),
+	)
+	// The local source exists, so routing resolves a source, and its live
+	// continuation fails as a dead session — the shape that sends the request
+	// to the saved index.
+	sources := appsource.NewRegistry()
+	sources.Add(&pastFallbackRelaySource{readErr: appwire.SessionUnavailable(threadNotFoundMessagePrefix + entry.Meta.ID)})
+	server := newHubAppServer(cfg, sources)
+	operations := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelay(server, cfg, sources), server: server}
+	_, err := operations.turns(t.Context(), appwire.ThreadTurnsListParams{
+		Ref:        "local:" + entry.Meta.ID,
+		Cursor:     "a-cursor-the-saved-index-does-not-own",
+		TurnWindow: &appwire.ThreadTurnWindow{Turn: "turn_m1"},
+	})
+	if err == nil {
+		t.Fatal("a continuation whose cursor the saved index rejects answered a page")
+	}
+	wire, ok := errors.AsType[appwire.WireError](err)
+	if !ok {
+		t.Fatalf("failed continuation = %T %v, want a typed wire error", err, err)
+	}
+	data, ok := wire.Data.(appwire.HistoryReadErrorData)
+	if !ok {
+		t.Fatalf("failed continuation data = %#v, want HistoryReadErrorData", wire.Data)
+	}
+	// The diagnostic survives the stamp: this failure is the saved index
+	// rejecting the cursor, and it still says so.
+	if data.EvenerErrorInfo != appwire.ErrorTranscriptItemCursorStale {
+		t.Fatalf("failed continuation info = %q, want %q", data.EvenerErrorInfo, appwire.ErrorTranscriptItemCursorStale)
+	}
+	// Absence was never established here: routing missed and the saved index
+	// could not answer, so the failure must not claim a daemon is gone.
+	if data.BootGeneration != appwire.UnknownOwnerBootGeneration {
+		t.Fatalf("failed continuation boot generation = %q, want %q", data.BootGeneration, appwire.UnknownOwnerBootGeneration)
+	}
+}

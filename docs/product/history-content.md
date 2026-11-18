@@ -244,13 +244,16 @@ that token is not proof the daemon is gone, and a client must not retire a
 standing hold on it.
 
 A **failed** saved read is the case that does carry ownership: it stamps
-`daemonless` only when the hub established absence — one roster snapshot,
-ancestry included, showed nobody owns the thread — and `unknown-owner` whenever
-it could not establish that, including an incomplete scan, an unverified claim,
-a live or incompatible owner, unverifiable delegate ancestry, or no roster to
-ask. `unknown-owner` is not a claim that no daemon runs; it is the hub saying it
-does not know. A failed read must never claim a daemon is gone, because the only
-evidence it has is that it failed.
+`daemonless` on one of exactly two established facts. Either one roster
+snapshot, ancestry included, showed that nobody owns the thread; or the
+requested ref names a source this hub does not serve at all, in which case no
+daemon here could be serving it and no roster is needed — that holds even for a
+hub configured without one. Everywhere else it stamps `unknown-owner`: an
+incomplete scan, an unverified claim, a live or incompatible owner,
+unverifiable delegate ancestry, or no roster to ask. `unknown-owner` is not a
+claim that no daemon runs; it is the hub saying it does not know. A failed read
+must never claim a daemon is gone, because the only evidence it has is that it
+failed.
 
 The shared history reducer preserves higher item versions across overlapping
 pages. `HistoryState.replacementScopes` records closed page intervals and their
