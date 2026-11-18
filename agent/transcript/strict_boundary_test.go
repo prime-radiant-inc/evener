@@ -3,7 +3,12 @@ package transcript
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -27,14 +32,20 @@ func TestDecodeHeaderRejectsUnknownFieldsAndTrailingValues(t *testing.T) {
 }
 
 func TestDecodeEntryRejectsUnknownFieldsAndTrailingValues(t *testing.T) {
+	const arguments = `{"provider_specific":{"path":"a"}}`
+	entryWithSpelling := func(spelling string) string {
+		return `{"kind":"entry","seq":0,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"tool_call","tool_call":{"id":"c1","name":"read_file","arguments":` + arguments + `,"arguments_spelling":` + spelling + `}}]}}}`
+	}
 	tests := []struct {
-		name string
-		line string
+		name       string
+		line       string
+		permissive bool
 	}{
 		{name: "unknown entry field", line: `{"kind":"entry","seq":0,"turn":{"kind":"USER_INPUT"},"unknown":true}`},
 		{name: "unknown turn field", line: `{"kind":"entry","seq":0,"turn":{"kind":"USER_INPUT","unknown":true}}`},
 		{name: "unknown tool call field", line: `{"kind":"entry","seq":0,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"tool_call","tool_call":{"id":"c1","name":"read_file","argumnts":{"path":"a"}}}]}}}`},
-		{name: "unknown tool argument spelling field", line: `{"kind":"entry","seq":0,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"tool_call","tool_call":{"id":"c1","name":"read_file","arguments":{},"arguments_spelling":{"edits":[{"at":0,"unknown":true}]}}}]}}}`},
+		{name: "unknown spelling field after damaged digest", line: entryWithSpelling(`{"sha256":"!","unknown":true}`), permissive: true},
+		{name: "unknown edit field after damaged bytes", line: entryWithSpelling(`{"edits":[{"at":0,"bytes":"!","unknown":true}]}`), permissive: true},
 		{name: "trailing value", line: `{"kind":"entry","seq":0,"turn":{"kind":"USER_INPUT"}} {}`},
 	}
 	for _, tc := range tests {
@@ -42,15 +53,39 @@ func TestDecodeEntryRejectsUnknownFieldsAndTrailingValues(t *testing.T) {
 			if _, err := DecodeEntry([]byte(tc.line)); err == nil {
 				t.Fatalf("DecodeEntry(%q) succeeded", tc.line)
 			}
+			if tc.permissive {
+				var entry Entry
+				if err := json.Unmarshal([]byte(tc.line), &entry); err != nil {
+					t.Fatalf("permissive reader: %v", err)
+				}
+			}
 		})
 	}
-	valid := `{"kind":"entry","seq":0,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"tool_call","tool_call":{"id":"c1","name":"read_file","arguments":{"provider_specific":{"path":"a"}}}}]}}}`
-	entry, err := DecodeEntry([]byte(valid))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := entry.Turn.Message.Content[0].ToolCall.SentArguments(); got != `{"provider_specific":{"path":"a"}}` {
-		t.Errorf("decoded tool arguments = %q", got)
+	digest := sha256.Sum256([]byte(arguments))
+	goodDigest := base64.StdEncoding.EncodeToString(digest[:])
+	for _, tc := range []struct{ name, digest, edit, want string }{
+		{"valid edits", goodDigest, "CQ==", " \t" + arguments},
+		{"damaged digest", "!", "CQ==", arguments},
+		{"damaged second edit", goodDigest, "!", arguments},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entry := entryWithSpelling(`{"sha256":"` + tc.digest + `","edits":[{"at":0,"bytes":"IA=="},{"at":0,"bytes":"` + tc.edit + `"}]}`)
+			path := filepath.Join(t.TempDir(), "session.jsonl")
+			if err := os.WriteFile(path, []byte(scanHeaderLine+"\n"+entry+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			w, entries, err := OpenWriterForSession(path, "S")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = w.Close() })
+			if len(entries) != 1 {
+				t.Fatalf("recovered %d entries, want 1", len(entries))
+			}
+			if got := entries[0].Turn.Message.Content[0].ToolCall.SentArguments(); got != tc.want {
+				t.Errorf("recovered arguments = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

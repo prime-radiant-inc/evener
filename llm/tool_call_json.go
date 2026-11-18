@@ -36,16 +36,29 @@ func (tc ToolCallData) MarshalJSON() ([]byte, error) {
 	return json.Marshal(record)
 }
 
+// spellingBytes decodes damaged optional bytes as nil. The enclosing spelling
+// and edits still use the caller's policy for unknown fields.
+type spellingBytes []byte
+
+func (b *spellingBytes) UnmarshalJSON(data []byte) error {
+	var decoded []byte
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		decoded = nil
+	}
+	*b = decoded
+	return nil
+}
+
 // argumentEdit restores a run of original whitespace or string escaping at a
 // byte offset in the structured JSON. Unchanged argument values are stored once.
 type argumentEdit struct {
-	At    int    `json:"at"`
-	Drop  int    `json:"drop,omitempty"`
-	Bytes []byte `json:"bytes"`
+	At    int           `json:"at"`
+	Drop  int           `json:"drop,omitempty"`
+	Bytes spellingBytes `json:"bytes"`
 }
 
 type argumentSpelling struct {
-	Digest []byte         `json:"sha256"`
+	Digest spellingBytes  `json:"sha256"`
 	Edits  []argumentEdit `json:"edits"`
 }
 
@@ -109,7 +122,7 @@ func (format *argumentSpelling) restore(stored []byte) []byte {
 	original := make([]byte, 0, len(stored))
 	pos := 0
 	for _, edit := range format.Edits {
-		if edit.At < pos || edit.At > len(stored) || edit.Drop < 0 || edit.Drop > len(stored)-edit.At {
+		if edit.Bytes == nil || edit.At < pos || edit.At > len(stored) || edit.Drop < 0 || edit.Drop > len(stored)-edit.At {
 			return nil
 		}
 		original = append(original, stored[pos:edit.At]...)
