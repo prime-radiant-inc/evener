@@ -52,6 +52,28 @@ func (t *Tracker) StepInBlock(line string) bool {
 	return t.Step(line) || t.Inside()
 }
 
+// StepInBlockIn advances over line within the list item whose content
+// indentation is container, and reports whether the line belongs to a block.
+//
+// It is StepInBlock for a caller that already tracks list scope, and it exists
+// because that caller knows something this tracker cannot infer from the line
+// alone: the line is a continuation of an item rather than top-level text. A
+// fence opened there belongs to the item exactly as one opened on the marker
+// line does, and Markdown ends it when the item ends. Without the scope the
+// fence reads as a document-level block that nothing closes, so every later
+// top-level line is swallowed as its content (#6493 review).
+//
+// container is the scope for this line, 0 outside any item, so a caller must
+// reset it on the line that leaves the item. It is read only when no block is
+// open: a block's own content may look like a list, and what it holds is quoted
+// text rather than structure.
+func (t *Tracker) StepInBlockIn(line string, container int) bool {
+	if t.length == 0 && t.container == 0 && container > 0 {
+		t.container = container
+	}
+	return t.Step(line) || t.Inside()
+}
+
 // Step advances over line and reports whether it opened or closed a block.
 func (t *Tracker) Step(line string) bool {
 	// A non-blank line indented less than the list item's content leaves the

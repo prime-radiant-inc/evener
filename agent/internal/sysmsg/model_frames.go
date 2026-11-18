@@ -297,13 +297,21 @@ func EscapeModelAuthoredFrames(text string) string {
 	for line := range strings.Lines(text) {
 		content := strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
 		out := line
-		// List state is read only outside a block: a fence's own content may
-		// look like a list, and what it holds is quoted text, not structure.
-		inBlock := fence.StepInBlock(content)
+		// One list scope for the line, read from the state BEFORE it: it answers
+		// both questions the line asks — does a fence opened here belong to a
+		// list item, and is this line indented code — and the two must agree, or
+		// a fence the item holds is read as a document-level block that outlives
+		// it (#6493 review).
+		//
+		// It is read only outside a block: a fence's own content may look like a
+		// list, and what it holds is quoted text, not structure. "Outside" is
+		// decided before the line, so the line that opens a fence still gets the
+		// item's scope.
 		container := 0
-		if !inBlock {
+		if !fence.Inside() {
 			container = lists.step(content)
 		}
+		inBlock := fence.StepInBlockIn(content, container)
 		if !inBlock && !indentedCode(content, container) && !isQuotedLine(content) {
 			if escaped, ok := escapeFrameOpener(content); ok {
 				out = escaped + line[len(content):]

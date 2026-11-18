@@ -36,6 +36,38 @@ func anchorResponsePredatesBoundary(history []schema.Turn, activeStart int, anch
 
 const responseContextMarkerV1 = "cont-ctx-v1"
 
+// responseContextMarkerFullHistorySeed marks a response that answered a
+// full-history request carrying the model-authored frame escape.
+//
+// The marker is what records the state of the prefix a response was generated
+// from, and for these it was escaped on the way out: the escape rewrote the
+// frame in an earlier turn, so what the provider retained is already the
+// defused copy. Refusing to continue from such a response re-sends full history
+// every round for the rest of the turn's life even though every subsequent
+// anchor is clean, which is the performance half of the same defect the escape
+// fixes (#6493 review).
+const responseContextMarkerFullHistorySeed = "cont-ctx-v1-full-history"
+
+// responsesContinuationMarkerAcceptsAnchor reports whether a stored turn's
+// context marker makes it an anchor candidate. One predicate, because the same
+// question is asked when a turn is read as an anchor and when a candidate is
+// matched against a plan, and two answers would let a turn be eligible in one
+// place and not the other.
+func responsesContinuationMarkerAcceptsAnchor(marker string) bool {
+	switch strings.TrimSpace(marker) {
+	case responseContextMarkerV1, responseContextMarkerFullHistorySeed:
+		return true
+	}
+	return false
+}
+
+// responsesContinuationAnchorSeededByEscapedFullHistory reports whether the
+// anchor's retained prefix is the escaped full-history copy rather than the raw
+// transcript.
+func responsesContinuationAnchorSeededByEscapedFullHistory(anchor schema.Turn) bool {
+	return strings.TrimSpace(anchor.ResponseContextMarker) == responseContextMarkerFullHistorySeed
+}
+
 type responsesContinuationAnchorCandidate struct {
 	TurnIndex int
 	Turn      schema.Turn
@@ -92,7 +124,20 @@ func selectResponsesContinuationAnchorCandidate(cfg SessionConfig, history []sch
 			Reason:      reason,
 		}
 	}
-	if responsesContinuationAnchorCarriesEscapableText(history, activeStart, anchorIndex) {
+	// The anchor's own output is checked whatever its prefix was: a frame the
+	// model wrote on this turn still reaches the next round in the provider's
+	// spelling, because the retained copy is the model's bytes, not the escaped
+	// dispatch copy. That clause is what keeps accepting a seeded anchor from
+	// reopening the defect the escape exists to stop (#6493 review).
+	ownOutputEscapable := responsesContinuationAnchorCarriesEscapableText(history, anchorIndex, anchorIndex)
+	prefixEscapable := ownOutputEscapable
+	if !prefixEscapable && !responsesContinuationAnchorSeededByEscapedFullHistory(anchor) {
+		// The prefix is the raw transcript, so a frame anywhere in it reaches the
+		// model unescaped and the anchor is refused. A seeded anchor's prefix is
+		// the escaped copy, so only its own output can still need escaping.
+		prefixEscapable = responsesContinuationAnchorCarriesEscapableText(history, activeStart, anchorIndex-1)
+	}
+	if prefixEscapable {
 		// The provider retains the anchor's own bytes and replays them from
 		// previous_response_id; only the delta is sent. A frame the projection
 		// would escape in the local copy therefore reaches the model in the
@@ -287,5 +332,5 @@ func turnHasResponsesContinuationMetadata(turn schema.Turn) bool {
 		strings.TrimSpace(turn.ResponseEndpoint) != "" &&
 		strings.TrimSpace(turn.ResponseStorageScopeFingerprint) != "" &&
 		strings.TrimSpace(turn.ResponseRequestFingerprint) != "" &&
-		strings.TrimSpace(turn.ResponseContextMarker) == responseContextMarkerV1
+		responsesContinuationMarkerAcceptsAnchor(turn.ResponseContextMarker)
 }

@@ -747,10 +747,16 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 func responsesContinuationFullHistoryRequestForPlan(res registry.Resolved, req llm.Request, plan llm.ResponsesContinuationPlan) llm.Request {
 	req, _ = llm.ApplyResponsesContinuationStoreOverride(req, plan.StoragePolicyLabel)
 	req.HistoryMode = llm.HistoryModeFullHistory
+	// req.Messages is the dispatch copy the primary build already escaped, so
+	// this response's retained prefix is the defused text rather than the raw
+	// transcript. Recording that on the turn is what lets a clean response to
+	// this request restore continuation instead of every later round re-sending
+	// full history for a frame that has already been escaped once (#6493
+	// review).
 	req.Continuation = &llm.ContinuationMetadata{
 		EndpointFamily:          string(plan.EndpointFamily),
 		RequestFingerprint:      plan.RequestFingerprint,
-		ContextMarker:           responseContextMarkerV1,
+		ContextMarker:           responseContextMarkerFullHistorySeed,
 		StoragePolicyLabel:      plan.StoragePolicyLabel,
 		StorageScopeFingerprint: plan.StorageScopeFingerprint,
 	}
@@ -836,7 +842,7 @@ func responsesContinuationCandidateMatchesPlan(candidate responsesContinuationAn
 	return strings.TrimSpace(candidate.Turn.ResponseID) != "" &&
 		candidate.Turn.ResponseRequestFingerprint == plan.RequestFingerprint &&
 		candidate.Turn.ResponseStorageScopeFingerprint == plan.StorageScopeFingerprint &&
-		candidate.Turn.ResponseContextMarker == responseContextMarkerV1
+		responsesContinuationMarkerAcceptsAnchor(candidate.Turn.ResponseContextMarker)
 }
 
 func responsesContinuationDeltaMessages(base []llm.Message, deltaTurns []schema.Turn, dropsMedia func(string) bool) []llm.Message {

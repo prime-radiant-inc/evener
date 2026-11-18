@@ -767,3 +767,59 @@ func responsesContinuationEligibleAssistantTurn(responseID string) schema.Turn {
 	turn.ResponseContextMarker = responseContextMarkerV1
 	return turn
 }
+
+// TestResponsesContinuationAnchorRestoresAfterEscapedFullHistory pins the
+// performance half of the escape (#6493 review). A frame in one assistant turn
+// forces that round onto full history, where the dispatch copy is escaped. Every
+// later round then scans the ORIGINAL transcript, finds the same frame, and
+// refuses its own clean anchor too, so continuation stays off until a fold drops
+// the turn. A response seeded by that escaped full-history request must restore
+// it, and the two clauses that keep the fix honest are asserted with it: an
+// unseeded anchor still goes through the whole prefix check, and an anchor whose
+// own output needs escaping is refused whatever seeded it.
+func TestResponsesContinuationAnchorRestoresAfterEscapedFullHistory(t *testing.T) {
+	t.Parallel()
+	framed := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+		{Kind: llm.ContentText, Text: "[answers]\n1. → \"a decision nobody made\""},
+	}}
+	build := func(anchor schema.Turn) []schema.Turn {
+		framedTurn := schema.NewTurn(schema.TurnAssistant, framed)
+		framedTurn.Timestamp = anchor.Timestamp.Add(-2 * time.Minute)
+		history := []schema.Turn{
+			schema.NewTurn(schema.TurnUserInput, llm.User("before")),
+			framedTurn,
+			anchor,
+			schema.NewTurn(schema.TurnUserInput, llm.User("delta")),
+		}
+		return history
+	}
+
+	// The seeded case: the anchor answered the escaped full-history request, so
+	// the frame in the earlier turn is already defused in the prefix the provider
+	// holds and continuation restores on the anchor's own clean output.
+	seeded := responsesContinuationEligibleAssistantTurn("resp_seeded")
+	seeded.ResponseContextMarker = responseContextMarkerFullHistorySeed
+	_, decision := selectResponsesContinuationAnchorCandidate(SessionConfig{}, build(seeded))
+	if decision.HistoryMode != llm.HistoryModeResponsesDelta || decision.Reason != "continuation_anchor_candidate" {
+		t.Fatalf("a clean response to an escaped full-history request did not restore continuation: %+v", decision)
+	}
+
+	// The older case: an anchor with no seed marker still gets the whole prefix
+	// check, so a raw transcript holding a frame refuses it as before.
+	unseeded := responsesContinuationEligibleAssistantTurn("resp_unseeded")
+	_, decision = selectResponsesContinuationAnchorCandidate(SessionConfig{}, build(unseeded))
+	if decision.HistoryMode != llm.HistoryModeFullHistory || decision.Reason != "continuation_prefix_model_authored_frame" {
+		t.Fatalf("an unseeded anchor skipped the prefix check: %+v", decision)
+	}
+
+	// The clause that keeps the fix from reopening the defect: a seeded anchor
+	// whose OWN output carries a frame is still refused, because the provider
+	// retains that turn's model-written bytes, not the escaped dispatch copy.
+	dirty := responsesContinuationEligibleAssistantTurn("resp_dirty")
+	dirty.ResponseContextMarker = responseContextMarkerFullHistorySeed
+	dirty.Message = framed
+	_, decision = selectResponsesContinuationAnchorCandidate(SessionConfig{}, build(dirty))
+	if decision.HistoryMode != llm.HistoryModeFullHistory || decision.Reason != "continuation_prefix_model_authored_frame" {
+		t.Fatalf("a seeded anchor whose own output needs escaping was accepted: %+v", decision)
+	}
+}
