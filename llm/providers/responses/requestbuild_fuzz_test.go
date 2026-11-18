@@ -272,8 +272,9 @@ func FuzzResponsesBuildBody(f *testing.F) {
 	f.Add("json", "s", "u", []byte(`{}`), []byte(`{}`), byte(25), byte(0), byte(0))
 	// A nil tool schema is a tool that declares no arguments. The builder
 	// supplies its own closed empty object, so with the per-tool override
-	// asking for strict mode the tool goes out strict — the oracle must not
-	// substitute an open schema for nil and expect non-strict (#6200).
+	// asking for strict mode the tool goes out strict. The oracle must not
+	// substitute an open schema for nil and expect non-strict: nil means "no
+	// declared arguments", which is not the same thing as an open object.
 	f.Add("m", "s", "u", []byte(`{}`), []byte(`null`), byte(131), byte(2), byte(0))
 	f.Add("JSON", "s", "u", []byte(`{}`), []byte(`{}`), byte(25), byte(0), byte(0))
 	f.Add("json_schema", "s", "u", []byte(`{}`), []byte(`{"type":"object"}`), byte(25), byte(8), byte(0))

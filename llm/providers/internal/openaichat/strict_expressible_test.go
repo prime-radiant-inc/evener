@@ -190,6 +190,42 @@ func TestStrictExpressible(t *testing.T) {
 			},
 			want: false,
 		},
+		// Strict mode requires exactly the declared properties: a required name
+		// the object never declares makes the projected schema unsatisfiable,
+		// and it is illegal in strict mode whether or not the rewrite transforms
+		// the node. A closed nullable object is the case that escaped, because
+		// the rewrite matches only a literal type string.
+		{
+			name: "closed nullable object requires a key it does not declare",
+			in: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"target": map[string]any{
+						"type":                 []string{"object", "null"},
+						"additionalProperties": false,
+						"properties": map[string]any{
+							"id": map[string]any{"type": "string"},
+						},
+						"required": []string{"id", "scope"},
+					},
+				},
+				"required": []string{"target"},
+			},
+			want: false,
+		},
+		{
+			name: "closed object requires a key it does not declare",
+			in: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"id": map[string]any{"type": "string"},
+				},
+				"required": []string{"id", "scope"},
+			},
+			want: false,
+		},
 		{
 			name: "nullable array type list leaves items optional",
 			in: map[string]any{
@@ -779,8 +815,8 @@ func TestRefusedBranchKeepsItsExclusion(t *testing.T) {
 // Every schema the gate certifies must accept, after projection, the calls its
 // original form accepted. The keywords the rewrite does not model are what
 // break that, so a schema carrying one is refused and sent as it was
-// advertised. This is the shape both reviewers described: a wrapper or
-// dependency that constrains keys the projected object would forbid.
+// advertised. The shapes that break it are those where a keyword constrains
+// keys the projected object would forbid: a wrapper or a dependency.
 func TestRefusedKeywordSchemasKeepTheirAcceptedCalls(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

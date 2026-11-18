@@ -108,6 +108,15 @@ func strictlyExpressibleNode(m map[string]any, visited bool) bool {
 		if len(props) > 0 && !allPropertiesRequired(props, m["required"]) {
 			return false
 		}
+		// Strict mode admits only a required list that names exactly the
+		// declared properties. A name the object never declares makes the
+		// projected schema unsatisfiable, and the rewrite cannot repair it: it
+		// rewrites required only where it transforms the node, so a node it
+		// leaves alone would carry the extra name to the provider. This holds
+		// for every object node, not only the transformed ones.
+		if !requiredNamesDeclared(props, m["required"]) {
+			return false
+		}
 		// Only the rewrite may supply additionalProperties: false. An object it
 		// does not transform keeps the advertised value, and strict mode
 		// requires false.
@@ -118,16 +127,6 @@ func strictlyExpressibleNode(m map[string]any, visited bool) bool {
 		// lossless only if the object did not allow other keys.
 		if transformed && !allKeysDeclared(m) {
 			return false
-		}
-		// The rewrite replaces required with exactly the declared property
-		// names, so a requirement on a key the node never declares would be
-		// dropped rather than projected.
-		if transformed {
-			for name := range requiredNamesOf(m["required"]) {
-				if _, has := props[name]; !has {
-					return false
-				}
-			}
 		}
 		for _, child := range props {
 			childMap, ok := child.(map[string]any)
@@ -253,6 +252,35 @@ func allPropertiesRequired(props map[string]any, required any) bool {
 	return true
 }
 
+// requiredNamesDeclared reports whether every name in required is a declared
+// property. Strict mode admits required only as exactly the declared property
+// names, so a name the object never declares makes the schema unsatisfiable
+// there. This is the other half of allPropertiesRequired: that one asks whether
+// every property is required, this one whether every requirement is a property.
+func requiredNamesDeclared(props map[string]any, required any) bool {
+	switch list := required.(type) {
+	case []string:
+		for _, name := range list {
+			if _, has := props[name]; !has {
+				return false
+			}
+		}
+	case []any:
+		for _, v := range list {
+			if name, ok := v.(string); ok {
+				if _, has := props[name]; !has {
+					return false
+				}
+			}
+		}
+	case nil:
+		return true
+	default:
+		return false
+	}
+	return true
+}
+
 // A node the rewrite transforms may not permit keys it does not declare, so
 // only an explicit additionalProperties: false is certifiable there.
 //
@@ -265,27 +293,6 @@ func allPropertiesRequired(props map[string]any, required any) bool {
 func allKeysDeclared(m map[string]any) bool {
 	closed, ok := m["additionalProperties"].(bool)
 	return ok && !closed
-}
-
-// requiredNamesOf reads a node's required list in either of the shapes the
-// builders and decoded provider schemas use.
-func requiredNamesOf(raw any) map[string]bool {
-	var out map[string]bool
-	switch list := raw.(type) {
-	case []string:
-		out = make(map[string]bool, len(list))
-		for _, name := range list {
-			out[name] = true
-		}
-	case []any:
-		out = make(map[string]bool, len(list))
-		for _, v := range list {
-			if name, ok := v.(string); ok {
-				out[name] = true
-			}
-		}
-	}
-	return out
 }
 
 // modeledKeywords lists every JSON Schema keyword StrictifyJSONSchema either

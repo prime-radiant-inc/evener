@@ -317,3 +317,39 @@ func TestRefusedNestingSchemaIsEmittedUnchanged(t *testing.T) {
 		}
 	}
 }
+
+// A required name the object never declares makes the schema illegal under
+// strict mode, and the rewrite cannot repair it: it rewrites required only
+// where it transforms the node, so a closed nullable object would carry the
+// stale name to the provider and be rejected. The tool is sent non-strict with
+// its advertised schema, and the stale name is not silently deleted — that
+// would change what the caller asked for.
+func TestStrictToolProjectionSendsMismatchedRequiredUnchanged(t *testing.T) {
+	t.Parallel()
+	schema := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"target": map[string]any{
+				"type":                 []string{"object", "null"},
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"id": map[string]any{"type": "string"},
+				},
+				"required": []string{"id", "scope"},
+			},
+		},
+		"required": []string{"target"},
+	}
+	req := userReq("hi")
+	req.Tools = []llm.ToolDefinition{{Name: "job_status", Parameters: schema}}
+
+	body := build(t, req, resolved(strictCaps))
+	tool := body["tools"].([]map[string]any)[0]
+	if tool["strict"] != false {
+		t.Fatalf("strict = %#v, want false: a required name the object never declares is not expressible in strict mode", tool["strict"])
+	}
+	if got, want := jsonOf(t, tool["parameters"]), jsonOf(t, schema); got != want {
+		t.Fatalf("the emitted schema must be the advertised one, with the stale required name intact\n got: %s\nwant: %s", got, want)
+	}
+}
