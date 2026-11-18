@@ -392,16 +392,9 @@ func TestNotificationTurnBareTextAckIsNotScolded(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			// The agent already observed this job's result, so it acknowledges the
-			// terminal notification with bare text instead of calling communicate.
-			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("Acknowledged — already saw this job, no action needed.")}
-			},
-		},
-	}
+	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("Acknowledged — already saw this job, no action needed.")}
+	})
 	c.Register(adapter)
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
@@ -435,12 +428,7 @@ func TestJobNotificationTurnDeliversPendingDurableRecord(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ack") },
-		},
-	}
+	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("ack") })
 	c.Register(adapter)
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
@@ -485,12 +473,7 @@ func TestJobNotificationTurnDeliversWatchNotification(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ack") },
-		},
-	}
+	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("ack") })
 	c.Register(adapter)
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
@@ -519,12 +502,7 @@ func TestWatchNotificationHistoryDoesNotSuppressDurableTerminalNotification(t *t
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ack") },
-		},
-	}
+	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("ack") })
 	c.Register(adapter)
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
@@ -563,12 +541,7 @@ func TestJobNotificationTurnRequeuesWhenDeliveredMarkFails(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ack") },
-		},
-	}
+	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("ack") })
 	c.Register(adapter)
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
@@ -637,12 +610,7 @@ func TestJobNotificationTurnRequeuesWhenJobManagerMissing(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("should not run") },
-		},
-	}
+	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("should not run") })
 	c.Register(adapter)
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
@@ -668,12 +636,7 @@ func TestJobNotificationTurnRequeuesWhenStoreLoadFailsThenDelivers(t *testing.T)
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ack") },
-		},
-	}
+	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("ack") })
 	c.Register(adapter)
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
@@ -876,12 +839,7 @@ func newNotificationExcerptSession(t *testing.T) (*Session, *fakeAdapter) {
 	t.Helper()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ack") },
-		},
-	}
+	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("ack") })
 	c.Register(adapter)
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {

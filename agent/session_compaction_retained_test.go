@@ -372,7 +372,7 @@ func checkRetainedProviderOrder(t *testing.T, s *Session, want []string) {
 	t.Helper()
 	calls := 0
 	s.profile = withTestSessionNamer(s.client, s.profile)
-	s.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
+	s.client.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
 		calls++
 		var got []string
 		for _, message := range req.Messages {
@@ -390,7 +390,7 @@ func checkRetainedProviderOrder(t *testing.T, s *Session, want []string) {
 		}
 		call := communicateCall("retained-order", "opaque-result-928")
 		return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}
-	}}})
+	}))
 	if _, err := s.ProcessInput(context.Background(), "opaque-after-restore-928", nil); err != nil {
 		t.Fatal(err)
 	}

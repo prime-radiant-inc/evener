@@ -114,12 +114,7 @@ func TestParseAskUserCallArgumentsSemanticViolation(t *testing.T) {
 func TestPendingAskArguments_AvailableWithNoEventConsumer(t *testing.T) {
 	t.Parallel()
 	ask := askUserCall("ask1", askUserArgsValid())
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) },
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) })
 	sess := newSession(t, withAdapter(f))
 	// No goroutine, no select, nothing: sess.Events() is never called.
 
@@ -152,12 +147,7 @@ func TestPendingAskArguments_OneEntryPerCallInOrder(t *testing.T) {
 	t.Parallel()
 	ask1 := askUserCall("ask1", askUserArgsValid())
 	ask2 := askUserCall("ask2", askUserArgsTwoQuestions())
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask1, ask2) },
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask1, ask2) })
 	sess := newSession(t, withAdapter(f))
 
 	ctx := tripwireCtx(t)
@@ -195,13 +185,7 @@ func TestPendingAskArguments_ClearedByAnsweringSteeringCarrierNotStale(t *testin
 	ask1 := askUserCall("ask1", askUserArgsValid())
 	ask2 := askUserCall("ask2", askUserArgsTwoQuestions())
 	c := llm.NewClient()
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask1) },
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask2) },
-		},
-	}
+	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask1) }, func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask2) })
 	c.Register(adapter)
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{StateDir: dir}))
 
@@ -254,13 +238,7 @@ func TestPendingAskArguments_ClearedWithAskPending(t *testing.T) {
 	t.Parallel()
 	ask := askUserCall("ask1", askUserArgsValid())
 	comm := communicateCall("c1", "Using Postgres.")
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) },
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(comm) },
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) }, func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(comm) })
 	sess := newSession(t, withAdapter(f))
 
 	ctx := tripwireCtx(t)

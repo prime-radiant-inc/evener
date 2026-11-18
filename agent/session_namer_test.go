@@ -11,33 +11,28 @@ import (
 func TestNameSession_UsesCheapModelAndStructuredOutput(t *testing.T) {
 	t.Parallel()
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-4.1-nano")
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				if req.Model != "gpt-4.1-nano" {
-					t.Fatalf("model = %q, want cheap model", req.Model)
-				}
-				if req.Provider != "openai" {
-					t.Fatalf("provider = %q, want openai", req.Provider)
-				}
-				if req.ResponseFormat == nil || req.ResponseFormat.Type != "json_schema" {
-					t.Fatalf("ResponseFormat = %#v, want json_schema", req.ResponseFormat)
-				}
-				if len(req.Tools) != 0 {
-					t.Fatalf("Tools len = %d, want 0", len(req.Tools))
-				}
-				joined := messagesText(req.Messages)
-				if !strings.Contains(joined, "initial user prompt") || !strings.Contains(joined, "fix the flaky test") {
-					t.Fatalf("prompt did not include expected source text: %q", joined)
-				}
-				return llm.Response{
-					Message: llm.Assistant(`{"name":"Fix Flaky Test"}`),
-					Usage:   llm.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
-				}
-			},
-		},
-	}
+	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		if req.Model != "gpt-4.1-nano" {
+			t.Fatalf("model = %q, want cheap model", req.Model)
+		}
+		if req.Provider != "openai" {
+			t.Fatalf("provider = %q, want openai", req.Provider)
+		}
+		if req.ResponseFormat == nil || req.ResponseFormat.Type != "json_schema" {
+			t.Fatalf("ResponseFormat = %#v, want json_schema", req.ResponseFormat)
+		}
+		if len(req.Tools) != 0 {
+			t.Fatalf("Tools len = %d, want 0", len(req.Tools))
+		}
+		joined := messagesText(req.Messages)
+		if !strings.Contains(joined, "initial user prompt") || !strings.Contains(joined, "fix the flaky test") {
+			t.Fatalf("prompt did not include expected source text: %q", joined)
+		}
+		return llm.Response{
+			Message: llm.Assistant(`{"name":"Fix Flaky Test"}`),
+			Usage:   llm.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
+		}
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 
@@ -71,20 +66,15 @@ func TestNameSession_UsesCheapModelAndStructuredOutput(t *testing.T) {
 func TestNameSession_RequestsReasoningOffAndLeavesOutputUncapped(t *testing.T) {
 	t.Parallel()
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-4.1-nano-namer")
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				if req.ReasoningEffort == nil || *req.ReasoningEffort != llm.ReasoningEffortNone {
-					t.Fatalf("ReasoningEffort = %#v, want %q", req.ReasoningEffort, llm.ReasoningEffortNone)
-				}
-				if req.MaxTokens != nil {
-					t.Fatalf("MaxTokens = %#v, want nil so a reasoning model cannot starve the title", req.MaxTokens)
-				}
-				return llm.Response{Message: llm.Assistant(`{"name":"Fix Flaky Test"}`)}
-			},
-		},
-	}
+	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		if req.ReasoningEffort == nil || *req.ReasoningEffort != llm.ReasoningEffortNone {
+			t.Fatalf("ReasoningEffort = %#v, want %q", req.ReasoningEffort, llm.ReasoningEffortNone)
+		}
+		if req.MaxTokens != nil {
+			t.Fatalf("MaxTokens = %#v, want nil so a reasoning model cannot starve the title", req.MaxTokens)
+		}
+		return llm.Response{Message: llm.Assistant(`{"name":"Fix Flaky Test"}`)}
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 
@@ -102,29 +92,19 @@ func TestNameSession_RoutesToCheapProvider(t *testing.T) {
 	// A cross-provider cheap model ("anthropic/...") must route the namer's call
 	// to the cheap provider, not the active provider.
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "anthropic/claude-haiku-4-5-20251001")
-	mainAdapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				t.Errorf("namer routed to active provider %q, want cheap provider anthropic", req.Provider)
-				return llm.Response{Message: llm.Assistant(`{"name":"Wrong"}`)}
-			},
-		},
-	}
-	cheapAdapter := &fakeAdapter{
-		name: "anthropic",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				if req.Provider != "anthropic" {
-					t.Fatalf("provider = %q, want anthropic", req.Provider)
-				}
-				if req.Model != "claude-haiku-4-5-20251001" {
-					t.Fatalf("model = %q, want claude-haiku-4-5-20251001", req.Model)
-				}
-				return llm.Response{Message: llm.Assistant(`{"name":"Cheap Routed"}`)}
-			},
-		},
-	}
+	mainAdapter := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		t.Errorf("namer routed to active provider %q, want cheap provider anthropic", req.Provider)
+		return llm.Response{Message: llm.Assistant(`{"name":"Wrong"}`)}
+	})
+	cheapAdapter := newFakeAdapter("anthropic", func(req llm.Request) llm.Response {
+		if req.Provider != "anthropic" {
+			t.Fatalf("provider = %q, want anthropic", req.Provider)
+		}
+		if req.Model != "claude-haiku-4-5-20251001" {
+			t.Fatalf("model = %q, want claude-haiku-4-5-20251001", req.Model)
+		}
+		return llm.Response{Message: llm.Assistant(`{"name":"Cheap Routed"}`)}
+	})
 	client := llm.NewClient()
 	client.Register(mainAdapter)
 	client.Register(cheapAdapter)
@@ -140,17 +120,12 @@ func TestNameSession_RoutesToCheapProvider(t *testing.T) {
 
 func TestNameSession_FallsBackToActiveModel(t *testing.T) {
 	t.Parallel()
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				if req.Model != "gpt-5.2" {
-					t.Fatalf("model = %q, want active model", req.Model)
-				}
-				return llm.Response{Message: llm.Assistant(`{"name":"Review System Prompt"}`)}
-			},
-		},
-	}
+	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		if req.Model != "gpt-5.2" {
+			t.Fatalf("model = %q, want active model", req.Model)
+		}
+		return llm.Response{Message: llm.Assistant(`{"name":"Review System Prompt"}`)}
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 
@@ -180,14 +155,9 @@ func TestSessionNamerEnabledUsesActiveModelFallback(t *testing.T) {
 
 func TestNameSession_SanitizesGeneratedName(t *testing.T) {
 	t.Parallel()
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant(`{"name":"  \"Fix Parser Bug!!!\"  "}`)}
-			},
-		},
-	}
+	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant(`{"name":"  \"Fix Parser Bug!!!\"  "}`)}
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 

@@ -123,28 +123,18 @@ func TestWebFetchTool_Integration(t *testing.T) {
 
 	// Set up fake adapter that captures requests and returns a canned answer.
 	var capturedReqs []llm.Request
-	fa := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			// Step 0: the main agent calls web_fetch.
-			func(req llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(llm.ToolCallData{
-					ID:        "wf1",
-					Name:      "web_fetch",
-					Arguments: json.RawMessage(fmt.Sprintf(`{"url": %q, "question": "What is this page about?"}`, srv.URL)),
-				})
-			},
-			// Step 1: the cheap model Complete() call from web_fetch.
-			func(req llm.Request) llm.Response {
-				capturedReqs = append(capturedReqs, req)
-				return agenttest.FinalResponse("This page is about Go programming.")
-			},
-			// Step 2: the main agent receives the web_fetch result and responds.
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("The page is about Go programming.")
-			},
-		},
-	}
+	fa := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(llm.ToolCallData{
+			ID:        "wf1",
+			Name:      "web_fetch",
+			Arguments: json.RawMessage(fmt.Sprintf(`{"url": %q, "question": "What is this page about?"}`, srv.URL)),
+		})
+	}, func(req llm.Request) llm.Response {
+		capturedReqs = append(capturedReqs, req)
+		return agenttest.FinalResponse("This page is about Go programming.")
+	}, func(req llm.Request) llm.Response {
+		return agenttest.FinalResponse("The page is about Go programming.")
+	})
 
 	c := llm.NewClient()
 	c.Register(fa)
@@ -243,24 +233,17 @@ func TestWebFetchTool_ResultContainsFilePaths(t *testing.T) {
 
 	dir := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	fa := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(llm.ToolCallData{
-					ID:        "wf1",
-					Name:      "web_fetch",
-					Arguments: json.RawMessage(fmt.Sprintf(`{"url": %q, "question": "test"}`, srv.URL)),
-				})
-			},
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("answer")
-			},
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("done")
-			},
-		},
-	}
+	fa := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(llm.ToolCallData{
+			ID:        "wf1",
+			Name:      "web_fetch",
+			Arguments: json.RawMessage(fmt.Sprintf(`{"url": %q, "question": "test"}`, srv.URL)),
+		})
+	}, func(req llm.Request) llm.Response {
+		return agenttest.FinalResponse("answer")
+	}, func(req llm.Request) llm.Response {
+		return agenttest.FinalResponse("done")
+	})
 
 	c := llm.NewClient()
 	c.Register(fa)
@@ -310,25 +293,17 @@ func TestWebFetchTool_JSONContent(t *testing.T) {
 	cacheHome := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", cacheHome)
 
-	fa := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(llm.ToolCallData{
-					ID:        "wf1",
-					Name:      "web_fetch",
-					Arguments: json.RawMessage(fmt.Sprintf(`{"url": %q, "question": "What is the status?"}`, srv.URL)),
-				})
-			},
-			// Cheap model call.
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("The status is ok.")
-			},
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("Status is ok.")
-			},
-		},
-	}
+	fa := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(llm.ToolCallData{
+			ID:        "wf1",
+			Name:      "web_fetch",
+			Arguments: json.RawMessage(fmt.Sprintf(`{"url": %q, "question": "What is the status?"}`, srv.URL)),
+		})
+	}, func(req llm.Request) llm.Response {
+		return agenttest.FinalResponse("The status is ok.")
+	}, func(req llm.Request) llm.Response {
+		return agenttest.FinalResponse("Status is ok.")
+	})
 
 	c := llm.NewClient()
 	c.Register(fa)
@@ -423,14 +398,9 @@ func TestWebFetchTool_HTTP404RetriesWithAlternateUserAgent(t *testing.T) {
 	dir := t.TempDir()
 	cacheHome := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", cacheHome)
-	fa := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant(modelSentinel)}
-			},
-		},
-	}
+	fa := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant(modelSentinel)}
+	})
 	c := llm.NewClient()
 	c.Register(fa)
 

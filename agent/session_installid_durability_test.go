@@ -33,9 +33,7 @@ func TestSession_InstallationIDSurvivesRestore(t *testing.T) {
 	dir := t.TempDir()
 
 	createClient := llm.NewClient()
-	createAdapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
-	}}
+	createAdapter := newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse("ok") })
 	createClient.Register(createAdapter)
 
 	created, err := NewSession(createClient, withTestSessionNamer(createClient, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
@@ -70,9 +68,7 @@ func TestSession_InstallationIDSurvivesRestore(t *testing.T) {
 	}
 
 	restoreClient := llm.NewClient()
-	restoreAdapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
-	}}
+	restoreAdapter := newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse("ok") })
 	restoreClient.Register(restoreAdapter)
 
 	restored, err := RestoreSessionFromMetaWithConfig(restoreClient, withTestSessionNamer(restoreClient, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{

@@ -76,11 +76,9 @@ func TestDelegateTools_CreateSendStopStatusUseDelegateID(t *testing.T) {
 func TestDelegatePublicMetadataUsesProviderWireToolNames(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
-	adapter := &fakeAdapter{name: "google", steps: []func(llm.Request) llm.Response{
-		func(req llm.Request) llm.Response {
-			return agenttest.FinalResponse("done")
-		},
-	}}
+	adapter := newFakeAdapter("google", func(req llm.Request) llm.Response {
+		return agenttest.FinalResponse("done")
+	})
 	client.Register(adapter)
 	profile := withTestSessionNamer(client, newGeminiProfile("gemini-test"))
 	workspace := t.TempDir()

@@ -16,9 +16,7 @@ import (
 // routes that still need the side-channel.
 func TestDescribeImage_AnthropicPDFToolResultSkipsTheSideChannel(t *testing.T) {
 	t.Parallel()
-	anthropic := &fakeAdapter{name: "anthropic", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("a pdf about cats")} },
-	}}
+	anthropic := newFakeAdapter("anthropic", func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("a pdf about cats")} })
 	profile := newAnthropicProfile("claude-opus-4-6")
 	if !profile.AcceptsDocumentInput(&llm.DocumentData{Data: []byte("%PDF-1.4 fake"), MediaType: "application/pdf"}) {
 		t.Fatal("test premise: the fixture Anthropic row must declare pdf input")

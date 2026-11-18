@@ -223,11 +223,9 @@ func TestRunPreCompactHook_PluginModelContextKeepsPrecompactHookKind(t *testing.
 	s := newTestSession(t)
 
 	hookClient := llm.NewClient()
-	hookClient.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(llm.Request) llm.Response {
-			return llm.Response{Message: llm.Assistant(`{"hookSpecificOutput":{"additionalContext":"plugin context"}}`)}
-		},
-	}})
+	hookClient.Register(newFakeAdapter("openai", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant(`{"hookSpecificOutput":{"additionalContext":"plugin context"}}`)}
+	}))
 	runner := hooks.NewRunner(hookClient, "gpt-5.2")
 	runner.Add(plugin.HookPreCompact, plugin.RegisteredHook{Matcher: "*", Type: "prompt", Prompt: "compact"})
 	s.hookRunner = runner

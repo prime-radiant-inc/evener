@@ -480,21 +480,14 @@ func reclamationRootIDs(claim *delegateRuntimeReclamationClaim) []string {
 // scheduled path end to end is TestIntg_DelegateIdleReleasesStdioMCPServer.
 func TestDelegateIdleRelease_ReleasesWholeSubtreeLeafFirst(t *testing.T) {
 	workspace := t.TempDir()
-	adapter := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		// The parent delegate's turn: spawn its own child delegate.
-		func(llm.Request) llm.Response {
-			return agenttest.ToolCallResponse(llm.ToolCallData{
-				ID:        "call_spawn_child",
-				Name:      "delegate",
-				Arguments: json.RawMessage(`{"prompt":"grandchild sentinel task"}`),
-				Type:      "function",
-			})
-		},
-		// The grandchild's turn: finish.
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("grandchild done") },
-		// The parent's follow-up turn, after the grandchild's tool result: finish.
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("parent done") },
-	}}
+	adapter := newFakeAdapter("openai", func(llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(llm.ToolCallData{
+			ID:        "call_spawn_child",
+			Name:      "delegate",
+			Arguments: json.RawMessage(`{"prompt":"grandchild sentinel task"}`),
+			Type:      "function",
+		})
+	}, func(llm.Request) llm.Response { return agenttest.FinalResponse("grandchild done") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("parent done") })
 	client := llm.NewClient()
 	client.Register(adapter)
 	profile := withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2"))
@@ -709,7 +702,7 @@ func driveWideSubtreeIdleRelease(t *testing.T, wideChildren, limit int, parkDead
 	for range wideChildren + 1 {
 		steps = append(steps, func(llm.Request) llm.Response { return agenttest.FinalResponse("member done") })
 	}
-	adapter := &fakeAdapter{name: "openai", steps: steps}
+	adapter := newFakeAdapter("openai", steps...)
 	client := llm.NewClient()
 	client.Register(adapter)
 	profile := withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2"))

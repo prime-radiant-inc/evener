@@ -134,6 +134,8 @@ const ITEM_MODEL_KEYS = new Set([
   "clientMutationId",
   "conversationInputIds",
   "answerToTurnIds",
+  "resolvedAskCalls",
+  "resolvedAskLegacyCount",
   "actor",
   "type",
   "text",
@@ -213,6 +215,19 @@ export function validItem(value: unknown): value is CachedSessionItem {
     (!Array.isArray(value.answerToTurnIds) || value.answerToTurnIds.some((id) => typeof id !== "string"))
   )
     return false;
+  if (
+    value.resolvedAskCalls !== undefined &&
+    (!Array.isArray(value.resolvedAskCalls) ||
+      !value.resolvedAskCalls.every(
+        (call) =>
+          isRecord(call) &&
+          hasOnlyKeys(call, ["turnId", "callId"]) &&
+          typeof call.turnId === "string" &&
+          typeof call.callId === "string",
+      ))
+  )
+    return false;
+  if (value.resolvedAskLegacyCount !== undefined && !isNonNegativeInteger(value.resolvedAskLegacyCount)) return false;
   if (value.prevalOnly !== undefined && typeof value.prevalOnly !== "boolean") return false;
   if (
     value.warning !== undefined &&
@@ -482,6 +497,7 @@ function validStableDelegate(value: unknown): boolean {
     "structuredResultValid",
     "exhaustionResumable",
     "parentWatchGranted",
+    "drainHeldByJobs",
   ];
   const numberFields = ["runningForMs", "quietForMs", "durationMs", "exhaustionLimit", "delegationAllowance"];
   return (
@@ -504,6 +520,9 @@ function validStableDelegate(value: unknown): boolean {
     stringFields.every((key) => value[key] === undefined || typeof value[key] === "string") &&
     booleanFields.every((key) => value[key] === undefined || typeof value[key] === "boolean") &&
     numberFields.every((key) => value[key] === undefined || isFiniteNumber(value[key])) &&
+    (value.runningJobCount === undefined || isNonNegativeInteger(value.runningJobCount)) &&
+    (value.holdSequence === undefined || isNonNegativeInteger(value.holdSequence)) &&
+    (value.oldestRunningJobStartedAt === undefined || typeof value.oldestRunningJobStartedAt === "string") &&
     (value.warnings === undefined || validStringArray(value.warnings)) &&
     (value.diagnostics === undefined || validStringArray(value.diagnostics)) &&
     (value.usage === undefined || validUsage(value.usage)) &&

@@ -26,7 +26,7 @@ func TestRestoreEnvironmentWithNoRetainedEntriesReemitsFullBlock(t *testing.T) {
 				envProbes:           probes,
 			}
 			client := llm.NewClient()
-			client.Register(&fakeAdapter{name: "openai", steps: repeatFinalResponse(1, "ok")})
+			client.Register(newFakeAdapter("openai", repeatFinalResponse(1, "ok")...))
 			sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 				StateDir: dir,
 				testOnly: testCfg,
@@ -75,7 +75,7 @@ func TestRestoreEnvironmentWithNoRetainedEntriesReemitsFullBlock(t *testing.T) {
 			}
 
 			restoreClient := llm.NewClient()
-			restoreClient.Register(&fakeAdapter{name: "openai", steps: repeatFinalResponse(1, "restored")})
+			restoreClient.Register(newFakeAdapter("openai", repeatFinalResponse(1, "restored")...))
 			restored, err := RestoreSessionFromMetaWithConfig(
 				restoreClient,
 				NewOpenAIProfile("gpt-5.2"),

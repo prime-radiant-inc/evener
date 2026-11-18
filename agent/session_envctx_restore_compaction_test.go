@@ -93,7 +93,7 @@ func TestRestoreEnvironmentReconcilesCompactionWithStaleMetadata(t *testing.T) {
 				t.Fatal(err)
 			}
 			client := llm.NewClient()
-			client.Register(&fakeAdapter{name: "openai", steps: repeatFinalResponse(1, "resumed")})
+			client.Register(newFakeAdapter("openai", repeatFinalResponse(1, "resumed")...))
 			restored, err := RestoreSessionFromMetaWithConfig(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(cwd), meta, RestoreSessionConfig{
 				StateDir: stateDir,
 				testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true, envProbes: probes},

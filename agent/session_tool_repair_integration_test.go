@@ -282,13 +282,7 @@ func TestExecTool_ValidNoncanonicalArgsCanonicalizeLikeTranscript(t *testing.T) 
 func TestSession_RepairsAliasedArgAndEmitsEvent(t *testing.T) {
 	aliasedCall := llm.ToolCallData{ID: "call1", Name: "widget", Arguments: json.RawMessage(`{"path":"/x"}`)}
 	comm := communicateCall("c1", "done")
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(aliasedCall) },
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(comm) },
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(aliasedCall) }, func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(comm) })
 	sess := newSession(t, withAdapter(f))
 
 	var gotArgs map[string]any
@@ -332,13 +326,7 @@ func TestSession_RepairedThenDeniedCallStillEmitsRepairedEvent(t *testing.T) {
 	t.Parallel()
 	aliasedCall := llm.ToolCallData{ID: "call1", Name: "widget", Arguments: json.RawMessage(`{"path":"/x"}`)}
 	comm := communicateCall("c1", "done")
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(aliasedCall) },
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(comm) },
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(aliasedCall) }, func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(comm) })
 	sess := newSession(t, withAdapter(f))
 
 	var toolRan bool
@@ -417,13 +405,7 @@ func TestExecTool_RejectedCommunicateLiveVsReload(t *testing.T) {
 	// ends cleanly and the live side emits exactly one EventCommunicate — for
 	// the recovered call, NOT the rejected one.
 	recoveredCall := communicateCall("call_ok_comm", "recovered")
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(rejectedCall) },
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(recoveredCall) },
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(rejectedCall) }, func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(recoveredCall) })
 	sess := newSession(t, withAdapter(f), withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
 		StateDir:         t.TempDir(), // enables transcript persistence for reload

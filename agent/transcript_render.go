@@ -514,15 +514,16 @@ func rawLinesForRange(ctx context.Context, path, root string, startSeq, endSeq i
 			continue
 		}
 		// Strict validation stays DecodeEntry's job (unknown-field and trailing-
-		// data rejection); publicTranscriptLine does the lenient public
-		// projection. Both now share the one []byte with no string copies
-		// between them. Fusing them into a single JSON parse would mean
-		// reimplementing one of the two semantics here (strictness vs. the
-		// exact map-marshaled key order), so the two calls stay.
-		if _, err := transcript.DecodeEntry(line); err != nil {
+		// data rejection); publicTranscriptLine does the public projection, and
+		// the decision to include the entry is DecodeEntry's own decoded turn —
+		// the one definition of a public position — never a second reading of
+		// these bytes. Fusing them into a single JSON parse would mean
+		// reimplementing the strict semantics here, so the two calls stay.
+		decoded, err := transcript.DecodeEntry(line)
+		if err != nil {
 			return "", 0, skipped, false, fmt.Errorf("parse transcript entry: %w", err)
 		}
-		encoded, include, err := publicTranscriptLine(line, entryPos+1)
+		encoded, include, err := publicTranscriptLine(line, entryPos+1, decoded.Turn)
 		if err != nil {
 			return "", 0, skipped, false, err
 		}

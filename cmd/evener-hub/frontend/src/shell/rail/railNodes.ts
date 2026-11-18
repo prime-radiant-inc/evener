@@ -183,6 +183,14 @@ export interface OverflowRailNode extends WidgetTreeNode {
   kind: "overflow";
   count: number;
   pages: OverflowPage[];
+  /** The live band whose tier this row pages, set only where the row renders
+   * away from that band's fold. Two capped lists can end their rows side by
+   * side - the Needs-you band's own page row renders after the bands when
+   * none of the tier's loaded rows draws the band, right beside Live's page
+   * row - and the count alone would give the two controls the same visible
+   * and accessible name. Absent inside the band: its own fold already says
+   * which rows the row speaks for. */
+  scope?: Band;
 }
 
 export function sectionOverflowNode(
@@ -191,8 +199,9 @@ export function sectionOverflowNode(
   remaining: number,
   offset: number,
   limit: number,
+  scope?: Band,
 ): OverflowRailNode[] {
-  return overflowNode(id, remaining, [{ section, offset, limit }]);
+  return overflowNode(id, remaining, [{ section, offset, limit }], scope);
 }
 
 export function pinSectionOverflowNode(
@@ -244,8 +253,8 @@ const projectNodeCache = new WeakMap<object, WeakMap<IsExpanded, Map<string, Pro
 // renders: an active project's inline list shows Current+Recent (the archived
 // tier is diverted out of it), the archived sub-branch shows only Archived,
 // and a hydrated archived project shows all three.
-function overflowNode(id: string, count: number, pages: OverflowPage[] = []): OverflowRailNode[] {
-  return count > 0 ? [{ id: `${id}:overflow`, kind: "overflow", count, pages }] : [];
+function overflowNode(id: string, count: number, pages: OverflowPage[] = [], scope?: Band): OverflowRailNode[] {
+  return count > 0 ? [{ id: `${id}:overflow`, kind: "overflow", count, pages, ...(scope ? { scope } : {}) }] : [];
 }
 
 function tierOverflow(p: RailProject, tiers: readonly ("current" | "recent" | "archived")[]): number {

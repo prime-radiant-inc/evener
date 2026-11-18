@@ -476,6 +476,15 @@ func TestQuarantineRecoversACrashBeforeTheRename(t *testing.T) {
 	if string(aside) != quarantinedStoreJSON {
 		t.Fatalf("the recovered aside does not hold the corrupt bytes verbatim:\n%s", aside)
 	}
+	// The recovery builds its signal before it re-runs the rename, so the signal
+	// it returns must be told where the corrupt bytes went: a client that reads
+	// AsideFile from it has to reach the file just proven to hold them.
+	if signal := store.Quarantine(); signal == nil {
+		t.Fatal("Quarantine() = nil, want the signal of the quarantine this boot completed")
+	} else if signal.AsideFile != intent.AsideFile {
+		t.Fatalf("the recovered signal names AsideFile %q, want %q — the file holding the corrupt bytes",
+			signal.AsideFile, intent.AsideFile)
+	}
 	if _, ok := store.Record("00000000000000000001"); !ok {
 		t.Fatalf("the recovered replacement is missing the fence import: %+v", store.Records())
 	}

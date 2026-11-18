@@ -297,17 +297,12 @@ func TestRestoreThenTurnAutosaveKeepsPriorTotals(t *testing.T) {
 	turnUsage := llm.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15}
 
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				clk.Advance(delta)
-				resp := agenttest.FinalResponse("ok")
-				resp.Usage = turnUsage
-				return resp
-			},
-		},
-	})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		clk.Advance(delta)
+		resp := agenttest.FinalResponse("ok")
+		resp.Usage = turnUsage
+		return resp
+	}))
 	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
 
 	meta := schema.SessionMeta{

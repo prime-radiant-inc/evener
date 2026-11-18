@@ -29,7 +29,7 @@ func checkAnswerLinkLiveAndSaved(t *testing.T, kind schema.TurnKind) {
 	}
 	defer writer.Close()
 	var turn schema.Turn
-	if err := json.Unmarshal([]byte(`{"format":1,"turn_id":"answer","kind":"USER_INPUT","answer_to_turn_ids":["question"],"message":{"role":"user","content":[{"kind":"text","text":"yes"}]}}`), &turn); err != nil {
+	if err := json.Unmarshal([]byte(`{"format":1,"turn_id":"answer","kind":"USER_INPUT","answer_to_turn_ids":["question"],"ask_resolution":{"calls":[{"turnId":"question","callId":"call-name"}],"legacy_count":2},"message":{"role":"user","content":[{"kind":"text","text":"yes"}]}}`), &turn); err != nil {
 		t.Fatal(err)
 	}
 	turn.Kind = kind
@@ -51,6 +51,12 @@ func checkAnswerLinkLiveAndSaved(t *testing.T, kind schema.TurnKind) {
 		}
 		if item.Observation == nil || item.Observation.TurnID != "answer" || !reflect.DeepEqual(item.Observation.AnswerToTurnIDs, []string{"question"}) {
 			t.Fatalf("lost recorded answer link: %s", raw)
+		}
+		// Admission's evidence rides the same observation: the named call, and
+		// the count of questions it could not name (#6323). Both clients need
+		// the count to know a composed line is unattributable.
+		if !reflect.DeepEqual(item.Observation.ResolvedAskCalls, []appwire.PendingAskCall{{TurnID: "question", CallID: "call-name"}}) || item.Observation.ResolvedAskLegacyCount != 2 {
+			t.Fatalf("lost recorded call-level evidence: %s", raw)
 		}
 	}
 	t.Run("shared live projection", func(t *testing.T) {

@@ -181,6 +181,28 @@ func (read *sessionActivityRead) captureDelegateCandidates(ctx context.Context, 
 				// read and a pushed frame agree for every row state.
 				candidate.row.LatestIntent = delegateDisplayIntent(live.intent, candidate.row.LatestIntent)
 			}
+			// The wait the row cannot otherwise show. A delegate's finalization
+			// drain holds its run open while its child session runs a managed
+			// shell, and no durable aggregate or activity clock carries that
+			// hold: the job itself does. The controller already holds its own
+			// lock here, so the join reads the child runtime it resolved and
+			// the job manager's running map (see runningJobsForDelegateLocked).
+			// Only a real hold fills the fields; the count alone would also
+			// match a delegate still working with a background shell, which
+			// must keep reading as working.
+			held, count, oldest, sequence := controller.runningJobsForDelegateLocked(key.ID)
+			// The sequence rides even a cleared hold: a client that saw the wait
+			// must be able to tell this clearing is newer than it, not an older
+			// sample arriving late. A delegate whose hold never moved carries 0,
+			// which the wire omits.
+			candidate.row.HoldSequence = sequence
+			if held {
+				candidate.row.DrainHeldByJobs = true
+				candidate.row.RunningJobCount = count
+				if !oldest.IsZero() {
+					candidate.row.OldestRunningJobStartedAt = oldest.UTC().Format(time.RFC3339Nano)
+				}
+			}
 		}
 		candidates = append(candidates, candidate)
 		matched++

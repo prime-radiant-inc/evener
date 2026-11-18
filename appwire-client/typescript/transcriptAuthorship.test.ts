@@ -7,7 +7,8 @@ import {
   encodeTranscriptItem,
   threadModelFromCache,
 } from "./transcriptCache";
-import { hydrateThread, mergeTranscriptItemVersioned } from "./transcriptHistory";
+import { hydrateThread, mergeHistory, mergeTranscriptItemVersioned } from "./transcriptHistory";
+import { itemIsIdentityOnly, itemTextPresence, markItemIdentityOnly, markItemTextOmitted } from "./transcriptItems";
 import { mergeTurnHistory } from "./turnHistoryMerge";
 
 const author = {
@@ -138,6 +139,124 @@ test("sparse merges retain attribution but authoritative unknown or absent repla
   });
   expect(mergeTranscriptItemVersioned(held, 1, sparse, 2).authorship).toBeUndefined();
   expect(mergeTranscriptItemVersioned(held, 2, sparse, 1).authorship).toEqual(author);
+});
+
+test("an equal-version refresh fills missing ask evidence without replacing the held row", () => {
+  // A client that cached a reply before resolvedAskCalls existed holds it at
+  // some version. The daemon then serves that SAME version with the evidence,
+  // because the evidence rides the observation rather than the item version.
+  // Version precedence would keep the held row forever, so the field would
+  // never arrive for anyone with a warm cache.
+  const heldText = "the reply the browser already holds";
+  const held: ItemModel = { id: "answer", turnId: "turn", type: "userMessage", text: heldText, version: 4 };
+  const refreshed: ItemModel = {
+    id: "answer",
+    turnId: "turn",
+    type: "userMessage",
+    text: "a different body the refresh also carries",
+    version: 4,
+    resolvedAskCalls: [{ turnId: "turn-question", callId: "call-1" }],
+    resolvedAskLegacyCount: 0,
+  };
+  const filled = mergeTranscriptItemVersioned(held, 4, refreshed, 4);
+  expect(filled.resolvedAskCalls).toEqual([{ turnId: "turn-question", callId: "call-1" }]);
+  expect(filled.resolvedAskLegacyCount).toBe(0);
+  // The held text wins: filling evidence must not let a same-version refresh
+  // replace the body a reader is already looking at.
+  expect(filled.text).toBe(heldText);
+  // Evidence the held row already has is not replaced by an equal-version
+  // refresh, and a refresh carrying none leaves the held row untouched.
+  const withEvidence: ItemModel = {
+    ...held,
+    resolvedAskCalls: [{ turnId: "turn-question", callId: "call-held" }],
+  };
+  expect(mergeTranscriptItemVersioned(withEvidence, 4, refreshed, 4).resolvedAskCalls).toEqual([
+    { turnId: "turn-question", callId: "call-held" },
+  ]);
+  expect(mergeTranscriptItemVersioned(held, 4, refreshed, 4).text).toBe(heldText);
+  // A held row whose body the read omitted carries that fact in a
+  // non-enumerable marker. Filling ask evidence must preserve it: without the
+  // marker the row reads as an authoritative empty settle, and the local
+  // reconciliation that still owes this reply its body will refuse to supply
+  // it.
+  const omittedBody = markItemTextOmitted({ ...held, text: "" });
+  const omittedFilled = mergeTranscriptItemVersioned(omittedBody, 4, refreshed, 4);
+  expect(itemTextPresence(omittedFilled)).toBe("omitted");
+  expect(omittedFilled.resolvedAskCalls).toEqual([{ turnId: "turn-question", callId: "call-1" }]);
+  expect(
+    mergeTranscriptItemVersioned(
+      held,
+      4,
+      { ...refreshed, resolvedAskCalls: undefined, resolvedAskLegacyCount: undefined },
+      4,
+    ),
+  ).toBe(held);
+  // A live refresh reaches the transcript model through mergeHistory, not the
+  // entry-cache merge, so the same rule has to hold there: the evidence
+  // arrives, and the held body stands.
+  const mergedTurns = mergeHistory([{ id: "turn", status: "completed", items: [held] }], {
+    turns: [{ id: "turn", status: "completed", items: [] }],
+    items: [refreshed],
+  });
+  expect(mergedTurns[0]?.items[0]?.resolvedAskCalls).toEqual([{ turnId: "turn-question", callId: "call-1" }]);
+  expect(mergedTurns[0]?.items[0]?.text).toBe(heldText);
+  // Background pruning can reduce a reply to an identity-only placeholder at
+  // the version the daemon then re-serves in full. The refresh carries the
+  // body, so it must replace the placeholder rather than fill evidence onto
+  // it: an evidence-only fill would leave a reply with no text even though the
+  // full text is right there.
+  const placeholder = markItemIdentityOnly({ id: "answer", turnId: "turn", type: "userMessage", text: "", version: 4 });
+  const upgradedTurns = mergeHistory([{ id: "turn", status: "completed", items: [placeholder] }], {
+    turns: [{ id: "turn", status: "completed", items: [] }],
+    items: [refreshed],
+  });
+  expect(upgradedTurns[0]?.items[0]?.text).toBe(refreshed.text);
+  expect(upgradedTurns[0]?.items[0]?.resolvedAskCalls).toEqual([{ turnId: "turn-question", callId: "call-1" }]);
+  // A placeholder that only gains evidence must stay a placeholder. The
+  // enriching spread drops the non-enumerable identity-only marker, and
+  // without it a later same-version refresh can no longer take the upgrade
+  // path that would restore the body: the fill would destroy the very
+  // evidence that fixes the row.
+  // Both rows pruned: no upgrade applies, so the fill runs, and the marker
+  // has to survive it.
+  const evidenceOnly: ItemModel = { id: "answer", turnId: "turn", type: "userMessage", text: "", version: 5 };
+  const enrichedPlaceholder = mergeTranscriptItemVersioned(
+    markItemIdentityOnly(evidenceOnly),
+    5,
+    markItemIdentityOnly({ ...refreshed, version: 5, text: "" }),
+    5,
+  );
+  expect(itemIsIdentityOnly(enrichedPlaceholder)).toBe(true);
+  expect(enrichedPlaceholder.resolvedAskCalls).toEqual([{ turnId: "turn-question", callId: "call-1" }]);
+});
+
+test("a versionless held row still keeps the fields a sparse update omits", () => {
+  // A live refresh can reissue an item the model already holds at no recorded
+  // version. Version precedence gives the incoming row that slot, but an
+  // omission-tolerant merge must still fill what the update did not carry: a
+  // sparse tool update that drops output or images must not erase them, and a
+  // text-omitting update must not blank the row.
+  const held: ItemModel = {
+    id: "tool",
+    turnId: "turn",
+    type: "toolCall",
+    text: "the output the reader already holds",
+    output: "kept output",
+  };
+  const sparse: ItemModel = {
+    id: "tool",
+    turnId: "turn",
+    type: "toolCall",
+    text: "",
+    status: "completed",
+  };
+  markItemTextOmitted(sparse);
+  const merged = mergeHistory([{ id: "turn", status: "completed", items: [held] }], {
+    turns: [{ id: "turn", status: "completed", items: [] }],
+    items: [sparse],
+  });
+  expect(merged[0]?.items[0]?.output).toBe(held.output);
+  expect(merged[0]?.items[0]?.text).toBe(held.text);
 });
 
 test("old missing and invalid metadata never borrows thread identity", () => {

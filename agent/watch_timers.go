@@ -34,15 +34,29 @@ func (jm *jobManager) startProgressTimer(key watchKey, cfg *watchConfig, stop <-
 // lock before consulting decideProgressTick. target is the raw watch target,
 // echoed into the notification job id for non-session targets. oneShot marks a
 // one-shot timer, whose single fire is also its last.
+//
+// The output fields answer one question: did the watched job produce anything
+// since the model last heard from this watch? targetOutputBytes is the job's
+// lifetime stream length (jobstore.OutputStore.Len), the same offset space the
+// output matcher scans in, and lastTickOutputBytes is that length at the last
+// DELIVERED tick. timer and sessionTarget both mark ticks whose cadence is time
+// rather than output: a timer's repeat is its own contract, and a session has no
+// output stream to grow. targetTransitioning marks a target that is stopping,
+// finalizing, or already terminal — a state change the model must not miss.
 type progressTickSnapshot struct {
-	closing         bool
-	stillRegistered bool
-	sessionTarget   bool
-	targetRunning   bool
-	hasSend         bool
-	oneShot         bool
-	firedPendingEnd bool
-	target          string
+	closing             bool
+	stillRegistered     bool
+	sessionTarget       bool
+	targetRunning       bool
+	targetTransitioning bool
+	hasSend             bool
+	oneShot             bool
+	firedPendingEnd     bool
+	timer               bool
+	tickFired           bool
+	targetOutputBytes   int64
+	lastTickOutputBytes int64
+	target              string
 }
 
 // progressTickDecision is what decideProgressTick returns for one tick: whether
@@ -53,9 +67,15 @@ type progressTickSnapshot struct {
 // endOneShot asks the caller to end a fired one-shot: set together with fire on
 // its first delivery, and alone when a previous end failed to persist and this
 // tick only retries the teardown.
+//
+// coalesce is the tick that is recorded but not delivered: the watch fired on
+// its own cadence and stays armed, but carried nothing the model has not already
+// been told, so it produces no notification and no delivery. It is mutually
+// exclusive with fire.
 type progressTickDecision struct {
 	keepAlive    bool
 	fire         bool
+	coalesce     bool
 	sendDelivery bool
 	recordBudget bool
 	endOneShot   bool
@@ -71,6 +91,17 @@ type progressTickDecision struct {
 // end could not persist keeps the goroutine alive without firing until the
 // retry lands, so fire alone — not keepAlive — decides whether this tick
 // delivers.
+//
+// A progress-interval tick that would carry no new output coalesces instead of
+// delivering. "No new output" is a job-targeted tick whose target has produced
+// no byte since the last delivered tick, so re-waking the model would tell it
+// nothing it did not already know. Four things are never coalesced, and each
+// protects an invariant rather than a preference: the first tick (!tickFired),
+// because the model must see the output's content at least once; a target in
+// transition, because a terminal state change is not a quiet interval; and
+// timer and session-target ticks, whose cadence is time rather than output. A
+// coalesced tick still keeps the goroutine alive and still counts as a fire, so
+// the watch is never inert.
 func decideProgressTick(snap progressTickSnapshot) progressTickDecision {
 	if snap.closing || !snap.stillRegistered {
 		return progressTickDecision{}
@@ -85,6 +116,13 @@ func decideProgressTick(snap progressTickSnapshot) progressTickDecision {
 	if !snap.sessionTarget && !snap.targetRunning {
 		return progressTickDecision{}
 	}
+	// Output coalescing: only a job-targeted tick that has already delivered has
+	// a baseline to compare against, and only a target that is not changing state
+	// is quiet in the sense that matters. The cadence stays armed either way.
+	if !snap.timer && !snap.sessionTarget && !snap.targetTransitioning && snap.tickFired &&
+		snap.targetOutputBytes <= snap.lastTickOutputBytes {
+		return progressTickDecision{keepAlive: true, coalesce: true}
+	}
 	dec := progressTickDecision{keepAlive: !snap.oneShot, fire: true, endOneShot: snap.oneShot}
 	if snap.hasSend {
 		dec.sendDelivery = true
@@ -95,6 +133,20 @@ func decideProgressTick(snap progressTickSnapshot) progressTickDecision {
 		dec.notifyJobID = snap.target
 	}
 	return dec
+}
+
+// runOutputBytesLocked reports a running job's lifetime output length — the same
+// offset space the output matcher scans in — or 0 for a nil run. It is the
+// cursor a progress tick compares against, not a new one: jobstore.OutputStore
+// already owns the count, and liveJobRecords reports the same value as a running
+// job's OutputBytes. The store's mutex is independent of jm.mu and takes no
+// callback into the manager, so reading it under jm.mu cannot invert a lock
+// order. The caller must hold jm.mu.
+func runOutputBytesLocked(run *runningJob) int64 {
+	if run == nil || run.output == nil {
+		return 0
+	}
+	return run.output.Len()
 }
 
 func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
@@ -111,17 +163,34 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 
 	root := events.SessionEvent{SessionID: jm.sessionID, Provenance: jobProvenanceForWatch(jm, cfg.target)}
 	jm.mu.Lock()
+	run := jm.running[cfg.target]
 	snap := progressTickSnapshot{
-		closing:         jm.closing,
-		stillRegistered: jm.watches[key] == cfg,
-		sessionTarget:   isWatchSessionTarget(cfg.target),
-		targetRunning:   jm.running[cfg.target] != nil,
-		hasSend:         cfg.send != nil,
-		oneShot:         cfg.oneShot,
-		firedPendingEnd: cfg.firedPendingEnd,
-		target:          cfg.target,
+		closing:           jm.closing,
+		stillRegistered:   jm.watches[key] == cfg,
+		sessionTarget:     isWatchSessionTarget(cfg.target),
+		targetRunning:     run != nil,
+		hasSend:           cfg.send != nil,
+		oneShot:           cfg.oneShot,
+		firedPendingEnd:   cfg.firedPendingEnd,
+		timer:             cfg.timer,
+		tickFired:         cfg.tickFired,
+		targetOutputBytes: runOutputBytesLocked(run),
+		target:            cfg.target,
 	}
+	snap.lastTickOutputBytes = cfg.lastTickOutputBytes
+	snap.targetTransitioning = run != nil && (run.terminal != nil || run.finalize != nil || run.stopStatus != "")
 	dec := decideProgressTick(snap)
+	if dec.coalesce {
+		// A coalesced tick is a fire the model does not hear: the watch ran on its
+		// cadence and stays armed, so the cadence's own history advances. It
+		// delivers nothing, so it counts no delivery and leaves the baseline
+		// alone — the next tick still compares against the last output the model
+		// was actually told about. Returning keepAlive is what keeps the ticker
+		// armed; a coalesced tick must never retire the goroutine.
+		cfg.lastClockFire = jm.now()
+		jm.mu.Unlock()
+		return dec.keepAlive
+	}
 	if !dec.fire && !dec.endOneShot {
 		jm.mu.Unlock()
 		return false
@@ -132,6 +201,8 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 		// to the notification counted below. The delivery ring cannot serve as
 		// the clock's history; see lastClockFire.
 		cfg.lastClockFire = jm.now()
+		cfg.tickFired = true
+		cfg.lastTickOutputBytes = snap.targetOutputBytes
 	}
 	if dec.sendDelivery {
 		deliveries = append(deliveries, jm.watchSendSnapshot(cfg, cfg.target, "progress_tick", root).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, root.Provenance)))
