@@ -599,7 +599,7 @@ func PublishReplacementTranscript(fs afero.Fs, dir string, meta SessionMeta, wri
 		if err != nil {
 			return err
 		}
-		defer os.RemoveAll(staging)
+		defer func() { _ = os.RemoveAll(staging) }()
 		header := filepath.Join(staging, filepath.Base(path))
 		if err := writeHeader(header); err != nil {
 			return err
