@@ -61,12 +61,16 @@ export interface PopoverProps {
  * can't cut it off. The placement math (flip-then-clamp) lives in
  * computePosition.ts, shared verbatim with widgets/menu.
  *
- * Behavior mirrors Menu: reopening always re-measures rather than trusting a
- * stale position; a scroll anywhere (capture-phase, so a scrollable
- * ancestor's own scroll counts too) or a viewport resize closes it rather
- * than continuously repositioning; an outside click or Escape closes it.
- * Built on FocusScope with trap so Tab/Shift+Tab cycle within the panel while
- * open, matching Menu.
+ * Behavior it shares with Menu: reopening always re-measures rather than
+ * trusting a stale position; a scroll anywhere (capture-phase, so a
+ * scrollable ancestor's own scroll counts too) closes it, and an outside
+ * click or Escape closes it. Built on FocusScope with trap so Tab/Shift+Tab
+ * cycle within the panel while open, matching Menu.
+ *
+ * Where it differs, and why: a viewport resize closes Popover, whereas Menu
+ * re-anchors and stays open - opening Menu can itself dismiss the software
+ * keyboard, and that resize is not the reader dismissing anything (#6337).
+ * See "Menu" in the widget reference.
  */
 export function Popover({
   open,

@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { expect, test, vi } from "vitest";
@@ -36,6 +36,40 @@ function ComposerLikeSurface() {
       <Menu trigger="Actions" items={items()} />
     </div>
   );
+}
+
+// SessionMenu's own shape and order (shell/sessionMenu/SessionMenu.tsx), with
+// the one entry SessionChrome drops on a short viewport: "Find in session…"
+// sits BEFORE Pin and Archive in the inspection group. Dropping it moves both
+// of them down one index.
+function sessionActionsItems(showFind: boolean): MenuItem[] {
+  const inspection: MenuItem[] = [
+    { id: "overview", label: "Overview", onSelect: vi.fn() },
+    ...(showFind ? [{ id: "find", label: "Find in session…", onSelect: vi.fn() }] : []),
+  ];
+  return [
+    ...inspection,
+    { id: "rename", label: "Rename", onSelect: vi.fn() },
+    { id: "pin", label: "Pin this session…", onSelect: vi.fn() },
+    { id: "archive", label: "Archive", onSelect: vi.fn() },
+  ];
+}
+
+// The live shape of the bug: a window resize re-renders the caller with one
+// entry gone, exactly as AppShell re-rendering SessionChrome does when the
+// viewport crosses 480px (SessionChrome reads window.innerHeight when its
+// items are built).
+function ShrinkingSessionMenu({ onArchive }: { onArchive: () => void }) {
+  const [showFind, setShowFind] = useState(() => window.innerHeight >= 480);
+  useEffect(() => {
+    const onResize = () => setShowFind(window.innerHeight >= 480);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  const list = sessionActionsItems(showFind).map((entry) =>
+    entry.id === "archive" ? { ...entry, onSelect: onArchive } : entry,
+  );
+  return <Menu trigger="Actions" items={list} />;
 }
 
 test("renders only the trigger when closed", () => {
@@ -300,7 +334,20 @@ test("a viewport resize re-anchors the menu instead of closing it", async () => 
 // stopped closing could leave it detached).
 test("a keyboard-dismissal resize leaves the composer's menu open and re-anchored", async () => {
   const user = userEvent.setup();
-  let triggerTop = 400;
+  // Geometry chosen so the placement can only come out right if BOTH the
+  // trigger's new rect and the new viewport height are read after the resize.
+  // Popup 160x120, TRIGGER_GAP 4, EDGE_MARGIN 8.
+  //
+  //   keyboard up   (height 400): trigger top 300 -> below overflows, flips
+  //                               above: 300 - 4 - 120 = 176
+  //   keyboard gone (height 800): trigger top 500 -> below fits: 528 + 4 = 532
+  //
+  // A stale trigger rect (300) with the new height still flips to 176; a stale
+  // viewport (400) with the new rect overflows and flips to 376. Only the
+  // fresh measurement gives 532, so this test fails on either stale input.
+  let triggerTop = 300;
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 400 });
   const box = (left: number, top: number, width: number, height: number) =>
     ({
       left,
@@ -329,19 +376,22 @@ test("a keyboard-dismissal resize leaves the composer's menu open and re-anchore
     await user.click(screen.getByRole("button", { name: "Actions" }));
     expect(screen.getByRole("menu")).toBeTruthy();
     // The focus move that dismisses the Android keyboard: the editor the
-    // person was typing in no longer has focus.
+    // person was typing in no longer has focus, and a menu item has it.
     expect(document.activeElement).not.toBe(editor);
-    expect(screen.getByRole("menu").style.top).toBe("432px");
+    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Rename" }));
+    expect(screen.getByRole("menu").style.top).toBe("176px"); // flipped above
 
-    // The keyboard is gone, the composer sits lower, and the browser reports
-    // the layout viewport change the menu's own focus move caused.
-    triggerTop = 200;
+    // The keyboard is gone: the layout viewport grew by its height, the
+    // composer moved down with it, and the browser reports both.
+    triggerTop = 500;
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
     fireEvent(window, new Event("resize"));
 
     expect(screen.getByRole("menu")).toBeTruthy();
-    expect(screen.getByRole("menu").style.top).toBe("232px");
+    expect(screen.getByRole("menu").style.top).toBe("532px"); // fits below again
   } finally {
     vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
   }
 });
 
@@ -364,6 +414,193 @@ test("an outside press still closes the menu after a keyboard-dismissal resize",
   expect(screen.getByRole("menu")).toBeTruthy();
 
   await user.click(screen.getByRole("button", { name: "Elsewhere" }));
+  expect(screen.queryByRole("menu")).toBeNull();
+});
+
+// A frame the component will see once, with the position it computed inside
+// the frame: rAF is captured rather than awaited so the test drives the exact
+// moment the widget re-measures, instead of racing a timer.
+function captureFrames(): { flush: () => void } {
+  const pending: FrameRequestCallback[] = [];
+  vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+    pending.push(callback);
+    return pending.length;
+  });
+  return {
+    flush: () => {
+      act(() => {
+        for (const callback of pending.splice(0)) callback(0);
+      });
+    },
+  };
+}
+
+// --- iOS resizes only the VISUAL viewport (review, Medium 2) ----------------
+// The mobile shell spends a visual-viewport shrink as `--keyboard-inset`
+// padding, which slides the composer and this trigger down. No window
+// `resize` fires for it, so a menu listening only on the window stayed at the
+// coordinates it measured while the keyboard was still up.
+test("a visual-viewport resize re-anchors the menu to the trigger it moved", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  const fakeViewport = new EventTarget() as EventTarget & { height: number };
+  fakeViewport.height = 400;
+  vi.stubGlobal("visualViewport", fakeViewport);
+  const { flush } = captureFrames();
+  let triggerTop = 300;
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 400 });
+  const box = (left: number, top: number, width: number, height: number) =>
+    ({
+      left,
+      top,
+      right: left + width,
+      bottom: top + height,
+      width,
+      height,
+      x: left,
+      y: top,
+      toJSON: () => ({}),
+    }) as DOMRect;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  try {
+    render(<Menu trigger="Actions" items={items()} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menu").style.top).toBe("176px"); // flipped above
+
+    // The keyboard's inset lands: the composer and its trigger slide down, and
+    // only the visual viewport reports it.
+    triggerTop = 500;
+    fakeViewport.height = 800;
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+    fakeViewport.dispatchEvent(new Event("resize"));
+    flush();
+
+    expect(screen.getByRole("menu")).toBeTruthy();
+    expect(screen.getByRole("menu").style.top).toBe("532px"); // follows the trigger
+  } finally {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
+// --- the trigger moves after the resize event (review, Medium 3) -----------
+// Dockview lays out from an observed box, a frame after the window's own
+// resize. Measuring in the resize handler therefore reads the trigger's OLD
+// rect, and the footer then moves with no further window event. The
+// ResizeObserver notification is the second chance to measure - it arrives
+// after layout, which is the only moment the trigger's final rect exists.
+test("a desktop resize that lands before the layout settles still ends on the trigger's final position", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  let triggerTop = 300;
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 400 });
+  const box = (left: number, top: number, width: number, height: number) =>
+    ({
+      left,
+      top,
+      right: left + width,
+      bottom: top + height,
+      width,
+      height,
+      x: left,
+      y: top,
+      toJSON: () => ({}),
+    }) as DOMRect;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  // A ResizeObserver the test fires by hand, the way a browser fires it when
+  // the observed trigger's box changes.
+  const callbacks = new Map<Element, () => void>();
+  class HandDrivenResizeObserver {
+    constructor(private readonly callback: () => void) {}
+    observe(target: Element): void {
+      callbacks.set(target, this.callback);
+    }
+    unobserve(target: Element): void {
+      callbacks.delete(target);
+    }
+    disconnect(): void {
+      for (const [target, callback] of [...callbacks]) {
+        if (callback === this.callback) callbacks.delete(target);
+      }
+    }
+  }
+  vi.stubGlobal("ResizeObserver", HandDrivenResizeObserver);
+  const { flush } = captureFrames();
+  try {
+    render(<Menu trigger="Actions" items={items()} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menu").style.top).toBe("176px"); // flipped above
+
+    // The window grows while the trigger is still where the keyboard left it:
+    // the resize handler measures that stale rect and places the popup below
+    // it, which is the detachment the reviewer described.
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+    fireEvent(window, new Event("resize"));
+    expect(screen.getByRole("menu").style.top).toBe("332px"); // 300 + 28 + 4
+
+    // Dockview finishes: the trigger is at its final position, and the
+    // observed box is what says so.
+    triggerTop = 500;
+    act(() => {
+      for (const callback of callbacks.values()) callback();
+    });
+    flush();
+
+    expect(screen.getByRole("menu").style.top).toBe("532px"); // 500 + 28 + 4
+  } finally {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
+// --- the menu follows its item set, not a snapshot (review, Medium 1) -------
+// With the menu open and "Pin this session…" focused, a caller that drops an
+// EARLIER entry (SessionChrome drops "Find in session…" below 480px) left the
+// stored index pointing at "Archive". Enter then archived the session while
+// the person was looking at Pin. The active item is now tracked by its stable
+// id, resolved against the list as it is at activation time, so the key
+// activates what is focused.
+test("an entry disappearing above the focused item cannot retarget Enter at the next one", async () => {
+  const user = userEvent.setup();
+  const onArchive = vi.fn();
+  render(<ShrinkingSessionMenu onArchive={onArchive} />);
+
+  await user.click(screen.getByRole("button", { name: "Actions" }));
+  // Rove down to "Pin this session…" - the row whose index moves when Find
+  // disappears.
+  for (let step = 0; step < 3; step++) await user.keyboard("{ArrowDown}");
+  const pin = screen.getByRole("menuitem", { name: "Pin this session…" });
+  expect(document.activeElement).toBe(pin);
+
+  // The viewport crossed the threshold: Find is gone, so Pin and Archive each
+  // slid down one index. Focus is still on the same row the person is on.
+  const tallerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 400 });
+  try {
+    fireEvent(window, new Event("resize"));
+    expect(screen.queryByRole("menuitem", { name: "Find in session…" })).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Pin this session…" }));
+
+    await user.keyboard("{Enter}");
+  } finally {
+    if (tallerHeight) Object.defineProperty(window, "innerHeight", tallerHeight);
+  }
+
+  expect(onArchive).not.toHaveBeenCalled();
+  // Pin's own selection opens a picker in the app; here it closes the menu,
+  // which proves Enter activated Pin and not its neighbour.
   expect(screen.queryByRole("menu")).toBeNull();
 });
 

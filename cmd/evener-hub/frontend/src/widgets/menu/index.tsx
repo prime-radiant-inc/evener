@@ -178,7 +178,18 @@ function stepEnabledIndex(items: MenuEntry[], from: number, delta: 1 | -1): numb
  */
 export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "default" }: MenuProps) {
   const [isOpen, setIsOpen] = useState(false);
-  const [activeIndex, setActiveIndex] = useState(() => firstEnabledIndex(items));
+  // The active item is tracked by its STABLE ID, never by its index. The item
+  // list is the caller's: SessionMenu drops "Find in session..." when the
+  // viewport height crosses 480px (SessionChrome), and any caller may add,
+  // remove or reorder entries while the popup is open. An index is a snapshot
+  // of the list at the moment it was written; when an earlier entry
+  // disappears, that index names a DIFFERENT item, and Enter/Space would
+  // activate something the person never chose - "Pin this session..." focused,
+  // a resize drops Find, and the stored index now names "Archive".
+  const [activeId, setActiveId] = useState<string | undefined>(() => {
+    const first = items[firstEnabledIndex(items)];
+    return first === undefined || isSeparator(first) ? undefined : first.id;
+  });
   const [position, setPosition] = useState<MenuPosition | null>(null);
   const [origin, setOrigin] = useState<string | undefined>(undefined);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -193,6 +204,16 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   const itemRefs = useRef<(HTMLLIElement | null)[]>([]);
   const triggerId = useId();
 
+  // Resolve the tracked id against the list as it is NOW. The id may name an
+  // entry this render no longer has (the caller removed it) or one that has
+  // become disabled; either way it is not actionable, and the caller's next
+  // enabled entry is where roving focus belongs.
+  const indexOfActive = useCallback(() => {
+    const index = items.findIndex((entry) => !isSeparator(entry) && entry.id === activeId);
+    if (index !== -1 && isActionable(itemAt(items, index))) return index;
+    return firstEnabledIndex(items);
+  }, [items, activeId]);
+
   // Opens with a naive, unflipped position (left-aligned to the trigger,
   // below it - the same fixed geometry the pre-portal popup always used)
   // computed synchronously from the trigger's OWN rect, which is all that's
@@ -203,7 +224,8 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   // this is deliberately never null and the popup is deliberately never
   // hidden in between - see that same comment for why.
   function openMenu() {
-    setActiveIndex(firstEnabledIndex(items));
+    const first = items[firstEnabledIndex(items)];
+    setActiveId(first === undefined || isSeparator(first) ? undefined : first.id);
     const triggerRect = triggerRef.current?.getBoundingClientRect();
     setPosition(triggerRect ? { top: triggerRect.bottom + TRIGGER_GAP, left: triggerRect.left } : { top: 0, left: 0 });
     setIsOpen(true);
@@ -262,9 +284,42 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     placeMenu();
   }, [isOpen, placeMenu]);
 
+  // The entry the person is on can leave the list while the popup is open
+  // (SessionMenu drops "Find in session..." when the viewport crosses 480px).
+  // React reuses the surviving nodes by their `key`, so focus stays on the
+  // same entry when the list merely shifts. What does NOT survive is focus on
+  // the entry that was removed: the browser drops it to <body>, and the next
+  // Enter would reach nothing at all. Put it on the surviving entry the id
+  // resolution names. Keyed on the id signature, not on `items` itself: a
+  // caller that rebuilds its array every render must not re-run this.
+  const itemIds = items.map((entry) => entry.id).join("\u0000");
+  const resolvedActiveIndex = indexOfActive();
+  // biome-ignore lint/correctness/useExhaustiveDependencies: itemIds is the deliberate trigger-only dep - the id signature, not the array's identity, is what says the caller's list changed, and callers rebuild that array every render; indexOfActive is called at effect time, so the closure that runs is the current one
+  useLayoutEffect(() => {
+    // `isOpen` false means the popup is leaving: FocusScope has already handed
+    // focus back to whatever opened the menu, and re-focusing an item here
+    // would take it away again (the Escape-returns-focus test is the oracle).
+    // This effect answers only a focus DROP while the menu is live.
+    if (!isOpen) return;
+    const popup = popupRef.current;
+    const focused = ownerDocument.activeElement;
+    // Focus in the popup: the entry the person was on survived the list change
+    // (React reuses it by key), so it is what they are looking at - leave it.
+    if (popup !== null && focused !== null && popup.contains(focused)) return;
+    // Focus anywhere else that is not the popup's own scope means focus was
+    // dropped to <body> by the entry's removal, which is the case this
+    // recovers. A focus that has moved to a real control (the person tabbed
+    // away, a Dialog took it) is theirs, not ours to reclaim.
+    if (focused !== null && focused !== ownerDocument.body) return;
+    const node = itemRefs.current[indexOfActive()];
+    node?.focus();
+  }, [isOpen, ownerDocument, itemIds]);
+
   function focusIndex(index: number) {
     if (index === -1) return;
-    setActiveIndex(index);
+    const entry = itemAt(items, index);
+    if (isSeparator(entry)) return;
+    setActiveId(entry.id);
     itemRefs.current[index]?.focus();
   }
 
@@ -310,14 +365,19 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   }
 
   function handleMenuKeyDown(event: KeyboardEvent<HTMLUListElement>) {
+    // Roving and activation both start from the item that is actually
+    // focused, resolved against the list as it is NOW - not from a stored
+    // index. See activeId's own comment: an index written before the caller
+    // changed `items` names a different entry after the change.
+    const current = indexOfActive();
     switch (event.key) {
       case "ArrowDown":
         event.preventDefault();
-        focusIndex(stepEnabledIndex(items, activeIndex, 1));
+        focusIndex(stepEnabledIndex(items, current, 1));
         break;
       case "ArrowUp":
         event.preventDefault();
-        focusIndex(stepEnabledIndex(items, activeIndex, -1));
+        focusIndex(stepEnabledIndex(items, current, -1));
         break;
       case "Home":
         event.preventDefault();
@@ -329,8 +389,10 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         break;
       case "Enter":
       case " ": {
-        const item = items[activeIndex];
-        if (item) {
+        // The item under focus, which is what the person is looking at. A
+        // stale index here is how a stray Enter archives a session.
+        const item = items[current];
+        if (item !== undefined) {
           event.preventDefault();
           selectItem(item);
         }
@@ -406,6 +468,53 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     return watchViewport(rootRef.current, onScrollCapture, placeMenu);
   }, [isOpen, closeMenu, ownerDocument, placeMenu]);
 
+  // A resize event is not the only thing that moves the trigger, and the
+  // resize itself is not the moment the trigger has finished moving:
+  //
+  // - iOS Safari resizes only the VISUAL viewport when the keyboard leaves.
+  //   The mobile shell spends that as `padding-bottom: var(--keyboard-inset)`
+  //   (AppShell.module.css), which slides the composer and this trigger with
+  //   it, and the window's own `resize` never fires. useKeyboardInset listens
+  //   on that same visual viewport, as NextNeedsYou's list already does.
+  // - A desktop window resize reaches this widget before Dockview finishes its
+  //   own layout: Dockview resizes from an observed box, delivered a frame
+  //   after the window's resize, so the trigger's rect at the resize event is
+  //   its OLD one and the footer then moves again with no further window
+  //   event.
+  //
+  // Both are the same fact - the trigger ended up somewhere else - so both get
+  // the same answer: re-measure once the trigger has actually moved, after
+  // layout, instead of trusting the rect a resize event happened to catch. A
+  // ResizeObserver on the trigger covers a trigger whose box changes, and
+  // fires after layout; the visual-viewport listener covers a trigger that is
+  // only translated. Feature-detected, as Popover does it: jsdom has no
+  // ResizeObserver, and the resize handler above is then the whole behavior.
+  useEffect(() => {
+    if (!isOpen) return;
+    const ownerWindow = ownerDocument.defaultView ?? window;
+    // One pending frame at a time, so a burst of notifications re-measures
+    // once, after the layout that moved the trigger rather than during it.
+    let frame: number | null = null;
+    const placeAfterLayout = () => {
+      if (frame !== null) return;
+      frame = ownerWindow.requestAnimationFrame(() => {
+        frame = null;
+        placeMenu();
+      });
+    };
+    const visualViewport = ownerWindow.visualViewport;
+    visualViewport?.addEventListener("resize", placeAfterLayout);
+    const Observer = ownerWindow.ResizeObserver;
+    const observer = typeof Observer === "undefined" ? null : new Observer(placeAfterLayout);
+    const triggerEl = triggerRef.current;
+    if (observer !== null && triggerEl !== null) observer.observe(triggerEl);
+    return () => {
+      if (frame !== null) ownerWindow.cancelAnimationFrame(frame);
+      visualViewport?.removeEventListener("resize", placeAfterLayout);
+      observer?.disconnect();
+    };
+  }, [isOpen, ownerDocument, placeMenu]);
+
   const iconOnly = label !== undefined;
   const triggerClassName = [
     CLASS.trigger,
@@ -477,7 +586,7 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
                     key={item.id}
                     // biome-ignore lint/a11y/noNoninteractiveElementToInteractiveRole: ARIA APG menu markup, see the ul above
                     role="menuitem"
-                    tabIndex={!item.disabled && index === activeIndex ? 0 : -1}
+                    tabIndex={!item.disabled && index === resolvedActiveIndex ? 0 : -1}
                     aria-disabled={item.disabled === true ? true : undefined}
                     className={`${CLASS.item} ${item.disabled ? CLASS.itemDisabled : ""}`}
                     ref={(node) => {
