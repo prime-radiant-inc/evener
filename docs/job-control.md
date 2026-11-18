@@ -17,7 +17,8 @@ sections below preserve tool parameters, ownership rules and terminal outcomes.
 | A service that must survive the session | Detached shell mode, where the environment supports it | Returns a PID, not a managed job. The caller owns logs and shutdown. No job notifications or Evener stop control. A sandboxed session with a wrapper cannot detach: use a session-owned background job there, and expect the process to stop with the session. |
 | Another agent's conversation | `delegate` | Returns a stable `dlg_...` ID. A completed run leaves the delegate idle and available for another message. |
 
-The environment decides whether detached mode exists. Evener asks it through
+The startup prompt explains shell modes when the session can call the shell
+tool. The environment decides whether detached mode exists. Evener asks it through
 `execenv.DetachSupportReporter` before building the model-facing shell schema: an
 environment that cannot disown a process — a sandboxed session with a wrapper
 provisioned, or a platform without detached-process attributes — omits

@@ -56,8 +56,6 @@ Ending a turn while work you started still runs is a normal turn end, not an inc
 
 When you have nothing else to do while it runs, end your turn: call `communicate` with `end_turn=true`, `end_reason="waiting_on_work"`, and one sentence saying what you are waiting for. The notification wakes you; checking in a loop only spends time. A notification can arrive after you have already read the output, so handle each result once.
 
-Start a process the task wants left running, such as a server, in `detached` mode. Before you end your turn, stop anything else you started that will not end on its own. A detached command gets no session scratch, so give it absolute paths for its output and for any file it reads, never a path built from `$EVENER_SCRATCH_DIR`.
-
 ## Git and safety
 
 The worktree may hold changes you did not make. Leave them, and work with them where they touch your files. Undo only your own changes, one file at a time, such as `git restore path/to/file.go`. Use non-interactive git commands, and amend a commit only when your task asks.

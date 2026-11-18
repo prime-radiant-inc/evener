@@ -6,6 +6,7 @@ import (
 	"slices"
 	"testing"
 
+	"primeradiant.com/evener/agent/envctx"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/llm"
 )
@@ -51,10 +52,20 @@ func TestManagerRequestAllBranches(t *testing.T) {
 				t.Fatal(err)
 			}
 			req := adapter.waitForRequests(t, "root", 1)[0]
-			if mode == "all" || mode == "ordinary" {
-				if !slices.ContainsFunc(req.Tools, func(td llm.ToolDefinition) bool { return td.Name == "exec_command" }) || slices.ContainsFunc(req.Tools, func(td llm.ToolDefinition) bool { return td.Name == "shell" }) {
-					t.Fatal("provider tool renaming changed")
+			shell := slices.IndexFunc(req.Tools, func(td llm.ToolDefinition) bool { return td.Name == "exec_command" })
+			wantShell := allowed == nil || slices.Contains(allowed, "shell")
+			if (shell >= 0) != wantShell || slices.ContainsFunc(req.Tools, func(td llm.ToolDefinition) bool { return td.Name == "shell" }) {
+				t.Fatal("the advertised shell disagrees with the tool-name policy or provider mapping")
+			}
+			wantDetach := envctx.DetachUnavailable
+			if shell >= 0 {
+				modes, _ := shellModeProperty(t, req.Tools[shell].Parameters)["enum"].([]any)
+				if slices.Contains(modes, "detached") {
+					wantDetach = envctx.DetachAvailable
 				}
+			}
+			if root.promptLaunch.DetachedShell != wantDetach {
+				t.Fatalf("startup detach guidance = %q, provider tool schema requires %q", root.promptLaunch.DetachedShell, wantDetach)
 			}
 			if mode != "all" && mode != "ordinary" {
 				agenttest.CheckGolden(t, filepath.Join("testdata", "messagingprompt", "manager-"+mode+".md"), managerRequestGolden(req), *updatePromptGoldens, "Regenerate with go test ./agent -run TestManagerRequestAllBranches -update-prompt and review the diff.")
