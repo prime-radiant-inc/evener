@@ -92,3 +92,61 @@ func TestProjectName_RestoreRootGitFIFONeverBlocks(t *testing.T) {
 		t.Fatalf("projectName(owner restore root with .git FIFO) = %q, want %q from the restore directory", got, "repo")
 	}
 }
+
+// TestProjectName_LabelNeverExecutesGit pins the review finding that a label
+// lookup must not run a process. A read-only transcript search takes its inputs
+// from workspaces: the owner's recorded restore root can sit inside a Git
+// submodule, and the command runner resolves "git" from a PATH that workspace
+// directories can reach, so executing Git here would run a repository-supplied
+// binary with the daemon's permissions.
+//
+// The canary is a fake git first on PATH that records its own execution. A
+// label path that runs Git leaves the marker; one that reads the .git layout
+// structurally does not. The submodule is the case that made the resolver run
+// Git in the first place (it used to fall through to the binary), and the label
+// still names the recorded directory because the layout alone cannot say more.
+func TestProjectName_LabelNeverExecutesGit(t *testing.T) {
+	canaryDir := t.TempDir()
+	canary := filepath.Join(canaryDir, "git-ran")
+	fakeGit := filepath.Join(canaryDir, "git")
+	script := "#!/bin/sh\n: > " + canary + "\nexit 1\n"
+	if err := os.WriteFile(fakeGit, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake git: %v", err)
+	}
+	t.Setenv("PATH", canaryDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	// A restore root inside a Git submodule: a .git pointer file whose target is
+	// a .git/modules directory. Structurally that names the submodule's own
+	// checkout, which is what the label should use.
+	parent := t.TempDir()
+	sub := filepath.Join(parent, "sub")
+	subGitDir := filepath.Join(parent, ".git", "modules", "sub")
+	if err := os.MkdirAll(subGitDir, 0o755); err != nil {
+		t.Fatalf("mkdir submodule git dir: %v", err)
+	}
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("mkdir submodule checkout: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, ".git"), []byte("gitdir: "+subGitDir+"\n"), 0o644); err != nil {
+		t.Fatalf("write submodule pointer: %v", err)
+	}
+
+	bucket := newBucket(t)
+	ownerID := identifier.MustNewSessionID()
+	owner := schema.SessionMeta{ID: ownerID, WorktreeRestoreRoot: sub}
+	owner.EnvInfo.WorkingDir = sub
+	if err := schema.SaveSessionMeta(bucket, owner); err != nil {
+		t.Fatalf("save owner meta: %v", err)
+	}
+
+	m := schema.SessionMeta{}
+	m.EnvInfo.WorkingDir = filepath.Join(bucket, "sessions", ownerID, "worktrees", "notes")
+	got := projectName(m, bucket)
+
+	if _, err := os.Stat(canary); err == nil {
+		t.Fatalf("projectName(restore root in a Git submodule) executed git from PATH; a read-only search must never run workspace code (label = %q)", got)
+	}
+	if got != "sub" {
+		t.Fatalf("projectName(restore root in a Git submodule) = %q, want %q from the submodule checkout", got, "sub")
+	}
+}

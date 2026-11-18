@@ -16,6 +16,10 @@ import (
 // bytes check for it with errors.Is instead of matching the message.
 var ErrNotRegularFile = errors.New("not a regular file")
 
+// ErrGitPointerTooLarge reports that a ".git" pointer file exceeded the size a
+// pointer can occupy. It is neither read whole nor parsed.
+var ErrGitPointerTooLarge = errors.New("Git pointer file is larger than any pointer")
+
 // OpenRegularNoFollow opens path for reading through a single descriptor that
 // is validated before any read: the open refuses a symlink at the final
 // component (ELOOP, the target is never touched) and never blocks — a

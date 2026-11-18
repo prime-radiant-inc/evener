@@ -136,14 +136,14 @@ func localStructuralMainRoot(cwd string) (root string, isGit bool, handled bool,
 			if info.IsDir() {
 				return identifier.ResolveClean(dir), true, true, nil
 			}
-			content, readErr := readGitPointerNoBlock(gitPath)
+			content, readErr := ReadGitPointerFile(gitPath)
 			if readErr != nil {
 				// A .git entry that is not a directory and cannot be opened as a
 				// regular file (a FIFO with no writer, a socket, a device, an
 				// unreadable file) is not a pointer this walk can read. Report it
 				// as unsupported rather than as an error, so the caller's
 				// restore-path fallback answers instead of the search failing.
-				if errors.Is(readErr, ErrNotRegularFile) {
+				if errors.Is(readErr, ErrNotRegularFile) || errors.Is(readErr, ErrGitPointerTooLarge) {
 					return "", true, false, nil
 				}
 				return "", true, true, fmt.Errorf("read Git pointer %q: %w", gitPath, readErr)
@@ -171,20 +171,42 @@ func localStructuralMainRoot(cwd string) (root string, isGit bool, handled bool,
 	}
 }
 
-// readGitPointerNoBlock reads a .git pointer file through the same open every
-// other untrusted-leaf read in this package uses: it never blocks and it
-// admits only a regular file. A .git entry that is a FIFO with no writer, a
-// socket, or a device therefore returns ErrNotRegularFile instead of hanging
-// the caller or handing back bytes that are not a pointer.
-func readGitPointerNoBlock(path string) ([]byte, error) {
-	f, err := OpenRegularNoFollow(path)
+// gitPointerMaxBytes bounds a .git pointer read. A pointer is one path line, so
+// this is generous by three orders of magnitude; a longer file is not a pointer
+// and is refused rather than loaded into the daemon's memory.
+const gitPointerMaxBytes = 4096
+
+// ReadGitPointerFile reads a .git pointer file. The leaf may be a symlink (a
+// linked checkout whose .git points at a shared pointer file is legitimate), so
+// the link is resolved first; the resolved target must then be a regular file,
+// opened nonblocking, so a FIFO with no writer, a socket, or a device returns
+// ErrNotRegularFile instead of hanging the caller. The read is capped at
+// gitPointerMaxBytes and a longer file is refused with ErrGitPointerTooLarge.
+//
+// It is exported because every reader of a workspace-controlled pointer needs
+// exactly this guard: the Git-root resolver and the transcript label lookup both
+// call it, so the symlink allowance, the regular-file requirement, and the size
+// cap cannot drift apart.
+func ReadGitPointerFile(path string) ([]byte, error) {
+	target := path
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		target = resolved
+	} else if info, lerr := os.Lstat(path); lerr == nil && info.Mode()&os.ModeSymlink != 0 {
+		// A leaf symlink that does not resolve is not a pointer this walk can
+		// read, and it must not be opened to find that out.
+		return nil, fmt.Errorf("open %q: %w", path, ErrNotRegularFile)
+	}
+	f, err := OpenRegularNoFollow(target)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	data, readErr := io.ReadAll(f)
+	data, readErr := io.ReadAll(io.LimitReader(f, gitPointerMaxBytes+1))
 	if readErr != nil {
 		return nil, readErr
+	}
+	if len(data) > gitPointerMaxBytes {
+		return nil, fmt.Errorf("read %q: %w", path, ErrGitPointerTooLarge)
 	}
 	return data, nil
 }

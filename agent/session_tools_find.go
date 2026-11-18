@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -799,7 +800,6 @@ func projectName(m schema.SessionMeta, bucketDir ...string) string {
 }
 
 type projectNameResolver struct {
-	env                *execenv.LocalExecutionEnvironment
 	mainRootCache      map[string]string
 	bucketProjectCache map[string]string
 	stateRootCache     []string
@@ -807,7 +807,6 @@ type projectNameResolver struct {
 
 func newProjectNameResolver() *projectNameResolver {
 	return &projectNameResolver{
-		env:                execenv.NewLocalExecutionEnvironment(""),
 		mainRootCache:      make(map[string]string),
 		bucketProjectCache: make(map[string]string),
 	}
@@ -825,20 +824,13 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 		return ""
 	}
 
-	// 1. Check ResolveMainRepoRoot (cached by wd)
-	if root, ok := r.mainRootCache[wd]; ok {
-		if root != "" {
-			return filepath.Base(root)
-		}
-	} else {
-		root := execenv.ResolveMainRepoRoot(r.env, wd)
-		r.mainRootCache[wd] = root
-		if root != "" {
-			return filepath.Base(root)
-		}
+	// 1. Resolve the main checkout structurally (cached by wd). A label never
+	// needs a process: see resolveMainRootStructural.
+	if root := r.resolveMainRoot(wd); root != "" {
+		return filepath.Base(root)
 	}
 
-	// 2. ONLY if wd is structurally a worktree path whose checkout directory no longer resolves via ResolveMainRepoRoot:
+	// 2. ONLY if wd is structurally a worktree path whose checkout directory has no .git layout to resolve:
 	if name, isWorktree := r.worktreePathFallback(wd, bucketDir, m.ParentSessionID); isWorktree {
 		return name
 	}
@@ -937,6 +929,14 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 	// as /srv/archive/evener/projects/shared merely spells the layout, so both
 	// are skipped; every project bucket under the configured root keeps the
 	// fallback, legacy names included.
+	//
+	// It also answers only for a worktree recorded inside this same bucket. A row
+	// discovered in bucket A can record a worktree that lives in bucket B; A's
+	// sibling sessions describe A's repository, and naming this worktree after
+	// one of them mislabels a session from another repository.
+	if stateDir != bound {
+		return "", true
+	}
 	if home := stateHomeFor(bound); home == "" || !r.isConfiguredStateHome(home) {
 		return "", true
 	}
@@ -1104,9 +1104,59 @@ func (r *projectNameResolver) resolveMainRoot(dir string) string {
 	if root, ok := r.mainRootCache[dir]; ok {
 		return root
 	}
-	root := execenv.ResolveMainRepoRoot(r.env, dir)
+	root := resolveMainRootStructural(dir)
 	r.mainRootCache[dir] = root
 	return root
+}
+
+// resolveMainRootStructural resolves dir's main checkout from the .git layout
+// alone, never by running Git.
+//
+// Transcript search is read-only and its inputs are workspace-controlled: a
+// recorded restore root can sit inside a repository the user checked out, and
+// the command runner prepends workspace directories to PATH, so any `git`
+// invocation here would run a repository-supplied executable with the daemon's
+// permissions. None of that is acceptable for a label. The structural walk
+// answers the same question for the layouts that matter — a .git directory, a
+// linked-worktree pointer, a submodule pointer — and returns "" otherwise, and
+// every caller already falls back to the recorded directory's own name.
+func resolveMainRootStructural(dir string) string {
+	clean := filepath.Clean(dir)
+	for {
+		gitPath := filepath.Join(clean, ".git")
+		info, err := os.Lstat(gitPath)
+		switch {
+		case err == nil && info.IsDir():
+			return identifier.ResolveClean(clean)
+		case err == nil:
+			// A .git file (or a symlink to one): a linked worktree pointer names
+			// the main checkout; a submodule pointer names this repository. Both
+			// are layout, so neither needs Git or a process.
+			content, readErr := execenv.ReadGitPointerFile(gitPath)
+			if readErr != nil {
+				return ""
+			}
+			pointer := string(content)
+			if root, ok := identifier.MainRootFromGitdirPointer(pointer, clean); ok {
+				if identifier.ValidateLinkedWorktreePointer(pointer, clean, root) == nil {
+					return identifier.ResolveClean(root)
+				}
+				return ""
+			}
+			if _, ok := identifier.ParseGitdirPointer(pointer); ok {
+				if identifier.ValidateSubmodulePointer(pointer, clean) != nil {
+					return ""
+				}
+				return identifier.ResolveClean(clean)
+			}
+			return ""
+		}
+		parent := filepath.Dir(clean)
+		if parent == clean {
+			return ""
+		}
+		clean = parent
+	}
 }
 
 // canonicalProjectPath returns the canonical main-checkout path a session's

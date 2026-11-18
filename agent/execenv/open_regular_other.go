@@ -14,6 +14,10 @@ import (
 // bytes check for it with errors.Is instead of matching the message.
 var ErrNotRegularFile = errors.New("not a regular file")
 
+// ErrGitPointerTooLarge reports that a ".git" pointer file exceeded the size a
+// pointer can occupy. It is neither read whole nor parsed.
+var ErrGitPointerTooLarge = errors.New("Git pointer file is larger than any pointer")
+
 // OpenRegularNoFollow is the portable fallback: this platform has no
 // O_NOFOLLOW, so a leaf symlink is followed there (creating one requires
 // elevated privileges on the common non-unix hosts), and the open is a plain

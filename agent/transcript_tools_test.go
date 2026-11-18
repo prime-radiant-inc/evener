@@ -596,6 +596,26 @@ func TestFind_ProjectName_FallbacksAndOrdinaryDirectories(t *testing.T) {
 		t.Fatalf("projectName(delegate restore root in repo subdirectory) = %q, want repo root %q", got, want)
 	}
 
+	// 8b. A restore root that is itself a linked worktree resolves to the shared
+	// main checkout from the .git pointer alone. This is the layout a process
+	// would have needed Git for; the label must answer without running one.
+	linkedMain, linkedWT := gittest.NewLinkedWorktree(t)
+	if err := os.MkdirAll(filepath.Join(linkedWT, "pkg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkedSID := identifier.MustNewSessionID()
+	linkedMeta := schema.SessionMeta{ID: linkedSID, WorktreeRestoreRoot: linkedWT}
+	linkedMeta.EnvInfo.WorkingDir = filepath.Join(linkedWT, "pkg")
+	linkedBucket := newConfiguredBucket(t)
+	if err := schema.SaveSessionMeta(linkedBucket, linkedMeta); err != nil {
+		t.Fatal(err)
+	}
+	linkedWD := schema.SessionMeta{}
+	linkedWD.EnvInfo.WorkingDir = filepath.Join(linkedBucket, "sessions", linkedSID, "worktrees", "dlg_linked")
+	if got, want := projectName(linkedWD, linkedBucket), filepath.Base(linkedMain); got != want {
+		t.Fatalf("projectName(delegate restore root in a linked worktree) = %q, want main checkout %q", got, want)
+	}
+
 	// 9. Same resolution for the bucket-wide pass that reads a sibling's
 	// WorktreeRestoreRoot when the worktree's own session has no meta.
 	restoreSiblingBucket := newConfiguredBucket(t)
@@ -826,6 +846,28 @@ func TestFind_ProjectName_StateWorktreeWithoutBucketMetadata(t *testing.T) {
 	mDeleted.EnvInfo.WorkingDir = filepath.Join(bucket, "worktrees", "some-bucket", "revert-rail-slice")
 	if got := projectName(mDeleted, bucket); got != "" {
 		t.Fatalf("projectName(deleted worktree without bucket metadata) = %q, want empty", got)
+	}
+
+	// Bucket A holds a session of its own repository. Sibling inference is
+	// bucket-wide, so it must answer only for worktrees recorded inside A: a row
+	// in A whose recorded path points into bucket B belongs to B's repository and
+	// must not be labelled with A's.
+	bucketA := filepath.Join(stateRoot, "projects", "bucket-a")
+	bucketB := filepath.Join(stateRoot, "projects", "bucket-b")
+	for _, dir := range []string{bucketA, bucketB} {
+		if err := os.MkdirAll(filepath.Join(dir, "sessions"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bucketASibling := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	bucketASibling.EnvInfo.GitOriginURL = "git@github.com:owner/bucket-a-repo.git"
+	if err := schema.SaveSessionMeta(bucketA, bucketASibling); err != nil {
+		t.Fatal(err)
+	}
+	mOtherBucketRow := schema.SessionMeta{}
+	mOtherBucketRow.EnvInfo.WorkingDir = filepath.Join(bucketB, "sessions", identifier.MustNewSessionID(), "worktrees", "dlg_other_bucket")
+	if got := projectName(mOtherBucketRow, bucketA); got != "" {
+		t.Fatalf("projectName(row in bucket A recording a worktree in bucket B) = %q, want empty (A's sibling must not name B's worktree)", got)
 	}
 
 	// Another bucket under the same state root, reached by a symlink to a
