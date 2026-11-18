@@ -2,8 +2,11 @@ package responses
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/llm"
 )
 
 // syntheticResponsesSSE builds a raw Responses-API SSE body mirroring the
@@ -54,6 +57,47 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 	if calls := resp.ToolCalls(); len(calls) != 0 {
 		t.Fatalf("ToolCalls() = %d, want 0: %+v", len(calls), calls)
 	}
+
+	t.Run("independently repeated fields replay identical input", func(t *testing.T) {
+		fields := [4]string{"cipher", " λ\t", "\r\n<&>", " \t" + `{ "arg": 1.0 }` + "\n"}
+		terminal := func(f [4]string) string {
+			return `{"output":[` +
+				`{"type":"reasoning","id":"rs","encrypted_content":` + jsonOf(t, f[0]) + `,"content":[{"type":"reasoning_text","text":"r"}],"summary":[]},` +
+				`{"type":"message","id":"msg","content":[{"type":"output_text","text":` + jsonOf(t, f[1]) + `},{"type":"output_text","text":` + jsonOf(t, f[2]) + `}]},` +
+				`{"type":"function_call","id":"fc","call_id":"call","name":"f","arguments":` + jsonOf(t, f[3]) + `}]}`
+		}
+		events := strings.Join([]string{
+			`data: {"type":"response.output_item.done","item":{"type":"reasoning","id":"rs","encrypted_content":` + jsonOf(t, fields[0]) + `}}`,
+			`data: {"type":"response.output_text.delta","item_id":"msg","content_index":1,"delta":` + jsonOf(t, fields[2]) + `}`,
+			`data: {"type":"response.output_text.delta","item_id":"msg","content_index":0,"delta":` + jsonOf(t, fields[1]) + `}`,
+			`data: {"type":"response.function_call_arguments.done","item_id":"fc","call_id":"call","arguments":` + jsonOf(t, fields[3]) + `}`,
+		}, "\n\n") + "\n\n"
+		res := resolved(openaiCaps)
+		res.Caps.ReplayReasoningText = new(true)
+		nextInput := func(t *testing.T, response string) string {
+			t.Helper()
+			got, err := ExtractRecordedResponse([]byte(response), res.ModelID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return jsonOf(t, build(t, llm.Request{Model: res.ModelID, Messages: []llm.Message{got.Message}}, res)["input"])
+		}
+		want := nextInput(t, terminal(fields))
+		for omitted := range 1 << len(fields) {
+			t.Run(fmt.Sprintf("omitted_%04b", omitted), func(t *testing.T) {
+				repeated := fields
+				for i := range repeated {
+					if omitted&(1<<i) != 0 {
+						repeated[i] = ""
+					}
+				}
+				stream := events + `data: {"type":"response.completed","response":` + terminal(repeated) + "}\n\n"
+				if got := nextInput(t, stream); got != want {
+					t.Errorf("input from stream = %s, complete response = %s", got, want)
+				}
+			})
+		}
+	})
 }
 
 func TestExtractRecordedResponse_ResponsesSSE_TerminalRawArguments(t *testing.T) {
