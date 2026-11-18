@@ -40,10 +40,17 @@ func (cm *Manager) RecordInputTokensFor(profile *provider.Profile, tokens int, h
 // other profile-derived values stay current after a model change. An exact
 // token count belongs only to the instance, model, and protocol that produced
 // it, so changing any part of that target invalidates the measurement.
-func (cm *Manager) SetProfile(profile *provider.Profile) {
+//
+// It reports whether the estimation target changed. A caller deciding whether
+// the swap changed what context reads publish needs that answer: dropping a
+// measurement moves the published usage even when the outgoing and incoming
+// targets share a window and a compaction threshold, and the target's own
+// estimator rules can move it with no measurement involved.
+func (cm *Manager) SetProfile(profile *provider.Profile) (targetChanged bool) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
-	if !sameProfileTarget(cm.profile, profile) {
+	targetChanged = !sameProfileTarget(cm.profile, profile)
+	if targetChanged {
 		cm.lastInputTokens = 0
 		cm.historyLenAtMeasure = 0
 		// The unknown-window disclosure names the model it assumed for, so
@@ -60,6 +67,7 @@ func (cm *Manager) SetProfile(profile *provider.Profile) {
 	// A generation counter makes any swap a miss, including a swap to a profile
 	// that compares equal.
 	cm.profileGen++
+	return targetChanged
 }
 
 func sameProfileTarget(a, b *provider.Profile) bool {

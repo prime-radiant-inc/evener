@@ -2388,17 +2388,24 @@ func (s *Session) applyModelSwitchControl(model, primedInstance string, primedLi
 	// model installed: a fallback replaces it with its own. Reselecting the
 	// configured model restores the configured budget even when the two
 	// configured profiles are identical, and the switch event below is the only
-	// thing that refreshes the daemon's context facet. Capture both halves of
-	// that budget — the window and the compaction threshold derived from it —
+	// thing that refreshes the daemon's context facet. Capture every part of
+	// that budget the facet reads — the window, the compaction threshold derived
+	// from it, and the estimation target whose measurement supplies the usage —
 	// so a fallback that shares the configured window and source but compacts at
-	// its own custom threshold still announces the restore. When the context is
+	// its own custom threshold, or one whose window and threshold match while
+	// only its target differs, still announces the restore. When the context is
 	// genuinely unchanged the switch stays as quiet as it was.
 	prevEffectiveWindow, prevEffectiveWindowSource, havePrevWindow := 0, "", false
 	prevEffectiveThreshold, havePrevThreshold := 0, false
+	contextTargetMoved := false
 	if s.contextMgr != nil {
 		prevEffectiveWindow, prevEffectiveWindowSource, havePrevWindow = s.contextMgr.EffectiveWindow()
 		prevEffectiveThreshold, havePrevThreshold = s.contextMgr.EffectiveCompactionThreshold()
-		s.contextMgr.SetProfile(s.profile)
+		// A third half no window or threshold read can see: the manager bills
+		// against an estimation target, and a swap to a different one drops the
+		// fallback's exact token count even when its window and its threshold are
+		// the configured model's own.
+		contextTargetMoved = s.contextMgr.SetProfile(s.profile)
 	}
 	settledWindow, settledWindowSource := budgetingWindow(s.profile)
 	contextWindowMoved := havePrevWindow &&
@@ -2411,7 +2418,7 @@ func (s *Session) applyModelSwitchControl(model, primedInstance string, primedLi
 		settledThreshold = s.contextMgr.CompactionThresholdTokens(s.profile)
 	}
 	contextThresholdMoved := havePrevThreshold && prevEffectiveThreshold != settledThreshold
-	contextMoved := contextWindowMoved || contextThresholdMoved
+	contextMoved := contextWindowMoved || contextThresholdMoved || contextTargetMoved
 	if s.reg != nil {
 		s.reapplyProviderSpecificTools(commitPrev, nextProfile)
 	}

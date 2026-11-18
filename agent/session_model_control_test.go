@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
@@ -433,11 +435,99 @@ func TestModelControlSameWindowDifferentThresholdReselectRepublishes(t *testing.
 	}
 }
 
+// TestModelControlSameWindowAndThresholdDifferentTargetReselectRepublishes
+// covers the fallback that leaves no window or threshold behind: it answered
+// with the configured model's own context window, window source and compaction
+// threshold, so only its estimation target differs. Its answer installed an
+// exact token count of its own, which SetProfile drops when the configured
+// target comes back. Comparing the window and the threshold alone treated that
+// reselect as unchanged and suppressed the switch event, so every read kept
+// serving the fallback's count and pressure.
+func TestModelControlSameWindowAndThresholdDifferentTargetReselectRepublishes(t *testing.T) {
+	t.Parallel()
+	sess, reg := newThresholdedModelControlSession(t, 150_000)
+	configured, err := provider.Resolve(reg, "work/model-shared")
+	if err != nil {
+		t.Fatalf("resolve configured model: %v", err)
+	}
+	fallback, err := provider.Resolve(reg, "work/model-fallback")
+	if err != nil {
+		t.Fatalf("resolve fallback model: %v", err)
+	}
+	// The fallback that answered shares every budget the switch compares:
+	// window, window source, and compaction threshold.
+	sess.contextMgr.SetProfile(fallback)
+	if prevWindow, prevSource, _ := sess.contextMgr.EffectiveWindow(); prevWindow != configured.ContextWindowSize() || prevSource != configured.ContextWindowSource() {
+		t.Fatalf("fixture: fallback window = %d (%q), want the configured %d (%q)",
+			prevWindow, prevSource, configured.ContextWindowSize(), configured.ContextWindowSource())
+	}
+	wantThreshold := sess.contextMgr.CompactionThresholdTokens(configured)
+	if prevThreshold, ok := sess.contextMgr.EffectiveCompactionThreshold(); !ok || prevThreshold != wantThreshold {
+		t.Fatalf("fixture: fallback threshold = %d (ok=%v), want the configured %d", prevThreshold, ok, wantThreshold)
+	}
+	// The fallback answered, so its API measurement is the count every read
+	// serves until the configured target returns.
+	text := strings.Repeat("f", 4096)
+	turn := schema.NewTurn(schema.TurnUserInput, llm.User(text))
+	sess.recordTurn(turn, turn)
+	sess.mu.Lock()
+	historyLen := len(sess.history)
+	sess.mu.Unlock()
+	const fallbackTokens = 180_000
+	if !sess.contextMgr.RecordInputTokensFor(fallback, fallbackTokens, historyLen) {
+		t.Fatal("fixture: the fallback's own measurement was refused")
+	}
+	fallbackPressure := float64(fallbackTokens) / float64(configured.ContextWindowSize())
+	if got, pressure := sess.ContextStatus(); got.Used != fallbackTokens || pressure != fallbackPressure {
+		t.Fatalf("fixture: context = %d tokens/%v pressure, want the fallback's %d/%v", got.Used, pressure, fallbackTokens, fallbackPressure)
+	}
+
+	if _, err := sess.SetModelControl(thresholdedModelControlRequest(sess, "cm_target_reselect")); err != nil {
+		t.Fatalf("reselect configured model: %v", err)
+	}
+	requireModelControlEvent(t, sess)
+	var found *events.ModelChangedData
+	for {
+		select {
+		case event := <-sess.Events():
+			if data, ok := event.Data.(events.ModelChangedData); ok {
+				found = &data
+			}
+			continue
+		default:
+		}
+		break
+	}
+	if found == nil {
+		t.Fatal("reselecting the configured model emitted no EventModelChanged, so the context facet keeps the fallback's token count")
+	}
+	if got := sess.contextMgr.LastInputTokens(); got != 0 {
+		t.Fatalf("measurement after reselect = %d, want the fallback's count dropped", got)
+	}
+	if found.ContextUsed == fallbackTokens {
+		t.Fatalf("published context used = %d, want the reselected model's count, not the fallback's", found.ContextUsed)
+	}
+	got, gotPressure := sess.ContextStatus()
+	if got.Used == fallbackTokens {
+		t.Fatalf("context used after reselect = %d, want the reselected model's count, not the fallback's", got.Used)
+	}
+	if gotPressure == fallbackPressure {
+		t.Fatalf("context pressure after reselect = %v, want the reselected model's pressure, not the fallback's", gotPressure)
+	}
+}
+
 // TestModelControlSameModelReselectStaysQuiet pins the other half: a reselect
 // that changes nothing the context facet reports emits no model-change event.
 func TestModelControlSameModelReselectStaysQuiet(t *testing.T) {
 	t.Parallel()
 	sess, _ := newThresholdedModelControlSession(t, 120_000)
+	// A measurement taken under the installed target survives a same-target
+	// reselect. Clearing it would move every published read even with no event
+	// to announce the move, so the count stands and the switch stays quiet.
+	const measuredInputTokens = 90_000
+	if !sess.contextMgr.RecordInputTokensFor(sess.currentProfile(), measuredInputTokens, 0) {
+		t.Fatal("the configured profile's own measurement was refused")
+	}
 	if _, err := sess.SetModelControl(thresholdedModelControlRequest(sess, "cm_threshold_same")); err != nil {
 		t.Fatalf("reselect configured model: %v", err)
 	}
@@ -452,6 +542,14 @@ func TestModelControlSameModelReselectStaysQuiet(t *testing.T) {
 		default:
 		}
 		break
+	}
+	if got := sess.contextMgr.LastInputTokens(); got != measuredInputTokens {
+		t.Fatalf("measurement after an unchanged reselect = %d, want the retained %d", got, measuredInputTokens)
+	}
+	// The switch's own marker turn legitimately extends the estimate; a dropped
+	// measurement would instead replace it with the marker's char/4 value.
+	if got, _ := sess.ContextStatus(); got.Used < measuredInputTokens {
+		t.Fatalf("context used after an unchanged reselect = %d, want the retained measurement's baseline at least", got.Used)
 	}
 }
 
