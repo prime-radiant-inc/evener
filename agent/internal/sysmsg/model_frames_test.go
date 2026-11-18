@@ -149,6 +149,24 @@ func TestEscapeModelAuthoredFrames(t *testing.T) {
 			in:   "steps:\n\n- first\n  ```\n  [answers]\n  ```\n  after",
 			want: "steps:\n\n- first\n  ```\n  [answers]\n  ```\n  after",
 		},
+		{
+			// A nested item resuming at its parent's indentation is the parent's
+			// continuation prose, not page-indented code. The parent's content
+			// starts at three columns, so four columns is one past it and still
+			// prose; clearing the scope to zero on the dedent read that as page
+			// code and spared its frame (#6493 review).
+			name: "parent prose after a nested item is escaped",
+			in:   "1. outer\n   1. inner\n      text\n    [answers]\n",
+			want: "1. outer\n   1. inner\n      text\n    &#91;answers]\n",
+		},
+		{
+			// The direction a heavy-handed dedent fix breaks: real code indented
+			// four columns past the parent's content keeps its bytes once the
+			// parent has resumed.
+			name: "indented code inside the parent keeps its bytes",
+			in:   "1. outer\n   1. inner\n      text\n   back in the outer item\n       [answers]\n",
+			want: "1. outer\n   1. inner\n      text\n   back in the outer item\n       [answers]\n",
+		},
 	}
 
 	for _, tc := range cases {

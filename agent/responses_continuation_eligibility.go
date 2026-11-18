@@ -68,6 +68,28 @@ func responsesContinuationAnchorSeededByEscapedFullHistory(anchor schema.Turn) b
 	return strings.TrimSpace(anchor.ResponseContextMarker) == responseContextMarkerFullHistorySeed
 }
 
+// responsesContinuationMarkerForDelta returns the marker a response to a delta
+// extending anchor should carry.
+//
+// A delta request sends only the delta, and the delta's own messages are the
+// escaped dispatch copy, so the response's retained prefix is its anchor's
+// prefix plus escaped text. When the anchor's prefix was the escaped
+// full-history copy, everything the provider now holds is escaped, and the
+// response continues that state. Stamping the legacy marker instead would make
+// the next request rescan the raw transcript, find the same earlier frame, and
+// send full history again — so an eligible session would alternate between
+// delta and full history round after round until a fold dropped the turn
+// (#6493 review).
+//
+// A delta extending a legacy anchor keeps the legacy marker: its retained
+// prefix is still raw transcript text, and the next request must scan it.
+func responsesContinuationMarkerForDelta(anchor schema.Turn) string {
+	if responsesContinuationAnchorSeededByEscapedFullHistory(anchor) {
+		return responseContextMarkerFullHistorySeed
+	}
+	return responseContextMarkerV1
+}
+
 type responsesContinuationAnchorCandidate struct {
 	TurnIndex int
 	Turn      schema.Turn

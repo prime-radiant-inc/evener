@@ -734,7 +734,7 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 			DeltaTurnKinds:          responsesContinuationTurnKinds(candidate.Delta),
 			EndpointFamily:          string(plan.EndpointFamily),
 			RequestFingerprint:      plan.RequestFingerprint,
-			ContextMarker:           responseContextMarkerV1,
+			ContextMarker:           responsesContinuationMarkerForDelta(candidate.Turn),
 			StoragePolicyLabel:      plan.StoragePolicyLabel,
 			StorageScopeFingerprint: plan.StorageScopeFingerprint,
 		}

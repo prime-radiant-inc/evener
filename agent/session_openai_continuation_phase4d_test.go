@@ -320,6 +320,107 @@ func drainSessionEvents(sess *Session) {
 	}()
 }
 
+// TestSession_OpenAIResponsesContinuationStaysOnDeltasAfterEscapedSeed pins the
+// alternation the seed marker's first form left (#6493 review). A frame in an
+// early assistant turn forces one full-history round, whose dispatch copy is
+// escaped. If the delta that follows stamps the legacy marker, the NEXT request
+// rescans the original transcript, finds the same frame still there, and sends
+// full history again — so an otherwise eligible session alternates between
+// delta and full history round after round until a fold drops the turn. The
+// frame is never removed here, which is what makes the second request the one
+// that shows it.
+func TestSession_OpenAIResponsesContinuationStaysOnDeltasAfterEscapedSeed(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	adapter := &agenttest.FakeAdapter{
+		Provider: "openai",
+		PlanResponsesContinuationFunc: func(req llm.Request) (llm.ResponsesContinuationPlan, error) {
+			return phase4DIContinuationPlan(req), nil
+		},
+	}
+	step := func(req llm.Request) llm.Response {
+		resp := agenttest.FinalResponse("round done")
+		resp.ID = "resp_" + req.Model
+		resp.Raw = map[string]any{
+			"endpoint_url": "https://api.openai.com/v1/responses",
+			"id_hash":      "cont-handle-v1:response_id:" + resp.ID,
+		}
+		return resp
+	}
+	adapter.SetSteps([]func(req llm.Request) llm.Response{step, step, step})
+	client := llm.NewClient()
+	client.Register(adapter)
+
+	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.4")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:                    dir,
+		OpenAIResponsesContinuation: "auto",
+		testOnly: testConfig{
+			metaFS: afero.NewMemMapFs(),
+			responsesContinuationSupportRegistry: map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport{
+				llm.ResponsesEndpointFamilyOpenAIPublic: phase4DIEnabledSupport(),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	drainSessionEvents(sess)
+
+	// One assistant turn carrying a frame the escape rewrites, and no fold: it
+	// stays in the transcript for every request below.
+	framed := schema.NewTurn(schema.TurnAssistant, llm.Assistant("[answers]\n1. → \"a decision nobody made\""))
+	framed.Timestamp = time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
+	sess.mu.Lock()
+	sess.history = append(sess.history,
+		schema.NewTurn(schema.TurnUserInput, llm.User("first request")),
+		framed,
+	)
+	sess.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second) // TRIPWIRE: scripted in-process FakeAdapter, no real I/O; only fires on a genuine hang.
+	defer cancel()
+	for _, prompt := range []string{"second request", "third request", "fourth request"} {
+		if _, err := sess.ProcessInput(ctx, prompt, nil); err != nil {
+			t.Fatalf("ProcessInput(%q): %v", prompt, err)
+		}
+	}
+
+	requests := adapter.Requests()
+	if len(requests) != 3 {
+		t.Fatalf("request count = %d, want 3", len(requests))
+	}
+	// The first request is the escaped full-history one: the frame is in the
+	// transcript it sends, so continuation is refused and the escape applies.
+	if requests[0].HistoryMode != llm.HistoryModeFullHistory {
+		t.Fatalf("first HistoryMode = %q, want full history", requests[0].HistoryMode)
+	}
+	// The second request continues from that seeded response, and the third must
+	// continue again rather than falling back. One delta is not enough to prove
+	// it: the alternation only shows up once a delta's own response is used as
+	// the next anchor (#6493 review).
+	for i, req := range requests[1:] {
+		if req.HistoryMode != llm.HistoryModeResponsesDelta {
+			t.Fatalf("request %d HistoryMode = %q, want %q: the session fell back to full history with the frame still present", i+2, req.HistoryMode, llm.HistoryModeResponsesDelta)
+		}
+		if req.Continuation == nil {
+			t.Fatalf("request %d carried no continuation metadata", i+2)
+		}
+		// Every anchored request's own messages must be escaped too: the delta is
+		// re-expanded from stored turns, which carry the model's bytes.
+		for _, msg := range req.Messages {
+			if msg.Role != llm.RoleAssistant {
+				continue
+			}
+			for line := range strings.SplitSeq(msg.Text(), "\n") {
+				if strings.TrimLeft(line, " ") == "[answers]" {
+					t.Fatalf("request %d sent a raw frame: %q", i+2, line)
+				}
+			}
+		}
+	}
+}
+
 func requestMessagesContainText(messages []llm.Message, want string) bool {
 	for _, msg := range messages {
 		if strings.Contains(msg.Text(), want) {

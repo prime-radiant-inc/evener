@@ -409,13 +409,17 @@ func indentedCode(content string, container int) bool {
 // listContainer tracks the content indentation of the Markdown list item the
 // scan is inside, so an item's own text is not mistaken for page-indented code.
 //
-// It models what the escape needs and nothing more: one list container, the way
-// mdfence.Tracker does, because the question is only whether a line's indent
-// reaches four columns past its item. A line indented less than the item's
-// content leaves the item and is read at the top level again; a blank line stays
-// inside it, since a blank line neither ends an item nor opens code.
+// It models what the escape needs and nothing more: the current item's content
+// indentation and, when the item is nested, the one that encloses it. A line
+// indented less than the current item's content leaves that item, and the scope
+// that applies to it is its parent's rather than the top level: a nested list
+// resuming at its parent's indentation is the parent's continuation prose, and
+// clearing to zero there made that prose read as page-indented code, so a frame
+// in it survived (#6493 review). A blank line stays inside the current item,
+// since a blank line neither ends an item nor opens code.
 type listContainer struct {
 	content int
+	parent  int
 }
 
 // step returns the content indentation that applies to line: the item's, taken
@@ -427,8 +431,13 @@ func (l *listContainer) step(content string) int {
 	}
 	indent := mdfence.LeadingColumns(content)
 	if l.content > 0 && indent < l.content {
-		// Left the item: this line belongs to the enclosing context.
-		l.content = 0
+		// Left the item: the scope that applies is the enclosing one. A line that
+		// is also indented less than the parent leaves that too, and the walk
+		// continues to the top level.
+		l.content, l.parent = l.parent, 0
+		for l.content > 0 && indent < l.content {
+			l.content, l.parent = l.parent, 0
+		}
 	}
 	rest := content[mdfence.LeadingSpaces(content):]
 	if marker, ok := mdfence.ListMarker(rest); ok {
@@ -436,7 +445,14 @@ func (l *listContainer) step(content string) int {
 		spaces := len(after) - len(strings.TrimLeft(after, " "))
 		if spaces >= 1 && spaces <= 4 {
 			// The content starts after the marker and its following spaces, at
-			// this line's own indentation.
+			// this line's own indentation. The item it nests inside is the one
+			// whose content it is indented past, and a marker at the top level
+			// nests inside nothing.
+			if l.content > 0 && indent >= l.content {
+				l.parent = l.content
+			} else {
+				l.parent = 0
+			}
 			l.content = indent + marker + spaces
 			return l.content
 		}
