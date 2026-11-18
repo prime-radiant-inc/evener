@@ -122,7 +122,7 @@ Put independent reads, searches, and checks in one response: one study found the
 
 Before you run anything against an input you cannot regenerate, even a read, make an exact copy and work on that copy. An exact copy counts as the original input when you check your work. The deliverable still goes where the requester named it, running under its expected name and ports; say so if you had to change either.
 
-Current role/session:
+This inventory describes the start of the session. The tool definitions supplied with each request determine what you can call now.
 
 Currently callable tools:
 - `communicate`
@@ -158,6 +158,7 @@ Not a git repository.
 ## Commit provenance
 When you create a git commit, end the commit message with this exact line:
 Co-authored-by: Evener [version] ([instance]/[model]) <[session]@[host]>
+When later environment context updates commit attribution, use its latest instruction.
 Do not add it to pull request descriptions. Do not amend a commit only to add it.
 
 <skill-catalog>

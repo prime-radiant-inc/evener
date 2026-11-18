@@ -393,11 +393,13 @@ func wppPromptDataAndRender(t *testing.T, token string) {
 		t.Fatalf("prompt source log = %#v", sess.promptSourceLog)
 	}
 	user := llm.User("user text")
-	if got := prependSystemPromptToUserMessage("system", user); len(got.Content) != len(user.Content)+1 || got.Content[0].Text != "system\n\n" {
-		t.Fatalf("system prepend = %#v", got)
+	for _, prompt := range []string{token, "  "} {
+		if got := prependSystemPromptToUserMessage(prompt, user); len(got.Content) != len(user.Content)+1 || got.Content[0].Text != prompt+"\n\n" || got.Content[1].Text != user.Content[0].Text {
+			t.Fatalf("system prepend = %#v", got)
+		}
 	}
-	if got := prependSystemPromptToUserMessage("  ", user); len(got.Content) != len(user.Content) {
-		t.Fatalf("blank system prepend changed user: %#v", got)
+	if got := prependSystemPromptToUserMessage("", user); len(got.Content) != len(user.Content) || got.Text() != user.Text() {
+		t.Fatalf("empty system prepend changed user: %#v", got)
 	}
 	if sandboxPromptLine(env) != "" || sandboxPromptLine(nil) != "" {
 		t.Fatal("non-local environment unexpectedly emitted sandbox prompt text")

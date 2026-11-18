@@ -240,12 +240,12 @@ The bundled `gardening-memory` skill is explicitly activated through
 contradictions, remove duplicates, split sprawling pages, fix `when` lines and
 tags, merge pages that share tags, delete stale pages, and remove recorded
 approvals, plan status and progress while keeping any durable fact on the same
-page. It does not activate automatically or run background work. It is
-advertised in a session's skill catalog, and loads, only while the session can
-save memory: a delegate, a `--disable-memory` session, or a root whose profile
-denies a save tool does not list it in its skill catalog and cannot activate
-it, and a refusal fails visibly instead of delivering instructions the session
-cannot follow.
+page. The startup prompt lists the skill when the session starts with save
+access. The current tool definitions and `use_skill` follow the session’s
+live permissions. Revoking a save tool removes it from subsequent requests
+and blocks skill activation, while the saved startup catalog retains its
+original wording. Delegates and sessions started with `--disable-memory`
+omit the skill from that catalog.
 
 ## Generated index
 

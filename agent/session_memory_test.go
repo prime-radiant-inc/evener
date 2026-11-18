@@ -138,16 +138,15 @@ func TestMemoryGardeningSkill(t *testing.T) {
 }
 
 // The gardening-memory skill corrects pages with the memory save tools, so a
-// session that cannot save memory (a delegate, a memory-disabled session, or a
-// profile that denies a save tool) must neither see it in the model catalog nor
-// activate it through use_skill. A save-capable root session keeps both.
+// session that starts without save tools omits it from the startup catalog.
+// Activation and the tools sent with a request follow current access.
 func TestMemoryGardeningSkillGatedBySaveCapability(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name               string
 		cfg                SessionConfig
 		revoke             string
-		loadable           bool // use_skill activates it; the catalog lists it exactly when true
+		loadable           bool // use_skill can activate it on this request
 		initialUnavailable bool // the construction-time autosave already has the fixed verdict
 	}{
 		{"enabled", SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, "", true, false},
@@ -158,9 +157,10 @@ func TestMemoryGardeningSkillGatedBySaveCapability(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			var catalogListed, bodyDelivered bool
+			var catalogListed, writeOffered, bodyDelivered bool
 			steps := []func(llm.Request) llm.Response{
 				func(req llm.Request) llm.Response {
+					writeOffered = slices.ContainsFunc(req.Tools, func(def llm.ToolDefinition) bool { return def.Name == "memory_write" })
 					for _, msg := range req.Messages {
 						if msg.Role == llm.RoleSystem && strings.Contains(msg.Text(), "- gardening-memory: ") {
 							catalogListed = true
@@ -212,10 +212,11 @@ func TestMemoryGardeningSkillGatedBySaveCapability(t *testing.T) {
 				t.Fatal(err)
 			}
 			stop()
-			// A delegate receives no <skill-catalog> at all, so it expects a
-			// false catalog verdict like the other no-save shapes.
-			if catalogListed != tc.loadable {
-				t.Errorf("model catalog lists %s = %t, want %t", gardeningMemorySkillName, catalogListed, tc.loadable)
+			if want := !tc.initialUnavailable; catalogListed != want {
+				t.Errorf("startup catalog lists %s = %t, want %t", gardeningMemorySkillName, catalogListed, want)
+			}
+			if writeOffered != tc.loadable {
+				t.Errorf("current request offers memory_write = %t, want %t", writeOffered, tc.loadable)
 			}
 			if bodyDelivered != tc.loadable {
 				t.Errorf("use_skill delivered the body = %t, want %t", bodyDelivered, tc.loadable)
