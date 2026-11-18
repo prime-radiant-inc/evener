@@ -871,12 +871,32 @@ export class TranscriptRepository {
    * speaks for this repository's own instance and boot. The transcript is left
    * exactly as it is: this read proved nothing about rows.
    *
-   * Returns whether the envelope advanced the held model. The caller uses that
-   * only to decide whether anything published.
+   * `replay` folds the model-control frames buffered during that same read onto
+   * the model this repository holds once the envelope is in. Those frames were
+   * delivered while the held model was `recovering`, a state the live fold
+   * ignores, so a newer same-boot choice would otherwise stay in the buffer and
+   * the picker would return to `ready` showing the reply's older one. The
+   * caller owns the matching rule and supplies it here, so this repository
+   * applies exactly the fold the hydration path uses rather than a second copy.
+   *
+   * Returns whether the envelope advanced the held model, and whether the
+   * replay asked for a replacement read. The caller decides whether anything
+   * published and carries the recovery obligation to the store.
    */
-  acceptDiscardedReadModelControl(response: ThreadReadResponse): boolean {
-    if (this.#sealed || this.#model === undefined) return false;
-    return this.#applyReadModelControl(response);
+  acceptDiscardedReadModelControl(
+    response: ThreadReadResponse,
+    replay?: (held: ThreadModel) => { model: ThreadModel; replacementReadRequired: boolean },
+  ): { accepted: boolean; replacementReadRequired: boolean } {
+    if (this.#sealed || this.#model === undefined) return { accepted: false, replacementReadRequired: false };
+    if (!this.#applyReadModelControl(response)) return { accepted: false, replacementReadRequired: false };
+    const replayed = replay?.(this.#model);
+    if (replayed === undefined) return { accepted: true, replacementReadRequired: false };
+    if (replayed.model !== this.#model) {
+      this.#model = replayed.model;
+      this.#publish();
+      this.#reclaimBackgroundModel();
+    }
+    return { accepted: true, replacementReadRequired: replayed.replacementReadRequired };
   }
 
   #applyReadModelControl(response: ThreadReadResponse): boolean {

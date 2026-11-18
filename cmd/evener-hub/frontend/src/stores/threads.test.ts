@@ -9,6 +9,7 @@ import type {
   AnyNotification,
   MethodName,
   MethodTypes,
+  ModelControlSnapshot,
   ThreadReadResponse,
   ThreadTurnsListResponse,
   TurnQueueResponse,
@@ -2612,4 +2613,133 @@ test("the shutdown dispatch gate is released when the cancellation write fails",
   await threadsStore.getState().send(ref, "after shutdown");
   await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+});
+
+// A recovery read can answer with a valid same-boot model-control envelope
+// while its transcript window is discarded, and a newer matching model-control
+// frame can arrive during that read. The held `recovering` state cannot apply
+// the frame, so installing only the reply's envelope returns the picker to
+// `ready` showing the older choice until another read or switch.
+describe("discarded recovery reads replay buffered model control", () => {
+  function controlSnapshot(
+    revision: number,
+    options: { activeProvider?: string; activeModel?: string; bootGeneration?: string } = {},
+  ): ModelControlSnapshot {
+    return {
+      authority: { instanceId: "thr_ref_a", bootGeneration: options.bootGeneration ?? "1" },
+      revision,
+      active: {
+        modelProvider: options.activeProvider ?? "anthropic",
+        model: options.activeModel ?? "claude-sonnet-4-5",
+        reasoningEffortLevels: ["low", "high"],
+        supportsReasoning: true,
+      },
+    };
+  }
+
+  function controlRead(ref: string, snapshot: ModelControlSnapshot, length: number): ThreadReadResponse {
+    return {
+      thread: testThread(ref, {
+        modelProvider: snapshot.active.modelProvider,
+        evener: {
+          ref,
+          capabilities: { ...CAPABILITIES, modelControlVersion: 1 },
+          modelControl: snapshot,
+          queue: { revision: 0 },
+        },
+      }),
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length },
+    };
+  }
+
+  function controlFrame(ref: string, snapshot: ModelControlSnapshot): AnyNotification {
+    return {
+      method: "thread/model/controlChanged",
+      params: { ref, threadId: "thr_ref_a", modelControl: snapshot },
+    };
+  }
+
+  test("a discarded recovery read shows the newer choice buffered during it", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => controlRead("ref_a", controlSnapshot(1), 5));
+    await threadsStore.getState().ensureThread("ref_a");
+    expect(threadsStore.getState().threads.get("ref_a")?.history?.length).toBe(5);
+
+    // An equal-revision conflict is a pick this client cannot apply, so the
+    // store enters recovery and issues one replacement read.
+    const recovery = deferred<ThreadReadResponse>();
+    let reads = 0;
+    fake.on("thread/read", () => {
+      reads += 1;
+      return reads === 1 ? recovery.promise : controlRead("ref_a", controlSnapshot(9), 5);
+    });
+    fake.emitNotification(
+      controlFrame("ref_a", controlSnapshot(1, { activeProvider: "openai", activeModel: "gpt-5.5" })),
+    );
+    expect(threadsStore.getState().threads.get("ref_a")?.modelControlState.kind).toBe("recovering");
+    await flushUntil(() => reads === 1);
+
+    // While that read is in flight, a newer choice speaking for the same
+    // authority arrives. The held `recovering` model cannot apply it.
+    fake.emitNotification(
+      controlFrame("ref_a", controlSnapshot(3, { activeProvider: "google", activeModel: "gemini-3-pro" })),
+    );
+
+    // The read answers for the same boot with a window behind the one held, so
+    // its transcript half is discarded and only its envelope is installed.
+    recovery.resolve(controlRead("ref_a", controlSnapshot(2, { activeProvider: "openai", activeModel: "gpt-5.5" }), 2));
+    await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.modelControlState.kind === "ready");
+
+    const model = threadsStore.getState().threads.get("ref_a");
+    expect(model?.modelControlState).toEqual({
+      kind: "ready",
+      snapshot: controlSnapshot(3, { activeProvider: "google", activeModel: "gemini-3-pro" }),
+    });
+    // The held transcript survives the discarded window.
+    expect(model?.history?.length).toBe(5);
+  });
+
+  test("a conflicting frame buffered during a discarded recovery read requests a replacement read", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => controlRead("ref_a", controlSnapshot(1), 5));
+    await threadsStore.getState().ensureThread("ref_a");
+
+    const recovery = deferred<ThreadReadResponse>();
+    const replacement = deferred<ThreadReadResponse>();
+    let reads = 0;
+    fake.on("thread/read", () => {
+      reads += 1;
+      if (reads === 1) return recovery.promise;
+      if (reads === 2) return replacement.promise;
+      return controlRead("ref_a", controlSnapshot(4, { activeProvider: "google", activeModel: "gemini-3-pro" }), 5);
+    });
+    fake.emitNotification(
+      controlFrame("ref_a", controlSnapshot(1, { activeProvider: "openai", activeModel: "gpt-5.5" })),
+    );
+    await flushUntil(() => reads === 1);
+
+    // Buffered during the read, and conflicting with the envelope the read
+    // itself carries: applying it leaves the model needing a fresh read.
+    fake.emitNotification(
+      controlFrame("ref_a", controlSnapshot(2, { activeProvider: "google", activeModel: "gemini-3-pro" })),
+    );
+    recovery.resolve(controlRead("ref_a", controlSnapshot(2, { activeProvider: "openai", activeModel: "gpt-5.5" }), 2));
+
+    // The replayed conflict is carried forward as a replacement read even
+    // though the discarded read's waiter settles on its envelope.
+    await flushUntil(() => reads === 2);
+    expect(reads).toBe(2);
+    expect(threadsStore.getState().threads.get("ref_a")?.modelControlState.kind).toBe("recovering");
+
+    replacement.resolve(
+      controlRead("ref_a", controlSnapshot(4, { activeProvider: "google", activeModel: "gemini-3-pro" }), 5),
+    );
+    await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.modelControlState.kind === "ready");
+    const recovered = threadsStore.getState().threads.get("ref_a")?.modelControlState;
+    expect(recovered?.kind === "ready" ? recovered.snapshot : undefined).toEqual(
+      controlSnapshot(4, { activeProvider: "google", activeModel: "gemini-3-pro" }),
+    );
+  });
 });

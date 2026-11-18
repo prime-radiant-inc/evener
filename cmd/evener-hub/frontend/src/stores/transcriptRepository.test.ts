@@ -3219,14 +3219,14 @@ it("does not reinstall a retired boot from a saved-index fallback's own envelope
   expect(owner.acceptRead(current, { lifetime: 1, readId: "current", boundary: "current" })).toBe(true);
 
   // The live read failed; the saved view answers, and it was written by boot 1.
-  const fallback = read("fallback", 3);
+  const fallback: ThreadHistoryReadResponse = read("fallback", 3);
   fallback.bootGeneration = "1";
   fallback.thread.evener.instanceId = threadId;
   fallback.thread.evener.capabilities = { ...ALL_CAPABILITIES, modelControlVersion: 1 };
   fallback.thread.evener.modelControl = control("1", "claude-sonnet-4-5");
   fallback.servedFrom = "saved-index";
   fallback.fallbackReason = "live-read-failed";
-  fallback.snapshot = { incarnation: current.history?.incarnation ?? "", length: 3 };
+  fallback.snapshot = { incarnation: current.snapshot?.incarnation ?? "", length: 3 };
   fallback.requestGeneration = 4;
   owner.acceptRead(fallback, { lifetime: 1, readId: "fallback", boundary: "fallback" });
 

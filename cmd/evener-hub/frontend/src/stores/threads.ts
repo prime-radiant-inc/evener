@@ -6226,18 +6226,36 @@ function isDiscardedReadResult(pending: PendingThreadHydration, model: ThreadMod
 // failed the pick waiting on that read. The repository judges the envelope
 // against its own binding, so a stale boot is still refused there.
 //
+// The frames buffered during this read (hydration.fixtureNotifications, the
+// pre-cut copy the response cut then clears) are replayed onto the accepted
+// envelope through the hydration path's own matching rule (replayQuarantinedModelControl):
+// they were delivered while the held model was `recovering`, which the live fold
+// ignores, so installing only the reply's envelope would return the picker to
+// `ready` showing the older choice until another read or switch. A replay that
+// asks for a replacement read is carried forward here, exactly as the published
+// path carries `modelControlRecoveryRequired`.
+//
 // Settling the waiting read `ready` here is the other half: retirePendingHydration
 // settles every pending binding `failed`, so a pick parked on this read rejects
 // unless this read reports the authority it established. The settle is
-// idempotent, so the retirement that follows leaves it alone.
+// idempotent, so the retirement that follows leaves it alone. It happens before
+// the replacement read begins, because that read's own begin retires this
+// binding.
 function applyDiscardedReadModelControl(
   ref: string,
   hydration: ThreadHydration,
   pending: PendingThreadHydration,
 ): void {
-  const accepted = existingEntryRoute(ref)?.repository?.acceptDiscardedReadModelControl(hydration.response) === true;
-  if (!accepted) return;
+  const repository = existingEntryRoute(ref)?.repository;
+  if (!repository) return;
+  const outcome = repository.acceptDiscardedReadModelControl(hydration.response, (held) =>
+    replayQuarantinedModelControl(held, hydration.fixtureNotifications),
+  );
+  if (!outcome.accepted) return;
   settleModelControlRead(pending.modelControlRead, { kind: "ready" });
+  if (outcome.replacementReadRequired) {
+    startModelControlReplacementReadForGeneration(ref, pending.client, pending.epoch, pending.modelControlReadSequence);
+  }
 }
 
 function ensureCacheLease(ref: string): void {
