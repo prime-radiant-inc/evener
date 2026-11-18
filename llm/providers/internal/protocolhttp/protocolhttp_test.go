@@ -1,6 +1,7 @@
 package protocolhttp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -281,7 +282,7 @@ func testServingDeployment(t *testing.T) {
 				t.Errorf("source %d hop %d selected owned=%t anchored=%t, want %t", source, i, policy.Owned, policy.Anchored, want)
 			}
 			for j := range i {
-				if routes[j] == routes[i] && string(data) != string(seen[j]) {
+				if routes[j] == routes[i] && !bytes.Equal(data, seen[j]) {
 					t.Errorf("source %d changed return bytes at hop %d", source, i)
 				}
 			}
