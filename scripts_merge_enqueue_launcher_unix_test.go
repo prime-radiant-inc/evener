@@ -2002,19 +2002,40 @@ func TestMergeEnqueueLauncherDoesNotBuildUnderAReplaceableRoot(t *testing.T) {
 		probe := func(dir string) error {
 			return runLauncherFunc(t, validatorFuncs, `dir_entry_is_replaceable "$2"`, dir)
 		}
-		own := filepath.Join(t.TempDir(), "owned-by-us")
-		if err := os.MkdirAll(own, 0o700); err != nil {
-			t.Fatalf("create %s: %v", own, err)
+		// Under the validated fixture base, not t.TempDir().
+		//
+		// Both directories below are deliberately given modes this test has to
+		// APPLY -- one private, one sticky and world-readable. t.TempDir() descends
+		// from the ambient TMPDIR, so on a TMPDIR whose ancestor another local user
+		// can replace, the entry can be swapped between the mkdir and the chmod and
+		// the chmod then lands on that user's target: a directory outside the
+		// fixture, made world-writable by a test run. The mode has to be applied to
+		// an entry the test owns, which means one created beneath a base whose whole
+		// chain the launcher's own rule already accepted.
+		base := fixtureScratchBase(t)
+		own, reason := createPrivateFixtureDir(t, base)
+		if reason != refusalNone {
+			t.Fatalf("could not create the fixture-owned directory: %s", fixtureRefusalDetail(reason))
 		}
-		if err := os.Chmod(own, 0o700); err != nil {
-			t.Fatalf("make %s private: %v", own, err)
+		t.Cleanup(func() { _ = os.RemoveAll(own) })
+		// The assertion this case exists for: the mode below is applied to a path
+		// under the validated base, which is what makes it the test's own entry. A
+		// fixture built with t.TempDir() descends from the ambient TMPDIR, so on a
+		// TMPDIR whose ancestor another user can replace, the chmod follows the
+		// replacement and a directory outside the fixture becomes world-writable.
+		if !strings.HasPrefix(own, base+string(os.PathSeparator)) {
+			t.Fatalf("%s is not under the validated fixture base %s: a mode applied here lands on an entry this test does not own", own, base)
 		}
 		if err := probe(own); err == nil {
 			t.Fatalf("a 0700 directory owned by this user was reported replaceable")
 		}
-		stickyOwn := filepath.Join(t.TempDir(), "sticky-owned-by-us")
-		if err := os.MkdirAll(stickyOwn, 0o700); err != nil {
-			t.Fatalf("create %s: %v", stickyOwn, err)
+		stickyOwn, reason := createPrivateFixtureDir(t, base)
+		if reason != refusalNone {
+			t.Fatalf("could not create the sticky fixture-owned directory: %s", fixtureRefusalDetail(reason))
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(stickyOwn) })
+		if !strings.HasPrefix(stickyOwn, base+string(os.PathSeparator)) {
+			t.Fatalf("%s is not under the validated fixture base %s: the 1777 mode applied to it would land on an entry this test does not own", stickyOwn, base)
 		}
 		// ModeSticky, not 0o1777: Go's FileMode puts the special bits in high
 		// flags, so a literal 0o1777 is masked down to 0777 and the sticky bit

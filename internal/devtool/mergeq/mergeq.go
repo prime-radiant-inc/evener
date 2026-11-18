@@ -46,6 +46,12 @@ const (
 	// run for as long as GitHub takes to answer, past the --wait the caller asked
 	// for.
 	finalObservationAllowance = pollInterval
+	// dropDiagnosticAllowance bounds the two reads that only EXPLAIN a drop the
+	// status read already observed: the merge-group run and the removal reason.
+	// They share one allowance, because neither is what decided the run -- the
+	// drop was decided before either was asked -- and a diagnostic that can hold
+	// the command past its own limit is a wait with no limit.
+	dropDiagnosticAllowance = pollInterval
 	// stalenessWindow is how old a queue removal event may be and still
 	// explain the drop it is read for. An older one is a prior drop's event,
 	// not this drop's reason.

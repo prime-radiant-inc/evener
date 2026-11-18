@@ -82,8 +82,18 @@ func (r RunRef) String() string {
 // the removal event could not be read at all: the operator's next step is the
 // same either way.
 func dropOutcome(ctx context.Context, opts Options, st Status, c Client, now func() time.Time) (Outcome, *ExitError) {
-	ref := mergeGroupRef(ctx, opts, st.Base, c)
-	event, err := c.QueueDrop(ctx, opts.Repo, opts.PR)
+	// Both diagnostic reads share ONE finite allowance. The drop has already been
+	// observed -- the status read is what saw the queue entry gone -- so the two
+	// reads that only explain it must not be able to hold the command past its own
+	// limit: on the operator's signal-only context they could stall indefinitely,
+	// after `--wait` and after the final observation's allowance, and the run would
+	// never report the drop it had already decided. Whatever the reads do not
+	// produce in that allowance is answered by the fallbacks below, which is the
+	// same answer an unreadable reason already gets.
+	readCtx, stopReads := context.WithTimeout(ctx, dropDiagnosticAllowance)
+	defer stopReads()
+	ref := mergeGroupRef(readCtx, opts, st.Base, c)
+	event, err := c.QueueDrop(readCtx, opts.Repo, opts.PR)
 	// The context is checked whether or not the read returned an error, and it is
 	// checked before the error is interpreted. A ctx whose deadline expired or
 	// whose cancellation arrived while a descendant held the output pipe can still
@@ -93,6 +103,11 @@ func dropOutcome(ctx context.Context, opts Options, st Status, c Client, now fun
 	// exits 1, while the launcher reports 130 for the same invocation. The
 	// distinction between "the operator stopped asking" and "GitHub said this" is
 	// the whole point of this branch, so it is asked first and on both paths.
+	//
+	// The run's OWN context is asked, not the reads': the allowance above is what
+	// bounds the diagnostics, and a spent allowance is an unread reason, not an
+	// interrupt. Asking the read context here would report an operator cancellation
+	// for a run nobody cancelled.
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return Outcome{}, &ExitError{Kind: Interrupted, Detail: ctxErr.Error()}
 	}

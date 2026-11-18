@@ -871,23 +871,63 @@ func TestACompleteReplyAfterTheSignalIsNotAQueueVerdict(t *testing.T) {
 	if code := Run(ctx, opts(30*time.Second), c, clock, &stdout, &stderr); code != InterruptedExit {
 		t.Fatalf("Run = exit %d, want %d: the reply arrived after the operator cancelled, and reporting its verdict says a wait they stopped reached its own conclusion (stdout %q)", code, InterruptedExit, stdout.String())
 	}
-	if !c.replied {
-		t.Fatal("the client never delivered its reply, so this case did not reach the path it exists to test")
+	// The run has to have REACHED the final observation. A client that cancels on
+	// the initial status read never enters the wait, and the case then passes
+	// without exercising the path it names -- which is what an earlier version of
+	// this test did.
+	if c.observedAt != finalObservation {
+		t.Fatalf("the cancelling read was %v, want the final observation: the case has to cancel on the read whose reply commits the run to a verdict, or it proves nothing about it", c.observedAt)
 	}
-	if strings.Contains(stdout.String(), "MERGEQ ") {
-		t.Fatalf("a cancelled wait printed an outcome line: %q", stdout.String())
+	// The wait reported where the PR entered the queue, which is not a terminal
+	// verdict: it is the progress line the script always printed.
+	if !strings.Contains(stdout.String(), "MERGEQ queued position=1") {
+		t.Fatalf("the wait printed no queued progress line (stdout %q): the run did not reach the wait this case is about", stdout.String())
+	}
+	// And no terminal verdict: no MERGEQ line other than that progress line.
+	for _, line := range strings.Split(strings.TrimSpace(stdout.String()), "\n") {
+		if strings.HasPrefix(line, "MERGEQ ") && line != "MERGEQ queued position=1" {
+			t.Fatalf("a cancelled wait printed the terminal verdict %q: the reply arrived after the operator cancelled, and reporting it says a wait they stopped reached its own conclusion", line)
+		}
 	}
 }
 
-// lateReplyClient cancels the run and then answers in full, saying the PR merged
-// -- the verdict a run that trusted the late reply would print.
+// observing is the read a lateReplyClient cancelled on.
+type observing int
+
+const (
+	// initialRead is the status read before the wait, which places the PR in the
+	// queue.
+	initialRead observing = iota
+	// finalObservation is the read made after the wait's budget is spent, whose
+	// reply is what a run would report as the outcome.
+	finalObservation
+	// queueRead is a poll's status read inside the wait.
+	queueRead
+)
+
+// lateReplyClient answers the pre-wait reads normally, then delivers one
+// complete reply after cancelling the run, saying the PR merged -- the verdict a
+// run that trusted the late reply would print in place of the interrupt.
 type lateReplyClient struct {
-	cancel  context.CancelFunc
-	replied bool
+	cancel context.CancelFunc
+	// statusCalls counts every status reply, so the client knows which read it is
+	// answering.
+	statusCalls int
+	// observedAt records the read that delivered the late reply.
+	observedAt observing
 }
 
 func (c *lateReplyClient) Status(context.Context, string, string) (Status, error) {
-	c.replied = true
+	c.statusCalls++
+	// The first read places the PR in the queue, so the run enters its wait at
+	// all. Cancelling here instead would test nothing the case names.
+	if c.statusCalls == 1 {
+		return Status{ID: "PR_6499", State: "OPEN", Entry: queueEntry(1)}, nil
+	}
+	// Every later status read is the poll's or the final observation's. The latter
+	// is the one that decides a timeout, so it is the one that cancels and then
+	// answers in full.
+	c.observedAt = finalObservation
 	c.cancel()
 	return Status{ID: "PR_6499", State: mergedState, MergeCommit: new(string)}, nil
 }

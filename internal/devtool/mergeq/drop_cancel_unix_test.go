@@ -89,3 +89,74 @@ func TestQueueDropCancelledReadIsNotADrop(t *testing.T) {
 		}
 	})
 }
+
+// TestADropIsReportedWhenItsDiagnosticReadsStall pins the other limit on the
+// drop path: the two reads that only EXPLAIN a drop must not be able to hold the
+// run past its own limit.
+//
+// The drop is already decided when dropOutcome is called -- the status read saw
+// the queue entry gone. Everything after that is a diagnostic: which merge-group
+// run to read, and what the queue's removal reason was. On the operator's
+// signal-only context those reads carry no deadline at all, so a stalled
+// `gh run list` or removal-event query could keep the command running past
+// `--wait` and past the final observation's allowance, and the operator would
+// never be told about the drop the run had already observed.
+//
+// The assertion is on the allowance each read RECEIVES, not on waiting one out:
+// a read that carries a deadline is bounded, and one carrying the run's
+// signal-only context is the unbounded call this finding is about. Waiting for a
+// 30-second allowance to expire would cost the suite what it is checking.
+func TestADropIsReportedWhenItsDiagnosticReadsStall(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+	c := &deadlineRecordingDiagnostics{}
+	// A base on the status, because the run reference is built from it: without
+	// one mergeGroupRef answers from the base alone and never makes the list call,
+	// so only one of the two diagnostics would be exercised.
+	out, exitErr := dropOutcome(context.Background(), Options{Repo: "example.invalid/none", PR: "1"}, Status{State: "OPEN", Base: "main"}, c, func() time.Time { return now })
+	if exitErr != nil {
+		t.Fatalf("dropOutcome returned %v, want the drop it had already observed: the diagnostic reads explain a drop, they do not decide it", exitErr)
+	}
+	if out.Kind != Dropped {
+		t.Fatalf("kind = %v, want Dropped: the queue entry was gone, and that is the outcome", out.Kind)
+	}
+	if len(c.hadDeadline) != 2 {
+		t.Fatalf("%d diagnostic reads were made, want both of them asked: the run reference and the removal reason", len(c.hadDeadline))
+	}
+	for i, had := range c.hadDeadline {
+		if !had {
+			t.Fatalf("diagnostic read %d of 2 was issued on the run's signal-only context, which carries no deadline: a stalled gh call there keeps the command running past --wait, and the operator never learns about the drop the run already saw", i+1)
+		}
+	}
+	// The fallback when a diagnostic does not arrive: the reason is reported as
+	// unavailable, which is the same answer an unreadable reason already gets.
+	if out.DropClass != DropReasonUnavailable {
+		t.Fatalf("class = %v, want DropReasonUnavailable: the removal reason read did not answer, and that is a drop whose reason is unavailable", out.DropClass)
+	}
+	if out.Reason == "" {
+		t.Fatal("the drop was reported with no reason at all: an unavailable reason still names the run the operator should read")
+	}
+}
+
+// deadlineRecordingDiagnostics records the allowance each diagnostic read is
+// given and answers nothing, which is the shape of a read that has not come back
+// when its allowance runs out.
+type deadlineRecordingDiagnostics struct {
+	Client
+	hadDeadline []bool
+}
+
+func (c *deadlineRecordingDiagnostics) record(ctx context.Context) {
+	_, ok := ctx.Deadline()
+	c.hadDeadline = append(c.hadDeadline, ok)
+}
+
+func (c *deadlineRecordingDiagnostics) QueueDrop(ctx context.Context, _, _ string) (*DropEvent, error) {
+	c.record(ctx)
+	return nil, ctx.Err()
+}
+
+func (c *deadlineRecordingDiagnostics) MergeGroupRuns(ctx context.Context, _ string) ([]GroupRun, error) {
+	c.record(ctx)
+	return nil, ctx.Err()
+}
