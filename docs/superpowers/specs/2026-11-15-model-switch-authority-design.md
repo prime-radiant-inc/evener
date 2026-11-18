@@ -189,7 +189,13 @@ The daemon atomically verifies its serving boot, resolves the stable ref, verifi
 
 After shape and authority validation, the session assigns a monotonically increasing `requestSequence` before model admission starts. Assignment is serialized with model-control state. The sequence decides which concurrently validating request may be accepted; it is not a second client merge authority.
 
-Supersession is decided at commit, not at issue. A newer request that has merely been issued does not disqualify an older one: both may still be validating, and either may fail. Only a swap that has actually committed — the newer pick's profile replacing `active` — passes an older pick, which then settles as superseded at its own commit check and cannot alter the snapshot. A direct admission failure also cannot alter it. Both outcomes belong only to their originating calls. This is what preserves an already accepted desired intent when a newer invalid choice is refused: the older pick still lands because nothing newer committed.
+Two different rules both end a request as superseded, and they key on different counters. Keep them apart.
+
+**Application eligibility is decided at commit, by the committed watermark.** A newer request that has merely been issued does not disqualify an older one: both may still be validating, and either may fail. An older pick that commits first advances the watermark to its own issue, and because the newer pick's issue is higher it is *not* below the watermark — the newer pick may still commit afterwards if it passes its own validation and no higher-sequence request has committed in the meantime. Only a swap that has already committed passes a pick whose issue is below it, and that pick settles superseded at its own commit check without altering the snapshot. This is what preserves an already accepted desired intent when a newer invalid choice is refused: the older pick still lands because nothing newer committed.
+
+**A direct validation failure is a separate path, keyed on the issue counter.** When a request that was applying immediately fails direct validation while a newer request has already been issued, the call settles superseded instead of publishing a rejection — the newer request owns the outcome, and there is nothing for the older one to report. This changes only that call's result: the snapshot is unchanged, no shared transition is invented, and the rejection lifecycle is not written. It is not the commit rule; no swap has committed when it fires.
+
+A direct admission failure cannot alter the snapshot either. All of these outcomes belong only to their originating calls.
 
 Keep the two records distinct when reading this. The **newest desired record** is the latest accepted request and its lifecycle, and a newer acceptance replaces it, so a superseded pick leaves the newer intent intact while the older queue entry is dropped. The **active model** is the profile the session is actually running, and it moves only through the committed transitions below. A pending desired record can therefore name a model the session is not running yet, and a rejected one can name a model it never ran.
 
@@ -202,8 +208,9 @@ The method is not replay-idempotent: the snapshot retains only the latest desire
 ```mermaid
 stateDiagram-v2
     [*] --> Validating: bind authority and assign request sequence
-    Validating --> Refused: admission fails
+    Validating --> Refused: validation fails, no newer request issued
     Validating --> Superseded: newer swap committed
+    Validating --> Superseded: validation fails after a newer request was issued
     Validating --> Pending: accepted while a call is active
     Validating --> Applied: accepted and committed immediately
     Pending --> Applied: turn boundary or quota retry commits target
@@ -394,7 +401,8 @@ This replacement supersedes PR #6345. Do not merge or close #6345 until this rep
 | Pick 1 accepted; pick 2 accepted | One newer snapshot contains pick 2; pick 1 can no longer affect shared state |
 | Accepted pick rejects at boundary or quota retry | New snapshot keeps active metadata and marks that exact desired mutation rejected; display falls back active |
 | Older validation finishes after a newer swap commits | Older call is superseded and cannot publish a snapshot transition |
-| Older validation finishes after a newer request is issued but before it commits | Older call still commits if it gets there first; the newer one then finds itself superseded |
+| Older validation finishes after a newer request is issued but before it commits | Older call still commits if it gets there first, advancing the watermark to its own issue; the newer pick's issue is higher, so it may still commit afterwards if it passes its own validation and no higher-sequence request has committed |
+| Immediate application fails validation while a newer request has been issued | That call settles superseded without publishing; the snapshot is unchanged and no rejection lifecycle is written |
 | Older deferred result arrives after newer acceptance | Desired identity no longer matches, so it cannot change the newer snapshot |
 | Same-model pick is accepted | Revision advances and desired becomes applied even without a canonical model-change event |
 | Old active-model event arrives after a newer snapshot | Capable reducer cannot use it to overwrite snapshot-owned metadata |
@@ -539,7 +547,7 @@ Run `make generate` and commit generated AppWire TypeScript and `docs/appwire-pr
 1. A model accepted during a running turn appears in the initiating composer as soon as `thread/model/set` succeeds.
 2. Every connected browser and native view converges on the same whole snapshot and displayed target.
 3. A direct refusal leaves the prior accepted desired intent visible.
-4. A newer accepted request permanently supersedes every older desired intent.
+4. A newer *committed* swap supersedes every older pick at its commit check. A merely issued newer request does not, so an older pick may commit first and the newer may commit after it; only a direct validation failure settles a call superseded on the issue counter alone, and that changes no shared state.
 5. Deferred rejection settles the exact accepted mutation, survives reconnect, and falls back to active.
 6. Same-model acceptance advances shared state without requiring `thread/model/changed`.
 7. Response, notification, and read cannot be combined into a mixed-revision value.
