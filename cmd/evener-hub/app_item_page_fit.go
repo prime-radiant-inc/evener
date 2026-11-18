@@ -1350,37 +1350,62 @@ func packItemCandidates[T any](
 	// result too large. The nearest item is always retained, even if it alone
 	// exceeds the soft target.
 	selectedStart := len(candidates) - len(selected)
-	for {
-		selected = append([]appitempaging.TranscriptItemCandidate(nil), candidates[selectedStart:]...)
-		// A per-call resolution stamp is metadata the size loop above cannot
-		// shrink by dropping items, because one reply carries it whole (#6323).
-		for i := range selected {
-			selected[i].Item = boundTranscriptItemStamp(selected[i].Item, transcriptReadStampLimitBytes)
+	// buildPage builds one candidate window. stampLimit bounds the per-call
+	// resolution stamps alone: a page carries every selected item, so several
+	// sub-limit call lists can add up past the soft limit, and costing the
+	// reader an item for metadata it does not need is worse than serving the
+	// page without the lists.
+	buildPage := func(items []appitempaging.TranscriptItemCandidate, stampLimit int) (T, int, error) {
+		page := append([]appitempaging.TranscriptItemCandidate(nil), items...)
+		for i := range page {
+			page[i].Item = boundTranscriptItemStamp(page[i].Item, stampLimit)
 		}
-		dropped := selectedStart
-		older := hasOlder || dropped > 0
-		olderCursor, cursorErr := packedOlderCursor(result, selected[0].Position, older)
+		older := hasOlder || selectedStart > 0
+		olderCursor, cursorErr := packedOlderCursor(result, page[0].Position, older)
 		if cursorErr != nil {
-			return zero, cursorErr
+			return zero, 0, cursorErr
 		}
-		var regroupErr error
-		selected = appitempaging.NormalizeProjectedItemCompleteness(selected)
-		turns, regroupErr := appitempaging.RegroupTurnFragments(selected)
+		page = appitempaging.NormalizeProjectedItemCompleteness(page)
+		turns, regroupErr := appitempaging.RegroupTurnFragments(page)
 		if regroupErr != nil {
-			return zero, fmt.Errorf("regroup transcript item fragments: %w", regroupErr)
+			return zero, 0, fmt.Errorf("regroup transcript item fragments: %w", regroupErr)
 		}
 		response := build(turns, olderCursor)
 		if enrich != nil {
-			response, err = enrich(response)
-			if err != nil {
-				return zero, err
+			var enrichErr error
+			response, enrichErr = enrich(response)
+			if enrichErr != nil {
+				return zero, 0, enrichErr
 			}
 		}
 		encoded, marshalErr := json.Marshal(contentTurns(response))
 		if marshalErr != nil {
-			return zero, fmt.Errorf("marshal transcript item turns: %w", marshalErr)
+			return zero, 0, fmt.Errorf("marshal transcript item turns: %w", marshalErr)
 		}
-		if len(encoded) <= transcriptRPCResultSoftLimit || len(selected) == 1 {
+		return response, len(encoded), nil
+	}
+	for {
+		window := candidates[selectedStart:]
+		response, size, buildErr := buildPage(window, transcriptReadStampLimitBytes)
+		if buildErr != nil {
+			return zero, buildErr
+		}
+		if size <= transcriptRPCResultSoftLimit {
+			return response, nil
+		}
+		// Over budget with the stamps: retry this same window with every call
+		// list omitted before dropping the oldest item. Bodies, turn links and
+		// legacy counts are kept, so a window that fits unstamped costs the
+		// reader nothing.
+		omitted, omittedSize, omittedErr := buildPage(window, 0)
+		if omittedErr != nil {
+			return zero, omittedErr
+		}
+		if omittedSize <= transcriptRPCResultSoftLimit {
+			return omitted, nil
+		}
+		// The nearest item is always retained, even alone over the target.
+		if len(window) == 1 {
 			return response, nil
 		}
 		selectedStart++

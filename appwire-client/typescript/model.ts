@@ -88,8 +88,10 @@ export interface ItemModel {
   // same capture, and the first to settle clears those calls. The link above
   // collapses a whole execution to one turn, so several calls in one
   // execution share it; this list names WHICH calls were captured, and a
-  // consumer matches an ask row's own (turnId, callId) against it instead of
-  // guessing by header. Undefined for ordinary messages, for unfenced
+  // ask row is identified by its own (turnId, callId). How a client uses that
+  // identity to choose a recap is a display decision this field does not make:
+  // the shipped clients still select recaps from the turn link and the reply
+  // text. Undefined for ordinary messages, for unfenced
   // whole-set answers (which record no call list), for any answer from a
   // daemon that predates the field, and on a BOUNDED read that omitted the
   // list to fit its page. Undefined too for a fenced inline steer answering a

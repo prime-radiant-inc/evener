@@ -486,6 +486,79 @@ func TestPackTranscriptItemPageOmitsOversizedResolvedAskStamp(t *testing.T) {
 }
 
 // TestFitManagerReadUnderCapDropsStampAtThePageCap covers the case the
+// TestPackTranscriptItemPageOmitsSmallStampsBeforeDroppingAnItem covers the
+// page the per-item bound cannot see either, one tier below the cap: several
+// replies each carry a call list UNDER the 8 KiB per-item limit, and together
+// they push the item page past the 1 MiB soft limit. Dropping the oldest item
+// would make the reader fetch another page to see content that fits, so the
+// lists go first and every item is served.
+func TestPackTranscriptItemPageOmitsSmallStampsBeforeDroppingAnItem(t *testing.T) {
+	// The page maximum, so the stamps add up as far as the protocol allows.
+	const itemCount = appwire.TranscriptItemPageLimit
+	// A call list under the per-item limit, repeated per reply. The ids are
+	// UUID-width so the size is realistic: 60 calls encodes to roughly 6 KiB,
+	// which passes the per-item bound and still adds up across 40 replies.
+	calls := make([]appwire.PendingAskCall, 60)
+	for i := range calls {
+		calls[i] = appwire.PendingAskCall{
+			TurnID: "1a2b3c4d-5e6f-4071-92a3-b4c5d6e7f809",
+			CallID: fmt.Sprintf("2b3c4d5e-6f70-4182-a3b4-%012x", i),
+		}
+	}
+	// Bodies alone stay under the 1 MiB soft limit; 40 of them plus 40 stamps
+	// do not. The sizes are chosen so the page crosses the limit only WITH the
+	// call lists, which is the state that must not cost the reader an item.
+	const bodyLength = 22_500
+	items := make([]appwire.ThreadItem, itemCount)
+	for i := range items {
+		items[i] = appwire.ThreadItem{
+			Type: "userMessage",
+			ID:   fmt.Sprintf("reply-%02d", i),
+			Text: fmt.Sprintf("[answers]\nDeploy? = yes %02d %s", i, strings.Repeat("x", bodyLength)),
+			Observation: &appwire.SessionObservationMetadata{
+				Ref:              "local:thread",
+				TurnID:           "0f1c2b3a-4d5e-4f60-8a91-b2c3d4e5f607",
+				AnswerToTurnIDs:  []string{"1a2b3c4d-5e6f-4071-92a3-b4c5d6e7f809"},
+				ResolvedAskCalls: calls,
+			},
+			Version: 1,
+		}
+	}
+	candidates := testWindowTurnCandidates("0f1c2b3a-4d5e-4f60-8a91-b2c3d4e5f607", items)
+	// The candidates must be big enough to cross the soft limit with their
+	// stamps and small enough to fit without them, or this case proves nothing.
+	read, err := packThreadReadItemCandidates(transcriptItemCandidateResult{
+		Candidates: appitempaging.TranscriptItemWindow{Candidates: candidates},
+		Identity:   appitempaging.CursorIdentity{ThreadRef: "local:thread", Incarnation: "small-stamps", ProjectionVersion: 1},
+		Exhausted:  true,
+	}, func(response appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error) {
+		return response, nil
+	}, itemCount)
+	if err != nil {
+		t.Fatalf("pack item page with %d sub-limit stamps: %v", itemCount, err)
+	}
+	served := flattenTestItems(read.Thread.Turns)
+	if len(served) != itemCount {
+		t.Fatalf("served %d items, want all %d: the page fits without its call lists", len(served), itemCount)
+	}
+	for i := range served {
+		if got := len(served[i].Observation.ResolvedAskCalls); got != 0 {
+			t.Fatalf("served item %d kept %d stamp calls, want the call lists omitted as a unit", i, got)
+		}
+		if len(served[i].Observation.AnswerToTurnIDs) == 0 {
+			t.Fatalf("served item %d lost its turn links", i)
+		}
+		if served[i].Text != items[i].Text {
+			t.Fatalf("served item %d text = %q, want %q", i, served[i].Text, items[i].Text)
+		}
+	}
+	// The canonical items keep their full stamps.
+	if got := len(candidates[0].Item.Observation.ResolvedAskCalls); got != len(calls) {
+		t.Fatalf("canonical candidate stamp = %d calls, want %d", got, len(calls))
+	}
+}
+
+// TestFitManagerReadUnderCapDropsStampAtThePageCap covers the case the
 // per-item bound cannot see: a reply that is itself almost the whole Manager
 // cap, plus a stamp small enough to pass the per-item check. The page fits the
 // content soft limit and still busts the cap once the envelope is added, so the

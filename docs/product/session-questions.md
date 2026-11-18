@@ -105,11 +105,14 @@ interrupt and session close also retain their explicit whole-set clear behavior.
 An answer's observation carries that capture to clients as two fields:
 `resolvedAskCalls:[{turnId,callId}]` and `resolvedAskLegacyCount`. The turn
 link alone cannot say which of several calls in one execution a reply answered,
-so `resolvedAskCalls` names the calls admission captured, and a client matches a
-settled ask by the ask row's own `(turnId, callId)`. It is the captured set,
+so `resolvedAskCalls` names the calls admission captured, each identified by the
+ask row's own `(turnId, callId)`. It is the captured set,
 not a record of what this reply cleared: two fenced replies admitted against the
 same pending revision can carry the same capture, and the first to settle clears
-those calls. `resolvedAskLegacyCount` names the captured questions admission
+those calls. Using that identity to choose which recap a settled ask displays is
+a client display decision and is not settled here; until it is, clients keep
+selecting recaps from the turn link and the reply text as they do today.
+`resolvedAskLegacyCount` names the captured questions admission
 could not attribute to a call at all: they are
 restored from records that predate call ids, so their headers never reach the
 wire and no client can tell whether one of them shares a header an answer line
