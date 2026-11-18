@@ -145,6 +145,75 @@ test("a layout dismissal focuses the trigger without letting the rail scroll", a
   }
 });
 
+// A box that shrinks can hide the trigger with nothing else to announce it. A
+// chip appearing above the desktop rail takes height out of the rail's own
+// scrollport, so the row nearest its bottom leaves the client area: no session
+// arrived, no scroll happened, and the chip is outside everything this widget
+// watches. The rail's own box is observed, and that is the notification the
+// visibility question is asked on.
+test("a rail scrollport that shrinks past the trigger dismisses without moving the rail", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  const RAIL_TOP = 100;
+  // The trigger sits near the bottom of a 300px rail: the last row the reader
+  // can see. Its box never changes; the rail around it does.
+  let railHeight = 300;
+  const triggerTop = 100 + railHeight - 40;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
+    if (this.getAttribute("data-testid") === "rail-port") return box(0, RAIL_TOP, 300, railHeight);
+    if (this.getAttribute("data-testid") === "rail-row") return box(0, 120, 300, 40);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  // The client area is the box: no border, no scrollbar in this rail.
+  vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.getAttribute("data-testid") === "rail-port") return railHeight;
+    return this.tagName === "UL" ? 120 : 0;
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  class FiringResizeObserver {
+    static callback: ResizeObserverCallback | null = null;
+    constructor(callback: ResizeObserverCallback) {
+      FiringResizeObserver.callback = callback;
+    }
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  vi.stubGlobal("ResizeObserver", FiringResizeObserver);
+  const { flush } = captureFrames();
+  try {
+    render(
+      <div data-testid="rail-port" style={{ overflowY: "auto" }}>
+        <div data-testid="rail-row">Steady live session</div>
+        <Menu trigger="Actions" items={items()} />
+      </div>,
+    );
+    const scroller = screen.getByTestId("rail-port");
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 1200 });
+    scroller.scrollTop = 200;
+    const offsetBefore = scroller.scrollTop;
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menu")).toBeTruthy();
+
+    // The chip arrives above the rail and takes 60px out of its box. The row
+    // the trigger is on now ends past the client bottom; nothing scrolled.
+    railHeight = 240;
+    act(() => {
+      FiringResizeObserver.callback?.([], {} as ResizeObserver);
+    });
+    flush();
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(scroller.scrollTop).toBe(offsetBefore);
+  } finally {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1401,6 +1470,58 @@ test("a horizontal clamp from a vanished wide row leaves the menu open", async (
 // reader scrolled 40px down it, so the trigger ends 40px HIGHER on screen while
 // the offset gains exactly those 40 - its place in the content is unmoved, and
 // that is what makes the offset change the reader's.
+// An inline correction does not excuse movement on the OTHER axis. The wide row
+// leaves, so the browser gives back the inline offset the moment the reader is
+// also scrolling down: the inline half is the browser's, the vertical half is
+// theirs. Reading the clamp first and returning on it kept the menu open with
+// keyboard focus through a scroll the reader did make.
+test("an inline clamp does not excuse a vertical scroll the reader made", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  let triggerTop = 300;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
+    if (this.getAttribute("data-testid") === "rail-port") return box(0, 0, 300, 600);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  const { flush } = captureFrames();
+  try {
+    render(
+      <div data-testid="rail-port" style={{ overflowY: "auto", overflowX: "auto" }}>
+        <Menu trigger="Actions" items={items()} />
+      </div>,
+    );
+    const scroller = screen.getByTestId("rail-port");
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 1200 });
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 600 });
+    Object.defineProperty(scroller, "scrollWidth", { configurable: true, value: 500 });
+    Object.defineProperty(scroller, "clientWidth", { configurable: true, value: 300 });
+    scroller.scrollLeft = 200;
+    scroller.scrollTop = 100;
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menu")).toBeTruthy();
+
+    // The wide row goes: the inline range falls to 80, so 200 is past it and
+    // 80 is the endpoint. In the same moment the reader scrolls 40 down, so the
+    // trigger rises 40 on screen while its place in the content grows by 100 -
+    // no correction explains that, and the vertical range was never clamped.
+    Object.defineProperty(scroller, "scrollWidth", { configurable: true, value: 380 });
+    scroller.scrollLeft = 80;
+    scroller.scrollTop = 140;
+    triggerTop = 260;
+    fireEvent.scroll(scroller);
+    flush();
+
+    expect(screen.queryByRole("menu")).toBeNull();
+  } finally {
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
 // A live update can move the trigger twice before any scroll is classified, and
 // only the SECOND of those movements is the browser's correction. A row
 // arriving inside the visible area moves the trigger down while the offset

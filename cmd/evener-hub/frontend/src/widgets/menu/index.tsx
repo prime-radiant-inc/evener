@@ -619,11 +619,23 @@ function classifyScrollerScroll(
   // a row that left somewhere else in the rail. Both the endpoint and the
   // previous offset are the scroller's own numbers, so a reader scrolling
   // sideways to a legal place is not a clamp and still dismisses.
+  const maximum = scroller.scrollHeight - scroller.clientHeight;
+  const moved = now - previous.scrollTop;
+  const contentMoved = contentTop - previous.contentTop;
+  const verticalClamped = previous.scrollTop > maximum && Math.abs(now - maximum) <= CLAMP_ROUNDING;
   const maximumLeft = scroller.scrollWidth - scroller.clientWidth;
   if (previous.scrollLeft > maximumLeft && Math.abs(scroller.scrollLeft - maximumLeft) <= CLAMP_ROUNDING) {
-    return "clamp";
+    // One axis being a correction does not make the gesture one. A row that
+    // made the rail wide disappears, the browser gives back the inline offset,
+    // and the reader scrolls down in the same moment: the inline half is the
+    // browser's, the vertical half is theirs, and the popup has to go. So the
+    // inline clamp only counts when the OTHER axis is quiet, or explained by a
+    // correction of its own - otherwise this is a reader's scroll that happened
+    // to coincide with a range that contracted.
+    const verticalExplained =
+      moved === 0 || verticalClamped || (contentMoved !== 0 && Math.abs(contentMoved - moved) <= CLAMP_ROUNDING);
+    return verticalExplained ? "clamp" : "scrolled";
   }
-  const maximum = scroller.scrollHeight - scroller.clientHeight;
   // The browser may land a correction a fraction short of the endpoint the
   // whole-pixel `scrollHeight - clientHeight` describes: 199.5 against 200 is a
   // clamp, and an exact equality calls it a reader's scroll and closes the
@@ -632,9 +644,7 @@ function classifyScrollerScroll(
   // scroller last reported pointed PAST the range it now allows. A reader who
   // scrolls to the end arrives from an offset that was already legal, so the
   // tolerance cannot turn an ordinary scroll into a correction.
-  if (previous.scrollTop > maximum && Math.abs(now - maximum) <= CLAMP_ROUNDING) return "clamp";
-  const moved = now - previous.scrollTop;
-  const contentMoved = contentTop - previous.contentTop;
+  if (verticalClamped) return "clamp";
   // The offset moved, in the same direction as the trigger's place in the
   // content, by exactly as much. Nothing but an insertion or removal above the
   // trigger moves the two together like that: a reader's drag moves the offset
@@ -1708,7 +1718,25 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     visualViewport?.addEventListener("resize", placeAfterLayout);
     visualViewport?.addEventListener("scroll", placeAfterLayout);
     const Observer = ownerWindow.ResizeObserver;
-    const observer = typeof Observer === "undefined" ? null : new Observer(placeAfterLayout);
+    // A box changing size is not always good news for the popup's anchor. A
+    // chip appearing above the desktop rail takes height out of the rail's own
+    // box, so the row nearest the bottom falls outside its client area with no
+    // session arriving, no scroll and no DOM change under the trigger - and the
+    // chip itself is outside everything this widget observes. What the observer
+    // DOES see is the scrollport it clips against, so the same visibility
+    // question the mutation path asks is asked of every observed box: a trigger
+    // that no longer intersects what the reader can see dismisses the menu, and
+    // one that still does re-anchors. The dismissal is the non-scrolling one,
+    // because layout hid the trigger and the reader did not ask to move.
+    const onObservedSize = () => {
+      const el = triggerRef.current;
+      if (el !== null && triggerMeasurablyHidden(el, ownerWindow)) {
+        closeMenuRestoringFocusWithoutScroll();
+        return;
+      }
+      placeAfterLayout();
+    };
+    const observer = typeof Observer === "undefined" ? null : new Observer(onObservedSize);
     // The trigger's box covers a trigger that resized; the POPUP's box covers
     // a caller that changed the item set, which changes the popup's height
     // without touching the trigger at all - adding "Find in session..." to an
