@@ -1029,15 +1029,16 @@ func EstimatorTargetsEquivalent(a, b registry.Resolved) bool {
 
 // The same fields identify the rules for live measurements and saved ones.
 type estimatorTarget struct {
-	Model, WireModel, Protocol, Surface, Family, ImageDetail, ReplayRoute string
-	ThinkingAsText, RawReplay, ChatScalar, ReasoningDisabled              bool
-	MultimodalToolResults, SeesImages, SeesDocuments                      bool
+	Model, WireModel, Protocol, Surface, Family, ImageDetail, RequestRoute string
+	ThinkingAsText, RawReplay, ChatScalar, ReasoningDisabled               bool
+	MultimodalToolResults, SeesImages, SeesDocuments                       bool
 }
 
 func estimatorTargetFor(r registry.Resolved) estimatorTarget {
-	t := estimatorTarget{
+	return estimatorTarget{
 		Model: r.ModelID, WireModel: r.WireID, Protocol: r.Protocol,
 		Surface: r.Surface, Family: r.Model.Family,
+		RequestRoute:          r.ReasoningReplayRoute(),
 		ImageDetail:           registry.StringValue(r.Caps.ImageDetail),
 		ThinkingAsText:        registry.BoolValue(r.Caps.ThinkingAsText),
 		RawReplay:             r.ReplaysRawReasoning(),
@@ -1047,10 +1048,6 @@ func estimatorTargetFor(r registry.Resolved) estimatorTarget {
 		SeesImages:            RowSeesToolResultMedia(r, "image/png"),
 		SeesDocuments:         RowSeesToolResultMedia(r, "application/pdf"),
 	}
-	if t.RawReplay {
-		t.ReplayRoute = r.ReasoningReplayRoute()
-	}
-	return t
 }
 
 func replaysChatScalar(r registry.Resolved) bool {

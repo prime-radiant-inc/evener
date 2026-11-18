@@ -86,8 +86,11 @@ func TestRestoreSeedsMetricsIntoMeta(t *testing.T) {
 	}
 
 	t.Run("input measurement follows the answering target", func(t *testing.T) {
-		clientFor := func(wire string, replay bool) *llm.Client {
+		const original = "https://measure-a.example.test/v1"
+		const replacement = "https://measure-b.example.test/v1"
+		clientFor := func(wire, endpoint string, replay bool) *llm.Client {
 			inst := testRegistryInstances()["gw"]
+			inst.Transport.BaseURL = endpoint
 			inst.Models = map[string]registry.Model{"reasoner": {
 				WireID: wire, Protocol: registry.ProtocolOpenAIResponses,
 				Caps: registry.Caps{ReplayReasoningText: &replay, ContextWindow: new(100_000)},
@@ -95,20 +98,25 @@ func TestRestoreSeedsMetricsIntoMeta(t *testing.T) {
 			return registryClient(t, map[string]registry.Provider{"gw": inst}, &fakeAdapter{name: "gw"})
 		}
 		for _, tc := range []struct {
-			name, wire string
-			replay     bool
-			want       int
+			name, wire, endpoint string
+			before, after        bool
+			want                 int
 		}{
-			{"same", "wire-a", true, 90_000},
-			{"unknown measurement owner", "wire-a", true, 0},
-			{"replay disabled", "wire-a", false, 0},
-			{"redirected model", "wire-b", true, 0},
+			{"same", "wire-a", original, true, true, 90_000},
+			{"unknown measurement owner", "wire-a", original, true, true, 0},
+			{"replay disabled", "wire-a", original, true, false, 0},
+			{"redirected model", "wire-b", original, true, true, 0},
+			{"same endpoint without replay", "wire-a", original, false, false, 90_000},
+			{"redirected endpoint without replay", "wire-a", replacement, false, false, 0},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				state := t.TempDir()
-				client := clientFor("wire-a", true)
+				client := clientFor("wire-a", original, tc.before)
 				s := newSession(t, withClient(client), withStateDir(state), withProfile(resolveClientProfile(t, client, "gw/reasoner")))
-				s.contextMgr.RecordInputTokens(90_000, 0)
+				s.appendTurn(schema.TurnUserInput, llm.User("measured input"))
+				measured := len(s.history)
+				s.contextMgr.RecordInputTokens(90_000, measured)
+				s.appendTurn(schema.TurnUserInput, llm.User("later input"))
 				s.Close()
 				meta, err := schema.LoadSessionMeta(state, s.id)
 				if err != nil {
@@ -117,7 +125,7 @@ func TestRestoreSeedsMetricsIntoMeta(t *testing.T) {
 				if tc.name == "unknown measurement owner" {
 					meta.LastInputTarget = ""
 				}
-				client = clientFor(tc.wire, tc.replay)
+				client = clientFor(tc.wire, tc.endpoint, tc.after)
 				restored, err := RestoreSessionFromMetaWithConfig(client, resolveClientProfile(t, client, "gw/reasoner"),
 					execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, RestoreSessionConfig{
 						StateDir: state, testOnly: sharingHostProbe(testConfig{skipGitSnapshot: true}),
@@ -126,8 +134,12 @@ func TestRestoreSeedsMetricsIntoMeta(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer restored.Close()
-				if got := restored.Meta().LastInputTokens; got != tc.want {
-					t.Fatalf("restored measurement = %d, want %d", got, tc.want)
+				saved := restored.Meta()
+				if saved.LastInputTokens != tc.want {
+					t.Fatalf("restored measurement = %d, want %d", saved.LastInputTokens, tc.want)
+				}
+				if tc.want != 0 && saved.LastInputHistoryLength != measured {
+					t.Fatalf("measured prefix = %d, want %d", saved.LastInputHistoryLength, measured)
 				}
 				if used := restored.contextMgr.EstimateUsage(restored.history, 100).Used; tc.want == 0 && (used <= 0 || used >= 90_000) {
 					t.Fatalf("local estimate after target change = %d", used)
