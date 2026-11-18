@@ -561,17 +561,43 @@ func (jm *jobManager) rememberRenderedWatchSendFrame(cfg *watchConfig, rendered 
 }
 
 // stableWatchNotificationContent is the attention content a stable receiver
-// gets for frame: the frame without its delivery_id lines.
+// gets for frame: the frame with the ONE metadata field the renderer generated
+// removed.
+//
+// That field is removed by POSITION, not by its spelling. buildWatchFrame emits
+// exactly one top-level "delivery_id:" line, directly after the "Watch frame"
+// header; every other line that could read like it belongs to the caller's own
+// message (which precedes the header) or to an indented excerpt (which is
+// written as a block). Stripping every trimmed line that starts with the field
+// name deleted those too, so a message or a captured output line reading
+// "delivery_id: ..." reached the model with its content cut out — the ordinary
+// caller renderer preserved it, so the durable route silently lost it (#2340
+// review).
 func stableWatchNotificationContent(frame string) string {
 	lines := strings.Split(frame, "\n")
-	out := lines[:0]
-	for _, line := range lines {
-		if strings.HasPrefix(strings.TrimSpace(line), "delivery_id:") {
+	header := -1
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "Watch frame" {
+			header = i
+			break
+		}
+	}
+	if header < 0 {
+		return frame
+	}
+	// Only a TOP-LEVEL line can be the generated field: an excerpt's lines are
+	// indented by writeWatchFrameIndentedBlock, and the caller's message sits
+	// above the header. So the first top-level "delivery_id:" line below the
+	// header is the renderer's, and it is the only one removed.
+	for i := header + 1; i < len(lines); i++ {
+		if strings.HasPrefix(lines[i], " ") || strings.HasPrefix(lines[i], "\t") {
 			continue
 		}
-		out = append(out, line)
+		if strings.HasPrefix(lines[i], "delivery_id:") {
+			return strings.Join(append(slices.Clone(lines[:i]), lines[i+1:]...), "\n")
+		}
 	}
-	return strings.Join(out, "\n")
+	return frame
 }
 
 func (jm *jobManager) isCurrentPendingWatchSend(cfg *watchConfig, state jobstore.WatchSendState) bool {

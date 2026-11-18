@@ -5341,6 +5341,50 @@ func TestStableWatchDiagnosticsGetOneAttentionItemPerFailedDelivery(t *testing.T
 	}
 }
 
+// TestStableWatchFrameKeepsCallerContentThatLooksLikeMetadata pins the content-loss
+// half of the caller frame's rendering (#2340 review).
+//
+// The attention content is the frame minus the ONE metadata field the renderer
+// generated. Stripping by spelling removed every trimmed line that read
+// "delivery_id:", including a line the caller wrote in its own message and a
+// captured output line in the excerpt — content the ordinary caller renderer
+// delivers intact. The field is identified by position now, so only it goes.
+func TestStableWatchFrameKeepsCallerContentThatLooksLikeMetadata(t *testing.T) {
+	t.Parallel()
+	const (
+		callerLine  = "delivery_id: this line is part of MY message"
+		excerptLine = "delivery_id: this line came from the job's output"
+		generated   = "dlv_generated_field"
+	)
+	frame := strings.Join([]string{
+		callerLine,
+		"",
+		"Watch frame",
+		"watch_id: watch:life-formatter",
+		"delivery_id: " + generated,
+		"job_id: job:life-formatter",
+		"trigger: completed",
+		"excerpt:",
+		"    " + excerptLine,
+	}, "\n")
+
+	got := stableWatchNotificationContent(frame)
+	if !strings.Contains(got, callerLine) {
+		t.Fatalf("the caller's own message line was removed from the delivered content:\n%s", got)
+	}
+	if !strings.Contains(got, excerptLine) {
+		t.Fatalf("a captured output line was removed from the delivered excerpt:\n%s", got)
+	}
+	if strings.Contains(got, generated) {
+		t.Fatalf("the generated delivery_id field survived into the delivered content:\n%s", got)
+	}
+	// Non-vacuity: everything else the frame carried is still there, so the
+	// assertions above cannot pass by returning an empty string.
+	if !strings.Contains(got, "watch_id: watch:life-formatter") || !strings.Contains(got, "trigger: completed") {
+		t.Fatalf("the delivered content lost fields it must keep:\n%s", got)
+	}
+}
+
 // One delivery can fail TWICE at different stages, and those are two notices.
 //
 // The dropped-state write fails, a retry succeeds, and the final drop
