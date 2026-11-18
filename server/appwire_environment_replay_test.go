@@ -119,7 +119,7 @@ func TestEnvironmentChangesPreserveLiveTranscriptItemIdentity(t *testing.T) {
 	environmentCount := 0
 	for input := range 2 {
 		if input == 1 {
-			git("symbolic-ref", "HEAD", "refs/heads/second")
+			git("switch", "-c", "second")
 		}
 		_, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{
 			ClientMutationID: fmt.Sprintf("environment-input-%d", input), ExpectedInstanceID: sess.ID(),
