@@ -19,10 +19,10 @@ import (
 	"primeradiant.com/evener/agent/internal/mdfence"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/internal/tool/repair"
-	"primeradiant.com/evener/agent/wirenames"
 	"primeradiant.com/evener/agent/internal/turnwindow"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/agent/wirenames"
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 )

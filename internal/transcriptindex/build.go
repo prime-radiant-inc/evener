@@ -272,7 +272,7 @@ func (b *builder) applyLegacy(ordinal uint64, offset int64, length uint32, entry
 				return err
 			}
 		}
-		slot, err := b.appendItemWithContext(item, parts[i], b.turnSlot, c, context)
+		slot, err := b.appendItemWithContext(item, parts[i], b.turnSlot, c, context, seed)
 		if err != nil {
 			return err
 		}
@@ -743,7 +743,7 @@ func (b *builder) appendItems(slot uint64, entry *schema.Turn, c contributor, se
 				return err
 			}
 		}
-		if _, err := b.appendItemWithContext(item, parts[i], slot, c, context); err != nil {
+		if _, err := b.appendItemWithContext(item, parts[i], slot, c, context, seed); err != nil {
 			return err
 		}
 	}
@@ -754,9 +754,40 @@ func (b *builder) appendItems(slot uint64, entry *schema.Turn, c contributor, se
 
 // appendItemWithContext appends the record of an item the entry c opens at
 // part. Only deferred communicate results need Context (communicateContext).
-func (b *builder) appendItemWithContext(item appwire.ThreadItem, part int, turnSlot uint64, c contributor, context strRef) (uint64, error) {
+func (b *builder) appendItemWithContext(item appwire.ThreadItem, part int, turnSlot uint64, c contributor, context strRef, seed map[string]string) (uint64, error) {
 	version := c.Ordinal + 1
 	record := itemRecord{Entry: version, Part: uint32(part), Turn: uint32(turnSlot), Version: version, Opener: c, ItemIndex: b.entryItemIndex, Context: context}
+	// Persist the builder's own resolution of this entry's unnamed results.
+	// Read-back reprojects the entry and must reproduce this record rather than
+	// derive a new answer from a turn summary a later batch may have moved past
+	// the announcing entry (#1166 review).
+	if len(seed) > 0 {
+		list := make([]seedEntry, 0, len(seed))
+		for callID, name := range seed {
+			callRef, err := b.x.strings.putString(callID)
+			if err != nil {
+				return 0, err
+			}
+			nameRef, err := b.x.strings.putString(name)
+			if err != nil {
+				return 0, err
+			}
+			list = append(list, seedEntry{Call: callRef, Name: nameRef})
+		}
+		slices.SortFunc(list, func(a, c seedEntry) int {
+			if a.Call.Off == c.Call.Off {
+				return 0
+			}
+			if a.Call.Off < c.Call.Off {
+				return -1
+			}
+			return 1
+		})
+		var err error
+		if record.Seed, err = b.x.strings.put(encodeSeedEntries(list)); err != nil {
+			return 0, err
+		}
+	}
 	b.entryItemIndex++
 	if b.entryReplayOrdinal {
 		b.replayOrdinals[b.entryReplayTurn]++

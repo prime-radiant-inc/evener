@@ -36,7 +36,12 @@ const (
 	// of its own would report the earlier attempt's error. The record layout
 	// and the JSON shapes did not change, so the projection name is the only
 	// thing that can tell the two folds apart.
-	projectionID = "transcript-read-model-v12"
+	// v13: the item record carries the builder's own seed for an entry's unnamed
+	// results (itemRecord.Seed), which read-back replays instead of re-deriving
+	// from a turn summary a later batch can move. The record layout changed, so
+	// a v12 sidecar cannot be read as a v13 one and every existing sidecar
+	// rebuilds from the transcript (#1166 review).
+	projectionID = "transcript-read-model-v13"
 
 	// tailBytes is how much of the covered prefix's end validation compares,
 	// the check the attention fold cursor uses (agent/session_attention.go).

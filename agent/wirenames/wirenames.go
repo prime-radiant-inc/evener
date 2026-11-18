@@ -6,6 +6,7 @@ package wirenames
 
 import (
 	"maps"
+	"strings"
 
 	"primeradiant.com/evener/llm/registry"
 )
@@ -49,8 +50,13 @@ func Canonical(name string) string {
 // case. Two names that canonicalize to the same tool are the same tool; two
 // that do not are genuinely different tools sharing a call id, which is the
 // case the settlement guard exists to keep apart (#1166 review).
+//
+// Surrounding whitespace is not part of a name. Dispatch trims before it
+// executes (canonicalToolName), so a provider that pads a name leaves the
+// announcement padded and the result trimmed; comparing raw would split a call
+// from its own result on whitespace alone.
 func Same(a, b string) bool {
-	return Canonical(a) == Canonical(b)
+	return Canonical(strings.TrimSpace(a)) == Canonical(strings.TrimSpace(b))
 }
 
 // ForSurface returns the canonical→wire renames for surface, or nil when the

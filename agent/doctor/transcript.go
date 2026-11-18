@@ -13,10 +13,10 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/runetrim"
-	"primeradiant.com/evener/agent/wirenames"
 	"primeradiant.com/evener/agent/internal/turnwindow"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/agent/wirenames"
 	"primeradiant.com/evener/llm"
 )
 

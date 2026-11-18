@@ -709,3 +709,164 @@ func TestAReadBackKeepsTheRecordedDeliveryPart(t *testing.T) {
 	rebuilt := openIndex(t, path, dir)
 	assertBoth(t, "after rebuild", turnItemsOf(t, allCandidates(t, rebuilt), "turn_both"))
 }
+
+// TestReadBackKeepsTheBuilderResolutionAfterALaterBatch covers read-back when a
+// later assistant batch in the SAME turn announces other ids. The builder
+// resolved the results entry against the entry it was awaiting when those
+// results arrived; read-back re-derives from whatever entry is awaiting in the
+// summary NOW, which is the later batch — and the later batch says nothing
+// about this id. The unnamed command result then consumes the deferred
+// delivery's arguments, the recorded delivery part projects nothing, and the
+// page is rejected as corrupt. Rebuilding recreates it, so the assertion is on
+// the record, not the page (#1166 review).
+func TestReadBackKeepsTheBuilderResolutionAfterALaterBatch(t *testing.T) {
+	fx := fixture{
+		name:   "read back keeps the builder resolution",
+		header: transcript.Header{SessionID: "readback_later", CreatedAt: fixtureClock, ProfileID: "p", Model: "m"},
+		lines: []fixtureLine{
+			entryLine(opens("turn_later", schema.TurnSpanExecution, user("go"))),
+			entryLine(inTurn("turn_later", inheritedAuthorship(assistant(
+				call("call_later", "read_file", `{"path":"a"}`),
+				call("call_later", "communicate", `{"message":"the delivery"}`),
+			)))),
+			// One entry, two parts: the command's unnamed result, then the
+			// delivery's named one. The builder resolves this here.
+			entryLine(inTurn("turn_later", results(
+				result("call_later", "", "the bytes"),
+				result("call_later", "communicate", "the delivery"),
+			))),
+			// A later batch in the same turn announces DIFFERENT ids, moving the
+			// turn's awaiting entry past the one that recorded this id.
+			entryLine(inTurn("turn_later", assistant(call("call_other", "shell", `{"cmd":"true"}`)))),
+			entryLine(completion("turn_later", schema.TurnCompleted, 99, 10)),
+		},
+	}
+	path := writeFixture(t, fx)
+	dir := t.TempDir()
+
+	assertBoth := func(t *testing.T, label string, items []appwire.ThreadItem) {
+		t.Helper()
+		command, delivered := false, false
+		for _, item := range items {
+			switch item.Type {
+			case "commandExecution":
+				if item.ToolName == "read_file" && item.Status == appwire.TurnStatusCompleted {
+					command = true
+				}
+			case "agentMessage":
+				if strings.Contains(item.Text, "the delivery") {
+					delivered = true
+				}
+			}
+		}
+		if !command {
+			t.Errorf("%s: the reserved command is missing or unsettled (items %s)", label, itemShapes(items))
+		}
+		if !delivered {
+			t.Errorf("%s: the recorded delivery part did not render: read-back resolved against the later batch (items %s)",
+				label, itemShapes(items))
+		}
+	}
+
+	first := openIndex(t, path, dir)
+	assertBoth(t, "first read", turnItemsOf(t, allCandidates(t, first), "turn_later"))
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	rebuilt := openIndex(t, path, dir)
+	assertBoth(t, "after rebuild", turnItemsOf(t, allCandidates(t, rebuilt), "turn_later"))
+}
+
+// TestReadBackFoldKeepsEachRowInBothResultOrders covers the fold when the
+// standalone result comes FIRST. Folding must not compact the cached
+// projection in place: the reserved item and the standalone item are separate
+// records that share one cached projection, so overwriting that slice makes the
+// later record read the wrong part and shows one tool's output twice while the
+// other row loses its own (#1166 review).
+func TestReadBackFoldKeepsEachRowInBothResultOrders(t *testing.T) {
+	fx := fixture{
+		name:   "read back fold both result orders",
+		header: transcript.Header{SessionID: "fold_orders", CreatedAt: fixtureClock, ProfileID: "p", Model: "m"},
+		lines: []fixtureLine{
+			entryLine(opens("turn_order", schema.TurnSpanExecution, user("go"))),
+			entryLine(inTurn("turn_order", inheritedAuthorship(assistant(
+				call("call_order", "read_file", `{"path":"a"}`),
+				call("call_order", "shell", `{"cmd":"ls"}`),
+			)))),
+			// The STANDALONE tool's result first, the reserved tool's second.
+			entryLine(inTurn("turn_order", results(
+				result("call_order", "shell", "a.txt"),
+				result("call_order", "read_file", "the bytes"),
+			))),
+			entryLine(completion("turn_order", schema.TurnCompleted, 99, 10)),
+		},
+	}
+	path := writeFixture(t, fx)
+	items := turnItemsOf(t, allCandidates(t, openIndex(t, path, t.TempDir())), "turn_order")
+
+	reserved, other := "", ""
+	for _, item := range items {
+		if item.CallID != "call_order" || item.Type != "commandExecution" {
+			continue
+		}
+		switch item.ToolName {
+		case "read_file":
+			reserved = item.Output
+		case "shell":
+			other = item.Output
+		}
+	}
+	if reserved != "the bytes" {
+		t.Errorf("reserved call output = %q, want %q: the fold must not move the reserved item (items %s)",
+			reserved, "the bytes", itemShapes(items))
+	}
+	if other != "a.txt" {
+		t.Errorf("standalone call output = %q, want %q: it lost its own part (items %s)",
+			other, "a.txt", itemShapes(items))
+	}
+}
+
+// TestAWhitespacePaddedAnnouncementSettles covers dispatch's normalization.
+// Dispatch trims a tool name before executing it, so the result records the
+// trimmed name while the assistant turn keeps the padded spelling the provider
+// sent. A comparison of raw spellings leaves that call unmatched — the same
+// phantom split the alias table fixes, reached through whitespace (#1166
+// review).
+func TestAWhitespacePaddedAnnouncementSettles(t *testing.T) {
+	fx := fixture{
+		name:   "whitespace padded announcement settles",
+		header: transcript.Header{SessionID: "padded", CreatedAt: fixtureClock, ProfileID: "p", Model: "m"},
+		lines: []fixtureLine{
+			entryLine(opens("turn_pad", schema.TurnSpanExecution, user("go"))),
+			entryLine(inTurn("turn_pad", assistant(call("call_pad", " read_file ", `{"path":"a"}`)))),
+			entryLine(inTurn("turn_pad", results(result("call_pad", "read_file", "the bytes")))),
+			entryLine(completion("turn_pad", schema.TurnCompleted, 99, 10)),
+		},
+	}
+	path := writeFixture(t, fx)
+	indexed := turnItemsOf(t, allCandidates(t, openIndex(t, path, t.TempDir())), "turn_pad")
+	replayed := replayedTurnOf(t, path, "turn_pad")
+
+	for _, reader := range []struct {
+		name  string
+		items []appwire.ThreadItem
+	}{{"index", indexed}, {"replay", replayed.Items}} {
+		rows, interrupted := 0, false
+		for _, item := range reader.items {
+			if item.CallID != "call_pad" {
+				continue
+			}
+			rows++
+			if item.Status == appwire.TurnStatusInterrupted {
+				interrupted = true
+			}
+		}
+		if rows != 1 {
+			t.Errorf("%s: rows = %d, want 1: a padded spelling names the same tool dispatch ran (items %s)",
+				reader.name, rows, itemShapes(reader.items))
+		}
+		if interrupted {
+			t.Errorf("%s: the settled call reads interrupted (items %s)", reader.name, itemShapes(reader.items))
+		}
+	}
+}

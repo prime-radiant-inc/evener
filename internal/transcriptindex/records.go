@@ -10,10 +10,11 @@ import (
 // Record sizes. Records are fixed-size so a record's slot names its offset,
 // and an append can rewrite one in place.
 const (
-	itemRecordSize   = 132
+	itemRecordSize   = 144 // + Seed strRef
 	turnRecordSize   = 168
 	contributorSize  = 32
 	contextEntrySize = contributorSize + 12 // contributor + TurnID strRef
+	seedEntrySize    = 24                   // Call strRef + Name strRef
 	updateRecordSize = 24
 )
 
@@ -71,6 +72,21 @@ type itemRecord struct {
 	// no in-progress item and reg.CommRawArgs/LastAssistantText must be
 	// replayed from elsewhere before it can be reconstructed.
 	Context strRef
+	// Seed is the builder's own resolution of the unnamed results in the
+	// opener entry, encoded as []seedEntry: call id to the tool name the
+	// builder settled it with. Read-back reprojects the entry, and it cannot
+	// re-derive this from the turn summary — a later batch in the same turn
+	// moves the awaiting entry past the one that recorded the id, so the
+	// summary answers about the wrong batch. Persisting it is what makes
+	// read-back reproduce the record the builder wrote instead of a new one
+	// (#1166 review).
+	Seed strRef
+}
+
+// seedEntry is one name resolution the builder applied to an unnamed result.
+type seedEntry struct {
+	Call strRef
+	Name strRef
 }
 
 // Item record flags.
@@ -273,6 +289,7 @@ func encodeItemInto(dst []byte, r itemRecord) []byte {
 	c.putU32(r.Flags)
 	c.putU32(r.ItemIndex)
 	c.putRef(r.Context)
+	c.putRef(r.Seed)
 	return c.buf
 }
 
@@ -290,7 +307,33 @@ func decodeItem(buf []byte) itemRecord {
 	c.u32(&r.Flags)
 	c.u32(&r.ItemIndex)
 	c.ref(&r.Context)
+	c.ref(&r.Seed)
 	return r
+}
+
+func (c *codec) putSeedEntry(v seedEntry) { c.putRef(v.Call); c.putRef(v.Name) }
+func (c *codec) seedEntry(v *seedEntry)   { c.ref(&v.Call); c.ref(&v.Name) }
+
+func encodeSeedEntries(list []seedEntry) []byte {
+	c := codec{buf: make([]byte, len(list)*seedEntrySize)}
+	for _, v := range list {
+		c.putSeedEntry(v)
+	}
+	return c.buf
+}
+
+func decodeSeedEntries(buf []byte) ([]seedEntry, error) {
+	if len(buf)%seedEntrySize != 0 {
+		return nil, errors.New("transcript index: seed entry run is not a whole number of entries")
+	}
+	c := codec{buf: buf}
+	out := make([]seedEntry, 0, len(buf)/seedEntrySize)
+	for c.at < len(buf) {
+		var v seedEntry
+		c.seedEntry(&v)
+		out = append(out, v)
+	}
+	return out, nil
 }
 
 func (c *codec) contextEntry(v *contextEntry) {

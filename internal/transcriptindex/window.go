@@ -1056,7 +1056,13 @@ func (r *reader) item(record itemRecord, turnID string) (appwire.ThreadItem, err
 			// against: its rule is last-name-wins and this fold IS that rule, so
 			// the guard here would drop the result a legacy id resolves to.
 			if reserved := apptranscript.ReservedCallToolName(opener, callID); identity && reserved != "" {
-				kept := items[:0]
+				// A fresh slice, never items[:0]: items is the CACHED projection
+				// of this entry, shared by every record that opens a part of it.
+				// Compacting it in place makes the standalone row, read after the
+				// reserved one, index into a part the fold moved — the reserved
+				// output shows twice and the standalone row loses its own
+				// (#1166 review).
+				kept := make([]appwire.ThreadItem, 0, len(items))
 				for _, projected := range items {
 					if apptranscript.MergesByCallID(projected) &&
 						!apptranscript.ResultSettlesReservedCall(reserved, projected.ToolName) {
@@ -1179,27 +1185,32 @@ func (r *reader) projectWithContext(record itemRecord, turnID string) ([]appwire
 	}
 	// An inherited batch can hold the unnamed result for a reserved command AND
 	// the named result for a deferred communicate under one id. The builder
-	// resolved each part against the turn's AWAITING entry: the reservation
-	// answered an unnamed part first, and the pending communicate only named it
-	// when nothing was reserved. Replay that same answer from the summary the
-	// builder wrote, rather than re-deriving one from Context — Context holds
-	// the announcing entry, which is not necessarily the entry the builder was
-	// awaiting by the time this result arrived. Without it the unnamed part
-	// consumes the delivery's arguments and the recorded delivery part projects
-	// nothing, which reads as a corrupt page and rebuilds to the same record
-	// (#1166 review).
-	if record.Opener.Name.Len == 0 {
-		summary, err := r.x.turns.read(uint64(record.Turn), 1)
+	// resolved each part against the entry it was awaiting WHEN THE RESULTS
+	// ARRIVED and persisted that answer on the record; replay it. Re-deriving
+	// from the turn summary is wrong: a later assistant batch in the same turn
+	// moves the summarised awaiting entry past the announcing entry, so the
+	// summary answers about the wrong batch — the unnamed part then consumes the
+	// delivery's arguments, the recorded delivery part projects nothing, and the
+	// page is rejected as corrupt (#1166 review).
+	if record.Seed.Len > 0 {
+		buf, err := r.x.strings.get(record.Seed)
 		if err != nil {
 			return nil, nil, err
 		}
-		stored := decodeTurn(summary)
-		if awaiting, err := r.entry(stored.AwaitingOffset, stored.AwaitingLength); err == nil && awaiting.Format == schema.TurnFormatIdentity {
-			for id := range apptranscript.ReservedCalls(awaiting) {
-				if name := apptranscript.ReservedCallToolName(awaiting, id); name != "" {
-					reg.ResolvedNames[id] = name
-				}
+		list, err := decodeSeedEntries(buf)
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, entry := range list {
+			call, err := r.x.strings.get(entry.Call)
+			if err != nil {
+				return nil, nil, err
 			}
+			name, err := r.x.strings.get(entry.Name)
+			if err != nil {
+				return nil, nil, err
+			}
+			reg.ResolvedNames[string(call)] = string(name)
 		}
 	}
 	// Context is the entries whose registry state a deferred communicate result
