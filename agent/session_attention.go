@@ -601,6 +601,19 @@ func (s *Session) publishAcknowledgedDelegateAttentionReport(attentionID string,
 	// across both makes a request see neither or both.
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
+	// The seam sits inside the critical section and before either write below,
+	// so a test that probes attentionMu here asks the question the lock exists
+	// to answer: is the report entering history under the same hold the
+	// projection captures with? A seam outside the lock could be observed while
+	// the write was still unguarded. s.mu is taken and released on the same side
+	// of attentionMu that the projection capture takes them, so it adds no new
+	// order.
+	s.mu.Lock()
+	beforePublication := s.cfg.testOnly.delegateAttentionBeforeReportPublication
+	s.mu.Unlock()
+	if beforePublication != nil {
+		beforePublication()
+	}
 	if turn.AttentionID != "" {
 		// The caller already folded this row: publishing reuses that read so a
 		// commit path costs no second transcript fold.
@@ -1667,47 +1680,43 @@ func (s *Session) moveHeldDelegateAttentionTurnsToTail(released []string) {
 	for _, id := range released {
 		releasable[id] = struct{}{}
 	}
-	// A row whose release is still owed its position is not always pending: a
-	// crash after the consumed marker and before RunStarted leaves the reopen
-	// resolved, and the restart still owes the order the release produced. Such
-	// a row is included here; every other resolved row keeps the position it was
-	// presented at.
-	for _, id := range fold.order {
-		if _, ok := releasable[id]; !ok {
-			continue
-		}
-		if _, resolved := fold.resolutions[id]; !resolved {
-			continue
-		}
-		if fold.resolutions[id] != delegateAttentionConsumed {
-			continue
-		}
-		if _, _, ok := cutDelegateAttentionReopenSegment(id); !ok {
-			continue
-		}
-		pending = append(pending, id)
-	}
+	// Only pending rows move here. A resolved row was presented at a position
+	// the request that carried it already answered for, and moving it again
+	// would put an old report behind the reply that addressed it. The one
+	// resolved row a restart still owes a position is the exact trigger of the
+	// generation it recovers, and that row is moved where its identity is
+	// known — after its turn is back in history — by
+	// admitRecoveredDelegateAttentionTrigger.
 	for _, attentionID := range pending {
 		if _, ok := releasable[attentionID]; !ok {
 			continue
 		}
-		var held schema.Turn
-		s.mu.Lock()
-		for index := range s.history {
-			if s.history[index].AttentionID == attentionID && s.history[index].Kind == schema.TurnSteering {
-				held = s.history[index]
-				break
-			}
-		}
-		s.mu.Unlock()
-		if held.AttentionID == "" {
-			continue
-		}
-		s.dropResidentDelegateAttentionTurnLocked(attentionID)
-		if err := s.retainDelegateAttentionTurn(held); err != nil {
-			s.emit(warningDataFromError("move held delegate attention turn to the history tail", err))
+		_ = s.moveResidentDelegateAttentionTurnToTailLocked(attentionID)
+	}
+}
+
+// moveResidentDelegateAttentionTurnToTailLocked re-appends one resident
+// steering turn at the tail of the history, leaving it untouched when the
+// history holds no turn for that row. It reports whether it moved anything. The
+// caller holds attentionMu.
+func (s *Session) moveResidentDelegateAttentionTurnToTailLocked(attentionID string) error {
+	if attentionID == "" {
+		return nil
+	}
+	var held schema.Turn
+	s.mu.Lock()
+	for index := range s.history {
+		if s.history[index].AttentionID == attentionID && s.history[index].Kind == schema.TurnSteering {
+			held = s.history[index]
+			break
 		}
 	}
+	s.mu.Unlock()
+	if held.AttentionID == "" {
+		return nil
+	}
+	s.dropResidentDelegateAttentionTurnLocked(attentionID)
+	return s.retainDelegateAttentionTurn(held)
 }
 
 // retainUnpublishedDelegateAttentionReport records that this receiver still
@@ -1764,18 +1773,48 @@ func (s *Session) publishRetainedDelegateAttentionReport(attentionID string) err
 // table cannot answer this — it records only the tool-results turn a resident
 // reply carried, and a stop's retry acknowledges in the journal alone.
 //
+// The queue belongs to the delegate whose run posted the packet, and the
+// receiver is recorded on the delivery as its owner. This session is the
+// receiver, so asking about its own queue would find nothing — a child's
+// deposit is queued on the child — and every outstanding delivery would read
+// as acknowledged. The identity therefore yields the posting delegate, and the
+// queue is asked about that delegate while the target is asked about this one.
+// Both halves are needed: a delivery ID naming another receiver must not answer
+// for this receiver's report.
+//
 // A row whose ID is not a delivery identity never waits here. Callers hold
 // attentionMu; the controller lock is taken inside.
 func (s *Session) delegateAttentionReportAwaitsAcknowledgment(attentionID string) bool {
-	controller := s.delegateController
-	if controller == nil || s.owningDelegateID == "" {
-		return false
-	}
 	deliveryID, ok := strings.CutPrefix(stripDelegateAttentionReopenSegments(attentionID), delegateAttentionID(""))
 	if !ok || deliveryID == "" {
 		return false
 	}
-	return controller.deliveryPending(s.owningDelegateID, deliveryID)
+	return s.delegateAttentionDeliveryAwaitsAcknowledgment(deliveryID)
+}
+
+// delegateAttentionDeliveryAwaitsAcknowledgment is
+// delegateAttentionReportAwaitsAcknowledgment for a caller that already holds a
+// delivery identity rather than an attention identity.
+//
+// This is the one rule for "the deposit behind this report has not been
+// acknowledged yet", and both entry points into history take it: the restore
+// that republishes pending turns before a runtime attaches, and the live
+// compaction that rebuilds the retained attention turns. A second copy of the
+// question is how the two diverged in the first place — compaction restored
+// every pending transcript turn while restore withheld the deferred ones, so a
+// request could present the new report while withholding the older report its
+// acknowledgment was about to release. Holding attentionMu is the caller's job;
+// the controller lock is taken inside.
+func (s *Session) delegateAttentionDeliveryAwaitsAcknowledgment(deliveryID string) bool {
+	controller := s.delegateController
+	if controller == nil || deliveryID == "" {
+		return false
+	}
+	source, ok := parseDelegateDeliveryID(deliveryID)
+	if !ok {
+		return false
+	}
+	return controller.deliveryPendingForReceiver(source, deliveryID, s.owningDelegateID)
 }
 
 // retainPendingDelegateAttentionTurnsLocked restores every still-pending row's
@@ -1801,27 +1840,7 @@ func (s *Session) retainPendingDelegateAttentionTurnsLocked(fold delegateAttenti
 // owed a release. The row keeps its durable turn and its arm publishes it once
 // its own gate passes. The caller holds attentionMu.
 func (s *Session) retainPendingDelegateAttentionTurnsExceptLocked(fold delegateAttentionFold, skip []string) error {
-	pendingTurns := fold.pendingTurns("")
-	// A delivery's report is recorded before its acknowledgment commits and
-	// published after it, because the acknowledgment is what raises the release
-	// floor the report is presented against. A compaction that restores pending
-	// turns would otherwise publish a deposit whose acknowledgment is still
-	// outstanding: the request then carries the new report while withholding the
-	// report that same acknowledgment is going to release.
-	//
-	// The record that decides this is the delegate journal's pending-delivery
-	// queue, not the transcript's commit table: a stop's retry acknowledges
-	// inside the journal and never writes a commit turn, so "no commit" cannot
-	// be read as "still deferred" without withholding rows that are already
-	// acknowledged. A row that is not a delivery's report is never deferred.
-	kept := make([]schema.Turn, 0, len(pendingTurns))
-	for _, durable := range pendingTurns {
-		if s.delegateAttentionReportAwaitsAcknowledgment(durable.AttentionID) {
-			continue
-		}
-		kept = append(kept, durable)
-	}
-	pendingTurns = kept
+	pendingTurns := s.publishableDelegateAttentionTurnsLocked(fold.pendingTurns(""))
 	if len(skip) != 0 {
 		kept := make([]schema.Turn, 0, len(pendingTurns))
 		for _, durable := range pendingTurns {
@@ -1838,6 +1857,43 @@ func (s *Session) retainPendingDelegateAttentionTurnsExceptLocked(fold delegateA
 		}
 	}
 	return nil
+}
+
+// publishableDelegateAttentionTurnsLocked drops, from turns, every report whose
+// delivery has not been acknowledged yet.
+//
+// A delivery's report is recorded before its acknowledgment commits and
+// published after it, because the acknowledgment is what raises the release
+// floor the report is presented against. A restore or a compaction that put
+// such a turn into history would publish a deposit whose acknowledgment is
+// still outstanding: the request then carries the new report while withholding
+// the report that same acknowledgment is going to release, which is the
+// resident order inverted.
+//
+// The record that decides this is the delegate journal's pending-delivery queue,
+// not the transcript's commit table: a stop's retry acknowledges inside the
+// journal and never writes a commit turn, so "no commit" cannot be read as
+// "still deferred" without withholding rows that are already acknowledged. A row
+// that is not a delivery's report is never deferred.
+//
+// The accepted trigger is kept whatever its delivery says. The accept path
+// latched it because a settled request must present it, and the generation that
+// presents it is the one whose acceptance its own waker owed. Every other
+// reader of pending turns must take this filter, so no path reaches history
+// with a question about acknowledgment asked somewhere else — or not at all.
+// The caller holds attentionMu.
+func (s *Session) publishableDelegateAttentionTurnsLocked(turns []schema.Turn) []schema.Turn {
+	if len(turns) == 0 {
+		return turns
+	}
+	kept := make([]schema.Turn, 0, len(turns))
+	for _, durable := range turns {
+		if durable.AttentionID != s.attentionAcceptedID && s.delegateAttentionReportAwaitsAcknowledgment(durable.AttentionID) {
+			continue
+		}
+		kept = append(kept, durable)
+	}
+	return kept
 }
 
 // admitPendingWatchFramesLocked admits the wake of every stable watch frame
@@ -1909,29 +1965,17 @@ type delegateQuietedRow struct {
 // under the controller lock with the aggregate.
 func (s *Session) stopQuietedDelegateAttentionRowsLocked(fold delegateAttentionFold, generation uint64, runStarts map[delegateLease]delegatestore.RunTrigger, runOutcomes map[delegateLease]delegatestore.Outcome, delegateID string) []delegateQuietedRow {
 	var rows []delegateQuietedRow
-	// A row this pass must consider is one whose quiet it can still decide AND
-	// one whose order the release owes. The second is not always pending: a
-	// fresh wake can release an older reopen and the drive select it, and a
-	// crash after the consumed marker lands but before RunStarted commits
-	// leaves that row resolved. The restart still owes the released order — the
-	// request that presents the frame that freed the report must end on the
-	// report, not ahead of the frame — so a consumed reopen of an
-	// attention-triggered cancelled generation is included here. Other resolved
-	// turns keep the positions they were presented at.
-	candidates := fold.pendingIDs()
-	for _, id := range fold.order {
-		if _, resolved := fold.resolutions[id]; !resolved {
-			continue
-		}
-		if fold.resolutions[id] != delegateAttentionConsumed {
-			continue
-		}
-		if _, _, ok := cutDelegateAttentionReopenSegment(id); !ok {
-			continue
-		}
-		candidates = append(candidates, id)
-	}
-	for _, id := range candidates {
+	// Only a pending row has a quiet this pass may rebuild. A resolved row has
+	// no position for a hold to defend: it was presented or discarded already,
+	// and the one order a restart still owes for a resolved reopen — the tail
+	// move a release produced — belongs to the generation that carries that
+	// reopen as its trigger. Deriving a hold for a resolved row instead puts
+	// that trigger behind the very quiet its own generation exists to end: the
+	// recovered request filters it out, the run settles successfully, and the
+	// report stays durably consumed with the model never having read it. The
+	// trigger's own restore releases it (releaseRecoveredDelegateAttentionTrigger),
+	// where the exact identity is known and the turn is already back in history.
+	for _, id := range fold.pendingIDs() {
 		source, _, ok := cutDelegateAttentionReopenSegment(id)
 		if !ok {
 			continue
@@ -2187,14 +2231,21 @@ func (s *Session) delegateAttentionFoldLocked() (delegateAttentionFold, error) {
 }
 
 // pendingAttentionTurnsLocked returns the turns behind the pending attention
-// items and the accepted trigger no settled request has presented. The caller
-// holds attentionMu.
+// items and the accepted trigger no settled request has presented, minus every
+// report whose delivery is still unacknowledged. The caller holds attentionMu.
+//
+// This is the compaction side of the same rule the restore takes: a fold that
+// dropped an attention turn reads the transcript back through here, and a
+// deposit published from it would enter history before its acknowledgment
+// raised the release floor. Both entry points ask
+// publishableDelegateAttentionTurnsLocked, so neither can answer the question
+// for the other and get a different answer.
 func (s *Session) pendingAttentionTurnsLocked() ([]schema.Turn, error) {
 	fold, err := s.delegateAttentionFoldLocked()
 	if err != nil {
 		return nil, err
 	}
-	return fold.pendingTurns(s.attentionAcceptedID), nil
+	return s.publishableDelegateAttentionTurnsLocked(fold.pendingTurns(s.attentionAcceptedID)), nil
 }
 
 // attentionTurns returns the turns of history that carry an attention identity.
@@ -2248,12 +2299,37 @@ func (s *Session) holdAcceptedTrigger(attentionID string) {
 // and puts its turn and the pending items' turns (turns, in arrival order)
 // back into the resumed history, which a compaction marker after them would
 // have cut.
+//
+// The trigger is then admitted on its own identity: any automatic-drive hold on
+// it is ended, and its turn is moved to the history tail. Bootstrap re-arms a
+// generation that never ran, so its trigger is the one row this request owes,
+// and a hold on it would filter it out of the request that settles it — the run
+// succeeds, the consumed marker stands, and the report is durably delivered to
+// nobody. A hold here is the stop quiet the derivation rebuilt: the row can
+// still be pending when the crash landed before its consumed marker, so the
+// derivation's pending pass sees a reopen whose stop generation is above the
+// release floor and quiets it. The recovered generation is newer evidence than
+// that stop — it is the wake that generation is running for — which is exactly
+// what admission means, so the hold ends here rather than waiting for a wake
+// that already committed. Other pending stopped reports keep their quiet.
+//
+// The tail move is unconditional because no settled request has presented this
+// trigger: the owed generation has no RunStarted, so nothing has been answered
+// for at any position. A turn the resumed history already holds is replaced in
+// place and then moved, so restoration stays idempotent.
 func (s *Session) restoreAcceptedTrigger(attentionID string, turns []schema.Turn) error {
 	s.holdAcceptedTrigger(attentionID)
 	for i, turn := range turns {
 		if err := s.retainDelegateAttentionTurn(turn, turns[i+1:]...); err != nil {
 			return err
 		}
+	}
+	s.clearDelegateAttentionHold(attentionID)
+	s.attentionMu.Lock()
+	err := s.moveResidentDelegateAttentionTurnToTailLocked(attentionID)
+	s.attentionMu.Unlock()
+	if err != nil {
+		s.emit(warningDataFromError("restore the recovered delegate attention trigger", err))
 	}
 	return nil
 }

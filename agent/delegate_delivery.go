@@ -602,6 +602,37 @@ func (c *delegateTreeController) deliveryPendingLocked(delegateID, deliveryID st
 	})
 }
 
+// deliveryPendingForReceiver reports whether sourceDelegateID's queue still
+// holds deliveryID unacknowledged AND that delivery is addressed to
+// receiverDelegateID.
+//
+// The queue a delivery sits in and the delegate it is addressed to are two
+// different facts, and a report's acknowledgment is only decided by the first
+// asked about the second. queueDelivery appends to the aggregate of the
+// delegate whose run posted the packet and records the receiver as
+// PendingDelivery.OwnerDelegateID, so a receiver that searched its own queue
+// would find nothing and read every unacknowledged deposit as acknowledged.
+// The target check keeps a delivery ID that names some other receiver's
+// delivery from answering for this one.
+//
+// The root session's owningDelegateID is empty, and a top-level delegate's
+// ParentDelegateID is empty with it, so an empty receiver is a real identity
+// here and not a missing one.
+func (c *delegateTreeController) deliveryPendingForReceiver(sourceDelegateID, deliveryID, receiverDelegateID string) bool {
+	if c == nil || sourceDelegateID == "" || deliveryID == "" {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	aggregate := c.durable[sourceDelegateID]
+	if aggregate == nil {
+		return false
+	}
+	return slices.ContainsFunc(aggregate.PendingDeliveries, func(pending delegatestore.PendingDelivery) bool {
+		return pending.DeliveryID == deliveryID && pending.OwnerDelegateID == receiverDelegateID
+	})
+}
+
 func (c *delegateTreeController) ReplayDeliveries() []delegateDeliveryPlan {
 	release, err := c.beginRetirementMutation()
 	if err != nil {

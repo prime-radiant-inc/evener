@@ -226,6 +226,14 @@ type testConfig struct {
 	// the capture, and the capture's answer is one moment's. Nil in
 	// production.
 	delegateAttentionDuringProjectionCapture func()
+	// delegateAttentionBeforeReportPublication observes an acknowledged report's
+	// publication inside the attentionMu hold it shares with the projection
+	// capture, before the report enters history. A test probes attentionMu
+	// there: the lock is held, so a probe that acquires it proves the write ran
+	// unguarded. This asks the question without scheduling — the earlier fixture
+	// signalled before the call and could observe a publication that had not
+	// started. Nil in production.
+	delegateAttentionBeforeReportPublication func()
 	// delegateAttentionArmBlocked observes a non-root handoff arm that cannot
 	// pass its gate because a reservation holds the delegate: the arm has
 	// released attentionMu and is about to wait for that reservation, and it

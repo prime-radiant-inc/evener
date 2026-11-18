@@ -479,8 +479,28 @@ func delegateRunFinishedEvent(lease delegateLease, outcome delegatestore.Outcome
 }
 
 func delegateDeliveryID(delegateID string, generation uint64) string {
-	return delegateID + "/delivery/" + strconv.FormatUint(generation, 10)
+	return delegateID + delegateDeliveryIDSeparator + strconv.FormatUint(generation, 10)
 }
+
+// parseDelegateDeliveryID splits a delivery identity back into the delegate
+// whose run posted it and the generation's full identity. It is the inverse of
+// delegateDeliveryID, and the only reader of that format: a caller that needs
+// to know which delegate's queue holds a delivery must ask here rather than
+// re-derive the shape, or the two definitions drift.
+func parseDelegateDeliveryID(deliveryID string) (sourceDelegateID string, ok bool) {
+	at := strings.LastIndex(deliveryID, delegateDeliveryIDSeparator)
+	if at <= 0 || at+len(delegateDeliveryIDSeparator) >= len(deliveryID) {
+		return "", false
+	}
+	if _, err := strconv.ParseUint(deliveryID[at+len(delegateDeliveryIDSeparator):], 10, 64); err != nil {
+		return "", false
+	}
+	return deliveryID[:at], true
+}
+
+// delegateDeliveryIDSeparator separates the posting delegate from the
+// generation in a delivery identity.
+const delegateDeliveryIDSeparator = "/delivery/"
 
 func delegateMissingTerminalPacket() delegatestore.TerminalPacket {
 	return delegateTerminalErrorPacket("delegate completed without an accepted communicate result")
