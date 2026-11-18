@@ -217,11 +217,21 @@ func TestProjectStableActivityDelegate_InvalidMetadata(t *testing.T) {
 		Delegates: map[string]delegateSnapshot{"dlg_1": row},
 	}
 	delegate := projectStableActivityDelegate(snap, row, newActivityBudget(), 0, nil, 0)
-	if delegate.Branch.Error == "" || !strings.Contains(delegate.Branch.Error, "metadata is invalid") {
-		t.Fatalf("expected invalid-metadata branch error, got %q", delegate.Branch.Error)
+	// Behaviour, not copy: an unparseable document must announce itself on both
+	// surfaces an operator reads, and must not invent the details it could not
+	// decode. The message text is not the contract — a copy edit that kept the
+	// behaviour would fail a text assertion and tell us nothing.
+	if delegate.Branch.Error == "" {
+		t.Fatal("an unparseable metadata document produced no branch error")
 	}
-	if len(delegate.Diagnostics) != 1 || delegate.Diagnostics[0] != "delegate terminal metadata is invalid" {
-		t.Errorf("Diagnostics = %v", delegate.Diagnostics)
+	if len(delegate.Diagnostics) == 0 {
+		t.Errorf("an unparseable metadata document produced no diagnostic")
+	}
+	if delegate.Usage != nil {
+		t.Errorf("undecodable usage was reported as a value: %+v", delegate.Usage)
+	}
+	if delegate.Worktree != nil {
+		t.Errorf("undecodable worktree was reported as a value: %+v", delegate.Worktree)
 	}
 }
 
@@ -1828,5 +1838,109 @@ func TestProjectStableActivityDelegateCarriesNeedsAttention(t *testing.T) {
 	delegate := projectStableActivityDelegate(snap, row, newActivityBudget(), 0, nil, 0)
 	if !delegate.NeedsAttention {
 		t.Fatal("JobActivityDelegate lost the delegate's NeedsAttention")
+	}
+}
+
+// TestProjectStableActivityDelegate_MistypedMetadataIsStillDiagnosed is the low:
+// a packet that is valid JSON but carries a field of the wrong type passes
+// journal validation and fails the projection's typed decode. Reporting only
+// when the document is not valid JSON missed it, because a string in the
+// worktree field is perfectly well-formed — so the details vanished from every
+// surface with no diagnostic anywhere.
+func TestProjectStableActivityDelegate_MistypedMetadataIsStillDiagnosed(t *testing.T) {
+	t.Parallel()
+	packet := &delegatestore.TerminalPacket{
+		Kind: "result",
+		// Well-formed JSON, wrong type for Worktree and for the usage counters.
+		Metadata: json.RawMessage(`{"worktree":"not-an-object","cumulative_usage":{"input_tokens":"many"}}`),
+	}
+	// A SETTLED generation: terminal details are reported only there, and this
+	// test is about how a malformed document is reported, not about which
+	// generation owns it.
+	outcome := &delegatestore.Outcome{Status: delegatestore.OutcomeCompleted}
+	row := delegateSnapshotWithPacket("dlg_1", "root", "child", "inspect", packet, outcome)
+	snap := activitySessionSnapshot{
+		SessionID: "root", Ref: "local:root", RootID: "root",
+		Delegates: map[string]delegateSnapshot{"dlg_1": row},
+	}
+	delegate := projectStableActivityDelegate(snap, row, newActivityBudget(), 0, nil, 0)
+	// Assert the BEHAVIOUR, not the copy: a diagnostic is present, it is
+	// reported as a branch error, and the details it could not decode are
+	// absent rather than invented. Pinning the message text would make a copy
+	// edit fail this test while the behaviour it guards stayed correct.
+	if len(delegate.Diagnostics) == 0 {
+		t.Fatalf("a mistyped metadata field was dropped with no diagnostic: %v", delegate.Diagnostics)
+	}
+	if delegate.Branch.Error == "" {
+		t.Error("the invalid-metadata diagnostic has no branch error to accompany it")
+	}
+	if delegate.Usage != nil {
+		t.Errorf("undecodable usage was reported as a value: %+v", delegate.Usage)
+	}
+	if delegate.Worktree != nil {
+		t.Errorf("undecodable worktree was reported as a value: %+v", delegate.Worktree)
+	}
+}
+
+// TestResumedRunDoesNotReportThePreviousSettlementsWorktree is the medium: a
+// resumed delegate keeps the previous run's terminal packet while the new
+// generation runs.
+//
+// That packet describes where the last settlement left the worktree. Reporting
+// it on the OPEN generation shows a HEAD the resumed run has already moved past
+// and a dirty flag from before it committed — a stale fact attributed to a run
+// that has not finished. The packet is not wrong; using it here is.
+//
+// The packet is deliberately over the 16 KiB activity cap so the case is the
+// one the finding names: a large tool list must not be what decides whether
+// terminal details are reported.
+func TestResumedRunDoesNotReportThePreviousSettlementsWorktree(t *testing.T) {
+	t.Parallel()
+	bigToolList := make([]string, 0, 1400)
+	for i := range 1400 {
+		bigToolList = append(bigToolList, fmt.Sprintf("svc__tool_%03d", i))
+	}
+	encoded, err := json.Marshal(map[string]any{
+		"worktree": map[string]any{
+			"path": "/wt", "branch": "old-branch", "head_sha": "deadbeefcafe", "dirty": true,
+		},
+		"cumulative_usage": map[string]any{"input_tokens": 11, "total_tokens": 11},
+		"tools":            bigToolList,
+	})
+	if err != nil {
+		t.Fatalf("marshal metadata: %v", err)
+	}
+	if len(encoded) <= 16*1024 {
+		t.Fatalf("fixture is wrong: the packet is %d bytes, so the large-list case is not exercised", len(encoded))
+	}
+
+	packet := &delegatestore.TerminalPacket{Kind: delegatestore.PacketReported, Metadata: encoded}
+	// A prior settlement exists, and a NEW run is open on it.
+	outcome := &delegatestore.Outcome{Status: delegatestore.OutcomeCompleted}
+	row := delegateSnapshotWithPacket("dlg_1", "root", "child", "resume me", packet, outcome)
+	row.currentRunOpen = true
+	row.lifecycle = delegateLifecycleRunning
+
+	snap := activitySessionSnapshot{
+		SessionID: "root", Ref: "local:root", RootID: "root",
+		Delegates: map[string]delegateSnapshot{"dlg_1": row},
+	}
+	delegate := projectStableActivityDelegate(snap, row, newActivityBudget(), 0, nil, 0)
+	if delegate.Worktree != nil {
+		t.Errorf("the open generation reported the previous settlement's worktree: %+v", delegate.Worktree)
+	}
+	if delegate.Usage != nil {
+		t.Errorf("the open generation reported the previous settlement's usage: %+v", delegate.Usage)
+	}
+
+	// The SAME packet on a settled row still reports its details: the fix must
+	// not hide terminal data from a generation that actually finished.
+	row.currentRunOpen = false
+	settled := projectStableActivityDelegate(activitySessionSnapshot{
+		SessionID: "root", Ref: "local:root", RootID: "root",
+		Delegates: map[string]delegateSnapshot{"dlg_1": row},
+	}, row, newActivityBudget(), 0, nil, 0)
+	if settled.Worktree == nil || settled.Worktree.HeadSHA != "deadbeefcafe" {
+		t.Errorf("a settled generation lost its own worktree details: %+v", settled.Worktree)
 	}
 }

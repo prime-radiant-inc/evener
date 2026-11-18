@@ -175,6 +175,14 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 	prior, _ := s.env.(*execenv.LocalExecutionEnvironment)
 	s.env = next
 	s.envInfo = ei
+	// The verdict about the CLI-only MCP classification was resolved against the
+	// workspace being left, so it must not survive this swap. The classification
+	// itself was NOT derived from that workspace: it is what the CLI layers
+	// supply, and the evidence records the layers it came from. Keeping both
+	// lets the exclusion recover when this session returns to the workspace it
+	// describes, and the re-resolved verdict keeps it inactive in any other
+	// (see invalidateCLIMCPClassification).
+	s.invalidateCLIMCPClassification()
 	if record != nil {
 		record()
 	}

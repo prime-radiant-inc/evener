@@ -233,6 +233,7 @@ var eventKindSpecs = []eventKindSpec{
 				payload := *src.RunFinished
 				payload.Outcome = *cloneOutcome(&src.RunFinished.Outcome)
 				payload.Packet = cloneTerminalPacket(src.RunFinished.Packet)
+				payload.ObservedTools = cloneStringPtr(src.RunFinished.ObservedTools)
 				dst.RunFinished = &payload
 			}
 		},
@@ -457,7 +458,43 @@ func applyRunFinished(state State, event Event) error {
 	// frame field and the read field agree on a settled row.
 	aggregate.LatestIntent = ""
 	aggregate.LatestPacket = cloneTerminalPacket(packet)
+	// Availability outlives the report: record what this generation registered,
+	// tagged with the generation, so a reader can tell it from the next run's
+	// (which is committed before its runtime attaches) and so a packetless
+	// completed_no_action settle still leaves an honest answer behind. A packet
+	// with no observation (written before the field existed) leaves the prior
+	// value alone rather than inventing one.
+	if observed, ok := packetObservedTools(packet); ok {
+		aggregate.LatestObservation = &observed
+		aggregate.LatestObservationGeneration = payload.Generation
+	} else if payload.ObservedTools != nil {
+		// A settle with no packet — a completed_no_action attention run — still
+		// observed its child. Record it here so availability survives the
+		// runtime's reclamation without inventing a terminal delivery.
+		aggregate.LatestObservation = cloneStringPtr(payload.ObservedTools)
+		aggregate.LatestObservationGeneration = payload.Generation
+	}
 	return nil
+}
+
+// packetObservedTools reads a terminal packet's recorded observation. ok is
+// false when the packet carries none — nil on the wire, or no packet at all —
+// which is distinct from an empty list: that one is the honest "this generation
+// registered nothing" and must not be replaced by the ceiling.
+func packetObservedTools(packet *TerminalPacket) ([]string, bool) {
+	if packet == nil || len(packet.Metadata) == 0 {
+		return nil, false
+	}
+	var metadata struct {
+		ObservedTools *[]string `json:"observed_tools"`
+	}
+	if err := json.Unmarshal(packet.Metadata, &metadata); err != nil {
+		return nil, false
+	}
+	if metadata.ObservedTools == nil {
+		return nil, false
+	}
+	return *cloneStringPtr(metadata.ObservedTools), true
 }
 
 func applyResumabilityClosed(state State, event Event) error {
@@ -974,6 +1011,9 @@ func cloneAggregate(aggregate *Aggregate) *Aggregate {
 	clone.PreparedTerminal = cloneTerminalPacket(aggregate.PreparedTerminal)
 	clone.LatestOutcome = cloneOutcome(aggregate.LatestOutcome)
 	clone.LatestPacket = cloneTerminalPacket(aggregate.LatestPacket)
+	if aggregate.LatestObservation != nil {
+		clone.LatestObservation = cloneStringPtr(aggregate.LatestObservation)
+	}
 	clone.PendingDeliveries = make([]PendingDelivery, len(aggregate.PendingDeliveries))
 	for i := range aggregate.PendingDeliveries {
 		clone.PendingDeliveries[i] = aggregate.PendingDeliveries[i]
@@ -986,6 +1026,7 @@ func cloneDescriptor(descriptor Descriptor) Descriptor {
 	clone := descriptor
 	clone.TaskTemplates = append([]task.TaskTemplate(nil), descriptor.TaskTemplates...)
 	clone.ToolNameCeiling = append([]string(nil), descriptor.ToolNameCeiling...)
+	clone.CeilingReachabilityExcluded = append([]string(nil), descriptor.CeilingReachabilityExcluded...)
 	clone.FrozenSkillNames = append([]string(nil), descriptor.FrozenSkillNames...)
 	clone.FrozenSkillBodies = append([]string(nil), descriptor.FrozenSkillBodies...)
 	// FrozenSkillPreload is all immutable string fields, so copying the slice's
@@ -1036,4 +1077,17 @@ func cloneOutcome(outcome *Outcome) *Outcome {
 		clone.Resumable = &resumable
 	}
 	return &clone
+}
+
+// cloneStringPtr copies an optional list without erasing the difference between
+// absent ("no observation was recorded") and present-but-empty ("it registered
+// nothing"). The alias matters for the same reason the copy does: a cloned event
+// must not share backing storage with the event the store handed out.
+func cloneStringPtr(in *[]string) *[]string {
+	if in == nil {
+		return nil
+	}
+	out := make([]string, len(*in))
+	copy(out, *in)
+	return &out
 }

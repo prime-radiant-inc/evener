@@ -168,6 +168,7 @@ func (s *Session) composeHubRegistry() {
 		}
 	}
 	if !s.hubEnabled {
+		s.setManagerOnlyTools(nil)
 		s.hubOrdinary = nil
 		return
 	}
@@ -223,6 +224,21 @@ func (s *Session) composeHubRegistry() {
 	s.composeHubInputTools()
 	s.composeHubDelegateTool()
 	s.composeHubStopTool()
+	// Recorded last, once every branch above has registered what it will: a
+	// tool is Manager-only when nothing ordinary supplied it (hubOrdinary's nil
+	// base), core registration never supplied it either, and this composition
+	// therefore did. A nil base alone is not enough: this session's own
+	// allowed/denied policy may have removed an ordinary registration after
+	// initMCP, and a child runs core registration itself, so it would still
+	// register those. A branch that skipped a name leaves it unregistered, and
+	// such a name is not one composition supplies.
+	managerOnly := make(map[string]bool, len(s.hubOrdinary))
+	for name, base := range s.hubOrdinary {
+		if base == nil && !s.coreToolNames[name] && s.reg.Get(name) != nil {
+			managerOnly[name] = true
+		}
+	}
+	s.setManagerOnlyTools(managerOnly)
 }
 
 // managerDelegateDefinition keeps the owned-delegate contract on calls without

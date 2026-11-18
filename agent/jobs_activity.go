@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -16,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/activitybound"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
@@ -111,6 +113,219 @@ func boundActivityDelegatePayload(payload json.RawMessage) json.RawMessage {
 		return nil
 	}
 	return append(json.RawMessage(nil), payload...)
+}
+
+// activityDelegateMetadata drops the tool-name lists from a terminal packet's
+// metadata before the Activity envelope measures it.
+//
+// Activity rows never display which tools a delegate had — that belongs to the
+// status and list surfaces — so those lists are pure weight here. They are also
+// unbounded: an MCP-heavy child registers hundreds of names, and a metadata
+// document that grew past the 16 KiB cap would be dropped WHOLE, taking the
+// usage and worktree details the row does show with it. Removing the two lists
+// first keeps the fields Activity actually renders inside the cap.
+//
+// Unparseable input is returned untouched, so the existing bounds and the
+// existing diagnostics keep deciding what happens to it rather than this
+// function silently swallowing a malformed document.
+func activityDelegateMetadata(payload json.RawMessage) json.RawMessage {
+	if len(payload) == 0 {
+		return payload
+	}
+	trimmed, changed := stripDelegateToolLists(payload)
+	if !changed {
+		return payload
+	}
+	return trimmed
+}
+
+// stripDelegateToolLists removes the top-level "tools" and "observed_tools"
+// members from a JSON object, streaming over the document instead of decoding it
+// into a map of RawMessage.
+//
+// That matters under a lock. The earlier version unmarshalled the whole document
+// into map[string]json.RawMessage — copying every member, including a task brief
+// it was about to discard — then re-encoded it. The compact Activity read does
+// this for every captured row while the live controller mutex is held, so a page
+// of delegates with large briefs allocated and re-encoded all of them in the
+// critical section.
+//
+// Streaming alone was not enough. Decoding each value into a RawMessage copied
+// the tool lists too — the largest members in the document, copied only to be
+// dropped — and a large task brief was rewritten into the buffer in full before
+// anything measured it against the cap. Even a token-level skip is not enough:
+// json.Decoder materializes every string it walks, so a skip that goes through
+// the decoder still allocates each name in the list it is discarding.
+//
+// So this scans the BYTES. A dropped member is skipped by finding where its value
+// ends, and its contents are never touched; a retained member is checked against
+// the remaining budget and copied only if it fits. Both properties are
+// allocations the caller would otherwise pay under the controller mutex.
+//
+// changed is false when the document is not an object, is malformed, or has no
+// tool list. Callers then pass the original bytes through, so the existing
+// bounds and diagnostics keep deciding what happens to a document this cannot
+// understand.
+func stripDelegateToolLists(payload json.RawMessage) (out json.RawMessage, changed bool) {
+	// Validate first. json.Valid walks the bytes without allocating, and it keeps
+	// this scanner's acceptance exactly as strict as the decoder's was: malformed
+	// input stays the caller's to diagnose rather than being half-copied here.
+	if !json.Valid(payload) {
+		return nil, false
+	}
+	i := skipJSONSpace(payload, 0)
+	if i >= len(payload) || payload[i] != '{' {
+		return nil, false
+	}
+	i++
+	var buf bytes.Buffer
+	buf.WriteByte('{')
+	wrote := false
+	for {
+		i = skipJSONSpace(payload, i)
+		if i < len(payload) && payload[i] == '}' {
+			break
+		}
+		keyStart := i
+		keyEnd, ok := scanJSONString(payload, i)
+		if !ok {
+			return nil, false
+		}
+		i = skipJSONSpace(payload, keyEnd)
+		if i >= len(payload) || payload[i] != ':' {
+			return nil, false
+		}
+		valueStart := skipJSONSpace(payload, i+1)
+		valueEnd, ok := scanJSONValue(payload, valueStart)
+		if !ok {
+			return nil, false
+		}
+		i = valueEnd
+
+		// json.Valid already proved the key is a valid string literal; it carries
+		// no escapes in either name, so the quoted bytes compare directly against
+		// the literal without building a string.
+		key := payload[keyStart:keyEnd]
+		if string(key) == `"tools"` || string(key) == `"observed_tools"` {
+			changed = true
+		} else {
+			// The budget is enforced BEFORE the copy. A retained member that cannot
+			// fit is therefore never written, and neither is anything after it: the
+			// document is unusable at any size, so the scan stops.
+			if wrote {
+				buf.WriteByte(',')
+			}
+			if buf.Len()+(keyEnd-keyStart)+1+(valueEnd-valueStart) > activityMaxDelegatePayloadBytes {
+				return nil, false
+			}
+			buf.Write(key)
+			buf.WriteByte(':')
+			buf.Write(payload[valueStart:valueEnd])
+			wrote = true
+		}
+
+		i = skipJSONSpace(payload, i)
+		if i < len(payload) && payload[i] == ',' {
+			i++
+			continue
+		}
+		break
+	}
+	if !changed {
+		return nil, false
+	}
+	buf.WriteByte('}')
+	return buf.Bytes(), true
+}
+
+// skipJSONSpace returns the index of the first non-whitespace byte at or after i.
+func skipJSONSpace(b []byte, i int) int {
+	for i < len(b) {
+		switch b[i] {
+		case ' ', '\t', '\r', '\n':
+			i++
+			continue
+		}
+		return i
+	}
+	return i
+}
+
+// scanJSONString returns the index just past the string literal that starts at i,
+// which must be its opening quote. Escape sequences are stepped over two bytes at
+// a time so an escaped quote does not end the string.
+func scanJSONString(b []byte, i int) (int, bool) {
+	if i >= len(b) || b[i] != '"' {
+		return 0, false
+	}
+	i++
+	for i < len(b) {
+		switch b[i] {
+		case '\\':
+			i += 2
+			continue
+		case '"':
+			return i + 1, true
+		}
+		i++
+	}
+	return 0, false
+}
+
+// scanJSONValue returns the index just past the JSON value that starts at i.
+//
+// It is what lets a dropped member cost nothing: the caller learns where the
+// value ends without the value being decoded, so an untouched tool list of
+// hundreds of names allocates nothing here. Objects and arrays are matched by
+// depth, strings by scanJSONString, and scalars by their delimiters. The input is
+// known valid, so a failure means this scanner is wrong, not that the document is.
+func scanJSONValue(b []byte, i int) (int, bool) {
+	if i >= len(b) {
+		return 0, false
+	}
+	switch b[i] {
+	case '"':
+		return scanJSONString(b, i)
+	case '{', '[':
+		depth := 0
+		for i < len(b) {
+			switch b[i] {
+			case '"':
+				next, ok := scanJSONString(b, i)
+				if !ok {
+					return 0, false
+				}
+				i = next
+				continue
+			case '{', '[':
+				depth++
+			case '}', ']':
+				depth--
+				if depth == 0 {
+					return i + 1, true
+				}
+			}
+			i++
+		}
+		return 0, false
+	default:
+		// A scalar — number, true, false, null — ends at the next structural byte.
+		start := i
+		for i < len(b) {
+			switch b[i] {
+			case ',', '}', ']', ' ', '\t', '\r', '\n':
+				if i > start {
+					return i, true
+				}
+				return 0, false
+			}
+			i++
+		}
+		if i > start {
+			return i, true
+		}
+		return 0, false
+	}
 }
 
 // capActivityDelegateWarnings bounds both the number of warnings and the length
@@ -1138,7 +1353,8 @@ func projectActivitySessionAt(snapshot activitySessionSnapshot, budget *activity
 
 func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegateSnapshot, budget *activityBudget, depth int, path []string, resumeIndex int) appwire.JobActivityDelegate {
 	descriptor := row.descriptor
-	status := projectDelegateStatus(budget.now, row)
+	// Timing only: the activity entry carries clocks, not availability.
+	status := projectDelegateStatusWithoutTools(budget.now, row)
 	// Mandate and Task carry the same text; truncate it once rather than
 	// repeating the work for each copy.
 	task := activitybound.Truncate(descriptor.Task, activityMaxDelegateProseRunes)
@@ -1207,23 +1423,25 @@ func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegat
 			valid := *packet.StructuredResultValid
 			delegate.StructuredValid = &valid
 		}
-		// The delegates list read parses metadata only when it fits this cap,
-		// so an ancestor row of the same packet omits the usage and worktree
-		// too -- and, like the read, never parses an oversized document.
-		if bounded := boundActivityDelegatePayload(packet.Metadata); len(bounded) != 0 {
-			var metadata delegateTerminalPacketMetadata
-			if err := json.Unmarshal(bounded, &metadata); err != nil {
-				appendActivityBranchError(&delegate.Branch, "delegate terminal metadata is invalid")
-				delegate.Diagnostics = append(delegate.Diagnostics, "delegate terminal metadata is invalid")
-			} else {
-				delegate.Usage = activityUsageFromCumulative(metadata.CumulativeUsage)
-				if metadata.Worktree != nil {
-					delegate.Worktree = &appwire.JobActivityWorktree{
-						Path: metadata.Worktree.Path, Branch: metadata.Worktree.Branch,
-						HeadSHA: metadata.Worktree.HeadSHA, Ahead: metadata.Worktree.Ahead, Dirty: metadata.Worktree.Dirty,
-					}
+		// Every surface that shows usage or worktree details reads this one
+		// projection, so the Activity tree, the compact delegate read and the
+		// pushed update cannot disagree about the same packet.
+		// The details reported here belong to a SETTLED generation only, but
+		// the diagnostic below describes the packet itself: a malformed packet
+		// is worth reporting whatever generation it belongs to, so the two read
+		// different inputs on purpose.
+		reported := settledPacketMetadata(packet, row.currentRunOpen)
+		if metadata, ok, malformed := delegateTerminalMetadataProjection(reported); ok {
+			delegate.Usage = activityUsageFromCumulative(metadata.CumulativeUsage)
+			if metadata.Worktree != nil {
+				delegate.Worktree = &appwire.JobActivityWorktree{
+					Path: metadata.Worktree.Path, Branch: metadata.Worktree.Branch,
+					HeadSHA: metadata.Worktree.HeadSHA, Ahead: metadata.Worktree.Ahead, Dirty: metadata.Worktree.Dirty,
 				}
 			}
+		} else if malformed || (len(packet.Metadata) != 0 && !json.Valid(packet.Metadata)) {
+			appendActivityBranchError(&delegate.Branch, "delegate terminal metadata is invalid")
+			delegate.Diagnostics = append(delegate.Diagnostics, "delegate terminal metadata is invalid")
 		}
 	}
 	childID, err := activityChildSessionForStable(row)
@@ -1918,4 +2136,73 @@ func projectActivityJob(rec *jobstore.JobRecord, ownerRef string) appwire.JobAct
 		job.ExitCode = &exit
 	}
 	return job
+}
+
+// settledPacketMetadata is the terminal metadata a row may report, or nil when
+// the row's packet belongs to a PREVIOUS generation.
+//
+// A resumed delegate keeps the previous run's terminal packet in the journal
+// while the new generation runs. That packet describes the worktree as the last
+// settlement left it, so reporting it on the running generation shows a HEAD
+// that the resumed run has already moved past, or a dirty flag from before it
+// committed. The packet is not wrong; attributing it to the open run is.
+//
+// One rule, stated once, for every surface that projects usage, worktree, or
+// scratch details from a packet: report them only when no run is open after the
+// packet. A packet is written when a run finishes; it goes stale when a LATER
+// run starts on top of it, which is exactly currentRunOpen.
+//
+// The condition is currentRunOpen alone, and deliberately not
+// delegateRunTerminal. That predicate additionally requires an outcome, which
+// answers "has this delegate ever finished a run" — a different question. A
+// row can carry a packet without a recorded outcome, and its details are still
+// that delegate's own; requiring an outcome here would hide them.
+//
+// It also says nothing about the packet's SIZE: a settled generation reports
+// its details whatever its tool list weighs, because the projection that
+// measures the document handles that separately.
+func settledPacketMetadata(packet *delegatestore.TerminalPacket, currentRunOpen bool) json.RawMessage {
+	if packet == nil || currentRunOpen {
+		return nil
+	}
+	return packet.Metadata
+}
+
+// delegateTerminalMetadataProjection is the ONE bounded read of a terminal
+// packet's metadata, shared by every surface that shows usage or worktree
+// details: the Activity tree, the compact delegate read, and the pushed
+// delegate update.
+//
+// All three read the same packet, so all three must drop the same things and
+// keep the same things. The tool-name lists are unbounded — an MCP-heavy child
+// registers hundreds of names — and no surface that renders usage or worktree
+// details displays them. Dropping those lists BEFORE measuring keeps usage and
+// worktree inside the 16 KiB cap; measuring first and giving up when the
+// document is too large is how a long tool list used to crowd out details that
+// fit.
+//
+// ok is false when the metadata is unusable: absent, over the cap even after
+// the lists are dropped, or not a JSON object. Callers report nothing rather
+// than inventing values.
+//
+// malformed is the narrower fact that the document was VALID JSON that this
+// struct could not decode — a field of the wrong type, say. It is separate from
+// ok because the two answer different questions: ok says "there are no details
+// to show", while malformed says "there were details and they were damaged".
+// A caller that reports only when !json.Valid misses this case, because
+// json.Valid is true for any well-formed document whatever its types, so a
+// packet whose worktree is a string would silently lose its details with no
+// diagnostic on any surface.
+func delegateTerminalMetadataProjection(payload json.RawMessage) (metadata delegateTerminalPacketMetadata, ok, malformed bool) {
+	if len(payload) == 0 {
+		return metadata, false, false
+	}
+	trimmed := activityDelegateMetadata(payload)
+	if len(trimmed) > activityMaxDelegatePayloadBytes {
+		return metadata, false, false
+	}
+	if err := json.Unmarshal(trimmed, &metadata); err != nil {
+		return metadata, false, true
+	}
+	return metadata, true, false
 }

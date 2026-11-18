@@ -1012,6 +1012,10 @@ func cloneDelegateStartDescriptor(descriptor delegatestore.Descriptor) delegates
 	clone := descriptor
 	clone.TaskTemplates = append([]task.TaskTemplate(nil), descriptor.TaskTemplates...)
 	clone.ToolNameCeiling = append([]string(nil), descriptor.ToolNameCeiling...)
+	// Same lifetime and same rules as ToolNameCeiling: both are per-delegate
+	// ceiling facts, so a clone that shared this one's backing array would let
+	// one delegate's ceiling edit corrupt another's.
+	clone.CeilingReachabilityExcluded = append([]string(nil), descriptor.CeilingReachabilityExcluded...)
 	clone.FrozenSkillNames = append([]string(nil), descriptor.FrozenSkillNames...)
 	clone.FrozenSkillBodies = append([]string(nil), descriptor.FrozenSkillBodies...)
 	// FrozenSkillPreload is all immutable string fields, so copying the

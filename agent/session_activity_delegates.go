@@ -120,6 +120,13 @@ type sessionActivityDelegateCandidate struct {
 	row             appwire.SessionDelegate
 	report          json.RawMessage
 	reportComplete  bool
+	// metadata is the terminal packet's raw metadata, captured with the row and
+	// projected by project() — after the controller mutex is released. It is here
+	// as bytes rather than as decoded fields on purpose: the document can carry a
+	// task brief and a tool-name list of hundreds of entries, and decoding it
+	// inside the capture loop held the delegate controller mutex across both a
+	// copy and a 16 KiB measurement for every row on the page.
+	metadata json.RawMessage
 }
 
 // Capture bounded row facts and the immutable settled packet together. Report
@@ -201,7 +208,8 @@ func captureSessionActivityDelegate(rootID string, state delegatestore.State, ag
 	if aggregate.Phase == delegatestore.PhaseIdle || aggregate.Phase == delegatestore.PhaseClosed {
 		snapshot.lifecycle = delegateLifecycleIdle
 	}
-	status := projectDelegateStatus(now, snapshot)
+	// Timing only: this row carries clocks, not availability.
+	status := projectDelegateStatusWithoutTools(now, snapshot)
 	d := aggregate.Descriptor
 	row := appwire.SessionDelegate{Name: activitybound.Truncate(d.Name, activityMaxLabelRunes), DelegateID: aggregate.DelegateID, RunGeneration: aggregate.Generation, ProjectionRevision: aggregate.ProjectionRevision, OwnerRef: encodeRef("", sessionActivityDelegateOwner(state, aggregate)), RootRef: encodeRef("", rootID), ChildRef: encodeRef("", d.ChildSessionID), ParentDelegateID: d.ParentDelegateID, Description: activitybound.Truncate(d.Description, activityMaxDelegateProseRunes), Task: activitybound.Truncate(d.Task, activityMaxDelegateProseRunes), Type: "delegate", Lifecycle: string(snapshot.lifecycle), Phase: string(aggregate.Phase), Status: string(snapshot.lifecycle), Resumable: aggregate.Resumable, NeedsAttention: aggregate.NeedsAttention, NotResumableReason: activitybound.Truncate(aggregate.NotResumableReason, activityMaxDelegateProseRunes), Model: activitybound.Truncate(d.ResolvedModel, activityMaxLabelRunes), ReasoningEffort: d.Config.ReasoningEffort, RunStartedAt: status.RunStartedAt, LatestActivityAt: status.LatestActivityAt, LatestIntent: appwire.Excerpt(aggregate.LatestIntent, appwire.MaxIntentRunes)}
 	// LatestOutcome remains the immutable prior settlement while a new run is
@@ -221,21 +229,40 @@ func captureSessionActivityDelegate(rootID string, state delegatestore.State, ag
 	if packet := aggregate.LatestPacket; !aggregate.CurrentRunOpen && aggregate.LatestOutcome != nil && packet != nil && packet.Kind == delegatestore.PacketReported {
 		candidate.report, candidate.reportComplete = activitybound.BoundMessage(packet.Message)
 	}
-	if packet := aggregate.LatestPacket; packet != nil && len(packet.Metadata) <= activityMaxDelegatePayloadBytes {
-		var metadata delegateTerminalPacketMetadata
-		if json.Unmarshal(packet.Metadata, &metadata) == nil {
-			row.Usage = activityUsageFromCumulative(metadata.CumulativeUsage)
-			if wt := metadata.Worktree; wt != nil {
-				row.Worktree = &appwire.JobActivityWorktree{Path: activitybound.Truncate(wt.Path, activityMaxDelegateProseRunes), Branch: activitybound.Truncate(wt.Branch, activityMaxLabelRunes), HeadSHA: activitybound.Truncate(wt.HeadSHA, activityMaxLabelRunes), Ahead: wt.Ahead, Dirty: wt.Dirty}
-			}
-		}
+	// Only a SETTLED generation reports usage and worktree from the packet: a
+	// resumed run still owns the previous settlement's packet, and its HEAD and
+	// dirty flag describe where that run left the worktree, not where this one
+	// is. The guard lives in one helper so all three surfaces apply it.
+	var metadata json.RawMessage
+	if packet := aggregate.LatestPacket; packet != nil && !aggregate.CurrentRunOpen {
+		// Take a REFERENCE, not a copy. The packet is durable and immutable — the
+		// fold replaces packets rather than editing them, and its clone deep-copies
+		// this slice — so the bytes cannot change under the projection that runs
+		// after the unlock. Copying them here would allocate the whole document,
+		// tool lists and briefs included, in exactly the critical section this
+		// capture exists to keep short: the 16 KiB measurement that decides the
+		// document is unusable happens later, so a copy taken here may be discarded
+		// having already been paid for.
+		metadata = packet.Metadata
 	}
 	candidate.row = row
+	candidate.metadata = metadata
 	return candidate
 }
 
 func (candidate sessionActivityDelegateCandidate) project() appwire.SessionDelegate {
 	row := candidate.row
+	// The same projection the Activity tree and the compact delegate read use, so
+	// a live frame keeps the usage and worktree details those surfaces keep rather
+	// than dropping them whenever a long tool list pushed the raw document over the
+	// cap. It runs here, after the controller mutex is released, because it drops
+	// and measures a document that can be far larger than the row it produces.
+	if metadata, ok, _ := delegateTerminalMetadataProjection(candidate.metadata); ok {
+		row.Usage = activityUsageFromCumulative(metadata.CumulativeUsage)
+		if wt := metadata.Worktree; wt != nil {
+			row.Worktree = &appwire.JobActivityWorktree{Path: activitybound.Truncate(wt.Path, activityMaxDelegateProseRunes), Branch: activitybound.Truncate(wt.Branch, activityMaxLabelRunes), HeadSHA: activitybound.Truncate(wt.HeadSHA, activityMaxLabelRunes), Ahead: wt.Ahead, Dirty: wt.Dirty}
+		}
+	}
 	preview, truncated := activitybound.Preview(candidate.report, candidate.reportComplete)
 	row.ReportPreview = preview
 	row.ReportPreviewTruncated = truncated

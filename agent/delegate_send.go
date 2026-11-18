@@ -178,10 +178,16 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		if plans, steerErr := s.delegateController.Steer(ctx, actor, delegateID, message); steerErr == nil {
 			_ = s.executeDelegateMutationPlans(plans)
 			name := ""
+			// The row the steer captured already carries this generation's tool
+			// availability, so report it. Leaving it out made a steered reply and a
+			// status row for the same child disagree about what the child has,
+			// which is the one thing the availability projection exists to prevent.
+			var tools []string
 			for _, update := range plans.updates {
 				for _, row := range update.rows {
 					if row.id == delegateID {
 						name = row.descriptor.Name
+						tools = delegateAvailability(row)
 						break
 					}
 				}
@@ -195,6 +201,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 				Type:                delegateResourceType,
 				Status:              jobstore.StatusRunning,
 				Name:                name,
+				Tools:               tools,
 				RunningInBackground: true,
 				Action:              "steered",
 			}}
@@ -435,11 +442,35 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		Action:              "started",
 		TranscriptRef:       started.descriptor.TranscriptRef,
 	}
+	// Availability is what this child registered, not the frozen ceiling that
+	// bounds it (see observedDelegateTools). A resumed generation registers
+	// again from its own workspace, so the two can differ.
+	if observed := observedDelegateTools(sub.sess); observed != nil {
+		result.Tools = observed
+	}
 	if waiter == nil {
 		return delegateSendOutcome{result: result}
 	}
 	resolution := runtime.waitInline(ctx, waiter, maxWaitMS)
 	if resolution.fallback || resolution.packet == nil || resolution.commit == nil {
+		// The child kept running and may have registered more while we waited —
+		// an MCP retry that healed a server, for instance. A timeout therefore
+		// answers from the generation NOW, not from the sample taken before the
+		// wait, so a timed-out reply and a completed one for the same generation
+		// cannot disagree.
+		//
+		// "Now" is read THROUGH THE CONTROLLER for the generation this wait was
+		// made against, never from the child session this call happens to hold.
+		// The child outlives its generation: a retained idle child can run a
+		// notification turn after the wait withdrew, heal a server there, and
+		// register a name that belongs to no generation the reply can speak for.
+		// Sampling its session would then report that name against a generation
+		// whose terminal packet and status still carry the old list, so one
+		// generation would answer differently depending on whether the wait
+		// completed or timed out.
+		if observed := s.delegateController.observedToolsForGeneration(delegateID, waiter.generation); observed != nil {
+			result.Tools = providerVisibleToolNames(observed, s.toolNameMap())
+		}
 		result.TimedOut = true
 		return delegateSendOutcome{result: result}
 	}
@@ -490,7 +521,15 @@ func populateDelegateSendResult(result *sendMessageResult, packet delegatestore.
 		result.Task = metadata.Task
 		result.Description = metadata.Description
 		result.AgentType = metadata.AgentType
+		// Availability comes from the generation's own observation, so a
+		// completed reply and a timed-out one for the same generation agree. A
+		// nil observation (a packet written before the field existed) falls back
+		// to the ceiling the packet carried; an empty observation is the honest
+		// "registered nothing" and is reported as such.
 		tools := append([]string(nil), metadata.Tools...)
+		if metadata.ObservedTools != nil {
+			tools = append([]string(nil), (*metadata.ObservedTools)...)
+		}
 		if len(nameMap) > 0 && nameMap[0] != nil {
 			tools = providerVisibleToolNames(tools, nameMap[0])
 		}

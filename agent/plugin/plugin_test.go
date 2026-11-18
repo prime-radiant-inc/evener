@@ -543,7 +543,7 @@ func TestDiscoverPluginMCPConfigs_FromFile(t *testing.T) {
 	os.WriteFile(filepath.Join(pluginDir, ".mcp.json"),
 		[]byte(`{"mcpServers": {"my-server": {"command": "echo", "args": ["hello"]}}}`), 0644)
 
-	configs, _, err := discoverPluginMCPConfigs(pluginDir, nil, "test-plugin")
+	configs, _, _, err := discoverPluginMCPConfigs(pluginDir, nil, "test-plugin")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -567,7 +567,7 @@ func TestDiscoverPluginMCPConfigs_ExpandsRoot(t *testing.T) {
 	os.WriteFile(filepath.Join(pluginDir, ".mcp.json"),
 		[]byte(`{"mcpServers": {"srv": {"command": "${CLAUDE_PLUGIN_ROOT}/server"}}}`), 0644)
 
-	configs, _, err := discoverPluginMCPConfigs(pluginDir, nil, "p")
+	configs, _, _, err := discoverPluginMCPConfigs(pluginDir, nil, "p")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -593,7 +593,7 @@ func TestDiscoverPluginMCPConfigs_RootWithDollarInPath(t *testing.T) {
 	os.WriteFile(filepath.Join(pluginDir, ".mcp.json"),
 		[]byte(`{"mcpServers": {"srv": {"command": "${CLAUDE_PLUGIN_ROOT}/server"}}}`), 0644)
 
-	configs, warnings, err := discoverPluginMCPConfigs(pluginDir, nil, "p")
+	configs, warnings, _, err := discoverPluginMCPConfigs(pluginDir, nil, "p")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -610,7 +610,7 @@ func TestDiscoverPluginMCPConfigs_InlineManifest(t *testing.T) {
 	pluginDir, _ = filepath.EvalSymlinks(pluginDir)
 	inline := json.RawMessage(`{"inline-srv": {"command": "inline-cmd"}}`)
 
-	configs, _, err := discoverPluginMCPConfigs(pluginDir, inline, "myplugin")
+	configs, _, _, err := discoverPluginMCPConfigs(pluginDir, inline, "myplugin")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -627,7 +627,7 @@ func TestDiscoverPluginMCPConfigs_InlineManifest(t *testing.T) {
 
 func TestDiscoverPluginMCPConfigs_NoConfig(t *testing.T) {
 	pluginDir := t.TempDir()
-	configs, _, err := discoverPluginMCPConfigs(pluginDir, nil, "empty")
+	configs, _, _, err := discoverPluginMCPConfigs(pluginDir, nil, "empty")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -643,7 +643,7 @@ func TestDiscoverPluginMCPConfigs_FilePlusInline(t *testing.T) {
 		[]byte(`{"mcpServers": {"file-srv": {"command": "from-file"}}}`), 0644)
 	inline := json.RawMessage(`{"inline-srv": {"command": "from-inline"}}`)
 
-	configs, _, err := discoverPluginMCPConfigs(pluginDir, inline, "combo")
+	configs, _, _, err := discoverPluginMCPConfigs(pluginDir, inline, "combo")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -669,7 +669,7 @@ func TestDiscoverPluginMCPConfigs_InlineShadowsFile(t *testing.T) {
 		[]byte(`{"mcpServers": {"srv": {"command": "from-file"}}}`), 0644)
 	inline := json.RawMessage(`{"srv": {"command": "from-inline"}}`)
 
-	configs, _, err := discoverPluginMCPConfigs(pluginDir, inline, "shadow")
+	configs, _, _, err := discoverPluginMCPConfigs(pluginDir, inline, "shadow")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -930,5 +930,53 @@ func TestLoad_SkipsAnUnreadableCommandFileAndKeepsTheRest(t *testing.T) {
 	}
 	if len(lp.SkippedComponents) != 1 || filepath.Base(lp.SkippedComponents[0].File) != "locked.md" {
 		t.Fatalf("SkippedComponents = %v, want the unreadable file", lp.SkippedComponents)
+	}
+}
+
+// TestLoadAllFailSoftResolvesEachDirectoryOnce is the medium: duplicate
+// selection and plugin loading each read the manifest, so a directory retargeted
+// between the two reads reserves the OLD manifest name while the instance
+// loaded from it supplies the NEW plugin's servers.
+//
+// The consequence is not cosmetic. A directory holding the old name is then
+// skipped as a duplicate of a name nothing supplies, and because the skipped
+// directory's evidence is its own manifest digest — which still matches — no
+// later freshness check notices. A child re-reads the directory and finds a
+// server the parent's ceiling went on excluding.
+//
+// The seam reads the manifest twice only if the code does. This test makes the
+// second read return a DIFFERENT manifest, which is exactly what a retarget
+// between the two does, and asserts the batch never saw it.
+func TestLoadAllFailSoftResolvesEachDirectoryOnce(t *testing.T) {
+	dir := makePluginDir(t, "once")
+
+	orig := pluginReadFile
+	var reads int
+	pluginReadFile = func(path string) ([]byte, error) {
+		if filepath.Base(filepath.Dir(path)) != ".claude-plugin" {
+			return orig(path)
+		}
+		reads++
+		if reads > 1 {
+			// A retarget between selection and load: a second read would answer
+			// a different question, and must not be asked.
+			return []byte(`{"name":"retargeted"}`), nil
+		}
+		return orig(path)
+	}
+	t.Cleanup(func() { pluginReadFile = orig })
+
+	plugins, skipped := LoadAllFailSoft([]string{dir})
+	if len(skipped) != 0 {
+		t.Fatalf("skipping a healthy plugin: %v", skipped)
+	}
+	if len(plugins) != 1 {
+		t.Fatalf("want the plugin loaded once, got %d", len(plugins))
+	}
+	if reads != 1 {
+		t.Errorf("the batch read the manifest %d times, so the name that reserved the directory and the plugin loaded from it were different reads", reads)
+	}
+	if plugins[0].Manifest.Name != "once" {
+		t.Errorf("loaded %q, so the loaded plugin came from the second read rather than the one that selected it", plugins[0].Manifest.Name)
 	}
 }

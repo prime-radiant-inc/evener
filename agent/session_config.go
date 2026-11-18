@@ -491,8 +491,14 @@ type spawnConfig struct {
 	// toolNameCeiling is the durable stable-delegate capability ceiling carried
 	// into construction. NewSession applies it after all intrinsic tools and
 	// ordinary spawn policy so the model-facing cache cannot exceed the ceiling.
-	toolNameCeiling         []string
-	communicateOutputSchema map[string]any
+	toolNameCeiling []string
+	// ceilingReachabilityExcluded names the tools the ceiling dropped for
+	// reachability rather than role authorization. They are re-admitted here,
+	// before the ceiling is applied, when this session can register them: the
+	// ceiling is a bound on what the child MAY use, and the reachability half of
+	// it describes a workspace that may since have changed.
+	ceilingReachabilityExcluded []string
+	communicateOutputSchema     map[string]any
 
 	// isolation is "worktree" for a delegate spawned with
 	// delegate(isolation:"worktree") (native worktree tools spec §9); empty

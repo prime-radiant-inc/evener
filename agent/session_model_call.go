@@ -119,6 +119,12 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	if err := s.admitPendingSkillSelections(); err != nil {
 		return nil, "", nil, llm.Request{}, nil, "", err
 	}
+	// The delegate roster and the delegate tool definition are both derived from
+	// the CLI-MCP exclusion, whose answer can change while the session runs (an
+	// in-place branch switch adding a fallback server). Rebuild before this
+	// request if it changed, so the model is not shown a capability list the
+	// current workspace contradicts.
+	s.refreshCachesForExclusionChange()
 	// --- Phase: SystemPrompt ---
 	tPhaseStart := s.sclock().Now()
 

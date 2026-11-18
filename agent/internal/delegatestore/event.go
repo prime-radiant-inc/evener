@@ -60,6 +60,21 @@ type RunFinished struct {
 	Disposition RunDisposition  `json:"disposition"`
 	DeliveryID  string          `json:"delivery_id,omitempty"`
 	Packet      *TerminalPacket `json:"packet,omitempty"`
+	// ObservedTools is what this generation actually registered, for a settle
+	// that carries NO packet: a completed_no_action attention run reports
+	// nothing, so there is nowhere else to record what its child had. Without
+	// it, status and list revert to the frozen ceiling once the runtime is
+	// reclaimed and claim tools the child never registered.
+	//
+	// Nil is "no observation recorded" and an empty list is "registered
+	// nothing"; the fold keeps the distinction, exactly as the packet metadata
+	// does. A packet-carrying settle leaves this nil and is read from Packet.
+	//
+	// The pointer draws that distinction on the wire: nil is absent and a
+	// pointer to an empty slice is the present []. A plain slice with omitempty
+	// cannot, because it drops the empty case — which is the case that says a
+	// child registered nothing, and the one a reopened journal must preserve.
+	ObservedTools *[]string `json:"observed_tools,omitempty"`
 	// ObserverCallbackDelivered marks a report a watch-origin observer already
 	// handed to its parent itself, so the fold must not also queue a delivery
 	// for it. Nothing in this process sets it any more: its only writer ran on

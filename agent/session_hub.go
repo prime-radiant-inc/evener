@@ -82,3 +82,14 @@ func (s *Session) hubToolDenied(name string) bool {
 		(len(s.cfg.spawn.allowedToolNames) > 0 && !slices.Contains(s.cfg.spawn.allowedToolNames, name)) ||
 		(len(s.cfg.spawn.toolNameCeiling) > 0 && !slices.Contains(s.cfg.spawn.toolNameCeiling, name))
 }
+
+// hubToolDeniedAgainst is hubToolDenied with an explicit ceiling, for callers
+// that must judge against the ceiling the session is actually running with
+// rather than the raw frozen list. The allowed and denied lists are unchanged:
+// only the reachability half of the ceiling is ever re-admitted, and these two
+// lists carry the role's authorization, which never widens.
+func (s *Session) hubToolDeniedAgainst(ceiling []string, name string) bool {
+	return slices.Contains(s.cfg.spawn.deniedToolNames, name) ||
+		(len(s.cfg.spawn.allowedToolNames) > 0 && !slices.Contains(s.cfg.spawn.allowedToolNames, name)) ||
+		(len(ceiling) > 0 && !slices.Contains(ceiling, name))
+}

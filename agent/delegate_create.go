@@ -123,12 +123,13 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	if selection.warning != nil {
 		s.emitDiagnosticWarning(*selection.warning)
 	}
-	toolNameCeiling := s.delegateEffectiveToolNameCeiling(selection, args, isolationName)
+	toolNameCeiling, ceilingReachabilityExcluded := s.delegateEffectiveToolNameCeiling(selection, args, isolationName)
 	requestedSandbox, err := s.requestedDelegateSandbox(args, toolNameCeiling)
 	if err != nil {
 		return delegateStartFailed(err)
 	}
 	descriptor, worktreeProject, err := runtime.describe(ctx, args, task, isolationName, requestedSandbox, selection, toolNameCeiling)
+	descriptor.CeilingReachabilityExcluded = append([]string(nil), ceilingReachabilityExcluded...)
 	if err != nil {
 		return delegateStartFailed(err)
 	}
@@ -278,6 +279,13 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	degradedSandboxAdvisory := degradedReadOnlyDelegateAdvisory(prepared.sub.sess.currentEnv())
 	s.launchSubagentRun(prepared.runCtx, prepared.sub, prepared.runCancel, prepared.input, started.descriptor.Provenance)
 	result := createResult(startedDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, nil))
+	// The child is constructed and initialized by now, so what it registered is
+	// known (see observedDelegateTools). Report that, not the frozen ceiling:
+	// the ceiling bounds what this delegate may use, and availability is what
+	// the child actually holds.
+	if observed := observedDelegateTools(prepared.sub.sess); observed != nil {
+		result.Tools = observed
+	}
 	// The advisories ride the launched delegate's own result only: they are
 	// metadata for the caller's next isolation choice, not delegate output, not
 	// an EventWarning, and not durable job state a later delegate_send replays.
@@ -301,8 +309,13 @@ func (s *Session) delegateActor(ctx context.Context) (delegateActor, error) {
 	return rootDelegateActor(s.delegateRootSessionID), nil
 }
 
-func (s *Session) delegateEffectiveToolNameCeiling(selection subagentModelSelection, args delegateArgs, isolationName string) []string {
-	return s.subagentToolNameCeiling(selection.agent, args.grantsDelegation(), isolationName)
+// delegateEffectiveToolNameCeiling returns the child's ceiling and, separately,
+// the names REACHABILITY removed from it. Both are recorded: the ceiling keeps
+// authorization and recovery on one bound, and the removed names let a cold
+// resume tell a role denial (permanent) from a reachability denial, which is a
+// fact about the workspace the ceiling was computed in.
+func (s *Session) delegateEffectiveToolNameCeiling(selection subagentModelSelection, args delegateArgs, isolationName string) (ceiling, reachabilityExcluded []string) {
+	return s.subagentToolNameCeilingAndExcluded(selection.agent, args.grantsDelegation(), isolationName)
 }
 
 func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, brief, isolationName string, requestedSandbox *sandbox.SandboxPolicy, selection subagentModelSelection, toolNameCeiling []string) (delegatestore.Descriptor, identifier.Project, error) {
@@ -805,6 +818,32 @@ func delegatePermanentStartFailure(err error, reason string) delegateFinish {
 		reason:      reason,
 		packet:      packet,
 	}
+}
+
+// observedDelegateTools is what a started child actually registered, or nil
+// when no child runtime has been observed. Reporting reads this; the
+// descriptor's ToolNameCeiling stays the authorization ceiling that bounds what
+// the child may call and that recovery replays.
+//
+// The distinction is not cosmetic. The descriptor is committed before the child
+// finishes initializing, so it cannot know which names initialization actually
+// registered: a fallback server that came up in the child's own workspace, or a
+// name rolled back by a collision, is invisible to it. A child that registered
+// nothing reports nothing.
+func observedDelegateTools(sess *Session) []string {
+	if sess == nil || sess.reg == nil {
+		return nil
+	}
+	// The FILTERED set, not the raw registry. A server's tools are registered
+	// when its handshake is parsed and the allowed/denied/ceiling rules run
+	// afterwards, so the registry is briefly a superset — and a create receipt
+	// sampled from it would advertise a name the child removes before its first
+	// model request. Status and list read the same snapshot, so the two surfaces
+	// describe one child the same way.
+	sess.mu.Lock()
+	names := sess.callableToolOrder()
+	sess.mu.Unlock()
+	return names
 }
 
 func startedDelegateResult(descriptor delegatestore.Descriptor, delegateID string, committed delegateUpdatePlan, plans delegateMutationPlans, err error) delegateResult {

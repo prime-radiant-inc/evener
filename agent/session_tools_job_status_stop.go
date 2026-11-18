@@ -348,11 +348,48 @@ type delegateStatusResult struct {
 }
 
 func projectDelegateStatus(now time.Time, snapshot delegateSnapshot, nameMap ...map[string]string) delegateStatusResult {
-	descriptor := snapshot.descriptor
-	tools := append([]string(nil), descriptor.ToolNameCeiling...)
+	out := projectDelegateStatusWithoutTools(now, snapshot)
+	out.Tools = delegateAvailability(snapshot, nameMap...)
+	return out
+}
+
+// delegateAvailability answers "what does this delegate have" from observation
+// only. Each source is tried in order of how directly it observes the
+// generation being reported:
+//
+//  1. a live runtime for this generation, read at capture time;
+//  2. the last settled generation's recorded observation, but ONLY while it
+//     still describes the generation being reported — a cold restart commits
+//     the new generation before its runtime attaches, so the settled record
+//     still belongs to the previous run until the new one reports;
+//  3. the frozen ceiling, for a delegate no generation of which has ever been
+//     observed.
+//
+// An observed empty list is an answer ("it registered nothing") and is never
+// replaced by the ceiling.
+func delegateAvailability(snapshot delegateSnapshot, nameMap ...map[string]string) []string {
+	var tools []string
+	switch {
+	case snapshot.observedTools != nil:
+		tools = append([]string(nil), snapshot.observedTools...)
+	case snapshot.settledObservation != nil && snapshot.observedGeneration == snapshot.generation:
+		tools = append([]string(nil), snapshot.settledObservation...)
+	default:
+		tools = append([]string(nil), snapshot.descriptor.ToolNameCeiling...)
+	}
 	if len(nameMap) > 0 && nameMap[0] != nil {
 		tools = providerVisibleToolNames(tools, nameMap[0])
 	}
+	return tools
+}
+
+// projectDelegateStatusWithoutTools projects everything a status row reports
+// EXCEPT tool availability. Callers that want only timing (activity rolls,
+// delegate frames, the compact session-activity projection) use it so they do
+// not decode a terminal packet's metadata — which can carry a large task brief
+// — to throw the decoded list away.
+func projectDelegateStatusWithoutTools(now time.Time, snapshot delegateSnapshot) delegateStatusResult {
+	descriptor := snapshot.descriptor
 	out := delegateStatusResult{
 		ID:                 snapshot.id,
 		Type:               "delegate",
@@ -362,7 +399,6 @@ func projectDelegateStatus(now time.Time, snapshot delegateSnapshot, nameMap ...
 		Task:               descriptor.Task,
 		Description:        descriptor.Description,
 		AgentType:          descriptor.AgentType,
-		Tools:              tools,
 		Model:              descriptor.ResolvedModel,
 		ReasoningEffort:    descriptor.Config.ReasoningEffort,
 		Resumable:          snapshot.resumable,

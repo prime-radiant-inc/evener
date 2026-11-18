@@ -532,7 +532,7 @@ func assertPluginLoaderProgramErrorPaths(t *testing.T, fx pluginLoaderProgramFix
 		t.Fatal("default hooks directory path unexpectedly loaded")
 	}
 
-	configs, warnings, err := discoverPluginMCPConfigs(fx.alpha, json.RawMessage(`{"":{"command":"invalid"}}`), "alpha")
+	configs, warnings, _, err := discoverPluginMCPConfigs(fx.alpha, json.RawMessage(`{"":{"command":"invalid"}}`), "alpha")
 	if err != nil || len(configs) != 2 || len(warnings) != 1 || !strings.Contains(warnings[0], "alpha") {
 		t.Fatalf("invalid inline MCP layer = configs:%#v warnings:%#v err:%v", configs, warnings, err)
 	}
@@ -615,8 +615,8 @@ func assertPluginLoaderProgramInjectedFailures(t *testing.T, fx pluginLoaderProg
 	}
 	assertLoaderProgramFailure(t, fx.alpha, "hook discovery fault")
 	pluginDiscoverHooks = origHooks
-	pluginDiscoverMCP = func(string, json.RawMessage, string) ([]mcpconfig.ServerConfig, []string, error) {
-		return nil, nil, fault
+	pluginDiscoverMCP = func(string, json.RawMessage, string) ([]mcpconfig.ServerConfig, []string, mcpconfig.LayerEvidence, error) {
+		return nil, nil, mcpconfig.LayerEvidence{}, fault
 	}
 	assertLoaderProgramFailure(t, fx.alpha, "MCP discovery fault")
 }

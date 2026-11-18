@@ -609,7 +609,7 @@ func (c *delegateTreeController) reduceGenerationFinishIntent(intent finishInten
 		events = []delegatestore.Event{finished}
 
 	case delegatestore.PhaseStopping:
-		decision := c.reduceStoppedGenerationFinishIntent(finishIntent{lease: lease, finish: finish, latch: finishLatchTriple})
+		decision := c.reduceStoppedGenerationFinishIntent(finishIntent{lease: lease, finish: finish, runtime: live.runtime, latch: finishLatchTriple})
 		// The generation finish latches its authenticated live state
 		// unconditionally on a failed append.
 		decision.latchLive = live
@@ -620,7 +620,15 @@ func (c *delegateTreeController) reduceGenerationFinishIntent(intent finishInten
 			if outcome == "" {
 				outcome = delegatestore.OutcomeCompleted
 			}
-			events = []delegatestore.Event{delegateRunFinishedEvent(lease, outcome, disposition, reason, endedAt, "", nil)}
+			// A completed_no_action settle carries no packet by design, so its
+			// observation rides the RunFinished event instead. Otherwise a
+			// reclaimed runtime leaves status and list reporting the ceiling,
+			// claiming tools the child never registered.
+			finished := delegateRunFinishedEvent(lease, outcome, disposition, reason, endedAt, "", nil)
+			if observed := observedDelegateTools(live.runtime); observed != nil {
+				finished.RunFinished.ObservedTools = &observed
+			}
+			events = []delegatestore.Event{finished}
 			break
 		}
 		packet := delegateTerminalErrorPacket(reason)
@@ -707,6 +715,23 @@ func (c *delegateTreeController) reduceStoppedGenerationFinishIntent(intent fini
 		endedAt = c.now()
 	}
 	event, deliveryID := stoppedGenerationFinishEvent(lease, intent.finish.packet, endedAt)
+	// A stop that lands after the runtime attached but before its initial input
+	// committed settles this generation with a SYNTHETIC packet, and that
+	// packet carries no tool observation of its own. Once the binding is
+	// released, availability reads fall back to the frozen ceiling and can name
+	// tools the live row had correctly omitted — a report of capabilities this
+	// generation never had.
+	//
+	// The observation is recorded from the runtime bound to THIS generation, and
+	// only when one attached: an unobserved generation must leave the field
+	// absent rather than publish an empty list, because absent and empty are
+	// different facts. A packet the run supplied keeps whatever observation it
+	// already carried.
+	if event.RunFinished != nil && event.RunFinished.ObservedTools == nil && intent.finish.packet == nil {
+		if observed := observedDelegateTools(intent.runtime); observed != nil {
+			event.RunFinished.ObservedTools = &observed
+		}
+	}
 	return finishDecision{
 		events:            []delegatestore.Event{event},
 		latch:             intent.latch,

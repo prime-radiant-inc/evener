@@ -112,8 +112,17 @@ type Descriptor struct {
 	FrozenRolePrompt  string              `json:"frozen_role_prompt,omitempty"`
 	TaskTemplates     []task.TaskTemplate `json:"task_templates,omitempty"`
 	ToolNameCeiling   []string            `json:"tool_name_ceiling,omitempty"`
-	FrozenSkillNames  []string            `json:"frozen_skill_names,omitempty"`
-	FrozenSkillBodies []string            `json:"frozen_skill_bodies,omitempty"`
+	// CeilingReachabilityExcluded names the tools the ceiling dropped for
+	// REACHABILITY rather than role authorization: the child could not register
+	// them in the workspace the ceiling was computed in (a CLI-only MCP server's
+	// tools, a Manager-composition-only tool). They are recorded separately
+	// because the two reasons have different lifetimes. A role denial is
+	// permanent; reachability can change under the delegate, and when it does the
+	// tool must come back. Absent on descriptors written before this field
+	// existed, where no reachability exclusion is known to have been applied.
+	CeilingReachabilityExcluded []string `json:"ceiling_reachability_excluded,omitempty"`
+	FrozenSkillNames            []string `json:"frozen_skill_names,omitempty"`
+	FrozenSkillBodies           []string `json:"frozen_skill_bodies,omitempty"`
 	// FrozenSkillMetadata carries each frozen preload's typed provenance
 	// (description, source, content digests) alongside the unchanged
 	// names/bodies. Absent on legacy descriptors, where the provenance stays
@@ -156,24 +165,44 @@ type SandboxSnapshot struct {
 
 type Aggregate struct {
 	// CreatedAt is immutable membership order, independent of later run updates.
-	CreatedAt          time.Time         `json:"created_at,omitzero"`
-	DelegateID         string            `json:"delegate_id"`
-	Descriptor         Descriptor        `json:"descriptor"`
-	Generation         uint64            `json:"generation"`
-	Trigger            RunTrigger        `json:"trigger,omitempty"`
-	Phase              Phase             `json:"phase"`
-	CurrentRunOpen     bool              `json:"current_run_open"`
-	PreparedTerminal   *TerminalPacket   `json:"prepared_terminal,omitempty"`
-	Resumable          bool              `json:"resumable"`
-	NotResumableReason string            `json:"not_resumable_reason,omitempty"`
-	NeedsAttention     bool              `json:"needs_attention"`
-	RunStartedAt       time.Time         `json:"run_started_at,omitzero"`
-	LatestActivityAt   time.Time         `json:"latest_activity_at,omitzero"`
-	LatestIntent       string            `json:"latest_intent,omitempty"`
-	LatestOutcome      *Outcome          `json:"latest_outcome,omitempty"`
-	LatestPacket       *TerminalPacket   `json:"latest_packet,omitempty"`
-	PendingDeliveries  []PendingDelivery `json:"pending_deliveries,omitempty"`
-	PendingStopSeq     uint64            `json:"pending_stop_seq,omitempty"`
+	CreatedAt          time.Time       `json:"created_at,omitzero"`
+	DelegateID         string          `json:"delegate_id"`
+	Descriptor         Descriptor      `json:"descriptor"`
+	Generation         uint64          `json:"generation"`
+	Trigger            RunTrigger      `json:"trigger,omitempty"`
+	Phase              Phase           `json:"phase"`
+	CurrentRunOpen     bool            `json:"current_run_open"`
+	PreparedTerminal   *TerminalPacket `json:"prepared_terminal,omitempty"`
+	Resumable          bool            `json:"resumable"`
+	NotResumableReason string          `json:"not_resumable_reason,omitempty"`
+	NeedsAttention     bool            `json:"needs_attention"`
+	RunStartedAt       time.Time       `json:"run_started_at,omitzero"`
+	LatestActivityAt   time.Time       `json:"latest_activity_at,omitzero"`
+	LatestIntent       string          `json:"latest_intent,omitempty"`
+	LatestOutcome      *Outcome        `json:"latest_outcome,omitempty"`
+	LatestPacket       *TerminalPacket `json:"latest_packet,omitempty"`
+	// LatestObservation is what the generation named by LatestObservationGeneration
+	// actually registered, carried forward from its terminal packet by the fold.
+	//
+	// It is a separate field from LatestPacket because the two answer different
+	// questions at different times. LatestPacket is the run's REPORT, and a
+	// generation may settle without one (a completed_no_action attention run
+	// writes none). Availability still exists for such a run, and after idle
+	// reclamation the packet may be gone while the observation is still the only
+	// honest answer to "what did that child have".
+	//
+	// LatestObservationGeneration is what makes it safe to read after a restart:
+	// a new generation is committed before its runtime attaches, so LatestPacket
+	// (and this) still describe the PREVIOUS run until the new one reports. A
+	// reader MUST compare it to Generation before using the list.
+	// LatestObservation is a POINTER for the same reason the packet metadata's
+	// is: omitempty would drop an empty list, and an empty list is the honest
+	// "this generation registered nothing". A nil pointer is "no observation
+	// recorded"; a pointer to an empty slice is an answer.
+	LatestObservation           *[]string         `json:"latest_observation,omitempty"`
+	LatestObservationGeneration uint64            `json:"latest_observation_generation,omitempty"`
+	PendingDeliveries           []PendingDelivery `json:"pending_deliveries,omitempty"`
+	PendingStopSeq              uint64            `json:"pending_stop_seq,omitempty"`
 	// PendingStopAt is when the pending subtree stop was REQUESTED, taken from
 	// the request event's own timestamp, and zero whenever PendingStopSeq is.
 	// PendingStopSeq answers "was a stop asked for"; only this answers "how long

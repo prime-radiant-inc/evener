@@ -199,10 +199,11 @@ func projectDelegateListItem(now time.Time, visible delegateVisibleRow, nameMap 
 	snapshot := visible.snapshot
 	status := projectDelegateStatus(now, snapshot, nameMap...)
 	resumable := snapshot.resumable
-	tools := append([]string(nil), snapshot.descriptor.ToolNameCeiling...)
-	if len(nameMap) > 0 && nameMap[0] != nil {
-		tools = providerVisibleToolNames(tools, nameMap[0])
-	}
+	// One answer for both surfaces: the status projection already resolves
+	// availability (observation, then packet, then ceiling) and applies the
+	// provider-visible name map, so the list row cannot disagree with the status
+	// row for the same delegate.
+	tools := append([]string(nil), status.Tools...)
 	item := jobListEntry{
 		ID:                   snapshot.id,
 		Kind:                 "delegate",

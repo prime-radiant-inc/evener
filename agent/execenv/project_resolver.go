@@ -135,7 +135,11 @@ func localStructuralMainRoot(cwd string) (root string, isGit bool, handled bool,
 			if info.IsDir() {
 				return identifier.ResolveClean(dir), true, true, nil
 			}
-			content, readErr := os.ReadFile(gitPath)
+			// Bounded and nonblocking, for the reason structuralWorktreeRoot
+			// gives: a .git entry that is not a directory is a pointer file on a
+			// repository-writable path, and an unbounded read of one that became a
+			// FIFO blocks with no timeout above it.
+			content, readErr := ReadFileCapped(gitPath)
 			if readErr != nil {
 				return "", true, true, fmt.Errorf("read Git pointer %q: %w", gitPath, readErr)
 			}

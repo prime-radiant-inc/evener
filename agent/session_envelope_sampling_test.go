@@ -165,6 +165,9 @@ var envelopeSamplingPermittedLocks = map[string]string{
 		"lock is a leaf that never emits (TestSessionReadLockIsALeaf)",
 	"Session.executionFrontierMu": "the recorded listener takes only this leaf and releases it before emitting; " +
 		"sampling takes Session.mu then this leaf, so no reverse edge can cycle",
+	"Session.delegateExclusionsMu": "it guards the two name sets the delegate tool ceiling subtracts, " +
+		"which no envelope sample reads or derives from: the exclusion is applied when a ceiling is " +
+		"built, never while sampling an envelope",
 }
 
 // TestEnvelopeSamplingNeverBlocksOnAnEmitHeldLock runs every method the daemon's

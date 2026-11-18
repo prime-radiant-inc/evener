@@ -147,6 +147,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			activatedSkillBodies:          activatedSkillBodies,
 			frozenSkillMetadata:           append([]schema.FrozenSkillPreload(nil), descriptor.FrozenSkillMetadata...),
 			toolNameCeiling:               append([]string(nil), descriptor.ToolNameCeiling...),
+			ceilingReachabilityExcluded:   append([]string(nil), descriptor.CeilingReachabilityExcluded...),
 			deniedToolNames:               s.unavailableMemoryToolNames(),
 			isolation:                     descriptor.Isolation,
 			communicateOutputSchema:       cloneMap(resultSchema),
@@ -168,8 +169,13 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 		child.discardRestoredCandidate()
 		return nil, false, errors.New("restored delegate did not inherit the exact controller binding")
 	}
+	// Judge the child against the ceiling it was actually constructed with, not
+	// the bare frozen list: NewSession re-admits a registered name the frozen
+	// ceiling had excluded only for reachability, so checking against the frozen
+	// list here would reject exactly the names that re-admission restored.
+	effective := effectiveChildToolCeiling(descriptor.ToolNameCeiling, descriptor.CeilingReachabilityExcluded, child.reg)
 	for name := range child.reg.RegisteredNames() {
-		if !hasString(descriptor.ToolNameCeiling, name) {
+		if !hasString(effective, name) {
 			child.discardRestoredCandidate()
 			return nil, false, fmt.Errorf("restored delegate tool %q exceeds the committed ceiling", name)
 		}

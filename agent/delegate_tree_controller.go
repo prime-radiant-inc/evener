@@ -393,6 +393,22 @@ type delegateSnapshot struct {
 	// else the folded journal value — the read's join, applied here so a frame
 	// and a read agree for every row state.
 	latestIntent string
+	// observedTools is what the running child ACTUALLY registered, reported
+	// beside the descriptor's ceiling rather than replacing it. The ceiling
+	// bounds what a delegate may use and recovery reads it; availability is
+	// what the child registered, and reporting reads that. Nil means no child
+	// runtime has been observed for this snapshot, so the reader keeps the
+	// frozen list rather than claiming the delegate has nothing.
+	observedTools []string
+	// settledObservation is the observation this delegate's LAST SETTLED
+	// generation recorded, with the generation it belongs to. It answers for a
+	// run whose runtime is gone — settled and reclaimed — and for a
+	// completed_no_action attention run that wrote no terminal packet at all.
+	// observedGeneration must be compared to generation before it is read: a
+	// cold restart commits the new generation before its runtime attaches, and
+	// the settled observation still describes the previous run until then.
+	settledObservation []string
+	observedGeneration uint64
 }
 
 // delegateWorktreeSnapshot is the process-local read model used by
@@ -1440,6 +1456,35 @@ func (c *delegateTreeController) captureDelegateSnapshotsLocked(ids []string) []
 func (c *delegateTreeController) captureDelegateSnapshotLocked(id string) delegateSnapshot {
 	snapshot := captureDelegateSnapshot(c.durable[id])
 	if live := c.live[id]; live != nil {
+		// Availability comes from the child's own registration, never from the
+		// descriptor: the descriptor is committed before the child initializes,
+		// so it cannot know which tools initialization actually registered (a
+		// fallback server that came up, a name rolled back by a collision). A
+		// child that registers nothing reports nothing.
+		//
+		// The registry is sampled ONLY for the generation it is bound to. A
+		// retained idle delegate can run a notification turn without opening a
+		// new generation, and that turn can heal an MCP server: reading its
+		// registry would then report the new tool against the already-settled
+		// generation, and reclaiming the runtime would take the tool back out of
+		// the same rows while a completed send's answer stayed fixed. The settled
+		// generation keeps its recorded observation instead (see
+		// delegateAvailability), and an idle runtime that has healed a server is
+		// simply not evidence about a generation it does not belong to.
+		//
+		// The runtime sampled is the one attached to the MATCHING binding, not
+		// whatever live.runtime currently holds. A retained child can carry a
+		// resident runtime while its newly committed generation has a binding with
+		// no runtime attached yet; sampling live.runtime during that window would
+		// attribute the resident registry to the new generation before attachment.
+		// Until a runtime is attached, the generation has no observation and the
+		// normal fallback applies.
+		if runtime := c.boundRuntimeLocked(live, snapshot.generation); runtime != nil && runtime.reg != nil {
+			// The order is the published snapshot's, so this read is a copy
+			// rather than a sort under the controller mutex. An empty result is
+			// a generation that registered nothing, which is a real observation.
+			snapshot.observedTools = runtime.callableToolOrder()
+		}
 		if live.activityAt.After(snapshot.latestActivityAt) {
 			snapshot.latestActivityAt = live.activityAt
 		}
@@ -1457,6 +1502,80 @@ func (c *delegateTreeController) captureDelegateSnapshotLocked(id string) delega
 		}
 	}
 	return snapshot
+}
+
+// boundRuntimeLocked returns the runtime attached to the binding for this
+// generation, or nil when there is no such binding or it has none attached yet.
+//
+// This is the runtime a generation's availability may be sampled from. live.runtime
+// is the resident child, which outlives a settled generation, so reading it for a
+// generation that has not attached its own runtime reports one generation's
+// registry against another.
+func (c *delegateTreeController) boundRuntimeLocked(live *delegateLiveState, generation uint64) *Session {
+	if live == nil || live.binding == nil || live.binding.lease.generation != generation {
+		return nil
+	}
+	return live.binding.runtime
+}
+
+// observedToolsForGeneration answers "what did this delegate's generation
+// register" through the controller, so the caller cannot sample a runtime that
+// no longer serves the generation it is reporting.
+//
+// This is the same rule captureDelegateSnapshotLocked applies to every row, made
+// available to a caller that is answering one reply rather than building a page:
+// an inline send that withdraws on timeout used to read the child session it
+// happened to hold, and a retained child can run a notification turn after its
+// generation settles — healing an MCP server, and so registering a name that
+// belongs to no generation the reply can speak for. The reply then attributed a
+// newly registered tool to a settled generation whose terminal packet recorded
+// the old list.
+//
+// nil means no observation exists for this generation (never observed, or the
+// binding has no runtime attached yet), and the caller falls back as it would
+// for any unobserved generation. An empty non-nil slice is an answer: the child
+// registered nothing.
+func (c *delegateTreeController) observedToolsForGeneration(delegateID string, generation uint64) []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	live := c.live[delegateID]
+	if live == nil {
+		return nil
+	}
+	if runtime := c.boundRuntimeLocked(live, generation); runtime != nil && runtime.reg != nil {
+		registered := runtime.callableToolNames()
+		names := make([]string, 0, len(registered))
+		for name := range registered {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		return names
+	}
+	// The generation's runtime is not attached, so the durable record is the only
+	// observation that speaks for it — and only while it describes THIS
+	// generation. A cold restart commits the new generation before its runtime
+	// attaches, so the settled record still belongs to the previous run.
+	aggregate := c.durable[delegateID]
+	if aggregate == nil || aggregate.LatestObservationGeneration != generation {
+		return nil
+	}
+	return cloneObservedTools(aggregate.LatestObservation)
+}
+
+// cloneObservedTools copies a durable observation, preserving the distinction
+// between nil ("no observation recorded") and empty ("registered nothing").
+//
+// The copy is explicit rather than append onto a nil slice, because that idiom
+// returns nil for an empty input and would erase exactly the case this function
+// exists to keep: a generation that registered zero tools must still report zero
+// tools after its runtime is reclaimed, not fall back to the ceiling.
+func cloneObservedTools(observed *[]string) []string {
+	if observed == nil {
+		return nil
+	}
+	out := make([]string, len(*observed))
+	copy(out, *observed)
+	return out
 }
 
 // delegateDisplayIntent is the one join a row's displayed intent reads: the
@@ -1505,6 +1624,8 @@ func captureDelegateSnapshot(aggregate *delegatestore.Aggregate) delegateSnapsho
 		lastOutcome:                outcome,
 		latestPacket:               cloneStableTerminalPacket(aggregate.LatestPacket),
 		latestIntent:               aggregate.LatestIntent,
+		settledObservation:         cloneObservedTools(aggregate.LatestObservation),
+		observedGeneration:         aggregate.LatestObservationGeneration,
 	}
 }
 

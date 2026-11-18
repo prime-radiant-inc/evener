@@ -517,7 +517,10 @@ func delegateFrameStatusInfo(now time.Time, rootID string, row delegateSnapshot)
 
 func delegateStatusInfo(now time.Time, rootID string, row delegateSnapshot, boundedMetadata bool) DelegateStatusInfo {
 	descriptor := row.descriptor
-	timing := projectDelegateStatus(now, row)
+	// Timing only: this frame reports clocks, and resolving availability here
+	// would decode a terminal packet's metadata (which can carry a large task
+	// brief) to throw the list away.
+	timing := projectDelegateStatusWithoutTools(now, row)
 	out := DelegateStatusInfo{
 		DelegateID:          row.id,
 		RunGeneration:       row.generation,
@@ -573,13 +576,33 @@ func delegateStatusInfo(now time.Time, rootID string, row delegateSnapshot, boun
 		out.StructuredValid = appwire.ClonePointer(packet.StructuredResultValid)
 		out.StructuredReason = packet.StructuredResultReason
 		out.Warnings = append([]string(nil), packet.Warnings...)
-		// The activity read bounds the payload with the same helper, so a pushed
-		// frame omits the same usage and worktree -- and, like the read, never
-		// parses an oversized document at all. Detailed status asks for a
-		// diagnostics projection and keeps the whole payload.
-		payload := packet.Metadata
+		// A pushed frame and the Activity read share ONE projection, so a
+		// reconciliation read at the same revision cannot remove fields the frame
+		// carried. That projection drops the unbounded tool-name lists before it
+		// measures, which is what stops them crowding out usage and worktree
+		// details that fit.
+		//
+		// Detailed status is a diagnostics surface, not the frame: it keeps the
+		// whole payload and reports an unparseable document instead of staying
+		// silent, so an operator can see a packet the capped readers had to
+		// discard.
+		payload := settledPacketMetadata(packet, row.currentRunOpen)
 		if boundedMetadata {
-			payload = boundActivityDelegatePayload(payload)
+			trimmed, ok, malformed := delegateTerminalMetadataProjection(payload)
+			if !ok {
+				if malformed || (len(payload) != 0 && !json.Valid(payload)) {
+					out.Diagnostics = append(out.Diagnostics, "delegate terminal metadata is invalid")
+				}
+				return out
+			}
+			out.Usage = activityUsageFromCumulative(trimmed.CumulativeUsage)
+			if trimmed.Worktree != nil {
+				out.Worktree = &appwire.JobActivityWorktree{
+					Path: trimmed.Worktree.Path, Branch: trimmed.Worktree.Branch,
+					HeadSHA: trimmed.Worktree.HeadSHA, Ahead: trimmed.Worktree.Ahead, Dirty: trimmed.Worktree.Dirty,
+				}
+			}
+			return out
 		}
 		if len(payload) != 0 {
 			var metadata delegateTerminalPacketMetadata

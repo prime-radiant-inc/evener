@@ -3,10 +3,12 @@ package agent
 import (
 	"encoding/json"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/llm"
 )
 
 // TestStoppedGenerationFinishEventIsTheSingleHome pins the stop-finish decision
@@ -143,4 +145,61 @@ func preFoldSettledGenerationFinish(prepared delegatestore.TerminalPacket, incom
 		finish = preparedFinish
 	}
 	return finish, outcome, disposition, reason
+}
+
+// TestStopDuringStartInputRecordsTheRuntimeObservation is the medium: a stop
+// landing after the runtime attached but before the initial input committed
+// settles the generation with a SYNTHETIC packet, which carries no observation
+// of its own.
+//
+// Once the binding is released, availability falls back to the frozen ceiling
+// and can name tools the live row had correctly omitted — a report of
+// capabilities the generation never had. The observation is recorded from the
+// runtime bound to THIS generation, and only when one attached: an unobserved
+// generation must stay absent, not become an empty list.
+func TestStopDuringStartInputRecordsTheRuntimeObservation(t *testing.T) {
+	t.Parallel()
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	lease := delegateLease{delegateID: "dlg_target", generation: 1}
+
+	// A runtime that published two callable tools before the stop landed.
+	runtime := newSession(t, withDir(t.TempDir()), withConfig(SessionConfig{}))
+	register := func(name string) {
+		t.Helper()
+		runtime.mu.Lock()
+		defer runtime.mu.Unlock()
+		if err := runtime.reg.Register(regTool(llm.ToolDefinition{Name: name, Description: name})); err != nil {
+			t.Fatalf("register %s: %v", name, err)
+		}
+	}
+	register("svc__alpha")
+	register("svc__beta")
+	runtime.mu.Lock()
+	runtime.publishCallableTools()
+	runtime.mu.Unlock()
+
+	decision := c.reduceStoppedGenerationFinishIntent(finishIntent{lease: lease, runtime: runtime, latch: finishLatchTriple})
+	if len(decision.events) != 1 || decision.events[0].RunFinished == nil {
+		t.Fatalf("events = %#v, want one RunFinished", decision.events)
+	}
+	observed := decision.events[0].RunFinished.ObservedTools
+	if observed == nil {
+		t.Fatal("a stop over an attached runtime recorded no observation, so availability falls back to the ceiling")
+	}
+	for _, want := range []string{"svc__alpha", "svc__beta"} {
+		if !slices.Contains(*observed, want) {
+			t.Errorf("the recorded observation omitted %q: %v", want, *observed)
+		}
+	}
+
+	// No runtime attached: the field stays ABSENT, not empty. An empty list
+	// would claim "this generation registered nothing", which is a different
+	// fact from "nothing was observed".
+	unobserved := c.reduceStoppedGenerationFinishIntent(finishIntent{lease: lease, latch: finishLatchTriple})
+	if len(unobserved.events) != 1 || unobserved.events[0].RunFinished == nil {
+		t.Fatalf("events = %#v, want one RunFinished", unobserved.events)
+	}
+	if unobserved.events[0].RunFinished.ObservedTools != nil {
+		t.Errorf("an unobserved generation published an observation: %v", *unobserved.events[0].RunFinished.ObservedTools)
+	}
 }
