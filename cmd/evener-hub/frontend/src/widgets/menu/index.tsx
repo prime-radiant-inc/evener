@@ -171,6 +171,43 @@ function revealRow(popup: HTMLElement, row: HTMLElement): void {
   else if (rowBottom > popup.scrollTop + popup.offsetHeight) popup.scrollTop = rowBottom - popup.offsetHeight;
 }
 
+/** What the reveal question is asked of: the row's place in the popup's scroll
+ * space, and the height of the scrollport that decides whether it fits.
+ *
+ * One recorded observation, because there is one question - is the focused row
+ * inside the popup's visible area, and did layout put it outside - and every
+ * other fact this widget can observe (which ids the list holds, whether the
+ * popup's own box changed, whether the focused id vanished) is a proxy for it.
+ * Each proxy acquired a case the others did not cover: a row inserted above
+ * moves the row without changing the popup's box, a label that wraps moves it
+ * without changing any id, and a shrink moves the scrollport under a row that
+ * never moved at all.
+ *
+ * The scrollport's OFFSET is deliberately not part of it: scrollTop is the
+ * reader's, and a row they scrolled away from is not a row layout hid. */
+interface RowObservation {
+  top: number;
+  height: number;
+  width: number;
+  portHeight: number;
+  portWidth: number;
+}
+
+const observeRow = (popup: HTMLElement, row: HTMLElement): RowObservation => ({
+  top: row.offsetTop,
+  height: row.offsetHeight,
+  width: row.offsetWidth,
+  portHeight: popup.offsetHeight,
+  portWidth: popup.offsetWidth,
+});
+
+const movedSince = (now: RowObservation, before: RowObservation): boolean =>
+  now.top !== before.top ||
+  now.height !== before.height ||
+  now.width !== before.width ||
+  now.portHeight !== before.portHeight ||
+  now.portWidth !== before.portWidth;
+
 function itemAt(items: MenuEntry[], i: number): MenuEntry {
   const item = items[i];
   if (!item) throw new Error(`menu item index ${i} out of range for ${items.length} items`);
@@ -296,6 +333,55 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     setIsOpen(false);
   }, []);
 
+  // Where the focused row sat the last time this widget looked, and in what
+  // scrollport. The reveal runs on the answer to one question, so this is the
+  // one fact it is answered from: layout moved the row (or the scrollport under
+  // it) AND the row is now outside the visible area. Anything else - a list
+  // change, a vanished id, a resized popup - is only a REASON to re-ask.
+  const rowObservationRef = useRef<RowObservation | null>(null);
+
+  /** Reveal the focused row if it is outside the popup's visible area, and do
+   * nothing in every other case.
+   *
+   * This is the ONLY place that decides to reveal, and it decides on one
+   * question: is the focused row clipped? Every other fact the widget can
+   * observe - a changed id list, a vanished focused id, a resized popup, a text
+   * node that arrived - is a reason to RE-ASK, never a reason to reveal on its
+   * own. Asking from four doors and answering in one place is what keeps a
+   * newly-noticed trigger from becoming a new mechanism.
+   *
+   * `reason` says only what the prior observation means. "layout" is a pass
+   * that followed some change to the page, so a row that layout did not move is
+   * a row the reader scrolled away from and must be left alone. "focus" is a
+   * replacement this widget just focused because the row it was on was removed:
+   * there is no earlier position to compare against and no scroll of the
+   * reader's to preserve, so the visibility check alone decides. */
+  const revealFocusedRowIfClipped = useCallback(
+    (popup: HTMLElement, reason: "layout" | "focus" = "layout") => {
+      const row = itemRefs.current.find((node) => node !== null && node === ownerDocument.activeElement) ?? null;
+      if (row === null) {
+        // Focus is not on a row (an initial open, or the reader moved it), so no
+        // row's geometry is this widget's to keep in view.
+        rowObservationRef.current = null;
+        return;
+      }
+      const now = observeRow(popup, row);
+      const before = rowObservationRef.current;
+      rowObservationRef.current = now;
+      // `before === null` is the first look: the row was just focused and the
+      // popup was placed around it, so layout has not moved it out of view.
+      if (reason === "layout" && (before === null || !movedSince(now, before))) return;
+      // Already visible on BOTH axes: a row inserted BELOW this one moves nothing
+      // above it, and the reader's own scroll to the lower actions must survive
+      // that. Width counts because a narrower popup wraps labels and can clip a
+      // row sideways without changing the scrollport's height at all.
+      const visibleVertically = now.top >= popup.scrollTop && now.top + now.height <= popup.scrollTop + now.portHeight;
+      const visibleHorizontally = now.width <= popup.clientWidth;
+      if (visibleVertically && visibleHorizontally) return;
+      revealRow(popup, row);
+    },
+    [ownerDocument],
+  );
   // Measures the trigger and the popup's own natural (unclamped) size and
   // moves the popup to the flipped/clamped position - see computeMenuPosition
   // above. Runs in the commit that mounts the popup, and again on every
@@ -402,20 +488,7 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // viewport, so it can pan the page itself - before this pass has written
     // the popup's new coordinates, it pans toward where the popup used to be.
     // Arithmetic in the popup's own scroll space has no such reach.
-    const scrollportHeight = popupEl.offsetHeight;
-    const scrollportWidth = popupEl.offsetWidth;
-    const lastBox = lastPopupBoxRef.current;
-    lastPopupBoxRef.current = { height: scrollportHeight, width: scrollportWidth, capped };
-    // `lastBox === null` is the first placement: the popup has just opened with
-    // its scroll at the top and focus on a row that is already visible, so
-    // nothing has been hidden yet.
-    const refocused =
-      lastBox !== null &&
-      (scrollportHeight < lastBox.height || scrollportWidth < lastBox.width || (capped && !lastBox.capped));
-    if (refocused) {
-      const focusedRow = itemRefs.current.find((node) => node !== null && node === ownerDocument.activeElement);
-      if (focusedRow) revealRow(popupEl, focusedRow);
-    }
+    revealFocusedRowIfClipped(popupEl);
     // Only write when it actually moved: the observers below can report a
     // mutation that changes nothing about placement (a text node elsewhere in
     // the same scroller), and a state write per notification would re-render
@@ -429,7 +502,7 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // and comparing it with a layout-coordinate trigger picks the wrong edge
     // once the visual viewport is panned far enough to cross the trigger.
     setOrigin(transformOriginFor(triggerRect, next));
-  }, [ownerDocument]);
+  }, [ownerDocument, revealFocusedRowIfClipped]);
 
   // Re-measure ONCE on the next frame. A resize event is not the moment the
   // trigger has finished moving: the docked pane reflows after it, and the
@@ -442,10 +515,6 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   // a resize, a visual-viewport change and an observation together -
   // re-measures once.
   const frameRef = useRef<number | null>(null);
-  // The popup's box at the last placement, so a pass can tell a change that
-  // may have hidden the focused row - a shorter or a narrower scrollport, or
-  // one whose labels have just begun to wrap - from an ordinary re-place.
-  const lastPopupBoxRef = useRef<{ height: number; width: number; capped: boolean } | null>(null);
   const placeAfterLayout = useCallback(() => {
     if (frameRef.current !== null) return;
     const ownerWindow = ownerDocument.defaultView ?? window;
@@ -510,13 +579,6 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   // about to leave. Only a row that was here and is now gone may move focus,
   // and that is the one thing that may move the popup's own scroll.
   const lastFocusedIdRef = useRef<string | null>(null);
-  // Where that row sat in the popup's scroll space when focus or the list last
-  // changed. A list update can leave the focused row exactly where it was and
-  // still re-run this effect (a row arriving BELOW it, which is the ordinary
-  // case for a turn starting under a menu the reader has scrolled down), and
-  // revealing then would undo their scroll for an update that moved nothing
-  // they can see. Only a row the update actually moved is revealed.
-  const lastFocusedTopRef = useRef<number | null>(null);
   // biome-ignore lint/correctness/useExhaustiveDependencies: itemIds is the deliberate trigger-only dep - the id signature, not the array's identity, is what says the caller's list changed, and callers rebuild that array every render; indexOfActive is called at effect time, so the closure that runs is the current one
   useLayoutEffect(() => {
     // `isOpen` false means the popup is leaving: FocusScope has already handed
@@ -535,10 +597,11 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // one thing a list change can do to a row whose identity survived. Enter
     // would then invoke an action the reader cannot see.
     if (popup !== null && focused !== null && popup.contains(focused)) {
-      const row = focused as HTMLElement;
-      const moved = lastFocusedTopRef.current !== null && lastFocusedTopRef.current !== row.offsetTop;
-      lastFocusedTopRef.current = row.offsetTop;
-      if (moved) revealRow(popup, row);
+      // The same question the placement pass asks, asked from the other door:
+      // whether this list change moved the row holding focus out of sight. It
+      // is what catches a label that wraps (no id changes, no popup box
+      // changes) as surely as it catches a row arriving above.
+      revealFocusedRowIfClipped(popup);
       return;
     }
     // A row was focused and that row is still in the list: nothing was lost, so
@@ -570,7 +633,12 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     const index = itemRefs.current.findIndex((node) => node !== null && node === target);
     if (index === -1) return;
     lastFocusedIdRef.current = itemAt(items, index).id;
-    lastFocusedTopRef.current = (target as HTMLElement).offsetTop;
+    // The observation starts when the row is focused: the spot it sits in then
+    // is what every later pass is compared against, so "layout moved it" means
+    // moved since the reader arrived rather than since the last time this
+    // widget happened to look.
+    const popup = popupRef.current;
+    if (popup !== null) rowObservationRef.current = observeRow(popup, target as HTMLElement);
   }
 
   // `reveal` is for a replacement focused OUT of a keypress: a row the reader
@@ -586,8 +654,11 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     const node = itemRefs.current[index] ?? null;
     if (node === null) return;
     node.focus(reveal ? { preventScroll: true } : undefined);
+    // The same question, asked for a row this widget just focused: it is the
+    // reader's replacement, not a row they scrolled to, so clipping is the
+    // whole test.
     const popup = popupRef.current;
-    if (reveal && popup !== null) revealRow(popup, node);
+    if (reveal && popup !== null) revealFocusedRowIfClipped(popup, "focus");
   }
 
   // The index of the item that actually holds DOM focus, or -1 when focus is
@@ -886,11 +957,23 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         subtree: true,
       });
     }
+    // A label inside the popup can change without any box resizing: an activity
+    // count arrives on Overview and the row wraps onto a second line, pushing a
+    // lower row out of the scrollport. No id changes, the popup's own box does
+    // not change, and the row that moved is not the one whose box changed - so
+    // this is watched as what it is, a content change inside the popup, and the
+    // pass then asks the same geometry question it asks everywhere else.
+    const popupMutations: MutationObserver | null =
+      typeof Mutations === "undefined" || popupEl === null ? null : new Mutations(() => placeAfterLayout());
+    if (popupMutations !== null && popupEl !== null) {
+      popupMutations.observe(popupEl, { childList: true, characterData: true, subtree: true });
+    }
     return () => {
       visualViewport?.removeEventListener("resize", placeAfterLayout);
       visualViewport?.removeEventListener("scroll", placeAfterLayout);
       observer?.disconnect();
       mutations?.disconnect();
+      popupMutations?.disconnect();
     };
   }, [isOpen, ownerDocument, placeAfterLayout]);
 

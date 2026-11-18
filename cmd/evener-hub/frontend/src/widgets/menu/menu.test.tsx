@@ -1425,6 +1425,86 @@ test("a second narrowing still keeps the focused row in view when the popup is a
   }
 });
 
+// A cap tall enough for three 44px rows, and the reader on the third one, which
+// is fully visible. Then a row ABOVE it wraps onto a second line: no id changes,
+// the popup's own box does not change, and the row holding focus keeps its
+// identity - only its geometry moves. A placement pass keyed on a shrinking
+// scrollport or a changed item set sees none of that, and the row the person is
+// looking at ends up clipped while Enter still invokes it.
+function CountingOverviewMenu({ counted }: { counted: boolean }) {
+  const list: MenuItem[] = [
+    {
+      id: "overview",
+      label: counted ? "Overview 12 sessions need you" : "Overview",
+      onSelect: vi.fn(),
+    },
+    { id: "rename", label: "Rename", onSelect: vi.fn() },
+    { id: "delete", label: "Delete", onSelect: vi.fn() },
+  ];
+  return <Menu trigger="Actions" items={list} />;
+}
+
+test("a label that wraps above the focused row reveals it, without any item or popup size changing", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  // The popup's scrollport is 140px in both cases: its own box never changes.
+  const PORT = 140;
+  // The first row is 44px, or 88px once its label wraps onto a second line.
+  // Later rows sit after it, so a wrap ABOVE them translates them down.
+  let overviewHeight = 44;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, 100, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 160, PORT);
+    return box(0, 0, 0, 0);
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "UL") return PORT;
+    if (this.tagName !== "LI" || !this.parentElement) return 0;
+    return Array.prototype.indexOf.call(this.parentElement.children, this) === 0 ? overviewHeight : 44;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
+    return this.tagName === "UL" ? 160 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName !== "LI" || !this.parentElement) return 0;
+    const index = Array.prototype.indexOf.call(this.parentElement.children, this);
+    return index === 0 ? 0 : overviewHeight + (index - 1) * 44;
+  });
+  const { flush } = captureFrames();
+  try {
+    const view = render(<CountingOverviewMenu counted={false} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    // Delete spans 88..132 inside a 140px scrollport: fully visible.
+    const last = screen.getByRole("menuitem", { name: "Delete" });
+    last.focus();
+    expect(document.activeElement).toBe(last);
+    const popup = screen.getByRole("menu");
+    expect(popup.scrollTop).toBe(0);
+
+    // An activity count arrives on Overview's label and it wraps. Delete moves
+    // to 132..176, below the scrollport - and nothing else about the menu
+    // changed: same ids, same popup box, same cap.
+    overviewHeight = 88;
+    view.rerender(<CountingOverviewMenu counted />);
+    // The content change is delivered to the observer before the next frame,
+    // not inside the render that caused it; drain that delivery, then the frame
+    // it queues.
+    await act(async () => {});
+    flush();
+
+    // Delete's bottom is 176 and the scrollport ends at 140.
+    expect(popup.scrollTop).toBe(176 - PORT);
+    expect(document.activeElement).toBe(last);
+    // Enter still invokes the row the reader is on, which is now in sight.
+    await user.keyboard("{Enter}");
+    expect(screen.queryByRole("menu")).toBeNull();
+  } finally {
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
 // A list change can push a row that SURVIVED out of the scrollport: a turn
 // starting adds Stop and Steer above the inspection group, and the popup's own
 // box does not change at all (it is height-capped, so it stays capped at the
@@ -1663,12 +1743,18 @@ test("a transcript streaming beside the composer does not re-place the open menu
   // record a streaming token produces. Counting geometry reads would not work:
   // React's own rerender reads rects for reasons that have nothing to do with
   // this widget, so the count moves whether or not the filter is there.
-  const captured: { callback: MutationCallback | null } = { callback: null };
+  // The widget registers two observers - one on the trigger's own layout
+  // context, one on the popup's content - so the capture keys them by the
+  // element they watch rather than by registration order.
+  const captured: { byTarget: Map<Element, MutationCallback> } = { byTarget: new Map() };
   class CapturingMutationObserver {
+    private callback: MutationCallback;
     constructor(callback: MutationCallback) {
-      captured.callback = callback;
+      this.callback = callback;
     }
-    observe() {}
+    observe(target: Element) {
+      captured.byTarget.set(target, this.callback);
+    }
     disconnect() {}
     takeRecords(): MutationRecord[] {
       return [];
@@ -1687,18 +1773,29 @@ test("a transcript streaming beside the composer does not re-place the open menu
     const { rerender } = render(<ComposerBesideTranscript tokens={TRANSCRIPT_TOKENS.slice(0, 1)} />);
     await user.click(screen.getByRole("button", { name: "Actions" }));
     expect(screen.getByRole("menu").style.top).toBe("332px");
-    const callback = captured.callback;
-    if (callback === null) throw new Error("the menu registered no mutation observer");
-    scheduled.length = 0;
-
-    // A token arrives inside the transcript's own scroller, beside the
-    // composer. Nothing outside that scroller is laid out by it, so no frame.
-    const transcript = screen.getByTestId("transcript");
+    // The observer on the trigger's own layout context: the outermost ancestor
+    // inside the body, which is the one whose filter decides whether a
+    // streaming record re-measures the trigger.
+    const wrapper = screen.getByRole("button", { name: "Actions" }).parentElement;
+    if (wrapper === null) throw new Error("the trigger has no wrapper");
+    let layoutContext: Element = wrapper;
+    while (layoutContext.parentElement !== null && layoutContext.parentElement !== document.body) {
+      layoutContext = layoutContext.parentElement;
+    }
+    const callback = captured.byTarget.get(layoutContext);
+    if (callback === undefined)
+      throw new Error("the menu registered no mutation observer for the trigger's layout context");
     const record = (target: Element) => {
       const next = { addedNodes: [], removedNodes: [] } as unknown as MutationRecord;
       Object.defineProperty(next, "target", { value: target });
       return next;
     };
+    scheduled.length = 0;
+
+    // A token arrives inside the transcript's own scroller, beside the
+    // composer. Nothing outside that scroller is laid out by it, so no frame.
+    const transcript = screen.getByTestId("transcript");
+
     act(() => {
       callback([record(transcript)], {} as MutationObserver);
     });
@@ -1706,10 +1803,8 @@ test("a transcript streaming beside the composer does not re-place the open menu
 
     // The same callback DOES schedule from a record that could move the
     // trigger: the composer's own wrapper is not inside any other scroller.
-    const wrapper = screen.getByRole("button", { name: "Actions" }).parentElement;
-    expect(wrapper).not.toBeNull();
     act(() => {
-      callback([record(wrapper as Element)], {} as MutationObserver);
+      callback([record(wrapper)], {} as MutationObserver);
     });
     expect(scheduled.length).toBe(1);
 
