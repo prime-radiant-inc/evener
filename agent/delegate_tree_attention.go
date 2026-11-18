@@ -822,6 +822,31 @@ func (c *delegateTreeController) admittedAttentionRows(delegateID string) map[st
 	return admitted
 }
 
+// attentionReleaseFloor is the newest settled generation whose quiet an
+// admitted wake has already ended, for delegateID. It is the same floor the
+// presentation reads reconcile against: the durable release record, raised by
+// the in-memory sample an open-run admission records when the journal refuses
+// to name a generation it cannot resolve. A row the floor has reached is
+// eligible evidence — a release is what makes a stopped report presentable
+// again — so a reader deciding what a generation may carry must weigh the
+// floor and not only the wake set: a reopened row is minted by a stop and
+// never armed, so its eligibility lives here and nowhere else.
+func (c *delegateTreeController) attentionReleaseFloor(delegateID string) uint64 {
+	if c == nil || delegateID == "" {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var floor uint64
+	if aggregate := c.durable[delegateID]; aggregate != nil {
+		floor = aggregate.AttentionHoldReleasedGeneration
+	}
+	if state := c.attention[delegateID]; state != nil && state.releasedGeneration > floor {
+		floor = state.releasedGeneration
+	}
+	return floor
+}
+
 // owesDelegateAttention reports whether delegateID still has attention the
 // driver has yet to deliver, escalate or forget.
 func (c *delegateTreeController) owesDelegateAttention(delegateID string) bool {

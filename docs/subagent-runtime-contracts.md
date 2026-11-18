@@ -56,10 +56,14 @@ before that run, and the journal refuses a release naming a generation that is
 not settled. The admission still ended that quiet, so the controller records the
 same sample in memory at the moment the wake commits
 (`delegateAttentionState.releasedGeneration`) and presentation takes the higher
-of the two floors. That in-memory record orders presentation within the resident
-runtime; the durable floor orders a later cold restore, which therefore sees the
-stop's quiet still standing until a wake at a settled generation journals its
-release. A
+of the two floors. That in-memory record orders presentation across every
+runtime that shares the controller — not only the runtime that held it. An idle
+reclaim drops the runtime pointer but keeps the controller's wake state, so the
+restored runtime's first presentation read takes the surviving in-memory floor
+and ends the hold with no durable release at all. The durable floor is what
+orders a restore that had to rebuild the controller from the journal, where no
+in-memory sample survived; that restore keeps the stop's quiet standing until a
+wake at a settled generation journals its release. A
 reopened row therefore stays quiet only while no release at or past its
 generation is journaled: the release makes it eligible again after an idle
 reclaim, and a stop that settles after a wake settles a later generation, whose

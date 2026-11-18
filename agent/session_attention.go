@@ -1746,6 +1746,19 @@ func (s *Session) acceptDelegateAttention(reservation *delegateStartReservation)
 	// and the committed batch would then lower NeedsAttention for rows the wake
 	// never touched.
 	admitted := s.delegateController.admittedAttentionRows(reservation.delegateID)
+	// A released row is eligible evidence even though no wake carries it. A
+	// reopening stop mints its report under /reopened/<generation> and never
+	// arms it, so the wake set alone reads it as a frame no admission reached
+	// and the capture would drop it from the generation that must present it.
+	// With the row dropped, CommitStart computes attentionNeeded false for a
+	// delegate that has pending attention, appends NeedsAttention:false beside
+	// RunStarted, and replaces the wake set with the empty capture: a stop
+	// landing before presentation then has nothing to rearm and the released
+	// report waits for an unrelated event. The release floor is the fact that
+	// separates the two cases — a row it has reached was made presentable by a
+	// release, while a fresh watch frame it has not reached is still waiting
+	// for its own arm.
+	released := s.delegateController.attentionReleaseFloor(reservation.delegateID)
 	captured := make([]string, 0, len(pendingIDs))
 	for _, pendingID := range pendingIDs {
 		if pendingID == attentionID {
@@ -1753,6 +1766,10 @@ func (s *Session) acceptDelegateAttention(reservation *delegateStartReservation)
 			continue
 		}
 		if _, known := admitted[pendingID]; known {
+			captured = append(captured, pendingID)
+			continue
+		}
+		if _, generation, ok := cutDelegateAttentionReopenSegment(pendingID); ok && released >= generation {
 			captured = append(captured, pendingID)
 		}
 	}
