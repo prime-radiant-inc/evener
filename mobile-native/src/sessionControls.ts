@@ -197,7 +197,22 @@ export class SessionControls {
 				if (!this.isCurrent("destination")) return false;
 				await this.refresh();
 			}
-			if (this.disposed || !this.isCurrent()) return false;
+			if (this.disposed || !this.isCurrent()) {
+				// A pick on a cold session resumes behind its change, so it recycles
+				// the transport the same way a resume does (#6696). The dispatch was
+				// acknowledged before these controls were disposed: when the
+				// destination is still this session, it owns the refresh and the
+				// confirmation, so the pick reports the change the screen will read.
+				// The refresh is confirmation only, and a pick whose destination left
+				// claims nothing.
+				if (kind !== "changeModel" || !this.isCurrent("destination")) return false;
+				try {
+					await this.refresh();
+				} catch {
+					// The acknowledgement, not the read, is the record that it applied.
+				}
+				return true;
+			}
 			if (kind === "shutdown" || kind === "forceStop") {
 				// A shutdown narrates nothing here: the session's own toast
 				// confirms it and the screen stays (ruling 19).

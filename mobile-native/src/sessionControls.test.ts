@@ -799,6 +799,62 @@ describe("conversation-owned session controls", () => {
 		expect(await request).toBe(true);
 		expect(reads).toBe(1);
 	});
+	// A pick on a cold session resumes behind its change, and that resume
+	// recycles the transport (#6696): the screen's `connected` change disposes
+	// the controls that are mid-pick while the same session stays in front.
+	// The mutation landed, so the pick reports a change — the sheet closes and
+	// the screen confirms it — instead of reading as a pick that never
+	// happened. A pick that did not apply, and one whose screen left, claim
+	// nothing.
+	it.each([
+		{ outcome: "applied while the destination stays current", mutate: "apply", destination: true, refreshes: 1 },
+		{ outcome: "applied after the destination left", mutate: "apply", destination: false, refreshes: 0 },
+		{ outcome: "refused while the destination stays current", mutate: "refuse", destination: true, refreshes: 0 },
+	] as const)(
+		"reports a pick the recycle disposed its binding for: $outcome",
+		async ({ mutate, destination, refreshes }) => {
+			const applied: string[] = [];
+			let inFront = true;
+			let current = true;
+			let refreshed = 0;
+			const sent = Promise.withResolvers<void>();
+			const ack = Promise.withResolvers<void>();
+			const controls = new SessionControls(
+				await boundary({
+					models: async () => ({ data: [{ provider: "two", model: "next" }] }),
+					model: async (provider, model) => {
+						applied.push(`${provider}/${model}`);
+						sent.resolve();
+						await ack.promise;
+						if (mutate === "refuse") throw new Error("The hub refused the change.");
+					},
+				}),
+				async () => {
+					refreshed++;
+				},
+				() => {},
+				// The screen's own fence: `inFront` is the session's route still
+				// being the one in front (destination scope), and `current` is the
+				// instance's own binding generation.
+				(scope) => inFront && (scope === "destination" || current),
+				() => null,
+				() => true,
+			);
+			await controls.loadModels();
+			const pick = controls.changeModel("two", "next");
+			await sent.promise;
+			expect(controls.getSnapshot().pending).toBe("changeModel");
+			// The recycle: the screen's memo disposes this binding, its generation
+			// moves on, and the same session stays (or leaves) the one in front.
+			controls.dispose();
+			current = false;
+			inFront = destination;
+			ack.resolve();
+			expect(await pick).toBe(mutate === "apply" && destination);
+			expect(applied).toEqual(["two/next"]);
+			expect(refreshed).toBe(refreshes);
+		},
+	);
 	it("ignores a catalog that resolves after the controller is disposed", async () => {
 		let resolve!: (value: ModelListResponse) => void;
 		const controls = new SessionControls(
