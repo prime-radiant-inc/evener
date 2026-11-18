@@ -530,3 +530,91 @@ func TestSelectedHistoryContinuationAllowsAppendAndBefore(t *testing.T) {
 		t.Fatalf("before override after append=%v", got)
 	}
 }
+
+// TestSelectedHistoryOmitsCallListsBeforeDroppingAnItem pins the content-filtered
+// fitter's budget order: a selected window whose call lists alone push the page
+// over 1 MiB is served with the lists omitted, not with its oldest message
+// dropped (#6323). Dropping an item costs the reader a message and an extra
+// continuation, which is a worse trade than losing optional metadata.
+func TestSelectedHistoryOmitsCallListsBeforeDroppingAnItem(t *testing.T) {
+	t.Parallel()
+	f := fixtureHistory()
+	// Two replies whose bodies fit the page together, with a call list that
+	// does not. Both directions are measured below, so a fixture that fits
+	// either way cannot make this test pass vacuously.
+	for i := range f.candidates {
+		f.candidates[i].Item.Type = "agentMessage"
+		f.candidates[i].Item.Text = strings.Repeat("x", 200000)
+	}
+	const replies = 2
+	calls := make([]appwire.PendingAskCall, 0, 8000)
+	for i := range 8000 {
+		calls = append(calls, appwire.PendingAskCall{TurnID: "turn", CallID: fmt.Sprintf("call-%0*d", 80, i)})
+	}
+	last := len(f.candidates) - 1
+	stamped := f.candidates[last].Item
+	stamped.Observation = &appwire.SessionObservationMetadata{
+		ResolvedAskCalls:       calls,
+		ResolvedAskLegacyCount: 3,
+	}
+	bodies, err := json.Marshal([]appwire.ThreadItem{f.candidates[last-1].Item, f.candidates[last].Item})
+	if err != nil {
+		t.Fatal(err)
+	}
+	withCalls, err := json.Marshal([]appwire.ThreadItem{f.candidates[last-1].Item, stamped})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bodies) > pageContentBytes {
+		t.Fatalf("fixture bodies alone are %d bytes, over the %d-byte budget: the page would drop a message for its bodies", len(bodies), pageContentBytes)
+	}
+	if len(withCalls) <= pageContentBytes {
+		t.Fatalf("fixture with the call list is %d bytes, within the %d-byte budget: it never exercises the omission", len(withCalls), pageContentBytes)
+	}
+	f.candidates[last].Item = stamped
+	params := appwire.ThreadReadParams{ThreadContentParams: conversationParams(), Ref: "local:thread", IncludeTurns: true, ItemLimit: replies}
+	r, err := Read(t.Context(), params, f.read, f.list)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ids(r.Thread.Turns); !reflect.DeepEqual(got, []string{"204", "205"}) {
+		t.Fatalf("served replies=%v, want both selected replies: the page must omit the call list rather than drop a message", got)
+	}
+	var served *appwire.ThreadItem
+	for turnIndex := range r.Thread.Turns {
+		for itemIndex := range r.Thread.Turns[turnIndex].Items {
+			if item := r.Thread.Turns[turnIndex].Items[itemIndex]; item.ID == "205" {
+				served = &item
+			}
+		}
+	}
+	if served == nil {
+		t.Fatalf("served page dropped the stamped reply 205: %v", ids(r.Thread.Turns))
+	}
+	observation := served.Observation
+	if observation == nil {
+		t.Fatal("served reply lost its observation, which carries the turn links")
+	}
+	if len(observation.ResolvedAskCalls) != 0 {
+		t.Fatalf("served reply kept %d call-list entries: the over-budget page should have omitted them", len(observation.ResolvedAskCalls))
+	}
+	if observation.ResolvedAskLegacyCount != 3 {
+		t.Fatalf("legacy count=%d, want 3: omitting the call list must keep the count", observation.ResolvedAskLegacyCount)
+	}
+	if served.Text == "" {
+		t.Fatal("served reply lost its text")
+	}
+	encoded, err := json.Marshal(r.Thread.Turns)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(encoded) > pageContentBytes {
+		t.Fatalf("served page=%d bytes, over the %d-byte content budget", len(encoded), pageContentBytes)
+	}
+	// The canonical fixture item keeps its full stamp: bounding a read must not
+	// rewrite the projection other reads serve.
+	canonical := f.candidates[last].Item.Observation
+	if canonical == nil || len(canonical.ResolvedAskCalls) != len(calls) {
+		t.Fatalf("canonical item lost its call list: %+v", canonical)
+	}
+}

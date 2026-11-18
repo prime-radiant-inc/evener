@@ -1505,18 +1505,8 @@ func transcriptWindowItemBodyBytes(item appwire.ThreadItem) int {
 // the canonical item the caller retains, so the full stamp survives in the
 // projection every other read serves.
 func boundTranscriptItemStamp(item appwire.ThreadItem, limit int) appwire.ThreadItem {
-	observation := item.Observation
-	if observation == nil || len(observation.ResolvedAskCalls) == 0 {
-		return item
-	}
-	encoded, err := json.Marshal(observation.ResolvedAskCalls)
-	if err != nil || len(encoded) <= limit {
-		return item
-	}
-	bounded := *observation
-	bounded.ResolvedAskCalls = nil
-	item.Observation = &bounded
-	return item
+	bounded, _ := appitempaging.OmitResolvedAskCalls(item, limit)
+	return bounded
 }
 
 func transcriptWindowItemHasBody(item appwire.ThreadItem) bool {

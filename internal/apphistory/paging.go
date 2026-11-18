@@ -292,15 +292,45 @@ func fill(ctx context.Context, params appwire.ThreadTurnsListParams, page appwir
 	// Item bytes alone are a lower bound on the encoded page. Measure each
 	// payload once so oversized windows do not repeatedly clone and encode
 	// large tool outputs while discarding their oldest items.
-	itemSizes := make([]int, len(selected))
-	itemBytes := 0
-	for i, candidate := range selected {
-		encoded, err := json.Marshal(candidate.Item)
-		if err != nil {
+	var itemSizes []int
+	var itemBytes int
+	measure := func() error {
+		sizes := make([]int, len(selected))
+		total := 0
+		for i := range selected {
+			encoded, err := json.Marshal(selected[i].Item)
+			if err != nil {
+				return err
+			}
+			sizes[i] = len(encoded)
+			total += len(encoded)
+		}
+		itemSizes, itemBytes = sizes, total
+		return nil
+	}
+	// A per-call resolution stamp is optional metadata, not a body. Omit the
+	// lists as a unit before any item is dropped, so a page that is over
+	// budget only because of them costs the reader no message (#6323).
+	// Bodies, turn links and legacy counts stay.
+	omitLists := func() bool {
+		omitted := false
+		for i := range selected {
+			item, changed := appitempaging.OmitResolvedAskCalls(selected[i].Item, 0)
+			if !changed {
+				continue
+			}
+			selected[i].Item = item
+			omitted = true
+		}
+		return omitted
+	}
+	if err := measure(); err != nil {
+		return appwire.ThreadTurnsListResponse{}, err
+	}
+	if itemBytes > pageContentBytes && omitLists() {
+		if err := measure(); err != nil {
 			return appwire.ThreadTurnsListResponse{}, err
 		}
-		itemSizes[i] = len(encoded)
-		itemBytes += len(encoded)
 	}
 	for itemBytes > pageContentBytes && len(selected) > 1 {
 		itemBytes -= itemSizes[0]
@@ -317,7 +347,17 @@ func fill(ctx context.Context, params appwire.ThreadTurnsListParams, page appwir
 		if err != nil {
 			return appwire.ThreadTurnsListResponse{}, err
 		}
-		if len(encoded) <= pageContentBytes || len(selected) <= 1 {
+		if len(encoded) <= pageContentBytes {
+			break
+		}
+		// The encoded page carries turn wrappers the per-item measure cannot
+		// see, so it can exceed the budget while item bytes did not. Try the
+		// same omission here before dropping a selected item, and before the
+		// nearest item is retained alone over the target.
+		if omitLists() {
+			continue
+		}
+		if len(selected) <= 1 {
 			break
 		}
 		selected = selected[1:]
