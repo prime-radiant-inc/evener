@@ -420,26 +420,26 @@ data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","index
 data: [DONE]
 
 `
-		resp, err := ExtractRecordedResponse([]byte(sse), "m")
-		if err != nil {
-			t.Fatal(err)
+		want := []map[string]any{
+			{"type": "reasoning.text", "index": 2, "text": "first-2", "signature": "sig-2"},
+			{"type": "reasoning.text", "index": 7, "text": "second-7", "signature": "sig-7", "metadata": "meta-7"},
+			{"type": "reasoning.encrypted", "id": "e3", "data": "opaque-3"},
 		}
-		out, err := toChatMessages([]llm.Message{resp.Message}, registry.Caps{ReplayReasoningText: new(true)}, true)
-		if err != nil {
-			t.Fatal(err)
-		}
-		details, _ := out[0]["reasoning_details"].([]map[string]any)
-		if len(details) != 3 || details[0]["data"] != "opaque-3" ||
-			details[1]["signature"] != "sig-7" || details[1]["text"] != "second-7" || details[1]["metadata"] != "meta-7" ||
-			details[2]["signature"] != "sig-2" || details[2]["text"] != "first-2" {
-			t.Fatalf("interleaved continuations = %#v", details)
-		}
-		scalar, err := toChatMessages([]llm.Message{resp.Message}, registry.Caps{ReplayReasoningText: new(true)}, false)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if scalar[0]["reasoning_text"] != "first-2second-7" || jsonOf(t, scalar[0]["reasoning_details"]) != jsonOf(t, details) {
-			t.Errorf("aggregate scalar replay = %#v", scalar[0])
+		complete := map[string]any{"reasoning_text": "first-2second-7", "reasoning_details": want}
+		responses, _ := decode(t, jsonOf(t, chatResponseRaw(complete, "stop")), sse)
+		for source, resp := range responses {
+			for _, useDetails := range []bool{true, false} {
+				out, err := toChatMessages([]llm.Message{resp.Message}, registry.Caps{ReplayReasoningText: new(true)}, useDetails)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := jsonOf(t, out[0]["reasoning_details"]); got != jsonOf(t, want) {
+					t.Errorf("%s reordered authenticated details: %s", source, got)
+				}
+				if !useDetails && out[0]["reasoning_text"] != complete["reasoning_text"] {
+					t.Errorf("%s aggregate scalar replay = %#v", source, out[0])
+				}
+			}
 		}
 	})
 	t.Run("unindexed signatures with two open blocks", func(t *testing.T) {
@@ -467,9 +467,9 @@ data: [DONE]
 				t.Fatal(err)
 			}
 			details, _ := out[0]["reasoning_details"].([]map[string]any)
-			if len(details) != 3 || details[0]["signature"] != "unassigned" || details[0]["text"] != nil ||
+			if len(details) != 3 || details[2]["signature"] != "unassigned" || details[2]["text"] != nil ||
 				details[1]["signature"] != "b7" || details[1]["text"] != "beta" || details[1]["index"] != nil ||
-				details[2]["signature"] != "a0" || details[2]["text"] != "alpha" || details[2]["id"] != "a" {
+				details[0]["signature"] != "a0" || details[0]["text"] != "alpha" || details[0]["id"] != "a" {
 				t.Fatalf("signatures and authenticated text = %#v", details)
 			}
 		}

@@ -261,11 +261,11 @@ func (f chatReasoningFields) scalar() (string, string) {
 }
 
 type reasoningDetailBlock struct {
-	text     strings.Builder
-	wire     map[string]any
-	signed   bool
-	position int
-	indexed  bool
+	text         strings.Builder
+	wire         map[string]any
+	continuation bool
+	position     int
+	indexed      bool
 }
 
 // chatReasoning assembles one completion. A trailing signature authenticates
@@ -279,8 +279,7 @@ type chatReasoning struct {
 	display      *strings.Builder
 	displayField string
 	open         []*reasoningDetailBlock
-	blocks       []*reasoningDetailBlock
-	continuation []*reasoningDetailBlock
+	blocks       []*reasoningDetailBlock // native detail order, reserved when a block first appears
 	hasSignature bool
 }
 
@@ -372,7 +371,7 @@ func (r *chatReasoning) openDetail(pos int, item reasoningDetailItem, single boo
 
 func (r *chatReasoning) addDetail(pos int, item reasoningDetailItem, piece string, single bool) {
 	if item.isEncrypted() {
-		r.continuation = append(r.continuation, &reasoningDetailBlock{wire: item.wireItem()})
+		r.blocks = append(r.blocks, &reasoningDetailBlock{wire: item.wireItem(), continuation: true})
 		return
 	}
 	if piece == "" && !item.carriesContinuation() {
@@ -393,11 +392,10 @@ func (r *chatReasoning) addDetail(pos int, item reasoningDetailItem, piece strin
 	}
 	block.text.WriteString(piece)
 	if item.carriesContinuation() {
-		block.signed = true
+		block.continuation = true
 		if block.text.Len() > 0 {
 			block.wire["text"] = block.text.String()
 		}
-		r.continuation = append(r.continuation, block)
 		r.hasSignature = true
 		if index >= 0 {
 			r.open = slices.Delete(r.open, index, index+1)
@@ -422,8 +420,10 @@ func (r *chatReasoning) parts() []llm.ContentPart {
 			}
 		}
 		var opaque []map[string]any
-		for _, block := range r.continuation {
-			opaque = append(opaque, block.wire)
+		for _, block := range r.blocks {
+			if block.continuation {
+				opaque = append(opaque, block.wire)
+			}
 		}
 		thinking.EncryptedContent = encodeEncryptedDetails(opaque)
 		appendPart(thinking)
@@ -434,20 +434,14 @@ func (r *chatReasoning) parts() []llm.ContentPart {
 		appendPart(llm.ThinkingData{Text: scalar, Signature: r.scalarField})
 	}
 	for _, block := range r.blocks {
-		if !block.signed {
-			thinking := llm.ThinkingData{Text: block.text.String()}
-			if block == mirror {
-				setChatReplayScalar(&thinking, r.scalarField, scalar)
-			} else if scalar != "" {
-				thinking.ChatScalar = &llm.ChatReasoningScalar{}
-			}
-			appendPart(thinking)
+		thinking := llm.ThinkingData{Text: block.text.String()}
+		if block.continuation {
+			thinking.EncryptedContent = encodeEncryptedDetails([]map[string]any{block.wire})
 		}
-	}
-	for _, block := range r.continuation {
-		thinking := llm.ThinkingData{Text: block.text.String(), EncryptedContent: encodeEncryptedDetails([]map[string]any{block.wire})}
 		if block == mirror {
 			setChatReplayScalar(&thinking, r.scalarField, scalar)
+		} else if !block.continuation && scalar != "" {
+			thinking.ChatScalar = &llm.ChatReasoningScalar{}
 		}
 		appendPart(thinking)
 	}
@@ -479,12 +473,12 @@ func (r *chatReasoning) scalarMirror(scalar string) *reasoningDetailBlock {
 			continue
 		}
 		if text == scalar {
-			if block.signed {
+			if block.continuation {
 				return block
 			}
 			exact = block
 		}
-		if aggregate == nil || (aggregate.signed && !block.signed) {
+		if aggregate == nil || (aggregate.continuation && !block.continuation) {
 			aggregate = block
 		}
 		pieces = append(pieces, text)
