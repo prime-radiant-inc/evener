@@ -460,13 +460,9 @@ func responsesReasoningChars(t *ThinkingData, replayText bool) int {
 			return 0
 		}
 	}
-	if id := strings.TrimSpace(t.ID); id != "" {
-		chars += len(id)
-	}
+	chars += len(t.ID)
 	for _, s := range t.Summary {
-		if s = strings.TrimSpace(s); s != "" {
-			chars += len(s)
-		}
+		chars += len(s)
 	}
 	return chars
 }

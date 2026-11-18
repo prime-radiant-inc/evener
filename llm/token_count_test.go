@@ -1066,7 +1066,7 @@ func TestEstimateMessagesInputTokensForResolved_BillsThinkingShapesByAdapter(t *
 		{"responses skips display-only text on a replaying row", row(responses, replay), thinking(&ThinkingData{Text: text}), 0},
 		{"responses skips foreign reasoning details on a replaying row", row(responses, replay), thinking(&ThinkingData{ID: id, Text: text, EncryptedContent: compat}), 0},
 		{"responses drops the display text beside the blob", row(responses, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: blob, Text: text}), blobChars / 4},
-		{"responses drops an id and summaries that do not ride", row(responses, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: blob, ID: "  ", Summary: []string{" "}}), blobChars / 4},
+		{"responses bills the original id and summary bytes", row(responses, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: blob, ID: " id ", Summary: []string{" ", "", "  s  "}}), (blobChars + 4 + 1 + 5) / 4},
 		{"chat drops the opaque blob and replays its text", row(chat, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: blob, Text: text}), textChars / 4},
 		{"chat drops an opaque blob with no text", row(chat, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: blob}), 0},
 		{"anthropic drops the opaque blob and replays the text", row(anthropic, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: blob, Text: text}), textChars / 4},

@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -31,23 +32,22 @@ func responseContentFromOutputItems(out []any, body []byte, rawItems []json.RawM
 		}
 		switch typ {
 		case "message":
-			phase, _ := item["phase"].(string)
-			// content: [{type:"output_text", text:"..."}]
-			if itemContent, ok := item["content"].([]any); ok {
-				for _, cAny := range itemContent {
-					c, ok := cAny.(map[string]any)
-					if !ok {
-						continue
-					}
-					ct, _ := c["type"].(string)
-					if ct == "output_text" {
-						text, _ := c["text"].(string)
-						if text != "" || phase != "" {
-							content = append(content, llm.ContentPart{Kind: llm.ContentText, Text: text, Phase: phase})
-						}
-					}
+			var prior *responsesOutputItem
+			if stream != nil {
+				id, _ := item["id"].(string)
+				prior = stream.byID[id]
+				if prior == nil {
+					prior = stream.byIndex[int64(itemIdx)]
+				}
+				if prior == nil && len(out) == 1 {
+					prior = stream.anonymousText
+				}
+				if prior != nil && (prior.kind != "message" || (prior.id != "" && id != "" && prior.id != id)) {
+					prior = nil
 				}
 			}
+			phase, _ := item["phase"].(string)
+			content = prior.appendMessage(content, item, phase)
 		case "function_call":
 			name, _ := item["name"].(string)
 			args, _ := item["arguments"].(string)
@@ -104,12 +104,12 @@ func responseContentFromOutputItems(out []any, body []byte, rawItems []json.RawM
 				},
 			})
 		case "reasoning":
-			thinking := responsesThinking(item)
+			thinking, native := responsesThinking(item)
 			if stream != nil {
-				if hasResponsesReasoning(thinking) {
+				if native == reasoningSubstantive {
 					onlyReasoningPlaceholders = false
 				} else {
-					thinking = stream.settleReasoning(item, thinking)
+					thinking = stream.settleReasoning(item, thinking, native)
 				}
 			}
 			if thinking != nil {
@@ -127,17 +127,22 @@ func responseContentFromOutputItems(out []any, body []byte, rawItems []json.RawM
 
 // Only a completed reasoning item with the same native ID may supply
 // reasoning absent from the terminal.
-func (acc *responsesOutputAccumulator) settleReasoning(item map[string]any, terminal *llm.ThinkingData) *llm.ThinkingData {
+func (acc *responsesOutputAccumulator) settleReasoning(item map[string]any, terminal *llm.ThinkingData, terminalNative reasoningContent) *llm.ThinkingData {
 	id, _ := item["id"].(string)
 	output := acc.byID[id]
 	if output == nil || output.kind != "reasoning" {
 		return terminal
 	}
-	prior := responsesThinking(output.done)
-	if !hasResponsesReasoning(prior) {
+	prior, native := responsesThinking(output.done)
+	if native == reasoningAbsent {
 		return terminal
 	}
-	if summary := parseReasoningSummary(item["summary"]); len(summary) > 0 {
+	// Terminal whitespace is already native text. A zero-length part can
+	// still be filled, and ciphertext is the preferred continuation.
+	if prior.EncryptedContent == "" && (terminalNative == reasoningWhitespace || terminalNative == native) {
+		return terminal
+	}
+	if summary := parseReasoningSummary(item["summary"]); summary != nil {
 		prior.Summary = summary
 	}
 	return prior
@@ -168,17 +173,12 @@ func (acc *responsesOutputAccumulator) sparseContent(reasoning []llm.ContentPart
 			}
 			continue
 		}
-		if item.text.Len() > 0 {
-			content = append(content, llm.ContentPart{Kind: llm.ContentText, Text: item.text.String(), Phase: item.phase})
+		if item.kind == "message" {
+			content = item.appendMessage(content, item.done, item.phase)
 			continue
 		}
 		if item.done != nil {
 			parts := responseContentFromOutputItems([]any{item.done}, nil, []json.RawMessage{item.raw}, nil)
-			if item.kind == "message" && item.phase != "" {
-				for i := range parts {
-					parts[i].Phase = item.phase
-				}
-			}
 			if len(parts) != 0 {
 				content = append(content, parts...)
 				continue
@@ -188,6 +188,41 @@ func (acc *responsesOutputAccumulator) sparseContent(reasoning []llm.ContentPart
 			content = append(content, llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
 				ID: st.id, ItemID: st.itemID, Name: st.name, Type: "function", Arguments: st.args.Bytes(),
 			}})
+		}
+	}
+	return content
+}
+
+// A terminal message owns its parts. A single empty placeholder can be filled
+// by its completed output item or its text deltas.
+func (prior *responsesOutputItem) appendMessage(content []llm.ContentPart, message map[string]any, phase string) []llm.ContentPart {
+	start := len(content)
+	content = appendResponsesText(content, message, phase)
+	if prior == nil || len(content) > start+1 || (len(content) > start && content[start].Text != "") {
+		return content
+	}
+	if phase == "" {
+		phase = prior.phase
+	}
+	if prior.textComplete {
+		return appendResponsesText(content[:start], prior.done, phase)
+	}
+	if len(prior.text) != 0 {
+		content = content[:start]
+		for _, index := range slices.Sorted(maps.Keys(prior.text)) {
+			content = append(content, llm.ContentPart{Kind: llm.ContentText, Text: prior.text[index].String(), Phase: phase, ResponsesMessageStart: len(content) == start})
+		}
+	}
+	return content
+}
+
+func appendResponsesText(content []llm.ContentPart, message map[string]any, phase string) []llm.ContentPart {
+	start := len(content)
+	parts, _ := message["content"].([]any)
+	for _, entry := range parts {
+		p, _ := entry.(map[string]any)
+		if text, ok := p["text"].(string); ok && p["type"] == "output_text" {
+			content = append(content, llm.ContentPart{Kind: llm.ContentText, Text: text, Phase: phase, ResponsesMessageStart: len(content) == start})
 		}
 	}
 	return content
@@ -212,24 +247,24 @@ func (acc *responsesOutputAccumulator) orderOutput() {
 	slices.SortStableFunc(acc.output, func(a, b *responsesOutputItem) int { return cmp.Compare(a.index, b.index) })
 }
 
-func hasResponsesReasoning(t *llm.ThinkingData) bool {
-	if t == nil {
-		return false
-	}
-	if t.EncryptedContent != "" {
-		return true
-	}
-	for text := range t.ResponsesReasoningTextParts() {
-		if strings.TrimSpace(text) != "" {
-			return true
-		}
-	}
-	return false
-}
+type reasoningContent uint8
 
-func responsesThinking(item map[string]any) *llm.ThinkingData {
+const (
+	reasoningAbsent reasoningContent = iota
+	reasoningEmpty
+	reasoningWhitespace
+	reasoningSubstantive
+)
+
+// Native bytes can consist entirely of whitespace. Such an item is kept in
+// history while still allowing the stream to supply missing answer or tool items.
+func responsesThinking(item map[string]any) (*llm.ThinkingData, reasoningContent) {
 	id, _ := item["id"].(string)
 	encrypted, _ := item["encrypted_content"].(string)
+	native := reasoningAbsent
+	if encrypted != "" {
+		native = reasoningSubstantive
+	}
 	parts, _ := item["content"].([]any)
 	var display strings.Builder
 	var textParts []llm.ResponsesTextPart
@@ -240,6 +275,16 @@ func responsesThinking(item map[string]any) *llm.ThinkingData {
 		if !ok || (kind == "" && strings.TrimSpace(text) == "") {
 			continue
 		}
+		if kind == "reasoning_text" && native < reasoningSubstantive {
+			switch {
+			case text == "":
+				native = max(native, reasoningEmpty)
+			case strings.TrimSpace(text) == "":
+				native = reasoningWhitespace
+			default:
+				native = reasoningSubstantive
+			}
+		}
 		if len(textParts) != 0 {
 			display.WriteString(reasoningPartSeparator)
 		}
@@ -247,11 +292,9 @@ func responsesThinking(item map[string]any) *llm.ThinkingData {
 		display.WriteString(text)
 		textParts = append(textParts, llm.ResponsesTextPart{Type: kind, Start: start, End: display.Len()})
 	}
-	// A blank unencrypted item leaves the streamed answer available for
-	// recovery. A substantive item keeps all of its typed part boundaries.
 	text := display.String()
-	if encrypted == "" && strings.TrimSpace(text) == "" {
-		return nil
+	if native == reasoningAbsent && strings.TrimSpace(text) == "" {
+		return nil, native
 	}
 	return &llm.ThinkingData{
 		ID:                 id,
@@ -259,7 +302,7 @@ func responsesThinking(item map[string]any) *llm.ThinkingData {
 		EncryptedContent:   encrypted,
 		Summary:            parseReasoningSummary(item["summary"]),
 		ResponsesTextParts: textParts,
-	}
+	}, native
 }
 
 // fromResponses maps a Responses API JSON object into an llm.Response.

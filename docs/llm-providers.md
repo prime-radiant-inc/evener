@@ -534,8 +534,10 @@ saved the original spelling can replay only the bytes still on disk.
 - On `openai-responses`, an encrypted reasoning item takes precedence. When
   the row opts in and an item has raw `content`, Evener returns its
   `reasoning_text` parts in order with the item's ID when supplied. Evener
-  saves the type and boundaries of each text part, including display-only
-  parts. Older transcripts can contain an item ID and joined text without
+  saves the type and byte boundaries of each text part, including display-only
+  parts. It preserves whitespace in raw parts, item IDs and summaries, and
+  keeps separate assistant messages and their `output_text` parts in order.
+  Older transcripts can contain an item ID and joined text without
   part types. On an opted-in route, Evener sends that text as one reasoning
   part for the issuing model. Any display text already joined into that old
   item travels with it. A summary alone supplies no raw text. Neither

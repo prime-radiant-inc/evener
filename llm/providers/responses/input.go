@@ -288,10 +288,17 @@ func toResponsesInput(msgs []llm.Message, imageCap string, replayReasoningText b
 func appendAssistantInput(items []any, parts []llm.ContentPart, replayReasoningText bool) ([]any, error) {
 	var group map[string]any
 	var phase string
+	var nativeGroup bool
 	for _, p := range parts {
 		switch p.Kind {
 		case llm.ContentText:
-			if strings.TrimSpace(p.Text) == "" && p.Phase == "" {
+			if replayReasoningText && p.ResponsesMessageStart {
+				group = nil
+				nativeGroup = true
+			} else if group == nil || phase != p.Phase {
+				nativeGroup = false
+			}
+			if !nativeGroup && strings.TrimSpace(p.Text) == "" && p.Phase == "" {
 				continue
 			}
 			if group == nil || phase != p.Phase {
@@ -342,8 +349,8 @@ func standaloneInputItem(p llm.ContentPart, replayReasoningText bool) map[string
 			return nil
 		}
 		item["summary"] = reasoningSummaryInput(t.Summary)
-		if id := strings.TrimSpace(t.ID); id != "" {
-			item["id"] = id
+		if t.ID != "" {
+			item["id"] = t.ID
 		}
 		return item
 	case llm.ContentToolCall:
@@ -369,10 +376,6 @@ func standaloneInputItem(p llm.ContentPart, replayReasoningText bool) map[string
 func reasoningSummaryInput(summary []string) []any {
 	out := make([]any, 0, len(summary))
 	for _, text := range summary {
-		text = strings.TrimSpace(text)
-		if text == "" {
-			continue
-		}
 		out = append(out, map[string]any{
 			"type": "summary_text",
 			"text": text,
@@ -392,8 +395,8 @@ func parseReasoningSummary(raw any) []string {
 		if !ok {
 			continue
 		}
-		text, _ := item["text"].(string)
-		if strings.TrimSpace(text) == "" {
+		text, ok := item["text"].(string)
+		if !ok {
 			continue
 		}
 		out = append(out, text)

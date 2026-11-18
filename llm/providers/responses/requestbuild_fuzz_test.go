@@ -481,12 +481,19 @@ func FuzzResponsesBuildBody(f *testing.F) {
 			if reasoning == nil {
 				t.Fatalf("a thinking part with non-OpenAI encrypted content must replay as a reasoning item: %s", inputJSON)
 			}
-			if reasoning["encrypted_content"] != "opaque-fuzz-blob" || reasoning["id"] != "rs_fuzz" {
-				t.Fatalf("reasoning item must carry the blob and the trimmed id: %s", inputJSON)
+			want := req.Messages[2].Content[1].Thinking
+			if reasoning["encrypted_content"] != want.EncryptedContent || reasoning["id"] != want.ID {
+				t.Fatalf("reasoning item lost native ciphertext or ID: %s", inputJSON)
 			}
 			summary, _ := reasoning["summary"].([]any)
-			if len(summary) != 1 || summary[0].(map[string]any)["text"] != "fuzz summary" {
-				t.Fatalf("whitespace-only summary entries must be dropped: %s", inputJSON)
+			if len(summary) != len(want.Summary) {
+				t.Fatalf("summary parts = %d, want %d", len(summary), len(want.Summary))
+			}
+			for i, text := range want.Summary {
+				part, _ := summary[i].(map[string]any)
+				if part["type"] != "summary_text" || part["text"] != text {
+					t.Fatalf("summary part %d = %#v, want summary_text %q", i, part, text)
+				}
 			}
 		case 7:
 			var want map[string]any

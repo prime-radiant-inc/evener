@@ -281,7 +281,7 @@ func responseHasContent(r Response) bool {
 	}
 	if len(r.Message.Content) == 1 {
 		part := r.Message.Content[0]
-		return part.Kind != ContentText || part.Text != "" || part.Phase != ""
+		return part.Kind != ContentText || part.Text != "" || part.Phase != "" || part.ResponsesMessageStart
 	}
 	return true
 }

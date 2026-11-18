@@ -27,7 +27,7 @@ type responsesOutputItem struct {
 	index           int64
 	done            map[string]any
 	raw             json.RawMessage
-	text            strings.Builder
+	text            map[int64]*strings.Builder
 	textComplete    bool
 	tool            *responsesToolState
 }
@@ -54,15 +54,19 @@ func newResponsesOutputAccumulator() *responsesOutputAccumulator {
 	}
 }
 
+func responsesEventIndex(payload map[string]any, field string) int64 {
+	if n, ok := payload[field].(json.Number); ok {
+		if i, err := n.Int64(); err == nil && i >= 0 {
+			return i
+		}
+	}
+	return -1
+}
+
 // An item can be identified before its contents arrive. Retain the position
 // supplied by any of its events and keep first appearance for unindexed items.
 func (acc *responsesOutputAccumulator) outputItem(payload map[string]any, kind, id string, fallback *responsesOutputItem) *responsesOutputItem {
-	index := int64(-1)
-	if n, ok := payload["output_index"].(json.Number); ok {
-		if i, err := n.Int64(); err == nil && i >= 0 {
-			index = i
-		}
-	}
+	index := responsesEventIndex(payload, "output_index")
 	item := acc.byID[id]
 	if item == nil {
 		item = acc.byIndex[index]
@@ -103,7 +107,14 @@ func (acc *responsesOutputAccumulator) handleOutputTextDelta(payload map[string]
 		acc.anonymousText = item
 	}
 	if !item.textComplete {
-		item.text.WriteString(delta)
+		if item.text == nil {
+			item.text = make(map[int64]*strings.Builder)
+		}
+		index := max(0, responsesEventIndex(payload, "content_index"))
+		if item.text[index] == nil {
+			item.text[index] = new(strings.Builder)
+		}
+		item.text[index].WriteString(delta)
 	}
 	return delta
 }
@@ -119,7 +130,7 @@ func (item *responsesOutputItem) settleMessage(message map[string]any) {
 		part, _ := entry.(map[string]any)
 		if text, _ := part["text"].(string); part["type"] == "output_text" && text != "" {
 			item.textComplete = true
-			item.text.Reset()
+			item.text = nil
 			return
 		}
 	}

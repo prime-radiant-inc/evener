@@ -137,6 +137,10 @@ type ContentPart struct {
 	Thinking   *ThinkingData   `json:"thinking,omitempty"`
 	WebSearch  *WebSearchData  `json:"web_search,omitempty"`
 
+	// ResponsesMessageStart marks the first output_text part of a native
+	// assistant message. Two adjacent messages can have the same phase.
+	ResponsesMessageStart bool `json:"responses_message_start,omitempty"`
+
 	// Machinery marks a text part as session-manufactured machinery — a
 	// notification for the model the user never typed — rather than
 	// user-facing prose. Producers set it at construction; consumers that

@@ -21,20 +21,27 @@ type replayItem struct {
 	Name, Arguments  string
 }
 
-// replayInput reads the next request after a transcript save and reload.
+// replayInput checks the first and reloaded requests carry identical input.
 func replayInput(t *testing.T, msg llm.Message, replay bool) []replayItem {
 	t.Helper()
-	var saved llm.Message
-	if err := json.Unmarshal([]byte(jsonOf(t, msg)), &saved); err != nil {
-		t.Fatal(err)
-	}
 	res := resolved(openaiCaps)
 	if replay {
 		res.Caps.ReplayReasoningText = new(true)
 	}
-	body := build(t, llm.Request{Model: res.ModelID, Messages: []llm.Message{saved}}, res)
+	input := func(m llm.Message) string {
+		body := build(t, llm.Request{Model: res.ModelID, Messages: []llm.Message{m}}, res)
+		return jsonOf(t, body["input"])
+	}
+	warm := input(msg)
+	var saved llm.Message
+	if err := json.Unmarshal([]byte(jsonOf(t, msg)), &saved); err != nil {
+		t.Fatal(err)
+	}
+	if cold := input(saved); cold != warm {
+		t.Fatalf("reloaded input = %s, first input = %s", cold, warm)
+	}
 	var items []replayItem
-	if err := json.Unmarshal([]byte(jsonOf(t, body["input"])), &items); err != nil {
+	if err := json.Unmarshal([]byte(warm), &items); err != nil {
 		t.Fatal(err)
 	}
 	return items
@@ -53,15 +60,20 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 	const blankReasoning = `{"type":"reasoning","id":"rs_1","content":[{"type":"reasoning_text","text":" "},{"type":"reasoning_text","text":"\t"}],"summary":[]}`
 	const encryptedItem = `{"type":"reasoning","id":"rs_1","encrypted_content":"e1","content":[{"type":"reasoning_text","text":""}],"summary":[]}`
 	const earlierItem = `{"type":"reasoning","id":"rs_1","content":[{"type":"reasoning_text","text":"r_earlier"}]}`
+	const earlierSummary = `{"type":"reasoning","id":"rs_1","content":[{"type":"reasoning_text","text":" r3 "},{"type":"reasoning_text","text":""},{"type":"reasoning_text","text":"r4"}],"summary":[{"type":"summary_text","text":"s0"}]}`
 	const otherItem = `{"type":"reasoning","id":"rs_other","content":[{"type":"reasoning_text","text":"r_other"}]}`
 	const summaryItem = `{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"s1"}]}`
 	const displayItem = `{"type":"reasoning","id":"rs_1","content":[{"type":"summary_text","text":"s1"}]}`
 	const earlierAnswer = `{"type":"message","content":[{"type":"output_text","text":"m_earlier"}]}`
 	const answerItem = `{"type":"message","content":[{"type":"output_text","text":"m1"}]}`
+	const emptyAnswer = `{"type":"message","id":"msg_2","content":[{"type":"output_text","text":""}]}`
+	const secondAnswer = `{"type":"message","id":"msg_2","content":[{"type":"output_text","text":""},{"type":"output_text","text":" \t"},{"type":"output_text","text":"m2"}]}`
 	const answerDelta = `{"type":"response.output_text.delta","delta":"m1"}`
 	const toolDelta = `{"type":"response.function_call_arguments.delta","name":"f","call_id":"call_1","delta":"{}"}`
 	const toolItem = `{"type":"function_call","name":"f","call_id":"call_1","arguments":"{}"}`
 	const otherAnswerDelta = `{"type":"response.output_text.delta","item_id":"msg_2","delta":"m2"}`
+	const laterPart = `{"type":"response.output_text.delta","item_id":"msg_2","content_index":2,"delta":"m2"}`
+	const blankPart = `{"type":"response.output_text.delta","item_id":"msg_2","content_index":1,"delta":" \t"}`
 	const toolAdded = `{"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"f"}}`
 	const argumentsDone = `{"type":"response.function_call_arguments.done","item_id":"fc_1","arguments":"{}"}`
 	done := func(item string) string { return `{"type":"response.output_item.done","item":` + item + "}" }
@@ -83,9 +95,14 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 	}
 	answer := replayItem{Type: "message", Content: []replayText{{"output_text", "m1"}}}
 	otherAnswer := replayItem{Type: "message", Content: []replayText{{"output_text", "m2"}}}
+	multipart := replayItem{Type: "message", Content: []replayText{{"output_text", ""}, {"output_text", " \t"}, {"output_text", "m2"}}}
 	commentary := otherAnswer
 	commentary.Phase = "commentary"
 	raw := replayItem{Type: "reasoning", ID: "rs_1", Content: []replayText{{"reasoning_text", " r3 "}, {"reasoning_text", ""}, {"reasoning_text", "r4"}}, Summary: []replayText{}}
+	empty := replayItem{Type: "reasoning", ID: "rs_1", Content: []replayText{{"reasoning_text", ""}}, Summary: []replayText{}}
+	emptyWithSummary := empty
+	emptyWithSummary.Summary = []replayText{{"summary_text", "s1"}}
+	blank := replayItem{Type: "reasoning", ID: "rs_1", Content: []replayText{{"reasoning_text", " "}, {"reasoning_text", "\t"}}, Summary: []replayText{}}
 	rawWithSummary := raw
 	rawWithSummary.Summary = []replayText{{"summary_text", "s1"}}
 	encrypted := replayItem{Type: "reasoning", ID: "rs_1", Encrypted: "e1", Summary: []replayText{}}
@@ -97,11 +114,24 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 		want   []replayItem
 	}{
 		{"settled item", nil, []string{reasoningItem, answerItem}, []replayItem{raw, answer}},
+		{"standalone empty native answer", nil, []string{emptyAnswer}, []replayItem{{Type: "message", Content: []replayText{{"output_text", ""}}}}},
+		{"empty native answer with a matching streamed answer", []string{otherAnswerDelta}, []string{emptyAnswer}, []replayItem{otherAnswer}},
+		{"distinct native messages sharing a phase", nil, []string{answerItem, secondAnswer}, []replayItem{answer, multipart}},
+		{"substantive native message owns its phase", []string{messageAdded}, []string{secondAnswer}, []replayItem{multipart}},
+		{"out of order completed messages sharing a phase", []string{at(1, done(secondAnswer)), at(0, done(answerItem))}, nil, []replayItem{answer, multipart}},
+		{"indexed delta and completed answer sharing a phase", []string{at(1, done(secondAnswer)), at(0, answerDelta)}, nil, []replayItem{answer, multipart}},
+		{"indexed parts of a sparse message", []string{at(1, done(answerItem)), at(0, laterPart), at(0, blankPart)}, nil, []replayItem{{Type: "message", Content: []replayText{{"output_text", " \t"}, {"output_text", "m2"}}}, answer}},
 		{"completed items with empty terminal", []string{done(reasoningItem), done(answerItem)}, nil, []replayItem{raw, answer}},
 		{"display deltas with settled answer", nil, []string{answerItem}, []replayItem{answer}},
 		{"display deltas with empty terminal", []string{answerDelta}, nil, []replayItem{answer}},
-		{"streamed answer with empty terminal reasoning", []string{answerDelta}, []string{emptyReasoning}, []replayItem{answer}},
-		{"streamed answer with blank terminal reasoning", []string{answerDelta}, []string{blankReasoning}, []replayItem{answer}},
+		{"standalone empty native reasoning", nil, []string{emptyReasoning}, []replayItem{empty}},
+		{"empty completed reasoning with terminal summary", []string{done(emptyReasoning)}, []string{summaryItem, answerItem}, []replayItem{emptyWithSummary, answer}},
+		{"streamed answer with empty terminal reasoning", []string{answerDelta}, []string{emptyReasoning}, []replayItem{empty, answer}},
+		{"streamed answer with blank terminal reasoning", []string{answerDelta}, []string{blankReasoning}, []replayItem{blank, answer}},
+		{"blank terminal reasoning with completed answer and call", []string{done(answerItem), done(toolItem)}, []string{blankReasoning}, []replayItem{blank, answer, tool}},
+		{"completed blank reasoning fills empty terminal", []string{done(blankReasoning)}, []string{emptyReasoning, answerItem}, []replayItem{blank, answer}},
+		{"terminal native whitespace wins over earlier text", []string{done(reasoningItem)}, []string{blankReasoning, answerItem}, []replayItem{blank, answer}},
+		{"terminal empty summary clears completed summary", []string{done(earlierSummary)}, []string{emptyReasoning, answerItem}, []replayItem{raw, answer}},
 		{"reasoning only", []string{done(reasoningItem)}, []string{emptyReasoning}, []replayItem{raw}},
 		{"display-only terminal part with streamed answer", []string{done(reasoningItem), answerDelta}, []string{displayItem}, []replayItem{raw, answer}},
 		{"reasoning with streamed answer and tool", []string{done(reasoningItem), answerDelta, toolDelta}, []string{emptyReasoning}, []replayItem{raw, answer, tool}},
@@ -111,12 +141,12 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 		{"encrypted reasoning with empty text", nil, []string{encryptedItem, answerItem}, []replayItem{encrypted, answer}},
 		{"matching completed reasoning and terminal answer", []string{done(reasoningItem), done(earlierAnswer)}, []string{emptyReasoning, answerItem}, []replayItem{raw, answer}},
 		{"matching item after answer keeps terminal summary", []string{done(reasoningItem)}, []string{answerItem, summaryItem}, []replayItem{answer, rawWithSummary}},
-		{"different completed reasoning", []string{done(otherItem)}, []string{emptyReasoning, answerItem}, []replayItem{answer}},
-		{"completed summary only", []string{done(summaryItem)}, []string{emptyReasoning, answerItem}, []replayItem{answer}},
+		{"different completed reasoning", []string{done(otherItem)}, []string{emptyReasoning, answerItem}, []replayItem{empty, answer}},
+		{"completed summary only", []string{done(summaryItem)}, []string{emptyReasoning, answerItem}, []replayItem{empty, answer}},
 		{"terminal raw reasoning wins", []string{done(earlierItem)}, []string{reasoningItem, answerItem}, []replayItem{raw, answer}},
 		{"terminal encrypted reasoning wins", []string{done(reasoningItem)}, []string{encryptedItem, answerItem}, []replayItem{encrypted, answer}},
 		{"completed encrypted reasoning survives a placeholder", []string{done(encryptedItem)}, []string{blankReasoning, answerItem}, []replayItem{encrypted, answer}},
-		{"placeholder with completed answer only", []string{done(answerItem)}, []string{emptyReasoning}, []replayItem{answer}},
+		{"placeholder with completed answer only", []string{done(answerItem)}, []string{emptyReasoning}, []replayItem{empty, answer}},
 		{"unmatched reasoning leaves completed answer and tool", []string{done(otherItem), done(answerItem), done(toolItem)}, []string{summaryItem}, []replayItem{answer, tool}},
 		{"indexed delta before completed reasoning", []string{at(1, done(reasoningItem)), at(0, otherAnswerDelta)}, []string{emptyReasoning}, []replayItem{otherAnswer, raw}},
 		{"added positions order sparse text tool and reasoning", []string{at(2, reasoningAdded), at(1, toolAdded), at(0, messageAdded), done(reasoningItem), argumentsDone, otherAnswerDelta}, nil, []replayItem{commentary, tool, raw}},
@@ -165,6 +195,8 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 			}
 			if got, want := replayInput(t, recorded.Message, true), replayInput(t, settled.Message, true); !reflect.DeepEqual(got, want) {
 				t.Fatalf("recorded input = %#v, live settled input = %#v", got, want)
+			} else if len(settled.Message.Content) != 0 && !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("recorded input = %#v, want %#v", got, tc.want)
 			}
 		})
 	}
@@ -180,19 +212,20 @@ func TestResponseContentFromOutputItems_KeepsReasoningTextContent(t *testing.T) 
 	t.Parallel()
 	var out []any
 	if err := json.Unmarshal([]byte(`[
-		{"id":"rs_1","type":"reasoning","content":[{"type":"reasoning_text","text":" α\n\nβ "},{"type":"summary_text","text":"v2"},{"type":"reasoning_text","text":"\t"},{"type":"reasoning_text","text":"γ\n"}],"summary":[{"type":"summary_text","text":"s1"}]},
-		{"type":"message","phase":"commentary","content":[{"type":"output_text","text":"m1"}]},
+		{"id":" \trs_1 ","type":"reasoning","content":[{"type":"reasoning_text","text":" α\n\nβ "},{"type":"summary_text","text":"v2"},{"type":"reasoning_text","text":"\t"},{"type":"reasoning_text","text":"γ\n"}],"summary":[{"type":"summary_text","text":" \ns1\t "},{"type":"summary_text","text":""},{"type":"summary_text","text":"\t \n"}]},
+		{"type":"message","content":[{"type":"output_text","text":"m1"},{"type":"output_text","text":" \t"},{"type":"output_text","text":""}]},
+		{"type":"message","content":[{"type":"output_text","text":"m2"}]},
 		{"type":"function_call","name":"f","call_id":"call_1","arguments":"{}"},
 		{"type":"reasoning","content":[{"type":"reasoning_text","text":"q2"}],"summary":[]},
 		{"type":"reasoning","id":"rs_display","content":[{"type":"summary_text","text":"v3"}]},
-		{"type":"message","phase":"final_answer","content":[{"type":"output_text","text":"m2"}]}
+		{"type":"message","phase":"final_answer","content":[{"type":"output_text","text":"m3"}]}
 	]`), &out); err != nil {
 		t.Fatalf("unmarshal fixture: %v", err)
 	}
 
 	content := responseContentFromOutputItems(out, nil, nil, nil)
-	if len(content) != 6 {
-		t.Fatalf("content parts = %d, want 6: %#v", len(content), content)
+	if len(content) != 9 {
+		t.Fatalf("content parts = %d, want 9: %#v", len(content), content)
 	}
 	th := content[0]
 	if th.Kind != llm.ContentThinking || th.Thinking == nil {
@@ -201,8 +234,8 @@ func TestResponseContentFromOutputItems_KeepsReasoningTextContent(t *testing.T) 
 	if th.Thinking.Text != " α\n\nβ \n\nv2\n\n\t\n\nγ\n" {
 		t.Fatalf("settled thinking text = %q", th.Thinking.Text)
 	}
-	if th.Thinking.ID != "rs_1" {
-		t.Fatalf("thinking id = %q, want rs_1", th.Thinking.ID)
+	if th.Thinking.ID != " \trs_1 " {
+		t.Fatalf("thinking id = %q", th.Thinking.ID)
 	}
 	if th.Thinking.EncryptedContent != "" {
 		t.Fatalf("encrypted content = %q, want empty", th.Thinking.EncryptedContent)
@@ -223,16 +256,22 @@ func TestResponseContentFromOutputItems_KeepsReasoningTextContent(t *testing.T) 
 	msg := llm.Message{Role: llm.RoleAssistant, Content: content}
 	items := replayInput(t, msg, true)
 	want := []replayItem{
-		{Type: "reasoning", ID: "rs_1", Content: []replayText{{"reasoning_text", " α\n\nβ "}, {"reasoning_text", "\t"}, {"reasoning_text", "γ\n"}}, Summary: []replayText{{"summary_text", "s1"}}},
-		{Type: "message", Phase: "commentary", Content: []replayText{{"output_text", "m1"}}},
+		{Type: "reasoning", ID: " \trs_1 ", Content: []replayText{{"reasoning_text", " α\n\nβ "}, {"reasoning_text", "\t"}, {"reasoning_text", "γ\n"}}, Summary: []replayText{{"summary_text", " \ns1\t "}, {"summary_text", ""}, {"summary_text", "\t \n"}}},
+		{Type: "message", Content: []replayText{{"output_text", "m1"}, {"output_text", " \t"}, {"output_text", ""}}},
+		{Type: "message", Content: []replayText{{"output_text", "m2"}}},
 		{Type: "function_call", CallID: "call_1", Name: "f", Arguments: "{}"},
 		{Type: "reasoning", Content: []replayText{{"reasoning_text", "q2"}}, Summary: []replayText{}},
-		{Type: "message", Phase: "final_answer", Content: []replayText{{"output_text", "m2"}}},
+		{Type: "message", Phase: "final_answer", Content: []replayText{{"output_text", "m3"}}},
 	}
 	if !reflect.DeepEqual(items, want) {
 		t.Fatalf("replayed items = %#v, want %#v", items, want)
 	}
-	for _, it := range replayInput(t, msg, false) {
+	strict := replayInput(t, msg, false)
+	group := replayItem{Type: "message", Content: []replayText{{"output_text", "m1"}, {"output_text", "m2"}}}
+	if len(strict) == 0 || !reflect.DeepEqual(strict[0], group) {
+		t.Fatalf("strict target grouping = %#v, want first group %#v", strict, group)
+	}
+	for _, it := range strict {
 		if it.Type == "reasoning" {
 			t.Fatalf("strict target received raw reasoning: %+v", it)
 		}
