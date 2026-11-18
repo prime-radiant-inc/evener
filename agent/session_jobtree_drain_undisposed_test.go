@@ -509,10 +509,23 @@ func TestClearedWatchStartsAFreshAnnouncementEpisode(t *testing.T) {
 	if len(reqs) != 4 {
 		t.Fatalf("model requests = %d, want 4: the turn that armed the watch, its held turn, and two fresh-episode escalation turns", len(reqs))
 	}
-	lastText := func(i int) string { return reqs[i].Messages[len(reqs[i].Messages)-1].Text() }
+	notice := func(i int) string {
+		t.Helper()
+		start := 0
+		if i > 0 {
+			start = len(reqs[i-1].Messages)
+		}
+		for _, msg := range reqs[i].Messages[start:] {
+			if msg.Role == llm.RoleUser && strings.Contains(msg.Text(), jobID) {
+				return msg.Text()
+			}
+		}
+		t.Fatalf("request %d has no notice for job %q", i, jobID)
+		return ""
+	}
 	// The episode after the clear opens with the same first announcement the
 	// original episode did, then escalates.
-	if lastText(2) != lastText(0) || lastText(3) == lastText(2) {
+	if notice(2) != notice(0) || notice(3) == notice(2) {
 		t.Fatal("the episode after a watch clear did not restart at the first announcement")
 	}
 }

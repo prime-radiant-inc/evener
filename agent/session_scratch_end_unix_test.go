@@ -500,7 +500,15 @@ func TestResumeReopensTheSameScratch(t *testing.T) {
 	dir, workspace := t.TempDir(), t.TempDir()
 	t.Setenv("TMPDIR", t.TempDir())
 	adapter := &agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response { return agenttest.FinalResponse("done") }}
-	root1 := newSession(t, withDir(workspace), withConfig(SessionConfig{StateDir: dir}), withEnvironmentSnapshot(), withAdapter(adapter))
+	launchEnv := execenv.NewLocalExecutionEnvironment(workspace)
+	cfg := SessionConfig{StateDir: dir}
+	if err := PickFreshSessionID(launchEnv, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := launchEnv.ExecCommand(t.Context(), "true", 5000, workspace, nil); err != nil {
+		t.Fatal(err)
+	}
+	root1 := newSession(t, withEnv(launchEnv), withConfig(cfg), withAdapter(adapter))
 	scratch := mintRootScratch(t, root1)
 	sendOneUserInput(t, root1, "start")
 	prompt := adapter.Requests()[0].Messages[0].Text()
@@ -511,7 +519,7 @@ func TestResumeReopensTheSameScratch(t *testing.T) {
 	root1.Close()
 
 	root2, err := RestoreSessionFromMetaWithConfig(root1.client, root1.profile,
-		execenv.NewLocalExecutionEnvironment(workspace), meta, RestoreSessionConfig{StateDir: dir})
+		execenv.NewLocalExecutionEnvironment(workspace), meta, RestoreSessionConfig{StateDir: dir, testOnly: testConfig{skipGitSnapshot: true}})
 	if err != nil {
 		t.Fatalf("restore: %v", err)
 	}
@@ -568,7 +576,7 @@ func TestResumeReopensTheSameScratch(t *testing.T) {
 			}
 			for round := range 2 {
 				env := execenv.NewLocalExecutionEnvironment(workspace)
-				restored, err := RestoreSessionFromMetaWithConfig(root1.client, root1.profile, env, meta, RestoreSessionConfig{StateDir: state})
+				restored, err := RestoreSessionFromMetaWithConfig(root1.client, root1.profile, env, meta, RestoreSessionConfig{StateDir: state, testOnly: testConfig{skipGitSnapshot: true}})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -591,10 +599,10 @@ func TestResumeReopensTheSameScratch(t *testing.T) {
 	}
 	t.Run("unavailable_at_launch", func(t *testing.T) {
 		state := t.TempDir()
-		live := newSession(t, withDir(workspace), withConfig(SessionConfig{StateDir: state}), withEnvironmentSnapshot(), withAdapter(adapter))
+		live := newSession(t, withDir(workspace), withConfig(SessionConfig{StateDir: state}), withAdapter(adapter))
 		for round := range 2 {
 			if round > 0 {
-				live, err = RestoreSessionFromMetaWithConfig(live.client, live.profile, execenv.NewLocalExecutionEnvironment(workspace), live.Meta(), RestoreSessionConfig{StateDir: state})
+				live, err = RestoreSessionFromMetaWithConfig(live.client, live.profile, execenv.NewLocalExecutionEnvironment(workspace), live.Meta(), RestoreSessionConfig{StateDir: state, testOnly: testConfig{skipGitSnapshot: true}})
 				if err != nil {
 					t.Fatal(err)
 				}
