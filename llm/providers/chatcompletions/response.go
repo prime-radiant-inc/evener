@@ -388,7 +388,11 @@ func (r *chatReasoning) parts() []llm.ContentPart {
 		}
 	}
 	for _, block := range r.continuation {
-		appendPart(llm.ThinkingData{Text: block.text.String(), EncryptedContent: encodeEncryptedDetails([]map[string]any{block.wire})})
+		thinking := llm.ThinkingData{Text: block.text.String(), EncryptedContent: encodeEncryptedDetails([]map[string]any{block.wire})}
+		if block == mirror {
+			setChatReplayScalar(&thinking, r.scalarField, scalar)
+		}
+		appendPart(thinking)
 	}
 	return parts
 }
@@ -403,9 +407,9 @@ func setChatReplayScalar(thinking *llm.ThinkingData, field, scalar string) {
 	}
 }
 
-// An exact signed mirror already carries the scalar on the wire. When several
-// detail texts together mirror it, one unsigned part carries the exact scalar
-// including any separators received from the provider.
+// A single detail owns the observed scalar when its text mirrors one or more
+// details. An exact match can reuse its display bytes. For an aggregate, prefer
+// an unsigned part so replay of the scalar can survive removal of signed items.
 func (r *chatReasoning) scalarMirror(scalar string) *reasoningDetailBlock {
 	if scalar == "" {
 		return nil

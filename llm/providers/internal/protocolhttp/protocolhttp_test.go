@@ -144,6 +144,42 @@ func TestURLAndModelInBody(t *testing.T) {
 	if !ModelInBody(registry.Resolved{Transport: registry.Transport{Endpoint: "/messages"}}) {
 		t.Fatal("plain endpoints send model in the body")
 	}
+	res.Transport.Auth = registry.AuthNone
+	priorSelectors := map[string]bool{}
+	for _, constants := range []map[string]any{
+		{"model": "body-11"},
+		{"model": nil},
+		{"model": ""},
+		{"model": "overridden", "model.deployment": "body-27"},
+	} {
+		res.Transport.Body = constants
+		p, err := Prepare(t.Context(), &Call{Method: http.MethodPost, URL: URL(res, res.Transport.Endpoint), Body: map[string]any{}, Res: res})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var sent map[string]any
+		if err := json.Unmarshal(p.Body, &sent); err != nil {
+			t.Fatal(err)
+		}
+		model, ok := sent["model"]
+		if !ok {
+			t.Fatalf("missing body model for constants %v", constants)
+		}
+		selector := res.OutboundModelSelector()
+		equivalent := res
+		equivalent.Transport.Body = map[string]any{"model": model}
+		if selector == "" || priorSelectors[selector] || equivalent.OutboundModelSelector() != selector {
+			t.Errorf("selector for %v did not identify the prepared model %v", constants, model)
+		}
+		priorSelectors[selector] = true
+		if name, ok := model.(string); ok && name != "" && name != selector {
+			t.Errorf("selector = %q, prepared body model = %q", selector, name)
+		}
+		equivalent.WireID += "-other"
+		if res.ReasoningReplayRoute() == equivalent.ReasoningReplayRoute() {
+			t.Fatal("different URL models with the same body model shared a replay route")
+		}
+	}
 }
 
 func TestDoDecodesStampsAndLogs(t *testing.T) {

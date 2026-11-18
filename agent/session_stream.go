@@ -159,7 +159,7 @@ func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile
 	group.Model = req.Model
 	group.Provider = req.Provider
 	res := profile.Resolved()
-	group.WireModel = res.WireID
+	group.WireModel = res.OutboundModelSelector()
 	group.ReasoningRoute = res.ReasoningReplayRoute()
 	// Announce every retry before its backoff sleep. Both paths below share this
 	// policy, so a rejection at stream open and a mid-stream truncation report

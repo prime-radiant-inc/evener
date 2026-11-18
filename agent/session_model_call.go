@@ -2179,17 +2179,27 @@ func (rs replayScope) projectThinkingPart(p llm.ContentPart, provenanceKeeps, ke
 		if !keepRaw || p.Kind != llm.ContentThinking || p.Thinking == nil || p.Thinking.Redacted {
 			return p, true
 		}
-		if scalar, _ := p.Thinking.ChatReplayScalar(); p.Thinking.Text == "" && scalar == "" {
+		scalar, field := p.Thinking.ChatReplayScalar()
+		if p.Thinking.Text == "" && scalar == "" {
 			return p, true
 		}
 		if encrypted := p.Thinking.EncryptedContent; encrypted != "" {
 			details := llm.OpenAICompatReasoningDetails(encrypted)
-			if rs.reasoningTextTarget.Protocol != registry.ProtocolOpenAIChat || len(details) == 0 || llm.OpenAICompatSignedReasoningItem(details) != nil {
+			if rs.reasoningTextTarget.Protocol != registry.ProtocolOpenAIChat || len(details) == 0 {
 				return p, true
 			}
-			thinking := *p.Thinking
-			thinking.EncryptedContent = ""
-			p.Thinking = &thinking
+			if llm.OpenAICompatSignedReasoningItem(details) != nil {
+				// A signed detail's display can replay independently only when
+				// the provider also supplied the scalar on its own wire field.
+				if p.Thinking.ChatScalar == nil || !llm.IsOpenAICompatReasoningField(field) || scalar == "" {
+					return p, true
+				}
+				p.Thinking = &llm.ThinkingData{Text: scalar, Signature: field}
+			} else {
+				thinking := *p.Thinking
+				thinking.EncryptedContent = ""
+				p.Thinking = &thinking
+			}
 		}
 	}
 	return llm.TrimThinkingForReplay(p, rs.DropThinking)

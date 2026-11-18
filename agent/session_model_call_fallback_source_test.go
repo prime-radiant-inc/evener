@@ -128,6 +128,14 @@ func TestFallbackKeepsOpaqueAndWebSearchScopeAcrossProtocols(t *testing.T) {
 			if err := s.appendAssistantTurn(prior, ModelAttemptMetadata{Protocol: primary.Protocol(), RequestModel: primary.Model()}); err != nil {
 				t.Fatal(err)
 			}
+			mirror, err := chatcompletions.ExtractRecordedResponse([]byte(`{"choices":[{"message":{"role":"assistant","content":"answer-b52","reasoning":"mirror-b52","reasoning_details":[{"type":"reasoning.text","signature":"sig-b52","text":"mirror-b52"}]}}]}`), row.WireID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mirror.Provider = row.Instance
+			if err := s.appendAssistantTurn(mirror, ModelAttemptMetadata{Protocol: row.Protocol, RequestModel: row.ModelID}); err != nil {
+				t.Fatal(err)
+			}
 			ctx := tripwireCtx(t)
 			for _, input := range []string{"turn-one", "turn-two"} {
 				if _, err := s.ProcessInput(ctx, input, nil); err != nil {
@@ -144,7 +152,8 @@ func TestFallbackKeepsOpaqueAndWebSearchScopeAcrossProtocols(t *testing.T) {
 				{{query: "q-a08"}},
 			}
 			if tc.raw {
-				want[1] = append(want[1], part{text: "b27"})
+				want[0] = slices.Insert(want[0], 1, part{text: "mirror-b52"})
+				want[1] = append(want[1], part{text: "mirror-b52"}, part{text: "b27"})
 			}
 			for i, req := range requests {
 				var got []part
@@ -176,7 +185,7 @@ func TestFallbackKeepsOpaqueAndWebSearchScopeAcrossProtocols(t *testing.T) {
 					scalars = append(scalars, text)
 				}
 			}
-			if (tc.raw && !slices.Equal(scalars, []string{"native-b27"})) || (!tc.raw && len(scalars) != 0) {
+			if (tc.raw && !slices.Equal(scalars, []string{"mirror-b52", "native-b27"})) || (!tc.raw && len(scalars) != 0) {
 				t.Errorf("fallback wire scalars = %q", scalars)
 			}
 		})

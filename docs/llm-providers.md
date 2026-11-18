@@ -507,9 +507,11 @@ assistant's prior reasoning in its request history. Evener returns all
 eligible reasoning still in context, including earlier tool calls in the
 current turn and earlier user turns. Raw text belongs to the instance,
 protocol, model and request endpoint that produced it. Evener records the
-configured model name, its wire model ID and a digest of the resolved
-request route. Changing the wire model or endpoint under the same name starts
-a separate reasoning history. For older turns Evener uses the issuer
+configured model name, the model selected by the outgoing request, and a
+digest of the resolved request route. A row that sets `body.model` can
+select a different model from its `wire_id`. Changing the selected model
+or endpoint under the same name starts a separate reasoning history.
+For older turns Evener uses the issuer
 information available in the transcript. Replayed reasoning counts toward
 context pressure. On resume, a saved input-token measurement applies only to
 the target and replay rules that produced it. Otherwise Evener estimates the
@@ -529,8 +531,9 @@ saved the original spelling can replay only the bytes still on disk.
   setting takes precedence and merges reasoning into assistant-visible text
   across model switches. A scalar replay field can travel alongside opaque
   `reasoning_details`. An independent scalar retains its original bytes even
-  when the gateway also sent display text in details. Signed text stays with
-  the detail that carries its signature.
+  when the gateway also sent display text in details. If the gateway sends
+  identical bytes in a scalar and a signed detail, a scalar route replays
+  both fields. A signed detail on its own supplies only that detail.
 - On `openai-responses`, an encrypted reasoning item takes precedence. When
   the row opts in and an item has raw `content`, Evener returns its
   `reasoning_text` parts in order with the item's ID when supplied. Evener

@@ -199,23 +199,33 @@ func TestFallbackReplaysOnlyItsIssuersReasoning(t *testing.T) {
 		fixedStep(agenttest.FinalResponse("done")),
 		fixedStep(agenttest.FinalResponse("wire-model reply")),
 		fixedStep(agenttest.FinalResponse("deployment reply")),
+		fixedStep(agenttest.FinalResponse("body-model reply")),
+		fixedStep(agenttest.FinalResponse("same-model reply")),
 	)
 	// The profile used to assemble each request resolves on the same registry
-	// as the client dispatching it. A restart can load different wire IDs.
-	clientFor := func(wireSuffix, deployment string) *llm.Client {
+	// as the client dispatching it. A restart can redirect the selected model
+	// through its wire ID, request URL, or a body.model constant.
+	clientFor := func(wireSuffix, deployment, bodySuffix string) *llm.Client {
 		instances := testRegistryInstances()
 		for _, profile := range []*provider.Profile{primary, fallback} {
 			inst := instances[profile.ID()]
 			inst.Surface = registry.SurfaceOpenAI
+			transport := &registry.Transport{
+				BaseURL:        "https://" + profile.ID() + ".example.test/v1",
+				Endpoint:       "/generate?deployment=" + deployment + "&token=token-75c",
+				StreamEndpoint: "/stream?deployment=" + deployment,
+			}
+			if bodySuffix != "" {
+				transport.Body = map[string]any{"model": profile.ID() + bodySuffix}
+			}
 			inst.Models = map[string]registry.Model{"reasoner": {
-				WireID: profile.ID() + wireSuffix, Protocol: profile.Protocol(), Caps: profile.Resolved().Caps,
-				Transport: &registry.Transport{BaseURL: "https://" + profile.ID() + ".example.test/v1", Endpoint: "/generate?deployment=" + deployment + "&token=token-75c", StreamEndpoint: "/stream?deployment=" + deployment},
+				WireID: profile.ID() + wireSuffix, Protocol: profile.Protocol(), Caps: profile.Resolved().Caps, Transport: transport,
 			}}
 			instances[profile.ID()] = inst
 		}
 		return registryClient(t, instances, primaryAdapter, fallbackAdapter)
 	}
-	client := clientFor("-wire-1", "deployment-1")
+	client := clientFor("-declared", "deployment-1", "-wire-1")
 	resolve := func(ref string) (*provider.Profile, error) { return provider.Resolve(client.Registry(), ref) }
 	stateDir := t.TempDir()
 	s := newSession(t, withProfile(resolveClientProfile(t, client, "work/reasoner")), withClient(client), withStateDir(stateDir),
@@ -242,8 +252,16 @@ func TestFallbackReplaysOnlyItsIssuersReasoning(t *testing.T) {
 
 	meta, env := s.Meta(), s.currentEnv()
 	s.Close()
-	for i, redirect := range []struct{ wire, deployment string }{{"-wire-2", "deployment-1"}, {"-wire-1", "deployment-2"}} {
-		client = clientFor(redirect.wire, redirect.deployment)
+	for i, redirect := range []struct {
+		wire, deployment, body string
+		replay                 bool
+	}{
+		{"-wire-2", "deployment-1", "", false},
+		{"-declared", "deployment-2", "-wire-1", false},
+		{"-declared", "deployment-1", "-wire-3", false},
+		{"-wire-1", "deployment-1", "", true},
+	} {
+		client = clientFor(redirect.wire, redirect.deployment, redirect.body)
 		resumed, err := RestoreSessionFromMetaWithConfig(client, resolveClientProfile(t, client, "work/reasoner"), env, meta, RestoreSessionConfig{
 			StateDir: stateDir, ResolveProfile: resolve, ModelFallbacks: []string{"gw/reasoner"},
 			testOnly: sharingHostProbe(testConfig{skipGitSnapshot: true}),
@@ -261,7 +279,14 @@ func TestFallbackReplaysOnlyItsIssuersReasoning(t *testing.T) {
 			t.Fatalf("redirect %+v made %d primary and %d fallback requests", redirect, len(primaryRequests), len(fallbackRequests))
 		}
 		for _, req := range []llm.Request{primaryRequests[4+i], fallbackRequests[3+i]} {
-			assertReasoningMarkers(t, req)
+			switch {
+			case !redirect.replay:
+				assertReasoningMarkers(t, req)
+			case req.Provider == primary.ID():
+				assertReasoningMarkers(t, req, "primary-42")
+			default:
+				assertReasoningMarkers(t, req, "fallback-73", "fallback-81")
+			}
 			if !requestCarriesText(req, "follow-up") {
 				t.Errorf("%s lost conversation history across the redirect", req.Provider)
 			}

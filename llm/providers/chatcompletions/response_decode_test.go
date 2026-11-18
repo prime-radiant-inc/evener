@@ -156,6 +156,45 @@ func TestFromChatCompletionResponse_ThinkingItemsJoin(t *testing.T) {
 // original field and bytes in the next request, including after persistence.
 func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 	t.Parallel()
+	decode := func(t *testing.T, body, sse string) (map[string]*llm.Response, string) {
+		t.Helper()
+		responses := map[string]*llm.Response{}
+		for mode, recording := range map[string]string{"json": body, "recorded SSE": sse} {
+			resp, err := ExtractRecordedResponse([]byte(recording), "m")
+			if err != nil {
+				t.Fatalf("%s: %v", mode, err)
+			}
+			responses[mode] = &resp
+		}
+		events, err := chatStreamEvents(t, sse, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		acc := llm.NewStreamAccumulator()
+		var display strings.Builder
+		for _, ev := range events {
+			acc.Process(ev)
+			display.WriteString(ev.ReasoningDelta)
+		}
+		if acc.Response() == nil {
+			t.Fatal("missing settled stream response")
+		}
+		responses["live SSE"] = acc.Response()
+		return responses, display.String()
+	}
+	checkScalar := func(t *testing.T, msg map[string]any, field, value string) {
+		t.Helper()
+		for _, key := range llm.OpenAICompatReasoningFields() {
+			got, ok := msg[key]
+			if key == field && value != "" {
+				if got != value {
+					t.Errorf("%s = %#v, want %q", key, got, value)
+				}
+			} else if ok {
+				t.Errorf("unexpected %s in replay %#v", key, msg)
+			}
+		}
+	}
 	tests := []struct {
 		name, scalarField, scalar, display string
 		details                            []any
@@ -177,33 +216,12 @@ func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fields := map[string]any{tt.scalarField: tt.scalar, "reasoning_details": tt.details}
-			nonStream, err := fromChatCompletionResponse(chatResponseRaw(fields, "stop"), nil, nil)
-			if err != nil {
-				t.Fatal(err)
+			sse := "data: {\"choices\":[{\"index\":0,\"delta\":" + jsonOf(t, fields) + "}]}\n\n" + "data: [DONE]\n\n"
+			responses, display := decode(t, jsonOf(t, chatResponseRaw(fields, "stop")), sse)
+			if display != tt.display {
+				t.Fatalf("live reasoning = %q, want %q", display, tt.display)
 			}
-			delta, err := json.Marshal(fields)
-			if err != nil {
-				t.Fatal(err)
-			}
-			body := "data: {\"choices\":[{\"index\":0,\"delta\":" + string(delta) + "}]}\n\n" + "data: [DONE]\n\n"
-			stream, err := ExtractRecordedResponse([]byte(body), "m")
-			if err != nil {
-				t.Fatal(err)
-			}
-			events, err := chatStreamEvents(t, body, nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			acc := llm.NewStreamAccumulator()
-			var liveDisplay strings.Builder
-			for _, ev := range events {
-				acc.Process(ev)
-				liveDisplay.WriteString(ev.ReasoningDelta)
-			}
-			if acc.Response() == nil || liveDisplay.String() != tt.display {
-				t.Fatalf("live reasoning = %q, settled = %t", liveDisplay.String(), acc.Response() != nil)
-			}
-			for name, resp := range map[string]*llm.Response{"json": &nonStream, "recorded SSE": &stream, "live SSE": acc.Response()} {
+			for name, resp := range responses {
 				t.Run(name, func(t *testing.T) {
 					parts := resp.Message.Content
 					if len(parts) != 1 || parts[0].Kind != llm.ContentThinking || parts[0].Thinking == nil || parts[0].Thinking.Text != tt.display || parts[0].Thinking.Signature != "" {
@@ -239,11 +257,7 @@ func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 						} else if msg[route.field] != route.want || msg["reasoning_details"] != nil {
 							t.Errorf("%s replay = %#v, want %q", route.field, msg, route.want)
 						}
-						for _, field := range llm.OpenAICompatReasoningFields() {
-							if field != route.field && msg[field] != nil {
-								t.Errorf("%s replay also includes %s", route.field, field)
-							}
-						}
+						checkScalar(t, msg, route.field, route.want)
 					}
 				})
 			}
@@ -269,36 +283,34 @@ func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 			if len(details) != 1 || details[0]["text"] != "signed-68" || details[0]["signature"] != "sig-68" {
 				t.Fatalf("continuation = %#v", details)
 			}
-			want := scalar
-			if scalar == "signed-68" {
-				want = "" // The signed continuation already carries this scalar.
-			}
-			if got, _ := out[0]["reasoning"].(string); got != want || out[0]["reasoning_content"] != nil {
+			if got, _ := out[0]["reasoning"].(string); got != scalar || out[0]["reasoning_content"] != nil {
 				t.Errorf("scalar %q replays as %#v", scalar, out[0])
 			}
 		}
 	})
 	for _, tc := range []struct {
-		name, scalar, detail, wantScalar string
-		streamPrefix                     int
+		name, scalar, detail, independent string
+		streamPrefix                      int
 	}{
 		{"independent signed text", "scalar-12", "signed-37", "scalar-12", 0},
 		{"signature without detail text", "scalar-12", "", "scalar-12", 0},
 		{"trailing detail signature", "scalar-12", "signed-37", "scalar-12", len("signed-37")},
 		{"signature with final text fragment", "scalar-12", "signed-37", "scalar-12", len("signed-")},
-		{"mirrored signed text", "signed-37", "signed-37", "", 0},
+		{"mirrored signed text", " \tsigned-37\n ", " \tsigned-37\n ", "", len(" \tsigned-")},
+		{"signed detail alone", "", "signed-37", "", 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			signed := map[string]any{"type": "reasoning.text", "signature": "sig-37", "format": "wire-1", "index": 0}
 			if tc.detail != "" {
 				signed["text"] = tc.detail
 			}
-			fields := map[string]any{"reasoning": tc.scalar, "reasoning_text": tc.scalar, "reasoning_details": []any{signed}}
-			body, err := json.Marshal(chatResponseRaw(fields, "stop"))
-			if err != nil {
-				t.Fatal(err)
+			fields := map[string]any{"reasoning_details": []any{signed}}
+			var chunks []map[string]any
+			if tc.scalar != "" {
+				fields["reasoning"], fields["reasoning_text"] = tc.scalar, tc.scalar
+				chunks = append(chunks, map[string]any{"reasoning": tc.scalar, "reasoning_text": tc.scalar})
 			}
-			chunks := []map[string]any{{"reasoning": tc.scalar, "reasoning_text": tc.scalar}}
+			body := jsonOf(t, chatResponseRaw(fields, "stop"))
 			if tc.streamPrefix != 0 {
 				chunks = append(chunks, map[string]any{"reasoning_details": []any{map[string]any{"type": "reasoning.text", "text": tc.detail[:tc.streamPrefix], "index": 0}}})
 				signed["text"] = tc.detail[tc.streamPrefix:]
@@ -306,26 +318,20 @@ func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 			chunks = append(chunks, map[string]any{"reasoning_details": []any{signed}})
 			var sse strings.Builder
 			for _, chunk := range chunks {
-				data, err := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": chunk}}})
-				if err != nil {
-					t.Fatal(err)
-				}
-				sse.WriteString("data: " + string(data) + "\n\n")
+				data := jsonOf(t, map[string]any{"choices": []any{map[string]any{"delta": chunk}}})
+				sse.WriteString("data: " + data + "\n\n")
 			}
 			sse.WriteString("data: [DONE]\n\n")
-			for mode, recorded := range map[string][]byte{"json": body, "stream": []byte(sse.String())} {
+			responses, _ := decode(t, body, sse.String())
+			for mode, resp := range responses {
 				t.Run(mode, func(t *testing.T) {
-					resp, err := ExtractRecordedResponse(recorded, "m")
-					if err != nil {
-						t.Fatal(err)
-					}
-					if got, want := resp.ReasoningText(), strings.Trim(tc.wantScalar+"\n\n"+tc.detail, "\n"); got != want {
+					if got, want := resp.ReasoningText(), strings.Trim(tc.independent+"\n\n"+tc.detail, "\n"); got != want {
 						t.Errorf("settled reasoning = %q, want %q", got, want)
 					}
-					if tc.wantScalar != "" {
+					if tc.independent != "" {
 						var source string
 						for _, part := range resp.Message.Content {
-							if part.Thinking != nil && part.Thinking.Text == tc.wantScalar && part.Thinking.EncryptedContent == "" {
+							if part.Thinking != nil && part.Thinking.Text == tc.independent && part.Thinking.EncryptedContent == "" {
 								source = part.Thinking.Signature
 							}
 						}
@@ -333,16 +339,35 @@ func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 							t.Errorf("independent scalar source = %q", source)
 						}
 					}
-					for _, field := range []string{"reasoning_text", "reasoning_details"} {
-						caps := registry.Caps{ReplayReasoningText: new(true), ReasoningField: &field}
-						out, err := toChatMessages([]llm.Message{resp.Message}, caps, field == "reasoning_details")
-						if err != nil {
-							t.Fatal(err)
+					var saved llm.Message
+					if err := json.Unmarshal([]byte(jsonOf(t, resp.Message)), &saved); err != nil {
+						t.Fatal(err)
+					}
+					if tc.scalar != "" && tc.scalar == tc.detail {
+						if len(saved.Content) != 1 || saved.Content[0].Thinking == nil {
+							t.Fatalf("signed mirror settled as %#v", saved.Content)
 						}
-						msg := out[0]
+						if source := saved.Content[0].Thinking.ChatScalar; source == nil || source.Field != "reasoning" || source.Text != "" {
+							t.Errorf("signed mirror stores scalar source %#v", source)
+						}
+					}
+					for _, route := range []struct {
+						override    *string
+						scalarField string
+					}{{nil, "reasoning"}, {new("reasoning_text"), "reasoning_text"}, {new("reasoning_details"), ""}} {
+						res := resolved(nil)
+						res.Caps.ReplayReasoningText, res.Caps.ReasoningField = new(true), route.override
+						req := llm.Request{Model: "m", Messages: []llm.Message{resp.Message}}
+						out := build(t, req, res)
+						req.Messages = []llm.Message{saved}
+						if jsonOf(t, build(t, req, res)) != jsonOf(t, out) {
+							t.Fatalf("persisted request differs on scalar field %q", route.scalarField)
+						}
+						msg := out["messages"].([]map[string]any)[0]
+						checkScalar(t, msg, route.scalarField, tc.scalar)
 						details, _ := msg["reasoning_details"].([]map[string]any)
-						if field == "reasoning_details" && tc.wantScalar != "" {
-							if len(details) != 2 || details[0]["text"] != tc.wantScalar || details[0]["signature"] != nil {
+						if route.scalarField == "" && tc.independent != "" {
+							if len(details) != 2 || details[0]["text"] != tc.independent || details[0]["signature"] != nil {
 								t.Errorf("unified independent text = %#v", msg)
 								continue
 							}
@@ -354,14 +379,29 @@ func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 								t.Errorf("unified details decode to %q in %d parts, want %q in %d", got, n, resp.ReasoningText(), len(resp.Message.Content))
 							}
 							details = details[1:]
-						} else if got, _ := msg["reasoning_text"].(string); got != tc.wantScalar {
-							t.Errorf("scalar = %q, want %q", got, tc.wantScalar)
 						}
 						if len(details) != 1 || details[0]["signature"] != "sig-37" || details[0]["format"] != "wire-1" {
 							t.Fatalf("signed detail = %#v", details)
 						}
 						if got, _ := details[0]["text"].(string); got != tc.detail {
-							t.Errorf("%s signed text = %q, want %q", field, got, tc.detail)
+							t.Errorf("signed text = %q, want %q", got, tc.detail)
+						}
+					}
+					if tc.scalar != "" && tc.scalar == tc.detail {
+						for _, caps := range []registry.Caps{{}, {ReplayReasoningText: new(false)}, {Reasoning: new(false), ReplayReasoningText: new(true)}} {
+							out, err := toChatMessages([]llm.Message{saved}, caps, false)
+							if err != nil {
+								t.Fatal(err)
+							}
+							checkScalar(t, out[0], "", "")
+							details, _ := out[0]["reasoning_details"].([]map[string]any)
+							wantDetails := 1
+							if caps.ReasoningDisabled() {
+								wantDetails = 0
+							}
+							if len(details) != wantDetails {
+								t.Errorf("unenrolled replay = %#v", out[0])
+							}
 						}
 					}
 				})
@@ -369,7 +409,7 @@ func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 		})
 	}
 	t.Run("interleaved detail indexes", func(t *testing.T) {
-		sse := `data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","index":2,"text":"first-"},{"type":"reasoning.text","index":7,"text":"second-"}]}}]}
+		sse := `data: {"choices":[{"delta":{"reasoning_text":"first-2second-7","reasoning_details":[{"type":"reasoning.text","index":2,"text":"first-"},{"type":"reasoning.text","index":7,"text":"second-"}]}}]}
 
 data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.encrypted","id":"e3","data":"opaque-3"}]}}]}
 
@@ -391,6 +431,13 @@ data: [DONE]
 			details[1]["signature"] != "sig-7" || details[1]["text"] != "second-7" || details[1]["metadata"] != "meta-7" ||
 			details[2]["signature"] != "sig-2" || details[2]["text"] != "first-2" {
 			t.Fatalf("interleaved continuations = %#v", details)
+		}
+		scalar, err := toChatMessages([]llm.Message{resp.Message}, registry.Caps{ReplayReasoningText: new(true)}, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if scalar[0]["reasoning_text"] != "first-2second-7" || jsonOf(t, scalar[0]["reasoning_details"]) != jsonOf(t, details) {
+			t.Errorf("aggregate scalar replay = %#v", scalar[0])
 		}
 	})
 }

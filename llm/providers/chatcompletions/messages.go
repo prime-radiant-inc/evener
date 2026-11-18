@@ -229,7 +229,9 @@ func reasoningFromParts(parts []llm.ContentPart, keepDetails, asText, scalarRepl
 				if existing, _ := signed["text"].(string); existing == "" && piece != "" {
 					signed["text"] = piece
 				}
-				continue
+				if !scalarReplay || p.Thinking.ChatScalar == nil {
+					continue
+				}
 			}
 		}
 		if scalarReplay {

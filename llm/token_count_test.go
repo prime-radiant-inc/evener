@@ -1033,6 +1033,7 @@ func TestEstimateMessagesInputTokensForResolved_BillsThinkingShapesByAdapter(t *
 	chat, google := registry.ProtocolOpenAIChat, registry.ProtocolGoogle
 	replay := registry.Caps{ReplayReasoningText: new(true)}
 	observedScalar := thinking(&ThinkingData{Text: summary, ChatScalar: &ChatReasoningScalar{Field: "reasoning", Text: "r123"}})
+	signedMirror := thinking(&ThinkingData{Text: text, EncryptedContent: signed, ChatScalar: &ChatReasoningScalar{Field: "reasoning"}})
 	unified := replay
 	unified.ReasoningField = new("reasoning_details")
 	signedAndScalar := thinking(&ThinkingData{Text: text, EncryptedContent: signed})
@@ -1075,6 +1076,10 @@ func TestEstimateMessagesInputTokensForResolved_BillsThinkingShapesByAdapter(t *
 
 		{"chat bills the compat array and its text", row(chat, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: compat, Text: text}), (len(compat) + textChars) / 4},
 		{"chat bills text already in its signed detail once", row(chat, replay), thinking(&ThinkingData{EncryptedContent: signed, Text: text}), len(signed) / 4},
+		{"enrolled chat bills an observed scalar and its signed mirror", row(chat, replay), signedMirror, (len(signed) + textChars) / 4},
+		{"unified chat bills a signed scalar mirror once", row(chat, unified), signedMirror, len(signed) / 4},
+		{"unenrolled chat bills a signed scalar mirror once", row(chat, registry.Caps{}), signedMirror, len(signed) / 4},
+		{"chat bills the signed text fallback alongside an observed scalar", row(chat, replay), thinking(&ThinkingData{EncryptedContent: compat, Text: text, ChatScalar: &ChatReasoningScalar{Field: "reasoning", Text: "r123"}}), (len(compat) + textChars + 4) / 4},
 		{"chat bills independent scalar text beside its signed detail", row(chat, replay), signedAndScalar, (len(signed) + summaryChars) / 4},
 		{"enrolled chat bills the exact received scalar", row(chat, replay), observedScalar, 1},
 		{"unified chat bills the display details", row(chat, unified), observedScalar, summaryChars / 4},
@@ -1142,6 +1147,20 @@ func TestEstimatorTargetsEquivalentCoversTheModelID(t *testing.T) {
 	otherFamily.Model.Family = "claude"
 	if EstimatorTargetsEquivalent(base, otherFamily) {
 		t.Fatal("rows with different families are different estimator targets")
+	}
+	base.WireID = "model-a"
+	for _, tc := range []struct {
+		bodyModel string
+		same      bool
+	}{{"model-a", true}, {"model-b", false}} {
+		override := base
+		override.Transport.Body = map[string]any{"model": tc.bodyModel}
+		if live := EstimatorTargetsEquivalent(base, override); live != tc.same {
+			t.Errorf("body model %q retains live measurement = %t, want %t", tc.bodyModel, live, tc.same)
+		}
+		if saved := InputTokenMeasurementKey(base) == InputTokenMeasurementKey(override); saved != tc.same {
+			t.Errorf("body model %q retains saved measurement = %t, want %t", tc.bodyModel, saved, tc.same)
+		}
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -267,6 +268,37 @@ func sameRequestPaths(a, b Transport) bool {
 func (r *Resolved) RequestURL(template string) string {
 	path := strings.ReplaceAll(template, "{model}", url.PathEscape(r.WireID))
 	return strings.TrimRight(r.Transport.BaseURL, "/") + path
+}
+
+// OutboundModelSelector identifies the model selected by an agent request.
+// A body.model constant overrides the model from the protocol builder. A
+// model in the URL also contributes to ReasoningReplayRoute via RequestURL.
+func (r Resolved) OutboundModelSelector() string {
+	value, supplied := r.Transport.Body["model"]
+	for key := range r.Transport.Body {
+		if strings.HasPrefix(key, "model.") {
+			// Dotted constants can replace a model string with an object. Use
+			// the transport's precedence on a copy of its JSON values.
+			body := map[string]any{}
+			ApplyBodyConstants(body, cloneAnyMap(r.Transport.Body))
+			value, supplied = body["model"]
+			break
+		}
+	}
+	if !supplied {
+		if !strings.HasPrefix(r.WireID, "\x00") {
+			return r.WireID
+		}
+		value = r.WireID
+	}
+	if model, ok := value.(string); ok && model != "" && !strings.HasPrefix(model, "\x00") {
+		return model
+	}
+	// Keep explicit empty and structured selectors distinct from an absent
+	// transcript stamp. Only JSON-encodable values can reach the provider.
+	encoded, _ := json.Marshal(value)
+	sum := sha256.Sum256(encoded)
+	return "\x00" + hex.EncodeToString(sum[:])
 }
 
 // ReasoningReplayRoute identifies the destinations that may receive reasoning

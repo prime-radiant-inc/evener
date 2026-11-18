@@ -482,7 +482,9 @@ func chatReasoningChars(target targetInfo, p ContentPart) int {
 				if text, _ := signed["text"].(string); text == "" {
 					chars += len(t.Text)
 				}
-				return chars
+				if !target.chatScalarReplay || t.ChatScalar == nil {
+					return chars
+				}
 			}
 		}
 	}
@@ -1036,7 +1038,7 @@ type estimatorTarget struct {
 
 func estimatorTargetFor(r registry.Resolved) estimatorTarget {
 	return estimatorTarget{
-		Model: r.ModelID, WireModel: r.WireID, Protocol: r.Protocol,
+		Model: r.ModelID, WireModel: r.OutboundModelSelector(), Protocol: r.Protocol,
 		Surface: r.Surface, Family: r.Model.Family,
 		RequestRoute:          r.ReasoningReplayRoute(),
 		ImageDetail:           registry.StringValue(r.Caps.ImageDetail),

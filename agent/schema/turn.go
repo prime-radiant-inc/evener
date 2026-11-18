@@ -524,8 +524,8 @@ type Turn struct {
 	ResponseRequestFingerprint      string `json:"response_request_fingerprint,omitempty"`
 	ResponseRequestModel            string `json:"response_request_model,omitempty"`
 	ResponseStorageScopeFingerprint string `json:"response_storage_scope_fingerprint,omitempty"`
-	// ResponseWireModel is the resolved model sent to the provider. The
-	// requested alias and the model name reported in the answer can differ.
+	// ResponseWireModel is the outbound model selector, including a model
+	// supplied by a request-body constant. The requested alias can differ.
 	ResponseWireModel string `json:"response_wire_model,omitempty"`
 	// RoundID names the model round an ASSISTANT entry (including a salvage
 	// entry) records: every request from the round's first attempt up to the
@@ -585,7 +585,7 @@ func (t *Turn) MatchesReasoningTextTarget(res *registry.Resolved, route string) 
 	if res.Instance == "" || t.ResponseProvider != res.Instance ||
 		(t.ResponseProtocol != "" && t.ResponseProtocol != res.Protocol) ||
 		(t.ResponseReasoningRoute != "" && t.ResponseReasoningRoute != route) ||
-		(t.ResponseWireModel != "" && t.ResponseWireModel != res.WireID) {
+		(t.ResponseWireModel != "" && t.ResponseWireModel != res.OutboundModelSelector()) {
 		return false
 	}
 	if t.ResponseProtocol == "" {
@@ -616,7 +616,7 @@ func (t *Turn) MatchesReasoningTextTarget(res *registry.Resolved, route string) 
 	// Earlier records can carry just the model the provider reported, which
 	// can be the wire id behind the user's configured model name.
 	reported := strings.TrimSpace(t.ResponseModel)
-	return reported != "" && (reported == res.ModelID || reported == res.WireID)
+	return reported != "" && (reported == res.ModelID || reported == res.OutboundModelSelector())
 }
 
 // NewTurn creates a Turn with the current UTC time.
