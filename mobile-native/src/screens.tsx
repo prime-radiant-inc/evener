@@ -893,6 +893,13 @@ function ConversationScreenView({
 						current.ref === route.params.ref
 					);
 				}
+				// The same session, whether or not its screen is the one in front:
+				// an outer screen can cover this conversation without moving the
+				// binding to another one. Settlement asks this, so a covered picker
+				// is not left with an action in flight forever.
+				if (scope === "session") {
+					return currentDestination.current.store === store && current.ref === route.params.ref;
+				}
 				if (
 					currentDestination.current.store !== store ||
 					currentDestination.current.client !== client ||

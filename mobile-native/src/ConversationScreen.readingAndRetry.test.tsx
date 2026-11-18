@@ -2496,6 +2496,60 @@ it("confirms a pick the root stack is still showing", async () => {
 	expect(tree.root.findAllByType(Toast)).toHaveLength(1);
 });
 
+// Settlement is not visibility. A vision change is not the pick the hub
+// acknowledges: its report waits on its own read, and a screen pushed on the
+// root stack covers this conversation without disposing its controls. What the
+// reader comes back to has to be a picker they can use.
+it("leaves the picker usable after a vision change settles under a covering screen", async () => {
+	const served = thread("ref-covered", "idle");
+	(served as unknown as { evener: Record<string, unknown> }).evener.capabilities = {
+		...CAPABILITIES,
+		changeVisionModel: true,
+	};
+	const { tree, hub, route } = await mount(served);
+	const host = modelHosts.get(sheetKey("hub-1", "ref-covered"));
+	if (!host?.controls) throw new Error("the screen provides no model controls");
+	const held = Promise.withResolvers<void>();
+	const request = hub.client.request.bind(hub.client);
+	(hub.client as unknown as { request: typeof request }).request = async (
+		method: string,
+		params: Record<string, unknown>,
+	) => {
+		if (method === "thread/read") await held.promise;
+		return request(method, params);
+	};
+	const sheet = render(
+		<ModelSheet
+			route={
+				{
+					key: "vision-sheet",
+					name: "ModelSheet",
+					params: { hubId: "hub-1", ref: "ref-covered", setting: "vision" },
+				} as unknown as ComponentProps<typeof ModelSheet>["route"]
+			}
+			navigation={navigation as unknown as ComponentProps<typeof ModelSheet>["navigation"]}
+		/>,
+	);
+	vi.mocked(navigation.goBack).mockClear();
+	act(() => pressable(sheet, "Off")?.props.onPress());
+	await settle();
+	expect(hub.requests.some((entry) => entry.method === "thread/vision-model/set")).toBe(true);
+	expect(host.controls.getSnapshot().pending).toBe("setVisionModel");
+	// An alert opens another conversation on the root stack while the change's
+	// read is out. The detail stack under it is unchanged, so this controller
+	// stays mounted and live.
+	rootStack.pushed = { key: "conversation-elsewhere", name: "Conversation" };
+	act(() => tree.update(<SessionScreen route={route} navigation={navigation} />));
+	held.resolve();
+	await settle();
+	// The reader returns to the pane. The row answers to them, not to a field
+	// left behind: a change that settled under a covering screen must not leave
+	// the picker disabled.
+	rootStack.pushed = null;
+	act(() => tree.update(<SessionScreen route={route} navigation={navigation} />));
+	expect(pressable(sheet, "Off")?.props.accessibilityState).toMatchObject({ disabled: false });
+});
+
 it("names the model as the session's Board row does while the catalog can't be read (S17)", async () => {
 	catalogHub.fails = true;
 	fleet.live = [fleetSession("ref-model", { title: "Model", state: "idle", model_name: "Claude Sonnet 5" })];

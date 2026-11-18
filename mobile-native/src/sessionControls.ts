@@ -52,7 +52,7 @@ export class SessionControls {
 			ConversationModelCatalog,
 		private refresh: () => Promise<void>,
 		private stopped: () => void,
-		private isCurrent: (scope?: "destination" | "route") => boolean,
+		private isCurrent: (scope?: "destination" | "route" | "session") => boolean,
 		private getReasoning: () => Pick<
 			MobileConversation,
 			"supportsReasoning" | "reasoningEffort" | "reasoningEffortLevels"
@@ -74,6 +74,22 @@ export class SessionControls {
 	private publish(state: Partial<ControlsState>) {
 		this.state = { ...this.state, ...state };
 		for (const listener of this.listeners) listener();
+	}
+	/** Whether the action ends here without a report: this controller was
+	 * disposed, or its screen is no longer the one in front. Settlement is not
+	 * visibility, so an ending that leaves the same session's controls live
+	 * still clears their in-flight state, and a failure keeps its reason for
+	 * the sheet mounted under the covering screen: a pending state left behind
+	 * shows every picker row disabled when the reader returns. Only the notice
+	 * and the return value follow the route, since announcing a change applied
+	 * to a reader who has left is what that fence is for. A binding that moved
+	 * to another conversation publishes nothing at all, which is why this asks
+	 * the session's identity rather than the disposed flag alone. */
+	private ends(error: string | null = null): boolean {
+		if (this.disposed) return true;
+		if (this.isCurrent()) return false;
+		if (this.isCurrent("session")) this.publish({ pending: null, error });
+		return true;
 	}
 	dispose() {
 		this.disposed = true;
@@ -194,7 +210,10 @@ export class SessionControls {
 			// controls before its acknowledgement arrives. The bound screen still
 			// owns this refresh when its identity fence is current.
 			if (kind === "resume") {
-				if (!this.isCurrent("destination")) return false;
+				if (!this.isCurrent("destination")) {
+					if (!this.disposed) this.publish({ pending: null });
+					return false;
+				}
 				await this.refresh();
 			}
 			if (kind === "changeModel") {
@@ -232,9 +251,7 @@ export class SessionControls {
 				}
 				return stayed;
 			}
-			if (this.disposed || !this.isCurrent()) {
-				return false;
-			}
+			if (this.ends()) return false;
 			if (kind === "shutdown" || kind === "forceStop") {
 				// A shutdown narrates nothing here: the session's own toast
 				// confirms it and the screen stays (ruling 19).
@@ -247,7 +264,7 @@ export class SessionControls {
 				return true;
 			}
 			if (kind !== "resume") await this.refresh();
-			if (this.disposed || !this.isCurrent()) return false;
+			if (this.ends()) return false;
 			this.publish({
 				pending: null,
 				error: null,
@@ -264,22 +281,23 @@ export class SessionControls {
 			});
 			return true;
 		} catch (cause) {
-			if (this.disposed || !this.isCurrent()) return false;
+			const failure =
+				cause instanceof WireError
+					? `Could not confirm the action: ${cause.message}`
+					: "Could not confirm the action. Check the session before trying again; it may have been applied.";
+			if (this.ends(failure)) return false;
 			if (cause instanceof WireError && cause.evenerErrorInfo === "actionUnavailable") {
 				try {
 					await this.refresh();
 				} catch {
 					// Preserve the original server rejection; refresh is confirmation only.
 				}
-				if (this.disposed || !this.isCurrent()) return false;
+				if (this.ends(failure)) return false;
 			}
 			this.publish({
 				pending: null,
 				notice: null,
-				error:
-					cause instanceof WireError
-						? `Could not confirm the action: ${cause.message}`
-						: "Could not confirm the action. Check the session before trying again; it may have been applied.",
+				error: failure,
 			});
 			return false;
 		}

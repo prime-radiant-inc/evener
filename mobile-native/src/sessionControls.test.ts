@@ -922,6 +922,33 @@ describe("conversation-owned session controls", () => {
 		expect(refreshed).toBe(1);
 		expect(controls.getSnapshot()).toMatchObject({ pending: null, error: null });
 	});
+	// Settlement is not visibility: an outer screen can cover this conversation
+	// without disposing its controls, and whatever was in flight still has to
+	// end, or the picker under that screen stays disabled for good.
+	it.each([
+		{ name: "a successful rename", settle: "applies" },
+		{ name: "a rejected rename", settle: "refuses" },
+	] as const)("settles the in-flight state of a covered controller after $name", async ({ settle }) => {
+		let covered = false;
+		const controls = new SessionControls(
+			await boundary({
+				rename: async () => {
+					if (settle === "refuses") throw new Error("The hub refused the name.");
+				},
+			}),
+			async () => {},
+			() => {},
+			// The screen's own fence: the route is still the same session, and
+			// an outer screen covering it is what `current` is not.
+			(scope) => (scope === "session" ? true : !covered),
+			() => null,
+			() => true,
+		);
+		const rename = controls.rename("New name");
+		covered = true;
+		expect(await rename).toBe(false);
+		expect(controls.getSnapshot().pending).toBeNull();
+	});
 	// The reader can leave while the pick's refresh is still out. Whoever left
 	// is owed no confirmation on the screen they left, so the pick reports no
 	// change there — including when that refresh itself fails.
