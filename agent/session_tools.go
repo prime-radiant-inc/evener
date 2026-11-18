@@ -259,22 +259,10 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	nameMap := s.currentProfile().ToolNameMap()
 	visibleNames := providerVisibleToolNames(s.reg.Names(), nameMap)
 	requestedVisible := providerToolName(call.Name, nameMap)
-	// Snapshot the model's original argument bytes before prepareToolCall may
-	// replace them with the repaired form. The live tool-call events carry
-	// these bytes so they agree with the reload path, which uses
-	// SentArguments() (RawArguments when the original was invalid JSON, else
-	// the recorded Arguments). For VALID JSON the reload path's recorded
-	// Arguments are the transcript-persisted canonical form (compacted and
-	// HTML-escaped by encoding/json), so canonicalize valid bytes the same
-	// way here; preserve the exact original bytes only for INVALID JSON (the
-	// malformed cases where reload surfaces RawArguments verbatim).
+	// The live events and the reloaded AppWire item expose the same argument
+	// string, including the spelling the model used before any repair or hook.
 	originalArgs := call.Arguments
-	argsJSON := string(originalArgs)
-	if json.Valid(originalArgs) {
-		if canonical, err := json.Marshal(originalArgs); err == nil {
-			argsJSON = string(canonical)
-		}
-	}
+	argsJSON := call.SentArguments()
 	prep := prepareToolCall(call, s.shellToolForDiagnostics(s.reg.Get(call.Name)), visibleNames, requestedVisible, s.resultToolName(), finishReason)
 	call = prep.Call
 	prevalidated := true

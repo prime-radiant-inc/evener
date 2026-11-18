@@ -220,26 +220,27 @@ func TestExecTool_OversizedValidJSONSuppressesIntent(t *testing.T) {
 	}
 }
 
-// TestExecTool_ValidNoncanonicalArgsCanonicalizeLikeTranscript proves finding B:
-// VALID but noncanonical arguments (extra whitespace, HTML-sensitive chars in a
-// string value) must render the same live as reload. The transcript persistence
-// path compacts and HTML-escapes valid JSON (json.Marshal of json.RawMessage),
-// so the live ArgumentsJSON must too -- emitting raw original bytes diverges.
-func TestExecTool_ValidNoncanonicalArgsCanonicalizeLikeTranscript(t *testing.T) {
-	t.Parallel()
-	// Valid JSON with extra whitespace and HTML-sensitive chars: < > &.
-	const originalArgs = `{  "intent" : "b<c & d" , "x" : 1  }`
-	// The canonical form is compact + HTML-escaped. Hard-coded (not computed
-	// via json.Marshal) so the test is independent of the same function the
-	// production code uses — a no-op json.Marshal would not hide behind the
-	// expected value matching itself.
-	const wantCanonical = `{"intent":"b\u003cc \u0026 d","x":1}`
-	if wantCanonical == originalArgs {
-		t.Fatalf("fixture is already canonical; test cannot prove non-trivial canonicalization")
+func projectedToolTurns(t *testing.T, path string) []appwire.Turn {
+	t.Helper()
+	reg := apptranscript.NewToolCallRegistry()
+	turns, err := apptranscript.ItemTurnsFromFile(path, 128<<20, func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
+		return apptranscript.ProjectTurn(turnID, turnIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
+	return turns
+}
 
-	s := newSession(t)
-	s.stateDir = t.TempDir()
+func TestExecTool_OriginalArgumentsInLiveAndReloadedItems(t *testing.T) {
+	t.Parallel()
+	const originalArgs = `{  "intent" : "b<c & d" , "x" : 1  }`
+	call := llm.ToolCallData{ID: "widget-1", Name: "widget", Arguments: json.RawMessage(originalArgs)}
+	adapter := newFakeAdapter("openai",
+		func(llm.Request) llm.Response { return agenttest.ToolCallResponse(call) },
+		func(llm.Request) llm.Response { return agenttest.ToolCallResponse(communicateCall("done-2", "done")) },
+	)
+	s := newSession(t, withAdapter(adapter), withConfig(SessionConfig{StateDir: t.TempDir()}))
 
 	s.registerTool("widget", "does a thing", map[string]any{
 		"type":                 "object",
@@ -255,22 +256,26 @@ func TestExecTool_ValidNoncanonicalArgsCanonicalizeLikeTranscript(t *testing.T) 
 
 	startCh := drainToolCallStartEvents(s)
 
-	res := s.execTool(context.Background(), llm.ToolCallData{
-		ID:        "call_noncanonical",
-		Name:      "widget",
-		Arguments: json.RawMessage(originalArgs),
-	}, "")
-	if res.IsError {
-		t.Fatalf("execTool failed: %s", res.FullOutput)
+	if _, err := s.ProcessInput(t.Context(), "run widget", nil); err != nil {
+		t.Fatal(err)
 	}
 	s.Close()
-
-	starts := <-startCh
-	if len(starts) != 1 {
-		t.Fatalf("got %d ToolCallStart events, want 1", len(starts))
+	var live string
+	for _, start := range <-startCh {
+		if start.CallID == call.ID {
+			live = start.ArgumentsJSON
+		}
 	}
-	if starts[0].ArgumentsJSON != wantCanonical {
-		t.Fatalf("ArgumentsJSON = %q\nwant canonical (matches reload transcript): %q", starts[0].ArgumentsJSON, wantCanonical)
+	var restored string
+	for _, turn := range projectedToolTurns(t, s.TranscriptPath()) {
+		for _, item := range turn.Items {
+			if item.CallID == call.ID {
+				restored = item.ArgumentsJSON
+			}
+		}
+	}
+	if live != originalArgs || restored != originalArgs {
+		t.Fatalf("original %q, live %q, reloaded %q", originalArgs, live, restored)
 	}
 }
 
@@ -456,17 +461,7 @@ func TestExecTool_RejectedCommunicateLiveVsReload(t *testing.T) {
 	if transcriptPath == "" {
 		t.Fatal("session has no transcript path; StateDir was not set")
 	}
-	// The registry must be shared across all turns: the assistant turn seeds
-	// CommRawArgs (the raw malformed bytes) and the tool-results turn reads
-	// them to render the rejected communicate. A per-turn registry would lose
-	// that cross-turn linkage.
-	reg := apptranscript.NewToolCallRegistry()
-	turns, err := apptranscript.ItemTurnsFromFile(transcriptPath, 128<<20, func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
-		return apptranscript.ProjectTurn(turnID, turnIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
-	})
-	if err != nil {
-		t.Fatalf("ItemTurnsFromFile: %v", err)
-	}
+	turns := projectedToolTurns(t, transcriptPath)
 
 	// Find the rejected communicate item across all projected turns. It must
 	// be a commandExecution (tool/error), not an agentMessage.

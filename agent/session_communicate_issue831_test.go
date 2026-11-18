@@ -591,17 +591,8 @@ func TestSession_PreToolUseHookDoesNotDecodeOrMergeInvalidRawArgumentsIssue831(t
 			if got.start == nil || got.start.Description != "" {
 				t.Fatalf("start = %+v, want no description derived from raw-invalid arguments", got.start)
 			}
-			// The end event's ArgumentsJSON matches the reload path: valid JSON
-			// is canonicalized (compacted + HTML-escaped) exactly as the transcript
-			// persistence path encodes it; invalid-JSON bytes are preserved raw.
-			expectedArgsJSON := string(args)
-			if json.Valid(args) {
-				if canonical, err := json.Marshal(json.RawMessage(args)); err == nil {
-					expectedArgsJSON = string(canonical)
-				}
-			}
-			if got.end == nil || got.end.ArgumentsJSON != expectedArgsJSON {
-				t.Fatalf("end = %+v, want ArgumentsJSON matching reload (canonical for valid JSON, raw for invalid)", got.end)
+			if got.start.ArgumentsJSON != string(args) || got.end == nil || got.end.ArgumentsJSON != string(args) {
+				t.Fatalf("tool start and end should both carry the original %d argument bytes", len(args))
 			}
 		})
 	}
