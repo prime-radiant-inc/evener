@@ -21,6 +21,7 @@ import { ref, response, snapshot, sourceIds, sourceItems } from "./conversationH
 import * as entryRoutes from "./entryTranscriptRoutes";
 import { resetNavigationStoreForTests } from "./navigation/store";
 import { SessionEntryCache } from "./sessionEntryCache";
+import type { ForegroundHold } from "./threadOwners";
 import {
   acquireBackgroundThread,
   resetThreadsStoreForTests,
@@ -82,7 +83,10 @@ async function mountedConversation() {
     keyboardScrollPaneId: null,
   };
   const ensure = vi.spyOn(threadsStore.getState(), "ensureThread");
-  const release = vi.spyOn(threadsStore.getState(), "releaseThread");
+  // The release names the hold this mount took, not the ref: a ref-keyed
+  // release dropped whichever hold was newest, which is exactly the defect.
+  // Observing the handle seam keeps this fixture a release observer.
+  const release = vi.spyOn(threadsStore.getState(), "releaseThreadHold");
   const tree = (host: string) => (
     <ClientProvider client={client}>
       <ConversationHandoffBoundary
@@ -154,8 +158,16 @@ test("same logical pane keeps item-backed source through ConversationBody host r
       await settleEntryTranscriptForTests(ref);
     });
     // These assert the actual cleanup/replacement, not a no-op rerender.
-    expect(fixture.release.mock.calls).toEqual([[ref], [ref]]);
-    expect(fixture.ensure.mock.calls).toEqual([[ref], [ref], [ref]]);
+    // Two releases, each naming a hold for this ref: the fixture asserts that
+    // the unmount released the mount's own holds, which is what retires the
+    // bodies - not that a ref string reached some method.
+    expect(fixture.release.mock.calls).toHaveLength(2);
+    for (const [hold] of fixture.release.mock.calls) {
+      expect((hold as ForegroundHold).ref, "each release must name this ref's hold").toBe(ref);
+    }
+    // The acquisition count is what the test is about; the second argument is
+    // this pane's own onHold handoff, not a different call.
+    expect(fixture.ensure.mock.calls.map(([target]) => target)).toEqual([ref, ref, ref]);
     expect(workspaceStore.getState().panes[0]).toBe(fixture.pane);
     expect(conversationPaneLifetime(fixture.pane)).toBe(fixture.lifetime);
     expect(retainedTranscriptReadView(fixture.lifetime, ref, "session")).toBe(fixture.readView);

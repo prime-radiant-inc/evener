@@ -13,6 +13,7 @@ import * as entryRoutes from "../stores/entryTranscriptRoutes";
 import { resetNavigationStoreForTests } from "../stores/navigation/store";
 import { activityContext, activitySummary } from "../stores/sessionActivityTestUtils";
 import { SessionEntryCache } from "../stores/sessionEntryCache";
+import type { ForegroundHold } from "../stores/threadOwners";
 import { foregroundHolds } from "../stores/threadOwners";
 import {
   acquireBackgroundThread,
@@ -83,7 +84,9 @@ async function mountHost(mobile: boolean, configure?: (client: FakeClient, pane:
   workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
   configure?.(client, pane);
   const ensure = vi.spyOn(threadsStore.getState(), "ensureThread");
-  const release = vi.spyOn(threadsStore.getState(), "releaseThread");
+  // The release names the hold the mount took, not the ref. Spying on the
+  // ref-keyed shorthand would observe nothing now that panes release handles.
+  const release = vi.spyOn(threadsStore.getState(), "releaseThreadHold");
   let view: ReturnType<typeof render>;
   await act(async () => {
     view = render(<AppShell client={client} />);
@@ -137,7 +140,11 @@ test("real desktop to phone preserves source at every publication", async () => 
     fixture.setMobile(true);
   });
   expect(getDockviewApi()).toBeNull();
-  expect(fixture.release).toHaveBeenCalledWith(ref);
+  // The unmount released a hold for this ref through the handle seam.
+  expect(
+    fixture.release.mock.calls.some(([hold]) => (hold as ForegroundHold).ref === ref),
+    "the departing mount must release its own hold for this ref",
+  ).toBe(true);
   expect(fixture.ensure.mock.calls.length).toBeGreaterThanOrEqual(2);
   await act(async () => {
     await settleEntryTranscriptForTests(ref);
@@ -157,7 +164,11 @@ test("held lazy desktop preserves source across separate commits", async () => {
     fixture.setMobile(false);
   });
   expect(getDockviewApi()).toBeNull();
-  expect(fixture.release).toHaveBeenCalledWith(ref);
+  // The unmount released a hold for this ref through the handle seam.
+  expect(
+    fixture.release.mock.calls.some(([hold]) => (hold as ForegroundHold).ref === ref),
+    "the departing mount must release its own hold for this ref",
+  ).toBe(true);
   const duringLoading = snapshot();
   await act(async () => {
     resolve(await import("./DockHost"));
@@ -183,7 +194,11 @@ test("real phone to desktop preserves source", async () => {
     fixture.setMobile(false);
   });
   expect(getDockviewApi()?.getPanel(fixture.pane.id)).toBeDefined();
-  expect(fixture.release).toHaveBeenCalledWith(ref);
+  // The unmount released a hold for this ref through the handle seam.
+  expect(
+    fixture.release.mock.calls.some(([hold]) => (hold as ForegroundHold).ref === ref),
+    "the departing mount must release its own hold for this ref",
+  ).toBe(true);
   try {
     assertPreserved(fixture);
   } finally {
