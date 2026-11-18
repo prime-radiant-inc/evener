@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -48,6 +49,7 @@ type responsesOutputItem struct {
 	index              int64
 	done               map[string]any
 	doneOrder          int
+	unlinkedReasoning  []responsesReasoningCompletion
 	raw                json.RawMessage
 	text               map[int64]*responsesOutputText
 	tool               *responsesToolState
@@ -56,12 +58,71 @@ type responsesOutputItem struct {
 	finalSummaries     map[int64]responsesSummaryFinal
 	displayOnly        bool
 	hasNativeID        bool // A native item or typed reasoning event supplied this ID.
-	ambiguousCallIndex bool // Distinct issued calls claimed this index.
+	ambiguousCallIndex bool // Distinct function items or issued calls claimed this index.
 }
 
 type responsesSummaryFinal struct {
 	order int
 	text  string
+}
+
+type responsesReasoningCompletion struct {
+	order int
+	item  map[string]any
+}
+
+func (item *responsesOutputItem) completeReasoning(completed map[string]any, order int) {
+	// Until the provider links its ID and output index, a separate record
+	// may hold intervening updates. Keep their arrival order for that join.
+	if item.id == "" || item.index < 0 {
+		item.unlinkedReasoning = append(item.unlinkedReasoning, responsesReasoningCompletion{order, completed})
+	} else {
+		item.unlinkedReasoning = nil
+	}
+	item.applyReasoningCompletion(completed)
+}
+
+func (item *responsesOutputItem) applyReasoningCompletion(completed map[string]any) {
+	if item.done == nil {
+		item.done = map[string]any{"type": "reasoning"}
+	}
+	if id, ok := completed["id"].(string); ok {
+		item.done["id"] = id
+	}
+	if cipher, _ := completed["encrypted_content"].(string); cipher != "" {
+		item.done["encrypted_content"] = cipher
+	}
+	for _, field := range []string{"content", "summary"} {
+		if parts, supplied := completed[field].([]any); supplied {
+			previous, _ := item.done[field].([]any)
+			item.done[field] = completedReasoningParts(previous, parts)
+		}
+	}
+}
+
+// The new array selects its members, including a completely empty list.
+// A selected part can omit text already supplied at the same type and index.
+func completedReasoningParts(previous, selected []any) []any {
+	var filled []any
+	for i := range min(len(previous), len(selected)) {
+		part, _ := selected[i].(map[string]any)
+		prior, _ := previous[i].(map[string]any)
+		kind, _ := part["type"].(string)
+		text, ok := prior["text"].(string)
+		if part["text"] != nil || kind == "" || prior["type"] != kind || !ok {
+			continue
+		}
+		if filled == nil {
+			filled = slices.Clone(selected)
+		}
+		part = maps.Clone(part)
+		part["text"] = text
+		filled[i] = part
+	}
+	if filled != nil {
+		return filled
+	}
+	return selected
 }
 
 func (item *responsesOutputItem) keepSummaryFinal(index int64, final responsesSummaryFinal) {
@@ -123,7 +184,7 @@ func (f *responsesFragments) merge(other responsesFragments) {
 type responsesOutputText struct {
 	deltas         responsesFragments
 	final          string
-	finalType      string // An explicit empty refusal owns its message slot.
+	finalType      string // A typed final owns its slot even when its text is empty.
 	finalOrder     int
 	itemFinal      bool
 	reasoningType  string // Supplied by reasoning_part.added at this content index.
@@ -162,7 +223,12 @@ func (item *responsesOutputItem) textPart(index int64, single bool) *responsesOu
 }
 
 func (p *responsesOutputText) settle(kind, value string, itemFinal bool, order int) {
-	if (value != "" || kind == "refusal") && (itemFinal || !p.itemFinal) && (itemFinal != p.itemFinal || order >= p.finalOrder) {
+	// An item snapshot can use empty text or arguments as a placeholder.
+	// Dedicated part finals have already supplied a string value.
+	if itemFinal && value == "" && kind != "refusal" {
+		return
+	}
+	if (itemFinal || !p.itemFinal) && (itemFinal != p.itemFinal || order >= p.finalOrder) {
 		p.final, p.finalType, p.itemFinal, p.finalOrder = value, kind, itemFinal, order
 		p.deltas = nil
 	}
@@ -295,6 +361,19 @@ func (item *responsesOutputItem) acceptsCallID(id string) bool {
 	return id == "" || item.tool == nil || item.tool.callID == "" || id == item.tool.callID
 }
 
+// An established item ID identifies the function even if a gateway repeats
+// a different call ID. Until both item IDs are known, compare issued calls.
+func (item *responsesOutputItem) acceptsFunctionIdentity(itemID, callID string, known *responsesOutputItem) bool {
+	if known != nil && known.tool != nil {
+		itemID = cmp.Or(itemID, known.id)
+		callID = cmp.Or(callID, known.tool.callID)
+	}
+	if item.id != "" && itemID != "" {
+		return item.id == itemID
+	}
+	return item.acceptsCallID(callID)
+}
+
 func (acc *responsesOutputAccumulator) namedItem(kind, id string) *responsesOutputItem {
 	item := acc.byID[id]
 	if !item.accepts(kind, id, -1) {
@@ -348,7 +427,22 @@ func (acc *responsesOutputAccumulator) join(item, other *responsesOutputItem) *r
 			item.summaries[index] = joined
 		}
 	}
-	if other.doneOrder > item.doneOrder {
+	if item.kind == "reasoning" {
+		if item.done == nil {
+			item.done = other.done
+		} else if other.done != nil {
+			// Two distinct completed records can meet only while their item
+			// ID and index are still separate. Apply all fields in stream order.
+			updates := append(item.unlinkedReasoning, other.unlinkedReasoning...)
+			slices.SortFunc(updates, func(a, b responsesReasoningCompletion) int { return cmp.Compare(a.order, b.order) })
+			item.done = nil
+			for _, update := range updates {
+				item.applyReasoningCompletion(update.item)
+			}
+		}
+		item.unlinkedReasoning = nil // Both records now share an ID and index.
+		item.doneOrder = max(item.doneOrder, other.doneOrder)
+	} else if other.doneOrder > item.doneOrder {
 		item.done, item.raw, item.doneOrder = other.done, other.raw, other.doneOrder
 	}
 	for index, part := range other.text {
@@ -528,9 +622,13 @@ func (acc *responsesOutputAccumulator) callItem(callID string) *responsesOutputI
 }
 
 func (acc *responsesOutputAccumulator) toolOutput(payload map[string]any, callID, itemID, name, alias string) *responsesOutputItem {
+	fallback := acc.callItem(callID)
+	if alias != "" {
+		fallback = cmp.Or(acc.byID[alias], acc.byCallID[alias])
+	}
 	index := responsesEventIndex(payload, "output_index")
-	if owner := acc.byIndex[index]; owner != nil {
-		if !owner.acceptsCallID(callID) && (itemID == "" || owner.id != itemID) {
+	if owner := acc.byIndex[index]; owner != nil && owner.tool != nil {
+		if !owner.acceptsFunctionIdentity(itemID, callID, cmp.Or(acc.byID[itemID], fallback)) {
 			owner.ambiguousCallIndex = true
 		}
 		if owner.ambiguousCallIndex {
@@ -539,10 +637,6 @@ func (acc *responsesOutputAccumulator) toolOutput(payload map[string]any, callID
 	}
 	if callID == "" && itemID == "" && alias == "" && index < 0 {
 		return nil
-	}
-	fallback := acc.callItem(callID)
-	if alias != "" {
-		fallback = cmp.Or(acc.byID[alias], acc.byCallID[alias])
 	}
 	item := acc.outputItem(index, "function_call", itemID, fallback, true)
 	if item.tool == nil {
@@ -691,12 +785,16 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 			fallback, _ = acc.uniqueMessage(itemID, index, true)
 		}
 		output := acc.outputItem(index, it, itemID, fallback, true)
-		settled := item
-		if it == "message" {
+		switch it {
+		case "reasoning":
+			output.completeReasoning(item, acc.order)
+		case "message":
 			output.settleMessage(item, acc.order)
-			settled = output.messageWithCompletedSelection(item)
+			output.done = output.messageWithCompletedSelection(item)
+		default:
+			output.done = item
 		}
-		output.done, output.raw = settled, rawItemToken
+		output.raw = rawItemToken
 		output.doneOrder = acc.order
 		acc.completed++
 		return item, nil, "", false

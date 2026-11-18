@@ -187,32 +187,49 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 		const emptyMessage = `{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"m","content":[]}}`
 		const reference = `{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"m","content":null}}`
 		const other = `{"type":"response.output_text.delta","item_id":"other","output_index":1,"content_index":0,"delta":"other"}`
+		const textFinal = `{"type":"response.output_text.done","item_id":"m","content_index":0`
+		const emptyPart = `{"type":"response.content_part.done","item_id":"m","content_index":0,"part":{"type":"output_text","text":""}}`
+		const emptyRefusal = `{"type":"response.content_part.done","item_id":"m","content_index":0,"part":{"type":"refusal","refusal":""}}`
+		const selectedPart = `{"type":"message","id":"m","content":[{"type":"output_text"`
+		emptyText := []replayText{{"output_text", ""}}
+		draftText := []replayText{{"output_text", "draft"}}
 		for _, tc := range []struct {
-			name   string
-			events []string
-			text   string
+			name     string
+			events   []string
+			terminal string
+			parts    []replayText
 		}{
-			{"completed empty array clears its earlier draft", []string{draft, emptyMessage}, ""},
-			{"repeated item reference preserves its clear", []string{draft, emptyMessage, reference}, ""},
-			{"cleared message leaves another draft selected", []string{draft, other, emptyMessage}, "other"},
-			{"item reference keeps its draft", []string{draft, reference}, "draft"},
-			{"pending draft supplies a sparse terminal", []string{draft}, "draft"},
+			{"completed empty array clears its earlier draft", []string{draft, emptyMessage}, "", nil},
+			{"repeated item reference preserves its clear", []string{draft, emptyMessage, reference}, "", nil},
+			{"cleared message leaves another draft selected", []string{draft, other, emptyMessage}, "", []replayText{{"output_text", "other"}}},
+			{"item reference keeps its draft", []string{draft, reference}, "", draftText},
+			{"pending draft supplies a sparse terminal", []string{draft}, "", draftText},
+			{"explicit empty text final owns its part", []string{draft, textFinal + `,"text":""}`, draft}, "", emptyText},
+			{"empty typed final fills omitted terminal text", []string{draft, emptyPart}, selectedPart + `}]}`, emptyText},
+			{"empty final fills null terminal text", []string{draft, textFinal + `,"text":""}`, reference}, selectedPart + `,"text":null}]}`, emptyText},
+			{"missing and null finals leave draft bytes", []string{draft, textFinal + `}`, textFinal + `,"text":null}`}, "", draftText},
+			{"empty final replaces an earlier final and survives missing text", []string{draft, textFinal + `,"text":"earlier"}`, emptyPart, textFinal + `}`}, "", emptyText},
+			{"empty completed refusal owns its part", []string{draft, emptyRefusal}, "", []replayText{{"refusal", ""}}},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				events := slices.Clone(tc.events)
-				events = append(events, `{"type":"response.completed","response":{"output":[]}}`)
+				events = append(events, `{"type":"response.completed","response":{"output":[`+tc.terminal+`]}}`)
 				observed, live := responsesEvents(t, events...)
 				if !hasEventType(observed, llm.StreamEventTextDelta) {
 					t.Fatal("live accumulator never received the draft")
 				}
 				var want []replayItem
-				if tc.text != "" {
-					want = []replayItem{{Type: "message", Content: []replayText{{"output_text", tc.text}}}}
+				var wantText strings.Builder
+				if len(tc.parts) != 0 {
+					want = []replayItem{{Type: "message", Content: tc.parts}}
+					for _, part := range tc.parts {
+						wantText.WriteString(part.Text)
+					}
 				}
 				saved := recorded(t, "data: "+strings.Join(events, "\n\ndata: ")+"\n\n")
 				for _, result := range []llm.Response{*live, saved} {
-					if got := replayInput(t, result.Message, true); !reflect.DeepEqual(got, want) || result.Text() != tc.text {
-						t.Errorf("settled text = %q, native input = %+v, want %q and %+v", result.Text(), got, tc.text, want)
+					if got := replayInput(t, result.Message, true); !reflect.DeepEqual(got, want) || result.Text() != wantText.String() {
+						t.Errorf("settled text = %q, native input = %+v, want %+v", result.Text(), got, want)
 					}
 				}
 			})
@@ -393,6 +410,12 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 	const summaryOmitted = `{"type":"reasoning","id":"r"` + nativeParts + `}`
 	const streamSummary = `"summary":[{"type":"summary_text","text":" §λ\t"},{"type":"summary_text","text":""},{"type":"summary_text","text":"\r\n<&>last "}]`
 	const summaryCompleted = `{"type":"reasoning","id":"r",` + streamSummary + nativeParts + `}`
+	const completedCipher = `{"type":"reasoning","id":"r","encrypted_content":"cipher",` + streamSummary + nativeParts + `}`
+	const reference = `{"type":"reasoning","id":"r"}`
+	reasoningDone := func(item string) string { return `{"type":"response.output_item.done","item":` + item + `}` }
+	atReasoning := func(item string) string {
+		return `{"type":"response.output_item.done","output_index":1,"item":` + item + `}`
+	}
 	const firstSummary = `{"type":"response.reasoning_summary_text.done","item_id":"r","summary_index":0,"text":" §λ\t"}`
 	const lastSummary = `{"type":"response.reasoning_summary_text.done","output_index":1,"summary_index":2,"text":"\r\n<&>last "}`
 	finalSummaries := []string{
@@ -526,6 +549,39 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 		}, answer + "," + summaryOmitted,
 			answer + `,{"type":"reasoning","id":"r","summary":[{"type":"summary_text","text":" §λ\t"}]` + nativeParts + `}`},
 		{"summary events alone cannot create a native item", append(slices.Clone(finalSummaries), answerDelta), "", answer},
+		{"repeated reasoning completion keeps native content and summary", []string{"{" + display + "}",
+			reasoningDone(summaryCompleted), reasoningDone(reference),
+		}, answer + "," + reference, answer + "," + summaryCompleted},
+		{"repeated reasoning completion keeps ciphertext and summary", []string{"{" + display + "}",
+			reasoningDone(completedCipher), reasoningDone(`{"type":"reasoning","id":"r","encrypted_content":null,"summary":null,"content":null}`),
+			reasoningDone(`{"type":"reasoning","id":"r","encrypted_content":""}`), reasoningDone(reference),
+		}, reference, completedCipher},
+		{"repeated reasoning completions can replace and clear independent fields", []string{"{" + display + "}",
+			atReasoning(completedCipher), atReasoning(`{"type":"reasoning","summary":[],"content":[]}`),
+			atReasoning(`{"type":"reasoning","encrypted_content":"other opaque"}`), reasoningDone(reference), answerDelta,
+		}, "", answer + `,{"type":"reasoning","id":"r","encrypted_content":"other opaque","summary":[]}`},
+		{"repeated reasoning completions keep an explicit blank native part", []string{"{" + display + "}",
+			reasoningDone(summaryCompleted), reasoningDone(`{"type":"reasoning","id":"r","content":[{"type":"reasoning_text","text":""}]}`), reasoningDone(reference),
+		}, reference, `{"type":"reasoning","id":"r",` + streamSummary + `,"content":[{"type":"reasoning_text","text":""}]}`},
+		{"a missing ID inherits the selected completion's ID", []string{"{" + display + "}",
+			atReasoning(summaryCompleted), atReasoning(`{"type":"reasoning","id":null}`),
+		}, answer + `,{"type":"reasoning","id":null}`, answer + "," + summaryCompleted},
+		{"an explicitly cleared completion ID survives a reference", []string{"{" + display + "}",
+			atReasoning(summaryCompleted), atReasoning(`{"type":"reasoning","id":""}`), atReasoning(`{"type":"reasoning"}`),
+		}, answer + `,{"type":"reasoning"}`, answer + `,{"type":"reasoning",` + streamSummary + nativeParts + `}`},
+		{"bridged reasoning completions use the latest observation of each field", []string{"{" + display + "}",
+			reasoningDone(nativeItem), atReasoning(`{"type":"reasoning",` + streamSummary + `}`), reasoningDone(twoParts), declaredItem,
+			atReasoning(`{"type":"reasoning","content":null,"summary":null}`),
+		}, answer + `,{"type":"reasoning"}`, answer + `,{"type":"reasoning","id":"r",` + streamSummary + `,"content":[{"type":"reasoning_text","text":" λ\t"},{"type":"reasoning_text","text":"\r\n<&>"}]}`},
+		{"partial reasoning arrays inherit text only in matching selected slots", []string{"{" + display + "}",
+			reasoningDone(summaryCompleted),
+			atReasoning(`{"type":"reasoning","content":[{"type":"reasoning_text","text":"latest\t"}],"summary":[{"type":"summary_text","text":"latest\n"}]}`),
+			reasoningDone(`{"type":"reasoning","id":"r","content":[{"type":"reasoning_text"},{"type":"reasoning_text","text":""}],"summary":[{"type":"summary_text","text":null}]}`), declaredItem,
+		}, answer + "," + reference, answer + `,{"type":"reasoning","id":"r","content":[{"type":"reasoning_text","text":"latest\t"},{"type":"reasoning_text","text":""}],"summary":[{"type":"summary_text","text":"latest\n"}]}`},
+		{"withdrawn reasoning slots cannot fill a later partial array", []string{"{" + display + "}",
+			atReasoning(summaryCompleted), atReasoning(`{"type":"reasoning","id":"r","content":[],"summary":[]}`),
+			atReasoning(`{"type":"reasoning","id":"r","content":[{"type":"reasoning_text"}],"summary":[{"type":"summary_text"}]}`),
+		}, answer + "," + reference, answer},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			want := nextInput(t, recorded(t, `{"output":[`+tc.complete+`]}`))

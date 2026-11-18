@@ -118,6 +118,11 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 		at(0, `{"type":"response.function_call_arguments.done","call_id":"call_1","name":"f","arguments":" \t{ \"k\": 1 }\n"}`),
 		at(0, `{"type":"response.function_call_arguments.done","call_id":"call_2","name":"g","arguments":"{ \"k\": 2 }"}`),
 	}
+	const secondItemAdded = `{"type":"response.output_item.added","item":{"type":"function_call","id":"fc_2","name":"g"}}`
+	const secondItemFinal = `{"type":"response.function_call_arguments.done","item_id":"fc_2","name":"g","arguments":"{ \"k\": 2 }"}`
+	const secondLinked = `{"type":"function_call","id":"fc_2","call_id":"call_2"}`
+	anonymousFinal := at(0, `{"type":"response.function_call_arguments.done","arguments":"{\"k\":3}"}`)
+	provisionalAtOccupiedIndex := []string{at(0, toolAdded), finalArguments, at(0, secondItemAdded), anonymousFinal}
 	const indexedArguments = `{"type":"response.function_call_arguments.delta","delta":"{}"}`
 	const indexedFinalArguments = `{"type":"response.function_call_arguments.done","arguments":" \t{ \"k\": 1 }\n"}`
 	const indexedItemFinal = `{"type":"function_call","id":"fc_1","arguments":" \t{ \"k\": 1 }\n"}`
@@ -209,9 +214,21 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 		{"first call at a reused index keeps its final arguments", indexedCalls, []string{firstCall}, []replayItem{finalTool}},
 		{"second call at a reused index keeps its name and final arguments", indexedCalls, []string{secondCall}, []replayItem{secondTool}},
 		{"calls at a reused index follow their selected IDs in terminal order", indexedCalls, []string{secondCall, firstCall}, []replayItem{secondTool, finalTool}},
-		{"unidentified final at a reused index belongs to neither call", append(slices.Clone(indexedCalls), at(0, `{"type":"response.function_call_arguments.done","arguments":"{\"k\":3}"}`)),
+		{"unidentified final at a reused index belongs to neither call", append(slices.Clone(indexedCalls), anonymousFinal),
 			[]string{firstCall, secondCall}, []replayItem{finalTool, secondTool}},
 		{"terminal cannot identify a call by its reused index alone", indexedCalls, []string{emptyToolByIndex}, nil},
+		{"a different provisional item makes the occupied index ambiguous", provisionalAtOccupiedIndex, []string{firstCall}, []replayItem{finalTool}},
+		{"a provisional item prevents anonymous terminal selection at the occupied index", provisionalAtOccupiedIndex, []string{emptyToolByIndex}, nil},
+		{"distinct provisional items keep their bytes until both call IDs arrive", []string{at(0, toolItemAdded), finalArguments, at(0, secondItemAdded), secondItemFinal, anonymousFinal},
+			[]string{secondLinked, linkedCall}, []replayItem{secondTool, finalTool}},
+		{"a registered call identifies its item at the occupied index", []string{at(0, toolItemAdded), finalArguments, done(secondLinked), secondItemFinal,
+			at(0, `{"type":"response.function_call_arguments.done","call_id":"call_2","name":"g","arguments":"{ \"k\": 2 }"}`), anonymousFinal},
+			[]string{linkedCall, secondCall}, []replayItem{finalTool, secondTool}},
+		{"a registered item identifies its call at the occupied index", []string{indexedCalls[0], done(secondLinked), at(0, secondItemFinal), anonymousFinal},
+			[]string{firstCall, secondCall}, []replayItem{finalTool, secondTool}},
+		{"a registered event ID identifies its item at the occupied index", []string{at(0, toolAdded), finalArguments, done(secondLinked), secondItemFinal,
+			at(0, `{"type":"response.function_call_arguments.done","id":"fc_2","arguments":"{ \"k\": 2 }"}`), anonymousFinal},
+			[]string{firstCall, secondCall}, []replayItem{finalTool, secondTool}},
 		{"indexed completed item precedes its terminal call ID", []string{at(0, done(indexedItemFinal))}, []string{emptyToolByCall}, []replayItem{finalTool}},
 		{"an explicit call ID matching its item ID is already settled", []string{sameIDAdded, conflictingCallDelta}, nil, []replayItem{{Type: "function_call", CallID: "fc_1", Name: "f", Arguments: "{}"}}},
 		{"indexed arguments without an eventual call ID stay undispatched", []string{at(2, indexedArguments)}, nil, nil},

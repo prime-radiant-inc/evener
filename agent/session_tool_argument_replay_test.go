@@ -67,9 +67,7 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 		thoughts    []string
 	}{
 		{&responses.Protocol{}, "input", "", `{"output":[
-			{"type":"reasoning","id":"r1","content":[
-				{"type":"reasoning_text","text":` + mustJSON(t, first) + `},
-				{"type":"reasoning_text","text":` + mustJSON(t, second) + `}]},
+			{"type":"reasoning","id":"r1"},
 			{"type":"function_call","call_id":"c1","name":"write_file","arguments":` + good + `},
 			{"type":"function_call","call_id":"c2","name":"f","arguments":` + bad + `}
 		]}`, []string{first, second}},
@@ -88,6 +86,7 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 					`{"type":"response.reasoning_summary_part.added","output_index":0,"item_id":"r1","summary_index":1,"part":{"type":"summary_text","text":""}}`,
 					`{"type":"response.reasoning_summary_text.done","output_index":0,"item_id":"r1","summary_index":1,"text":""}`,
 					`{"type":"response.reasoning_summary_text.done","output_index":0,"item_id":"r1","summary_index":0,"text":` + mustJSON(t, summary) + `}`,
+					`{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"r1","content":[{"type":"reasoning_text","text":` + mustJSON(t, first) + `},{"type":"reasoning_text","text":` + mustJSON(t, second) + `}]}}`,
 					`{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"r1"}}`,
 					mustJSON(t, map[string]any{"type": "response.completed", "response": json.RawMessage(tc.response)}),
 				}, "\n\ndata: ") + "\n\n"

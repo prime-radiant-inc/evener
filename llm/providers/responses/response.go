@@ -393,7 +393,7 @@ func (item *responsesOutputItem) appendMessage(content []llm.ContentPart, messag
 			substantive = true
 		} else {
 			source := observed[int64(index)]
-			if len(parts) == 1 && (source == nil || source.value() == "") {
+			if len(parts) == 1 && (source == nil || source.finalType == "" && len(source.deltas) == 0) {
 				source = observed[-1]
 			}
 			if source != nil && source.finalType != "refusal" {
@@ -502,12 +502,16 @@ func (item *responsesOutputItem) settledReasoningText(index int, kind string) (t
 }
 
 func (item *responsesOutputItem) reasoningID(terminal map[string]any) string {
-	if raw, supplied := terminal["id"]; supplied {
-		id, _ := raw.(string)
+	if id, supplied := terminal["id"].(string); supplied {
 		return id
 	}
-	if item != nil && item.hasNativeID {
-		return item.id
+	if item != nil {
+		if id, supplied := item.done["id"].(string); supplied {
+			return id
+		}
+		if item.hasNativeID {
+			return item.id
+		}
 	}
 	return ""
 }
