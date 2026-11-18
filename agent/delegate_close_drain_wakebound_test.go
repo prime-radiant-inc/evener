@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -135,3 +136,48 @@ func TestOrdinaryDeliverySuppliesNoPublicationBound(t *testing.T) {
 // error rather than a message assertion target: the test checks the sink and the
 // bound, never the wording.
 var errTestWakeFailed = errors.New("wake refused")
+
+// The explicit no-bound sentinel must not read as a bound to anything that asks
+// by nil-ness, and it must not panic the way a nil context would.
+//
+// Three of the six ordinary-path call sites now pass noBound instead of a
+// literal nil: emitSessionActivityChangedBounded, wakeDeliveryReceiver and
+// scheduleDelegateAttentionRetryBounded. Each reaches lockWithin, whose whole
+// question is "did a caller hand me a stall budget". A bare context.Background()
+// answers yes to that question -- the Done channel never closes, so the lock is
+// polled rather than taken -- and a nil answers it by crashing whoever calls
+// Err. The sentinel is the value that says "no" to both.
+func TestNoBoundSentinelIsNotACallerBound(t *testing.T) {
+	if suppliedCallerBound(noBound) {
+		t.Fatal("the no-bound sentinel reads as a caller-supplied bound: every ordinary wake would " +
+			"be treated as bounded, and lockWithin would poll a Done channel that never closes")
+	}
+	if suppliedCallerBound(nil) {
+		t.Fatal("a nil context reads as a caller-supplied bound")
+	}
+	bound, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	if !suppliedCallerBound(bound) {
+		t.Fatal("a real cancellable context does not read as a caller-supplied bound")
+	}
+
+	// The sentinel must be safe to inspect the way a real context is: the crash
+	// a nil context causes is the reason it exists.
+	if err := noBound.Err(); err != nil {
+		t.Fatalf("noBound.Err() = %v, want nil", err)
+	}
+	if done := noBound.Done(); done != nil {
+		t.Fatal("noBound.Done() returns a channel: a send selecting on it would park on an arm that can never fire")
+	}
+	if _, ok := noBound.Deadline(); ok {
+		t.Fatal("noBound reports a deadline")
+	}
+
+	// And it must keep an ordinary arm's behaviour: the plain lock, taken at
+	// once, with no polling.
+	var mu sync.Mutex
+	if !lockWithin(noBound, &mu) {
+		t.Fatal("lockWithin(noBound) refused the lock: an ordinary wake would be dropped")
+	}
+	mu.Unlock()
+}

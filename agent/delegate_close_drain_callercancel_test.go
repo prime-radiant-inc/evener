@@ -121,3 +121,58 @@ func TestCloseDrainWatchFlushRunsOnTheDrainBound(t *testing.T) {
 		t.Fatal("the watch invalidation never reached the blocked-send boundary: the send was not the thing under test")
 	}
 }
+
+// A bounded publication's job-manager observer must run on the same bound.
+//
+// emitWithProvenanceContext correctly bounded its own send, then handed the
+// event to the UNBOUNDED observer. The watch-activity flush inside that observer
+// is synchronous, so a publication that filled the last slot in a full stream
+// left the flush waiting on the session's own delivery path -- the full close
+// cascade. The stop deadline that released the send could not release the flush,
+// so collectible lanes reached disposal with an expired budget.
+//
+// Both conditions are required to reach the wait, and this test supplies both:
+// a pending invalidation for the flush to publish, and a full stream so the
+// flush cannot land.
+func TestBoundedPublicationFlushesWatchActivityOnItsBound(t *testing.T) {
+	s := newTestSessionForEnvctx(t)
+	if s.jobManager == nil {
+		t.Fatal("session has no job manager: nothing to flush watch activity through")
+	}
+
+	// A full authoritative stream.
+	s.events = make(chan events.SessionEvent, 1)
+	s.events <- events.New(events.HookStartData{Event: "occupies the only slot"})
+	s.authoritativeConsumer = true
+	t.Cleanup(func() { s.authoritativeConsumer = false })
+
+	// A concurrent watch mutation has queued an invalidation for the flush.
+	s.jobManager.noteWatchActivity(s.ID())
+
+	var parked atomic.Bool
+	s.testOnlyBlockedSendEntered = func() { parked.Store(true) }
+	t.Cleanup(func() { s.testOnlyBlockedSendEntered = nil })
+
+	bound, cancelBound := context.WithCancel(t.Context())
+	cancelBound()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.emitWithProvenanceContext(bound, events.WarningData{Message: "a bounded publication"}, nil)
+	}()
+
+	// The publication reaches the blocked-send boundary and the whole call,
+	// flush included, returns on the bound.
+	testwait.Until(t, "the bounded publication and its watch flush to return on the bound", func() bool {
+		select {
+		case <-done:
+			return true
+		default:
+			return false
+		}
+	})
+	if !parked.Load() {
+		t.Fatal("the publication never reached the blocked-send boundary: the send was not the thing under test")
+	}
+}

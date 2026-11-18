@@ -3067,6 +3067,43 @@ func (s *Session) recordTurnBounded(bound context.Context, live, persisted schem
 	return rec, err
 }
 
+// noBound is the explicit "no caller supplied a stall budget" value for every
+// bound-carrying parameter on the delegate wake, attention and publication
+// paths. It is a real context rather than a nil one, because a nil context is a
+// latent crash: anything on the path that calls Err, Done or Deadline panics,
+// and the call sites that pass it cannot be told from a caller that simply
+// forgot. It is also not context.Background: several consumers ask "did a caller
+// hand me a budget" by nil-ness, and Background answers yes to that question.
+// lockWithin polling a Done channel that never closes turned an ordinary wake
+// into a spin on attentionMu instead of the plain lock it had always taken.
+//
+// So the absence of a bound is now a value that says so. hasCallerBound is the
+// one predicate every consumer uses, and its three methods answer exactly as an
+// unbounded wait must: never cancelled, never expiring, no deadline.
+type unboundedContext struct{}
+
+func (unboundedContext) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (unboundedContext) Done() <-chan struct{}       { return nil }
+func (unboundedContext) Err() error                  { return nil }
+func (unboundedContext) Value(any) any               { return nil }
+
+// noBound is the sentinel described above.
+var noBound context.Context = unboundedContext{}
+
+// suppliedCallerBound reports whether bound is anything other than one of the
+// two encodings of "no bound": a nil context and noBound.
+//
+// It deliberately does NOT try to decide whether a non-nil context carries a
+// usable deadline. Every consumer keeps exactly the behaviour it had for
+// non-nil contexts before the sentinel existed, and the only change is that the
+// explicit no-bound value now takes the same branch as nil did. Widening the
+// question -- "does this context have a deadline" -- would silently move
+// context.Background(), a turn's context, and the session's lifetime onto paths
+// their callers never asked for.
+func suppliedCallerBound(bound context.Context) bool {
+	return bound != nil && bound != noBound
+}
+
 // lockWithin acquires m, giving up when bound expires first, and reports whether
 // it was taken.
 //
@@ -3076,7 +3113,7 @@ func (s *Session) recordTurnBounded(bound context.Context, live, persisted schem
 // nothing was waiting to hand it back. Polling keeps the whole attempt inside the
 // caller, so giving up leaves nothing behind.
 func lockWithin(bound context.Context, m *sync.Mutex) bool {
-	if bound == nil {
+	if !suppliedCallerBound(bound) {
 		m.Lock()
 		return true
 	}
@@ -3320,7 +3357,7 @@ func (s *Session) surfaceTranscriptWarningsTo(diag recordDiagnostics) {
 	// has no nil case: it sends on the context it is given. Route those through
 	// the unbounded announce so the ordinary path keeps its own backpressure
 	// behavior and never dereferences a nil context.
-	if diag.bound == nil {
+	if !suppliedCallerBound(diag.bound) {
 		s.announceFailClosed()
 		return
 	}

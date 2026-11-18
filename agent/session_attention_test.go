@@ -2524,7 +2524,7 @@ func TestDelegateAttention_StopDrainDoesNotResolveAttentionTwice(t *testing.T) {
 		t.Fatalf("StopSubtree: %v", err)
 	}
 	root := &Session{delegateController: c}
-	if err := c.drainStop(context.Background(), c.stopForResult(result), root); err != nil {
+	if err := c.drainStopAbandonable(context.Background(), c.stopForResult(result), root, nil, false); err != nil {
 		t.Fatalf("drain stop with root mutation executor: %v", err)
 	}
 	pending, err := readPendingDelegateAttention(path, sessionID)
@@ -3378,7 +3378,7 @@ func TestRootDelegateAttention_PreArmedAttentionNotPresentedKeepsItsNotification
 	)
 	// Armed in the wake set before the turn; its durable entry does not exist
 	// yet, so no request of the user turn can present it.
-	root.armRootDelegateAttentions([]string{attentionID})
+	root.armRootDelegateAttentionsBounded(noBound, []string{attentionID})
 	if _, err := root.ProcessInput(context.Background(), "status update please", nil); err != nil {
 		t.Fatalf("process user turn: %v", err)
 	}
@@ -4439,7 +4439,7 @@ func (f *strandedStopFixture) drain(t *testing.T, timeout time.Duration) error {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	return f.controller.drainStop(ctx, f.controller.stopForResult(f.stop), f.root)
+	return f.controller.drainStopAbandonable(ctx, f.controller.stopForResult(f.stop), f.root, nil, false)
 }
 
 // drainUntilParked runs a real drain and cancels it once it is parked on stop
@@ -4456,7 +4456,9 @@ func (f *strandedStopFixture) drainUntilParked(t *testing.T) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- f.controller.drainStop(ctx, f.controller.stopForResult(f.stop), f.root) }()
+	go func() {
+		done <- f.controller.drainStopAbandonable(ctx, f.controller.stopForResult(f.stop), f.root, nil, false)
+	}()
 	select {
 	case <-parked:
 	case err := <-done:
@@ -4752,7 +4754,7 @@ func TestDelegateAttention_PrelaunchStopWaitsForTakenInlineCommit(t *testing.T) 
 	if _, err := commits[0].commit.Complete(true); err != nil {
 		t.Fatalf("complete the taken inline commit: %v", err)
 	}
-	if err := f.controller.drainStop(context.Background(), f.controller.stopForResult(f.stop), nil); err != nil {
+	if err := f.controller.drainStopAbandonable(context.Background(), f.controller.stopForResult(f.stop), nil, nil, false); err != nil {
 		t.Fatalf("stop after the taken inline commit was acknowledged = %v", err)
 	}
 	if !channelClosed(f.stop.done) {
@@ -4942,7 +4944,7 @@ func TestDelegateAttention_PrelaunchStopRetriesAfterTransientAckFailure(t *testi
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- c.drainStop(ctx, c.stopForResult(f.stop), f.root) }()
+	go func() { done <- c.drainStopAbandonable(ctx, c.stopForResult(f.stop), f.root, nil, false) }()
 	select {
 	case <-parked:
 	case err := <-done:
@@ -5342,7 +5344,7 @@ func TestDelegateAttention_StartDeliveryReplayFailureDoesNotFailCommittedStart(t
 	// fires on a genuine hang, not scheduler contention under a loaded suite.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := c.drainStop(ctx, c.stopForResult(stop), root); err != nil {
+	if err := c.drainStopAbandonable(ctx, c.stopForResult(stop), root, nil, false); err != nil {
 		t.Fatalf("stop after the committed start: %v", err)
 	}
 	if !channelClosed(stop.done) {

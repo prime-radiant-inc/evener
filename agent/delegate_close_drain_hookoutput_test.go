@@ -181,9 +181,7 @@ func TestBoundedNotificationHookOutputStillHonoursItsBound(t *testing.T) {
 	// Precondition: the user message reaches the full stream and parks there. An
 	// output publication that ignores its bound parks here forever, which is the
 	// defect this test exists to catch.
-	testwait.Until(t, "the hook's user message to park on the full stream", func() bool {
-		return parked.Load()
-	})
+	testwait.Until(t, "the hook's user message to park on the full stream", parked.Load)
 
 	// Only now does the bound expire.
 	cancelBound()

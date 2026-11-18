@@ -2179,7 +2179,7 @@ func TestRetirementDelegateStopAdmittedFirst(t *testing.T) {
 	// TRIPWIRE: stop.done/driver evidence determines completion, not the timeout.
 	ctx, finish := context.WithTimeout(context.Background(), 10*time.Second)
 	defer finish()
-	if err := tree.drainStop(ctx, stop, root); err != nil {
+	if err := tree.drainStopAbandonable(ctx, stop, root, nil, false); err != nil {
 		t.Fatal(err)
 	}
 	events, err := tree.store.Load()

@@ -1509,15 +1509,12 @@ func (s *Session) isRootDelegateAttentionReceiver() bool {
 	return isRoot
 }
 
-// armRootDelegateAttentions caches already-durable root attention IDs and
-// coalesces one autonomous notification wake for the batch. The cache is never
-// authority: an append/readback succeeds before admission here, and restart
-// replaces it from the receiver transcript fold.
-func (s *Session) armRootDelegateAttentions(attentionIDs []string) {
-	_ = s.armRootDelegateAttentionsBounded(context.Background(), attentionIDs)
-}
-
-// armRootDelegateAttentionsBounded is armRootDelegateAttentions on a caller's
+// armRootDelegateAttentionsBounded caches already-durable root attention IDs
+// and coalesces one autonomous notification wake for the batch. The cache is
+// never authority: an append/readback succeeds before admission here, and
+// restart replaces it from the receiver transcript fold.
+//
+// It is on a caller's
 // bound. The cached IDs are never authority -- the append/readback succeeded
 // before admission -- so a wake that cannot take the lock in time skips the
 // cache and reports the skip rather than waiting out the close.
@@ -2362,9 +2359,9 @@ func (s *Session) resetDelegateAttentionArmRetryLocked() {
 }
 
 func (s *Session) scheduleDelegateAttentionRetry() {
-	// nil, not context.Background(): see retryDelegateAttentionLater. An
+	// noBound, not context.Background(): see retryDelegateAttentionLater. An
 	// ordinary retry has no caller bound, and Background reads as one.
-	s.scheduleDelegateAttentionRetryBounded(nil)
+	s.scheduleDelegateAttentionRetryBounded(noBound)
 }
 
 // scheduleDelegateAttentionRetryBounded is scheduleDelegateAttentionRetry on a

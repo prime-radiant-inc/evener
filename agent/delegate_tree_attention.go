@@ -815,13 +815,13 @@ func (c *delegateTreeController) hasRunnableDelegateAttention() bool {
 }
 
 func (c *delegateTreeController) retryDelegateAttentionLater() {
-	// No caller supplied a stall budget here, and nil says so. Passing
+	// No caller supplied a stall budget here, and noBound says so. Passing
 	// context.Background() instead made an absent bound look present: lockWithin
 	// polls a Done channel that never closes, so this path spun on
 	// attentionMu rather than taking the plain lock it has always taken. A
 	// bound belongs to the caller that has one -- the close drain is the only
 	// such caller -- and every other caller keeps today's behavior exactly.
-	c.retryDelegateAttentionLaterBounded(nil)
+	c.retryDelegateAttentionLaterBounded(noBound)
 }
 
 // retryDelegateAttentionLaterBounded is retryDelegateAttentionLater on a

@@ -310,7 +310,14 @@ func (s *Session) emitWithProvenanceContext(ctx context.Context, data events.Eve
 	}
 	data, ev := s.sendEventOnContext(ctx, data, p)
 	if s.jobManager != nil {
-		s.jobManager.onSessionEvent(ev)
+		// The observer's flush is SYNCHRONOUS with this send: a bounded
+		// publication can take the last slot in a full stream, and the watch
+		// activity flush that follows then runs on this goroutine. On the
+		// unbounded path it waits out the whole close cascade, and the stop
+		// deadline that released THIS send cannot release that one -- so the
+		// budget teardown needs is spent immediately after a correctly bounded
+		// publication. The bound is passed, not dropped here.
+		s.jobManager.onSessionEventContext(ctx, ev)
 	}
 	if events.KindOf(data) == events.EventWarning {
 		s.fireNotificationHookBounded(ctx, warningHookMessage(data), warningHookTitle(data))
@@ -472,7 +479,7 @@ func withPublicationBound(ctx context.Context) context.Context {
 // publicationBound reports the bound a lifecycle publication must use, and
 // whether the dispatcher supplied one at all.
 func publicationBound(ctx context.Context) (context.Context, bool) {
-	if ctx == nil {
+	if !suppliedCallerBound(ctx) {
 		return nil, false
 	}
 	if bounded, _ := ctx.Value(publicationBoundKey{}).(bool); !bounded {

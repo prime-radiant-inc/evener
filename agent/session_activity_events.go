@@ -11,7 +11,7 @@ import (
 // Activity invalidations travel through the existing bridge without becoming
 // model-facing watch observations. Publication happens outside domain locks.
 func (s *Session) emitSessionActivityChanged(owner string, resource appwire.SessionActivityResource) {
-	s.emitSessionActivityChangedBounded(nil, owner, resource)
+	s.emitSessionActivityChangedBounded(noBound, owner, resource)
 }
 
 // emitSessionActivityChangedBounded is emitSessionActivityChanged on the bound
@@ -26,7 +26,7 @@ func (s *Session) emitSessionActivityChangedBounded(ctx context.Context, owner s
 		targets = controller.sessionAncestryLocked(owner)
 		controller.mu.Unlock()
 	}
-	if ctx == nil {
+	if !suppliedCallerBound(ctx) {
 		s.publishSessionActivityChanged(owner, targets, resource)
 		return
 	}
@@ -102,7 +102,7 @@ func (jm *jobManager) noteWatchActivity(receiver string) {
 	jm.watchActivityMu.Unlock()
 }
 func (jm *jobManager) publishWatchActivity() {
-	jm.publishWatchActivityContext(nil)
+	jm.publishWatchActivityContext(noBound)
 }
 
 // publishWatchActivityContext flushes the receivers whose watch activity moved,

@@ -1411,7 +1411,7 @@ func (c *delegateTreeController) emitDelegateUpdate(plan delegateUpdatePlan) {
 // publications are made on that pass's deadline and an unrelated delegate's
 // publications are untouched. See delegateUpdatePlan.bound.
 func stampBound(bound context.Context, plans delegateMutationPlans) delegateMutationPlans {
-	if bound == nil {
+	if !suppliedCallerBound(bound) {
 		return plans
 	}
 	for i := range plans.updates {

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 )
 
@@ -817,9 +818,46 @@ func (c *delegateTreeController) drainStopForClose(ctx context.Context, stop *de
 	return c.drainStopAbandonable(ctx, stop, root, nil, true)
 }
 
-func (c *delegateTreeController) drainStop(ctx context.Context, stop *delegateStopState, root *Session) error {
-	return c.drainStopAbandonable(ctx, stop, root, nil, false)
+// publishDrainWarnings publishes the warnings a stop pass settled, on the path
+// that caller owns.
+//
+// The two callers have different obligations and must not share one publisher:
+//
+//   - The ordinary stop driver (warningsOnly false) publishes on emit, the
+//     session's ordinary path. That path fires the configured Notification hook
+//     independently of whether the channel accepted the event, which is the
+//     guarantee a full best-effort buffer must not remove.
+//   - The close drain (warningsOnly true) publishes on emitCloseDrainWarnings,
+//     which is bounded by the drain's stop context and retains an undelivered
+//     warning for one retry on what the cascade has left after the removals.
+//     That retry deliberately does NOT redispatch the hook.
+//
+// Neither path can run the hook twice: the ordinary path retains nothing, so
+// the close-time retry never sees it, and the close path's retry publishes only
+// the channel event.
+func (s *Session) publishDrainWarnings(warningsOnly bool, ctx context.Context, warnings []events.WarningData) {
+	if s == nil || len(warnings) == 0 {
+		return
+	}
+	if warningsOnly {
+		if observe := ObserveCloseDrainPublication; observe != nil {
+			observe(ctx)
+		}
+		s.emitCloseDrainWarnings(ctx, warnings)
+		return
+	}
+	for _, warning := range warnings {
+		s.emit(warning)
+	}
 }
+
+// ObserveCloseDrainPublication is the context-independent observation seam for
+// a close-driven drain's warning publication: it sees the bound every such
+// publication is made on, so a test can assert WHICH deadline caps it instead of
+// measuring how long a send took. Nil in production, like
+// ObserveCloseStopJoinBudget and for the same reason -- host load can stretch any
+// wall-clock ceiling, but the deadline a pass chose is exact.
+var ObserveCloseDrainPublication func(bound context.Context)
 
 // drainStopAbandonable is drainStop plus an optional abandon signal. The stop
 // driver passes its own cancellable context's Done channel, so a close join
@@ -859,6 +897,32 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 			retirementRelease()
 		}
 	}()
+	// ONE publication decision for both callers, and one budget for the close
+	// side. Mediums 2 and 3 of review 53025's successor are the same mistake at
+	// two points of this entry, so they are answered here rather than at each
+	// publish site.
+	//
+	// M2 -- the ordinary stop driver must keep the guarantee the ordinary path
+	// had. Routing its warnings through emitCloseDrainWarnings made the hook a
+	// CONSEQUENCE of channel delivery: that helper retains an undelivered
+	// warning and publishes the hook only when the send lands, so a full
+	// best-effort buffer converted a notification that used to arrive into one
+	// that silently did not. publishDrainWarnings keeps the ordinary path on
+	// emit, which dispatches the hook independently of delivery and retains
+	// nothing -- so the close-time retry can never deliver it twice.
+	//
+	// M3 -- a close-driven drain must not reserve a fresh slice per subtree.
+	// Each top-level subtree gets its own stop context, and passing that to the
+	// warning sends let every otherwise-complete stop spend another slice of the
+	// cascade against a full stream. The publications are capped at the
+	// cascade's SHARED absolute cutoff instead; the stop context still governs
+	// reconciliation, which is a join, not a publication.
+	pubCtx := ctx
+	if warningsOnly {
+		capped, cancelCapped := closeCascadePublicationContext(ctx)
+		defer cancelCapped()
+		pubCtx = capped
+	}
 	for {
 		select {
 		case <-stop.done:
@@ -906,7 +970,7 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 			// failed: the receipt that produced it is gone from the store,
 			// so no later pass can settle it again.
 			if root != nil {
-				root.emitCloseDrainWarnings(ctx, plans.warnings)
+				root.publishDrainWarnings(warningsOnly, pubCtx, plans.warnings)
 			}
 			return err
 		}
@@ -916,7 +980,7 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 		// it out of the drain unpublished. Publishing first also keeps the
 		// warning off the plan-execution path: it is news, not an effect.
 		if root != nil {
-			root.emitCloseDrainWarnings(ctx, plans.warnings)
+			root.publishDrainWarnings(warningsOnly, pubCtx, plans.warnings)
 		}
 		plans.warnings = nil
 		for _, plan := range plans.shellRepairs {

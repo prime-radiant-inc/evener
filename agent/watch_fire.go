@@ -16,7 +16,7 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 	jm.mu.Lock()
 	notifications, deliveries, emitting := jm.evaluateWatchesLocked(ev)
 	jm.mu.Unlock()
-	jm.finishWatchEvaluation(nil, notifications, deliveries, emitting)
+	jm.finishWatchEvaluation(noBound, notifications, deliveries, emitting)
 }
 
 // onSessionEventContext is onSessionEvent on the bound of the caller that sent

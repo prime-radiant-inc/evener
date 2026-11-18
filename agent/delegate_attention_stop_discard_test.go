@@ -135,7 +135,7 @@ func TestDelegateAttention_LiveStopSettlementDiscardsBoundAttention(t *testing.T
 	if stop == nil {
 		t.Fatal("stop state missing after admission")
 	}
-	if err := c.drainStop(context.Background(), stop, nil); err != nil {
+	if err := c.drainStopAbandonable(context.Background(), stop, nil, nil, false); err != nil {
 		t.Fatalf("drainStop: %v", err)
 	}
 	select {

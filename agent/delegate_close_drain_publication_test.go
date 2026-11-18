@@ -307,3 +307,71 @@ func TestCloseCascadeMintsOnePublicationCutoff(t *testing.T) {
 			"spends the time the lane removals need", firstDeadline, secondDeadline)
 	}
 }
+
+// A close cascade with several top-level subtrees must publish their warnings on
+// ONE cutoff, not one slice per subtree.
+//
+// Each subtree's drain gets its own stop context from closeStopJoinContext, and
+// that context is derived from what is LEFT of the cascade. Passing it to the
+// warning sends charged the reservation once per subtree: the first stop spent
+// half of what remained, the second spent half of the half, and the sends the
+// removals waited on ran out of time that no single pass had consumed. The
+// magnitude is what made this survive review -- one subtree looks exactly like
+// one reservation, and the defect only appears at the second.
+//
+// The bound is observed rather than timed: the deadline a pass chooses is exact,
+// where a duration depends on host load.
+func TestCloseSubtreeDrainsShareOnePublicationCutoff(t *testing.T) {
+	r := newWorktreeRepo(t)
+	root := r.s
+	root.events = make(chan events.SessionEvent, 8)
+
+	restoreBudget := SetLaneClosePassBudget(closeDrainCascadeBudget)
+	defer restoreBudget()
+	cascade, cancelCascade := ensureCloseBudget(context.Background())
+	defer cancelCascade()
+	root.closeCtxMu.Lock()
+	root.closeCtx = cascade
+	root.closeCtxMu.Unlock()
+
+	var bounds []context.Context
+	ObserveCloseDrainPublication = func(bound context.Context) { bounds = append(bounds, bound) }
+	defer func() { ObserveCloseDrainPublication = nil }()
+
+	// Two top-level subtrees, each with a receipt the drain must abandon and a
+	// warning it must therefore publish. Two is enough: the defect is that the
+	// SECOND pass gets a different cutoff, so a single-subtree fixture cannot
+	// see it at all.
+	for i := range 2 {
+		f := newStrandedStopFixture(t, strandedStopOptions{updates: 1, inline: true, realRoot: true})
+		f.root.events = make(chan events.SessionEvent, 8)
+		// Each subtree's drain gets its OWN stop context, derived from what is
+		// left of the shared cascade -- exactly what closeRuntimeTree hands each
+		// top-level subtree in its loop.
+		stopCtx, cancelStop := closeStopJoinContext(cascade)
+		err := f.controller.drainStopForClose(stopCtx, f.controller.stopForResult(f.stop))
+		cancelStop()
+		if err != nil {
+			t.Fatalf("close drain for subtree %d = %v, want the abandoned receipt to settle the stop", i+1, err)
+		}
+	}
+
+	if len(bounds) < 2 {
+		t.Fatalf("close drains published %d warning batch(es), want at least 2: the fixture did not reach two subtrees", len(bounds))
+	}
+	first, ok := bounds[0].Deadline()
+	if !ok {
+		t.Fatal("the first close drain published on a context with no deadline: nothing caps the warning send")
+	}
+	for i, bound := range bounds[1:] {
+		deadline, ok := bound.Deadline()
+		if !ok {
+			t.Fatalf("close drain %d published on a context with no deadline", i+2)
+		}
+		if !deadline.Equal(first) {
+			t.Fatalf("two subtree drains published on DIFFERENT cutoffs: first=%s later=%s; "+
+				"closeStopJoinContext derives its budget from what is left of the cascade, so each "+
+				"subtree reserved another slice of the time the lane removals need", first, deadline)
+		}
+	}
+}

@@ -124,7 +124,7 @@ func (s *Session) emitDelegateUpdate(plan delegateUpdatePlan) {
 	// the teardown's remaining removals share. So narrowing is decided per
 	// TARGET: bounded only where the target is closing too.
 	publishedBound := func(target *Session) (context.Context, bool) {
-		if bound == nil || target == nil {
+		if !suppliedCallerBound(bound) || target == nil {
 			return nil, false
 		}
 		target.closeCtxMu.RLock()
