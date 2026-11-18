@@ -177,7 +177,18 @@ func setManagerThreadModel(ctx context.Context, cfg hubcore.WebConfig, sources *
 	})
 	if err != nil && managerModelMutationNeedsDiagnosticRead(err) {
 		if source, sourceErr := sourceForThread(sources, params.Ref, ""); sourceErr == nil {
-			_, _ = source.ReadThread(ctx, appwire.ThreadReadParams{Ref: params.Ref, IncludeTurns: false, Subscribe: false})
+			if read, readErr := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: params.Ref, IncludeTurns: false, Subscribe: false}); readErr == nil {
+				// The read already answered "which model does the daemon run"
+				// for a caller whose mutation outcome is uncertain. Handing it
+				// back inside the failure saves a second round trip, and it
+				// never changes the outcome or re-enables replay.
+				if observed := read.Thread.Evener.ModelControl; observed != nil {
+					var wire appwire.WireError
+					if errors.As(err, &wire) {
+						err = wire.WithModelControlObserved(*observed)
+					}
+				}
+			}
 		}
 	}
 	return response, err

@@ -396,6 +396,28 @@ func TestManagerSessionControlModelAuthorityAdapter(t *testing.T) {
 			if !ok || data.ClientMutationID != source.modelCalls[0].ClientMutationID {
 				t.Fatalf("mutation identity changed: data=%+v params=%+v", data, source.modelCalls[0])
 			}
+			// The diagnostic read already observed which model the daemon runs.
+			// Discarding it makes the caller issue a second read for a fact this
+			// path held, so the failure carries the observed state while keeping
+			// the original outcome and blocking automatic replay.
+			observed, ok := appwire.ModelControlObservedOf(err)
+			if !ok {
+				t.Fatalf("failure carries no observed model-control state: %v", err)
+			}
+			if observed.Active.ModelProvider != "anthropic" || observed.Active.Model != "claude-opus-4-6" {
+				t.Fatalf("observed state = %+v, want the model the diagnostic read saw", observed)
+			}
+			// The evidence is additive: every field the original refusal carried
+			// must read exactly as it did, including its outcome and whether a
+			// replay is allowed, because a caller decides those from this data.
+			var originalWire appwire.WireError
+			if !errors.As(test.err(source.modelCalls[0].ClientMutationID), &originalWire) {
+				t.Fatal("test refusal is not a wire error")
+			}
+			original, _ := appwire.ErrorDataOf(originalWire.Data)
+			if data != original {
+				t.Fatalf("observed evidence changed the refusal: got %+v, want %+v", data, original)
+			}
 		})
 	}
 }

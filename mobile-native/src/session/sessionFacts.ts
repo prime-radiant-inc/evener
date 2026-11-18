@@ -135,8 +135,11 @@ export function modelChipLabel(
 	const target = session.modelControlState
 		? modelControlDisplay(session as ThreadModel)
 		: { modelProvider: session.modelProvider, model: session.model ?? session.modelProvider };
-	const modelProvider =
-		session.modelControlState?.kind === "ready" ? `${target.modelProvider}/${target.model}` : target.modelProvider;
+	// Every model-control state carries a complete display target - the live
+	// snapshot's, the connection's canonical one, or a recovery's last safe one -
+	// so the qualified id is always available. Qualifying it only in `ready`
+	// shows the provider alone during recovery, which reads as a lost model.
+	const modelProvider = session.modelControlState ? `${target.modelProvider}/${target.model}` : target.modelProvider;
 	const namesActiveModel = session.modelControlState
 		? target.modelProvider === session.modelProvider && target.model === session.model
 		: target.modelProvider === session.modelProvider;

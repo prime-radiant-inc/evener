@@ -75,6 +75,14 @@ func (s *Session) modelControlResponseLocked(disposition appwire.ModelControlDis
 	}
 }
 
+// advanceModelControlLocked publishes one model-control transition.
+//
+// The desired record belongs to the newest issue, so an older pick that is
+// still applying as a fallback updates Active without touching it. Replacing
+// it would do two kinds of damage at once: clients would show the fallback as
+// the newest intent while the queue still tries the newer pick first, and the
+// newer pick's own rejection could no longer match the record, so both that
+// rejection and its transcript warning would vanish. Callers hold s.mu.
 func (s *Session) advanceModelControlLocked(profile *provider.Profile, fence modelSwitchFence, lifecycle appwire.ModelControlLifecycle) appwire.ModelControlSnapshot {
 	if s.modelControl.Revision == 0 {
 		s.modelControl.Authority = appwire.ModelControlAuthority{InstanceID: s.id, BootGeneration: s.bootGeneration}
@@ -83,6 +91,9 @@ func (s *Session) advanceModelControlLocked(profile *provider.Profile, fence mod
 	s.modelControl.Revision++
 	if profile != nil {
 		s.modelControl.Active = modelControlActive(profile)
+	}
+	if desired := s.modelControl.Desired; desired != nil && desired.RequestSequence > fence.pickSeq {
+		return cloneModelControlSnapshot(s.modelControl)
 	}
 	s.modelControl.Desired = &appwire.ModelControlDesired{
 		RequestSequence:  fence.pickSeq,

@@ -527,6 +527,19 @@ func TestLateOlderPickAppliesWhenTheNewerPickFailsAtTheBoundary(t *testing.T) {
 	if got := s.Profile().Model(); got != "gpt-5.4" {
 		t.Fatalf("selected model = %q; the older pick must be selected once the newer one is rejected (%q)", got, "gpt-5.4")
 	}
+	// The older pick is the fallback, not the newest intent: it may move Active
+	// when it applies, but the desired record must keep naming the newer pick
+	// and report that pick's rejection. An older pick that overwrote Desired
+	// while the newer one was still queued would also suppress the newer pick's
+	// rejection - the record no longer matched its fence - so both facts are
+	// asserted from the same run.
+	final := s.ModelControlSnapshot()
+	if final.Active.Model != "gpt-5.4" {
+		t.Fatalf("active model = %q, want the applied older pick (%q)", final.Active.Model, "gpt-5.4")
+	}
+	if final.Desired == nil || final.Desired.Model != "glm-test" || final.Desired.Lifecycle != appwire.ModelControlLifecycleRejected {
+		t.Fatalf("desired record = %+v, want the newer pick (glm-test) rejected; the older pick must not replace the newest intent", final.Desired)
+	}
 }
 
 // TestBusyRequeueDoesNotCancelAnOlderPickItMightStillFail pins the re-queue's

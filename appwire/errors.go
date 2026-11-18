@@ -944,6 +944,47 @@ func MutationNotAccepted(clientMutationID, message string) WireError {
 	}
 }
 
+// ModelControlObservedErrorData carries the model-control state a recovery read
+// observed onto the failure it was diagnosing. It embeds the original
+// ErrorData, so a caller that only reads evenerErrorInfo, the outcome and the
+// retry disposition sees exactly the failure it saw before: the evidence
+// answers "which model does the daemon run now", it does not soften the
+// outcome or unblock a replay.
+type ModelControlObservedErrorData struct {
+	ErrorData
+	Observed ModelControlSnapshot `json:"observed"`
+}
+
+// WithModelControlObserved keeps the original wire error intact while placing
+// the state a diagnostic read observed inside its Data. The hub's
+// router dispatch discards a result returned beside an error, so Data is the
+// only channel a failure has.
+func (e WireError) WithModelControlObserved(observed ModelControlSnapshot) WireError {
+	if base, ok := ErrorDataOf(e.Data); ok {
+		e.Data = ModelControlObservedErrorData{ErrorData: base, Observed: observed}
+		return e
+	}
+	e.Data = ModelControlObservedErrorData{
+		ErrorData: ErrorData{EvenerErrorInfo: ErrorMutationOutcomeUnknown},
+		Observed:  observed,
+	}
+	return e
+}
+
+// ModelControlObservedOf is the state a failed model mutation's diagnostic
+// read observed, when the failure carried one.
+func ModelControlObservedOf(err error) (ModelControlSnapshot, bool) {
+	var wire WireError
+	if !errors.As(err, &wire) {
+		return ModelControlSnapshot{}, false
+	}
+	data, ok := wire.Data.(ModelControlObservedErrorData)
+	if !ok {
+		return ModelControlSnapshot{}, false
+	}
+	return data.Observed, true
+}
+
 // ModelControlAuthorityStale refuses a model mutation whose exact thread or
 // daemon authority has retired.
 func ModelControlAuthorityStale(clientMutationID, message string) WireError {

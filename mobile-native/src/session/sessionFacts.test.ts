@@ -186,6 +186,24 @@ describe("the model chip (spec 8.5)", () => {
 		);
 		expect(modelChipLabel(controlledSession("pending"), undefined, "Claude from Board")).toBe("gpt-5.5 · High");
 	});
+	it("names the model itself, not its provider, while a pick is in recovery", () => {
+		// A recovery state carries the last safe display target: the provider
+		// AND the model a pick had reached. Showing the provider alone would
+		// replace the selected model's name with "openai" for the whole
+		// recovery, which reads as the session having lost its model.
+		const recovering = {
+			modelProvider: "anthropic",
+			model: "claude-sonnet-5",
+			modelControlState: {
+				kind: "recovering" as const,
+				lastSafeDisplay: { modelProvider: "openai", model: "gpt-5.5" },
+			},
+			reasoningEffort: "high",
+			reasoningEffortLevels: ["low", "high"],
+			supportsReasoning: true,
+		};
+		expect(modelChipLabel(recovering, controlledCatalog, "Stale Board model")).toBe("GPT 5.5 · High");
+	});
 	it("names the model the way the catalog does, with its effort", () => {
 		expect(
 			modelChipLabel(

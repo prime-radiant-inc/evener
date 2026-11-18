@@ -522,3 +522,52 @@ func TestHubRPCThreadReasoningEffortSetResumesPastThread(t *testing.T) {
 		t.Fatalf("effortCalled=%q", effortCalled)
 	}
 }
+
+// TestHubRPCThreadModelSetRejectsMalformedRequestBeforeResuming pins the
+// ingress boundary for thread/model/set. A request missing a required
+// authority field cannot be honored whatever the session's state is, so it must
+// be refused before the resume path runs: resuming an ordinary saved session
+// starts a daemon, and paying that cost for a request the daemon is certain to
+// reject leaves a session running that nobody asked for.
+func TestHubRPCThreadModelSetRejectsMalformedRequestBeforeResuming(t *testing.T) {
+	root := t.TempDir()
+	workingDir := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-malformed-00000000")
+	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
+	past := closeOnCleanup(t, hubcore.NewPastIndex(filepath.Join(root, "projects", "*")))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	runDir := t.TempDir()
+	resumeCalls := 0
+	spawner := &fakeRPCSpawner{
+		resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			resumeCalls++
+			return rendezvous.Entry{}, context.DeadlineExceeded
+		},
+	}
+	roster := hubcore.NewRoster(runDir, nil)
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	mustInitializeHubClient(t, client)
+
+	// Every field except the boot generation, which is the missing authority
+	// precondition this test is about.
+	_, err := client.ThreadModelSet(context.Background(), appwire.ThreadModelSetParams{
+		Ref:                "local:" + sessionID,
+		ModelProvider:      "openai",
+		Model:              "gpt-5.4",
+		ClientMutationID:   "cm-malformed-model-set",
+		ExpectedInstanceID: sessionID,
+	})
+	if err == nil {
+		t.Fatal("thread/model/set accepted a request with no expectedBootGeneration")
+	}
+	assertWireCode(t, err, appwire.CodeInvalidParams)
+	if resumeCalls != 0 {
+		t.Fatalf("resume calls = %d, want 0; a request the daemon must reject cannot justify starting it", resumeCalls)
+	}
+}
