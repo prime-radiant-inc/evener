@@ -927,11 +927,12 @@ type EvenerDelegateInfo struct {
 	RunStartedAt           string `json:"runStartedAt,omitempty"`
 	RunEndedAt             string `json:"runEndedAt,omitempty"`
 	LatestActivityAt       string `json:"latestActivityAt,omitempty"`
-	// RunningJobCount is how many managed shell jobs the delegate's own child
-	// session is running, and OldestRunningJobStartedAt is the RFC3339Nano
-	// start of the oldest of them: the same wait SessionDelegate carries, so a
-	// pushed frame and a read row cannot disagree about why a delegate is still
-	// running. Absent when the delegate owns no running job.
+	// DrainHeldByJobs says this delegate's finalization drain is holding its run
+	// open on the jobs counted below; RunningJobCount and
+	// OldestRunningJobStartedAt phrase that wait. The same facts SessionDelegate
+	// carries, so a pushed frame and a read row cannot disagree about why a
+	// delegate is still running. Absent without the hold.
+	DrainHeldByJobs           bool   `json:"drainHeldByJobs,omitempty"`
 	RunningJobCount           int    `json:"runningJobCount,omitempty"`
 	OldestRunningJobStartedAt string `json:"oldestRunningJobStartedAt,omitempty"`
 	// LatestIntent is the open generation's newest stated tool-call intent

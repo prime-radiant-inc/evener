@@ -414,6 +414,69 @@ test("a stale projectionRevision cannot regress a row", async () => {
   expect(store.getSnapshot().delegates.rows[0]?.status).toBe("completed");
 });
 
+// The drain hold is its own facet, outside the revision ladder. Entering the
+// drain appends no durable delegate event, so both edges publish at the
+// revision the loaded row already carries; under the ladder that row would
+// never learn the wait and never learn it ended.
+test("a hold at an unchanged revision still reaches a loaded row", async () => {
+  const client = pushClient();
+  const context = pushContext();
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context,
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ projectionRevision: 4 })],
+  }));
+  const { store } = await pushOwner(client);
+  const loaded = store.getSnapshot().delegates.rows[0];
+  expect(loaded?.drainHeldByJobs ?? false).toBe(false);
+
+  // Same revision the row already holds: every other field must hold its
+  // place, and only the hold and its phrasing arrive.
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({
+        projectionRevision: 4,
+        status: "running",
+        drainHeldByJobs: true,
+        runningJobCount: 2,
+        oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
+      }),
+    ),
+  );
+  expect(store.getSnapshot().delegates.rows[0]).toMatchObject({
+    drainHeldByJobs: true,
+    runningJobCount: 2,
+    oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
+  });
+});
+
+// And the release edge, at the same revision again: the row must stop
+// claiming the wait rather than keeping the last hold forever.
+test("clearing the hold at an unchanged revision empties the wait", async () => {
+  const client = pushClient();
+  const context = pushContext();
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context,
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [
+      delegateRow({
+        projectionRevision: 4,
+        drainHeldByJobs: true,
+        runningJobCount: 1,
+        oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
+      }),
+    ],
+  }));
+  const { store } = await pushOwner(client);
+  client.emitNotification(pushedFrame(frameInfo({ projectionRevision: 4 })));
+  const row = store.getSnapshot().delegates.rows[0];
+  expect(row?.drainHeldByJobs ?? false).toBe(false);
+  expect(row?.runningJobCount ?? 0).toBe(0);
+  expect(row?.oldestRunningJobStartedAt ?? "").toBe("");
+});
+
 test("a resume clears the prior report", async () => {
   const client = pushClient();
   client.on("evener/thread/delegates/list", ({ scope }) => ({

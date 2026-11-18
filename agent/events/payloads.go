@@ -907,13 +907,14 @@ type DelegateUpdatedData struct {
 	ParentWatchGranted  bool                  `json:"parent_watch_granted,omitempty"`
 	Usage               *DelegateUsageData    `json:"usage,omitempty"`
 	Worktree            *DelegateWorktreeData `json:"worktree,omitempty"`
-	// RunningJobCount and OldestRunningJobStartedAt are the same live wait the
-	// SessionDelegate row carries: how many managed shell jobs the delegate's
-	// own child session is running, and when the oldest started. The frame
-	// carries them because a client replaces a row's mutating fields with the
-	// frame's, so a frame that omitted them would erase the wait exactly while
-	// the drain is reporting activity. Both are absent when there is no such
-	// job, which stays "no fact" rather than "known idle".
+	// DrainHeldByJobs is the same hold the SessionDelegate row carries: this
+	// delegate's finalization drain is waiting on its own running jobs.
+	// RunningJobCount and OldestRunningJobStartedAt phrase that hold. The frame
+	// carries all three because a client replaces a row's mutating fields with
+	// the frame's, so a frame that omitted them would erase the wait exactly
+	// while the drain is reporting activity. All are absent without the hold,
+	// which stays "no fact" rather than "known idle".
+	DrainHeldByJobs           bool   `json:"drain_held_by_jobs,omitempty"`
 	RunningJobCount           int    `json:"running_job_count,omitempty"`
 	OldestRunningJobStartedAt string `json:"oldest_running_job_started_at,omitempty"`
 }

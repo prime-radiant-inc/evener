@@ -733,12 +733,13 @@ export interface EvenerDelegateInfo {
   runEndedAt?: string;
   latestActivityAt?: string;
   /**
-   * RunningJobCount is how many managed shell jobs the delegate's own child
-   * session is running, and OldestRunningJobStartedAt is the RFC3339Nano
-   * start of the oldest of them: the same wait SessionDelegate carries, so a
-   * pushed frame and a read row cannot disagree about why a delegate is still
-   * running. Absent when the delegate owns no running job.
+   * DrainHeldByJobs says this delegate's finalization drain is holding its run
+   * open on the jobs counted below; RunningJobCount and
+   * OldestRunningJobStartedAt phrase that wait. The same facts SessionDelegate
+   * carries, so a pushed frame and a read row cannot disagree about why a
+   * delegate is still running. Absent without the hold.
    */
+  drainHeldByJobs?: boolean;
   runningJobCount?: number;
   oldestRunningJobStartedAt?: string;
   /**
@@ -4002,12 +4003,19 @@ export interface SessionDelegate {
    */
   latestIntent?: string;
   /**
+   * DrainHeldByJobs is the fact the row could not state before: this
+   * delegate's run is held open by its own finalization drain, waiting on
+   * the managed shell counted below. It is what a reader needs to tell a
+   * held delegate from one still working — a delegate mid-turn with the same
+   * background shell is NOT held. Only the live read produces it, and it is
+   * absent from a retained read or an older daemon, so a client never reads
+   * an omission as "known free".
+   */
+  drainHeldByJobs?: boolean;
+  /**
    * RunningJobCount is how many managed shell jobs the delegate's own child
-   * session is running right now — the live hold the drain waits on, so a
-   * reader can tell a delegate parked on its own command from one mid-turn.
-   * Only the live read produces it: it is absent when the delegate owns no
-   * running job, and absent from a retained read or an older daemon, so a
-   * client never reads an omission as "known free".
+   * session is running while that hold is set. Absent whenever the hold is,
+   * so it phrases the wait and never reports a count on its own.
    */
   runningJobCount?: number;
   /**
@@ -6563,7 +6571,7 @@ export const WIRE_FIELD_KEYS = {
   OutputImage: ["source", "name", "mediaType", "size", "url", "sha", "path"],
   QueueState: ["depth", "revision", "preview", "ids", "clientMutationIds", "texts", "skillNames", "commandNames", "mentions", "imageCounts"],
   EvenerUsage: ["inputTokens", "outputTokens", "cacheReadTokens", "totalTokens"],
-  EvenerDelegateInfo: ["runGeneration", "delegateId", "ownerSessionId", "logicalOwnerSessionId", "rootSessionId", "childSessionId", "childRef", "transcriptRef", "parentDelegateId", "type", "lifecycle", "phase", "status", "outcome", "reason", "error", "terminal", "resumable", "needsAttention", "notResumableReason", "projectionRevision", "reportPreview", "reportPreviewTruncated", "task", "description", "agentType", "requestedModel", "resolvedProfileId", "resolvedModel", "model", "reasoningEffort", "originTurnId", "originToolCallId", "originItemId", "runStartedAt", "runEndedAt", "latestActivityAt", "runningJobCount", "oldestRunningJobStartedAt", "latestIntent", "runningForMs", "quietForMs", "durationMs", "packetKind", "message", "structuredResult", "structuredResultValid", "structuredResultReason", "warnings", "diagnostics", "exhaustionBudget", "exhaustionLimit", "exhaustionResumable", "delegationAllowance", "parentWatchGranted", "usage", "worktree"],
+  EvenerDelegateInfo: ["runGeneration", "delegateId", "ownerSessionId", "logicalOwnerSessionId", "rootSessionId", "childSessionId", "childRef", "transcriptRef", "parentDelegateId", "type", "lifecycle", "phase", "status", "outcome", "reason", "error", "terminal", "resumable", "needsAttention", "notResumableReason", "projectionRevision", "reportPreview", "reportPreviewTruncated", "task", "description", "agentType", "requestedModel", "resolvedProfileId", "resolvedModel", "model", "reasoningEffort", "originTurnId", "originToolCallId", "originItemId", "runStartedAt", "runEndedAt", "latestActivityAt", "drainHeldByJobs", "runningJobCount", "oldestRunningJobStartedAt", "latestIntent", "runningForMs", "quietForMs", "durationMs", "packetKind", "message", "structuredResult", "structuredResultValid", "structuredResultReason", "warnings", "diagnostics", "exhaustionBudget", "exhaustionLimit", "exhaustionResumable", "delegationAllowance", "parentWatchGranted", "usage", "worktree"],
   JobActivityWorktree: ["path", "branch", "headSha", "ahead", "dirty"],
   CommandDescriptor: ["name", "pluginName", "description", "argumentHint", "source"],
   EvenerSkillInfo: ["name", "description", "disableModelInvocation", "userInvocable", "available", "allowedTools"],

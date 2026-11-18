@@ -495,6 +495,7 @@ func appwireDelegateInfo(data events.DelegateUpdatedData) appwire.EvenerDelegate
 		OriginToolCallID: data.OriginToolCallID, OriginItemID: data.OriginItemID, RunStartedAt: data.RunStartedAt,
 		RunEndedAt: data.RunEndedAt, LatestActivityAt: data.LatestActivityAt, RunningForMS: appwire.ClonePointer(data.RunningForMS),
 		LatestIntent:              appwire.Excerpt(data.LatestIntent, appwire.MaxIntentRunes),
+		DrainHeldByJobs:           data.DrainHeldByJobs,
 		RunningJobCount:           data.RunningJobCount,
 		OldestRunningJobStartedAt: data.OldestRunningJobStartedAt,
 		QuietForMS:                appwire.ClonePointer(data.QuietForMS), DurationMS: appwire.ClonePointer(data.DurationMS), PacketKind: data.PacketKind,

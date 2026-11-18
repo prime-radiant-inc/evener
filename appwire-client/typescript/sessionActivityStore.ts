@@ -1093,7 +1093,13 @@ export class SessionActivityStore {
     // from 1. The frame is first sight for this epoch, as a read's row is.
     const incomingWins = applied === undefined || revisionOf(incoming.projectionRevision) > applied;
     const merged = joinDelegateState(incoming, current, incomingWins);
-    return delegateRowsEqual(merged, current) ? current : merged;
+    // The drain hold is its own facet, outside the revision ladder: entering or
+    // leaving the drain moves no durable delegate field, so both edges arrive
+    // at the revision the row already carries. A frame is the only ordered
+    // carrier of that fact, so it always supplies it -- while every other field
+    // keeps the ordering above.
+    const held = joinDelegateHold(merged, frame);
+    return delegateRowsEqual(held, current) ? current : held;
   }
   private joinDelegateRows(
     incoming: readonly SessionDelegate[],
@@ -1548,6 +1554,7 @@ function delegateRowFromFrame(row: SessionDelegate, frame: EvenerDelegateInfo): 
     latestIntent: boundedIntent(frame.latestIntent),
     // The frame carries the same live wait the read row does, so a frame that
     // wins the merge replaces it with the truth rather than erasing it.
+    drainHeldByJobs: frame.drainHeldByJobs,
     runningJobCount: frame.runningJobCount,
     oldestRunningJobStartedAt: frame.oldestRunningJobStartedAt,
     usage: frame.usage,
@@ -1556,6 +1563,28 @@ function delegateRowFromFrame(row: SessionDelegate, frame: EvenerDelegateInfo): 
 }
 export function isValidActivityTimestamp(value: string): boolean {
   return activityInstant(value) !== null;
+}
+
+/** The frame's drain-hold facet, applied to a row whatever the revision
+ * ordering says. A hold transition appends no durable delegate event, so both
+ * its edges publish at the revision the row already holds; under the ladder a
+ * loaded row would never learn the wait and never learn it ended. The frame is
+ * the only ordered carrier, and the publisher always fills the whole facet, so
+ * an omitted hold means "not held" rather than "unchanged". */
+function joinDelegateHold(row: SessionDelegate, frame: EvenerDelegateInfo): SessionDelegate {
+  if (
+    (row.drainHeldByJobs ?? false) === (frame.drainHeldByJobs ?? false) &&
+    row.runningJobCount === frame.runningJobCount &&
+    row.oldestRunningJobStartedAt === frame.oldestRunningJobStartedAt
+  ) {
+    return row;
+  }
+  return {
+    ...row,
+    drainHeldByJobs: frame.drainHeldByJobs,
+    runningJobCount: frame.runningJobCount,
+    oldestRunningJobStartedAt: frame.oldestRunningJobStartedAt,
+  };
 }
 
 /** The frame fields a row merge can apply. The raw report payload and the model
@@ -1621,6 +1650,7 @@ const delegateRowFields: Record<keyof SessionDelegate, true> = {
   runEndedAt: true,
   latestActivityAt: true,
   latestIntent: true,
+  drainHeldByJobs: true,
   runningJobCount: true,
   oldestRunningJobStartedAt: true,
   usage: true,

@@ -1346,6 +1346,7 @@ describe("current transcript checkpoints", () => {
       runStartedAt: "2026-10-25T10:00:00Z",
       runEndedAt: "2026-10-25T10:01:00Z",
       latestActivityAt: "2026-10-25T10:00:59Z",
+      drainHeldByJobs: true,
       runningJobCount: 2,
       oldestRunningJobStartedAt: "2026-10-25T10:00:30Z",
       latestIntent: "Reading the board.",
@@ -1376,6 +1377,48 @@ describe("current transcript checkpoints", () => {
     if (!decoded) throw new Error("a delegate with every generated field was rejected");
 
     expect(threadModelFromCurrentState(decoded).delegates?.[0]).toEqual(everyField);
+  });
+
+  it("rejects a checkpoint whose delegate hold fields are malformed", () => {
+    // The key allowlist alone would admit anything under these names, so the
+    // validator owns their types: a string count and a numeric start are both
+    // outside the wire shape and must fail the decode rather than reach a row.
+    // Every case starts from a row that decodes, so the rejection is the
+    // malformed value and not some other missing required field.
+    const base: EvenerDelegateInfo = {
+      runGeneration: 1,
+      delegateId: "dlg_hold",
+      ownerSessionId: "root",
+      rootSessionId: "root",
+      childSessionId: "child",
+      transcriptRef: "local:child",
+      type: "delegate",
+      lifecycle: "running",
+      phase: "running",
+      status: "running",
+      terminal: false,
+      resumable: true,
+      needsAttention: false,
+      projectionRevision: 2,
+    };
+    const checkpoint = (delegate: EvenerDelegateInfo) => {
+      const original = hydrateThread(currentRead("local:bad-hold"), "local:bad-hold", 10);
+      original.delegates = [delegate];
+      const encoded = currentTranscriptState(original);
+      if (!encoded) throw new Error("the hold delegate did not encode");
+      return JSON.parse(JSON.stringify(encoded));
+    };
+    expect(decodeCurrentTranscriptState(checkpoint(base))).toBeDefined();
+    // The omission stays valid: an older checkpoint carries none of the three.
+    expect(decodeCurrentTranscriptState(checkpoint({ ...base, runningJobCount: 2 }))).toBeDefined();
+    for (const malformed of [
+      { runningJobCount: "2" },
+      { oldestRunningJobStartedAt: 17 },
+      { runningJobCount: -1 },
+      { drainHeldByJobs: "true" },
+    ]) {
+      expect(decodeCurrentTranscriptState(checkpoint({ ...base, ...malformed } as never))).toBeUndefined();
+    }
   });
 
   it("round-trips a deferred turn carrying every generated field", () => {

@@ -186,13 +186,16 @@ func (read *sessionActivityRead) captureDelegateCandidates(ctx context.Context, 
 			// shell, and no durable aggregate or activity clock carries that
 			// hold: the job itself does. The controller already holds its own
 			// lock here, so the join reads the child runtime it resolved and
-			// the job manager's running map (see runningJobsForDelegateLocked). A
-			// delegate owning no such job leaves both fields zero, which the
-			// wire omits.
-			count, oldest := controller.runningJobsForDelegateLocked(key.ID)
-			candidate.row.RunningJobCount = count
-			if count > 0 && !oldest.IsZero() {
-				candidate.row.OldestRunningJobStartedAt = oldest.UTC().Format(time.RFC3339Nano)
+			// the job manager's running map (see runningJobsForDelegateLocked).
+			// Only a real hold fills the fields; the count alone would also
+			// match a delegate still working with a background shell, which
+			// must keep reading as working.
+			if held, count, oldest := controller.runningJobsForDelegateLocked(key.ID); held {
+				candidate.row.DrainHeldByJobs = true
+				candidate.row.RunningJobCount = count
+				if !oldest.IsZero() {
+					candidate.row.OldestRunningJobStartedAt = oldest.UTC().Format(time.RFC3339Nano)
+				}
 			}
 		}
 		candidates = append(candidates, candidate)

@@ -158,12 +158,17 @@ type SessionDelegate struct {
 	// value — the same join the pushed frame applies, so the read and the
 	// frame agree for every row state. Absent from older daemons.
 	LatestIntent string `json:"latestIntent,omitempty"`
+	// DrainHeldByJobs is the fact the row could not state before: this
+	// delegate's run is held open by its own finalization drain, waiting on
+	// the managed shell counted below. It is what a reader needs to tell a
+	// held delegate from one still working — a delegate mid-turn with the same
+	// background shell is NOT held. Only the live read produces it, and it is
+	// absent from a retained read or an older daemon, so a client never reads
+	// an omission as "known free".
+	DrainHeldByJobs bool `json:"drainHeldByJobs,omitempty"`
 	// RunningJobCount is how many managed shell jobs the delegate's own child
-	// session is running right now — the live hold the drain waits on, so a
-	// reader can tell a delegate parked on its own command from one mid-turn.
-	// Only the live read produces it: it is absent when the delegate owns no
-	// running job, and absent from a retained read or an older daemon, so a
-	// client never reads an omission as "known free".
+	// session is running while that hold is set. Absent whenever the hold is,
+	// so it phrases the wait and never reports a count on its own.
 	RunningJobCount int `json:"runningJobCount,omitempty"`
 	// OldestRunningJobStartedAt is the RFC3339Nano start of the oldest of those
 	// jobs, so a row can say how long the wait has lasted. Empty whenever

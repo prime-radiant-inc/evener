@@ -375,15 +375,25 @@ A delegate whose run is held open while it waits on its own background shell
 says so on its row. The run genuinely continues — that hold is the documented
 contract, not a stall — but during it `latestIntent` and `latestActivityAt`
 both stop moving, so the row used to be indistinguishable from a delegate
-still working on a model turn. The row now carries `runningJobCount` and
-`oldestRunningJobStartedAt`, folded from the delegate's own child session's job
-manager with the drain's own ownership predicate: an owned managed shell still
-in the running map. The pushed `evener/delegate/updated` frame carries the same
-pair, so a frame cannot erase what a read reports. A delegate owning no running
-job omits both fields, and a client must read that omission as "no such fact"
-rather than "known idle" — retained reads and older daemons never send them.
-The phone does not render them yet; its delegate row keeps showing the stale
-`latestActivityAt` and thereby nothing new about the wait.
+still working on a model turn. The row carries `drainHeldByJobs`: this
+delegate's finalization drain is holding its run open on a managed shell still
+in its own child session's running map, matched with the drain's own ownership
+predicate. `runningJobCount` and `oldestRunningJobStartedAt` come from the same
+join and only phrase that wait. The hold decides whether the row reads as
+waiting; the count never does, because a delegate that starts a background
+shell and keeps working has the same count and is not held.
+
+Each edge of the hold publishes an `evener/delegate/updated` frame. That frame
+is the only carrier: entering or leaving the drain appends no durable delegate
+event and moves no durable field, so a row a client loaded before the shell
+started would otherwise never learn the wait for its whole duration. The
+client applies the hold facet outside its projection-revision ladder for the
+same reason, while every other delegate field keeps that ordering. The frame
+carries the same fields the read does, so the two surfaces cannot disagree. A
+delegate with no hold omits all three, and a client must read that omission as
+"no such fact" rather than "known idle" — retained reads and older daemons
+never send them. The phone does not render them yet; its delegate row keeps
+showing the stale `latestActivityAt` and thereby nothing new about the wait.
 
 A subagent row's leading mark is the session status dot on every surface, with
 one state the session vocabulary does not have: quiet. An open run shows the

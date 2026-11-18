@@ -95,6 +95,32 @@ func (s *Session) bootstrapDelegateResources() error {
 	return nil
 }
 
+// setDrainHeld records that this session's finalization drain now is (or no
+// longer is) holding its delegate run open, and publishes the delegate update
+// the transition implies.
+//
+// The publication is the point. Entering the drain appends no durable delegate
+// event and moves no delegate field a frame is built from, so a row a client
+// loaded BEFORE its shell started would otherwise never learn the wait until
+// the shell finished — the one window the row exists to describe. Publishing
+// here is what turns the hold into an ordered update a loaded row applies.
+//
+// The transition is idempotent per edge: setting a hold already set (or
+// clearing one already clear) publishes nothing, so a drain that re-enters its
+// loop does not spam frames.
+func (s *Session) setDrainHeld(held bool) {
+	if s == nil {
+		return
+	}
+	if s.drainHeld.Swap(held) == held {
+		return
+	}
+	if s.delegateController == nil || s.owningDelegateID == "" {
+		return
+	}
+	s.delegateController.publishDelegateHold(s.ID(), s.owningDelegateID)
+}
+
 func (s *Session) emitDelegateUpdate(plan delegateUpdatePlan) {
 	if s == nil || s.delegateController == nil {
 		return
@@ -115,13 +141,14 @@ func (s *Session) emitDelegateUpdate(plan delegateUpdatePlan) {
 		// delegate's own job manager under the lock already held: a frame that
 		// omitted it would erase the wait from a row the capture had filled,
 		// because a winning frame replaces every mutating field.
-		runningJobs, oldestRunningJob := s.delegateController.runningJobsForDelegateLocked(row.id)
+		heldByJobs, runningJobs, oldestRunningJob := s.delegateController.runningJobsForDelegateLocked(row.id)
 		s.delegateController.mu.Unlock()
 		s.publishSessionActivityChanged(logicalOwner, ancestry, appwire.SessionActivityResourceDelegates)
 		data := delegateUpdatedDataFromStatus(delegateFrameStatusInfo(now, rootID, row))
 		data.AncestorSessionIDs = ancestors
+		data.DrainHeldByJobs = heldByJobs
 		data.RunningJobCount = runningJobs
-		if runningJobs > 0 && !oldestRunningJob.IsZero() {
+		if heldByJobs && !oldestRunningJob.IsZero() {
 			data.OldestRunningJobStartedAt = oldestRunningJob.UTC().Format(time.RFC3339Nano)
 		}
 		// A subagent's own thread lists its subtree, so each live ancestor

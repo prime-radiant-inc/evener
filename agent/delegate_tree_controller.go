@@ -862,33 +862,37 @@ func (c *delegateTreeController) delegateOwnerOfSessionLocked(sessionID string) 
 	return ""
 }
 
-// runningJobsForDelegateLocked reports how many managed shell jobs the
-// delegate's own child session is running and when the oldest of them started.
-// It answers the one question a delegate's row could not: a delegate whose run
-// is held open by its finalization drain while its own command runs is doing
-// work the durable aggregate never records, and a reader with only phase and
-// LatestActivityAt cannot tell that wait from a model still thinking.
+// runningJobsForDelegateLocked reports whether the delegate's run is held open
+// by its own finalization drain, and if so how many managed shell jobs that
+// drain is waiting on and when the oldest started.
 //
-// The caller holds c.mu. Ownership is the drain's own predicate
-// (isOwnedDrainJob), so a row names exactly the jobs that hold the delegate
-// open and no others; the count and the oldest start come from one jm.mu
-// snapshot, so a completion between them cannot pair a stale count with a fresh
-// start. A delegate with no live runtime — a retained read, or a released
-// delegate — has no running jobs to report, which reads as "no fact", not
-// "known free": both callers then leave the row's fields at their zero value
-// and the wire omits them.
+// The caller holds c.mu. The hold is two facts together, and neither alone is
+// the answer: the child session must be inside its finalization drain
+// (Session.drainHeld), and one of its own managed shells must still be running
+// (runningOwnedShellJobs, which filters with the drain's own isOwnedDrainJob).
+// A delegate mid-turn that merely started a background shell has the count and
+// no hold — it is still working, and its row must keep saying so.
+//
+// A delegate with no live runtime — a retained read, or a released delegate —
+// is not held, because entering the drain appends no durable event for a
+// retained read to fold. Both callers leave the row's fields at their zero
+// value then, and the wire omits them: "no fact", never "known free".
 //
 // An unstated start time counts as neither the oldest nor zero: a job whose
 // record has no start cannot claim to be the oldest wait.
-func (c *delegateTreeController) runningJobsForDelegateLocked(delegateID string) (int, time.Time) {
+func (c *delegateTreeController) runningJobsForDelegateLocked(delegateID string) (bool, int, time.Time) {
 	if c == nil || delegateID == "" {
-		return 0, time.Time{}
+		return false, 0, time.Time{}
 	}
 	live := c.live[delegateID]
 	if live == nil || live.runtime == nil || live.runtime.jobManager == nil {
-		return 0, time.Time{}
+		return false, 0, time.Time{}
 	}
-	return live.runtime.jobManager.runningOwnedShellJobs()
+	count, oldest := live.runtime.jobManager.runningOwnedShellJobs()
+	if !live.runtime.drainHeld.Load() || count == 0 {
+		return false, 0, time.Time{}
+	}
+	return true, count, oldest
 }
 
 // watchClearAuthority reports whether the calling session may clear a
@@ -1436,6 +1440,28 @@ func (c *delegateTreeController) emitDelegateUpdates(plans delegateMutationPlans
 
 func (c *delegateTreeController) capturedPlanLocked(id string) delegateUpdatePlan {
 	return delegateUpdatePlan{rows: []delegateSnapshot{c.captureDelegateSnapshotLocked(id)}}
+}
+
+// publishDelegateHold emits one delegate update for delegateID so a loaded row
+// learns that its drain hold just changed. A row loaded before the hold was
+// set has no other signal: the transition moves no durable field, and the
+// client drops a same-revision frame whose mutating fields it cannot order, so
+// a plain notification would not land. The plan is captured under the
+// controller lock and emitted outside it, exactly as the other publications do.
+func (c *delegateTreeController) publishDelegateHold(sessionID, delegateID string) {
+	if c == nil || delegateID == "" {
+		return
+	}
+	c.mu.Lock()
+	if live := c.live[delegateID]; live == nil || live.runtime == nil || live.runtime.ID() != sessionID {
+		// Not this delegate's live runtime: a released or replaced child cannot
+		// hold anything open, and naming its row would resurrect a settled one.
+		c.mu.Unlock()
+		return
+	}
+	plan := c.capturedPlanLocked(delegateID)
+	c.mu.Unlock()
+	c.emitDelegateUpdate(plan)
 }
 
 func (c *delegateTreeController) appendResumabilityClosureLocked(delegateID string, events ...delegatestore.Event) (delegateUpdatePlan, error) {
