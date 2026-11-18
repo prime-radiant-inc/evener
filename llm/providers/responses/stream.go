@@ -436,10 +436,11 @@ func (acc *responsesOutputAccumulator) handleOutputTextDelta(payload map[string]
 func (acc *responsesOutputAccumulator) handleTextPartDone(payload map[string]any, typ string) bool {
 	part := payload
 	kind := "output_text"
-	if typ == "response.content_part.done" {
+	switch typ {
+	case "response.content_part.done":
 		part, _ = payload["part"].(map[string]any)
 		kind, _ = part["type"].(string)
-	} else if typ == "response.refusal.done" {
+	case "response.refusal.done":
 		kind = "refusal"
 	}
 	text, ok := responsesMessagePartText(kind, part)
