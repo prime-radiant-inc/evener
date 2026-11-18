@@ -1055,7 +1055,11 @@ func (r *reader) item(record itemRecord, turnID string) (appwire.ThreadItem, err
 			// Stamped only. A format-0 entry has no reservation to compare
 			// against: its rule is last-name-wins and this fold IS that rule, so
 			// the guard here would drop the result a legacy id resolves to.
-			if reserved := apptranscript.ReservedCallToolName(opener, callID); identity && reserved != "" {
+			// Presence, not a non-empty name: an entry that records the call
+			// with no name still holds the reservation for its id, and skipping
+			// the guard there folds a DIFFERENT tool's named result over the
+			// reserved row, overwriting its name and output (#1166 review).
+			if reserved, announced := apptranscript.ReservedCallToolName(opener, callID); identity && announced {
 				// A fresh slice, never items[:0]: items is the CACHED projection
 				// of this entry, shared by every record that opens a part of it.
 				// Compacting it in place makes the standalone row, read after the
@@ -1065,7 +1069,7 @@ func (r *reader) item(record itemRecord, turnID string) (appwire.ThreadItem, err
 				kept := make([]appwire.ThreadItem, 0, len(items))
 				for _, projected := range items {
 					if apptranscript.MergesByCallID(projected) &&
-						!apptranscript.ResultSettlesReservedCall(opener.ResponseProvider, reserved, projected.ToolName) {
+						!apptranscript.ResultSettlesReservedCall(opener.ResponseSurface, reserved, projected.ToolName) {
 						continue
 					}
 					kept = append(kept, projected)

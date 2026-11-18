@@ -990,15 +990,19 @@ func partProjectsItem(entries map[int]schema.Turn, entry, part int) bool {
 // entry reserve for this id" cannot answer differently from the reader asking
 // "which part". The transcript index's read-back uses it to fold a contributor
 // result only into the call it belongs to (#1166 review).
-func ReservedCallToolName(entry *schema.Turn, callID string) string {
+func ReservedCallToolName(entry *schema.Turn, callID string) (name string, reserved bool) {
 	if entry == nil {
-		return ""
+		return "", false
 	}
 	part, ok := ReservedCalls(entry)[callID]
 	if !ok {
-		return ""
+		return "", false
 	}
-	return reservedToolName(map[int]schema.Turn{0: *entry}, 0, part)
+	// Presence and name are separate answers. A call recorded with no name is
+	// still the reservation for its id: reading "" as "no reservation" stops
+	// guarding exactly the duplicate-id shape the guard exists for, and folds a
+	// different tool's named result over the reserved row (#1166 review).
+	return reservedToolName(map[int]schema.Turn{0: *entry}, 0, part), true
 }
 
 // reservedToolName is the tool name the entry recorded for the part it reserved
@@ -1055,10 +1059,11 @@ func ReservedCalls(entry *schema.Turn) map[string]int {
 // reservation: that is the case the reservation exists for. When it does name a
 // tool, the claim must match the reserved call's name.
 //
-// surface is the ANNOUNCING entry's provider surface, and it decides what the
-// announcement's own name means: exec_command names shell on OpenAI and is an
-// ordinary tool name elsewhere, so a check that reads both names through every
-// surface's aliases lets one tool's result settle another's call (#1166 review).
+// surface is the ANNOUNCING entry's recorded DISPATCH surface
+// (schema.Turn.ResponseSurface), and it decides what the announcement's own
+// name means: exec_command names shell on OpenAI and is an ordinary tool name
+// elsewhere, so a check that reads both names through every surface's aliases
+// lets one tool's result settle another's call (#1166 review).
 func ResultSettlesReservedCall(surface, reservedTool, resultTool string) bool {
 	if resultTool == "" {
 		return true
@@ -1207,7 +1212,7 @@ func mergeExecutionItems(items []appwire.ThreadItem, itemEntries []int, itemAnno
 				// overwrite the command's name and status, which the index does
 				// not do. One guard, both readers (#1166 review).
 				if reserved, announced := reservations.reserved(entry, item.CallID); announced &&
-					!ResultSettlesReservedCall(entries[entry].ResponseProvider, reservedToolName(entries, entry, reserved), item.ToolName) {
+					!ResultSettlesReservedCall(entries[entry].ResponseSurface, reservedToolName(entries, entry, reserved), item.ToolName) {
 					merged = append(merged, item)
 					mergedGrp = append(mergedGrp, group)
 					continue

@@ -621,7 +621,7 @@ func (b *builder) applyResults(slot uint64, summary turnRecord, entry *schema.Tu
 		if err != nil {
 			return err
 		}
-		awaitingSurface = awaiting.ResponseProvider
+		awaitingSurface = awaiting.ResponseSurface
 		// The reservation rule is shared with whole-file replay
 		// (apptranscript.ReservedCalls): a result settles the FIRST recorded
 		// part carrying its call id, in both readers.
@@ -767,8 +767,18 @@ func (b *builder) appendItemWithContext(item appwire.ThreadItem, part int, turnS
 	// derive a new answer from a turn summary a later batch may have moved past
 	// the announcing entry (#1166 review).
 	if len(seed) > 0 {
+		// Sort the IDs BEFORE writing their strings. Sorting on the strRef
+		// offsets afterwards makes the encoded order follow map iteration,
+		// because the offsets are assigned in that order — so two builds of one
+		// transcript from one binary could write different sidecar bytes.
+		ids := make([]string, 0, len(seed))
+		for callID := range seed {
+			ids = append(ids, callID)
+		}
+		slices.Sort(ids)
 		list := make([]seedEntry, 0, len(seed))
-		for callID, name := range seed {
+		for _, callID := range ids {
+			name := seed[callID]
 			callRef, err := b.x.strings.putString(callID)
 			if err != nil {
 				return 0, err
@@ -779,15 +789,6 @@ func (b *builder) appendItemWithContext(item appwire.ThreadItem, part int, turnS
 			}
 			list = append(list, seedEntry{Call: callRef, Name: nameRef})
 		}
-		slices.SortFunc(list, func(a, c seedEntry) int {
-			if a.Call.Off == c.Call.Off {
-				return 0
-			}
-			if a.Call.Off < c.Call.Off {
-				return -1
-			}
-			return 1
-		})
 		var err error
 		if record.Seed, err = b.x.strings.put(encodeSeedEntries(list)); err != nil {
 			return 0, err

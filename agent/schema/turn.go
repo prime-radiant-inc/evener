@@ -501,11 +501,18 @@ type Turn struct {
 	ResponseEndpointFamily string `json:"response_endpoint_family,omitempty"`
 	// ResponseID is the provider's response identifier (from llm.Response.ID),
 	// recorded on assistant turns and surfaced in ATIF trajectory export.
-	ResponseID                      string `json:"response_id,omitempty"`
-	ResponseIDHash                  string `json:"response_id_hash,omitempty"`
-	ResponseModel                   string `json:"response_model,omitempty"`
-	ResponseProtocol                string `json:"response_protocol,omitempty"`
-	ResponseProvider                string `json:"response_provider,omitempty"`
+	ResponseID       string `json:"response_id,omitempty"`
+	ResponseIDHash   string `json:"response_id_hash,omitempty"`
+	ResponseModel    string `json:"response_model,omitempty"`
+	ResponseProtocol string `json:"response_protocol,omitempty"`
+	ResponseProvider string `json:"response_provider,omitempty"`
+	// ResponseSurface is the vocabulary this entry's tool names were written
+	// in: the resolved model's surface, which decides which provider aliases
+	// dispatch applied. It is NOT ResponseProvider, which records the
+	// connection instance name; a registry entry can set a model's surface
+	// independently of the instance that serves it, so only this field says
+	// which rename table the announced names belong to.
+	ResponseSurface                 string `json:"response_surface,omitempty"`
 	ResponseRequestFingerprint      string `json:"response_request_fingerprint,omitempty"`
 	ResponseRequestModel            string `json:"response_request_model,omitempty"`
 	ResponseStorageScopeFingerprint string `json:"response_storage_scope_fingerprint,omitempty"`

@@ -961,6 +961,7 @@ func TestARealExecCommandOnAnthropicIsNotTheShellCall(t *testing.T) {
 		call("call_anth", "exec_command", `{"message":"report"}`),
 	))
 	announce.ResponseProvider = "anthropic"
+	announce.ResponseSurface = "anthropic"
 	fx := fixture{
 		name:   "a real exec_command is not the shell call",
 		header: transcript.Header{SessionID: "anth_exec", CreatedAt: fixtureClock, ProfileID: "p", Model: "m"},
@@ -995,5 +996,116 @@ func TestARealExecCommandOnAnthropicIsNotTheShellCall(t *testing.T) {
 	}
 	if configured == nil {
 		t.Errorf("index: the configured exec_command result lost its own row: %s", itemShapes(indexed))
+	}
+}
+
+// TestAGSuiteSurfaceSettlesItsGoogleName covers the field the guard reads: the
+// SURFACE dispatch applied, not the connection instance name.
+//
+// ResponseProvider records the instance that served the call, and a registry
+// entry may set a model's surface independently of it — an instance called
+// openai can serve a google-surface model. Dispatch then renames shell to
+// run_shell_command, so the announcement says run_shell_command and the result
+// says shell. Reading the provider as if it were the surface applies the OpenAI
+// table, matches nothing, leaves the result standalone, and a later completion
+// marks the successful call interrupted (#1166 review).
+func TestAGSuiteSurfaceSettlesItsGoogleName(t *testing.T) {
+	announce := inTurn("turn_g", assistant(
+		call("call_g", "run_shell_command", `{"cmd":"ls"}`),
+	))
+	// The instance is not the surface: an openai-named connection serving a
+	// google-surface model.
+	announce.ResponseProvider = "openai"
+	announce.ResponseSurface = "google"
+	fx := fixture{
+		name:   "a google surface settles its own name",
+		header: transcript.Header{SessionID: "gsuite_surface", CreatedAt: fixtureClock, ProfileID: "p", Model: "m"},
+		lines: []fixtureLine{
+			entryLine(opens("turn_g", schema.TurnSpanExecution, user("go"))),
+			entryLine(announce),
+			entryLine(inTurn("turn_g", results(result("call_g", "shell", "a.txt")))),
+			entryLine(completion("turn_g", schema.TurnCompleted, 97, 10)),
+		},
+	}
+	path := writeFixture(t, fx)
+	indexed := turnItemsOf(t, allCandidates(t, openIndex(t, path, t.TempDir())), "turn_g")
+
+	rows, settled, interrupted := 0, false, false
+	for _, item := range indexed {
+		if item.CallID != "call_g" {
+			continue
+		}
+		rows++
+		if item.Status == appwire.TurnStatusCompleted {
+			settled = true
+		}
+		if item.Status == appwire.TurnStatusInterrupted {
+			interrupted = true
+		}
+	}
+	if rows != 1 {
+		t.Errorf("index: rows for one google-surface call = %d, want 1: run_shell_command and shell are one tool on that surface (items %s)",
+			rows, itemShapes(indexed))
+	}
+	if !settled {
+		t.Errorf("index: the google-surface call never settled: the guard read the instance name as the surface (items %s)",
+			itemShapes(indexed))
+	}
+	if interrupted {
+		t.Errorf("index: the settled call reads interrupted (items %s)", itemShapes(indexed))
+	}
+}
+
+// TestAnEmptyNamedReservationKeepsItsOwnOutput covers what the read-back fold
+// asks before it guards: does this entry hold a reservation for the call, not
+// does that reservation have a name.
+//
+// A call recorded with no tool name still owns its id, so a DIFFERENT tool's
+// named result under that id is its own row. Keying the guard on a non-empty
+// name read the nameless reservation as "no reservation" and skipped the guard,
+// folding the other tool's result over the reserved row: the reserved row lost
+// its own output and the other tool's row disappeared into it (#1166 review).
+func TestAnEmptyNamedReservationKeepsItsOwnOutput(t *testing.T) {
+	announce := inTurn("turn_empty", assistant(
+		call("call_empty", "", `{"cmd":"ls"}`),
+		call("call_empty", "read_file", `{"path":"a"}`),
+	))
+	fx := fixture{
+		name:   "an empty-named reservation keeps its own output",
+		header: transcript.Header{SessionID: "empty_res", CreatedAt: fixtureClock, ProfileID: "p", Model: "m"},
+		lines: []fixtureLine{
+			entryLine(opens("turn_empty", schema.TurnSpanExecution, user("go"))),
+			entryLine(announce),
+			entryLine(inTurn("turn_empty", results(
+				result("call_empty", "", "reserved output"),
+				result("call_empty", "read_file", "a.txt"),
+			))),
+		},
+	}
+	path := writeFixture(t, fx)
+	indexed := turnItemsOf(t, allCandidates(t, openIndex(t, path, t.TempDir())), "turn_empty")
+
+	// Three distinct rows: the reserved call, the visible read_file
+	// announcement, and read_file's own result. The reserved row's output must
+	// be its own, and read_file's result must not have replaced it.
+	var reservedKept, namedRowKept bool
+	for _, item := range indexed {
+		if item.CallID != "call_empty" || item.Type != "commandExecution" {
+			continue
+		}
+		switch item.Output {
+		case "reserved output":
+			reservedKept = true
+		case "a.txt":
+			namedRowKept = true
+		}
+	}
+	if !reservedKept {
+		t.Errorf("index: the reserved row lost its own output: a nameless reservation still owns its id (items %s)",
+			itemShapes(indexed))
+	}
+	if !namedRowKept {
+		t.Errorf("index: read_file's result lost its own row: folding it into the reservation overwrites a row the builder kept separate (items %s)",
+			itemShapes(indexed))
 	}
 }

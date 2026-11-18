@@ -3294,6 +3294,13 @@ func assistantHistoryMessage(message llm.Message) llm.Message {
 // appendAssistantTurn appends an assistant turn that carries the full response
 // metadata (usage stats and response ID) alongside the message content.
 func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttemptMetadata) error {
+	// The surface whose aliases dispatch applied, which is what makes this
+	// entry's tool names readable later. resp.Provider names the connection
+	// instance and can differ from it.
+	surface := ""
+	if profile := s.currentProfile(); profile != nil {
+		surface = profile.Surface()
+	}
 	t := schema.Turn{
 		Kind:                            schema.TurnAssistant,
 		Message:                         assistantHistoryMessage(resp.Message),
@@ -3302,6 +3309,7 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 		ResponseID:                      resp.ID,
 		ResponseIDHash:                  finalAttempt.ResponseIDHash,
 		ResponseProvider:                resp.Provider,
+		ResponseSurface:                 surface,
 		ResponseModel:                   resp.Model,
 		ResponseRequestModel:            finalAttempt.RequestModel,
 		AttemptGroupID:                  finalAttempt.AttemptGroupID,
