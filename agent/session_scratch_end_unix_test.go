@@ -237,6 +237,51 @@ func TestBareRestoreNamesTheRecordedScratchOwner(t *testing.T) {
 	}
 }
 
+// TestBareRestoreNamesFromTheRecordNotTheCallersCopy: the meta a caller passes
+// can predate the durable record — a daemon that recorded an owner after the
+// caller read the file. The restore must name the environment from the record it
+// reloads under session ownership, not from that stale copy, or it reopens the
+// wrong directory and clears the owner it was supposed to honor. The reload is
+// reached through RestoreSessionConfig's own seam: a StateDir plus
+// AcquireSessionOwnership reloads the meta after ownership is taken.
+func TestBareRestoreNamesFromTheRecordNotTheCallersCopy(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := artifactRestoreMeta(t).ID
+	ownerID := artifactRestoreMeta(t).ID
+	delegate := artifactRestoreMeta(t)
+	delegate.IsSubagent = true
+	// The caller's copy knows the tree but not the owner the record later gained.
+	stale := delegate
+	stale.ScratchTreeRootID = rootID
+	recorded := delegate
+	recorded.ScratchTreeRootID = rootID
+	recorded.ScratchDirSessionID = ownerID
+	if err := schema.SaveSessionMeta(stateDir, recorded); err != nil {
+		t.Fatalf("save the durable record: %v", err)
+	}
+	cfg := artifactRestoreConfig(t, stateDir)
+	cfg.AcquireSessionOwnership = func(string) error { return nil }
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	sess, err := RestoreSessionFromMetaWithConfig(newArtifactTestClient(), NewOpenAIProfile("gpt-5.2"), env, stale, cfg)
+	if err != nil {
+		t.Fatalf("bare restore: %v", err)
+	}
+	t.Cleanup(sess.Close)
+	if root, owner := env.ScratchIdentity(); root != rootID || owner != ownerID {
+		t.Errorf("bare restore named its scratch %s/%s from the caller's copy, want the recorded %s/%s", root, owner, rootID, ownerID)
+	}
+	// The name must decide the DIRECTORY, not only the identity the test read
+	// back: a named scratch keeps it at close and TestMain collects it, so no
+	// cleanup removes a path reached through filepath.Dir.
+	scratch := mintRootScratch(t, sess)
+	if got := sandbox.SessionScratchOwnerOf(scratch); got != ownerID {
+		t.Errorf("restored session mints the directory of %q, want the recorded owner %q", got, ownerID)
+	}
+	if got := sandbox.SessionScratchTreeRootOf(scratch); got != rootID {
+		t.Errorf("restored session mints in tree %q, want the recorded tree %q", got, rootID)
+	}
+}
+
 // TestSelfOwnedScratchMetaRecordsNoScratchOwner: a delegate resumed as the root
 // of its tree names its environment after itself, and every session whose
 // environment names it after itself owns its scratch; the meta records no

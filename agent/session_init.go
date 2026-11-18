@@ -923,24 +923,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if err := schema.ValidateSessionID(meta.ID); err != nil {
 		return nil, fmt.Errorf("invalid session id: %w", err)
 	}
-	// A delegate's own environment was named when it was prepared, and a shared
-	// delegate is handed its parent's, so only a restore with no live spawn
-	// carrier names env.
-	//
-	// Scratch ownership is durable: it is recorded from the environment when the
-	// scratch is created (SessionMeta.ScratchDirSessionID) and every resume reads
-	// it from that same record. A restore that has only the meta to go on would
-	// otherwise name the environment after the session itself and mint a second,
-	// empty directory beside the one its transcript names — flipping the recorded
-	// owner to unowned on the next save. Both identity halves therefore come from
-	// the record: the tree the scratch lives in, and the session whose directory
-	// in that tree it occupies. (A delegate's bare resume is refused before it
-	// reaches here — refuseBareDelegateResume in cmd/evener — so this branch is
-	// reached by the restore constructor's own contract, not by that command.)
-	if restoreCfg.spawn.parentSessionID == "" {
-		nameRootScratch(env, meta.RestoredScratchTreeRoot(), meta.RestoredScratchDirSession())
-	}
-
 	restoreComplete := false
 	ownershipAcquired := false
 	if restoreCfg.AcquireSessionOwnership != nil {
@@ -966,6 +948,32 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 			}
 			meta = currentMeta
 		}
+	}
+	// A delegate's own environment was named when it was prepared, and a shared
+	// delegate is handed its parent's, so only a restore with no live spawn
+	// carrier names env.
+	//
+	// Scratch ownership is durable: it is recorded from the environment when the
+	// scratch is created (SessionMeta.ScratchDirSessionID) and every resume reads
+	// it from that same record. A restore that has only the meta to go on would
+	// otherwise name the environment after the session itself and mint a second,
+	// empty directory beside the one its transcript names — flipping the recorded
+	// owner to unowned on the next save. Both identity halves therefore come from
+	// the record: the tree the scratch lives in, and the session whose directory
+	// in that tree it occupies.
+	//
+	// This runs AFTER the reload above, and must: the caller's copy of meta can
+	// predate the record (a daemon that recorded an owner after the caller read
+	// the file), and naming from that copy would reopen the wrong directory and
+	// clear the owner this very restore is supposed to honor. Naming stays ahead
+	// of every mint — provisionRestoredSandbox and initSessionState both come
+	// later — and nameRootScratch leaves an already-named environment alone.
+	//
+	// A delegate's bare resume is refused before it reaches here
+	// (refuseBareDelegateResume in cmd/evener), so this branch is reached by the
+	// restore constructor's own contract, not by that command.
+	if restoreCfg.spawn.parentSessionID == "" {
+		nameRootScratch(env, meta.RestoredScratchTreeRoot(), meta.RestoredScratchDirSession())
 	}
 	defer func() {
 		if !restoreComplete && ownershipAcquired {
