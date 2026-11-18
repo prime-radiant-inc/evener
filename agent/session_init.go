@@ -1708,12 +1708,15 @@ func (s *Session) initSessionState(runSessionStartHooks bool, savedHeader *trans
 	s.envInfo = ei
 	s.workspaceWritableRoots = installedWritableRoots(env)
 
-	if !s.cfg.testOnly.skipGitSnapshot {
-		if savedHeader == nil {
+	if savedHeader == nil {
+		if !s.cfg.testOnly.skipGitSnapshot {
 			s.capabilities = probeCapabilities(env, ei.WorkingDir)
-		} else if local, ok := env.(*execenv.LocalExecutionEnvironment); ok {
-			// Resume skips the prompt's shell probes. Reopen scratch before the
-			// first request reports what its commands can access.
+		}
+	} else if local, ok := env.(*execenv.LocalExecutionEnvironment); ok {
+		// Reopen scratch advertised in the saved context before reporting its
+		// availability. Older prompts can name scratch without a recorded path.
+		workspace := s.envTracker.State()
+		if workspace.Last.ScratchDir != "" || workspace.ScratchDirUnknown {
 			local.PrepareSessionScratch()
 		}
 	}

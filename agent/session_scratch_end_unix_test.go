@@ -519,7 +519,7 @@ func TestResumeReopensTheSameScratch(t *testing.T) {
 	root1.Close()
 
 	root2, err := RestoreSessionFromMetaWithConfig(root1.client, root1.profile,
-		execenv.NewLocalExecutionEnvironment(workspace), meta, RestoreSessionConfig{StateDir: dir})
+		execenv.NewLocalExecutionEnvironment(workspace), meta, RestoreSessionConfig{StateDir: dir, testOnly: testConfig{skipGitSnapshot: true}})
 	if err != nil {
 		t.Fatalf("restore: %v", err)
 	}
