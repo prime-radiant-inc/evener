@@ -680,7 +680,11 @@ func (s *Session) armDelegateAttention(attentionID string) error {
 // the batch; the stop's batched acknowledgment retry is the caller that has
 // several IDs.
 func (s *Session) armDelegateAttentions(attentionIDs []string) error {
-	return s.armDelegateAttentionsBounded(context.Background(), attentionIDs)
+	// noBound, not context.Background(): lockWithin asks "did a caller hand me a
+	// stall budget" by whether the value is one, and a bare Background makes an
+	// ordinary arm poll a Done channel that never closes instead of taking the
+	// plain lock. Ordinary delivery already answers this way.
+	return s.armDelegateAttentionsBounded(noBound, attentionIDs)
 }
 
 // errDelegateAttentionArmSpent reports that a bounded arm could not take
@@ -766,7 +770,8 @@ func (s *Session) armDelegateAttentionsBounded(bound context.Context, attentionI
 // receiver once for the whole batch — the same single wake a one-ID arm's
 // caller gets — instead of once per ID.
 func (s *Session) armDelegateAttentionsOnce(attentionIDs []string) error {
-	return s.armDelegateAttentionsOnceBounded(context.Background(), attentionIDs)
+	// noBound for the same reason as armDelegateAttentions.
+	return s.armDelegateAttentionsOnceBounded(noBound, attentionIDs)
 }
 
 // armDelegateAttentionsOnceBounded is armDelegateAttentionsOnce on a caller's
@@ -835,7 +840,8 @@ func (s *Session) armDelegateAttentionOnce(attentionID string) error {
 // reports whether attentionID was still pending, so the caller decides how the
 // wake fires — once for a batch, or the single-ID arm's own notify.
 func (s *Session) armDelegateAttentionInController(attentionID string) (armed bool, err error) {
-	return s.armDelegateAttentionInControllerBounded(context.Background(), attentionID)
+	// noBound for the same reason as armDelegateAttentions.
+	return s.armDelegateAttentionInControllerBounded(noBound, attentionID)
 }
 
 // armDelegateAttentionInControllerBounded is armDelegateAttentionInController on
@@ -891,7 +897,8 @@ func (s *Session) hasPendingDelegateAttentionArmRetry() bool {
 }
 
 func (s *Session) pendingDelegateAttentionIDs() ([]string, error) {
-	return s.pendingDelegateAttentionIDsBounded(context.Background())
+	// noBound for the same reason as armDelegateAttentions.
+	return s.pendingDelegateAttentionIDsBounded(noBound)
 }
 
 // pendingDelegateAttentionIDsBounded is pendingDelegateAttentionIDs on a

@@ -176,3 +176,53 @@ func TestBoundedPublicationFlushesWatchActivityOnItsBound(t *testing.T) {
 		t.Fatal("the publication never reached the blocked-send boundary: the send was not the thing under test")
 	}
 }
+
+// A bounded watch flush that loses an invalidation must keep the receiver
+// pending, because the flush clears the whole set before it sends.
+//
+// The flush takes the pending receivers, empties the set, and only then sends.
+// If a bounded send expires -- a close warning took the last slot in a full
+// authoritative stream -- the invalidation is gone from the set AND undelivered.
+// When the consumer resumes, the next ordinary event finds nothing pending, so an
+// open Watches view stays stale until the user refreshes by hand. The fix keeps
+// an undelivered receiver in the set, merged with anything a concurrent watch
+// change recorded while the flush was running.
+func TestBoundedWatchFlushKeepsAnUndeliveredReceiverPending(t *testing.T) {
+	s := newTestSessionForEnvctx(t)
+	if s.jobManager == nil {
+		t.Fatal("session has no job manager: nothing to flush watch activity through")
+	}
+
+	// A full authoritative stream, so the invalidation genuinely cannot land.
+	s.events = make(chan events.SessionEvent, 1)
+	s.events <- events.New(events.HookStartData{Event: "occupies the only slot"})
+	s.authoritativeConsumer = true
+	t.Cleanup(func() { s.authoritativeConsumer = false })
+
+	var parked atomic.Bool
+	s.testOnlyBlockedSendEntered = func() { parked.Store(true) }
+	t.Cleanup(func() { s.testOnlyBlockedSendEntered = nil })
+
+	receiver := "delivery-the-consumer-cannot-accept"
+	s.jobManager.noteWatchActivity(receiver)
+
+	// An already-expired bound: the send reaches the blocked arm and gives up
+	// on it, which is the condition a close drain meets when the cascade's
+	// publication cutoff is spent.
+	bound, cancelBound := context.WithCancel(t.Context())
+	cancelBound()
+	s.jobManager.publishWatchActivityContext(bound)
+
+	if !parked.Load() {
+		t.Fatal("the invalidation never reached the blocked-send boundary: the fixture did not stall the send, so it cannot observe a lost invalidation")
+	}
+
+	s.jobManager.watchActivityMu.Lock()
+	pending := s.jobManager.watchActivityReceivers
+	s.jobManager.watchActivityMu.Unlock()
+	if _, held := pending[receiver]; !held {
+		t.Fatalf("the receiver whose invalidation expired is no longer pending (%v): the flush cleared the set "+
+			"before sending, so nothing will ever publish this invalidation and an open Watches view stays stale "+
+			"until a manual refresh", pending)
+	}
+}

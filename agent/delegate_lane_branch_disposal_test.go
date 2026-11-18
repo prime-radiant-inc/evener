@@ -81,7 +81,7 @@ func TestDelegateLaneBranchCanary_UnresolvedBranchLeavesLaneForPrune(t *testing.
 	}
 	st := worktree.ClassifyReason(reason, r.s.id, id)
 
-	outcome, _ := r.s.disposeUnchangedLaneMechanics(run, st, isolationLane{delegateID: id, path: lanePath}, metaDir, downgradeUnlockKeep, false)
+	outcome, _ := r.s.disposeUnchangedLaneMechanics(run, st, isolationLane{delegateID: id, path: lanePath}, metaDir, downgradeUnlockKeep, false, nil)
 
 	if outcome != laneDeclined {
 		t.Fatalf("outcome = %v, want laneDeclined (nothing touched)", outcome)

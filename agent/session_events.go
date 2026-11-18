@@ -809,6 +809,13 @@ func (s *Session) SetDescendantEventFunc(f func(events.SessionEvent)) {
 	}
 }
 
+// ObserveCloseDrainPublication is the context-independent observation seam for a
+// bounded close publication: it sees the bound the send is made on, so a test can
+// assert WHICH deadline caps it instead of measuring how long the send took. Nil
+// in production, like ObserveCloseStopJoinBudget and for the same reason -- host
+// load can stretch any wall-clock ceiling, but the deadline a pass chose is exact.
+var ObserveCloseDrainPublication func(bound context.Context)
+
 // emitCloseDrainWarnings publishes the warnings a delegate close drain settled,
 // on the stop context that drain runs under. It is the closing session's whole
 // publication surface: a warning is news the owner would otherwise never see --
@@ -825,6 +832,12 @@ func (s *Session) SetDescendantEventFunc(f func(events.SessionEvent)) {
 func (s *Session) emitCloseDrainWarnings(ctx context.Context, warnings []events.WarningData) {
 	if s == nil || s.events == nil {
 		return
+	}
+	// Recorded at the publication rather than at each caller: every bounded
+	// close publication ends up here, so this is the one place that can say
+	// which deadline actually capped the send.
+	if observe := ObserveCloseDrainPublication; observe != nil {
+		observe(ctx)
 	}
 	// The bound travels with the warning, not with the session. Every send this
 	// publication causes -- the warning itself, the Notification hook it fires,

@@ -2,10 +2,12 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
@@ -121,5 +123,77 @@ func TestOrdinaryStopDrainDispatchesTheLostResultHookOnce(t *testing.T) {
 	if got != 1 {
 		t.Fatalf("the lost-result warning dispatched its Notification hook %d time(s), want exactly 1: "+
 			"a full buffer must not drop the notification, and a retry must not duplicate it", got)
+	}
+}
+
+// The incomplete-close warning that follows a failed delegate-tree stop must not
+// spend the budget the worktree removals need.
+//
+// The warning comes AFTER the drain, so the drain may already have taken the last
+// slot in a full authoritative stream with a lost-result warning. Publishing the
+// close failure on the ordinary path then parks on the whole cascade, and the
+// collectible lanes that would have been removed arrive at their turn with nothing
+// left. The failure is still news, so it is not dropped: the first attempt is
+// bounded at the cascade's shared publication cutoff and an undelivered warning is
+// retained for the post-removal retry.
+func TestIncompleteCloseWarningBeforeDisposalRunsOnTheCascadeCutoff(t *testing.T) {
+	r := newWorktreeRepo(t)
+	root := r.s
+
+	// The stream is NOT filled here, deliberately. This test asserts WHICH bound
+	// the warning is published on, not that the send parks: a full stream makes
+	// the unbounded mutant hang instead of failing, and a timeout is not a red.
+	// The parking consequence is pinned separately by
+	// TestCloseSubtreeDrainsShareOnePublicationCutoff and the drain's own bound
+	// tests.
+	root.events = make(chan events.SessionEvent, 8)
+	root.authoritativeConsumer = true
+	t.Cleanup(func() { root.authoritativeConsumer = false })
+
+	restoreBudget := SetLaneClosePassBudget(closeDrainCascadeBudget)
+	defer restoreBudget()
+	cascade, cancelCascade := ensureCloseBudget(t.Context())
+	defer cancelCascade()
+	minted, ok := cascade.Value(closeCascadePublicationKey{}).(time.Time)
+	if !ok {
+		t.Fatal("ensureCloseBudget minted no publication cutoff: nothing bounds a close publication")
+	}
+
+	var saw []time.Time
+	ObserveCloseDrainPublication = func(bound context.Context) {
+		if deadline, ok := bound.Deadline(); ok {
+			saw = append(saw, deadline)
+		}
+	}
+	defer func() { ObserveCloseDrainPublication = nil }()
+
+	// Drive the PRODUCTION branch, not the helper: the finding is that the call
+	// site publishes an unbounded warning before disposal, and a test that calls
+	// the helper directly would pass with that call site reverted.
+	c, _ := newDelegateControllerTestHarness(t, 2, 2)
+	root.delegateController = c
+	root.ownsDelegateController = true
+	// A real subtree to stop, so the close reaches a durable append at all: an
+	// empty tree never writes and the fault below would never fire.
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	c.mu.Lock()
+	c.appendFault = func(appended []delegatestore.Event) error {
+		for _, event := range appended {
+			if event.Kind == delegatestore.EventDelegateSubtreeStopCompleted {
+				return errors.New("journal unavailable")
+			}
+		}
+		return nil
+	}
+	c.mu.Unlock()
+	root.closeDelegateRuntimeTree(cascade)
+
+	if len(saw) != 1 {
+		t.Fatalf("the pre-disposal close warning published through %d bounded send(s), want 1: "+
+			"a warning that bypasses the bounded publisher is the one that spends the removals' budget", len(saw))
+	}
+	if !saw[0].Equal(minted) {
+		t.Fatalf("the pre-disposal close warning published on %s, want the cascade's shared cutoff %s: "+
+			"any later deadline is budget the worktree removals no longer have", saw[0], minted)
 	}
 }

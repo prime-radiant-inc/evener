@@ -152,7 +152,12 @@ func TestNoBoundSentinelIsNotACallerBound(t *testing.T) {
 		t.Fatal("the no-bound sentinel reads as a caller-supplied bound: every ordinary wake would " +
 			"be treated as bounded, and lockWithin would poll a Done channel that never closes")
 	}
-	if suppliedCallerBound(nil) {
+	// A nil context is the other encoding of "no bound". It is held in a
+	// variable rather than written as a literal argument so the assertion is
+	// about the PREDICATE's answer for an absent context, not a call that passes
+	// nil where a real one belongs. The predicate is nil-safe; that is its job.
+	var absent context.Context
+	if suppliedCallerBound(absent) {
 		t.Fatal("a nil context reads as a caller-supplied bound")
 	}
 	bound, cancel := context.WithCancel(t.Context())

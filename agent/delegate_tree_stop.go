@@ -835,14 +835,11 @@ func (c *delegateTreeController) drainStopForClose(ctx context.Context, stop *de
 // Neither path can run the hook twice: the ordinary path retains nothing, so
 // the close-time retry never sees it, and the close path's retry publishes only
 // the channel event.
-func (s *Session) publishDrainWarnings(warningsOnly bool, ctx context.Context, warnings []events.WarningData) {
+func (s *Session) publishDrainWarnings(ctx context.Context, warningsOnly bool, warnings []events.WarningData) {
 	if s == nil || len(warnings) == 0 {
 		return
 	}
 	if warningsOnly {
-		if observe := ObserveCloseDrainPublication; observe != nil {
-			observe(ctx)
-		}
 		s.emitCloseDrainWarnings(ctx, warnings)
 		return
 	}
@@ -850,14 +847,6 @@ func (s *Session) publishDrainWarnings(warningsOnly bool, ctx context.Context, w
 		s.emit(warning)
 	}
 }
-
-// ObserveCloseDrainPublication is the context-independent observation seam for
-// a close-driven drain's warning publication: it sees the bound every such
-// publication is made on, so a test can assert WHICH deadline caps it instead of
-// measuring how long a send took. Nil in production, like
-// ObserveCloseStopJoinBudget and for the same reason -- host load can stretch any
-// wall-clock ceiling, but the deadline a pass chose is exact.
-var ObserveCloseDrainPublication func(bound context.Context)
 
 // drainStopAbandonable is drainStop plus an optional abandon signal. The stop
 // driver passes its own cancellable context's Done channel, so a close join
@@ -954,7 +943,14 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 		// only way a consumer can tell that from a context that merely exists is
 		// the mark. Assigning the bare ctx here made every publication on this
 		// pass's path read as unbounded -- the opposite of this drain's contract.
-		evidence.bound = withPublicationBound(ctx)
+		//
+		// pubCtx, not ctx: the acknowledgment wakes and diagnostics a close
+		// reconcile publishes are publications like any other on this pass, so
+		// they take the cascade's shared cutoff. Only the reconciliation WAITS
+		// keep the subtree's own stop context -- a close that retries a committed
+		// acknowledgment across several subtrees otherwise spends a fresh slice
+		// of the cascade per subtree, and the removals get what is left.
+		evidence.bound = withPublicationBound(pubCtx)
 		plans, err := c.Reconcile(evidence)
 		if plans.retirementRelease != nil {
 			retirementReleases = append(retirementReleases, plans.retirementRelease)
@@ -970,7 +966,7 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 			// failed: the receipt that produced it is gone from the store,
 			// so no later pass can settle it again.
 			if root != nil {
-				root.publishDrainWarnings(warningsOnly, pubCtx, plans.warnings)
+				root.publishDrainWarnings(pubCtx, warningsOnly, plans.warnings)
 			}
 			return err
 		}
@@ -980,7 +976,7 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 		// it out of the drain unpublished. Publishing first also keeps the
 		// warning off the plan-execution path: it is news, not an effect.
 		if root != nil {
-			root.publishDrainWarnings(warningsOnly, pubCtx, plans.warnings)
+			root.publishDrainWarnings(pubCtx, warningsOnly, plans.warnings)
 		}
 		plans.warnings = nil
 		for _, plan := range plans.shellRepairs {

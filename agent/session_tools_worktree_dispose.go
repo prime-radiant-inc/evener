@@ -238,7 +238,7 @@ func (s *Session) disposeStableExecute(ctx context.Context, run worktree.GitRunn
 		result.AlreadyDisposed = alreadyClosed
 		return result, nil
 	}
-	outcome, note := s.disposeUnchangedLaneMechanics(run, st, lane, metaDir, downgradeUnlockKeep, forceDirty)
+	outcome, note := s.disposeUnchangedLaneMechanics(run, st, lane, metaDir, downgradeUnlockKeep, forceDirty, nil)
 	switch outcome {
 	case laneKeptDirty:
 		return WorktreeDisposeResult{

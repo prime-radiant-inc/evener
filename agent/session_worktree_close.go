@@ -74,6 +74,7 @@ func (s *Session) disposeDelegateLanesAtClose(ctx context.Context) {
 	// closures are still appended before their removals, so the order that makes
 	// disk and the durable record agree is unchanged; only the announcement moved.
 	var closureUpdates []delegateUpdatePlan
+	var laneWarnings []events.WarningData
 	for _, delegate := range delegates {
 		lane := isolationLane{delegateID: delegate.delegateID, path: delegate.descriptor.WorkingDir}
 		// Budget check at the top of each iteration: once the deadline passes,
@@ -86,7 +87,9 @@ func (s *Session) disposeDelegateLanesAtClose(ctx context.Context) {
 			}
 			continue
 		}
-		note, wasKept, updates := s.disposeOneDelegateLane(budgetCtx, local, delegate)
+		note, wasKept, updates := s.disposeOneDelegateLane(budgetCtx, local, delegate, func(w events.WarningData) {
+			laneWarnings = append(laneWarnings, w)
+		})
 		closureUpdates = append(closureUpdates, updates...)
 		// The budget can expire inside a git operation after the top-of-loop
 		// check. Route that lane through the same non-expiring safety tail as all
@@ -131,6 +134,16 @@ func (s *Session) disposeDelegateLanesAtClose(ctx context.Context) {
 		plan.bound = publishCtx
 		s.delegateController.emitDelegateUpdate(plan)
 	}
+	// The lanes' own warnings are deferred for the same reason and on the same
+	// cutoff. A warning published inside a lane's turn became a prerequisite for
+	// the NEXT lane's removal: on a stalled authoritative stream, a branch-delete
+	// failure in the first lane spent the rest of the cascade there, and every
+	// later collectible lane reached only the touch-and-unlock tail. The durable
+	// resumability closures are still written BEFORE their removals, so the
+	// record and the filesystem still agree; only the news moved.
+	if len(laneWarnings) > 0 {
+		s.emitCloseDrainWarnings(publishCtx, laneWarnings)
+	}
 	if len(kept) > 0 {
 		s.emit(events.WarningData{
 			Message: "kept " + strconv.Itoa(len(kept)) + " isolation worktree lane(s) not collected automatically (unmerged or squash-merged), dirty, or unverifiable at session close: " + strings.Join(kept, "; "),
@@ -156,7 +169,11 @@ func (s *Session) disposeDelegateLanesAtClose(ctx context.Context) {
 // publishing them itself: the caller publishes after it has attempted every
 // lane, so one undeliverable announcement cannot spend the budget later lanes
 // need to leave the disk.
-func (s *Session) disposeOneDelegateLane(ctx context.Context, local *execenv.LocalExecutionEnvironment, delegate delegateWorktreeSnapshot) (note string, kept bool, updates []delegateUpdatePlan) {
+// warn receives the warnings this lane's disposal would otherwise publish
+// synchronously. The close pass collects them and publishes after every removal,
+// so a warning is never on the removal path; the live dispose op passes nil and
+// keeps publishing immediately, because there is no cascade there to starve.
+func (s *Session) disposeOneDelegateLane(ctx context.Context, local *execenv.LocalExecutionEnvironment, delegate delegateWorktreeSnapshot, warn func(events.WarningData)) (note string, kept bool, updates []delegateUpdatePlan) {
 	lane := isolationLane{delegateID: delegate.delegateID, path: delegate.descriptor.WorkingDir}
 	lanePath := filepath.Clean(lane.path)
 	if lanePath == "" || lanePath == "." {
@@ -223,10 +240,10 @@ func (s *Session) disposeOneDelegateLane(ctx context.Context, local *execenv.Loc
 
 	_, _, plans, closeErr := s.delegateController.closeStableWorktreeResumability(s, lane.delegateID, stableWorktreeDisposalReason, true)
 	if closeErr != nil {
-		s.emit(events.WarningData{Message: fmt.Sprintf("delegate lane resumability closure failed for %s: %v", lane.delegateID, closeErr)})
+		s.publishLaneWarning(warn, events.WarningData{Message: fmt.Sprintf("delegate lane resumability closure failed for %s: %v", lane.delegateID, closeErr)})
 		return lane.delegateID + " at " + lanePath + " (resumability closure failed; retained intact)", true, nil
 	}
-	outcome, cleanupNote := s.disposeUnchangedLaneMechanics(run, st, lane, metaDir, downgradeUnlockKeep, false)
+	outcome, cleanupNote := s.disposeUnchangedLaneMechanics(run, st, lane, metaDir, downgradeUnlockKeep, false, warn)
 	if outcome == laneKeptDirty {
 		return cleanupNote + " (resumability closed; retained residue)", true, plans.updates
 	}
@@ -555,13 +572,27 @@ func (s *Session) statLaneGitDir(lanePath string) (os.FileInfo, error) {
 // unless dirty-forced"): the model-facing dispose op sets it when `force_dirty`
 // discards a dirty lane, which a non-force remove would refuse. The close path
 // never forces — a late dirty write there downgrades back to KEEP instead.
-func (s *Session) disposeUnchangedLaneMechanics(run worktree.GitRunner, st worktree.LockState, lane isolationLane, metaDir string, downgrade downgradePolicy, forceRemove bool) (outcome laneDisposalOutcome, note string) {
+// publishLaneWarning routes a lane warning to the caller's collector when one is
+// given, and to the session's ordinary path otherwise.
+func (s *Session) publishLaneWarning(warn func(events.WarningData), warning events.WarningData) {
+	if warn != nil {
+		warn(warning)
+		return
+	}
+	s.emit(warning)
+}
+
+// warn collects the warnings this call would otherwise publish inline. The
+// close pass supplies a collector and publishes after every removal, so a
+// warning is never on the removal path; the live dispose op passes nil and
+// publishes immediately, because there is no cascade there to starve.
+func (s *Session) disposeUnchangedLaneMechanics(run worktree.GitRunner, st worktree.LockState, lane isolationLane, metaDir string, downgrade downgradePolicy, forceRemove bool, warn func(events.WarningData)) (outcome laneDisposalOutcome, note string) {
 	if lane.branch == "" {
 		// Defense in depth: a lane record that never resolved its branch (a
 		// future caller's omission) must not delete the sidecar and strand the
 		// real branch behind it. Touch nothing; the lane stays exactly as it
 		// is, like a lane whose lock could not be released.
-		s.emit(events.WarningData{Message: fmt.Sprintf("delegate lane %s reached disposal without a resolved branch; left untouched", lane.delegateID)})
+		s.publishLaneWarning(warn, events.WarningData{Message: fmt.Sprintf("delegate lane %s reached disposal without a resolved branch; left untouched", lane.delegateID)})
 		return laneDeclined, "its branch was never resolved"
 	}
 	lanePath := filepath.Clean(lane.path)
@@ -600,7 +631,7 @@ func (s *Session) disposeUnchangedLaneMechanics(run worktree.GitRunner, st workt
 			case downgradeRelockKeep:
 				marker := worktree.FormatDelegateMarker(lane.delegateID, s.id)
 				if _, lockErr := run("worktree", "lock", "--reason", marker, lanePath); lockErr != nil {
-					s.emit(events.WarningData{Message: fmt.Sprintf("delegate lane %s kept after eviction but its lock could not be re-acquired at %s: %v", lane.delegateID, lanePath, lockErr)})
+					s.publishLaneWarning(warn, events.WarningData{Message: fmt.Sprintf("delegate lane %s kept after eviction but its lock could not be re-acquired at %s: %v", lane.delegateID, lanePath, lockErr)})
 				}
 				return laneKeptDirty, lane.delegateID + " at " + lanePath + " (dirty at removal; re-locked)"
 			default: // downgradeUnlockKeep
@@ -613,7 +644,7 @@ func (s *Session) disposeUnchangedLaneMechanics(run worktree.GitRunner, st workt
 	// Delete the branch (unchanged lane: tip == base, no work lost) and the
 	// sidecar. Best-effort — the lane is already unrevivable.
 	if _, err := run("branch", "-D", lane.branch); err != nil {
-		s.emit(events.WarningData{Message: fmt.Sprintf("delegate lane branch delete failed for %s: %v", lane.delegateID, err)})
+		s.publishLaneWarning(warn, events.WarningData{Message: fmt.Sprintf("delegate lane branch delete failed for %s: %v", lane.delegateID, err)})
 	}
 	_ = worktree.DeleteSidecar(metaDir, lane.delegateID)
 	return laneDisposed, ""
