@@ -611,11 +611,20 @@ func (s *Session) foldHistoryBeforeRequest(ctx context.Context, round, sysLen in
 			// Compaction is an auxiliary provider call made on an UNLEASED
 			// turn too, so its input obeys THE RULE as well (LIFE-01, #2340):
 			// a still-pending watch row must not ride into a summary any more
-			// than into the request, because the summary is what later
-			// requests expand. Identity, not content, decides.
+			// than into the request, because the summary is what later requests
+			// expand. Identity, not content, decides.
+			//
+			// preManageLen is NOT recomputed from the filtered slice. It is the
+			// PUBLICATION MERGE BOUNDARY: publishFoldedHistory appends
+			// s.history[preManageLen:] onto the folded result to carry turns that
+			// arrived concurrently. Lowering it to the filtered length makes every
+			// turn between the two look like a concurrent append, so the fold
+			// re-appends history that was already in the snapshot it folded --
+			// duplicated ordinary history, in exchange for withholding one notice.
+			// The filter applies to what the summarizer SEES; the boundary stays
+			// the length of the snapshot that was taken.
 			if filtered, _ := s.dropUnleasedWatchAttentionTurns(ctx, historyTurns); len(filtered) != len(historyTurns) {
 				historyTurns = filtered
-				preManageLen = len(historyTurns)
 			}
 
 			// Auxiliary-call admission (LIFE-01, #2340). The lease was validated

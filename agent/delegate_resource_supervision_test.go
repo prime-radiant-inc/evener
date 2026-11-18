@@ -4895,3 +4895,84 @@ func TestStableSupervisionQuiescenceWaitsForTheChildNamer(t *testing.T) {
 		t.Fatalf("quiescence returned with %d child namer runs pending and name %q, want none pending and the slow namer's name", pending, name)
 	}
 }
+
+// TestDelegateResourceSupervision_WatchFilteredFoldDoesNotDuplicateHistory pins
+// the HIGH the branch review found in the projection drop itself (LIFE-01,
+// #2340).
+//
+// Withholding a pending watch row from the fold's input shortens the slice the
+// summarizer sees. That shortened length is NOT the publication merge boundary:
+// publishFoldedHistory carries concurrent turns by appending
+// s.history[snapLen:] onto the folded result, so shrinking snapLen to the
+// filtered length makes every turn between the two look like a turn that
+// arrived during the fold, and the fold re-appends history it already folded.
+// The gate would then duplicate ordinary conversation in exchange for
+// withholding one notice.
+//
+// The shape that shows it: a deferred row in the MIDDLE of history, with turns
+// after it, so the removal is not simply a truncation of the tail.
+//
+// Honest note on the red proof: with preManageLen shortened to the filtered
+// length this test DOES fail, but it fails earlier, at the request's own
+// budget admission -- the re-appended turns inflate the estimate before the
+// duplicate-turn assertion is reached. The assertion below is the precise
+// statement of the defect; the red proof is the prepare error above it.
+func TestDelegateResourceSupervision_WatchFilteredFoldDoesNotDuplicateHistory(t *testing.T) {
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
+	})
+	root := restoreSupervisionRoot(t, fixture, nil)
+	sub := warmStableSupervisionDelegate(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	// Small on purpose: the duplication this pins must be caught by the
+	// duplicate-turn assertion below, not by the request later exceeding the
+	// token budget, which would be a different failure wearing this test's name.
+	seedSessionHistory(t, sub.sess, 4)
+
+	deferred := jobNotification{
+		Kind:   jobNotificationKindWatch,
+		JobID:  "job:fold-duplicate",
+		Status: jobNotificationEventWatch,
+		Reason: "watch send failed",
+	}
+	attentionID := deferredWatchAttentionID(deferred)
+	notice := sub.sess.formatJobNotificationReminder([]deliverableJobNotification{{notification: deferred}})
+	if _, err := sub.sess.appendDelegateNotificationDurably(attentionID, notice); err != nil {
+		t.Fatalf("append the deferred watch notice: %v", err)
+	}
+	// Ordinary turns AFTER the deferred row, so the filter's removal is interior.
+	sub.sess.mu.Lock()
+	for i := range 2 {
+		turn := schema.NewTurn(schema.TurnSteering, llm.User(fmt.Sprintf("after the deferred watch %d", i)))
+		sub.sess.history = append(sub.sess.history, turn)
+	}
+	before := len(sub.sess.history)
+	sub.sess.mu.Unlock()
+
+	forcePressureAbove(t, sub.sess, sub.sess.contextMgr.CheckpointThreshold)
+	sub.sess.elicitNoteFn = func(context.Context, []schema.Turn) (string, error) { return "note", nil }
+	if _, _, _, _, _, _, err := sub.sess.prepareModelRequestWithError(context.Background(), 0, new(events.RoundTimings)); err != nil {
+		t.Fatalf("unleased model request on the stable child = %v, want it to carry its ordinary work", err)
+	}
+	sub.sess.mu.Lock()
+	defer sub.sess.mu.Unlock()
+	// A fold summarizes, so the history may SHRINK. It must never GROW by
+	// re-appending turns that were in the snapshot it folded.
+	if len(sub.sess.history) > before {
+		t.Fatalf("history after the filtered fold = %d turns, want <= %d: the fold re-appended turns it already folded", len(sub.sess.history), before)
+	}
+	// The sharpest statement of the same fact: the deferred row is what was
+	// withheld, and the turns after it are still each present exactly once.
+	after := make(map[string]int, len(sub.sess.history))
+	for _, turn := range sub.sess.history {
+		if turn.StableTurnID != "" {
+			after[turn.StableTurnID]++
+		}
+	}
+	for id, count := range after {
+		if count > 1 {
+			t.Fatalf("durable fold published turn %q %d times, want it exactly once", id, count)
+		}
+	}
+}
