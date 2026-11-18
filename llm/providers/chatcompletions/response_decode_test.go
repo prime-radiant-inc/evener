@@ -584,6 +584,63 @@ data: [DONE]
 			}
 		}
 	})
+	t.Run("a late identity joins a signed detail in arrival order", func(t *testing.T) {
+		check := func(t *testing.T, batches [][]map[string]any, want []map[string]any) {
+			t.Helper()
+			var sse strings.Builder
+			for _, batch := range batches {
+				sse.WriteString(`data: {"choices":[{"delta":{"reasoning_details":` + jsonOf(t, batch) + `}}]}` + "\n\n")
+			}
+			sse.WriteString("data: [DONE]\n\n")
+			body := chatResponseRaw(map[string]any{"reasoning_details": want}, "stop")
+			responses, _ := decode(t, jsonOf(t, body), sse.String())
+			for source, resp := range responses {
+				var saved llm.Message
+				if err := json.Unmarshal([]byte(jsonOf(t, resp.Message)), &saved); err != nil {
+					t.Fatal(err)
+				}
+				for _, input := range []llm.Message{resp.Message, saved} {
+					out, err := toChatMessages([]llm.Message{input}, registry.Caps{ReplayReasoningText: new(true)}, true)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if got := jsonOf(t, out[0]["reasoning_details"]); got != jsonOf(t, want) {
+						t.Errorf("%s native details = %s, want %s", source, got, jsonOf(t, want))
+					}
+				}
+			}
+		}
+		opaque := map[string]any{"type": "reasoning.encrypted", "id": "other", "data": "sealed"}
+		want := []map[string]any{
+			{"type": "reasoning.text", "id": "a", "index": 7, "format": "fmt", "text": " α\t<B> C\r\nDΩ", "signature": "sig-a", "hint": "id-last"},
+			opaque,
+		}
+		check(t, [][]map[string]any{
+			{{"type": "reasoning.text", "id": "a", "format": "fmt", "text": " α\t", "hint": "id-first"}},
+			{opaque},
+			{{"index": 7, "text": "<B>", "hint": "index"}},
+			{{"id": "a", "text": " C\r\n", "hint": "id-last"}},
+			{{"index": 7, "text": "D"}},
+			{{"id": "a", "index": 7, "text": "Ω", "signature": "sig-a"}},
+		}, want)
+		indexed := map[string]any{"type": "reasoning.text", "index": 7, "text": "index"}
+		named := map[string]any{"type": "reasoning.text", "id": "a", "text": "name"}
+		sig := map[string]any{"type": "reasoning.text", "id": "a", "index": 7, "signature": "sig"}
+		t.Run("index precedes ID", func(t *testing.T) {
+			other := map[string]any{"type": "reasoning.text", "index": 9, "text": "other"}
+			check(t, [][]map[string]any{{indexed, other}, {named}, {sig}}, []map[string]any{
+				{"type": "reasoning.text", "id": "a", "index": 7, "text": "indexname", "signature": "sig"}, other,
+			})
+		})
+		t.Run("separate siblings cannot supply the signature text", func(t *testing.T) {
+			check(t, [][]map[string]any{{named, indexed}, {sig}}, []map[string]any{named, indexed, sig})
+		})
+		t.Run("incompatible formats cannot supply the signature text", func(t *testing.T) {
+			named := map[string]any{"type": "reasoning.text", "id": "a", "format": "one", "text": "name"}
+			indexed := map[string]any{"type": "reasoning.text", "index": 7, "format": "two", "text": "index"}
+			check(t, [][]map[string]any{{named}, {indexed}, {sig}}, []map[string]any{named, indexed, sig})
+		})
+	})
 	t.Run("empty indexed openings retain signed detail metadata", func(t *testing.T) {
 		const sse = `data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","id":"a","index":7,"format":"fmt-a"},{"type":"reasoning.text","id":"b","index":2},{"type":"reasoning.text","id":"unused","index":9}]}}]}
 

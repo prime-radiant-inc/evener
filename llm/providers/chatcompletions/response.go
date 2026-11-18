@@ -2,6 +2,7 @@ package chatcompletions
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -267,6 +268,32 @@ type reasoningDetailBlock struct {
 	position     int
 	index        *int
 	batch        int
+	fragments    []reasoningDetailFragment
+}
+
+// While an ID or index is missing, another open block may hold fragments of
+// this same item. Their arrival order determines the signed bytes and metadata.
+type reasoningDetailFragment struct {
+	batch           int
+	wire            map[string]any
+	text, textField string
+}
+
+func (b *reasoningDetailBlock) appendFragment(f reasoningDetailFragment) {
+	for key, value := range f.wire {
+		switch key {
+		case "type", "id", "index", "format":
+			if known := b.wire[key]; known != nil && known != "" {
+				continue
+			}
+		}
+		b.wire[key] = value
+	}
+	if b.textField == "" {
+		b.textField = f.textField
+	}
+	b.text.WriteString(f.text)
+	b.batch = f.batch
 }
 
 // chatReasoning assembles one completion. A trailing signature authenticates
@@ -333,6 +360,7 @@ func (r *chatReasoning) openDetail(pos int, item reasoningDetailItem, single boo
 		byIndex
 	)
 	match, best := -1, 0
+	idMatch, idCount := -1, 0
 	for i, block := range r.open {
 		// An array's siblings are separate items. Later deltas can extend
 		// each one by its wire index, ID, or position in a subsequent array.
@@ -358,6 +386,7 @@ func (r *chatReasoning) openDetail(pos int, item reasoningDetailItem, single boo
 			rank = byIndex
 		case id != "" && id == item.ID:
 			rank = byID
+			idMatch, idCount = i, idCount+1
 		case item.Index != nil:
 			if *item.Index != block.position {
 				continue
@@ -371,10 +400,45 @@ func (r *chatReasoning) openDetail(pos int, item reasoningDetailItem, single boo
 			match = -1
 		}
 	}
+	if match >= 0 && best == byIndex && idCount == 1 {
+		if id, _ := r.open[match].wire["id"].(string); id == "" {
+			match = r.joinDetail(match, idMatch)
+		}
+	}
 	if match < 0 {
 		return -1, nil
 	}
 	return match, r.open[match]
+}
+
+// A fragment naming both handles can bind previously separate ID-only and
+// index-only histories. Distinct siblings in one array cannot be the same item.
+func (r *chatReasoning) joinDetail(byIndex, byID int) int {
+	indexed, named := r.open[byIndex], r.open[byID]
+	for _, key := range []string{"type", "format"} {
+		a, _ := indexed.wire[key].(string)
+		b, _ := named.wire[key].(string)
+		if a != "" && b != "" && a != b {
+			return -1
+		}
+	}
+	fragments := slices.Concat(indexed.fragments, named.fragments)
+	slices.SortFunc(fragments, func(a, b reasoningDetailFragment) int { return cmp.Compare(a.batch, b.batch) })
+	for i := 1; i < len(fragments); i++ {
+		if fragments[i-1].batch == fragments[i].batch {
+			return -1
+		}
+	}
+	first, last := min(byIndex, byID), max(byIndex, byID)
+	keep, drop := r.open[first], r.open[last]
+	*keep = reasoningDetailBlock{wire: make(map[string]any), position: keep.position, index: indexed.index}
+	for _, f := range fragments {
+		keep.appendFragment(f)
+	}
+	r.open = slices.Delete(r.open, last, last+1)
+	slot := slices.Index(r.blocks, drop)
+	r.blocks = slices.Delete(r.blocks, slot, slot+1)
+	return first
 }
 
 func (r *chatReasoning) addDetail(pos int, item reasoningDetailItem, piece string, single, settled bool) {
@@ -398,37 +462,28 @@ func (r *chatReasoning) addDetail(pos int, item reasoningDetailItem, piece strin
 		return
 	}
 	if block == nil {
-		block = &reasoningDetailBlock{wire: wire, position: pos}
+		block = &reasoningDetailBlock{wire: make(map[string]any, len(wire)), position: pos}
 		r.blocks = append(r.blocks, block)
 		if !signed {
 			r.open = append(r.open, block)
-		}
-	} else {
-		for key, value := range wire {
-			switch key {
-			case "type", "id", "index", "format":
-				// openDetail matched these fields. A fragment can fill a
-				// missing identity, but its nulls cannot erase a known one.
-				if known := block.wire[key]; known != nil && known != "" {
-					continue
-				}
-			}
-			block.wire[key] = value
 		}
 	}
 	if item.Index != nil {
 		block.index = item.Index
 	}
-	block.batch = r.batch
-	if block.textField == "" {
-		switch {
-		case item.Text != "" || settledEmpty:
-			block.textField = "text"
-		case item.Thinking != "":
-			block.textField = "thinking"
-		}
+	f := reasoningDetailFragment{batch: r.batch, wire: wire, text: piece}
+	switch {
+	case item.Text != "" || settledEmpty:
+		f.textField = "text"
+	case item.Thinking != "":
+		f.textField = "thinking"
 	}
-	block.text.WriteString(piece)
+	block.appendFragment(f)
+	if id, _ := block.wire["id"].(string); !signed && (block.index == nil || id == "") {
+		block.fragments = append(block.fragments, f)
+	} else {
+		block.fragments = nil
+	}
 	if signed {
 		block.continuation = true
 		if block.text.Len() > 0 {
