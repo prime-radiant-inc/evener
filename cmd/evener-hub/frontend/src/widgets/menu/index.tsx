@@ -278,7 +278,16 @@ const WITNESS_LIMIT = 8;
  * choice, not this widget's. Asking them all and accepting the first that
  * accounts for the offset finds whatever the browser actually held, where
  * betting on a single box keeps selecting a row the update happened to leave
- * alone. */
+ * alone.
+ *
+ * A GROUP THAT HOLDS THE TRIGGER is descended into rather than skipped. In the
+ * rail the trigger is a button on a session row INSIDE the Live band, so the
+ * band's wrapper contains both the trigger and every row the browser could have
+ * anchored - skipping the wrapper would leave the section that holds the
+ * trigger with no witness at all, which is every menu in the rail. The
+ * trigger's own subtree is still excluded, one element at a time, because the
+ * trigger's row moves with the trigger and a witness that always moves with it
+ * can never explain anything. */
 function witnessesIn(scroller: Element, triggerEl: HTMLElement, ownerWindow: Window): Element[] {
   const port = scroller.getBoundingClientRect();
   // The visible band in the same viewport coordinates the candidates report.
@@ -296,7 +305,7 @@ function witnessesIn(scroller: Element, triggerEl: HTMLElement, ownerWindow: Win
   const groups = Array.from(scroller.children);
   for (const group of groups) {
     if (found.length >= WITNESS_LIMIT) break;
-    if (group.contains(triggerEl) || triggerEl.contains(group)) continue;
+    if (triggerEl.contains(group)) continue;
     const groupRect = group.getBoundingClientRect();
     if (groupRect.height > 0 && (groupRect.bottom <= portTop || groupRect.top >= portBottom)) continue;
     // The group ITSELF counts: in a flat list each row is a direct child of the

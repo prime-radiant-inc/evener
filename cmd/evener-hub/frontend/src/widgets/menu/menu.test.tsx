@@ -699,6 +699,84 @@ test("a live row changing bands leaves the menu open on its trigger", async () =
   }
 });
 
+// The rail's session rows carry the Actions trigger, so the trigger sits INSIDE
+// the Live band - the same section the browser's anchor row is in, not a
+// sibling of it. A witness scan that skips any group holding the trigger
+// therefore walks past the only section the anchor can be in, finds nothing,
+// and reports an unexplained offset change: the menu closes on a band change
+// that never moved its trigger. The anchor's own row is the answer, and it is
+// reachable only by descending INTO the section the trigger lives in, with the
+// trigger's own subtree excluded.
+test("a band change inside the trigger's own section leaves the menu open", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  // The heading is above the scrollport, exactly as it is once the reader has
+  // scrolled past it: it cannot speak for the row the browser is holding.
+  let headingTop = -40;
+  let witnessTop = 120;
+  let triggerTop = 300;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
+    if (this.getAttribute("data-testid") === "live-heading") return box(100, headingTop, 200, 20);
+    if (this.getAttribute("data-testid") === "live-row") return box(100, witnessTop, 200, 40);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  const { flush } = captureFrames();
+  try {
+    render(
+      <div data-testid="owning-scroller" style={{ overflowY: "auto" }}>
+        <div data-testid="live-section">
+          <div data-testid="live-heading">Live</div>
+          <div data-testid="live-row">Live session</div>
+          <div data-testid="trigger-row">
+            <Menu trigger="Actions" items={items()} />
+          </div>
+        </div>
+      </div>,
+    );
+    const scroller = screen.getByTestId("owning-scroller");
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 600 });
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 200 });
+    scroller.scrollTop = 340;
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menu").style.top).toBe("332px"); // 300 + 28 + 4
+
+    // The session in the row above crosses from Idle into Working. Nothing
+    // changes height, so the trigger keeps its place in the CONTENT - but the
+    // browser holds its anchor at the same place on SCREEN and gives back 24 of
+    // offset to do it. Only the row it held explains that: its own content
+    // position moved by exactly the offset the browser gave back.
+    scroller.scrollTop = 316;
+    triggerTop = 324;
+    headingTop = -16;
+    fireEvent.scroll(scroller);
+    flush();
+
+    // Still the reader's: nothing they did moved it, and the popup followed the
+    // trigger to where it now sits.
+    expect(screen.getByRole("menu")).toBeTruthy();
+    expect(screen.getByRole("menu").style.top).toBe("356px"); // 324 + 28 + 4
+
+    // The reading above must not turn into "a scroll never dismisses". The
+    // reader drags the rail 40px: content untouched, so the trigger and the row
+    // the browser held a moment ago both move up the screen with their places
+    // in the content exactly where they were.
+    scroller.scrollTop = 356;
+    triggerTop = 284;
+    witnessTop = 80;
+    headingTop = -56;
+    fireEvent.scroll(scroller);
+    flush();
+    expect(screen.queryByRole("menu")).toBeNull();
+  } finally {
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
 // A rail does not stand still: rows arrive and leave on every update, so the
 // row the browser anchored on a moment ago is often gone by the next one. A
 // witness set carried over from the survivors is, after a few updates, a set of
@@ -2792,10 +2870,17 @@ test("a list that shrinks under the offset does not pull the reader back to its 
   const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
   Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
   const PORT = 120;
-  // The leading block is what a turn's end takes away: Stop and Steer. Delete
-  // goes with them - it is the turn's own action - so the content shrinks by
-  // more than the leading block and the maximum offset falls further still.
-  let leading = 112;
+  const ROW = 44;
+  // Every number below comes from these two, so the fixture cannot describe a
+  // scroll position the geometry forbids. While the turn runs the menu holds
+  // seven rows - Stop, Steer, Rename, Duplicate, Delete, Archive, Pin - and
+  // that is 308 of content in a 120px port, so the reader can reach 188.
+  const MAX_BEFORE = 7 * ROW - PORT; // 188
+  // A turn's end takes Stop and Steer away from above the reader and Delete
+  // with them - it is the turn's own action - leaving four rows of 44. The
+  // content is 176, so the maximum offset falls to 56, and the browser pulls
+  // the offset back by 132.
+  const MAX_AFTER = 4 * ROW - PORT; // 56
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     if (this.tagName === "BUTTON") return box(100, 300, 40, 28);
     if (this.tagName === "UL") return box(0, 0, 160, PORT);
@@ -2803,7 +2888,7 @@ test("a list that shrinks under the offset does not pull the reader back to its 
   });
   vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
     if (this.tagName === "UL") return PORT;
-    return this.tagName === "LI" ? 44 : 0;
+    return this.tagName === "LI" ? ROW : 0;
   });
   vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
     return this.tagName === "UL" ? 160 : 0;
@@ -2811,7 +2896,7 @@ test("a list that shrinks under the offset does not pull the reader back to its 
   vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function (this: HTMLElement) {
     if (this.tagName !== "LI" || !this.parentElement) return 0;
     const index = Array.prototype.indexOf.call(this.parentElement.children, this);
-    return leading + index * 44;
+    return index * ROW;
   });
   const { flush } = captureFrames();
   const rename: MenuItem = { id: "rename", label: "Rename", onSelect: vi.fn() };
@@ -2839,30 +2924,30 @@ test("a list that shrinks under the offset does not pull the reader back to its 
     row.focus();
     const popup = screen.getByRole("menu");
     expect(document.activeElement).toBe(row);
-    // 112 of leading content + six rows of 44 = 376 in a 120px port: the reader
-    // can reach 256, and is there. Rename spans 200..244, entirely ABOVE that
-    // view at 256..376 - they are looking at the actions below it.
-    Object.defineProperty(popup, "scrollHeight", { configurable: true, value: 376 });
-    popup.scrollTop = 256;
+    // Seven rows of 44 = 308 in a 120px port, so 188 is the furthest the offset
+    // can go and the reader is there. Rename spans 88..132, entirely ABOVE that
+    // view at 188..308 - they are looking at the actions below it.
+    Object.defineProperty(popup, "scrollHeight", { configurable: true, value: 7 * ROW });
+    popup.scrollTop = MAX_BEFORE;
     fireEvent.scroll(popup);
-    expect(popup.scrollTop).toBe(256);
+    expect(popup.scrollTop).toBe(MAX_BEFORE);
 
-    // The turn ends: 88 of leading content and Delete's 44 leave, so the content
-    // is 244 and the maximum falls to 124. The browser pulls the offset back
-    // from 256 to exactly 124 - the whole 132 - while Rename moved up only 88,
-    // to 112. The two did NOT travel together, which is also what a swipe looks
-    // like, so the earlier look gets rebased onto 124: it then reads as 0..44 of
-    // the row - fully visible - and the 12..44 now on screen as a loss the
-    // update supposedly caused. At the offsets actually measured the row was
-    // hidden both times: 200..244 above 256, and 112..156 above 124.
-    leading = 24;
-    Object.defineProperty(popup, "scrollHeight", { configurable: true, value: 244 });
-    popup.scrollTop = 124;
+    // The turn ends: Stop, Steer and Delete all leave, so the content is 176
+    // and the maximum falls from 188 to 56. The browser pulls the offset back
+    // the whole 132 while Rename moved up only 88, to 0 - the two did NOT
+    // travel together, which is also what a swipe looks like. Read at the
+    // offsets each look was actually taken at, the row was off the top of the
+    // view both times: 88..132 above 188..308, and 0..44 above 56..176. So
+    // nothing was lost and the reader keeps the place they were reading.
+    // Reading the earlier look at the later offset instead would call the row
+    // fully visible before and clipped after, and scroll back to it.
+    Object.defineProperty(popup, "scrollHeight", { configurable: true, value: 4 * ROW });
+    popup.scrollTop = MAX_AFTER;
     view.rerender(<SessionMenu ended />);
     flush();
 
     // The reader keeps the place they were reading.
-    expect(popup.scrollTop).toBe(124);
+    expect(popup.scrollTop).toBe(MAX_AFTER);
     expect(document.activeElement).toBe(row);
   } finally {
     vi.restoreAllMocks();

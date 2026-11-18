@@ -2,8 +2,10 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { act, fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { expect, test, vi } from "vitest";
+import { Menu } from "../menu";
 import { Tree, type TreeNode } from "./index";
 
 // Flattened visible order for this fixture: a, b, b1, c
@@ -285,6 +287,57 @@ test("ArrowLeft on a collapsed, top-level branch does nothing (no parent)", () =
   fireEvent.keyDown(row("c"), { key: "ArrowLeft" });
   expect(onToggle).not.toHaveBeenCalled();
   expect(document.activeElement).toBe(row("c"));
+});
+
+// A menu inside a row portals its popup to the body, and React still runs a key
+// pressed in that popup up the COMPONENT tree - so the row's handler sees a key
+// pressed in DOM the row does not contain. Acting on it hands focus to the
+// parent row while the menu is still open, and the Escape the person presses
+// next is delivered to that row instead of the popup they are reading. The row
+// contains the event's target or it does not; that is the whole of the rule,
+// and it has to leave the row's OWN ArrowLeft working.
+test("a key pressed in a row's portalled menu is not the row's to act on", async () => {
+  const user = userEvent.setup();
+  render(
+    <Tree
+      nodes={[{ id: "b", expanded: true, children: [{ id: "b1" }] }]}
+      onActivate={vi.fn()}
+      onToggle={vi.fn()}
+      renderRow={(node) =>
+        node.id === "b1" ? (
+          <>
+            {node.id}
+            <Menu trigger="Actions" items={[{ id: "rename", label: "Rename", onSelect: vi.fn() }]} />
+          </>
+        ) : (
+          node.id
+        )
+      }
+    />,
+  );
+  // Matched loosely on purpose: the row's accessible name now carries the
+  // trigger's own label, because the trigger is part of the row.
+  const theTreeRow = screen.getByRole("treeitem", { name: /b1/ });
+  act(() => theTreeRow.focus());
+
+  await user.click(screen.getByRole("button", { name: "Actions" }));
+  const item = screen.getByRole("menuitem", { name: "Rename" });
+  act(() => item.focus());
+
+  await user.keyboard("{ArrowLeft}");
+
+  // The menu still has the key, and focus: the row did not take it.
+  expect(screen.getByRole("menu")).toBeTruthy();
+  expect(document.activeElement).toBe(item);
+
+  // Which is what keeps Escape reaching the popup.
+  await user.keyboard("{Escape}");
+  expect(screen.queryByRole("menu")).toBeNull();
+
+  // And the row's own ArrowLeft is untouched: from b1 to its parent b.
+  act(() => theTreeRow.focus());
+  await user.keyboard("{ArrowLeft}");
+  expect(document.activeElement).toBe(row("b"));
 });
 
 test("ArrowLeft on a top-level leaf does nothing (no parent)", () => {

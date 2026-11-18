@@ -216,6 +216,16 @@ export function Tree<T extends TreeNode = TreeNode>({
 
   function handleKeyDown(event: KeyboardEvent<HTMLDivElement>, node: T, parent: T | null) {
     const index = indexById.get(node.id);
+    // Keys from a PORTALLED descendant are not this row's. React runs an event
+    // from a menu item's DOM node up the COMPONENT tree, so a row that hosts a
+    // Menu sees the keys pressed inside that menu even though the menu's DOM
+    // sits under document.body, outside this row's subtree. Acting on one moves
+    // focus out of a menu that is still open, and the next Escape is then
+    // delivered to the row instead of the popup the person is reading. A key
+    // this row's own DOM contains - a nested control, the row itself - still
+    // reaches the handler, which is why the check is containment and not a
+    // key list: a row cannot enumerate every key a widget inside it owns.
+    if (!event.currentTarget.contains(event.target as Node)) return;
     // renderEntries and flattenVisible walk the same nodes under the same
     // expanded-branch predicate, so node.id is always a key here in
     // practice - but that's an invariant between two separate functions,
