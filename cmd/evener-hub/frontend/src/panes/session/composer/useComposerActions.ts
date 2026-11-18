@@ -47,6 +47,7 @@ import {
   pushSelectionRefusal,
   selectionRefusal,
   submitDraftToStore,
+  unbackedMarkersIn,
   withRecoveryDestinationClaim,
 } from "./submitProtocol";
 
@@ -396,6 +397,20 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     if (isBusy()) return;
     if (attachments.hasPending) {
       toasts.push("error", "Image attachment is still processing");
+      return;
+    }
+    // The invariant: a marker and its bytes are committed together. This
+    // source refuses to submit an anchor whose image it does not hold, rather
+    // than let the marker reach the wire as literal text with no image item -
+    // the model would be told about an image it cannot see. The composer
+    // states the same fact in place beside the draft and keeps it
+    // (Composer.tsx), so the press has nothing to undo and no toast to time
+    // out.
+    //
+    // The numbers come from the source's adoption tag, never from scanning
+    // the text on its own: a marker the person typed is legal literal prose,
+    // and only an adopted one without bytes is unbacked.
+    if (unbackedMarkersIn(options.text ?? textRef.current, source.getSnapshot().unbackedImageMarkers).length > 0) {
       return;
     }
     const model = liveThreadModel(ref);

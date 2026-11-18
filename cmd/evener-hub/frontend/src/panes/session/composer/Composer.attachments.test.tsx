@@ -28,6 +28,7 @@ import {
   installGatedDecodeStub,
   installStalledDecodeStub,
   mountComposer,
+  mountComposerWithHandle,
   seedRejectedRecovery,
   seedRejectedRecoveryWithAttachment,
   submitButton,
@@ -756,4 +757,116 @@ test("a photo taken on Android is staged like any picked image", async () => {
   fireEvent.change(input, { target: { files: [photo] } });
 
   await waitFor(() => expect(screen.getByRole("button", { name: /remove/i })).toBeTruthy());
+});
+
+// Issue #4826: a reader that adopts a persisted draft's "[image N]" marker
+// owns no bytes for it - bytes never enter localStorage, so a remounted
+// reader gets the anchor and an empty attachment store. Sending then ships
+// the marker as literal text with no image item, telling the model about an
+// image it cannot see. The refusal must happen at the request boundary, and
+// the reason must sit with the draft rather than in a toast that times out.
+test("a draft adopted with a marker but no bytes refuses to send and says why in place", async () => {
+  installCanvasStubs();
+  const ref = "ref_a";
+  // The source exists (and is empty) before the other reader's draft lands,
+  // so the adoption below is the mount-time bind, not the initial read.
+  const source = createTestComposerSource(ref);
+  // Written exactly as a composer with a staged image writes it: the record
+  // names marker 1 as having had bytes. localStorage never held those bytes,
+  // so this reader adopts the anchor with an empty attachment store.
+  writeComposerDraft(ref, { text: "Cascade reader draft[image 1]", skillNames: [] }, [1]);
+  const { fake } = await mountComposerWithHandle(ref, {}, { source });
+  const delivered: unknown[] = [];
+  fake.on("turn/start", (params) => {
+    delivered.push(params.input);
+    return {
+      receipt: appliedReceipt(params.clientMutationId, "thread_a"),
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  fake.on("turn/queue", (params) => {
+    delivered.push(params.input);
+    return { receipt: appliedReceipt(params.clientMutationId, "thread_a") };
+  });
+
+  const editor = textarea();
+  expect(editor.textContent).toBe("Cascade reader draft[image 1]");
+
+  // The refusal must hold even when the press arrives as the form's own
+  // submit, which no disabled button gates, so this drives that path.
+  fireEvent.submit(screen.getByTestId("composer-form"));
+  await flushPendingTurnsProjectionForTests();
+  expect(delivered).toEqual([]);
+
+  // The reason sits in the flow where the draft is, and the draft is kept
+  // exactly as the person left it. Send is disabled rather than merely
+  // refusing the press, so the person is not offered an action that cannot
+  // happen.
+  expect(screen.getByTestId("composer-unbacked-image")).toBeTruthy();
+  expect(editor.textContent).toBe("Cascade reader draft[image 1]");
+  expect(readComposerDraft(ref)).toEqual({ text: "Cascade reader draft[image 1]", skillNames: [] });
+  expect(submitButton().disabled).toBe(true);
+});
+
+test("an image this reader staged keeps its marker sendable with no refusal", async () => {
+  installCanvasStubs();
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a");
+  fake.on("turn/start", (params) => ({
+    receipt: appliedReceipt(params.clientMutationId, "thread_a"),
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
+
+  const editor = textarea();
+  pastePngInto(editor, "shot.png");
+  await screen.findByRole("button", { name: "View shot.png" });
+  expect(editor.textContent).toBe("[image 1]");
+  expect(screen.queryByTestId("composer-unbacked-image")).toBeNull();
+
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  const call = fake.calls.find((candidate) => candidate.method === "turn/start");
+  if (call === undefined) throw new Error("expected the staged image to send");
+  const input = (call.params as { input: Array<{ type: string; text?: string }> }).input;
+  expect(input.some((item) => item.type === "image")).toBe(true);
+  expect(input.some((item) => item.type === "text" && item.text?.includes("[image 1]"))).toBe(false);
+});
+
+// The false positive this fix must not ship: a marker is legal literal text
+// when the person typed it, and only an anchor the persisted record says had
+// bytes is unbacked. The reload is what separates the two designs - a send
+// path that scanned the text would refuse this draft, because the text it
+// reads is identical to the adopted one above.
+test("a marker the person typed stays sendable after a reload", async () => {
+  installCanvasStubs();
+  const ref = "ref_a";
+  const user = userEvent.setup();
+  const typed = "look at [image 1]";
+  const firstSource = createTestComposerSource(ref);
+  const first = await mountComposerWithHandle(ref, {}, { source: firstSource });
+  first.fake.on("turn/start", (params) => ({
+    receipt: appliedReceipt(params.clientMutationId, "thread_a"),
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
+  // "[[": userEvent reads a single "[" as the start of a key descriptor, so
+  // the escaped input types the same bracket the draft keeps.
+  await user.type(textarea(), "look at [[image 1]");
+  expect(screen.queryByTestId("composer-unbacked-image")).toBeNull();
+  expect(readComposerDraft(ref).text).toBe(typed);
+  first.unmount();
+  // A reload keeps localStorage and loses the attachment store with the page.
+  firstSource.dispose();
+
+  const fake = await mountComposer(ref);
+  fake.on("turn/start", (params) => ({
+    receipt: appliedReceipt(params.clientMutationId, "thread_a"),
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
+  expect(textarea().textContent).toBe(typed);
+  expect(screen.queryByTestId("composer-unbacked-image")).toBeNull();
+  expect(submitButton().disabled).toBe(false);
+
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
 });

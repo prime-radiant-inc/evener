@@ -63,6 +63,7 @@ import {
   Button,
   ConfirmDialog,
   Dropzone,
+  InlineNotice,
   PromptCard,
   SendIcon,
   Tooltip,
@@ -100,7 +101,7 @@ import { SlashCompletionMenu } from "./SlashCompletionMenu";
 import { maskSkillAtoms, type SkillEditorValue } from "./skillDocument";
 import type { ComposerSourceState } from "./sourceState";
 import { recordStoplessComposer } from "./stoplessComposer";
-import { pushRecoveryRefusal } from "./submitProtocol";
+import { pushRecoveryRefusal, unbackedMarkersIn } from "./submitProtocol";
 import { type ComposerSubmission, useBuiltinSubmission } from "./useBuiltinSubmission";
 import { useInlineStopReady } from "./useInlineStopReady";
 import { useSlashCompletion } from "./useSlashCompletion";
@@ -261,11 +262,15 @@ function ComposerWithSubmission({
     cursorToRestoreRef.current = cursor;
     setCursorRestoreSeq((seq) => seq + 1);
   }, []);
-  const { text, skillNames, commandNames, mentions, restoreEpoch, activeRecoveryId } = useSyncExternalStore(
-    source.subscribe,
-    source.getSnapshot,
-    source.getSnapshot,
-  );
+  const {
+    text,
+    skillNames,
+    commandNames,
+    mentions,
+    restoreEpoch,
+    activeRecoveryId,
+    unbackedImageMarkers: unbackedImageMarkersFromSource,
+  } = useSyncExternalStore(source.subscribe, source.getSnapshot, source.getSnapshot);
   const restoredRecoveryRef = useRef(activeRecoveryId);
   useLayoutEffect(() => {
     if (restoredRecoveryRef.current === activeRecoveryId) return;
@@ -905,6 +910,12 @@ function ComposerWithSubmission({
   const hasText = text.trim() !== "";
   const hasAttachments = attachments.items.length > 0;
   const hasContent = hasText || hasAttachments || skillNames.length > 0 || selectionMeta.commandNames.length > 0;
+  // Anchors this composer adopted from a persisted draft but holds no image
+  // for. The send path refuses them (useComposerActions.submit) and the notice
+  // below says why, in place, instead of a toast that has already gone by the
+  // time the person looks up. Both read one tag, so the refusal and its
+  // explanation cannot disagree.
+  const unbackedImageMarkers = unbackedMarkersIn(text, unbackedImageMarkersFromSource);
   const inlineStop = !!model && controlsFor(model).stop && !hasContent;
   const inlineStopReady = useInlineStopReady(ref, !model || askPending ? null : inlineStop ? "stop" : "send");
 
@@ -1045,6 +1056,9 @@ function ComposerWithSubmission({
       toasts.push("error", "Image attachment is still processing");
       return;
     }
+    // A marker whose bytes are gone is not a sendable draft. The notice
+    // beside the draft already says so; the press changes nothing.
+    if (unbackedImageMarkers.length > 0) return;
     if (submitBuiltin()) return;
     // Hand off before Send becomes disabled. Never refocus on completion:
     // the user may have moved to another control or session while submitting.
@@ -1348,6 +1362,22 @@ function ComposerWithSubmission({
         // composer when several are mounted - including an ordinary pane and a
         // cascade column showing the same conversation.
         <div ref={formAnchorRef} className={CLASS.formAnchor} data-composer={ref} data-composer-pane={paneId}>
+          {/* An adopted marker whose image is gone. Kept in the flow above the
+              draft rather than toasted: the press is refused, the draft stays,
+              and the reason stays readable for as long as the anchor does.
+              `live` is "off" because this is a standing property of the
+              draft, not news arriving after it rendered - the announcement
+              Send's own disabled state carries is enough, and a fresh alert
+              on every re-render would interrupt for nothing. */}
+          {unbackedImageMarkers.length > 0 && (
+            <InlineNotice tone="danger" live="off" data-testid="composer-unbacked-image">
+              {`The attached image for ${unbackedImageMarkers
+                .map((marker) => `[image ${marker}]`)
+                .join(
+                  ", ",
+                )} is no longer available in this composer. Remove the reference, or attach the image again, before sending.`}
+            </InlineNotice>
+          )}
           {/* Anchored above the control row inside the card below, opening
               upward - see slashcompletionmenu.module.css's header comment
               for the anchored-float recipe. Mounted only
@@ -1442,6 +1472,11 @@ function ComposerWithSubmission({
                           // toast.
                           disabled={
                             actionPending ||
+                            // An adopted marker with no bytes behind it is not
+                            // sendable content: the request would carry the
+                            // anchor as literal text and no image item. The
+                            // notice above the form says why.
+                            unbackedImageMarkers.length > 0 ||
                             !hasContent ||
                             !(ended
                               ? (canSendWhenEnded || fence.sendDriven) && canCompose && !fence.stillFenced

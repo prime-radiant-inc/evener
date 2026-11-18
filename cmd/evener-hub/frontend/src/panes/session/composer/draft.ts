@@ -18,7 +18,7 @@
 // {text, skillNames} as a single atomic localStorage value, so a draft's
 // canonical skill selections survive a reload next to its text. The v1 key
 // held plain text only; see readComposerDraft for the approved transition.
-import { canonicalSkillNames } from "@evener/appwire-client";
+import { canonicalSkillNames, markerPattern } from "@evener/appwire-client";
 import { ownClientId } from "../../../stores/mutationClientIdentity";
 import { createSecureUUID } from "../../../stores/secureUUID";
 import { patchSelectionText, type SkillEditorValue } from "./skillDocument";
@@ -41,6 +41,21 @@ export interface ComposerDraft extends SkillEditorValue {
   // one is carried to the other (see carryComposerDraft). Absent on records an
   // older build wrote.
   editedAt?: number;
+}
+
+// The marker numbers whose bytes were staged when this record was written.
+//
+// Kept OUT of ComposerDraft's public shape on purpose: it is persistence
+// provenance, not draft content, and every reader of the draft (chips, the
+// editor, the carry) has no use for it. It exists so an adopting composer can
+// tell an anchor that HAD bytes - and lost them, because localStorage never
+// holds image bytes - from literal "[image 1]" prose the person typed. Only
+// the former is unbacked, so only the former refuses a send
+// (sourceState's unbackedImageMarkers). Absent on records an older build
+// wrote, and those adopt no unbacked markers: an old record cannot prove an
+// anchor had bytes, and refusing on a guess would refuse legitimate prose.
+interface StoredComposerDraft extends ComposerDraft {
+  imageMarkers?: number[];
 }
 
 // A remount inherits the same draft revision. Editing or replacing its
@@ -113,9 +128,9 @@ export function writePaneComposerSeat(paneId: string, ref: string, seat: string)
   }
 }
 
-function isStoredComposerDraft(value: unknown): value is ComposerDraft {
+function isStoredComposerDraft(value: unknown): value is StoredComposerDraft {
   if (typeof value !== "object" || value === null) return false;
-  const record = value as Partial<ComposerDraft>;
+  const record = value as Partial<StoredComposerDraft>;
   return (
     typeof record.text === "string" &&
     Array.isArray(record.skillNames) &&
@@ -124,6 +139,9 @@ function isStoredComposerDraft(value: unknown): value is ComposerDraft {
       (Array.isArray(record.commandNames) && record.commandNames.every((name) => typeof name === "string"))) &&
     (record.editedAt === undefined || typeof record.editedAt === "number") &&
     (record.revisionId === undefined || typeof record.revisionId === "string") &&
+    (record.imageMarkers === undefined ||
+      (Array.isArray(record.imageMarkers) &&
+        record.imageMarkers.every((marker) => Number.isSafeInteger(marker) && marker > 0))) &&
     (record.mentions === undefined ||
       (Array.isArray(record.mentions) &&
         record.mentions.every(
@@ -220,7 +238,11 @@ export function readDraftEditedAt(ref: string): number {
 // staged next to its own visible `/<name>` reference, so a record with names
 // and no text is not something the composer produces; one that arrives from an
 // older build is normalized on restore rather than trusted here.
-export function writeComposerDraft(ref: string, value: ComposerDraft): string | undefined {
+export function writeComposerDraft(
+  ref: string,
+  value: ComposerDraft,
+  imageMarkers?: readonly number[],
+): string | undefined {
   markDraftEdited(ref);
   try {
     if (isBlankDraft(value)) {
@@ -233,7 +255,12 @@ export function writeComposerDraft(ref: string, value: ComposerDraft): string | 
       const revisionId = createSecureUUID();
       localStorage.setItem(
         composerDraftStorageKey(ref),
-        JSON.stringify({ ...value, revisionId, editedAt: Date.now() }),
+        JSON.stringify({
+          ...value,
+          revisionId,
+          editedAt: Date.now(),
+          ...(imageMarkers && imageMarkers.length > 0 ? { imageMarkers: [...imageMarkers] } : {}),
+        }),
       );
       try {
         localStorage.removeItem(draftStorageKey(ref));
@@ -253,11 +280,46 @@ export function readComposerDraftRevisionId(ref: string): string | undefined {
   return readComposerDraftSnapshot(ref).revisionId;
 }
 
+/**
+ * The marker numbers a persisted draft recorded as having image bytes behind
+ * them, in the same record readComposerDraftSnapshot just returned.
+ *
+ * This is the one fact an adopting composer needs to honour the invariant
+ * that a marker and its bytes are committed together (issue #4826): a marker
+ * listed here had an image, localStorage kept no bytes, so the adopter owns
+ * an anchor with nothing behind it and must refuse to send it. A marker NOT
+ * listed here is literal prose the person typed, which sends as text.
+ */
+export function readComposerDraftImageMarkers(ref: string): number[] {
+  try {
+    const structured = localStorage.getItem(composerDraftStorageKey(ref));
+    if (structured === null) return [];
+    const parsed: unknown = JSON.parse(structured);
+    if (!isStoredComposerDraft(parsed)) return [];
+    return parsed.imageMarkers ?? [];
+  } catch {
+    return [];
+  }
+}
+
+// The recorded markers a new text still spells. Provenance travels only with
+// the anchor it describes: a marker whose "[image N]" the text no longer
+// contains has no image reference left to lose.
+function markersStillSpelled(text: string, markers: readonly number[]): number[] {
+  if (markers.length === 0) return [];
+  const spelled = new Set(Array.from(text.matchAll(markerPattern()), (match) => Number(match[1])));
+  return markers.filter((marker) => spelled.has(marker));
+}
+
 // Explicit atoms follow their visible labels across text edits. Names-only
 // drafts retain their selections independently of the prose.
 export function writeDraft(ref: string, value: string): void {
   const current = readComposerDraft(ref);
-  writeComposerDraft(ref, current.mentions ? patchSelectionText(current, value) : { ...current, text: value });
+  writeComposerDraft(
+    ref,
+    current.mentions ? patchSelectionText(current, value) : { ...current, text: value },
+    markersStillSpelled(value, readComposerDraftImageMarkers(ref)),
+  );
 }
 
 // clearDraft drops a ref's stored draft outright - called on every
@@ -289,7 +351,10 @@ export function carryComposerDraft(fromRef: string, toRef: string): void {
   if (isBlankDraft(from)) return;
   const to = readComposerDraft(toRef);
   if (!isBlankDraft(to) && readDraftEditedAt(fromRef) <= readDraftEditedAt(toRef)) return;
-  writeComposerDraft(toRef, from);
+  // The carried text keeps its anchors' provenance: the new pane holds none of
+  // the bytes (this function's own note above), so a marker it names is an
+  // anchor with no image and must refuse rather than send as literal text.
+  writeComposerDraft(toRef, from, markersStillSpelled(from.text, readComposerDraftImageMarkers(fromRef)));
 }
 
 // Recovery persistence owns the text in IndexedDB. Removing its redundant

@@ -3,7 +3,7 @@
 // selections, how a draft reaches the threads store, and what the user hears
 // when a recovery row was changed or consumed elsewhere.
 
-import type { ComposerMention } from "@evener/appwire-client";
+import { type ComposerMention, markerPattern } from "@evener/appwire-client";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import type { DisplayedRecoveryStopCapture } from "../../../stores/mutationOutboxIndexedDB";
 import { type InputAttachment, readRecoveryWithStopEpoch, threadsStore } from "../../../stores/threads";
@@ -47,6 +47,23 @@ export type RecoveryRefusal = "changed" | "consumed";
 export function pushRecoveryRefusal(refusal: RecoveryRefusal): void {
   if (refusal === "changed") pushToast("info", "This message changed in another tab. Refresh and try again.", refusal);
   else pushToast("info", "This message was already sent in another tab.", refusal);
+}
+
+/**
+ * The adopted markers a submission would carry with no image behind them.
+ *
+ * `unbacked` is the source's own adoption tag (ComposerSourceSnapshot), which
+ * is populated only where a composer takes on a persisted draft whose bytes
+ * it does not hold. A marker that number names and the text still spells is
+ * an anchor whose image is gone, and the request must refuse rather than ship
+ * it: buildComposerInput leaves an unmatched marker as literal text and
+ * emits no image item, so the model would be told about an image it cannot
+ * see. A marker the person typed is not in the tag and never refuses.
+ */
+export function unbackedMarkersIn(text: string, unbacked: readonly number[]): number[] {
+  if (unbacked.length === 0) return [];
+  const spelled = new Set(Array.from(text.matchAll(markerPattern()), (match) => Number(match[1])));
+  return unbacked.filter((marker) => spelled.has(marker));
 }
 
 export type DraftRoute = "send" | "queue" | "steer" | "drain";

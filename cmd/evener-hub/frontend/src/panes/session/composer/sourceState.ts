@@ -1,4 +1,4 @@
-import type { ComposerMention } from "@evener/appwire-client";
+import { type ComposerMention, markerPattern } from "@evener/appwire-client";
 import { createStore } from "zustand/vanilla";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import { createSecureUUID } from "../../../stores/secureUUID";
@@ -17,6 +17,7 @@ import {
   clearPersistedDraftIfRevisionMatches,
   markDraftEdited,
   readComposerDraft,
+  readComposerDraftImageMarkers,
   readComposerDraftRevisionId,
   readComposerDraftSnapshot,
   readDraftRevision,
@@ -65,6 +66,22 @@ export interface ComposerSourceSnapshot {
   skillNames: string[];
   commandNames: string[];
   mentions?: ComposerMention[];
+  /**
+   * Marker numbers this source ADOPTED from a persisted draft without the
+   * bytes their anchor stood for, and that the current text still spells
+   * while no staged attachment carries that marker.
+   *
+   * The invariant this exists to hold: a marker and its bytes are committed
+   * together. A draft round-trips through localStorage, which never holds
+   * image bytes (see attachments/useAttachments.ts), so a reader that adopts
+   * another reader's draft gets the anchor and no image. Sending that would
+   * tell the model about an image it cannot see - the marker reaches the wire
+   * as literal text with no image item. So the send path refuses while this
+   * is non-empty, and the composer says why beside the draft. A marker that
+   * was never adopted is never listed: literal "[image N]" prose the person
+   * typed is theirs to send.
+   */
+  unbackedImageMarkers: number[];
   activeRecoveryId: string | null;
   recoveryActivating: boolean;
   recoveryOperationBusy: boolean;
@@ -190,6 +207,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     skillNames: restoredSkillNames(initial),
     commandNames: initial.commandNames ?? [],
     mentions: initial.mentions,
+    unbackedImageMarkers: [],
     activeRecoveryId: null,
     recoveryActivating: false,
     recoveryOperationBusy: false,
@@ -295,6 +313,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     if (text.trim() !== "") cancelCleanupRetry();
     textRef.current = text;
     state.setState({ text });
+    refreshUnbackedImageMarkers();
   }
   function updateSkillNames(skillNames: string[]): void {
     if (disposed) return;
@@ -342,14 +361,29 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     reconcileRecoveryTarget(record?.targetRef ?? ref);
     state.setState({ activeRecoveryId });
   }
+  // The invariant of issue #4826 at its write site: the anchors whose bytes
+  // this source holds are recorded WITH the text that names them. localStorage
+  // never holds image bytes, so a record without this list cannot say whether
+  // a later reader's "[image N]" was an image anchor or literal prose, and the
+  // adopter would have to guess either way - send the anchor with no image, or
+  // refuse a legitimate send.
+  function stagedMarkerNumbers(): number[] {
+    return operations.items.map((item) => item.marker);
+  }
   function persistDraft(text: string): void {
     if (disposed) return;
-    currentDraftRevisionId = writeComposerDraft(ref, {
-      text,
-      skillNames: skillNamesRef.current,
-      ...(selectionMetaRef.current.commandNames.length ? { commandNames: selectionMetaRef.current.commandNames } : {}),
-      ...(selectionMetaRef.current.mentions ? { mentions: selectionMetaRef.current.mentions } : {}),
-    });
+    currentDraftRevisionId = writeComposerDraft(
+      ref,
+      {
+        text,
+        skillNames: skillNamesRef.current,
+        ...(selectionMetaRef.current.commandNames.length
+          ? { commandNames: selectionMetaRef.current.commandNames }
+          : {}),
+        ...(selectionMetaRef.current.mentions ? { mentions: selectionMetaRef.current.mentions } : {}),
+      },
+      stagedMarkerNumbers(),
+    );
     ownedDraftRevisionRef.current = readDraftRevision(ref);
   }
   function markRestore(): void {
@@ -389,6 +423,46 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     },
   };
   const operations = createAttachmentOperations(editor, attachments);
+
+  // Markers an adoption brought in without bytes, as marker numbers. Seeded
+  // only from a draft this source did not own (the mount read, or bindEditor
+  // replacing a stale draft with a newer one), never from anything typed
+  // here. `refreshUnbackedImageMarkers` keeps the published list honest as the
+  // person edits the text or stages an image over a reused number.
+  let adoptedUnbackedMarkers = new Set<number>();
+
+  function markerNumbersIn(text: string): number[] {
+    return Array.from(text.matchAll(markerPattern()), (match) => Number(match[1]));
+  }
+
+  function refreshUnbackedImageMarkers(): void {
+    if (adoptedUnbackedMarkers.size === 0) {
+      if (state.getState().unbackedImageMarkers.length > 0) state.setState({ unbackedImageMarkers: [] });
+      return;
+    }
+    const backed = new Set(operations.items.map((item) => item.marker));
+    const present = new Set(markerNumbersIn(textRef.current));
+    const next = [...adoptedUnbackedMarkers]
+      .filter((marker) => present.has(marker) && !backed.has(marker))
+      .sort((left, right) => left - right);
+    const current = state.getState().unbackedImageMarkers;
+    if (next.length === current.length && next.every((marker, index) => marker === current[index])) return;
+    state.setState({ unbackedImageMarkers: next });
+  }
+
+  /** Adopt the markers a persisted record says had bytes behind them. */
+  function adoptUnbackedImageMarkers(recorded: readonly number[]): void {
+    const owned = new Set(operations.items.map((item) => item.marker));
+    adoptedUnbackedMarkers = new Set(recorded.filter((marker) => !owned.has(marker)));
+    refreshUnbackedImageMarkers();
+  }
+
+  // The mount read is an adoption too: this source starts with an empty
+  // attachment store, so a draft already on disk was written by someone
+  // else's composer (or by this one before a reload, which lost its bytes the
+  // same way). Only the markers its record names as having had image bytes
+  // count - a marker the record does not name was literal prose.
+  adoptUnbackedImageMarkers(readComposerDraftImageMarkers(ref));
 
   function queueRecoveryPersistence(
     clientMutationId: string,
@@ -847,6 +921,9 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   const unsubscribeAttachments = attachments.subscribe(() => {
     if (operations.items.length > 0) cancelCleanupRetry();
     persistDetachedRecovery();
+    // A settled item can back a marker number this source adopted, and a
+    // removal can take that backing away again.
+    refreshUnbackedImageMarkers();
   });
   const unsubscribeDraft = state.subscribe(persistDetachedRecovery);
 
@@ -888,6 +965,13 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
         updateSelectionMeta(draft);
         currentDraftRevisionId = draft.revisionId;
         ownedDraftRevisionRef.current = readDraftRevision(ref);
+        // This is the adoption the invariant names: another reader's draft
+        // (or this one before a reload) carried the marker anchors, and this
+        // source's attachment store starts empty, so the bytes those anchors
+        // stood for are gone. Only the anchors the record itself listed as
+        // having had bytes are unbacked - anything else spelled "[image N]" in
+        // the text is prose the person typed, and it sends as text.
+        adoptUnbackedImageMarkers(readComposerDraftImageMarkers(ref));
       }
       markRestore();
       boundEditor = nextEditor;

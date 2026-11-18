@@ -242,8 +242,14 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
         operationTokens.set(item, token);
         return item;
       });
-      editor.write(text, start);
+      // Bytes first, then the text that names them (issue #4826). The editor
+      // write is the commit point: a source persists its draft on that call,
+      // recording exactly the markers its attachment store holds at that
+      // instant. Writing the marker first would persist an anchor the record
+      // could not attribute to an image, and an adopting reader would then
+      // send it as literal text with no image behind it.
       setItems((prev) => [...prev, ...newItems]);
+      editor.write(text, start);
 
       for (const { file, token } of accepted) {
         reencodeToPng(file)
@@ -294,8 +300,10 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
     if (removed) removedWhilePendingRef.current.add(operationToken(removed));
     const current = editor.read();
     const stripped = stripMarker(current.text, current.cursor, marker);
-    editor.write(stripped.value, stripped.cursor ?? current.cursor);
+    // Same ordering as ingestFiles, for the same reason: the persisted record
+    // this write produces must not cite bytes this source just dropped.
     setItems((prev) => prev.filter((item) => item.marker !== marker));
+    editor.write(stripped.value, stripped.cursor ?? current.cursor);
   };
 
   const clearSubmitted = (submittedMarkers: Set<number>) => {
