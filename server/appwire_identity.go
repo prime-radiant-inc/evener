@@ -31,6 +31,7 @@ type PreparedAppIdentity struct {
 	transcriptPath string
 	recordedLength int64
 	bootGeneration string
+	modelControl   *appwire.ModelControlSnapshot
 }
 
 // WithBootGeneration returns the identity served at bootGeneration, the
@@ -49,6 +50,16 @@ func (p PreparedAppIdentity) WithBootGeneration(bootGeneration string) PreparedA
 // the file up to its first hooked entry.
 func (p PreparedAppIdentity) WithRecordedLength(length int64) PreparedAppIdentity {
 	p.recordedLength = length
+	return p
+}
+
+// WithModelControlSnapshot returns the identity whose replacement session
+// reported snapshot, published in the same projection commit as the identity
+// so the two can never be observed apart. The caller samples it BEFORE
+// ReplaceAppIdentity: a source call can take the session's own mutex, and the
+// commit holds the projection gate.
+func (p PreparedAppIdentity) WithModelControlSnapshot(snapshot appwire.ModelControlSnapshot) PreparedAppIdentity {
+	p.modelControl = &snapshot
 	return p
 }
 
@@ -131,6 +142,12 @@ func PrepareAppIdentityForRef(sourceID, threadID, ref, transcriptPath string) (P
 // same ref, a resync carrying the new history's epoch tells subscribers to
 // replace what they hold; the new history starts one epoch past the old one so
 // the ref's epochs only increase.
+//
+// The replacement's model-control facet, when the caller supplied one with
+// WithModelControlSnapshot, is installed in this same commit: the resync above
+// is what tells a client to read, so an identity published without it answers
+// that read with no model control at all. Every other facet is left to the
+// caller's post-commit RefreshThreadEnvelope.
 func (s *Server) ReplaceAppIdentity(prepared PreparedAppIdentity, activate func()) {
 	var detached []*threadHistory
 	s.appServer.CommitProjection(func() []appserver.SequencedNotification {
@@ -193,6 +210,24 @@ func (s *Server) ReplaceAppIdentity(prepared PreparedAppIdentity, activate func(
 		// being forgotten. The caller re-seeds with RefreshThreadEnvelope once
 		// the replacement session is the live one.
 		s.appEnvelope = threadEnvelope{}
+		// Model control is the exception to that re-seed, because a client can
+		// complete its resync read between this commit and the caller's
+		// RefreshThreadEnvelope: it would see the replacement with no
+		// modelControlVersion, reduce it to `unsupported`, and leave the picker
+		// disabled on a healthy session until a later refresh or reconnect. The
+		// caller sampled the replacement's facet BEFORE this commit -- a sample
+		// can take the session's own mutex, and this commit holds the projection
+		// gate -- so installing it here costs no I/O under that gate. Every other
+		// facet stays with the post-commit seed.
+		//
+		// A snapshot that does not speak for the identity being installed is
+		// dropped rather than published: a retired session's authority would
+		// advertise model control the replacement cannot answer for, which is
+		// worse than advertising none.
+		if control := prepared.modelControl; control != nil &&
+			control.Authority.InstanceID == prepared.threadID && control.Authority.BootGeneration == prepared.bootGeneration {
+			s.appEnvelope.assign(facetModelControl, threadEnvelope{ModelControl: control}, false, false, false)
+		}
 		s.appActivity.restart()
 		s.status.SessionID = prepared.threadID
 		s.mu.Unlock()

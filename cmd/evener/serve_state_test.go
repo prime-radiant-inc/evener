@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -763,6 +764,10 @@ type clearIdentityServer struct {
 	// installs for each session it bridges.
 	subagentTally         func() (appwire.SubagentTally, bool)
 	subagentTallyInstalls int
+	// afterReplace runs once ReplaceAppIdentity has returned: the identity and
+	// its resync are published, and the caller's envelope re-seed has not run
+	// yet. That is the window a second client's resync read lands in.
+	afterReplace func()
 }
 
 func (s *clearIdentityServer) ReplaceAppIdentity(prepared server.PreparedAppIdentity, activate func()) {
@@ -775,6 +780,9 @@ func (s *clearIdentityServer) ReplaceAppIdentity(prepared server.PreparedAppIden
 		}
 	}
 	s.Server.ReplaceAppIdentity(prepared, activate)
+	if s.afterReplace != nil {
+		s.afterReplace()
+	}
 }
 
 func (s *clearIdentityServer) SetClearFunc(fn func(context.Context, appwire.ThreadClearParams) error) {
@@ -1334,13 +1342,9 @@ func TestClearSeedsTheReplacementEnvelopeBeforeItsBridgeRuns(t *testing.T) {
 }
 
 // TestStartupSeedsTheEnvelopeBeforeTheBridgeRuns is the same pin for the other
-// seed. The daemon installs its identity before any event has been drained, so
-// without an explicit seed the first client to attach -- which is what opening a
-// session URL does -- reads a thread with no diagnostics, no reasoning settings
-// and no title, for a session that has all three.
-//
-// Bridging is suppressed entirely, so SESSION_START can never arrive and the
-// seed is the only thing that can populate the envelope.
+// seed: the daemon installs its identity before any event has been drained, so
+// without an explicit seed the first client to attach reads a thread with no
+// diagnostics, no reasoning settings and no title.
 func TestStartupSeedsTheEnvelopeBeforeTheBridgeRuns(t *testing.T) {
 	deps, state, args := newClearServeDeps(t)
 	deps.bridge = func(_ serveServer, _ *agent.Session, _ func(events.SessionEvent), onDrained func()) {
@@ -1376,5 +1380,62 @@ func TestStartupSeedsTheEnvelopeBeforeTheBridgeRuns(t *testing.T) {
 	}
 	if !diagnostics {
 		t.Fatal("the first thread/read carries no diagnostics: the daemon installed its identity without seeding the envelope")
+	}
+}
+
+// TestClearPublishesTheReplacementModelControlWithItsIdentity is the model
+// control exception to that post-commit seed.
+//
+// The identity commit records the resync, and the envelope re-seed runs after
+// it. A second client whose resync read completes in between used to see the
+// replacement instance with no modelControlVersion, reduce the read to
+// `unsupported`, and leave the picker disabled on a healthy session until some
+// later refresh or reconnect -- the seed does not trigger another read. The
+// replacement's model-control facet is therefore sampled before the swap and
+// installed in the identity's own commit.
+//
+// The read below happens exactly in that window, from the replacement's own
+// clear attempt, before RefreshThreadEnvelope can run.
+func TestClearPublishesTheReplacementModelControlWithItsIdentity(t *testing.T) {
+	deps, state, args := newClearServeDeps(t)
+	var during appwire.Thread
+	var duringErr error
+	inner := deps.newServer
+	deps.newServer = func(cfg server.ServerConfig) serveServer {
+		srv := inner(cfg).(*clearIdentityServer)
+		srv.afterReplace = func() {
+			conn := srv.AppServer().NewConnection("clear-model-control")
+			conn.HandleMessage(context.Background(), appwire.RequestMessage(
+				appwire.NewIntID(1), appwire.MethodInitialize,
+				appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+			resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(
+				appwire.NewIntID(2), appwire.MethodThreadRead,
+				appwire.ThreadReadParams{Ref: "local:" + srv.Server.GetStatus().SessionID}))
+			read, ok := resp.Response.Result.(appwire.ThreadReadResponse)
+			if !ok {
+				duringErr = fmt.Errorf("thread/read result = %T", resp.Response.Result)
+				return
+			}
+			during = read.Thread
+		}
+		return srv
+	}
+
+	obs := runClearAttempt(t, deps, state, args, func(*clearObservation) {})
+	if obs.clearErr != nil {
+		t.Fatalf("clear: %v", obs.clearErr)
+	}
+	if duringErr != nil {
+		t.Fatal(duringErr)
+	}
+	if during.Evener.InstanceID == "" || during.Evener.InstanceID == obs.oldSessionID {
+		t.Fatalf("instance read in the window = %q, want the replacement (old %q)", during.Evener.InstanceID, obs.oldSessionID)
+	}
+	if during.Evener.Capabilities.ModelControlVersion != appwire.ModelControlVersion1 {
+		t.Fatalf("modelControlVersion in the window = %d, want 1: the replacement was published without its model-control facet",
+			during.Evener.Capabilities.ModelControlVersion)
+	}
+	if during.Evener.ModelControl == nil || during.Evener.ModelControl.Authority.InstanceID != during.Evener.InstanceID {
+		t.Fatalf("modelControl in the window = %+v, want the replacement's own authority", during.Evener.ModelControl)
 	}
 }

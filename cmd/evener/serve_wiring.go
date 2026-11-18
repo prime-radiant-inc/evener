@@ -330,7 +330,14 @@ func bindServerCallbacks(ctx context.Context, srv serveServer, deps serveDeps, l
 		// and the thread's history. The stable workspace ref remains subscribed
 		// while a resync tells every client to hydrate the new instance.
 		srv.WireTranscriptHistory(newSess)
-		srv.ReplaceAppIdentity(prepared.WithRecordedLength(newSess.TranscriptRecordedLength()).WithBootGeneration(appwire.BootGeneration(clearGeneration)), func() { live.set(newSess, clearEnv) })
+		// Model control is sampled from the replacement HERE, before the commit,
+		// and installed in the identity's own commit. A source call can take the
+		// session's mutex and the commit holds the projection gate, and a client
+		// can complete its resync read before the post-commit envelope seed runs:
+		// without this it would see the replacement with no modelControlVersion
+		// and disable the picker on a live session.
+		replacementModelControl := newSess.ModelControlSnapshot()
+		srv.ReplaceAppIdentity(prepared.WithRecordedLength(newSess.TranscriptRecordedLength()).WithBootGeneration(appwire.BootGeneration(clearGeneration)).WithModelControlSnapshot(replacementModelControl), func() { live.set(newSess, clearEnv) })
 		srv.SetWorkingDir(clearWd)
 		servedBootGeneration.Store(clearGeneration)
 		// Re-root the retirement controller at the replacement. The lease held

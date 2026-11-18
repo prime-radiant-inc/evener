@@ -25,8 +25,12 @@ import (
 // SessionStart CurrentWork seed, then accept typed event carriers inside
 // CommitProjection. The carrier path never calls the source callback; session
 // and turn checkpoints still sample those fields for old-producer recovery.
-// appThread remains the only reader. Never add a callback fallback
-// beside a direct carrier.
+// ModelControl has one further writer, ReplaceAppIdentity, which installs a
+// snapshot its caller sampled BEFORE that commit: the commit holds the
+// projection gate and a client can read in the window before the post-commit
+// seed, so the replacement's authority has to be published with the identity it
+// belongs to (see appwire_identity.go). appThread remains the only reader.
+// Never add a callback fallback beside a direct carrier.
 //
 // One writing function is not one serialized writer, and the gap is real rather
 // than pedantic. refreshFacets samples outside s.mu, deliberately, and runs

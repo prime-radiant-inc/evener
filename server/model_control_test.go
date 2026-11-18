@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 )
 
@@ -295,5 +296,78 @@ func TestModelControlNotificationMatchesThreadRead(t *testing.T) {
 	}
 	if notified == nil || read.Thread.Evener.ModelControl == nil || !reflect.DeepEqual(*notified, *read.Thread.Evener.ModelControl) {
 		t.Fatalf("notification/read differ: notification=%+v read=%+v", notified, read.Thread.Evener.ModelControl)
+	}
+}
+
+// A clear publishes the replacement identity and its resync in ONE commit, and
+// only re-seeds the envelope from the replacement session afterwards
+// (cmd/evener/serve_wiring.go). A client that finishes its resync read inside
+// that window sees the new instance carrying no modelControlVersion, reduces it
+// to `unsupported`, and leaves the picker disabled on a healthy replacement
+// until some later refresh or reconnect. The replacement's model-control facet
+// is therefore installed in the identity's own commit.
+//
+// The window is modelled exactly: the swap runs, and the read happens BEFORE
+// RefreshThreadEnvelope, which is where a second client's resync read lands.
+func TestReplaceAppIdentityPublishesTheReplacementModelControl(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	installModelControlIdentity(t, srv, "old", "7", "local:workspace")
+	// Every other facet stays populated, so the assertion below also proves the
+	// commit installs model control ALONE and leaves the post-commit seed to do
+	// the rest.
+	source := &stubThreadEnvelopeSource{
+		modelControl: modelControlSnapshot("new", "8", 1, "gpt-new"),
+		queue:        appwire.QueueState{Depth: 3, Revision: 2},
+		meta:         schema.SessionMeta{ID: "new", Name: "the replacement session"},
+	}
+	srv.SetThreadEnvelopeSource(source)
+
+	prepared, err := PrepareAppIdentityForRef("local", "new", "local:workspace", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.ReplaceAppIdentity(prepared.WithBootGeneration("8").WithModelControlSnapshot(source.modelControl), nil)
+
+	read, err := srv.handleAppThreadRead(context.Background(), appwire.ThreadReadParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if read.Thread.Evener.InstanceID != "new" {
+		t.Fatalf("instance = %q, want the replacement", read.Thread.Evener.InstanceID)
+	}
+	if read.Thread.Evener.Capabilities.ModelControlVersion != appwire.ModelControlVersion1 {
+		t.Fatalf("modelControlVersion = %d, want 1: the replacement identity was published without its model-control facet",
+			read.Thread.Evener.Capabilities.ModelControlVersion)
+	}
+	if read.Thread.Evener.ModelControl == nil || !reflect.DeepEqual(*read.Thread.Evener.ModelControl, source.modelControl) {
+		t.Fatalf("modelControl = %+v, want %+v", read.Thread.Evener.ModelControl, source.modelControl)
+	}
+	if read.Thread.Evener.Queue.Depth != 0 || read.Thread.Name != "" {
+		t.Fatalf("identity commit installs other facets: queue=%+v name=%q", read.Thread.Evener.Queue, read.Thread.Name)
+	}
+}
+
+// The commit carries a facet only when it speaks for the identity being
+// installed. A snapshot sampled from the session being retired would advertise
+// an authority the replacement cannot answer for, which is worse than
+// advertising none: the client would hold `ready` and fence its pick against a
+// daemon that no longer exists.
+func TestReplaceAppIdentityDropsAModelControlSnapshotForAnotherAuthority(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	installModelControlIdentity(t, srv, "old", "7", "local:workspace")
+	retired := modelControlSnapshot("old", "7", 2, "gpt-old")
+	prepared, err := PrepareAppIdentityForRef("local", "new", "local:workspace", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.ReplaceAppIdentity(prepared.WithBootGeneration("8").WithModelControlSnapshot(retired), nil)
+
+	read, err := srv.handleAppThreadRead(context.Background(), appwire.ThreadReadParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if read.Thread.Evener.ModelControl != nil || read.Thread.Evener.Capabilities.ModelControlVersion != 0 {
+		t.Fatalf("retired authority published under the replacement: modelControl=%+v version=%d",
+			read.Thread.Evener.ModelControl, read.Thread.Evener.Capabilities.ModelControlVersion)
 	}
 }
