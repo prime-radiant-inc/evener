@@ -13,7 +13,12 @@ import type {
   ThreadClearResponse,
   ThreadReadResponse,
 } from "@evener/appwire-client";
-import { acquireThreadSubscription, type ThreadSubscriptionLease } from "@evener/appwire-client";
+import {
+  acquireThreadSubscription,
+  ErrorTranscriptHistoryFailed,
+  type ThreadSubscriptionLease,
+  WireError,
+} from "@evener/appwire-client";
 import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -21,7 +26,11 @@ import { resetPendingTurnsStoreForTests } from "../panes/session/composer/queue/
 import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { connectReadyFakeClient } from "../testing/connectionTestUtils";
 import { resetConnectionStoreForTests } from "./connection";
-import { productionEntryTranscriptForTests, setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
+import {
+  existingEntryRoute,
+  productionEntryTranscriptForTests,
+  setProductionEntryCacheForTests,
+} from "./entryTranscriptRoutes";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { readResponse } from "./threadHydrationTestUtils";
 import { pendingThreadHydrationUpdatesForTests, resetThreadsStoreForTests, threadsStore } from "./threads";
@@ -1440,5 +1449,153 @@ describe("useThreadsStore.ensureThread", () => {
     expect(threadsStore.getState().threads.get("ref_a")?.delegates?.[0]?.runningJobCount).toBe(2);
 
     threadsStore.getState().releaseThread("ref_a");
+  });
+
+  // M2: a structured read failure is not an exemption from publishing what the
+  // replacement already said. A boot-changing resync clears the retired daemon's
+  // hold and buffers the replacement's delegate updates while its targeted read
+  // runs. When that read answers transcriptHistoryFailed, the failure branch used
+  // to publish the pre-update base model, and hydration cleanup then dropped the
+  // buffered hold - so the watched row omitted the wait for its whole duration,
+  // since an unchanged hold emits no update of its own to restore it.
+  test("a watched read that fails still publishes the replacement's buffered hold", async () => {
+    const fake = connectReadyFakeClient();
+    const ref = "local:watched";
+    const threadId = `thr_${ref}`;
+    const initial = versionedReadResponse(
+      ref,
+      {
+        status: { type: "active" },
+        evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
+      },
+      0,
+    );
+    // The refused read stays open until the test rejects it, so the delegate
+    // frame below is buffered for its replay rather than folded live.
+    const refused: { reject: ((error: Error) => void) | null } = { reject: null };
+    let readCount = 0;
+    fake.on("thread/read", (params) => {
+      readCount += 1;
+      if (readCount === 1) return echoRead(initial, params.requestGeneration);
+      return new Promise<ThreadReadResponse>((_resolve, reject) => {
+        refused.reject = reject;
+      });
+    });
+
+    // A watched-only ref: the delegate card's live view, not an open pane.
+    await threadsStore.getState().watchThread(ref, { includeTurns: true });
+    expect(threadsStore.getState().watchedThreads.has(ref)).toBe(true);
+
+    // Boot 1 publishes the retired daemon's hold: 900 outranks anything the
+    // replacement numbers from its own start, which is why it must not survive.
+    fake.emitNotification({
+      method: "evener/delegate/updated",
+      params: { threadId, ref, delegate: heldDelegateRow() },
+    });
+    await flushUntil(() => threadsStore.getState().watchedThreads.get(ref)?.delegates?.[0]?.holdSequence === 900);
+
+    // Boot 2 takes over. The resync retires boot 1's hold before starting its
+    // read, and the frames arriving while that read is pending are buffered.
+    fake.emitNotification({
+      method: "evener/thread/resync",
+      params: { threadId, ref, bootGeneration: "2", epoch: 2 },
+    });
+    await flushUntil(() => refused.reject !== null);
+    expect(
+      threadsStore.getState().watchedThreads.get(ref)?.delegates?.[0]?.holdSequence,
+      "the replacement must retire the retired daemon's sample before its read settles",
+    ).toBeUndefined();
+
+    // Boot 2 publishes its own live wait while the read is still pending. Its
+    // sequence is lower because it numbers from its own start.
+    fake.emitNotification({
+      method: "evener/delegate/updated",
+      params: {
+        threadId,
+        ref,
+        delegate: { ...heldDelegateRow(), holdSequence: 1, projectionRevision: 4 },
+      },
+    });
+
+    // The read fails structurally. The failure must publish the buffered hold,
+    // not the pre-update base model that predates it.
+    refused.reject?.(
+      new WireError("thread history failed at entry 7", -32603, {
+        evenerErrorInfo: ErrorTranscriptHistoryFailed,
+      }),
+    );
+    await flushUntil(() => threadsStore.getState().watchedThreads.get(ref)?.history?.failed !== undefined);
+    expect(threadsStore.getState().watchedThreads.get(ref)?.delegates?.[0]?.holdSequence).toBe(1);
+    expect(threadsStore.getState().watchedThreads.get(ref)?.delegates?.[0]?.drainHeldByJobs).toBe(true);
+    expect(threadsStore.getState().watchedThreads.get(ref)?.delegates?.[0]?.runningJobCount).toBe(2);
+
+    threadsStore.getState().releaseWatchedThread(ref);
+  });
+
+  // The sibling direction of the M2 finding, on the entry-backed path: the
+  // repository owns recorded ingestion, so a delegate frame during a pending
+  // tracked read is accepted by the repository itself before it reaches this
+  // buffer. A structured failure publishes the repository's own snapshot, not a
+  // base model captured before the frame, so that hold is not discarded. This is
+  // the sweep's third path, asserted rather than assumed.
+  test("a tracked read that fails keeps the hold the entry repository already accepted", async () => {
+    const fake = connectReadyFakeClient();
+    const ref = "ref_a";
+    const initial = versionedReadResponse(
+      ref,
+      {
+        status: { type: "active" },
+        evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
+      },
+      0,
+    );
+    const refused: { reject: ((error: Error) => void) | null } = { reject: null };
+    let readCount = 0;
+    fake.on("thread/read", (params) => {
+      readCount += 1;
+      if (readCount === 1) return echoRead(initial, params.requestGeneration);
+      return new Promise<ThreadReadResponse>((_resolve, reject) => {
+        refused.reject = reject;
+      });
+    });
+    await threadsStore.getState().ensureThread(ref);
+    expect(existingEntryRoute(ref)?.repository).toBeDefined();
+
+    // Boot 1's sample is retired by the hand-off; boot 2 then publishes its own
+    // live wait, which the repository accepts as its own recorded ingestion.
+    fake.emitNotification({
+      method: "evener/delegate/updated",
+      params: { threadId: "thr_ref_a", ref, delegate: heldDelegateRow() },
+    });
+    await flushUntil(() => threadsStore.getState().threads.get(ref)?.delegates?.[0]?.holdSequence === 900);
+
+    fake.emitNotification({
+      method: "evener/thread/resync",
+      params: { threadId: "thr_ref_a", ref, bootGeneration: "2", epoch: 2 },
+    });
+    await flushUntil(() => refused.reject !== null);
+    fake.emitNotification({
+      method: "evener/delegate/updated",
+      params: {
+        threadId: "thr_ref_a",
+        ref,
+        delegate: { ...heldDelegateRow(), holdSequence: 1, projectionRevision: 4 },
+      },
+    });
+    // Non-vacuous: the repository really holds boot 2's live sample right now.
+    await flushUntil(() => existingEntryRoute(ref)?.repository?.getSnapshot()?.delegates?.[0]?.holdSequence === 1);
+
+    refused.reject?.(
+      new WireError("thread history failed at entry 7", -32603, {
+        evenerErrorInfo: ErrorTranscriptHistoryFailed,
+      }),
+    );
+    await flushUntil(() => threadsStore.getState().threads.get(ref)?.history?.failed !== undefined);
+    // The repository owns recorded ingestion, so the failure publishes its own
+    // snapshot, not a base model captured before the frame: the hold survives.
+    expect(existingEntryRoute(ref)?.repository?.getSnapshot()?.delegates?.[0]?.holdSequence).toBe(1);
+    expect(threadsStore.getState().threads.get(ref)?.delegates?.[0]?.holdSequence).toBe(1);
+
+    threadsStore.getState().releaseThread(ref);
   });
 });

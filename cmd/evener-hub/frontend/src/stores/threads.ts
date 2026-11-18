@@ -4428,7 +4428,19 @@ async function readThreadHydration(
     // this hydration's own base model (superseded generations are ignored by
     // applyHistoryReadFailure itself).
     if (isTranscriptHistoryFailedError(err) && pending.baseModel) {
-      const failedModel = applyHistoryReadFailure(pending.baseModel, errorText(err), pending.requestGeneration ?? 0);
+      // Fold the buffered updates onto the base BEFORE recording the failure.
+      // A boot-changing resync clears the old hold and buffers the replacement
+      // daemon's delegate updates; if the read then fails, publishing the raw
+      // base model discards a hold the replacement published while the read was
+      // pending, and the watched row omits that wait for its whole duration
+      // because an unchanged hold emits no further update.
+      //
+      // The failure is applied last, and to this hydration's own base model, so
+      // superseded generations are still ignored by applyHistoryReadFailure,
+      // the diagnostic still lands, and the hydration ownership checks above
+      // still decide whether anything is published at all.
+      const buffered = replayHydrationNotifications(pending.baseModel, pending.notifications).model;
+      const failedModel = applyHistoryReadFailure(buffered, errorText(err), pending.requestGeneration ?? 0);
       const entry = tracked ? existingEntryRoute(ref) : undefined;
       if (!tracked) {
         putWatchedThreadModel(ref, failedModel);

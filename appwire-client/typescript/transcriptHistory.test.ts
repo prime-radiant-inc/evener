@@ -19,6 +19,7 @@ import {
   applyReadResponse,
   frontierFromCursor,
   hydrateThread,
+  invalidateHistory,
   issueLatestWindowRead,
   mergeOlderItemPage,
   mergeSavedViewPage,
@@ -26,8 +27,15 @@ import {
   mergeTranscriptTurnVersioned,
   olderFrontierOf,
 } from "./transcriptHistory";
-import { markItemTextOmitted } from "./transcriptItems";
-import type { OverlayItem, ThreadHistoryTurnsListResponse, ThreadReadResponse, Turn } from "./types.gen";
+import { handOffReplacedSource, markItemTextOmitted } from "./transcriptItems";
+import type {
+  AnyNotification,
+  EvenerDelegateInfo,
+  OverlayItem,
+  ThreadHistoryTurnsListResponse,
+  ThreadReadResponse,
+  Turn,
+} from "./types.gen";
 
 // A v6 read response for the standard test thread. `olderCursor` absent is a
 // source read that named no older history; a value is the opaque continuation.
@@ -1589,4 +1597,88 @@ test("a read carries scratchDir into the model and a withdrawn root clears it", 
     2000,
   );
   expect(withdrawn.scratchDir).toBeUndefined();
+});
+
+function heldDelegate(holdSequence: number, projectionRevision: number): EvenerDelegateInfo {
+  return {
+    runGeneration: 1,
+    delegateId: "dlg_held",
+    ownerSessionId: "sess_owner",
+    rootSessionId: "sess_root",
+    childSessionId: "sess_child",
+    transcriptRef: "local:01dlg_held",
+    type: "delegate",
+    lifecycle: "stable",
+    phase: "working",
+    status: "running",
+    outcome: "pending",
+    terminal: false,
+    resumable: true,
+    needsAttention: false,
+    projectionRevision,
+    drainHeldByJobs: true,
+    holdSequence,
+    runningJobCount: 2,
+    oldestRunningJobStartedAt: "2026-01-03T00:00:00Z",
+  };
+}
+
+// A descendant served by its parent daemon at "5@root" switches to its own
+// daemon at "1". The browser records "1" as the hold owner at the hand-off,
+// before the targeted read settles. A reconnect inside that window invalidates
+// history with NO boot token, and the invalidation's fallback identity (the
+// last read's "5@root", right for deciding history validity) is not evidence
+// naming a replacement. Writing it back as the owner makes the next resync from
+// "1" compare against "5@root", read as another replacement, and erase the hold
+// daemon 1 published — which emits no update of its own to restore it.
+test("a bootless reconnect keeps the hold owner a replacement recorded", () => {
+  const base = hydrateThread(
+    { thread: testThread(), bootGeneration: "5@root", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 } },
+    "ref_t",
+    1000,
+  );
+  // The retired daemon's sample: 900 outranks any sequence daemon 1 reaches
+  // first, which is why the hand-off has to drop it.
+  let model = applyNotification(
+    base,
+    { method: "evener/delegate/updated", params: { ref: "ref_t", delegate: heldDelegate(900, 3) } } as AnyNotification,
+    2000,
+  );
+  expect(model.delegates?.[0]?.holdSequence).toBe(900);
+
+  // The browser's hand-off when "1" takes over: retire 5@root's samples and
+  // record "1" as the owner, with no invalidation fold of its own.
+  const handed = handOffReplacedSource(model, "1");
+  if (!handed) throw new Error("the hand-off retired nothing");
+  model = handed;
+  expect(model.delegates?.[0]?.holdSequence).toBeUndefined();
+  expect(model.history?.holdOwner).toBe("1");
+
+  // Daemon 1 publishes its own live hold while no read has succeeded.
+  model = applyNotification(
+    model,
+    { method: "evener/delegate/updated", params: { ref: "ref_t", delegate: heldDelegate(1, 4) } } as AnyNotification,
+    2500,
+  );
+  expect(model.delegates?.[0]?.holdSequence).toBe(1);
+
+  // A reconnect inside that window. No boot token is named, so this is not a
+  // source replacement and must not become the recorded owner.
+  model = invalidateHistory(model);
+
+  // Daemon 1's own resync, a newer epoch of the same source: its hold stands.
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/resync",
+      params: { threadId: base.threadId, ref: "ref_t", bootGeneration: "1", epoch: 3 },
+    } as AnyNotification,
+    3000,
+  );
+  expect(model.delegates?.[0]?.holdSequence).toBe(1);
+  expect(model.delegates?.[0]?.drainHeldByJobs).toBe(true);
+  expect(model.delegates?.[0]?.runningJobCount).toBe(2);
+  // The mechanism, pinned after the harm it causes: the reconnect never became
+  // the recorded owner, so daemon 1's resync compares against its own boot.
+  expect(model.history?.holdOwner).toBe("1");
 });

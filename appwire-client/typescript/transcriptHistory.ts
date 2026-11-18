@@ -848,12 +848,23 @@ export function invalidated(history: HistoryState, signal: HistorySignal = {}): 
   // the hold samples. Recording it at each fold was tried twice and missed a
   // site both times; a fourth caller must not be able to miss it.
   //
-  // Only a replaced source takes ownership. A same-boot or bootless
-  // invalidation leaves the recorded owner alone: its daemon's delegate
-  // controller is still sampling, and an unchanged hold emits no update of its
-  // own to restore one dropped here.
+  // Only a replaced source takes ownership, and only evidence that names one
+  // may record it: the signal's OWN boot token. Never the fallback above.
+  //
+  // `bootGeneration` falls back to the awaited identity when a caller supplies
+  // no token, which is correct for invalidating history and wrong for
+  // recording an owner. A descendant that switches from its parent daemon at
+  // "5@root" to its own at "1" records "1"; a reconnect in that window calls
+  // invalidateHistory with no token, the fallback resolves to "5@root", and
+  // writing that back as the owner lets the next resync from "1" erase the
+  // hold that daemon still owns.
+  //
+  // A same-boot or bootless invalidation therefore leaves the recorded owner
+  // alone: that daemon's delegate controller is still sampling, and an
+  // unchanged hold emits no update of its own to restore one dropped here.
+  const explicit = signal.bootGeneration || undefined;
   const owner = history.holdOwner ?? history.awaited?.bootGeneration ?? history.bootGeneration;
-  const record = compareBootGeneration(owner, bootGeneration) === "replace" ? bootGeneration : undefined;
+  const record = explicit !== undefined && compareBootGeneration(owner, explicit) === "replace" ? explicit : undefined;
   return {
     ...history,
     invalidatedAtGeneration: history.issuedGeneration,
