@@ -2,14 +2,13 @@ package agent
 
 // Resource regression and benchmark for the per-round request-history snapshot.
 //
-// A preparation allocates one snapshot of s.history and expands that snapshot
-// unlocked. It must not also clone the published history into a copy nothing
-// reads: the strategy fold already re-snapshots at the top of every attempt, and
-// the final HistoryExpand snapshot covers the no-strategy path. This file pins
-// the request's contents and ordering across large text-only histories and holds
-// the per-preparation allocation below a literal ceiling placed between a
-// copy-free preparation and one that also makes that dead copy, so a publish
-// pass that hands its caller the copy fails here.
+// A preparation expands s.history from locked snapshots taken while preparing
+// it: one for each fold attempt, and the final HistoryExpand snapshot both paths
+// take before expansion. It must not also clone the published history into a
+// copy nothing reads. This file pins the request's contents and ordering across
+// large text-only histories and holds the per-preparation allocation below a
+// literal ceiling placed between a copy-free preparation and one that also makes
+// that dead copy, so a publish pass that hands its caller the copy fails here.
 //
 // The fixture runs the real Session and the real preparation path against the
 // scripted adapter already used by BenchmarkNewSession. No provider call is
@@ -63,11 +62,11 @@ var requestHistoryFixtureTurns = []int{256, requestHistoryBudgetTurns}
 // hold the same value today. They stay separate so a change that moves one lane
 // alone cannot silently move the other.
 //
-// The race margins are smaller than the copy's own size on purpose: the gap
-// between a copy-free preparation and its copy-bearing partner is 843,776
-// bytes (the copy itself), so no ceiling can hold half a copy of clearance on
-// both sides. The regression test below therefore requires a quarter copy on
-// each side, the most either lane can offer while still catching the copy.
+// The margins are a fraction of the copy rather than the copy's own size
+// because the gap between a copy-free preparation and its copy-bearing partner
+// is 843,776 bytes (the copy itself): a ceiling at the midpoint of the two
+// readings holds half a copy on each side, and the regression test below
+// requires a quarter copy on each side as its minimum.
 //
 // Both literals are deliberate: do not derive them from the implementation
 // under test.
@@ -317,9 +316,9 @@ func measureRequestHistoryBytesWithDeadCopy(t *testing.T, s *Session, copyBearin
 // copy-free and a copy-bearing measurement of one preparation, with a quarter of
 // the dead copy as margin on each side: the ceiling clears a healthy preparation
 // and catches one that also makes the copy, and each gap is a real share of the
-// copy rather than a few bytes of noise. One lane's two readings sit exactly one
-// copy apart, so a quarter copy is the most clearance a ceiling can hold on both
-// sides while still catching the copy.
+// copy rather than a few bytes of noise. A quarter copy is the minimum margin
+// this requires, not the most a ceiling can hold: a lane's two readings sit one
+// copy apart, so a ceiling at their midpoint leaves half a copy on each side.
 func assertRequestHistoryCeilingHasTeeth(t *testing.T, free, bearing, ceiling, deadCopyBytes int64) {
 	t.Helper()
 	if free >= ceiling {
@@ -362,7 +361,7 @@ func TestPrepareModelRequestHistoryAllocationBudget(t *testing.T) {
 				return
 			}
 			bytesPerPreparation := measureRequestHistoryBytesPerPreparation(t, s)
-			removable := int64(requestHistoryBudgetTurns) * int64(unsafe.Sizeof(schema.Turn{}))
+			removable := requestHistoryDeadCopyBytes()
 			t.Logf("attributable bytes per preparation %d, removable dead copy %d, budget %d", bytesPerPreparation, removable, maxRequestHistoryBytesPerPreparation())
 			if bytesPerPreparation >= maxRequestHistoryBytesPerPreparation() {
 				t.Fatalf("bytes per preparation %d, budget %d", bytesPerPreparation, maxRequestHistoryBytesPerPreparation())
@@ -377,9 +376,10 @@ func TestPrepareModelRequestHistoryAllocationBudget(t *testing.T) {
 // lane's ceiling, with real margin, while a copy-free preparation stays
 // under it. The budget test itself can only fail when the copy is
 // reintroduced into production code; this test fails if the ceiling is ever
-// moved to where the copy would slip under it. It measures both shapes back
-// to back on one fixture, so the margin is a ratio of two readings from the
-// same process rather than a comparison against a number in a comment.
+// moved to where the copy would slip under it, or down past a healthy
+// preparation. It measures both shapes back to back on one fixture, so the
+// margin is a ratio of two readings from the same process rather than a
+// comparison against a number in a comment.
 // Serial: it measures process-global TotalAlloc, like its siblings.
 func TestPrepareModelRequestHistoryCeilingCatchesDeadCopy(t *testing.T) {
 	s := newRequestHistoryPreparationSession(t, requestHistoryBudgetTurns, requestHistoryNoFoldLane)
