@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/clock"
@@ -397,6 +398,130 @@ func TestDelegateResourceSupervision_EarlyCommittedSendStartRefusesASecondTurn(t
 	waitForStableSupervisionRun(t, root, fixture.childID)
 	if got := supervisionRequestCount(fixture.adapter); got != 2 {
 		t.Fatalf("provider requests = %d, want warm plus the one send turn", got)
+	}
+}
+
+// TestDelegateResourceSupervision_StableChildWatchDiagnosticRunsLeased pins
+// LIFE-01 (#2340): a watch persistence/drop diagnostic delivered to an idle
+// stable delegate child with no durable attention pending must never start an
+// UNLEASED model turn.
+//
+// The diagnostic is the reachable case. A stable child's watch notices used to
+// enter its ordinary notification queue, and the wake edge then fell through to
+// driveSubagentNotificationTurn, which launches a model-bearing
+// EntryNotification turn with no lease in context. Model and tool admission only
+// gate WHEN a lease is present, so the turn ran as if the child were an ordinary
+// session: the controller reported the child idle while it called its provider,
+// and generation accounting, stop admission and result settlement did not cover
+// it.
+//
+// The oracle is accounting, never copy. A leased drive commits an attention
+// generation before its run starts and settles that generation at the end, so a
+// model turn that really was governed by a lease leaves a NEWER settled
+// generation behind. The warm send settles generation 1; the diagnostic must
+// settle generation 2. On the unleased fallback the provider request happens but
+// no generation is committed or settled at all.
+func TestDelegateResourceSupervision_StableChildWatchDiagnosticRunsLeased(t *testing.T) {
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
+		// The leased attention run that carries the diagnostic. It takes no
+		// action, so the generation settles private/no-action.
+		func(llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant("diagnostic requires no action")}
+		},
+	})
+	root := restoreSupervisionRoot(t, fixture, nil)
+	sub := warmStableSupervisionDelegate(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	// Non-vacuity: the warm send ran one governed turn and settled generation 1,
+	// so a later generation 2 is evidence of a SECOND governed turn rather than a
+	// number the fixture produced.
+	warmRequests := supervisionRequestCount(fixture.adapter)
+	if warmRequests != 1 {
+		t.Fatalf("provider requests after the warm send = %d, want 1", warmRequests)
+	}
+	warmFinished := latestDelegateControllerRunFinished(t, root.delegateController, fixture.delegateID)
+	if warmFinished.Generation != 1 {
+		t.Fatalf("warm send settled generation %d, want 1", warmFinished.Generation)
+	}
+
+	// A real send-rail diagnostic: a watch send that failed, named by its watch,
+	// arriving on the child's OWN job manager exactly as a real failed watch
+	// delivery does. Nothing durable is pending for the child at this point.
+	jm := sub.sess.jobManager
+	if jm == nil {
+		t.Fatal("the stable child has no job manager to deliver a watch diagnostic")
+	}
+	jm.enqueueWatchNotifications([]jobNotification{
+		watchSendDiagnosticNotification("watch:life-01", "job:finished", "watch send failed: delivery_id=life-01"),
+	})
+
+	// First: the diagnostic reaches the provider at all. This is the turn the
+	// audit says runs unleased, so its arrival is the premise, not the finding.
+	testwait.Until(t, "the watch diagnostic reached the provider", func() bool {
+		return supervisionRequestCount(fixture.adapter) > warmRequests
+	})
+	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	// The finding: that same turn must have been governed by a committed
+	// generation. On the unleased fallback the request above happens while the
+	// settled generation stays at the warm send's, which is precisely a model turn
+	// the controller never accounted for.
+	finished := latestDelegateControllerRunFinished(t, root.delegateController, fixture.delegateID)
+	if finished.Generation != warmFinished.Generation+1 {
+		t.Fatalf("provider requests rose to %d but the settled generation stayed at %d (want %d): the diagnostic ran an UNLEASED model turn",
+			supervisionRequestCount(fixture.adapter), finished.Generation, warmFinished.Generation+1)
+	}
+	// Nothing may be left queued on the child's ordinary rail. A queued notice is
+	// what the unleased turn existed to drain; the diagnostic became attention and
+	// the leased run consumed it.
+	if pending := sub.sess.peekNotifications(); pending != 0 {
+		t.Fatalf("child notifications pending = %d, want none", pending)
+	}
+}
+
+// TestDelegateResourceSupervision_StableChildMustHaveALeaseForModelTurns pins
+// the admission half of LIFE-01 (#2340): a stable delegate child REFUSES a model
+// call and a tool call that carry no lease, instead of presenting them as an
+// ordinary session's. This is what makes the ingress fix enforceable rather than
+// incidental: if a future path demotes a stable notice back to the plain queue,
+// the turn it launches fails loudly at admission instead of running unaccounted.
+//
+// The refusals are asserted by identity (errors.Is against the sentinel), never
+// by message text. The root session is asserted NOT to refuse: it is not a
+// delegate, has no generation to hold, and must keep the ordinary path, so this
+// change cannot widen into a product policy change for non-delegate sessions.
+func TestDelegateResourceSupervision_StableChildMustHaveALeaseForModelTurns(t *testing.T) {
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
+	})
+	root := restoreSupervisionRoot(t, fixture, nil)
+	sub := warmStableSupervisionDelegate(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	// Model admission: the stable child refuses an unleased request build.
+	_, _, _, _, _, _, err := sub.sess.prepareModelRequestWithError(context.Background(), 0, new(events.RoundTimings))
+	if !errors.Is(err, errDelegateStableModelTurnUnleased) {
+		t.Fatalf("unleased model request on the stable child = %v, want the unleased-turn refusal", err)
+	}
+	// Tool admission: same rule. A refused tool is reported as a skipped, errored
+	// result with no execution, so the assertion is on that behavior rather than on
+	// the refusal's copy (error-text assertions are not allowed).
+	res := sub.sess.execTool(context.Background(), llm.ToolCallData{Name: "communicate", ID: "call:leak", Arguments: json.RawMessage(`{"message":"x"}`)}, "")
+	if !res.IsError || res.CallID != "call:leak" {
+		t.Fatalf("unleased tool call on the stable child = %+v, want a skipped errored result for its call id", res)
+	}
+
+	// The non-delegate carve-out: a root session is not governed by a generation,
+	// so its unleased model request must still build rather than refuse.
+	if root.owningDelegateID != "" {
+		t.Fatalf("the root session owns delegate %q, want no owning delegate", root.owningDelegateID)
+	}
+	if _, _, _, _, _, _, err := root.prepareModelRequestWithError(context.Background(), 0, new(events.RoundTimings)); errors.Is(err, errDelegateStableModelTurnUnleased) {
+		t.Fatal("a root session's model request was refused as an unleased stable delegate turn")
 	}
 }
 

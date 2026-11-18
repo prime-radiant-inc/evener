@@ -82,6 +82,12 @@ func (s *Session) driveChildrenWithUndeliveredAttention() {
 			continue
 		}
 		if child.peekNotifications() > 0 || child.jobManager.hasPendingWatchSends() {
+			if stableDelegateChild(child) {
+				// LIFE-01 (#2340): same rule as the wake edge. A stable child's
+				// notices are durable attention, so there is no unleased turn to
+				// launch here.
+				continue
+			}
 			if s.driveSubagentNotificationTurn(sub) {
 				// Settle the parent's forwarded drive signal on a successful
 				// handoff so the same stale pending does not re-drive forever; the
@@ -134,6 +140,14 @@ func (s *Session) redriveLiveChild(childSessionID string) {
 	}
 }
 
+// stableDelegateChild reports whether sess belongs to a STABLE delegate child: a
+// delegate whose runs are exact generations under a controller lease. Ephemeral
+// subagents carry no owning delegate id (subagents.go sets it empty), so they are
+// not covered and keep the notification-turn fallback they legitimately use.
+func stableDelegateChild(sess *Session) bool {
+	return sess != nil && sess.owningDelegateID != "" && sess.delegateController != nil
+}
+
 // driveChildIfNotStopGated is the wake-edge drive: it skips a stop-gated child so
 // a deliberately stopped child is not resurrected by its own pre-stop notify
 // (spec §3 stop-gating), and a child the one-shot drain has abandoned for the
@@ -147,6 +161,16 @@ func (s *Session) driveChildIfNotStopGated(sub *subagent) {
 		return
 	}
 	if s.driveDelegateAttention(sub) {
+		return
+	}
+	// LIFE-01 (#2340): a stable delegate child has no model-bearing fallback.
+	// driveDelegateAttention above is its ONLY drive, because every model turn it
+	// runs must be an exact generation held under a lease. The notification drive
+	// below launches an UNLEASED EntryNotification turn, which the controller
+	// would report as an idle child making a provider call. A stable child's
+	// notices therefore arrive as durable attention (see
+	// persistStableWatchPendings), and anything left here is not model work.
+	if stableDelegateChild(sub.sess) {
 		return
 	}
 	if s.driveSubagentNotificationTurn(sub) {

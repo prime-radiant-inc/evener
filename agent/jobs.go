@@ -1909,6 +1909,9 @@ func (jm *jobManager) enqueueNotifications(notifs []jobNotification) bool {
 	if len(notifs) == 0 || jm.enqueue == nil {
 		return false
 	}
+	if queued := jm.persistStableWatchPendings(notifs); queued {
+		return true
+	}
 	release := func() {}
 	if jm.holdWake != nil {
 		release = jm.holdWake()
@@ -1916,6 +1919,42 @@ func (jm *jobManager) enqueueNotifications(notifs []jobNotification) bool {
 	defer release()
 	for _, n := range notifs {
 		jm.enqueue(n)
+	}
+	return true
+}
+
+// persistStableWatchPendings is enqueueNotifications' stable-delegate branch: a
+// watch notice bound for a stable child becomes durable attention instead of a
+// queued notification, so the child can only run it inside a leased generation
+// (LIFE-01, #2340). It reports whether it handled the whole group. A manager
+// with no stable owner, or a group carrying anything other than watch notices,
+// is left to the ordinary rail unchanged.
+//
+// A failure to persist is surfaced as an operator diagnostic and the notice is
+// dropped rather than demoted to the queue: the queue is the unleased path this
+// branch exists to close, and a duplicate notice is not worth reopening it.
+func (jm *jobManager) persistStableWatchPendings(notifs []jobNotification) bool {
+	if jm.stableOwner == nil {
+		return false
+	}
+	for _, n := range notifs {
+		if !n.isWatch() {
+			return false
+		}
+	}
+	var failures error
+	for _, n := range notifs {
+		_, owner, err := jm.persistStableWatchAttention(n)
+		if owner == nil {
+			return false
+		}
+		if err != nil {
+			failures = errors.Join(failures, err)
+			continue
+		}
+	}
+	if failures != nil {
+		jm.stableOwner.emit(warningDataFromError("persist stable watch attention", failures))
 	}
 	return true
 }

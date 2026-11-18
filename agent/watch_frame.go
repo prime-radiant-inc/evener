@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"strconv"
 	"strings"
 
@@ -322,6 +324,63 @@ func limitWatchText(s string, maxChars int) string {
 
 func (jm *jobManager) enqueueWatchNotifications(notifications []jobNotification) {
 	_ = jm.enqueueNotifications(jm.routeWatchNotifications(notifications))
+}
+
+// persistStableWatchAttention turns a watch notice bound for a stable delegate
+// child into durable stable attention (LIFE-01, #2340).
+//
+// A stable child is a delegate session, so every model turn it runs must be an
+// exact generation under a lease (docs/subagent-management/11-delegate-resource-model.md).
+// A watch notice pushed onto its ordinary notification queue instead wakes the
+// child through the notification drive, which renders a model-bearing
+// EntryNotification turn WITHOUT reserving or committing a generation: the
+// controller reports the child idle while the child calls its provider, so
+// normal generation accounting, stop admission, and result settlement do not
+// cover that turn. Diagnostics are the reachable case, because a failed watch
+// send is exactly when no other attention is pending.
+//
+// Stability comes from the notice's identity, so a replayed enqueue refolds
+// into the same attention item instead of appending a second one. Watch
+// diagnostics carry no delivery lineage of their own (OriginWatchID is display
+// only), so their identity is the watch, the job, and the reason: a repeat of
+// the same failure is one item, and a distinct failure is a distinct item.
+//
+// The notice never enters the plain queue. On success a lease-governed
+// attention run delivers it; on failure the error is returned so the caller can
+// surface it as an operator diagnostic rather than silently starting an
+// unleased turn.
+func (jm *jobManager) persistStableWatchAttention(n jobNotification) (string, *Session, error) {
+	jm.mu.Lock()
+	owner := jm.stableOwner
+	jm.mu.Unlock()
+	if owner == nil || owner.owningDelegateID == "" {
+		return "", nil, nil
+	}
+	attentionID := stableWatchDiagnosticAttentionID(n)
+	content := owner.formatJobNotificationReminder([]deliverableJobNotification{{notification: n}})
+	if _, err := owner.appendDelegateNotificationDurably(attentionID, content); err != nil {
+		return "", owner, err
+	}
+	if err := owner.armDelegateAttention(attentionID); err != nil {
+		return "", owner, err
+	}
+	return attentionID, owner, nil
+}
+
+// stableWatchDiagnosticAttentionID derives a replay-stable identity for a watch
+// notice from the facts that make it one notice. The reason is hashed because
+// it is bounded free text rendered by the rail; the id only has to be equal
+// exactly when the notice is.
+func stableWatchDiagnosticAttentionID(n jobNotification) string {
+	sum := sha256.Sum256([]byte(n.Reason))
+	scope := n.WatchID
+	if scope == "" {
+		scope = n.OriginWatchID
+	}
+	if scope == "" {
+		scope = n.JobID
+	}
+	return "watchdiag:" + scope + ":" + n.JobID + ":" + hex.EncodeToString(sum[:8])
 }
 
 // routeWatchNotifications delivers every watch notification addressed to

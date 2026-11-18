@@ -309,6 +309,19 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			return nil, "", nil, llm.Request{}, nil, "", claimErr
 		}
 	} else {
+		// A stable delegate child is a session that may only reach its provider
+		// inside an exact generation under a lease (LIFE-01, #2340): the
+		// controller accounts for the turn, admits a stop, and settles the
+		// canonical result through that lease. Without one the turn would run
+		// unaccounted, with the controller reporting the child idle, so refuse it
+		// here rather than present it as an ordinary model call.
+		//
+		// A root session (owningDelegateID == "") keeps the ordinary path: it is
+		// not a delegate and has no generation to hold. Zero-model maintenance
+		// drains never reach this function, so they keep running unleased.
+		if s.owningDelegateID != "" && s.delegateController != nil {
+			return nil, "", nil, llm.Request{}, nil, "", errDelegateStableModelTurnUnleased
+		}
 		history = expandHistory(historyTurns, scope)
 	}
 
