@@ -215,7 +215,12 @@ function withAskEvidence(held: ItemModel, incoming: ItemModel): ItemModel {
   if (held.resolvedAskLegacyCount === undefined && incoming.resolvedAskLegacyCount !== undefined) {
     filled.resolvedAskLegacyCount = incoming.resolvedAskLegacyCount;
   }
-  return filled;
+  // The identity-only marker is non-enumerable too, so the spread drops it.
+  // A placeholder that gains evidence must stay a placeholder: without the
+  // marker a later same-version refresh can no longer take the upgrade path
+  // that would restore its body, so the fill would destroy the evidence that
+  // fixes the row.
+  return itemIsIdentityOnly(held) ? markItemIdentityOnly(filled) : filled;
 }
 
 /** Applies the recorded turn-version precedence while keeping hydrated items owned by history. */
@@ -324,35 +329,21 @@ export function mergeHistory(turns: TurnModel[], fragment: HistoryFragment, held
     const identity = itemIdentity(incoming);
     const index = turn.items.findIndex((item) => itemIdentity(item) === identity);
     const heldItem = turn.items[index];
-    const identityUpgrade =
-      heldItem !== undefined &&
-      heldItem.version === incoming.version &&
-      itemIsIdentityOnly(heldItem) &&
-      !itemIsIdentityOnly(incoming);
-    // A same-version refresh may supply ask-resolution evidence the held row
-    // never had (#6323). The entry cache handles that case, and a live refresh
-    // reaches the model through this merge instead, whose version check would
-    // otherwise drop the incoming row before the evidence could be filled.
-    const evidenceFill =
-      heldItem !== undefined && heldItem.version === incoming.version && fillsAskEvidence(heldItem, incoming);
-    if (index === -1 ? heldOnly : !supersedes(heldItem?.version, incoming.version) && !identityUpgrade && !evidenceFill)
-      continue;
+    // One decision, not two. The same function the entry-cache merge uses
+    // resolves version precedence, an identity upgrade and the same-version
+    // ask-evidence fill (#6323) together; re-deriving any of them here is how
+    // the upgrade and the fill came to disagree, with a pruned placeholder
+    // gaining evidence but keeping an empty body the refresh supplied.
+    const merged =
+      index === -1 || heldItem === undefined || heldItem.version === undefined
+        ? incoming
+        : mergeTranscriptItemVersioned(heldItem, heldItem.version, incoming, incoming.version ?? 0);
+    if (index === -1 ? heldOnly : merged === heldItem) continue;
     // Copy a turn's items once per merge, then edit the copy in place.
     const writable = ownedItems.has(turn.id) ? turn : { ...turn, items: [...turn.items] };
     ownedItems.add(turn.id);
     if (index === -1) writable.items.splice(itemsBefore(writable.items, incoming.position), 0, incoming);
-    else if (evidenceFill && heldItem !== undefined) writable.items[index] = withAskEvidence(heldItem, incoming);
-    else {
-      // A higher-version replacement is otherwise authoritative for every
-      // field it carries, but an OMITTED text field is not a replacement —
-      // main's landed text-presence rule (itemTextPresence/wireItemToModel):
-      // an explicit empty string IS authoritative (a real settle with
-      // nothing to say), while an absent one just means this entry said
-      // nothing about text, and the prior provided value stands (e.g. a
-      // reasoning item's seeded summary surviving a completion that omits
-      // text of its own).
-      writable.items[index] = mergeReplacedItem(turn.items[index], incoming);
-    }
+    else writable.items[index] = merged;
     byId.set(turn.id, writable);
     changed = true;
   }

@@ -913,6 +913,7 @@ export {
   imageSessionRouteForSession,
   isToolCallItemId,
   isToolResultItemId,
+  itemIsIdentityOnly,
   itemTextPresence,
   joinedReasoningParagraphs,
   markItemIdentityOnly,

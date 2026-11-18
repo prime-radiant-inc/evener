@@ -7,8 +7,8 @@ import {
   encodeTranscriptItem,
   threadModelFromCache,
 } from "./transcriptCache";
-import { hydrateThread, mergeTranscriptItemVersioned } from "./transcriptHistory";
-import { itemTextPresence, markItemTextOmitted } from "./transcriptItems";
+import { hydrateThread, mergeHistory, mergeTranscriptItemVersioned } from "./transcriptHistory";
+import { itemIsIdentityOnly, itemTextPresence, markItemIdentityOnly, markItemTextOmitted } from "./transcriptItems";
 import { mergeTurnHistory } from "./turnHistoryMerge";
 
 const author = {
@@ -191,6 +191,43 @@ test("an equal-version refresh fills missing ask evidence without replacing the 
       4,
     ),
   ).toBe(held);
+  // A live refresh reaches the transcript model through mergeHistory, not the
+  // entry-cache merge, so the same rule has to hold there: the evidence
+  // arrives, and the held body stands.
+  const mergedTurns = mergeHistory([{ id: "turn", status: "completed", items: [held] }], {
+    turns: [{ id: "turn", status: "completed", items: [] }],
+    items: [refreshed],
+  });
+  expect(mergedTurns[0]?.items[0]?.resolvedAskCalls).toEqual([{ turnId: "turn-question", callId: "call-1" }]);
+  expect(mergedTurns[0]?.items[0]?.text).toBe(heldText);
+  // Background pruning can reduce a reply to an identity-only placeholder at
+  // the version the daemon then re-serves in full. The refresh carries the
+  // body, so it must replace the placeholder rather than fill evidence onto
+  // it: an evidence-only fill would leave a reply with no text even though the
+  // full text is right there.
+  const placeholder = markItemIdentityOnly({ id: "answer", turnId: "turn", type: "userMessage", text: "", version: 4 });
+  const upgradedTurns = mergeHistory([{ id: "turn", status: "completed", items: [placeholder] }], {
+    turns: [{ id: "turn", status: "completed", items: [] }],
+    items: [refreshed],
+  });
+  expect(upgradedTurns[0]?.items[0]?.text).toBe(refreshed.text);
+  expect(upgradedTurns[0]?.items[0]?.resolvedAskCalls).toEqual([{ turnId: "turn-question", callId: "call-1" }]);
+  // A placeholder that only gains evidence must stay a placeholder. The
+  // enriching spread drops the non-enumerable identity-only marker, and
+  // without it a later same-version refresh can no longer take the upgrade
+  // path that would restore the body: the fill would destroy the very
+  // evidence that fixes the row.
+  // Both rows pruned: no upgrade applies, so the fill runs, and the marker
+  // has to survive it.
+  const evidenceOnly: ItemModel = { id: "answer", turnId: "turn", type: "userMessage", text: "", version: 5 };
+  const enrichedPlaceholder = mergeTranscriptItemVersioned(
+    markItemIdentityOnly(evidenceOnly),
+    5,
+    markItemIdentityOnly({ ...refreshed, version: 5, text: "" }),
+    5,
+  );
+  expect(itemIsIdentityOnly(enrichedPlaceholder)).toBe(true);
+  expect(enrichedPlaceholder.resolvedAskCalls).toEqual([{ turnId: "turn-question", callId: "call-1" }]);
 });
 
 test("old missing and invalid metadata never borrows thread identity", () => {
