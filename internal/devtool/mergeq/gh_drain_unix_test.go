@@ -23,7 +23,11 @@ import (
 // while it lives, and "returned anyway" is an observable fact. The answer the
 // wrapper wrote must survive: only the drain timed out.
 func TestGHDrainIsBoundedAfterAnAnswer(t *testing.T) {
-	h := orphanpipetest.New(t)
+	// NewIn, not New: WriteScript writes an executable into the holder's
+	// directory and the call below runs it, so the directory has to be one this
+	// test validated rather than wherever t.TempDir() happens to point. See
+	// fixtureExecDir.
+	h := orphanpipetest.NewIn(t, fixtureExecDir(t))
 	gh := h.WriteScript(t, "gh", "printf '{\"data\":{}}'\n"+h.Spawn()+"\n")
 	// A handle in the environment, planted where a launcher running this binary
 	// would have put its own. A fixture must not touch it: an unset GroupFile
@@ -34,14 +38,14 @@ func TestGHDrainIsBoundedAfterAnAnswer(t *testing.T) {
 	// The variable is set for the process, not through t.Setenv, because this
 	// case cannot be parallel and t.Setenv forbids it: the whole point is a
 	// process-wide value a fixture inherits.
-	inherited := filepath.Join(t.TempDir(), "live-launcher-handle")
+	inherited := filepath.Join(h.Dir(), "live-launcher-handle")
 	if err := os.WriteFile(inherited, []byte("4321\n"), 0o600); err != nil {
 		t.Fatalf("write the launcher's handle: %v", err)
 	}
 	t.Setenv(ghGroupFileEnv, inherited)
 	// The explicit handle, inside this case's own directory, is what keeps the
 	// fixture off the inherited one.
-	groupFile := filepath.Join(t.TempDir(), "gh-group")
+	groupFile := filepath.Join(h.Dir(), "gh-group")
 	done := make(chan struct {
 		out []byte
 		err error

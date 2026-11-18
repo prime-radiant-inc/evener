@@ -20,38 +20,151 @@ import (
 )
 
 // fixtureExecDir returns a private directory this test can execute a program
-// from.
+// from, under a base whose whole ancestry another local user cannot replace.
 //
-// The fixtures here launch shell scripts, and t.TempDir() descends from the
-// ambient TMPDIR. On a host whose TMPDIR is mounted noexec -- a hardened CI
+// The fixtures here launch shell scripts, and `t.TempDir()` descends from the
+// ambient TMPDIR, so that made two things assumptions. The first is
+// executability: on a host whose TMPDIR is mounted noexec -- a hardened CI
 // image, a container with a locked-down /tmp -- the script cannot run, the
 // fixture never publishes the PID the case waits for, and the case times out on
 // a failure that says nothing about the client. An executable GOTMPDIR does not
 // help: that is the go command's work directory, not where these fixtures write.
 //
-// The property is established instead of assumed, by running a trivial script in
-// the directory this returns. When the base cannot execute one, the case fails
-// by name rather than waiting out a deadline for a fixture that never ran.
+// The second is trust. A directory's own mode bounds who can write inside it,
+// not who can replace it: another user who can replace an *ancestor* can swap
+// this whole directory for one of their own, and the case then executes their
+// script with this user's privileges. That is the same rule the launcher applies
+// to its scratch roots, and it belongs on the fixture for the same reason -- the
+// fixture executes a program out of this directory, so it has to know the path
+// it executes through.
 //
-// It stays inside the test's own temp space on purpose. Falling back to the
-// developer's $HOME or $XDG_RUNTIME_DIR would make the case depend on which
-// roots this machine happens to have, and would leave directories behind
-// outside the fixture.
+// Both are established before anything is created, written or run, and both are
+// asked of the chain rather than of the leaf. A check that comes after the first
+// mkdir, chmod, write or exec is too late to be a check.
+//
+// Candidate bases are tried in the launcher's own order -- the ambient temp dir,
+// then the per-session runtime dir, then a directory under $HOME -- so a noexec
+// or replaceable TMPDIR is passed over rather than failing the case. Every
+// directory created here is removed with the test, so a fallback leaves nothing
+// behind.
 func fixtureExecDir(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	// 0700 whatever the runner's umask is. t.TempDir() is 0775 under umask 0002,
-	// and a fixture directory other users can write is not the private base the
-	// rest of this file assumes.
-	if err := os.Chmod(dir, 0o700); err != nil {
-		t.Fatalf("make the fixture directory private: %v", err)
+	var refusals []string
+	for _, base := range fixtureBaseCandidates() {
+		dir, reason := execDirUnder(t, base)
+		if reason == "" {
+			return dir
+		}
+		refusals = append(refusals, base+": "+reason)
 	}
+	t.Fatalf("no base on this machine can host these fixtures, so a case below would time out waiting for a script that never ran:\n\t%s\nset TMPDIR to an exec-capable directory whose ancestry this user controls, rather than reading the timeout as a client bug", strings.Join(refusals, "\n\t"))
+	return ""
+}
+
+// fixtureBaseCandidates is the bases to try, in the launcher's own order.
+func fixtureBaseCandidates() []string {
+	candidates := []string{os.TempDir()}
+	if dir := os.Getenv("XDG_RUNTIME_DIR"); dir != "" {
+		candidates = append(candidates, dir)
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates, filepath.Join(home, ".cache"))
+	}
+	return candidates
+}
+
+// execDirUnder returns a private, exec-capable directory under base, or "" and
+// the reason base cannot host one.
+//
+// The order is the point. base is resolved, every component from the root down
+// is checked, and only a base that passes gets a mkdir, a write or an exec
+// beneath it.
+func execDirUnder(t *testing.T, base string) (dir, reason string) {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		return "", fmt.Sprintf("cannot resolve it (%v)", err)
+	}
+	if reason := replaceableAncestor(resolved); reason != "" {
+		return "", reason
+	}
+	// MkdirTemp is 0700 whatever the runner's umask is, which keeps the fixture's
+	// own entry private once the chain above it is trusted.
+	dir, err = os.MkdirTemp(resolved, "mergeq-fixture.")
+	if err != nil {
+		return "", fmt.Sprintf("cannot create a directory in it (%v)", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	probe := filepath.Join(dir, "exec-probe.sh")
 	writeExecutable(t, probe, "#!/usr/bin/env bash\nexit 0\n")
 	if err := exec.Command(probe).Run(); err != nil {
-		t.Fatalf("%s cannot execute a program (%v): these fixtures launch scripts, so this case needs an exec-capable TMPDIR; set TMPDIR to one rather than letting the case time out waiting for a fixture that never ran", dir, err)
+		return "", fmt.Sprintf("the filesystem cannot execute a program there (%v)", err)
 	}
-	return dir
+	return dir, ""
+}
+
+// replaceableAncestor names the first component of path that another local user
+// can replace, or "" when the chain is this user's to control.
+//
+// It walks from the root down, because that is the direction the question is
+// asked in: each component has to be trusted before the next can be, and a
+// component that cannot be inspected is a refusal rather than a pass.
+//
+// A component is trusted when this user or root owns it and no one else can
+// write to it. Two exceptions match the launcher's. A sticky directory is
+// trusted even when world-writable, because the sticky bit stops another user
+// renaming or deleting an entry this user created -- that is what makes /tmp
+// usable at all. A group-writable directory is trusted when the group is one of
+// this process's groups, because then the "other user" is this user.
+func replaceableAncestor(path string) string {
+	groups := map[int]bool{os.Getgid(): true}
+	if gids, err := os.Getgroups(); err == nil {
+		for _, gid := range gids {
+			groups[gid] = true
+		}
+	}
+	for _, component := range pathComponents(path) {
+		info, err := os.Stat(component)
+		if err != nil {
+			return fmt.Sprintf("cannot inspect %s (%v)", component, err)
+		}
+		if !info.IsDir() {
+			return fmt.Sprintf("%s is not a directory", component)
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			return fmt.Sprintf("%s: cannot read its owner", component)
+		}
+		if uid := int(stat.Uid); uid != os.Getuid() && uid != 0 {
+			return fmt.Sprintf("%s is owned by uid %d, not by this user or root", component, uid)
+		}
+		if info.Mode()&os.ModeSticky != 0 {
+			continue
+		}
+		perm := info.Mode().Perm()
+		if perm&0o002 != 0 {
+			return fmt.Sprintf("%s is writable by other users and has no sticky bit, so another user can replace entries in it", component)
+		}
+		if perm&0o020 != 0 && !groups[int(stat.Gid)] {
+			return fmt.Sprintf("%s is writable by group %d, which this process is not in", component, stat.Gid)
+		}
+	}
+	return ""
+}
+
+// pathComponents lists path's components from the root down.
+func pathComponents(path string) []string {
+	var components []string
+	for probe := filepath.Clean(path); ; probe = filepath.Dir(probe) {
+		components = append(components, probe)
+		if probe == filepath.Dir(probe) {
+			break
+		}
+	}
+	for i, j := 0, len(components)-1; i < j; i, j = i+1, j-1 {
+		components[i], components[j] = components[j], components[i]
+	}
+	return components
 }
 
 // writeExecutable writes an executable script, holding syscall.ForkLock so a
@@ -547,4 +660,85 @@ func TestRunRefRendersTheResolvedRunOrThePrefix(t *testing.T) {
 	if got := (RunRef{}).String(); got == "" {
 		t.Fatal("empty rendering = \"\", want a readable fallback")
 	}
+}
+
+// TestMergEQFixtureBaseIsTrustedAndExecutable pins the two properties the
+// executable fixtures need from their base, and pins them where they are
+// decided rather than through a case that would time out without them.
+//
+// The base these fixtures run from is not only storage: a script written there
+// is executed, so a base another local user can replace is a way to run their
+// program with this user's privileges. Checking the leaf's mode does not answer
+// that -- the leaf is private and the ancestor is the way in. The same base also
+// has to be able to execute a program, or every case under it waits out a
+// deadline for a fixture that never ran.
+//
+// Both are asked directly, because a case that only fails by timing out says
+// "something is wrong" and not which of the two it was.
+func TestMergEQFixtureBaseIsTrustedAndExecutable(t *testing.T) {
+	// Not parallel itself: the last subtest sets TMPDIR for the process.
+	t.Run("a replaceable ancestor is refused", func(t *testing.T) {
+		t.Parallel()
+		// Not under t.TempDir(): the parent has to be replaceable for the case to
+		// mean anything, and the point is to hand execDirUnder a base whose chain
+		// is wrong. The directory is created inside this case's own temp space so
+		// cleanup is the test's, then opened up to the mode the ancestor rule
+		// exists for.
+		dir := filepath.Join(t.TempDir(), "replaceable")
+		if err := os.Mkdir(dir, 0o777); err != nil {
+			t.Fatalf("create %s: %v", dir, err)
+		}
+		if err := os.Chmod(dir, 0o777); err != nil {
+			t.Fatalf("make %s replaceable: %v", dir, err)
+		}
+		// A 0777 directory is only replaceable if no sticky bit protects it. If the
+		// runner's umask or mount options left one on, this case cannot state its
+		// premise and says so instead of passing for the wrong reason.
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatalf("stat %s: %v", dir, err)
+		}
+		if info.Mode()&os.ModeSticky != 0 {
+			t.Skipf("%s came back sticky, so it is not the replaceable base this case needs", dir)
+		}
+		if reason := replaceableAncestor(dir); reason == "" {
+			t.Fatalf("%s is writable by other users with no sticky bit, and the ancestor rule accepted it: another user can replace entries in it, so a script this test executes from there may not be the script it wrote", dir)
+		}
+		// And the refusal reaches the function the fixtures actually call, not only
+		// the predicate: handing it this base must not return a directory.
+		if got, reason := execDirUnder(t, dir); reason == "" {
+			t.Fatalf("execDirUnder(%s) returned %s under a replaceable ancestor: the fixture would execute a program from a path another user can swap", dir, got)
+		}
+	})
+	t.Run("an exec-capable base is accepted", func(t *testing.T) {
+		t.Parallel()
+		base := fixtureExecDir(t)
+		if reason := replaceableAncestor(base); reason != "" {
+			t.Fatalf("the base the fixtures use is replaceable: %s", reason)
+		}
+		if err := exec.Command(filepath.Join(base, "exec-probe.sh")).Run(); err != nil {
+			t.Fatalf("%s cannot execute a program (%v), and the fixtures there launch scripts", base, err)
+		}
+	})
+	t.Run("a replaceable TMPDIR falls back rather than failing the case", func(t *testing.T) {
+		// Not parallel: it changes the process environment the candidate list
+		// reads, and t.Setenv panics in a parallel test.
+		dir := filepath.Join(t.TempDir(), "replaceable-tmp")
+		if err := os.Mkdir(dir, 0o777); err != nil {
+			t.Fatalf("create %s: %v", dir, err)
+		}
+		if err := os.Chmod(dir, 0o777); err != nil {
+			t.Fatalf("make %s replaceable: %v", dir, err)
+		}
+		if info, err := os.Stat(dir); err != nil {
+			t.Fatalf("stat %s: %v", dir, err)
+		} else if info.Mode()&os.ModeSticky != 0 {
+			t.Skipf("%s came back sticky, so it is not the replaceable base this case needs", dir)
+		}
+		t.Setenv("TMPDIR", dir)
+		got := fixtureExecDir(t)
+		if strings.HasPrefix(got, dir+string(os.PathSeparator)) {
+			t.Fatalf("fixtureExecDir returned %s under a replaceable TMPDIR: the fixtures would execute a program from a path another user can swap", got)
+		}
+	})
 }

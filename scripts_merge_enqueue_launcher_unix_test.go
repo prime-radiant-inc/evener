@@ -1263,6 +1263,26 @@ func pidGone(pid int) bool {
 	return trimmed == "" || strings.HasPrefix(trimmed, "Z")
 }
 
+// processStopped reports whether pid is in the stopped state.
+//
+// The forced stop SIGSTOPs the tree it is about to census, and SIGSTOP cannot be
+// ignored or deferred. That makes "the helper is stopped" a structural
+// observable for "the scan has started", which is what a case that interrupts
+// inside the scan has to wait for. The state's first character is `T` for a
+// stopped process, and `t` for one traced by a debugger, which is also stopped.
+func processStopped(t *testing.T, pid int) bool {
+	t.Helper()
+	state, err := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		return false
+	}
+	trimmed := strings.TrimSpace(string(state))
+	if trimmed == "" {
+		return false
+	}
+	return trimmed[0] == 'T' || trimmed[0] == 't'
+}
+
 // logPID reads the pid a fixture wrote under prefix, waiting for it to appear.
 func logPID(t *testing.T, f launcherFixture, prefix string) int {
 	t.Helper()
@@ -1946,6 +1966,33 @@ func TestMergeEnqueueLauncherDoesNotBuildUnderAReplaceableRoot(t *testing.T) {
 		if err := probe(stickyOwn); err == nil {
 			t.Fatalf("a 1777 directory owned by this user was reported replaceable")
 		}
+		// The same directory with an access ACL that grants another user write.
+		//
+		// The ACL branch ran before the sticky check, so a 1777 directory carrying
+		// a write-granting ACL was reported replaceable even though its sticky bit
+		// stops anyone renaming or deleting an entry this script created -- the
+		// only entries that matter here. On a host where such a directory is the
+		// only executable candidate, that refusal exits 2 before reaching GitHub.
+		//
+		// The sticky answer is asked first on Linux, so this case fails if the ACL
+		// branch is reached first again. It is skipped where setfacl is absent,
+		// because the premise cannot be manufactured.
+		if setfacl, err := exec.LookPath("setfacl"); err == nil {
+			if err := exec.Command(setfacl, "-m", "u:nobody:rwx", stickyOwn).Run(); err != nil {
+				t.Logf("could not grant an ACL to nobody in %s (%v); the sticky-plus-ACL premise is unavailable here", stickyOwn, err)
+			} else {
+				t.Cleanup(func() { _ = exec.Command(setfacl, "-b", stickyOwn).Run() })
+				// The premise: the directory really carries an ACL whose effective
+				// permission for another user includes write, or this case would be
+				// about a directory that never had the shape.
+				if err := runLauncherFunc(t, validatorFuncs, `dir_acl_grants_foreign_write "$2"`, stickyOwn); err != nil {
+					t.Fatalf("the ACL was not read as a foreign write (%v): this case needs a write grant for its premise", err)
+				}
+				if err := probe(stickyOwn); err == nil {
+					t.Fatalf("a 1777 directory owned by this user, with an ACL granting nobody write, was reported replaceable: the sticky bit already stops another user replacing entries this script created, so the ACL read must not override it")
+				}
+			}
+		}
 		foreign := foreignOwnedDirectory()
 		if foreign == "" {
 			t.Skip("no directory owned by a third user on this machine: ownership cannot be manufactured without root")
@@ -2268,6 +2315,17 @@ scratch_path_is_trusted "$2"`
 				name: "an attribute grant is not a replaceable directory",
 				acl:  " 0: user:nobody allow list,writeattr,writeextattr\n",
 				want: false,
+			},
+			{
+				// `writesecurity` is the opposite case to `writeattr`, and the one
+				// that is easy to read as an attribute permission. It lets the
+				// grantee rewrite this directory's ACL, and the ACL it writes can
+				// give it add_file and delete -- so it is a way to replace an entry
+				// one step removed, and a 0755 directory carrying it is one another
+				// user can take over.
+				name: "a security grant is a replaceable directory",
+				acl:  " 0: user:nobody allow list,writesecurity\n",
+				want: true,
 			},
 			{
 				name: "a named user granted add_file",
@@ -2707,10 +2765,13 @@ while :; do sleep 0.05; done
 // was stopped and the launcher exited 130 over a helper that was still running.
 //
 // The window is held open by the helper's own term grace, which the stop spends
-// waiting for a group that ignores TERM. The test sends the signal there -- not
-// on a sleep, on the launcher's own "still running" line, which is printed
-// immediately before that stop begins -- and asks whether the helper survived
-// the exit. A launcher that reports 130 while the helper is alive fails.
+// waiting for a group that ignores TERM. Where to send the signal is decided by
+// the helper's own process state, not by the launcher's wording: the forced stop
+// SIGSTOPs the tree it is about to census, so the helper entering the stopped
+// state is the fact that the scan has begun. Waiting on a diagnostic sentence
+// instead would make a copy edit time this case out.
+//
+// A launcher that reports 130 while the helper is alive fails.
 func TestMergeEnqueueLauncherStopsTheHelperWhenInterruptedDuringTheSurvivorStop(t *testing.T) {
 	t.Parallel()
 	f := newLauncherFixture(t, `#!/usr/bin/env bash
@@ -2742,15 +2803,12 @@ while :; do sleep 0.05; done
 	if innerGroup <= 1 {
 		t.Fatalf("the fixture helper published group %d, want the group the launcher recorded", innerGroup)
 	}
-	// The launcher prints this the moment it finds the group still populated,
-	// immediately before the stop that the interrupt below lands inside.
-	testwait.UntilSeen(t, "the launcher to start stopping the group its wrapper left", func() (bool, string) {
-		body, err := os.ReadFile(f.stderr)
-		if err != nil {
-			return false, ""
-		}
-		text := string(body)
-		return strings.Contains(text, "still running"), text
+	// The forced stop SIGSTOPs the tree before it takes the census, so the
+	// helper's own stopped state is the fact that the scan has begun -- the
+	// window the interrupt has to land inside. Nothing here reads the launcher's
+	// text: a diagnostic copy edit must not be able to fail a cancellation case.
+	testwait.Until(t, "the fixture helper to be frozen for the survivor census", func() bool {
+		return processStopped(t, innerPID)
 	})
 	signalLauncher(t, cmd, syscall.SIGTERM)
 	code, exited := waitExit(t, cmd, launcherExitDeadline)
@@ -2767,6 +2825,81 @@ while :; do sleep 0.05; done
 	}
 	if code != 130 {
 		t.Fatalf("launcher exit %d, want 130; %s", code, f.output(t))
+	}
+}
+
+// TestMergeEnqueueLauncherStopsACallTheKilledHelperPublished pins the second of
+// the two groups this script records.
+//
+// The launcher can stop a helper two ways: politely, TERM at its PID, or, when
+// that does not work, by killing the groups it recorded. The check that runs
+// after `wait` looked for survivors in the first recorded group -- the one the
+// helper leads -- and nothing else. A `gh` call runs in a group of its own, and
+// the helper publishes that id precisely so a forced stop can reach a call that
+// left the helper's tree. So a helper killed after publishing left the check
+// answering "no survivors": the run returned the helper's death as if it were a
+// queue outcome while the enqueue request was still in flight, and the EXIT trap
+// removed the handle the cleanup would have needed to stop it.
+//
+// The fixture is that shape and no other: the helper starts a call in its own
+// group, publishes that group, and then kills itself. The call traps TERM, so
+// only a group KILL ends it, and it is in neither the helper's group nor this
+// script's, so nothing else here reaches it.
+func TestMergeEnqueueLauncherStopsACallTheKilledHelperPublished(t *testing.T) {
+	t.Parallel()
+	// The helper script is written after the fixture exists, because it embeds
+	// the call's path and the fixture mints the directory.
+	f := newLauncherFixture(t, "#!/usr/bin/env bash\nexit 0\n")
+	call := filepath.Join(f.dir, "gh-call.sh")
+	writeTestFile(t, call, []byte(`#!/usr/bin/env bash
+trap '' TERM
+printf 'call-pid=%s;pgid=%s\n' "$$" "$(ps -o pgid= -p "$$" | tr -d ' ')" >> "$EVENER_FIXTURE_LOG"
+while :; do sleep 0.05; done
+`), 0o755)
+	writeTestFile(t, f.path, []byte(`#!/usr/bin/env bash
+set -uo pipefail
+set -m
+`+shellquote.Literal(call)+` &
+set +m
+# Publish the group where a real helper publishes it, wait until the call has
+# recorded itself so the group is certainly the call's, and then die hard. The
+# handle is written BEFORE the death, which is the order that matters: a helper
+# killed without publishing leaves nothing to find, and that shape is already
+# covered by the recorded-group check.
+for _ in $(seq 1 250); do
+  [ -s "$EVENER_FIXTURE_LOG" ] && break
+  sleep 0.02
+done
+printf '%s\n' "$!" > "$EVENER_MERGEQ_GH_GROUP_FILE"
+printf 'published\n' >> "$EVENER_FIXTURE_LOG"
+kill -9 "$$"
+`), 0o755)
+	cmd := f.launcherCmd(t, "--pr", "6499", "--wait", "570", "--repo", "example.invalid/none")
+	cmd.Env = append(cmd.Env,
+		"EVENER_HELPER_TERM_GRACE_SECONDS=0",
+		"EVENER_STOP_TREE_GRACE_SECONDS=1",
+	)
+	runLauncher(t, cmd, f)
+	callPID, callGroup := logPIDAndGroup(t, f, "call-pid=")
+	t.Cleanup(func() { killGroups(callPID) })
+	if callGroup != callPID {
+		t.Fatalf("the call is in group %d, want its own group %d: this case needs it outside the helper's group, which is what the published handle exists for", callGroup, callPID)
+	}
+	// The helper published and then killed itself, so `wait` has returned before
+	// the launcher's own checks run: the helper's group is empty and only the
+	// published group names the live call.
+	waitForLine(t, f, "published")
+	code, exited := waitExit(t, cmd, launcherExitDeadline)
+	if !exited {
+		t.Fatalf("launcher still running after %s; %s", launcherExitDeadline, f.output(t))
+	}
+	if !pidGone(callPID) {
+		t.Fatalf("the launcher exited %d while the GitHub call it published (pid %d, group %d) was still running: the post-wait check looked only at the helper's own group, and the handle it then removed was the only route to this one; %s",
+			code, callPID, callGroup, f.output(t))
+	}
+	// And the status is not the helper's death read as a queue answer.
+	if code != 2 {
+		t.Fatalf("launcher exit %d, want 2: a run whose helper died mid-request did not reach the queue; %s", code, f.output(t))
 	}
 }
 

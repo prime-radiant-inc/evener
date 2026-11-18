@@ -292,12 +292,17 @@ acl_ls_e_grants_foreign_write() {
     # else, and a substring match calls that directory replaceable. Refusing a
     # harmless grant stops the launcher on an ordinary Mac.
     #
-    # Only the permissions that change what is IN the directory count: `write`
-    # (macOS defines it on a directory as add_file plus add_subdirectory plus
-    # delete) and the three it stands for. `writeattr`, `writeextattr` and
-    # `writesecurity` change the attributes of the directory itself and are not a
-    # way to replace an entry, so they stay out of the list for the same reason
-    # the read-only ones do.
+    # The list is every permission that can put a different entry in this
+    # directory, directly or by way of another permission. `write` on a
+    # directory is the Darwin name for add_file plus add_subdirectory plus delete,
+    # and the three it stands for are listed beside it for ACLs that spell them
+    # out. `writesecurity` is a grant of the same thing one step removed: it lets
+    # the grantee rewrite the ACL of this directory, and an ACL it writes can give it
+    # add_file and delete. Reading that as an attribute permission would accept a
+    # 0755 directory another user can take over, which is exactly the entry
+    # replacement being asked about. `writeattr` and `writeextattr` only change
+    # their own attributes, cannot widen the ACL, and stay out for the
+    # same reason the read-only ones do.
     #
     # $2 requires a name after the colon, which excludes `user::` and `group::` --
     # the owner and owning group, whose bits the caller has already read from the
@@ -305,7 +310,7 @@ acl_ls_e_grants_foreign_write() {
     # same reason as the field split: a permission list is not prose, and a group
     # called `appendage` is not a grant.
     $2 ~ /^(user|group):[^:]/ && $3 == "allow" &&
-      $4 ~ /(^|,)(write|add_file|add_subdirectory|delete|append)(,|$)/ { found = 1 }
+      $4 ~ /(^|,)(writesecurity|write|add_file|add_subdirectory|delete|append)(,|$)/ { found = 1 }
     END { exit found ? 0 : 1 }
   '
 }
@@ -408,6 +413,30 @@ dir_entry_is_replaceable() {
   local dir="$1" writable acl
   [ -d "$dir" ] || return 0
   dir_is_owned_by_trusted "$dir" || return 0
+  # Sticky first, and only where it settles the question: a trusted-owned sticky
+  # directory lets another user add entries but not rename or delete one this
+  # script created, and every entry that matters here is one this script created
+  # under a name it chose. So no ACL grant changes the answer for it.
+  #
+  # This has to be asked BEFORE the ACL read on Linux, which is where the review
+  # found it. A root-owned sticky team scratch directory -- 1777 with an access
+  # ACL, an ordinary thing on a shared build host -- carries a mask and a named
+  # entry that grant write, and the ACL branch refused it on that basis. If it was
+  # the only executable candidate the launcher then exited 2 before reaching
+  # GitHub, on a directory nobody can actually replace anything in.
+  #
+  # Darwin is deliberately not covered by this early return. A BSD ACL can carry
+  # `writesecurity`, and on Darwin the sticky bit does not take that away from a
+  # grantee: they can rewrite the directory's ACL, and then the entries are theirs
+  # to move. That case has to reach the ACL reader, so the platform decides
+  # whether sticky is an answer, not merely whether the mode looks safe.
+  #
+  # The mode bits are still read below for the non-sticky case, and a sticky
+  # directory owned by somebody this script does not trust never reaches here at
+  # all: dir_is_owned_by_trusted refused it above.
+  if [ -k "$dir" ] && [ "$(uname -s)" != Darwin ]; then
+    return 1
+  fi
   dir_acl_grants_foreign_write "$dir" && return 0
   # Other-writable is a mode fact and is checked first, because it needs no ACL.
   writable=$(find "$dir" -maxdepth 0 -perm -0002 -print 2>/dev/null) || return 0
@@ -624,6 +653,27 @@ child_running() {
   esac
   return 0
 }
+# published_gh_group — print the GitHub-call group the helper published, or fail.
+#
+# One definition, because two callers now ask the question -- the survivor census
+# and the check that runs after the helper exits -- and a handle read two ways is
+# a handle that can be validated in one place and used in another. The value is an
+# id the helper wrote, so it is re-validated on every read: a file holding
+# anything other than one positive integer names no group and must not be
+# signalled, and this script's own group is never one of them.
+published_gh_group() {
+  local published own_group
+  [ -n "${gh_group_file:-}" ] && [ -r "$gh_group_file" ] || return 1
+  published=$(tr -d ' \n' < "$gh_group_file" 2>/dev/null) || return 1
+  case "$published" in
+    '' | *[!0-9]*) return 1 ;;
+  esac
+  [ "$published" -gt 1 ] || return 1
+  own_group=$(ps -o pgid= -p "$$" 2>/dev/null | tr -d ' ')
+  [ "$published" != "$own_group" ] || return 1
+  printf '%s\n' "$published"
+}
+
 # helper_call_groups <pid> <helper-group> — print each process group the
 # helper's GitHub call may be in, once, other than the helper's own and this
 # script's. helper-group may be empty when ps cannot name it any more; the
@@ -957,7 +1007,7 @@ mint_gh_group_file() {
 # handlers, and wait for it. Returns the helper's own status, which is the
 # contract's whenever the helper started.
 start_helper() {
-  local helper_scratch="${2:-}"
+  local helper_scratch="${2:-}" published_call
   cd "$root" || return 2
   # Monitor mode gives the helper its own process group, following run_bounded
   # in scripts/lib/gate-bounded.sh. Two reasons, both #6730's review:
@@ -1037,6 +1087,29 @@ start_helper() {
     else
       echo "merge-enqueue: the helper exited $status and left the process group it started still running, so that status is not a queue outcome; an EVENER_DEV_BIN wrapper must exec the helper or wait for it and forward its status" >&2
     fi
+    stop_helper_tree "" "$helper_group"
+    status=2
+  fi
+  # The published GitHub-call group, checked on its own.
+  #
+  # This script records exactly two process groups it may have to stop, and the
+  # check above looks at only the first: the group the helper leads. A `gh` call
+  # runs in a group of its own, and the helper publishes that group id in the
+  # handle precisely so a forced stop can reach a call that left the helper's
+  # tree. When the helper is killed after publishing -- not cancelled, killed --
+  # its own group empties, the check above answers "no survivors", and the run
+  # returned the helper's death as if it were a queue outcome while the enqueue
+  # request was still in flight. The EXIT trap then removed the handle the
+  # survivor cleanup would have needed.
+  #
+  # So the census is over both recorded groups, not the one that was easiest to
+  # name. A live call is stopped before this returns, and the status of a run
+  # that was killed mid-request is not a queue answer: 2, not whatever signal
+  # ended the helper. A handle that names nothing alive changes nothing, which is
+  # what keeps an ordinary helper's own 0, 1 or 2 untouched.
+  published_call=$(published_gh_group) || published_call=""
+  if [ -n "$published_call" ] && helper_group_leaves_survivors "$published_call"; then
+    echo "merge-enqueue: the helper exited $status and left the GitHub call it published still running, so that status is not a queue outcome" >&2
     stop_helper_tree "" "$helper_group"
     status=2
   fi
