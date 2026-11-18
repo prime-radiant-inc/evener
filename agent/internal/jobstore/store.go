@@ -248,13 +248,16 @@ func (s *Store) reconcilePendingLocked() error {
 	// The bytes went to s.pending.file. Only that file can be asked whether the
 	// record is there, and only when the name still reaches it.
 	reached := s.pending.file != nil && sameJournalFile(s.pending.file, named)
-	pending := s.pending
-	s.pendingSet = false
-	s.pending = pendingWrite{}
 	if reached {
-		if present, err := s.pendingRecordIsDurableLocked(named, pending); err != nil {
+		if present, err := s.pendingRecordIsDurableLocked(named, s.pending); err != nil {
+			// Nothing was learned, so the reservation is kept for the next
+			// attempt: the record may be in the journal, and its sequence may be
+			// in use. The append fails retryably rather than guessing.
 			return err
 		} else if present {
+			pending := s.pending
+			s.pendingSet = false
+			s.pending = pendingWrite{}
 			// The record arrived. Its sequence is spent on it, and the next
 			// append continues past it rather than reusing the number.
 			if pending.lastSeq > s.seq {
@@ -263,6 +266,9 @@ func (s *Store) reconcilePendingLocked() error {
 			return nil
 		}
 	}
+	pending := s.pending
+	s.pendingSet = false
+	s.pending = pendingWrite{}
 	// The record is not in the journal readers see, so the retry has to write it
 	// — and it must not take a number that journal already uses.
 	//
@@ -295,6 +301,24 @@ func (s *Store) pendingRecordIsDurableLocked(named os.FileInfo, pending pendingW
 		return false, nil
 	}
 	if named.Size() < pending.offset+int64(len(pending.line)) {
+		// The journal is too short to hold the whole record. That is NOT a finding
+		// that the record is absent: a rotation can interrupt the write so only a
+		// PREFIX of the batch reached the surviving file, and the surviving
+		// records already hold sequences this retry must not reuse. A short file
+		// is therefore inconclusive, and the caller keeps the reservation.
+		if named.Size() > pending.offset {
+			// A PREFIX of this write survived. Its records are durable and hold
+			// the sequences this retry was about to reuse, so the high-water mark
+			// is raised past them before the caller allocates anything.
+			//
+			// Raising it is not a guess: these bytes are in the journal the name
+			// reaches, and a record whose sequence is on disk has spent that
+			// number whether or not this append reported success.
+			if err := s.adoptSurvivingPrefixLocked(named, pending); err != nil {
+				return false, err
+			}
+			return false, fmt.Errorf("%w: %s: the record is only partly present", ErrJournalLookupInconclusive, s.path)
+		}
 		return false, nil
 	}
 	f, err := s.fs.Open(s.path)
@@ -302,14 +326,56 @@ func (s *Store) pendingRecordIsDurableLocked(named os.FileInfo, pending pendingW
 		if os.IsNotExist(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("jobstore: read %s: %w", s.path, err)
+		// An Open that fails for any other reason answered nothing. Reporting
+		// "absent" here clears a reservation whose sequences may well be in use.
+		return false, fmt.Errorf("%w: read %s: %w", ErrJournalLookupInconclusive, s.path, err)
 	}
 	defer func() { _ = f.Close() }()
 	buf := make([]byte, len(pending.line))
 	if _, err := f.ReadAt(buf, pending.offset); err != nil {
-		return false, nil
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return false, fmt.Errorf("%w: %s: %w", ErrJournalLookupInconclusive, s.path, err)
+		}
+		return false, fmt.Errorf("%w: read %s: %w", ErrJournalLookupInconclusive, s.path, err)
 	}
 	return bytes.Equal(buf, pending.line), nil
+}
+
+// adoptSurvivingPrefixLocked raises the sequence high-water mark past every
+// complete record a partially written batch left in the journal.
+//
+// A rotation can interrupt a batch after some of its lines are durable and
+// before the rest are, and the surviving lines carry real sequences. Whoever
+// retries must allocate above them, or the journal ends up with two records on
+// one number and the fold keeps whichever it meets first. The bytes are read
+// from the handle rather than the path for the same reason every other repair
+// is: the path may already reach a different file.
+//
+// Only complete, decodable records raise the mark. A trailing fragment has not
+// spent its number — it is not a record yet — and raising the mark for it would
+// skip a sequence for nothing.
+func (s *Store) adoptSurvivingPrefixLocked(named os.FileInfo, pending pendingWrite) error {
+	if pending.offset < 0 || named.Size() <= pending.offset {
+		return nil
+	}
+	raw := make([]byte, named.Size()-pending.offset)
+	if _, err := s.f.ReadAt(raw, pending.offset); err != nil {
+		return fmt.Errorf("%w: read %s: %w", ErrJournalLookupInconclusive, s.path, err)
+	}
+	for _, line := range bytes.Split(raw, []byte{'\n'}) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var e Event
+		if err := json.Unmarshal(line, &e); err != nil {
+			// A line that does not decode is not a record that spent a number.
+			continue
+		}
+		if e.Seq > s.seq {
+			s.seq = e.Seq
+		}
+	}
+	return nil
 }
 
 // foldCache caches the last fold of each kind, keyed on the cursor's identity
@@ -487,7 +553,15 @@ func (s *Store) Append(e Event) error {
 		return err
 	}
 	s.seq = nextSeq
-	s.noteAppendedLocked(startOffset, startOffset+int64(len(b)), verified)
+	if err := s.noteAppendedLocked(startOffset, startOffset+int64(len(b)), verified); err != nil {
+		// The bytes were confirmed and then could not be found in the file, so
+		// this append's record is not readable from the journal the name reaches.
+		// The sequence it used is spent either way; the reservation is what keeps
+		// a retry from reusing it.
+		s.pending = pendingWrite{file: appendedName, offset: startOffset, firstSeq: nextSeq, lastSeq: nextSeq, line: append([]byte(nil), b...)}
+		s.pendingSet = true
+		return err
+	}
 	return nil
 }
 
@@ -680,7 +754,11 @@ func (s *Store) AppendBatch(events []Event) error {
 		return err
 	}
 	s.seq = nextSeq
-	s.noteAppendedLocked(startOffset, startOffset+written, verified)
+	if err := s.noteAppendedLocked(startOffset, startOffset+written, verified); err != nil {
+		s.pending = pendingWrite{file: appendedName, offset: startOffset, firstSeq: firstBatchSeq, lastSeq: nextSeq, line: batchLine}
+		s.pendingSet = true
+		return err
+	}
 	return nil
 }
 
@@ -800,8 +878,18 @@ func (s *Store) CommittedJournal() (CommittedJournalState, error) {
 	// file it holds: recovery truncates through the handle, so on a replacement
 	// it would cut the journal that was moved aside and leave the replacement
 	// torn. Identity decides that before anything else.
+	//
+	// The sample answers three states, not two, and the third is the one that
+	// matters here. The handle may reach the name's file, it may reach another,
+	// or it may not be samplable at all — and a failed stat is not evidence that
+	// nothing changed. Collapsing it into "not the same file" skips the repair
+	// and then books the sample below as the writer's baseline, so the next
+	// append compares against a baseline nothing established, finds it
+	// unchanged, and joins its event to whatever fragment was never examined.
+	// handleSampled records whether this question was answered at all.
 	handle, handleErr := s.f.Stat()
-	sameFile := handleErr == nil && sameJournalFile(handle, info)
+	handleSampled := handleErr == nil
+	sameFile := handleSampled && sameJournalFile(handle, info)
 
 	size, mod := info.Size(), info.ModTime()
 	// Reconcile the reported length with what this store already made durable
@@ -823,10 +911,29 @@ func (s *Store) CommittedJournal() (CommittedJournalState, error) {
 	lagging := false
 	if s.laggingAppendEnd > size {
 		onDisk, haveLength := s.journalRealSizeLocked()
-		if haveLength && onDisk >= s.laggingAppendEnd {
-			size, lagging = s.laggingAppendEnd, true
-		} else {
+		switch {
+		case !haveLength:
+			// Nothing measured the file, so nothing here can tell lag from a
+			// truncation. Drop the claim and let the ordinary change test run:
+			// an unsampled answer must not be spent as a favourable one.
 			s.laggingAppendEnd = 0
+		case onDisk == s.laggingAppendEnd:
+			// The file is exactly as long as the append confirmed. The attributes
+			// trail it and the bytes are there: substitution is honest.
+			size, lagging = s.laggingAppendEnd, true
+		default:
+			// The file is a different length from the append's confirmed end. That
+			// is not lag — lag reports the SAME bytes with older attributes — so
+			// this is an external change, and it must be reported and repaired as
+			// one rather than hidden behind the confirmed end. Substituting here
+			// is how a complete out-of-band event stays invisible: the boundary
+			// keeps reporting the shorter confirmed end while the journal holds
+			// more.
+			//
+			// The measured length wins and the claim is dropped, so the change
+			// test below sees a difference and inspects the tail.
+			s.laggingAppendEnd = 0
+			size = onDisk
 		}
 	}
 	// One question decides both the generation and the repair: are these the
@@ -893,8 +1000,17 @@ func (s *Store) CommittedJournal() (CommittedJournalState, error) {
 		// has to inspect the tail before it writes. The read still answers, with
 		// the bounded view it can decode.
 		settled, err := s.recoverTrailingPartialLineLocked()
-		if err != nil {
+		if err != nil && !errors.Is(err, ErrMalformedTrailingRecord) {
 			return CommittedJournalState{}, err
+		}
+		if errors.Is(err, ErrMalformedTrailingRecord) {
+			// A tail that is not a record cannot be repaired, and the bytes are
+			// preserved as evidence. The reader still answers: it reports the
+			// length it can decode and withholds the line it cannot. What the
+			// error withholds is the SETTLED conclusion, which is why this
+			// falls through to the unsampled branch below rather than returning
+			// early.
+			settled = false
 		}
 		if repaired, statErr := s.fs.Stat(s.path); statErr == nil {
 			info = repaired
@@ -909,6 +1025,22 @@ func (s *Store) CommittedJournal() (CommittedJournalState, error) {
 			}
 			return CommittedJournalState{Path: s.path, Size: size, Generation: s.journalGen, MetadataResolvesWrites: !s.cursor.disabled && !s.metadataLagging}, nil
 		}
+	}
+	if !handleSampled {
+		// The question "does this name reach the file this store appends
+		// through" was never answered, so nothing here established where this
+		// store's bytes end. The read still answers with the bounded view it can
+		// decode — an activity page needs it, and refusing would fail an
+		// ordinary poll. The WRITER's baseline is a different claim: leave it
+		// unsampled so the next append inspects the tail instead of comparing
+		// against a sample that never happened.
+		s.sampled = false
+		s.named = info
+		s.contentTracked = true
+		if !lagging {
+			s.laggingAppendEnd = 0
+		}
+		return CommittedJournalState{Path: s.path, Size: size, Generation: s.journalGen, MetadataResolvesWrites: !s.cursor.disabled && !s.metadataLagging}, nil
 	}
 	s.journalSize, s.journalMod, s.sampled = size, mod, true
 	s.named = info
@@ -1397,7 +1529,7 @@ func (s *Store) verifyCursorBeforeAppendLocked(info os.FileInfo, err error) {
 // an offset into the new file, and pages would blend two files. A nil sample
 // means nothing was verified, so no baseline is recorded and the next read
 // re-samples for itself.
-func (s *Store) noteAppendedLocked(startOffset, endOffset int64, verified os.FileInfo) {
+func (s *Store) noteAppendedLocked(startOffset, endOffset int64, verified os.FileInfo) error {
 	// Every append changes the durable bytes, so the fold generation moves on
 	// all paths below — including the early returns that drop the cursor. A fold
 	// cached before this append must never be served after it, whether or not
@@ -1406,6 +1538,11 @@ func (s *Store) noteAppendedLocked(startOffset, endOffset int64, verified os.Fil
 	// on the previous length stays valid and is extended, not rebuilt.
 	s.foldGen++
 	s.folds = foldCache{gen: s.foldGen}
+	// What this store believed about the file BEFORE this write. The append's
+	// own sample overwrites those fields below, and the two questions that need
+	// a "before" — did the length move while the timestamp did not — cannot be
+	// asked afterwards.
+	beforeSize, beforeMod, wasSampled := s.journalSize, s.journalMod, s.sampled
 	if verified != nil {
 		s.journalSize, s.journalMod, s.sampled = verified.Size(), verified.ModTime(), true
 		s.named = verified
@@ -1418,6 +1555,36 @@ func (s *Store) noteAppendedLocked(startOffset, endOffset int64, verified os.Fil
 		// omitted until the metadata catches up.
 		s.laggingAppendEnd = 0
 		if verified.Size() < endOffset {
+			// A short sample has two causes and they need opposite answers.
+			//
+			// If the FILE is at least endOffset long, the bytes this append
+			// confirmed are there and only the attributes trail them: it is lag,
+			// and the append succeeded. If the file itself is shorter, the bytes
+			// are GONE — an in-place truncation during the fsync, or a rewrite
+			// that cut them — and this append is about to report success for an
+			// event no reader can find. Respecting metadata lag must not become a
+			// licence to acknowledge a vanished write, so the file arbitrates
+			// rather than the attributes, exactly as it does for the boundary.
+			//
+			// A file that cannot be measured here leaves the baseline unsampled
+			// and the append retryable: unknown is not "the bytes are there".
+			onDisk, haveLength := s.journalRealSizeLocked()
+			if !haveLength {
+				s.sampled = false
+				s.laggingAppendEnd = 0
+				s.metadataLagging = true
+				return fmt.Errorf("%w: %s: the bytes this append wrote cannot be confirmed", ErrJournalNameUnavailable, s.path)
+			}
+			if onDisk < endOffset {
+				s.sampled = false
+				s.laggingAppendEnd = 0
+				s.metadataLagging = true
+				// The event is not in the file. Reporting success here is how a
+				// completion stops retrying while no reader can find the record,
+				// so the append is retryable: the caller retries, and the retry
+				// reconciles against a journal that never held the bytes.
+				return fmt.Errorf("%w: %s: the bytes this append wrote are no longer in the journal", ErrJournalReplaced, s.path)
+			}
 			s.journalSize = endOffset
 			s.laggingAppendEnd = endOffset
 			// The filesystem under-reported bytes this append just made durable.
@@ -1457,13 +1624,17 @@ func (s *Store) noteAppendedLocked(startOffset, endOffset int64, verified os.Fil
 		s.sampled = false
 		s.laggingAppendEnd = endOffset
 	}
+	// Recorded here, before the cursor branches, because several of them return
+	// early for exactly the sample this is about — and cursor validity does not
+	// decide whether the filesystem can resolve a write.
+	s.noteUnresolvableTimestampLocked(startOffset, endOffset, verified, beforeSize, beforeMod, wasSampled)
 	if !s.cursor.valid {
-		return
+		return nil
 	}
 	if startOffset != s.cursor.size {
 		// The file grew or shrank behind the store's back before this append.
 		s.cursor.valid = false
-		return
+		return nil
 	}
 	// The sample the post-sync check RESOLVED and vouched for is the only one
 	// that may become the cursor's baseline. Statting the path here would ask
@@ -1476,14 +1647,14 @@ func (s *Store) noteAppendedLocked(startOffset, endOffset int64, verified os.Fil
 		// this cursor's prefix belongs to. Drop it rather than adopt whatever
 		// the path says now.
 		s.cursor.valid = false
-		return
+		return nil
 	}
 	if verified.Size() != endOffset {
 		// The filesystem does not report the bytes just written — stale or cached
 		// metadata, or a concurrent writer. Its numbers cannot be used to decide
 		// what has already been read, so the cursor goes.
 		s.cursor.valid = false
-		return
+		return nil
 	}
 	if endOffset != startOffset && verified.ModTime().Equal(s.cursor.mod) {
 		// This append changed the file's length and the filesystem reported the
@@ -1492,14 +1663,41 @@ func (s *Store) noteAppendedLocked(startOffset, endOffset int64, verified os.Fil
 		// someone else's. Give the cursor up for good rather than trust it.
 		s.cursor.disabled = true
 		s.cursor.valid = false
-		return
+		return nil
 	}
 	s.cursor.size = verified.Size()
 	s.cursor.mod = verified.ModTime()
 	s.cursor.identity = verified
+	return nil
 }
 
 // advanceCursorLocked decodes the log from the cursor's offset to the file's real
+// noteUnresolvableTimestampLocked records that this filesystem cannot tell one of
+// the store's own writes from no write at all.
+//
+// The evidence is an append that changed the file's LENGTH while its
+// modification time did not move. Length and timestamp both advance on a write
+// the filesystem can see, so a length that moved alone means the timestamp
+// cannot resolve a write.
+//
+// It is recorded here rather than beside the cursor checks because those return
+// early for exactly this sample, and cursor validity has nothing to do with
+// whether the filesystem can resolve a write. A later same-length rewrite under
+// this condition leaves the reconciled size and timestamp unchanged, so a
+// boundary still advertising trustworthy metadata would let a live fold serve
+// the rows that rewrite removed.
+func (s *Store) noteUnresolvableTimestampLocked(startOffset, endOffset int64, verified os.FileInfo, beforeSize int64, beforeMod time.Time, wasSampled bool) {
+	if verified == nil || !wasSampled || endOffset == startOffset {
+		return
+	}
+	if verified.Size() == beforeSize {
+		return
+	}
+	if verified.ModTime().Equal(beforeMod) {
+		s.metadataLagging = true
+	}
+}
+
 // EOF, committing every newline-terminated line to the cursor. An unterminated
 // final line is decoded and returned separately: it is not durable bytes the
 // cursor may keep, but it must be reported exactly as a full reread reports it.
@@ -1676,19 +1874,28 @@ func (s *Store) recoverTrailingPartialLineLocked() (settled bool, err error) {
 	// second replacement from supplying the evidence for a cut on the first one.
 	cut := bytes.LastIndexByte(raw, '\n')
 	if cut < 0 {
-		return true, s.recoverTrailingJSONLineLocked(raw, 0)
+		return true, s.recoverTrailingJSONLineLocked(raw, 0, 1)
 	}
-	return true, s.recoverTrailingJSONLineLocked(raw[cut+1:], int64(cut+1))
+	return true, s.recoverTrailingJSONLineLocked(raw[cut+1:], int64(cut+1), bytes.Count(raw[:cut+1], []byte{'\n'})+1)
 }
 
-func (s *Store) recoverTrailingJSONLineLocked(line []byte, offset int64) error {
+func (s *Store) recoverTrailingJSONLineLocked(line []byte, offset int64, lineNo int) error {
 	var e Event
 	err := json.Unmarshal(line, &e)
 	if err == nil {
 		return s.finishTrailingJSONLineLocked()
 	}
 	if !isIncompleteTrailingJSON(line, err) {
-		return nil
+		// The last line is not a truncated record — it decodes as nothing any
+		// partial write could explain. The bytes are left exactly where they are,
+		// because cutting them would destroy evidence of a real corruption and
+		// terminating them would turn it into a record. But this is NOT a settled
+		// tail: a writer that treats it as one appends after bytes no reader can
+		// decode, and every later read and reopen fails on the pair.
+		//
+		// So the repair reports what it found. A reader may still proceed on the
+		// bounded view; a writer must refuse.
+		return &malformedTrailingRecordError{path: s.path, line: lineNo, err: err}
 	}
 	// Repairing the tail changes the file under the cursor: re-read from zero.
 	s.invalidateCursorLocked()
@@ -1784,6 +1991,42 @@ var ErrJournalReplaced = errors.New("jobstore: journal name refers to a differen
 // activity and reopen read, which is a lost record, not a delayed one.
 var ErrJournalNameUnavailable = errors.New("jobstore: journal name is not reachable")
 
+// ErrMalformedTrailingRecord reports that the journal's last line is not a
+// record, and is not a truncated one either: no partial write can explain it.
+//
+// The bytes are preserved rather than cut, because they are the only evidence of
+// a corruption that already happened. What the error withholds is the
+// conclusion: a tail in this state is not settled, so a writer must not append
+// after it. A reader may proceed with the bounded view it can decode.
+var ErrMalformedTrailingRecord = errors.New("jobstore: the journal's last line is not a record")
+
+// ErrJournalLookupInconclusive reports that the journal could not answer whether
+// a failed write's record is in it.
+//
+// It is the distinction between "the record is absent" and "nothing was
+// learned". A rotation that interrupts a batch can leave a PREFIX of it in the
+// surviving file, and that prefix already holds sequences a retry would
+// otherwise reuse; a transient Open or ReadAt failure says nothing at all.
+// Clearing the reservation on either reads a non-answer as a denial, which is
+// how two records end up sharing a sequence.
+var ErrJournalLookupInconclusive = errors.New("jobstore: the journal could not answer whether the record arrived")
+
+// malformedTrailingRecordError names the unfinished record and the decoder's
+// complaint, so a writer's refusal says which bytes it refused to write after.
+type malformedTrailingRecordError struct {
+	path string
+	line int
+	err  error
+}
+
+func (e *malformedTrailingRecordError) Error() string {
+	return fmt.Sprintf("%v: %s: parse event line %d: %v", ErrMalformedTrailingRecord, e.path, e.line, e.err)
+}
+
+func (e *malformedTrailingRecordError) Unwrap() []error {
+	return []error{ErrMalformedTrailingRecord, e.err}
+}
+
 // followNamedJournalLocked makes the store write to the file its journal name
 // reaches, adopting a replacement that arrived while the store was open.
 //
@@ -1822,7 +2065,17 @@ func (s *Store) followNamedJournalLocked(named os.FileInfo, err error) (bool, er
 		// for a record no reader of the named journal will ever see.
 		return false, fmt.Errorf("%w: %s: %w", ErrJournalNameUnavailable, s.path, err)
 	}
-	if s.journalNameIsHeldLocked(named) {
+	held, heldErr := s.journalNameIsHeldLocked(named)
+	if heldErr != nil {
+		// The handle could not be sampled, so nothing here established which
+		// file this store appends through. Proceeding would write into whatever
+		// the handle still reaches while every post-sync check compared two
+		// samples of the NAME — the moved-aside file gets the event and the
+		// replacement gets the credit. A write whose target cannot be confirmed
+		// is retryable, never acknowledged.
+		return false, fmt.Errorf("%w: %s: %w", ErrJournalNameUnavailable, s.path, heldErr)
+	}
+	if held {
 		return false, nil
 	}
 	// A rename-and-replace is not atomic, and a second one can land while this
@@ -1939,18 +2192,28 @@ func (s *Store) followNamedJournalLocked(named os.FileInfo, err error) (bool, er
 // there: it is the only evidence of which file this store is following, and it
 // keeps the append on the handle the caller handed over instead of silently
 // replacing it with a fresh open.
-func (s *Store) journalNameIsHeldLocked(named os.FileInfo) bool {
+//
+// It returns an error when the handle cannot be sampled, because there are three
+// answers and only two of them are safe to act on. Reporting "held" for an
+// unsamplable handle is how an append lands in a file that was moved aside while
+// the post-sync check compares two samples of the replacement and vouches for
+// it; the caller turns the error into a retryable append outcome.
+func (s *Store) journalNameIsHeldLocked(named os.FileInfo) (bool, error) {
 	handle, err := s.f.Stat()
 	if err != nil {
-		return true
+		// Not "yes". An unsamplable handle answers nothing about which file the
+		// name reaches, and a caller that needs to know whether it may append
+		// through this store cannot be told "carry on" by a failed stat. The
+		// caller turns this into a retryable outcome.
+		return false, fmt.Errorf("jobstore: stat %s: %w", s.path, err)
 	}
 	if handle.Sys() != nil && named.Sys() != nil {
-		return os.SameFile(handle, named)
+		return os.SameFile(handle, named), nil
 	}
 	if s.named != nil {
-		return sameJournalFile(s.named, named)
+		return sameJournalFile(s.named, named), nil
 	}
-	return sameJournalFile(handle, named)
+	return sameJournalFile(handle, named), nil
 }
 
 // inspectAdoptableJournal validates the open candidate f and repairs the one
