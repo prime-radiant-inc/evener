@@ -171,7 +171,12 @@ func TestSharedEnvDelegateMetaRecordsTheScratchOwner(t *testing.T) {
 	parent := artifactRestoreMeta(t).ID
 	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
 	env.SetScratchIdentity(rootID, parent)
-	sess, err := RestoreSessionFromMetaWithConfig(newArtifactTestClient(), NewOpenAIProfile("gpt-5.2"), env, delegate, artifactRestoreConfig(t, t.TempDir()))
+	cfg := artifactRestoreConfig(t, t.TempDir())
+	// The live spawn carrier is what makes this the IN-PROCESS restore: with a
+	// parent session named, the restore leaves the handed environment's identity
+	// alone instead of naming it from the meta.
+	cfg.spawn.parentSessionID = parent
+	sess, err := RestoreSessionFromMetaWithConfig(newArtifactTestClient(), NewOpenAIProfile("gpt-5.2"), env, delegate, cfg)
 	if err != nil {
 		t.Fatalf("restore: %v", err)
 	}
@@ -181,20 +186,27 @@ func TestSharedEnvDelegateMetaRecordsTheScratchOwner(t *testing.T) {
 	}
 	// The in-process path hands the child the parent's own environment, so the
 	// restore must leave that environment's identity exactly as the parent named
-	// it: adopting the recorded owner is the standalone path's job, not this one's.
+	// it: adopting the recorded owner belongs to a bare restore, not this one.
 	if root, owner := env.ScratchIdentity(); root != rootID || owner != parent {
 		t.Errorf("in-process delegate restore named the handed environment %s/%s, want the parent's own %s/%s", root, owner, rootID, parent)
 	}
 }
 
-// TestStandaloneResumeReopensTheRecordedScratchOwner: `serve --resume
-// <delegate>` restores with an empty spawn carrier, so the delegate's meta is the
-// only record of a scratch it shared with its parent. The resume must name the
-// environment after the RECORDED owner — the session whose directory in the tree
-// the scratch occupies — and not after the delegate: naming it after the delegate
-// mints a second, empty directory beside the one its transcript names, and the
-// first autosave rewrites the recorded owner as unowned.
-func TestStandaloneResumeReopensTheRecordedScratchOwner(t *testing.T) {
+// TestBareRestoreNamesTheRecordedScratchOwner: a restore with no spawn carrier
+// has only the meta to reconstruct a scratch it shared with its parent, so it
+// must name the environment after the RECORDED owner — the session whose
+// directory in the tree the scratch occupies — and not after the session itself:
+// naming it after the session mints a second, empty directory beside the one its
+// transcript names, and the first autosave rewrites the recorded owner as
+// unowned.
+//
+// This is the restore constructor's contract, NOT a CLI capability: a bare
+// `serve --resume` or `run --resume` of a delegate is refused before any restore
+// (refuseBareDelegateResume, cmd/evener/resume_guard.go; ruling #4442), and the
+// daemon's own delegate restore always carries a live spawn parent. Every path
+// that does reach this branch therefore arrives through the constructor, so the
+// assertion is made at the seam all of them share.
+func TestBareRestoreNamesTheRecordedScratchOwner(t *testing.T) {
 	rootID := artifactRestoreMeta(t).ID
 	ownerID := artifactRestoreMeta(t).ID
 	delegate := artifactRestoreMeta(t)
@@ -204,22 +216,24 @@ func TestStandaloneResumeReopensTheRecordedScratchOwner(t *testing.T) {
 	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
 	sess, err := RestoreSessionFromMetaWithConfig(newArtifactTestClient(), NewOpenAIProfile("gpt-5.2"), env, delegate, artifactRestoreConfig(t, t.TempDir()))
 	if err != nil {
-		t.Fatalf("standalone resume: %v", err)
+		t.Fatalf("bare restore: %v", err)
 	}
 	t.Cleanup(sess.Close)
 	if root, owner := env.ScratchIdentity(); root != rootID || owner != ownerID {
-		t.Fatalf("standalone resume named its scratch %s/%s, want the recorded %s/%s", root, owner, rootID, ownerID)
+		t.Fatalf("bare restore named its scratch %s/%s, want the recorded %s/%s", root, owner, rootID, ownerID)
 	}
+	// A named scratch is kept at close and TestMain collects it; never remove a
+	// directory reached through filepath.Dir, which is the shared temp root when
+	// allocation fell back to a disposable scratch.
 	scratch := mintRootScratch(t, sess)
-	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(scratch)) })
 	if got := sandbox.SessionScratchOwnerOf(scratch); got != ownerID {
-		t.Errorf("resumed delegate mints the directory of %q, want the recorded owner %q", got, ownerID)
+		t.Errorf("restored delegate mints the directory of %q, want the recorded owner %q", got, ownerID)
 	}
 	if got := sandbox.SessionScratchTreeRootOf(scratch); got != rootID {
-		t.Errorf("resumed delegate mints in tree %q, want the recorded tree %q", got, rootID)
+		t.Errorf("restored delegate mints in tree %q, want the recorded tree %q", got, rootID)
 	}
 	if got := sess.Meta().ScratchDirSessionID; got != ownerID {
-		t.Errorf("meta after the standalone resume records scratch dir session %q, want the recorded owner %q", got, ownerID)
+		t.Errorf("meta after the bare restore records scratch dir session %q, want the recorded owner %q", got, ownerID)
 	}
 }
 
