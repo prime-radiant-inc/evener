@@ -1708,9 +1708,14 @@ func (s *Session) initSessionState(runSessionStartHooks bool, savedHeader *trans
 	s.envInfo = ei
 	s.workspaceWritableRoots = installedWritableRoots(env)
 
-	// The toolchain probes supply only the startup prompt's capability preamble.
-	if savedHeader == nil && !s.cfg.testOnly.skipGitSnapshot {
-		s.capabilities = probeCapabilities(env, ei.WorkingDir)
+	if !s.cfg.testOnly.skipGitSnapshot {
+		if savedHeader == nil {
+			s.capabilities = probeCapabilities(env, ei.WorkingDir)
+		} else if local, ok := env.(*execenv.LocalExecutionEnvironment); ok {
+			// Resume skips the prompt's shell probes. Reopen scratch before the
+			// first request reports what its commands can access.
+			local.PrepareSessionScratch()
+		}
 	}
 
 	// Session init whose launch cwd is already inside a managed worktree

@@ -202,6 +202,14 @@ func (e *LocalExecutionEnvironment) SessionScratchDir() string {
 	return e.sessionScratchPath()
 }
 
+// PrepareSessionScratch opens the directory a resumed session's commands will
+// use before its first request can report the path. A wrapper already owns it.
+func (e *LocalExecutionEnvironment) PrepareSessionScratch() {
+	if e.Wrapper == nil {
+		e.unsandboxedScratchDir()
+	}
+}
+
 // SessionScratchBase reports the scratch base this env's session scratch was
 // actually allocated in — the base allocation chose, which is not always the
 // requested one: a base inside the session's workspace is refused for the user

@@ -519,7 +519,7 @@ func TestResumeReopensTheSameScratch(t *testing.T) {
 	root1.Close()
 
 	root2, err := RestoreSessionFromMetaWithConfig(root1.client, root1.profile,
-		execenv.NewLocalExecutionEnvironment(workspace), meta, RestoreSessionConfig{StateDir: dir, testOnly: testConfig{skipGitSnapshot: true}})
+		execenv.NewLocalExecutionEnvironment(workspace), meta, RestoreSessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("restore: %v", err)
 	}
@@ -528,11 +528,8 @@ func TestResumeReopensTheSameScratch(t *testing.T) {
 	if !ok {
 		t.Fatalf("restored env = %T, want a local environment", root2.currentEnv())
 	}
-	if _, err := env2.ExecCommand(context.Background(), "true", 5000, workspace, nil); err != nil {
-		t.Fatalf("restored session cannot run a command: %v", err)
-	}
 	if got := env2.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(scratch) {
-		t.Fatalf("restored scratch = %q, want the same %q", got, scratch)
+		t.Fatalf("scratch before the first restored command = %q, want %q", got, scratch)
 	}
 	if _, err := os.Stat(filepath.Join(scratch, "notes.md")); err != nil {
 		t.Fatalf("the restored session's scratch lost its file: %v", err)

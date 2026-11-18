@@ -169,7 +169,8 @@ and two probes (the exit status of `git config --list`, and which of `go`,
 sandbox-derived lines. It exists so a session reads its box instead of
 discovering it by failing at it. Evener runs the toolchain probes when
 rendering a new prompt. A cold resume with a saved prompt reuses its
-measurements. Git branch reconciliation still observes the installed checkout.
+measurements. The restored session opens its scratch directory before its
+first request, and Git branch reconciliation still observes the installed checkout.
 
 The startup prompt records the session's writable scratch directory. If a
 resume installs scratch elsewhere, the next request carries the installed path
