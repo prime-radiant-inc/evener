@@ -251,6 +251,15 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		if err := s.delegateController.BeginTool(lease); err != nil {
 			return skippedToolResult(call, err)
 		}
+	} else if s.stableChildTurnNeedsLease(ctx) {
+		// Same rule as model admission (LIFE-01, #2340): a stable delegate child's
+		// tool call belongs to a generation, so one carrying a pending watch notice
+		// is refused instead of running outside the controller's accounting. A turn
+		// with no watch notice pending is a legitimate unleased path and is left
+		// alone, exactly as model admission leaves it.
+		if s.hasPendingWatchNotification() {
+			return skippedToolResult(call, errDelegateStableModelTurnUnleased)
+		}
 	}
 
 	// Self-heal off-distribution tool calls before hooks/dispatch. Snapshot the

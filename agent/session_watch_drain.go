@@ -82,6 +82,16 @@ func (s *Session) driveChildrenWithUndeliveredAttention() {
 			continue
 		}
 		if child.peekNotifications() > 0 || child.jobManager.hasPendingWatchSends() {
+			// LIFE-01 (#2340): the skip is scoped to WATCH work, exactly as at
+			// the wake edge. A stable child's watch notice is durable attention
+			// and has its own leased drive, so skipping it here is right. But an
+			// ordinary notification -- a recovered shell completion whose
+			// immediate wake declined on a full drive budget -- is drained only
+			// by an EntryNotification turn, and skipping the retry strands it
+			// once a slot frees.
+			if stableDelegateChild(child) && !child.hasPendingOrdinaryNotification() {
+				continue
+			}
 			if s.driveSubagentNotificationTurn(sub) {
 				// Settle the parent's forwarded drive signal on a successful
 				// handoff so the same stale pending does not re-drive forever; the
@@ -149,9 +159,35 @@ func (s *Session) driveChildIfNotStopGated(sub *subagent) {
 	if s.driveDelegateAttention(sub) {
 		return
 	}
+	// LIFE-01 (#2340): a stable delegate child has no model-bearing fallback for
+	// a WATCH notice. driveDelegateAttention above is the only drive a watch
+	// notice may use, because its ingress made it durable attention whose whole
+	// point is a governed generation; the notification drive below launches an
+	// UNLEASED EntryNotification turn, which the controller would report as an
+	// idle child making a provider call. A watch notice reaching this point was
+	// demoted to the ordinary queue by some path other than production ingress,
+	// so it is refused here as well as at admission rather than run unleased.
+	//
+	// Every OTHER notice keeps this fallback: a terminal shell completion, a
+	// nested delegate's forwarded report and the rest are ordinary queued
+	// notifications with no lease to inherit, and the queue is drained only by an
+	// EntryNotification turn, so skipping the drive here would strand them. That
+	// unleased drive turn is a pre-existing defect filed as #6797; #2340
+	// deliberately does not widen to it.
+	if stableDelegateChild(sub.sess) && sub.sess.hasPendingWatchNotification() {
+		return
+	}
 	if s.driveSubagentNotificationTurn(sub) {
 		s.settleDrivenChildForwardedPendings(sub.sess.id)
 	}
+}
+
+// stableDelegateChild reports whether sess belongs to a STABLE delegate child: a
+// delegate whose runs are exact generations under a controller lease. Ephemeral
+// subagents carry no owning delegate id (subagents.go sets it empty), so they are
+// not covered and keep the notification-turn fallback they legitimately use.
+func stableDelegateChild(sess *Session) bool {
+	return sess != nil && sess.owningDelegateID != "" && sess.delegateController != nil
 }
 
 // renderUnreachableChildPendings is the failure fallback (spec §3): a forwarded

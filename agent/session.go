@@ -1496,6 +1496,20 @@ func (s *Session) appendOrFoldJobNotificationLocked(n jobNotification) {
 }
 
 func (s *Session) enqueueJobNotificationAndNotify(n jobNotification) {
+	// A watch notice bound for a STABLE delegate child must become durable
+	// attention instead of a queued notification (LIFE-01, #2340). The queue is
+	// drained only by an EntryNotification turn, which for a stable child runs
+	// with no lease in context, and such a turn must not carry a watch notice
+	// (stableChildTurnNeedsLease). Refusing it there without this ingress would
+	// strand the notice rather than deliver it, and the reachable case is
+	// exactly the one the issue names: a watch-send diagnostic, which arrives
+	// when the send rail had no other way to report the failure.
+	//
+	// A notice that is not a watch, or a session that is not a stable delegate
+	// child, takes the ordinary rail unchanged.
+	if n.isWatch() && stableDelegateChild(s) && s.jobManager != nil && s.jobManager.persistStableWatchPending(n) {
+		return
+	}
 	s.pendingJobNotifsMu.Lock()
 	s.appendOrFoldJobNotificationLocked(n)
 	held := s.notifyWakeHolds > 0
@@ -1574,6 +1588,99 @@ func (s *Session) drainJobNotifications() []jobNotification {
 	drained := s.pendingJobNotifs
 	s.pendingJobNotifs = nil
 	return drained
+}
+
+// hasPendingWatchNotification reports whether the model notifications this
+// session still owes include a watch notice. It is the narrow predicate model
+// and tool admission use to find the one payload that must never reach a model
+// through an unleased turn (LIFE-01, #2340): a watch notice's ingress turns it
+// into durable attention precisely so a governed generation presents it, and a
+// turn that finds one queued instead is the legacy path this issue closes.
+//
+// The kind is the whole test. Nothing here reads reason or body text, so a
+// caller cannot be refused for what a notice says -- only for what it is.
+func (s *Session) hasPendingWatchNotification() bool {
+	if s == nil {
+		return false
+	}
+	s.pendingJobNotifsMu.Lock()
+	defer s.pendingJobNotifsMu.Unlock()
+	for _, n := range s.pendingJobNotifs {
+		if n.isWatch() {
+			return true
+		}
+	}
+	for _, a := range s.jobNotifsAwaitingRequest {
+		if a.deliverable.notification.isWatch() {
+			return true
+		}
+	}
+	return false
+}
+
+// stableChildTurnNeedsLease reports whether THIS turn is the unleased
+// stable-delegate model turn the issue closes: a stable child, with no lease in
+// context, about to carry a watch notice (LIFE-01, #2340).
+//
+// It is the ONE statement of that predicate. Model admission, tool admission
+// and the notification accept all ask it, so a rule that must agree in three
+// places cannot drift between them. A lease in context is not this predicate's
+// business -- admission validates the lease itself against the controller,
+// because a lease can be stale or fenced while still being present.
+func (s *Session) stableChildTurnNeedsLease(ctx context.Context) bool {
+	if s == nil || s.owningDelegateID == "" || s.delegateController == nil {
+		return false
+	}
+	if _, ok := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); ok {
+		return false
+	}
+	return true
+}
+
+// refuseUnleasedWatchNotice reports whether this turn would carry a watch
+// notice without a lease. acceptNotificationInput asks BEFORE it writes the
+// reminder, because the admission gate reads the queue and the drain below
+// empties it first (session_notifications.go).
+func (s *Session) refuseUnleasedWatchNotice(ctx context.Context, jobNotifs []deliverableJobNotification) bool {
+	if !s.stableChildTurnNeedsLease(ctx) {
+		return false
+	}
+	for _, d := range jobNotifs {
+		if d.notification.isWatch() {
+			return true
+		}
+	}
+	return false
+}
+
+// hasPendingOrdinaryNotification reports whether the session's ordinary
+// notification rail holds anything that is NOT a watch notice: a terminal shell
+// completion, a forwarded nested report, steering owed to the model.
+//
+// It exists so the parent drain can tell the two kinds of queued work apart on a
+// stable child. Watch work is durable attention with its own leased drive; an
+// ordinary notification is drained only by an EntryNotification turn, which for
+// a stable child has no lease to inherit (#6797). Skipping BOTH kinds stranded
+// recovered completions whose immediate wake had declined on a full drive
+// budget (#2340 review F7), so the drain skips watch-only work and still retries
+// the ordinary kind.
+func (s *Session) hasPendingOrdinaryNotification() bool {
+	if s == nil {
+		return false
+	}
+	s.pendingJobNotifsMu.Lock()
+	defer s.pendingJobNotifsMu.Unlock()
+	for _, n := range s.pendingJobNotifs {
+		if !n.isWatch() {
+			return true
+		}
+	}
+	for _, a := range s.jobNotifsAwaitingRequest {
+		if !a.deliverable.notification.isWatch() {
+			return true
+		}
+	}
+	return false
 }
 
 // peekNotifications reports how many notifications are still owed to the model

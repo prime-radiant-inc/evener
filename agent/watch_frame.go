@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"strconv"
 	"strings"
 
@@ -8,6 +10,18 @@ import (
 	"primeradiant.com/evener/agent/internal/lineend"
 	"primeradiant.com/evener/agent/provenance"
 )
+
+// stableWatchOwner snapshots the stable delegate owner and its controller under
+// jm.mu. Every reader of stableOwner takes this snapshot: a new generation
+// rewrites the field in bindDelegateParent under the same mutex, and a timer or
+// shell callback enqueues concurrently with exactly that rewrite. The caller
+// holds no lock afterwards, so transcript I/O and wake callbacks run outside
+// jm.mu.
+func (jm *jobManager) stableWatchOwner() (*Session, *delegateTreeController) {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	return jm.stableOwner, jm.delegateController
+}
 
 func watchNotification(jobID, reason string) jobNotification {
 	return jobNotification{
@@ -28,6 +42,89 @@ func watchSendDiagnosticNotification(watchID, jobID, reason string) jobNotificat
 	n := watchNotification(jobID, reason)
 	n.OriginWatchID = watchID
 	return n
+}
+
+// stableWatchNoticeAttentionID is the durable attention identity of a watch
+// notice bound for a stable delegate child (LIFE-01, #2340).
+//
+// Stability is what makes the ingress replay-safe: appendDelegateNotification-
+// Durably treats the same identity and content as a no-op and a reused identity
+// with different content as corruption, so a replayed enqueue must derive the
+// SAME id and a genuinely different notice must derive a different one. A
+// watch-send diagnostic carries no delivery lineage of its own -- OriginWatchID
+// is display-only -- so its identity is the watch, the job and the reason: a
+// repeat of one failure is one item, and a distinct failure is a distinct item.
+func stableWatchNoticeAttentionID(n jobNotification) string {
+	scope := n.WatchID
+	if scope == "" {
+		scope = n.OriginWatchID
+	}
+	if scope == "" {
+		scope = n.JobID
+	}
+	sum := sha256.Sum256([]byte(n.Reason))
+	return "watchdiag:" + scope + ":" + n.JobID + ":" + hex.EncodeToString(sum[:8])
+}
+
+// persistStableWatchPending is enqueueNotifications' stable-delegate branch: a
+// watch notice bound for a stable child becomes durable attention rather than a
+// queued notification, so the child can only run it inside a leased generation
+// (LIFE-01, #2340). It reports whether it handled the notice.
+//
+// Without this, the notice lands on the ordinary queue, whose only drain is an
+// EntryNotification turn -- and a stable child's unleased turn must not carry a
+// watch notice, so the gate would refuse the turn and leave the notice to be
+// refused again. That is a stranded delivery, not a fixed one. The reachable
+// case is the one the issue names: a watch-send diagnostic, emitted precisely
+// when the send rail had no other way to report the failure.
+//
+// A manager with no stable owner, or one whose owner is not a delegate, keeps
+// the ordinary rail. The owner and controller are snapshotted ONCE under jm.mu:
+// a new generation rewrites both fields under that same mutex, so re-reading
+// them after the transcript I/O would race a concurrent timer or shell
+// callback.
+func (jm *jobManager) persistStableWatchPending(n jobNotification) bool {
+	owner, controller := jm.stableWatchOwner()
+	if owner == nil || owner.owningDelegateID == "" {
+		return false
+	}
+	attentionID := stableWatchNoticeAttentionID(n)
+	content := owner.formatJobNotificationReminder([]deliverableJobNotification{{notification: n}})
+	if controller != nil {
+		// Register the notice's own cause BEFORE the item can be presented: a
+		// runaway-watch diagnostic carries the chain the breaker stopped, and
+		// the response event must descend from it or the breaker reads that
+		// response as a fresh trigger and fires again.
+		controller.attentionCauses.remember(attentionID, n.Provenance)
+	}
+	// An accepted notice is news for the job_status repeat guard, exactly as a
+	// queued one is: appendOrFoldJobNotificationLocked forgets the target on
+	// every enqueue, so the durable route must do the same or the child's next
+	// job_status call on that target is refused as a repeat.
+	if n.JobID == "" {
+		owner.jobStatusPolls.forgetAll()
+	} else {
+		owner.jobStatusPolls.forget(n.JobID)
+	}
+	if _, err := owner.appendDelegateNotificationDurably(attentionID, content); err != nil {
+		if controller != nil {
+			controller.attentionCauses.forget(attentionID)
+		}
+		// The append failed, so the notice is NOT durable. Queueing it would
+		// reopen the unleased path this ingress exists to close; dropping it
+		// silently would lose a failure report. Surface it as an operator
+		// diagnostic and report the notice handled, so the caller does not fall
+		// back to the queue.
+		owner.emit(warningDataFromError("persist stable watch attention", err))
+		return true
+	}
+	if err := owner.armDelegateAttention(attentionID); err != nil {
+		// The row IS durable; only its wake failed. armDelegateAttention
+		// already retains the id for its own paced re-arm, so the notice is
+		// not lost.
+		owner.emit(warningDataFromError("arm stable watch attention", err))
+	}
+	return true
 }
 
 func (jm *jobManager) watchNotificationFromWatch(cfg *watchConfig, jobID, reason string, root *provenance.Causal) jobNotification {

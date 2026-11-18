@@ -21,6 +21,13 @@ var (
 	errDelegateNotControllable = errors.New("not_controllable: delegate")
 	errDelegateStaleLease      = errors.New("stale_delegate_lease")
 	errDelegateTargetBusy      = errors.New("target_busy")
+	// errDelegateStableModelTurnUnleased is model and tool admission's refusal
+	// of an unleased turn on a stable delegate child (LIFE-01, #2340). That
+	// child only reaches its provider or a tool inside an exact generation held
+	// under a lease, which is what makes the controller's accounting, stop
+	// admission, and result settlement cover the turn. No lease in context is a
+	// refusal, not the ordinary non-delegate path.
+	errDelegateStableModelTurnUnleased = errors.New("unleased_stable_delegate_model_turn")
 )
 
 type delegateLifecycle string
@@ -1348,6 +1355,22 @@ func (c *delegateTreeController) recordTerminalSeen(lease delegateLease) error {
 	defer c.mu.Unlock()
 	decision := c.reduceTerminalSeenIntent(finishIntent{lease: lease})
 	return decision.err
+}
+
+// admitModelRequestLease reports whether lease is still an admitted generation
+// of a running delegate with no stop pending, using the same predicate every
+// other leased provider call goes through. Request preparation calls it so a
+// turn that was fenced mid-round cannot spend a provider call before the
+// request's own BeginModelRequest (LIFE-01, #2340).
+//
+// It takes no claim: the request's own BeginModelRequest still records the
+// provider claim and its steering snapshot. This is the earlier, cheaper gate
+// that a phase reaching a provider BEFORE that claim must not skip.
+func (c *delegateTreeController) admitModelRequestLease(lease delegateLease) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, _, err := c.admitLeaseLocked(lease, delegatestore.PhaseRunning)
+	return err
 }
 
 func (c *delegateTreeController) admitLeaseLocked(lease delegateLease, phases ...delegatestore.Phase) (*delegatestore.Aggregate, *delegateLiveState, error) {
