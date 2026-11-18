@@ -137,16 +137,18 @@ func capActivityDelegateWarnings(warnings []string) []string {
 // at (RootID/SessionID/Path) AND skips exactly the entries that session
 // already rendered (ResumeIndex), rather than re-rendering that session's
 // list from its own top with a fresh budget. JobsEpoch/
-// DelegatesEpoch are the fold-cache generations (foldcache.Result.Epoch —
-// see historicalJobFoldCache/historicalDelegateFoldCache in
-// jobs_activity_past.go) SessionID's own jobs.jsonl and RootID's shared
-// delegates.jsonl were at when this token was minted; loadActivitySnapshotForParams
-// rejects a resume whose epochs no longer match what the fold caches
-// currently report for those same paths, rather than silently applying
-// ResumeIndex to a journal that was rewritten or shrunk out from under it.
-// An ordinary append never bumps epoch (see foldcache.Result.Epoch's own
-// doc comment) — append-only growth is exactly the case a resume must
-// tolerate, not treat as staleness.
+// DelegatesEpoch are the fold generations SessionID's own jobs.jsonl and
+// RootID's shared delegates.jsonl were at when this token was minted —
+// foldcache.Result.Epoch for a historical session (see
+// historicalJobFoldCache/historicalDelegateFoldCache in
+// jobs_activity_past.go), the live fold's own rebuild epoch for a live root
+// (liveJobFold). loadActivitySnapshotForParams rejects a resume whose epochs
+// no longer match what those folds currently report for the same paths,
+// rather than silently applying ResumeIndex to a journal that was rewritten
+// or shrunk out from under it. An ordinary append never bumps epoch (see
+// foldcache.Result.Epoch's own doc comment, and liveJobFold's for the live
+// case) — append-only growth is exactly the case a resume must tolerate, not
+// treat as staleness.
 type activityContinuation struct {
 	Version        int      `json:"v"`
 	RootID         string   `json:"root"`
@@ -185,14 +187,14 @@ type activityContinuation struct {
 	// carried into the continuation too, and echoed back as the resumed page's
 	// own Revision (LoadSessionJobActivityTree). It is checked on resume only
 	// when the root is LIVE (loadActivitySnapshotForParams): a live
-	// session's JobsEpoch/DelegatesEpoch above are always 0 (it reads neither
-	// fold cache), so they provide no staleness protection at all for a live
-	// continuation — 0 == 0 always passes, even across a real mutation.
-	// Revision closes that gap the same way epoch closes it for historical
-	// sessions. A historical continuation is not validated on this field: the
-	// epoch fields already say whether a resume position is safe, and echoing
-	// the token's number back keeps a pagination walk's revision stable even
-	// though the persisted max it was first computed from can move under it.
+	// session's JobsEpoch moves only when a rebuild replaces its own job fold,
+	// so a delegate appended under this root passes that check — 0 == 0 or
+	// n == n — even though it changes what the next page renders. Revision
+	// closes that gap the same way epoch closes it for historical sessions. A
+	// historical continuation is not validated on this field: the epoch fields
+	// already say whether a resume position is safe, and echoing the token's
+	// number back keeps a pagination walk's revision stable even though the
+	// persisted max it was first computed from can move under it.
 	Revision uint64 `json:"rev,omitempty"`
 }
 
@@ -214,15 +216,16 @@ type activitySessionSnapshot struct {
 	// shared root journal. The job counts are incomplete, so the projected
 	// branch carries an error instead of reporting a complete history.
 	DegradedJobHistory bool
-	// JobsEpoch and DelegatesEpoch are historicalJobFoldCache's and
-	// historicalDelegateFoldCache's current generation counters for this
-	// session's own jobs.jsonl and the delegates.jsonl it folds,
-	// respectively (0 for a LIVE session's own snapshot — loadLiveActivityBase
-	// reads neither cache, and a live session's own data is always current,
-	// never stale in the sense these caches guard against; a live root's
-	// CLOSED children still carry their real ones). Carried into any
-	// continuation that names THIS session — see activityContinuation,
-	// markActivitySessionTruncated and collectActivitySessionEpochs.
+	// JobsEpoch and DelegatesEpoch are the generations of this session's own
+	// jobs.jsonl, and of the delegates.jsonl it folds, respectively. A
+	// historical session reports historicalJobFoldCache's and
+	// historicalDelegateFoldCache's counters. A live session reports its
+	// liveJobFold's own: jobs.jsonl's epoch advances whenever a rebuild
+	// replaces a fold the page may have counted positions in — an ordinary
+	// append does not — and delegates.jsonl is not read through that fold, so
+	// its generation stays 0. Carried into any continuation that names THIS
+	// session — see activityContinuation, markActivitySessionTruncated and
+	// collectActivitySessionEpochs.
 	JobsEpoch      uint64
 	DelegatesEpoch uint64
 	// JobsJournalAbsent records that this session had no jobs.jsonl when the
@@ -383,10 +386,10 @@ func (s *Session) JobActivityTree(ctx context.Context, params appwire.JobsListPa
 	root := activitySessionLocator{live: s, stateDir: s.stateDir, sessionID: s.ID()}
 	now := s.sclock().Now().UTC()
 	if s.jobActivityClock == nil {
-		// ctx reaches the bounded scanners that load already-exited descendants
-		// of this live root. The root's own job list loads through
-		// jm.store.LoadOrdered, a separate unbounded read on jobstore.Store's
-		// cursor-caching path that does not take a context.
+		// ctx reaches every reader this snapshot takes: the bounded scanners that
+		// load already-exited descendants of this live root, and the incremental
+		// fold that extends the root's own job list by the events appended since
+		// the previous read.
 		snapshot, startDepth, resumeIndex, err := loadActivitySnapshotForParams(ctx, root, params)
 		if err != nil {
 			return appwire.JobActivityTree{}, err
@@ -490,12 +493,12 @@ func loadActivitySnapshotForParams(ctx context.Context, root activitySessionLoca
 		return nil, 0, 0, activityStaleContinuationError("the underlying journal changed")
 	}
 
-	// A live session has no fold-cache generation at all (jobsEpoch and
-	// delegatesEpoch above are both 0 for one — activitySessionSnapshot's
-	// doc comment), so the check above cannot speak for a live target:
-	// 0 == 0 passes across a real mutation. Revision closes that gap the
-	// same way a generation closes it for a historical session: checked
-	// against the SAME jobActivityClock
+	// The epoch check above speaks for a live target's own job list — a
+	// rebuild of it advances liveJobFold's epoch — but it cannot speak for a
+	// delegate appended under this root, which changes no fold and renumbers
+	// nothing this live session reports: 0 == 0 passes across that mutation.
+	// Revision closes that gap the same way a generation closes it for a
+	// historical session: checked against the SAME jobActivityClock
 	// projectStableLiveActivityTreeAt's own before/after retry loop reads,
 	// so any mutation between mint and resume — not just one within a
 	// single request — is caught here.
@@ -668,14 +671,31 @@ func buildActivityContinuationAt(loc activitySessionLocator, cont activityContin
 
 func loadActivityBase(loc activitySessionLocator, required bool, cache *historicalActivityCache) (activityLoadedBase, error) {
 	if loc.live != nil {
-		return loadLiveActivityBase(loc.live)
+		return loadLiveActivityBase(cache.ctx, loc.live)
 	}
 	return loadHistoricalActivityBase(loc.stateDir, loc.sessionID, required, cache)
 }
 
-func loadLiveActivityBase(s *Session) (activityLoadedBase, error) {
+// loadLiveActivityBase reads a live session's own job list from its journal.
+//
+// The list is folded incrementally through the job manager's liveJobFold, so
+// serving a page costs the events appended since the previous read rather than
+// the whole journal: a live session folds its complete history once and extends
+// that fold by each later append, at any history length. It never calls
+// jobstore.Store's Load, which allocates a private copy of every record per
+// call — an O(history) cost on a path every activity request takes.
+//
+// The fold reads no further than the store's committed length, so an append
+// still in flight, and one whose fsync then rolls it back, cannot enter the page
+// or the positions that page counted. ctx is the request's: a canceled request
+// stops waiting, and the scan itself stops once its last waiter is gone, so
+// abandoning a cold read does not still pay for it.
+func loadLiveActivityBase(ctx context.Context, s *Session) (activityLoadedBase, error) {
 	if s == nil {
 		return activityLoadedBase{}, errors.New("session unavailable")
+	}
+	if err := ctx.Err(); err != nil {
+		return activityLoadedBase{}, err
 	}
 	snapshot := activitySessionSnapshot{
 		SessionID: s.ID(),
@@ -695,11 +715,39 @@ func loadLiveActivityBase(s *Session) (activityLoadedBase, error) {
 	snapshot.Usage = appwire.EvenerUsageFromLLM(s.CumulativeUsageSnapshot())
 	jm, err := sessionJobManager(s)
 	if err == nil && jm != nil && jm.store != nil {
-		ordered, err := jm.store.LoadOrdered()
+		// The live records are sampled FIRST and the committed boundary
+		// second. A job enters the map only once its start event committed, so
+		// reading the map first puts every job it holds at or before a
+		// boundary read afterwards — and the fold below covers it. Sampled the
+		// other way, a job committing between the two calls is live but absent
+		// from the fold, and the overlay drops the row instead of overlaying
+		// one.
+		live := jm.liveJobRecords()
+		committed, err := jm.store.CommittedJournal()
 		if err != nil {
 			return activityLoadedBase{}, err
 		}
-		snapshot.Jobs = newActivityJobList(mergeActivityRecords(ordered, jm.liveJobRecords()))
+		folded, err := jm.liveActivityFold.records(ctx, committed.Path, committed, jm.store.CommittedJournal)
+		if err != nil {
+			return activityLoadedBase{}, err
+		}
+		// A rebuild may have removed the start record of a job that is still
+		// running. Live records for those jobs have no durable row to overlay, so
+		// the list would drop them and the page would report a running job as
+		// gone. Only a fold descended from a rebuild needs that second chance; an
+		// ordinary append removes nothing, and a stray live row there would have
+		// no place in the order. The which-are-stranded answer is memoized on the
+		// fold per publication, so an unchanged refresh costs the live set rather
+		// than the history.
+		snapshot.Jobs = jm.liveActivityFold.overlayLive(folded, live)
+		// A rebuild of this fold is the one thing that renumbers the list a page
+		// counts positions in: truncating the journal drops rows and shifts the
+		// rest toward the front. Carrying the fold's epoch into the snapshot puts
+		// that fact in every continuation minted over it, so a resume minted
+		// before the truncation fails the same epoch check a historical session
+		// uses instead of applying its index to a list that moved. An ordinary
+		// append leaves the epoch alone and so leaves paging alone.
+		snapshot.JobsEpoch = folded.epoch
 	}
 	children := make(map[string]*subagent)
 	if s.subagents != nil {
@@ -954,87 +1002,6 @@ func sortedActivityChildIDs(children map[string]*activitySessionSnapshot) []stri
 	}
 	sort.Strings(ids)
 	return ids
-}
-
-// mergeActivityRecords overlays live records on durable history without
-// mutating either input. Durable records retain their append positions. Jobs
-// visible only in the live map are inserted by (StartedAt, JobID). It serves
-// a live session's own jobs, read fresh from its store on every page; a
-// closed session's history is ordered once by its fold instead (see
-// historicalJobFold).
-func mergeActivityRecords(durable []*jobstore.JobRecord, live map[string]*jobstore.JobRecord) []*jobstore.JobRecord {
-	// One index per durable job: its position in first-appearance order, with
-	// a later duplicate replacing the record in place, at a single map
-	// operation per durable record.
-	durableIndex := make(map[string]int, len(durable))
-	ordered := make([]*jobstore.JobRecord, 0, len(durable))
-	for _, rec := range durable {
-		if rec == nil || rec.JobID == "" {
-			continue
-		}
-		if at, seen := durableIndex[rec.JobID]; seen {
-			ordered[at] = rec
-			continue
-		}
-		durableIndex[rec.JobID] = len(ordered)
-		ordered = append(ordered, rec)
-	}
-
-	liveByID := make(map[string]*jobstore.JobRecord, len(live))
-	liveKeys := make([]string, 0, len(live))
-	for key := range live {
-		liveKeys = append(liveKeys, key)
-	}
-	sort.Strings(liveKeys)
-	for _, key := range liveKeys {
-		rec := live[key]
-		if rec == nil || rec.JobID == "" {
-			continue
-		}
-		if _, seen := liveByID[rec.JobID]; !seen {
-			liveByID[rec.JobID] = rec
-		}
-	}
-
-	merged := make([]*jobstore.JobRecord, 0, len(ordered)+len(liveByID))
-	for _, rec := range ordered {
-		if len(liveByID) > 0 {
-			if liveRec := liveByID[rec.JobID]; liveRec != nil {
-				rec = liveRec
-			}
-		}
-		merged = append(merged, rec.Clone())
-	}
-
-	liveOnly := make([]*jobstore.JobRecord, 0, len(liveByID))
-	for jobID, rec := range liveByID {
-		if _, durable := durableIndex[jobID]; !durable {
-			liveOnly = append(liveOnly, rec.Clone())
-		}
-	}
-	sort.Slice(liveOnly, func(i, j int) bool {
-		return activityRecordBefore(liveOnly[i], liveOnly[j])
-	})
-	for _, rec := range liveOnly {
-		at := len(merged)
-		for i, current := range merged {
-			if activityRecordBefore(rec, current) {
-				at = i
-				break
-			}
-		}
-		merged = append(merged, nil)
-		copy(merged[at+1:], merged[at:])
-		merged[at] = rec
-	}
-	return merged
-}
-
-func activityRecordBefore(left, right *jobstore.JobRecord) bool {
-	if left.StartedAt.Equal(right.StartedAt) {
-		return left.JobID < right.JobID
-	}
-	return left.StartedAt.Before(right.StartedAt)
 }
 
 // projectActivitySessionAt renders snapshot's own entries (its owned shell

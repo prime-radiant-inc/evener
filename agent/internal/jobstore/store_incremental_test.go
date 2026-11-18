@@ -3,6 +3,7 @@ package jobstore
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
 	"os"
@@ -1104,5 +1105,265 @@ func TestStoreFoldCacheSeesForeignAppendAfterStaleStat(t *testing.T) {
 	}
 	if _, ok := got["job_foreign_stale_stat"]; !ok {
 		t.Fatalf("load hid the foreign append: got %d jobs without job_foreign_stale_stat", len(got))
+	}
+}
+
+// The committed boundary is the seam the live activity fold reads through: it
+// says how far a reader outside the store may fold, and it carries the content
+// generation that decides whether a previously folded prefix may be extended.
+// These tests pin the three properties the fold depends on, at the store rather
+// than through the fold: an append is growth (not a new generation), a
+// truncation and an in-place rewrite each move it, and a torn tail is repaired
+// so it cannot be joined onto.
+
+// TestCommittedJournalOrdinaryAppendKeepsTheGeneration pins the property the
+// incremental fold's whole economy rests on: two boundary reads across an
+// ordinary append report the SAME generation and a longer committed prefix, so
+// the fold extends its prefix instead of rebuilding it.
+func TestCommittedJournalOrdinaryAppendKeepsTheGeneration(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "jobs.jsonl")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	before, err := s.CommittedJournal()
+	if err != nil {
+		t.Fatalf("CommittedJournal before any append: %v", err)
+	}
+	if before.Path != path {
+		t.Fatalf("boundary path = %q, want the journal's own %q", before.Path, path)
+	}
+	if before.Size != 0 {
+		t.Fatalf("boundary size on an empty journal = %d, want 0", before.Size)
+	}
+	if !before.MetadataResolvesWrites {
+		t.Fatalf("a fresh store reported MetadataResolvesWrites=false before any append observed otherwise")
+	}
+
+	if err := s.Append(incrementalTestEvent(0)); err != nil {
+		t.Fatalf("first append: %v", err)
+	}
+	first, err := s.CommittedJournal()
+	if err != nil {
+		t.Fatalf("CommittedJournal after first append: %v", err)
+	}
+	if first.Size <= before.Size {
+		t.Fatalf("boundary size = %d after an append, want it past the %d it started at", first.Size, before.Size)
+	}
+	if first.Generation != before.Generation {
+		t.Fatalf("generation moved %d -> %d across an ordinary append: a fold would rebuild instead of extending", before.Generation, first.Generation)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat journal: %v", err)
+	}
+	if first.Size != info.Size() {
+		t.Fatalf("boundary size = %d, want the journal's committed length %d", first.Size, info.Size())
+	}
+
+	// A second read of an unchanged journal reports the same thing again: the
+	// boundary is a sample, not a one-shot event a reader consumes.
+	again, err := s.CommittedJournal()
+	if err != nil {
+		t.Fatalf("repeated CommittedJournal: %v", err)
+	}
+	if again.Size != first.Size || again.Generation != first.Generation {
+		t.Fatalf("repeated boundary read = (size %d, gen %d), want the unchanged (size %d, gen %d)", again.Size, again.Generation, first.Size, first.Generation)
+	}
+
+	// And the next append keeps extending the same generation.
+	if err := s.Append(incrementalTestEvent(1)); err != nil {
+		t.Fatalf("second append: %v", err)
+	}
+	second, err := s.CommittedJournal()
+	if err != nil {
+		t.Fatalf("CommittedJournal after second append: %v", err)
+	}
+	if second.Generation != first.Generation {
+		t.Fatalf("generation moved %d -> %d across a second ordinary append", first.Generation, second.Generation)
+	}
+	if second.Size <= first.Size {
+		t.Fatalf("boundary size = %d after a second append, want it past the %d it was", second.Size, first.Size)
+	}
+}
+
+// TestCommittedJournalTruncationMovesTheGeneration pins the one change that
+// must invalidate a fold: a journal that shrank is not the file any prefix
+// describes, so its content generation has to move even though the store is
+// still open on the same handle.
+func TestCommittedJournalTruncationMovesTheGeneration(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "jobs.jsonl")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+	for i := range 4 {
+		if err := s.Append(incrementalTestEvent(i)); err != nil {
+			t.Fatalf("append %d: %v", i, err)
+		}
+	}
+	full, err := s.CommittedJournal()
+	if err != nil {
+		t.Fatalf("CommittedJournal: %v", err)
+	}
+
+	// Cut the journal in place, keeping the first record whole.
+	raw, err := afero.ReadFile(afero.NewOsFs(), path)
+	if err != nil {
+		t.Fatalf("read journal: %v", err)
+	}
+	cut := bytes.IndexByte(raw, '\n')
+	if cut < 0 {
+		t.Fatalf("fixture journal holds no complete record")
+	}
+	if err := os.Truncate(path, int64(cut+1)); err != nil {
+		t.Fatalf("truncate journal: %v", err)
+	}
+
+	after, err := s.CommittedJournal()
+	if err != nil {
+		t.Fatalf("CommittedJournal after truncation: %v", err)
+	}
+	if after.Generation <= full.Generation {
+		t.Fatalf("generation = %d after a truncation, want it past the %d it reported for the longer journal: a fold would extend a prefix the file no longer has", after.Generation, full.Generation)
+	}
+	if after.Size >= full.Size {
+		t.Fatalf("boundary size = %d after truncation, want it below the previous %d", after.Size, full.Size)
+	}
+}
+
+// TestCommittedJournalSameLengthRewriteMovesTheGeneration pins the case length
+// alone cannot see: the journal was replaced with different bytes of the same
+// length, so the only evidence is the modification time, and the generation
+// must move for it.
+func TestCommittedJournalSameLengthRewriteMovesTheGeneration(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "jobs.jsonl")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+	if err := s.Append(incrementalTestEvent(0)); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	first, err := s.CommittedJournal()
+	if err != nil {
+		t.Fatalf("CommittedJournal: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read journal: %v", err)
+	}
+
+	// Rewrite the same LENGTH with different bytes, and put the mtime an hour
+	// into the future so no clock granularity can hide the change.
+	rewritten := bytes.Replace(raw, []byte(`"job_0"`), []byte(`"job_9"`), 1)
+	if len(rewritten) != len(raw) {
+		t.Fatalf("fixture rewrite changed the length (%d -> %d)", len(raw), len(rewritten))
+	}
+	if err := os.WriteFile(path, rewritten, 0o644); err != nil {
+		t.Fatalf("rewrite journal: %v", err)
+	}
+	future := time.Now().Add(time.Hour)
+	if err := os.Chtimes(path, future, future); err != nil {
+		t.Fatalf("stamp rewritten journal: %v", err)
+	}
+
+	after, err := s.CommittedJournal()
+	if err != nil {
+		t.Fatalf("CommittedJournal after rewrite: %v", err)
+	}
+	if after.Generation <= first.Generation {
+		t.Fatalf("generation = %d after a same-length rewrite, want it past the %d it reported before: a fold would keep the rows the rewrite removed", after.Generation, first.Generation)
+	}
+	if after.Size != first.Size {
+		t.Fatalf("boundary size = %d after a same-length rewrite, want the unchanged %d", after.Size, first.Size)
+	}
+}
+
+// TestCommittedJournalRepairsATornTail pins that a partial trailing record is
+// settled before the boundary is reported, so the record the next append writes
+// lands on its own line instead of joining the fragment.
+func TestCommittedJournalRepairsATornTail(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "jobs.jsonl")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+	if err := s.Append(incrementalTestEvent(0)); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	committed, err := s.CommittedJournal()
+	if err != nil {
+		t.Fatalf("CommittedJournal: %v", err)
+	}
+
+	// Leave a fragment of a record behind the committed prefix, the way an
+	// out-of-band writer that was cut off mid-write does.
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read journal: %v", err)
+	}
+	fragment := []byte(`{"seq":2,"kind":"job_started","job_id":"job_torn`)
+	if err := os.WriteFile(path, append(raw, fragment...), 0o644); err != nil {
+		t.Fatalf("write torn tail: %v", err)
+	}
+
+	repaired, err := s.CommittedJournal()
+	if err != nil {
+		t.Fatalf("CommittedJournal over a torn tail: %v", err)
+	}
+	if repaired.Size != committed.Size {
+		t.Fatalf("boundary size = %d over a torn tail, want the %d that decodes", repaired.Size, committed.Size)
+	}
+	if repaired.Generation <= committed.Generation {
+		t.Fatalf("generation = %d after a torn tail, want it past the %d it was", repaired.Generation, committed.Generation)
+	}
+	onDisk, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat repaired journal: %v", err)
+	}
+	if onDisk.Size() != committed.Size {
+		t.Fatalf("journal still holds %d bytes after the boundary read, want the torn fragment cut back to %d", onDisk.Size(), committed.Size)
+	}
+
+	// The repaired journal must still accept an append and still decode, which
+	// is the whole reason the fragment had to go.
+	if err := s.Append(incrementalTestEvent(1)); err != nil {
+		t.Fatalf("append after torn-tail repair: %v", err)
+	}
+	events, err := s.LoadEvents()
+	if err != nil {
+		t.Fatalf("LoadEvents after torn-tail repair: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("journal holds %d events after the repair and an append, want 2", len(events))
+	}
+}
+
+// TestCommittedJournalReportsClosedAndUnusable pins that the boundary read
+// answers with the same typed failures every other operation reports, rather
+// than a zero snapshot a caller could mistake for an empty journal.
+func TestCommittedJournalReportsClosedAndUnusable(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "jobs.jsonl")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, err := s.CommittedJournal(); !errors.Is(err, ErrStoreClosed) {
+		t.Fatalf("CommittedJournal on a closed store = %v, want ErrStoreClosed", err)
 	}
 }
