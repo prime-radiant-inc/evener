@@ -549,34 +549,34 @@ reasoning input on its Responses API for `deepseek-flash` and
 `replay_reasoning_text = true` in each of those model rows.
 [DeepSeek Responses input items](https://api-docs.deepseek.com/guides/responses_api/#input-items).
 
-For a **Lunaroute** connection, the three models below accept plain replay
-on both protocols. Its chat endpoint emits `reasoning`, while GLM and
-Inkling read `reasoning_content`. DeepSeek reads either field. Add these
-model tables to the existing connection in `providers.toml`, substituting
-its instance name for `lunaroute`. For a new connection, the full example
-reads the gateway's API base URL and key from the two named environment
-variables. Choose `protocol = "openai-responses"` for Responses, which
-ignores the chat field setting. [Gateway probes](https://github.com/prime-radiant-inc/evener/issues/6709).
+For a **Lunaroute** connection, use Responses. The three models below
+accept native `reasoning_text` items. For an existing connection, use its
+instance name in the model tables. A model row with its own `protocol`
+overrides the connection, so set that row to `openai-responses` as well.
+For a new connection, the example reads the gateway's API base URL and key
+from the two named environment variables. [Gateway probes](https://github.com/prime-radiant-inc/evener/issues/6709).
 
 ```toml
 [providers.lunaroute]
 base = "openai-compatible"
 vars_env = { BASE_URL = "LUNAROUTE_BASE_URL" }
 api_key = "$LUNAROUTE_API_KEY"
-protocol = "openai-chat"
+protocol = "openai-responses"
 
 [providers.lunaroute.models."deepseek-4.1-flash"]
 replay_reasoning_text = true
-reasoning_field = "reasoning_content"
 
 [providers.lunaroute.models."glm-5.3-flash"]
 replay_reasoning_text = true
-reasoning_field = "reasoning_content"
 
 [providers.lunaroute.models."inkling-2-small"]
 replay_reasoning_text = true
-reasoning_field = "reasoning_content"
 ```
+
+For a Lunaroute connection using `openai-chat`, set
+`reasoning_field = "reasoning_content"` on the enrolled model rows. The
+chat endpoint emits `reasoning`. GLM and Inkling read `reasoning_content`
+on input, and DeepSeek reads either spelling.
 
 What changed structurally: `thinking_format` is now a `Caps` field set in
 `providers.toml`/the curated overlay (a provider- or model-level TOML key),
