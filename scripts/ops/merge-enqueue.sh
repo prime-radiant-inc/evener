@@ -213,6 +213,77 @@ dir_is_owned_by_trusted() {
 # inside DIR, so DIR is not a place this script may put anything it will later
 # trust.
 #
+# acl_getfacl_grants_foreign_write -- read `getfacl -p -c` output on stdin.
+#
+# The entries that matter are the named-user and named-group ones and the mask
+# that caps them: `user::` and `group::` are the owner and owning group, which
+# the mode bits already describe, and `other::` likewise. The mask is included
+# because it bounds every named entry, so a mask carrying write means a named
+# entry may carry it too even when that entry is printed as `#effective:r--`.
+acl_getfacl_grants_foreign_write() {
+  awk -F: '
+    $1 == "user"  && $2 != "" && index($3, "w") { found = 1 }
+    $1 == "group" && $2 != "" && index($3, "w") { found = 1 }
+    $1 == "mask"              && index($2, "w") { found = 1 }
+    END { exit found ? 0 : 1 }
+  '
+}
+
+# acl_ls_e_grants_foreign_write -- read macOS `ls -lde` ACL lines on stdin.
+#
+# Darwin has no getfacl; it prints an ACL as numbered entries after the mode
+# line, as `0: user:nobody allow read,write`. Only an `allow` entry counts --
+# a `deny` entry takes permission away -- and only one naming a user or group,
+# with a permission that lets that user change what is in the directory. The
+# read-only permissions (read, readattr, readextattr, readsecurity, list,
+# search, execute) and the inheritance markers are deliberately not in the
+# pattern: refusing those would turn a harmless grant, which is what most ACLs
+# on a Mac are, into a launcher that will not build.
+acl_ls_e_grants_foreign_write() {
+  awk '
+    /^[[:space:]]*[0-9]+:[[:space:]]*(user|group):/ && /[[:space:]]allow[[:space:]]/ {
+      if ($0 ~ /(write|add_file|add_subdirectory|delete|append)/) { found = 1 }
+    }
+    END { exit found ? 0 : 1 }
+  '
+}
+
+# dir_acl_grants_foreign_write DIR -- true when DIR's extended ACL gives write to
+# anyone outside this user and root, or when the ACL cannot be read at all.
+#
+# Only called for an entry `ls` marks with `+`, so the common case costs one stat
+# and no ACL read. The two readers are not interchangeable and both are needed:
+# getfacl is Linux's tool and is not installed on macOS, where `ls -lde` is the
+# only thing that prints an ACL. Trying only getfacl would answer "grants" for
+# every marked entry on a Mac, and a directory with a harmless read-only grant
+# would be refused -- a hardening rule that stops the tool from working is worse
+# than the window it closes.
+#
+# Anything neither reader can parse is a yes: a rule that cannot read the
+# permission cannot vouch for it, which is the same convention as the rest of
+# this file.
+dir_acl_grants_foreign_write() {
+  local dir="$1" listing acl
+  listing=$(ls -ldn "$dir" 2>/dev/null) || return 0
+  # The mode is the first field; the marker sits at the end of it, not at the end
+  # of the line. Matching the whole listing would look for a line that ends in
+  # `+`, which no `ls -l` line does.
+  case "${listing%%[[:space:]]*}" in
+    *+) ;;
+    *) return 1 ;;
+  esac
+  if command -v getfacl >/dev/null 2>&1; then
+    acl=$(getfacl -p -c "$dir" 2>/dev/null) || return 0
+    [ -n "$acl" ] || return 0
+    printf '%s\n' "$acl" | acl_getfacl_grants_foreign_write
+    return $?
+  fi
+  acl=$(ls -lde "$dir" 2>/dev/null) || return 0
+  [ -n "$acl" ] || return 0
+  printf '%s\n' "$acl" | acl_ls_e_grants_foreign_write
+  return $?
+}
+
 # It answers the unsafe way whenever it cannot answer at all. A directory that is
 # not there, or one whose owner or write bits cannot be read, comes back
 # replaceable: a component that is absent is a component somebody else can
@@ -228,10 +299,24 @@ dir_is_owned_by_trusted() {
 #
 # Then the write bits. Group- or other-writable means those users can replace
 # entries; the sticky bit takes rename and delete back from them.
+#
+# Then extended ACLs, which the mode bits do not describe. `ls -ldn` marks an
+# entry that carries one with a `+` after the mode, on GNU and on BSD both, and
+# a `+` means somebody's access is not those nine characters. On macOS a 0755
+# directory with a trusted owner is exactly where this bites: the owner is fine
+# and the mode is fine, and an ACL still lets another local user add, rename and
+# delete entries.
+#
+# A `+` is not by itself an answer, though. An ACL that grants another user only
+# read does not make the directory replaceable, and refusing every marked entry
+# would turn a harmless grant into a refusal to merge. So the marker decides
+# only whether the ACL has to be read, and dir_acl_grants_foreign_write answers
+# what it grants. When it cannot read the ACL, its answer is yes.
 dir_entry_is_replaceable() {
   local dir="$1" writable
   [ -d "$dir" ] || return 0
   dir_is_owned_by_trusted "$dir" || return 0
+  dir_acl_grants_foreign_write "$dir" && return 0
   writable=$(find "$dir" -maxdepth 0 \( -perm -0020 -o -perm -0002 \) -print 2>/dev/null) || return 0
   [ -n "$writable" ] || return 1
   [ -k "$dir" ] && return 1
@@ -324,45 +409,6 @@ scratch_path_is_trusted() {
 # symlink whose resolved destination is trusted is accepted -- resolution is
 # asked for, not forbidden -- but from here on only the destination is named, so
 # there is no spelling left that could be swapped between the check and the use.
-scratch_root=""
-for scratch_candidate in "${TMPDIR:-/tmp}" "${XDG_RUNTIME_DIR:-}" "${HOME:+$HOME/.cache/evener-scratch}"; do
-  [ -n "$scratch_candidate" ] || continue
-  case "$scratch_candidate" in
-    /*) ;;
-    *) continue ;;
-  esac
-  if [ ! -d "$scratch_candidate" ]; then
-    # $TMPDIR and $XDG_RUNTIME_DIR are the caller's to provide. A missing one is
-    # unavailable, not an invitation: `mkdir -p` here would recreate a directory
-    # a sandbox removed, put the scratch inside it, and leave it behind for the
-    # next run to treat as real. Only $HOME/.cache/evener-scratch belongs to this
-    # tool, and only it is created -- 0700 throughout, so only this user can
-    # enter it or the directories between it and $HOME. An existing cache
-    # directory is used as its owner left it, and still has to pass the chain
-    # check.
-    # Compared as a string, not as a case pattern: $HOME can hold characters a
-    # pattern would read as wildcards, and this test decides whether the script
-    # creates a directory.
-    [ "$scratch_candidate" = "${HOME:-/nonexistent}/.cache/evener-scratch" ] || continue
-    (umask 077 && mkdir -p "$scratch_candidate") 2>/dev/null || continue
-  fi
-  [ -w "$scratch_candidate" ] || continue
-  # Resolved before the check, and the resolved value is what gets kept. The
-  # candidate was named by the caller or by $HOME and may be a symlink; the
-  # destination is what every later step must use, so it is resolved here rather
-  # than trusted in one spelling and used in another.
-  scratch_resolved=$(scratch_resolve "$scratch_candidate" 2>/dev/null) || continue
-  [ -n "$scratch_resolved" ] || continue
-  scratch_path_is_trusted "$scratch_resolved" || continue
-  scratch_root="$scratch_resolved"
-  break
-done
-# The canonical root, not the caller's spelling of it, is what TMPDIR says from
-# now on: scratch_dir, the build, the helper and the group file all read this.
-if [ -n "$scratch_root" ] && [ "$scratch_root" != "${TMPDIR:-/tmp}" ]; then
-  TMPDIR="$scratch_root"
-  export TMPDIR
-fi
 
 # Forward a signal to the child and reap it before this script exits, so a
 # SIGTERM at the script's PID stops the poll instead of leaving it running
@@ -782,10 +828,16 @@ start_helper() {
   # set -m it is the child's own pid, and recording it here is what lets the
   # forced stop find the Go helper after a wrapper child has exited: `ps` on a
   # reaped pid names nothing, and the group outlives the process that led it.
-  helper_group=$(ps -o pgid= -p "$child" 2>/dev/null | tr -d ' ') || helper_group=""
-  case "$helper_group" in
-    '' | *[!0-9]*) helper_group="" ;;
-  esac
+  #
+  # It comes from the job handle, not from `ps`. Under set -m bash puts the job
+  # in a new group and makes it the leader, so `$!` IS the group id -- and asking
+  # `ps` for it instead is a race this script loses in the one shape that
+  # matters: an EVENER_DEV_BIN wrapper can start the helper and exit before the
+  # lookup runs, leaving `ps` naming nothing at all. helper_group would then be
+  # empty, the forced stop would start from the exited wrapper, and the launcher
+  # could return 130 while the helper the wrapper left behind was still polling
+  # or submitting. Reading the handle cannot fail that way.
+  helper_group="$child"
   launching=false
   # A signal that arrived between the fork and the PID record was held by the
   # handler; the launch is now interruptible and complete, so act on it.
@@ -834,7 +886,32 @@ build_helper() {
   # gets the ambient go env file minus its GOFLAGS lines: the cache, proxy and
   # toolchain settings it needs are kept, and the one setting this script owns is
   # not the file's to choose.
-  goenv=$(go env GOENV 2>/dev/null) || goenv=""
+  #
+  # The path is resolved WITHOUT running the go command, which matters more than
+  # it looks: `go env GOENV` runs from the caller's directory, so a go.work that
+  # selects an uncached toolchain makes it wait on a download. That wait is in
+  # the foreground and before the build is a tracked child, and bash defers a
+  # trap until the foreground command returns, so a SIGTERM at this script's PID
+  # would stall here until the download finished. The rule below is the go
+  # command's own, written out: $GOENV, else the platform's config directory,
+  # and `off` when the caller asked for no file at all. It mirrors
+  # scripts/lib/private-go-home.sh and agent/sandbox/env_floor.go rather than
+  # inventing a third answer.
+  goenv=${GOENV:-}
+  if [ -z "$goenv" ]; then
+    case "$(uname -s)" in
+      Darwin)
+        [ -z "${HOME:-}" ] || goenv="$HOME/Library/Application Support/go/env"
+        ;;
+      *)
+        if [ -n "${XDG_CONFIG_HOME:-}" ]; then
+          goenv="$XDG_CONFIG_HOME/go/env"
+        elif [ -n "${HOME:-}" ]; then
+          goenv="$HOME/.config/go/env"
+        fi
+        ;;
+    esac
+  fi
   case "$goenv" in
     '' | off)
       goenv=off
@@ -911,6 +988,67 @@ trap 'interrupted TERM' TERM
 trap 'interrupted INT' INT
 trap 'interrupted HUP' HUP
 trap 'finish' EXIT
+
+# The scratch root is chosen here, after the libraries are loaded and the traps
+# are armed, because the choice now includes asking whether the root can execute
+# a program -- gate_scratch_root_executes is the repository's probe -- and a root
+# that cannot is skipped in favour of the next candidate. The probe is asked only
+# for the build path, which is the only one that runs something out of scratch: a
+# prebuilt helper needs the directory to hold a group file and nothing more, so a
+# noexec TMPDIR stays a perfectly good place for it.
+scratch_root=""
+# The build path writes a helper into scratch and executes it; the prebuilt path
+# only writes a group file there. So the execution requirement belongs to the
+# former alone, and a caller who supplied their own helper keeps a noexec TMPDIR.
+scratch_must_execute=true
+[ -n "${EVENER_DEV_BIN:-}" ] && scratch_must_execute=false
+for scratch_candidate in "${TMPDIR:-/tmp}" "${XDG_RUNTIME_DIR:-}" "${HOME:+$HOME/.cache/evener-scratch}"; do
+  [ -n "$scratch_candidate" ] || continue
+  case "$scratch_candidate" in
+    /*) ;;
+    *) continue ;;
+  esac
+  if [ ! -d "$scratch_candidate" ]; then
+    # $TMPDIR and $XDG_RUNTIME_DIR are the caller's to provide. A missing one is
+    # unavailable, not an invitation: `mkdir -p` here would recreate a directory
+    # a sandbox removed, put the scratch inside it, and leave it behind for the
+    # next run to treat as real. Only $HOME/.cache/evener-scratch belongs to this
+    # tool, and only it is created -- 0700 throughout, so only this user can
+    # enter it or the directories between it and $HOME. An existing cache
+    # directory is used as its owner left it, and still has to pass the chain
+    # check.
+    # Compared as a string, not as a case pattern: $HOME can hold characters a
+    # pattern would read as wildcards, and this test decides whether the script
+    # creates a directory.
+    [ "$scratch_candidate" = "${HOME:-/nonexistent}/.cache/evener-scratch" ] || continue
+    (umask 077 && mkdir -p "$scratch_candidate") 2>/dev/null || continue
+  fi
+  [ -w "$scratch_candidate" ] || continue
+  # Resolved before the check, and the resolved value is what gets kept. The
+  # candidate was named by the caller or by $HOME and may be a symlink; the
+  # destination is what every later step must use, so it is resolved here rather
+  # than trusted in one spelling and used in another.
+  scratch_resolved=$(scratch_resolve "$scratch_candidate" 2>/dev/null) || continue
+  [ -n "$scratch_resolved" ] || continue
+  scratch_path_is_trusted "$scratch_resolved" || continue
+  # And it has to be able to run what will be written to it. A noexec mount is
+  # writable, trusted and useless for this: selection would pick it, the build
+  # would succeed, and the exec probe further down would then exit 2 with a
+  # usable $XDG_RUNTIME_DIR or cache directory sitting untried. The probe is a
+  # program this script writes and runs, so it happens after the chain check and
+  # never before it.
+  if [ "$scratch_must_execute" = true ]; then
+    gate_scratch_root_executes "$scratch_resolved" || continue
+  fi
+  scratch_root="$scratch_resolved"
+  break
+done
+# The canonical root, not the caller's spelling of it, is what TMPDIR says from
+# now on: scratch_dir, the build, the helper and the group file all read this.
+if [ -n "$scratch_root" ] && [ "$scratch_root" != "${TMPDIR:-/tmp}" ]; then
+  TMPDIR="$scratch_root"
+  export TMPDIR
+fi
 
 if [ -n "${EVENER_DEV_BIN:-}" ]; then
   # A relative override belongs to the caller's directory. Absolute paths are
