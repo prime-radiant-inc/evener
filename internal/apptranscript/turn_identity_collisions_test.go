@@ -373,26 +373,7 @@ func TestSplitPreludeRunsAgreeOnCompleteness(t *testing.T) {
 	// the header's own items out, so a page cut there could advertise a whole
 	// turn and drop the continuation a client uses to fetch the rest
 	// (localDaemonWindowTransferResume) (#1166 review).
-	for _, candidate := range indexCandidates(t, path) {
-		if candidate.TurnID != appwire.SystemPreludeTurnID {
-			continue
-		}
-		var run appwire.Turn
-		for _, turn := range runs {
-			for _, item := range turn.Items {
-				if item.Position != nil && *item.Position == candidate.Position {
-					run = turn
-				}
-			}
-		}
-		if run.ID == "" {
-			continue
-		}
-		if candidate.HasEarlierItems != run.HasEarlierItems || candidate.HasLaterItems != run.HasLaterItems {
-			t.Errorf("prelude item at %+v: index earlier=%v later=%v, full read earlier=%v later=%v",
-				candidate.Position, candidate.HasEarlierItems, candidate.HasLaterItems, run.HasEarlierItems, run.HasLaterItems)
-		}
-	}
+	assertRunBoundaryFlags(t, turns, appwire.SystemPreludeTurnID, indexCandidates(t, path))
 	// The delivery is a whole turn of its own: it continues nothing.
 	for _, turn := range turns {
 		if turn.ID == "turn_delivery_1" {
@@ -769,6 +750,214 @@ func TestLegacySiblingGroupsStayWhole(t *testing.T) {
 	}
 }
 
+// TestHiddenPartReservesCallIDBeforeVisiblePart covers one assistant entry
+// that announces a hidden communicate call and then a visible command with the
+// SAME provider call id. The index reserves the id at the FIRST recorded call
+// part — the hidden one, which projects no item — so the result has no item to
+// settle into and stays a separate record. A full read that reserved the id at
+// the first VISIBLE announcement would instead attach that result to the
+// command, giving an output to a call the index leaves unanswered (#1166
+// review).
+func TestHiddenPartReservesCallIDBeforeVisiblePart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "hidden_then_visible"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stamp := func(turn schema.Turn, id string, span schema.TurnSpanKind) schema.Turn {
+		turn.Format = schema.TurnFormatIdentity
+		turn.TurnID = id
+		turn.TurnKind = span
+		return turn
+	}
+	record := func(turn schema.Turn) {
+		t.Helper()
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceVerbatim}); err != nil {
+			t.Fatalf("record %s: %v", turn.Kind, err)
+		}
+	}
+	commCall := llm.ToolCallData{ID: "call_shared", Name: "communicate", Arguments: json.RawMessage(`{"message":"hi"}`)}
+	readCall := llm.ToolCallData{ID: "call_shared", Name: "read_file", Arguments: json.RawMessage(`{"path":"a"}`)}
+	record(stamp(schema.NewTurn(schema.TurnUserInput, llm.User("go")), "t_mix", schema.TurnSpanExecution))
+	// ONE entry: the hidden communicate part first, then the visible command.
+	mixed := schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+		{Kind: llm.ContentToolCall, ToolCall: &commCall},
+		{Kind: llm.ContentToolCall, ToolCall: &readCall},
+	}}}
+	mixed.Authorship = &schema.TranscriptAuthorship{Inherited: true}
+	record(stamp(mixed, "t_mix", ""))
+	record(stamp(schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("call_shared", "read_file", "out", false)), "t_mix", ""))
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := apptranscript.NewToolCallRegistry()
+	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+		return items
+	})
+	if err != nil {
+		t.Fatalf("ItemTurnsFromFile: %v", err)
+	}
+	// The visible command must NOT receive the result: the id was claimed by
+	// the hidden communicate part, so both readers keep the result as its own
+	// record and the command stays unanswered.
+	//
+	// The two readers do still differ on one item here, and that difference is
+	// NOT this finding: the index also holds an agentMessage the full read does
+	// not, because the projector's communicate-result rule (a healed
+	// communicate renders an agentMessage from its raw arguments) runs on the
+	// index's own registry state. That rule is unchanged from main — see
+	// apptranscript.go's `if name == "communicate"` result branch — and this
+	// change neither creates nor widens it. It is reported in the PR body
+	// rather than asserted here, so this test pins only what settlement does.
+	// The announcement and the settled result both carry the id, so select the
+	// announcement by the status only it can have: the in-progress call.
+	var announced, settled *appwire.ThreadItem
+	for ti := range turns {
+		for ii := range turns[ti].Items {
+			item := &turns[ti].Items[ii]
+			if item.CallID != "call_shared" || item.ToolName != "read_file" {
+				continue
+			}
+			if item.Status == appwire.TurnStatusInProgress {
+				announced = item
+			} else {
+				settled = item
+			}
+		}
+	}
+	if announced == nil {
+		t.Fatalf("full read turns = %+v, want the announced read_file command left in progress", shapesFromTurns(turns))
+	}
+	if announced.Output != "" {
+		t.Errorf("read_file call output=%q, want it left unanswered: the hidden part reserved the id", announced.Output)
+	}
+	// The result is kept, but as its own record rather than folded into the
+	// announcement it does not belong to.
+	if settled == nil {
+		t.Errorf("full read turns = %+v, want the shared result kept as its own record", shapesFromTurns(turns))
+	}
+}
+
+// assertRunBoundaryFlags compares the two readers' continuation flags at the
+// only granularity they share. The index reports a flag per ITEM; the full read
+// reports one per RUN. An item in the middle of a run legitimately says
+// "earlier" where its run says otherwise, because the flag answers "are there
+// items before this one in the turn" for an item and "does this run start the
+// turn" for a run. At a run's FIRST item the two questions are the same, and
+// likewise at its LAST item for the forward flag — and those boundaries are
+// exactly what a page transfer follows.
+func assertRunBoundaryFlags(t *testing.T, turns []appwire.Turn, turnID string, candidates []appitempaging.TranscriptItemCandidate) {
+	t.Helper()
+	// The run holding each item position, and each run's first and last item.
+	type extent struct{ first, last appwire.ThreadItemPosition }
+	extents := make(map[int]extent)
+	runOf := make(map[appwire.ThreadItemPosition]int)
+	for i := range turns {
+		if turns[i].ID != turnID || len(turns[i].Items) == 0 {
+			continue
+		}
+		var e extent
+		// The header prompt's position IS the zero position, so a zero-value
+		// test cannot tell "unset" from "first item at entry 0".
+		haveFirst := false
+		for _, item := range turns[i].Items {
+			if item.Position == nil {
+				continue
+			}
+			runOf[*item.Position] = i
+			if !haveFirst {
+				e.first = *item.Position
+				haveFirst = true
+			}
+			e.last = *item.Position
+		}
+		extents[i] = e
+	}
+	checked := 0
+	for _, c := range candidates {
+		if c.TurnID != turnID {
+			continue
+		}
+		run, ok := runOf[c.Position]
+		if !ok {
+			t.Fatalf("full read has no %q run holding the item at %+v", turnID, c.Position)
+		}
+		e := extents[run]
+		checked++
+		if c.Position == e.first && c.HasEarlierItems != turns[run].HasEarlierItems {
+			t.Errorf("item at %+v opens run %d: index earlier=%v, full read earlier=%v",
+				c.Position, run, c.HasEarlierItems, turns[run].HasEarlierItems)
+		}
+		if c.Position == e.last && c.HasLaterItems != turns[run].HasLaterItems {
+			t.Errorf("item at %+v closes run %d: index later=%v, full read later=%v",
+				c.Position, run, c.HasLaterItems, turns[run].HasLaterItems)
+		}
+	}
+	if checked == 0 {
+		t.Fatalf("index holds no %q candidates", turnID)
+	}
+}
+
+// TestStampedPreludePageSeesHeaderEarlier covers an older transcript with a
+// header prompt, a delivery, and then its first stamped startup hook. A
+// bounded page that starts at that hook must report HasEarlierItems=true,
+// because the header prompt is part of the same turn and the full read says so.
+// The indexed flag is what a backward transfer follows, so reporting false
+// lets it stop before the prompt (#1166 review).
+func TestStampedPreludePageSeesHeaderEarlier(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "prelude_page", SystemPrompt: "You are Evener."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stamped := func(kind schema.TurnKind, msg llm.Message, span schema.TurnSpanKind) schema.Turn {
+		turn := schema.Turn{Kind: kind, Message: msg}
+		turn.Format = schema.TurnFormatIdentity
+		turn.TurnID = appwire.SystemPreludeTurnID
+		turn.TurnKind = span
+		return turn
+	}
+	delivery := schema.Turn{Kind: schema.TurnSteering, Message: llm.User("attention")}
+	delivery.Format = schema.TurnFormatIdentity
+	delivery.TurnID = "turn_delivery_1"
+	delivery.TurnKind = schema.TurnSpanDelivery
+	hook := stamped(schema.TurnHookCompleted, llm.System("hook ran"), schema.TurnSpanPrelude)
+	hook.Hook = &schema.HookInfo{Event: "SessionStart"}
+	for _, turn := range []schema.Turn{delivery, hook} {
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceVerbatim}); err != nil {
+			t.Fatalf("record %s: %v", turn.Kind, err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := apptranscript.NewToolCallRegistry()
+	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+		return items
+	})
+	if err != nil {
+		t.Fatalf("ItemTurnsFromFile: %v", err)
+	}
+	// The hook's fragment is the prelude run at entry 2: its earlier flag must
+	// be true on BOTH sides, because the header prompt belongs to the same
+	// turn. Run-boundary comparison also covers the header's own item.
+	assertRunBoundaryFlags(t, turns, appwire.SystemPreludeTurnID, indexCandidates(t, path))
+	for _, turn := range turns {
+		if turn.ID != appwire.SystemPreludeTurnID {
+			continue
+		}
+		for _, item := range turn.Items {
+			if item.Type == "systemMessage" && item.Position != nil && item.Position.Entry == 2 && !turn.HasEarlierItems {
+				t.Errorf("hook fragment at entry 2 earlier=false, want true: the header prompt is part of the same turn")
+			}
+		}
+	}
+}
+
 func TestDuplicateAnnouncementInOneEntrySettlesFirst(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
 	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "duplicate_announcement"})
@@ -849,5 +1038,87 @@ func TestDuplicateAnnouncementInOneEntrySettlesFirst(t *testing.T) {
 	}
 	if !reflect.DeepEqual(gotOutputs, wantOutputs) {
 		t.Errorf("full read call outputs = %v, want the index's %v", gotOutputs, wantOutputs)
+	}
+}
+
+// TestSettledProvenanceNamesAnnouncementIdentity covers the order of the two
+// decisions a settlement makes: which identity the settled item keeps, and
+// what its provenance is derived from. MergeThreadItems derives
+// ConversationProvenance.SourceItemID from the id the merged item will carry,
+// so the identity has to be established BEFORE the merge. Restoring the
+// announcement's id afterwards leaves the provenance naming the result entry's
+// own item — an id this read never emits — and a client that follows
+// SourceItemID lands on an item that does not exist (#1166 review).
+//
+// Only ask_user announcements carry provenance (apptranscript.go's
+// `call.Name == "ask_user" && p != nil`), so this is the one settlement where
+// the derived value is observable.
+func TestSettledProvenanceNamesAnnouncementIdentity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "settled_provenance"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stamp := func(turn schema.Turn, id string, span schema.TurnSpanKind) schema.Turn {
+		turn.Format = schema.TurnFormatIdentity
+		turn.TurnID = id
+		turn.TurnKind = span
+		return turn
+	}
+	record := func(turn schema.Turn) {
+		t.Helper()
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceVerbatim}); err != nil {
+			t.Fatalf("record %s: %v", turn.Kind, err)
+		}
+	}
+	origin := &schema.ConversationOutputProvenance{Version: 1, InstanceID: "instance", RunGeneration: 9, RequestID: "request-a", FrontierID: "frontier-a"}
+	ask := schema.Turn{
+		Kind:                   schema.TurnAssistant,
+		ConversationProvenance: origin,
+		Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_ask", Name: "ask_user", Arguments: json.RawMessage(`{"private":"original"}`)}},
+		}},
+	}
+	result := schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("call_ask", "ask_user", "ack", false))
+	record(stamp(schema.NewTurn(schema.TurnUserInput, llm.User("go")), "t_ask", schema.TurnSpanExecution))
+	record(stamp(ask, "t_ask", ""))
+	record(stamp(result, "t_ask", ""))
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := apptranscript.NewToolCallRegistry()
+	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+		return items
+	})
+	if err != nil {
+		t.Fatalf("ItemTurnsFromFile: %v", err)
+	}
+	var settled []appwire.ThreadItem
+	for _, turn := range turns {
+		for _, item := range turn.Items {
+			if item.CallID == "call_ask" && item.Status != appwire.TurnStatusInProgress {
+				settled = append(settled, item)
+			}
+		}
+	}
+	if len(settled) != 1 {
+		t.Fatalf("settled ask_user items = %d (%+v), want the result settled into the announcement", len(settled), settled)
+	}
+	item := settled[0]
+	p := item.ConversationProvenance
+	if p == nil {
+		t.Fatalf("settled item lost the announcement's provenance: %+v", item)
+	}
+	// The identity the client reconciles on is the announcement's.
+	if item.ID == "" {
+		t.Fatalf("settled item id = %q, want the announcement's identity", item.ID)
+	}
+	// And the provenance must name THAT item, because it is derived from the
+	// identity the merge saw.
+	if p.SourceItemID != item.ID {
+		t.Errorf("settled provenance source item = %q, want the emitted item %q: identity must be set before the merge derives from it",
+			p.SourceItemID, item.ID)
 	}
 }

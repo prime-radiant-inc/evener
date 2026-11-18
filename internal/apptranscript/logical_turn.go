@@ -517,7 +517,13 @@ func hasRecordedToolCall(turn *schema.Turn) bool {
 func settleTurnCalls(groups []groupedTurn) [][]appwire.ThreadItem {
 	settled := make([][]appwire.ThreadItem, len(groups))
 	// slot names one emitted item: the group it belongs to and its index there.
-	type slot struct{ group, at int }
+	// none marks a call id the awaited entry recorded at a part that projects
+	// no item, such as a hidden communicate call: the id is claimed, but it has
+	// no item for a result to settle into.
+	type slot struct {
+		group, at int
+		none      bool
+	}
 	// awaiting is a turn's current awaiting entry: the entry that announced
 	// calls most recently, and the item each of its call ids announced first.
 	type awaiting struct {
@@ -571,14 +577,37 @@ func settleTurnCalls(groups []groupedTurn) [][]appwire.ThreadItem {
 					aw = &awaiting{entry: entryIndex, calls: make(map[string]slot)}
 					open[group.turnID] = aw
 				}
-				at := len(merged)
-				for _, item := range entryItems {
-					if MergesByCallID(item) && item.Status == appwire.TurnStatusInProgress {
-						if _, seen := aw.calls[item.CallID]; !seen {
-							aw.calls[item.CallID] = slot{group: g, at: at}
-						}
+				// Reserve from the entry's RECORDED PARTS in order, which is
+				// what the index does (build.go's applyResults walks
+				// Message.Content and keeps the first part per id). A hidden
+				// part therefore claims its id before a later visible part can:
+				// when one entry announces a communicate and then a command
+				// with the same provider id, the index reserves the communicate
+				// part, finds no item there, and leaves the command's result as
+				// its own record. Reserving from visible items instead would
+				// hand that result to the command (#1166 review).
+				visibleTool := make([]int, 0, len(entryItems))
+				for idx, item := range entryItems {
+					if item.Type == "commandExecution" && item.CallID != "" && item.Status == appwire.TurnStatusInProgress {
+						visibleTool = append(visibleTool, idx)
 					}
-					at++
+				}
+				next := 0
+				for _, part := range turn.Message.Content {
+					if part.Kind != llm.ContentToolCall || part.ToolCall == nil {
+						continue
+					}
+					if _, seen := aw.calls[part.ToolCall.ID]; seen {
+						continue
+					}
+					if part.ToolCall.Name == "communicate" {
+						aw.calls[part.ToolCall.ID] = slot{none: true}
+						continue
+					}
+					if next < len(visibleTool) {
+						aw.calls[part.ToolCall.ID] = slot{group: g, at: len(merged) + visibleTool[next]}
+						next++
+					}
 				}
 			}
 			for _, item := range entryItems {
@@ -592,6 +621,16 @@ func settleTurnCalls(groups []groupedTurn) [][]appwire.ThreadItem {
 				if item.Status != appwire.TurnStatusInProgress {
 					if aw := open[group.turnID]; aw != nil {
 						if target, ok := aw.calls[item.CallID]; ok {
+							if target.none {
+								// The awaiting entry recorded this id at a part
+								// that projects no item, so there is nothing to
+								// settle: the index finds no item at that part
+								// and emits this result as its own record. A
+								// result must not be re-homed onto a later
+								// visible call that shares the id.
+								merged = append(merged, item)
+								continue
+							}
 							// The group being built has no published slice
 							// yet, so its slot is read from merged directly.
 							var holder *appwire.ThreadItem
@@ -612,9 +651,16 @@ func settleTurnCalls(groups []groupedTurn) [][]appwire.ThreadItem {
 							// carries none, so a merge that does not force it
 							// drops the round the announcement belonged to
 							// (#1166 review).
-							identity, round := holder.ID, holder.RoundID
+							//
+							// The identity goes on the INCOMING item before the
+							// merge, not after it: MergeThreadItems derives
+							// ConversationProvenance.SourceItemID from
+							// incoming.ID, so restoring the id afterwards would
+							// leave the provenance pointing at an item this
+							// read never emits. Identity is established first
+							// and everything else derives from it.
+							item.ID, item.RoundID = holder.ID, holder.RoundID
 							*holder = MergeThreadItems(*holder, item)
-							holder.ID, holder.RoundID = identity, round
 							continue
 						}
 					}

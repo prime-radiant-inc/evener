@@ -462,12 +462,20 @@ func (x *Index) span(r *reader, lo, hi uint64) ([]appitempaging.TranscriptItemCa
 			return nil, x.fail(err)
 		}
 		item.Version = record.Version
+		// A stamped prelude summary shares its turn with the HEADER
+		// prelude, whose items the index holds in x.prelude rather than in
+		// the item table. The header's items come FIRST in that turn, so a
+		// stamped item continues earlier whenever the header has any item —
+		// the full read reports exactly that, and this flag is what a
+		// backward transfer follows (#1166 review). The forward direction
+		// is the same rule, seen from the header's side (preludeCandidate).
+		earlier := record.ItemIndex > 0 || (turn.ID == appwire.SystemPreludeTurnID && x.prelude != nil && len(x.prelude.Items) > 0)
 		candidates = append(candidates, appitempaging.TranscriptItemCandidate{
 			TurnID:          turn.ID,
 			Turn:            turn,
 			Item:            item,
 			Position:        *item.Position,
-			HasEarlierItems: record.ItemIndex > 0,
+			HasEarlierItems: earlier,
 			HasLaterItems:   uint64(record.ItemIndex)+1 < uint64(stamped.count),
 			Model:           stamped.model,
 		})
@@ -635,19 +643,38 @@ func (x *Index) preludeCandidate(i int) appitempaging.TranscriptItemCandidate {
 // fresh transcript writes under that id. The header itself lives in x.prelude
 // and has no summary, so the stamped items are the only other place the same
 // turn's items can be.
+//
+// The answer rides in the memo preludeBoundary already keeps, keyed on the same
+// table state: a per-candidate turnSlotOf would fall back to a walk of every
+// turn summary when the id is absent, which is precisely the case for a
+// transcript whose header has no stamped entries (#1166 review).
 func (x *Index) preludeHasStampedItems() bool {
-	if x.prelude == nil {
+	if x.prelude == nil || x.turns.n == 0 {
 		return false
 	}
-	slot, found, err := x.turnSlotOf(x.prelude.ID)
-	if err != nil || !found {
+	memo := x.preludeStore()
+	if !memo.valid || memo.epoch != x.turns.epoch || memo.turns != x.turns.n {
+		_, found, err := x.turnSlotOf(x.prelude.ID)
+		if err != nil {
+			return false
+		}
+		*memo = preludeMemo{valid: true, epoch: x.turns.epoch, turns: x.turns.n, indexed: found}
+	}
+	if !memo.indexed {
 		return false
 	}
-	record, err := x.turnRecordAt(slot)
-	if err != nil {
-		return false
+	if !memo.counted {
+		slot, found, err := x.turnSlotOf(x.prelude.ID)
+		if err != nil || !found {
+			return false
+		}
+		record, err := x.turnRecordAt(slot)
+		if err != nil {
+			return false
+		}
+		memo.itemCount, memo.counted = record.ItemCount, true
 	}
-	return record.ItemCount > 0
+	return memo.itemCount > 0
 }
 
 // lastCandidate is the very last item overall (prelude or indexed), or nil
