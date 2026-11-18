@@ -2559,7 +2559,11 @@ test("a visual-viewport scroll with no resize re-anchors the menu", async () => 
   vi.stubGlobal("visualViewport", fakeViewport);
   const { flush } = captureFrames();
   let triggerTop = 300;
-  Object.defineProperty(window, "innerHeight", { configurable: true, value: 400 });
+  // A 400px visible area whose top later sits 100px down ends at 500, so a
+  // 400px layout viewport could never report that pan. 600 contains it, and the
+  // placement still reads the visual viewport's own 400px height - the point of
+  // this fixture is the SCROLL, not the size.
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 600 });
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
     if (this.tagName === "UL") return box(0, 0, 160, 120);
