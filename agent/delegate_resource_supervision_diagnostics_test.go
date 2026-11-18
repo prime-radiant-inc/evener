@@ -81,6 +81,35 @@ func TestStableSupervisionFailureSnapshotCapturesPendingAttention(t *testing.T) 
 			}
 		}
 	})
+
+	t.Run("a scripted step replacement in flight does not block the snapshot", func(t *testing.T) {
+		// A replacement holds the Script mutex across its write. The snapshot
+		// must report that as a busy provider rather than wait inside the read:
+		// the retry loop around it can only honour its deadline if the snapshot
+		// itself never blocks. Held here for the whole call, so a busy answer is
+		// the only one a nonblocking snapshot can give.
+		release := fixture.adapter.script.HoldForTest()
+		defer release()
+		snapshot := stableSupervisionFailureSnapshot(root, sub, fixture.adapter)
+		// The hold is still in place, so the snapshot above answered DURING it
+		// and cannot have got its answer by waiting the writer out.
+		if _, _, ok := fixture.adapter.script.TryState(); ok {
+			t.Fatal("the fixture released the script before the snapshot returned")
+		}
+		if snapshot["provider_lock_busy"] != true {
+			t.Fatalf("snapshot while a step replacement held the script = %#v, want provider_lock_busy", snapshot)
+		}
+		for _, key := range []string{"provider_cursor", "provider_steps"} {
+			if _, ok := snapshot[key]; ok {
+				t.Errorf("snapshot reported %q while the script was busy; it must omit the keys it could not read", key)
+			}
+		}
+		// The request list lives behind the adapter mutex, which is free here, so
+		// a busy script must not cost the snapshot that evidence too.
+		if _, ok := snapshot["provider_requests"].([]llm.Request); !ok {
+			t.Errorf("snapshot omitted provider_requests while only the script was busy: %#v", snapshot)
+		}
+	})
 }
 
 // Dropping a populated reservation, or flattening its admission flags, must
@@ -463,7 +492,17 @@ func stableSupervisionFailureSnapshot(root *Session, sub *subagent, adapter *fak
 		// fakeAdapter holds this mutex across a scripted provider step. Blocking
 		// Requests() here would hide a provider stuck inside that step.
 		if adapter.mu.TryLock() {
-			snapshot["provider_cursor"], snapshot["provider_steps"] = adapter.cursor(), adapter.scriptLen()
+			// The cursor and the step count live behind the Script mutex, which a
+			// step replacement can hold. TryState reads both without waiting, so
+			// this whole snapshot path is nonblocking: a busy Script reports
+			// through the same provider-lock key a busy adapter does, and the
+			// retry loop picks it up on its next pass. The script is taken second
+			// here, as in Complete.
+			if cursor, steps, ok := adapter.script.TryState(); ok {
+				snapshot["provider_cursor"], snapshot["provider_steps"] = cursor, steps
+			} else {
+				snapshot["provider_lock_busy"] = true
+			}
 			snapshot["provider_requests"] = append([]llm.Request(nil), adapter.requests...)
 			adapter.mu.Unlock()
 		} else {

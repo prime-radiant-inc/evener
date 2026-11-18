@@ -1,4 +1,4 @@
-//go:build unix
+//go:build linux || darwin
 
 package schema
 
@@ -10,6 +10,19 @@ import (
 
 	"golang.org/x/sys/unix"
 )
+
+// This arm is linux || darwin, not unix: markLivelockHeld and
+// unmarkLivelockHeld (the symbols this file's mint and release call) exist
+// only for those two GOOS, and held-ness has no generic definition to fall
+// back on — Linux needs an OFD write lock because its F_GETLK does not report
+// flock locks, while Darwin needs no second marker at all because flock is
+// itself visible to GETLK (session_livelock_marker_linux.go,
+// session_livelock_marker_darwin.go). Nothing ships off those two targets
+// (.goreleaser.yml builds linux and darwin), so there is no shipped platform
+// on which a third arm could run. Every other GOOS — the Unix ones included —
+// takes session_livelock_other.go's not-applied arm, which is why that file's
+// tag excludes these two rather than testing !unix. A build tag on a caller
+// must be no broader than the tags on the symbols it calls (issue #6796).
 
 // AcquireSessionLivelock takes the exclusive flock a root session's process
 // holds for its lifetime on <dir>/sessions/<id>.livelock, creating the file
