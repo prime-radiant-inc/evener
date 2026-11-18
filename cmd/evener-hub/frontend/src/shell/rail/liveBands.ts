@@ -194,24 +194,37 @@ export function liveBandNodes(
       children.push(...bandOverflowNodes(id, overflow.remaining, overflow.offset, overflow.limit));
     return [cachedBandNode(id, band, isExpanded(id, true), children)];
   });
-  // The tier outgrew its loaded pages while none of them drew the band.
+  // The tier outgrew its loaded pages while none of them drew the band. This
+  // row is the one that can end up beside Live's own page row with nothing
+  // above it saying which list it pages, so it names the band it stands for.
   if (overflow && nodes.every((node) => node.kind !== "band" || node.band !== "needsYou"))
-    nodes.push(...bandOverflowNodes(liveBandId("needsYou"), overflow.remaining, overflow.offset, overflow.limit));
+    nodes.push(
+      ...bandOverflowNodes(liveBandId("needsYou"), overflow.remaining, overflow.offset, overflow.limit, "needsYou"),
+    );
   return nodes;
 }
 
 // The one overflow row a band can hold, kept while the page state behind it
 // holds, so an unchanged band keeps its node - and the row's memoized render.
-// One slot per band, not one per tuple: the numbers move as pages load, and a
-// map keyed by them would keep every intermediate state a session saw.
+// The slot is per band AND per scope: the same band renders this row twice,
+// inside its fold and (when nothing draws the fold) after the bands, and the
+// two rows must not trade a label. Not one slot per tuple: the numbers move as
+// pages load, and a map keyed by them would keep every intermediate state.
 const bandOverflowCache = new Map<string, OverflowRailNode[]>();
 const bandOverflowKey = new Map<string, string>();
-function bandOverflowNodes(bandID: string, remaining: number, offset: number, limit: number): OverflowRailNode[] {
+function bandOverflowNodes(
+  bandID: string,
+  remaining: number,
+  offset: number,
+  limit: number,
+  scope?: Band,
+): OverflowRailNode[] {
+  const slot = `${bandID}|${scope ?? ""}`;
   const key = `${remaining}|${offset}|${limit}`;
-  const cached = bandOverflowCache.get(bandID);
-  if (cached && bandOverflowKey.get(bandID) === key) return cached;
-  const nodes = sectionOverflowNode(bandID, "needs_you", remaining, offset, limit);
-  bandOverflowCache.set(bandID, nodes);
-  bandOverflowKey.set(bandID, key);
+  const cached = bandOverflowCache.get(slot);
+  if (cached && bandOverflowKey.get(slot) === key) return cached;
+  const nodes = sectionOverflowNode(bandID, "needs_you", remaining, offset, limit, scope);
+  bandOverflowCache.set(slot, nodes);
+  bandOverflowKey.set(slot, key);
   return nodes;
 }

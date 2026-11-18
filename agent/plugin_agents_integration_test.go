@@ -103,22 +103,17 @@ func TestSpawnAgent_PluginAgentType_SystemPrompt(t *testing.T) {
 
 	// Track what system prompt the subagent's LLM request uses
 	var subagentSystemPrompt string
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				// This is the subagent's first LLM call
-				for _, m := range req.Messages {
-					if m.Role == llm.RoleSystem {
-						subagentSystemPrompt = m.Text()
-					}
-				}
-				return llm.Response{
-					Message: llm.Assistant("done"),
-				}
-			},
-		},
-	}
+	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		// This is the subagent's first LLM call
+		for _, m := range req.Messages {
+			if m.Role == llm.RoleSystem {
+				subagentSystemPrompt = m.Text()
+			}
+		}
+		return llm.Response{
+			Message: llm.Assistant("done"),
+		}
+	})
 	c.Register(adapter)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
@@ -213,7 +208,7 @@ func TestSpawnAgent_PluginAgentType_Model(t *testing.T) {
 					"openai": {Base: "openai", APIKey: "k"},
 				}, lister)
 			} else {
-				c.Register(&fakeAdapter{name: "openai", steps: steps})
+				c.Register(newFakeAdapter("openai", steps...))
 			}
 
 			sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
@@ -410,17 +405,12 @@ func TestSpawnAgent_PluginAgentType_RestrictsTools(t *testing.T) {
 	c := llm.NewClient()
 
 	var subagentToolNames []string
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				for _, td := range req.Tools {
-					subagentToolNames = append(subagentToolNames, td.Name)
-				}
-				return llm.Response{Message: llm.Assistant("done")}
-			},
-		},
-	}
+	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		for _, td := range req.Tools {
+			subagentToolNames = append(subagentToolNames, td.Name)
+		}
+		return llm.Response{Message: llm.Assistant("done")}
+	})
 	c.Register(adapter)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
@@ -575,14 +565,9 @@ func TestSpawnAgent_PluginAgentType_AllowanceGated(t *testing.T) {
 	t.Run("spawnable at allowance > 0", func(t *testing.T) {
 		dir := t.TempDir()
 		c := llm.NewClient()
-		c.Register(&fakeAdapter{
-			name: "openai",
-			steps: []func(req llm.Request) llm.Response{
-				func(req llm.Request) llm.Response {
-					return llm.Response{Message: llm.Assistant("done")}
-				},
-			},
-		})
+		c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant("done")}
+		}))
 
 		sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 			StateDir:         t.TempDir(),
@@ -607,19 +592,14 @@ func TestSpawnAgent_PluginAgentType_InjectsSkillContent(t *testing.T) {
 	c := llm.NewClient()
 
 	var subagentSystemPrompt string
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				for _, m := range req.Messages {
-					if m.Role == llm.RoleSystem {
-						subagentSystemPrompt = m.Text()
-					}
-				}
-				return llm.Response{Message: llm.Assistant("done")}
-			},
-		},
-	}
+	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		for _, m := range req.Messages {
+			if m.Role == llm.RoleSystem {
+				subagentSystemPrompt = m.Text()
+			}
+		}
+		return llm.Response{Message: llm.Assistant("done")}
+	})
 	c.Register(adapter)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{

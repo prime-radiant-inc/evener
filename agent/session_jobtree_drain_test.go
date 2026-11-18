@@ -839,12 +839,7 @@ func TestDrainSettlesChildDurableOnlyPending(t *testing.T) {
 
 func TestDrainJobTreeBatchesQueuedShellNotifications(t *testing.T) {
 	t.Parallel()
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response { return agenttest.FinalResponse("batch handled") },
-		},
-	}
+	adapter := newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse("batch handled") })
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{}))
 	jm := sess.jobManager
 	seedOwnedDurablePending(t, jm, "shell-batch-one", jobstore.JobShell)
@@ -970,12 +965,7 @@ func TestDrainJobTreeWaitsForRunningDelegate(t *testing.T) {
 func TestDrainJobTreeWaitsForForegroundPromotedShell(t *testing.T) {
 	t.Parallel()
 	clk := agenttest.NewFakeClock()
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response { return agenttest.FinalResponse("foreground shell handled") },
-		},
-	}
+	adapter := newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse("foreground shell handled") })
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
 		clock: clk,
 	}))
@@ -1052,9 +1042,7 @@ func TestDrainJobTreeWaitsForForegroundPromotedShell(t *testing.T) {
 // The watch remains armed for later output, but only an unfired condition can
 // tell a one-shot drain that the model explicitly awaits this job.
 func TestDrainDoesNotExcuseFiredReadinessWatch(t *testing.T) {
-	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("readiness acknowledged") },
-	}}
+	adapter := newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse("readiness acknowledged") })
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{TurnEndsProcess: true}))
 	shell := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
 		ID: "shell", Name: "shell", Arguments: json.RawMessage(`{"command":"printf READY\\n; ` + idleShellCommand + `","mode":"background"}`),

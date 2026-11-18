@@ -67,10 +67,10 @@ func TestManagerForkAsideDoNotInheritRole(t *testing.T) {
 					t.Errorf("cycle %d persisted child inherited Manager", cycle)
 				}
 				client := llm.NewClient()
-				client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
+				client.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
 					assertOrdinaryManagerRequest(t, req)
 					return agenttest.FinalResponse("child-result")
-				}}})
+				}))
 				child, err := RestoreSessionFromMeta(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(t.TempDir()), childMeta, stateDir)
 				if err != nil {
 					t.Fatal(err)
@@ -97,7 +97,7 @@ func TestDelegateManagerRoleNotInheritedOnCreateOrResume(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
 	requests := make(chan llm.Request, 8)
-	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(req llm.Request) llm.Response { requests <- req; return agenttest.FinalResponse("child-result") }}})
+	client.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { requests <- req; return agenttest.FinalResponse("child-result") }))
 	root := newSession(t, withClient(client), withConfig(SessionConfig{Manager: true, StateDir: t.TempDir(), MaxSubagentDepth: 1, testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true}}))
 	defer root.Close()
 	result := root.createDelegate(context.Background(), delegateArgs{Task: "child-input", DelegationAllowance: new(0)})
@@ -140,7 +140,7 @@ func TestDelegateManagerRoleNotInheritedOnCreateOrResume(t *testing.T) {
 			if root.getSub(result.ChildSessionID) != nil {
 				t.Fatal("child runtime not reclaimed")
 			}
-			client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(req llm.Request) llm.Response { requests <- req; return agenttest.FinalResponse("resumed-result") }}})
+			client.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { requests <- req; return agenttest.FinalResponse("resumed-result") }))
 			outcome := (delegateRuntime{owner: root}).send(context.Background(), result.DelegateID, "followup-input", 0)
 			if outcome.result.Err != nil {
 				t.Fatal(outcome.result.Err)

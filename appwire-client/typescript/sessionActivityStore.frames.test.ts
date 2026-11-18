@@ -1,3 +1,101 @@
+// The buffered half of the same ordering. A row no loaded page can take yet
+// holds its frames; both hold edges arrive at the same revision, so the ladder
+// would settle the buffered pair on the earlier edge and the admitted row would
+// wear a wait that has already ended. The source sequence orders the pair: each
+// buffered frame keeps the sequence it was received with, so settling does not
+// re-stamp the older edge as newer.
+test("a buffered pre-hold frame cannot outlive the edge that clears it", async () => {
+  const client = pushClient();
+  const admit = deferred<void>();
+  const readStarted = deferred<void>();
+  const context = pushContext();
+  let served = 0;
+  client.on("evener/thread/delegates/list", async ({ scope }) => {
+    served += 1;
+    if (served > 1) {
+      readStarted.resolve();
+      await admit.promise;
+    }
+    return {
+      context,
+      scope: scope ?? "session",
+      page: { complete: true, issues: [] },
+      // The row the buffer's identity names is admitted only by the second
+      // response, so both edges below buffer behind the first.
+      delegates: served > 1 ? [delegateRow({ projectionRevision: 4 })] : [],
+    };
+  });
+  const store = owner(client);
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.complete);
+
+  // Both edges for a row the loaded set does not carry yet, with the sequences
+  // the source assigns: the release is sampled after the hold it ends.
+  const held = frameInfo({ projectionRevision: 4, holdSequence: 5, drainHeldByJobs: true, runningJobCount: 1 });
+  client.emitNotification(pushedFrame(held));
+  client.emitNotification(pushedFrame(frameInfo({ projectionRevision: 4, holdSequence: 6 })));
+
+  // The read that admits the row arrives after both edges.
+  activityChanged(client, ["delegates"]);
+  await readStarted.promise;
+  admit.resolve();
+  await activityState(store, () => store.getSnapshot().delegates.rows.length === 1);
+  const row = store.getSnapshot().delegates.rows[0];
+  expect(row?.drainHeldByJobs ?? false).toBe(false);
+  expect(row?.holdSequence ?? 0).toBe(6);
+  expect(row?.runningJobCount ?? 0).toBe(0);
+});
+
+// The inverse arrival order, buffered. A frame sampled before the hold and
+// delivered after the release must not reinstate the wait: the source sequence
+// is what orders the pair, so the older sample loses however late it arrives.
+test("a buffered hold older than the release does not reinstate the wait", async () => {
+  const client = pushClient();
+  const admit = deferred<void>();
+  const readStarted = deferred<void>();
+  const context = pushContext();
+  let served = 0;
+  client.on("evener/thread/delegates/list", async ({ scope }) => {
+    served += 1;
+    if (served > 1) {
+      readStarted.resolve();
+      await admit.promise;
+    }
+    return {
+      context,
+      scope: scope ?? "session",
+      page: { complete: true, issues: [] },
+      delegates: served > 1 ? [delegateRow({ projectionRevision: 4 })] : [],
+    };
+  });
+  const store = owner(client);
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.complete);
+
+  // The release is sampled after the hold, but the hold is delivered last.
+  client.emitNotification(pushedFrame(frameInfo({ projectionRevision: 4, holdSequence: 6 })));
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({
+        projectionRevision: 4,
+        holdSequence: 5,
+        drainHeldByJobs: true,
+        runningJobCount: 1,
+        oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
+      }),
+    ),
+  );
+
+  activityChanged(client, ["delegates"]);
+  await readStarted.promise;
+  admit.resolve();
+  await activityState(store, () => store.getSnapshot().delegates.rows.length === 1);
+  const row = store.getSnapshot().delegates.rows[0];
+  expect(row?.drainHeldByJobs ?? false).toBe(false);
+  expect(row?.holdSequence ?? 0).toBe(6);
+  expect(row?.runningJobCount ?? 0).toBe(0);
+});
+
 // @vitest-environment node
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { WireError } from "./errors";
@@ -414,6 +512,223 @@ test("a stale projectionRevision cannot regress a row", async () => {
   expect(store.getSnapshot().delegates.rows[0]?.status).toBe("completed");
 });
 
+// The drain hold is its own facet, outside the revision ladder. Entering the
+// drain appends no durable delegate event, so both edges publish at the
+// revision the loaded row already carries; under the ladder that row would
+// never learn the wait and never learn it ended.
+test("a hold at an unchanged revision still reaches a loaded row", async () => {
+  const client = pushClient();
+  const context = pushContext();
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context,
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ projectionRevision: 4 })],
+  }));
+  const { store } = await pushOwner(client);
+  const loaded = store.getSnapshot().delegates.rows[0];
+  expect(loaded?.drainHeldByJobs ?? false).toBe(false);
+
+  // Same revision the row already holds: every other field must hold its
+  // place, and only the hold and its phrasing arrive.
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({
+        projectionRevision: 4,
+        status: "running",
+        drainHeldByJobs: true,
+        holdSequence: 5,
+        runningJobCount: 2,
+        oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
+      }),
+    ),
+  );
+  expect(store.getSnapshot().delegates.rows[0]).toMatchObject({
+    drainHeldByJobs: true,
+    holdSequence: 5,
+    runningJobCount: 2,
+    oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
+  });
+});
+
+// And the release edge, at the same revision again: the row must stop
+// claiming the wait rather than keeping the last hold forever.
+test("clearing the hold at an unchanged revision empties the wait", async () => {
+  const client = pushClient();
+  const context = pushContext();
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context,
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [
+      delegateRow({
+        projectionRevision: 4,
+        drainHeldByJobs: true,
+        holdSequence: 4,
+        runningJobCount: 1,
+        oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
+      }),
+    ],
+  }));
+  const { store } = await pushOwner(client);
+  client.emitNotification(pushedFrame(frameInfo({ projectionRevision: 4, holdSequence: 6 })));
+  const row = store.getSnapshot().delegates.rows[0];
+  expect(row?.drainHeldByJobs ?? false).toBe(false);
+  expect(row?.holdSequence ?? 0).toBe(6);
+  expect(row?.runningJobCount ?? 0).toBe(0);
+  expect(row?.oldestRunningJobStartedAt ?? "").toBe("");
+});
+
+// A higher projection revision does not mean a newer hold sample, and the
+// store must not let the durable winner supply the hold. A frame that samples
+// the wait at a new revision and pauses can arrive after a heartbeat that
+// sampled a reduced count: the durable fields must take the frame's revision
+// while the hold keeps the later sample.
+test("a higher-revision frame does not roll the hold back", async () => {
+  const client = pushClient();
+  const context = pushContext();
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context,
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [
+      delegateRow({
+        projectionRevision: 4,
+        drainHeldByJobs: true,
+        holdSequence: 12,
+        runningJobCount: 2,
+        oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
+      }),
+    ],
+  }));
+  const { store } = await pushOwner(client);
+
+  // One shell finished: higher revision, but its hold was sampled before the
+  // row's.
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({
+        projectionRevision: 5,
+        status: "running",
+        drainHeldByJobs: true,
+        holdSequence: 10,
+        runningJobCount: 1,
+        oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
+      }),
+    ),
+  );
+  const row = store.getSnapshot().delegates.rows[0];
+  expect(row?.projectionRevision).toBe(5);
+  expect(row?.holdSequence).toBe(12);
+  expect(row?.runningJobCount).toBe(2);
+});
+
+// The clearing sample is also the one whose fields are missing: a cleared hold
+// omits its count and oldest start on the wire, so a merge that fills those
+// from the other side restores exactly the wait the sequence just rejected.
+// The frame below carries the higher revision, which makes it the durable
+// winner -- and therefore the loser whose fields must not leak anywhere.
+test("a delayed held frame cannot refill a cleared row's omitted hold fields", async () => {
+  const client = pushClient();
+  const context = pushContext();
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context,
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [
+      delegateRow({
+        projectionRevision: 4,
+        holdSequence: 12,
+        // Cleared: no hold, and the count and oldest start are absent.
+      }),
+    ],
+  }));
+  const { store } = await pushOwner(client);
+  expect(store.getSnapshot().delegates.rows[0]?.holdSequence).toBe(12);
+
+  // Sampled before the row's clear, but projected at a higher revision.
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({
+        projectionRevision: 5,
+        status: "running",
+        drainHeldByJobs: true,
+        holdSequence: 10,
+        runningJobCount: 2,
+        oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
+      }),
+    ),
+  );
+  const row = store.getSnapshot().delegates.rows[0];
+  expect(row?.projectionRevision).toBe(5);
+  expect(row?.holdSequence).toBe(12);
+  expect(row?.drainHeldByJobs ?? false).toBe(false);
+  expect(row?.runningJobCount ?? 0).toBe(0);
+  expect(row?.oldestRunningJobStartedAt ?? "").toBe("");
+});
+
+// The inverse arrival order: a delegates refresh captures a running row just
+// before the drain starts, and its reply lands after the hold frame. At the
+// same revision the read used to clear the hold, and the row then missed the
+// wait for the rest of its duration. The hold carries its own freshness, so
+// the newer frame stands against the older snapshot while every durable field
+// keeps the revision ordering.
+test("a read that predates the hold cannot clear it", async () => {
+  const client = pushClient();
+  const refresh = deferred<void>();
+  const started = deferred<void>();
+  const context = pushContext();
+  let served = 0;
+  client.on("evener/thread/delegates/list", async ({ scope }) => {
+    served += 1;
+    // The first page loads the row; the second is the refresh captured before
+    // the hold, held open until after the frame has landed.
+    if (served > 1) {
+      started.resolve();
+      await refresh.promise;
+    }
+    return {
+      context,
+      scope: scope ?? "session",
+      page: { complete: true, issues: [] },
+      // The refresh's page carries a durable change, so the test can await the
+      // landing it is judging: a read that never arrived would prove nothing.
+      // Its hold sample is the one the read took before the drain started, so
+      // the row must reject it even though it arrives last.
+      delegates: [delegateRow({ projectionRevision: 4, latestIntent: served > 1 ? "Refreshed." : undefined })],
+    };
+  });
+  const store = owner(client);
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.complete);
+
+  // Ask for the refresh, then deliver the hold before the refresh resolves.
+  activityChanged(client, ["delegates"]);
+  await started.promise;
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({
+        projectionRevision: 4,
+        holdSequence: 5,
+        drainHeldByJobs: true,
+        runningJobCount: 1,
+        oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
+      }),
+    ),
+  );
+  // The frame must have landed before the older snapshot resolves, or the test
+  // is not exercising the ordering it names.
+  await activityState(store, () => store.getSnapshot().delegates.rows[0]?.drainHeldByJobs === true);
+  refresh.resolve();
+  // Wait for the read itself to land. Its durable field is what proves it
+  // arrived; the hold is the fact this test is about.
+  await activityState(store, () => store.getSnapshot().delegates.rows[0]?.latestIntent === "Refreshed.");
+  const row = store.getSnapshot().delegates.rows[0];
+  expect(row?.drainHeldByJobs).toBe(true);
+  expect(row?.holdSequence).toBe(5);
+  expect(row?.runningJobCount).toBe(1);
+});
+
 test("a resume clears the prior report", async () => {
   const client = pushClient();
   client.on("evener/thread/delegates/list", ({ scope }) => ({
@@ -746,6 +1061,40 @@ test("an epoch change wins over an applied row with the same id at a lower revis
   expect(row?.projectionRevision).toBe(1);
   expect(row?.reportPreview).toBe("replacement");
   expect(row?.status).toBe("running");
+});
+
+// A replacement daemon numbers its hold samples from its own start, so a
+// sequence from the retired epoch must not judge a frame from the new one: a
+// larger retired number would either suppress a real wait or keep a finished
+// one visible. This is the "within the source epoch" half of the ordering rule.
+test("a replacement epoch's frame is not judged by the retired hold sequence", async () => {
+  const { client, store } = await pushOwner();
+  // The old daemon's last sample carries a high sequence while held.
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({
+        projectionRevision: 5,
+        drainHeldByJobs: true,
+        holdSequence: 900,
+        runningJobCount: 2,
+        oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
+      }),
+    ),
+  );
+  expect(store.getSnapshot().delegates.rows[0]?.holdSequence).toBe(900);
+
+  // The replacement announces its epoch through a summary read, as it does in
+  // production, and then frames the row with its own low sequence and no hold.
+  client.on("evener/thread/activity/read", ({ scope }) => ({
+    ...summaryFixture(scope),
+    context: pushContext({ epoch: "epoch-2" }),
+  }));
+  await store.refresh("summary");
+  client.emitNotification(pushedFrame(frameInfo({ projectionRevision: 1, holdSequence: 1 })));
+  const row = store.getSnapshot().delegates.rows[0];
+  expect(row?.drainHeldByJobs ?? false).toBe(false);
+  expect(row?.holdSequence).toBe(1);
+  expect(row?.runningJobCount ?? 0).toBe(0);
 });
 
 test("extending the epoch comparison to root reads neither loops nor misses the change", async () => {
@@ -2018,12 +2367,23 @@ test("a buffered frame places on the identity its walk served, never on the twin
 
 test("a frame that arrives while a replacement is announced is not overwritten by its read", async () => {
   const client = activityClient();
+  // The row starts held: a previous daemon retired this session while it was
+  // waiting on a shell, so the retained sequence is the old daemon's and is
+  // higher than anything the replacement will assign for a long time.
   client.on("evener/thread/activity/read", ({ scope }) => ({ ...summaryFixture(scope), context: pushContext() }));
   client.on("evener/thread/delegates/list", ({ scope }) => ({
     context: pushContext(),
     scope: scope ?? "session",
     page: { complete: true, issues: [] },
-    delegates: [delegateRow({ status: "running" })],
+    delegates: [
+      delegateRow({
+        status: "running",
+        drainHeldByJobs: true,
+        holdSequence: 900,
+        runningJobCount: 2,
+        oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
+      }),
+    ],
   }));
   const store = owner(client);
   store.start();
@@ -2043,19 +2403,31 @@ test("a frame that arrives while a replacement is announced is not overwritten b
   expect(store.getSnapshot().delegates.loading).toBe(true);
   client.emitNotification(
     pushedFrame(
-      frameInfo({ delegateId: "delegate-1", projectionRevision: 9, status: "completed", reportPreview: "settled" }),
+      // The resumed delegate is running again and is not waiting on a shell,
+      // but the replacement numbers its hold samples from its own start.
+      frameInfo({
+        delegateId: "delegate-1",
+        projectionRevision: 9,
+        status: "completed",
+        reportPreview: "settled",
+        holdSequence: 1,
+      }),
     ),
   );
   reconciled.resolve({
     context: pushContext({ epoch: "epoch-2" }),
     scope: "session",
     page: { complete: true, issues: [] },
-    delegates: [delegateRow({ status: "running" })],
+    delegates: [delegateRow({ status: "running", holdSequence: 1 })],
   });
   await activityState(store, () => !store.getSnapshot().delegates.loading);
   const row = store.getSnapshot().delegates.rows[0];
   expect(row?.status).toBe("completed");
   expect(row?.reportPreview).toBe("settled");
+  // The retired daemon's hold cannot survive into the replacement's epoch.
+  expect(row?.drainHeldByJobs ?? false).toBe(false);
+  expect(row?.holdSequence).toBe(1);
+  expect(row?.runningJobCount ?? 0).toBe(0);
 });
 
 test("a terminal frame racing the first response of a retained owner waits for the ordering it establishes", async () => {

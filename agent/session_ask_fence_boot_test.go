@@ -32,7 +32,7 @@ func TestAskFenceChildBootDurableBeforeCreateAndResumeInput(t *testing.T) {
 			return agenttest.FinalResponse("child-result")
 		}
 	}
-	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{providerInput("1")}})
+	client.Register(newFakeAdapter("openai", providerInput("1")))
 	root = newSession(t, withClient(client), withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1, testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true}}))
 	result := root.createDelegate(context.Background(), delegateArgs{Task: "child-input", DelegationAllowance: new(0)})
 	if result.Err != nil {
@@ -71,7 +71,7 @@ func TestAskFenceChildBootDurableBeforeCreateAndResumeInput(t *testing.T) {
 			if root.getSub(result.ChildSessionID) != nil {
 				t.Fatal("runtime not reclaimed")
 			}
-			client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{providerInput("2")}})
+			client.Register(newFakeAdapter("openai", providerInput("2")))
 			outcome := (delegateRuntime{owner: root}).send(context.Background(), result.DelegateID, "followup-input", 0)
 			if outcome.result.Err != nil {
 				t.Fatal(outcome.result.Err)

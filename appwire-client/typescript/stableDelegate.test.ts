@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { delegateWorkText } from "./stableDelegate";
+import { delegateWaitText, delegateWorkText } from "./stableDelegate";
 
 // The one rule every surface shares: a working row's newest tool intent
 // stands in for the status word, and every other row state keeps the word the
@@ -19,4 +19,48 @@ test("a terminal row keeps the status word over a stale intent", () => {
 test("a row without a non-empty intent keeps the status word", () => {
   expect(delegateWorkText({ terminal: false }, "working")).toBe("working");
   expect(delegateWorkText({ latestIntent: "" }, "working")).toBe("working");
+});
+
+// The hold, not the count, decides whether a row reads as waiting. These assert
+// the transition between states rather than the copy: which source supplies the
+// text, and what it reverts to when the hold clears.
+test("the drain hold, not the job count, supplies the wait text", () => {
+  const held = { terminal: false, drainHeldByJobs: true, runningJobCount: 1 };
+  expect(delegateWaitText(held)).not.toBe("");
+  // Held outranks the intent: the intent stopped moving for the whole hold.
+  expect(delegateWorkText({ ...held, latestIntent: "Reading." }, "working")).toBe(delegateWaitText(held));
+
+  // A positive count with no hold is a delegate still working: it keeps both
+  // its own intent and, without one, the status word.
+  const working = { terminal: false, runningJobCount: 3 };
+  expect(delegateWaitText(working)).toBe("");
+  expect(delegateWorkText({ ...working, latestIntent: "Reading." }, "working")).toBe("Reading.");
+  expect(delegateWorkText(working, "working")).toBe("working");
+});
+
+test("clearing the hold puts the intent and the status word back", () => {
+  const intent = "Retrying the flaky search.";
+  const held = { terminal: false, drainHeldByJobs: true, runningJobCount: 2, latestIntent: intent };
+  expect(delegateWorkText(held, "working")).not.toBe(intent);
+
+  // The same row once the drain has let go: the intent resumes, and with no
+  // intent the status word does.
+  const released = { ...held, drainHeldByJobs: false, runningJobCount: 0 };
+  expect(delegateWorkText(released, "working")).toBe(intent);
+  expect(delegateWorkText({ ...released, latestIntent: "" }, "working")).toBe("working");
+
+  // A terminal row never claims a wait, whatever the hold flag last said.
+  expect(delegateWaitText({ terminal: true, drainHeldByJobs: true, runningJobCount: 2 })).toBe("");
+});
+
+// The count phases the wait; it never changes whether there is one.
+test("the job count phrases the hold and nothing more", () => {
+  const one = delegateWaitText({ terminal: false, drainHeldByJobs: true, runningJobCount: 1 });
+  const many = delegateWaitText({ terminal: false, drainHeldByJobs: true, runningJobCount: 4 });
+  expect(one).not.toBe("");
+  expect(many).not.toBe("");
+  expect(one).not.toBe(many);
+  // A hold with no countable job states no wait: the count is required to
+  // phrase one, and an unphrased hold is not rendered at all.
+  expect(delegateWaitText({ terminal: false, drainHeldByJobs: true })).toBe("");
 });

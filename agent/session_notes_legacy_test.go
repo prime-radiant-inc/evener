@@ -55,9 +55,7 @@ func TestRestoredLegacyNotesCarryNoTerminalControls(t *testing.T) {
 		sessionID, humanJSON))
 
 	client := llm.NewClient()
-	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
-	}})
+	client.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") }))
 	sess, err := RestoreSessionFromMetaWithConfig(
 		client,
 		withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")),

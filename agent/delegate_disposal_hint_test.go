@@ -50,7 +50,7 @@ func TestDelegateDisposalHint_DelegateSendReportsFinalWorktreeState(t *testing.T
 				return communicateWithDefaultOutput("follow-up complete")
 			})
 			childClient := llm.NewClient()
-			childClient.Register(&fakeAdapter{name: "openai", steps: childSteps})
+			childClient.Register(newFakeAdapter("openai", childSteps...))
 			registerTestSessionNamer(childClient)
 
 			repo := newRetirementWorktreeRepo(t)
@@ -211,21 +211,18 @@ func TestDelegateDisposalHint_UsesImmediateParentToolCapability(t *testing.T) {
 				})
 			}
 			parentClient := llm.NewClient()
-			parentClient.Register(&fakeAdapter{name: "openai", steps: parentSteps})
+			parentClient.Register(newFakeAdapter("openai", parentSteps...))
 			registerTestSessionNamer(parentClient)
 
 			childClient := llm.NewClient()
-			childClient.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-				func(llm.Request) llm.Response {
-					return agenttest.ToolCallResponse(writeFileCall("dirty-file", "CHILD_WORK.txt", "nested dirty worktree"))
-				},
-				func(req llm.Request) llm.Response {
-					if toolResultTextForCall(req, "dirty-file") == "" {
-						t.Error("child did not receive its file-write result")
-					}
-					return communicateWithDefaultOutput("child worktree updated")
-				},
-			}})
+			childClient.Register(newFakeAdapter("openai", func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(writeFileCall("dirty-file", "CHILD_WORK.txt", "nested dirty worktree"))
+			}, func(req llm.Request) llm.Response {
+				if toolResultTextForCall(req, "dirty-file") == "" {
+					t.Error("child did not receive its file-write result")
+				}
+				return communicateWithDefaultOutput("child worktree updated")
+			}))
 			registerTestSessionNamer(childClient)
 
 			clients := make(chan *llm.Client, 2)
