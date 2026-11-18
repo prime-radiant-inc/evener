@@ -486,10 +486,17 @@ func (f *liveJobFold) records(ctx context.Context, path string, committed jobsto
 		// The journal's content is no longer the one this fold consumed, so no
 		// part of it describes the file any more. A scan already in flight
 		// cannot answer this caller either: it may have read the bytes before
-		// they went away. A fold that covers this boundary but whose evidence
-		// this call cannot accept is rebuilt for the same reason: the bytes it
-		// describes cannot be shown to be these bytes.
-		rebuild := !f.built || committed.Generation != f.gen || (covers && !inheritedEvidence(f.gen))
+		// they went away.
+		//
+		// The evidence question is NOT limited to the case where the fold already
+		// covers the boundary. A fold that stops short of it is extended, and an
+		// extension appends the delta to the fold's prefix — so the same doubt
+		// applies with more force: on a filesystem whose metadata cannot resolve a
+		// write, a journal that GREW since this fold was built gives no reason to
+		// believe the prefix is intact, and the growth itself is what hides a
+		// same-length rewrite followed by an append. Asking only when `covers`
+		// holds extended exactly that case and kept the removed prefix.
+		rebuild := !f.built || committed.Generation != f.gen || !inheritedEvidence(f.gen)
 		// Where the fold stood when this iteration's scan began. A scan that
 		// leaves it there has nothing left to give this caller, and extending
 		// again would read the same bytes forever.
