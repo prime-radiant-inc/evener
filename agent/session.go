@@ -2801,7 +2801,7 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 		// The entry and the event announcing it are one publication, and the
 		// transcript door is the statement that says so: the entry is in history
 		// before the event exists, so no reader can observe the event ahead of
-		// the transcript that explains it, and the door keeps a fold from
+		// the entry that explains it, and the door keeps a fold from
 		// committing its markers between those two steps.
 		//
 		// The event is a trigger, not a snapshot: when the root session's bridge
