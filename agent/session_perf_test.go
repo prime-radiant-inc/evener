@@ -8,9 +8,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -1497,16 +1499,69 @@ func TestRestoreSessionFromMeta_NoTranscript_StartsClean(t *testing.T) {
 			}
 		})
 	}
-	for _, failure := range []string{"metadata write", "header write"} {
+	t.Run("fresh metadata sync fails independently of the transcript", func(t *testing.T) {
+		fs := &promptMetaSyncFailureFS{Fs: afero.NewOsFs()}
+		fs.fail.Store(true)
+		cfg := RestoreSessionConfig{StateDir: t.TempDir(), ForceRealIO: true, testOnly: testConfig{
+			skipGitSnapshot: true, noSyncJobStore: true, metaFS: fs,
+		}}
+		s, err := start(true, cfg)
+		if err != nil {
+			t.Fatalf("fresh publication: %v", err)
+		}
+		defer s.Close()
+		_, err = schema.LoadSessionMeta(cfg.StateDir, meta.ID)
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("fresh startup published metadata despite failed content sync: %v", err)
+		}
+
+		fs.fail.Store(false)
+		if _, err := s.ProcessInput(t.Context(), "retry metadata persistence", nil); err != nil {
+			t.Fatal(err)
+		}
+		if prompt, _ := lastRequest(t, s); prompt != s.transcript.Header().SystemPrompt {
+			t.Error("request did not use the published header's system prompt")
+		}
+		checkpoint := loadMetaForTest(t, s)
+		if mode := checkpoint.PromptLaunch.TurnEndsProcess; mode == nil || *mode {
+			t.Fatalf("retry omitted the visible prompt's launch facts: %+v", checkpoint.PromptLaunch)
+		}
+
+		fs.fail.Store(true)
+		if _, err := s.ProcessInput(t.Context(), "continue during checkpoint failure", nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := loadMetaForTest(t, s); got.Revision != checkpoint.Revision {
+			t.Errorf("failed autosave replaced revision %d with %d", checkpoint.Revision, got.Revision)
+		}
+		fs.fail.Store(false)
+		if _, err := s.ProcessInput(t.Context(), "checkpoint after recovery", nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := loadMetaForTest(t, s); got.Revision <= checkpoint.Revision ||
+			!reflect.DeepEqual(got.PromptLaunch, checkpoint.PromptLaunch) {
+			t.Error("retry did not advance the checkpoint with the original launch facts")
+		}
+	})
+	for _, failure := range []string{"metadata write", "metadata sync", "header write"} {
 		t.Run("retry after "+failure, func(t *testing.T) {
 			cfg := RestoreSessionConfig{StateDir: t.TempDir(), ForceRealIO: true, testOnly: testConfig{skipGitSnapshot: true, noSyncJobStore: true}}
 			if err := schema.SaveSessionMeta(cfg.StateDir, meta); err != nil {
+				t.Fatal(err)
+			}
+			metaPath := schema.SessionMetaPath(cfg.StateDir, meta.ID)
+			before, err := os.ReadFile(metaPath)
+			if err != nil {
 				t.Fatal(err)
 			}
 			failedCfg, failedMeta := cfg, meta
 			switch failure {
 			case "metadata write":
 				failedCfg.testOnly.metaFS = &notesRenameFailureFS{Fs: afero.NewOsFs(), fail: true, err: os.ErrPermission}
+			case "metadata sync":
+				fs := &promptMetaSyncFailureFS{Fs: afero.NewOsFs()}
+				fs.fail.Store(true)
+				failedCfg.testOnly.metaFS = fs
 			case "header write":
 				failedMeta.CreatedAt = time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
 			}
@@ -1516,11 +1571,16 @@ func TestRestoreSessionFromMeta_NoTranscript_StartsClean(t *testing.T) {
 				t.Fatal("restore unexpectedly succeeded")
 			}
 			var marshalErr *json.MarshalerError
-			if failure == "metadata write" && !errors.Is(err, os.ErrPermission) || failure == "header write" && !errors.As(err, &marshalErr) {
+			if failure == "metadata write" && !errors.Is(err, os.ErrPermission) ||
+				failure == "metadata sync" && !errors.Is(err, syscall.EIO) ||
+				failure == "header write" && !errors.As(err, &marshalErr) {
 				t.Fatalf("restore did not reach the intended %s failure: %v", failure, err)
 			}
 			if _, err := os.Stat(schema.SessionTranscriptPath(cfg.StateDir, meta.ID)); !errors.Is(err, os.ErrNotExist) {
 				t.Errorf("failed publication left a transcript at the recovery path: %v", err)
+			}
+			if after, err := os.ReadFile(metaPath); err != nil || !bytes.Equal(after, before) {
+				t.Errorf("failed publication replaced the last usable metadata: %v", err)
 			}
 			cfg.TurnEndsProcess = true
 			recovered, err := restore(meta, cfg)
@@ -1534,6 +1594,31 @@ func TestRestoreSessionFromMeta_NoTranscript_StartsClean(t *testing.T) {
 			}
 		})
 	}
+}
+
+type promptMetaSyncFailureFS struct {
+	afero.Fs
+	fail atomic.Bool
+}
+
+func (fs *promptMetaSyncFailureFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	f, err := fs.Fs.OpenFile(name, flag, perm)
+	if err == nil && (strings.HasSuffix(name, ".meta.json.tmp") || strings.HasSuffix(name, ".meta.json")) {
+		return promptMetaSyncFailureFile{File: f, fail: &fs.fail}, nil
+	}
+	return f, err
+}
+
+type promptMetaSyncFailureFile struct {
+	afero.File
+	fail *atomic.Bool
+}
+
+func (f promptMetaSyncFailureFile) Sync() error {
+	if f.fail.Load() {
+		return syscall.EIO
+	}
+	return f.File.Sync()
 }
 
 type afterPromptMetaOpenFS struct {

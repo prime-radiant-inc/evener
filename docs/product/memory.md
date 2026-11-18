@@ -503,9 +503,9 @@ deletion. Reopening the same project identity sees its surviving files.
 `--disable-memory` defaults to false on `evener` and `evener serve`. Disabled
 sessions expose no native memory tools, add no automatic memory guidance or
 index context, and perform no native wiki I/O. Ordinary tools, skills and
-session notes remain available; `gardening-memory` is not among them, because a
-disabled session cannot save memory and so neither sees it in its catalog nor
-loads it, exactly like a delegate or a root whose profile denies a save tool.
+session notes remain available. Sessions started with memory disabled omit
+`gardening-memory` from the startup skill catalog. Activating the skill
+requires live access to the memory save tools.
 
 The same opt-out is the launch layers' `memory_enabled` option: settable per
 launch and savable as the global and project launch defaults. The launch
@@ -525,9 +525,12 @@ cannot load.
 
 The choice is sticky across resume and compaction. Omitting the flag on resume
 preserves it; passing the flag can additionally disable an enabled session.
-Disabled parents dominate fresh and restored children. There is no live
-toggle: the option shapes new sessions, and a resumed session keeps the
-state it was created with.
+Disabled parents propagate the opt-out to fresh and restored children. The flag
+takes effect when starting or resuming a session. On resume, the saved startup
+prompt and its skill catalog keep their original wording, so the catalog can
+still list `gardening-memory` after memory is disabled. The resumed session
+omits the native memory tools from its requests and refuses new or pending
+activations of `gardening-memory`.
 
 Opt-out does not remove stored files, prior conversation or other sessions'
 access. It does not revoke general filesystem permissions: unrestricted file

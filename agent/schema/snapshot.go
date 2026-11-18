@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -561,14 +562,14 @@ func SessionsDirListable(fs afero.Fs, dir string) bool {
 }
 
 // SaveSessionMeta writes a SessionMeta to <dir>/sessions/<id>.meta.json using
-// atomic rename and compact JSON (no indentation).
+// compact JSON (no indentation) and syncs the contents before atomic rename.
 func SaveSessionMeta(dir string, meta SessionMeta) error {
 	return SaveSessionMetaWithFS(sessionMetaFS, dir, meta)
 }
 
 // SaveSessionMetaWithFS writes a SessionMeta through fs using the same atomic
-// temp-file and rename sequence as SaveSessionMeta: mkdir plus a temp write and
-// rename, all through the injected filesystem. Tests and fuzzers inject an
+// temp-file and rename sequence as SaveSessionMeta, all through the injected
+// filesystem. Tests and fuzzers inject an
 // in-memory or sandboxed filesystem to exercise persistence without touching
 // real disk.
 func SaveSessionMetaWithFS(fs afero.Fs, dir string, meta SessionMeta) error {
@@ -639,13 +640,6 @@ func PublishSessionTranscript(fs afero.Fs, dir string, meta SessionMeta, recover
 		}
 		// A crash may leave replacement facts without a header. A retry can
 		// replace those facts. A visible header must already have its facts.
-		metadata, err := fs.OpenFile(SessionMetaPath(dir, meta.ID), os.O_RDWR, 0)
-		if err != nil {
-			return err
-		}
-		if err := errors.Join(metadata.Sync(), metadata.Close()); err != nil {
-			return fmt.Errorf("sync replacement prompt launch facts: %w", err)
-		}
 		if err := fsatomic.SyncDir(sessionsDir); err != nil {
 			return err
 		}
@@ -829,7 +823,22 @@ func writeSessionMetaLocked(fs afero.Fs, dir string, meta SessionMeta, newPrompt
 	target := SessionMetaPath(dir, meta.ID)
 	tmp := target + ".tmp"
 
-	if err := afero.WriteFile(fs, tmp, data, 0o644); err != nil {
+	f, err := fs.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return fmt.Errorf("open temp file: %w", err)
+	}
+	n, err := f.Write(data)
+	if err == nil && n != len(data) {
+		err = io.ErrShortWrite
+	}
+	// Keep the previous checkpoint available until the new contents are synced.
+	if err == nil {
+		if syncErr := f.Sync(); syncErr != nil {
+			err = fmt.Errorf("sync temp file: %w", syncErr)
+		}
+	}
+	if err := errors.Join(err, f.Close()); err != nil {
+		_ = fs.Remove(tmp)
 		return fmt.Errorf("write temp file: %w", err)
 	}
 	if err := fs.Rename(tmp, target); err != nil {
