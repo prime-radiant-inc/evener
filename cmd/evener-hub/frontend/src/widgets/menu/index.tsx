@@ -145,6 +145,11 @@ function topLevelWrapperOf(element: HTMLElement, ownerDocument: Document): HTMLE
 // and the labels wrap.
 const NARROW_POPUP_WIDTH = 180;
 
+// `offsetWidth` reports whole pixels while the cap it is compared against can
+// be fractional (a pinch zoom at 2.4x leaves 180.25). A popup within this
+// distance of its cap is at the cap.
+const CAP_ROUNDING = 1;
+
 function firstEnabledIndex(items: MenuEntry[]): number {
   return items.findIndex(isActionable);
 }
@@ -352,18 +357,24 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // above 180 still narrows the popup. Comparing the cap against the layout
     // viewport instead would wrap every menu, since the cap always reserves
     // both edge margins.
-    const capped = popupEl.offsetWidth >= availableWidth;
+    //
+    // A zoom can leave the cap fractional (180.25) while offsetWidth reports
+    // the rounded integer (180), so the comparison allows that rounding: a
+    // popup within a pixel of the cap is at it, which is the case that still
+    // needs the break.
+    const capped = popupEl.offsetWidth >= availableWidth - CAP_ROUNDING;
     popupEl.classList.toggle(CLASS.popupNarrow, capped);
     const placed = computeMenuPosition(
       localTriggerRect,
       { width: popupEl.offsetWidth, height: popupEl.offsetHeight },
       { width: visible.width, height: visible.height },
     );
-    // A SHORTER scrollport can leave the row the reader is on below it - Enter
-    // would then activate a row whose label and focus ring are out of sight.
-    // Only a shrink can do that, and only a shrink is answered: revealing on
-    // every pass would undo the reader's own scroll to the lower actions the
-    // moment any placement runs (a pan, a row appearing above).
+    // A shorter scrollport - or a narrower popup whose labels now wrap, which
+    // makes every row taller - can leave the row the reader is on below it.
+    // Enter would then activate a row whose label and focus ring are out of
+    // sight. Only those two changes are answered; revealing on every pass would
+    // undo the reader's own scroll to the lower actions the moment any
+    // placement runs (a pan, a row appearing above).
     //
     // The reveal moves the POPUP's own scrollTop and nothing else.
     // scrollIntoView would answer the same question through geometry, but on a
@@ -372,9 +383,13 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // the popup's new coordinates, it pans toward where the popup used to be.
     // Arithmetic in the popup's own scroll space has no such reach.
     const scrollportHeight = popupEl.offsetHeight;
-    const shrunk = lastScrollportHeightRef.current !== null && scrollportHeight < lastScrollportHeightRef.current;
-    lastScrollportHeightRef.current = scrollportHeight;
-    if (shrunk) {
+    const lastBox = lastPopupBoxRef.current;
+    lastPopupBoxRef.current = { height: scrollportHeight, capped };
+    // `lastBox === null` is the first placement: the popup has just opened with
+    // its scroll at the top and focus on a row that is already visible, so
+    // nothing has been hidden yet.
+    const refocused = lastBox !== null && (scrollportHeight < lastBox.height || (capped && !lastBox.capped));
+    if (refocused) {
       const focusedRow = itemRefs.current.find((node) => node !== null && node === ownerDocument.activeElement);
       if (focusedRow) {
         const rowTop = focusedRow.offsetTop;
@@ -409,9 +424,10 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   // a resize, a visual-viewport change and an observation together -
   // re-measures once.
   const frameRef = useRef<number | null>(null);
-  // The popup's scrollport height at the last placement, so a pass can tell a
-  // shrink (which may have hidden the focused row) from an ordinary re-place.
-  const lastScrollportHeightRef = useRef<number | null>(null);
+  // The popup's box at the last placement, so a pass can tell a change that
+  // may have hidden the focused row - a shorter or newly-wrapping scrollport -
+  // from an ordinary re-place.
+  const lastPopupBoxRef = useRef<{ height: number; capped: boolean } | null>(null);
   const placeAfterLayout = useCallback(() => {
     if (frameRef.current !== null) return;
     const ownerWindow = ownerDocument.defaultView ?? window;

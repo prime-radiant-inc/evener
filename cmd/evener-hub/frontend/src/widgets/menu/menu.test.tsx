@@ -1225,6 +1225,125 @@ test("a shrink that shortens the popup scrolls its focused row back into view", 
   }
 });
 
+// A narrower popup wraps its labels, and a wrapped label makes every row
+// taller. The popup can then keep its height or even grow while the row the
+// reader is on moves below the scrollport, so a height-only guard misses it.
+// The cap applying is the trigger here, and the reveal is still the popup's own
+// scrollTop.
+test("a zoom that narrows the popup wraps labels and keeps the focused row in view", async () => {
+  const user = userEvent.setup();
+  const originalInnerWidth = Object.getOwnPropertyDescriptor(window, "innerWidth");
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: 800 });
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  const fakeViewport = new EventTarget() as EventTarget & {
+    width: number;
+    height: number;
+    offsetLeft: number;
+    offsetTop: number;
+  };
+  fakeViewport.width = 800;
+  fakeViewport.height = 800;
+  fakeViewport.offsetLeft = 0;
+  fakeViewport.offsetTop = 0;
+  vi.stubGlobal("visualViewport", fakeViewport);
+  // A popup with room for its label, then the same popup under a cap that
+  // forces the break. Rows are 44px tall and the popup stays 120px tall in
+  // both cases, so only the cap distinguishes them.
+  let popupWidth = 220;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(20, 100, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, popupWidth, 120);
+    return box(0, 0, 0, 0);
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
+    return this.tagName === "UL" ? popupWidth : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "UL") return 120;
+    return this.tagName === "LI" ? 44 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName !== "LI" || !this.parentElement) return 0;
+    return Array.prototype.indexOf.call(this.parentElement.children, this) * 44;
+  });
+  const { flush } = captureFrames();
+  try {
+    render(<Menu trigger="Actions" items={items()} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    const popup = screen.getByRole("menu");
+    expect(popup.className).not.toContain("popupNarrow");
+
+    // The reader is on the last row, which is below the 120px scrollport.
+    const last = screen.getByRole("menuitem", { name: "Delete" });
+    last.focus();
+    expect(document.activeElement).toBe(last);
+    expect(popup.scrollTop).toBe(0);
+
+    // Pinch zoom: the visible width no longer fits the popup, so the cap now
+    // decides its width and the labels wrap. Its box height does NOT change.
+    fakeViewport.width = 200;
+    popupWidth = 184;
+    fakeViewport.dispatchEvent(new Event("resize"));
+    flush();
+
+    expect(popup.className).toContain("popupNarrow");
+    // Delete's bottom is 132; a 120px scrollport from 0 ends at 120.
+    expect(popup.scrollTop).toBe(12);
+    expect(document.activeElement).toBe(last);
+  } finally {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    if (originalInnerWidth) Object.defineProperty(window, "innerWidth", originalInnerWidth);
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
+// A zoom can leave the cap fractional - 180.25 for this visual viewport - while
+// offsetWidth reports the rounded integer. Comparing them exactly would leave
+// wrapping off in the one case that still needs it, so a popup within a pixel
+// of its cap counts as capped.
+test("a fractional width cap still wraps the labels it forces to the break", async () => {
+  const user = userEvent.setup();
+  const originalInnerWidth = Object.getOwnPropertyDescriptor(window, "innerWidth");
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: 800 });
+  const fakeViewport = new EventTarget() as EventTarget & {
+    width: number;
+    height: number;
+    offsetLeft: number;
+    offsetTop: number;
+  };
+  // 196.25 - 16 = 180.25: the cap, while the rounded measurement reports 180.
+  fakeViewport.width = 196.25;
+  fakeViewport.height = 800;
+  fakeViewport.offsetLeft = 0;
+  fakeViewport.offsetTop = 0;
+  vi.stubGlobal("visualViewport", fakeViewport);
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(20, 300, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 400, 120);
+    return box(0, 0, 0, 0);
+  });
+  stubPopupLayoutBox(window, 180, 120);
+  try {
+    render(
+      <Menu
+        trigger="Actions"
+        items={[{ id: "archive", label: "Archive all ten sessions in this workspace", onSelect: vi.fn() }]}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+
+    const popup = screen.getByRole("menu");
+    expect(popup.style.maxInlineSize).toBe("180.25px");
+    expect(popup.className).toContain("popupNarrow");
+  } finally {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    if (originalInnerWidth) Object.defineProperty(window, "innerWidth", originalInnerWidth);
+  }
+});
+
 // Revealing the focused row is only ever an answer to a scrollport that got
 // SHORTER. A reader who scrolls down to the lower actions has deliberately
 // moved away from the row that still holds focus, and every other placement

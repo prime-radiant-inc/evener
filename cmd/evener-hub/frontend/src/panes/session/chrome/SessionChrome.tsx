@@ -35,7 +35,7 @@
 import type { NavigationSessionLocation } from "@evener/appwire-client";
 import { SHUT_DOWN_STATUSES, sessionActionError } from "@evener/appwire-client";
 import { isNavigationUnavailable } from "@evener/appwire-client/state/navigation";
-import { type RefObject, useLayoutEffect, useRef, useState } from "react";
+import { useLayoutEffect, useState } from "react";
 import {
   activitySidebarOpenFor,
   activitySidebarStore,
@@ -43,6 +43,7 @@ import {
 } from "../../../shell/activitybar/activitySidebarStore";
 import { useClient } from "../../../shell/clientContext";
 import { closePanesForDeletedSessions } from "../../../shell/deletedSessionPanes";
+import { usePaneDocument } from "../../../shell/paneDocument";
 import { assignSessionPin, deleteSession, setArchived, unpinSession } from "../../../shell/rail/actions";
 import { isConfirmedCrashedSession } from "../../../shell/rail/sessionKind";
 import { navigate, paneToURL, refParam } from "../../../shell/routing";
@@ -57,7 +58,6 @@ import { ownerRetainedRef } from "../../../stores/recoveryFence";
 import { useSessionActivity, useSubagentCounts } from "../../../stores/sessionActivity";
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
 import { Cadence, useToasts } from "../../../widgets";
-import { ownerWindowOf } from "../../../widgets/internal/documentRealm";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { requestFindInSession } from "../find/findRequest";
 import { NOW_TICK_MS, useNowTick, WORK_TICK_MS } from "../liveness";
@@ -124,31 +124,33 @@ const EMPTY_FRAME_TIMES: number[] = [];
 // Below this viewport height the session menu cannot hold one more row.
 const FIND_MENU_MIN_VIEWPORT_HEIGHT = 480;
 
-/** Whether the window this chrome is RENDERED IN is tall enough for the menu to
+/** Whether the window this pane is RENDERED IN is tall enough for the menu to
  * carry Find, kept current as that window resizes.
  *
  * The measurement has to be the pane's own window, not the opener's: a
  * Dockview popout is a separate Window, and resizing it changes only its own
  * innerHeight. The opener can stay 520px tall while its popout shortens to
  * 390px, and a list built once from the opener's measurement then keeps
- * offering an item the popout cannot show. A portal's children belong to the
- * popout from their first commit, so the root element resolves the realm.
+ * offering an item the popout cannot show.
  *
- * Read in a layout effect rather than during render for that reason: the ref
- * is set by the time it runs, and the element it points at is the one the
- * portal put in the pane's document. `null` means the chrome has not mounted
- * (or is the chrome-less discovery mount), where the item set is not built.
+ * The pane's document comes from PaneDocumentContext, which DockHost
+ * republishes at the move itself - Dockview moves a panel's DOM into the popout
+ * window without re-rendering the pane, so nothing observable from the pane's
+ * own element changes. An effect keyed on the element would stay bound to the
+ * opener, so the document is the dependency.
  */
-function useFindFitsViewport(rootRef: RefObject<HTMLDivElement | null>, enabled: boolean): boolean {
+function useFindFitsViewport(enabled: boolean): boolean {
+  const paneDocument = usePaneDocument();
   const [fits, setFits] = useState(true);
   useLayoutEffect(() => {
-    if (!enabled || !rootRef.current) return;
-    const win = ownerWindowOf(rootRef.current);
+    if (!enabled) return;
+    const win = paneDocument.defaultView;
+    if (win === null) return;
     const read = () => setFits(win.innerHeight >= FIND_MENU_MIN_VIEWPORT_HEIGHT);
     read();
     win.addEventListener("resize", read);
     return () => win.removeEventListener("resize", read);
-  }, [rootRef, enabled]);
+  }, [paneDocument, enabled]);
   return fits;
 }
 
@@ -170,10 +172,7 @@ export function SessionChrome({
   const isMobile = useIsMobile();
   const [verbosityOpen, setVerbosityOpen] = useState(false);
   const toasts = useToasts();
-  // The chrome's own root element, so the Find decision can resolve the window
-  // this chrome is rendered in (a popout's, not the opener's) - see the hook.
-  const rootRef = useRef<HTMLDivElement | null>(null);
-  const findFitsViewport = useFindFitsViewport(rootRef, !discoveryOnly);
+  const findFitsViewport = useFindFitsViewport(!discoveryOnly);
   // The Overview menu item's checked state is the sidebar open ON THIS
   // SESSION (the shared predicate hook). The mobile overlay uses the same
   // scope, so rail and session menus agree at every viewport.
@@ -365,7 +364,6 @@ export function SessionChrome({
           own chrome for exactly this state, so there is no status body to
           compress and no second menu to dedupe against. */}
       <div
-        ref={rootRef}
         className={
           placement === "composer" ? (compactRung ? `${CLASS.inline} ${CLASS.inlineRung}` : CLASS.inline) : CLASS.chrome
         }

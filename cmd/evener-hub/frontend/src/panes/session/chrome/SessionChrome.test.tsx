@@ -29,6 +29,7 @@ import {
 } from "../../../shell/activitybar/activitySidebarStore";
 import { ClientProvider } from "../../../shell/clientContext";
 import { resetFocusedActivityScopeForTests } from "../../../shell/focusedSession";
+import { PaneDocumentContext } from "../../../shell/paneDocument";
 import { registerPaneForTests } from "../../../shell/paneRegistry";
 import { MOBILE_QUERY } from "../../../shell/useIsMobile";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
@@ -935,18 +936,34 @@ test("desktop Overview toggles closed only when the sidebar is scoped to this se
   }
 });
 
-// The Find decision is measured against the window the chrome is RENDERED IN.
-// A Dockview popout is its own Window: shortening it leaves the opener's
-// innerHeight untouched, so a list built once from a global measurement keeps
-// offering a row the popout has no room to show.
-test("shortening a popout drops Find and leaves the open menu on a surviving row", async () => {
+// The Find decision is measured against the window the PANE is rendered in,
+// published by DockHost through PaneDocumentContext. A Dockview popout is its
+// own Window: shortening it leaves the opener's innerHeight untouched, so a
+// list built once from a global measurement keeps offering a row the popout has
+// no room to show. The context is the dependency rather than the pane's own
+// element because Dockview moves a panel's DOM into the popout without
+// re-rendering it - nothing observable from that element changes at the move,
+// so an effect keyed on the element stays bound to the opener.
+test("moving a pane into a short popout drops Find and restoring the tall window brings it back", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_popout"));
   fake.on("evener/jobs/list", () => ({ data: emptyActivityTree() }));
   await threadsStore.getState().ensureThread("ref_popout");
   const { frame, doc, win } = appendPopout();
   Object.defineProperty(win, "innerHeight", { configurable: true, value: 520 });
-  const view = renderUI(createPortal(<SessionChrome ref="ref_popout" />, doc.body));
+  const openerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 520 });
+
+  const view = renderUI(
+    createPortal(
+      <ClientProvider client={fake}>
+        <PaneDocumentContext.Provider value={doc}>
+          <SessionChrome ref="ref_popout" />
+        </PaneDocumentContext.Provider>
+      </ClientProvider>,
+      doc.body,
+    ),
+  );
   try {
     const trigger = within(doc.body).getByRole("button", { name: "Session actions" });
     fireEvent.click(trigger);
@@ -957,7 +974,8 @@ test("shortening a popout drops Find and leaves the open menu on a surviving row
     fireEvent.keyDown(doc.activeElement ?? trigger, { key: "ArrowDown" });
     expect(doc.activeElement).toBe(find);
 
-    // The pane shortens to 390px. Only the popout's own window reports it.
+    // The pane is moved into a popout only 390px tall. Only that window
+    // reports it; the opener stays 520px.
     Object.defineProperty(win, "innerHeight", { configurable: true, value: 390 });
     act(() => {
       win.dispatchEvent(new Event("resize"));
@@ -970,9 +988,17 @@ test("shortening a popout drops Find and leaves the open menu on a surviving row
     expect(focused).not.toBeNull();
     expect(menu.contains(focused)).toBe(true);
     expect(focused?.getAttribute("role")).toBe("menuitem");
+
+    // Docked back into a tall window: the row returns.
+    Object.defineProperty(win, "innerHeight", { configurable: true, value: 700 });
+    act(() => {
+      win.dispatchEvent(new Event("resize"));
+    });
+    expect(within(within(doc.body).getByRole("menu")).getByRole("menuitem", { name: /^Find in session/ })).toBeTruthy();
   } finally {
     view.unmount();
     frame.remove();
+    if (openerHeight) Object.defineProperty(window, "innerHeight", openerHeight);
   }
 });
 
