@@ -954,13 +954,15 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// carrier names env.
 	//
 	// Scratch ownership is durable: it is recorded from the environment when the
-	// scratch is created (SessionMeta.ScratchDirSessionID) and every resume reads
-	// it from that same record. A restore that has only the meta to go on would
-	// otherwise name the environment after the session itself and mint a second,
-	// empty directory beside the one its transcript names — flipping the recorded
-	// owner to unowned on the next save. Both identity halves therefore come from
-	// the record: the tree the scratch lives in, and the session whose directory
-	// in that tree it occupies.
+	// scratch is created (SessionMeta.ScratchDirSessionID), and a resume with no
+	// live spawn carrier — the only kind that reconstructs a scratch here —
+	// reads it back from that same record. A restore that has only the meta to go
+	// on would otherwise name the environment after the session itself and mint a
+	// second, empty directory beside the one its transcript names — flipping the
+	// recorded owner to unowned on the next save. Both identity halves therefore
+	// come from the record: the tree the scratch lives in, and the session whose
+	// directory in that tree it occupies. A restore with a live spawn parent
+	// instead keeps the identity of the environment that parent handed it.
 	//
 	// This runs AFTER the reload above, and must: the caller's copy of meta can
 	// predate the record (a daemon that recorded an owner after the caller read

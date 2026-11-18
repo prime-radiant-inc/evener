@@ -202,10 +202,10 @@ func TestSharedEnvDelegateMetaRecordsTheScratchOwner(t *testing.T) {
 //
 // This is the restore constructor's contract, NOT a CLI capability: a bare
 // `serve --resume` or `run --resume` of a delegate is refused before any restore
-// (refuseBareDelegateResume, cmd/evener/resume_guard.go; ruling #4442), and the
-// daemon's own delegate restore always carries a live spawn parent. Every path
-// that does reach this branch therefore arrives through the constructor, so the
-// assertion is made at the seam all of them share.
+// (refuseBareDelegateResume in cmd/evener/resume_guard.go), and the daemon's own
+// delegate restore always carries a live spawn parent. Every path that does reach
+// this branch therefore arrives through the constructor, so the assertion is made
+// at the seam all of them share.
 func TestBareRestoreNamesTheRecordedScratchOwner(t *testing.T) {
 	rootID := artifactRestoreMeta(t).ID
 	ownerID := artifactRestoreMeta(t).ID
