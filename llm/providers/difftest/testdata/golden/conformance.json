@@ -92,6 +92,7 @@
     "provider": "responses",
     "source": "llm/providers/openai/adapter_test.go TestAdapter_Stream_EmitsReasoningSummaryDeltas",
     "text": "Answer",
+    "reasoning": "Let me think.\n\nThen verify.",
     "finish": "stop",
     "input_tokens": 1,
     "output_tokens": 2,
