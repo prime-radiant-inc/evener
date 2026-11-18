@@ -36,46 +36,73 @@ func TestTurnEndsProcessReachesChildSessions(t *testing.T) {
 // with its turn; resumed by the daemon it does not. So restore REPLACES the
 // persisted value rather than inheriting it — otherwise a run-created session
 // resumed under serve would treat background jobs as dying with the turn.
+// Question availability belongs to the registered tools and can change even
+// when the restoring process has the same lifetime.
 func TestRestoreTakesTurnEndsProcessFromTheRestoringProcess(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name      string
-		persisted bool
-		restorer  bool
-		aside     bool
-		legacy    bool
+		name             string
+		persisted        bool
+		restorer         bool
+		aside            bool
+		legacy           bool
+		responder        bool
+		interactive      bool
+		interactiveAside bool
+		questionUpdate   string
 	}{
 		{name: "serve resuming a one-shot session", persisted: true, restorer: false},
 		{name: "one-shot resuming a serve session", persisted: false, restorer: true},
 		{name: "one-shot resume-with a serve session", restorer: true, aside: true},
 		{name: "daemon resuming a daemon session"},
-		{name: "daemon resuming without a recorded launch mode", legacy: true},
+		{name: "daemon resuming without recorded launch capabilities", legacy: true, questionUpdate: envctx.QuestionsUnavailable},
+		{name: "one-shot resuming without its attached responder", persisted: true, restorer: true, responder: true, questionUpdate: envctx.QuestionsUnavailable},
+		{name: "interactive aside of an unattended session", persisted: true, restorer: true, aside: true, interactiveAside: true, questionUpdate: envctx.QuestionsAvailable},
+		{name: "interactive session keeping its question tool", interactive: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			dir, cwd := t.TempDir(), t.TempDir()
 			adapter := &agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response { return agenttest.FinalResponse("done") }}
-			parent := newSession(t, withStateDir(dir), withDir(cwd), withAdapter(adapter), withConfig(SessionConfig{TurnEndsProcess: tt.persisted, NonInteractive: true}))
+			parent := newSession(t, withStateDir(dir), withDir(cwd), withAdapter(adapter), withConfig(SessionConfig{
+				TurnEndsProcess: tt.persisted, NonInteractive: !tt.interactive, AskResponderAttached: tt.responder,
+			}))
 			sendOneUserInput(t, parent, "launch")
 			launch := adapter.Requests()[0]
 			startup, _ := responsesInstructionsAndHistory(responsesPromptBody(t, launch, parent.profile.Resolved()))
 			var prior []any
+			wantAsk := tt.interactive || tt.responder
+			var questionUpdates []string
 			check := func(req llm.Request, modes ...string) []any {
 				t.Helper()
 				body := responsesPromptBody(t, req, parent.profile.Resolved())
 				prompt, history := responsesInstructionsAndHistory(body)
 				input := body["input"].([]any)
 				if prompt != startup || len(input) < len(prior) || !slices.EqualFunc(input[:len(prior)], prior, reflect.DeepEqual) {
-					t.Fatal("execution mode change rewrote the native prompt or an earlier input")
+					t.Fatal("restore rewrote the native prompt or an earlier input")
 				}
-				var got []string
+				tools, _ := body["tools"].([]map[string]any)
+				if hasAsk := slices.ContainsFunc(tools, func(def map[string]any) bool { return def["name"] == askUserToolName }); hasAsk != wantAsk {
+					t.Errorf("native ask_user tool present = %t, want %t", hasAsk, wantAsk)
+				}
+				var gotModes, questions []string
 				for _, msg := range history {
 					var block envctx.Tracker
-					if block.ReplayBlock(msg) && block.State().Last.ExecutionMode != "" {
-						got = append(got, block.State().Last.ExecutionMode)
+					if !block.ReplayBlock(msg) {
+						continue
+					}
+					last := block.State().Last
+					if last.ExecutionMode != "" {
+						gotModes = append(gotModes, last.ExecutionMode)
+					}
+					if last.AskUserState != "" {
+						questions = append(questions, last.AskUserState)
 					}
 				}
-				if !slices.Equal(got, modes) {
-					t.Errorf("native execution mode updates = %v, want %v", got, modes)
+				if !slices.Equal(questions, questionUpdates) {
+					t.Errorf("native question availability updates = %v, want %v", questions, questionUpdates)
+				}
+				if !slices.Equal(gotModes, modes) {
+					t.Errorf("native execution mode updates = %v, want %v", gotModes, modes)
 				}
 				return input
 			}
@@ -83,17 +110,26 @@ func TestRestoreTakesTurnEndsProcessFromTheRestoringProcess(t *testing.T) {
 			id := parent.ID()
 			if tt.aside {
 				var err error
-				id, err = AsideSessionWithConfig(dir, id, parent.Meta().Config)
+				cfg := parent.Meta().Config
+				if tt.interactiveAside {
+					cfg.NonInteractive = false
+				}
+				id, err = AsideSessionWithConfig(dir, id, cfg)
 				if err != nil {
 					t.Fatal(err)
 				}
 			}
 			parent.Close()
+			wantAsk = tt.interactive || tt.interactiveAside
+			if tt.questionUpdate != "" {
+				questionUpdates = []string{tt.questionUpdate}
+			}
 			previous := new(tt.persisted)
 			if tt.legacy {
 				previous = nil
 				meta := loadMetaForTest(t, parent)
 				meta.PromptLaunch.TurnEndsProcess = nil
+				meta.PromptLaunch.HasAskUser = nil
 				saved, err := os.ReadFile(schema.SessionTranscriptPath(dir, id))
 				if err != nil {
 					t.Fatal(err)

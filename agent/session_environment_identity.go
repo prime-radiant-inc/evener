@@ -135,6 +135,13 @@ func (s *Session) setEnvironmentIdentity(snap *envctx.Snapshot, last envctx.Snap
 			snap.ExecutionMode = envctx.OneShotMode
 		}
 	}
+	canAsk := s.canInstructTool(askUserToolName)
+	if launch := s.promptLaunch.HasAskUser; launch == nil || *launch != canAsk || last.AskUserState != "" {
+		snap.AskUserState = envctx.QuestionsUnavailable
+		if canAsk {
+			snap.AskUserState = envctx.QuestionsAvailable
+		}
+	}
 }
 
 // A fork, a model switch, or a fold can leave the current attribution

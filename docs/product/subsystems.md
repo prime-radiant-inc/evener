@@ -129,7 +129,9 @@ either an author or inheritance. See
 [original transcript authors](history-content.md#original-transcript-authors).
 
 For [session questions](session-questions.md), **S09** owns the atomic pending
-set and its boot/revision identity. **S11** compares an answer's expected pair
+set and its boot/revision identity. Its tool registry determines whether the
+session can ask questions. If that availability changes, S09 appends current
+guidance before the next provider request. **S11** compares an answer's expected pair
 at admission and persists the captured composite calls and legacy-question
 count. **S10** retains that exact resolution evidence so replay preserves later
 questions. **S05** owns the bounded row and pair-fenced page contract;

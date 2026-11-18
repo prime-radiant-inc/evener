@@ -211,7 +211,7 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 	// ask_user's registration IS the interactive-root gate itself (spec §7
 	// point 1); reading it back from the registry avoids a second predicate
 	// that could drift from the real gate.
-	data.HasAskUser = s.reg.Get("ask_user") != nil
+	data.HasAskUser = s.canInstructTool(askUserToolName)
 	// end_reason shares that gate: the registered communicate schema takes
 	// it by this same predicate (toolDeps.offersEndReason).
 	data.HasEndReason = s.hasHumanPartnerToAsk()

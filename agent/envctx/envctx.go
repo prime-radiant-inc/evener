@@ -37,6 +37,7 @@ type Snapshot struct {
 	Model             string   `json:"model,omitempty"`
 	KnowledgeCutoff   string   `json:"knowledge_cutoff,omitempty"`
 	ExecutionMode     string   `json:"execution_mode,omitempty"` // set when a later observation supplies the job lifetime
+	AskUserState      string   `json:"ask_user_state,omitempty"`
 	CommitTrailer     string   `json:"commit_trailer,omitempty"`
 	OmitCommitTrailer bool     `json:"omit_commit_trailer,omitempty"` // explicit cancellation of a prior directive
 }
@@ -65,6 +66,9 @@ const hostWritableRoots = writableRootsPrefix + "host filesystem permissions gov
 const executionModePrefix = "execution mode: "
 const OneShotMode = "one-shot"
 const DaemonMode = "daemon"
+const askUserPrefix = "ask_user: "
+const QuestionsAvailable = "available"
+const QuestionsUnavailable = "unavailable"
 const commitTrailerPrefix = "For new commits in this session, use this trailer: "
 const omitCommitTrailer = "Omit the Co-authored-by trailer on new commits in this session."
 
@@ -139,6 +143,8 @@ func (t *Tracker) ReplayBlock(block string) bool {
 			}
 		case line == executionModePrefix+OneShotMode, line == executionModePrefix+DaemonMode:
 			t.st.Last.ExecutionMode = strings.TrimPrefix(line, executionModePrefix)
+		case line == askUserPrefix+QuestionsAvailable, line == askUserPrefix+QuestionsUnavailable:
+			t.st.Last.AskUserState = strings.TrimPrefix(line, askUserPrefix)
 		case strings.HasPrefix(line, commitTrailerPrefix):
 			t.st.Last.CommitTrailer = strings.TrimPrefix(line, commitTrailerPrefix)
 			t.st.Last.OmitCommitTrailer = false
@@ -229,6 +235,16 @@ func (t *Tracker) RenderDiff(cur Snapshot) string {
 		case DaemonMode:
 			lines = append(lines, executionModePrefix+DaemonMode,
 				"Shell jobs and delegates keep running after the turn ends. Their completion can wake this session without a progress watch.")
+		}
+	}
+	if cur.AskUserState != prev.AskUserState {
+		switch cur.AskUserState {
+		case QuestionsAvailable:
+			lines = append(lines, askUserPrefix+QuestionsAvailable,
+				"Use ask_user for decisions only your human partner can settle. First check the task and available evidence, then ask the remaining questions together.")
+		case QuestionsUnavailable:
+			lines = append(lines, askUserPrefix+QuestionsUnavailable,
+				"No one can answer through ask_user in this session. Use the task and available evidence to make decisions and continue. Report any assumptions that affect the result.")
 		}
 	}
 	if cur.CommitTrailer != "" {

@@ -59,6 +59,8 @@ evener --resume-with SESSION_ID --timeout 2m 'Review the earlier findings indepe
 
 Replace `SESSION_ID` with an ID from the listing. `--resume` continues the saved session; `--resume-with` creates a new session using the old context. `--resume-last` selects the most recent session. Use explicit IDs in scripts to avoid resuming unrelated work. Plugin selection cannot be changed with `--resume` or `--resume-last`; `--ask-responder` cannot be combined with any resume mode.
 
+The responder command belongs to the run that started it. When you resume that run, the first request tells the model to proceed with the task instructions and available evidence.
+
 ## Commands
 
 Each command owns its flags. Run `evener COMMAND --help` before scripting a subcommand; one-shot options are not universal options.

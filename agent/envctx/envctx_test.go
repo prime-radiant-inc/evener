@@ -128,6 +128,7 @@ func TestReplayBlockFollowsRenderedChanges(t *testing.T) {
 	initial.SessionID = "child-a1"
 	initial.Model = "provider/m1"
 	initial.ExecutionMode = OneShotMode
+	initial.AskUserState = QuestionsAvailable
 	initial.KnowledgeCutoff = "2025-01"
 	initial.CommitTrailer = "Co-authored-by: Evener v1 (provider/m1) <child-a1@host>"
 	writer := NewTracker(State{})
@@ -139,6 +140,7 @@ func TestReplayBlockFollowsRenderedChanges(t *testing.T) {
 	changed.Pressure = Pressure{}
 	changed.Model = "provider/m2"
 	changed.ExecutionMode = DaemonMode
+	changed.AskUserState = QuestionsUnavailable
 	changed.KnowledgeCutoff = ""
 	changed.CommitTrailer = ""
 	changed.OmitCommitTrailer = true
@@ -165,6 +167,7 @@ func TestReplayBlockFollowsRenderedChanges(t *testing.T) {
 		observed.GitBranch = initial.GitBranch
 		observed.Pressure = initial.Pressure
 		observed.ScratchDir = changed.ScratchDir
+		observed.AskUserState = changed.AskUserState
 		previous := NewTracker(State{Last: nominal, HasSent: true})
 		retained := previous.RenderDiff(observed)
 		var projection Tracker
@@ -172,10 +175,11 @@ func TestReplayBlockFollowsRenderedChanges(t *testing.T) {
 			t.Fatal("expected a retained partial environment")
 		}
 		nominal.ScratchDir = observed.ScratchDir
+		nominal.AskUserState = observed.AskUserState
 		refill := NewTracker(projection.State()).RenderDiff(nominal)
 		var refilled Tracker
-		if !refilled.ReplayBlock(refill) || refilled.State().Last.ScratchDir != "" {
-			t.Fatal("refilling the environment repeated the retained scratch update")
+		if !refilled.ReplayBlock(refill) || refilled.State().Last.ScratchDir != "" || refilled.State().Last.AskUserState != "" {
+			t.Fatal("refilling the environment repeated a retained update")
 		}
 		if !projection.ReplayBlock(refill) || projection.State() != (State{Last: nominal, HasSent: true}) {
 			t.Fatalf("model projection after refill = %+v, want %+v", projection.State(), nominal)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/gittest"
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 )
@@ -152,6 +154,85 @@ func TestNotificationTurn_DrivesModelRequestWithReminder(t *testing.T) {
 	sess.mu.Unlock()
 	if !sawSteering {
 		t.Fatal("no TurnSteering entry carrying the <job-notification ...> block was appended to history")
+	}
+	t.Run("checkout before restored notification", testRestoredNotificationWorkspace)
+}
+
+func testRestoredNotificationWorkspace(t *testing.T) {
+	dir, stateDir := evalSyms(t, t.TempDir()), evalSyms(t, t.TempDir())
+	copyWorktreeBaseRepo(t, dir)
+	const launchBranch, observed, unborn = "launch-18", "observed-29", "unborn-57"
+	gittest.Run(t, dir, "checkout", "-b", launchBranch)
+	var probeCall string
+	adapter := &agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response {
+		if probeCall != "" {
+			id := probeCall
+			probeCall = ""
+			return agenttest.ToolCallResponse(llm.ToolCallData{ID: id, Name: "shell", Arguments: []byte(`{"command":"pwd\ngit branch --show-current"}`)})
+		}
+		return agenttest.FinalResponse("ack")
+	}}
+	s := newSession(t, withDir(dir), withStateDir(stateDir), withEnvironmentSnapshot(), withAdapter(adapter))
+	gittest.Run(t, dir, "checkout", "-b", observed)
+	sendOneUserInput(t, s, "begin")
+	prior := adapter.Requests()[0]
+	saved, err := readTranscriptFull(t.Context(), s.TranscriptPath(), stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prior.Messages[0].Text() != saved.Header.SystemPrompt || !strings.Contains(saved.Header.SystemPrompt, launchBranch) {
+		t.Fatal("the provider and transcript did not share the prompt from the launch checkout")
+	}
+	if last, blocks := requestEnvironment(prior); blocks != 1 || last.Cwd != dir || last.GitBranch != observed {
+		t.Fatalf("launch request has %d workspace updates at %q on %q", blocks, last.Cwd, last.GitBranch)
+	}
+	for i, tc := range []struct {
+		git              []string
+		actual, reported string
+		blocks           int
+	}{
+		{[]string{"checkout", launchBranch}, launchBranch, launchBranch, 2},
+		{nil, launchBranch, launchBranch, 2},
+		{[]string{"checkout", "--orphan", unborn}, unborn, launchBranch, 2},
+		{[]string{"commit", "--allow-empty", "-m", "first"}, unborn, unborn, 3},
+	} {
+		jobID := fmt.Sprintf("job_checkout_%d", i)
+		enqueueCompletedJobNotification(t, s, jobID)
+		s.Close()
+		if tc.git != nil {
+			gittest.Run(t, dir, tc.git...)
+		}
+		env := execenv.NewLocalExecutionEnvironment(dir)
+		resumed, err := RestoreSessionFromMetaWithConfig(s.client, s.profile, env, loadMetaForTest(t, s), RestoreSessionConfig{
+			StateDir: stateDir, testOnly: sharingHostProbe(testConfig{}),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(resumed.Close)
+		s = resumed
+		before := len(adapter.Requests())
+		id := fmt.Sprintf("branch-%d", i)
+		probeCall = id
+		if _, err := s.ProcessInputKind(t.Context(), "", nil, EntryNotification); err != nil {
+			t.Fatal(err)
+		}
+		reqs := adapter.Requests()[before:]
+		if len(reqs) != 2 || !requestsContain(reqs[:1], fmt.Sprintf(`job_id=%q`, jobID)) {
+			t.Fatalf("restored job %s produced %d requests, want its notification and shell result", jobID, len(reqs))
+		}
+		if result := toolResultTextForCall(reqs[1], id); !strings.Contains(result, dir+"\n"+tc.actual) {
+			t.Fatalf("shell did not report cwd %q and branch %q in %s", dir, tc.actual, result)
+		}
+		for _, req := range reqs {
+			if len(req.Messages) < len(prior.Messages) || !reflect.DeepEqual(req.Messages[:len(prior.Messages)], prior.Messages) {
+				t.Fatal("the notification or its tool continuation rewrote earlier provider messages")
+			}
+			if last, blocks := requestEnvironment(req); last.Cwd != dir || last.GitBranch != tc.reported || blocks != tc.blocks {
+				t.Errorf("step %d request has %d workspace updates at %q on %q, want %d at %q on %q", i, blocks, last.Cwd, last.GitBranch, tc.blocks, dir, tc.reported)
+			}
+		}
+		prior = reqs[1]
 	}
 }
 

@@ -146,6 +146,7 @@ type PromptLaunchFacts struct {
 	ScratchDir      *string `json:"scratch_dir,omitempty"`
 	WritableRoots   *string `json:"writable_roots,omitempty"`
 	TurnEndsProcess *bool   `json:"turn_ends_process,omitempty"`
+	HasAskUser      *bool   `json:"has_ask_user,omitempty"`
 }
 
 // Clone keeps a metadata snapshot independent of the session's launch facts.
@@ -155,6 +156,7 @@ func (p PromptLaunchFacts) Clone() PromptLaunchFacts {
 		ScratchDir:      appwire.ClonePointer(p.ScratchDir),
 		WritableRoots:   appwire.ClonePointer(p.WritableRoots),
 		TurnEndsProcess: appwire.ClonePointer(p.TurnEndsProcess),
+		HasAskUser:      appwire.ClonePointer(p.HasAskUser),
 	}
 }
 
@@ -712,6 +714,7 @@ func writeSessionMetaLocked(fs afero.Fs, dir string, meta SessionMeta, newPrompt
 			launch.ScratchDir = cmp.Or(previous.PromptLaunch.ScratchDir, launch.ScratchDir)
 			launch.WritableRoots = cmp.Or(previous.PromptLaunch.WritableRoots, launch.WritableRoots)
 			launch.TurnEndsProcess = cmp.Or(previous.PromptLaunch.TurnEndsProcess, launch.TurnEndsProcess)
+			launch.HasAskUser = cmp.Or(previous.PromptLaunch.HasAskUser, launch.HasAskUser)
 		}
 		if previous.Revision == math.MaxUint64 {
 			return fmt.Errorf("session meta revision overflow for %s", meta.ID)

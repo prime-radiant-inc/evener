@@ -1416,6 +1416,10 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if savedHeader == nil {
 		// The replacement prompt was rendered against the installed environment.
 		s.rehydrateEnvironmentContext(s.history)
+	} else if branch := s.envInfo.GitBranch; branch != "" && branch != s.envTracker.State().Last.GitBranch {
+		// A job can wake the restored session before a user input samples
+		// the checkout. Publish the observed change before that request.
+		s.worktreeContextPending = true
 	}
 	// The restore twin of NewSession's post-init livelock release: the mint
 	// happened inside initSessionState, and any restore-replay failure below
@@ -1888,6 +1892,7 @@ func (s *Session) initSessionState(runSessionStartHooks bool, savedHeader *trans
 			ScratchDir:      new(installedScratchDir(env)),
 			WritableRoots:   new(s.workspaceWritableRoots),
 			TurnEndsProcess: new(s.cfg.TurnEndsProcess),
+			HasAskUser:      new(s.canInstructTool(askUserToolName)),
 		}
 		if warning != "" {
 			s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{Message: warning})
