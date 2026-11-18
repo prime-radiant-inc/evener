@@ -1242,6 +1242,15 @@ func delegateAttentionPendingSet(ids []string) map[string]struct{} {
 	// treats nil as "unknown, fall back to the wake set" — which drops the very
 	// trigger acceptance just consumed. Only a caller that could not read the
 	// transcript passes nil.
+	//
+	// The other direction costs more. A fold that could not run must stay nil:
+	// turning it into an authoritative empty set tells the gate that no row is
+	// pending, which the gate reads as "not awaiting admission" and admits a
+	// frame whose wake nothing confirmed. That would present a row on an
+	// unconfirmed read, so the unavailable answer keeps its own identity here.
+	if ids == nil {
+		return nil
+	}
 	pending := make(map[string]struct{}, len(ids))
 	for _, id := range ids {
 		pending[id] = struct{}{}
