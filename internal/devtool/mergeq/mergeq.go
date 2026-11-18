@@ -338,10 +338,11 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 	// allowance, the confirmation included. It is created here so the
 	// confirmation and the wait below cannot each mint one of their own.
 	post := &postDeadline{}
-	// confirmedAfterDeadline says the confirmation read the queue after the
-	// wait had already run out. Such a read is this instant's queue, so it is
-	// eligible to be the timeout verdict exactly as a post-deadline poll is.
-	var confirmedAfterDeadline bool
+	// known is what this run has learned about the queue, recorded as it is
+	// learned. Everything the exit path decides reads it, rather than the last
+	// thing that happened: an observed answer is not less true because a later
+	// read failed.
+	var known queueKnowledge
 	if st.Entry == nil {
 		// The mutation is bounded too. On the signal-only context it had no limit at
 		// all, so a stalled call blocked the confirmation from starting and held the
@@ -378,20 +379,16 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 			// refusal is an answer: reconciling it spends a read looking for a
 			// queue entry that a different invocation may have put there.
 			//
-			// A RefusalError is checked first and outranks the expired context,
-			// because the two can be true at once: gh can return the refusal just
-			// before the budget expires, with the drain crossing it afterwards.
-			// The context then says "expired" while the mutation's answer was a
-			// definite no.
-			var refusal *RefusalError
-			uncertain := !errors.As(enqueueErr, &refusal) &&
-				(errors.Is(enqueueErr, ErrIncompleteReply) || enqueueExpired)
-			if !uncertain {
+			// Which of the three endings this is, asked once: an answer, an
+			// unknown, or a failure the call stated.
+			if !outcomeUnknown(enqueueErr, enqueueExpired) {
 				return Outcome{}, refusalFor(ctx, EnqueueFailed, enqueueErr)
 			}
-			if st, confirmedAfterDeadline, exitErr = confirmEnqueue(ctx, opts, c, clock, deadline, post); exitErr != nil {
+			var confirmed bool
+			if st, confirmed, exitErr = confirmEnqueue(ctx, opts, c, clock, deadline, post); exitErr != nil {
 				return Outcome{}, exitErr
 			}
+			known.observe(st, confirmed)
 			if st.State == mergedState {
 				return Outcome{Kind: Merged, SHA: st.MergeSHA()}, nil
 			}
@@ -400,8 +397,12 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 				// the honest report is that the enqueue could not be confirmed.
 				return Outcome{}, refusalFor(ctx, EnqueueFailed, enqueueErr)
 			}
-		} else if st, confirmedAfterDeadline, exitErr = confirmEnqueue(ctx, opts, c, clock, deadline, post); exitErr != nil {
-			return Outcome{}, exitErr
+		} else {
+			var confirmed bool
+			if st, confirmed, exitErr = confirmEnqueue(ctx, opts, c, clock, deadline, post); exitErr != nil {
+				return Outcome{}, exitErr
+			}
+			known.observe(st, confirmed)
 		}
 		if st.State == mergedState {
 			return Outcome{Kind: Merged, SHA: st.MergeSHA()}, nil
@@ -432,17 +433,6 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 	var out Outcome
 	var read Status
 	var merged, expired bool
-	// answeredAfterDeadline says the status in `st` was read on the post-deadline
-	// allowance, so it is this instant's queue. The timeout verdict states a
-	// position and a state, and a position from before the deadline is the queue
-	// of an earlier instant: reporting it would name the past as the present.
-	//
-	// The confirmation's own answer counts. It is the read that follows an
-	// enqueue, and when it starts after the deadline it is the same observation a
-	// post-deadline poll makes -- leaving it out of this flag discarded a
-	// position the run had confirmed, and answered exit 2 where the documented
-	// repeat-on-timeout verdict was exit 1.
-	answeredAfterDeadline := confirmedAfterDeadline
 	for {
 		if err := ctx.Err(); err != nil {
 			return Outcome{}, &ExitError{Kind: Interrupted, Detail: err.Error()}
@@ -471,7 +461,6 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 		// anyway. A read that never starts and a read that answers look identical to
 		// a fake that does not look at its context.
 		budget := deadline.Sub(clock.Now())
-		afterDeadline := budget <= 0
 		if budget <= 0 {
 			if budget = post.take(clock, deadline); budget <= 0 {
 				break
@@ -487,7 +476,11 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 		if merged {
 			return out, nil
 		}
-		answeredAfterDeadline = afterDeadline
+		// When the answer arrived, not when the poll started: the deadline applies
+		// to the observation. A poll that straddled it read this instant's queue,
+		// and calling that a read of the wait leaves the run with no observation to
+		// build its timeout verdict from.
+		known.observe(read, deadline.Sub(clock.Now()) <= 0)
 		st = read
 		if st.State == mergedState {
 			return Outcome{Kind: Merged, SHA: st.MergeSHA()}, nil
@@ -518,25 +511,31 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 			// operator nothing was decided while the documented repeat-on-timeout
 			// workflow was the right one. Only a run with no post-deadline answer
 			// at all has nothing to report.
-			if !answeredAfterDeadline {
-				return Outcome{}, lookupNotRead()
-			}
-			return timedOutAt(st), nil
+			return known.ending()
 		}
 		if exitErr != nil {
+			// Same rule as the loop's poll: a transient failure here costs the run a
+			// newer observation, and the confirmed position is still this instant's
+			// queue as far as the run can tell. A connection reset must not stop the
+			// documented repeat-on-timeout workflow for a run that already read the
+			// position.
+			if known.answered {
+				return known.ending()
+			}
 			return Outcome{}, exitErr
 		}
 		if merged {
 			return out, nil
 		}
+		known.observe(read, true)
 		st = read
-		answeredAfterDeadline = true
 	}
 	// An allowance with nothing left is not a fresh one: a read handed it would be
 	// a call that never starts. What the run has then is a position from before
 	// the deadline, and exit 2 is the code for "the queue could not be read".
-	if !answeredAfterDeadline {
-		return Outcome{}, lookupNotRead()
+	timedOut, notRead := known.ending()
+	if notRead != nil {
+		return Outcome{}, notRead
 	}
 	if st.State == mergedState {
 		return Outcome{Kind: Merged, SHA: st.MergeSHA()}, nil
@@ -544,7 +543,60 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 	if st.Entry == nil {
 		return dropOutcome(ctx, opts, st, c, clock.Now)
 	}
-	return timedOutAt(st), nil
+	return timedOut, nil
+}
+
+// queueKnowledge is what one run knows about the queue, and the only thing its
+// exit path reads.
+//
+// A run can end three ways and only two of them are decided here. A refusal is
+// GitHub's own no, and it ends the run where it is reported. Queued: a read
+// confirmed a position, and that survives any later read failing, because the
+// queue's answer at that instant was given. Unknown: no read completed, so
+// whether the pull request is in the queue was never learned, and the run must
+// say so rather than name the past as the present.
+//
+// It is one value rather than a flag per read because the run learns this fact in
+// four places -- the confirmation after an enqueue, the wait's polls, the poll
+// that straddles the deadline, and the recheck after the loop -- and each of them
+// used to carry its own boolean. Two booleans meaning one fact can disagree, and
+// the exit path then chose between exit 1 and exit 2 by consulting whichever it
+// happened to reach first: a position an earlier read had confirmed was thrown
+// away because the read after it failed.
+type queueKnowledge struct {
+	// answered says a read completed after the wait ran out. Only such a read is
+	// this instant's queue: one from before the deadline is the queue of an
+	// earlier instant, and printing its position would report the past as now.
+	answered bool
+	// st is the latest answer, which is what the timeout verdict names.
+	st Status
+}
+
+// observe records one completed read. afterDeadline is when the ANSWER arrived,
+// not when the call started: a confirmation that started before the deadline and
+// answered after it is a post-deadline observation, and reading the clock before
+// the call recorded the intent of the read instead of its result -- so an
+// enqueue accepted first and confirmed second was reported as never confirmed.
+func (k *queueKnowledge) observe(st Status, afterDeadline bool) {
+	k.st = st
+	if afterDeadline {
+		k.answered = true
+	}
+}
+
+// ending is what a run whose wait is over reports: the timeout verdict, at the
+// position the last answer named, when a read completed after the deadline, and
+// the lookup failure when none did.
+//
+// This is the one predicate the exit path asks. Every read that can end the wait
+// -- the confirmation, the poll that straddles the deadline, the recheck after
+// the loop -- ends by asking it, so a run that has answered the question once
+// cannot be made to answer it again.
+func (k *queueKnowledge) ending() (Outcome, *ExitError) {
+	if !k.answered {
+		return Outcome{}, lookupNotRead()
+	}
+	return timedOutAt(k.st), nil
 }
 
 // timedOutAt is the timeout verdict for a status read after the deadline: the
@@ -686,15 +738,16 @@ func readStatus(ctx context.Context, opts Options, c Client) (Status, *ExitError
 // anything, and exit 130 would say they had. The run does not know whether the
 // enqueue landed, which is a lookup failure -- exit 2 -- and says so.
 //
-// It also reports whether the wait had already run out when the read started,
-// which is what makes an answer a post-deadline observation the caller can use
-// as its timeout verdict.
+// It also reports whether the wait had already run out when the ANSWER arrived,
+// which is what makes it a post-deadline observation the caller can use as its
+// timeout verdict. The clock is read after the call returns, not before it
+// starts: the deadline applies to the observation, not to the request that
+// produced it. Reading it first calls a read that started before the deadline
+// and answered after it a read of the wait, and its answer -- a real position,
+// read after the deadline -- was then not allowed to carry the timeout verdict.
+// The enqueue was accepted and confirmed, and the run reported that nothing had
+// been read.
 func confirmEnqueue(ctx context.Context, opts Options, c Client, clock Clock, deadline time.Time, post *postDeadline) (Status, bool, *ExitError) {
-	// Captured before the read, for the same reason the wait loop captures it
-	// before its own: a read that starts before the deadline and ends after it is
-	// still a read of the wait, and one that starts after is the queue at this
-	// instant.
-	afterDeadline := deadline.Sub(clock.Now()) <= 0
 	readCtx, stop := context.WithTimeout(ctx, post.budget(clock, deadline, opts.Wait))
 	defer stop()
 	st, exitErr := readStatus(readCtx, opts, c)
@@ -706,7 +759,7 @@ func confirmEnqueue(ctx context.Context, opts Options, c Client, clock Clock, de
 			Detail: "the queue state after enqueueing did not complete within the wait's allowance, so whether the pull request is queued was not read",
 		}
 	}
-	return st, afterDeadline, exitErr
+	return st, deadline.Sub(clock.Now()) <= 0, exitErr
 }
 
 // postDeadline is the ONE allowance the reads that cannot draw on the wait are
@@ -793,6 +846,35 @@ func remainingAllowance(opts Options, clock Clock, deadline time.Time) time.Dura
 		return finalObservationAllowance
 	}
 	return left
+}
+
+// outcomeUnknown reports whether a failed enqueue call ended without
+// establishing whether GitHub performed the mutation, which is the only ending
+// that is read back.
+//
+// Three endings, and the state read is right for exactly one of them. A refusal
+// is GitHub's answer: reconciling it spends a read looking for this invocation's
+// work and finds whatever is there, including an entry another operator made for
+// the same pull request, which turns a refused --jump into reported success. A
+// failure the call stated is the same kind of answer and takes the same path. A
+// call that was cut off, or whose own allowance expired, may have been accepted
+// before it ended, so only that one is uncertain.
+//
+// The discriminated error types are asked first because the two can be true at
+// once: gh can return the refusal just before the budget expires, with the output
+// drain crossing it afterwards. The context then says "expired" while the
+// mutation's answer was a definite no.
+//
+// A body-less failure -- a reset connection, a killed process, a wrapper's own
+// diagnostic -- is an unknown outcome, reported as ErrOutcomeUnknown by the
+// client. It used to be indistinguishable from a failure the call stated, and the
+// run reported GitHub having accepted an enqueue as a refusal.
+func outcomeUnknown(err error, expired bool) bool {
+	var refusal *RefusalError
+	if errors.As(err, &refusal) {
+		return false
+	}
+	return errors.Is(err, ErrOutcomeUnknown) || errors.Is(err, ErrIncompleteReply) || expired
 }
 
 // refusalFor turns a failed client call into the run-ending refusal.

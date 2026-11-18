@@ -1238,6 +1238,57 @@ func TestAStalledRecheckKeepsTheConfirmedPosition(t *testing.T) {
 	}
 }
 
+// TestAFailedRecheckKeepsTheConfirmedPosition pins the other ending of the same
+// recheck: it does not run out, it FAILS.
+//
+// A connection reset while rechecking costs the run a newer observation. It does
+// not unlearn the position the poll before it confirmed, which was read after the
+// deadline and is therefore this instant's queue. Reporting exit 2 there says
+// nothing was decided, stops the documented repeat-on-timeout workflow, and
+// differs from the identical read merely expiring -- which is exit 1 -- for a
+// reason the operator cannot see or act on.
+func TestAFailedRecheckKeepsTheConfirmedPosition(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+	c := &failingRecheckClient{fakeClient: fakeClient{statuses: []Status{{ID: "PR_6499", State: "OPEN", Entry: queueEntry(4)}}}}
+	c.now = &now
+	clock := Clock{
+		Now: func() time.Time { return now },
+		// The sleep spends the wait, so the poll that follows is a post-deadline
+		// read: the position it confirms is this instant's queue.
+		Sleep: func(_ context.Context, d time.Duration) bool { now = now.Add(d); c.waited = true; return true },
+	}
+	var stdout, stderr strings.Builder
+	if code := Run(context.Background(), opts(time.Second), c, clock, &stdout, &stderr); code != 1 {
+		t.Fatalf("Run = exit %d (stdout %q, stderr %q), want 1: the post-deadline poll confirmed position 4, and a recheck that failed afterwards cannot unread it", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "position=4") {
+		t.Fatalf("stdout %q does not name the position the post-deadline poll confirmed: a transient failure on the recheck discarded an answer the run had already received", stdout.String())
+	}
+}
+
+// failingRecheckClient answers the post-deadline poll and then fails every read
+// after it, the way a connection reset does.
+type failingRecheckClient struct {
+	fakeClient
+	now *time.Time
+	// waited says the run has entered its wait, so the reads being seen are the
+	// ones the finding is about rather than the starting lookup.
+	waited   bool
+	answered bool
+}
+
+func (c *failingRecheckClient) Status(ctx context.Context, repo, pr string) (Status, error) {
+	if !c.waited {
+		return c.fakeClient.Status(ctx, repo, pr)
+	}
+	if c.answered {
+		return Status{}, errors.New("read tcp: connection reset by peer")
+	}
+	c.answered = true
+	return c.fakeClient.Status(ctx, repo, pr)
+}
+
 // stallAfterFirstPostDeadlineClient answers the post-deadline poll, then reports
 // its allowance as spent on every read after it, which is a recheck that never
 // completes.
@@ -1285,6 +1336,73 @@ func TestAPostDeadlineConfirmationKeepsItsPosition(t *testing.T) {
 	if !strings.Contains(stdout.String(), "position=7") {
 		t.Fatalf("stdout %q does not name the position the post-deadline confirmation read: the confirmed answer was discarded", stdout.String())
 	}
+}
+
+// TestAConfirmationThatAnswersAfterTheDeadlineIsThisInstantsQueue pins the
+// timestamp the post-deadline decision is made from.
+//
+// The rule is about the OBSERVATION, not the request that produced it. A
+// confirmation that starts a moment before the deadline and answers a moment
+// after it read the queue after the deadline: its answer is this instant's queue,
+// and it is the timeout verdict. Reading the clock before the call instead calls
+// that answer a read of the wait, so the run holds a confirmed position and
+// reports that the queue was never read.
+//
+// The mutation here answers inside the wait; the confirmation then spends the
+// REST of the wait and the shared allowance answering. It started before the
+// deadline and answered after it, which is the shape the finding names.
+func TestAConfirmationThatAnswersAfterTheDeadlineIsThisInstantsQueue(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+	c := &slowConfirmationClient{fakeClient: fakeClient{statuses: []Status{
+		{ID: "PR_6499", State: "OPEN"},
+		{ID: "PR_6499", State: "OPEN", Entry: queueEntry(5)},
+	}}}
+	c.now = &now
+	// The confirmation answers position 5 and takes long enough that the clock is
+	// past the deadline when it does.
+	c.answerAfter = 2 * finalObservationAllowance
+	clock := Clock{
+		Now:   func() time.Time { return now },
+		Sleep: func(_ context.Context, d time.Duration) bool { now = now.Add(d); return true },
+	}
+	var stdout, stderr strings.Builder
+	if code := Run(context.Background(), opts(time.Second), c, clock, &stdout, &stderr); code != 1 {
+		t.Fatalf("Run = exit %d (stdout %q, stderr %q), want 1: the confirmation read position 5 after the deadline, so this is the repeat-on-timeout verdict and not a lookup failure", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "position=5") {
+		t.Fatalf("stdout %q does not name the position the confirmation read: the answer arrived after the deadline and the run read the clock before the call, so a confirmed position was reported as never read", stdout.String())
+	}
+}
+
+// slowConfirmationClient answers the confirmation after moving its clock past
+// the deadline, which is a read whose request started inside the wait and whose
+// answer arrived outside it.
+type slowConfirmationClient struct {
+	fakeClient
+	now *time.Time
+	// answerAfter is how long the confirmation appears to take, measured on the
+	// run's own clock.
+	answerAfter   time.Duration
+	enqueueCalled bool
+}
+
+func (c *slowConfirmationClient) Enqueue(context.Context, string, string, bool) error {
+	c.enqueueCalled = true
+	return nil
+}
+
+func (c *slowConfirmationClient) Status(ctx context.Context, repo, pr string) (Status, error) {
+	if !c.enqueueCalled {
+		return c.fakeClient.Status(ctx, repo, pr)
+	}
+	c.enqueueCalled = false
+	// The answer is produced now, and the clock then moves past the deadline
+	// before the run reads it: the observation is after the deadline even though
+	// the call started before it.
+	st, err := c.fakeClient.Status(ctx, repo, pr)
+	*c.now = c.now.Add(c.answerAfter)
+	return st, err
 }
 
 // stallAfterConfirmationClient spends the whole wait in the mutation, answers the
@@ -1342,6 +1460,54 @@ func (c *stallAfterFirstPostDeadlineClient) Status(ctx context.Context, repo, pr
 	// and it costs a millisecond rather than an interval.
 	*c.now = c.now.Add(finalObservationAllowance - time.Millisecond)
 	return c.fakeClient.Status(ctx, repo, pr)
+}
+
+// TestAPollThatAnswersAfterTheDeadlineIsThisInstantsQueue pins the same rule one
+// place over: the wait loop's own poll.
+//
+// The last poll of a wait is scheduled to land on the deadline, and the read it
+// makes finishes a moment later -- outside the wait the caller asked for. Reading
+// the deadline before the call calls that a read of the wait, so the run ends
+// with no post-deadline observation and reports exit 2 ("the queue could not be
+// read") for a position it has in hand.
+func TestAPollThatAnswersAfterTheDeadlineIsThisInstantsQueue(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+	c := &slowPollClient{fakeClient: fakeClient{statuses: []Status{
+		{ID: "PR_6499", State: "OPEN"},
+		{ID: "PR_6499", State: "OPEN", Entry: queueEntry(9)},
+	}}}
+	c.now = &now
+	clock := Clock{
+		Now: func() time.Time { return now },
+		// The sleep spends the wait exactly, so the poll that follows starts ON the
+		// deadline and answers just after it.
+		Sleep: func(_ context.Context, d time.Duration) bool { now = now.Add(d); c.waited = true; return true },
+	}
+	var stdout, stderr strings.Builder
+	if code := Run(context.Background(), opts(time.Second), c, clock, &stdout, &stderr); code != 1 {
+		t.Fatalf("Run = exit %d (stdout %q, stderr %q), want 1: the poll answered position 9 after the deadline, so this is the repeat-on-timeout verdict", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "position=9") {
+		t.Fatalf("stdout %q does not name the position the straddling poll read: the answer arrived after the deadline and was recorded as a read of the wait", stdout.String())
+	}
+}
+
+// slowPollClient answers the wait's poll a moment after the deadline has passed,
+// which is a poll scheduled on the deadline and answered after it.
+type slowPollClient struct {
+	fakeClient
+	now    *time.Time
+	waited bool
+}
+
+func (c *slowPollClient) Status(ctx context.Context, repo, pr string) (Status, error) {
+	if !c.waited {
+		return c.fakeClient.Status(ctx, repo, pr)
+	}
+	st, err := c.fakeClient.Status(ctx, repo, pr)
+	*c.now = c.now.Add(time.Millisecond)
+	return st, err
 }
 
 // TestTheWaitSpendsOnePostDeadlineAllowance pins how long a run may keep reading

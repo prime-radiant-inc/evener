@@ -161,8 +161,8 @@ func clearGHGroup(path string) {
 // lost, so a run must read the state back before calling the call a failure.
 var ErrIncompleteReply = errors.New("gh exited before its reply arrived, and a descendant it left behind kept the pipe open past the drain bound")
 
-// RefusalError is a call that COMPLETED and was refused: gh ran to its own exit
-// and reported failure.
+// RefusalError is a call that COMPLETED and was refused: GitHub answered the
+// request, and the answer was no.
 //
 // It is a distinct type because the run has to tell a refusal from an unknown
 // ending, and the context cannot make that distinction. A refusal can arrive
@@ -172,19 +172,34 @@ var ErrIncompleteReply = errors.New("gh exited before its reply arrived, and a d
 // whatever is there, including an entry another operator made for the same pull
 // request. The answer is an answer.
 //
-// What makes it a refusal is that the process reached its OWN end with a
-// non-zero status -- not that it wrote to stderr. A `gh` wrapper that prints a
-// diagnostic and is then killed by the enqueue deadline wrote to stderr too, and
-// its ending is not an answer: GitHub may have accepted the mutation before the
-// kill. Reporting that as a refusal skips the read that would find out, and the
-// operator is told the enqueue failed for a pull request that is queued. Three
-// endings, not two: completed and rejected, succeeded, and ended without a
-// result -- and only the last is reconciled.
+// What makes it a refusal is GitHub's own reply, not the exit status and not
+// stderr. `gh` prints a rejected GraphQL request's body on stdout, with an
+// `errors` array, and copies the first message to stderr. Nothing else does: a
+// transport failure, an auth failure before the request is made, and a kill all
+// leave stdout empty and put only a diagnostic on stderr. A wrapper that prints
+// such a diagnostic and is then killed by the enqueue deadline is therefore not
+// refusing anything -- GitHub may have accepted the mutation before the kill --
+// and calling it a refusal skips the read that would find out, leaving the
+// operator told the enqueue failed for a pull request that is queued.
+//
+// Three endings, not two: refused (GitHub said no), succeeded, and unknown (no
+// usable answer). Only the last is reconciled.
 type RefusalError struct {
 	Detail string
 }
 
 func (e *RefusalError) Error() string { return e.Detail }
+
+// ErrOutcomeUnknown reports a call that ended without establishing whether
+// GitHub performed the write: a transport failure, an auth failure before the
+// request was made, or a process killed mid-call. GitHub may have accepted the
+// mutation before the connection broke, so the caller must read the state back
+// rather than report a failure.
+//
+// It is the counterpart of RefusalError, and the two are what the three endings
+// are expressed in: a RefusalError is GitHub's own no, ErrOutcomeUnknown is no
+// answer at all, and an error that is neither is a failure the call stated.
+var ErrOutcomeUnknown = errors.New("the call ended without establishing whether GitHub performed the write, so its outcome has to be read back")
 
 // completeReply reports whether out is a whole JSON document.
 //
@@ -195,6 +210,42 @@ func (e *RefusalError) Error() string { return e.Detail }
 // make by itself.
 func completeReply(out []byte) bool {
 	return len(out) > 0 && json.Valid(out)
+}
+
+// graphqlRefusal reports whether out is a reply in which GitHub refused the
+// request, and the message it gave.
+//
+// This is the positive evidence a refusal needs. `gh api graphql` prints the
+// response body whatever the status, so a mutation GitHub declined -- a protected
+// branch, a PR another operator already queued under --jump -- arrives as
+// `{"data":{...},"errors":[{"message":"..."}]}` with the message copied to
+// stderr. A request that never reached GitHub has no body at all: a reset
+// connection, a proxy failure and a killed process all leave stdout empty.
+//
+// The distinction is load-bearing in one direction only. Treating a body-less
+// failure as a refusal reports a refused mutation when it may have succeeded,
+// which is the misreport this exists to prevent; treating a refusal as unknown
+// costs one status read and finds the truth. So the test is the errors array, and
+// anything else -- including a body with data and no errors, which the caller's
+// parser rejects on its own terms -- stays unknown.
+func graphqlRefusal(out []byte) (string, bool) {
+	if !completeReply(out) {
+		return "", false
+	}
+	var body struct {
+		Errors []struct {
+			Message string
+		}
+	}
+	if err := json.Unmarshal(out, &body); err != nil {
+		return "", false
+	}
+	for _, e := range body.Errors {
+		if msg := strings.TrimSpace(e.Message); msg != "" {
+			return msg, true
+		}
+	}
+	return "", false
 }
 
 func (c GHClient) run(ctx context.Context, args ...string) ([]byte, error) {
@@ -247,23 +298,41 @@ func (c GHClient) run(ctx context.Context, args ...string) ([]byte, error) {
 		return nil, ErrIncompleteReply
 	}
 	if err != nil {
-		// A call that ran to its own end, failed, and said why has answered: the
-		// answer is no. Reported as a RefusalError so a caller cannot confuse it
-		// with a reply that was lost, whatever the context did in the meantime.
+		// Refused, or unknown? GitHub's reply decides, and neither stderr nor the
+		// exit status can.
 		//
-		// "Ran to its own end" is the load-bearing half, and stderr alone does not
-		// establish it. A gh wrapper that prints a diagnostic and is then killed by
-		// the enqueue deadline wrote to stderr as well, and its ending is not an
-		// answer: GitHub may have accepted the mutation before the group kill. A
-		// process this call killed reports no exit status at all -- ExitCode is -1
-		// for a signal -- which is exactly the distinction between a refusal and an
-		// unknown outcome. Reporting the killed one as a refusal skips the read that
-		// would find out, and the operator is told the enqueue failed for a pull
-		// request that is queued.
-		completed := cmd.ProcessState != nil && cmd.ProcessState.ExitCode() >= 0
-		if detail := strings.TrimSpace(stderr.String()); detail != "" && completed {
+		// A rejected GraphQL request answers with a body: `{"data":...,"errors":[...]}`
+		// on stdout, with gh copying the first message to stderr. That is the only
+		// ending that establishes the answer is no. A transport failure -- a reset
+		// connection, a DNS failure, a TLS error -- leaves stdout empty and writes a
+		// diagnostic to stderr; GitHub may still have performed the mutation before
+		// the connection broke, so the outcome is unknown and has to be read back.
+		// An exit status of 1 is common to both, which is why the exit status is not
+		// the test, and a wrapper's own diagnostic on stderr is not a GraphQL body.
+		//
+		// The previous version tested the exit status after stderr was non-empty.
+		// That called a transport failure a refusal and reported an enqueue GitHub
+		// had accepted as a failure, which is the misreport this whole PR exists to
+		// stop.
+		detail := strings.TrimSpace(stderr.String())
+		if refusal, ok := graphqlRefusal(stdout.Bytes()); ok {
+			if detail == "" {
+				detail = refusal
+			}
 			return nil, &RefusalError{Detail: detail}
-		} else if detail != "" {
+		}
+		if !completeReply(stdout.Bytes()) {
+			// No body, so nothing establishes whether GitHub performed the write.
+			// It is reported as unknown rather than as a failure, because a failure
+			// is an answer and this call does not have one: reporting it as a
+			// failure is what let an enqueue GitHub had accepted be reported as
+			// refused, with the read that would have found it skipped.
+			if detail != "" {
+				return nil, fmt.Errorf("%w: %w: %s", ErrOutcomeUnknown, err, detail)
+			}
+			return nil, fmt.Errorf("%w: %w", ErrOutcomeUnknown, err)
+		}
+		if detail != "" {
 			// The call ended without a result. Its stderr is still the diagnostic a
 			// reader needs, so it is carried, and the error itself stays wrapped so
 			// errors.Is still sees the termination cause.

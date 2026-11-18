@@ -421,10 +421,11 @@ kill -9 "$$"
 		t.Fatalf("error = %v, want gh's stderr carried as detail: the diagnostic is context a reader needs and is not what makes this a refusal", err)
 	}
 
-	// And a call that DID run to its own non-zero exit is still a refusal, with
-	// the same stderr: the classification is the ending, not the text.
+	// And a call that DID run to its own exit and answered is still a refusal, with
+	// the same stderr: the classification is the reply, and stderr only carries it.
 	rejected := filepath.Join(dir, "gh-rejected")
 	writeExecutable(t, rejected, `#!/usr/bin/env bash
+printf '%s' '{"data":{"enqueuePullRequest":null},"errors":[{"type":"UNPROCESSABLE","message":"protected branch"}]}'
 printf 'gh: could not enqueue: protected branch\n' >&2
 exit 1
 `)
@@ -432,6 +433,48 @@ exit 1
 	_, err = c.run(context.Background(), "api", "graphql")
 	if !errors.As(err, &refusal) {
 		t.Fatalf("error = %v, want a RefusalError: the process exited 1 on its own, so its answer is no and reconciling it would report another operator's entry as this invocation's work", err)
+	}
+
+	// And a call that reached its own exit WITHOUT a reply body is not a refusal,
+	// whatever it wrote to stderr. That is a transport failure: GitHub may have
+	// performed the mutation before the connection broke. `gh` answers a rejected
+	// GraphQL request with the response body on stdout, so the body -- not the exit
+	// status and not the diagnostic -- is what says GitHub declined.
+	transport := filepath.Join(dir, "gh-transport")
+	writeExecutable(t, transport, `#!/usr/bin/env bash
+printf 'gh: Post "https://api.github.com/graphql": read tcp: connection reset by peer\n' >&2
+exit 1
+`)
+	c = GHClient{GH: transport, GroupFile: filepath.Join(dir, "group")}
+	_, err = c.run(context.Background(), "api", "graphql")
+	if err == nil {
+		t.Fatal("a failed call with no reply was read as success")
+	}
+	if errors.As(err, &refusal) {
+		t.Fatalf("error = %v, reported as a refusal: the call exited 1 but GitHub's reply never arrived, so whether the mutation landed is unknown and the run must read the queue back", err)
+	}
+	if !errors.Is(err, ErrOutcomeUnknown) {
+		t.Fatalf("error = %v, want ErrOutcomeUnknown: a body-less failure is an unknown outcome, and calling it a failure is what reported an accepted enqueue as refused", err)
+	}
+	if !strings.Contains(err.Error(), "connection reset by peer") {
+		t.Fatalf("error = %v, want gh's own diagnostic carried: the operator needs to read what the transport said", err)
+	}
+
+	// The refusal direction: a rejected GraphQL request answers with a body on
+	// stdout. That is the only ending where the answer is a definite no.
+	deferred := filepath.Join(dir, "gh-graphql-refused")
+	writeExecutable(t, deferred, `#!/usr/bin/env bash
+printf '%s' '{"data":{"enqueuePullRequest":null},"errors":[{"type":"UNPROCESSABLE","message":"Pull request is not mergeable"}]}'
+printf 'gh: Pull request is not mergeable\n' >&2
+exit 1
+`)
+	c = GHClient{GH: deferred, GroupFile: filepath.Join(dir, "group")}
+	_, err = c.run(context.Background(), "api", "graphql")
+	if !errors.As(err, &refusal) {
+		t.Fatalf("error = %v, want a RefusalError: GitHub answered the request and the answer was no, which is an answer and not something to reconcile", err)
+	}
+	if errors.Is(err, ErrOutcomeUnknown) {
+		t.Fatalf("error = %v, also reads as unknown: a refused request has an answer", err)
 	}
 }
 
