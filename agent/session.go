@@ -2804,11 +2804,12 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 		// the transcript that explains it, and the door keeps a fold from
 		// committing its markers between those two steps.
 		//
-		// The event is a trigger, not a snapshot: the bridge samples current
-		// context when it handles the event (server/thread_envelope.go's
-		// facetsByEvent), so the sample can reflect state a later publication
-		// moved. Nor does the door order this event against a fold's own events,
-		// which flush only after it is released (publishFoldTransaction).
+		// The event is a trigger, not a snapshot: when the root session's bridge
+		// handles this event it samples current context
+		// (server/thread_envelope.go's facetsByEvent), so the sample can reflect
+		// state a later publication moved. Nor does the door order this event
+		// against a fold's own events, which flush only after it is released
+		// (publishFoldTransaction).
 		if hook := s.cfg.testOnly.beforeEnvironmentEventPublish; hook != nil {
 			hook()
 		}
