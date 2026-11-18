@@ -400,6 +400,25 @@ export function modelSetReplyLostError(clientMutationId: string, cause: "timeout
 }
 
 /**
+ * The refusal for a model change on a connection that negotiated an older
+ * protocol than this client speaks (client.ts's dialAndHandshake). v8 added
+ * the client mutation id and the exact authority a daemon fences a pick on, so
+ * an older hub would apply the pick unchecked rather than refuse it. Nothing
+ * was dispatched, so this answer is notAccepted and never the outcome-unknown
+ * envelope a lost reply produces: the picker must not offer a change this
+ * connection cannot send. retryDisposition "none" is the wire's own word for
+ * the same fact -- sending the identical pick again can only be refused again
+ * (appwire.MutationOutcomeNotAccepted).
+ */
+export function modelSetOlderHubError(): WireError {
+  return new WireError("This hub is older than this app, so it cannot change a session's model", -32600, {
+    evenerErrorInfo: "olderHubProtocol",
+    mutationOutcome: "notAccepted",
+    retryDisposition: "none",
+  });
+}
+
+/**
  * Whether a reply's own desired record is this mutation, already settled as
  * rejected. A reply can arrive with an accepted disposition and a rejected
  * lifecycle for the very mutation it answers: the pick passed admission, then

@@ -15,9 +15,18 @@ import {
   type SubscriberErrorPhase,
 } from "./client";
 import type { AppwireClientLike } from "./clientLike";
-import { ConnectionClosedError, errorText, mutationErrorData, RequestTimeoutError, WireError } from "./errors";
+import {
+  ConnectionClosedError,
+  ErrorUpgradeRequired,
+  errorText,
+  mutationErrorData,
+  RequestTimeoutError,
+  WireError,
+} from "./errors";
+import { modelPickCanSend } from "./modelControl";
 import { FAKE_INITIALIZE_RESULT, FakeSocket } from "./testing/fakeSocket";
 import { wireThread } from "./testing/notifications";
+import { hydrateThread } from "./transcriptHistory";
 import { rpcURLFromLocation } from "./transport";
 import type {
   AttentionChangedPayload,
@@ -321,25 +330,216 @@ describe("AppwireClient", () => {
   // byte-identical every time -- so it has to be terminal, or an operator who
   // upgrades the hub under an open browser gets "Reconnecting" forever instead
   // of something they can act on.
-  test("connect gives up when the server rejects the handshake as invalid", async () => {
-    const fake = new FakeSocket();
-    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });
-
-    const connecting = connectReady(fake, client);
-    await flushUntil(() => fake.sent.length > 0);
-    const frame = lastSentFrame(fake);
-    fake.receive({
-      id: frame.id,
-      error: {
-        code: -32600,
-        message: `protocol version "evener-appwire-v2" is incompatible; want "${APPWIRE_PROTOCOL_VERSION}"`,
+  test("connect gives up when the server rejects the handshake at every protocol", async () => {
+    const sockets: FakeSocket[] = [];
+    const client = new AppwireClient({
+      url: "ws://x/rpc",
+      socketFactory: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
       },
     });
 
-    await expect(connecting).rejects.toThrow(/incompatible/);
+    const connecting = client.connect();
+    sockets[0]?.open();
+    await flushUntil(() => Boolean(sockets[0]?.sent.length));
+    sockets[0]?.receive({ id: lastSentFrame(sockets[0]!).id, error: { code: -32600 } });
+    // An ambiguous refusal is retried once at the previous protocol, and a
+    // hub that refuses that too is one no announcement can satisfy.
+    await flushUntil(() => sockets.length === 2);
+    sockets[1]?.open();
+    await flushUntil(() => Boolean(sockets[1]?.sent.length));
+    sockets[1]?.receive({ id: lastSentFrame(sockets[1]!).id, error: { code: -32600 } });
+
+    await expect(connecting).rejects.toThrow();
     expect(client.state).toBe("closed");
     // Same contract as the mismatched-version test above: the initial
     // connect must classify the close, not just the reconnect path.
+    expect(client.terminalReason).toBe("protocol");
+  });
+
+  // An older hub answers a newer announcement with a bare InvalidRequest that
+  // names no direction (internal/appserver/server.go), so a client cannot read
+  // "this hub is older than me" off the error. Announcing the previous
+  // protocol on a socket of its own is the only way to find out, and reaching
+  // ready that way is what keeps a phone that upgraded ahead of its hub able
+  // to browse sessions and to run evener/update/apply.
+  test("connect falls back to the previous protocol when an older hub refuses the handshake", async () => {
+    const sockets: FakeSocket[] = [];
+    const client = new AppwireClient({
+      url: "ws://x/rpc",
+      socketFactory: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    const ready = vi.fn();
+    client.onReady(ready);
+
+    const connecting = client.connect();
+    sockets[0]?.open();
+    await flushUntil(() => Boolean(sockets[0]?.sent.length));
+    const first = lastSentFrame(sockets[0]!);
+    expect(first.params).toMatchObject({ protocolVersion: APPWIRE_PROTOCOL_VERSION });
+    sockets[0]?.receive({ id: first.id, error: { code: -32600 } });
+
+    // The retry is a fresh socket: the refused one is retired, never reused.
+    await flushUntil(() => sockets.length === 2);
+    const retry = sockets[1];
+    if (!retry) throw new Error("expected the fallback socket");
+    expect(sockets[0]?.closeRequests).toHaveLength(1);
+    retry.open();
+    await flushUntil(() => Boolean(retry.sent.length));
+    const second = lastSentFrame(retry);
+    expect(second.params).toMatchObject({ protocolVersion: "evener-appwire-v7" });
+    retry.receive({ id: second.id, result: { ...FAKE_INITIALIZE_RESULT, protocolVersion: "evener-appwire-v7" } });
+
+    const result = await connecting;
+    expect(result.protocolVersion).toBe("evener-appwire-v7");
+    expect(client.state).toBe("ready");
+    expect(ready).toHaveBeenCalledTimes(1);
+    // The updater is what lets that phone upgrade the hub it just met.
+    const applying = client.request("evener/update/apply", { channel: "" });
+    const applyFrame = lastSentFrame(retry);
+    expect(applyFrame.method).toBe("evener/update/apply");
+    retry.receive({ id: applyFrame.id, result: { restarting: true } });
+    await expect(applying).resolves.toEqual({ restarting: true });
+  });
+
+  // v8 is what made a model change carry the mutation id and the exact
+  // authority the daemon fences a pick on. A connection that had to fall back
+  // to v7 must refuse the mutation itself rather than hand it to a hub that
+  // would apply it unchecked.
+  test("a connection that fell back to the older hub refuses thread/model/set without sending it", async () => {
+    const sockets: FakeSocket[] = [];
+    const client = new AppwireClient({
+      url: "ws://x/rpc",
+      socketFactory: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    const connecting = client.connect();
+    sockets[0]?.open();
+    await flushUntil(() => Boolean(sockets[0]?.sent.length));
+    sockets[0]?.receive({ id: lastSentFrame(sockets[0]!).id, error: { code: -32600 } });
+    await flushUntil(() => sockets.length === 2);
+    const retry = sockets[1];
+    if (!retry) throw new Error("expected the fallback socket");
+    retry.open();
+    await flushUntil(() => Boolean(retry.sent.length));
+    retry.receive({
+      id: lastSentFrame(retry).id,
+      result: { ...FAKE_INITIALIZE_RESULT, protocolVersion: "evener-appwire-v7" },
+    });
+    await connecting;
+    const framesBefore = retry.sent.length;
+
+    const refusal = client
+      .request("thread/model/set", {
+        ref: "local:th_1",
+        modelProvider: "work",
+        model: "gpt-5.5",
+        clientMutationId: "cm_older_hub",
+        expectedInstanceId: "instance_1",
+        expectedBootGeneration: "7",
+      })
+      .catch((caught: unknown) => caught);
+    const error = await refusal;
+    // Nothing was written: a mutation the peer never received is not an
+    // unknown outcome, so the caller may report it as not sent.
+    expect(retry.sent).toHaveLength(framesBefore);
+    expect(error).toBeInstanceOf(WireError);
+    expect(mutationErrorData(error)).toMatchObject({ mutationOutcome: "notAccepted", retryDisposition: "none" });
+
+    // The same refusal is why the picker is not offered: a v7 read carries no
+    // model-control capability, and that absence alone reduces to unsupported.
+    const coldRead = hydrateThread(
+      {
+        thread: wireThread("ref_test", {
+          status: { type: "idle" },
+          evener: {
+            ref: "ref_test",
+            capabilities: { ...wireThread().evener.capabilities, changeModel: true },
+            queue: { revision: 0 },
+          },
+        }),
+      },
+      "ref_test",
+      0,
+    );
+    expect(coldRead.modelControlState.kind).toBe("unsupported");
+    expect(modelPickCanSend(coldRead)).toBe(false);
+  });
+
+  // A hub of this client's own generation must cost exactly one handshake and
+  // keep the full model-control path: the fallback is a cost paid only where
+  // something refused.
+  test("a client that meets a hub on its own protocol dials once and keeps model control", async () => {
+    const sockets: FakeSocket[] = [];
+    const client = new AppwireClient({
+      url: "ws://x/rpc",
+      socketFactory: () => {
+        const socket = new FakeSocket({ autoInitialize: true });
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    const connecting = client.connect();
+    sockets[0]?.open();
+    await connecting;
+
+    expect(sockets).toHaveLength(1);
+    const complete: ThreadModelSetResponse = {
+      modelControlVersion: 1,
+      disposition: "accepted",
+      modelControl: {
+        authority: { instanceId: "instance_1", bootGeneration: "7" },
+        revision: 2,
+        active: { modelProvider: "work", model: "gpt-5.5", reasoningEffortLevels: [], supportsReasoning: false },
+      },
+    };
+    const accepted = client.request("thread/model/set", {
+      ref: "local:th_1",
+      modelProvider: "work",
+      model: "gpt-5.5",
+      clientMutationId: "cm_same_generation",
+      expectedInstanceId: "instance_1",
+      expectedBootGeneration: "7",
+    });
+    const frame = lastSentFrame(sockets[0]!);
+    expect(frame.method).toBe("thread/model/set");
+    sockets[0]?.receive({ id: frame.id, result: complete });
+    await expect(accepted).resolves.toEqual(complete);
+  });
+
+  // Only a NEWER hub names its direction. upgradeRequired is therefore this
+  // client's own limitation, and announcing anything else changes nothing --
+  // it must fail as it does today, and must never end up looking connected.
+  test("a handshake refused because the hub is newer fails terminally without downgrading", async () => {
+    const sockets: FakeSocket[] = [];
+    const client = new AppwireClient({
+      url: "ws://x/rpc",
+      socketFactory: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    const connecting = client.connect();
+    sockets[0]?.open();
+    await flushUntil(() => Boolean(sockets[0]?.sent.length));
+    sockets[0]?.receive({
+      id: lastSentFrame(sockets[0]!).id,
+      error: { code: -32600, data: { evenerErrorInfo: ErrorUpgradeRequired } },
+    });
+
+    await expect(connecting).rejects.toThrow();
+    expect(sockets).toHaveLength(1);
+    expect(client.state).toBe("closed");
     expect(client.terminalReason).toBe("protocol");
   });
 
@@ -1179,11 +1379,12 @@ describe("AppwireClient", () => {
 
   // The sibling above simulates a response shape no server produces. A daemon
   // that disagrees about the protocol REJECTS initialize with InvalidRequest
-  // (internal/appserver/server.go), and retrying that handshake can never
-  // succeed because the frame is byte-identical every time. Upgrading the hub
-  // under an open browser is the ordinary way to reach it -- without this the
-  // browser shows "Reconnecting" forever instead of something actionable.
-  test("a rejected handshake during reconnect closes terminally without another dial", async () => {
+  // (internal/appserver/server.go). Upgrading the hub under an open browser is
+  // the ordinary way to reach it -- without a terminal close the browser shows
+  // "Reconnecting" forever instead of something actionable. The one retry at
+  // the previous protocol is part of that attempt, not a second one: a hub
+  // that refuses both announcements can never meet this client.
+  test("a handshake rejected at every protocol during reconnect closes terminally without another dial", async () => {
     const sockets: FakeSocket[] = [];
     const client = new AppwireClient({
       url: "ws://x/rpc",
@@ -1201,19 +1402,17 @@ describe("AppwireClient", () => {
     await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
     sockets[1]?.open();
     await flushUntil(() => Boolean(sockets[1]?.sent.length));
-    const initialize = lastSentFrame(sockets[1]!);
-    sockets[1]?.receive({
-      id: initialize.id,
-      error: {
-        code: -32600,
-        message: `protocol version "evener-appwire-v2" is incompatible; want "${APPWIRE_PROTOCOL_VERSION}"`,
-      },
-    });
+    sockets[1]?.receive({ id: lastSentFrame(sockets[1]!).id, error: { code: -32600 } });
+    await flushUntil(() => sockets.length === 3);
+    sockets[2]?.open();
+    await flushUntil(() => Boolean(sockets[2]?.sent.length));
+    sockets[2]?.receive({ id: lastSentFrame(sockets[2]!).id, error: { code: -32600 } });
     await flushUntil(() => client.state === "closed");
 
     expect(client.state).toBe("closed");
+    expect(client.terminalReason).toBe("protocol");
     await vi.runAllTimersAsync();
-    expect(sockets).toHaveLength(2);
+    expect(sockets).toHaveLength(3);
   });
 
   test("close() after socket open but before ready rejects the pending connect() promise", async () => {

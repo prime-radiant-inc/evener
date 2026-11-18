@@ -8,11 +8,12 @@ import {
   CODE_INVALID_REQUEST,
   ConnectionClosedError,
   isMethodNotFound,
+  isUpgradeRequiredError,
   RequestTimeoutError,
   WireError,
 } from "./errors";
 import { decodeHistoryServingResponse } from "./historyServing";
-import { modelSetReplyLostError, validateThreadModelSetResponse } from "./modelControl";
+import { modelSetOlderHubError, modelSetReplyLostError, validateThreadModelSetResponse } from "./modelControl";
 import { isPlainObject } from "./plainObject";
 import type { WebSocketLike } from "./transport";
 import type { AnyNotification, InitializeResponse, MethodName, MethodTypes } from "./types.gen";
@@ -55,12 +56,23 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 // reload.
 export const RESUME_REQUEST_TIMEOUT_MS = 10 * 60_000;
 export const APPWIRE_PROTOCOL_VERSION = "evener-appwire-v8";
+// OLDER_HUB_PROTOCOL_VERSION is the newest protocol this client re-announces
+// when a hub refuses the one above. A phone that upgrades ahead of its hub
+// would otherwise never reach ready, and so could neither browse the hub's
+// sessions nor call evener/update/apply to upgrade it
+// (docs/product/README.md, the client/hub compatibility row). Only the
+// negotiation falls back: a connection that ends up here refuses every
+// authority-bound model change (see request()), because v8 is what added the
+// mutation id and the exact authority the daemon fences a pick on
+// (appwire/types_protocol.go). Remove the fallback once no supported hub
+// release predates v8.
+const OLDER_HUB_PROTOCOL_VERSION = "evener-appwire-v7";
 const DEFAULT_CLIENT_INFO = { name: "evener-web", version: "0.1.0" };
 const DEFAULT_CAPABILITIES = { experimentalApi: false };
 
 class ProtocolVersionMismatchError extends Error {
-  constructor(received: string) {
-    super(`AppwireClient: expected protocol ${APPWIRE_PROTOCOL_VERSION}, received ${received}`);
+  constructor(received: string, expected: string) {
+    super(`AppwireClient: expected protocol ${expected}, received ${received}`);
     this.name = "ProtocolVersionMismatchError";
   }
 }
@@ -78,13 +90,31 @@ class InitializeValidationError extends Error {
 // HandshakeRejectedError marks an initialize the server REFUSED, as opposed to
 // one it answered with a version we do not speak. A daemon that disagrees about
 // the protocol rejects with InvalidRequest rather than replying with its own
-// version, so this is the shape a real skew actually produces -- and retrying is
-// pointless either way, because the frame we would resend is byte-identical.
+// version, so this is the shape a real skew actually produces -- and resending
+// the same announcement is pointless, because the frame is byte-identical.
+//
+// upgradeRequired is the one refusal that names its own direction: a hub NEWER
+// than this client stamps it on the announcement it will not take. Every other
+// bare InvalidRequest is ambiguous -- a hub older than this client answers the
+// same way as a hub refusing for an unrelated reason -- which is what makes the
+// older-hub retry below the only available reading of it.
 class HandshakeRejectedError extends Error {
+  readonly upgradeRequired: boolean;
+
   constructor(cause: WireError) {
     super(`AppwireClient: the server rejected the handshake: ${cause.message}`);
     this.name = "HandshakeRejectedError";
+    this.upgradeRequired = isUpgradeRequiredError(cause);
   }
+}
+
+// canRetryAtOlderProtocol reports whether a failed handshake is one a second
+// announcement can answer: the hub refused ours without naming a direction.
+// A newer hub's upgradeRequired is this client's own limitation, which no
+// announcement fixes, and every other failure is not a protocol disagreement
+// at all.
+function canRetryAtOlderProtocol(error: unknown): boolean {
+  return error instanceof HandshakeRejectedError && !error.upgradeRequired;
 }
 
 // TerminalReason names a close a human has to resolve, as opposed to an
@@ -265,6 +295,11 @@ export class AppwireClient {
 
   private socket: WebSocketLike | null = null;
   private historyUnsupported = false;
+  // The protocol this connection negotiated, which is the client's own unless
+  // a handshake fell back to an older hub (dialAndHandshake). Set only by a
+  // successful handshake, and reset at the start of every dial, so a reconnect
+  // to an upgraded hub regains what the fallback took away.
+  private negotiatedProtocolVersion: string = APPWIRE_PROTOCOL_VERSION;
   private recoveryClient: AppwireClient | null = null;
   private resumePending = false;
   private connectionState: ConnectionState = "idle";
@@ -475,6 +510,16 @@ export class AppwireClient {
       ) as Promise<MethodTypes[M]["result"]>;
     }
     if (method === "thread/model/set") {
+      // A connection that negotiated below this client's own protocol cannot
+      // carry this mutation. v8 added the client mutation id and the exact
+      // authority the daemon fences a pick on; a hub that predates them takes
+      // the same method without either and applies whatever model it is
+      // handed (appwire/types_protocol.go). Nothing is written, so the answer
+      // is a pre-send refusal -- notAccepted and "none", never the
+      // outcome-unknown envelope a dispatched pick's lost reply produces.
+      if (this.negotiatedProtocolVersion !== APPWIRE_PROTOCOL_VERSION) {
+        return Promise.reject(modelSetOlderHubError());
+      }
       // The generated type promises a complete model-control response, but the
       // wire carries whatever the peer sent. The browser and phone stores each
       // validate their own call; a direct SDK call has to get the same answer
@@ -667,25 +712,60 @@ export class AppwireClient {
     return false;
   }
 
-  // dialAndHandshake dials a fresh socket and runs it through
+  // dialAndHandshake negotiates a fresh socket through
   // open -> initialize -> initialized -> ready, arming the heartbeat on
   // success. Shared by the initial connect() (performHandshake) and every
   // reconnect attempt (attemptReconnect); callers decide what a failure
   // means for connection lifecycle (terminal close vs. another backoff).
   //
-  // Both setState() calls in here dispatch synchronously to
+  // An ambiguous refusal is retried ONCE at OLDER_HUB_PROTOCOL_VERSION on a
+  // socket of its own. A client must not read the direction of a bare
+  // InvalidRequest off the hub's message: only a newer hub names one
+  // (upgradeRequired), so the version a hub will actually speak is learnable
+  // only by announcing it. A client that meets its own generation pays
+  // exactly one handshake; the fallback is the second socket's whole cost.
+  //
+  // Both setState() calls in initializeOnSocket dispatch synchronously to
   // onStateChange/onReady subscribers, and a subscriber calling close()
   // reentrantly runs it to completion — tears down, disarms, and reaches
   // "closed" — *before* control returns to the line right after that
-  // setState() call. The two isClosed() checks below are load-bearing, not
+  // setState() call. The two isClosed() checks there are load-bearing, not
   // defensive: without the first, the caller (performHandshake, on the very
   // first connect) would still dial a socket that close() can never clean up
   // again; without the second, "ready" would still arm a heartbeat timer
   // on a client that just closed.
   private async dialAndHandshake(): Promise<InitializeResponse> {
+    this.negotiatedProtocolVersion = APPWIRE_PROTOCOL_VERSION;
     if (this.isClosed()) {
       throw new ConnectionClosedError("AppwireClient: closed");
     }
+    let refusal: unknown;
+    try {
+      return await this.initializeOnSocket(APPWIRE_PROTOCOL_VERSION);
+    } catch (error) {
+      if (!canRetryAtOlderProtocol(error)) throw error;
+      refusal = error;
+    }
+    // The retry answers for the connection as a whole, so the socket the
+    // refused announcement left open is retired first: it is never the one a
+    // later frame rides, and its close event must not reach handleSocketLoss.
+    this.teardownFailedSocket();
+    if (this.isClosed()) throw refusal;
+    try {
+      return await this.initializeOnSocket(OLDER_HUB_PROTOCOL_VERSION);
+    } catch (error) {
+      // close() during the retry is the caller's own action, and the terminal
+      // reason it must not produce is "protocol": a reload would not fix it.
+      if (this.isClosed()) throw error;
+      // The older announcement was refused too, so this client and this hub
+      // cannot meet at any version: report the refusal the caller must act
+      // on. The retry's own failure would name the second attempt, and the
+      // terminal "protocol" classification belongs to the original.
+      throw refusal;
+    }
+  }
+
+  private async initializeOnSocket(announced: string): Promise<InitializeResponse> {
     const socket = this.socketFactory(this.url);
     this.socket = socket;
     this.historyUnsupported = false;
@@ -696,7 +776,7 @@ export class AppwireClient {
     socket.onclose = (ev) => this.handleSocketLoss(socket, ev.code);
 
     const rawResult = await this.request("initialize", {
-      protocolVersion: APPWIRE_PROTOCOL_VERSION,
+      protocolVersion: announced,
       clientInfo: this.clientInfo,
       capabilities: DEFAULT_CAPABILITIES,
     }).catch((error: unknown) => {
@@ -706,9 +786,10 @@ export class AppwireClient {
       throw error;
     });
     const result = decodeInitializeResponse(rawResult);
-    if (result.protocolVersion !== APPWIRE_PROTOCOL_VERSION) {
-      throw new ProtocolVersionMismatchError(result.protocolVersion);
+    if (result.protocolVersion !== announced) {
+      throw new ProtocolVersionMismatchError(result.protocolVersion, announced);
     }
+    this.negotiatedProtocolVersion = result.protocolVersion;
     this.sendFrame({ method: "initialized", params: {} });
     this.enterReady(result);
     if (!this.isClosed() && this.socket === socket) {

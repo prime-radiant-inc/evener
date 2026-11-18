@@ -1,6 +1,7 @@
 // @vitest-environment node
 
 import { describe, expect, test } from "vitest";
+import { AppwireClient } from "./client";
 import { ConnectionClosedError, friendlyErrorMessage, GENERIC_ERROR_MESSAGE, WireError } from "./errors";
 import { createFrameworkFreeStore } from "./frameworkFreeStore";
 import {
@@ -12,6 +13,7 @@ import {
   RESTART_REQUEST_TIMEOUT_MS,
   type RestartBaseline,
 } from "./hubUpdate";
+import { FAKE_INITIALIZE_RESULT, FakeSocket } from "./testing/fakeSocket";
 import type { UpdateCheckResponse } from "./types.gen";
 
 const UP_TO_DATE: UpdateCheckResponse = {
@@ -75,6 +77,20 @@ function scripted(options: { noClient?: boolean } = {}) {
 }
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+function lastSentFrame(fake: FakeSocket): Record<string, unknown> {
+  const raw = fake.sent[fake.sent.length - 1];
+  if (!raw) throw new Error("expected at least one sent frame");
+  return JSON.parse(raw) as Record<string, unknown>;
+}
+
+// flushUntil drains microtask turns until `done()` reports true (or a bounded
+// number elapse, so a genuine hang fails fast instead of silently). The real
+// client's handshake continues on microtasks, so a test must yield before
+// inspecting what it sent.
+async function flushUntil(done: () => boolean, maxTurns = 20): Promise<void> {
+  for (let i = 0; i < maxTurns && !done(); i += 1) await Promise.resolve();
+}
 
 async function checked(check: UpdateCheckResponse) {
   const hub = scripted();
@@ -554,5 +570,74 @@ describe("dispose", () => {
     await hub.controller.apply();
     await hub.controller.runCheck();
     expect(hub.pending).toHaveLength(0);
+  });
+});
+
+// The compatibility promise (docs/product/README.md): a client that upgraded
+// ahead of its hub still reaches ready and still runs the updater, because
+// that is the only path by which the hub it is talking to gets upgraded. This
+// drives the real AppwireClient over a socket scripted to refuse the current
+// protocol the way an older hub does, so the assertion covers the whole path
+// the phone takes rather than the controller alone.
+describe("against an older hub", () => {
+  const OLDER_PROTOCOL_VERSION = "evener-appwire-v7";
+
+  test("reaches ready on the older protocol and applies the hub's update over it", async () => {
+    const sockets: FakeSocket[] = [];
+    const client = new AppwireClient({
+      url: "ws://x/rpc",
+      socketFactory: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    const connecting = client.connect();
+    sockets[0]?.open();
+    await flushUntil(() => Boolean(sockets[0]?.sent.length));
+    sockets[0]?.receive({ id: lastSentFrame(sockets[0]!).id, error: { code: -32600 } });
+    await flushUntil(() => sockets.length === 2);
+    const older = sockets[1];
+    if (!older) throw new Error("expected the fallback socket");
+    older.open();
+    await flushUntil(() => Boolean(older.sent.length));
+    older.receive({
+      id: lastSentFrame(older).id,
+      result: { ...FAKE_INITIALIZE_RESULT, protocolVersion: OLDER_PROTOCOL_VERSION },
+    });
+    await connecting;
+    expect(client.state).toBe("ready");
+
+    const restarts: RestartBaseline[] = [];
+    const controller = createHubUpdateController({
+      client: () => client,
+      currentIncarnation: async () => null,
+      awaitRestart: async (previous) => {
+        restarts.push(previous);
+        return true;
+      },
+    });
+    const checking = controller.runCheck();
+    await flushUntil(() =>
+      older.sent.some((raw) => (JSON.parse(raw) as { method?: string }).method === "evener/update/check"),
+    );
+    const check = JSON.parse(older.sent[older.sent.length - 1] ?? "{}") as { id?: number };
+    older.receive({ id: check.id, result: { ...WAITING, updateAvailable: true } });
+    await checking;
+
+    // The combined path is the deprecated one an older hub still serves, and
+    // it is the whole reason this connection had to be reachable at all.
+    const applying = controller.apply();
+    await flushUntil(() =>
+      older.sent.some((raw) => (JSON.parse(raw) as { method?: string }).method === "evener/update/apply"),
+    );
+    const apply = JSON.parse(older.sent[older.sent.length - 1] ?? "{}") as { id?: number };
+    older.receive({ id: apply.id, result: { restarting: true } });
+    await applying;
+
+    // The combined path confirms the restart the way an older hub can report
+    // it: by version, since it names no incarnation.
+    expect(restarts).toEqual([{ version: WAITING.currentVersion, incarnation: null }]);
+    expect(controller.getState()).toMatchObject({ applying: false, restarting: false, applyError: null });
   });
 });
