@@ -761,3 +761,150 @@ test("a stamp whose recorded question disagrees with the arguments is not consum
   expect(answeredAskUserSuffix(model, first)).toBeUndefined();
   expect(answeredAskUserReply(model, first)).toBeUndefined();
 });
+
+test("a stamp naming two same-header calls recaps neither, because one line answers both", () => {
+  // The composed form is keyed by header, so two lines that share a header
+  // collapse to the last one. A stamp naming both calls proves the reply
+  // answered both but cannot say which line belongs to which, so recapping
+  // either would print one call's answer under the other's question.
+  const first = item({
+    argumentsJSON: askUserArgs(ONE_QUESTION),
+    turnId: "turn_1",
+    id: "ask_1",
+    callId: "call_1",
+    toolName: "ask_user",
+    status: "completed",
+  });
+  const second = item({
+    argumentsJSON: askUserArgs(ONE_QUESTION),
+    turnId: "turn_1",
+    id: "ask_2",
+    callId: "call_2",
+    toolName: "ask_user",
+    status: "completed",
+  });
+  const reply = userMessage({
+    text: '[answers]\n1. [Deploy?] → "Yes"\n2. [Deploy?] → "No"',
+    turnId: "turn_2",
+    answerToTurnIds: ["turn_1"],
+    resolvedAskCalls: [
+      { turnId: "turn_1", callId: "call_1" },
+      { turnId: "turn_1", callId: "call_2" },
+    ],
+  });
+  const model = turnsModel([first, second], [reply]);
+  expect(answeredAskUserSuffix(model, first)).toBeUndefined();
+  expect(answeredAskUserSuffix(model, second)).toBeUndefined();
+});
+
+test("a multi-call stamp still recaps where the pre-stamp path can prove it", () => {
+  // The single-call narrowing must FALL BACK, not silently produce an empty
+  // recap. Two calls with distinct headers and a reply answering only the
+  // first: the stamp claims both, so the stamp path is closed, but the
+  // pre-stamp heuristic proves the attribution on its own - the reply names a
+  // header this call asks and no sibling asks. A fallback that returned
+  // nothing would pass the same-header tests and quietly lose this recap.
+  const first = item({
+    argumentsJSON: askUserArgs(ONE_QUESTION),
+    turnId: "turn_1",
+    id: "ask_1",
+    callId: "call_1",
+    toolName: "ask_user",
+    status: "completed",
+  });
+  const second = item({
+    argumentsJSON: askUserArgs([
+      { header: "Rollback?", question: "Roll back if it fails?", options: [{ label: "Yes", detail: "ok" }] },
+    ]),
+    turnId: "turn_1",
+    id: "ask_2",
+    callId: "call_2",
+    toolName: "ask_user",
+    status: "completed",
+  });
+  const reply = userMessage({
+    text: '[answers]\n1. [Deploy?] → "Yes"',
+    turnId: "turn_2",
+    answerToTurnIds: ["turn_1"],
+    resolvedAskCalls: [
+      { turnId: "turn_1", callId: "call_1" },
+      { turnId: "turn_1", callId: "call_2" },
+    ],
+  });
+  const model = turnsModel([first, second], [reply]);
+  expect(answeredAskUserReply(model, first)).toBe(reply);
+  // Defined, not empty: the recap exists without asserting on its wording.
+  expect(answeredAskUserSuffix(model, first)).toBeDefined();
+  expect(answeredAskUserSuffix(model, second)).toBeUndefined();
+});
+
+test("a stamp naming only an unloaded call does not let a loaded sibling claim the answer", () => {
+  // A transcript page can hold call B while the reply's stamp names only call
+  // A, which this page never loaded. The header matches, so the pre-stamp
+  // heuristic would hand A's answer to B - the mispairing the stamp exists to
+  // prevent. A stamp that does not name B is evidence against B, not silence.
+  const loaded = item({
+    argumentsJSON: askUserArgs(ONE_QUESTION),
+    turnId: "turn_1",
+    id: "ask_loaded",
+    callId: "call_loaded",
+    toolName: "ask_user",
+    status: "completed",
+  });
+  const reply = userMessage({
+    text: '[answers]\n1. [Deploy?] → "Yes"',
+    turnId: "turn_2",
+    answerToTurnIds: ["turn_1"],
+    resolvedAskCalls: [{ turnId: "turn_1", callId: "call_elsewhere" }],
+  });
+  const model = turnsModel([loaded], [reply]);
+  expect(answeredAskUserSuffix(model, loaded)).toBeUndefined();
+  expect(answeredAskUserReply(model, loaded)).toBeUndefined();
+});
+
+test("a hook that rewrites an option's meaning is not consumed as agreement", () => {
+  // The header and the prompt survive a hook rewrite that changes what an
+  // option means - here the database the "Primary" option names. Comparing
+  // only header and prompt would approve the stamp, and the recap would print
+  // the accepted choice under the ORIGINAL option's description.
+  const sent = [
+    {
+      header: "Database?",
+      question: "Which database?",
+      options: [
+        { label: "Primary", detail: "the Postgres primary" },
+        { label: "Replica", detail: "read-only" },
+      ],
+    },
+  ];
+  const ask = item({
+    argumentsJSON: askUserArgs(sent),
+    turnId: "turn_1",
+    id: "ask_1",
+    callId: "call_1",
+    toolName: "ask_user",
+    status: "completed",
+    raw: {
+      version: 1,
+      questions: [
+        {
+          header: "Database?",
+          question: "Which database?",
+          options: [
+            { label: "Primary", detail: "the MySQL primary" },
+            { label: "Replica", detail: "read-only" },
+          ],
+        },
+      ],
+    },
+  });
+  const reply = userMessage({
+    text: '[answers]\n1. [Database?] → "Primary"',
+    turnId: "turn_2",
+    answerToTurnIds: ["turn_1"],
+    resolvedAskCalls: [{ turnId: "turn_1", callId: "call_1" }],
+  });
+  const model = turnsModel([ask], [reply]);
+  expect(answeredAskUserSuffix(model, ask)).toBeUndefined();
+  expect(answeredAskUserReply(model, ask)).toBeUndefined();
+});
