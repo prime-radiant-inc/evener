@@ -643,6 +643,16 @@ func (runtime delegateRuntime) stableSendFailureOutcomeAfterDispatch(ctx context
 
 func delegateFailedSendResult(started delegateStartCommit, plans delegateMutationPlans, cause error, nameMap ...map[string]string) sendMessageResult {
 	snapshot := latestDelegateMutationSnapshot(started.lease.delegateID, started.plan, plans)
+	if snapshot.id == "" {
+		// No mutation row describes this delegate, so the receipt has no reduced
+		// snapshot to read and the ceiling fallback would find a nil descriptor.
+		// FailCommittedRestart returns empty plans when the lease is no longer
+		// ours, so this is reachable in production and not only in a fixture.
+		// The start commit's own descriptor is then the frozen ceiling in hand,
+		// and it is the same one the child was started with. A row that does
+		// describe the delegate still wins, and so does an observation.
+		snapshot.descriptor = started.descriptor
+	}
 	resumable := snapshot.resumable
 	// The SAME resolution job_status reads. A stop that wins after the runtime
 	// attached has a recorded observation for this generation, and building the
