@@ -266,7 +266,7 @@ func (s *Session) renderUnreachableChildPendingsWithLoaders(
 			continue
 		}
 		jm.removeRuntimePendingWatchSend(dropped)
-		n := watchSendDiagnosticForState(*state, dropped.DiagnosticReason)
+		n := watchSendDiagnosticForState(*state, watchSendStageDrop, dropped.DiagnosticReason)
 		n.Provenance = provenance.Clone(state.Provenance)
 		s.enqueueJobNotification(n)
 	}

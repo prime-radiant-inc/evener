@@ -296,6 +296,12 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// held-attention filter can shrink the projected list without reopening
 	// that window.
 	presentedBoundary := len(historyTurns)
+	// A pending watch row whose timer has since been CLEARED is retired before
+	// any projection is taken, leased or not: this is the request boundary, the
+	// point the ordinary queue re-checks its own entries, and a tick persisted
+	// before the clear would otherwise ride whichever request is built next
+	// (#2340 review M2). A row this session retained no facts for is untouched.
+	s.retireClearedStableWatchAttention()
 	// heldDropped reports that this request's projection kept a held row out
 	// — a nonstandard view of the resident history that must not seed or
 	// continue from a stored anchor.
