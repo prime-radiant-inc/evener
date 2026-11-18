@@ -920,33 +920,47 @@ func (s *Session) unparkSteering() {
 	s.mu.Unlock()
 }
 
-// steeringParkOutcome reports what a wake owes a steer a failed attempt
-// parked, and records that the daemon has been told.
+// steeringParkOutcome reports what a wake owes a steer a failed attempt parked.
 //
 // The park is a state, not an event: every wake that lands while it holds sees
 // the same parked steer, and every one of them reporting it would put the same
 // line in the log once per wake -- the durable probe, the buffered acceptance
 // wake that follows the failure, and the next probe all included. One line per
-// failed attempt is the useful count, so the first wake after the park reports
-// it and the rest stand down quietly. A later failed attempt parks again and
-// reports again.
+// failed attempt is the useful count.
+//
+// This reports; it does not consume. Consuming happens only once the daemon's
+// sink has actually taken the line (MarkSteeringParkReported), because a report
+// offered to a spool that refused it was never made, and clearing the flag here
+// would leave the park permanently unreported.
 func (s *Session) steeringParkOutcome() PendingInputOutcome {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.steeringParked || !s.hasPendingUserSteeringLocked() || !s.steeringParkUnreported {
 		return PendingInputNothingRunnable
 	}
-	s.steeringParkUnreported = false
 	return PendingInputSteeringParked
 }
 
-// markSteeringParkReported records that this wake told the daemon about the
-// park it just took. The claim that parks the steer reports it on the same
-// return, so the next wake does not repeat it.
-func (s *Session) markSteeringParkReported() {
+// MarkSteeringParkReported records that the daemon's sink took the park's line,
+// so no later wake repeats it. A later failed attempt parks again and reports
+// again.
+//
+// It is called by whoever made the report, and only when the sink accepted it:
+// a refused offer was never a report, and marking it would silence the park for
+// the rest of the session's life.
+func (s *Session) MarkSteeringParkReported() {
 	s.mu.Lock()
 	s.steeringParkUnreported = false
 	s.mu.Unlock()
+}
+
+// steeringParkReportPending reports whether the current park still owes the
+// daemon a line. It reads the flag without consuming it, so a caller can assert
+// what a wake did without changing it.
+func (s *Session) steeringParkReportPending() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.steeringParked && s.hasPendingUserSteeringLocked() && s.steeringParkUnreported
 }
 
 // steeringParkedNow reports whether user steering is parked: a failed attempt

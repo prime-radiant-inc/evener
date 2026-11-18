@@ -912,6 +912,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// draining the daemon's output.
 	diagnostics := newServeDiagnosticSpool(logOut)
 	defer diagnostics.Close()
+	// The retirement loop reports its teardown failures too, and shutdown joins
+	// that loop, so it takes the same nonblocking sink as the input loop.
+	retiring.diagnostics = diagnostics
 
 	// Input processing loop. Each turn runs under a per-turn cancellable
 	// context that is wired into the server's interrupt handler so POST
@@ -1040,7 +1043,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			bridge.clearMutationRunner(runnerDone)
 			// After runnerDone closes, never before: a Stop that captured the
 			// runner waits on that channel to finalize its fence.
-			reportTurnOutcome(diagnostics, sess.ID(), processErr, msg.QueuedInput, pendingInput)
+			reportTurnOutcome(diagnostics, sess.ID(), processErr, msg.QueuedInput, pendingInput, sess.MarkSteeringParkReported)
 			_ = result
 			return processed
 		}
@@ -1215,13 +1218,21 @@ func pendingInputStoodDown(processErr error, outcome agent.PendingInputOutcome) 
 // The spool drops a line that arrives while its one slot is taken, which is the
 // price of never waiting: a lost line is cheaper than a daemon that cannot
 // finish a turn or stop.
-func reportTurnOutcome(diagnostics *serveDiagnosticSpool, sessionID string, processErr error, queuedInput bool, outcome agent.PendingInputOutcome) {
+func reportTurnOutcome(diagnostics *serveDiagnosticSpool, sessionID string, processErr error, queuedInput bool, outcome agent.PendingInputOutcome, markParkReported func()) {
 	if processErr != nil {
 		diagnostics.Logf(sessionID, "error: %s", turnFailureSummary(processErr))
 		return
 	}
 	if queuedInput && pendingInputStoodDown(processErr, outcome) {
-		diagnostics.Logf(sessionID, "queued input stood down: %s", outcome)
+		// A park is reported once per failed attempt, and only the sink knows
+		// whether this line landed. Consuming the report on a refused offer
+		// would leave the park silent while the steer is still standing.
+		if !diagnostics.Logf(sessionID, "queued input stood down: %s", outcome) {
+			return
+		}
+		if outcome == agent.PendingInputSteeringParked && markParkReported != nil {
+			markParkReported()
+		}
 	}
 }
 

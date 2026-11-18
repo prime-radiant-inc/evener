@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"primeradiant.com/evener/agent"
@@ -52,6 +53,11 @@ type serveDiagnosticSpool struct {
 	out   io.Writer
 	lines chan serveDiagnosticLine
 	stop  chan struct{}
+	done  chan struct{}
+	// writing is set for as long as the worker is inside a write. The one slot
+	// is free only when it is clear, so an offer can never land in a slot the
+	// worker has already drained.
+	writing atomic.Int32
 }
 
 // serveDiagnosticLine is one queued diagnostic, with the session it belongs to.
@@ -72,43 +78,88 @@ func newServeDiagnosticSpool(out io.Writer) *serveDiagnosticSpool {
 		out:   out,
 		lines: make(chan serveDiagnosticLine, 1),
 		stop:  make(chan struct{}),
+		done:  make(chan struct{}),
 	}
 	go p.run()
 	return p
 }
 
 func (p *serveDiagnosticSpool) run() {
+	defer close(p.done)
 	for {
 		select {
-		case <-p.stop:
-			return
 		case line := <-p.lines:
+			// Hold the slot until the write finishes. Reading the line frees
+			// the channel, so a worker that read and then blocked would let the
+			// next offer land in a slot nothing will read again -- accepted and
+			// then dropped, which is the one outcome the caller cannot see.
+			p.writing.Store(1)
 			serveLogAt(p.out, line.at, line.sessionID, "%s", line.text)
+			p.writing.Store(0)
+		case <-p.stop:
+			// A stop can arrive while a line this spool accepted is still
+			// queued. Drain what is already here before exiting: the record
+			// was taken from its producer, so dropping it would lose the last
+			// line before a shutdown for no reason a writable sink explains.
+			for {
+				select {
+				case line := <-p.lines:
+					serveLogAt(p.out, line.at, line.sessionID, "%s", line.text)
+				default:
+					return
+				}
+			}
 		}
 	}
 }
 
-// Logf queues one diagnostic line. It never blocks the caller: a line that
-// arrives while the worker is still writing an earlier line is dropped.
-func (p *serveDiagnosticSpool) Logf(sessionID, format string, args ...any) {
-	p.logAt(time.Now(), sessionID, format, args...)
+// Logf queues one diagnostic line and reports whether the spool accepted it. It
+// never blocks the caller: a line that arrives while the worker is still writing
+// an earlier line is refused.
+//
+// The result is not decoration. A caller that has state to update on the
+// strength of a report -- the park a wake owes exactly one line -- must update
+// it only when this returns true, or a refused line leaves the state saying the
+// daemon was told when it was not.
+func (p *serveDiagnosticSpool) Logf(sessionID, format string, args ...any) bool {
+	return p.logAt(time.Now(), sessionID, format, args...)
 }
 
 // logAt is Logf against a caller-supplied instant: the moment the line was
 // emitted, which is what the worker stamps rather than the moment the sink
 // became free.
-func (p *serveDiagnosticSpool) logAt(at time.Time, sessionID, format string, args ...any) {
+func (p *serveDiagnosticSpool) logAt(at time.Time, sessionID, format string, args ...any) bool {
+	if p.writing.Load() != 0 {
+		return false
+	}
 	select {
 	case p.lines <- serveDiagnosticLine{sessionID: sessionID, text: fmt.Sprintf(format, args...), at: at}:
+		return true
 	default:
+		return false
 	}
 }
 
-// Close retires the spool without waiting for a write already in flight. A
-// write stuck on a stalled sink cannot be recalled, and shutdown must not wait
-// on the sink it is trying to leave behind.
+// serveDiagnosticSpoolShutdownBudget bounds how long Close waits for the worker
+// to drain. It is short on purpose: it exists to let an accepted record reach a
+// sink that is still draining, not to give a stalled sink more time.
+const serveDiagnosticSpoolShutdownBudget = 250 * time.Millisecond
+
+// Close stops the spool, lets its worker drain what was already accepted, and
+// waits for it within a fixed budget.
+//
+// The wait is what makes the last record deterministic: a producer that handed
+// a line to the spool and then shut down would otherwise return before the
+// worker wrote it, and a responsive sink would lose the line that recorded why
+// the daemon was stopping. The budget is what keeps that from becoming a new
+// dependency: a write stuck on a stalled sink cannot be recalled, so Close
+// gives up on it rather than holding shutdown behind the sink it is leaving.
 func (p *serveDiagnosticSpool) Close() {
 	close(p.stop)
+	select {
+	case <-p.done:
+	case <-time.After(serveDiagnosticSpoolShutdownBudget):
+	}
 }
 
 // retirementAttemptSummary renders an automatic retirement attempt that did

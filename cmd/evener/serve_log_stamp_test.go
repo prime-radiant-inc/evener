@@ -8,10 +8,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"primeradiant.com/evener/agent"
-	"primeradiant.com/evener/internal/testwait"
 )
 
 // serveLine is one parsed componentlog record from the serve component: its
@@ -204,51 +204,57 @@ func (s *stalledSink) Write(p []byte) (int, error) {
 // stalled sink, which is what the loop used to do, and it does not return. The
 // second emits through the spool, which does.
 func TestServeDiagnosticSpoolDoesNotBlockOnAStalledSink(t *testing.T) {
-	t.Parallel()
-	sink := &stalledSink{release: make(chan struct{}), onEnter: make(chan struct{})}
-	t.Cleanup(func() { close(sink.release) })
+	// In a bubble: synctest.Wait returns once every goroutine here is blocked,
+	// so a write that regressed to blocking fails the assertion below directly
+	// instead of hanging the suite until the timeout releases the sink.
+	synctest.Test(t, func(t *testing.T) {
+		sink := &stalledSink{release: make(chan struct{}), onEnter: make(chan struct{})}
 
-	direct := make(chan struct{})
-	go func() {
-		defer close(direct)
-		serveLogf(sink, "session-1", "diagnostic straight to the sink")
-	}()
-	// The sink closes entered as it is about to block, so awaiting that is
-	// awaiting the write's entry rather than polling for it. A failed
-	// assertion below still releases the writer, which keeps the failure a
-	// report instead of a hang.
-	<-sink.onEnter
-	select {
-	case <-direct:
-		t.Fatal("a direct write to a stalled sink returned; this test cannot show what the input loop used to wait on")
-	default:
-	}
-
-	spool := newServeDiagnosticSpool(sink)
-	defer spool.Close()
-	// The worker takes the first line and blocks in the write, as the direct
-	// write above is still blocked. Everything after it must not wait.
-	spool.Logf("session-1", "first stalled diagnostic")
-	// onEnter fires once, for the direct write above. The worker's own write is
-	// the second, so the counter is what says the worker is inside the sink
-	// and therefore cannot be the one making the emits below return.
-	testwait.Until(t, "the spool's worker to reach the stalled sink", func() bool {
-		return sink.writes.Load() == 2
-	})
-	emitted := make(chan struct{})
-	go func() {
-		defer close(emitted)
-		for range 100 {
-			spool.Logf("session-1", "diagnostic %d behind a stalled sink", 1)
+		direct := make(chan struct{})
+		go func() {
+			defer close(direct)
+			serveLogf(sink, "session-1", "diagnostic straight to the sink")
+		}()
+		// The sink closes onEnter as it is about to block, so awaiting that is
+		// awaiting the write's entry rather than polling for it.
+		<-sink.onEnter
+		select {
+		case <-direct:
+			t.Fatal("a direct write to a stalled sink returned; this test cannot show what the input loop used to wait on")
+		default:
 		}
-	}()
-	<-emitted
-	// The sink is still stalled at this point: release has not closed, so the
-	// worker cannot have finished its write. That is what makes the emits
-	// above meaningful -- they completed against a sink that is still stuck.
-	if got := sink.writes.Load(); got != 2 {
-		t.Fatalf("the sink saw %d writes while 100 diagnostics were enqueued, want 2: the worker drained the spool instead of blocking in the first write, so this proves nothing", got)
-	}
+
+		spool := newServeDiagnosticSpool(sink)
+		t.Cleanup(spool.Close)
+		// The worker takes the first line and blocks in the write, as the direct
+		// write above is still blocked. Everything after it must not wait.
+		spool.Logf("session-1", "first stalled diagnostic")
+		synctest.Wait()
+		if got := sink.writes.Load(); got != 2 {
+			t.Fatalf("the sink saw %d writes, want 2: the worker did not reach the stalled write, so the emits below prove nothing", got)
+		}
+
+		emitted := make(chan struct{})
+		go func() {
+			defer close(emitted)
+			for range 100 {
+				spool.Logf("session-1", "diagnostic %d behind a stalled sink", 1)
+			}
+		}()
+		synctest.Wait()
+		select {
+		case <-emitted:
+		default:
+			t.Fatal("emitting 100 diagnostics did not finish while the sink was stalled: the input loop would stall with it, and shutdown would wait on that loop")
+		}
+		// The sink is still stalled: release has not closed, so the worker
+		// cannot have finished its write. That is what makes the emits above
+		// meaningful -- they completed against a sink that is still stuck.
+		if got := sink.writes.Load(); got != 2 {
+			t.Fatalf("the sink saw %d writes while 100 diagnostics were enqueued, want 2: the worker drained the spool instead of blocking in the first write", got)
+		}
+		close(sink.release)
+	})
 }
 
 // gatedSink records the instant its first write began blocking and releases
@@ -274,6 +280,10 @@ func (s *gatedSink) Write(p []byte) (int, error) {
 // it, and the stamp it carries has to be the moment it was emitted. Stamping in
 // the worker would place a stand-down after events that happened while it
 // waited, which is the ordering the instant exists to establish.
+//
+// The line is offered a stamp well before the write that carries it runs, and
+// the assertion reads the stamp off the sink: an offer that was refused is not a
+// report, so the test offers again once the write can proceed.
 func TestServeDiagnosticSpoolStampsWhenTheLineIsEmitted(t *testing.T) {
 	t.Parallel()
 	sink := &gatedSink{
@@ -284,29 +294,23 @@ func TestServeDiagnosticSpoolStampsWhenTheLineIsEmitted(t *testing.T) {
 	spool := newServeDiagnosticSpool(sink)
 	defer spool.Close()
 
-	blocker := time.Date(2026, 7, 31, 18, 26, 56, 0, time.UTC)
-	waiting := time.Date(2026, 7, 31, 18, 26, 57, 0, time.UTC)
-	released := time.Date(2026, 7, 31, 18, 27, 30, 0, time.UTC)
+	emitted := time.Date(2026, 7, 31, 18, 26, 56, 0, time.UTC)
+	later := time.Date(2026, 7, 31, 18, 27, 30, 0, time.UTC)
 
-	// The first line reaches the sink and blocks there.
-	spool.logAt(blocker, "session-1", "the line the sink is stuck on")
+	// The line is stamped here, and the write that carries it happens after the
+	// sink is released -- a different instant, so the two cannot be confused.
+	if !spool.logAt(emitted, "session-1", "the line whose instant is under test") {
+		t.Fatal("the offer was refused with an idle spool")
+	}
 	<-sink.entered
-
-	// The second is emitted while the sink is blocked, and the sink does not
-	// resume until much later.
-	spool.logAt(waiting, "session-1", "a line that waits behind the sink")
-	testwait.Until(t, "the waiting line to be enqueued", func() bool {
-		return len(spool.lines) == 1
-	})
 	close(sink.release)
 
-	first := parseServeLine(t, <-sink.lines)
-	second := parseServeLine(t, <-sink.lines)
-	if first.at != serveLogStampFor(blocker) {
-		t.Fatalf("the blocked line's instant = %q, want %q", first.at, serveLogStampFor(blocker))
+	line := parseServeLine(t, <-sink.lines)
+	if line.at != serveLogStampFor(emitted) {
+		t.Fatalf("the line's instant = %q, want %q: it was stamped when the write ran, not when it was emitted", line.at, serveLogStampFor(emitted))
 	}
-	if second.at != serveLogStampFor(waiting) {
-		t.Fatalf("the waiting line's instant = %q, want %q: it was stamped when the sink resumed (%q), not when it was emitted", second.at, serveLogStampFor(waiting), serveLogStampFor(released))
+	if line.at == serveLogStampFor(later) {
+		t.Fatalf("the line's instant = %q: the write's instant, not the emission's", line.at)
 	}
 }
 
@@ -322,31 +326,125 @@ func TestServeDiagnosticSpoolStampsWhenTheLineIsEmitted(t *testing.T) {
 // What is asserted is that the records complete, not that they appear: a
 // daemon that logs and cannot shut down is the failure this exists for.
 func TestTurnOutcomeRecordsNeverBlockOnAStalledSink(t *testing.T) {
+	// In a bubble: the clock is fake and synctest.Wait returns once every
+	// goroutine here is blocked, so a record that regressed to a synchronous
+	// write fails this assertion directly instead of hanging the suite until
+	// the test timeout releases the sink.
+	synctest.Test(t, func(t *testing.T) {
+		sink := &stalledSink{release: make(chan struct{}), onEnter: make(chan struct{})}
+		diagnostics := newServeDiagnosticSpool(sink)
+		t.Cleanup(diagnostics.Close)
+
+		// The sink is stalled from the first write, which is the state a full
+		// pipe puts the process in.
+		diagnostics.Logf("session-1", "the line the sink is stuck on")
+		<-sink.onEnter
+
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			// A turn that failed, then a turn whose runnable input stood down:
+			// the two records the loop emits on this goroutine's behalf.
+			reportTurnOutcome(diagnostics, "session-1", errors.New("injected: turn failed"), true, agent.PendingInputSteeringParked, nil)
+			reportTurnOutcome(diagnostics, "session-1", nil, true, agent.PendingInputStopHeld, nil)
+			reportTurnOutcome(diagnostics, "session-1", errors.New("injected: another turn failed"), false, agent.PendingInputNoOutcome, nil)
+		}()
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("the loop's records did not finish while the sink was stalled: a synchronous write would block it here")
+		}
+		// The sink never resumed, so a record that had gone straight to it
+		// would still be blocked.
+		if got := sink.writes.Load(); got != 1 {
+			t.Fatalf("the sink saw %d writes while the loop emitted 3 records, want 1: the records went to the sink instead of the spool", got)
+		}
+		close(sink.release)
+	})
+}
+
+// TestServeDiagnosticSpoolDrainsAnAcceptedLineOnClose is the other half of the
+// shutdown contract.
+//
+// A record the spool accepted has left its producer, so dropping it on the way
+// out loses the line that says why the daemon stopped -- the very line a reader
+// opens the log for. Close therefore drains what was already accepted and waits
+// for it, bounded so a stalled sink still cannot hold shutdown.
+//
+// The sink here is responsive, so the record must be on it before Close returns:
+// no await, no retry, nothing left to chance.
+func TestServeDiagnosticSpoolDrainsAnAcceptedLineOnClose(t *testing.T) {
+	t.Parallel()
+	var sink bytes.Buffer
+	spool := newServeDiagnosticSpool(&sink)
+	spool.Logf("session-1", "the line the daemon stopped for")
+	spool.Close()
+
+	line := parseServeLine(t, sink.String())
+	if !strings.Contains(line.message, "the line the daemon stopped for") {
+		t.Fatalf("the record after Close = %q, want the accepted line: it was taken from its producer and then dropped", line.message)
+	}
+	if line.session != "session-1" {
+		t.Fatalf("the record's session after Close = %q, want session-1", line.session)
+	}
+}
+
+// TestRetirementTeardownReportDoesNotBlockOnAStalledSink covers the other loop
+// shutdown joins.
+//
+// A post-commit teardown failure is reported from the retirement loop, and
+// shutdown joins that loop after the input loop, so a record written straight to
+// a pipe whose reader stopped draining would hold the exit open after every turn
+// was already done. With the daemon's spool installed the report cannot wait.
+func TestRetirementTeardownReportDoesNotBlockOnAStalledSink(t *testing.T) {
 	t.Parallel()
 	sink := &stalledSink{release: make(chan struct{}), onEnter: make(chan struct{})}
 	t.Cleanup(func() { close(sink.release) })
-	diagnostics := newServeDiagnosticSpool(sink)
-	t.Cleanup(diagnostics.Close)
+	spool := newServeDiagnosticSpool(sink)
+	t.Cleanup(spool.Close)
 
-	// The sink is stalled from the first write, which is the state a full pipe
-	// puts the process in.
-	diagnostics.Logf("session-1", "the line the sink is stuck on")
+	// The pipe is full before the report is attempted.
+	spool.Logf("session-1", "the line the sink is stuck on")
 	<-sink.onEnter
 
+	// The pipe the fallback writes to is the stalled sink as well: without the
+	// spool, either record would land on it and block the loop shutdown joins.
+	r := &serveRetirement{deps: serveDeps{serveLogOut: sink}, diagnostics: spool}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		// A turn that failed, then a turn whose runnable input stood down: the
-		// two records the loop emits on this goroutine's behalf.
-		reportTurnOutcome(diagnostics, "session-1", errors.New("injected: turn failed"), true, agent.PendingInputSteeringParked)
-		reportTurnOutcome(diagnostics, "session-1", nil, true, agent.PendingInputStopHeld)
-		reportTurnOutcome(diagnostics, "session-1", errors.New("injected: another turn failed"), false, agent.PendingInputNoOutcome)
+		r.reportTeardown("session-1", "retirement reader drain failed: %v", errors.New("injected: drain failed"))
+		r.reportTeardown("session-1", "retirement release failed: %v", errors.New("injected: release failed"))
 	}()
 	<-done
 
-	// The sink never resumed, so a record that had gone straight to it would
-	// still be blocked here and this test would not have reached the assertion.
 	if got := sink.writes.Load(); got != 1 {
-		t.Fatalf("the sink saw %d writes while the loop emitted 3 records, want 1: the records went to the sink instead of the spool", got)
+		t.Fatalf("the sink saw %d writes while the retirement loop reported twice, want 1: the reports went to the pipe instead of the spool", got)
+	}
+}
+
+// TestServeDiagnosticSpoolReportsWhetherItAcceptedALine pins the contract the
+// park's once-per-attempt report depends on.
+//
+// An offer either lands or reports that it did not. A caller that updated state
+// on the strength of a refused offer would silence the condition it meant to
+// report -- the park would say "already told" about a line no sink ever saw.
+func TestServeDiagnosticSpoolReportsWhetherItAcceptedALine(t *testing.T) {
+	t.Parallel()
+	sink := &stalledSink{release: make(chan struct{}), onEnter: make(chan struct{})}
+	t.Cleanup(func() { close(sink.release) })
+	spool := newServeDiagnosticSpool(sink)
+	t.Cleanup(spool.Close)
+
+	// The worker takes this line and blocks in the sink, so the one slot is
+	// occupied from here on.
+	if !spool.Logf("session-1", "the line that fills the slot") {
+		t.Fatal("the first offer was refused with an idle spool")
+	}
+	<-sink.onEnter
+
+	if spool.Logf("session-1", "an offer behind the blocked write") {
+		t.Fatal("an offer was accepted while the one slot was taken: a caller would then clear state for a line that was dropped")
 	}
 }

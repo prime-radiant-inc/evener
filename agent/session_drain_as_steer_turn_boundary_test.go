@@ -1565,24 +1565,19 @@ func TestBufferedAcceptanceWakeDoesNotRetryAFailedInlineCarrier(t *testing.T) {
 	if runs == 0 {
 		t.Fatal("the failed inline carrier armed no wake at all; this test would then measure nothing about what a wake reports")
 	}
-	// One line per failed attempt. The park is a state that outlives the wake
-	// that first sees it, so reporting it on every wake would put the same line
-	// in the log once per wake -- the buffered acceptance wake, the durable
-	// probe behind it, and every unrelated wake while it holds. The first wake
-	// reports it and the rest stand down quietly; a later failed attempt parks
-	// again and reports again.
-	reported := 0
+	// The park outlives the wake that first sees it, so every wake that lands
+	// while it holds names it. Keeping that to one line is the daemon's job:
+	// only the sink knows whether a report landed, so the flag clears when the
+	// line is accepted rather than when it is offered. Nothing here consumes
+	// it, which is what lets the next wake retry a refused offer instead of
+	// losing it.
 	for _, outcome := range outcomes {
-		switch outcome {
-		case PendingInputSteeringParked:
-			reported++
-		case PendingInputNothingRunnable:
-		default:
-			t.Fatalf("buffered acceptance wake over a parked steer = %v, want steering-parked once and nothing-runnable after", outcome)
+		if outcome != PendingInputSteeringParked {
+			t.Fatalf("buffered acceptance wake over a parked steer = %v, want steering-parked: the park still stands and is unreported until the sink takes it", outcome)
 		}
 	}
-	if reported != 1 {
-		t.Fatalf("the buffered wakes reported the same park %d time(s) over %d wake(s), want exactly 1", reported, runs)
+	if !s.steeringParkReportPending() {
+		t.Fatal("a wake consumed the park's report without the daemon's sink accepting it; a refused line would then silence the park for good")
 	}
 	if outcomes[0] != PendingInputSteeringParked {
 		t.Fatalf("first buffered wake = %v, want steering-parked: the failure happened before it was answered", outcomes[0])

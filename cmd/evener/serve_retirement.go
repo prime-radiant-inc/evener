@@ -32,12 +32,33 @@ type serveRetirement struct {
 	// ctx is the daemon's lifetime context and cancel is what starts its exit.
 	ctx    context.Context
 	cancel context.CancelFunc
+	// diagnostics is the daemon's best-effort nonblocking sink. Teardown runs
+	// on the retirement loop, which shutdown joins, so a report written
+	// straight to the output pipe can hold the exit behind a reader that
+	// stopped draining it. Nil falls back to the pipe directly for tests that
+	// build this without a serve around it.
+	diagnostics *serveDiagnosticSpool
 }
 
 func (r *serveRetirement) observe(event, rootID string) {
 	if r.deps.retirementObserve != nil {
 		r.deps.retirementObserve(event, rootID)
 	}
+}
+
+// reportTeardown writes one post-commit teardown failure.
+//
+// Through the spool when serve built one: this runs on the retirement loop,
+// which shutdown joins after the input loop, so a record that waited on a
+// reader which had stopped draining the pipe would hold the exit open after
+// the turns were done. The pipe is the fallback for a standalone retirement
+// built without a serve around it.
+func (r *serveRetirement) reportTeardown(rootID, format string, args ...any) {
+	if r.diagnostics != nil {
+		r.diagnostics.Logf(rootID, format, args...)
+		return
+	}
+	serveLogf(r.deps.diagnosticOut(), rootID, format, args...)
 }
 
 // consumeRetirementClaim is the single pipeline both triggers share. Any
@@ -87,10 +108,10 @@ func (r *serveRetirement) consumeClaim(reqCtx context.Context, claim *agent.Reti
 	drainCancel()
 	var teardownErr error
 	if drainErr != nil {
-		serveLogf(r.deps.diagnosticOut(), root.ID(), "retirement reader drain failed: %v", drainErr)
+		r.reportTeardown(root.ID(), "retirement reader drain failed: %v", drainErr)
 		teardownErr = fmt.Errorf("retirement reader drain: %w", drainErr)
 	} else if err := agent.ReleaseForRetirement(r.ctx, prepared); err != nil {
-		serveLogf(r.deps.diagnosticOut(), root.ID(), "retirement release failed: %v", err)
+		r.reportTeardown(root.ID(), "retirement release failed: %v", err)
 		teardownErr = fmt.Errorf("retirement release: %w", err)
 	} else {
 		r.observe("released", root.ID())
