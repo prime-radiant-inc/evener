@@ -352,7 +352,7 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 		wakeAfterUnlock = func() error {
 			var wakeErrs []error
 			for _, wake := range deliveryWakes {
-				wakeErrs = append(wakeErrs, c.wakeDeliveryReceiver(wake.receiver, wake.attentionIDs))
+				wakeErrs = append(wakeErrs, c.wakeDeliveryReceiver(wake.receiver, wake.attentionIDs, wake.wakeGeneration))
 			}
 			return errors.Join(wakeErrs...)
 		}
@@ -506,6 +506,9 @@ func (c *delegateTreeController) reconcileRecoveryRequiredStopLocked() (delegate
 type delegateDeliveryWake struct {
 	receiver     delegateDeliveryReceiver
 	attentionIDs []string
+	// wakeGeneration is the settled generation this wake supersedes, sampled
+	// where the controller journaled the acknowledgment's release.
+	wakeGeneration uint64
 }
 
 // acknowledgeRetryableStopDeliveriesLocked retries the durable acknowledgment
@@ -530,6 +533,7 @@ func (c *delegateTreeController) acknowledgeRetryableStopDeliveriesLocked(stop *
 	var lost []events.WarningData
 	liveOrder := make([]*Session, 0)
 	liveIDs := make(map[*Session][]string)
+	liveGenerations := make(map[*Session]uint64)
 	cold := false
 	buildPlans := func() delegateMutationPlans {
 		plans := c.deliveryAckPlansLocked(
@@ -542,7 +546,11 @@ func (c *delegateTreeController) acknowledgeRetryableStopDeliveriesLocked(stop *
 	buildWakes := func() []delegateDeliveryWake {
 		wakes := make([]delegateDeliveryWake, 0, len(liveOrder)+1)
 		for _, receiver := range liveOrder {
-			wakes = append(wakes, delegateDeliveryWake{receiver: receiver, attentionIDs: liveIDs[receiver]})
+			wakes = append(wakes, delegateDeliveryWake{
+				receiver:       receiver,
+				attentionIDs:   liveIDs[receiver],
+				wakeGeneration: liveGenerations[receiver],
+			})
 		}
 		if cold {
 			wakes = append(wakes, delegateDeliveryWake{receiver: coldDelegateDeliveryReceiver{}})
@@ -623,6 +631,7 @@ func (c *delegateTreeController) acknowledgeRetryableStopDeliveriesLocked(stop *
 					liveOrder = append(liveOrder, receiver)
 				}
 				liveIDs[receiver] = append(liveIDs[receiver], delegateAttentionID(token.deliveryID))
+				liveGenerations[receiver] = ack.wakeGeneration
 			case coldDelegateDeliveryReceiver:
 				cold = true
 			}
@@ -722,7 +731,7 @@ func (c *delegateTreeController) reportDelegateWakeError(err error) {
 
 // wakeDeliveryReceiver reproduces deliverDelegatePacket's post-commit wake for
 // an acknowledgment the stop retried itself. It runs outside c.mu.
-func (c *delegateTreeController) wakeDeliveryReceiver(receiver delegateDeliveryReceiver, attentionIDs []string) error {
+func (c *delegateTreeController) wakeDeliveryReceiver(receiver delegateDeliveryReceiver, attentionIDs []string, wakeGeneration uint64) error {
 	switch receiver := receiver.(type) {
 	case *Session:
 		if receiver == nil {
@@ -738,8 +747,10 @@ func (c *delegateTreeController) wakeDeliveryReceiver(receiver delegateDeliveryR
 		// the arm below notifies, because the notify func drives the
 		// receiver synchronously: a hold still in place at the drive's
 		// list read would present the delivered row alone and leave
-		// the stopped report for a later generation.
-		receiver.releaseAutomaticDriveHolds(delegateHoldReleaseDelivery)
+		// the stopped report for a later generation. The generation is
+		// the one the acknowledgment's own release was journaled for, so
+		// the two orders agree on which quiet the wake superseded.
+		receiver.releaseAutomaticDriveHolds(delegateHoldReleaseDelivery, wakeGeneration)
 		// A non-root receiver gets the same durable arm the root gets
 		// (#6330): armDelegateAttentions opens the receiver's attention
 		// in the controller, waits out a racing attention start, and

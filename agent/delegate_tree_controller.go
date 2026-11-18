@@ -423,6 +423,10 @@ type delegateMutationPlans struct {
 	attentionFinalization *delegateSettlementClaim
 	shellRepairs          []delegateShellRepairPlan
 	warnings              []events.WarningData
+	// wakeGeneration is the settled generation a committed delivery's wake
+	// superseded, sampled where the controller journaled that wake. Zero when
+	// the plans commit no wake.
+	wakeGeneration uint64
 }
 
 func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTreeController, error) {

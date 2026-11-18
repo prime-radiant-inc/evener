@@ -2323,14 +2323,14 @@ func (a *subagent) finalizeRun(f subagentFinalize) {
 		// keep their presentation, and the arm that later presents them —
 		// or any fresh arm — releases the hold.
 		if userStopped && reopenID != "" {
-			a.sess.holdDelegateAttentionFromAutomaticDrive(reopenID)
+			a.sess.holdDelegateAttentionFromAutomaticDriveAt(reopenID, f.lease.generation)
 		}
 		// The same hold applies to a row a hook stop reopened: re-arming it at
 		// once relaunches SubagentStart, and a hook that keeps refusing would
 		// repeat launches, warnings and durable records without ever presenting
 		// the report.
 		if f.attentionUnpresented && reopenID != "" {
-			a.sess.holdDelegateAttentionFromAutomaticDrive(reopenID)
+			a.sess.holdDelegateAttentionFromAutomaticDriveAt(reopenID, f.lease.generation)
 		}
 	}
 	if f.stableRun && a.sess.delegateController != nil {

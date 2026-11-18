@@ -1335,15 +1335,16 @@ type Session struct {
 	// attentionMu.
 	attentionAcceptedCause *provenance.Causal
 	// attentionAutomaticDriveHolds names pending rows a user's stop quieted
-	// from automatic drives: the stopped generation's commit left the
-	// delegate armed for every other pending row, and that stale armed wake
-	// drives without a re-arm, so the drive's own reads keep a held row out
-	// of its claim and its riders while the rows the stop never touched
-	// still present. Any successful arm releases the holds — a wake from a
-	// new event may present the row — and the map is in-memory on purpose:
-	// a restart reconciles wakes from the durable fold, which cannot hold
-	// a quiet. Guarded by attentionMu.
-	attentionAutomaticDriveHolds map[string]struct{}
+	// from automatic drives, each stamped with the settled generation whose
+	// quiet it carries: the stopped generation's commit left the delegate
+	// armed for every other pending row, and that stale armed wake drives
+	// without a re-arm, so the drive's own reads keep a held row out of its
+	// claim and its riders while the rows the stop never touched still
+	// present. A wake releases only the holds at or below the generation it
+	// supersedes, so a stop that settles after an arm keeps its quiet. The
+	// map is in-memory on purpose: a restart reconciles wakes from the
+	// durable fold, which cannot hold a quiet. Guarded by attentionMu.
+	attentionAutomaticDriveHolds map[string]uint64
 
 	// turnNameRetryMu guards turnNameRetry alone. The paced wake it schedules
 	// runs while the session goroutine is mid-stand-down, so it must not queue

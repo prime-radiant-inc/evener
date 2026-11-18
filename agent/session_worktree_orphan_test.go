@@ -2413,7 +2413,7 @@ func TestDelegateAttentionArmWakeEndsHoldsBeforeTheDrive(t *testing.T) {
 	if _, err := lane.delegateSess.appendDelegateNotificationDurably(heldRowID, heldRowContent); err != nil {
 		t.Fatalf("pend the held row: %v", err)
 	}
-	lane.delegateSess.holdDelegateAttentionFromAutomaticDrive(heldRowID)
+	lane.delegateSess.holdDelegateAttentionFromAutomaticDriveAt(heldRowID, settledGeneration(t, lane.delegateSess))
 	// The new event and its production arm: the arm's wake fires through the
 	// wired edge in the same call.
 	if _, err := lane.delegateSess.appendDelegateNotificationDurably(newRowID, newRowContent); err != nil {
@@ -2507,7 +2507,8 @@ func TestDelegateAttentionHeldRowPresentsFromTheHistoryTail(t *testing.T) {
 	if _, err := lane.delegateSess.appendDelegateNotificationDurably(heldRowID, heldRowContent); err != nil {
 		t.Fatalf("pend the held row: %v", err)
 	}
-	lane.delegateSess.holdDelegateAttentionFromAutomaticDrive(heldRowID)
+	heldGeneration := settledGeneration(t, lane.delegateSess)
+	lane.delegateSess.holdDelegateAttentionFromAutomaticDriveAt(heldRowID, heldGeneration)
 	// The other row presents while the hold stands: the direct drive reads the
 	// list with the hold in place, so G2 presents the other row alone and its
 	// exchanges append after the held row's turn.
@@ -2532,7 +2533,7 @@ func TestDelegateAttentionHeldRowPresentsFromTheHistoryTail(t *testing.T) {
 		return !running
 	})
 	// The hold ends — the same production release every wake fires.
-	lane.delegateSess.releaseAutomaticDriveHolds(delegateHoldReleaseArm)
+	lane.delegateSess.releaseAutomaticDriveHolds(delegateHoldReleaseArm, heldGeneration)
 	// The held row presents through the wired arm: the arm's wake drives
 	// synchronously, and the request it builds must end on the report.
 	if err := lane.delegateSess.armDelegateAttention(heldRowID); err != nil {
@@ -3290,9 +3291,9 @@ func TestHeldRowsMoveToTheTailInArrivalOrder(t *testing.T) {
 		if _, err := sess.appendDelegateNotificationDurably(ids[i], fmt.Sprintf("held-order row %d", i+1)); err != nil {
 			t.Fatalf("pend row %d: %v", i+1, err)
 		}
-		sess.holdDelegateAttentionFromAutomaticDrive(ids[i])
+		sess.holdDelegateAttentionFromAutomaticDriveAt(ids[i], 1)
 	}
-	sess.releaseAutomaticDriveHolds(delegateHoldReleaseArm)
+	sess.releaseAutomaticDriveHolds(delegateHoldReleaseArm, 1)
 	var got []string
 	sess.mu.Lock()
 	for _, turn := range sess.history {
@@ -3541,7 +3542,7 @@ func TestDelegateAttentionDeliveredReportReleasesUserStopHold(t *testing.T) {
 	// release carries the arm's tag and must never satisfy the delivery
 	// assert below.
 	heldRowID := delegateAttentionID(lane.sharedSub.sess.owningDelegateID + "/delivery/1")
-	lane.delegateSess.holdDelegateAttentionFromAutomaticDrive(heldRowID)
+	lane.delegateSess.holdDelegateAttentionFromAutomaticDriveAt(heldRowID, settledGeneration(t, lane.delegateSess))
 	var releaseMu sync.Mutex
 	var heldRowReleaseSites []delegateHoldReleaseSite
 	updateSessionTestConfig(lane.delegateSess, func(cfg *testConfig) {

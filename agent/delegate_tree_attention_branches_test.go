@@ -568,7 +568,7 @@ func TestReconcileDelegateAttentionFromTranscriptsNil(t *testing.T) {
 func TestTryOpenDelegateAttentionNilController(t *testing.T) {
 	t.Parallel()
 	var c *delegateTreeController
-	_, _, _, _, err := c.tryOpenDelegateAttention("dlg_1", "att_1")
+	_, _, _, _, _, err := c.tryOpenDelegateAttention("dlg_1", "att_1")
 	if err == nil || !errors.Is(err, errDelegateNotControllable) {
 		t.Fatalf("expected errDelegateNotControllable, got %v", err)
 	}
@@ -577,7 +577,7 @@ func TestTryOpenDelegateAttentionNilController(t *testing.T) {
 func TestTryOpenDelegateAttentionEmptyDelegateID(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{}
-	_, _, _, _, err := c.tryOpenDelegateAttention("", "att_1")
+	_, _, _, _, _, err := c.tryOpenDelegateAttention("", "att_1")
 	if err == nil || !errors.Is(err, errDelegateNotControllable) {
 		t.Fatalf("expected errDelegateNotControllable, got %v", err)
 	}
@@ -586,7 +586,7 @@ func TestTryOpenDelegateAttentionEmptyDelegateID(t *testing.T) {
 func TestTryOpenDelegateAttentionEmptyAttentionID(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{}
-	_, _, _, _, err := c.tryOpenDelegateAttention("dlg_1", "")
+	_, _, _, _, _, err := c.tryOpenDelegateAttention("dlg_1", "")
 	if err == nil || !errors.Is(err, errDelegateNotControllable) {
 		t.Fatalf("expected errDelegateNotControllable, got %v", err)
 	}
@@ -598,7 +598,7 @@ func TestTryOpenDelegateAttentionNilAggregate(t *testing.T) {
 		durable:   map[string]*delegatestore.Aggregate{},
 		attention: map[string]*delegateAttentionState{},
 	}
-	_, _, _, _, err := c.tryOpenDelegateAttention("dlg_missing", "att_1")
+	_, _, _, _, _, err := c.tryOpenDelegateAttention("dlg_missing", "att_1")
 	if err == nil || !errors.Is(err, errDelegateNotControllable) {
 		t.Fatalf("expected errDelegateNotControllable for nil aggregate, got %v", err)
 	}
@@ -614,7 +614,7 @@ func TestTryOpenDelegateAttentionAlreadyExists(t *testing.T) {
 			"dlg_1": {wakeIDs: map[string]struct{}{"att_1": {}}},
 		},
 	}
-	added, blocker, _, emit, err := c.tryOpenDelegateAttention("dlg_1", "att_1")
+	added, blocker, _, emit, _, err := c.tryOpenDelegateAttention("dlg_1", "att_1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

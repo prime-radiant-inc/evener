@@ -356,6 +356,9 @@ type delegateDeliveryAck struct {
 	ownerID      string
 	delegateID   string
 	ownerChanged bool
+	// wakeGeneration is the settled generation the acknowledged delivery's
+	// wake supersedes, sampled where the wake was journaled.
+	wakeGeneration uint64
 }
 
 // completeDeliveryLocked is CompleteDelivery's body under the caller's c.mu.
@@ -369,7 +372,9 @@ func (c *delegateTreeController) completeDeliveryLocked(token delegateDeliveryTo
 		updateIDs = append(updateIDs, ack.ownerID)
 	}
 	updateIDs = append(updateIDs, ack.delegateID)
-	return c.deliveryAckPlansLocked(updateIDs, []string{ack.ownerID}), nil
+	plans := c.deliveryAckPlansLocked(updateIDs, []string{ack.ownerID})
+	plans.wakeGeneration = ack.wakeGeneration
+	return plans, nil
 }
 
 // deliveryAckPlansLocked assembles the snapshots and owner replays for
@@ -441,7 +446,8 @@ func (c *delegateTreeController) completeDeliveryAckLocked(token delegateDeliver
 	if !receipt.inline {
 		wakeOwner = receipt.ownerID
 	}
-	if err := c.appendAttentionWakeLocked(wakeOwner, events...); err != nil {
+	wakeGeneration, err := c.appendAttentionWakeLocked(wakeOwner, events...)
+	if err != nil {
 		receipt.retryable = true
 		c.evidenceVersion++
 		// A stop drain parked on this admission must wake to retry the
@@ -460,10 +466,11 @@ func (c *delegateTreeController) completeDeliveryAckLocked(token delegateDeliver
 	untrackStopLocked(c, func(s *delegateStopState) map[delegateDeliveryToken]struct{} { return s.deliveries }, token)
 	c.evidenceVersion++
 	return delegateDeliveryAck{
-		planned:      true,
-		ownerID:      receipt.ownerID,
-		delegateID:   receipt.delegateID,
-		ownerChanged: ownerChanged,
+		planned:        true,
+		ownerID:        receipt.ownerID,
+		delegateID:     receipt.delegateID,
+		ownerChanged:   ownerChanged,
+		wakeGeneration: wakeGeneration,
 	}, nil
 }
 
@@ -731,7 +738,7 @@ func deliverDelegatePacket(plan delegateDeliveryPlan, receiver delegateDeliveryR
 	if err != nil {
 		return plans, err
 	}
-	return plans, plan.controller.wakeDeliveryReceiver(receiver, []string{attentionID})
+	return plans, plan.controller.wakeDeliveryReceiver(receiver, []string{attentionID}, plans.wakeGeneration)
 }
 
 // replanStaleDelivery re-plans a delivery whose claim is gone but whose durable

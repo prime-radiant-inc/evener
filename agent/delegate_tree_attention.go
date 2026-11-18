@@ -251,7 +251,7 @@ func (c *delegateTreeController) openDelegateAttention(delegateID, attentionID s
 	}
 	defer release()
 	for {
-		added, blocker, plan, emit, err := c.tryOpenDelegateAttention(delegateID, attentionID)
+		added, blocker, plan, emit, _, err := c.tryOpenDelegateAttention(delegateID, attentionID)
 		if err != nil {
 			return false, err
 		}
@@ -269,13 +269,16 @@ func (c *delegateTreeController) openDelegateAttention(delegateID, attentionID s
 // tryOpenDelegateAttention performs one nonblocking projection-open attempt.
 // A reservation blocker is returned to the caller without waiting so callers
 // that hold a Session attention claim can release it before waiting.
-func (c *delegateTreeController) tryOpenDelegateAttention(delegateID, attentionID string) (bool, <-chan struct{}, delegateUpdatePlan, bool, error) {
+// The admitted wake's superseded generation is returned with it, so a caller
+// that holds session state ordered against that wake uses the journaled
+// value rather than sampling one of its own.
+func (c *delegateTreeController) tryOpenDelegateAttention(delegateID, attentionID string) (bool, <-chan struct{}, delegateUpdatePlan, bool, uint64, error) {
 	if c == nil || delegateID == "" || attentionID == "" {
-		return false, nil, delegateUpdatePlan{}, false, errDelegateNotControllable
+		return false, nil, delegateUpdatePlan{}, false, 0, errDelegateNotControllable
 	}
 	release, err := c.beginRetirementMutation()
 	if err != nil {
-		return false, nil, delegateUpdatePlan{}, false, err
+		return false, nil, delegateUpdatePlan{}, false, 0, err
 	}
 	defer release()
 	c.mu.Lock()
@@ -288,26 +291,27 @@ func (c *delegateTreeController) tryOpenDelegateAttention(delegateID, attentionI
 		}
 	}
 	if blocker != nil {
-		return false, blocker, delegateUpdatePlan{}, false, nil
+		return false, blocker, delegateUpdatePlan{}, false, 0, nil
 	}
 	if c.durable[delegateID] == nil {
-		return false, nil, delegateUpdatePlan{}, false, errDelegateNotControllable
+		return false, nil, delegateUpdatePlan{}, false, 0, errDelegateNotControllable
 	}
 	if state := c.attention[delegateID]; state != nil {
 		if _, exists := state.wakeIDs[attentionID]; exists {
-			return false, nil, delegateUpdatePlan{}, false, nil
+			return false, nil, delegateUpdatePlan{}, false, 0, nil
 		}
 	}
 	openEvent, err := c.delegateAttentionOpenEventLocked(delegateID)
 	if err != nil {
-		return false, nil, delegateUpdatePlan{}, false, err
+		return false, nil, delegateUpdatePlan{}, false, 0, err
 	}
 	var openEvents []delegatestore.Event
 	if openEvent != nil {
 		openEvents = append(openEvents, *openEvent)
 	}
-	if err := c.appendAttentionWakeLocked(delegateID, openEvents...); err != nil {
-		return false, nil, delegateUpdatePlan{}, false, err
+	wakeGeneration, err := c.appendAttentionWakeLocked(delegateID, openEvents...)
+	if err != nil {
+		return false, nil, delegateUpdatePlan{}, false, 0, err
 	}
 	added := c.noteDelegateAttentionLocked(delegateID, attentionID)
 	var plan delegateUpdatePlan
@@ -315,7 +319,7 @@ func (c *delegateTreeController) tryOpenDelegateAttention(delegateID, attentionI
 		plan = c.capturedPlanLocked(delegateID)
 	}
 	c.evidenceVersion++
-	return added, nil, plan, openEvent != nil, nil
+	return added, nil, plan, openEvent != nil, wakeGeneration, nil
 }
 
 // clearResolvedDelegateAttention lowers a delegate's lingering NeedsAttention
@@ -464,9 +468,28 @@ func (c *delegateTreeController) noteDelegateAttentionLocked(delegateID, attenti
 	return true
 }
 
+// attentionWakeGenerationLocked is the newest settled generation delegateID
+// rests at: the generation a wake admitted now is newer evidence than, and so
+// the newest quiet such a wake can supersede. A run still open has not settled,
+// so a wake admitted during it supersedes only the generation before that run:
+// the stop that run's own settle records afterwards settles a later generation,
+// and its quiet must stand. Callers must hold c.mu.
+func (c *delegateTreeController) attentionWakeGenerationLocked(delegateID string) uint64 {
+	aggregate := c.durable[delegateID]
+	if aggregate == nil || aggregate.Generation == 0 {
+		return 0
+	}
+	if aggregate.CurrentRunOpen {
+		return aggregate.Generation - 1
+	}
+	return aggregate.Generation
+}
+
 // appendAttentionWakeLocked journals the events that publish delegateID's new
 // wake, together with the release that orders that wake against a settled
-// user-stop quiet.
+// user-stop quiet. It returns the generation that wake supersedes, sampled
+// here under c.mu, for the caller to carry to every other order that has to
+// agree with the journal's.
 //
 // This is the one place a wake is published to the journal: the resident arm
 // (tryOpenDelegateAttention) and the committed delivery (completeDeliveryAck)
@@ -474,15 +497,16 @@ func (c *delegateTreeController) noteDelegateAttentionLocked(delegateID, attenti
 // instead of being a path that can omit it. The release rides the wake's own
 // batch, so an append that fails refuses the wake with it: a rejected arm can
 // never release a quiet it did not supersede.
-func (c *delegateTreeController) appendAttentionWakeLocked(delegateID string, events ...delegatestore.Event) error {
+func (c *delegateTreeController) appendAttentionWakeLocked(delegateID string, events ...delegatestore.Event) (uint64, error) {
+	generation := c.attentionWakeGenerationLocked(delegateID)
 	if release, owed := c.attentionHoldReleaseEventLocked(delegateID); owed {
 		events = append(events, release)
 	}
 	if len(events) == 0 {
-		return nil
+		return generation, nil
 	}
 	_, err := c.appendLocked(events...)
-	return err
+	return generation, err
 }
 
 // attentionHoldReleaseEventLocked is the release owed when a wake is admitted
@@ -502,17 +526,18 @@ func (c *delegateTreeController) attentionHoldReleaseEventLocked(delegateID stri
 		return delegatestore.Event{}, false
 	}
 	aggregate := c.durable[delegateID]
-	if aggregate == nil || aggregate.CurrentRunOpen || aggregate.Generation == 0 ||
+	generation := c.attentionWakeGenerationLocked(delegateID)
+	if aggregate == nil || aggregate.CurrentRunOpen || generation == 0 ||
 		aggregate.Trigger != delegatestore.TriggerAttention ||
 		aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != delegatestore.OutcomeCancelled ||
-		aggregate.AttentionHoldReleasedGeneration >= aggregate.Generation {
+		aggregate.AttentionHoldReleasedGeneration >= generation {
 		return delegatestore.Event{}, false
 	}
 	return delegatestore.Event{
 		Kind:       delegatestore.EventDelegateAttentionHoldReleased,
 		DelegateID: delegateID,
 		AttentionHoldReleased: &delegatestore.AttentionHoldReleased{
-			Generation: aggregate.Generation,
+			Generation: generation,
 		},
 	}, true
 }

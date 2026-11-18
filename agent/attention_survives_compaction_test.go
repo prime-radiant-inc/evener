@@ -474,7 +474,7 @@ func TestHeldAttentionProjectionSeedsNoContinuationAnchor(t *testing.T) {
 	}
 	sess.mu.Unlock()
 	sess.attentionMu.Lock()
-	sess.attentionAutomaticDriveHolds = map[string]struct{}{heldID: {}}
+	sess.attentionAutomaticDriveHolds = map[string]uint64{heldID: 1}
 	sess.attentionMu.Unlock()
 
 	ctx := context.WithValue(context.WithValue(context.Background(), delegateRunLeaseContextKey{}, lease), delegateAttentionRunContextKey{}, struct{}{})
@@ -553,6 +553,23 @@ func deriveHeldFixture(t *testing.T, outcome delegatestore.OutcomeStatus, reason
 	t.Helper()
 	sess, reopenedID, _ := deriveHeldFixtureWithJournal(t, outcome, reason)
 	return sess, reopenedID
+}
+
+// settledGeneration reads the generation sess's delegate rests at, sampled the
+// way the controller samples it when it admits a wake — the value a hold's
+// stamp and a release's admitted generation are both ordered against.
+func settledGeneration(t *testing.T, sess *Session) uint64 {
+	t.Helper()
+	sess.mu.Lock()
+	controller := sess.delegateController
+	owningDelegateID := sess.owningDelegateID
+	sess.mu.Unlock()
+	if controller == nil {
+		t.Fatal("the fixture session has no controller to sample")
+	}
+	controller.mu.Lock()
+	defer controller.mu.Unlock()
+	return controller.attentionWakeGenerationLocked(owningDelegateID)
 }
 
 // deriveHeldFixtureWithJournal is deriveHeldFixture plus the fixture's journal
@@ -794,8 +811,9 @@ func TestDeriveHeldDelegateAttentionFromOutcome(t *testing.T) {
 		t.Parallel()
 		sess, reopenedID, journalPath := deriveHeldFixtureWithJournal(t, delegatestore.OutcomeCancelled, "cancelled")
 		// The stop's own quiet, written through the production setter the settle
-		// tail writes with.
-		sess.holdDelegateAttentionFromAutomaticDrive(reopenedID)
+		// tail writes with, stamped with the generation the stop settled.
+		heldGeneration := settledGeneration(t, sess)
+		sess.holdDelegateAttentionFromAutomaticDriveAt(reopenedID, heldGeneration)
 		// The newer event: a fresh row is appended and admitted to the
 		// controller. openDelegateAttention is the primitive the resident arm and
 		// the cold drive both reach, and it journals the release for the
@@ -809,7 +827,8 @@ func TestDeriveHeldDelegateAttentionFromOutcome(t *testing.T) {
 		if _, err := sess.delegateController.openDelegateAttention("dlg_hold", freshID); err != nil {
 			t.Fatalf("admit the fresh wake: %v", err)
 		}
-		sess.releaseAutomaticDriveHolds(delegateHoldReleaseArm)
+		admittedGeneration := settledGeneration(t, sess)
+		sess.releaseAutomaticDriveHolds(delegateHoldReleaseArm, admittedGeneration)
 		sess.attentionMu.Lock()
 		heldBefore := sess.delegateAttentionHeldFromAutomaticDriveLocked(reopenedID)
 		sess.attentionMu.Unlock()
@@ -850,6 +869,34 @@ func TestDeriveHeldDelegateAttentionFromOutcome(t *testing.T) {
 		}
 		if slices.Contains(ids, reopenedID) {
 			t.Fatalf("the drive-side read offered a row the stop still quiets: %v", ids)
+		}
+	})
+
+	// The other direction of the same order: a wake admitted while the
+	// generation is still open supersedes only the generation before it. When
+	// the run settles cancelled, the stop that settle records is newer
+	// evidence than that wake, so its quiet must survive the arm's release.
+	t.Run("an arm admitted before the stop does not clear its quiet", func(t *testing.T) {
+		t.Parallel()
+		sess, reopenedID, _ := deriveHeldFixtureWithJournal(t, delegatestore.OutcomeCancelled, "cancelled")
+		stoppedGeneration := settledGeneration(t, sess)
+		// The stop's quiet, stamped at the generation that settle recorded.
+		sess.holdDelegateAttentionFromAutomaticDriveAt(reopenedID, stoppedGeneration)
+		// The arm's admission superseded the generation before the stop's, so
+		// its release is older evidence than the quiet and cannot end it.
+		sess.releaseAutomaticDriveHolds(delegateHoldReleaseArm, stoppedGeneration-1)
+		sess.attentionMu.Lock()
+		held := sess.delegateAttentionHeldFromAutomaticDriveLocked(reopenedID)
+		sess.attentionMu.Unlock()
+		if !held {
+			t.Fatal("an arm admitted before the stop cleared the quiet that stop installed")
+		}
+		ids, err := sess.automaticDelegateAttentionIDs()
+		if err != nil {
+			t.Fatalf("read the drive-side rows: %v", err)
+		}
+		if slices.Contains(ids, reopenedID) {
+			t.Fatalf("the drive-side read offered a row a newer stop still quiets: %v", ids)
 		}
 	})
 }

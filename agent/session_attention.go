@@ -813,7 +813,7 @@ func (s *Session) armDelegateAttentionInController(attentionID string) (armed bo
 			s.attentionMu.Unlock()
 			return false, nil
 		}
-		_, blocker, plan, emit, err := s.delegateController.tryOpenDelegateAttention(s.owningDelegateID, attentionID)
+		_, blocker, plan, emit, wakeGeneration, err := s.delegateController.tryOpenDelegateAttention(s.owningDelegateID, attentionID)
 		s.attentionMu.Unlock()
 		if err != nil {
 			return false, err
@@ -828,9 +828,11 @@ func (s *Session) armDelegateAttentionInController(attentionID string) (armed bo
 		// The holds end here, before the caller's wake: the notify func
 		// drives the receiver synchronously, and a hold still in place at
 		// the drive's list read would present the armed row alone and leave
-		// the stopped report for a later generation. A failed arm never
-		// reaches this point; the holds stand.
-		s.releaseAutomaticDriveHolds(delegateHoldReleaseArm)
+		// the stopped report for a later generation. The generation the arm
+		// superseded is the controller's own, sampled where it journaled the
+		// release, so a stop that settled after this admission keeps its hold.
+		// A failed arm never reaches this point; the holds stand.
+		s.releaseAutomaticDriveHolds(delegateHoldReleaseArm, wakeGeneration)
 		return true, nil
 	}
 }
@@ -1094,22 +1096,23 @@ func (s *Session) delegateAttentionHeldFromAutomaticDriveLocked(attentionID stri
 	return held
 }
 
-// holdDelegateAttentionFromAutomaticDrive quiets a reopened row a user's
+// holdDelegateAttentionFromAutomaticDriveAt quiets a reopened row a user's
 // stop owns: the stopped generation's commit replaced the controller's wake
 // with the pending rows it excluded, so the stale armed wake still drives
 // for them once the announce releases — the tail's skipped re-arm disarms
 // nothing — and without the hold the reopened report would ride the next
 // generation that wake starts, the immediate restart the stop exists to
-// prevent.
-func (s *Session) holdDelegateAttentionFromAutomaticDrive(attentionID string) {
+// prevent. The hold carries the settled generation whose quiet it stands for,
+// because that stamp is what decides whether a later wake supersedes it.
+func (s *Session) holdDelegateAttentionFromAutomaticDriveAt(attentionID string, generation uint64) {
 	if s == nil || attentionID == "" {
 		return
 	}
 	s.attentionMu.Lock()
 	if s.attentionAutomaticDriveHolds == nil {
-		s.attentionAutomaticDriveHolds = make(map[string]struct{})
+		s.attentionAutomaticDriveHolds = make(map[string]uint64)
 	}
-	s.attentionAutomaticDriveHolds[attentionID] = struct{}{}
+	s.attentionAutomaticDriveHolds[attentionID] = generation
 	s.attentionMu.Unlock()
 }
 
@@ -1124,20 +1127,29 @@ const (
 	delegateHoldReleaseArm delegateHoldReleaseSite = "arm"
 )
 
-// releaseAutomaticDriveHolds ends every user-stop hold a new event's wake
+// releaseAutomaticDriveHolds ends the user-stop holds a new event's wake
 // supersedes: a committed child delivery or a successful arm may present a
 // row the stop held out of the automatic drives, so the holds end with the
-// event that arrived — the site names which wake. The rows the stop never
-// touched keep their presentation either way, and a failed arm or an
-// uncommitted delivery woke nothing, so the holds stand.
+// event that arrived — the site names which wake, and admittedGeneration is
+// the settled generation that wake superseded, sampled where the wake was
+// admitted.
+//
+// The invariant is that a hold stands exactly while it is newer than every
+// wake admitted so far. A hold stamped above admittedGeneration belongs to a
+// stop that settled after this wake was admitted, so it survives: an arm that
+// was already in flight when the stop landed cannot clear the quiet that stop
+// just installed. A hold at or below it names a generation this wake is newer
+// evidence than, so it ends, and its row becomes presentable. The rows the
+// stop never touched keep their presentation either way, and a failed arm or
+// an uncommitted delivery woke nothing, so the holds stand.
 //
 // The release is durable before it is in-memory: the record names the settled
 // generation whose quiet this event superseded, so a runtime the idle release
 // later reclaims cannot have the derive rebuild a quiet this release already
-// ended. A record that cannot land leaves the reclaim no better and no worse
-// than before it existed — the resident hold still ends, and a later restore
-// rebuilds the quiet exactly as it did when the record was absent.
-func (s *Session) releaseAutomaticDriveHolds(site delegateHoldReleaseSite) {
+// ended. A record that cannot land releases no in-memory hold either: the
+// wake never published, so the held generation still outranks it and the
+// quiet stands on the resident runtime and on the next restore alike.
+func (s *Session) releaseAutomaticDriveHolds(site delegateHoldReleaseSite, admittedGeneration uint64) {
 	// The seam is runtime-mutable through updateSessionTestConfig, so its
 	// read shares the setter's session mutex — the convention every
 	// mid-run-mutable test seam follows.
@@ -1146,17 +1158,21 @@ func (s *Session) releaseAutomaticDriveHolds(site delegateHoldReleaseSite) {
 	s.mu.Unlock()
 	var released []string
 	s.attentionMu.Lock()
-	if len(s.attentionAutomaticDriveHolds) != 0 {
-		s.moveHeldDelegateAttentionTurnsToTail()
-		released = make([]string, 0, len(s.attentionAutomaticDriveHolds))
-		for id := range s.attentionAutomaticDriveHolds {
-			released = append(released, id)
+	for id, held := range s.attentionAutomaticDriveHolds {
+		if held > admittedGeneration {
+			continue
+		}
+		released = append(released, id)
+	}
+	sort.Strings(released)
+	if len(released) != 0 {
+		s.moveHeldDelegateAttentionTurnsToTail(released)
+		for _, id := range released {
+			delete(s.attentionAutomaticDriveHolds, id)
 		}
 	}
-	s.attentionAutomaticDriveHolds = nil
 	s.attentionMu.Unlock()
 	if hook != nil && released != nil {
-		sort.Strings(released)
 		hook(site, released)
 	}
 }
@@ -1171,16 +1187,23 @@ func (s *Session) releaseAutomaticDriveHolds(site delegateHoldReleaseSite) {
 // ends on it. Resolved rows keep their presented positions. The moves follow
 // the fold's arrival order, so rows held by back-to-back stops re-append
 // deterministically and the presenting request shows them in the order they
-// arrived. The caller holds attentionMu.
-func (s *Session) moveHeldDelegateAttentionTurnsToTail() {
+// arrived. Only the rows in released move: a hold a newer stop installed
+// outlives this wake, so its turn keeps the position the holding stop left it
+// in. The caller holds attentionMu.
+func (s *Session) moveHeldDelegateAttentionTurnsToTail(released []string) {
 	fold, err := s.delegateAttentionFoldLocked()
 	if err != nil {
 		// Best-effort: the rows keep their positions, and the release still
 		// ends the quiet.
 		return
 	}
-	for _, attentionID := range fold.pendingIDs() {
-		if _, held := s.attentionAutomaticDriveHolds[attentionID]; !held {
+	pending := fold.pendingIDs()
+	releasable := make(map[string]struct{}, len(released))
+	for _, id := range released {
+		releasable[id] = struct{}{}
+	}
+	for _, attentionID := range pending {
+		if _, ok := releasable[attentionID]; !ok {
 			continue
 		}
 		var held schema.Turn
@@ -1281,8 +1304,11 @@ func (s *Session) deriveHeldDelegateAttentionFromOutcome() {
 		}
 		held = append(held, id)
 	}
+	// The stamp is the generation the quiet comes from — the one the stop
+	// settled and the fold's reopens claim — so a wake admitted at a later
+	// generation ends this hold and one admitted before it never does.
 	for _, id := range held {
-		s.holdDelegateAttentionFromAutomaticDrive(id)
+		s.holdDelegateAttentionFromAutomaticDriveAt(id, generation)
 	}
 }
 
