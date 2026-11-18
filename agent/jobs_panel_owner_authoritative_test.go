@@ -1338,6 +1338,92 @@ func TestLoadSessionJobGetPreservesLaunchFieldsFromLegacyOwner(t *testing.T) {
 	}
 }
 
+// TestLoadSessionJobGetIgnoresLaunchFieldsFromContradictoryStart: the owner's
+// journal holds only the finish, and the ancestor's start names a DIFFERENT
+// owner than the job ID encodes. The owner's finish is the authority on what the
+// job's END was, but that start never described this job — its owner claim
+// contradicts the validated identifier — so its command and its explicit output
+// path are not launch facts this job may inherit. Copying them shows a foreign
+// command in the pane and points the output reader at a path that is not this
+// job's log, where a stale path makes readable output unreachable. The encoded
+// owner's default log is what answers instead.
+func TestLoadSessionJobGetIgnoresLaunchFieldsFromContradictoryStart(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	claimingSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 19, 6, 0, 0, 0, time.UTC)
+	ended := started.Add(2 * time.Minute)
+	exit := 0
+	stalePath := filepath.Join(t.TempDir(), "stale.log")
+
+	// The ancestor holds a start that claims another session as the owner.
+	rootStore := openJobJournal(t, jobsDir(stateDir, rootSession))
+	appendJobEvent(t, rootStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: claimingSession, VisibleToSession: rootSession,
+		Command: "make foreign-build", OutputPath: stalePath, StartedAt: &started,
+	})
+	closeJobJournal(t, rootStore)
+
+	// The owner's journal holds ONLY the finish.
+	ownerStore := openJobJournal(t, jobsDir(stateDir, ownerSession))
+	appendJobEvent(t, ownerStore, jobstore.Event{
+		Kind: jobstore.EventJobFinished, TS: ended, JobID: jobID,
+		Status: jobstore.StatusCompleted, ExitCode: &exit, EndedAt: &ended, TerminalGen: "gen_owner",
+		OutputBytes: int64(len("owner log")),
+	})
+	closeJobJournal(t, ownerStore)
+
+	// The owner's log sits where the session that ran the job writes it.
+	logPath := filepath.Join(jobsDir(stateDir, ownerSession), "jobs", jobID+".log")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logPath, []byte("owner log"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	job, found, err := LoadSessionJobGet(stateDir, rootSession, jobID, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the owner's finish")
+	}
+	if job.Status != string(jobstore.StatusCompleted) {
+		t.Fatalf("status = %q, want %q from the owner's finish", job.Status, jobstore.StatusCompleted)
+	}
+	if job.Command != "" {
+		t.Fatalf("command = %q, want it unset: the start that carried it names an owner the job ID contradicts",
+			job.Command)
+	}
+	read, err := loadSessionJobRecord(stateDir, rootSession, jobID, nil)
+	if err != nil {
+		t.Fatalf("loadSessionJobRecord: %v", err)
+	}
+	if read.record == nil {
+		t.Fatal("record = nil, want the owner's finish")
+	}
+	if read.record.OutputPath != "" {
+		t.Fatalf("outputPath = %q, want it unset: a contradictory start's path is not this job's log",
+			read.record.OutputPath)
+	}
+	page, pageFound, err := LoadSessionJobOutputPage(stateDir, rootSession, jobID, nil, 64, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobOutputPage: %v", err)
+	}
+	if !pageFound {
+		t.Fatal("output page found = false, want the owner's default log")
+	}
+	if page.Data != "owner log" {
+		t.Fatalf("data = %q, want %q: the default log follows the validated owner when no valid explicit path exists",
+			page.Data, "owner log")
+	}
+}
+
 // TestLoadSessionJobGetReportsCorruptOwnerJournalAsDamage: an encoded owner
 // journal that hits a malformed line before decoding any record for this job
 // must still hand its damage report back, so the caller serving the forwarded

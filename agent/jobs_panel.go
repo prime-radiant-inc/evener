@@ -531,8 +531,26 @@ func loadSessionJobRecord(stateDir, sessionID, jobID string, fence OwnerDeletion
 //
 // Only fields the owner left EMPTY are filled. A field the owner's journal set
 // is the owner's to state.
+//
+// A scoped start whose own owner claim the job ID contradicts never described
+// this job: it is a forwarded copy of some other session's launch, and its
+// command and explicit output path belong to THAT job. Recovering them would
+// show a foreign command in the pane and send the output read to a path that is
+// not this job's log, where a stale pointer hides the owner's default log. Such
+// a start supplies nothing, so its launch fields stay unset and the default log
+// under the validated owner answers instead. The owner's terminal status, exit
+// code and diagnostics are untouched either way — this function only ever
+// fills empty fields.
+//
+// The legacy corroborated-hint call site cannot reach the contradiction: that
+// branch exists only for a job ID that encodes no owner, so there is no
+// identifier for a claim to contradict and the guard is inert by construction
+// rather than by a second trust argument.
 func preserveLaunchFields(rec, scoped *jobstore.JobRecord) {
 	if rec == nil || scoped == nil || rec.JobID != scoped.JobID {
+		return
+	}
+	if ownerClaimContradicts(scoped) {
 		return
 	}
 	if rec.Type == "" {
