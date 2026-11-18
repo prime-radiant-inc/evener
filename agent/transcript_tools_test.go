@@ -978,6 +978,128 @@ func TestFind_ProjectName_SymlinkedStateHomeKeepsSiblingInference(t *testing.T) 
 	}
 }
 
+// newNamedCheckout builds an origin-less repository whose directory name is
+// distinct, so a label that names the wrong checkout is visible in the result.
+func newNamedCheckout(t *testing.T, name string) string {
+	t.Helper()
+	base := t.TempDir()
+	gittest.Run(t, base, "init", "-q", name)
+	dir := filepath.Join(base, name)
+	gittest.Run(t, dir, "commit", "-q", "--allow-empty", "-m", "init")
+	return dir
+}
+
+// TestFind_ProjectName_SameProjectManagedLaneKeepsSiblingOrigin covers a bucket
+// written by the runtime layout helper: <stateRoot>/projects/<projectID>. The
+// bucket's own project ID is its basename, so a managed lane whose path segment
+// carries that same ID belongs to the bucket's repository. Reading the ID from
+// a hash of the bucket's path instead answers with a different ID for the same
+// repository, which makes the lane read as foreign: its sibling is then skipped
+// for want of matching evidence even when that sibling's only surviving record
+// is a Git origin, and the bucket cache is bypassed for every such row.
+func TestFind_ProjectName_SameProjectManagedLaneKeepsSiblingOrigin(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	checkout := newNamedCheckout(t, "same-project-repo")
+	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(checkout))
+	if project.ID == "" || identifier.ValidateProjectID(project.ID) != nil {
+		t.Fatalf("fixture project ID %q is not a valid bucket basename", project.ID)
+	}
+	bucket, err := RuntimeDirForProjectWithStateHome(project, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if want := project.ID; filepath.Base(bucket) != want {
+		t.Fatalf("runtime layout helper wrote bucket %q, want basename %q", bucket, want)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+
+	// The sibling survives only as metadata: its checkout is gone, so the only
+	// thing it can still say about this project is the origin it recorded.
+	sibling := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	sibling.EnvInfo.GitOriginURL = "git@github.com:owner/same-project-repo.git"
+	sibling.EnvInfo.WorkingDir = filepath.Join(t.TempDir(), "deleted-checkout")
+	if err := schema.SaveSessionMeta(bucket, sibling); err != nil {
+		t.Fatal(err)
+	}
+
+	// The managed lane records the project in its own path and no owner session,
+	// so the sibling scan is what can name it.
+	//
+	// The resolver is shared across result rows (find sorts newest first), which
+	// is the only way the bucket cache is observable: the package-level
+	// projectName builds a fresh one per call.
+	r := newProjectNameResolver()
+	lane := schema.SessionMeta{}
+	lane.EnvInfo.WorkingDir = filepath.Join(bucket, "worktrees", project.ID, "dlg_same_project")
+	const want = "same-project-repo"
+	got := r.projectName(lane, bucket)
+	if got != want {
+		t.Fatalf("projectName(managed lane in its own project bucket) = %q, want the sibling's %q (the bucket basename is its project ID)", got, want)
+	}
+
+	// That answer is reusable for the bucket, and it must actually have been
+	// cached: the resolver is shared across result rows, and a foreign-project
+	// read deliberately does not cache. Removing the only record of the origin
+	// leaves the cache as the sole source for the next row.
+	if err := os.Remove(schema.SessionMetaPath(bucket, sibling.ID)); err != nil {
+		t.Fatalf("remove sibling meta: %v", err)
+	}
+	nextLane := schema.SessionMeta{}
+	nextLane.EnvInfo.WorkingDir = filepath.Join(bucket, "worktrees", project.ID, "dlg_same_project_next")
+	if got := r.projectName(nextLane, bucket); got != want {
+		t.Fatalf("projectName(second lane in the same bucket) = %q, want the cached %q", got, want)
+	}
+}
+
+// TestFind_ProjectName_StateLaneStopsGitWalkAtLaneRoot covers a shared --state-dir
+// that lives inside checkout A while holding a managed delegate lane for
+// checkout B. Deleting the originless lane leaves nothing at the lane path, so a
+// Git walk that climbs from it finds A's .git and answers with A — before the
+// same-bucket parent lookup, which knows the lane belongs to B, is consulted.
+// The lane is identified from the state directory first and the walk stops at
+// the lane root; a lane that still exists keeps resolving through its pointer.
+func TestFind_ProjectName_StateLaneStopsGitWalkAtLaneRoot(t *testing.T) {
+	checkoutA := newNamedCheckout(t, "checkout-a")
+	checkoutB := newNamedCheckout(t, "checkout-b")
+
+	// The shared override sits inside A and spells no Evener layout at all: it is
+	// recognized as this row's bucket, and nothing else.
+	stateDir := filepath.Join(checkoutA, "shared-state")
+	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir state dir: %v", err)
+	}
+
+	parentID := identifier.MustNewSessionID()
+	parent := schema.SessionMeta{ID: parentID, WorktreeRestoreRoot: checkoutB}
+	parent.EnvInfo.WorkingDir = checkoutB
+	if err := schema.SaveSessionMeta(stateDir, parent); err != nil {
+		t.Fatal(err)
+	}
+
+	// The delegate's own metadata is gone with its lane; only the parent remains.
+	delegateID := identifier.MustNewSessionID()
+	lanePath := filepath.Join(stateDir, "sessions", delegateID, "worktrees", "dlg_checkout_b")
+	deletedLane := schema.SessionMeta{ParentSessionID: parentID}
+	deletedLane.EnvInfo.WorkingDir = lanePath
+	const wantB = "checkout-b"
+	if got := projectName(deletedLane, stateDir); got != wantB {
+		t.Fatalf("projectName(deleted lane for checkout B in a state dir inside checkout A) = %q, want the parent's %q, not the enclosing checkout %q", got, wantB, filepath.Base(checkoutA))
+	}
+
+	// The confinement must not break a lane that still exists: its own .git
+	// pointer names the main checkout, and that is the label.
+	gittest.Run(t, checkoutB, "worktree", "add", "-q", lanePath, "-b", "lane-b")
+	liveLane := schema.SessionMeta{ParentSessionID: parentID}
+	liveLane.EnvInfo.WorkingDir = lanePath
+	if got, gotWant := projectName(liveLane, stateDir), wantB; got != gotWant {
+		t.Fatalf("projectName(live lane for checkout B) = %q, want %q", got, gotWant)
+	}
+}
+
 func TestFind_CatalogTrimmedAndOrdered(t *testing.T) {
 	t.Parallel()
 	dir := newBucket(t)

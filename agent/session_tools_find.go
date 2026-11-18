@@ -824,18 +824,32 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 		return ""
 	}
 
-	// 1. Resolve the main checkout structurally (cached by wd). A label never
+	// 1. A state-managed lane is identified first, from the state directory that
+	// records it. A lane whose checkout is gone has no .git to stop a Git walk,
+	// so the walk would climb past the lane root and answer with whichever
+	// repository encloses the state dir — a guess about a lane whose identity the
+	// state directory recorded. The walk is therefore confined to the lane root,
+	// where a live lane's own pointer still resolves.
+	if _, laneRoot, _, _, isLane := r.stateWorktreeOwner(wd, bucketDir); isLane {
+		if root := resolveMainRootWithin(wd, laneRoot); root != "" {
+			return filepath.Base(root)
+		}
+		name, _ := r.worktreePathFallback(wd, bucketDir, m.ParentSessionID)
+		return name
+	}
+
+	// 2. Resolve the main checkout structurally (cached by wd). A label never
 	// needs a process: see resolveMainRootStructural.
 	if root := r.resolveMainRoot(wd); root != "" {
 		return filepath.Base(root)
 	}
 
-	// 2. ONLY if wd is structurally a worktree path whose checkout directory has no .git layout to resolve:
+	// 3. ONLY if wd is structurally a worktree path whose checkout directory has no .git layout to resolve:
 	if name, isWorktree := r.worktreePathFallback(wd, bucketDir, m.ParentSessionID); isWorktree {
 		return name
 	}
 
-	// 3. For any ordinary directory (e.g. /home/jesse/my-notes), return filepath.Base(wd)
+	// 4. For any ordinary directory (e.g. /home/jesse/my-notes), return filepath.Base(wd)
 	return filepath.Base(wd)
 }
 
@@ -864,7 +878,7 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 	// lookalike: a managed worktree is written at <stateDir>/worktrees/<lane> and
 	// a delegate's at <stateDir>/sessions/<sid>/worktrees/<lane>, where stateDir
 	// is this bucket or a bucket proven to live under this state root.
-	stateDir, ownerSessionID, managedProjectID, isStateWorktree := r.stateWorktreeOwner(clean, bucketDir)
+	stateDir, _, ownerSessionID, managedProjectID, isStateWorktree := r.stateWorktreeOwner(clean, bucketDir)
 	if !isStateWorktree {
 		return "", false
 	}
@@ -905,14 +919,18 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 	}
 
 	// A managed worktree at <stateDir>/worktrees/<projectID>/<lane> records no
-	// owner session, so a flat --state-dir has no bucket-wide inference to fall
-	// back on. The row's parent lives in the same bucket, and when the canonical
-	// project of that parent's own metadata is the worktree's project, that
-	// metadata names the project.
-	if managedProjectID != "" && parentSessionID != "" {
+	// owner session, and a delegate's lane at
+	// <stateDir>/sessions/<sid>/worktrees/<lane> records one whose metadata can be
+	// gone with the lane. Both record their parent, and a lane is created as a
+	// worktree of its parent's repository, so the parent's own metadata names the
+	// project. A managed lane also records its project in its path, and then the
+	// parent must agree with that segment — otherwise the parent describes a
+	// different repository than the lane does.
+	if parentSessionID != "" {
 		if parent, ok := r.loadOwnedSessionMeta(bound, parentSessionID); ok {
 			if canonical := r.canonicalProjectPath(parent); canonical != "" &&
-				identifier.ProjectFromCanonicalPath(identifier.ResolveClean(canonical)).ID == managedProjectID {
+				(managedProjectID == "" ||
+					identifier.ProjectFromCanonicalPath(identifier.ResolveClean(canonical)).ID == managedProjectID) {
 				if origin := strings.TrimSpace(parent.EnvInfo.GitOriginURL); origin != "" {
 					return repoBasename(origin), true
 				}
@@ -941,12 +959,17 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 		return "", true
 	}
 	// A managed worktree records the project it belongs to in its own path
-	// (<stateDir>/worktrees/<projectID>/<lane>). When that ID is not this
-	// bucket's own ID, the worktree belongs to a different repository than the
-	// bucket does, and this bucket's siblings describe the bucket's repository.
-	// A sibling may still answer, but only on evidence about THIS project: its
-	// own recorded canonical path must hash to the worktree's project ID.
-	bucketProjectID := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(bound)).ID
+	// (<stateDir>/worktrees/<projectID>/<lane>). The bucket's own project ID is
+	// its basename, because that is where RuntimeDirForProjectWithStateHome
+	// writes it: <stateRoot>/projects/<projectID>. Hashing the bucket's path
+	// instead answers with a different ID for the same repository, so a lane
+	// sitting in its own bucket would read as foreign. A legacy bucket name that
+	// is not a project ID leaves the comparison unproven, and an unproven
+	// worktree keeps the evidence requirement.
+	bucketProjectID := filepath.Base(bound)
+	if identifier.ValidateProjectID(bucketProjectID) != nil {
+		bucketProjectID = ""
+	}
 	foreignProject := managedProjectID != "" && managedProjectID != bucketProjectID
 	// The cache is keyed by bucket and the bucket holds one repository, so it is
 	// only reusable for a project-agnostic answer. A foreign project's answer
@@ -1040,7 +1063,7 @@ func (r *projectNameResolver) matchesProjectID(m schema.SessionMeta, projectID s
 // A path is only a state worktree when its directory is independently identified
 // as a state bucket (isStateBucket). A workspace that merely spells the layout is
 // not one, so wd keeps its own basename instead of being read as a state tree.
-func (r *projectNameResolver) stateWorktreeOwner(wd, bucketDir string) (stateDir, ownerSessionID, managedProjectID string, ok bool) {
+func (r *projectNameResolver) stateWorktreeOwner(wd, bucketDir string) (stateDir, laneRoot, ownerSessionID, managedProjectID string, ok bool) {
 	sep := string(filepath.Separator)
 	clean := filepath.Clean(wd)
 	parts := strings.Split(clean, sep)
@@ -1051,6 +1074,7 @@ func (r *projectNameResolver) stateWorktreeOwner(wd, bucketDir string) (stateDir
 			continue
 		}
 		stateParts, owner, managed := parts[:i], "", ""
+		laneEnd := i + 2 // <stateDir>/worktrees/<lane>
 		switch {
 		case i >= 2 && parts[i-2] == "sessions":
 			stateParts, owner = parts[:i-2], parts[i-1]
@@ -1058,14 +1082,15 @@ func (r *projectNameResolver) stateWorktreeOwner(wd, bucketDir string) (stateDir
 			// <projectID>/<lane>: the segment is a project identity only when the
 			// path continues past it, so <stateDir>/worktrees/<lane> stays ownerless.
 			managed = parts[i+1]
+			laneEnd = i + 3 // <stateDir>/worktrees/<projectID>/<lane>
 		}
 		candidate := strings.Join(stateParts, sep)
 		if !r.isStateBucket(candidate, cleanBucket) {
 			continue
 		}
-		return candidate, owner, managed, true
+		return candidate, strings.Join(parts[:laneEnd], sep), owner, managed, true
 	}
-	return "", "", "", false
+	return "", "", "", "", false
 }
 
 // isStateBucket reports whether candidate is independently identified as a state
@@ -1183,39 +1208,79 @@ func (r *projectNameResolver) resolveMainRoot(dir string) string {
 func resolveMainRootStructural(dir string) string {
 	clean := filepath.Clean(dir)
 	for {
-		gitPath := filepath.Join(clean, ".git")
-		info, err := os.Lstat(gitPath)
-		switch {
-		case err == nil && info.IsDir():
-			return identifier.ResolveClean(clean)
-		case err == nil && info.Mode()&os.ModeSymlink != 0:
-			// A symlink is followed once, here, so the two shapes a legitimate
-			// link can hold are decided explicitly: a directory (a relocated .git
-			// directory) and a regular pointer file. Anything else it resolves to
-			// — or a link that resolves to nothing — is refused.
-			target, evalErr := filepath.EvalSymlinks(gitPath)
-			if evalErr != nil {
-				return ""
-			}
-			targetInfo, statErr := os.Stat(target)
-			if statErr != nil {
-				return ""
-			}
-			if targetInfo.IsDir() {
-				return identifier.ResolveClean(clean)
-			}
-			if !targetInfo.Mode().IsRegular() {
-				return ""
-			}
-			return mainRootFromPointerFile(clean, gitPath)
-		case err == nil:
-			return mainRootFromPointerFile(clean, gitPath)
+		if root, found := mainRootAt(clean); found {
+			return root
 		}
 		parent := filepath.Dir(clean)
 		if parent == clean {
 			return ""
 		}
 		clean = parent
+	}
+}
+
+// resolveMainRootWithin is resolveMainRootStructural confined to root: it asks
+// root and the directories beneath it and never climbs past root. A
+// state-managed lane stops here, because the lane's identity is recorded in the
+// state directory, not in whichever repository happens to enclose it: once the
+// lane's checkout is deleted it has no .git to stop an unbounded walk, and the
+// walk would climb past the lane root and answer with the enclosing checkout.
+//
+// A live lane still resolves, because its own .git pointer names the main
+// checkout and that pointer is read here.
+func resolveMainRootWithin(dir, root string) string {
+	clean := filepath.Clean(dir)
+	root = filepath.Clean(root)
+	for {
+		if resolved, found := mainRootAt(clean); found {
+			return resolved
+		}
+		if clean == root {
+			return ""
+		}
+		parent := filepath.Dir(clean)
+		if parent == clean {
+			return ""
+		}
+		clean = parent
+	}
+}
+
+// mainRootAt answers for one directory from its own .git entry. found is false
+// only when that entry is absent: an entry that exists and is refused answers
+// with the empty root and found true, so no caller climbs past a checkout whose
+// shape has already been decided. Absence is os.IsNotExist, never any other
+// error, because a read that failed did not establish that nothing is there.
+func mainRootAt(dir string) (root string, found bool) {
+	gitPath := filepath.Join(dir, ".git")
+	info, err := os.Lstat(gitPath)
+	switch {
+	case err != nil:
+		return "", !os.IsNotExist(err)
+	case info.IsDir():
+		return identifier.ResolveClean(dir), true
+	case info.Mode()&os.ModeSymlink != 0:
+		// A symlink is followed once, here, so the two shapes a legitimate link
+		// can hold are decided explicitly: a directory (a relocated .git
+		// directory) and a regular pointer file. Anything else it resolves to —
+		// or a link that resolves to nothing — is refused.
+		target, evalErr := filepath.EvalSymlinks(gitPath)
+		if evalErr != nil {
+			return "", true
+		}
+		targetInfo, statErr := os.Stat(target)
+		if statErr != nil {
+			return "", true
+		}
+		if targetInfo.IsDir() {
+			return identifier.ResolveClean(dir), true
+		}
+		if !targetInfo.Mode().IsRegular() {
+			return "", true
+		}
+		return mainRootFromPointerFile(dir, gitPath), true
+	default:
+		return mainRootFromPointerFile(dir, gitPath), true
 	}
 }
 
