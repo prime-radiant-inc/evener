@@ -39,9 +39,10 @@ type HarnessTagPrefix struct {
 //     prefix.
 //
 // So an entry added here for safety need not be added there, and an entry
-// added there for detection need not be added here. What the two must share is
-// how a tag NAME compares, which is HarnessTagMatches's job; when you add a
-// frame that both readers should know, add it to both lists and say why.
+// added there for detection need not be added here. What the two must agree on
+// is how a tag NAME compares: HarnessTagMatches is this package's rule, and a
+// tag that both readers know must fold case the same way in both. When you add
+// a frame that both should know, add it to both lists and say why.
 var modelAuthoredTagOpeners = []HarnessTagPrefix{
 	{Prefix: "<delegate-notification"},
 	{Prefix: "<job-notification"},

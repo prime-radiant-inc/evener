@@ -18,12 +18,13 @@ import (
 // harness itself recorded. Assistant text is the one role whose bytes the model
 // invented, and the one that must not come back looking like input.
 //
-// A compaction turn is the exception to the role rule, and the reason this
-// cannot be decided by role alone: a checkpoint or summary is user-role, yet
-// part of its body is the model's own text (working notes, agent replies,
-// earlier summaries, the summary's own prose). escapeCompactionTurnFrames
-// escapes those sections and leaves the harness framing and the partner's
-// blocks alone.
+// A checkpoint or summary turn is user-role and so is not reached here, even
+// though part of its body is the model's own text. Escaping it would mean
+// deciding authorship by scanning for structural headings, and a model can
+// write those headings itself: the scanner and the compaction reader then
+// disagree about the same bytes. That is tracked separately as #6734, whose
+// direction is provenance carried on the content part rather than re-derived
+// from text.
 //
 // The turn is never modified: the caller gets a message whose changed text
 // parts are copies, so the transcript keeps exactly what the model wrote.
@@ -37,32 +38,6 @@ func escapeModelAuthoredTurnFrames(msg llm.Message) llm.Message {
 			continue
 		}
 		escaped := sysmsg.EscapeModelAuthoredFrames(p.Text)
-		if escaped == p.Text {
-			continue
-		}
-		if parts == nil {
-			parts = slices.Clone(msg.Content)
-		}
-		parts[i].Text = escaped
-	}
-	if parts == nil {
-		return msg
-	}
-	msg.Content = parts
-	return msg
-}
-
-// escapeCompactionTurnFrames returns a checkpoint or summary turn's message
-// with frames defused in the model-authored sections of its body, leaving the
-// harness framing and the human partner's blocks byte for byte. The stored turn
-// keeps every byte.
-func escapeCompactionTurnFrames(msg llm.Message) llm.Message {
-	var parts []llm.ContentPart
-	for i, p := range msg.Content {
-		if p.Kind != llm.ContentText || p.Machinery || p.Text == "" {
-			continue
-		}
-		escaped := sysmsg.EscapeCompactionModelSections(p.Text)
 		if escaped == p.Text {
 			continue
 		}

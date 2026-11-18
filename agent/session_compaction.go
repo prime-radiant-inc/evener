@@ -11,7 +11,6 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/contextmgr"
-	"primeradiant.com/evener/agent/internal/sysmsg"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -724,11 +723,7 @@ func (s *Session) foldWithForceCompact(ctx context.Context, instructions string,
 const noteHandoffPrefix = "Here's your note to yourself from before compaction:"
 
 func renderNoteHandoff(note string) string {
-	// The prefix is the harness's, the note is the model's own earlier words:
-	// it reaches the next request as user-role steering, so a frame it invented
-	// must not arrive there with a harness frame's spelling (#6493). Only the
-	// body is escaped; the prefix stays exactly as written.
-	return noteHandoffPrefix + "\n" + sysmsg.EscapeModelAuthoredFrames(note)
+	return noteHandoffPrefix + "\n" + note
 }
 
 type steeringTurnRecord struct {

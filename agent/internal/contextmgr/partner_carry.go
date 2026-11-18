@@ -8,7 +8,6 @@ import (
 	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/internal/runetrim"
-	"primeradiant.com/evener/agent/internal/sysmsg"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -284,12 +283,7 @@ func (cm *Manager) condensePartnerMessages(ctx context.Context, prof *provider.P
 			route, role = resp.route, resp.role
 			// A long summary is split like a long message, so the next round's
 			// batches stay within budget.
-			//
-			// The reply is model-generated, and these lines go back into
-			// another summarizer prompt under the description of the human
-			// partner's messages: a frame it wrote must not arrive there
-			// spelling a frame the harness writes (#6493).
-			parts := splitMessage(sysmsg.EscapeModelAuthoredFrames(strings.TrimSpace(resp.Text())), budget/3, 400)
+			parts := splitMessage(strings.TrimSpace(resp.Text()), budget/3, 400)
 			for i, part := range parts {
 				label := "Summary of earlier messages: "
 				if len(parts) > 1 {

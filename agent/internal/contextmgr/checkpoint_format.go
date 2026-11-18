@@ -42,28 +42,10 @@ func renderCheckpointConversation(entries []checkpointConversationEntry) string 
 	return b.String()
 }
 
-// trimBlockEdges drops a block's leading and trailing blank lines and reports
-// "" for a block that holds nothing else, keeping the indentation of its first
-// content line. TrimSpace would strip that indentation, and indentation is
-// load-bearing here: a line indented four or more columns is Markdown code,
-// which the frame escape deliberately leaves alone. Trimming it would turn a
-// note the escape correctly spared as code into a bare frame opener in a
-// user-role message (#6493).
-func trimBlockEdges(text string) string {
-	lines := strings.Split(text, "\n")
-	for len(lines) > 0 && strings.TrimSpace(lines[0]) == "" {
-		lines = lines[1:]
-	}
-	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
-		lines = lines[:len(lines)-1]
-	}
-	return strings.Join(lines, "\n")
-}
-
 func renderCheckpointWorkingNotes(notes []string) string {
 	clean := make([]string, 0, len(notes))
 	for _, note := range notes {
-		note = trimBlockEdges(note)
+		note = strings.TrimSpace(note)
 		if note != "" {
 			clean = append(clean, note)
 		}
@@ -327,7 +309,7 @@ func extractCheckpointWorkingNotes(text string) []string {
 		blocks := parseMarkdownBlocks(section)
 		notes := make([]string, 0, len(blocks))
 		for _, block := range blocks {
-			note := trimBlockEdges(block.Text)
+			note := strings.TrimSpace(block.Text)
 			if note != "" {
 				notes = append(notes, note)
 			}
@@ -416,7 +398,7 @@ func parseMarkdownBlocks(section string) []checkpointMarkdownBlock {
 		if heading == "" {
 			return
 		}
-		text := trimBlockEdges(strings.Join(lines, "\n"))
+		text := strings.TrimSpace(strings.Join(lines, "\n"))
 		if text != "" {
 			blocks = append(blocks, checkpointMarkdownBlock{Heading: heading, Text: text})
 		}
@@ -466,22 +448,7 @@ func cleanCheckpointConversation(entries []checkpointConversationEntry) []checkp
 		default:
 			continue
 		}
-		var text string
-		if role == "agent" {
-			// An agent entry is model-authored, and the escape protects it: a
-			// note it quotes as indented code keeps that indentation (#6493).
-			text = trimBlockEdges(entry.Text)
-		} else {
-			// A user entry is a carried partner message. A summary turn's
-			// layout is recognized by re-rendering it and comparing exactly
-			// (carriesPartnerMessages), and that comparison's right side
-			// renders through this function: a user entry must normalize the
-			// way any earlier writer normalized it, or a legacy summary whose
-			// User block carries padding would match the current layout and
-			// have its model-authored text promoted to a partner message
-			// (#6493).
-			text = strings.TrimSpace(entry.Text)
-		}
+		text := strings.TrimSpace(entry.Text)
 		if text == "" {
 			continue
 		}

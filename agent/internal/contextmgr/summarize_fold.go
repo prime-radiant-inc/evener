@@ -6,43 +6,10 @@ import (
 	"slices"
 	"strings"
 
-	"primeradiant.com/evener/agent/internal/mdfence"
 	"primeradiant.com/evener/agent/internal/runetrim"
-	"primeradiant.com/evener/agent/internal/sysmsg"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
-
-// attributedModelText renders one model-authored payload for the summarizer
-// prompt with the label in front of it and the payload escaped line by line, so
-// a frame it quotes inside a fenced example stays quoted and a bare one is
-// defused.
-//
-// The label goes on the payload's first line, except when that line opens or
-// closes a fence: there the label takes its own line first, because splicing it
-// onto the fence would move the fence off the line start and unquote everything
-// inside it. That is how a quoted frame reached the prompt bare (#6695 review).
-func attributedModelText(label, payload string) string {
-	if !strings.HasSuffix(payload, "\n") {
-		payload += "\n"
-	}
-	// Escape the payload in one pass, not line by line: the escaper's fence
-	// tracker spans lines, and escaping each line on its own would unquote the
-	// body of a fence the model drew (#6695 review).
-	escaped := sysmsg.EscapeModelAuthoredFrames(payload)
-	if first, _, _ := strings.Cut(escaped, "\n"); opensFence(first) {
-		// Putting the label on this line would move the fence off the line
-		// start and unquote its body, so the label takes its own line.
-		return label + "\n" + escaped
-	}
-	return label + escaped
-}
-
-// opensFence reports whether line begins a fenced code block.
-func opensFence(line string) bool {
-	var fence mdfence.Tracker
-	return fence.StepInBlock(line)
-}
 
 // foldCutoff is where a compaction of history that keeps preserveRecent
 // recent turns cuts it: history[:cutoff] is folded. It is -1 when no safe cut
@@ -178,37 +145,18 @@ historyLoop:
 			// both summary prompts put the permissions and holds it quotes.
 			// Left-out partner messages written first take their share of
 			// the budget from it.
-			//
-			// Its model-authored sections are escaped as they enter this
-			// prompt, because the summary this builds is user-role content:
-			// an older fold's notes and agent replies must not carry a frame
-			// forward through it (#6493). The harness framing and the
-			// partner's own blocks stay byte for byte.
 			b.WriteString("Previous compaction: ")
-			b.WriteString(truncate(
-				sysmsg.EscapeCompactionModelSections(t.Message.Text()),
-				min(maxCheckpointChars, max(maxHistoryChars-b.Len(), 0)),
-			))
+			b.WriteString(truncate(t.Message.Text(), min(maxCheckpointChars, max(maxHistoryChars-b.Len(), 0))))
 			b.WriteString("\n")
 		case schema.TurnAssistant:
 			// Extract communicate calls so the summarizer sees how the agent
 			// talked to the user, while still distinguishing questions from
 			// non-await replies.
-			//
-			// The summary this builds is a user-role turn, so the model's own
-			// words are escaped before they enter the prompt: a frame the model
-			// invented must not survive into the summary with the spelling a
-			// harness frame opens with, or the next rollover hands it back as
-			// input (#6493). The labels below are the harness's own, and the
-			// partner's messages above stay verbatim.
-			//
-			// The escape runs on the payload and the label is written ahead of
-			// it, never spliced into it: a label inserted at the start of the
-			// text moves an opening fence off the line start, which would turn
-			// a frame the payload quotes inside a fenced example into an
-			// unquoted line of the prompt (#6695 review).
-			if text := truncate(t.Message.Text(), 500); text != "" {
-				b.WriteString(attributedModelText("Assistant: ", text))
+			text := t.Message.Text()
+			if text != "" {
+				b.WriteString("Assistant: ")
+				b.WriteString(truncate(text, 500))
+				b.WriteString("\n")
 			}
 			truncated := false
 			for _, p := range t.Message.Content {
@@ -221,9 +169,9 @@ historyLoop:
 						var entry string
 						switch {
 						case endTurn:
-							entry = attributedModelText("Agent Message: ", msg)
+							entry = fmt.Sprintf("Agent Message: %s\n", msg)
 						default:
-							entry = attributedModelText("Agent Status: ", msg)
+							entry = fmt.Sprintf("Agent Status: %s\n", msg)
 						}
 						if b.Len()+len(entry) > maxHistoryChars {
 							b.WriteString("\n[... truncated ...]\n")
@@ -343,17 +291,8 @@ historyLoop:
 	// recent turns sit outside it. One combined budget would mean truncating
 	// the reply or shedding partner messages below the cap the #4173 ruling
 	// chose for them.
-	//
-	// The reply is the model's own words and the turn it becomes is user-role,
-	// so it is escaped like every other model-authored text that reaches an
-	// input channel: a summarizer that wrote "[answers]" would otherwise hand
-	// the next request a frame in the partner's channel (#6493). The
-	// compaction pointer, the partner's reminder and carry text, and the
-	// harness's own markers are not model-authored and stay as they are.
-	// summaryAccept does not cover this: it accepts a well-formed summary, and
-	// a forged frame is well-formed.
 	summaryText := summaryTurnStart + cm.metaFor(ctx).compactionPointer("summary") + reminder +
-		renderCompactionModelText(summaryModelTextHeading, sysmsg.EscapeModelAuthoredFrames(resp.Text())) + carry + summaryMarkerEnd
+		renderCompactionModelText(summaryModelTextHeading, resp.Text()) + carry + summaryMarkerEnd
 	summaryTurn := schema.NewTurn(schema.TurnSummary, llm.User(summaryText))
 
 	result := make([]schema.Turn, 0, 1+preserveRecent)
