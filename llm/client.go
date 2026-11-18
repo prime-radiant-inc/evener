@@ -188,17 +188,23 @@ func (c *Client) withHasher(ctx context.Context) context.Context {
 // withOpenParameterlessSchemas restores the open empty schema for a tool that
 // declared no parameters, for the override adapter boundary only.
 //
-// prepareTools preserves a nil Parameters so an adapter can tell "this tool
-// takes no arguments" from "this tool advertises an open schema" — the built-in
-// providers need that distinction, because strict mode needs the closed empty
-// object and the local validator compiles against the open one. A registered
-// override never participated in that contract: it marshals a definition
-// straight through, or hands it to something else that does, so a nil
-// Parameters silently drops the key. The open empty schema is what every
-// override saw before the distinction existed, so it is restored here and the
-// built-in adapters keep the nil.
+// prepareTools replaces a nil Parameters with the open empty schema, so the
+// local validator has something to compile. The built-in adapters receive that
+// schema and, on a strict route, replace it with the closed empty object. A
+// registered override never takes part in that contract: it marshals the
+// definition straight through, or hands it to something else that does, so the
+// open schema is what it needs the definition to carry. Those requests are the
+// ones preparation built, and that is exactly what this restores.
+//
+// A direct Complete or Stream call never went through preparation. Its nil
+// Parameters is what the caller wrote, and an adapter that reads nil as "this
+// tool declares no arguments" is entitled to see it. Rewriting that nil would
+// hand such an adapter a schema permitting arbitrary keys in place of a
+// no-argument declaration — a change to the caller's request this boundary has
+// no business making. So a direct call keeps its nil, and the rewrite is
+// limited to prepared requests.
 func withOpenParameterlessSchemas(req Request) Request {
-	if len(req.Tools) == 0 {
+	if len(req.Tools) == 0 || !req.preparedTools {
 		return req
 	}
 	changed := false

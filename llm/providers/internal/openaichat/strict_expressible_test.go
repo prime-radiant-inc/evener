@@ -1481,54 +1481,165 @@ func TestSupplyDerivedTypesReadsEveryConcreteEnumShape(t *testing.T) {
 	}
 }
 
-// A schema can sit under a key that is not properties, items or a combinator:
-// additionalProperties and patternProperties both hold subschemas, and a
-// provider requiring an explicit type rejects a typeless node there. A tool
-// carrying either keyword is refused strict mode, so the whole schema reaches
-// the provider as advertised and the fallback walk is the only thing that can
-// state the type. Leaving these unvisited leaves the whole request rejected
-// even though the tool was correctly refused strict mode.
-func TestSupplyDerivedTypesReachesEverySchemaValuedContainer(t *testing.T) {
+// A schema can sit under many keys, not only properties, items and the
+// combinators. A provider requiring an explicit type rejects a typeless node
+// anywhere it appears, and a tool carrying any of these keywords is refused
+// strict mode, so the whole schema reaches the provider as advertised and the
+// fallback walk is the only thing that can state the type. This covers the
+// whole schema-bearing keyword set, so a missing position is a failing row
+// rather than a review finding.
+func TestSupplyDerivedTypesReachesEverySchemaPosition(t *testing.T) {
 	t.Parallel()
-	containers := map[string]func(inner map[string]any) map[string]any{
-		"additionalProperties": func(inner map[string]any) map[string]any {
-			return map[string]any{"type": "object", "additionalProperties": inner}
-		},
-		"patternProperties": func(inner map[string]any) map[string]any {
-			return map[string]any{"type": "object", "patternProperties": map[string]any{"^x-": inner}}
-		},
+	typeless := func(t *testing.T, m map[string]any, path ...string) map[string]any {
+		t.Helper()
+		for _, step := range path {
+			next, ok := m[step].(map[string]any)
+			if !ok {
+				t.Fatalf("%s is not a schema: %#v", step, m[step])
+			}
+			m = next
+		}
+		return m
 	}
-	for name, wrap := range containers {
-		t.Run(name, func(t *testing.T) {
+	inner := func() map[string]any { return map[string]any{"enum": []any{"a", "b"}} }
+	// accepts, when set, is an argument set the emitted schema must admit. It is
+	// only meaningful for a keyword that constrains positively; a negating or
+	// conditional keyword (not, if/then/else, propertyNames, contains) admits
+	// values outside the inner set, so the type assertion is the check there.
+	positions := []struct {
+		name    string
+		build   func(subschema map[string]any) map[string]any
+		read    func(schema map[string]any) map[string]any
+		accepts map[string]any
+		rejects map[string]any
+	}{
+		{"additionalProperties", func(s map[string]any) map[string]any {
+			return map[string]any{"type": "object", "additionalProperties": s}
+		}, func(m map[string]any) map[string]any { return typeless(t, m, "additionalProperties") },
+			map[string]any{"headers": map[string]any{"x-a": "a"}},
+			map[string]any{"headers": map[string]any{"x-a": "c"}}},
+		{"patternProperties", func(s map[string]any) map[string]any {
+			return map[string]any{"type": "object", "patternProperties": map[string]any{"^x-": s}}
+		}, func(m map[string]any) map[string]any {
+			pp, _ := m["patternProperties"].(map[string]any)
+			sub, _ := pp["^x-"].(map[string]any)
+			return sub
+		}, map[string]any{"headers": map[string]any{"x-a": "a"}},
+			map[string]any{"headers": map[string]any{"x-a": "c"}}},
+		{"not", func(s map[string]any) map[string]any {
+			return map[string]any{"type": "object", "not": s}
+		}, func(m map[string]any) map[string]any { return typeless(t, m, "not") }, nil, nil},
+		{"$defs", func(s map[string]any) map[string]any {
+			return map[string]any{"type": "object", "$defs": map[string]any{"D": s}}
+		}, func(m map[string]any) map[string]any {
+			defs, _ := m["$defs"].(map[string]any)
+			sub, _ := defs["D"].(map[string]any)
+			return sub
+		}, nil, nil},
+		{"definitions", func(s map[string]any) map[string]any {
+			return map[string]any{"type": "object", "definitions": map[string]any{"D": s}}
+		}, func(m map[string]any) map[string]any {
+			defs, _ := m["definitions"].(map[string]any)
+			sub, _ := defs["D"].(map[string]any)
+			return sub
+		}, nil, nil},
+		{"contains", func(s map[string]any) map[string]any {
+			return map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "contains": s}
+		}, func(m map[string]any) map[string]any { return typeless(t, m, "contains") }, nil, nil},
+		{"propertyNames", func(s map[string]any) map[string]any {
+			return map[string]any{"type": "object", "propertyNames": s}
+		}, func(m map[string]any) map[string]any { return typeless(t, m, "propertyNames") }, nil, nil},
+		{"dependentSchemas", func(s map[string]any) map[string]any {
+			return map[string]any{"type": "object", "dependentSchemas": map[string]any{"D": s}}
+		}, func(m map[string]any) map[string]any {
+			ds, _ := m["dependentSchemas"].(map[string]any)
+			sub, _ := ds["D"].(map[string]any)
+			return sub
+		}, nil, nil},
+		{"if", func(s map[string]any) map[string]any {
+			return map[string]any{"type": "object", "if": s}
+		}, func(m map[string]any) map[string]any { return typeless(t, m, "if") }, nil, nil},
+		{"then", func(s map[string]any) map[string]any {
+			return map[string]any{"type": "object", "then": s}
+		}, func(m map[string]any) map[string]any { return typeless(t, m, "then") }, nil, nil},
+		{"else", func(s map[string]any) map[string]any {
+			return map[string]any{"type": "object", "else": s}
+		}, func(m map[string]any) map[string]any { return typeless(t, m, "else") }, nil, nil},
+		{"prefixItems", func(s map[string]any) map[string]any {
+			return map[string]any{"type": "array", "prefixItems": []any{s}}
+		}, func(m map[string]any) map[string]any {
+			arr, _ := m["prefixItems"].([]any)
+			sub, _ := arr[0].(map[string]any)
+			return sub
+		}, nil, nil},
+		{"unevaluatedProperties", func(s map[string]any) map[string]any {
+			return map[string]any{"type": "object", "unevaluatedProperties": s}
+		}, func(m map[string]any) map[string]any { return typeless(t, m, "unevaluatedProperties") }, nil, nil},
+		{"unevaluatedItems", func(s map[string]any) map[string]any {
+			return map[string]any{"type": "array", "unevaluatedItems": s}
+		}, func(m map[string]any) map[string]any { return typeless(t, m, "unevaluatedItems") }, nil, nil},
+	}
+	for _, pos := range positions {
+		t.Run(pos.name, func(t *testing.T) {
 			t.Parallel()
 			emitted := SupplyDerivedTypes(map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,
-				"properties":           map[string]any{"headers": wrap(map[string]any{"enum": []any{"a", "b"}})},
+				"properties":           map[string]any{"headers": pos.build(inner())},
 				"required":             []string{"headers"},
 			})
 			headers := emitted["properties"].(map[string]any)["headers"].(map[string]any)
-			var values map[string]any
-			switch {
-			case headers["additionalProperties"] != nil:
-				values, _ = headers["additionalProperties"].(map[string]any)
-			default:
-				pp, _ := headers["patternProperties"].(map[string]any)
-				values, _ = pp["^x-"].(map[string]any)
+			sub := pos.read(headers)
+			if sub == nil {
+				t.Fatalf("the advertised subschema under %s is gone: %#v", pos.name, headers)
 			}
-			if values == nil {
-				t.Fatalf("the advertised subschema is gone: %#v", headers)
+			if sub["type"] != "string" {
+				t.Fatalf("the subschema under %s has type %#v, want \"string\": an unvisited node stays typeless and the provider rejects the request", pos.name, sub["type"])
 			}
-			if values["type"] != "string" {
-				t.Fatalf("the subschema under %s has type %#v, want \"string\": an unvisited node stays typeless and the provider rejects the request", name, values["type"])
+			// Stating the type must not change what the keyword accepts.
+			if pos.accepts != nil && !schemaAccepts(t, emitted, pos.accepts) {
+				t.Fatalf("the emitted schema rejects an argument set the advertised one accepts: %#v", pos.accepts)
 			}
-			// The members and the allowed keys are untouched.
-			if !schemaAccepts(t, emitted, map[string]any{"headers": map[string]any{"x-a": "a"}}) {
-				t.Fatal("the emitted schema rejects a member the advertised enum accepts")
-			}
-			if schemaAccepts(t, emitted, map[string]any{"headers": map[string]any{"x-a": "c"}}) {
-				t.Fatal("the emitted schema accepts a value the advertised enum rejects")
+			if pos.rejects != nil && schemaAccepts(t, emitted, pos.rejects) {
+				t.Fatalf("the emitted schema accepts an argument set the advertised one rejects: %#v", pos.rejects)
 			}
 		})
+	}
+}
+
+// A property named after a keyword must not be read as that keyword. properties
+// is a map of names to schemas, so a property called "enum" says nothing about
+// its parent's values. Walking the name map as if it were a schema would read
+// that name as a keyword and change what the parent accepts.
+func TestSupplyDerivedTypesDoesNotReadAPropertyNameAsAKeyword(t *testing.T) {
+	t.Parallel()
+	emitted := SupplyDerivedTypes(map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"enum":   map[string]any{"type": "string"},
+			"not":    map[string]any{"type": "string"},
+			"items":  map[string]any{"type": "string"},
+			"$defs":  map[string]any{"type": "string"},
+			"then":   map[string]any{"type": "string"},
+			"prefix": map[string]any{"type": "string"},
+		},
+		"required": []string{"enum", "not", "items", "$defs", "then", "prefix"},
+	})
+	// The root carries no value set, so no type is invented for it.
+	if _, has := emitted["type"]; !has {
+		t.Fatal("the root lost its declared type")
+	}
+	for _, name := range []string{"enum", "not", "items", "$defs", "then", "prefix"} {
+		sub, ok := emitted["properties"].(map[string]any)[name].(map[string]any)
+		if !ok {
+			t.Fatalf("property %q is gone", name)
+		}
+		if sub["type"] != "string" {
+			t.Fatalf("property %q has type %#v, want the declared string", name, sub["type"])
+		}
+	}
+	args := map[string]any{"enum": "e", "not": "n", "items": "i", "$defs": "d", "then": "t", "prefix": "p"}
+	if !schemaAccepts(t, emitted, args) {
+		t.Fatal("the emitted schema rejects the argument set the advertised one accepts")
 	}
 }

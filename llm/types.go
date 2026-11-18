@@ -484,6 +484,14 @@ type Request struct {
 	// drift the estimate silently. Rebuild the list and re-measure instead.
 	ToolsJSONBytes int `json:"-"`
 
+	// preparedTools reports that Tools came from prepareTools, which supplies
+	// the open empty schema for a parameterless tool so the local validator has
+	// something to compile. An override adapter needs that same schema in the
+	// definition it marshals, and preparedTools is how the client tells such a
+	// request from a direct Complete or Stream call, which never went through
+	// preparation and must keep passing the nil through untouched.
+	preparedTools bool
+
 	AdapterTimeout *AdapterTimeout `json:"adapter_timeout,omitempty"`
 }
 

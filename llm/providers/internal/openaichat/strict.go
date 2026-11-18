@@ -63,6 +63,36 @@ func SupplyDerivedTypes(schema map[string]any) map[string]any {
 // the accepted set. The walk therefore has to reach every such node, including
 // the ones strictifyJSONSchemaInPlace never descends into — a child of a
 // nullable object, say — because the certification covers those too.
+//
+// The positions below are the whole schema-bearing keyword set, not the subset
+// a run of reviews happened to name. A keyword that holds a subschema and is
+// missing from these tables leaves a typeless node on the wire, which costs the
+// whole request; the tables are what keeps that a one-line fix rather than
+// another round in which the next missing keyword is found.
+//
+// The shape is written down rather than guessed from the value, because
+// properties is a map of names to schemas and not a schema: reading its keys as
+// keywords would let a property named "enum" turn its parent into a value set.
+// A keyword that admits a boolean (additionalProperties, unevaluatedProperties,
+// unevaluatedItems) is left alone when the value is not a schema.
+var (
+	// singleSubschemaKeywords hold exactly one subschema.
+	singleSubschemaKeywords = []string{
+		"not", "items", "contains", "propertyNames",
+		"if", "then", "else",
+		"additionalProperties", "unevaluatedProperties", "unevaluatedItems",
+	}
+	// listSubschemaKeywords hold a list of subschemas.
+	listSubschemaKeywords = []string{
+		"allOf", "anyOf", "oneOf", "prefixItems",
+	}
+	// mapSubschemaKeywords hold a map of names to subschemas.
+	mapSubschemaKeywords = []string{
+		"properties", "patternProperties", "dependentSchemas",
+		"$defs", "definitions",
+	}
+)
+
 func supplyDerivedTypes(m map[string]any) {
 	if m == nil {
 		return
@@ -72,39 +102,30 @@ func supplyDerivedTypes(m map[string]any) {
 			m["type"] = name
 		}
 	}
-	if props, ok := m["properties"].(map[string]any); ok {
-		for _, child := range props {
-			if childMap, ok := child.(map[string]any); ok {
-				supplyDerivedTypes(childMap)
-			}
+	for _, keyword := range singleSubschemaKeywords {
+		if sub, ok := m[keyword].(map[string]any); ok {
+			supplyDerivedTypes(sub)
 		}
 	}
-	if items, ok := m["items"].(map[string]any); ok {
-		supplyDerivedTypes(items)
-	}
-	// A schema-valued additionalProperties holds a schema. The rewrite never
-	// descends into it — closing an object replaces it outright — so a tool that
-	// was refused strict mode keeps this node exactly as advertised, and a
-	// typeless node there still fails a provider that requires explicit types.
-	// A boolean additionalProperties is not a schema and is left alone.
-	if ap, ok := m["additionalProperties"].(map[string]any); ok {
-		supplyDerivedTypes(ap)
-	}
-	if pp, ok := m["patternProperties"].(map[string]any); ok {
-		for _, child := range pp {
-			if childMap, ok := child.(map[string]any); ok {
-				supplyDerivedTypes(childMap)
-			}
-		}
-	}
-	for _, comb := range []string{"anyOf", "oneOf", "allOf"} {
-		arr, ok := m[comb].([]any)
+	for _, keyword := range listSubschemaKeywords {
+		arr, ok := m[keyword].([]any)
 		if !ok {
 			continue
 		}
 		for _, it := range arr {
-			if child, ok := it.(map[string]any); ok {
-				supplyDerivedTypes(child)
+			if sub, ok := it.(map[string]any); ok {
+				supplyDerivedTypes(sub)
+			}
+		}
+	}
+	for _, keyword := range mapSubschemaKeywords {
+		named, ok := m[keyword].(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, v := range named {
+			if sub, ok := v.(map[string]any); ok {
+				supplyDerivedTypes(sub)
 			}
 		}
 	}
