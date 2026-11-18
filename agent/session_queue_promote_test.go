@@ -13,8 +13,8 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
-	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/llm"
 )
 
 func newPromoteTestSession(t *testing.T) *Session {

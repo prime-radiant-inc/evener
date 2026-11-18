@@ -3711,12 +3711,16 @@ func TestReadSessionTranscriptRejectsUnknownExpansionTurn(t *testing.T) {
 		t.Fatalf("expanding turn 0 emitted no expansion envelope: %s", existing.Output)
 	}
 
-	unknown := executeReadSessionTranscript(t, deps, map[string]any{"expand_turn": float64(9)})
-	if !unknown.IsError {
-		t.Fatalf("expanding nonexistent turn 9 succeeded with %d output bytes", len(unknown.Output))
+	// Ask the tool itself, not the helper: the helper copies err.Error() into
+	// Output, so a message that mentions expansion and a payload returned
+	// alongside an error would look the same there. A refusal is an error with
+	// no value.
+	value, err := execReadSessionTranscript(context.Background(), deps, map[string]any{"expand_turn": float64(9)})
+	if err == nil {
+		t.Fatalf("expanding nonexistent turn 9 succeeded: value=%#v", value)
 	}
-	if strings.Contains(unknown.Output, `"expansion"`) {
-		t.Fatalf("refused expansion still emitted expansion content: %s", unknown.Output)
+	if value != nil {
+		t.Fatalf("refused expansion returned a value: %#v", value)
 	}
 }
 

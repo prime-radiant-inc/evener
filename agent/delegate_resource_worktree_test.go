@@ -159,11 +159,14 @@ func TestDelegateWorktree_ForcePreservesLockProvenanceAndEvidence(t *testing.T) 
 		if !laneWorktreePresent(lanePath) {
 			t.Fatal("force bypassed foreign lock provenance")
 		}
-		// Force must not release a lock it does not own: git still reports the
-		// lane locked, with the reason the other owner set.
-		porcelain := wtGit(t, r.mainRoot, "worktree", "list", "--porcelain")
-		if !strings.Contains(porcelain, "locked foreign-owner") {
-			t.Fatalf("lane lock after forced refusal = %q, want the untouched foreign-owner lock", porcelain)
+		// Force must not release a lock it does not own: this lane is still
+		// locked, with exactly the reason the other owner set. Resolve the
+		// entry for lanePath itself, so a lock held by some other worktree
+		// cannot stand in for this one.
+		porcelain := worktree.ParsePorcelain(wtGit(t, r.mainRoot, "worktree", "list", "--porcelain"))
+		locked, reason := lockStateFromPorcelain(porcelain, lanePath)
+		if !locked || reason != "foreign-owner" {
+			t.Fatalf("lane lock after forced refusal = (locked=%t, reason=%q), want (true, %q)", locked, reason, "foreign-owner")
 		}
 	})
 
