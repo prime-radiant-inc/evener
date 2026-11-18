@@ -20,7 +20,7 @@ const (
 	fuzzUnsetName = "${" + fuzzUnsetVar + "}"
 )
 
-// FuzzMCPConfigLoad drives LoadFileUntrusted — the loader arbitrary bytes
+// FuzzMCPConfigLoad drives loadLayerEvidence — the loader arbitrary bytes
 // actually reach in production (the project's .evener/mcp.json) and the
 // package's real .mcp.json decode seam (json.Unmarshal of the config file →
 // ParseServerMap → serverJSONToConfig with ${VAR} expansion). Input is the
@@ -28,7 +28,7 @@ const (
 //
 // Because this is an internal (package mcpconfig) test, the oracle cross-checks
 // the returned configs against the same bytes re-decoded into the unexported
-// mcpConfigFile/mcpServerJSON shapes. For any config LoadFileUntrusted
+// mcpConfigFile/mcpServerJSON shapes. For any config loadLayerEvidence
 // accepts it asserts the structural invariants ParseServerMap +
 // serverJSONToConfig guarantee:
 //
@@ -39,7 +39,7 @@ const (
 //   - ${VAR} expansion is 1:1 — it never adds or drops an arg, env key, or
 //     header key (counts and key sets are preserved).
 //
-// And for any config LoadFileUntrusted rejects it asserts the no-partial-result
+// And for any config loadLayerEvidence rejects it asserts the no-partial-result
 // invariant: a non-nil error comes with an empty config slice.
 //
 // SAFETY: this target stays strictly within parse/expand/validate. It never
@@ -108,7 +108,7 @@ func FuzzMCPConfigLoad(f *testing.F) {
 			t.Fatalf("write input: %v", err)
 		}
 
-		configs, err := LoadFileUntrusted(path)
+		configs, _, err := loadLayerEvidence(path, expandEnvVarsUntrusted)
 		if err != nil {
 			// Rejected config must not leak a partial result.
 			if len(configs) != 0 {

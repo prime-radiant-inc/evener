@@ -531,8 +531,8 @@ func (s *Session) subagentToolNameCeilingFromRegistered(registered map[string]bo
 //
 // So the caller records both, and resume re-admits the reachability half when
 // the configuration it was derived from no longer holds.
-func (s *Session) subagentToolNameCeilingAndExcluded(agent *plugin.Agent, canDelegate bool, isolationName string) (ceiling, excluded []string) {
-	s.refreshCLIEvidenceFreshness()
+func (s *Session) subagentToolNameCeilingAndExcluded(ctx context.Context, agent *plugin.Agent, canDelegate bool, isolationName string) (ceiling, excluded []string) {
+	s.refreshCLIEvidenceFreshnessContext(ctx)
 	var registered map[string]bool
 	if s.reg != nil {
 		registered = s.reg.RegisteredNames()
@@ -767,8 +767,8 @@ type cliMCPClassificationEvidence struct {
 // MCP names eligible rather than excluding on ignorance. The paths are resolved
 // fresh (see mcpconfig.ConfigEvidence.EvidenceCurrent): a memoized git root would
 // answer the question this check exists to re-ask.
-func (s *Session) cliMCPClassificationCurrent(evidence cliMCPClassificationEvidence) bool {
-	return evidence.layers.EvidenceCurrent(s.env)
+func (s *Session) cliMCPClassificationCurrent(evidence cliMCPClassificationEvidence, env execenv.ExecutionEnvironment) bool {
+	return evidence.layers.EvidenceCurrent(env)
 }
 
 // refreshCLIEvidenceFreshness resolves the freshness verdict and stores it for
@@ -797,7 +797,15 @@ func (s *Session) refreshCLIEvidenceFreshnessContext(ctx context.Context) {
 	evidence := s.cliMCPEvidence
 	names := len(s.cliMCPToolNames)
 	applied := s.cliMCPExclusionKnown && s.cliMCPExclusionApplied
+	// The revision is read BEFORE the environment, and the order is load-bearing.
+	// A swap installs the new environment under s.mu and then bumps the revision
+	// under delegateExclusionsMu; reading revision-then-env can only pair an OLD
+	// revision with a NEW environment, which the publisher discards. The reverse
+	// order could pair the old environment with the new revision and publish a
+	// verdict about the workspace the session just left.
+	revision := s.cliMCPEnvRevision
 	s.delegateExclusionsMu.RUnlock()
+	env := s.currentEnv()
 	// With no classified CLI names there is nothing the verdict could exclude, so
 	// the check cannot change any answer this session gives — and the check is
 	// not free: it reads and hashes up to two config layers and forks git for the
@@ -812,7 +820,7 @@ func (s *Session) refreshCLIEvidenceFreshnessContext(ctx context.Context) {
 	if names == 0 && !applied {
 		return
 	}
-	fresh, settled := s.sampleExclusionFreshness(ctx, evidence)
+	fresh, settled := s.sampleExclusionFreshness(ctx, evidence, env, revision)
 	if !settled {
 		// Unknown, not stale: nothing was established about the layers, so the
 		// verdict is forgotten rather than recorded as a negative. The next
@@ -823,19 +831,43 @@ func (s *Session) refreshCLIEvidenceFreshnessContext(ctx context.Context) {
 		s.delegateExclusionsMu.Unlock()
 		return
 	}
+	s.publishFreshnessForRevision(fresh, revision)
+}
+
+// publishFreshnessForRevision records a verdict, but only for the environment it
+// was computed against.
+//
+// An answer about an environment the session has left is not an answer. The swap
+// already dropped the verdict; publishing this one would restore a claim about the
+// old workspace, and in the permissive direction it would keep the new workspace's
+// fallback tool out of the roster. Unknown is the honest state, and the next
+// request re-runs the check against the installed environment.
+//
+// The revision is compared and the verdict written under ONE hold, so a swap
+// cannot slip between them.
+func (s *Session) publishFreshnessForRevision(fresh bool, revision uint64) {
 	s.delegateExclusionsMu.Lock()
+	defer s.delegateExclusionsMu.Unlock()
+	if revision != s.cliMCPEnvRevision {
+		s.forgetCLIEvidenceFreshnessLocked()
+		return
+	}
 	s.cliMCPEvidenceFresh = fresh
 	s.cliMCPEvidenceFreshKnown = true
-	s.delegateExclusionsMu.Unlock()
 }
 
 // exclusionFreshnessCheck is one in-flight freshness check. Its result lives
 // here rather than on the session so every waiter reads the answer to the check
 // it waited on; done closes after fresh and settled are written.
 type exclusionFreshnessCheck struct {
-	done    chan struct{}
-	fresh   bool
-	settled bool
+	done chan struct{}
+	// revision is the environment install this check was computed for. A result
+	// whose revision no longer holds describes a workspace the session has left,
+	// so the publisher discards it rather than recording a verdict about the wrong
+	// environment.
+	revision uint64
+	fresh    bool
+	settled  bool
 }
 
 // sampleExclusionFreshness resolves the freshness verdict, bounded by ctx.
@@ -854,20 +886,23 @@ type exclusionFreshnessCheck struct {
 //
 // settled is false when ctx ended before the check answered. That is UNKNOWN
 // reachability, never "stale": nothing was established about the layers.
-func (s *Session) sampleExclusionFreshness(ctx context.Context, evidence cliMCPClassificationEvidence) (fresh, settled bool) {
+func (s *Session) sampleExclusionFreshness(ctx context.Context, evidence cliMCPClassificationEvidence, env execenv.ExecutionEnvironment, revision uint64) (fresh, settled bool) {
 	s.freshnessCheckMu.Lock()
 	check := s.freshnessCheck
 	if check == nil {
 		// The result lives on the check, not on the session: a waiter that read
 		// session fields after done closed could race a newer check and report its
 		// unfinished answer as this one's.
-		check = &exclusionFreshnessCheck{done: make(chan struct{})}
+		check = &exclusionFreshnessCheck{done: make(chan struct{}), revision: revision}
 		s.freshnessCheck = check
+		// env is captured by the caller and passed in, never read here: the swap path
+		// replaces s.env under s.mu, so a worker reading it directly would race the
+		// write. Each check verifies the one environment it was started for.
 		go func() {
-			fresh, settled := s.cliMCPClassificationCurrent(evidence), true
+			fresh := s.cliMCPClassificationCurrent(evidence, env)
 			s.freshnessCheckMu.Lock()
 			check.fresh = fresh
-			check.settled = settled
+			check.settled = true
 			s.freshnessCheck = nil
 			s.freshnessCheckMu.Unlock()
 			close(check.done)
@@ -1126,15 +1161,12 @@ func (s *Session) refreshCachesForExclusionChangeContext(ctx context.Context) {
 // The tools a Manager-composition-only registration supplies are unaffected —
 // no spawn path composes one, whatever the workspace.
 //
-// The four facts this classification is made of — server names, shadow flags,
-// tool names, and the evidence they were derived from — are cleared together
-// under ONE hold of delegateExclusionsMu, and nothing here reads the
-// environment. Both details are load-bearing: a ceiling build must never see
-// half a clear, and this runs from swapEnvAndRefresh, which holds s.mu and has
-// already installed the next environment. Reading it back (currentEnv, or any
+// invalidateCLIMCPClassification does NOT clear the classification: server names,
+// shadow flags, tool names and their evidence are all PRESERVED, and only the
+// verdict about them is dropped. Nothing here reads the environment, and that is
+// load-bearing: this runs from swapEnvAndRefresh, which holds s.mu and has
+// already installed the next environment, so reading it back (currentEnv, or an
 // evidence capture) would re-enter s.mu and deadlock every worktree switch.
-// invalidateCLIMCPClassification keeps the startup classification and drops only
-// the verdict about it, for a caller that changed the environment underneath it.
 //
 // Clearing the classification outright is wrong for an environment swap. The
 // classification describes what the CLI layers supply, which the swap does not
@@ -1155,6 +1187,12 @@ func (s *Session) invalidateCLIMCPClassification() {
 	s.delegateExclusionsMu.Lock()
 	defer s.delegateExclusionsMu.Unlock()
 	s.forgetCLIEvidenceFreshnessLocked()
+	// Bumped in the SAME hold that drops the verdict, so a check already in flight
+	// cannot publish over the clear. An answer about the workspace just left must
+	// not become the verdict for the one just installed: in the permissive
+	// direction it would keep the new workspace's fallback tool out of the roster,
+	// which is this issue's own defect arriving through the swap path.
+	s.cliMCPEnvRevision++
 }
 
 // cliMCPServersSnapshot returns the CLI-supplied server names and the subset a

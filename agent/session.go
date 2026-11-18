@@ -162,6 +162,12 @@ type Session struct {
 	cliMCPExclusionKnown   bool
 	cliMCPExclusionApplied bool
 	cliMCPExclusionVersion uint64
+	// cliMCPEnvRevision counts the environment installs this session has made. A
+	// freshness check is an answer ABOUT one environment, so its result is
+	// discarded if the environment changed while it ran: the swap already dropped
+	// the old verdict, and a check that started before the swap must not write a
+	// new one from the workspace the session just left.
+	cliMCPEnvRevision uint64
 	// freshnessCheck is non-nil while one freshness check is in flight, so a
 	// stalled filesystem costs the request path one goroutine however many
 	// requests arrive meanwhile. The in-flight check carries its own result:

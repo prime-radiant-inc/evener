@@ -123,7 +123,7 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	if selection.warning != nil {
 		s.emitDiagnosticWarning(*selection.warning)
 	}
-	toolNameCeiling, ceilingReachabilityExcluded := s.delegateEffectiveToolNameCeiling(selection, args, isolationName)
+	toolNameCeiling, ceilingReachabilityExcluded := s.delegateEffectiveToolNameCeiling(ctx, selection, args, isolationName)
 	requestedSandbox, err := s.requestedDelegateSandbox(args, toolNameCeiling)
 	if err != nil {
 		return delegateStartFailed(err)
@@ -274,6 +274,11 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 		runtime.retainAdoptedWithoutLaunch(prepared)
 		return createResult(startedDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, err))
 	}
+	// Capture what this generation registered AT COMMIT, before the run launches.
+	// A receipt describes the state its generation was in; a sample taken after
+	// launch can pick up a name a later notification turn registered, which no
+	// generation the receipt speaks for ever held.
+	committedObservation := observedDelegateTools(prepared.sub.sess)
 	bindDelegateActivity(prepared.sub.sess, s.delegateController, started.lease)
 	s.startDelegateQuietWatchdog(started.ctx, started.lease)
 	degradedSandboxAdvisory := degradedReadOnlyDelegateAdvisory(prepared.sub.sess.currentEnv())
@@ -282,9 +287,10 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	// The child is constructed and initialized by now, so what it registered is
 	// known (see observedDelegateTools). Report that, not the frozen ceiling:
 	// the ceiling bounds what this delegate may use, and availability is what
-	// the child actually holds.
-	if observed := observedDelegateTools(prepared.sub.sess); observed != nil {
-		result.Tools = observed
+	// the child actually holds. committedObservation is the COMMIT-time sample, so
+	// it cannot include a name registered after this generation started.
+	if committedObservation != nil {
+		result.Tools = committedObservation
 	}
 	// The advisories ride the launched delegate's own result only: they are
 	// metadata for the caller's next isolation choice, not delegate output, not
@@ -314,8 +320,13 @@ func (s *Session) delegateActor(ctx context.Context) (delegateActor, error) {
 // authorization and recovery on one bound, and the removed names let a cold
 // resume tell a role denial (permanent) from a reachability denial, which is a
 // fact about the workspace the ceiling was computed in.
-func (s *Session) delegateEffectiveToolNameCeiling(selection subagentModelSelection, args delegateArgs, isolationName string) (ceiling, reachabilityExcluded []string) {
-	return s.subagentToolNameCeilingAndExcluded(selection.agent, args.grantsDelegation(), isolationName)
+// ctx is the CALLER's, because deriving the ceiling waits on the in-flight
+// freshness check. That wait must end when the caller does: a delegate tool call
+// that joins a check stalled on a dead mount would otherwise wait on it forever,
+// past Stop cancelling the turn. An expired wait leaves reachability unknown,
+// which keeps the names eligible and lets the spawn proceed.
+func (s *Session) delegateEffectiveToolNameCeiling(ctx context.Context, selection subagentModelSelection, args delegateArgs, isolationName string) (ceiling, reachabilityExcluded []string) {
+	return s.subagentToolNameCeilingAndExcluded(ctx, selection.agent, args.grantsDelegation(), isolationName)
 }
 
 func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, brief, isolationName string, requestedSandbox *sandbox.SandboxPolicy, selection subagentModelSelection, toolNameCeiling []string) (delegatestore.Descriptor, identifier.Project, error) {

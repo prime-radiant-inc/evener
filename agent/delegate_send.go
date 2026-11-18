@@ -400,6 +400,15 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		s.sendersWG.Done()
 		return runtime.stableSendFailureOutcomeAfterDispatch(ctx, started, waiter, maxWaitMS, plans, err, nil)
 	}
+	// Capture what this generation registered AT COMMIT, before the run launches.
+	//
+	// A receipt describes the state its generation was in, so it must not be
+	// sampled after launch. The child outlives its generation: a retained idle
+	// child runs notification turns, and one that heals an MCP server there
+	// registers a name this generation never had. Sampling after launch would
+	// report that name against it — the same value-outliving-its-subject defect as
+	// the timed-out send below, arriving one call earlier.
+	committedObservation := observedDelegateTools(sub.sess)
 	// The start is committed and its input durable. Publish the snapshots
 	// and replay the owed deliveries as best effort: an acknowledgment failure
 	// there is not the start's failure and must not latch finalization recovery
@@ -442,11 +451,12 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		Action:              "started",
 		TranscriptRef:       started.descriptor.TranscriptRef,
 	}
-	// Availability is what this child registered, not the frozen ceiling that
-	// bounds it (see observedDelegateTools). A resumed generation registers
-	// again from its own workspace, so the two can differ.
-	if observed := observedDelegateTools(sub.sess); observed != nil {
-		result.Tools = observed
+	// Availability is what this child registered at COMMIT, not the frozen ceiling
+	// that bounds it (see observedDelegateTools) and not a sample taken after the
+	// run started. A resumed generation registers again from its own workspace, so
+	// the two can differ; committedObservation is the one that belongs to it.
+	if committedObservation != nil {
+		result.Tools = committedObservation
 	}
 	if waiter == nil {
 		return delegateSendOutcome{result: result}

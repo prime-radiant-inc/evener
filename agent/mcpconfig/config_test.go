@@ -508,9 +508,13 @@ func TestDiscoverRefusesProjectLayerCommandWithSyntaxError(t *testing.T) {
 	}
 }
 
-// The untrusted loaders refuse a $(command) expression where the trusted
+// The untrusted loading path refuses a $(command) expression where the trusted
 // loaders expand it: only config the user authors directly may run commands.
-func TestLoadFileUntrustedRefusesCommandExpressions(t *testing.T) {
+//
+// This drives loadLayerEvidence, which is the function production discovery uses
+// for the project and plugin layers, so the refusal is exercised on the path that
+// actually parses model-writable config rather than on a convenience wrapper.
+func TestProjectLayerLoadRefusesCommandExpressions(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "mcp.json")
 	if err := os.WriteFile(path, []byte(`{
@@ -518,8 +522,8 @@ func TestLoadFileUntrustedRefusesCommandExpressions(t *testing.T) {
 	}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadFileUntrusted(path); err == nil || !strings.Contains(err.Error(), "command expressions") {
-		t.Fatalf("LoadFileUntrusted err = %v; want the command-expression refusal", err)
+	if _, _, err := loadLayerEvidence(path, expandEnvVarsUntrusted); err == nil || !strings.Contains(err.Error(), "command expressions") {
+		t.Fatalf("loadLayerEvidence err = %v; want the command-expression refusal", err)
 	}
 
 	valueexpr.ResetForTest()

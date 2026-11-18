@@ -1911,7 +1911,13 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	// classification and its evidence here; this is the check that turns it into
 	// a verdict. It does I/O — config reads and one git fork — and must run
 	// without s.mu, which this point in construction satisfies.
-	s.refreshCLIEvidenceFreshness()
+	// Bounded, not Background: startup runs on a path a user can cancel, and a
+	// mount that stalls must not hold session construction open forever. An
+	// expired check leaves reachability unknown, which keeps the names eligible and
+	// lets construction finish; the first model request re-resolves it.
+	startupFreshCtx, cancelStartupFresh := context.WithTimeout(context.Background(), exclusionFreshnessRequestBudget)
+	s.refreshCLIEvidenceFreshnessContext(startupFreshCtx)
+	cancelStartupFresh()
 	s.rebuildToolDefsCache()
 	warning, renderFailed := s.refreshSystemPromptCache(env)
 	if warning != "" {

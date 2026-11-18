@@ -106,13 +106,13 @@ func TestProjectEvidenceComesFromTheParsedBytes(t *testing.T) {
 
 	s := &Session{env: env}
 	recorded := cliMCPClassificationEvidence{layers: evidence}
-	if !s.cliMCPClassificationCurrent(recorded) {
+	if !s.cliMCPClassificationCurrent(recorded, s.currentEnv()) {
 		t.Fatal("the evidence did not verify against the file it was read from")
 	}
 	if err := os.WriteFile(layer, []byte(`{"mcpServers":{"team_tools":{"command":"two"}}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if s.cliMCPClassificationCurrent(recorded) {
+	if s.cliMCPClassificationCurrent(recorded, s.currentEnv()) {
 		t.Error("an edited project layer still verified the old evidence")
 	}
 }
@@ -134,13 +134,13 @@ func TestCLIClassificationEvidenceRequiresTheCurrentProjectPath(t *testing.T) {
 	}
 	s := &Session{env: execenv.NewLocalExecutionEnvironment(root)}
 
-	if s.cliMCPClassificationCurrent(cliMCPClassificationEvidence{}) {
+	if s.cliMCPClassificationCurrent(cliMCPClassificationEvidence{}, s.currentEnv()) {
 		t.Error("an empty recorded path verified while the workspace resolves to a real project layer")
 	}
 	other := filepath.Join(t.TempDir(), ".evener", "mcp.json")
 	if s.cliMCPClassificationCurrent(cliMCPClassificationEvidence{layers: mcpconfig.ConfigEvidence{
 		Project: mcpconfig.LayerEvidence{Path: other, Digest: "d"},
-	}}) {
+	}}, s.currentEnv()) {
 		t.Error("evidence from a different project path verified against this workspace")
 	}
 }

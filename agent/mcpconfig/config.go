@@ -67,22 +67,6 @@ func loadFileWithEnv(path string, env valueexpr.Env) ([]ServerConfig, error) {
 	})
 }
 
-// LoadFileUntrusted is LoadFile for a config layer evener does not author —
-// the project's .evener/mcp.json or a plugin's .mcp.json. A $(command)
-// expression here would run on the host the moment the config loads, so it
-// is refused at parse time instead of executed.
-func LoadFileUntrusted(path string) ([]ServerConfig, error) {
-	return loadFileUntrustedWithEnv(path, processExpansionEnv())
-}
-
-// loadFileUntrustedWithEnv is LoadFileUntrusted with the expansion
-// environment supplied by the caller.
-func loadFileUntrustedWithEnv(path string, env valueexpr.Env) ([]ServerConfig, error) {
-	return loadFile(path, func(s string) (string, error) {
-		return expandEnvVarsUntrustedInEnv(s, env)
-	})
-}
-
 // loadLayerEvidence reads one discovery layer and returns the evidence for the
 // bytes it parsed, so no caller has to read the file again to fingerprint it.
 //

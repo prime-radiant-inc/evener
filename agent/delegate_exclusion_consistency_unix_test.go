@@ -67,7 +67,7 @@ func TestCLIClassificationEvidenceTreatsAnUnreadableLayerAsUnknown(t *testing.T)
 
 	result := make(chan bool, 1)
 	go func() {
-		result <- s.cliMCPClassificationCurrent(cliMCPClassificationEvidence{layers: evidence})
+		result <- s.cliMCPClassificationCurrent(cliMCPClassificationEvidence{layers: evidence}, s.currentEnv())
 	}()
 	select {
 	case current := <-result:
