@@ -749,6 +749,46 @@ test("an ancestor's durable corruption does not cancel a torn-tail row's recheck
   expect(drained.windows.totalBytes).toBe(105);
 });
 
+// A tail that fails transiently while the row is provisional must not be dropped
+// for good. The metadata says a later read could establish the status, so the
+// pane is still waiting on evidence; a slow recheck that SUCCEEDS re-arms one
+// tail, and the output arrives without any refresh or reconnect. Without that,
+// the error stays on screen indefinitely after the log became readable.
+//
+// This drives the reader rather than asserting on a flag: the assertion is that
+// the bytes reach the windows.
+test("a successful slow recheck re-arms a tail that failed on a recheckable row", async () => {
+  // The metadata lands first and says the row is provisional; the initial tail
+  // then fails. That failure is the one the pane must not keep forever.
+  peer.reply(await peer.request(META), {
+    ...metadata(false),
+    statusUnconfirmed: true,
+    statusRecheckable: true,
+  });
+  peer.fail(await peer.request(OUTPUT), "output unavailable");
+  await observed((snapshot) => snapshot.outputError !== null && snapshot.job?.statusUnconfirmed === true);
+
+  // No retry at the live rate: the row is provisional, so the tail waits for
+  // evidence rather than asking once a second.
+  const afterFailure = peer.requests(OUTPUT).length;
+  await vi.advanceTimersByTimeAsync(2000);
+  expect(peer.requests(OUTPUT)).toHaveLength(afterFailure);
+
+  // The slow recheck lands, still provisional. That is new evidence, and it owes
+  // one tail — which succeeds, so the bytes arrive and the error clears.
+  await vi.advanceTimersByTimeAsync(UNCONFIRMED_RECHECK_MS);
+  peer.reply(await peer.request(META, peer.requests(META).length - 1), {
+    ...metadata(false),
+    statusUnconfirmed: true,
+    statusRecheckable: true,
+  });
+  const retried = await peer.request(OUTPUT, afterFailure);
+  peer.reply(retried, page(0, "RECOVERED\n", 10));
+  const recovered = await observed((snapshot) => snapshot.outputError === null && snapshot.windows.live !== null);
+  expect(recovered.outputError).toBeNull();
+  expect(recovered.windows.live?.rows.length).toBeGreaterThan(0);
+});
+
 // A background recheck that FAILS must stay on the cadence it was scheduled at.
 // Escalating to the live rate because the requests are failing turns a server
 // error into a load problem, and it cannot produce the status any sooner than

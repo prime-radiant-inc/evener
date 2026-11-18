@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -2003,9 +2004,13 @@ func TestLoadSessionJobGetKeepsRecheckableWhenAncestorJournalIsCorrupt(t *testin
 // owner's journal holds a valid start AND a decodable job_finished, but that
 // finish declares "running" instead of an end. The fold copies the status, so a
 // clean scan yields a row that reads as a live job for a job the journal says
-// has ended. Only a finish sets the terminal generation, so that field is what
-// identifies the case per record: the row cannot state the job's state, and it
-// may not displace the ancestor's observed finish.
+// has ended.
+//
+// The finish deliberately omits terminal_generation. A writer may leave it out,
+// and the fold's own record of which event supplied the status is the evidence —
+// keying on a field the malformed event might not carry is how this row was
+// accepted as established. It cannot state the job's state, so it may not
+// displace the ancestor's observed finish.
 func TestLoadSessionJobGetKeepsForwardedTerminalOverNonterminalOwnerFinish(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
@@ -2020,7 +2025,7 @@ func TestLoadSessionJobGetKeepsForwardedTerminalOverNonterminalOwnerFinish(t *te
 	writeJobJournalLines(t, jobsDir(stateDir, ownerSession),
 		jobStartedLine(jobID, ownerSession, started)+"\n",
 		`{"kind":"job_finished","seq":2,"ts":"`+ended.Format(time.RFC3339)+
-			`","job_id":"`+jobID+`","status":"running","terminal_generation":"gen_declared_no_end"}`+"\n",
+			`","job_id":"`+jobID+`","status":"running"}`+"\n",
 	)
 
 	rootStore := openJobJournal(t, jobsDir(stateDir, rootSession))
@@ -2055,5 +2060,206 @@ func TestLoadSessionJobGetKeepsForwardedTerminalOverNonterminalOwnerFinish(t *te
 	}
 	if job.StatusUnconfirmed {
 		t.Fatal("StatusUnconfirmed = true on a terminal observation: the first terminal write is complete")
+	}
+}
+
+// TestLoadSessionJobGetFindsOwnerFinishOnceJournalBecomesReadable: the pane holds
+// the ancestor's unconfirmed row because the owner could not be consulted. The
+// owner's journal then becomes readable with the finish in it — the repair a
+// resumed session performs — and the NEXT read must return that finish.
+//
+// This is the half a recheck exists for: the first read is the one that decides
+// whether anybody looks again, and the second read is what they find. Without the
+// recheck being enabled the first read has already declared nothing better will
+// arrive, and the pane never issues the second.
+func TestLoadSessionJobGetFindsOwnerFinishOnceJournalBecomesReadable(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	ended := started.Add(time.Minute)
+	exit := 7
+
+	writeJobJournalLines(t, jobsDir(stateDir, rootSession),
+		jobStartedLine(jobID, ownerSession, started)+"\n",
+		`{"kind":"job_finished","seq":2,"status":`+"\n",
+	)
+	ownerJournal := filepath.Join(jobsDir(stateDir, ownerSession), "jobs.jsonl")
+	if err := os.MkdirAll(ownerJournal, 0o755); err != nil {
+		t.Fatalf("mkdir unreadable owner journal: %v", err)
+	}
+
+	first, found, err := LoadSessionJobGet(stateDir, rootSession, jobID, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet (owner unreadable): %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the ancestor's forwarded start")
+	}
+	if !first.StatusUnconfirmed || !first.StatusRecheckable {
+		t.Fatalf("unconfirmed=%v recheckable=%v (diagnostics %v): the owner was unreadable on THIS read",
+			first.StatusUnconfirmed, first.StatusRecheckable, first.Diagnostics)
+	}
+
+	// The repair: the owner's journal lands with the finish in it.
+	if err := os.Remove(ownerJournal); err != nil {
+		t.Fatalf("remove placeholder: %v", err)
+	}
+	writeJobJournalLines(t, jobsDir(stateDir, ownerSession),
+		jobStartedLine(jobID, ownerSession, started)+"\n",
+		`{"kind":"job_finished","seq":2,"ts":"`+ended.Format(time.RFC3339)+
+			`","job_id":"`+jobID+`","status":"command_exited_nonzero","reason":"exit_nonzero","exit_code":`+
+			strconv.Itoa(exit)+`,"ended_at":"`+ended.Format(time.RFC3339)+`","terminal_generation":"gen_real"}`+"\n",
+	)
+
+	// The read a recheck issues. No refresh, no reconnect: the same call the
+	// reader makes on its slow cadence.
+	second, found, err := LoadSessionJobGet(stateDir, rootSession, jobID, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet (owner repaired): %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the owner's finish")
+	}
+	if !second.Terminal {
+		t.Fatalf("terminal = false (status %q, diagnostics %v): the owner's journal now states the finish",
+			second.Status, second.Diagnostics)
+	}
+	if second.StatusUnconfirmed || second.StatusRecheckable {
+		t.Fatalf("unconfirmed=%v recheckable=%v on a terminal row: a terminal write is a complete observation",
+			second.StatusUnconfirmed, second.StatusRecheckable)
+	}
+	if second.ExitCode == nil || *second.ExitCode != exit {
+		t.Fatalf("exitCode = %v, want the owner's %d", second.ExitCode, exit)
+	}
+}
+
+// TestLoadSessionJobGetStopsRechecksWhenEverySourceIsPermanent: the requested
+// session IS the owner, and its journal stopped at durable corruption. There is
+// no other source to consult — no forwarded copy, no unreadable owner that might
+// come back — so no later read can get behind the bad line. This is the case
+// that stays stopped, and it is what keeps "keep rechecking" from degenerating
+// into "always recheck".
+func TestLoadSessionJobGetStopsRechecksWhenEverySourceIsPermanent(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	sessionID := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(sessionID)
+	started := time.Date(2026, 11, 20, 11, 0, 0, 0, time.UTC)
+
+	writeJobJournalLines(t, jobsDir(stateDir, sessionID),
+		jobStartedLine(jobID, sessionID, started)+"\n",
+		`{"kind":"job_finished","seq":2,"status":`+"\n",
+	)
+
+	job, found, err := LoadSessionJobGet(stateDir, sessionID, jobID, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the running prefix")
+	}
+	if !job.StatusUnconfirmed {
+		t.Fatalf("StatusUnconfirmed = false (diagnostics %v): the scan stopped at durable corruption", job.Diagnostics)
+	}
+	if job.StatusRecheckable {
+		t.Fatalf("StatusRecheckable = true (diagnostics %v): this session IS the owner and its scan cannot "+
+			"read past the bad line, so no later read establishes the status", job.Diagnostics)
+	}
+}
+
+// TestLoadSessionJobGetKeepsRecheckableWhileOwnerIsMerelyUnreadable: the ancestor
+// holds a valid forwarded start before a corrupt line, and the owner's journal is
+// not readable on THIS read. The row is unconfirmed, and the recheck must stay
+// enabled: the owner is the authority, "could not read it now" is a state of the
+// read rather than of the store, and the finish it holds on the next lookup is
+// exactly the answer the pane is waiting for.
+//
+// The counterpart, TestLoadSessionJobGetStopsRechecksWhenEverySourceIsPermanent,
+// is what keeps this from becoming "always recheck"; each half needs the other
+// or the predicate says nothing.
+func TestLoadSessionJobGetKeepsRecheckableWhileOwnerIsMerelyUnreadable(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+
+	writeJobJournalLines(t, jobsDir(stateDir, rootSession),
+		jobStartedLine(jobID, ownerSession, started)+"\n",
+		`{"kind":"job_finished","seq":2,"status":`+"\n",
+	)
+	// The owner's journal is present but not readable: a directory where the file
+	// must be. The read cannot consult it now, and nothing about that is durable.
+	if err := os.MkdirAll(filepath.Join(jobsDir(stateDir, ownerSession), "jobs.jsonl"), 0o755); err != nil {
+		t.Fatalf("mkdir unreadable owner journal: %v", err)
+	}
+
+	job, found, err := LoadSessionJobGet(stateDir, rootSession, jobID, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the ancestor's forwarded start")
+	}
+	if !job.StatusUnconfirmed {
+		t.Fatalf("StatusUnconfirmed = false (diagnostics %v): the forwarded copy stands in for an owner nobody could consult",
+			job.Diagnostics)
+	}
+	if !job.StatusRecheckable {
+		t.Fatalf("StatusRecheckable = false (diagnostics %v): the owner was unreadable on THIS read, "+
+			"and a later lookup can still obtain its finish", job.Diagnostics)
+	}
+}
+
+// TestLoadSessionJobGetAcceptsLaterValidOwnerFinish: the SAME owner journal, once
+// the malformed finish is followed by a real one, must supply the answer. The
+// record-scoped flag is cleared by the terminal write, so confidence is restored
+// rather than pinned forever — a repair has to be able to win.
+func TestLoadSessionJobGetAcceptsLaterValidOwnerFinish(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 19, 19, 0, 0, 0, time.UTC)
+	ended := started.Add(time.Minute)
+	exit := 5
+
+	writeJobJournalLines(t, jobsDir(stateDir, ownerSession),
+		jobStartedLine(jobID, ownerSession, started)+"\n",
+		`{"kind":"job_finished","seq":2,"ts":"`+started.Format(time.RFC3339)+
+			`","job_id":"`+jobID+`","status":"running"}`+"\n",
+		`{"kind":"job_finished","seq":3,"ts":"`+ended.Format(time.RFC3339)+
+			`","job_id":"`+jobID+`","status":"command_exited_nonzero","reason":"exit_nonzero","exit_code":`+
+			strconv.Itoa(exit)+`,"ended_at":"`+ended.Format(time.RFC3339)+`","terminal_generation":"gen_real"}`+"\n",
+	)
+
+	rootStore := openJobJournal(t, jobsDir(stateDir, rootSession))
+	appendJobEvent(t, rootStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: ownerSession, VisibleToSession: rootSession,
+		StartedAt: &started,
+	})
+	closeJobJournal(t, rootStore)
+
+	job, found, err := LoadSessionJobGet(stateDir, rootSession, jobID, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the owner's real finish")
+	}
+	if job.Status != string(jobstore.StatusCommandExitedNonzero) {
+		t.Fatalf("status = %q, want the owner's later terminal finish to win", job.Status)
+	}
+	if job.StatusUnconfirmed {
+		t.Fatal("StatusUnconfirmed = true: a terminal write is a complete observation, so confidence is restored")
+	}
+	if job.StatusRecheckable {
+		t.Fatal("StatusRecheckable = true on a confirmed row")
 	}
 }

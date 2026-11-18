@@ -666,18 +666,24 @@ func statusUnconfirmedOnWire(read sessionJobRecordRead) bool {
 // status of the row this read returns, for the clients that decide whether to
 // look again rather than never.
 //
-// It is the counterpart of statusUnconfirmed and rests on the same record-scoped
-// evidence; a client that only stopped would watch an unconfirmed row forever
-// while the append that would settle it lands.
+// THE INVARIANT, and every branch below follows from it: unconfirmed means
+// provisional, and provisional means somebody keeps looking. A client that only
+// stopped would watch an unconfirmed row forever while the evidence that would
+// settle it landed.
 //
-// Exactly one kind of evidence cannot change: THIS record's own scan stopped at
-// durable corruption, so no later append is reachable behind the bad line. Every
-// other cause is a statement the journal can still amend — a torn append can
-// complete, a statusless fragment can gain its status, a finish that declared no
-// end can be followed by a terminal one (the fold only short-circuits once a
-// status is already terminal), and a forwarded copy's owner can become
-// consultable. Resuming the session repairs all of them, which can happen while
-// the client is still connected.
+// So the question this answers is never "is the row damaged" but "could a later
+// read of some eligible source produce a better answer". Only one shape is
+// permanent: THIS record's own scan stopped at durable corruption and no owner
+// stands behind it, because then no append behind the bad line is reachable and
+// there is no other journal that could answer instead.
+//
+// Everything else is provisional: a torn append can complete, a statusless
+// fragment can gain its status, a finish that declared no end can be followed by
+// a terminal one (the fold only short-circuits once a status is already
+// terminal), and — the case the forwarded branch exists for — a forwarded copy
+// whose owner could not be CONSULTED says nothing about whether the owner will be
+// readable on the next read. Deciding "nothing better will ever arrive" from a
+// temporary read failure is the failure this predicate is meant to prevent.
 //
 // Like statusUnconfirmed this deliberately ignores the merged aggregate: an
 // intact owner row that inherited an ANCESTOR's durable corruption still rests
@@ -690,11 +696,21 @@ func statusRecheckableOnWire(read sessionJobRecordRead) bool {
 	if read.record == nil {
 		return false
 	}
+	// A forwarded copy stands in for an owner that could not be consulted, and an
+	// unreadable owner is a state of THIS READ, not of the owner's journal: the
+	// session may be mid-write, the store may be briefly locked, the directory may
+	// appear on the next lookup. The owner's own finish is the authoritative
+	// answer, so the row stays provisional while that source is merely unreachable
+	// now.
+	if read.diagnostics.ForwardedFallback || read.diagnostics.OwnerUnavailable {
+		return true
+	}
 	// Branch-local, deliberately: this record's OWN scan failing is the durable
-	// corruption that no later read gets past. The merged aggregate's
-	// ScanIncomplete also counts an ANCESTOR's damage, and cancelling the recheck
-	// on that is the same mistake as reading the status confidence off the
-	// aggregate — the row rests on readable bytes that a resume can extend.
+	// corruption that no later read gets past, and with no owner to consult it is
+	// the only source this row has. The merged aggregate's ScanIncomplete also
+	// counts an ANCESTOR's damage, and cancelling the recheck on that is the same
+	// mistake as reading the status confidence off the aggregate — the row rests
+	// on readable bytes that a resume can extend.
 	return read.scanErr == nil
 }
 
@@ -780,10 +796,12 @@ func readSessionJobJournal(stateDir, sessionID, jobID string) (sessionJobRecordR
 // a start time was folded from a start, and one without a type is a
 // notification or finish that never had one.
 //
-// A nonterminal status carrying a TERMINAL GENERATION is the other per-record
-// shape: only a job_finished sets that field, so the record's status was copied
-// from a finish that declared no end. The journal has already recorded the
-// job's end, and saying "running" from it is not a state the bytes support.
+// A status the fold copied from a malformed finish is the other per-record shape,
+// and it is the flag rather than a field the event may omit: the finish declared
+// no end at all, so the journal has recorded the job's end and the record cannot
+// say what it was. `terminal_generation` is NOT the test — a writer may omit it,
+// and a finish that omits it while carrying "running" is exactly the case that
+// slipped through.
 func recordStatusUnconfirmed(rec *jobstore.JobRecord, scanErr error, d sessionJobRecordDiagnostics) bool {
 	if rec == nil || rec.Status == "" || rec.Status.IsTerminal() {
 		return false
@@ -800,7 +818,7 @@ func recordStatusUnconfirmed(rec *jobstore.JobRecord, scanErr error, d sessionJo
 	}
 	// A finish that declared no terminal status: the fold recorded the job's end
 	// and this record cannot say what that end was.
-	if rec.TerminalGen != "" {
+	if rec.StatusFromMalformedFinish {
 		return true
 	}
 	return d.IncompleteLifecycle && rec.Type == ""

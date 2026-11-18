@@ -365,6 +365,13 @@ func applyEvent(r *JobRecord, e Event) {
 		if r.Status.IsTerminal() {
 			return
 		}
+		// The event says the run is over, so the status it carries must state what
+		// the end was. A nonterminal status here is a malformed finish: the record
+		// still takes it — the fold reconstructs the best record the log supports —
+		// but it records that the status came from an end that named no end, so a
+		// reader can rank it as the fragment it is. A later terminal finish
+		// overwrites both, which is how a repaired journal gets its confidence back.
+		r.StatusFromMalformedFinish = !e.Status.IsTerminal()
 		r.Status = e.Status
 		r.Reason = e.Reason
 		r.ExhaustionBudget = e.ExhaustionBudget

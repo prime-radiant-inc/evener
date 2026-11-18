@@ -273,12 +273,22 @@ export class JobLogReader {
    * two replies happened to arrive last. A pending drain still finishes,
    * because those bytes were already written. */
   private reconcileLiveDeadline(job: JobActivityJob | null, drainPending: boolean) {
-    // A retry is owed for bytes that were not delivered, and only while a retry
-    // could deliver them. An unconfirmed row's journal cannot state the status,
-    // so reading it again asks the same unanswerable question: the obligation is
-    // dropped here, where the confidence changes, rather than being remembered
-    // from a failure that happened before the row was known to be unconfirmed.
-    if (job !== null && !job.terminal && jobStatusUnconfirmed(job)) this.liveRetryOwed = false;
+    // THE INVARIANT for this file: unconfirmed means provisional, and provisional
+    // means somebody keeps looking. A retry is owed for bytes that were not
+    // delivered exactly while a retry could deliver them.
+    //
+    // A row that is unconfirmed AND recheckable is still provisional — the server
+    // has said a later read could establish the status — so a tail that failed
+    // before this metadata arrived is owed again: the error the pane shows
+    // describes a read that failed, and a live tail is how a person finds out
+    // whether the log became readable. Re-arming HERE paces it to one attempt per
+    // SUCCESSFUL slow recheck (the metadata deadline is UNCONFIRMED_RECHECK_MS),
+    // never the one-second cadence, and readOutput's success handler clears the
+    // obligation when a tail actually lands.
+    //
+    // Only a permanently blocked row drops it, because only there does reading
+    // again ask a question no source can answer.
+    if (job !== null && !job.terminal && jobStatusUnconfirmed(job)) this.liveRetryOwed = statusRecheckable(job);
     // An owed one-shot read is a demand, not a poll. It keeps the slot due until
     // it is served, so unconfirmed metadata stops the RECURRING cadence without
     // cancelling the read a person asked for.
