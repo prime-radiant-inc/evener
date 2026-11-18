@@ -99,69 +99,59 @@ func estimateInputTokens(t targetInfo, req Request) InputTokenCount {
 	}
 }
 
-// strictSentParameters reports the schema a strict-capable built-in route
-// substitutes for def, and whether it substitutes one at all.
+// priceEmittedToolSchemas replaces req's tool count with the price of the list
+// the route's own builder will emit.
 //
-// The two builders that implement strict mode swap the closed empty object —
-// type object, additionalProperties false, an empty required list — for a
-// definition that declares no parameters, because that is the one shape strict
-// mode accepts for a tool with no arguments. A tool that opted out keeps the
-// open empty object instead, which is the shape every non-strict route sends.
+// A builder changes a tool schema before sending it: a closed value set gains
+// the explicit type its provider requires, a parameterless tool gains a
+// synthesized schema, and a route that omits that schema for a caller's own
+// no-argument declaration keeps omitting it. Pricing the definitions as they
+// were received therefore prices a list other than the one that dispatches, and
+// near the input cap that difference decides admission in both directions: a
+// request can be admitted over budget, or refused while it fits.
 //
-// This is the one place that decision is written down: the per-tool delta and
-// the full price both read it, so they cannot disagree about which tools carry
-// the closed form.
-func strictSentParameters(def ToolDefinition) (map[string]any, bool) {
-	if def.Parameters != nil {
-		return nil, false
-	}
-	if def.Strict != nil && !*def.Strict {
-		return nil, false
-	}
-	return strictDefaultToolParameters(), true
-}
-
-// strictParameterlessByteDelta returns the bytes a strict-capable route adds
-// over the open empty schema for every parameterless tool it will send closed.
+// The protocol owns the answer because the protocol owns the builder, so this
+// asks it rather than restating its rules (ToolSchemaDeriver). A count is reused
+// when the builder changes nothing, which is the common case: a catalog that
+// already carries every type and no parameterless tool prices identically before
+// and after, and re-measuring it every dispatch would repeat a marshal the
+// cached count exists to avoid.
 //
-// The difference is a property of the two schemas rather than of the catalog,
-// so it is measured once and added per affected tool: a caller that already
-// holds the open price can adjust it without re-marshalling the list.
-func strictParameterlessByteDelta(defs []ToolDefinition) int {
-	perTool := ToolsJSONBytes([]ToolDefinition{{Name: "x", Parameters: strictDefaultToolParameters()}}) -
-		ToolsJSONBytes([]ToolDefinition{{Name: "x", Parameters: defaultToolParameters()}})
-	delta := 0
-	for _, def := range defs {
-		if _, closed := strictSentParameters(def); closed {
-			delta += perTool
-		}
+// The deriver is handed the definitions the builder is handed, nil Parameters
+// included, and answers with the list the wire carries. What the count covered
+// decides only how the answer is applied: a count measured over the substituted
+// form is adjusted by the difference between the two emitted lists, since the
+// substitute is already in it, and any other count is replaced by the emitted
+// price outright, since the schema was never in it.
+func priceEmittedToolSchemas(req Request, res registry.Resolved) Request {
+	if len(req.Tools) == 0 {
+		return req
 	}
-	return delta
-}
-
-// strictSentToolDefs returns defs as a strict-capable built-in route emits them,
-// for a caller that has to price the list from scratch rather than adjust a
-// count that already describes the open form.
-func strictSentToolDefs(defs []ToolDefinition) []ToolDefinition {
-	sent := asSentToolDefs(defs)
-	for i, def := range defs {
-		if closed, ok := strictSentParameters(def); ok {
-			sent[i].Parameters = closed
-		}
+	p, ok := ProtocolFor(res.Protocol)
+	if !ok {
+		return req
 	}
-	return sent
-}
-
-// strictDefaultToolParameters returns the closed empty schema a strict-capable
-// builder emits for a parameterless tool: the one shape strict mode accepts,
-// because it admits exactly the empty argument set.
-func strictDefaultToolParameters() map[string]any {
-	return map[string]any{
-		"type":                 "object",
-		"additionalProperties": false,
-		"properties":           map[string]any{},
-		"required":             []string{},
+	deriver, ok := p.(ToolSchemaDeriver)
+	if !ok {
+		return req
 	}
+	// The deriver is handed the definitions the builder is handed, nil
+	// Parameters included: a parameterless tool and an explicitly open one are
+	// different inputs, and only the first gains the closed schema. A count
+	// measured over the substituted form is a different baseline again, so it is
+	// adjusted by the difference between the two emitted lists rather than
+	// replaced by one of them.
+	emitted, changed := deriver.EmitToolSchemas(req.Tools, res, req.PreparedTools())
+	if !changed {
+		return req
+	}
+	emittedBytes := ToolsJSONBytes(emitted)
+	if req.ToolsJSONBytes > 0 && req.preparedToolList == identifyToolList(req.Tools) {
+		req.ToolsJSONBytes += emittedBytes - ToolsJSONBytes(asSentToolDefs(req.Tools))
+		return req
+	}
+	req.ToolsJSONBytes = emittedBytes
+	return req
 }
 
 // ToolsJSONBytes returns the byte length of defs' serialized form: the length

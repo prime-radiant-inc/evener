@@ -8,6 +8,7 @@ package responses
 
 import (
 	"net/http"
+	"reflect"
 	"slices"
 
 	"primeradiant.com/evener/llm"
@@ -50,4 +51,41 @@ func (*Protocol) PrunablePaths() []string {
 // BuildBody implements llm.Protocol for a non-streaming request.
 func (*Protocol) BuildBody(req llm.Request, res registry.Resolved) (map[string]any, error) {
 	return buildBody(req, res, false)
+}
+
+// EmitToolSchemas implements llm.ToolSchemaDeriver.
+//
+// The builder reaches its per-tool decision through toolSchema; this maps the
+// same list through the same function, so the local estimate prices the request
+// the builder emits rather than the one it received. Two differences make that
+// matter near the input cap: a typeless closed value set gains an explicit type
+// on both the strict and the refused paths, and a parameterless tool gains a
+// synthesized schema.
+//
+// baseline is the list the request's byte count describes, so a nil Parameters
+// means the count priced the builder's substitute and not the caller's nil. The
+// same toolSchema call answers both, which is the point of extracting it.
+//
+// prepared is unused: this builder reads a definition's nil Parameters itself
+// and does not branch on how the request arrived.
+func (*Protocol) EmitToolSchemas(baseline []llm.ToolDefinition, res registry.Resolved, prepared bool) ([]llm.ToolDefinition, bool) {
+	if len(baseline) == 0 {
+		return nil, false
+	}
+	strict := registry.BoolValue(res.Caps.StrictTools)
+	sent := make([]llm.ToolDefinition, len(baseline))
+	copy(sent, baseline)
+	changed := false
+	for i, t := range baseline {
+		params, _ := toolSchema(t, strict)
+		if reflect.DeepEqual(params, t.Parameters) {
+			continue
+		}
+		sent[i].Parameters = params
+		changed = true
+	}
+	if !changed {
+		return nil, false
+	}
+	return sent, true
 }

@@ -94,6 +94,55 @@ func preparedBudgetClient(t *testing.T, adapter ProviderAdapter, maxInput int) (
 	return c, res
 }
 
+// budgetClientOnRoute builds a client whose instance carries maxInput and the
+// given capability overrides. It exists so a test can name the route it prices:
+// a row without strict enforcement still reaches the same Responses endpoint,
+// which requires an explicit type on every node.
+func budgetClientOnRoute(t *testing.T, adapter ProviderAdapter, maxInput int, protocol string, caps registry.Caps) (*Client, registry.Resolved) {
+	t.Helper()
+	caps.ContextWindow = new(1_000_000)
+	caps.MaxInputTokens = new(maxInput)
+	caps.MaxOutputTokens = new(4_096)
+	r, err := registry.Load(
+		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+		registry.WithStateRoot(t.TempDir()),
+		registry.WithEnv(func(string) (string, bool) { return "", false }),
+		registry.WithInstances(map[string]registry.Provider{
+			"prepared-budget": {Base: "openai", Protocol: protocol, APIKey: "unused", Caps: caps},
+		}),
+	)
+	if err != nil {
+		t.Fatalf("registry.Load: %v", err)
+	}
+	c := NewClient(WithRegistry(r))
+	res, err := c.Resolve("prepared-budget/model")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if res.Caps.MaxInputTokens == nil || *res.Caps.MaxInputTokens != maxInput {
+		t.Fatalf("resolved max_input = %v, want %d", res.Caps.MaxInputTokens, maxInput)
+	}
+	c.Register(adapter)
+	return c, res
+}
+
+// typelessConstTool is a closed tool whose required argument states a value set
+// and no type: the shape the endpoint rejects on the way in even when strict
+// enforcement is off.
+func typelessConstTool() ToolDefinition {
+	return ToolDefinition{
+		Name: "set_mode",
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"payload": map[string]any{"const": "fixed"},
+			},
+			"required": []string{"payload"},
+		},
+	}
+}
+
 // preparedToolLists returns the same tool names twice: once as preparation
 // leaves a parameterless tool (nil Parameters), and once as the override
 // boundary restores it (the open empty schema).
@@ -369,56 +418,72 @@ func TestStrictCapableRoutePricesTheClosedParameterlessSchema(t *testing.T) {
 		defs[i] = ToolDefinition{Name: fmt.Sprintf("probe_%02d", i)}
 	}
 	openBytes := ToolsJSONBytes(asSentToolDefs(defs))
-	closed := make([]ToolDefinition, len(defs))
-	copy(closed, defs)
-	for i := range closed {
-		closed[i].Parameters = strictDefaultToolParameters()
+
+	// The prepared-budget row builds on the openai base, which declares strict
+	// tools: the route that sends the closed form.
+	_, res := preparedBudgetClient(t, &preparedBudgetAdapter{}, 1_000_000)
+	if !registry.BoolValue(res.Caps.StrictTools) {
+		t.Fatal("fixture route does not declare strict tools; the priced case needs a strict-capable row")
+	}
+	// The closed price is what the route's own builder emits, not a second
+	// expression of the closed schema written here: the point of the rule is
+	// that the price comes from the builder.
+	closed, changed := emitToolSchemas(t, res, defs)
+	if !changed {
+		t.Fatal("fixture route does not change a parameterless tool's schema; the priced case needs the closed form")
 	}
 	closedBytes := ToolsJSONBytes(closed)
 	if closedBytes <= openBytes {
 		t.Fatalf("fixture does not distinguish the two prices: open=%d closed=%d", openBytes, closedBytes)
 	}
 
+	req := preparedRequest(defs)
+	req.ToolsJSONBytes = openBytes
+	if got := priceEmittedToolSchemas(req, res); got.ToolsJSONBytes != closedBytes {
+		t.Fatalf("strict-capable count = %d, want %d: admission must price the closed schema the route emits",
+			got.ToolsJSONBytes, closedBytes)
+	}
+
 	// An opted-out tool keeps the open schema, so it must not be priced closed.
 	optedOut := make([]ToolDefinition, len(defs))
 	copy(optedOut, defs)
 	optedOut[0].Strict = new(false)
-	perTool := ToolsJSONBytes([]ToolDefinition{{Name: "x", Parameters: strictDefaultToolParameters()}}) -
-		ToolsJSONBytes([]ToolDefinition{{Name: "x", Parameters: defaultToolParameters()}})
-	if got, want := strictParameterlessByteDelta(optedOut), (toolCount-1)*perTool; got != want {
-		t.Fatalf("delta with one opt-out = %d, want %d: an opted-out tool is sent open and must not be "+
-			"priced closed", got, want)
+	optedOutReq := preparedRequest(optedOut)
+	optedOutReq.ToolsJSONBytes = openBytes
+	optedOutSent, _ := emitToolSchemas(t, res, optedOut)
+	wantOptedOut := ToolsJSONBytes(optedOutSent)
+	if wantOptedOut >= closedBytes {
+		t.Fatalf("fixture does not distinguish the opt-out: with one opt-out %d, all closed %d",
+			wantOptedOut, closedBytes)
 	}
-	if got, want := strictParameterlessByteDelta(defs), closedBytes-openBytes; got != want {
-		t.Fatalf("delta = %d, want %d", got, want)
-	}
-	if got := strictParameterlessByteDelta(nil); got != 0 {
-		t.Fatalf("delta over an empty catalog = %d, want 0", got)
-	}
-
-	// The prepared-budget row builds on the openai base, which declares strict
-	// tools: the route that sends the closed form.
-	c, res := preparedBudgetClient(t, &preparedBudgetAdapter{}, 1_000_000)
-	if !registry.BoolValue(res.Caps.StrictTools) {
-		t.Fatal("fixture route does not declare strict tools; the priced case needs a strict-capable row")
-	}
-	req := preparedRequest(defs)
-	req.ToolsJSONBytes = openBytes
-	priced := priceStrictParameterlessSchemas(req, mustDispatchTarget(t, c, req))
-	if want := openBytes + closedBytes - openBytes; priced.ToolsJSONBytes != want {
-		t.Fatalf("strict-capable count = %d, want %d: admission must price the closed schema the route emits",
-			priced.ToolsJSONBytes, want)
+	if got := priceEmittedToolSchemas(optedOutReq, res); got.ToolsJSONBytes != wantOptedOut {
+		t.Fatalf("count with one opt-out = %d, want %d: an opted-out tool is sent open and must not be "+
+			"priced closed", got.ToolsJSONBytes, wantOptedOut)
 	}
 
 	// The control: the same catalog on a route without the capability keeps the
 	// open price, because that is the schema such a route sends.
-	off := mustDispatchTarget(t, c, req)
-	off.res.Caps.StrictTools = nil
-	if got := priceStrictParameterlessSchemas(req, off); got.ToolsJSONBytes != openBytes {
+	off := res
+	off.Caps.StrictTools = nil
+	if got := priceEmittedToolSchemas(req, off); got.ToolsJSONBytes != openBytes {
 		t.Fatalf("capability-off count = %d, want %d: a route without strict enforcement sends the open schema",
 			got.ToolsJSONBytes, openBytes)
 	}
+}
 
+// emitToolSchemas asks the route's protocol what its builder will emit, which
+// is the only expression of that answer the tests are allowed to price against.
+func emitToolSchemas(t *testing.T, res registry.Resolved, baseline []ToolDefinition) ([]ToolDefinition, bool) {
+	t.Helper()
+	p, ok := ProtocolFor(res.Protocol)
+	if !ok {
+		t.Fatalf("no protocol registered for %q", res.Protocol)
+	}
+	deriver, ok := p.(ToolSchemaDeriver)
+	if !ok {
+		t.Fatalf("protocol %q does not derive tool schemas; the priced case needs a route whose builder does", res.Protocol)
+	}
+	return deriver.EmitToolSchemas(baseline, res, true)
 }
 
 // mustDispatchTarget resolves req's route through the client, so the test asks
@@ -438,18 +503,15 @@ func mustDispatchTarget(t *testing.T, c *Client, req Request) dispatchTarget {
 // ToolsJSONBytes is documented as a count a caller may stamp from its own tool
 // list, so a direct Complete or Stream call can arrive with a count taken over
 // the definitions as written. parameters is omitempty, so a parameterless tool
-// contributes nothing to that count at all — unlike the prepared count, which
-// already carries the open empty schema. Adding only the open-to-closed
-// difference to a raw count therefore leaves the schema out of the price
-// entirely, and a cap between the two prices admits a request that dispatches
-// larger than it was billed.
+// contributes nothing to that count at all, while the builder emits a schema for
+// it. A count like that undercounts the dispatched list, and near the input cap
+// it admits a request that dispatches larger than it was billed.
 //
-// The discriminating case is a raw stamp: a prepared stamp describes the open
-// form, so the delta is all that is missing there and the existing test covers
-// it. Here the count excludes the schema altogether, so the whole strict price
-// has to replace it. The assertions check both numbers, because a rule that
-// merely added the difference would pass a cap chosen only against the closed
-// price.
+// The rule is the same for both counts because the protocol answers for both:
+// the deriver is handed the form the count covered and answers with the form the
+// wire carries, so a raw count and a prepared count reach the same price. The
+// open price stays in the test as the control, because a rule that priced the
+// received definitions would land there.
 func TestARawToolCountIsRepricedToTheStrictForm(t *testing.T) {
 	t.Parallel()
 	const toolCount = 24
@@ -459,20 +521,25 @@ func TestARawToolCountIsRepricedToTheStrictForm(t *testing.T) {
 	}
 	rawBytes := ToolsJSONBytes(defs)
 	openBytes := ToolsJSONBytes(asSentToolDefs(defs))
-	strictBytes := ToolsJSONBytes(strictSentToolDefs(defs))
 	if rawBytes >= openBytes {
 		t.Fatalf("fixture does not distinguish a raw count from an open one: raw=%d open=%d", rawBytes, openBytes)
 	}
+
+	_, res := preparedBudgetClient(t, &preparedBudgetAdapter{}, 1_000_000)
+	if !registry.BoolValue(res.Caps.StrictTools) {
+		t.Fatal("fixture route does not declare strict tools; the priced case needs a strict-capable row")
+	}
+	strictSent, changed := emitToolSchemas(t, res, defs)
+	if !changed {
+		t.Fatal("fixture route does not change a parameterless tool's schema; the priced case needs the closed form")
+	}
+	strictBytes := ToolsJSONBytes(strictSent)
 	if strictBytes <= openBytes {
 		t.Fatalf("fixture does not distinguish the open and closed forms: open=%d closed=%d", openBytes, strictBytes)
 	}
 
-	c, res := preparedBudgetClient(t, &preparedBudgetAdapter{}, 1_000_000)
-	if !registry.BoolValue(res.Caps.StrictTools) {
-		t.Fatal("fixture route does not declare strict tools; the priced case needs a strict-capable row")
-	}
-	// A direct call: no preparation, so the count is the caller's own and the
-	// prepared stamp is unset.
+	// A direct call: no preparation, so the count is the caller's own and no
+	// prepared list is recorded for it.
 	req := Request{
 		Provider:       "prepared-budget",
 		Model:          "model",
@@ -480,32 +547,40 @@ func TestARawToolCountIsRepricedToTheStrictForm(t *testing.T) {
 		Tools:          defs,
 		ToolsJSONBytes: rawBytes,
 	}
-	priced := priceStrictParameterlessSchemas(req, mustDispatchTarget(t, c, req))
-	if priced.ToolsJSONBytes != strictBytes {
-		t.Fatalf("priced count = %d, want %d: a count taken over the definitions as written excludes the "+
-			"parameterless schema entirely, so the full strict price replaces it (raw %d, open %d)",
-			priced.ToolsJSONBytes, strictBytes, rawBytes, openBytes)
+	if got := priceEmittedToolSchemas(req, res); got.ToolsJSONBytes != strictBytes {
+		t.Fatalf("raw count priced to %d, want %d: a count taken over the definitions as written excludes "+
+			"the parameterless schema the builder emits (raw %d, open %d)",
+			got.ToolsJSONBytes, strictBytes, rawBytes, openBytes)
 	}
 
-	// The control: a prepared count describes the open form, so it keeps the
-	// delta rather than being re-measured.
+	// A prepared count reaches the same price: the deriver is handed the form
+	// the count covered, so the two entry points cannot disagree.
 	prepared := req
 	prepared.ToolsJSONBytes = openBytes
 	prepared = MarkPreparedToolBytes(prepared)
-	if got := priceStrictParameterlessSchemas(prepared, mustDispatchTarget(t, c, prepared)); got.ToolsJSONBytes != strictBytes {
-		t.Fatalf("prepared count repriced to %d, want %d", got.ToolsJSONBytes, strictBytes)
+	if got := priceEmittedToolSchemas(prepared, res); got.ToolsJSONBytes != strictBytes {
+		t.Fatalf("prepared count priced to %d, want %d: an open count plus the emitted closed form is the "+
+			"same list the raw count reaches", got.ToolsJSONBytes, strictBytes)
+	}
+
+	// The control: a route without the capability emits the open schema, so the
+	// count it is handed already describes what dispatches and must not move.
+	off := res
+	off.Caps.StrictTools = nil
+	if got := priceEmittedToolSchemas(prepared, off); got.ToolsJSONBytes != openBytes {
+		t.Fatalf("capability-off count = %d, want %d: a route that sends the open schema prices the open list",
+			got.ToolsJSONBytes, openBytes)
 	}
 
 	// The price is only worth asserting because admission reads it. A cap
-	// between what the raw count prices and what the strict form prices
-	// dispatches the larger request if the count is left alone, so the
-	// admission below has to fail on the count this rule produces.
+	// between the raw price and the closed price has to refuse, and it can only
+	// do so if the price reaches admission from inside it.
 	rawInput := EstimateInputTokensForResolved(res, req).Tokens
 	strictPriced := req
 	strictPriced.ToolsJSONBytes = strictBytes
 	strictInput := EstimateInputTokensForResolved(res, strictPriced).Tokens
 	if strictInput <= rawInput {
-		t.Fatalf("fixture does not straddle a cap: raw price %d, strict price %d", rawInput, strictInput)
+		t.Fatalf("fixture does not straddle a cap: raw price %d, closed price %d", rawInput, strictInput)
 	}
 	limit := rawInput + minimumTokenSafetyReserve + (strictInput-rawInput)/2
 	for range 16 {
@@ -520,12 +595,186 @@ func TestARawToolCountIsRepricedToTheStrictForm(t *testing.T) {
 		t.Fatalf("cap %d does not admit the raw price %d", limit, rawInput)
 	}
 	if strictInput+safety <= limit {
-		t.Fatalf("cap %d does not refuse the strict price %d", limit, strictInput)
+		t.Fatalf("cap %d does not refuse the closed price %d", limit, strictInput)
 	}
-	capped, cappedRes := preparedBudgetClient(t, &preparedBudgetAdapter{}, limit)
-	admitted := priceStrictParameterlessSchemas(req, mustDispatchTarget(t, capped, req))
-	if _, err := shapeAndApplyTokenBudget(admitted, cappedRes); err == nil {
-		t.Fatalf("admission accepted a request priced at %d under a cap of %d: the strict form costs %d, "+
-			"and the raw count %d does not include it", admitted.ToolsJSONBytes, limit, strictInput+safety, rawInput+safety)
+	_, cappedRes := preparedBudgetClient(t, &preparedBudgetAdapter{}, limit)
+	if _, err := shapeAndApplyTokenBudget(req, cappedRes, true); err == nil {
+		t.Fatalf("admission accepted a request billed at %d under a cap of %d: the closed form costs %d "+
+			"and the raw count %d does not include it", rawInput+safety, limit, strictInput+safety, rawInput+safety)
+	}
+}
+
+// TestARouteWithoutStrictEnforcementPricesTheTypesItAdds covers the count on a
+// route that never enters strict mode.
+//
+// The explicit-type requirement belongs to the schema dialect, not to the
+// strict-tools capability: the same Responses endpoint checks it with strict
+// enforcement off, and a tool carrying a typeless closed value set is rejected
+// along with the whole request. The builder supplies the type on that path, so
+// the dispatched list is larger than the one the count measured, and a cap
+// between the two prices admits a request over budget.
+//
+// The discriminating case is a prepared count. Preparation measured the catalog
+// before any builder ran, so the count describes the open form and the missing
+// bytes are exactly the supplied type. A rule keyed on the strict capability
+// instead of the dialect would leave this count alone and admit the request.
+func TestARouteWithoutStrictEnforcementPricesTheTypesItAdds(t *testing.T) {
+	t.Parallel()
+	const toolCount = 16
+	defs := make([]ToolDefinition, toolCount)
+	for i := range defs {
+		defs[i] = typelessConstTool()
+		defs[i].Name = fmt.Sprintf("set_mode_%02d", i)
+	}
+	_, res := budgetClientOnRoute(t, &preparedBudgetAdapter{}, 1_000_000, "", registry.Caps{StrictTools: new(false)})
+	if registry.BoolValue(res.Caps.StrictTools) {
+		t.Fatal("fixture route declares strict tools; the case under test is the route that does not")
+	}
+	emitted, changed := emitToolSchemas(t, res, defs)
+	if !changed {
+		t.Fatal("fixture route adds nothing to the tool schema; the priced case needs the supplied type")
+	}
+	measuredBytes := ToolsJSONBytes(asSentToolDefs(defs))
+	emittedBytes := ToolsJSONBytes(emitted)
+	if emittedBytes <= measuredBytes {
+		t.Fatalf("fixture does not distinguish the two prices: measured=%d emitted=%d", measuredBytes, emittedBytes)
+	}
+
+	req := Request{
+		Provider:       "prepared-budget",
+		Model:          "model",
+		Messages:       []Message{User("x")},
+		Tools:          defs,
+		ToolsJSONBytes: measuredBytes,
+	}
+	req = MarkPreparedToolBytes(req)
+	if got := priceEmittedToolSchemas(req, res); got.ToolsJSONBytes != emittedBytes {
+		t.Fatalf("count = %d, want %d: the builder supplies a type on this route, so the dispatched list is "+
+			"larger than the one preparation measured", got.ToolsJSONBytes, emittedBytes)
+	}
+
+	// A cap between the two prices: admission must read the priced count, so it
+	// has to refuse the request the unpriced count would have admitted.
+	measuredInput := EstimateInputTokensForResolved(res, req).Tokens
+	priced := req
+	priced.ToolsJSONBytes = emittedBytes
+	pricedInput := EstimateInputTokensForResolved(res, priced).Tokens
+	if pricedInput <= measuredInput {
+		t.Fatalf("fixture does not straddle a cap: measured price %d, emitted price %d", measuredInput, pricedInput)
+	}
+	limit := measuredInput + minimumTokenSafetyReserve + (pricedInput-measuredInput)/2
+	for range 16 {
+		next := measuredInput + SafetyReserveTokens(limit) + (pricedInput-measuredInput)/2
+		if next == limit {
+			break
+		}
+		limit = next
+	}
+	safety := SafetyReserveTokens(limit)
+	if measuredInput+safety >= limit {
+		t.Fatalf("cap %d does not admit the measured price %d", limit, measuredInput)
+	}
+	if pricedInput+safety <= limit {
+		t.Fatalf("cap %d does not refuse the emitted price %d", limit, pricedInput)
+	}
+	_, cappedRes := budgetClientOnRoute(t, &preparedBudgetAdapter{}, limit, "", registry.Caps{StrictTools: new(false)})
+	if _, err := shapeAndApplyTokenBudget(req, cappedRes, true); err == nil {
+		t.Fatalf("admission accepted a request billed at %d under a cap of %d: the emitted list costs %d "+
+			"and the measured count does not include the supplied type",
+			measuredInput+safety, limit, pricedInput+safety)
+	}
+}
+
+// TestADirectChatCallIsPricedAsTheChatBuilderEmitsIt covers the route whose
+// builder omits a parameterless tool's schema entirely.
+//
+// Chat Completions substitutes an open empty parameters object only when the
+// request came through preparation, because only then does the local validator
+// compile the tool against that schema. A direct Complete or Stream call keeps
+// the caller's nil, and ToChatTools omits the key, so the raw count over the
+// definitions as written is already the dispatched price. Repricing that count
+// from a parameterless tool's schema would charge for bytes the wire never
+// carries, and a cap between the two estimates would refuse a request that
+// fits — including for a tool that opted out, whose parameters key is omitted
+// on this route either way.
+func TestADirectChatCallIsPricedAsTheChatBuilderEmitsIt(t *testing.T) {
+	t.Parallel()
+	defs := []ToolDefinition{
+		{Name: "strict_one", Strict: new(true)},
+		{Name: "opted_out", Strict: new(false)},
+	}
+	rawBytes := ToolsJSONBytes(defs)
+	withSchemas := ToolsJSONBytes(asSentToolDefs(defs))
+	if withSchemas <= rawBytes {
+		t.Fatalf("fixture does not distinguish a raw count from one carrying the schemas: raw=%d open=%d",
+			rawBytes, withSchemas)
+	}
+
+	_, res := budgetClientOnRoute(t, &preparedBudgetAdapter{}, 1_000_000, registry.ProtocolOpenAIChat,
+		registry.Caps{StrictTools: new(true)})
+	if res.Protocol != registry.ProtocolOpenAIChat {
+		t.Fatalf("fixture route resolves to %q, want the Chat Completions protocol", res.Protocol)
+	}
+	req := Request{
+		Provider:       "prepared-budget",
+		Model:          "model",
+		Messages:       []Message{User("x")},
+		Tools:          defs,
+		ToolsJSONBytes: rawBytes,
+	}
+	if got := priceEmittedToolSchemas(req, res); got.ToolsJSONBytes != rawBytes {
+		t.Fatalf("count = %d, want %d: the Chat builder omits a parameterless tool's schema on a direct "+
+			"call, so the count over the definitions as written is the dispatched price",
+			got.ToolsJSONBytes, rawBytes)
+	}
+	// The same catalog through preparation does gain a schema for the strict
+	// tool, so the count must move there: that is what makes the assertion
+	// above about the direct path rather than about a deriver that never
+	// answers.
+	preparedReq := MarkPreparedTools(req)
+	preparedSent, preparedChanged := emitToolSchemas(t, res, preparedReq.Tools)
+	if !preparedChanged {
+		t.Fatal("prepared Chat catalog did not change; the direct-path assertion above would hold for the wrong reason")
+	}
+	preparedBytes := ToolsJSONBytes(preparedSent)
+	if preparedBytes == rawBytes {
+		t.Fatalf("prepared Chat price %d equals the raw price %d; the fixture cannot tell the two paths apart",
+			preparedBytes, rawBytes)
+	}
+	if got := priceEmittedToolSchemas(preparedReq, res); got.ToolsJSONBytes != preparedBytes {
+		t.Fatalf("prepared Chat count = %d, want %d: a prepared parameterless tool is sent with a schema "+
+			"the raw count never carried", got.ToolsJSONBytes, preparedBytes)
+	}
+
+	// A cap between the two prices: the request fits, because the wire never
+	// carries the schemas the larger count would bill for.
+	rawInput := EstimateInputTokensForResolved(res, req).Tokens
+	padded := req
+	padded.ToolsJSONBytes = preparedBytes
+	paddedInput := EstimateInputTokensForResolved(res, padded).Tokens
+	if paddedInput <= rawInput {
+		t.Fatalf("fixture does not straddle a cap: raw price %d, padded price %d", rawInput, paddedInput)
+	}
+	limit := rawInput + minimumTokenSafetyReserve + (paddedInput-rawInput)/2
+	for range 16 {
+		next := rawInput + SafetyReserveTokens(limit) + (paddedInput-rawInput)/2
+		if next == limit {
+			break
+		}
+		limit = next
+	}
+	safety := SafetyReserveTokens(limit)
+	if rawInput+safety >= limit {
+		t.Fatalf("cap %d does not admit the raw price %d", limit, rawInput)
+	}
+	if paddedInput+safety <= limit {
+		t.Fatalf("cap %d does not refuse the padded price %d", limit, paddedInput)
+	}
+	_, cappedRes := budgetClientOnRoute(t, &preparedBudgetAdapter{}, limit, registry.ProtocolOpenAIChat,
+		registry.Caps{StrictTools: new(true)})
+	if _, err := shapeAndApplyTokenBudget(req, cappedRes, true); err != nil {
+		t.Fatalf("admission refused a request priced at %d under a cap of %d: the wire carries no "+
+			"parameters schema for either tool, so the padded price %d is not what dispatches: %v",
+			rawInput+safety, limit, paddedInput+safety, err)
 	}
 }

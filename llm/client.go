@@ -185,48 +185,6 @@ func (c *Client) withHasher(ctx context.Context) context.Context {
 	return ctx
 }
 
-// priceStrictParameterlessSchemas makes budget admission price what a
-// strict-capable built-in route emits for a parameterless tool, so the
-// admitted request is the one that dispatches.
-//
-// A strict-capable route substitutes the closed empty object for a definition
-// that declares no parameters, because that is the one shape strict mode
-// accepts for a tool with no arguments. What a count already includes depends
-// on where it came from, and the two are not interchangeable:
-//
-//   - A prepared count was measured over the substituted form, with the open
-//     empty schema in place of a nil Parameters (asSentToolDefs), which is what
-//     a route without strict enforcement sends. Only the difference between the
-//     two schemas is missing there, so it is added per affected tool and the
-//     count is not re-measured.
-//   - Any other count is the caller's own. A raw ToolsJSONBytes prices the
-//     definitions as written, and parameters is omitempty: a parameterless tool
-//     contributes nothing at all to it. It then has to be replaced by the full
-//     price of the strict form rather than adjusted by a difference, or the
-//     request is admitted on a count that excludes the schema it will send.
-//
-// The prepared form is identified rather than assumed, the same way the
-// override boundary identifies it: a middleware that replaces the catalog and
-// refreshes the count leaves the stamp describing a different list, and that
-// refreshed count is a raw one. The override branch keeps the open price: it
-// restores the open schema for the definitions it marshals, so the count it
-// already carries is the one that describes its wire form.
-func priceStrictParameterlessSchemas(req Request, t dispatchTarget) Request {
-	if !t.resolved || !registry.BoolValue(t.res.Caps.StrictTools) || len(req.Tools) == 0 {
-		return req
-	}
-	delta := strictParameterlessByteDelta(req.Tools)
-	if delta == 0 {
-		return req
-	}
-	if req.ToolsJSONBytes > 0 && req.preparedToolList == identifyToolList(req.Tools) {
-		req.ToolsJSONBytes += delta
-		return req
-	}
-	req.ToolsJSONBytes = ToolsJSONBytes(strictSentToolDefs(req.Tools))
-	return req
-}
-
 // withOpenParameterlessSchemas restores the open empty schema for a tool that
 // declared no parameters, for the override adapter boundary only.
 //
@@ -450,12 +408,9 @@ func (c *Client) Complete(ctx context.Context, req Request) (Response, error) {
 		if t.override != nil {
 			req = withOpenParameterlessSchemas(req)
 		}
-		if t.override == nil {
-			req = priceStrictParameterlessSchemas(req, t)
-		}
 		if t.resolved {
 			var err error
-			req, err = shapeAndApplyTokenBudget(req, t.res)
+			req, err = shapeAndApplyTokenBudget(req, t.res, t.override == nil)
 			if err != nil {
 				return Response{}, err
 			}
@@ -501,12 +456,9 @@ func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 		if t.override != nil {
 			req = withOpenParameterlessSchemas(req)
 		}
-		if t.override == nil {
-			req = priceStrictParameterlessSchemas(req, t)
-		}
 		if t.resolved {
 			var err error
-			req, err = shapeAndApplyTokenBudget(req, t.res)
+			req, err = shapeAndApplyTokenBudget(req, t.res, t.override == nil)
 			if err != nil {
 				return nil, err
 			}
@@ -539,8 +491,22 @@ func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 	return newProviderStampStream(st, t.name), nil
 }
 
-func shapeAndApplyTokenBudget(req Request, res registry.Resolved) (Request, error) {
+// shapeAndApplyTokenBudget shapes req and admits it against res's budget.
+//
+// priceEmitted says whether the route's own builder will replace a tool schema
+// before sending it. It does on a protocol route, and it does not on an
+// override, where the adapter marshals the definition it was handed — the
+// override boundary has already restored the open schema that form carries, so
+// its received count is its wire count.
+func shapeAndApplyTokenBudget(req Request, res registry.Resolved, priceEmitted bool) (Request, error) {
 	req = ShapeRequest(req, res)
+	// The price is taken over the list the route's builder emits, not the one
+	// the request arrived with. This runs here rather than at either call site
+	// because admission is where the count is consumed, and every route that
+	// reaches the budget passes through this function.
+	if priceEmitted {
+		req = priceEmittedToolSchemas(req, res)
+	}
 	budgeted, _, err := ApplyTokenBudget(req, res)
 	return budgeted, err
 }

@@ -2,6 +2,7 @@ package openaichat
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"sort"
 	"strings"
@@ -1613,6 +1614,180 @@ func TestSupplyDerivedTypesReachesEverySchemaPosition(t *testing.T) {
 				t.Fatalf("the emitted schema accepts an argument set the advertised one rejects: %#v", pos.rejects)
 			}
 		})
+	}
+}
+
+// schemaPosition names one JSON Schema keyword that can hold a subschema, and
+// the shape its value takes there.
+//
+// The walk tables are written down by keyword, and a table written that way is
+// only as complete as the person who last edited it: twice now a sibling
+// keyword was left out while the shape it holds was added — a Draft 7 tuple
+// under items, then additionalItems and dependencies beside it. This
+// enumeration is the other direction of the same question, so a missing
+// sibling is a failing case rather than a review finding.
+//
+// A keyword's shape is named rather than guessed from the value, because
+// several keywords admit more than one: items is a schema or a tuple list,
+// additionalItems and additionalProperties are a schema or a boolean, and
+// dependencies is a schema or a list of property names. The walk skips the
+// shape that is not a subschema, and the nonSchema rows assert it survives
+// untouched.
+type schemaPosition struct {
+	keyword string
+	shape   positionShape
+	value   any
+}
+
+type positionShape int
+
+const (
+	shapeSchema positionShape = iota
+	shapeSchemaList
+	shapeSchemaMap
+	// shapeNotSchema is a value the keyword admits that is not a subschema.
+	// The walk must leave it exactly as advertised.
+	shapeNotSchema
+)
+
+// schemaBearingPositions covers every keyword that can hold a subschema, in
+// every shape it admits. Absent because no draft lets them hold one:
+// dependentRequired, required, enum, const, type, and the numeric and string
+// bounds.
+var schemaBearingPositions = []schemaPosition{
+	{"not", shapeSchema, schemaWithEnum()},
+	{"items", shapeSchema, schemaWithEnum()},
+	{"items", shapeSchemaList, []any{schemaWithEnum()}},
+	{"prefixItems", shapeSchemaList, []any{schemaWithEnum()}},
+	{"additionalItems", shapeSchema, schemaWithEnum()},
+	{"additionalItems", shapeNotSchema, true},
+	{"contains", shapeSchema, schemaWithEnum()},
+	{"propertyNames", shapeSchema, schemaWithEnum()},
+	{"if", shapeSchema, schemaWithEnum()},
+	{"then", shapeSchema, schemaWithEnum()},
+	{"else", shapeSchema, schemaWithEnum()},
+	{"additionalProperties", shapeSchema, schemaWithEnum()},
+	{"additionalProperties", shapeNotSchema, true},
+	{"unevaluatedProperties", shapeSchema, schemaWithEnum()},
+	{"unevaluatedProperties", shapeNotSchema, true},
+	{"unevaluatedItems", shapeSchema, schemaWithEnum()},
+	{"unevaluatedItems", shapeNotSchema, true},
+	{"allOf", shapeSchemaList, []any{schemaWithEnum()}},
+	{"anyOf", shapeSchemaList, []any{schemaWithEnum()}},
+	{"oneOf", shapeSchemaList, []any{schemaWithEnum()}},
+	{"properties", shapeSchemaMap, map[string]any{"p": schemaWithEnum()}},
+	{"patternProperties", shapeSchemaMap, map[string]any{"^x-": schemaWithEnum()}},
+	{"dependentSchemas", shapeSchemaMap, map[string]any{"p": schemaWithEnum()}},
+	{"dependencies", shapeSchemaMap, map[string]any{"p": schemaWithEnum()}},
+	{"dependencies", shapeNotSchema, map[string]any{"p": []any{"q"}}},
+	{"$defs", shapeSchemaMap, map[string]any{"D": schemaWithEnum()}},
+	{"definitions", shapeSchemaMap, map[string]any{"D": schemaWithEnum()}},
+}
+
+// schemaWithEnum is the closed value set each position carries: two string
+// members and no declared type, which is what the supply has to state.
+func schemaWithEnum() map[string]any {
+	return map[string]any{"enum": []any{"a", "b"}}
+}
+
+// Every keyword that can hold a subschema is reached by the supply walk, in
+// every shape it admits, and every schema inside one gets the type its closed
+// value set implies. The enumeration is iterated rather than its members being
+// named, so a keyword added here without a walk that reaches it fails as a
+// case rather than as a review finding.
+func TestSupplyDerivedTypesWalksEverySchemaBearingKeyword(t *testing.T) {
+	t.Parallel()
+	for i, pos := range schemaBearingPositions {
+		name := fmt.Sprintf("%s/%d", pos.keyword, i)
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			advertised := map[string]any{pos.keyword: pos.value}
+			emitted := SupplyDerivedTypes(map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties":           map[string]any{"inner": advertised},
+				"required":             []string{"inner"},
+			})
+			inner := emitted["properties"].(map[string]any)["inner"].(map[string]any)
+			switch pos.shape {
+			case shapeSchema:
+				assertTypedSubschema(t, pos.keyword, inner[pos.keyword])
+			case shapeSchemaList:
+				list, ok := inner[pos.keyword].([]any)
+				if !ok {
+					t.Fatalf("%s = %#v, want the advertised list: a refusal keeps the schema shape", pos.keyword, inner[pos.keyword])
+				}
+				for j, item := range list {
+					assertTypedSubschema(t, fmt.Sprintf("%s[%d]", pos.keyword, j), item)
+				}
+			case shapeSchemaMap:
+				named, ok := inner[pos.keyword].(map[string]any)
+				if !ok {
+					t.Fatalf("%s = %#v, want the advertised name map", pos.keyword, inner[pos.keyword])
+				}
+				for name, sub := range named {
+					if pos.keyword == "dependencies" {
+						// The name map carries one schema here and the
+						// non-schema row carries the property list, so a
+						// []any member is that list rather than a subschema.
+						if _, isList := sub.([]any); isList {
+							if !reflect.DeepEqual(sub, []any{"q"}) {
+								t.Fatalf("dependencies property list = %#v, want the advertised [\"q\"]", sub)
+							}
+							continue
+						}
+					}
+					assertTypedSubschema(t, fmt.Sprintf("%s[%s]", pos.keyword, name), sub)
+				}
+			case shapeNotSchema:
+				if !reflect.DeepEqual(inner[pos.keyword], pos.value) {
+					t.Fatalf("%s = %#v, want the advertised %#v: a value that is not a subschema must reach the provider untouched",
+						pos.keyword, inner[pos.keyword], pos.value)
+				}
+			}
+		})
+	}
+}
+
+// assertTypedSubschema fails unless v is a schema carrying the explicit type
+// its closed value set implies.
+func assertTypedSubschema(t *testing.T, where string, v any) {
+	t.Helper()
+	sub, ok := v.(map[string]any)
+	if !ok {
+		t.Fatalf("%s is not a schema: %#v", where, v)
+	}
+	if sub["type"] != "string" {
+		t.Fatalf("%s holds a typeless closed value set: type = %#v, want \"string\". A provider requiring an explicit type rejects the whole request, and the tool is already sent non-strict", where, sub["type"])
+	}
+}
+
+// The walk tables and the enumeration are checked against each other in both
+// directions. A keyword the enumeration names that no table visits is a
+// position the walk never reaches. A keyword a table visits that the
+// enumeration does not name is a position nothing checks, which is how the
+// last two siblings went missing.
+func TestSchemaBearingKeywordsMatchTheWalkTables(t *testing.T) {
+	t.Parallel()
+	inTable := map[string]bool{}
+	for _, list := range [][]string{singleSubschemaKeywords, listSubschemaKeywords, mapSubschemaKeywords} {
+		for _, keyword := range list {
+			inTable[keyword] = true
+		}
+	}
+	enumerated := map[string]bool{}
+	for _, pos := range schemaBearingPositions {
+		enumerated[pos.keyword] = true
+	}
+	for keyword := range enumerated {
+		if !inTable[keyword] {
+			t.Errorf("%q can hold a subschema but no walk table visits it: a typeless node inside one reaches the provider and costs the request", keyword)
+		}
+	}
+	for keyword := range inTable {
+		if !enumerated[keyword] {
+			t.Errorf("%q is walked but absent from the enumeration, so nothing checks that its position is still reachable", keyword)
+		}
 	}
 }
 

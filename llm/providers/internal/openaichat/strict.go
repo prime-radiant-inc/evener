@@ -170,6 +170,11 @@ var (
 		"not", "items", "contains", "propertyNames",
 		"if", "then", "else",
 		"additionalProperties", "unevaluatedProperties", "unevaluatedItems",
+		// additionalItems is a boolean or a schema, like
+		// additionalProperties, and the loop below skips the boolean.
+		// Draft 7 applies it to the positions a tuple leaves open, so a
+		// typeless scalar enum there reaches the provider unwalked.
+		"additionalItems",
 	}
 	// listSubschemaKeywords hold a list of subschemas.
 	listSubschemaKeywords = []string{
@@ -186,6 +191,12 @@ var (
 	mapSubschemaKeywords = []string{
 		"properties", "patternProperties", "dependentSchemas",
 		"$defs", "definitions",
+		// dependencies is Draft 7's name for dependentSchemas, and it
+		// admits two value shapes: a schema, and a list of property names
+		// that must be present together. The loop below visits only values
+		// that are schemas, so the property-name form is preserved as
+		// advertised rather than read as one.
+		"dependencies",
 	}
 )
 
