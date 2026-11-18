@@ -277,6 +277,68 @@ for (const viaApplyReadModel of [false, true] as const) {
   });
 }
 
+// RoboRev 53574 (Medium 2): the enriched `live-read-empty` is the OTHER way a
+// saved-index fallback can answer, and it is not the same ownership answer.
+// There a daemon DID answer: it supplied the transcript identity and only the
+// rows came from the saved index (`fallbackHistoryIdentity` keeps
+// `live.BootGeneration`, cmd/evener-hub/app_rpc.go:372-380). Suppressing that
+// token along with the fallback left the RECORDED owner stale, so the
+// answering daemon's own next frame compared against its predecessor and
+// cleared the live hold its read had just supplied.
+test("an enriched live-read-empty takes the answering daemon as the hold owner", () => {
+  const base = hydrateThread(
+    {
+      thread: testThread(),
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 100 },
+    },
+    "ref_t",
+    1000,
+  );
+  // A resync recorded boot 1 as the owner, and no read has applied since. This
+  // is the record whose staleness the finding describes.
+  let model: ThreadModel = { ...base, history: base.history && { ...base.history, holdOwner: "1" } };
+
+  // The live read succeeded and returned no items; the saved index supplied
+  // the rows. Boot 2 is the daemon that ANSWERED, so its token is the only
+  // evidence of who owns the samples.
+  const enriched = {
+    ...historyRead(),
+    thread: testThread({ turns: [versionedFragmentTurn([1])] }),
+    bootGeneration: "2",
+    snapshot: { incarnation: "inc-1", length: 100 },
+    servedFrom: "saved-index",
+    fallbackReason: "live-read-empty",
+    asOf: "2026-11-08T00:00:00Z",
+  } as ThreadReadResponse;
+  model = applyReadResponse(model, enriched, 1002);
+  expect(holdOwnerOf(model.history!)).toBe("2");
+
+  // Boot 2 publishes its live hold...
+  model = applyNotification(
+    model,
+    {
+      method: "evener/delegate/updated",
+      params: { ref: "ref_t", delegate: heldDelegate(900, 3) },
+    } as AnyNotification,
+    2500,
+  );
+  expect(model.delegates?.[0]?.holdSequence).toBe(900);
+
+  // ...and its OWN next resync must not read as a fresh replacement.
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/resync",
+      params: { threadId: base.threadId, ref: "ref_t", bootGeneration: "2", epoch: 2 },
+    } as AnyNotification,
+    3000,
+  );
+  expect(model.delegates?.[0]?.holdSequence).toBe(900);
+  expect(holdOwnerOf(model.history!)).toBe("2");
+});
+
 for (const facts of ["legacy", "unavailable"] as const) {
   for (const authoritative of [false, true]) {
     test(`${facts} read preserves its existing authoritative policy: ${authoritative}`, () => {

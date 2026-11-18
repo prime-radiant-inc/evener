@@ -4,7 +4,7 @@
 // these live in `reducer.ts`.
 
 import { type BootTokenEvidence, compareBootGeneration, confirmedBootReplacement } from "./bootGeneration";
-import { historyFallback, historyReplacesWindow, historyServingFacts } from "./historyServing";
+import { historyAnsweredLive, historyFallback, historyReplacesWindow, historyServingFacts } from "./historyServing";
 import type { HistoryState, ItemModel, OlderFrontier, ThreadModel, TurnModel } from "./model";
 import { comparePositions, SYSTEM_PRELUDE_TURN_ID } from "./model";
 import { frontierFromCursor, olderFrontierOf, withOlderFrontier } from "./olderFrontier";
@@ -1127,11 +1127,23 @@ export function applyReadResponse<M extends ThreadModel>(
     }
   }
   const generation = resp.requestGeneration ?? 0;
+  // A saved-index fallback names no source for the ROWS: it keeps held's
+  // identity and passes no read token, so nothing it carries can stand as
+  // evidence of a replacement.
+  //
+  // An enriched `live-read-empty` is the exception, and it is why the token and
+  // the rows are separate questions. A daemon answered that read and supplied
+  // the transcript identity; only the rows came from the saved index
+  // (`fallbackHistoryIdentity` keeps `live.BootGeneration`). Passing its token
+  // as the read's evidence of ownership is what keeps that daemon's own next
+  // history update from clearing the live hold its read just supplied. Every
+  // other fallback - `live-read-failed` included - passes nothing and preserves
+  // the recorded owner.
+  const fallbackReadsLive = historyFallback(resp) && historyAnsweredLive(resp);
   const history: HistoryState = {
-    // A saved-index fallback names no source: it keeps held's identity AND
-    // held's recorded owner, and passes no read token, so nothing it carries
-    // can stand in as evidence of a replacement.
-    ...(historyFallback(resp) ? retainedHistoryIdentity(undefined, held, undefined) : readIdentity(resp)),
+    ...(historyFallback(resp)
+      ? retainedHistoryIdentity(undefined, held, fallbackReadsLive ? resp.bootGeneration : undefined)
+      : readIdentity(resp)),
     appliedGeneration: generation,
     issuedGeneration: Math.max(held.issuedGeneration, generation),
     deferredPages: [],

@@ -29,6 +29,27 @@ export function historyFallback(value: object | undefined): boolean {
   return facts?.servedFrom === "saved-index" && facts.fallbackReason !== undefined;
 }
 
+// historyAnsweredLive reports whether a saved-index fallback was ENRICHED by a
+// daemon that answered: the live read succeeded and supplied the transcript
+// identity, and the saved index supplied only the rows the live window could
+// not carry (`live-read-empty`).
+//
+// That distinction is an ownership question, not a serving one. Every fallback
+// suppresses the boot token for HISTORY VALIDITY - the rows came from the
+// saved index, so they cannot stand as evidence about the source. But on an
+// enriched response the token is still the answering daemon's own account of
+// itself (`fallbackHistoryIdentity` keeps `live.BootGeneration`,
+// cmd/evener-hub/app_rpc.go:372-380), so it is the only evidence a client has
+// about who owns the hold. Dropping it there lets that daemon's next history
+// update clear the live hold its own read just supplied.
+//
+// `live-read-failed` does not qualify: the live read that made the fallback
+// necessary failed, so its token is no claim about who is serving the thread.
+export function historyAnsweredLive(value: object | undefined): boolean {
+  const facts = value as HistoryServingFacts | undefined;
+  return facts?.servedFrom === "saved-index" && facts.fallbackReason === "live-read-empty";
+}
+
 // Legacy responses retain their old authoritative semantics. Only the new
 // methods carry a provenance marker that changes replacement behavior.
 export function historyReplacesWindow(value: object): boolean {
