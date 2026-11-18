@@ -189,7 +189,9 @@ The daemon atomically verifies its serving boot, resolves the stable ref, verifi
 
 After shape and authority validation, the session assigns a monotonically increasing `requestSequence` before model admission starts. Assignment is serialized with model-control state. The sequence decides which concurrently validating request may be accepted; it is not a second client merge authority.
 
-A request whose validation finishes after a newer request started is superseded and cannot alter the snapshot. A direct admission failure also cannot alter it. Both outcomes belong only to their originating calls. This preserves an already accepted desired intent when a newer invalid choice is refused.
+Supersession is decided at commit, not at issue. A newer request that has merely been issued does not disqualify an older one: both may still be validating, and either may fail. Only a swap that has actually committed — the newer pick's profile replacing `active` — passes an older pick, which then settles as superseded at its own commit check and cannot alter the snapshot. A direct admission failure also cannot alter it. Both outcomes belong only to their originating calls. This is what preserves an already accepted desired intent when a newer invalid choice is refused: the older pick still lands because nothing newer committed.
+
+Keep the two records distinct when reading this. The **newest desired record** is the latest accepted request and its lifecycle, and a newer acceptance replaces it, so a superseded pick leaves the newer intent intact while the older queue entry is dropped. The **active model** is the profile the session is actually running, and it moves only through the committed transitions below. A pending desired record can therefore name a model the session is not running yet, and a rejected one can name a model it never ran.
 
 Once assigned, admission continues to a per-call terminal result if the transport disconnects. An accepted disposition requires a snapshot transition; shutdown before that transition returns an error or superseded result, never accepted with an unchanged snapshot. If the daemon exits, the new boot's identity discards the unfinished work.
 
@@ -201,7 +203,7 @@ The method is not replay-idempotent: the snapshot retains only the latest desire
 stateDiagram-v2
     [*] --> Validating: bind authority and assign request sequence
     Validating --> Refused: admission fails
-    Validating --> Superseded: newer request started
+    Validating --> Superseded: newer swap committed
     Validating --> Pending: accepted while a call is active
     Validating --> Applied: accepted and committed immediately
     Pending --> Applied: turn boundary or quota retry commits target
@@ -391,7 +393,8 @@ This replacement supersedes PR #6345. Do not merge or close #6345 until this rep
 | Pick 1 accepted pending; pick 2 directly refused | Snapshot remains on pending pick 1; pick 2's caller receives refusal |
 | Pick 1 accepted; pick 2 accepted | One newer snapshot contains pick 2; pick 1 can no longer affect shared state |
 | Accepted pick rejects at boundary or quota retry | New snapshot keeps active metadata and marks that exact desired mutation rejected; display falls back active |
-| Older validation finishes after newer request starts | Older call is superseded and cannot publish a snapshot transition |
+| Older validation finishes after a newer swap commits | Older call is superseded and cannot publish a snapshot transition |
+| Older validation finishes after a newer request is issued but before it commits | Older call still commits if it gets there first; the newer one then finds itself superseded |
 | Older deferred result arrives after newer acceptance | Desired identity no longer matches, so it cannot change the newer snapshot |
 | Same-model pick is accepted | Revision advances and desired becomes applied even without a canonical model-change event |
 | Old active-model event arrives after a newer snapshot | Capable reducer cannot use it to overwrite snapshot-owned metadata |
@@ -432,7 +435,7 @@ Use real `Session` model switching with controlled profile resolution and safe p
 
 - request-sequence assignment after shape and identity validation but before admission;
 - transport cancellation after assignment;
-- slow older validation superseded by a newer request;
+- slow older validation superseded by a newer committed swap, and the same slow validation still committing when the newer request has only been issued;
 - direct refusal preserving the current snapshot;
 - accepted pending, immediate applied, pending-to-applied, and pending-to-rejected transitions;
 - application at quota retry and turn boundary;
