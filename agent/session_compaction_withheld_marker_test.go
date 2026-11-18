@@ -256,7 +256,7 @@ func TestWithheldFoldKeepsTheConversationCovered(t *testing.T) {
 	for range 12 {
 		steps = append(steps, response)
 	}
-	s.client.Register(&fakeAdapter{name: "openai", steps: steps})
+	s.client.Register(newFakeAdapter("openai", steps...))
 	const rounds = 8
 	for i := range rounds {
 		if _, err := s.ProcessInput(context.Background(), fmt.Sprintf("opaque-withhold-coverage-input-%d", i), nil); err != nil {
@@ -344,7 +344,7 @@ func TestWithheldFoldSnapshotKeepsCoverageAfterAnotherFold(t *testing.T) {
 	for i := range steps {
 		steps[i] = response
 	}
-	s.client.Register(&fakeAdapter{name: "openai", steps: steps})
+	s.client.Register(newFakeAdapter("openai", steps...))
 	for i := range steps {
 		if _, err := s.ProcessInput(context.Background(), fmt.Sprintf("snapshot-input-%d", i), nil); err != nil {
 			t.Fatal(err)
@@ -540,7 +540,7 @@ func TestRequestSnapshotDuringFoldCommitKeepsCoverageKnown(t *testing.T) {
 	for range 4 {
 		steps = append(steps, final)
 	}
-	s.client.Register(&fakeAdapter{name: "openai", steps: steps})
+	s.client.Register(newFakeAdapter("openai", steps...))
 	const rounds = 4
 	for i := range rounds {
 		if _, err := s.ProcessInput(context.Background(), fmt.Sprintf("opaque-fold-commit-window-input-%d", i), nil); err != nil {
@@ -666,7 +666,7 @@ func TestLeasedRequestSnapshotDuringFoldCommitKeepsCoverageKnown(t *testing.T) {
 	for range 4 {
 		steps = append(steps, final)
 	}
-	s.client.Register(&fakeAdapter{name: "openai", steps: steps})
+	s.client.Register(newFakeAdapter("openai", steps...))
 	const rounds = 4
 	for i := range rounds {
 		if _, err := s.ProcessInput(context.Background(), fmt.Sprintf("opaque-leased-fold-commit-window-input-%d", i), nil); err != nil {
@@ -953,7 +953,7 @@ func TestConsecutiveWithheldFoldsKeepTheConversationCovered(t *testing.T) {
 	for range 3 {
 		steps = append(steps, final)
 	}
-	s.client.Register(&fakeAdapter{name: "openai", steps: steps})
+	s.client.Register(newFakeAdapter("openai", steps...))
 	if _, err := s.ProcessInput(context.Background(), "opaque-double-withhold-input-1", nil); err != nil {
 		t.Fatal(err)
 	}

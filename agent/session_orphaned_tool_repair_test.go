@@ -22,15 +22,10 @@ func TestSession_ProcessInputRepairsOrphanedAssistantToolCallsBeforeModelRequest
 	dir := t.TempDir()
 
 	var validationErr error
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				validationErr = validateRecoveredToolCallHistory(req.Messages)
-				return agenttest.FinalResponse("recovered")
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		validationErr = validateRecoveredToolCallHistory(req.Messages)
+		return agenttest.FinalResponse("recovered")
+	})
 	c := llm.NewClient()
 	c.Register(f)
 

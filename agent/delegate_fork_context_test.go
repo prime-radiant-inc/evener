@@ -134,14 +134,11 @@ func TestDelegateForkContext_DescendantsStartClean(t *testing.T) {
 	root.cfg.testOnly.childClientFactory = func() *llm.Client {
 		client := llm.NewClient()
 		if constructed.Add(1) == 1 {
-			client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-				func(llm.Request) llm.Response {
-					message := forkContextToolCall("nested-spawn", "delegate")
-					message.Content[0].ToolCall.Arguments = []byte(`{"prompt":"grandchild-unit-sentinel","delegation_allowance":0}`)
-					return llm.Response{Message: message}
-				},
-				func(llm.Request) llm.Response { return agenttest.FinalResponse("child finished") },
-			}})
+			client.Register(newFakeAdapter("openai", func(llm.Request) llm.Response {
+				message := forkContextToolCall("nested-spawn", "delegate")
+				message.Content[0].ToolCall.Arguments = []byte(`{"prompt":"grandchild-unit-sentinel","delegation_allowance":0}`)
+				return llm.Response{Message: message}
+			}, func(llm.Request) llm.Response { return agenttest.FinalResponse("child finished") }))
 		} else {
 			client.Register(grandchild)
 		}
@@ -188,9 +185,7 @@ func TestDelegateForkContext_ColdResumePreservesSnapshot(t *testing.T) {
 	root.appendTurn(schema.TurnUserInput, llm.User("archived-parent-sentinel"))
 	root.appendTurn(schema.TurnCheckpoint, llm.User("parent-summary-sentinel"))
 	root.appendTurn(schema.TurnUserInput, llm.User("recent-parent-sentinel"))
-	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("child-result-sentinel") },
-	}}
+	adapter := newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse("child-result-sentinel") })
 	client.Register(adapter)
 	result := root.createDelegate(context.Background(), delegateArgs{Task: "child-unit-sentinel", ForkContext: true, DelegationAllowance: new(0)})
 	if result.Err != nil {

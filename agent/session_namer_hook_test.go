@@ -15,20 +15,15 @@ import (
 func TestSessionNameFromPrompt_UpdatesMetaAndAdvisoryLog(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				if req.Model != "gpt-5.2" {
-					t.Fatalf("model = %q, want active model", req.Model)
-				}
-				return llm.Response{
-					Message: llm.Assistant(`{"name":"Fix Flaky Test"}`),
-					Usage:   llm.Usage{TotalTokens: 7},
-				}
-			},
-		},
-	}
+	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		if req.Model != "gpt-5.2" {
+			t.Fatalf("model = %q, want active model", req.Model)
+		}
+		return llm.Response{
+			Message: llm.Assistant(`{"name":"Fix Flaky Test"}`),
+			Usage:   llm.Usage{TotalTokens: 7},
+		}
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 	profile := NewOpenAIProfile("gpt-5.2")
@@ -78,9 +73,7 @@ func TestSessionNameFromPrompt_UpdatesMetaAndAdvisoryLog(t *testing.T) {
 func TestSessionNameFromPrompt_LogsAdvisoryFailureWithoutFailingSession(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	adapter := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant(`{"name":"!!!"}`)} },
-	}}
+	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant(`{"name":"!!!"}`)} })
 	client := llm.NewClient()
 	client.Register(adapter)
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-4.1-nano")
@@ -203,11 +196,9 @@ func TestSessionProcessInput_LaunchesInitialPromptNamerWithoutConfiguredCheapMod
 	t.Parallel()
 	dir := t.TempDir()
 	client := llm.NewClient()
-	client.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response {
-			return agenttest.ToolCallResponse(communicateCall("c1", "done"))
-		},
-	}})
+	client.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(communicateCall("c1", "done"))
+	}))
 	profile := NewOpenAIProfile("gpt-5.2")
 	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
@@ -294,18 +285,13 @@ func TestSessionNameFromCompactionTurn_RefreshesPromptName(t *testing.T) {
 func TestSessionNameFromCompactionTurn_SendsCurrentTitleToLLM(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				joined := messagesText(req.Messages)
-				if !strings.Contains(joined, "Current title: Fix Parser Crashes") {
-					t.Errorf("naming request missing current title: %q", joined)
-				}
-				return llm.Response{Message: llm.Assistant(`{"name":"Fix Parser Crashes"}`)}
-			},
-		},
-	}
+	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		joined := messagesText(req.Messages)
+		if !strings.Contains(joined, "Current title: Fix Parser Crashes") {
+			t.Errorf("naming request missing current title: %q", joined)
+		}
+		return llm.Response{Message: llm.Assistant(`{"name":"Fix Parser Crashes"}`)}
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-4.1-nano")

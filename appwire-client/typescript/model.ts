@@ -454,6 +454,18 @@ export interface ThreadModel {
   // the completion of the model's own output item (assistant message,
   // reasoning, tool call) - see reducer.ts's applyNotification.
   modelRetry?: ModelRetryState;
+  // The instant a model call waiting out a provider usage limit resumes by
+  // itself, as an ISO string (wire: EvenerThread.Failure.ResumesAt, an epoch-ms
+  // instant; absent for any failure that is not a wait, for a usage limit with
+  // no known reset, and once the wait ends). A read is its ONLY producer: the
+  // daemon samples its live quota wait into the same failure summary a failed
+  // turn uses (agent/session_state.go's RestingFailure), and the thread read
+  // carries it on a WORKING thread - so a session that reloads can still say
+  // when its call resumes, where the ephemeral modelRetry above cannot.
+  // Snapshot-only, like the evener.* fields below: hydrateThread sets it and
+  // nothing pushes it live; the next read refreshes it (and clears it with an
+  // explicit undefined when that read's failure names no resume time).
+  quotaResumesAt?: string;
   // Wave 5 T1: the following are all sourced from thread.evener
   // (appwire/types_thread.go's EvenerThread) and are SNAPSHOT-ONLY -
   // hydrateThread populates them, and applyNotification updates them ONLY

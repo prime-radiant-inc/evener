@@ -223,9 +223,10 @@ func TestVoicePendingAsk_InternalFoldDuringHumanNote(t *testing.T) {
 	}
 	s := newScriptedSummaryCompactSession(t, "pending-fold-cheap", summarize, withConfig(minimalTestSessionConfig(t)), withStateDir(t.TempDir()))
 	response := func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "output-73") }
-	s.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{response, response, response, response, func(llm.Request) llm.Response {
+	askStep := func(llm.Request) llm.Response {
 		return agenttest.ToolCallResponse(askUserCall("before-fold", askUserArgsValid()))
-	}, response}})
+	}
+	s.client.Register(newFakeAdapter("openai", append(append(agenttest.RepeatSteps(response, 4), askStep), response)...))
 	for range 5 {
 		if _, err := s.ProcessInput(tripwireCtx(t), "input-73", nil); err != nil {
 			t.Fatal(err)
@@ -283,7 +284,7 @@ func TestVoicePendingAsk_InternalFoldDuringHumanNote(t *testing.T) {
 	meta, dir := s.Meta(), s.stateDir
 	s.Close()
 	client := llm.NewClient()
-	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{response}})
+	client.Register(newFakeAdapter("openai", response))
 	client.Register(&agenttest.ScriptedAdapter{Provider: "pending-fold-cheap", Responder: summarize})
 	restored, err := RestoreSessionFromMeta(client, withTestSessionNamer(client, WithCheapModel(NewOpenAIProfile("gpt-5.2"), "pending-fold-cheap/model")), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
 	if err != nil {

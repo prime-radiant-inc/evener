@@ -34,12 +34,7 @@ func TestRestoreSession_SanitizesReasoningEffort(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
 			c := llm.NewClient()
-			f := &fakeAdapter{
-				name: "openai",
-				steps: []func(req llm.Request) llm.Response{
-					func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
-				},
-			}
+			f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") })
 			c.Register(f)
 
 			meta := schema.SessionMeta{

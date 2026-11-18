@@ -116,9 +116,7 @@ func TestFallbackKeepsOpaqueAndWebSearchScopeAcrossProtocols(t *testing.T) {
 			answer.Message.Content = append(answer.Message.Content, llm.ContentPart{Kind: llm.ContentThinking,
 				Thinking: &llm.ThinkingData{Text: "signed-b49", EncryptedContent: `[{"type":"reasoning.text","text":"signed-b49","signature":"sig-b49"}]`},
 			})
-			fallbackAdapter := &fakeAdapter{name: row.Instance, steps: []func(llm.Request) llm.Response{
-				fixedStep(answer), fixedStep(agenttest.FinalResponse("done")),
-			}}
+			fallbackAdapter := newFakeAdapter(row.Instance, fixedStep(answer), fixedStep(agenttest.FinalResponse("done")))
 			profiles := map[string]*provider.Profile{"third/reasoner": third, "fallback/reasoner": fallback}
 			s := newSession(t, withProfile(primary), withAdapter(primaryAdapter), withAdapter(thirdAdapter), withAdapter(fallbackAdapter), withConfig(SessionConfig{
 				ModelFallbacks: []string{"third/reasoner", "fallback/reasoner"},

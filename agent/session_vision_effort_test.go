@@ -30,12 +30,7 @@ const (
 func TestDescribeImage_ClampsEffortToProfileLevels(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant(visionOutputSentinel)} },
-		},
-	}
+	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant(visionOutputSentinel)} })
 	c := llm.NewClient()
 	c.Register(adapter)
 
@@ -68,12 +63,7 @@ func TestDescribeImage_ClampsEffortToProfileLevels(t *testing.T) {
 func TestDescribeImage_UsesLowEffortIndependentOfSession(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant(visionOutputSentinel)} },
-		},
-	}
+	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant(visionOutputSentinel)} })
 	c := llm.NewClient()
 	c.Register(adapter)
 	profile := withEffortLevels(NewOpenAIProfile("m"), llm.ReasoningEffortVocabulary()...)
@@ -116,31 +106,24 @@ func TestPersistToolResults_VisionSteeringIncludesLatencyAndUsage(t *testing.T) 
 	cacheRead := 9
 	cacheWrite := 10
 	cacheWrite1h := 11
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return visionReadFileResponse(filepath.Join(dir, "image.png"))
+	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return visionReadFileResponse(filepath.Join(dir, "image.png"))
+	}, func(req llm.Request) llm.Response {
+		fakeClock.Advance(125 * time.Millisecond)
+		return llm.Response{
+			Message: llm.Assistant(visionOutputSentinel),
+			Usage: llm.Usage{
+				InputTokens:              101,
+				OutputTokens:             13,
+				TotalTokens:              123,
+				ReasoningTokens:          &reasoning,
+				ReasoningTokensEstimated: &reasoningEstimated,
+				CacheReadTokens:          &cacheRead,
+				CacheWriteTokens:         &cacheWrite,
+				CacheWrite1hTokens:       &cacheWrite1h,
 			},
-			func(req llm.Request) llm.Response {
-				fakeClock.Advance(125 * time.Millisecond)
-				return llm.Response{
-					Message: llm.Assistant(visionOutputSentinel),
-					Usage: llm.Usage{
-						InputTokens:              101,
-						OutputTokens:             13,
-						TotalTokens:              123,
-						ReasoningTokens:          &reasoning,
-						ReasoningTokensEstimated: &reasoningEstimated,
-						CacheReadTokens:          &cacheRead,
-						CacheWriteTokens:         &cacheWrite,
-						CacheWrite1hTokens:       &cacheWrite1h,
-					},
-				}
-			},
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
-		},
-	}
+		}
+	}, func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") })
 	c := llm.NewClient()
 	c.Register(adapter)
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("m")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
@@ -196,19 +179,12 @@ func TestPersistToolResults_VisionSteeringOmitsAbsentUsage(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	fakeClock := agenttest.NewFakeClock()
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return visionReadFileResponse(filepath.Join(dir, "image.png"))
-			},
-			func(req llm.Request) llm.Response {
-				fakeClock.Advance(7 * time.Millisecond)
-				return llm.Response{Message: llm.Assistant(visionOutputSentinel), Usage: llm.Usage{}}
-			},
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
-		},
-	}
+	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return visionReadFileResponse(filepath.Join(dir, "image.png"))
+	}, func(req llm.Request) llm.Response {
+		fakeClock.Advance(7 * time.Millisecond)
+		return llm.Response{Message: llm.Assistant(visionOutputSentinel), Usage: llm.Usage{}}
+	}, func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") })
 	c := llm.NewClient()
 	c.Register(adapter)
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("m")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
@@ -711,9 +687,7 @@ func TestDescribeImage_PinnedRouteEffortFollowsTheRegistry(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
-			router := &fakeAdapter{name: "router", steps: []func(req llm.Request) llm.Response{
-				func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant(visionOutputSentinel)} },
-			}}
+			router := newFakeAdapter("router", func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant(visionOutputSentinel)} })
 			rows := map[string]registry.Model{}
 			if tc.row != nil {
 				rows[tc.model] = *tc.row

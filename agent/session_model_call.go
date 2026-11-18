@@ -518,7 +518,7 @@ func (s *Session) foldHistoryBeforeRequest(ctx context.Context, round, sysLen in
 			// this publish and a separate, later baseline write would be
 			// overwritten by round 0's absolute SET or misapplied against
 			// the wrong version.
-			_, ok, refused := s.publishFoldTransaction(preManageLen, snapRevision, snapAppends, historyTurns, commit, func(published []schema.Turn, restoredAt []int) {
+			ok, refused := s.publishFoldTransaction(preManageLen, snapRevision, snapAppends, historyTurns, commit, func(published []schema.Turn, restoredAt []int) {
 				if round == 0 {
 					s.turnHistoryBaseline = len(published)
 				} else {

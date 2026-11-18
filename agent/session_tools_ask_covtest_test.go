@@ -12,23 +12,23 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// TestNormalizeAskArgs_BatchFormPassthrough covers the batch form (Case 1,
-// line 109-110) which is already covered; here for completeness.
-func TestNormalizeAskArgs_BatchFormPassthrough(t *testing.T) {
+// TestNormalizeAskUserArgs_BatchFormPassthrough covers the batch form (Case 1)
+// which is already covered; here for completeness.
+func TestNormalizeAskUserArgs_BatchFormPassthrough(t *testing.T) {
 	t.Parallel()
 	args := askUserArgsValid()
-	out, err := normalizeAskArgs(args)
+	out, err := tool.NormalizeAskUserArgs(args)
 	if err != nil {
-		t.Fatalf("normalizeAskArgs batch form: %v", err)
+		t.Fatalf("NormalizeAskUserArgs batch form: %v", err)
 	}
 	if _, ok := out["questions"]; !ok {
 		t.Fatal("batch form missing questions")
 	}
 }
 
-// TestNormalizeAskArgs_ShorthandWithAllOptional covers the shorthand wrapping
-// path with all optional fields present (lines 116-131).
-func TestNormalizeAskArgs_ShorthandWithAllOptional(t *testing.T) {
+// TestNormalizeAskUserArgs_ShorthandWithAllOptional covers the shorthand
+// wrapping path with all optional fields present.
+func TestNormalizeAskUserArgs_ShorthandWithAllOptional(t *testing.T) {
 	t.Parallel()
 	args := map[string]any{
 		"question":      "Which option?",
@@ -39,9 +39,9 @@ func TestNormalizeAskArgs_ShorthandWithAllOptional(t *testing.T) {
 		"header":        "Choice",
 		"extra_field":   "preserved",
 	}
-	out, err := normalizeAskArgs(args)
+	out, err := tool.NormalizeAskUserArgs(args)
 	if err != nil {
-		t.Fatalf("normalizeAskArgs shorthand: %v", err)
+		t.Fatalf("NormalizeAskUserArgs shorthand: %v", err)
 	}
 	questions, ok := out["questions"].([]any)
 	if !ok || len(questions) != 1 {
@@ -66,10 +66,10 @@ func TestNormalizeAskArgs_ShorthandWithAllOptional(t *testing.T) {
 	}
 }
 
-// TestNormalizeAskArgs_ShorthandEmptyOptional covers the shorthand wrapping
-// path where optional fields are empty/zero and should be skipped (lines
-// 120, 123, 126, 129 — the `!= ""` and `== true` guards).
-func TestNormalizeAskArgs_ShorthandEmptyOptional(t *testing.T) {
+// TestNormalizeAskUserArgs_ShorthandEmptyOptional covers the shorthand
+// wrapping path where optional fields are empty/zero and should be skipped
+// (the `!= ""` and `== true` guards).
+func TestNormalizeAskUserArgs_ShorthandEmptyOptional(t *testing.T) {
 	t.Parallel()
 	args := map[string]any{
 		"question":      "Which option?",
@@ -79,9 +79,9 @@ func TestNormalizeAskArgs_ShorthandEmptyOptional(t *testing.T) {
 		"multi_select":  false, // false, should be skipped
 		"header":        "",    // empty, should be skipped
 	}
-	out, err := normalizeAskArgs(args)
+	out, err := tool.NormalizeAskUserArgs(args)
 	if err != nil {
-		t.Fatalf("normalizeAskArgs: %v", err)
+		t.Fatalf("NormalizeAskUserArgs: %v", err)
 	}
 	questions := out["questions"].([]any)
 	q := questions[0].(map[string]any)
@@ -92,18 +92,17 @@ func TestNormalizeAskArgs_ShorthandEmptyOptional(t *testing.T) {
 	}
 }
 
-// TestNormalizeAskArgs_ShorthandOnlyQuestionAndOptions covers the minimal
-// shorthand form with only question + options, no optional fields (lines
-// 116-119, 134-141).
-func TestNormalizeAskArgs_ShorthandOnlyQuestionAndOptions(t *testing.T) {
+// TestNormalizeAskUserArgs_ShorthandOnlyQuestionAndOptions covers the minimal
+// shorthand form with only question + options, no optional fields.
+func TestNormalizeAskUserArgs_ShorthandOnlyQuestionAndOptions(t *testing.T) {
 	t.Parallel()
 	args := map[string]any{
 		"question": "Which option?",
 		"options":  []any{map[string]any{"label": "A"}},
 	}
-	out, err := normalizeAskArgs(args)
+	out, err := tool.NormalizeAskUserArgs(args)
 	if err != nil {
-		t.Fatalf("normalizeAskArgs: %v", err)
+		t.Fatalf("NormalizeAskUserArgs: %v", err)
 	}
 	questions := out["questions"].([]any)
 	if len(questions) != 1 {
@@ -115,16 +114,16 @@ func TestNormalizeAskArgs_ShorthandOnlyQuestionAndOptions(t *testing.T) {
 	}
 }
 
-// TestNormalizeAskArgs_BothFormsError covers the error when both questions
-// and question are present (line 147-149).
-func TestNormalizeAskArgs_BothFormsError(t *testing.T) {
+// TestNormalizeAskUserArgs_BothFormsError covers the error when both questions
+// and question are present.
+func TestNormalizeAskUserArgs_BothFormsError(t *testing.T) {
 	t.Parallel()
 	args := map[string]any{
 		"questions": []any{map[string]any{}},
 		"question":  "Which?",
 		"options":   []any{map[string]any{}},
 	}
-	_, err := normalizeAskArgs(args)
+	_, err := tool.NormalizeAskUserArgs(args)
 	if err == nil {
 		t.Fatal("expected error for both forms")
 	}
@@ -133,14 +132,14 @@ func TestNormalizeAskArgs_BothFormsError(t *testing.T) {
 	}
 }
 
-// TestNormalizeAskArgs_QuestionWithoutOptionsError covers the error when
-// question is present but options is missing (line 153-155).
-func TestNormalizeAskArgs_QuestionWithoutOptionsError(t *testing.T) {
+// TestNormalizeAskUserArgs_QuestionWithoutOptionsError covers the error when
+// question is present but options is missing.
+func TestNormalizeAskUserArgs_QuestionWithoutOptionsError(t *testing.T) {
 	t.Parallel()
 	args := map[string]any{
 		"question": "Which?",
 	}
-	_, err := normalizeAskArgs(args)
+	_, err := tool.NormalizeAskUserArgs(args)
 	if err == nil {
 		t.Fatal("expected error for question without options")
 	}
@@ -149,12 +148,12 @@ func TestNormalizeAskArgs_QuestionWithoutOptionsError(t *testing.T) {
 	}
 }
 
-// TestNormalizeAskArgs_NeitherFormError covers the error when neither
-// questions nor question+options is present (line 158-160).
-func TestNormalizeAskArgs_NeitherFormError(t *testing.T) {
+// TestNormalizeAskUserArgs_NeitherFormError covers the error when neither
+// questions nor question+options is present.
+func TestNormalizeAskUserArgs_NeitherFormError(t *testing.T) {
 	t.Parallel()
 	args := map[string]any{"unrelated": "field"}
-	_, err := normalizeAskArgs(args)
+	_, err := tool.NormalizeAskUserArgs(args)
 	if err == nil {
 		t.Fatal("expected error for no form")
 	}
@@ -163,24 +162,24 @@ func TestNormalizeAskArgs_NeitherFormError(t *testing.T) {
 	}
 }
 
-// TestNormalizeAskArgs_EmptyArgs covers the empty-args case.
-func TestNormalizeAskArgs_EmptyArgs(t *testing.T) {
+// TestNormalizeAskUserArgs_EmptyArgs covers the empty-args case.
+func TestNormalizeAskUserArgs_EmptyArgs(t *testing.T) {
 	t.Parallel()
-	_, err := normalizeAskArgs(map[string]any{})
+	_, err := tool.NormalizeAskUserArgs(map[string]any{})
 	if err == nil {
 		t.Fatal("expected error for empty args")
 	}
 }
 
-// TestNormalizeAskArgs_QuestionsWithOptionsOnly covers the case where
+// TestNormalizeAskUserArgs_OptionsOnlyWithoutQuestion covers the case where
 // questions is absent, question is absent, but options is present (falls
-// through to the "neither form" error at line 158-160).
-func TestNormalizeAskArgs_OptionsOnlyWithoutQuestion(t *testing.T) {
+// through to the "neither form" error).
+func TestNormalizeAskUserArgs_OptionsOnlyWithoutQuestion(t *testing.T) {
 	t.Parallel()
 	args := map[string]any{
 		"options": []any{map[string]any{"label": "A"}},
 	}
-	_, err := normalizeAskArgs(args)
+	_, err := tool.NormalizeAskUserArgs(args)
 	if err == nil {
 		t.Fatal("expected error for options without question")
 	}
@@ -358,7 +357,7 @@ func TestQuestionsFromAskCalls_NonMatchingName(t *testing.T) {
 }
 
 // TestQuestionsFromAskCalls_NormalizeError covers the case where
-// normalizeAskArgs fails on a call's arguments (line 409-411).
+// tool.NormalizeAskUserArgs fails on a call's arguments.
 func TestQuestionsFromAskCalls_NormalizeError(t *testing.T) {
 	t.Parallel()
 	// Args with an invalid shape (both questions and question present).

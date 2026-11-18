@@ -84,7 +84,7 @@ func TestVoicePresentationRetryRestoreAndAdmission(t *testing.T) {
 	}
 	requests := 0
 	restored.profile = withTestSessionNamer(restored.client, restored.profile)
-	restored.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
+	restored.client.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
 		requests++
 		ids := map[string]bool{}
 		for _, message := range req.Messages {
@@ -111,7 +111,7 @@ func TestVoicePresentationRetryRestoreAndAdmission(t *testing.T) {
 		}
 		call := communicateCall("restart", "opaque-restarted-719")
 		return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}
-	}}})
+	}))
 	if _, err := restored.ProcessInput(withQueuedClientMutation(context.Background(), reclaimed), reclaimed.Text, reclaimed.Images); err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +221,7 @@ func TestVoicePresentationForcedFoldThenRestore(t *testing.T) {
 	defer restored.Close()
 	check(currentHistory(t, restored))
 	requests := 0
-	restored.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
+	restored.client.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
 		requests++
 		found := 0
 		for _, message := range req.Messages {
@@ -252,7 +252,7 @@ func TestVoicePresentationForcedFoldThenRestore(t *testing.T) {
 		}
 		call := communicateCall("restored", "opaque-restored-719")
 		return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}
-	}}})
+	}))
 	if _, err := restored.ProcessInput(context.Background(), "opaque-after-restore-831", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -549,7 +549,7 @@ func checkVoicePresentationRestoredRequest(t *testing.T, s *Session, want *appwi
 	t.Helper()
 	requests := 0
 	s.profile = withTestSessionNamer(s.client, s.profile)
-	s.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
+	s.client.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
 		requests++
 		found, association, correctionAt := 0, -1, -1
 		for i, message := range req.Messages {
@@ -584,7 +584,7 @@ func checkVoicePresentationRestoredRequest(t *testing.T, s *Session, want *appwi
 		}
 		call := communicateCall("restored", "opaque-restored-result-927")
 		return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}
-	}}})
+	}))
 	if _, err := s.ProcessInput(context.Background(), "opaque-after-restore-927", nil); err != nil {
 		t.Fatal(err)
 	}

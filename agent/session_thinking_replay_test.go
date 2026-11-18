@@ -75,9 +75,7 @@ func TestSession_ChatTargetRequestCarriesNoReplayedThinking(t *testing.T) {
 	t.Parallel()
 	row := replayGateway("gw", registry.ProtocolOpenAIChat).Resolved()
 	row.Caps.ReplayReasoningText = new(false)
-	adapter := &fakeAdapter{name: row.Instance, steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(communicateCall("c1", "ok")) },
-	}}
+	adapter := newFakeAdapter(row.Instance, fixedStep(agenttest.ToolCallResponse(communicateCall("c1", "ok"))))
 	sess := newSession(t, withProfile(provider.FromResolved(row, nil)), withAdapter(adapter))
 	prior := llm.Response{Provider: row.Instance, Model: row.WireID, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
 		{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "old chain of thought"}},
@@ -149,14 +147,14 @@ func TestSessionReplaysReasoningAcrossToolRoundsAndTurns(t *testing.T) {
 	} {
 		t.Run(profile.Protocol(), func(t *testing.T) {
 			t.Parallel()
-			adapter := &fakeAdapter{name: profile.ID(), steps: []func(llm.Request) llm.Response{
+			adapter := newFakeAdapter(profile.ID(),
 				fixedStep(withReasoningMarker(agenttest.ToolCallResponse(
 					llm.ToolCallData{ID: "tool-a", Name: "missing_a", Arguments: []byte(`{}`)}), profile.Protocol(), "r17a")),
 				fixedStep(withReasoningMarker(agenttest.ToolCallResponse(
 					llm.ToolCallData{ID: "tool-b", Name: "missing_b", Arguments: []byte(`{}`)}), profile.Protocol(), "r28b")),
 				fixedStep(withReasoningMarker(agenttest.FinalResponse("done"), profile.Protocol(), "r39c")),
 				fixedStep(agenttest.FinalResponse("done")),
-			}}
+			)
 			s := newSession(t, withProfile(profile), withAdapter(adapter))
 			ctx := tripwireCtx(t)
 			for _, input := range []string{"first", "follow-up"} {
@@ -194,14 +192,14 @@ func TestFallbackReplaysOnlyItsIssuersReasoning(t *testing.T) {
 				llm.ToolCallData{ID: "tool-a", Name: "missing_a", Arguments: []byte(`{}`)}), primary.Protocol(), "primary-42")
 		},
 	}
-	fallbackAdapter := &fakeAdapter{name: fallback.ID(), steps: []func(llm.Request) llm.Response{
+	fallbackAdapter := newFakeAdapter(fallback.ID(),
 		fixedStep(withReasoningMarker(agenttest.ToolCallResponse(
 			llm.ToolCallData{ID: "tool-b", Name: "missing_b", Arguments: []byte(`{}`)}), fallback.Protocol(), "fallback-73")),
 		fixedStep(withReasoningMarker(agenttest.FinalResponse("done"), fallback.Protocol(), "fallback-81")),
 		fixedStep(agenttest.FinalResponse("done")),
 		fixedStep(agenttest.FinalResponse("done")),
 		fixedStep(agenttest.FinalResponse("done")),
-	}}
+	)
 	// The profile used to assemble each request resolves on the same registry
 	// as the client dispatching it. A restart can load different wire IDs.
 	clientFor := func(wireSuffix, deployment string) *llm.Client {
@@ -346,7 +344,7 @@ func TestChatThinkingAsTextAcrossModels(t *testing.T) {
 	row := replayGateway("gw", registry.ProtocolOpenAIChat).Resolved()
 	row.Caps.ThinkingAsText = new(true)
 	profile := provider.FromResolved(row, nil)
-	adapter := &fakeAdapter{name: profile.ID(), steps: []func(llm.Request) llm.Response{fixedStep(agenttest.FinalResponse("done"))}}
+	adapter := newFakeAdapter(profile.ID(), fixedStep(agenttest.FinalResponse("done")))
 	s := newSession(t, withProfile(profile), withAdapter(adapter))
 	prior := withReasoningMarker(llm.Response{Provider: row.Instance, Model: "other", Message: llm.Assistant("answer-4e")}, row.Protocol, "trace-7b")
 	if err := s.appendAssistantTurn(prior, ModelAttemptMetadata{Protocol: row.Protocol, RequestModel: "other"}); err != nil {

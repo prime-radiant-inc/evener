@@ -22,7 +22,7 @@ import (
 func newTestSessionForState(t *testing.T) *Session {
 	t.Helper()
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{}})
+	c.Register(newFakeAdapter("openai"))
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{testOnly: sharingHostProbe(testConfig{})})
 	if err != nil {
 		t.Fatal(err)
@@ -109,9 +109,7 @@ func TestProcessInput_CleanCompletionRestsByEndReason(t *testing.T) {
 		t.Run("reason="+tc.reason, func(t *testing.T) {
 			t.Parallel()
 			c := llm.NewClient()
-			c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-				func(req llm.Request) llm.Response { return endReasonResponse("done", tc.reason) },
-			}})
+			c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return endReasonResponse("done", tc.reason) }))
 			sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{testOnly: immediateRestConfig()})
 			if err != nil {
 				t.Fatal(err)
@@ -155,9 +153,7 @@ func TestProcessInput_InterruptStaysIdle(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
 	blocker := make(chan struct{})
-	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { <-blocker; return agenttest.FinalResponse("late") },
-	}})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { <-blocker; return agenttest.FinalResponse("late") }))
 	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test-model")), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -174,10 +170,7 @@ func TestProcessInput_InterruptStaysIdle(t *testing.T) {
 func TestProcessInput_NextInputClearsAwaiting(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return endReasonResponse("one", "needs_response") },
-		func(req llm.Request) llm.Response { return endReasonResponse("two", "needs_response") },
-	}})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return endReasonResponse("one", "needs_response") }, func(req llm.Request) llm.Response { return endReasonResponse("two", "needs_response") }))
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{testOnly: immediateRestConfig()})
 	if err != nil {
 		t.Fatal(err)
@@ -311,9 +304,7 @@ func TestWireState_PendingParentWorkMakesIdleParentActive(t *testing.T) {
 func TestWireState_AwaitingOutranksAutonomy(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return endReasonResponse("done", "needs_response") },
-	}})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return endReasonResponse("done", "needs_response") }))
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{testOnly: immediateRestConfig()})
 	if err != nil {
 		t.Fatal(err)
@@ -378,10 +369,7 @@ func TestRestore_UserLastTurnStaysIdle(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
 	blocker := make(chan struct{})
-	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return endReasonResponse("Merge it?", "needs_response") },
-		func(req llm.Request) llm.Response { <-blocker; return agenttest.FinalResponse("late") },
-	}})
+	c.Register(newFakeAdapter("openai", func(llm.Request) llm.Response { return endReasonResponse("Merge it?", "needs_response") }, func(req llm.Request) llm.Response { <-blocker; return agenttest.FinalResponse("late") }))
 	dir := t.TempDir()
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: sharingHostProbe(immediateRestConfig())})
 	if err != nil {
@@ -460,9 +448,7 @@ func TestSettleAndRestoreReadTheAcceptedCommunicate(t *testing.T) {
 func TestProcessInput_NeedsResponseWithLiveChildRestsIdle(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") },
-	}})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") }))
 	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test-model")), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	defer sess.Close()
 	child := newTestSessionForState(t)
@@ -493,7 +479,7 @@ func restoreAfter(t *testing.T, steps []func(llm.Request) llm.Response, run func
 func saveAfter(t *testing.T, steps []func(llm.Request) llm.Response, run func(context.Context, *Session)) (string, schema.SessionMeta, SessionState) {
 	t.Helper()
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai", steps: steps})
+	c.Register(newFakeAdapter("openai", steps...))
 	dir := t.TempDir()
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: sharingHostProbe(immediateRestConfig())})
 	if err != nil {
@@ -615,9 +601,7 @@ func TestExecTool_HookContextFailureKeepsToolState(t *testing.T) {
 func TestArmAwaitingAtSettle_PendingDelegateReportRestsIdle(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	f := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") },
-	}}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") })
 	sess := newSession(t, withDir(stateDir), withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}), withAdapter(f))
 	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
