@@ -135,7 +135,7 @@ func TestRecordsFinalWireModel(t *testing.T) {
 					}
 					got = body.Model
 				}
-				return &http.Response{Request: r, StatusCode: 200, Body: io.NopCloser(strings.NewReader(response))}, nil
+				return &http.Response{Request: r, StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(response))}, nil
 			})}
 			if tc.rewrite != "" {
 				client.CheckRedirect = func(r *http.Request, _ []*http.Request) error {

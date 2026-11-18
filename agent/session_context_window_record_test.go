@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 
@@ -239,8 +240,7 @@ func TestContextStatus_DescribesTheFallbackThatServedTheRound(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer restored.Close()
-	for i := len(restored.history) - 1; i >= 0; i-- {
-		turn := restored.history[i]
+	for _, turn := range slices.Backward(restored.history) {
 		if turn.Kind == schema.TurnAssistant {
 			if turn.ResponseWireModel != "fallback-wire" || turn.ResponseRequestModel != "claude-opus-4-5" {
 				t.Fatalf("fallback wire/request model = %q/%q", turn.ResponseWireModel, turn.ResponseRequestModel)
