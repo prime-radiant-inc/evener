@@ -161,13 +161,33 @@ func responseContentFromOutputItems(out []any, body []byte, rawItems []json.RawM
 }
 
 func (item *responsesOutputItem) discardDisplayMirror(thinking *llm.ThinkingData) {
-	if len(item.display) != 0 && thinking != nil && slices.ContainsFunc(thinking.ResponsesTextParts, func(p llm.ResponsesTextPart) bool { return p.End > p.Start }) {
-		item.display = nil
+	if thinking == nil || len(item.display) == 0 && len(item.summaries) == 0 {
+		return
 	}
+	if !slices.ContainsFunc(thinking.ResponsesTextParts, func(p llm.ResponsesTextPart) bool { return p.End > p.Start }) {
+		return
+	}
+	// Native content settles its provisional raw deltas. A summary is a
+	// separate display source unless the same bytes already appear in the item.
+	item.display = nil
+	maps.DeleteFunc(item.summaries, func(_ int64, fragments responsesFragments) bool {
+		text := fragments.value()
+		return text == thinking.Text || slices.ContainsFunc(thinking.ResponsesTextParts, func(p llm.ResponsesTextPart) bool {
+			return thinking.Text[p.Start:p.End] == text
+		})
+	})
 }
 
 func (item *responsesOutputItem) appendDisplay(content []llm.ContentPart) []llm.ContentPart {
-	if text := item.display.value(); text != "" {
+	display := item.display
+	if len(item.summaries) > 0 {
+		display = slices.Clone(display)
+		for _, fragments := range item.summaries {
+			display = append(display, fragments...)
+		}
+		slices.SortFunc(display, func(a, b responsesFragment) int { return cmp.Compare(a.order, b.order) })
+	}
+	if text := display.value(); text != "" {
 		return append(content, llm.ContentPart{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: text}})
 	}
 	return content
@@ -320,6 +340,19 @@ func (item *responsesOutputItem) messageWithCompletedRefusal(message map[string]
 	return message
 }
 
+func responsesMessagePartText(kind string, part map[string]any) (string, bool) {
+	switch kind {
+	case "output_text":
+		text, ok := part["text"].(string)
+		return text, ok
+	case "refusal":
+		text, ok := part["refusal"].(string)
+		return text, ok
+	default:
+		return "", false
+	}
+}
+
 // Nonempty terminal text owns its index. An empty slot can be filled from
 // the same observed part; unindexed text can fill only a single-part message.
 func (item *responsesOutputItem) appendMessage(content []llm.ContentPart, message map[string]any, streamOnly bool) ([]llm.ContentPart, bool) {
@@ -336,18 +369,21 @@ func (item *responsesOutputItem) appendMessage(content []llm.ContentPart, messag
 	var substantive, recovered bool
 	for index, entry := range parts {
 		p, _ := entry.(map[string]any)
-		if p["type"] == "refusal" {
+		kind, _ := p["type"].(string)
+		text, ok := responsesMessagePartText(kind, p)
+		if kind == "refusal" {
 			// The refusal selects this message even if its text is empty. An
 			// earlier output_text or tool call cannot fill that selection.
-			text, _ := p["refusal"].(string)
+			if part := observed[int64(index)]; !ok && part != nil && part.finalType == "refusal" {
+				text = part.final
+			}
 			appendText(text, true)
 			substantive = true
 			continue
 		}
-		if p["type"] != "output_text" {
+		if kind != "output_text" {
 			continue
 		}
-		text, ok := p["text"].(string)
 		if text != "" {
 			substantive = true
 		} else {
@@ -355,7 +391,7 @@ func (item *responsesOutputItem) appendMessage(content []llm.ContentPart, messag
 			if len(parts) == 1 && (source == nil || source.value() == "") {
 				source = observed[-1]
 			}
-			if source != nil {
+			if source != nil && source.finalType != "refusal" {
 				text, ok = source.value(), true
 				recovered = recovered || text != ""
 			}
@@ -365,13 +401,28 @@ func (item *responsesOutputItem) appendMessage(content []llm.ContentPart, messag
 		}
 	}
 	if !substantive && len(parts) <= 1 {
+		// A completed refusal can select a message whose parts were omitted.
+		// An explicit part list owns the membership of that message.
+		_, explicitParts := message["content"]
+		if !explicitParts && item != nil {
+			_, explicitParts = item.done["content"]
+		}
 		for _, index := range slices.Sorted(maps.Keys(observed)) {
 			onlyUnindexed := index == -1 && len(parts) == 0 && len(observed) == 1
-			if index >= int64(len(parts)) || onlyUnindexed {
-				text := observed[index].value()
-				recovered = recovered || text != ""
-				appendText(text, false)
+			if index < int64(len(parts)) && !onlyUnindexed {
+				continue
 			}
+			part := observed[index]
+			if part.finalType == "refusal" {
+				if !explicitParts {
+					appendText(part.final, true)
+					substantive = true
+				}
+				continue
+			}
+			text := part.value()
+			recovered = recovered || text != ""
+			appendText(text, false)
 		}
 	}
 	// Explicit terminal and completed phases can clear an announcement. Only

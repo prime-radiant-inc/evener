@@ -106,7 +106,7 @@ func extractResponsesFromSSE(body []byte, requestedModel string) (llm.Response, 
 			}
 		case "response.output_text.delta":
 			acc.handleOutputTextDelta(payload)
-		case "response.output_text.done", "response.content_part.done":
+		case "response.output_text.done", "response.content_part.done", "response.refusal.done":
 			acc.handleTextPartDone(payload, typ)
 		case "response.reasoning_text.done":
 			acc.handleReasoningTextDone(payload)

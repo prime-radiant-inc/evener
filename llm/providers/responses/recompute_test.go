@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -81,21 +82,37 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 		type part = map[string]string
 		refused := part{"type": "refusal", "refusal": refusal}
 		const reference = `{"type":"message","id":"msg1","role":"assistant"}`
+		const selected = `{"output":[` + reference + `]}`
+		refusalDone := func(index int, value string) string {
+			return fmt.Sprintf(`{"type":"response.refusal.done","item_id":"msg1","output_index":1,"content_index":%d,"refusal":%s}`, index, jsonOf(t, value))
+		}
+		const secondText = `{"type":"response.output_text.done","item_id":"msg1","output_index":1,"content_index":1,"text":"second"}`
+		refusalPartDone := `{"type":"response.content_part.done","item_id":"msg1","output_index":1,"content_index":0,"part":` + jsonOf(t, refused) + `}`
 		completedRefusal := jsonOf(t, map[string]any{"type": "message", "id": "msg1", "role": "assistant", "content": []part{refused}})
 		for _, tc := range []struct {
 			name, text, terminal string
 			wantCalls            int
 			parts                []part
 			completed            []string
+			frames               []string
 		}{
 			{name: "refusal", text: refusal, parts: []part{refused}},
 			{name: "empty selected refusal", parts: []part{{"type": "refusal", "refusal": ""}}},
 			{name: "text and refusal", text: "selected" + refusal, parts: []part{{"type": "output_text", "text": "selected"}, refused}},
 			{name: "selected completed refusal", text: refusal, terminal: `{"output":[` + reference + `]}`, parts: []part{refused}, completed: []string{completedRefusal}},
 			{name: "metadata-only completion retains selected refusal", text: refusal, terminal: `{"output":[` + reference + `]}`, parts: []part{refused}, completed: []string{completedRefusal, reference}},
+			{name: "selected refusal final without an item completion", text: refusal, terminal: selected, parts: []part{refused}, frames: []string{refusalDone(0, refusal)}},
+			{name: "first refusal and later text settle in content order", text: refusal + "second", terminal: selected, parts: []part{refused, {"type": "output_text", "text": "second"}}, frames: []string{secondText, refusalDone(0, "earlier"), refusalDone(0, refusal), refusalPartDone}},
+			{name: "last refusal follows a streamed text part", text: "draft" + refusal, terminal: selected, parts: []part{{"type": "output_text", "text": "draft"}, refused}, frames: []string{refusalDone(1, refusal)}},
+			{name: "empty finalized refusal selects its message", terminal: selected, parts: []part{{"type": "refusal", "refusal": ""}}, frames: []string{refusalDone(0, "")}},
+			{name: "completed refusal part selects its message", text: refusal, terminal: selected, parts: []part{refused}, frames: []string{refusalPartDone}},
+			{name: "declared refusal inherits the completed message part", text: refusal, terminal: `{"output":[{"type":"message","id":"msg1","content":[{"type":"refusal"}]}]}`, parts: []part{refused}, completed: []string{completedRefusal}},
+			{name: "terminal refusal text owns its slot", text: "terminal", parts: []part{{"type": "refusal", "refusal": "terminal"}}, frames: []string{refusalDone(0, refusal)}},
+			{name: "explicit final answer withdraws other refusal and call", text: "final", parts: []part{{"type": "output_text", "text": "final"}}, frames: []string{`{"type":"response.refusal.done","item_id":"other","output_index":2,"content_index":0,"refusal":"other"}`}},
 			{name: "terminal answer replaces completed refusal", text: "final", parts: []part{{"type": "output_text", "text": "final"}}, completed: []string{completedRefusal}},
 			{name: "only a provider file search", terminal: `{"output":[{"type":"file_search_call","id":"fs1","status":"completed","queries":["fixture"]}]}`},
 			{name: "empty output recovers the stream", text: "draft", terminal: `{"output":[]}`, wantCalls: 1},
+			{name: "empty output recovers finalized message and issued call", text: refusal, terminal: `{"output":[]}`, frames: []string{refusalDone(0, refusal)}, wantCalls: 1},
 			{name: "metadata-only terminal recovers the stream", text: "draft", terminal: `{"status":"completed"}`, wantCalls: 1},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
@@ -108,6 +125,7 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 					`{"type":"response.function_call_arguments.delta","item_id":"fc1","delta":"{}"}`,
 					draft,
 				}
+				events = append(events, tc.frames...)
 				for _, item := range tc.completed {
 					events = append(events, `{"type":"response.output_item.done","output_index":1,"item":`+item+`}`)
 				}
@@ -117,7 +135,10 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 					t.Fatal("live accumulator never received the tentative tool call")
 				}
 				results := []llm.Response{*live, recorded(t, "data: "+strings.Join(events, "\n\ndata: ")+"\n\n")}
-				if tc.wantCalls == 0 && len(tc.completed) == 0 {
+				if tc.parts != nil {
+					full := jsonOf(t, map[string]any{"output": []any{map[string]any{"type": "message", "id": "msg1", "role": "assistant", "content": tc.parts}}})
+					results = append(results, recorded(t, full))
+				} else if tc.wantCalls == 0 {
 					results = append(results, recorded(t, terminal))
 				}
 				for _, response := range results {
@@ -147,6 +168,78 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 					ordinary.Caps.ReplayReasoningText = new(false)
 					if got := jsonOf(t, build(t, llm.Request{Model: res.ModelID, Messages: []llm.Message{restored}}, ordinary)["input"]); got != want {
 						t.Errorf("ordinary Responses input = %s, want %s", got, want)
+					}
+				}
+			})
+		}
+	})
+	t.Run("settled reasoning retains distinct streamed summaries", func(t *testing.T) {
+		const raw = " λ\t"
+		const distinct = " λ\t "
+		for _, tc := range []struct {
+			name, display, secondSummary, wantDisplay string
+			sparse, encrypted                         bool
+		}{
+			{name: "distinct summary", display: distinct, wantDisplay: distinct},
+			{name: "same bytes as one typed content part", display: raw},
+			{name: "distinct summary with ciphertext", display: distinct, wantDisplay: distinct, encrypted: true},
+			{name: "distinct summary and sparse terminal", display: distinct, wantDisplay: distinct, sparse: true},
+			{name: "only a matching summary part is suppressed", display: distinct, secondSummary: "other", wantDisplay: distinct},
+			{name: "distinct summary parts keep stream order", display: distinct, secondSummary: "second", wantDisplay: distinct + "\n\nsecond"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				item := map[string]any{"type": "reasoning", "id": "rs", "content": []map[string]string{{"type": "reasoning_text", "text": "other"}, {"type": "reasoning_text", "text": raw}}}
+				if tc.encrypted {
+					item["encrypted_content"] = "cipher"
+				}
+				complete := jsonOf(t, map[string]any{"output": []any{item}})
+				native := recorded(t, complete)
+				wantInput := nextInput(t, native)
+				events := []string{
+					`{"type":"response.reasoning_summary_part.added","item_id":"rs","output_index":0,"summary_index":0,"part":{"type":"summary_text","text":""}}`,
+					`{"type":"response.reasoning_summary_text.delta","item_id":"rs","output_index":0,"summary_index":0,"delta":` + jsonOf(t, tc.display) + `}`,
+					`{"type":"response.reasoning_part.added","item_id":"rs","output_index":0,"content_index":1,"part":{"type":"reasoning_text","text":""}}`,
+					`{"type":"response.reasoning_text.delta","item_id":"rs","output_index":0,"content_index":1,"delta":` + jsonOf(t, raw) + `}`,
+				}
+				if tc.secondSummary != "" {
+					events = append(events,
+						`{"type":"response.reasoning_summary_part.added","item_id":"rs","output_index":0,"summary_index":1,"part":{"type":"summary_text","text":""}}`,
+						`{"type":"response.reasoning_summary_text.delta","item_id":"rs","output_index":0,"summary_index":1,"delta":`+jsonOf(t, tc.secondSummary)+`}`)
+				}
+				terminal := complete
+				if tc.sparse {
+					events = append(events, `{"type":"response.output_item.done","output_index":0,"item":`+jsonOf(t, item)+`}`)
+					terminal = `{"output":[]}`
+				}
+				events = append(events, `{"type":"response.completed","response":`+terminal+`}`)
+				seen, live := responsesEvents(t, events...)
+				if !slices.ContainsFunc(seen, func(e llm.StreamEvent) bool { return e.ReasoningDelta == tc.display }) {
+					t.Fatal("stream omitted the summary delta")
+				}
+				saved := recorded(t, "data: "+strings.Join(events, "\n\ndata: ")+"\n\n")
+				for _, response := range []llm.Response{*live, saved} {
+					var stored llm.Message
+					if err := json.Unmarshal([]byte(jsonOf(t, response.Message)), &stored); err != nil {
+						t.Fatal(err)
+					}
+					if !slices.ContainsFunc(stored.Content, func(p llm.ContentPart) bool { return reflect.DeepEqual(p.Thinking, native.Message.Content[0].Thinking) }) {
+						t.Error("saved native reasoning differs from the complete response")
+					}
+					var displays []string
+					for _, part := range stored.Content {
+						if th := part.Thinking; th != nil && th.ID == "" && th.EncryptedContent == "" && len(th.ResponsesTextParts) == 0 {
+							displays = append(displays, th.Text)
+						}
+					}
+					var want []string
+					if tc.wantDisplay != "" {
+						want = append(want, tc.wantDisplay)
+					}
+					if !slices.Equal(displays, want) {
+						t.Errorf("saved display = %q, want %q", displays, want)
+					}
+					if nextInput(t, response) != wantInput || nextInput(t, llm.Response{Message: stored}) != wantInput {
+						t.Error("streamed summary changed the native reasoning replay")
 					}
 				}
 			})

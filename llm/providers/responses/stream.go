@@ -52,6 +52,7 @@ type responsesOutputItem struct {
 	text        map[int64]*responsesOutputText
 	tool        *responsesToolState
 	display     responsesFragments
+	summaries   map[int64]responsesFragments
 	displayOnly bool
 	hasNativeID bool // A native item or typed reasoning event supplied this ID.
 }
@@ -106,6 +107,7 @@ func (f *responsesFragments) merge(other responsesFragments) {
 type responsesOutputText struct {
 	deltas         responsesFragments
 	final          string
+	finalType      string // An explicit empty refusal owns its message slot.
 	finalOrder     int
 	itemFinal      bool
 	reasoningType  string // Supplied by reasoning_part.added at this content index.
@@ -113,7 +115,7 @@ type responsesOutputText struct {
 }
 
 func (p *responsesOutputText) value() string {
-	if p.final != "" {
+	if p.finalType != "" {
 		return p.final
 	}
 	return p.deltas.value()
@@ -143,9 +145,9 @@ func (item *responsesOutputItem) textPart(index int64, single bool) *responsesOu
 	return item.text[index]
 }
 
-func (p *responsesOutputText) settle(value string, itemFinal bool, order int) {
-	if value != "" && (itemFinal || !p.itemFinal) && (itemFinal != p.itemFinal || order >= p.finalOrder) {
-		p.final, p.itemFinal, p.finalOrder = value, itemFinal, order
+func (p *responsesOutputText) settle(kind, value string, itemFinal bool, order int) {
+	if (value != "" || kind == "refusal") && (itemFinal || !p.itemFinal) && (itemFinal != p.itemFinal || order >= p.finalOrder) {
+		p.final, p.finalType, p.itemFinal, p.finalOrder = value, kind, itemFinal, order
 		p.deltas = nil
 	}
 }
@@ -153,9 +155,9 @@ func (p *responsesOutputText) settle(value string, itemFinal bool, order int) {
 func (p *responsesOutputText) merge(other *responsesOutputText) {
 	p.reasoningType = cmp.Or(p.reasoningType, other.reasoningType)
 	p.reasoningFinal = p.reasoningFinal || other.reasoningFinal
-	if other.final != "" {
-		p.settle(other.final, other.itemFinal, other.finalOrder)
-	} else if p.final == "" {
+	if other.finalType != "" {
+		p.settle(other.finalType, other.final, other.itemFinal, other.finalOrder)
+	} else if p.finalType == "" {
 		p.deltas.merge(other.deltas)
 	}
 }
@@ -192,7 +194,17 @@ func (acc *responsesOutputAccumulator) reasoningDisplay(typ string, payload map[
 			}
 		}
 	}
-	acc.write(&source.display, delta)
+	if typ == "response.reasoning_summary_part.added" || typ == "response.reasoning_summary_text.delta" {
+		if source.summaries == nil {
+			source.summaries = make(map[int64]responsesFragments)
+		}
+		index := responsesEventIndex(payload, "summary_index")
+		fragments := source.summaries[index]
+		acc.write(&fragments, delta)
+		source.summaries[index] = fragments
+	} else {
+		acc.write(&source.display, delta)
+	}
 	if added {
 		if acc.reasoningStarted {
 			return reasoningPartSeparator
@@ -219,7 +231,7 @@ func (acc *responsesOutputAccumulator) handleReasoningTextDone(payload map[strin
 	acc.order++
 	part := item.textPart(index, false)
 	part.reasoningFinal = true
-	part.settle(text, false, acc.order)
+	part.settle("reasoning_text", text, false, acc.order)
 }
 
 func newResponsesOutputAccumulator() *responsesOutputAccumulator {
@@ -284,6 +296,15 @@ func (acc *responsesOutputAccumulator) join(item, other *responsesOutputItem) *r
 	item.index = max(item.index, other.index)
 	item.displayOnly = item.displayOnly && other.displayOnly
 	item.display.merge(other.display)
+	if item.summaries == nil {
+		item.summaries = other.summaries
+	} else {
+		for index, fragments := range other.summaries {
+			joined := item.summaries[index]
+			joined.merge(fragments)
+			item.summaries[index] = joined
+		}
+	}
 	if other.doneOrder > item.doneOrder {
 		item.done, item.raw, item.doneOrder = other.done, other.raw, other.doneOrder
 	}
@@ -404,7 +425,7 @@ func (acc *responsesOutputAccumulator) handleOutputTextDelta(payload map[string]
 	if delta != "" {
 		if item := acc.textOutput(payload); item != nil {
 			p := item.textPart(responsesEventIndex(payload, "content_index"), true)
-			if p != nil && p.final == "" {
+			if p != nil && p.finalType == "" {
 				acc.write(&p.deltas, delta)
 			}
 		}
@@ -414,22 +435,28 @@ func (acc *responsesOutputAccumulator) handleOutputTextDelta(payload map[string]
 
 func (acc *responsesOutputAccumulator) handleTextPartDone(payload map[string]any, typ string) bool {
 	part := payload
+	kind := "output_text"
 	if typ == "response.content_part.done" {
 		part, _ = payload["part"].(map[string]any)
-		if part["type"] != "output_text" {
-			return false
-		}
+		kind, _ = part["type"].(string)
+	} else if typ == "response.refusal.done" {
+		kind = "refusal"
 	}
-	text, ok := part["text"].(string)
+	text, ok := responsesMessagePartText(kind, part)
+	index := responsesEventIndex(payload, "content_index")
+	if kind == "refusal" {
+		id, _ := payload["item_id"].(string)
+		ok = ok && index >= 0 && (id != "" || responsesEventIndex(payload, "output_index") >= 0)
+	}
 	if ok {
 		if item := acc.textOutput(payload); item != nil {
 			acc.order++
-			if p := item.textPart(responsesEventIndex(payload, "content_index"), true); p != nil {
-				p.settle(text, false, acc.order)
+			if p := item.textPart(index, true); p != nil {
+				p.settle(kind, text, false, acc.order)
 			}
 		}
 	}
-	return typ == "response.output_text.done" || text != ""
+	return typ != "response.content_part.done" || text != ""
 }
 
 // Completion can supply a different subset of parts from the deltas.
@@ -438,8 +465,9 @@ func (item *responsesOutputItem) settleMessage(message map[string]any, order int
 	parts, _ := message["content"].([]any)
 	for index, entry := range parts {
 		part, _ := entry.(map[string]any)
-		if text, ok := part["text"].(string); ok && part["type"] == "output_text" {
-			item.textPart(int64(index), len(parts) == 1).settle(text, true, order)
+		kind, _ := part["type"].(string)
+		if text, ok := responsesMessagePartText(kind, part); ok {
+			item.textPart(int64(index), len(parts) == 1).settle(kind, text, true, order)
 		}
 	}
 }
@@ -574,7 +602,7 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDone(payload m
 			}
 		}
 		acc.order++
-		st.args.settle(argsStr, false, acc.order)
+		st.args.settle("arguments", argsStr, false, acc.order)
 	}
 	return st, st.callID != "" || st.itemID != ""
 }
@@ -632,7 +660,7 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 	}
 	st := output.tool
 	st.hasOutput = true
-	st.args.settle(argsStr, true, acc.order)
+	st.args.settle("arguments", argsStr, true, acc.order)
 	argsStr = st.args.value()
 	acc.completed++
 	return item, st, argsStr, st.callID != ""
@@ -846,7 +874,7 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 					s.Send(llm.StreamEvent{Type: llm.StreamEventTextStart, TextID: textID})
 				}
 				s.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, TextID: textID, Delta: delta})
-			case "response.output_text.done", "response.content_part.done":
+			case "response.output_text.done", "response.content_part.done", "response.refusal.done":
 				bearing := acc.handleTextPartDone(payload, typ)
 				s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload, ContentBearing: bearing})
 			case "response.reasoning_summary_text.delta", "response.reasoning_text.delta",
