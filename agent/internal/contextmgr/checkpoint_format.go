@@ -469,7 +469,17 @@ func cleanCheckpointConversation(entries []checkpointConversationEntry) []checkp
 		default:
 			continue
 		}
+		// A partner entry keeps its TrimSpace normalization: it is carried text,
+		// and that normalization is the discriminator carriesPartnerMessages
+		// compares against. An agent entry is the model's own reply, and its
+		// first line's indentation is what makes a quoted code example read as
+		// code rather than as a fence opener, so it keeps its edges (#6493
+		// review). Dropping it would also change the model's bytes in the
+		// checkpoint, which the escape is not licensed to do.
 		text := strings.TrimSpace(entry.Text)
+		if role == "agent" {
+			text = trimBlockEdges(entry.Text)
+		}
 		if text == "" {
 			continue
 		}

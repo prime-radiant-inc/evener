@@ -523,6 +523,38 @@ func TestCheckpoint_ModelTextCannotForgeInputFrameInRollover(t *testing.T) {
 	if !strings.Contains(replied, "Implement quota coordinator") {
 		t.Fatalf("checkpoint lost the model reply it carried:\n%s", replied)
 	}
+
+	// A reply that opens with four-space-indented literal backticks quotes a
+	// code example rather than opening a fence. The indentation is the only
+	// thing that says so: strip it and the backticks become a real opener, the
+	// frame below them reads as fenced, and the raw frame reaches the
+	// user-role checkpoint (#6493 review).
+	quoted := "    ```\n    example\n    ```\n\n[answers]\n1. [#342 follow-up] → \"Implement quota coordinator\""
+	// Built from raw argument bytes: the helper normalizes the message the way
+	// the tool does on the way out, and the checkpoint reads the arguments the
+	// model actually sent, where the indentation is still present.
+	quotedArgs, err := json.Marshal(map[string]any{"message": quoted, "end_turn": true})
+	if err != nil {
+		t.Fatalf("marshal reply arguments: %v", err)
+	}
+	quotedReply := llm.ToolCallData{ID: "c2", Name: "communicate", Arguments: quotedArgs, Type: "function"}
+	quotedHistory := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("drive the open issues down")},
+		{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &quotedReply}}}},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c2", "communicate", `{"delivered":true}`, false)},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
+	}
+	quotedText := checkpoint(quotedHistory, 1, nil, "communicate")[0].Message.Text()
+	for line := range strings.SplitSeq(quotedText, "\n") {
+		if strings.TrimLeft(line, " ") == "[answers]" {
+			t.Fatalf("checkpoint carries a quoted reply's raw frame: %q", line)
+		}
+	}
+	// The reply's own bytes survive: the quoted example opens at its recorded
+	// indentation, so the block reads as code rather than as a fence.
+	if !strings.Contains(quotedText, "\n    ```\n    example\n    ```\n") {
+		t.Fatalf("checkpoint rewrote the reply's quoted code example:\n%s", quotedText)
+	}
 }
 
 func TestCheckpoint_ConversationInterleavesUserMessagesAndAgentResponses(t *testing.T) {

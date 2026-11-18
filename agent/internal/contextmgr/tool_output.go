@@ -36,14 +36,32 @@ func parseCommunicateArgs(args json.RawMessage) (endTurn bool, message string) {
 	if len(args) == 0 || json.Unmarshal(args, &payload) != nil {
 		return false, ""
 	}
-	message = strings.TrimSpace(payload.Message)
+	message = trimReplyEdges(payload.Message)
 	if message == "" && payload.Output != nil {
-		message = strings.TrimSpace(payload.Output.Message)
+		message = trimReplyEdges(payload.Output.Message)
 	}
 	if payload.EndTurn == nil {
 		return false, ""
 	}
 	return *payload.EndTurn, message
+}
+
+// trimReplyEdges drops a reply's leading and trailing blank lines and reports
+// "" for one that holds nothing else. TrimSpace would strip the first content
+// line's indentation, and that indentation is load-bearing: a reply opening
+// with four-space-indented literal backticks is a model quoting a code
+// example, and the escape spares it. Removing the indent turns the backticks
+// into a real fence opener, and the scan then treats a frame below them as
+// fenced and leaves it unescaped in a user-role checkpoint (#6493 review).
+func trimReplyEdges(text string) string {
+	lines := strings.Split(text, "\n")
+	for len(lines) > 0 && strings.TrimSpace(lines[0]) == "" {
+		lines = lines[1:]
+	}
+	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return strings.Join(lines, "\n")
 }
 
 func communicateArgsFromHistory(history []schema.Turn, toolCallID string) (endTurn bool, message string) {
