@@ -134,12 +134,15 @@ func responsesThinking(item map[string]any) *llm.ThinkingData {
 		display.WriteString(text)
 		textParts = append(textParts, llm.ResponsesTextPart{Type: kind, Start: start, End: display.Len()})
 	}
-	if len(textParts) == 0 && encrypted == "" {
+	// A blank unencrypted item leaves the streamed answer available for
+	// recovery. A substantive item keeps all of its typed part boundaries.
+	text := display.String()
+	if encrypted == "" && strings.TrimSpace(text) == "" {
 		return nil
 	}
 	return &llm.ThinkingData{
 		ID:                 id,
-		Text:               display.String(),
+		Text:               text,
 		EncryptedContent:   encrypted,
 		Summary:            parseReasoningSummary(item["summary"]),
 		ResponsesTextParts: textParts,

@@ -45,7 +45,10 @@ func replayInput(t *testing.T, msg llm.Message, replay bool) []replayItem {
 // asserted too.
 func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 	t.Parallel()
-	const reasoningItem = `{"type":"reasoning","id":"rs_1","content":[{"type":"reasoning_text","text":" r3 "},{"type":"reasoning_text","text":"r4"}],"summary":[]}`
+	const reasoningItem = `{"type":"reasoning","id":"rs_1","content":[{"type":"reasoning_text","text":" r3 "},{"type":"reasoning_text","text":""},{"type":"reasoning_text","text":"r4"}],"summary":[]}`
+	const emptyReasoning = `{"type":"reasoning","id":"rs_1","content":[{"type":"reasoning_text","text":""}],"summary":[]}`
+	const blankReasoning = `{"type":"reasoning","id":"rs_1","content":[{"type":"reasoning_text","text":" "},{"type":"reasoning_text","text":"\t"}],"summary":[]}`
+	const encryptedItem = `{"type":"reasoning","id":"rs_1","encrypted_content":"e1","content":[{"type":"reasoning_text","text":""}],"summary":[]}`
 	const answerItem = `{"type":"message","content":[{"type":"output_text","text":"m1"}]}`
 	var prefix strings.Builder
 	for _, ev := range []string{
@@ -58,16 +61,21 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 	} {
 		prefix.WriteString("data: " + ev + "\n\n")
 	}
+	raw := &replayItem{Type: "reasoning", ID: "rs_1", Content: []replayText{{"reasoning_text", " r3 "}, {"reasoning_text", ""}, {"reasoning_text", "r4"}}, Summary: []replayText{}}
+	encrypted := &replayItem{Type: "reasoning", ID: "rs_1", Encrypted: "e1", Summary: []replayText{}}
 	for _, tc := range []struct {
-		name    string
-		done    []string
-		output  []string
-		wantRaw bool
+		name          string
+		done          []string
+		output        []string
+		wantReasoning *replayItem
 	}{
-		{"settled item", nil, []string{reasoningItem, answerItem}, true},
-		{"completed items with empty terminal", []string{reasoningItem, answerItem}, nil, true},
-		{"display deltas with settled answer", nil, []string{answerItem}, false},
-		{"display deltas with empty terminal", nil, nil, false},
+		{"settled item", nil, []string{reasoningItem, answerItem}, raw},
+		{"completed items with empty terminal", []string{reasoningItem, answerItem}, nil, raw},
+		{"display deltas with settled answer", nil, []string{answerItem}, nil},
+		{"display deltas with empty terminal", nil, nil, nil},
+		{"streamed answer with empty terminal reasoning", nil, []string{emptyReasoning}, nil},
+		{"streamed answer with blank terminal reasoning", nil, []string{blankReasoning}, nil},
+		{"encrypted reasoning with empty text", nil, []string{encryptedItem, answerItem}, encrypted},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var sse strings.Builder
@@ -96,10 +104,12 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 			if acc.Response() == nil {
 				t.Fatal("stream did not settle")
 			}
+			if got := acc.Response().Text(); got != "m1" {
+				t.Fatalf("settled answer = %q, want streamed answer %q", got, "m1")
+			}
 			want := []replayItem{{Type: "message", Content: []replayText{{"output_text", "m1"}}}}
-			if tc.wantRaw {
-				item := replayItem{Type: "reasoning", ID: "rs_1", Content: []replayText{{"reasoning_text", " r3 "}, {"reasoning_text", "r4"}}, Summary: []replayText{}}
-				want = append([]replayItem{item}, want...)
+			if tc.wantReasoning != nil {
+				want = append([]replayItem{*tc.wantReasoning}, want...)
 			}
 			if got := replayInput(t, acc.Response().Message, true); !reflect.DeepEqual(got, want) {
 				t.Fatalf("next input = %#v, want %#v", got, want)

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // chatResponseRaw builds the map fromChatCompletionResponse expects for one
@@ -43,6 +44,7 @@ func TestFromChatCompletionResponse_EncryptedDetailsRoundTrip(t *testing.T) {
 	t.Parallel()
 	raw := chatResponseRaw(map[string]any{
 		"role":              "assistant",
+		"reasoning":         "trace-17",
 		"reasoning_details": []any{map[string]any{"type": "reasoning.encrypted", "id": "e1", "data": "d1"}},
 	}, "stop")
 	resp, err := fromChatCompletionResponse(raw, nil, nil)
@@ -64,6 +66,15 @@ func TestFromChatCompletionResponse_EncryptedDetailsRoundTrip(t *testing.T) {
 	}
 	if want[0]["type"] != "reasoning.encrypted" || want[0]["id"] != "e1" || want[0]["data"] != "d1" {
 		t.Fatalf("encrypted item = %v, want every original field preserved", want[0])
+	}
+	caps := registry.Caps{ReplayReasoningText: new(true), ReasoningField: new("reasoning_content")}
+	out, err := toChatMessages([]llm.Message{resp.Message}, caps, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	details, _ := out[0]["reasoning_details"].([]map[string]any)
+	if out[0]["reasoning_content"] != "trace-17" || out[0]["reasoning"] != nil || len(details) != 1 || details[0]["data"] != "d1" {
+		t.Fatalf("next assistant input = %#v", out[0])
 	}
 }
 

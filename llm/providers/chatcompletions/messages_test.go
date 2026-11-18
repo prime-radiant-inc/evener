@@ -81,6 +81,15 @@ func TestToChatMessages_ReasoningReplay(t *testing.T) {
 	if len(items) != 1 || items[0]["text"] != "thought" || items[0]["signature"] != "sig-1" {
 		t.Fatalf("signed item must absorb the text: %v", items)
 	}
+	field.ReplayReasoningText = new(true)
+	mixed := []llm.Message{{Role: llm.RoleAssistant, Content: append([]llm.ContentPart{
+		{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "r2", Signature: "reasoning"}},
+	}, signed[0].Content...)}}
+	out, _ = toChatMessages(mixed, field, false)
+	items, _ = out[0]["reasoning_details"].([]map[string]any)
+	if out[0]["reasoning_content"] != "r2" || len(items) != 1 || items[0]["text"] != "thought" || items[0]["signature"] != "sig-1" {
+		t.Fatalf("separate scalar and signed reasoning = %#v", out[0])
+	}
 
 	asText := base
 	asText.ThinkingAsText = new(true)

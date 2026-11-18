@@ -88,17 +88,17 @@ func toChatMessages(messages []llm.Message, caps registry.Caps, useReasoningDeta
 			}
 			text := textFromParts(content)
 			calls := toolCallsFromParts(content)
-			reasoning := thinkingFromParts(content)
-			if reasoningOff {
+			asText := registry.BoolValue(caps.ThinkingAsText)
+			scalarReplay := caps.ReplaysReasoningText() && !useReasoningDetails && !asText
+			reasoning, details := reasoningFromParts(content, !reasoningOff, scalarReplay)
+			if reasoningOff && !asText {
 				// A declared non-reasoning model accepts no reasoning fields —
 				// prior-turn thinking (a fallback or model switch can carry it)
 				// is dropped from replay entirely. ThinkingAsText below is the
 				// deliberate exception: it rides ordinary text content.
-				if !registry.BoolValue(caps.ThinkingAsText) {
-					reasoning = ""
-				}
+				reasoning = ""
 			}
-			if reasoning != "" && registry.BoolValue(caps.ThinkingAsText) {
+			if reasoning != "" && asText {
 				// Replay thinking as ordinary text (no tags — tagged thinking
 				// teaches the model to mimic the tags). The reasoning field
 				// stays unset.
@@ -109,49 +109,22 @@ func toChatMessages(messages []llm.Message, caps registry.Caps, useReasoningDeta
 				}
 				reasoning = ""
 			}
-			var encrypted []map[string]any
-			if !reasoningOff {
-				encrypted = encryptedDetailsFromParts(content)
-			}
-			// Encrypted reasoning (OpenRouter Gemini/o-series) must round-trip
-			// through reasoning_details regardless of the useReasoningDetails
-			// flag. When present, text rides the same array (text first, then
-			// encrypted) to mirror OpenRouter's unified reasoning_details shape.
-			if reasoning != "" || len(encrypted) > 0 {
-				if useReasoningDetails || len(encrypted) > 0 {
-					var details []map[string]any
-					// A signature-bearing reasoning.text item (OpenRouter's
-					// Anthropic route) absorbs the accumulated text: the
-					// provider's canonical non-stream shape is ONE item with
-					// text+signature merged, not a synthetic text item beside
-					// a text-less signature item.
-					merged := false
-					if reasoning != "" {
-						for _, e := range encrypted {
-							if e["type"] == "reasoning.text" {
-								if t, _ := e["text"].(string); t == "" {
-									e["text"] = reasoning
-								}
-								merged = true
-								break
-							}
-						}
-					}
-					if reasoning != "" && !merged {
-						// MiniMax format: {type: "reasoning.text", text: "...", format: "unknown", index: 0}
-						details = append(details, map[string]any{
-							"type":   "reasoning.text",
-							"text":   reasoning,
-							"format": "unknown",
-							"index":  0,
-						})
-					}
-					details = append(details, encrypted...)
-					msg["reasoning_details"] = details
-				} else {
-					msg[reasoningReplayField(content, caps)] = reasoning
+			// A unified array puts reasoning text before the opaque items, or
+			// merges it into the signed item that carries it.
+			if reasoning != "" && (useReasoningDetails || (len(details) != 0 && !scalarReplay)) {
+				if !mergeSignedReasoningText(details, reasoning) {
+					details = append([]map[string]any{{
+						"type": "reasoning.text", "text": reasoning, "format": "unknown", "index": 0,
+					}}, details...)
 				}
-			} else if registry.BoolValue(caps.EmptyReasoningContent) && !useReasoningDetails && !reasoningOff {
+				reasoning = ""
+			}
+			if len(details) != 0 {
+				msg["reasoning_details"] = details
+			}
+			if reasoning != "" {
+				msg[reasoningReplayField(content, caps)] = reasoning
+			} else if len(details) == 0 && registry.BoolValue(caps.EmptyReasoningContent) && !useReasoningDetails && !reasoningOff {
 				msg["reasoning_content"] = ""
 			}
 			if len(calls) > 0 {
@@ -248,37 +221,45 @@ func reasoningReplayField(parts []llm.ContentPart, caps registry.Caps) string {
 	return "reasoning_content"
 }
 
-// encryptedDetailsFromParts decodes the opaque encrypted reasoning_details
-// items carried on assistant thinking parts (serialized in EncryptedContent),
-// concatenated in part order, ready to replay in the reasoning_details array.
-func encryptedDetailsFromParts(parts []llm.ContentPart) []map[string]any {
-	var out []map[string]any
+// reasoningFromParts keeps each signed item's text with its own signature
+// when independent plaintext goes to a scalar field.
+func reasoningFromParts(parts []llm.ContentPart, keepDetails, scalarReplay bool) (string, []map[string]any) {
+	var text strings.Builder
+	var details []map[string]any
 	for _, p := range parts {
-		if p.Kind == llm.ContentThinking && p.Thinking != nil &&
-			llm.IsOpenAICompatEncryptedReasoning(p.Thinking.EncryptedContent) {
-			// The guard also keeps a foreign provider's opaque blob (OpenAI
-			// Responses encrypted_content) off the wire on a cross-provider
-			// transcript — it would not parse as our item array anyway.
+		if p.Kind != llm.ContentThinking || p.Thinking == nil {
+			continue
+		}
+		piece := p.Thinking.Text
+		if keepDetails && llm.IsOpenAICompatEncryptedReasoning(p.Thinking.EncryptedContent) {
 			var items []map[string]any
 			if err := json.Unmarshal([]byte(p.Thinking.EncryptedContent), &items); err == nil {
-				out = append(out, items...)
+				details = append(details, items...)
+				if scalarReplay && piece != "" && mergeSignedReasoningText(items, piece) {
+					continue
+				}
 			}
 		}
+		if piece != "" {
+			if text.Len() != 0 {
+				text.WriteString("\n")
+			}
+			text.WriteString(piece)
+		}
 	}
-	return out
+	return text.String(), details
 }
 
-func thinkingFromParts(parts []llm.ContentPart) string {
-	var b strings.Builder
-	for _, p := range parts {
-		if p.Kind == llm.ContentThinking && p.Thinking != nil && p.Thinking.Text != "" {
-			if b.Len() > 0 {
-				b.WriteString("\n")
+func mergeSignedReasoningText(details []map[string]any, text string) bool {
+	for _, item := range details {
+		if item["type"] == "reasoning.text" {
+			if existing, _ := item["text"].(string); existing == "" {
+				item["text"] = text
 			}
-			b.WriteString(p.Thinking.Text)
+			return true
 		}
 	}
-	return b.String()
+	return false
 }
 
 // hasImageOrDocumentContent reports whether the multimodal content form is
