@@ -362,8 +362,8 @@ test("a stop on the displayed ref after an offline resend cancels it before reco
   await stageRetargetedSend(storage, fake, resumed);
   try {
     // The destination is already tracked before the send - a reader on the
-    // resumed session has it open - so the claim takes nothing and the resend
-    // commits straight to the outbox.
+    // resumed session has it open - so the resend's own hold is a second count
+    // on the model already there, and it commits straight to the outbox.
     await threadsStore.getState().ensureThread(resumed);
     // The tab drops offline before the Send: the row commits durably and its
     // dispatch parks on the reconnect.

@@ -8,6 +8,7 @@ import { useEffect } from "react";
 import type { TranscriptReadView } from "../panes/session/transcript/transcriptReadView";
 import { connectionStore } from "./connection";
 import { hasConversationHandoff, registerConversationClaim } from "./conversationClaimHandoff";
+import type { ForegroundHold } from "./threadOwners";
 import { threadsStore, useThreadsStore } from "./threads";
 
 // useThreadClaim holds one ensureThread(ref) claim while the caller is
@@ -55,27 +56,47 @@ export interface ThreadClaimLease {
   release(): void;
 }
 
-/** A one-shot foreground claim for a destination this tab has no tracked pane
- * model for - the recovery Send's destination hydration. A destination that
- * exists only as a watched stream model is still claimed: routing and
- * dispatch read the tracked map, so a watched-only destination needs the
- * foreground model for the resend's duration (the watch's own lean lifecycle
- * is refcounted separately and is untouched). The lease exists only once
- * ensureThread RESOLVES: a rejected acquisition has already rolled its own
- * claim back inside ensureThread, so a caller that released anyway would
- * consume another foreground reader's claim and retire its subscription or
- * hydration lifecycle. Resolving null means no claim was needed and there is
- * nothing to release. */
-export async function acquireUnreadThreadClaim(ref: string): Promise<ThreadClaimLease | null> {
-  const state = threadsStore.getState();
-  if (state.threads.get(ref) !== undefined) return null;
-  await state.ensureThread(ref);
+/** A one-shot foreground claim on the recovery Send's destination, held for
+ * the resend's duration. Every destination is claimed, including one another
+ * pane already tracks: a destination that exists only as a watched stream
+ * model needs the foreground model for the resend (routing and dispatch read
+ * the tracked map, and the watch's own lean lifecycle is refcounted
+ * separately and is untouched), and a tracked one needs the hold because the
+ * pane that tracks it may unmount mid-resend - which retires the model the
+ * enqueued row's dispatch reads, parking that row until someone reopens the
+ * destination. ensureThread/releaseThread count foreground holds, so the
+ * pane's own release still retires the model only when the resend has
+ * released its count too. Checking the tracked map before acquiring was the
+ * defect: the check and the acquisition were separable by an unmount. The
+ * lease exists only once ensureThread RESOLVES: a rejected acquisition has
+ * already rolled its own claim back inside ensureThread, so a caller that
+ * released anyway would consume another foreground reader's claim and retire
+ * its subscription or hydration lifecycle. There is no "no claim needed"
+ * answer: a resolved acquisition always holds exactly one count.
+ *
+ * The hold is routing-only. A resend routes on the destination's identity,
+ * status and capabilities, not its transcript bodies, so its hold keeps the
+ * model alive without becoming the body owner a pane open defers to and
+ * without waiting on a restoration read. A pane that opens later still finds
+ * no body owner and restores the bodies itself; a cached shell is unverified
+ * and falls through to the ordinary hydration, so the resend never routes on
+ * unverified state. */
+export async function acquireUnreadThreadClaim(ref: string): Promise<ThreadClaimLease> {
+  let hold: ForegroundHold | undefined;
+  await threadsStore.getState().ensureThread(ref, {
+    routingOnly: true,
+    onHold: (taken) => {
+      hold = taken;
+    },
+  });
+  const lease = hold;
+  if (!lease) throw new Error("a resolved routing acquisition must hold a lease");
   let released = false;
   return {
     release() {
       if (released) return;
       released = true;
-      threadsStore.getState().releaseThread(ref);
+      threadsStore.getState().releaseThreadHold(lease);
     },
   };
 }
