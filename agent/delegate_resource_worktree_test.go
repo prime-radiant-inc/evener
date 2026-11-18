@@ -80,8 +80,22 @@ func TestDelegateWorktree_DisposeGateCatchesReceiverRoutedWatch(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected dispose to be refused while a receiver-routed watch targets the delegate, got success")
 	}
-	if !strings.Contains(err.Error(), "is the target of an armed or pending watch send") {
-		t.Fatalf("dispose error = %v, want the watch-gate refusal", err)
+	// The watch is still registered: a refusal must not clear another
+	// component's watch registration as a side effect.
+	r.s.jobManager.mu.Lock()
+	_, stillArmed := r.s.jobManager.watches[key]
+	r.s.jobManager.mu.Unlock()
+	if !stillArmed {
+		t.Fatal("watch-gate refusal dropped the watch registration it refused on")
+	}
+	// The watch is the only blocker: with it cleared, the same dispose
+	// succeeds. That is what makes this the watch gate's refusal and not some
+	// other refusal that also leaves the lane in place.
+	r.s.jobManager.mu.Lock()
+	delete(r.s.jobManager.watches, key)
+	r.s.jobManager.mu.Unlock()
+	if _, err := r.s.worktreeDispose(context.Background(), id, false, false); err != nil {
+		t.Fatalf("dispose after clearing the watch = %v, want success", err)
 	}
 }
 
@@ -93,12 +107,20 @@ func TestDelegateWorktree_ExplicitDisposalPreservesDirtyAndD0Checks(t *testing.T
 			t.Fatal(err)
 		}
 
-		if _, err := r.s.worktreeDispose(context.Background(), id, false, false); err == nil || !strings.Contains(err.Error(), "uncommitted changes") {
-			t.Fatalf("dirty stable disposal error = %v, want dirty refusal", err)
+		if _, err := r.s.worktreeDispose(context.Background(), id, false, false); err == nil {
+			t.Fatal("dirty stable disposal succeeded, want dirty refusal")
 		}
 		assertStableWorktreeResumable(t, r.s.delegateController, id, true)
 		if !laneWorktreePresent(lanePath) {
 			t.Fatal("dirty refusal destroyed stable lane")
+		}
+		// The uncommitted file is still there and still uncommitted: the
+		// refusal preserved the work rather than discarding it.
+		if _, statErr := os.Stat(filepath.Join(lanePath, "dirty")); statErr != nil {
+			t.Fatalf("dirty refusal removed the uncommitted file: %v", statErr)
+		}
+		if status := wtGit(t, lanePath, "status", "--porcelain"); !strings.Contains(status, "dirty") {
+			t.Fatalf("dirty refusal changed the lane's git status: %q", status)
 		}
 	})
 
@@ -107,12 +129,18 @@ func TestDelegateWorktree_ExplicitDisposalPreservesDirtyAndD0Checks(t *testing.T
 		id, lanePath, _ := r.seedStableIsolationLane(t)
 		commitStableLaneChange(t, lanePath)
 
-		if _, err := r.s.worktreeDispose(context.Background(), id, false, false); err == nil || !strings.Contains(err.Error(), "unmerged commit") {
-			t.Fatalf("unmerged stable disposal error = %v, want D0 refusal", err)
+		tipBefore := strings.TrimSpace(wtGit(t, lanePath, "rev-parse", "HEAD"))
+		if _, err := r.s.worktreeDispose(context.Background(), id, false, false); err == nil {
+			t.Fatal("unmerged stable disposal succeeded, want D0 refusal")
 		}
 		assertStableWorktreeResumable(t, r.s.delegateController, id, true)
 		if !laneWorktreePresent(lanePath) {
 			t.Fatal("D0 refusal destroyed stable lane")
+		}
+		// The D0 refusal is about the unmerged tip: the commit must survive at
+		// the same SHA, not be discarded or rewritten.
+		if tipAfter := strings.TrimSpace(wtGit(t, lanePath, "rev-parse", "HEAD")); tipAfter != tipBefore {
+			t.Fatalf("D0 refusal moved the lane tip: got %s, want %s", tipAfter, tipBefore)
 		}
 	})
 }
@@ -124,12 +152,21 @@ func TestDelegateWorktree_ForcePreservesLockProvenanceAndEvidence(t *testing.T) 
 		wtGit(t, r.mainRoot, "worktree", "unlock", lanePath)
 		wtGit(t, r.mainRoot, "worktree", "lock", "--reason", "foreign-owner", lanePath)
 
-		if _, err := r.s.worktreeDispose(context.Background(), id, true, true); err == nil || !strings.Contains(err.Error(), "locked by another owner") {
-			t.Fatalf("forced foreign-lock disposal error = %v, want provenance refusal", err)
+		if _, err := r.s.worktreeDispose(context.Background(), id, true, true); err == nil {
+			t.Fatal("forced foreign-lock disposal succeeded, want provenance refusal")
 		}
 		assertStableWorktreeResumable(t, r.s.delegateController, id, true)
 		if !laneWorktreePresent(lanePath) {
 			t.Fatal("force bypassed foreign lock provenance")
+		}
+		// Force must not release a lock it does not own: this lane is still
+		// locked, with exactly the reason the other owner set. Resolve the
+		// entry for lanePath itself, so a lock held by some other worktree
+		// cannot stand in for this one.
+		porcelain := worktree.ParsePorcelain(wtGit(t, r.mainRoot, "worktree", "list", "--porcelain"))
+		locked, reason := lockStateFromPorcelain(porcelain, lanePath)
+		if !locked || reason != "foreign-owner" {
+			t.Fatalf("lane lock after forced refusal = (locked=%t, reason=%q), want (true, %q)", locked, reason, "foreign-owner")
 		}
 	})
 
