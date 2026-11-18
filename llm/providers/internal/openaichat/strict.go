@@ -289,10 +289,7 @@ func constrainsSomething(m map[string]any, isObject, isArray bool) bool {
 			return true
 		}
 		for kw := range modeledKeywords {
-			if kw == "type" {
-				continue
-			}
-			if _, has := m[kw]; has {
+			if _, has := m[kw]; has && !annotationKeywords[kw] {
 				return true
 			}
 		}
@@ -407,6 +404,28 @@ func keywordsModeled(m map[string]any) bool {
 		}
 	}
 	return true
+}
+
+// annotationKeywords lists the modeled keywords that describe a value without
+// narrowing the set of values it admits. A node carrying only these accepts
+// exactly what the empty schema accepts, so it states no constraint: a
+// parameter declared that way is as unverifiable under strict mode as one
+// declared {}, and certifying it hands the provider a schema it refuses.
+//
+// Every other member of modeledKeywords is treated as a constraint. That
+// direction is the safe one: a keyword wrongly left out here loses strictness
+// on one tool, while one wrongly included here would certify a node the
+// projection cannot verify. Annotation keywords outside modeledKeywords —
+// $comment, deprecated and the rest — never reach this set, because
+// keywordsModeled refuses the whole node before the predicate runs.
+var annotationKeywords = map[string]bool{
+	"title":       true,
+	"description": true,
+	"default":     true,
+	"examples":    true,
+	// format is an annotation under JSON Schema 2020-12 unless a caller opts
+	// into assertion, and the projection neither reads nor rewrites it.
+	"format": true,
 }
 
 func strictifyJSONSchemaInPlace(m map[string]any) {

@@ -257,9 +257,6 @@ func TestStrictToolProjectionKeepsParameterlessToolsClosed(t *testing.T) {
 // cannot grow with nesting no matter what an adapter does while building. The
 // measurement has to be of the emitted parameters, not of the input fixture:
 // serializing the fixture would still pass if the builder expanded the schema.
-// This is the emitted half of
-// TestRefusedSchemaProjectionDoesNotGrowWithNesting, which can only see the
-// gate's verdict from inside the adapter package.
 func TestRefusedNestingSchemaIsEmittedUnchanged(t *testing.T) {
 	t.Parallel()
 	nesting := func(depth int) map[string]any {
@@ -377,6 +374,14 @@ func TestStrictToolProjectionRefusesUnconstrainedArguments(t *testing.T) {
 				"tags": map[string]any{"type": "array"},
 			},
 			"required": []string{"tags"},
+		},
+		"annotation-only argument": {
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"payload": map[string]any{"description": "Free-form payload"},
+			},
+			"required": []string{"payload"},
 		},
 	}
 	for name, schema := range schemas {

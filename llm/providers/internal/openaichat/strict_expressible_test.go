@@ -253,6 +253,38 @@ func TestStrictExpressible(t *testing.T) {
 			},
 			want: false,
 		},
+		// Annotation keywords describe a value without naming the set it
+		// belongs to, so a parameter declared with only those accepts exactly
+		// what the empty schema accepts. Strict mode rejects a node that states
+		// no type and no value constraint, so certifying one loses the whole
+		// request rather than one tool's strictness.
+		{
+			name: "closed object with a required annotation-only argument",
+			in: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"payload": map[string]any{"description": "Free-form payload"},
+				},
+				"required": []string{"payload"},
+			},
+			want: false,
+		},
+		{
+			name: "annotation-only array items",
+			in: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"tags": map[string]any{
+						"type":  "array",
+						"items": map[string]any{"description": "A tag"},
+					},
+				},
+				"required": []string{"tags"},
+			},
+			want: false,
+		},
 		{
 			name: "nullable array type list leaves items optional",
 			in: map[string]any{
@@ -756,7 +788,7 @@ func TestStrictExpressibleAgreesWithTheProjection(t *testing.T) {
 // the declared ones removes calls the tool documents. The gate must refuse it
 // and the caller must send the schema it advertised. This is the regression
 // test for treating an absent keyword as a closed shape: restoring that
-// reading makes the first assertion fail.
+// reading makes the eligibility assertion fail.
 func TestOmittedAdditionalPropertiesIsNotCertified(t *testing.T) {
 	t.Parallel()
 	// The root is explicitly closed and only the nested object omits the
@@ -766,11 +798,18 @@ func TestOmittedAdditionalPropertiesIsNotCertified(t *testing.T) {
 		"type":                 "object",
 		"additionalProperties": false,
 		"properties": map[string]any{
-			"metadata": map[string]any{"type": "object"},
+			"metadata": map[string]any{
+				"type":       "object",
+				"properties": map[string]any{"team": map[string]any{"type": "string"}},
+				"required":   []string{"team"},
+			},
 		},
 		"required": []string{"metadata"},
 	}
-	args := map[string]any{"metadata": map[string]any{"team": "x"}}
+	// The nested object declares team and stays open, so the call carries a key
+	// it never declared. That is the call closing the object would remove, and
+	// it is why the omission is refused rather than rewritten.
+	args := map[string]any{"metadata": map[string]any{"team": "x", "slack": "y"}}
 
 	if !schemaAccepts(t, schema, args) {
 		t.Fatal("an open object must accept a key it does not declare")
