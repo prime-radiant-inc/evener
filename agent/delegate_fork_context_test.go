@@ -126,9 +126,10 @@ func testForkDelegateCheckout(t *testing.T) {
 	const parentBranch, childBranch, dispatchBranch = "parent-17", "child-28", "dispatch-39"
 	for _, tc := range []struct {
 		name, launch, dispatch, want string
-		moved, legacy                bool
+		moved, legacy, stable        bool
 	}{
 		{name: "shared checkout", want: parentBranch},
+		{name: "parent remains on its launch branch", stable: true, want: parentBranch},
 		{name: "confirmed child launch", launch: childBranch, want: childBranch},
 		{name: "confirmed child dispatch", dispatch: dispatchBranch, want: dispatchBranch},
 		{name: "different checkout", moved: true},
@@ -137,6 +138,9 @@ func testForkDelegateCheckout(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cwd := evalSyms(t, t.TempDir())
 			copyWorktreeBaseRepo(t, cwd)
+			if tc.stable {
+				gittest.Run(t, cwd, "checkout", "-b", parentBranch)
+			}
 			base := execenv.NewLocalExecutionEnvironment(cwd)
 			var childProbe bool
 			probes := &envctx.Probes{GitBranch: func(dir string) (string, bool) {
@@ -148,7 +152,9 @@ func testForkDelegateCheckout(t *testing.T) {
 			root := newSession(t, withEnv(base), withEnvironmentSnapshot(), withConfig(SessionConfig{
 				StateDir: t.TempDir(), MaxSubagentDepth: 1, ForceRealIO: true, testOnly: testConfig{envProbes: probes},
 			}))
-			gittest.Run(t, cwd, "checkout", "-b", parentBranch)
+			if !tc.stable {
+				gittest.Run(t, cwd, "checkout", "-b", parentBranch)
+			}
 			if tc.legacy {
 				// Older environment turns could name a branch before any turn named its checkout.
 				root.appendTurn(schema.TurnEnvironment, llm.User("<environment_context>\ngit branch: "+parentBranch+"\n</environment_context>"))

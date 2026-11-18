@@ -798,7 +798,7 @@ func TestUnrecordedAppendFailsClosed(t *testing.T) {
 	// package the freshly generated session ID before any ID-specific state
 	// is persisted (agent/session_config.go), early enough to occupy the
 	// transcript's path with a directory before the writer tries to create
-	// it there -- the writer's create then fails at the real OS boundary,
+	// it there -- publication then fails at the real OS boundary,
 	// the same way it would on a full disk, and every other per-ID state
 	// (which lives elsewhere under "sessions") is unaffected.
 	t.Run("missing writer", func(t *testing.T) {
@@ -827,7 +827,7 @@ func TestUnrecordedAppendFailsClosed(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// The writer's create already failed against the occupying
+		// Publication already failed against the occupying
 		// directory; remove it so a fresh read of the path (PrepareAppIdentity,
 		// below) sees a plain absence rather than a directory where a file
 		// belongs.

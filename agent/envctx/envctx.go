@@ -244,7 +244,9 @@ func (t *Tracker) RenderDiff(cur Snapshot) string {
 		cur.GitBranch = ""
 		cur.gitBranchUnknown = false
 	}
-	reportStatus := t.st.GitBranchUnknown
+	// A context-fork delegate copies these turns and has its own startup
+	// prompt. Keep the first confirmed branch with the checkout it describes.
+	reportStatus := first || t.st.GitBranchUnknown
 	if unknown {
 		// A prompt can name its checkout's branch even when the tracker holds
 		// no branch of its own. A measured inconclusive launch needs one

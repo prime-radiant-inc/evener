@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1338,6 +1339,32 @@ func TestRestoreSessionFromMeta_NoTranscript_StartsClean(t *testing.T) {
 			}
 		})
 	}
+	t.Run("fresh retry after a partial first header", func(t *testing.T) {
+		cfg := RestoreSessionConfig{StateDir: t.TempDir(), ForceRealIO: true, testOnly: testConfig{skipGitSnapshot: true, noSyncJobStore: true}}
+		err := schema.PublishSessionTranscript(nil, cfg.StateDir, meta, false, func(path string) error {
+			if err := os.WriteFile(path, []byte(`{"kind":"header"`), 0o600); err != nil {
+				return err
+			}
+			return io.ErrShortWrite
+		})
+		if !errors.Is(err, io.ErrShortWrite) {
+			t.Fatalf("partial header write: %v", err)
+		}
+		if _, err := os.Lstat(schema.SessionTranscriptPath(cfg.StateDir, meta.ID)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("failed header at the final path: %v", err)
+		}
+		retry, err := start(true, cfg)
+		if err != nil {
+			t.Fatalf("fresh retry with the same ID: %v", err)
+		}
+		defer retry.Close()
+		if _, err := retry.ProcessInput(t.Context(), "continued after a partial header", nil); err != nil {
+			t.Fatal(err)
+		}
+		if prompt, _ := lastRequest(t, retry); prompt != retry.transcript.Header().SystemPrompt {
+			t.Error("the retried request did not use its published prompt")
+		}
+	})
 	for _, failure := range []string{"metadata write", "header write"} {
 		t.Run("retry after "+failure, func(t *testing.T) {
 			cfg := RestoreSessionConfig{StateDir: t.TempDir(), ForceRealIO: true, testOnly: testConfig{skipGitSnapshot: true, noSyncJobStore: true}}

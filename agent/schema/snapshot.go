@@ -589,10 +589,28 @@ func PublishSessionTranscript(fs afero.Fs, dir string, meta SessionMeta, recover
 	return withSessionMetaWriteLock(sessionMetaFS, dir, meta.ID, func() error {
 		path := SessionTranscriptPath(dir, meta.ID)
 		sessionsDir := filepath.Dir(path)
-		if _, err := os.Lstat(path); err == nil {
+		if info, err := os.Lstat(path); err == nil {
+			if !info.Mode().IsRegular() {
+				return fmt.Errorf("transcript target %q is not a regular file", path)
+			}
 			return &os.PathError{Op: "create transcript", Path: path, Err: os.ErrExist}
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
+		}
+		staging, err := os.MkdirTemp(sessionsDir, ".prompt-*")
+		if err != nil {
+			return err
+		}
+		defer func() { _ = os.RemoveAll(staging) }()
+		header := filepath.Join(staging, filepath.Base(path))
+		if err := writeHeader(header); err != nil {
+			return err
+		}
+		publish := func() error {
+			if err := os.Rename(header, path); err != nil {
+				return err
+			}
+			return fsatomic.SyncDir(sessionsDir)
 		}
 		if !recovering {
 			if _, err := lstatIfPossible(fs, SessionMetaPath(dir, meta.ID)); errors.Is(err, os.ErrNotExist) {
@@ -603,21 +621,12 @@ func PublishSessionTranscript(fs afero.Fs, dir string, meta SessionMeta, recover
 				if err := fs.MkdirAll(sessionsDir, 0o755); err == nil {
 					_ = writeSessionMetaLocked(fs, dir, meta, false)
 				}
-				return writeHeader(path)
+				return publish()
 			} else if err != nil {
 				return err
 			}
 		}
 		if err := fs.MkdirAll(sessionsDir, 0o755); err != nil {
-			return err
-		}
-		staging, err := os.MkdirTemp(sessionsDir, ".prompt-*")
-		if err != nil {
-			return err
-		}
-		defer func() { _ = os.RemoveAll(staging) }()
-		header := filepath.Join(staging, filepath.Base(path))
-		if err := writeHeader(header); err != nil {
 			return err
 		}
 		if err := writeSessionMetaLocked(fs, dir, meta, true); err != nil {
@@ -635,10 +644,7 @@ func PublishSessionTranscript(fs afero.Fs, dir string, meta SessionMeta, recover
 		if err := fsatomic.SyncDir(sessionsDir); err != nil {
 			return err
 		}
-		if err := os.Rename(header, path); err != nil {
-			return err
-		}
-		return fsatomic.SyncDir(sessionsDir)
+		return publish()
 	})
 }
 

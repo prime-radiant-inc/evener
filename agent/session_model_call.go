@@ -316,7 +316,6 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		presentedTurns = snapshot
 		history, claimErr = s.delegateController.CompleteModelRequest(claim, snapshot, scope)
 		if claimErr != nil {
-			_ = s.delegateController.AbortModelRequest(claim)
 			return nil, "", nil, llm.Request{}, nil, "", claimErr
 		}
 	} else {

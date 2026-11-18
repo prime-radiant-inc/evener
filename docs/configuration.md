@@ -195,10 +195,11 @@ a valid session snapshot can recover even if the saved metadata contains
 malformed JSON. Evener preserves those bytes beside the recovered metadata.
 When a fresh launch and a recovery use the same session ID, the first to
 publish the transcript keeps its header, launch facts, and subsequent turns.
-A failed publication can be retried. Reopening a header uses its recorded
-launch facts even when an embedding application holds session ownership and
-supplies an older snapshot. If the metadata cannot be reread after the
-header opens, the restore uses the launch facts it already has.
+An interrupted header write leaves the session ID available for a retry.
+Reopening a header uses its recorded launch facts even when an embedding
+application holds session ownership and supplies an older snapshot. If the
+metadata cannot be reread after the header opens, the restore uses the launch
+facts it already has.
 
 If a session switches models or working directories, its next request carries
 the new facts in conversation context. If the Git branch changed while the
@@ -215,9 +216,10 @@ directory or linked `.git` metadata is unavailable, or Git refuses to inspect th
 checkout. If a later probe fails, the request keeps the last confirmed branch
 for this checkout, including one observed during restore or when entering or
 leaving a worktree.
-A delegate created with `fork_context` can use the last branch its copied
-environment turns confirm for this checkout. A confirmed observation at the
-delegate's own launch or first request supersedes the parent's.
+A session's first environment update records its confirmed branch and working
+directory. A delegate created with `fork_context` can use the last branch its
+copied environment turns confirm for this checkout. A confirmed observation
+at the delegate's own launch or first request supersedes the parent's.
 A saved prompt can name a branch without a separate launch record. An
 inconclusive probe in that same checkout leaves the saved guidance in effect
 until Git confirms a branch or confirms the directory is outside a worktree.
