@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -17,9 +18,9 @@ import (
 	"primeradiant.com/evener/agent/internal/goal"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
-	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/apptranscript"
+	"primeradiant.com/evener/internal/transcriptindex"
 	"primeradiant.com/evener/llm"
 )
 
@@ -276,13 +277,16 @@ func TestNotificationTurnOwnsDirectRetrySteering(t *testing.T) {
 	if _, err := sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
 	}
-	sess.mu.Lock()
-	liveHistory := append([]schema.Turn(nil), sess.history...)
-	sess.mu.Unlock()
+	// The live item read is the transcript index: the writer stamps an entry on
+	// its way to disk, so a history copied out of memory here carries no stamps
+	// and is not the live projection any client is served. Read the index while
+	// the session still holds its transcript, then again once it is saved.
+	live := indexedNotificationSteering(t, sess.TranscriptPath(), filepath.Join(t.TempDir(), "live-index"))
 	_, starts := recorder.snapshot()
 	if len(starts) != 1 || starts[0].TurnID == "" {
 		t.Fatalf("notification EventTurnStarted = %#v, want one named boundary", starts)
 	}
+	saved := indexedNotificationSteering(t, sess.TranscriptPath(), filepath.Join(t.TempDir(), "saved-index"))
 
 	data, err := readTranscriptFull(context.Background(), sess.TranscriptPath(), "")
 	if err != nil {
@@ -303,29 +307,132 @@ func TestNotificationTurnOwnsDirectRetrySteering(t *testing.T) {
 	project := func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
 		return apptranscript.ProjectTurn(turnID, turnIndex, turn, apptranscript.NewToolCallRegistry(), nil, nil)
 	}
-	liveEntries := make([]transcript.Entry, len(liveHistory))
-	for i, turn := range liveHistory {
-		liveEntries[i] = transcript.Entry{Kind: "entry", Seq: i + 1, Turn: turn}
-	}
-	liveTurns, err := apptranscript.ItemTurnsFromEntries(data.Header, liveEntries, project)
-	if err != nil {
-		t.Fatalf("live projection: %v", err)
-	}
 	coldTurns, err := apptranscript.ItemTurnsFromEntries(data.Header, data.Entries, project)
 	if err != nil {
 		t.Fatalf("cold projection: %v", err)
 	}
-	liveItem := findNotificationSteeringItem(liveTurns)
 	coldItem := findNotificationSteeringItem(coldTurns)
-	if liveItem == nil || coldItem == nil {
-		t.Fatalf("NoToolCalls item live=%#v cold=%#v", liveItem, coldItem)
+	if coldItem == nil {
+		t.Fatalf("whole-file read lists no NoToolCalls item")
 	}
-	if liveItem.TranscriptKey != coldItem.TranscriptKey || liveItem.TurnID != coldItem.TurnID || liveItem.Status != coldItem.Status {
-		t.Fatalf("live/cold NoToolCalls identity live=(key %q, turn %q, status %q) cold=(key %q, turn %q, status %q)", liveItem.TranscriptKey, liveItem.TurnID, liveItem.Status, coldItem.TranscriptKey, coldItem.TurnID, coldItem.Status)
+	if live.key != saved.key || live.turn != saved.turn || live.status != saved.status {
+		t.Fatalf("live/saved NoToolCalls identity live=(key %q, turn %q, status %q) saved=(key %q, turn %q, status %q)", live.key, live.turn, live.status, saved.key, saved.turn, saved.status)
+	}
+	if live.turn != starts[0].TurnID || saved.turn != starts[0].TurnID {
+		t.Fatalf("indexed NoToolCalls owner live=%q saved=%q, want the announced notification turn %q", live.turn, saved.turn, starts[0].TurnID)
+	}
+	// Saving a session appends its close records; it must not respell anything
+	// already recorded. Every item key the live read listed must still be there.
+	if len(saved.keys) < len(live.keys) || !slices.Equal(live.keys, saved.keys[:len(live.keys)]) {
+		t.Fatalf("saving respelled the item list: live=%v saved=%v", live.keys, saved.keys)
+	}
+	// The index and the whole-file read spell item keys under their own
+	// versions, so identity across the two readers is the turn and the status.
+	if coldItem.TurnID != saved.turn || coldItem.Status != saved.status {
+		t.Fatalf("whole-file/index NoToolCalls identity whole-file=(turn %q, status %q) index=(turn %q, status %q)", coldItem.TurnID, coldItem.Status, saved.turn, saved.status)
+	}
+	// The warm-up writes an environment entry and the user's input as two
+	// entries of ONE stamped turn. Both readers must group them as one turn: a
+	// reader that gives each its own turn renumbers every later item's position
+	// on the same transcript, which is how the retry steering item came to be
+	// spelled two ways (#1166 review).
+	coldEnvTurn, coldUserTurn := warmupGroupingIn(coldTurns)
+	indexEnvTurn, indexUserTurn := warmupGroupingIndexed(t, sess.TranscriptPath(), filepath.Join(t.TempDir(), "grouping-index"))
+	if coldEnvTurn == "" || coldUserTurn == "" {
+		t.Fatalf("whole-file read lost the warm-up entries: env=%q user=%q", coldEnvTurn, coldUserTurn)
+	}
+	if coldEnvTurn != coldUserTurn {
+		t.Fatalf("whole-file read grouped the stamped warm-up entries env=%q user=%q, want one turn", coldEnvTurn, coldUserTurn)
+	}
+	if indexEnvTurn != coldEnvTurn || indexUserTurn != coldUserTurn {
+		t.Fatalf("warm-up grouping whole-file=(env %q, user %q) index=(env %q, user %q): the two readers disagree about a stamped group", coldEnvTurn, coldUserTurn, indexEnvTurn, indexUserTurn)
 	}
 	if coldItem.TurnID != starts[0].TurnID {
 		t.Fatalf("cold NoToolCalls turn=%q, want notification turn %q", coldItem.TurnID, starts[0].TurnID)
 	}
+}
+
+// warmupGroupingIn reports the turn holding the warm-up environment entry and
+// the turn holding the warm-up user input, as the whole-file read spells them.
+// The prelude turn is excluded: its systemMessage is the header, not the
+// environment entry the session recorded.
+func warmupGroupingIn(turns []appwire.Turn) (envTurn, userTurn string) {
+	for _, turn := range turns {
+		if turn.ID == appwire.SystemPreludeTurnID {
+			continue
+		}
+		for _, item := range turn.Items {
+			switch item.Type {
+			case "systemMessage":
+				envTurn = turn.ID
+			case "userMessage":
+				userTurn = turn.ID
+			}
+		}
+	}
+	return envTurn, userTurn
+}
+
+// warmupGroupingIndexed is warmupGroupingIn against the transcript index, the
+// reader the live and saved item views are served from.
+func warmupGroupingIndexed(t *testing.T, path, dir string) (envTurn, userTurn string) {
+	t.Helper()
+	index, err := transcriptindex.Open(path, dir)
+	if err != nil {
+		t.Fatalf("transcriptindex.Open: %v", err)
+	}
+	defer func() { _ = index.Close() }()
+	window, err := index.Latest(40)
+	if err != nil {
+		t.Fatalf("index window: %v", err)
+	}
+	for _, candidate := range window.Candidates {
+		if candidate.TurnID == appwire.SystemPreludeTurnID {
+			continue
+		}
+		switch candidate.Item.Type {
+		case "systemMessage":
+			envTurn = candidate.TurnID
+		case "userMessage":
+			userTurn = candidate.TurnID
+		}
+	}
+	return envTurn, userTurn
+}
+
+// indexedSteering is one indexed read's answer: the NoToolCalls item's stable
+// key, the turn that owns it, its status, and every item key the window listed
+// in order.
+type indexedSteering struct {
+	key, turn, status string
+	keys              []string
+}
+
+// indexedNotificationSteering returns the NoToolCalls item's identity as the
+// transcript index spells it, together with the item key list the same read
+// returned.
+func indexedNotificationSteering(t *testing.T, path, dir string) indexedSteering {
+	t.Helper()
+	index, err := transcriptindex.Open(path, dir)
+	if err != nil {
+		t.Fatalf("transcriptindex.Open: %v", err)
+	}
+	defer func() { _ = index.Close() }()
+	window, err := index.Latest(40)
+	if err != nil {
+		t.Fatalf("index window: %v", err)
+	}
+	var found indexedSteering
+	for _, candidate := range window.Candidates {
+		found.keys = append(found.keys, candidate.Item.TranscriptKey)
+		if candidate.Item.SteeringKind == events.SteeringKindNoToolCalls {
+			found.key, found.turn, found.status = candidate.Item.TranscriptKey, candidate.TurnID, candidate.Item.Status
+		}
+	}
+	if found.key == "" {
+		t.Fatalf("index lists no NoToolCalls item in %s", dir)
+	}
+	return found
 }
 
 func findNotificationSteeringItem(turns []appwire.Turn) *appwire.ThreadItem {
