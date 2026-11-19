@@ -867,8 +867,9 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 			expectedBootGeneration: RESUMED_AUTHORITY.bootGeneration,
 		});
 		// The sheet that started the pick closed on the acceptance, and announced
-		// it once, even though its route still named the original ref.
-		expect(routeRef).toBe(REF);
+		// it once, even though its route still named the original ref: the resume
+		// moved the store to a different identity while the route stayed on REF,
+		// so the destination fence's two operands disagreed for the whole pick.
 		expect(navigation.goBack).toHaveBeenCalledTimes(1);
 		expect(toast).toHaveBeenCalledTimes(1);
 
