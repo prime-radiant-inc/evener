@@ -2820,22 +2820,6 @@ func otherLayerMCPNamespaces(configs []mcpconfig.ServerConfig, cliOnly []mcpconf
 	return namespaces
 }
 
-// recordCLIMCPServers records, from discovery metadata alone, the servers the
-// CLI layers supply and whether another layer declares the same name.
-//
-// It connects nothing. A shadowed entry is one precedence says this session does
-// NOT use, so dialling it would run a command (or send expanded credential
-// headers) for a reputation the ceiling does not need — and would do it whether
-// or not a delegate is ever spawned.
-//
-// What this buys is honesty about ignorance. A CLI-supplied server whose name
-// only the CLI layers declare is unreachable by a child, which clears those
-// layers. A CLI entry that shadows another layer's server is NOT a proven
-// exclusion: the child may rediscover the fallback and register tools under it,
-// so those names must stay eligible for the child to try. Unknown reachability
-// therefore means "let the child try", never "exclude it" — excluding on
-// ignorance hides tools the child can call, which is the defect this change
-// exists to fix.
 // effectiveChildToolCeiling is the ceiling a child session should enforce: the
 // frozen role ceiling, plus any name that ceiling dropped only for REACHABILITY
 // and that this session's registry can register right now.
@@ -2870,6 +2854,22 @@ func effectiveChildToolCeiling(ceiling, reachabilityExcluded []string, reg *tool
 	return effective
 }
 
+// recordCLIMCPServers records, from discovery metadata alone, the servers the
+// CLI layers supply and whether another layer declares the same name.
+//
+// It connects nothing. A shadowed entry is one precedence says this session does
+// NOT use, so dialling it would run a command (or send expanded credential
+// headers) for a reputation the ceiling does not need — and would do it whether
+// or not a delegate is ever spawned.
+//
+// What this buys is honesty about ignorance. A CLI-supplied server whose name
+// only the CLI layers declare is unreachable by a child, which clears those
+// layers. A CLI entry that shadows another layer's server is NOT a proven
+// exclusion: the child may rediscover the fallback and register tools under it,
+// so those names must stay eligible for the child to try. Unknown reachability
+// therefore means "let the child try", never "exclude it" — excluding on
+// ignorance hides tools the child can call, which is the defect this change
+// exists to fix.
 func (s *Session) recordCLIMCPServers(cliOnly []mcpconfig.CLIOnlyServer, evidence mcpconfig.ConfigEvidence) {
 	if len(cliOnly) == 0 {
 		s.setCLIMCPServers(nil, nil, evidence)

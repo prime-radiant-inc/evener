@@ -585,31 +585,6 @@ func diffToolNames(before, after []string) []string {
 	return removed
 }
 
-// reachableCeilingNames reports which of the names a ceiling dropped for
-// reachability this session can register NOW.
-//
-// The test is registration, not configuration: a name present in the registry
-// exists, so a resumed child whose role allows it may call it. Reading the
-// registry rather than re-deriving the exclusion keeps this from becoming a
-// second, weaker copy of the exclusion rule — and it is the same authority the
-// child itself uses.
-//
-// A session with no registry re-admits nothing: with nothing to observe, the
-// ceiling stays as recorded, which is the conservative direction.
-func (s *Session) reachableCeilingNames(excluded []string) []string {
-	if len(excluded) == 0 || s == nil || s.reg == nil {
-		return nil
-	}
-	registered := s.reg.RegisteredNames()
-	reachable := make([]string, 0, len(excluded))
-	for _, name := range excluded {
-		if registered[name] {
-			reachable = append(reachable, name)
-		}
-	}
-	return reachable
-}
-
 // The invariant this file's ceiling work answers to: the ceiling bounds what a
 // delegate may use, and recovery reads it; availability is what the child
 // registered, and only the child itself knows that. The two must not answer each
@@ -891,6 +866,24 @@ func (s *Session) refreshCLIEvidenceFreshnessContext(ctx context.Context) {
 	// An applied exclusion is still re-derived, because this call is also the
 	// path that CLEARS one — skipping there would strand a stale denial.
 	if names == 0 && !applied {
+		return
+	}
+	// A session whose plugin sources the evidence cannot verify never applies the
+	// CLI half (childExclusionDecision), whatever this check would answer: a child
+	// reloads every plugin directory from disk, so a plugin-supplied server can
+	// make a name this session believes is CLI-only reachable, and no fingerprint
+	// of the global and project layers can rule that out. The verdict therefore
+	// changes nothing such a session exposes, and paying for it on every model
+	// round buys an answer no ceiling reads.
+	//
+	// This is a gate on STARTING OR JOINING the check, not on the exclusion
+	// machinery: the Manager-only half is unaffected (no spawn path composes the
+	// hub, whatever the plugins declare), and it is applied from the recorded
+	// decision with no verdict at all. An applied exclusion is deliberately not
+	// revisited here for the same reason: with a plugin source present the shared
+	// decision is false, so an applied one was already re-derived by
+	// childExclusionDecision before this call.
+	if s.pluginMCPSourcesUnverified() {
 		return
 	}
 	fresh, settled, answerRevision := s.sampleExclusionFreshness(ctx, evidence, env, revision)
@@ -1982,22 +1975,22 @@ func (s *Session) applyChildToolPolicy(subCfg *SessionConfig, agent *plugin.Agen
 		// older set by design (widening it here is what the session-init ceiling
 		// comment forbids). Fresh spawns carry every intrinsic tool.
 		allowedTools = append([]string(nil), frozen.ToolNameCeiling...)
-		// EXCEPT the names the ceiling dropped for reachability. That half is a
-		// fact about the workspace the ceiling was computed in, not about the
-		// role, and it can have stopped being true: an operator adding the
-		// CLI-only server to the project or global config makes the tool
-		// discoverable, the resumed child registers it, and a ceiling frozen to
-		// exclude it would then strip a tool the child can call — this issue's
-		// failure inverted. Re-derive: a name is re-admitted only when the child
-		// can actually register it now.
+		// The reachability half travels SEPARATELY, exactly as cold restore hands
+		// it over. It is a fact about the workspace the ceiling was computed in,
+		// not about the role, and it can have stopped being true — an operator
+		// adding the CLI-only server to the project or global config makes the
+		// tool discoverable. But the authority on "the child can register it now"
+		// is the CHILD's registry, so NewSession applies effectiveChildToolCeiling
+		// against its own registrations before it caches tools. Re-admitting here
+		// from the PARENT's registry answers a different question: the parent
+		// holds tools the child cannot construct, so a name would enter the
+		// child's ceiling on the parent's evidence and then be unavailable.
 		//
-		// Role denials are untouched. They were never in this list, and a name
-		// the role forbids is not in the registry, so it cannot be re-admitted.
-		if rereadmit := s.reachableCeilingNames(frozen.CeilingReachabilityExcluded); len(rereadmit) > 0 {
-			allowedTools = appendUniqueStrings(allowedTools, rereadmit...)
-			sort.Strings(allowedTools)
-		}
-		subCfg.spawn.toolNameCeiling = append([]string(nil), allowedTools...)
+		// Role denials are untouched. They were never in the reachability list,
+		// and a name the role forbids is in no registry, so neither path admits
+		// it.
+		subCfg.spawn.toolNameCeiling = allowedTools
+		subCfg.spawn.ceilingReachabilityExcluded = append([]string(nil), frozen.CeilingReachabilityExcluded...)
 	} else {
 		// The policy follows the CHILD's granted allowance, not this session's:
 		// a leaf loses the delegation tools it cannot use, while the intrinsic

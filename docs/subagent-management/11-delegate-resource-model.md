@@ -645,9 +645,18 @@ one an operator had not configured yet; treating the first failure as final
 would deny a tool the child subsequently registered.
 
 An operator who adds the CLI-only server to the project or global config
-therefore gets the tool back on the next resume, or on the retry that
-reconnects it, instead of a delegate that registered it and was still denied
-it. A role-forbidden name is never in the registry, so neither path can widen
+therefore gets the tool back when the delegate is RECONSTRUCTED, instead of a
+delegate that registered it and was still denied it. Reconstructing means a
+cold restore, which builds the child from the descriptor and discovers servers
+again. Resuming a delegate that is still retained in memory is not a
+reconstruction: it hands back the live child, whose MCP manager and registry
+were built before the edit, so the new server is not discovered and the tool
+stays absent until the delegate is torn down and reconstructed. A server that
+was configured all along and failed its first connection is recovered by the
+retry instead: the MCP manager redials it on a later turn, and the tools that
+retry registers are judged against the effective ceiling, so they are admitted
+then rather than staying excluded for the rest of the delegate's life. A
+role-forbidden name is never in the registry, so no path can widen
 authorization, and the frozen role policy continues to bound the ceiling
 exactly as before. A descriptor written before this field existed records no
 exclusions, and nothing is re-admitted for it.

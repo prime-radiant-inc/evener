@@ -1491,24 +1491,36 @@ type Session struct {
 	systemPromptOverride string
 	cachedSystemPrompt   string
 	promptSourceLog      []promptSource
-	// appendSnapshot holds the last successfully loaded --system-prompt-append
-	// contents, so a prompt rebuild that is NOT about those files can reuse them
-	// instead of reading them again. A rebuild caused by a delegate-reachability
-	// change holds s.mu while it runs, and os.ReadFile does not observe
-	// cancellation: an append file that was readable at startup and whose mount
-	// has since stalled would block request preparation with the session lock
-	// held, where not even Stop can intervene. Nil means nothing has been loaded
-	// yet, and every ordinary rebuild loads and replaces it.
+	// appendSnapshot records what the last --system-prompt-append load found:
+	// which files it read, and which it could not. A prompt rebuild that is NOT
+	// about those files reuses it instead of reading them again. A rebuild caused
+	// by a delegate-reachability change holds s.mu while it runs, and os.ReadFile
+	// does not observe cancellation: an append file that was readable at startup
+	// and whose mount has since stalled would block request preparation with the
+	// session lock held, where not even Stop can intervene. Nil means nothing has
+	// been loaded yet, and every ordinary rebuild loads and replaces it.
 	appendSnapshot *appendContentSnapshot
 }
 
-// appendContentSnapshot is the append files' contents as they were last read,
-// keyed by the exact path list they were read for. The key is part of the value
-// because a snapshot is only a valid substitute for the read it replaces: a
-// different list of paths asks a different question.
+// appendContentSnapshot is one load of the append files, keyed by the exact path
+// list it was read for. The key is part of the value because a snapshot is only
+// a valid substitute for the read it replaces: a different list of paths asks a
+// different question.
+//
+// An omission is part of the answer. A partial load is recorded as it happened —
+// the files that read, in configured order, plus the paths that did not — so a
+// later reuse discloses the same omission the read would have. Substituting only
+// the files that once loaded would turn a later unreadable file into a silent
+// resurrection of instructions that are no longer on disk.
 type appendContentSnapshot struct {
-	paths    []string
-	contents []string
+	paths      []string
+	loaded     []appendContentEntry
+	unreadable []string
+}
+
+type appendContentEntry struct {
+	path    string
+	content string
 }
 
 type sessionDetachedProcess struct {

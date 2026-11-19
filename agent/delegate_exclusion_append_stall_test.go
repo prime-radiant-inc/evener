@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"syscall"
 	"testing"
@@ -51,44 +52,15 @@ func TestExclusionRefreshDoesNotRereadStalledAppendFiles(t *testing.T) {
 	if s.appendSnapshot == nil {
 		t.Fatal("fixture is wrong: the startup render did not record an append snapshot, so there is nothing to reuse")
 	}
-	if got := s.appendSnapshot.contents; len(got) != 1 || got[0] != body {
-		t.Fatalf("append snapshot = %q, want the startup contents", got)
+	if got := s.appendSnapshot.loaded; len(got) != 1 || got[0].path != appendPath || got[0].content != body {
+		t.Fatalf("append snapshot = %+v, want the startup contents", got)
 	}
 
-	// The mount stops answering: a reader of this path blocks until a writer
-	// appears, and none will.
-	if err := os.Remove(appendPath); err != nil {
-		t.Fatal(err)
-	}
-	if err := syscall.Mkfifo(appendPath, 0o600); err != nil {
-		t.Skipf("named pipes unavailable here: %v", err)
-	}
-
-	// A blocked reader is released by opening the write end. That matters for a
-	// FAILING run: the read happens while s.mu is held, so leaving it parked
-	// would deadlock the session's own Close at cleanup and turn a clean
-	// assertion failure into a hung test binary.
-	var releaseOnce sync.Once
-	release := func() {
-		releaseOnce.Do(func() {
-			// O_NONBLOCK is load-bearing: a blocking write-open waits for a
-			// reader, and on the PASSING path the rebuild never opened one, so
-			// it would hang the very test that proved the fix works.
-			// Non-blocking answers ENXIO when nobody is reading, which is
-			// exactly the case to leave alone.
-			if f, err := os.OpenFile(appendPath, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
-				_ = f.Close()
-			}
-		})
-	}
+	release := stallAppendFile(t, appendPath)
 
 	// The exclusion decision flips, which is what marks both caches stale and
 	// drives the rebuild down the reuse path.
-	s.delegateExclusionsMu.Lock()
-	s.cliMCPExclusionKnown = true
-	s.cliMCPExclusionApplied = true
-	s.cliMCPExclusionVersion++
-	s.delegateExclusionsMu.Unlock()
+	staleExclusionDecision(s)
 
 	returned := make(chan string, 1)
 	go func() {
@@ -111,4 +83,122 @@ func TestExclusionRefreshDoesNotRereadStalledAppendFiles(t *testing.T) {
 		release()
 		t.Fatal("the request path blocked on a stalled --system-prompt-append read while holding s.mu")
 	}
+}
+
+// TestExclusionRefreshReusesAPartialAppendLoad pins the same reuse for a load
+// that could not read every file.
+//
+// A file missing at startup used to leave NO snapshot at all, because only a
+// complete load was recorded. The next delegate-reachability refresh therefore
+// re-read every configured path under s.mu — including the readable one, whose
+// mount may since have stalled — so one absent file defeated the protection for
+// all the others. The omission is part of the load's answer: a reuse must
+// reproduce both the files that read and the paths that did not, and it must
+// reach that answer without touching the filesystem at all.
+func TestExclusionRefreshReusesAPartialAppendLoad(t *testing.T) {
+	// Not parallel: hermeticInfraEnv calls t.Setenv.
+	hermeticInfraEnv(t)
+	dir := realTempDirForTest(t)
+	appendPath := filepath.Join(dir, "append.md")
+	const body = "operator instructions"
+	if err := os.WriteFile(appendPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(dir, "absent-append.md")
+
+	s := newSession(t, withConfig(SessionConfig{
+		MaxSubagentDepth:   1,
+		SystemPromptAppend: []string{appendPath, missing},
+		AgentsDocPath:      filepath.Join(dir, "absent-AGENTS.md"),
+	}))
+	release := stallAppendFile(t, appendPath)
+	staleExclusionDecision(s)
+
+	got := awaitAppendReuse(t, s, release)
+	if len(got.appends) != 1 || got.appends[0] != body {
+		t.Errorf("reused appends = %q, want the one file that loaded", got.appends)
+	}
+	if want := []string{missing}; !slices.Equal(got.unreadable, want) {
+		t.Errorf("reused unreadable = %v, want %v: the reuse dropped the omission the read had disclosed", got.unreadable, want)
+	}
+
+	// The mechanism behind the reuse: the partial load was recorded as it
+	// happened, so there is something to answer from at all.
+	snapshot := s.appendSnapshot
+	if snapshot == nil {
+		t.Fatal("a startup load that skipped an unreadable file recorded no snapshot, so the next reachability refresh has nothing to reuse")
+	}
+	if len(snapshot.loaded) != 1 || snapshot.loaded[0].path != appendPath || snapshot.loaded[0].content != body {
+		t.Errorf("snapshot loaded = %+v, want only %q", snapshot.loaded, appendPath)
+	}
+	if want := []string{missing}; !slices.Equal(snapshot.unreadable, want) {
+		t.Errorf("snapshot unreadable = %v, want %v: the load's omission was not recorded with it", snapshot.unreadable, want)
+	}
+}
+
+// appendDataProbe is what one reuse-path prompt build put in the append data.
+type appendDataProbe struct {
+	appends    []string
+	unreadable []string
+}
+
+// awaitAppendReuse builds the prompt data from the append SNAPSHOT and fails the
+// test if that build has to touch the filesystem to answer. The build runs in
+// its own goroutine because a regression blocks inside the read, and the release
+// lets that goroutine finish so a failing run reports rather than hangs.
+func awaitAppendReuse(t *testing.T, s *Session, release func()) appendDataProbe {
+	t.Helper()
+	got := make(chan appendDataProbe, 1)
+	go func() {
+		data, _ := s.buildPromptDataWithAppends(s.env, true)
+		got <- appendDataProbe{appends: data.CLIAppends, unreadable: data.unreadableAppends}
+	}()
+	select {
+	case probe := <-got:
+		return probe
+	case <-time.After(appendStallTripwire): // TRIPWIRE: the reuse path reread a stalled file
+		release()
+		t.Fatal("the reachability refresh re-read --system-prompt-append instead of reusing the load it already had")
+		return appendDataProbe{}
+	}
+}
+
+// stallAppendFile replaces path with a named pipe no writer opens, which is how
+// a mount that stops answering behaves for a reader: os.ReadFile blocks.
+//
+// The returned release opens the write end so a FAILING run can finish: the read
+// under test may hold s.mu, and leaving the reader parked would deadlock the
+// session's own Close at cleanup and turn a clean assertion failure into a hung
+// test binary.
+func stallAppendFile(t *testing.T, path string) (release func()) {
+	t.Helper()
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		t.Skipf("named pipes unavailable here: %v", err)
+	}
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			// O_NONBLOCK is load-bearing: a blocking write-open waits for a
+			// reader, and on the PASSING path the rebuild never opened one, so
+			// it would hang the very test that proved the fix works.
+			// Non-blocking answers ENXIO when nobody is reading, which is
+			// exactly the case to leave alone.
+			if f, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+				_ = f.Close()
+			}
+		})
+	}
+}
+
+// staleExclusionDecision moves the recorded exclusion decision, which is what
+// marks the prompt cache stale and drives the next build down the reuse path.
+func staleExclusionDecision(s *Session) {
+	s.delegateExclusionsMu.Lock()
+	s.cliMCPExclusionKnown = true
+	s.cliMCPExclusionApplied = true
+	s.cliMCPExclusionVersion++
+	s.delegateExclusionsMu.Unlock()
 }

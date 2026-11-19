@@ -303,39 +303,51 @@ func (s *Session) buildPromptDataWithAppends(env execenv.ExecutionEnvironment, r
 	// session rather than merely slow it. The snapshot is keyed by the path
 	// list, so only the same question is answered from it, and any mismatch
 	// falls through to a real read.
+	//
+	// A reuse reproduces the WHOLE load it replaces, omissions included. An
+	// earlier read that skipped an unreadable file is the answer for that path
+	// until something reads again, so reusing only the files that loaded would
+	// silently drop the disclosure and, once one of those files had since become
+	// unreadable, resurrect instructions the session cannot currently supply.
 	reused := false
 	if reuseAppends && s.appendSnapshot != nil && slices.Equal(s.appendSnapshot.paths, s.cfg.SystemPromptAppend) {
 		reused = true
-		for i, p := range s.cfg.SystemPromptAppend {
-			text := s.appendSnapshot.contents[i]
-			data.CLIAppends = append(data.CLIAppends, text)
-			sources = append(sources, promptSource{Label: "append:" + p, Size: len(strings.TrimRight(text, "\n"))})
+		for _, entry := range s.appendSnapshot.loaded {
+			appendCLIAppend(&data, &sources, entry.path, entry.content)
 		}
+		data.unreadableAppends = append(data.unreadableAppends, s.appendSnapshot.unreadable...)
 	}
 	if !reused {
-		loaded := make([]string, 0, len(s.cfg.SystemPromptAppend))
+		loaded := make([]appendContentEntry, 0, len(s.cfg.SystemPromptAppend))
 		for _, p := range s.cfg.SystemPromptAppend {
 			b, err := os.ReadFile(p)
 			if err != nil {
 				data.unreadableAppends = append(data.unreadableAppends, p)
 				continue
 			}
-			loaded = append(loaded, string(b))
-			data.CLIAppends = append(data.CLIAppends, string(b))
-			sources = append(sources, promptSource{Label: "append:" + p, Size: len(strings.TrimRight(string(b), "\n"))})
+			text := string(b)
+			loaded = append(loaded, appendContentEntry{path: p, content: text})
+			appendCLIAppend(&data, &sources, p, text)
 		}
-		// Record the snapshot only when every file loaded: a partial load is not
-		// a durable answer, and substituting it later would turn a transient
-		// read error into permanently missing operator instructions.
-		if len(loaded) == len(s.cfg.SystemPromptAppend) {
-			s.appendSnapshot = &appendContentSnapshot{
-				paths:    append([]string(nil), s.cfg.SystemPromptAppend...),
-				contents: loaded,
-			}
+		// Record the snapshot even for a partial load. The read IS the answer for
+		// this path list, and it is the answer the normal rebuild just rendered
+		// from; refusing to keep it would leave a file that is missing at startup
+		// with no snapshot at all, so the next reachability refresh would re-read
+		// every path under s.mu — including a readable one whose mount has since
+		// stalled, which is the wedge this snapshot exists to prevent.
+		s.appendSnapshot = &appendContentSnapshot{
+			paths:      append([]string(nil), s.cfg.SystemPromptAppend...),
+			loaded:     loaded,
+			unreadable: append([]string(nil), data.unreadableAppends...),
 		}
 	}
 
 	return data, sources
+}
+
+func appendCLIAppend(data *promptData, sources *[]promptSource, path, content string) {
+	data.CLIAppends = append(data.CLIAppends, content)
+	*sources = append(*sources, promptSource{Label: "append:" + path, Size: len(strings.TrimRight(content, "\n"))})
 }
 
 func (s *Session) canPromptDelegation() bool {
