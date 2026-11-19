@@ -8,6 +8,7 @@ import {
   type MutationRecoveryRecord,
 } from "./mutationOutbox";
 import { registerPanelStoreEvictor, schedulePanelStoreEviction } from "./panelStoreEviction";
+import type { ForegroundHold } from "./threadOwners";
 import { readMutationPersistence, retryBlockedMutation, subscribeMutationPersistence, threadsStore } from "./threads";
 
 export interface HumanNoteDraft {
@@ -220,12 +221,28 @@ export function blurHumanNote(ref: string, owner: symbol): void {
   const draft = get(ref);
   if (!draft?.dirty || draft.focusOwners.size || draft.timer !== undefined) return;
   if (draft.submitted?.generation === draft.generation && draft.submitted.state === "submitting") return;
-  const state = threadsStore.getState();
-  const retained = state.ensureThread(ref).then(
-    () => null,
-    (error: unknown) => ({ error }),
-  );
-  const release = () => state.releaseThread(ref);
+  // This save's own hold, handed over the moment it exists. The debounce
+  // outlives the blur that armed it, so a pane can remount over this ref while
+  // the save still waits: releasing by ref at that point names whichever hold
+  // is NEWEST - the replacement pane's - and drops a mounted pane's claim while
+  // leaving this save's own hold counting, so the reader and subscription
+  // outlive the pane that closed. The handle names exactly the count taken here.
+  let hold: ForegroundHold | undefined;
+  const retained = threadsStore
+    .getState()
+    .ensureThread(ref, {
+      onHold: (taken) => {
+        hold = taken;
+      },
+    })
+    .then(
+      () => null,
+      (error: unknown) => ({ error }),
+    );
+  // A rejected acquisition already rolled its own hold back.
+  const release = () => {
+    if (hold) threadsStore.getState().releaseThreadHold(hold);
+  };
   // The debounce coalesces one typing session's blurs into a single write; it
   // must never mean "no write at all", so the same save is reachable from
   // teardown (flushPendingHumanNoteSaves).

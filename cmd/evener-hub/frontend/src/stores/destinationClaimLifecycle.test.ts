@@ -24,7 +24,7 @@ import { entryHistoryKey, setSessionCacheLookupDeadlineForTests } from "./sessio
 import type { SessionEntryCache } from "./sessionEntryCache";
 import { createEntryCacheFixture } from "./testing/entryCacheFixture";
 import { pumpIndexedDBUntil } from "./testing/indexedDBPump";
-import { bodyOwners, holdHistory, releaseHistory } from "./threadOwners";
+import { bodyOwners, foregroundHolds, holdHistory, releaseHistory } from "./threadOwners";
 import {
   installHydrationRetrySchedulerForTests,
   markCacheSessionsDeleted,
@@ -68,6 +68,17 @@ function historyFailedRejection(): WireError {
   return new WireError("thread history failed at entry 3", -32000, {
     evenerErrorInfo: "transcriptHistoryFailed",
   });
+}
+
+// Capture the retry a failed read arms, so a test can fire it on demand.
+// `retry.fire` stays undefined until a read answers and arms one.
+function captureRetryScheduler(): { retry: { fire: (() => void) | undefined }; restore: () => void } {
+  const retry: { fire: (() => void) | undefined } = { fire: undefined };
+  const restore = installHydrationRetrySchedulerForTests((_attempt, run) => {
+    retry.fire = run;
+    return () => {};
+  });
+  return { retry, restore };
 }
 
 // Seed the durable shell a pane's bounded lookup installs: a cached header the
@@ -170,11 +181,7 @@ test("a history-failed retry rejects the waiting claim and arms no further read"
     if (reads === 1) return claimRead.promise;
     throw historyFailedRejection();
   });
-  let fireRetry: (() => void) | undefined;
-  const restoreScheduler = installHydrationRetrySchedulerForTests((_attempt, run) => {
-    fireRetry = run;
-    return () => {};
-  });
+  const { retry, restore: restoreScheduler } = captureRetryScheduler();
   const claim = acquireUnreadThreadClaim(ref);
   await flushUntil(() => reads === 1);
   // A pane's bounded lookup installs a cached shell while the claim's read is
@@ -211,7 +218,7 @@ test("a history-failed retry rejects the waiting claim and arms no further read"
   );
   // The claim's read reports the index rebuilding, so its retry is armed.
   claimRead.reject(rebuildingRejection());
-  await flushUntil(() => fireRetry !== undefined);
+  await flushUntil(() => retry.fire !== undefined);
   expect(reads, "the claim's read reported rebuilding and armed its retry").toBe(1);
   // A concurrent source read verifies the destination while the retry waits.
   // A neutral retirement would let the woken claim resolve on that model; the
@@ -219,7 +226,7 @@ test("a history-failed retry rejects the waiting claim and arms no further read"
   // reject instead.
   route.cachedUnverified = false;
   // The retry answers with the hub's terminal answer for that attempt.
-  fireRetry?.();
+  retry.fire?.();
 
   expect(await settleOutcome(claim), "the terminal answer rejects the claim").toBe("rejected");
   // The claim's rebuilding read, the retry's terminal answer, and nothing after
@@ -507,4 +514,184 @@ test("a cached shell installed during a routing read does not certify the claim"
   await pane;
   lease.release();
   await cache.dispose();
+}, 20_000);
+
+// A mounted pane whose FIRST read the hub refuses has a loading surface and no
+// model to carry the diagnostic. Rolling its only hold back would leave the
+// view on that surface for good, so the pane keeps the paced first-read
+// recovery it has without a model, and the read that finally succeeds
+// hydrates the view that never unmounted.
+test("a mounted pane without a model retries a history-failed first read and hydrates on the later success", async () => {
+  const ref = "local:pane-first-read-failed";
+  const fake = connectMutationClient();
+  let reads = 0;
+  fake.on("thread/read", () => {
+    reads += 1;
+    if (reads === 1) throw historyFailedRejection();
+    return readResponse(ref, { name: "Recovered" });
+  });
+  const { retry, restore: restoreScheduler } = captureRetryScheduler();
+  const pane = threadsStore.getState().ensureThread(ref);
+  await flushUntil(() => retry.fire !== undefined);
+  expect(reads, "the pane's first read answered with the hub's refusal").toBe(1);
+  expect(threadsStore.getState().threads.has(ref), "no model exists to carry the diagnostic").toBe(false);
+  expect(foregroundHolds(ref), "the mounted pane keeps the only hold it took").toBe(1);
+  expect(bodyOwners(ref), "the mounted pane keeps owning its bodies").toBe(1);
+
+  retry.fire?.();
+  await pane;
+
+  expect(threadsStore.getState().threads.get(ref)?.name, "the later read hydrated the same mounted view").toBe(
+    "Recovered",
+  );
+  expect(reads, "the recovery's read is the only one after the refusal").toBe(2);
+  restoreScheduler();
+}, 20_000);
+
+// The delegate card's watched lifecycle is the same shape without a pane: a
+// lean watch whose first read is refused keeps its refcounted claim and its
+// retry, and a later read's snapshot is what the card finally renders.
+test("an uncached delegate watch retries a history-failed first read and hydrates on the later success", async () => {
+  const ref = "local:watched-first-read-failed";
+  const fake = connectMutationClient();
+  let reads = 0;
+  fake.on("thread/read", () => {
+    reads += 1;
+    if (reads === 1) throw historyFailedRejection();
+    return readResponse(ref, { name: "Card" });
+  });
+  const { retry, restore: restoreScheduler } = captureRetryScheduler();
+  const watching = threadsStore.getState().watchThread(ref);
+  await flushUntil(() => retry.fire !== undefined);
+  expect(reads, "the watch's first read answered with the hub's refusal").toBe(1);
+  expect(threadsStore.getState().watchedThreads.has(ref), "the card has no model yet").toBe(false);
+
+  retry.fire?.();
+  await watching;
+
+  expect(threadsStore.getState().watchedThreads.get(ref)?.name, "the later read hydrated the same card").toBe("Card");
+  expect(reads, "the recovery's read is the only one after the refusal").toBe(2);
+  threadsStore.getState().releaseWatchedThread(ref);
+  restoreScheduler();
+}, 20_000);
+
+// A resend's claim has no surface at all. A refusal on a destination no pane
+// has opened must still reject it at once: a pane-shaped recovery would hold
+// the resend busy over an answer the hub has already given, and no read may
+// follow a refusal the claim has been told about.
+test("a routing-only claim on an unopened destination still rejects at once and arms no read of its own", async () => {
+  const ref = "local:routing-first-read-failed";
+  const fake = connectMutationClient();
+  let reads = 0;
+  fake.on("thread/read", () => {
+    reads += 1;
+    throw historyFailedRejection();
+  });
+  let scheduled = 0;
+  const restoreScheduler = installHydrationRetrySchedulerForTests(() => {
+    scheduled += 1;
+    return () => {};
+  });
+  const claim = acquireUnreadThreadClaim(ref);
+
+  expect(await settleOutcome(claim), "the hub's answer rejects the unopened claim").toBe("rejected");
+  expect(reads, "the refusal is the only read").toBe(1);
+  expect(scheduled, "no pane-shaped recovery is armed over a refused destination").toBe(0);
+  await pump();
+  expect(reads, "the rejected claim leaves no read behind it").toBe(1);
+  expect(bodyOwners(ref), "a rejected routing acquisition leaves no body hold behind").toBe(0);
+  restoreScheduler();
+}, 20_000);
+
+// The two owners of one refused first read want opposite things: the pane has
+// a loading surface and needs the recovery, the resend has none and must not
+// wait for it. Both hold the ref at once, and each gets its own answer - the
+// pane hydrates from the retry that follows, and the claim rejects without
+// being the reason the retry stopped.
+test("a claim sharing a pane's refused first read rejects while the pane keeps its recovery", async () => {
+  const ref = "local:pane-and-claim-first-read-failed";
+  const fake = connectMutationClient();
+  // The first read is held open until both callers have joined it, then answers
+  // the hub's refusal by throwing at the handler - no promise of the test's own
+  // is left rejected with nobody awaiting it.
+  const bothJoined = deferred<void>();
+  let reads = 0;
+  fake.on("thread/read", async () => {
+    reads += 1;
+    if (reads > 1) return readResponse(ref, { name: "After retry" });
+    await bothJoined.promise;
+    throw historyFailedRejection();
+  });
+  const { retry, restore: restoreScheduler } = captureRetryScheduler();
+  const pane = threadsStore.getState().ensureThread(ref);
+  await flushUntil(() => reads === 1);
+  // The resend claims the same destination while the pane's read is outstanding.
+  const claim = acquireUnreadThreadClaim(ref);
+  await pump();
+  // Its outcome is observed from here on: the claim rejects the moment the
+  // refusal lands, and attaching a handler only after the retry is armed would
+  // leave that rejection unowned for the turns in between.
+  const claimOutcome = settleOutcome(claim);
+
+  // Both callers are parked on that one read; its refusal is the only answer
+  // either of them gets until the recovery reads again.
+  bothJoined.resolve();
+  await flushUntil(() => retry.fire !== undefined);
+
+  expect(await claimOutcome, "the routing claim learns the hub's answer without waiting out the pane's recovery").toBe(
+    "rejected",
+  );
+  expect(reads, "the refusal is still the only read").toBe(1);
+  expect(foregroundHolds(ref), "the claim's rollback leaves only the mounted pane's hold").toBe(1);
+  expect(bodyOwners(ref), "the mounted pane still owns its bodies").toBe(1);
+
+  retry.fire?.();
+  await pane;
+
+  expect(threadsStore.getState().threads.get(ref)?.name, "the pane's recovery hydrated its own view").toBe(
+    "After retry",
+  );
+  expect(reads, "the recovery read once").toBe(2);
+  restoreScheduler();
+}, 20_000);
+
+// A card that never hydrated has no model and, between retries, no read of its
+// own in flight. The reconnect fan-out has to find it by its claim alone:
+// listing only published models and pending reads skips exactly the card whose
+// first read the hub refused, so the hub could serve the history and the card
+// would never ask again.
+test("a reconnect re-reads a watched card that has neither a model nor a pending read", async () => {
+  const ref = "local:watched-reconnect-no-model";
+  const first = connectMutationClient();
+  first.on("thread/read", () => {
+    throw historyFailedRejection();
+  });
+  // The refusal's recovery is never fired, so the card sits with a claim and
+  // nothing else: this is the shape a reconnect has to notice.
+  const restoreScheduler = installHydrationRetrySchedulerForTests(() => () => {});
+  const watching = threadsStore.getState().watchThread(ref);
+  await pump();
+  expect(threadsStore.getState().watchedThreads.has(ref), "the card has no model").toBe(false);
+  expect(
+    first.calls.filter((call) => call.method === "thread/read"),
+    "the refusal is the only read",
+  ).toHaveLength(1);
+
+  let replacementReads = 0;
+  const second = new FakeClient("ready");
+  second.on("thread/read", () => {
+    replacementReads += 1;
+    return readResponse(ref, { name: "Served after reconnect" });
+  });
+  connectionStore.getState().connect(second);
+  await flushUntil(() => replacementReads > 0);
+
+  expect(replacementReads, "the reconnect re-read the card by its claim alone").toBeGreaterThan(0);
+  await flushUntil(() => threadsStore.getState().watchedThreads.get(ref)?.name === "Served after reconnect");
+  expect(threadsStore.getState().watchedThreads.get(ref)?.name, "the card hydrated after the reconnect").toBe(
+    "Served after reconnect",
+  );
+  await settleOutcome(watching);
+  threadsStore.getState().releaseWatchedThread(ref);
+  restoreScheduler();
 }, 20_000);

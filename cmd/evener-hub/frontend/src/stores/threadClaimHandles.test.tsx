@@ -10,13 +10,14 @@ import "fake-indexeddb/auto";
 import type { ThreadReadResponse } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { cleanup, render } from "@testing-library/react";
+import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { resetPendingTurnsStoreForTests } from "../panes/session/composer/queue/pendingTurnsStore";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { connectReadyFakeClient } from "../testing/connectionTestUtils";
 import { connectionStore, resetConnectionStoreForTests } from "./connection";
 import { entryTranscriptRoute } from "./entryTranscriptRoutes";
+import { blurHumanNote, editHumanNote, focusHumanNote, syncHumanNote } from "./humanNoteDrafts";
 import { bodyOwners, type ForegroundHold, foregroundHoldStanding, foregroundHolds } from "./threadOwners";
 import { resetThreadsStoreForTests, threadsStore } from "./threads";
 import { readResponse } from "./threadsSessionActionsTestUtils";
@@ -128,4 +129,44 @@ test("two open panes release one hold each, newest last", async () => {
   newer.unmount();
   expect(foregroundHolds(ref), "the last pane's release leaves nothing standing").toBe(0);
   expect(bodyOwners(ref), "the last pane's release drops its body ownership").toBe(0);
+}, 20_000);
+
+// A debounced note save holds the destination it is about to write at. That
+// hold outlives the blur that armed it, so a pane can remount over the same
+// ref while the save is still waiting. The save's own exit must then drop the
+// count it took: a ref-keyed release names the NEWEST hold, which by that point
+// is the replacement pane's, and spending it ends a mounted pane's acquisition
+// while the save's own hold keeps the reader and subscription alive after the
+// pane that closed.
+test("a note save's own exit drops its own hold, not a pane that remounted over it", async () => {
+  const ref = "local:note-save-hold";
+  connectReadyFakeClient((fake) => fake.on("thread/read", () => readResponse(ref)));
+  syncHumanNote(ref, "");
+  editHumanNote(ref, "draft that arms the debounce");
+  // The blur takes the save's hold and arms the 10s debounce.
+  act(() => blurHumanNote(ref, Symbol("blur owner")));
+  expect(foregroundHolds(ref), "the pending save holds the destination it will write at").toBe(1);
+
+  // The pane remounts over the same ref while the save waits out its debounce.
+  const holds = captureHolds();
+  const bodiesBefore = bodyOwners(ref);
+  const pane = render(<Pane ref={ref} />);
+  await vi.waitFor(() => expect(holds.length, "the replacement pane takes its own hold").toBe(1));
+  expect(foregroundHolds(ref), "the save's hold and the pane's both stand").toBe(2);
+  const bodiesWithPane = bodyOwners(ref);
+  expect(bodiesWithPane, "the pane owns the live bodies").toBe(bodiesBefore + 1);
+
+  // The save's debounce is cancelled (the same exit path a completed save
+  // takes through its own finally).
+  act(() => focusHumanNote(ref, Symbol("focus after remount")));
+
+  expect(
+    holds.map(foregroundHoldStanding),
+    "the save drops only its own hold, so the replacement pane's still stands",
+  ).toEqual([true]);
+  expect(foregroundHolds(ref), "the mounted pane is the only holder left").toBe(1);
+  expect(bodyOwners(ref), "the mounted pane keeps the bodies its reader renders").toBe(bodiesBefore);
+  expect(entryTranscriptRoute(ref), "the mounted pane's destination survives the save's exit").toBeDefined();
+  pane.unmount();
+  expect(foregroundHolds(ref), "the pane's own unmount is what finally retires the destination").toBe(0);
 }, 20_000);
