@@ -322,8 +322,12 @@ func (s *Server) finishProcessing() {
 			status := appStatus(s.status.State, false)
 			// The deferred status stated the rest that still stands (the
 			// turn that cleared changed nothing), so the idle placeholder
-			// that stands in for an unstated rest must not overwrite it.
-			if !deferredRest && (awaitingTurnEnd || status == appwire.ThreadStatusActive) {
+			// that stands in for an unstated rest must not overwrite it. An
+			// ACTIVE the deferred frame stated is a forecast, not a rest —
+			// the session's own active meant work would follow, and nothing
+			// follows once processing has ended — so it normalizes wherever
+			// it came from, deferred and stored alike.
+			if (!deferredRest && awaitingTurnEnd) || status == appwire.ThreadStatusActive {
 				s.status.State = appwire.ThreadStatusIdle
 				status = appwire.ThreadStatusIdle
 			}

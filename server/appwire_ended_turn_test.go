@@ -129,14 +129,14 @@ func TestDeferredSettlementNamesTheTurnItCleared(t *testing.T) {
 	// execution end's own status the way it discards every boundary.
 	srv.SetProcessingTurn("turn_a")
 	srv.RecordAppEvent(threadEvent("th_deferred_settlement", events.ExecutionStartedData{TurnID: "turn_a"}))
-	cursor := srv.appNotifier.CurrentSequence()
 	srv.RecordAppEvent(threadEvent("th_deferred_settlement", events.ExecutionEndedData{TurnID: "turn_a", Status: "completed"}))
 
 	// Turn B publishes while A's end is still behind it in the drain; A's
 	// SESSION_END defers behind B's pending start.
 	srv.SetProcessingTurn("turn_b")
 	BridgeEvent(srv, threadEvent("th_deferred_settlement", events.SessionEndData{Reason: "turn_failed", State: appwire.ThreadStatusIdle}), nil)
-	cursor = srv.appNotifier.CurrentSequence()
+	// The window under test begins after B's publication and A's deferral.
+	cursor := srv.appNotifier.CurrentSequence()
 
 	// B's wake found no work: no SESSION_END of its own arrives, and
 	// processing ends with the deferral still held.
@@ -155,6 +155,63 @@ func TestDeferredSettlementNamesTheTurnItCleared(t *testing.T) {
 	read := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:th_deferred_settlement"})
 	if read.Thread.Status.Type != appwire.ThreadStatusIdle || read.Thread.Evener.ActiveTurnID != "" {
 		t.Fatalf("read after settlement = %q/%q, want idle with no running turn", read.Thread.Status.Type, read.Thread.Evener.ActiveTurnID)
+	}
+}
+
+// An ACTIVE forecast is void once processing ends, wherever it came from.
+// Turn A ends with a queued watch notification, so its SESSION_END states
+// active (work will follow); the bridge defers that end behind turn B's
+// publication, and B — a notification wake that discards the stale watch —
+// finishes before its own execution start drains, so finishProcessing is
+// B's only publisher. The deferred frame supplied the state, but a forecast
+// is not a rest: the settlement must say idle, or thread/read keeps the
+// session looking working (Send withheld) with nothing running. Genuine
+// resting states a deferred frame states (awaiting, systemError) still
+// stand, and the settlement keeps naming the cleared turn.
+func TestDeferredActiveForecastNormalizesWhenProcessingEnds(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		deferred string
+		want     string
+	}{
+		{"active forecast", appwire.ThreadStatusActive, appwire.ThreadStatusIdle},
+		{"awaiting rest", appwire.ThreadStatusAwaiting, appwire.ThreadStatusAwaiting},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := NewServer(ServerConfig{})
+			srv.SetAppIdentity("local", "th_forecast")
+			srv.SetProcessingTurn("turn_a")
+			srv.RecordAppEvent(threadEvent("th_forecast", events.ExecutionStartedData{TurnID: "turn_a"}))
+
+			// B publishes before A's end drains; A's end defers behind B's
+			// pending start. B's own execution start never drains (the wake
+			// found no work), so the deferral holds to the end.
+			srv.SetProcessingTurn("turn_b")
+			BridgeEvent(srv, threadEvent("th_forecast", events.SessionEndData{Reason: "turn_failed", State: tc.deferred}), nil)
+			cursor := srv.appNotifier.CurrentSequence()
+			srv.SetProcessing(false)
+
+			frames := statusFrames(t, srv, cursor, "th_forecast")
+			if len(frames) != 2 {
+				t.Fatalf("settlement published %+v frames, want A's deferred replay and B's settlement", frames)
+			}
+			// The deferred replay is A's own terminal word, kept as deferred.
+			if frames[0].Status.Type != tc.deferred || frames[0].EndedTurnID != "turn_a" {
+				t.Fatalf("the deferred frame = %+v, want A's replay stating %q", frames[0], tc.deferred)
+			}
+			// The settlement is the current word: the cleared turn's id and
+			// the state that stands once processing has ended.
+			if frames[1].Status.Type != tc.want {
+				t.Fatalf("the settlement states %q, want %q: a forecast is void once processing ends", frames[1].Status.Type, tc.want)
+			}
+			if frames[1].EndedTurnID != "turn_b" {
+				t.Fatalf("the settlement named turn %q, want the cleared turn_b", frames[1].EndedTurnID)
+			}
+			read := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:th_forecast"})
+			if read.Thread.Status.Type != tc.want || read.Thread.Evener.ActiveTurnID != "" {
+				t.Fatalf("read after settlement = %q/%q, want %q with no running turn", read.Thread.Status.Type, read.Thread.Evener.ActiveTurnID, tc.want)
+			}
+		})
 	}
 }
 
