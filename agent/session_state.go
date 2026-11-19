@@ -451,6 +451,7 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 		ScratchDirSessionID:      scratchDirSessionID,
 		JobTreeRevision:          jobTreeRevision,
 		EnvContext:               s.envContextState,
+		LaunchEnvBaseline:        s.launchEnvBaseline,
 	}
 }
 

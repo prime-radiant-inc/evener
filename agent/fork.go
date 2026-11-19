@@ -322,6 +322,7 @@ func writeForkChildWithConfig(fs afero.Fs, stateDir, parentID string, parentHead
 		DivergenceTurn:        divergenceTurn,
 		ForkLabel:             "", // child carries no fork label; parent gets it
 		MemorySaveUnavailable: memorySaveUnavailable,
+		LaunchEnvBaseline:     parentMeta.LaunchEnvBaseline,
 	}
 
 	if err := deps.saveMeta(fs, stateDir, childMeta); err != nil {
