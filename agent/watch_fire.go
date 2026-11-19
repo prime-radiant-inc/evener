@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
@@ -250,6 +251,7 @@ func (jm *jobManager) conditionFireNotificationLocked(cfg *watchConfig, jobID, r
 	if len(own) >= runawaySelfInfluenceDepth {
 		cfg.rememberStoppedRunawayChain(own)
 		diagnostic := watchSendDiagnosticNotification(cfg.watchID, jobID, "watch notification dropped: runaway")
+		diagnostic.Occurrence = stoppedRunawayOccurrence(own)
 		diagnostic.Provenance = provenance.Clone(root)
 		return []jobNotification{diagnostic}, false
 	}
@@ -257,6 +259,21 @@ func (jm *jobManager) conditionFireNotificationLocked(cfg *watchConfig, jobID, r
 	n.backstopFires = jm.watchBackstopNoticeLocked(cfg)
 	n.ownMessageHops = provenance.MessagesFrom(root, jm.watchReceiverSession(cfg))
 	return []jobNotification{n}, true
+}
+
+// stoppedRunawayOccurrence identifies WHICH chain the guard stopped.
+//
+// The diagnostic's watch, job and reason are the same for every stop on one
+// watch, so without an occurrence two independent chains would share one
+// durable identity, and the second stop would read as a replay of the first and
+// be dropped. The chain's own fires name it: they are distinct delivery ids,
+// they are what the guard counted, and a re-evaluation of the same chain
+// derives the same set, so a retried append still replays rather than
+// duplicating. Sorted so the identity does not depend on lineage order.
+func stoppedRunawayOccurrence(fires []string) string {
+	sorted := slices.Clone(fires)
+	slices.Sort(sorted)
+	return "runaway:" + shortHash([]byte(strings.Join(sorted, "\x00")))
 }
 
 // conditionFireSendLocked counts a send watch's condition fire toward the

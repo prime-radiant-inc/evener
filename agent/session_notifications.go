@@ -68,7 +68,11 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 	// a turn that consumes what it presents is admitted for it: a parent's
 	// unleased drive of an idle delegate would present the update and leave it
 	// pending.
-	hasDelegateUpdate := s.coversPresentedAttention(ctx) && s.hasPendingDelegateUpdateAttention()
+	// A stable child's watch notice is durable attention for the same reason and
+	// under the same rule: it is already in the transcript, so the turn's model
+	// request carries it, and only a turn that consumes what it presents may be
+	// admitted for it.
+	hasDurableAttention := s.coversPresentedAttention(ctx) && (s.hasPendingDelegateUpdateAttention() || s.hasPendingStableWatchAttention())
 	s.requeueJobNotifications(retryJobNotifs)
 	injectedFailures := s.markJobNotificationsDelivered(injectedJobNotifs)
 	s.requeueJobNotifications(injectedFailures)
@@ -81,7 +85,7 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 	// Notifications an earlier turn wrote into the transcript but never carried
 	// in a dispatched request are still owed: this turn's request carries them.
 	carried := s.jobNotificationsAwaitingRequest()
-	if len(jobNotifs) == 0 && len(carried) == 0 && !hasSteering && !hasDelegateUpdate && (!hasRootAttention || s.rootAttentionRailParked()) {
+	if len(jobNotifs) == 0 && len(carried) == 0 && !hasSteering && !hasDurableAttention && (!hasRootAttention || s.rootAttentionRailParked()) {
 		if len(retryJobNotifs) == 0 && len(injectedFailures) == 0 {
 			s.resetJobNotificationRetry()
 		}

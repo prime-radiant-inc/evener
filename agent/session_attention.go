@@ -3094,6 +3094,21 @@ func (s *Session) resolveAttentionDurablyForGeneration(ids []string, disposition
 	if s == nil {
 		return errors.New("attention resolution session is nil")
 	}
+	if err := s.appendAttentionResolutionsDurably(ids, disposition, resumeGeneration); err != nil {
+		return err
+	}
+	// A resolved row never becomes a request again, so the timer identity kept
+	// beside it for the delivery-time liveness check can never be read. The
+	// prune is outside the append above because that holds attentionMu and
+	// pendingJobNotifsMu is a leaf.
+	s.pruneStableWatchTickWatch(ids...)
+	return nil
+}
+
+// appendAttentionResolutionsDurably is the resolution write itself: it appends
+// the markers, verifies the fold reads them back, and retires the causes. The
+// caller must not hold pendingJobNotifsMu.
+func (s *Session) appendAttentionResolutionsDurably(ids []string, disposition delegateAttentionResolution, resumeGeneration uint64) error {
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
 

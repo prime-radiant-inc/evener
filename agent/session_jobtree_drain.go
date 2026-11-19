@@ -1136,7 +1136,7 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 	// clears that coverage, which would leave an update whose marker failed
 	// to repeat turns forever.
 	drivenUpdates := make(map[string]struct{})
-	s.settlePresentedDelegateUpdates(drivenUpdates)
+	s.settlePresentedAttention(drivenUpdates)
 	// drainStartedAt is the instant the root declared the work over: in a
 	// one-shot run this loop starts the moment the coordinator's terminal
 	// communicate ended its turn. It is the reference delegateAbandonedByDrain
@@ -1298,7 +1298,8 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 		// and resume restores them; see
 		// TestRootDelegateAttention_PendingContentSurvivesCompactionRestart),
 		// so a request after a compaction or a failed turn still presents it.
-		notificationTurnOwed := s.peekNotifications() > 0 || s.pendingRootDelegateAttention() || s.hasUndrivenDelegateUpdate(drivenUpdates)
+		notificationTurnOwed := s.peekNotifications() > 0 || s.pendingRootDelegateAttention() ||
+			s.hasUndrivenDelegateUpdate(drivenUpdates) || s.hasUndrivenStableWatchAttention(drivenUpdates)
 		if s.hasPendingStableSteering() && !notificationTurnOwed {
 			return lastResult, nil
 		}
@@ -1318,7 +1319,7 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 			if res != "" {
 				lastResult = res
 			}
-			s.settlePresentedDelegateUpdates(drivenUpdates)
+			s.settlePresentedAttention(drivenUpdates)
 			s.restartDrainGraceSecondWindows(s.sclock().Now())
 			// A delivered notification is real drain progress: reset the stall
 			// clock so the watchdog measures only continuous stall, never a stall
@@ -1798,19 +1799,41 @@ func (s *Session) hasUndrivenDelegateUpdate(driven map[string]struct{}) bool {
 	})
 }
 
-// settlePresentedDelegateUpdates records the updates the last turn showed the
-// model in driven and retries the consumed marker of any still pending. A
-// failed marker write leaves an update the model already saw pending. The
-// turn's coverage survives until the next turn starts, so only the marker is
-// retried; if that fails too, the update stays pending for the generation's
-// end and this drain runs no more turns for it.
-func (s *Session) settlePresentedDelegateUpdates(driven map[string]struct{}) {
+// hasUndrivenStableWatchAttention reports whether this session owes the model a
+// watch notice the drain has not yet run a turn for.
+//
+// A stable delegate's watch notice is durable attention, not a queued
+// notification, so peekNotifications cannot see it and the successor attention
+// drive refuses a delegate that is already finalizing. Without this the notice
+// waits for the shell the delegate is draining to exit, which is exactly the
+// decision the notice would let it make.
+func (s *Session) hasUndrivenStableWatchAttention(driven map[string]struct{}) bool {
+	return slices.ContainsFunc(s.pendingStableWatchAttentionIDs(), func(id string) bool {
+		_, done := driven[id]
+		return !done
+	})
+}
+
+// settlePresentedAttention records the attention the last turn showed the model
+// in driven and retries the consumed marker of anything still pending. A failed
+// marker write leaves an item the model already saw pending. The turn's coverage
+// survives until the next turn starts, so only the marker is retried; if that
+// fails too, the item stays pending for the generation's end and this drain runs
+// no more turns for it.
+//
+// Both kinds of already-resolved work are covered, because the drain runs under
+// the run's lease and a successful turn consumes whatever its requests
+// presented: a child's update, and a watch notice bound for this stable child.
+func (s *Session) settlePresentedAttention(driven map[string]struct{}) {
 	for _, id := range s.presentedDelegateUpdateAttentionIDs() {
 		driven[id] = struct{}{}
 	}
-	if s.hasPendingDelegateUpdateAttention() {
+	for _, id := range s.presentedStableWatchAttentionIDs() {
+		driven[id] = struct{}{}
+	}
+	if s.hasPendingDelegateUpdateAttention() || s.hasPendingStableWatchAttention() {
 		if err := s.finishAttentionTurn(nil, nil); err != nil {
-			s.emit(warningDataFromError("delegate update consumption failed; left pending for its next generation", err))
+			s.emit(warningDataFromError("drain attention consumption failed; left pending for its next generation", err))
 		}
 	}
 }

@@ -172,13 +172,26 @@ func (s *Session) dropClearedStableWatchTicks(ids []string) []string {
 			s.emit(warningDataFromError("discard cleared watch tick", err))
 			return ids
 		}
-		s.pendingJobNotifsMu.Lock()
-		for _, id := range cleared {
-			delete(s.stableWatchTickWatch, id)
-		}
-		s.pendingJobNotifsMu.Unlock()
 	}
 	return kept
+}
+
+// pruneStableWatchTickWatch drops the timer identity recorded beside each
+// attention row that has just resolved.
+//
+// The record exists so a clear landing AFTER a tick was persisted can still
+// suppress that tick before its delivery. A resolved row is never presented, so
+// that check can never run for it, and no other path deletes the entry: keeping
+// it would leave one entry per delivered tick for the life of the session.
+func (s *Session) pruneStableWatchTickWatch(ids ...string) {
+	if s == nil || len(ids) == 0 {
+		return
+	}
+	s.pendingJobNotifsMu.Lock()
+	for _, id := range ids {
+		delete(s.stableWatchTickWatch, id)
+	}
+	s.pendingJobNotifsMu.Unlock()
 }
 
 // isStableWatchAttentionID reports whether attentionID names a watch notice

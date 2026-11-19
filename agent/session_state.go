@@ -249,6 +249,52 @@ func (s *Session) hasPendingDelegateUpdateAttention() bool {
 	return len(s.pendingDelegateUpdateAttentionIDs()) != 0
 }
 
+// pendingStableWatchAttentionIDs lists the watch notices resolved into this
+// session's transcript that are still unconsumed.
+//
+// A notice bound for a stable delegate child is durable attention rather than a
+// queued notification, because only a leased generation may present it. It is
+// the same shape of work as a child's update: it is already in the transcript,
+// so a turn run under the run's lease carries it, and only such a turn consumes
+// it.
+func (s *Session) pendingStableWatchAttentionIDs() []string {
+	if s == nil || s.owningDelegateID == "" {
+		return nil
+	}
+	ids, err := s.automaticDelegateAttentionIDs()
+	if err != nil {
+		return nil
+	}
+	var watches []string
+	for _, attentionID := range ids {
+		if isStableWatchAttentionID(attentionID) {
+			watches = append(watches, attentionID)
+		}
+	}
+	return watches
+}
+
+// presentedStableWatchAttentionIDs lists the watch notices the turn that just
+// ran showed the model. Coverage alone answers, so a notice already marked
+// consumed may be listed too; see presentedDelegateUpdateAttentionIDs.
+func (s *Session) presentedStableWatchAttentionIDs() []string {
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	var watches []string
+	for id := range s.attentionCoveredIDs {
+		if isStableWatchAttentionID(id) {
+			watches = append(watches, id)
+		}
+	}
+	return watches
+}
+
+// hasPendingStableWatchAttention reports whether this session owes the model a
+// watch notice it has not yet consumed.
+func (s *Session) hasPendingStableWatchAttention() bool {
+	return len(s.pendingStableWatchAttentionIDs()) != 0
+}
+
 // autonomyInFlight reports whether autonomous work will move this session
 // without user input: pending job notifications, queued input, a pending
 // delegate report, or a working child subagent (hasWorkingSubagent). Reads

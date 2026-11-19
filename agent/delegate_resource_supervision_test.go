@@ -660,12 +660,33 @@ func TestDelegateResourceSupervision_DiagnosticDeliveredAsALeasedGeneration(t *t
 	})
 	waitForStableSupervisionRun(t, root, fixture.childID)
 
-	// The provider request must sit behind a NEWLY committed generation, and the
-	// `warmFinished` generation must not be the one that carried it.
-	committed := latestDelegateControllerRunFinished(t, root.delegateController, fixture.delegateID)
-	if committed.Generation <= warmFinished.Generation {
-		t.Fatalf("generation carrying the diagnostic = %d, want greater than the warm generation %d: the diagnostic ran outside a new generation",
-			committed.Generation, warmFinished.Generation)
+	// The request that CARRIED the diagnostic is the one the ruling is about: a
+	// later generation's request that does not contain it proves nothing. Find
+	// that request and read the lease it was built under.
+	const diagnosticPayload = "delivery_id=life01-acceptance"
+	requests := fixture.adapter.Requests()
+	leases := fixture.adapter.RequestLeases()
+	if len(requests) != len(leases) {
+		t.Fatalf("recorded %d request(s) and %d lease(s): every request must record the lease it was built under",
+			len(requests), len(leases))
+	}
+	presented := -1
+	for i := range requests {
+		if requestsContain(requests[i:i+1], diagnosticPayload) {
+			presented = i
+			break
+		}
+	}
+	if presented < 0 {
+		t.Fatalf("no provider request carried the diagnostic payload %q: the notice never reached the model", diagnosticPayload)
+	}
+	carried := leases[presented]
+	if carried.delegateID != fixture.delegateID {
+		t.Fatalf("the diagnostic's lease names delegate %q, want %q", carried.delegateID, fixture.delegateID)
+	}
+	if carried.generation <= warmFinished.Generation {
+		t.Fatalf("the diagnostic's lease generation = %d, want greater than the warm generation %d: the diagnostic ran outside a new generation",
+			carried.generation, warmFinished.Generation)
 	}
 }
 

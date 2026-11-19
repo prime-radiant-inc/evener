@@ -47,6 +47,10 @@ type fakeAdapter struct {
 
 	mu       sync.Mutex
 	requests []llm.Request
+	// leases records, per request, the delegate lease the request was built
+	// under. A request built outside a leased generation records the zero
+	// value, so a test can tell a leased delivery from an unleased one.
+	leases []delegateLease
 }
 
 // newFakeAdapter builds a scripted adapter over steps. The script owns the
@@ -68,10 +72,11 @@ func (a *fakeAdapter) LiveModels(ctx context.Context) ([]registry.Model, error) 
 }
 
 func (a *fakeAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
-	_ = ctx
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.requests = append(a.requests, req)
+	lease, _ := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
+	a.leases = append(a.leases, lease)
 	step, ok := a.script.Next()
 	if !ok {
 		return llm.Response{Provider: a.name, Model: req.Model, Message: llm.Assistant("done")}, nil
@@ -139,6 +144,15 @@ func (a *fakeAdapter) Requests() []llm.Request {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return append([]llm.Request{}, a.requests...)
+}
+
+// RequestLeases returns, per request in Requests' order, the delegate lease it
+// was built under. The zero lease means the request was not built in a leased
+// generation.
+func (a *fakeAdapter) RequestLeases() []delegateLease {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]delegateLease{}, a.leases...)
 }
 
 // A retained lane's background drive can call Complete at any moment, so
