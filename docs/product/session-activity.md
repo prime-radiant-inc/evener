@@ -835,14 +835,16 @@ scope and leaves the sidebar, its preference saves and its checkmarks with the
 focused conversation. Each ordinary pane's status surface remains bound to its own
 conversation.
 
-Collapsed spines and phone columns expose Agents, Jobs, Watches and Tasks
-peeks, including empty Tasks. On desktop, readable columns omit per-column
-activity controls so the pane's bottom status bar remains the single activity
-strip, with each column's header and composer fixed while its transcript
-viewport scrolls internally; the pane body hosting the spines and columns never
-scrolls as a unit. On the phone, where the pane status bar is absent, the
-column's own activity controls render below its footer. About is available in
-Overview and has no cascade chip.
+Collapsed spines, desktop readable parent columns (compactly in their header
+row), and phone columns expose Agents, Jobs, Watches and Tasks peeks, including
+empty Tasks. On desktop, the selected leaf column omits per-column activity
+controls and no column stacks an activity strip below its composer, so the
+pane's bottom status bar remains the single bottom activity strip while each
+column's header and composer stay fixed around its internally scrolling
+transcript; the pane body hosting the spines and columns never scrolls as a
+unit. On the phone, where the pane status bar is absent, the column's own
+activity controls render below its footer. About is available in Overview and
+has no cascade chip.
 
 Ancestor spines reuse the session list's compact indicators: a gray spinner for
 active work, an amber dot for attention and a red diamond for failure. Idle and

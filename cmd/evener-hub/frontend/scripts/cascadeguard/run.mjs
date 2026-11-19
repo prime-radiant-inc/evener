@@ -670,11 +670,17 @@ async function assertColumnConversations() {
         editor: node.querySelector('[data-composer] [role="textbox"]') !== null,
       })),
       composerRefs: [...root.querySelectorAll("[data-composer]")].map(node => node.dataset.composer),
-      columnActivityControls: [...root.querySelectorAll('[data-testid="cascade-column"] [data-testid="cascade-activity-controls"]')].length,
+      leafActivityControls: [...root.querySelectorAll('[data-testid="cascade-column"][data-leaf] [data-testid="cascade-activity-controls"]')].length,
+      bottomColumnActivityControls: [...root.querySelectorAll('[data-testid="cascade-column"]')].filter((col) => {
+        const content = col.querySelector('[data-testid="cascade-column-content"]');
+        const controls = col.querySelector('[data-testid="cascade-activity-controls"]');
+        return Boolean(content && controls && (content.compareDocumentPosition(controls) & Node.DOCUMENT_POSITION_FOLLOWING));
+      }).length,
     };
   })()`);
   assert.ok(snapshot && snapshot.columns.length >= 1, "the inspector hosts readable columns");
-  assert.equal(snapshot.columnActivityControls, 0, "desktop cascade columns omit duplicate per-column activity controls above StatusBar");
+  assert.equal(snapshot.leafActivityControls, 0, "desktop leaf column omits duplicate activity controls above StatusBar");
+  assert.equal(snapshot.bottomColumnActivityControls, 0, "no desktop cascade column renders an activity strip below its transcript above StatusBar");
   assert.deepEqual(snapshot.composerRefs, snapshot.columns.map(column => column.ref),
     "every readable column embeds exactly its own conversation composer and nothing else does");
   for (const column of snapshot.columns) {

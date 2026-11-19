@@ -141,15 +141,14 @@ async function expectFourPeeks(controls: ReturnType<typeof scope>, ref: string) 
   await waitFor(() => expect(screen.queryByTestId("activity-peek")).toBeNull());
 }
 
-test("desktop cascade spine keeps About out of its four activity peeks while readable columns omit duplicate controls", async () => {
+test("desktop cascade spine and readable parent keep About out of their four activity peeks while leaf omits duplicate controls", async () => {
   const { client, mount } = fixture();
   client.on("evener/tasks/list", () => ({ data: [] }));
   mount();
   await conversationMounted("child");
   await expectFourPeeks(scope("root"), "root");
-  for (const ref of ["child", "grandchild"]) {
-    expect(scope(ref).queryByTestId("cascade-activity-controls")).toBeNull();
-  }
+  await expectFourPeeks(scope("child"), "child");
+  expect(scope("grandchild").queryByTestId("cascade-activity-controls")).toBeNull();
 });
 
 test("mobile cascade column keeps About out of its four activity peeks", async ({ onTestFinished }) => {
@@ -418,18 +417,31 @@ test("an initially empty incomplete parent page retains its real continuation an
   expect(leaf()).toBe("grandchild");
 });
 
-test("a parent Tasks peek mounts the existing scoped task list and opens no task pane", async () => {
+test("desktop readable parent column exposes compact header Tasks peek while keeping leaf Overview intact", async () => {
   const { client, mount } = fixture();
-  client.on("evener/tasks/list", () => ({
-    data: [{ id: 1, type: "implement", description: "Parent scoped task", prompt: "", status: "open" }],
+  client.on("evener/tasks/list", ({ ref }) => ({
+    data:
+      ref === "child"
+        ? [{ id: 1, type: "implement", description: "Readable parent task", prompt: "", status: "open" }]
+        : [],
   }));
+  activitySidebarStore.getState().openWith("about");
   mount();
   await conversationMounted("child");
-  expect(client.calls.filter((call) => call.method === "evener/tasks/list")).toHaveLength(0);
-  const peek = await openPeek("root", "Tasks");
-  expect(await within(peek).findByText("Parent scoped task")).toBeTruthy();
-  expect(workspaceStore.getState().panes).toHaveLength(1);
+  const sidebar = await screen.findByTestId("activity-sidebar");
+  await within(sidebar).findByText("wire-grandchild");
+  // Leaf column omits duplicate controls; parent controls sit in its header,
+  // never as a second bar below the transcript content.
+  expect(scope("grandchild").queryByTestId("cascade-activity-controls")).toBeNull();
+  const parentColumn = cascadeScope("child", "cascade-column");
+  const parentControls = within(parentColumn).getByTestId("cascade-activity-controls");
+  const parentContent = within(parentColumn).getByTestId("cascade-column-content");
+  expect(parentControls.compareDocumentPosition(parentContent) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  const peek = await openPeek("child", "Tasks");
+  expect(await within(peek).findByText("Readable parent task")).toBeTruthy();
   expect(leaf()).toBe("grandchild");
+  expect(within(sidebar).getByText("wire-grandchild")).toBeTruthy();
+  expect(within(sidebar).queryByText("wire-child")).toBeNull();
 });
 
 test("spine pop and counts are separate keyboard targets and Escape closes the peek before the sidebar", async () => {

@@ -158,8 +158,8 @@ function retireAttentionEntry(binding: HistoryBinding): void {
   // makes the observer treat this as a fresh branch, which drops every other
   // entry and releases their parked readers - including a source Back can
   // still reach, with its staged attachments.
-  if (survivor && url && isCascadeReturnedOrigin(survivor)) {
-    publishCascadeReturnURL(survivor, url, { replace: true });
+  if (survivor && isCascadeReturnedOrigin(survivor)) {
+    publishCascadeReturnURL(survivor, url ?? "/", { replace: true });
   } else {
     navigate(url ?? "/", { replace: true });
   }

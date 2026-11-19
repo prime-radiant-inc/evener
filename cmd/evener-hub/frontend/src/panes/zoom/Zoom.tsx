@@ -164,6 +164,7 @@ function ScopeConversation({
               <CascadeColumn
                 paneId={pane.id}
                 scope={activity}
+                leaf={leaf}
                 content={
                   state === "deleted" ? (
                     <EmptyState title="This session was deleted" hint="Its transcript is gone." reason="deleted" />
@@ -186,7 +187,13 @@ function ScopeConversation({
             )}
           />
         ) : (
-          <CascadeColumn paneId={pane.id} scope={activity} content={<Skeleton />} conversationFooter={null} />
+          <CascadeColumn
+            paneId={pane.id}
+            scope={activity}
+            leaf={leaf}
+            content={<Skeleton />}
+            conversationFooter={null}
+          />
         )
       ) : (
         <CascadeSpine paneId={pane.id} scope={activity} />

@@ -286,10 +286,11 @@ reachable in narrow groups. When the desktop host hides the tab strip (a
 in-place cascade), the pane retains its in-pane Return action. The parent is
 400px wide. The leaf flexes with a 440px minimum. Narrow desktop surfaces
 scroll horizontally and reveal the selected leaf instead of squeezing either
-reader. Parent and leaf transcript scrollers remain independent, desktop columns
-omit per-column activity controls so the pane's bottom status bar is the single
-activity strip (mobile columns keep their single bottom activity strip since
-the pane status bar is desktop-only), and the pane body hosting
+reader. Parent and leaf transcript scrollers remain independent, desktop leaf
+columns omit per-column activity controls and readable parent columns place
+their compact peeks in their header so the pane's bottom status bar is the
+single bottom activity strip (mobile columns keep their single bottom activity
+strip since the pane status bar is desktop-only), and the pane body hosting
 the spines and columns never scrolls as a unit.
 
 Only ancestor spines use the session list's

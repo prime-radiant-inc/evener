@@ -449,7 +449,7 @@ function openRouteAsPane(
   ws.openPane(
     "welcome",
     {},
-    isCascadeReturnedOrigin(focused) ? { keepExistingFocus: true, focusNew: false } : undefined,
+    isCascadeReturnedOriginURL(focused, pathname) ? { keepExistingFocus: true, focusNew: false } : undefined,
   );
 }
 

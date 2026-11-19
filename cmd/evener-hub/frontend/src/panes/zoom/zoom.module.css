@@ -222,6 +222,15 @@
   display: none;
 }
 
+.header .activityControls {
+  padding: 0;
+  border-top: 0;
+}
+
+.header .activityLabel {
+  display: none;
+}
+
 .peek {
   width: min(400px, calc(100vw - 32px));
 }

@@ -375,14 +375,18 @@ test("root and child render through real conversation readers inside one scaffol
   await screen.findByText("child content child-id");
   expect(columnRefs()).toEqual(["root", "child"]);
   expect(mounted.container.querySelectorAll('[data-pane-scaffold="cascade"]')).toHaveLength(1);
-  // Desktop columns omit per-column activity controls so the bottom StatusBar
-  // stays the single activity strip. A saved legacy in-place cascade (no
-  // params.inspection) still keeps its desktop Return action because the main
-  // group hides its tab strip.
+  // Desktop leaf columns omit per-column activity controls so the bottom
+  // StatusBar stays the single activity strip; a desktop non-leaf parent keeps
+  // compact header peeks above its transcript rather than a second bottom bar.
+  // A saved legacy in-place cascade (no params.inspection) still keeps its
+  // desktop Return action because the main group hides its tab strip.
   expect(screen.getAllByTestId("transcript-virtual-list")).toHaveLength(2);
-  for (const column of screen.getAllByTestId("cascade-column")) {
-    expect(within(column).queryByTestId("cascade-activity-controls")).toBeNull();
-  }
+  const [parentColumn, leafColumn] = screen.getAllByTestId("cascade-column");
+  if (!parentColumn || !leafColumn) throw new Error("expected parent and leaf cascade columns");
+  expect(within(leafColumn).queryByTestId("cascade-activity-controls")).toBeNull();
+  const parentControls = within(parentColumn).getByTestId("cascade-activity-controls");
+  const parentContent = within(parentColumn).getByTestId("cascade-column-content");
+  expect(parentControls.compareDocumentPosition(parentContent) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(screen.getByTestId("statusbar")).toBeTruthy();
   // Every readable column renders its conversation: one composer each, no
   // more than the columns on screen.

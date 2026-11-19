@@ -1552,6 +1552,36 @@ test("closing an inspector tab preserves its unrelated secondary source and edit
   expect(workspaceStore.getState().focusedPaneId).toBe(workspaceStore.getState().mainPane()?.id);
 });
 
+test("explicit navigation to dashboard focuses Welcome after closing an inspector tab", async () => {
+  const client = cascadeClient((ref) => cascadeContext(ref, ref === "local:child" ? ["local:main-session"] : []));
+  installLocationForRoute("local:main-session");
+  window.history.pushState({}, "", "/s/local%3Amain-session");
+  await act(async () => {
+    render(<AppShell client={client} />);
+  });
+  await waitFor(() => expect(refParam(workspaceStore.getState().mainPane()?.params)).toBe("local:main-session"));
+  const mainId = workspaceStore.getState().mainPane()?.id;
+  if (!mainId) throw new Error("expected main session pane");
+  const inspectorId = await act(async () =>
+    enterAgentCascade(
+      activityDelegate({ ownerRef: "local:main-session", childRef: "local:child", delegateId: "d-dashboard" }),
+      mainId,
+    ),
+  );
+  await screen.findByTestId("cascade-column");
+  await act(async () => {
+    getDockviewApi()?.getPanel(inspectorId)?.api.close();
+  });
+  expect(workspaceStore.getState().focusedPaneId).toBe(mainId);
+
+  // Explicit "Go to dashboard" navigation to "/" must focus Welcome rather
+  // than keeping the returned conversation focused.
+  await act(async () => navigate("/"));
+  await waitFor(() => expect(workspaceStore.getState().panes.some((pane) => pane.type === "welcome")).toBe(true));
+  const welcomePane = workspaceStore.getState().panes.find((pane) => pane.type === "welcome");
+  expect(workspaceStore.getState().focusedPaneId).toBe(welcomePane?.id);
+});
+
 test("phone Back from a secondary session's inspector publishes its URL without discarding the main pane or its staged attachments", async () => {
   const setMobile = installSwitchableViewport();
   setMobile(false);
