@@ -3428,6 +3428,41 @@ test("a snapshot-only wait carries no chip metadata", () => {
   expect(model.modelRetry).toBeUndefined();
 });
 
+// Scenario 13's state half: crossing the reset instant changes the
+// countdown's promise, never the facts beside it. The wait's chip metadata
+// (model tag, elapsed sample, receipt instant the elapsed advance keys on)
+// survives the deadline passing — no client clock ends a wait, so nothing
+// here clears or restamps anything. The elapsed-advance arithmetic itself
+// belongs to the liveness line that renders it.
+test("a wait's chip metadata survives the reset crossing", () => {
+  const resumesAt = Date.parse("2026-11-07T14:30:00Z");
+  let model = testHydrate({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } });
+  model = applyNotification(
+    model,
+    quotaRetry({ waitStartedAt: 2, resumesAt, turnId: "turn_1", model: "wait/model" }),
+    2000,
+  );
+
+  // Hours past the deadline, an unrelated scalar frame lands.
+  const later = applyNotification(
+    model,
+    {
+      method: "evener/job/finished",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        job: { jobId: "job_1", jobType: "shell", status: "finished", outputBytes: 0 },
+      },
+    },
+    resumesAt + 3_600_000,
+  );
+
+  expect(later.quotaResumesAt).toBe(new Date(resumesAt).toISOString());
+  expect(later.quotaWaitStartedAt).toBe(2);
+  expect(later.modelRetry?.model).toBe("wait/model");
+  expect(later.modelRetry?.receivedAt).toBe(2000);
+});
+
 // Deleted: "modelRetry clears when its turn completes" and "modelRetry
 // clears when a new turn starts". Both asserted the turnBoundary half of
 // modelRetry clearing (turn/completed or turn/started ending the wait
