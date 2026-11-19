@@ -2213,18 +2213,19 @@ func TestAConfirmedEnqueueWhoseRefreshFailsIsStillQueued(t *testing.T) {
 		t.Fatalf("refusal = %+v, want LookupFailed: no reply named an entry, so nothing established the enqueue", exitErr)
 	}
 
-	// A WAITING run asked when the queue finished, and this run cannot read the
-	// queue any further. Reporting Queued there would claim a wait that never ran,
-	// so the confirmed position carries the timeout verdict -- exit 1, which the
-	// documented workflow repeats -- and not a completed wait.
+	// A WAITING run keeps the position and spends its budget trying to read a
+	// newer answer. Every read fails, so the wait runs out with the mutation's
+	// reply as the last thing the run knows: the timeout verdict names the
+	// position GitHub confirmed, at exit 1, and says the entry's state is
+	// unavailable rather than printing an empty one.
 	waiting := &confirmedRefreshFailedClient{}
 	waiting.statuses = []Status{{ID: "PR_6499", State: "OPEN", Base: "main"}}
 	waited, exitErr := Execute(context.Background(), opts(30*time.Second), waiting, (&fakeClock{now: time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)}).clock())
 	if exitErr != nil {
-		t.Fatalf("Execute: %v, want the timeout verdict at the confirmed position: the queue could not be read again, and this run did not wait", exitErr)
+		t.Fatalf("Execute: %v, want the timeout verdict at the confirmed position: the mutation's reply named the entry and no read answered afterwards", exitErr)
 	}
-	if waited.Kind != TimedOut || waited.Position != 5 {
-		t.Fatalf("outcome = %+v, want TimedOut at position 5: a waiting run must not report a wait it never ran", waited)
+	if waited.Kind != TimedOut || waited.Position != 5 || waited.QueueState != absent {
+		t.Fatalf("outcome = %+v, want TimedOut at position 5 and the state %q: the position is GitHub's own answer and the state beside it is not", waited, absent)
 	}
 
 	// And an operator cancellation outranks the confirmed position: they stopped
@@ -2236,14 +2237,137 @@ func TestAConfirmedEnqueueWhoseRefreshFailsIsStillQueued(t *testing.T) {
 	if _, exitErr := Execute(ctx, opts(0), cancelled, (&fakeClock{now: time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)}).clock()); exitErr == nil || exitErr.Kind != Interrupted {
 		t.Fatalf("refusal = %+v, want Interrupted: the operator's stop outranks the confirmed position", exitErr)
 	}
+	// The same stop with a wait asked for, on a live context of its own: the stop
+	// arrives while the confirmation runs, and the confirmed position must not turn
+	// a cancelled wait into a timeout verdict.
+	waitCtx, cancelWait := context.WithCancel(context.Background())
+	defer cancelWait()
+	cancelledWait := &confirmedRefreshCancelledClient{cancel: cancelWait}
+	cancelledWait.statuses = []Status{{ID: "PR_6499", State: "OPEN", Base: "main"}}
+	if _, exitErr := Execute(waitCtx, opts(30*time.Second), cancelledWait, (&fakeClock{now: time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)}).clock()); exitErr == nil || exitErr.Kind != Interrupted {
+		t.Fatalf("refusal = %+v, want Interrupted: a stop during the confirmation outranks the confirmed position even when a wait was asked for", exitErr)
+	}
 }
 
-// confirmedRefreshFailedClient answers the mutation with a queue entry and an
+// TestAConfirmedEnqueueKeepsWaitingForTheOutcome pins what a waiting run does
+// when the enqueue is confirmed and the confirmation read fails: it waits.
+//
+// The position GitHub named is a write that landed, not a verdict. A waiting run
+// asked to be told when the queue finished, the wait budget is almost all still
+// there, and the queue can still merge or drop this pull request. Answering
+// `MERGEQ timeout` from the mutation's reply alone skips every poll that could
+// have observed either.
+func TestAConfirmedEnqueueKeepsWaitingForTheOutcome(t *testing.T) {
+	t.Parallel()
+	const sha = "abcdef0123456789abcdef0123456789abcdef01"
+	start := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+
+	t.Run("merge", func(t *testing.T) {
+		t.Parallel()
+		fc := &fakeClock{now: start}
+		c := &confirmedThenRefreshedClient{mergedSHA: sha, mergedFromCall: 2}
+		c.statuses = []Status{{ID: "PR_6499", State: "OPEN", Base: "main"}}
+		out, exitErr := Execute(context.Background(), opts(90*time.Second), c, fc.clock())
+		if exitErr != nil {
+			t.Fatalf("Execute: %v", exitErr)
+		}
+		if out.Kind != Merged || out.SHA != sha {
+			t.Fatalf("outcome = %+v, want Merged with sha %s: the wait had 90 seconds left and the queue merged the pull request inside it", out, sha)
+		}
+	})
+
+	// The mutation reported no ending of its own and still named the entry, so the
+	// confirmation is the read that failed. The wait is kept here too.
+	t.Run("merge after a mutation that reported no failure", func(t *testing.T) {
+		t.Parallel()
+		fc := &fakeClock{now: start}
+		c := &confirmedThenRefreshedClient{mergedSHA: sha, mergedFromCall: 2}
+		c.statuses = []Status{{ID: "PR_6499", State: "OPEN", Base: "main"}}
+		c.mutationReportedNoError = true
+		out, exitErr := Execute(context.Background(), opts(90*time.Second), c, fc.clock())
+		if exitErr != nil {
+			t.Fatalf("Execute: %v", exitErr)
+		}
+		if out.Kind != Merged || out.SHA != sha {
+			t.Fatalf("outcome = %+v, want Merged with sha %s: the mutation named the entry, only the confirmation failed, and the wait had 90 seconds left", out, sha)
+		}
+	})
+
+	t.Run("drop", func(t *testing.T) {
+		t.Parallel()
+		fc := &fakeClock{now: start}
+		c := &confirmedThenRefreshedClient{}
+		c.statuses = []Status{{ID: "PR_6499", State: "OPEN", Base: "main"}}
+		c.drop = &DropEvent{CreatedAt: start.Add(-time.Minute), Reason: "failed_checks"}
+		out, exitErr := Execute(context.Background(), opts(90*time.Second), c, fc.clock())
+		if exitErr != nil {
+			t.Fatalf("Execute: %v, want the drop the poll observed", exitErr)
+		}
+		if out.Kind != Dropped || out.PRState != "OPEN" {
+			t.Fatalf("outcome = %+v, want Dropped: the poll after the confirmation read the entry gone, and a confirmed enqueue that leaves no entry is a drop", out)
+		}
+	})
+
+	// A fresh status outranks the mutation's reply: the poll answers with the
+	// position the queue reports now, and the verdict is the timeout at that
+	// position and state rather than at the position the mutation named.
+	t.Run("fresh status", func(t *testing.T) {
+		t.Parallel()
+		fc := &fakeClock{now: start}
+		c := &confirmedThenRefreshedClient{}
+		c.statuses = []Status{
+			{ID: "PR_6499", State: "OPEN", Base: "main"},
+			{ID: "PR_6499", State: "OPEN", Base: "main", Entry: queueEntry(2)},
+		}
+		out, exitErr := Execute(context.Background(), opts(90*time.Second), c, fc.clock())
+		if exitErr != nil {
+			t.Fatalf("Execute: %v", exitErr)
+		}
+		if out.Kind != TimedOut || out.Position != 2 || out.QueueState != "QUEUED" {
+			t.Fatalf("outcome = %+v, want TimedOut at position 2 in QUEUED: that is the read the poll made, and it is newer than the mutation's reply", out)
+		}
+	})
+}
+
+// confirmedThenRefreshedClient answers the mutation with the entry its reply can
+// name and an unknown ending, fails the confirmation read, and then answers every
+// later read from the supplied data -- the shape of an enqueue that landed whose
+// first refresh hit a connection reset.
+type confirmedThenRefreshedClient struct {
+	fakeClient
+	// mutationReportedNoError makes the mutation return the entry with a nil
+	// error, so the confirmation is the only read that failed. The zero value is
+	// the entry beside an unknown ending, which is what a reply GitHub applied and
+	// then failed to resolve looks like.
+	mutationReportedNoError bool
+	// reads counts status reads, so the client can tell the starting lookup and
+	// the confirmation from the polls that follow.
+	reads int
+}
+
+func (c *confirmedThenRefreshedClient) Enqueue(context.Context, string, string, bool) (*QueueEntry, error) {
+	if c.mutationReportedNoError {
+		return &QueueEntry{Position: 5}, nil
+	}
+	return &QueueEntry{Position: 5}, fmt.Errorf("gh: %w", ErrIncompleteReply)
+}
+
+func (c *confirmedThenRefreshedClient) Status(ctx context.Context, repo, pr string) (Status, error) {
+	c.reads++
+	if c.reads == 2 {
+		// The confirmation.
+		return Status{}, errors.New("read tcp: connection reset by peer")
+	}
+	return c.fakeClient.Status(ctx, repo, pr)
+}
+
+// confirmedRefreshFailedClient answers the mutation with the entry its reply can
+// name -- the position, because that is all the mutation asks for -- and an
 // unknown ending, then fails the reconciliation read.
 type confirmedRefreshFailedClient struct{ fakeClient }
 
 func (c *confirmedRefreshFailedClient) Enqueue(context.Context, string, string, bool) (*QueueEntry, error) {
-	return &QueueEntry{Position: 5, State: "QUEUED"}, fmt.Errorf("gh: %w", ErrIncompleteReply)
+	return &QueueEntry{Position: 5}, fmt.Errorf("gh: %w", ErrIncompleteReply)
 }
 
 func (c *confirmedRefreshFailedClient) Status(ctx context.Context, repo, pr string) (Status, error) {

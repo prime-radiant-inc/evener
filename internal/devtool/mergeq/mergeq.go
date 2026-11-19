@@ -399,56 +399,55 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 			if !outcomeUnknown(enqueueErr, enqueueExpired) {
 				return Outcome{}, refusalFor(ctx, EnqueueFailed, enqueueErr)
 			}
-			var confirmed bool
-			if st, confirmed, exitErr = confirmEnqueue(ctx, opts, c, clock, deadline, post); exitErr != nil {
-				// The mutation's own reply named a queue entry, so GitHub confirmed
-				// the enqueue even though the refresh could not be read. Reporting a
-				// lookup failure here discards that confirmation and invites the
-				// operator to repeat a write that already landed.
-				if enqueueEntry != nil && exitErr.Kind != Interrupted {
-					return confirmedButUnrefreshed(opts.Wait, *enqueueEntry)
-				}
+		}
+		// The refresh is one read either way: whether the mutation reported an
+		// ending is a question about the write, and this read is what says where
+		// the pull request is now.
+		var confirmed bool
+		if st, confirmed, exitErr = confirmEnqueue(ctx, opts, c, clock, deadline, post); exitErr != nil {
+			// The mutation's own reply named a queue entry, so GitHub confirmed the
+			// enqueue even though the refresh could not be read. Reporting a lookup
+			// failure here discards that confirmation and invites the operator to
+			// repeat a write that already landed.
+			if enqueueEntry == nil || exitErr.Kind == Interrupted {
 				return Outcome{}, exitErr
 			}
+			// A waiting run keeps its wait. The queue can still merge or drop this
+			// pull request, and every read that answers from here on is a newer
+			// observation than the mutation's own reply, so the wait polls from the
+			// confirmed position and prefers whatever it sees. The confirmed
+			// position is the fallback for a budget that expires without a newer
+			// answer -- including one whose reads kept failing -- because GitHub
+			// did put the pull request there.
+			//
+			// The mutation asks for the position only, so its reply carries no
+			// state. The verdict says the state was not read rather than printing
+			// an empty one. A state the reply did carry is kept as it is.
+			entry := *enqueueEntry
+			if entry.State == "" {
+				entry.State = absent
+			}
+			st = Status{Entry: &entry}
+			known.confirmed = st.Entry
+		} else {
 			known.observe(st, confirmed)
 			if st.State == mergedState {
 				return Outcome{Kind: Merged, SHA: st.MergeSHA()}, nil
 			}
 			if st.Entry == nil {
 				if enqueueEntry == nil {
-					// No entry then and none now: the mutation did not land, and the
-					// honest report is that the enqueue could not be confirmed.
-					return Outcome{}, refusalFor(ctx, EnqueueFailed, enqueueErr)
+					if enqueueErr != nil {
+						// No entry then and none now: the mutation did not land, and
+						// the honest report is that the enqueue could not be confirmed.
+						return Outcome{}, refusalFor(ctx, EnqueueFailed, enqueueErr)
+					}
+					return Outcome{}, &ExitError{Kind: EnqueueLeftNoEntry, PRState: st.State}
 				}
 				// The mutation's reply named an entry and the read finds none, so the
 				// queue took the entry and removed it: that is a drop, not a failed
 				// mutation, and the drop diagnostics are what the operator needs.
 				return dropOutcome(ctx, opts, st, c, clock.Now)
 			}
-		} else {
-			var confirmed bool
-			if st, confirmed, exitErr = confirmEnqueue(ctx, opts, c, clock, deadline, post); exitErr != nil {
-				// Same rule on the branch where the mutation reported no error: when
-				// its reply named an entry, the enqueue is confirmed and only the
-				// refresh failed. That is "queued, current state unverified", not
-				// "nothing was read".
-				if enqueueEntry != nil && exitErr.Kind != Interrupted {
-					return confirmedButUnrefreshed(opts.Wait, *enqueueEntry)
-				}
-				return Outcome{}, exitErr
-			}
-			known.observe(st, confirmed)
-		}
-		if st.State == mergedState {
-			return Outcome{Kind: Merged, SHA: st.MergeSHA()}, nil
-		}
-		if st.Entry == nil {
-			if enqueueEntry == nil {
-				return Outcome{}, &ExitError{Kind: EnqueueLeftNoEntry, PRState: st.State}
-			}
-			// The enqueue landed and the entry is gone before this run could read it:
-			// a drop, with the diagnostics the queue's own reason supplies.
-			return dropOutcome(ctx, opts, st, c, clock.Now)
 		}
 	} else if opts.Jump {
 		// The jump rides on the enqueue call, which a queued PR does not get.
@@ -511,6 +510,19 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 			break
 		}
 		if exitErr != nil {
+			// The operator's stop outranks every position this run holds.
+			if exitErr.Kind == Interrupted {
+				return Outcome{}, exitErr
+			}
+			// A run the enqueue itself confirmed keeps waiting: a failed poll costs
+			// it a newer observation, not the position GitHub named, and the wait it
+			// was asked for has not run out. Ending here reports a lookup failure
+			// with most of the wait unspent, and the merge or drop that follows is
+			// never observed. Only the run with no confirmed position is over when a
+			// poll fails.
+			if known.confirmed != nil {
+				continue
+			}
 			return Outcome{}, exitErr
 		}
 		if merged {
@@ -571,8 +583,8 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 			//
 			// An allowance that ran out is the other surviving ending, and it does not
 			// reach here: observe() reports it as expired, handled above.
-			if known.answered {
-				return known.ending()
+			if timedOut, notRead := known.ending(); notRead == nil {
+				return timedOut, nil
 			}
 			return Outcome{}, exitErr
 		}
@@ -622,6 +634,15 @@ type queueKnowledge struct {
 	answered bool
 	// st is the latest answer, which is what the timeout verdict names.
 	st Status
+	// confirmed is the entry GitHub's own mutation reply named, when the read
+	// after it could not be made. It is a write GitHub performed, so the position
+	// stands whatever the reads that follow do; the state beside it was never
+	// read, because the mutation asks for the position only.
+	//
+	// It is the fallback and not an answer: every read that completes replaces it
+	// through observe, and it is what the verdict names only when the wait ends
+	// without one.
+	confirmed *QueueEntry
 }
 
 // observe records one completed read. afterDeadline is when the ANSWER arrived,
@@ -629,8 +650,12 @@ type queueKnowledge struct {
 // answered after it is a post-deadline observation, and reading the clock before
 // the call recorded the intent of the read instead of its result -- so an
 // enqueue accepted first and confirmed second was reported as never confirmed.
+//
+// A completed read supersedes the mutation's own reply: the fallback exists for
+// a run with no answer since the enqueue, and an answer is one.
 func (k *queueKnowledge) observe(st Status, afterDeadline bool) {
 	k.st = st
+	k.confirmed = nil
 	if afterDeadline {
 		k.answered = true
 	}
@@ -645,10 +670,17 @@ func (k *queueKnowledge) observe(st Status, afterDeadline bool) {
 // the loop -- ends by asking it, so a run that has answered the question once
 // cannot be made to answer it again.
 func (k *queueKnowledge) ending() (Outcome, *ExitError) {
-	if !k.answered {
-		return Outcome{}, lookupNotRead()
+	if k.answered {
+		return timedOutAt(k.st), nil
 	}
-	return timedOutAt(k.st), nil
+	// A run the enqueue itself confirmed is not one that read nothing: GitHub
+	// named where it put the pull request. The verdict names that position and
+	// says the state was not read, rather than reporting the whole run unread
+	// and sending the operator to repeat a wait they already spent.
+	if k.confirmed != nil {
+		return timedOutAt(Status{Entry: k.confirmed}), nil
+	}
+	return Outcome{}, lookupNotRead()
 }
 
 // timedOutAt is the timeout verdict for a status read after the deadline: the
@@ -728,36 +760,6 @@ func startupProbeEnding(ctx context.Context, probeErr *ExitError) *ExitError {
 		return nil
 	}
 	return probeErr
-}
-
-// confirmedButUnrefreshed reports the position the mutation's own reply named when
-// the read after it failed.
-//
-// The mutation is the observation that matters: GitHub answered with the queue
-// entry it created, which is a confirmed write. What failed is the refresh, and a
-// refresh that could not be read does not unconfirm the write. Reporting the
-// lookup failure instead discards a position the run holds and tells the operator
-// nothing was decided about an enqueue that landed -- the sharpest case being a
-// retried `--jump`, which the queue then refuses because the PR is already there.
-//
-// The verdict depends on what was asked for, and neither branch invents a state
-// the mutation did not report:
-//
-//   - `--wait 0` asked where the PR went, and the mutation's reply answered:
-//     Queued at that position, exit 0.
-//   - A waiting run asked to be told when the queue finished, and this run cannot
-//     read the queue any further. Reporting Queued there would claim a wait that
-//     never ran, so it reports the timeout verdict at the confirmed position --
-//     exit 1, which the documented workflow repeats. That is the honest report:
-//     the PR is queued at N and nothing newer could be read.
-//
-// A cancellation never reaches here: the caller checks Interrupted first, because
-// an operator who stopped the wait did not ask for a verdict.
-func confirmedButUnrefreshed(wait time.Duration, entry QueueEntry) (Outcome, *ExitError) {
-	if wait <= 0 {
-		return Outcome{Kind: Queued, Position: entry.Position}, nil
-	}
-	return timedOutAt(Status{Entry: &entry}), nil
 }
 
 // startupNotRead is the refusal for a run whose first lookups could not answer

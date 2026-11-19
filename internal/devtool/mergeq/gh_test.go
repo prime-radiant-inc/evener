@@ -126,7 +126,10 @@ func fixtureBaseCandidates() []string {
 //     permission is the `group::` line, capped by the mask, and a named user or
 //     named group entry counts too: its effective permission is its own bits AND
 //     the mask, so a named rwx under a writable mask is a grant even though the
-//     mode's group position is the only place the mask is visible.
+//     mode's group position is the only place the mask is visible. That reading
+//     is POSIX-only. A Darwin native ACL has no mask, so the mode's group bits
+//     stay the owning group's own permission and are checked whether or not an
+//     ACL is present: a read-only native ACL does not close a 0770 group door.
 //   - Anything that cannot be read is untrusted. "The check failed" and "the
 //     answer is no" are different facts and only one is safe to act on.
 //   - Every component is inspected with Lstat, never Stat. The walk runs over
@@ -204,16 +207,23 @@ func fixtureComponentReplaceable(t *testing.T, component string) string {
 		// private.
 		return component + " has an access ACL this fixture could not evaluate, so no entry in it can be shown to be harmless"
 	} else {
-		switch granted, readable := aclForeignGrant(acl); {
+		grant, readable := aclForeignGrant(acl)
+		switch {
 		case !readable:
 			return component + " has an access ACL whose entries this fixture could not parse, so no entry in it can be shown to be harmless"
-		case granted != "":
-			return component + " has an access ACL entry that may write: " + granted + ", so another local user can replace entries in it"
-		default:
-			// No foreign entry is effective, so the ACL cannot be used to replace an
-			// entry here whatever the mode's group position says.
+		case grant.entry != "":
+			return component + " has an access ACL entry that may write: " + grant.entry + ", so another local user can replace entries in it"
+		case grant.syntax == aclSyntaxPOSIX:
+			// A POSIX ACL's mask is what the mode's group position holds once the ACL
+			// is present, so a clean group question there is the whole answer: the
+			// owning group's own permission was read from `group::` and capped by the
+			// mask above.
 			return ""
 		}
+		// A Darwin native ACL has no mask, so the mode's group position is still the
+		// owning group's own permission and remains independently effective. A
+		// nonsticky 0770 directory is writable by every member of that group however
+		// tidy its ACL entries are, so the check below still has to run.
 	}
 	if perm&0o020 != 0 {
 		return fmt.Sprintf("%s is writable by group %d with no sticky bit, so another member of that group can replace entries in it", component, stat.Gid)
@@ -447,19 +457,45 @@ func darwinACLEntries(listing string) (entries []string, ok bool) {
 	return entries, strings.Contains(listing, "total ") || len(entries) > 0 || strings.Contains(listing, "\n")
 }
 
-// aclForeignGrant reads either ACL syntax and names the first entry that lets
-// some account other than this user or root replace an entry in the directory,
-// plus whether the text could be read at all.
+// aclSyntax says which of the two ACL syntaxes a reader returned, because they
+// answer the mode's group position differently. The zero value is neither, and
+// the caller keeps the mode's group question for it: an ACL whose syntax nobody
+// classified cannot be the reason to stop asking.
+type aclSyntax int8
+
+const (
+	// aclSyntaxPOSIX is getfacl output, where the mode's group position is the
+	// ACL mask and `group::` is the owning group's own permission.
+	aclSyntaxPOSIX aclSyntax = iota + 1
+	// aclSyntaxDarwin is a Darwin native ACL from `ls -ldne`. It has no mask, so
+	// the mode's group position stays the owning group's permission.
+	aclSyntaxDarwin
+)
+
+// aclGrant is what a reader found in an ACL: the first entry that lets some
+// account other than this user or root replace an entry in the directory (empty
+// when there is none), which syntax the text was, and whether it could be read
+// at all.
+type aclGrant struct {
+	entry  string
+	syntax aclSyntax
+}
+
+// aclForeignGrant reads either ACL syntax and reports what could replace an
+// entry in the directory, plus whether the text could be read at all.
 //
 // The two syntaxes differ in exactly the way that made the Darwin path unsafe to
 // skip: getfacl caps a named entry with a mask on Linux, and Darwin has no mask
-// because its ACLs are NFSv4-style and apply as written. Both are read here so
-// the caller asks one question of the answer it got.
-func aclForeignGrant(text string) (entry string, readable bool) {
+// because its ACLs are NFSv4-style and apply as written. The syntax is part of
+// the answer rather than inferred again by the caller, so the group question is
+// answered from the ACL that was actually read.
+func aclForeignGrant(text string) (grant aclGrant, readable bool) {
 	if strings.Contains(text, ": ") && !strings.Contains(text, "::") {
-		return darwinACLForeignGrant(text)
+		entry, readable := darwinACLForeignGrant(text)
+		return aclGrant{entry: entry, syntax: aclSyntaxDarwin}, readable
 	}
-	return aclForeignWrite(text)
+	entry, readable := aclForeignWrite(text)
+	return aclGrant{entry: entry, syntax: aclSyntaxPOSIX}, readable
 }
 
 // darwinACLForeignGrant names the first Darwin ACL entry that grants a foreign
@@ -729,12 +765,15 @@ func TestGHKilledWhileWaitingForItsReplyIsNotARefusal(t *testing.T) {
 	t.Parallel()
 	dir := fixtureExecDir(t)
 	killed := filepath.Join(dir, "gh-killed")
+	// A token this test chose, so the check below pins that the reader is handed
+	// whatever gh wrote to stderr rather than that any wording survived.
+	const killDetail = "fixture-kill-detail-4f7c"
 	// SIGKILL, not TERM: this is the ending the enqueue deadline produces (the
 	// client cancels with a group KILL), and it is the one with no exit status.
 	// The diagnostic goes to stderr first, so a client that reads stderr alone
 	// calls this a refusal.
 	writeExecutable(t, killed, `#!/usr/bin/env bash
-printf 'gh: fetching the merge queue\n' >&2
+printf '%s\n' `+shellquote.Literal("gh: "+killDetail)+` >&2
 kill -9 "$$"
 `)
 	c := GHClient{GH: killed, GroupFile: filepath.Join(dir, "group")}
@@ -746,9 +785,11 @@ kill -9 "$$"
 	if errors.As(err, &refusal) {
 		t.Fatalf("error = %v, reported as a refusal: the process never reached an exit status, so its outcome is unknown and an enqueue that GitHub accepted must still be reconciled", err)
 	}
-	// The diagnostic is still carried, so the operator keeps what gh said.
-	if !strings.Contains(err.Error(), "fetching the merge queue") {
-		t.Fatalf("error = %v, want gh's stderr carried as detail: the diagnostic is context a reader needs and is not what makes this a refusal", err)
+	// The diagnostic is still carried, so the operator keeps what gh said. The
+	// opaque token is this fixture's own, so a pass means stderr crossed the
+	// classification rather than that the detail happened to be reused.
+	if !strings.Contains(err.Error(), killDetail) {
+		t.Fatalf("error = %v, want the stderr this fixture emitted (%s) carried as detail: the diagnostic is context a reader needs and is not what makes this a refusal", err, killDetail)
 	}
 
 	// And a call that DID run to its own exit and answered is still a refusal, with
@@ -771,8 +812,11 @@ exit 1
 	// GraphQL request with the response body on stdout, so the body -- not the exit
 	// status and not the diagnostic -- is what says GitHub declined.
 	transport := filepath.Join(dir, "gh-transport")
+	// Another opaque token, for the same reason: what is being pinned is that
+	// the transport's own words reach the reader.
+	const transportDetail = "fixture-transport-detail-93ab"
 	writeExecutable(t, transport, `#!/usr/bin/env bash
-printf 'gh: Post "https://api.github.com/graphql": read tcp: connection reset by peer\n' >&2
+printf '%s\n' `+shellquote.Literal("gh: Post https://api.github.com/graphql: read tcp: "+transportDetail)+` >&2
 exit 1
 `)
 	c = GHClient{GH: transport, GroupFile: filepath.Join(dir, "group")}
@@ -786,8 +830,8 @@ exit 1
 	if !errors.Is(err, ErrOutcomeUnknown) {
 		t.Fatalf("error = %v, want ErrOutcomeUnknown: a body-less failure is an unknown outcome, and calling it a failure is what reported an accepted enqueue as refused", err)
 	}
-	if !strings.Contains(err.Error(), "connection reset by peer") {
-		t.Fatalf("error = %v, want gh's own diagnostic carried: the operator needs to read what the transport said", err)
+	if !strings.Contains(err.Error(), transportDetail) {
+		t.Fatalf("error = %v, want the diagnostic this fixture emitted (%s) carried: the operator needs to read what the transport said", err, transportDetail)
 	}
 
 	// The refusal direction: a rejected GraphQL request answers with a body on
@@ -1736,6 +1780,47 @@ drwx------+ 2 501 staff 64 Nov 18 12:00 darwin-acl
 			t.Fatalf("%s was refused although its ACL grants nobody write and execute: a harmless ACL must stay usable (%s)", dir, reason)
 		}
 
+		// A read-only native ACL does not make the mode's group bits harmless.
+		// Darwin has no ACL mask, so the mode's group position is still the owning
+		// group's own permission and stays independently effective: a nonsticky
+		// 0770 directory is writable by every member of that group however tidy
+		// its ACL entries are, and another member can replace the entry the
+		// fixture executes a script from. Only a POSIX ACL replaces the group
+		// question with its mask.
+		groupWritable := widenedFixtureDir(t, "darwin-acl-group-writable")
+		if err := os.Chmod(groupWritable, 0o770); err != nil {
+			t.Fatalf("make %s group-writable: %v", groupWritable, err)
+		}
+		info, err := os.Stat(groupWritable)
+		if err != nil {
+			t.Fatalf("stat %s: %v", groupWritable, err)
+		}
+		if perm := info.Mode().Perm(); perm&0o020 == 0 || perm&0o002 != 0 || info.Mode()&os.ModeSticky != 0 {
+			t.Skipf("%s came back %04o, which is not the nonsticky group-writable-only directory this case needs", groupWritable, perm)
+		}
+		groupStat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			t.Skip("cannot read the owning group on this platform")
+		}
+		fixtureACLTools = aclTools{
+			listing: func(string) (string, error) {
+				return "drwxrwx---+ 2 501 staff 64 Nov 18 12:00 darwin-acl-group-writable\n", nil
+			},
+			listingWithACL: func(string) (string, error) {
+				return `total 0
+drwxrwx---+ 2 501 staff 64 Nov 18 12:00 darwin-acl-group-writable
+ 0: user:424242 allow read
+ 1: group:staff deny write
+`, nil
+			},
+			getfacl: func(string) (string, error) {
+				return "", errors.New("getfacl is not installed")
+			},
+		}
+		if reason := fixtureComponentReplaceable(t, groupWritable); reason == "" {
+			t.Fatalf("%s is group-writable with no sticky bit and its native ACL merely declines to add a grant: Darwin's native ACL does not turn the mode's group bits into a mask, so a member of group %d can replace an entry there and the fixture would execute their script", groupWritable, groupStat.Gid)
+		}
+
 		// And an ACL that exists but cannot be read at all relocates rather than
 		// passing: what cannot be shown harmless is not harmless.
 		fixtureACLTools = aclTools{
@@ -1951,6 +2036,346 @@ func exitedProcess(t *testing.T, code int) *os.ProcessState {
 		t.Fatalf("run the exit-%d probe: %v", code, err)
 	}
 	return cmd.ProcessState
+}
+
+// readDeadline is a context whose deadline fires when the fixture says so.
+//
+// The ending the deadline rule is about -- a wrapper that wrote a whole reply and
+// was then killed by the read's allowance during cleanup -- is a race with the
+// wall clock, and a test that staged it with a real timeout would depend on the
+// host being fast enough to start a shell before it fired. The moment is
+// therefore chosen: the wrapper signals that it has written, and the fixture then
+// reports the deadline. Everything else is real -- a subprocess, a group kill, and
+// the captured output -- and Err reports the same context.DeadlineExceeded a
+// timed-out context does.
+type readDeadline struct {
+	context.Context
+	done chan struct{}
+	err  error
+}
+
+func newReadDeadline(parent context.Context) *readDeadline {
+	return &readDeadline{Context: parent, done: make(chan struct{})}
+}
+
+func (d *readDeadline) Done() <-chan struct{} { return d.done }
+
+func (d *readDeadline) Err() error {
+	select {
+	case <-d.done:
+		return d.err
+	default:
+		return nil
+	}
+}
+
+// fire ends the context with err, as a deadline or a cancellation would.
+func (d *readDeadline) fire(err error) {
+	d.err = err
+	close(d.done)
+}
+
+// runUntilTheWrapperHasWritten starts call and fires its read deadline once the
+// wrapper has published the marker it writes after its reply, so the reply is in
+// the captured pipe before the group is killed.
+func runUntilTheWrapperHasWritten(t *testing.T, marker string, ending error, call func(context.Context) error) error {
+	t.Helper()
+	ctx := newReadDeadline(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- call(ctx) }()
+	testwait.Until(t, "the wrapper to write its reply", func() bool {
+		_, err := os.Stat(marker)
+		return err == nil
+	})
+	ctx.fire(ending)
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(30 * time.Second):
+		t.Fatal("the read did not return after its deadline fired")
+		return nil
+	}
+}
+
+// TestGHDeadlineTerminatedReadKeepsACompleteReply pins that a read whose own
+// allowance ended the process still answers when the reply arrived whole.
+//
+// The allowance bounds how long the caller waits for an answer, and it does not
+// unread one that arrived. A gh wrapper can write the whole reply and then be
+// killed during cleanup; run hands those bytes back beside the process error, and
+// a caller that discards them reports a timeout or a lookup failure for a query
+// that was answered -- the final observation reporting a timeout immediately
+// after receiving the MERGED reply is the sharpest case.
+//
+// Every read query is covered, because each one discarded its captured bytes the
+// same way.
+func TestGHDeadlineTerminatedReadKeepsACompleteReply(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		args   string
+		body   string
+		verify func(t *testing.T, c GHClient, marker string)
+	}{
+		{
+			name: "MergedCommit",
+			args: "pr view",
+			body: `{"state":"MERGED","mergeCommit":{"oid":"cafe"}}`,
+			verify: func(t *testing.T, c GHClient, marker string) {
+				t.Helper()
+				var sha string
+				var merged bool
+				err := runUntilTheWrapperHasWritten(t, marker, context.DeadlineExceeded, func(ctx context.Context) error {
+					var err error
+					sha, merged, err = c.MergedCommit(ctx, "prime-radiant-inc/evener", "6499")
+					return err
+				})
+				if err != nil {
+					t.Fatalf("MergedCommit: %v, want the MERGED reply the wrapper wrote before the deadline killed it: discarding it reports a timeout for a query that was answered", err)
+				}
+				if !merged || sha != "cafe" {
+					t.Fatalf("MergedCommit = %q, %v, want cafe, true", sha, merged)
+				}
+			},
+		},
+		{
+			name: "Status",
+			args: "api graphql",
+			body: `{"data":{"repository":{"pullRequest":{"id":"PR_6499","state":"MERGED","baseRefName":"main","mergeCommit":{"oid":"cafe"},"mergeQueueEntry":null}}}}`,
+			verify: func(t *testing.T, c GHClient, marker string) {
+				t.Helper()
+				var st Status
+				err := runUntilTheWrapperHasWritten(t, marker, context.DeadlineExceeded, func(ctx context.Context) error {
+					var err error
+					st, err = c.Status(ctx, "prime-radiant-inc/evener", "6499")
+					return err
+				})
+				if err != nil {
+					t.Fatalf("Status: %v, want the status reply that arrived before the deadline: the query was answered", err)
+				}
+				if st.ID != "PR_6499" || st.State != mergedState || st.Base != "main" {
+					t.Fatalf("Status = %+v, want PR_6499 MERGED on main", st)
+				}
+			},
+		},
+		{
+			name: "QueueDrop",
+			args: "api graphql",
+			body: `{"data":{"repository":{"pullRequest":{"timelineItems":{"nodes":[{"createdAt":"2026-11-17T12:00:00Z","reason":"failed_checks"}]}}}}}`,
+			verify: func(t *testing.T, c GHClient, marker string) {
+				t.Helper()
+				var event *DropEvent
+				err := runUntilTheWrapperHasWritten(t, marker, context.DeadlineExceeded, func(ctx context.Context) error {
+					var err error
+					event, err = c.QueueDrop(ctx, "prime-radiant-inc/evener", "6499")
+					return err
+				})
+				if err != nil {
+					t.Fatalf("QueueDrop: %v, want the removal event that arrived before the deadline", err)
+				}
+				if event == nil || event.Reason != "failed_checks" {
+					t.Fatalf("QueueDrop = %+v, want the failed_checks removal event", event)
+				}
+			},
+		},
+		{
+			name: "MergeGroupRuns",
+			args: "run list",
+			body: `[{"databaseId":7,"url":"https://example.invalid/run","conclusion":"failure","headBranch":"gh-readonly-queue/main/pr-6499-abc"}]`,
+			verify: func(t *testing.T, c GHClient, marker string) {
+				t.Helper()
+				var runs []GroupRun
+				err := runUntilTheWrapperHasWritten(t, marker, context.DeadlineExceeded, func(ctx context.Context) error {
+					var err error
+					runs, err = c.MergeGroupRuns(ctx, "prime-radiant-inc/evener")
+					return err
+				})
+				if err != nil {
+					t.Fatalf("MergeGroupRuns: %v, want the run list that arrived before the deadline", err)
+				}
+				if len(runs) != 1 || runs[0].DatabaseID != 7 {
+					t.Fatalf("MergeGroupRuns = %+v, want the one run the wrapper listed", runs)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := fixtureExecDir(t)
+			c, marker := writeHangingReply(t, dir, tc.body)
+			tc.verify(t, c, marker)
+		})
+	}
+}
+
+// TestGHDeadlineTerminatedReadKeepsNoUnusableReply pins the other side of the
+// rule: a deadline that killed a read whose reply was cut off, absent or not the
+// query's answer is still the read failing.
+//
+// The parser is what decides usable, so a body that decodes to "no such pull
+// request" is not an answer to report as one. Nothing is invented from bytes that
+// do not carry the query's result.
+func TestGHDeadlineTerminatedReadKeepsNoUnusableReply(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{name: "no reply at all", body: ""},
+		{name: "a reply cut off mid-write", body: `{"state":"MERG`},
+		{name: "a reply that names no pull request", body: `{"data":{"repository":{"pullRequest":null}}}`},
+		{name: "a decodable body the status query cannot use", body: `{"message":"Server Error","status":"502"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := fixtureExecDir(t)
+			c, marker := writeHangingReply(t, dir, tc.body)
+			st, err := statusUntilTheWrapperHasWritten(t, c, marker)
+			if err == nil {
+				t.Fatalf("Status accepted %q as a reply and returned %+v: a deadline that killed an unusable answer is the read failing", tc.body, st)
+			}
+		})
+	}
+}
+
+// TestGHDeadlineTerminatedReplyMustBeShapedLikeTheQuerysAnswer pins that a
+// recovered reply is the query's own answer, not merely decodable JSON.
+//
+// Every parser this client writes ignores fields it did not ask for, which is
+// what lets GitHub add them. It also means a gateway's diagnostic decodes
+// cleanly into any of them. Reading one as a result reports a state the queue was
+// never asked about -- "not merged" for a request that failed in front of
+// GitHub -- so the recovery asks for the shape as well as the syntax.
+func TestGHDeadlineTerminatedReplyMustBeShapedLikeTheQuerysAnswer(t *testing.T) {
+	t.Parallel()
+	const gateway = `{"message":"Server Error","status":"502"}`
+	for _, tc := range []struct {
+		name   string
+		body   string
+		verify func(t *testing.T, c GHClient, marker string)
+	}{
+		{
+			name: "MergedCommit refuses a body with no state",
+			body: gateway,
+			verify: func(t *testing.T, c GHClient, marker string) {
+				t.Helper()
+				err := runUntilTheWrapperHasWritten(t, marker, context.DeadlineExceeded, func(ctx context.Context) error {
+					_, _, err := c.MergedCommit(ctx, "prime-radiant-inc/evener", "6499")
+					return err
+				})
+				if err == nil {
+					t.Fatal("MergedCommit reported a non-merged pull request from a gateway body: the reply carries no state, so the pull request was never read")
+				}
+			},
+		},
+		{
+			name: "QueueDrop refuses a body with no data",
+			body: gateway,
+			verify: func(t *testing.T, c GHClient, marker string) {
+				t.Helper()
+				err := runUntilTheWrapperHasWritten(t, marker, context.DeadlineExceeded, func(ctx context.Context) error {
+					_, err := c.QueueDrop(ctx, "prime-radiant-inc/evener", "6499")
+					return err
+				})
+				if err == nil {
+					t.Fatal("QueueDrop read a gateway body as a timeline with no removal event: nothing in it answers the query")
+				}
+			},
+		},
+		{
+			name: "MergeGroupRuns refuses a body that is not a list",
+			body: `null`,
+			verify: func(t *testing.T, c GHClient, marker string) {
+				t.Helper()
+				err := runUntilTheWrapperHasWritten(t, marker, context.DeadlineExceeded, func(ctx context.Context) error {
+					_, err := c.MergeGroupRuns(ctx, "prime-radiant-inc/evener")
+					return err
+				})
+				if err == nil {
+					t.Fatal("MergeGroupRuns read a null body as an empty run list: the reply is not the list the query asked for")
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := fixtureExecDir(t)
+			c, marker := writeHangingReply(t, dir, tc.body)
+			tc.verify(t, c, marker)
+		})
+	}
+}
+
+// writeHangingReply installs a fake gh that writes body, creates a marker file,
+// and then hangs until the test's deadline or cancellation kills it.
+func writeHangingReply(t *testing.T, dir, body string) (GHClient, string) {
+	t.Helper()
+	marker := filepath.Join(dir, "replied")
+	gh := filepath.Join(dir, "gh")
+	writeExecutable(t, gh, `#!/usr/bin/env bash
+printf '%s' `+shellquote.Literal(body)+`
+: > `+shellquote.Literal(marker)+`
+while :; do sleep 0.05; done
+`)
+	return GHClient{GH: gh, GroupFile: filepath.Join(dir, "group")}, marker
+}
+
+// statusUntilTheWrapperHasWritten is runUntilTheWrapperHasWritten for a Status
+// read, which returns two values.
+func statusUntilTheWrapperHasWritten(t *testing.T, c GHClient, marker string) (Status, error) {
+	t.Helper()
+	var st Status
+	err := runUntilTheWrapperHasWritten(t, marker, context.DeadlineExceeded, func(ctx context.Context) error {
+		var err error
+		st, err = c.Status(ctx, "prime-radiant-inc/evener", "6499")
+		return err
+	})
+	return st, err
+}
+
+// TestGHDeadlineTerminatedReadStillHonoursCancellation pins that the operator's
+// cancellation outranks a reply, whatever the deadline rule does.
+//
+// The deadline rule covers the read's own allowance, which the operator did not
+// cause. A cancelled invocation is the operator stopping the call, and an answer
+// reported from it tells them a wait they stopped reached its own conclusion.
+func TestGHDeadlineTerminatedReadStillHonoursCancellation(t *testing.T) {
+	t.Parallel()
+	dir := fixtureExecDir(t)
+	c, marker := writeHangingReply(t, dir, `{"state":"MERGED","mergeCommit":{"oid":"cafe"}}`)
+	err := runUntilTheWrapperHasWritten(t, marker, context.Canceled, func(ctx context.Context) error {
+		_, _, err := c.MergedCommit(ctx, "prime-radiant-inc/evener", "6499")
+		return err
+	})
+	if err == nil {
+		t.Fatal("a cancelled read returned the reply as an answer: the operator stopped the call and an answer reported from it says the wait reached its own conclusion")
+	}
+}
+
+// TestGHNonzeroExitWithALiveContextKeepsItsError pins the third case the
+// deadline rule must not swallow: a call that reached its own non-zero exit
+// under a live context failed on its own terms.
+//
+// Nothing about the context killed it, so there is no deadline to blame and no
+// reason to read a body past the exit status: the call's failure is its answer,
+// and reporting the bytes beside it as a result would turn a stated failure into
+// an observation about the queue.
+func TestGHNonzeroExitWithALiveContextKeepsItsError(t *testing.T) {
+	t.Parallel()
+	dir := fixtureExecDir(t)
+	gh := filepath.Join(dir, "gh")
+	writeExecutable(t, gh, `#!/usr/bin/env bash
+printf '%s' '{"state":"MERGED","mergeCommit":{"oid":"cafe"}}'
+exit 1
+`)
+	c := GHClient{GH: gh, GroupFile: filepath.Join(dir, "group")}
+	sha, merged, err := c.MergedCommit(context.Background(), "prime-radiant-inc/evener", "6499")
+	if err == nil {
+		t.Fatalf("MergedCommit = %q, %v, nil from a call that exited non-zero: its own exit is its answer, and a body printed past it is not an observation about the queue", sha, merged)
+	}
+	if sha != "" || merged {
+		t.Fatalf("MergedCommit returned %q, %v beside the error: a failed call's bytes are not a result", sha, merged)
+	}
 }
 
 // TestGHNonzeroExitKeepsTheEntryTheMutationReported pins M3: a reply that both

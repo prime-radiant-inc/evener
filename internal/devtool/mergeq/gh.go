@@ -321,6 +321,73 @@ func cleanReplySurvives(err error, state *os.ProcessState, out []byte) bool {
 	return err != nil && state != nil && state.Success() && completeReply(out)
 }
 
+// answerAfterReadDeadline decodes a read's captured reply when the read's own
+// deadline ended it.
+//
+// The deadline bounds how long the caller waits for a reply, and it does not
+// unread one that arrived. A wrapper can write a whole reply and then be killed
+// during cleanup, and run returns those bytes beside the process error; a caller
+// that discards them reports a timeout for a query that was answered.
+//
+// Only the READ's deadline is covered. An invocation cancellation is the
+// operator stopping the call, and it outranks any answer -- which is why each
+// caller asks its invocation context before using a result. A non-zero exit
+// under a live context is the call's own failure, and it keeps its error.
+//
+// The query's parser is what decides usable. Bytes it accepts answer the query;
+// bytes it rejects -- a reply cut off mid-write, an empty stdout, a body that
+// names no pull request -- leave the read the failure it was. The parsers the
+// callers pass also check the reply is SHAPED like that query's answer, because
+// decodable JSON is not the same thing as an answer: a gateway in front of the
+// API answers with its own body, which no query here asked for and none of them
+// may read as a result.
+//
+// A refusal is not recovered: GitHub answered no, and no parser has to be asked
+// to see it. run has already classified it, and a reply naming no data is not a
+// result the caller could use anyway.
+func answerAfterReadDeadline[T any](ctx context.Context, err error, out []byte, parse func([]byte) (T, error)) (T, bool) {
+	var zero T
+	if err == nil || !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return zero, false
+	}
+	if _, isRefusal := errors.AsType[*RefusalError](err); isRefusal {
+		return zero, false
+	}
+	answer, parseErr := parse(out)
+	if parseErr != nil {
+		return zero, false
+	}
+	return answer, true
+}
+
+// errNotTheReply is a body that decodes but is not the query's own answer.
+var errNotTheReply = errors.New("the reply is not the answer to this query")
+
+// graphQLAnswered reports whether out is a GraphQL reply body at all.
+//
+// The queries all select inside `data`, so a body with no `data` object answered
+// nothing: a gateway's `{"message":"Server Error","status":"502"}` decodes into
+// any struct this client defines and names no result, and reading it as one
+// reports a state the queue was never asked about.
+func graphQLAnswered(out []byte) bool {
+	var body struct{ Data *json.RawMessage }
+	if err := json.Unmarshal(out, &body); err != nil {
+		return false
+	}
+	return body.Data != nil
+}
+
+// parseGraphQLAnswer is parse behind the GraphQL-shape check.
+func parseGraphQLAnswer[T any](parse func([]byte) (T, error)) func([]byte) (T, error) {
+	return func(out []byte) (T, error) {
+		if !graphQLAnswered(out) {
+			var zero T
+			return zero, errNotTheReply
+		}
+		return parse(out)
+	}
+}
+
 func (c GHClient) run(ctx context.Context, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, c.ghName(), args...)
 	cmd.SysProcAttr = procgroup.SysProcAttr()
@@ -489,6 +556,9 @@ func (c GHClient) Status(ctx context.Context, repo, pr string) (Status, error) {
 	out, err := c.run(ctx, "api", "graphql",
 		"-f", "query="+statusQuery,
 		"-f", "o="+owner, "-f", "n="+name, "-F", "p="+pr)
+	if answer, ok := answerAfterReadDeadline(ctx, err, out, parseGraphQLAnswer(parseStatus)); ok {
+		return answer, nil
+	}
 	if err != nil {
 		return Status{}, err
 	}
@@ -537,30 +607,63 @@ func parseStatus(out []byte) (Status, error) {
 // MergedCommit implements Client.
 func (c GHClient) MergedCommit(ctx context.Context, repo, pr string) (string, bool, error) {
 	out, err := c.run(ctx, "pr", "view", pr, "--repo", repo, "--json", "state,mergeCommit")
+	if answer, ok := answerAfterReadDeadline(ctx, err, out, parseMergedAnswer); ok {
+		return answer.sha, answer.merged, nil
+	}
 	if err != nil {
 		return "", false, err
 	}
 	return parseMergedCommit(out)
 }
 
+// mergedReply is `gh pr view --json state,mergeCommit`'s answer, decoded.
+type mergedReply struct {
+	sha    string
+	merged bool
+}
+
+// parseMergedAnswer decodes the reply into the pair parseMergedCommit reports,
+// and rejects a body that carries no state.
+//
+// `gh pr view --json state` always prints one, so a body without it is not this
+// query's answer: a gateway's diagnostic decodes into the struct and would
+// otherwise read as "not merged", which is a state the pull request was never
+// read for.
+func parseMergedAnswer(out []byte) (mergedReply, error) {
+	sha, merged, hasState, err := decodeMergedCommit(out)
+	if err != nil {
+		return mergedReply{}, err
+	}
+	if !hasState {
+		return mergedReply{}, errNotTheReply
+	}
+	return mergedReply{sha: sha, merged: merged}, nil
+}
+
 // parseMergedCommit decodes `gh pr view --json state,mergeCommit`. A state
 // other than MERGED is not an error and not a merge: the caller keeps waiting.
 func parseMergedCommit(out []byte) (string, bool, error) {
+	sha, merged, _, err := decodeMergedCommit(out)
+	return sha, merged, err
+}
+
+func decodeMergedCommit(out []byte) (string, bool, bool, error) {
 	var body struct {
 		State       string
 		MergeCommit *struct{ OID string }
 	}
 	if err := json.Unmarshal(out, &body); err != nil {
-		return "", false, fmt.Errorf("decode pr view: %w", err)
+		return "", false, false, fmt.Errorf("decode pr view: %w", err)
 	}
+	hasState := body.State != ""
 	if body.State != mergedState {
-		return "", false, nil
+		return "", false, hasState, nil
 	}
 	sha := absent
 	if body.MergeCommit != nil && body.MergeCommit.OID != "" {
 		sha = body.MergeCommit.OID
 	}
-	return sha, true, nil
+	return sha, true, hasState, nil
 }
 
 // Enqueue implements Client.
@@ -648,6 +751,9 @@ func (c GHClient) QueueDrop(ctx context.Context, repo, pr string) (*DropEvent, e
 	out, err := c.run(ctx, "api", "graphql",
 		"-f", "query="+dropQuery,
 		"-f", "o="+owner, "-f", "n="+name, "-F", "p="+pr)
+	if answer, ok := answerAfterReadDeadline(ctx, err, out, parseGraphQLAnswer(parseDropEvent)); ok {
+		return answer, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -700,8 +806,24 @@ func parseDropEvent(out []byte) (*DropEvent, error) {
 func (c GHClient) MergeGroupRuns(ctx context.Context, repo string) ([]GroupRun, error) {
 	out, err := c.run(ctx, "run", "list", "--repo", repo, "--event", "merge_group", "--limit", "100",
 		"--json", "databaseId,url,conclusion,headBranch")
+	if answer, ok := answerAfterReadDeadline(ctx, err, out, parseRunListAnswer); ok {
+		return answer, nil
+	}
 	if err != nil {
 		return nil, err
+	}
+	return parseRuns(out)
+}
+
+// parseRunListAnswer is parseRuns behind a check that the reply is a list.
+//
+// `gh run list --json` prints a JSON array, and a bare `null` decodes into a nil
+// slice without complaint. That is not this query's answer -- a body that names
+// no list was never the run list -- so it is rejected rather than reported as an
+// empty queue's worth of runs.
+func parseRunListAnswer(out []byte) ([]GroupRun, error) {
+	if trimmed := bytes.TrimSpace(out); len(trimmed) == 0 || trimmed[0] != '[' {
+		return nil, errNotTheReply
 	}
 	return parseRuns(out)
 }
