@@ -1,7 +1,9 @@
 // LivenessLine is the honest, quiet liveness indicator for the transcript
 // pane: "Quiet ~30s" rolling to "May be stalled - no updates for 3m 5s", or -
 // when the wait has a known explanation - that explanation instead of either:
-// "rate limited — attempt 9/11 — retrying in 60s — 14m on this call" while the
+// the shared quota-wait words while a model call waits out a usage limit
+// (answering first, outside any quiet gate), "rate limited — attempt 9/11 —
+// retrying in 60s — 14m on this call" while the
 // daemon is retrying a model call, or "Waiting on N subagents" while the
 // session's subagents are still running (design brief principle 6: a wait
 // explained is not a stall). That decision is driven
@@ -17,7 +19,7 @@
 // that activity stops.
 
 import type { ModelRetryState } from "@evener/appwire-client";
-import { quotaResumeRemainingMs } from "@evener/appwire-client/state/navigation";
+import { type QuotaWaitState, quotaWaitState } from "@evener/appwire-client/state/navigation";
 import { useSubagentCounts } from "../../../../stores/sessionActivity";
 import { useThreadsStore } from "../../../../stores/threads";
 import { requireClass } from "../../../../widgets/internal/requireClass";
@@ -58,20 +60,38 @@ const CLASS = {
   stalled: requireClass(styles.stalled, "livenessline.module.css", "stalled"),
 };
 
+// The receipt-clock fallback's phase from the runway its own announcement
+// still has: counting while any remains, pending once it has run out — the
+// same phase rule the absolute instant renders, on the only basis an
+// announcement without one can offer.
+function receiptWaitState(remainingMs: number | null): QuotaWaitState | null {
+  if (remainingMs === null) return null;
+  return remainingMs > 0 ? { phase: "counting", remainingMs } : { phase: "pending" };
+}
+
 export function LivenessLine({ lastFrameAt, now, active, sessionRef, turnId, retry, primaryModel }: LivenessLineProps) {
   const delegates = useThreadsStore((s) => {
     if (sessionRef === undefined) return undefined;
     return (s.threads.get(sessionRef) ?? s.watchedThreads.get(sessionRef))?.delegates;
   });
-  // The instant a usage-limit wait resumes comes from the thread read
-  // (ThreadModel.quotaResumesAt), so it is here after a reload with no live
-  // frame to have announced it. Read from the same store lookup as the
-  // delegates above rather than added to this component's props: the caller
-  // already passes the model's other liveness inputs, and this one is
-  // model-sourced in a way the ephemeral `retry` prop is not.
+  // The wait's deadline comes from the thread model itself
+  // (ThreadModel.quotaResumesAt): the read's failure summary holds it across
+  // a reload with no live frame to have announced it. Read from the same
+  // store lookup as the delegates above rather than added to this
+  // component's props: the caller already passes the model's other liveness
+  // inputs, and this one is model-sourced in a way the ephemeral `retry` prop
+  // is not.
   const quotaResumesAt = useThreadsStore((s) => {
     if (sessionRef === undefined) return undefined;
     return (s.threads.get(sessionRef) ?? s.watchedThreads.get(sessionRef))?.quotaResumesAt;
+  });
+  // The wait's stamp: present only when a stamped producer announced it. The
+  // chip's elapsed sample is measured ONLY then - an unstamped daemon (one
+  // that predates the stamp) sends a default zero it never measured, so the
+  // pane must not display time-since-announcement as the call's elapsed.
+  const quotaWaitStartedAt = useThreadsStore((s) => {
+    if (sessionRef === undefined) return undefined;
+    return (s.threads.get(sessionRef) ?? s.watchedThreads.get(sessionRef))?.quotaWaitStartedAt;
   });
   const turnRunning = useRunningSubagentCount(
     turnId === undefined ? undefined : turnScopeKey(sessionRef, turnId),
@@ -96,48 +116,94 @@ export function LivenessLine({ lastFrameAt, now, active, sessionRef, turnId, ret
     groupElapsedMs: retry.groupElapsedMs,
     inProgress: lastFrameAt > retry.receivedAt || now - retry.receivedAt >= retry.delayMs,
   };
-  // The countdown rule is the shared one the rail row uses, so both surfaces
-  // agree on when a wait is over; a wait whose instant has passed explains
-  // nothing and leaves the ordinary decision below.
-  const fromRead = quotaResumeRemainingMs(quotaResumesAt, now);
+  // The countdown rule is the shared tri-state one every surface reads, so
+  // the pane and the row agree on the wait's state. The deadline the read
+  // carried is absolute, and while the model holds it, it is the WHOLE
+  // countdown: past it the wait is pending — the daemon keeps serving the
+  // wait's own summary with its original instant while the wait stands (a
+  // delegate held at its reset while every execution slot is occupied can
+  // stay waiting for hours), so a passed deadline is still a live wait, and
+  // no client clock may end it.
+  const fromRead = quotaWaitState(quotaResumesAt, now);
   // A pane OPEN when the limit hits gets only the live retry, and that
   // notification never invalidates history, so no read has set an instant for
-  // it (ThreadModel.quotaResumesAt is snapshot-only). Without this the wait
-  // would still render as the retry line's seconds countdown and then as
-  // unexplained silence - the very reading this issue is about - for the whole
-  // wait, until something happened to force a reload. `delayMs` is how long
-  // the call waits from `receivedAt`, both on this client's clock, so the
-  // distance to `now` needs no daemon clock and is off only by delivery
-  // latency. The read-sourced instant wins while it is still ahead: it is
-  // absolute, where this is a countdown from a message a reconnect could have
-  // delivered hours late. A read instant already past says that wait is over,
-  // which leaves a later retry free to speak for itself.
+  // it yet. Without this the wait would render as the retry line's own
+  // seconds countdown and then as unexplained silence - the very reading this
+  // issue is about - for the whole wait. `delayMs` is how long the call waits
+  // from `receivedAt`, both on this client's clock, so the distance to `now`
+  // needs no daemon clock and is off only by delivery latency.
   //
-  // The wait ends on the retry's OWN facts: its own countdown running out, or
-  // the reducer replacing it with the daemon's no-delay retry. It must NOT end
-  // on `lastFrameAt`, which is RetryWait's rule for a short backoff but wrong
-  // here: a six-hour wait sees frames that have nothing to do with the waiting
-  // call, and every thread-scalar frame restamps lastFrameAt (a finished
-  // background job, a delegate row update, a queue change - reducer.ts's
-  // THREAD_SCALAR_ONLY_METHODS). Keying on it would drop the chip the moment
-  // any of those landed and fall back to the retry text and then to silence,
-  // which is the reading this issue forbids.
+  // The receipt clock is a FALLBACK ONLY, and only while the model holds no
+  // absolute deadline at all (quotaWaitState returned null). It is never a
+  // second life for a passed one: an unstamped start installs no deadline
+  // (the reducer's own rule), so this fallback serves only the pane-open
+  // case, and once its own delay has run out the wait reads pending exactly
+  // as the absolute one does — a late announcement with receipt runway can
+  // never leap the line back to a countdown past a deadline the model knows
+  // has passed (scenario 11).
   //
-  // A retry outlives its turn (modelRetry is not cleared on Stop), so the
-  // guard against showing a dead turn's wait is the retry's own turn identity
-  // rather than any frame clock: only a retry naming THIS pane's running turn
-  // speaks for it.
-  const liveRemaining =
+  // The wait never ends on `lastFrameAt`: that is RetryWait's rule for a
+  // short backoff, but a six-hour wait sees unrelated frames (a finished
+  // job, a delegate row) restamp it constantly. Only the daemon ends a wait
+  // - the zero-delay wake, a turn boundary, or a read showing none - and
+  // the model fields those clear are what this reads. A retry outlives its
+  // turn (modelRetry is not cleared on Stop), so the guard against showing
+  // a dead turn's wait is the retry's own turn identity, never a frame
+  // clock: only a retry naming THIS pane's running turn speaks for it.
+  const receiptRunwayMs =
+    fromRead === null &&
     retry !== undefined &&
     retry.errorClass === "quota_exceeded" &&
     retry.delayMs > 0 &&
     retry.turnId !== undefined &&
-    retry.turnId === turnId &&
-    now - retry.receivedAt < retry.delayMs
+    retry.turnId === turnId
       ? retry.delayMs - (now - retry.receivedAt)
+      : null;
+  const liveWait = receiptWaitState(receiptRunwayMs);
+  // One time basis per wait: the absolute deadline the model holds wins over
+  // any receipt-clock fallback whenever it exists, including past-reset —
+  // a wait with a known deadline never re-derives its phase from a timer.
+  const waitState = fromRead ?? liveWait;
+  // The wait's own chip metadata: the model tag, the elapsed sample, and the
+  // receipt instant the advance keys on, all from the announcement that
+  // established the wait. The stamp matching is the reducer's fold (an
+  // equal-stamp start fills the chip; the wake retires it with the wait; a
+  // replacement retires the replaced turn's chip), so the quota chip the
+  // model holds beside a standing wait is that wait's own announcement.
+  // This narrows what reaches the line by the ownership the chip itself
+  // carries: only a chip naming THIS pane's running turn may speak for the
+  // wait. A snapshot-only wait (deadline from a read, no live announcement)
+  // carries neither tag nor elapsed - the snapshot cannot attribute them.
+  const chipMatchesWait =
+    retry !== undefined &&
+    retry.errorClass === "quota_exceeded" &&
+    waitState !== null &&
+    retry.turnId !== undefined &&
+    retry.turnId === turnId;
+  // Elapsed advances from the announcement's receipt instant, clamped so it
+  // never goes negative across the pane's tick boundary (the tick can land
+  // marginally before the receipt stamp a later frame recorded) - but only a
+  // MEASURED sample may display. The stamp is the discriminator: a stamped
+  // announcement's sample is real (including a valid zero), where an
+  // unstamped daemon's default zero measures nothing and would display pure
+  // time-since-announcement as the call's elapsed. The legacy wait itself is
+  // unaffected: its countdown and its pending phase stand; only the elapsed
+  // attribution is refused.
+  const chipElapsedMs =
+    chipMatchesWait && quotaWaitStartedAt !== undefined
+      ? Math.max(0, retry.groupElapsedMs + (now - retry.receivedAt))
       : undefined;
-  const remaining = fromRead ?? (liveRemaining !== undefined && liveRemaining > 0 ? liveRemaining : null);
-  const quotaWait: QuotaWait | undefined = remaining === null ? undefined : { remainingMs: remaining };
+  const quotaWait: QuotaWait | undefined =
+    waitState === null
+      ? undefined
+      : {
+          passedReset: waitState.phase === "pending",
+          ...(waitState.phase === "counting" ? { remainingMs: waitState.remainingMs } : {}),
+          ...(chipMatchesWait && retry.model !== undefined && retry.model !== primaryModel
+            ? { model: retry.model }
+            : {}),
+          ...(chipElapsedMs !== undefined ? { elapsedMs: chipElapsedMs } : {}),
+        };
   const { level, text } = describeLiveness(now - lastFrameAt, active, runningSubagents, retryWait, quotaWait);
   if (level === "none" || text === null) return null;
 
@@ -145,6 +211,9 @@ export function LivenessLine({ lastFrameAt, now, active, sessionRef, turnId, ret
     <div
       data-testid="liveness-line"
       data-level={level}
+      // The quota wait's phase, as a fact rather than a sentence: the level
+      // says a wait stands, this says which half of it the reader sees.
+      data-passed-reset={level === "quota" && quotaWait?.passedReset === true ? "true" : undefined}
       className={level === "stalled" ? `${CLASS.line} ${CLASS.stalled}` : CLASS.line}
     >
       {text}

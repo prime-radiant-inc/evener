@@ -302,18 +302,37 @@ export const findSessionNode = selectSessionSummary;
 
 /** How long until a call waiting out a provider usage limit resumes by
  * itself, given the instant it resumes and the current time; null when it is
- * not waiting: no instant was named, or that instant has passed. A passed
- * time is not shown because the call resumes then, and the surface may
- * refresh a little after it.
+ * not waiting: no instant was named, or that instant has passed and the wait
+ * no longer stands (the wake that ended it, or a read showing no wait).
+ * While the wait still stands past its instant — a delegate held at the
+ * reset while every execution slot is occupied — the caller reads
+ * quotaWaitState for the pending rendering instead of this countdown-only
+ * view.
  *
  * One rule for both holders of the instant: a navigation row's failure
  * (`resumes_at`, an ISO string) and a thread read's ThreadModel
  * (`quotaResumesAt`, the same instant already converted). Neither parses the
  * other's shape. */
 export function quotaResumeRemainingMs(resumesAt: string | undefined, nowMs: number): number | null {
+  const state = quotaWaitState(resumesAt, nowMs);
+  return state?.phase === "counting" ? state.remainingMs : null;
+}
+
+/** A recorded quota wait's phase, tri-state by the presence of the deadline:
+ * counting while the instant is still ahead, pending once it has passed and
+ * only the daemon can end the wait (the wake, a turn boundary, or a read
+ * showing no wait). Null only when no instant is recorded at all — the
+ * countdown and the pending rendering share one lifetime, so neither may
+ * resurrect a wait the daemon already ended, and a deadline that has passed
+ * can never be outrun by a later-arriving message's own runway.
+ */
+export type QuotaWaitState = { phase: "counting"; remainingMs: number } | { phase: "pending" };
+
+export function quotaWaitState(resumesAt: string | undefined, nowMs: number): QuotaWaitState | null {
   const parsed = parseTimestampMs(resumesAt);
-  if (parsed === undefined || parsed <= nowMs) return null;
-  return parsed - nowMs;
+  if (parsed === undefined) return null;
+  if (parsed <= nowMs) return { phase: "pending" };
+  return { phase: "counting", remainingMs: parsed - nowMs };
 }
 
 /** quotaResumeRemainingMs for a navigation row: the summary rides a working
@@ -327,6 +346,14 @@ export function quotaWaitRemainingMs(session: NavigationSessionSummary, nowMs: n
  * itself, so the words say when instead of what went wrong. */
 export function waitingForQuotaText(remainingMs: number): string {
   return `Waiting for quota · resumes in ${compactDuration(remainingMs)}`;
+}
+
+/** The same wait's words once its reset instant has passed and the daemon
+ * still holds the wait — the retry is owed to the call, not to the clock,
+ * and may queue for an execution slot behind other drives. Crossing the
+ * reset changes the promise, never the wait itself. */
+export function passedQuotaResetText(): string {
+  return "Waiting for quota · reset passed, retry pending";
 }
 
 /** The subagent counts a row's tally chip shows, or null when there is

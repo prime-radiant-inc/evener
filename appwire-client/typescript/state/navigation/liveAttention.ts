@@ -11,7 +11,7 @@ import { quietState } from "../../sessionActivity";
 import { type AttentionClass, approvalWaiting, attentionState } from "../../sessionAttention";
 import { taskSettledCount } from "../../taskListData";
 import type { NavigationSessionSummary, SessionActivity } from "../../types.gen";
-import { quotaWaitRemainingMs, subagentTallyToShow, waitingForQuotaText } from "./selectors";
+import { passedQuotaResetText, quotaWaitState, subagentTallyToShow, waitingForQuotaText } from "./selectors";
 
 export type BoardState = AttentionClass;
 
@@ -325,15 +325,24 @@ function workingWhyLine(row: NavigationSessionSummary, activity: SessionActivity
  * Board polls evener/activity/read); omitting them keeps every state exactly
  * as it read before S5, including a working row's pre-S5 fallback
  * (workingActivity). A row whose model call waits out a usage limit says
- * when it resumes while that time is still ahead. */
+ * when it resumes while that time is still ahead, and past the instant says
+ * the retry is pending while the row's summary still names the wait: the
+ * daemon keeps serving the wait's summary until the wake, a turn boundary,
+ * or the wait's end clears it, so a passed instant is still a live wait and
+ * the row must not fall back to "Working" beside one. */
 export function whyLine(
   item: ClassifiedRow,
   activity?: SessionActivity,
   msSinceReadMs = 0,
   nowMs = Date.now(),
 ): WhyLine | null {
-  const quotaWait = quotaWaitRemainingMs(item.row, nowMs);
-  if (quotaWait !== null) return { kind: "quota", text: waitingForQuotaText(quotaWait) };
+  const quota = quotaWaitState(item.row.failure?.resumes_at, nowMs);
+  if (quota !== null) {
+    return {
+      kind: "quota",
+      text: quota.phase === "pending" ? passedQuotaResetText() : waitingForQuotaText(quota.remainingMs),
+    };
+  }
   if (item.state === "working")
     return activity ? workingWhyLine(item.row, activity, msSinceReadMs) : workingActivity(item.row);
   const reason = REASONS[item.state];
