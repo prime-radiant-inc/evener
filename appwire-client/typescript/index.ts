@@ -651,7 +651,7 @@ export {
 } from "./spawnPluginSelectionState";
 export type { AdvancedFieldValue, AdvancedValues, ChipScalars } from "./spawnSchema";
 export { collectAdvancedOverrides, perLaunchEvenerOptions, resolveScalars } from "./spawnSchema";
-export type { StableDelegateState } from "./stableDelegate";
+export type { DelegateWaitFields, DelegateWaitOptions, StableDelegateState } from "./stableDelegate";
 export {
   delegateStatedIntent,
   delegateWaitText,
