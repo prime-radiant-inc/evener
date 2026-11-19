@@ -11,7 +11,13 @@ import {
 import { connectionStore } from "../../stores/connection";
 import { sessionActivitySnapshot } from "../../stores/sessionActivity";
 import { retainedTranscriptReadView } from "../session/transcript/transcriptReadView";
-import { associatedCascade, cascadeOrigin, cascadeOriginRef, recordCascadeOrigin } from "./inspectionOrigin";
+import {
+  associatedCascade,
+  cascadeOrigin,
+  cascadeOriginRef,
+  recordCascadeOrigin,
+  recordCascadeReturnedOrigin,
+} from "./inspectionOrigin";
 import {
   type CascadePath,
   type DelegateEdgeIntent,
@@ -175,6 +181,7 @@ export function returnFromAgentCascade(paneId: string): void {
       originLifetime?.alive &&
       conversationPaneLifetime(current) === originLifetime
     ) {
+      recordCascadeReturnedOrigin(current);
       workspaceStore.getState().focusPane(current.id);
       requestPaneFocus(current.id);
     }

@@ -177,7 +177,11 @@ export interface WorkspaceStoreState {
   // a subagent). Omitted, placement follows the default rule above. It only
   // affects a pane being CREATED: reopening an already-open pane resolves to
   // that pane wherever it currently sits. Only promotePane changes its slot.
-  openPane(type: PaneTypeId, params?: unknown, opts?: { keepExistingFocus?: boolean; slot?: PaneSlot }): string;
+  openPane(
+    type: PaneTypeId,
+    params?: unknown,
+    opts?: { keepExistingFocus?: boolean; focusNew?: boolean; slot?: PaneSlot },
+  ): string;
   togglePane(type: PaneTypeId, params?: unknown): { paneId: string; opened: boolean };
   // Makes (type, params) the one pane in the main slot, keeping that pane (and
   // its id, and everything mounted under it) only when it is already the same
@@ -749,9 +753,13 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
     const displaced = !refusesMain && type !== "welcome" && main?.type === "welcome" ? main : undefined;
     const slot: PaneSlot = !refusesMain && (main === undefined || displaced !== undefined) ? "main" : "secondary";
     const kept = displaced ? state.panes.filter((p) => p.id !== displaced.id) : state.panes;
+    const keepCreatedFocus =
+      opts?.focusNew === false &&
+      state.focusedPaneId !== null &&
+      presentedPanes(kept).some((pane) => pane.id === state.focusedPaneId);
     set({
       panes: [...kept, { id, type, params, slot, ...(composerSeatId === undefined ? {} : { composerSeatId }) }],
-      focusedPaneId: id,
+      focusedPaneId: keepCreatedFocus ? state.focusedPaneId : id,
     });
     return id;
   },

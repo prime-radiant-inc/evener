@@ -4,6 +4,16 @@ import { type OpenPaneRecord, onWorkspaceRestore, workspaceStore } from "../../s
 import { type SessionZoomParams, zoomIntentOf } from "./intent";
 
 const bindings = new WeakMap<PaneLifetime, PaneLifetime | null>();
+let returnedOrigin: PaneLifetime | null = null;
+
+export function recordCascadeReturnedOrigin(origin: OpenPaneRecord | null): void {
+  returnedOrigin = origin ? conversationPaneLifetime(origin) : null;
+}
+
+export function isCascadeReturnedOrigin(pane: OpenPaneRecord | undefined): boolean {
+  if (!pane || !returnedOrigin?.alive) return false;
+  return conversationPaneLifetime(pane) === returnedOrigin;
+}
 
 function isConversation(pane: OpenPaneRecord): boolean {
   const ref = refParam(pane.params);
@@ -70,6 +80,7 @@ export function associatedCascade(origin: OpenPaneRecord): OpenPaneRecord | null
 // Live queries follow the bound lifetime, so an identical replacement cannot
 // inherit the old inspector's Return destination.
 onWorkspaceRestore((panes) => {
+  returnedOrigin = null;
   for (const pane of panes) {
     const params = zoomIntentOf(pane);
     if (!params?.inspection) continue;
@@ -80,6 +91,12 @@ onWorkspaceRestore((panes) => {
 });
 
 workspaceStore.subscribe((state, previous) => {
+  if (returnedOrigin !== null) {
+    const focused = state.panes.find((pane) => pane.id === state.focusedPaneId);
+    if (!focused || !returnedOrigin.alive || conversationPaneLifetime(focused) !== returnedOrigin) {
+      returnedOrigin = null;
+    }
+  }
   if (state.panes === previous.panes) return;
   for (const pane of state.panes) {
     const params = zoomIntentOf(pane);

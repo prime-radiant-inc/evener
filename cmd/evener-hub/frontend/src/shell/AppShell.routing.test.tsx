@@ -12,6 +12,7 @@ import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } fr
 import { initNotifications, resetNotificationsForTests } from "../notifications";
 import { openDocBeside } from "../panes/doc/openDoc";
 import { enterAgentCascade, returnFromAgentCascade } from "../panes/zoom/actions";
+import { cascadeClient, cascadeContext } from "../panes/zoom/cascadeTestUtils";
 import { StubResizeObserver } from "../resizeObserverTestUtils";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { resetAuthStatusesStoreForTests } from "../stores/authStatuses";
@@ -1488,6 +1489,54 @@ test("deferred location preserves a restored secondary inspector and its real ce
   act(() => returnFromAgentCascade(cascadeId));
   expect(workspaceStore.getState().panes.map((pane) => pane.id)).toEqual([mainId, secondaryId]);
   expect(workspaceStore.getState().focusedPaneId).toBe(mainId);
+});
+
+test("closing an inspector tab preserves its unrelated secondary source and editor focus on a settled route", async () => {
+  const client = cascadeClient((ref) =>
+    cascadeContext(ref, ref === "local:unrelated-child" ? ["local:unrelated"] : []),
+  );
+  installLocationForRoute("local:main-session");
+  installLocationForRoute("local:other-route");
+  window.history.pushState({}, "", "/s/local%3Amain-session");
+  await act(async () => {
+    render(<AppShell client={client} />);
+  });
+  await waitFor(() => expect(refParam(workspaceStore.getState().mainPane()?.params)).toBe("local:main-session"));
+  const unrelatedId = await act(async () =>
+    workspaceStore.getState().openPane("session", { ref: "local:unrelated" }, { slot: "secondary" }),
+  );
+  await waitFor(() => expect(document.querySelector('[data-pane-scaffold="session:local:unrelated"]')).not.toBeNull());
+  const inspectorId = await act(async () =>
+    enterAgentCascade(
+      activityDelegate({
+        ownerRef: "local:unrelated",
+        childRef: "local:unrelated-child",
+        delegateId: "d-unrelated",
+      }),
+      unrelatedId,
+    ),
+  );
+  await screen.findByTestId("cascade-column");
+  const api = getDockviewApi();
+  if (!api) throw new Error("expected dockview api");
+  const inspectorPanel = api.getPanel(inspectorId);
+  if (!inspectorPanel) throw new Error("expected inspector panel");
+
+  await act(async () => {
+    inspectorPanel.api.close();
+  });
+  expect(workspaceStore.getState().panes.some((pane) => pane.id === inspectorId)).toBe(false);
+  expect(workspaceStore.getState().focusedPaneId).toBe(unrelatedId);
+  expect(api.activePanel?.id).toBe(unrelatedId);
+  const unrelatedPane = document.querySelector('[data-pane-scaffold="session:local:unrelated"]')?.parentElement;
+  const unrelatedEditor = unrelatedPane?.querySelector<HTMLElement>('[role="textbox"]');
+  if (!unrelatedEditor) throw new Error("expected unrelated source composer textbox");
+  expect(document.activeElement).toBe(unrelatedEditor);
+
+  // Fresh pathname navigation remains authoritative over the returned source.
+  await act(async () => navigate("/s/local%3Aother-route"));
+  await waitFor(() => expect(refParam(workspaceStore.getState().mainPane()?.params)).toBe("local:other-route"));
+  expect(workspaceStore.getState().focusedPaneId).toBe(workspaceStore.getState().mainPane()?.id);
 });
 
 test("a fresh child pathname waits for real location then focuses its existing conversation over inspection", async () => {

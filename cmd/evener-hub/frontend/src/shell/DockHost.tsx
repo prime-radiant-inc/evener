@@ -213,12 +213,9 @@ function positionFor(
 function ensureMainPane(): void {
   const ws = workspaceStore.getState();
   if (ws.mainPane() !== null) return;
-  const preservedFocus =
-    ws.focusedPaneId !== null && presentedPanes(ws.panes).some((pane) => pane.id === ws.focusedPaneId)
-      ? ws.focusedPaneId
-      : null;
-  ws.openPane("welcome");
-  if (preservedFocus !== null) workspaceStore.getState().focusPane(preservedFocus);
+  const hasSurvivingFocus =
+    ws.focusedPaneId !== null && presentedPanes(ws.panes).some((pane) => pane.id === ws.focusedPaneId);
+  ws.openPane("welcome", {}, hasSurvivingFocus ? { keepExistingFocus: true, focusNew: false } : undefined);
 }
 
 // The MAIN group's header never shows (Jesse: "I despise having the tab bar

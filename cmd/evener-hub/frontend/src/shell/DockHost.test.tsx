@@ -1720,8 +1720,7 @@ test("returning from a main-slot inspector keeps its surviving secondary source 
     await act(async () => {
       fireEvent.click(returnButton);
     });
-    await screen.findByText("No session open");
-    expect(workspaceStore.getState().mainPane()?.type).toBe("welcome");
+    await waitFor(() => expect(workspaceStore.getState().mainPane()?.type).toBe("welcome"));
     expect(workspaceStore.getState().focusedPaneId).toBe(mainId);
     expect(api.activePanel?.id).toBe(mainId);
     const originPane = document.querySelector('[data-pane-scaffold="session:root"]')?.parentElement;

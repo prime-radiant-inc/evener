@@ -14,6 +14,7 @@ import { requestComposerFocus } from "../panes/session/composer/composerFocus";
 import { conversationContextIncludes } from "../panes/session/transcript/openTranscript";
 import { isKnownSettingsSection, resolveSettingsSection } from "../panes/settings/sections";
 import { zoomParamsCoverConversation } from "../panes/zoom/cascadeCoverage";
+import { isCascadeReturnedOrigin } from "../panes/zoom/inspectionOrigin";
 import { type SessionZoomParams, zoomIntentOf } from "../panes/zoom/intent";
 import { startBackgroundTranscripts } from "../stores/backgroundTranscripts";
 import { useConnectionStore } from "../stores/connection";
@@ -324,7 +325,8 @@ function routePlacementIsApplied(
     focusedPane?.type === "sessionDetails" ||
     transcriptMatchesRoute(focusedPane) ||
     conversationMatchesRoute(focusedPane) ||
-    focusedCascadeConversation;
+    focusedCascadeConversation ||
+    isCascadeReturnedOrigin(rawFocused);
   const focusIsApplied = (paneId: string): boolean =>
     workspace.focusedPaneId === paneId || (allowFocusedCompanion && focusedCompanion) || focusedSeparatedInspection;
 
