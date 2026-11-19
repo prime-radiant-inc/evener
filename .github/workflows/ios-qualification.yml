@@ -61,7 +61,8 @@ jobs:
             "$PR_HEAD" "$MERGE" \
             scripts/native/ios/build-simulator.sh \
             scripts/native/ios/qualification \
-            scripts/native/ios/run-ui-tests.sh >> "$GITHUB_OUTPUT"
+            scripts/native/ios/run-ui-tests.sh \
+            scripts/native/ios/run-ui-journeys.sh >> "$GITHUB_OUTPUT"
       - name: Check out the chosen tree
         env:
           CHOSEN_REF: ${{ steps.tree.outputs.ref }}
@@ -93,8 +94,23 @@ jobs:
           npm ci --prefix appwire-client/typescript
       - name: Test qualification policy
         run: go test ./scripts/native/ios/qualification
-      - name: Build, inspect and qualify the real host and share extension
-        run: bash scripts/native/ios/build-simulator.sh --output "$QUALIFICATION_OUTPUT" --with-ui
+      - name: Build, verify and prepare the UI test products
+        run: bash scripts/native/ios/build-simulator.sh --output "$QUALIFICATION_OUTPUT"
+      # The app bundles must keep their executable bits and the xctestrun its
+      # relative product layout; artifact storage does not preserve file modes,
+      # so the products travel as one tarball and the journeys job extracts it.
+      - name: Package the products the journeys install and run
+        run: |
+          set -euo pipefail
+          cd "$QUALIFICATION_OUTPUT/DerivedData"
+          tar -czf "$QUALIFICATION_OUTPUT/ios-build-products.tar.gz" Build/Products
+          du -sh "$QUALIFICATION_OUTPUT/ios-build-products.tar.gz"
+      - name: Upload the build products for the journeys job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ios-build-products-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.QUALIFICATION_OUTPUT }}/ios-build-products.tar.gz
+          if-no-files-found: error
       - name: Upload public qualification diagnostics
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -104,10 +120,82 @@ jobs:
             ${{ env.QUALIFICATION_OUTPUT }}/*.log
             ${{ env.QUALIFICATION_OUTPUT }}/*.json
             ${{ env.QUALIFICATION_OUTPUT }}/*.plist
+            ${{ env.QUALIFICATION_OUTPUT }}/*.exit
             ${{ env.QUALIFICATION_OUTPUT }}/Podfile.lock.candidate
             ${{ env.QUALIFICATION_OUTPUT }}/Podfile.lock.diff
-            ${{ env.QUALIFICATION_OUTPUT }}/ui/*.log
-            ${{ env.QUALIFICATION_OUTPUT }}/ui/*.json
-            ${{ env.QUALIFICATION_OUTPUT }}/ui/*.exit
-            ${{ env.QUALIFICATION_OUTPUT }}/ui/ui.xcresult
+          if-no-files-found: warn
+
+  ui-journeys:
+    name: UI journeys
+    needs: [simulator-build]
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - name: Set the run-owned journey output path
+        run: |
+          printf 'JOURNEY_OUTPUT=%s/ios-journeys-%s-%s\n' "$RUNNER_TEMP" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
+          printf 'JOURNEY_PRODUCTS=%s/ios-journeys-products-%s-%s\n' "$RUNNER_TEMP" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
+      - name: Check out the merge ref with the PR head in its history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Choose the tested tree
+        id: tree
+        env:
+          PR_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          MERGE: ${{ github.sha }}
+        run: |
+          bash scripts/native/ios/qualification/checkout-ref.sh \
+            "$PR_HEAD" "$MERGE" \
+            scripts/native/ios/build-simulator.sh \
+            scripts/native/ios/qualification \
+            scripts/native/ios/run-ui-tests.sh \
+            scripts/native/ios/run-ui-journeys.sh >> "$GITHUB_OUTPUT"
+      - name: Check out the chosen tree
+        env:
+          CHOSEN_REF: ${{ steps.tree.outputs.ref }}
+        run: git checkout --force "$CHOSEN_REF"
+      - name: Select Xcode 26.6
+        run: sudo xcode-select --switch /Applications/Xcode_26.6.app
+      - name: Set up Go from repository policy
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.work
+          # No Go or npm cache: this workflow runs only on pull requests,
+          # whose saves serve only themselves (see "CI Caches" in
+          # docs/developing-evener/testing.md).
+          cache: false
+      - name: Set up Node 22.13.1
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          # The runtime pair embeds the frontend SPA, so this job pins the same
+          # Node version the build job uses. No Actions cache, for the same
+          # pull-request-only reason.
+          node-version: "22.13.1"
+      - name: Download the build products
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ios-build-products-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ios-build-products
+      - name: Restore the products layout
+        run: |
+          set -euo pipefail
+          mkdir -p "$JOURNEY_PRODUCTS"
+          tar -xzf "$RUNNER_TEMP/ios-build-products/ios-build-products.tar.gz" -C "$JOURNEY_PRODUCTS"
+      - name: Run the installed-app journeys
+        run: bash scripts/native/ios/run-ui-journeys.sh --products "$JOURNEY_PRODUCTS" --output "$JOURNEY_OUTPUT"
+      - name: Upload journey diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ios-journeys-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.JOURNEY_OUTPUT }}/*.log
+            ${{ env.JOURNEY_OUTPUT }}/*.json
+            ${{ env.JOURNEY_OUTPUT }}/ui/*.log
+            ${{ env.JOURNEY_OUTPUT }}/ui/*.json
+            ${{ env.JOURNEY_OUTPUT }}/ui/*.exit
+            ${{ env.JOURNEY_OUTPUT }}/ui/ui.xcresult
           if-no-files-found: warn
