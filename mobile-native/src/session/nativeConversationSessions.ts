@@ -16,7 +16,11 @@ import {
 	createConversationMutationPendingPort,
 	type ConversationMutationSubmitter,
 } from "../conversation/state/conversationMutation";
-import { createConversationService } from "../conversation/services/conversation";
+import {
+	createConversationService,
+	type ModelPickRequest,
+	ModelPickNotSentError,
+} from "../conversation/services/conversation";
 import { createDurableSubmitter, createNativeMutationHost, type NativeMutationHost } from "../nativeMutationHost";
 import {
 	getNativeMutationRuntime,
@@ -130,6 +134,10 @@ class SessionEntry implements NativeConversationSession {
 	#bindingGeneration = 0;
 	#retryAttemptBinding: number | null = null;
 	#readListeners = new Set<() => void>();
+	// The owner's own dispatch runs through the service's cold-pick path, so a
+	// resumed session that still reports cold would ask this entry to resume
+	// again. There is no second daemon to wake: such a pick was not sent.
+	#dispatchingPick = false;
 
 	constructor(options: {
 		hubId: string;
@@ -361,6 +369,10 @@ class SessionEntry implements NativeConversationSession {
 				return host?.beginRead(ref, expectedThreadId);
 			},
 			onReadComplete: (lease, response) => host?.reconcileRead(lease, response),
+			// The resume a cold pick needs recycles this exact binding, so the
+			// entry owns that pick: it is still here to open the identity the
+			// daemon resolved and to publish it to the mounted conversation.
+			runModelPick: (ref, pick) => this.#runModelPick(client, ref, pick),
 		});
 		this.#service = service;
 		const state = this.store.getState();
@@ -376,6 +388,45 @@ class SessionEntry implements NativeConversationSession {
 		// subscription below covers later thread opens, including /clear).
 		this.#bindPending();
 		void read.catch(() => undefined);
+	}
+
+	/** A cold pick's resume recycles the transport, so the provider rebinds this
+	 * entry before the daemon answers: the service that dispatches is the one
+	 * current after the resume, never the binding that asked. The resume can
+	 * also resolve a different identity, and the daemon will only accept the
+	 * pick on that one - so the entry follows it here, the same way a flush's
+	 * resume moves a mounted conversation, and leaves the draft behind on the
+	 * ref this entry was opened on. */
+	async #runModelPick(client: AppwireClientLike, threadRef: string, pick: ModelPickRequest): Promise<void> {
+		let service: NativeConversationService;
+		try {
+			if (this.#retired) throw new Error("This session is no longer open.");
+			if (this.#dispatchingPick) throw new Error("The session is still cold after its resume.");
+			const resumed = await client.resumeThread(threadRef);
+			const resolvedRef = resumed.thread.evener.ref === "" ? threadRef : resumed.thread.evener.ref;
+			const current = this.#service;
+			if (current === null) throw new Error("The hub is not connected.");
+			service = current;
+			if (resolvedRef !== this.store.getState().ref) {
+				// The authoritative read installs the resumed identity's authority
+				// on this binding, so the dispatch below is fenced on the daemon that
+				// will accept it.
+				await this.store.getState().openProjected(service, resolvedRef);
+				this.#runtime().publishIdentityChange({ hubId: this.hubId, from: threadRef, to: resolvedRef });
+			}
+		} catch (error) {
+			// Nothing has been written yet: the resume, the binding and the read
+			// that establishes the resumed authority all precede the frame.
+			throw new ModelPickNotSentError(error instanceof Error ? error.message : String(error));
+		}
+		// Outside the try: a failure here may be a dispatched pick the daemon
+		// applied, which the caller must not treat as unsent.
+		this.#dispatchingPick = true;
+		try {
+			await service.changeModel(pick.modelProvider, pick.model);
+		} finally {
+			this.#dispatchingPick = false;
+		}
 	}
 
 	#bindPending(): void {

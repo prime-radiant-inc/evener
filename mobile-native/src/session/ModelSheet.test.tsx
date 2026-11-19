@@ -158,7 +158,7 @@ function provide(session: MobileConversation, state: Partial<ControlsState> = {}
 		session,
 		controls: controls as unknown as SessionControls,
 		ready: true,
-		toast: vi.fn((message) => void calls.push(`toast:${message.text}`)),
+		toast: vi.fn(),
 		...over,
 	};
 	if (owner) modelHosts.release(sheetKey(HUB, REF), owner);
@@ -331,16 +331,13 @@ describe("choosing a model (spec 8.5)", () => {
 		expect(pressable(tree, "Claude Haiku 5")?.props.accessibilityState).toMatchObject({ selected: false });
 	});
 
-	it("changes the model, closes, and the session says it applies from the next turn", async () => {
-		const { calls } = provide(conversation());
+	it("changes the model, closes, and announces it once", async () => {
+		const { host, calls } = provide(conversation());
 		const tree = sheet();
 		act(() => pressable(tree, "Claude Haiku 5")?.props.onPress());
 		await settle();
-		expect(calls).toEqual([
-			"changeModel:anthropic/claude-haiku-5",
-			"goBack",
-			"toast:Model changed. Applies from the next turn.",
-		]);
+		expect(calls).toEqual(["changeModel:anthropic/claude-haiku-5", "goBack"]);
+		expect(host.toast).toHaveBeenCalledTimes(1);
 	});
 
 	it("closes on the already-selected row without sending, while the session is live", async () => {
@@ -646,8 +643,7 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 		const cold = await service.open(REF);
 		expect(cold.modelControlState.kind).toBe("unsupported");
 
-		const toasts: string[] = [];
-		const toast = vi.fn((message: { text: string }) => void toasts.push(message.text));
+		const toast = vi.fn();
 		const hostOwner = {};
 		owner = hostOwner;
 		let controls: SessionControls | null = null;
@@ -711,9 +707,10 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 			expectedInstanceId: RESUMED_AUTHORITY.instanceId,
 			expectedBootGeneration: RESUMED_AUTHORITY.bootGeneration,
 		});
-		// The daemon accepted the pick, so the sheet closed on it and said so.
+		// The daemon accepted the pick, so the sheet closed on it and the session
+		// announced it once.
 		expect(navigation.goBack).toHaveBeenCalledTimes(1);
-		expect(toasts).toEqual(["Model changed. Applies from the next turn."]);
+		expect(toast).toHaveBeenCalledTimes(1);
 
 		// The reconnected screen's own read is what shows the accepted model.
 		const resumedSession = await service.open(REF);

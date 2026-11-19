@@ -4,17 +4,30 @@
 // the wire client and the platform edges are test doubles - no fake store,
 // service or submitter stands in for the code under test.
 import "../conversationPlatform.testkit";
-import type { AppwireClientLike, Thread, ThreadReadResponse, TranscriptDisplayConfigV1 } from "@evener/appwire-client";
+import {
+	type AppwireClientLike,
+	modelControlDisplay,
+	type ModelControlSnapshot,
+	type Thread,
+	type ThreadReadResponse,
+	type TranscriptDisplayConfigV1,
+} from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { StrictMode, useLayoutEffect } from "react";
 import { act } from "react-test-renderer";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { NativeMutationRuntime, nativeMutationTargetKey } from "../nativeMutationRuntime";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import {
+	NativeMutationRuntime,
+	nativeMutationTargetKey,
+	type NativeMutationIdentityChange,
+} from "../nativeMutationRuntime";
 import { DraftDocument } from "../draftDocument";
 import { DraftRepository } from "../draftRepository";
+import { acceptedModelControl, PAST_CAPABILITIES } from "../modelControlTestUtils";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "../sqliteSync.testkit";
 import { render, settle, unmountMountedTrees } from "../renderNative.testkit";
 import { failureRowIdentity } from "../projectedRows";
+import { SessionControls } from "../sessionControls";
 import { DetailLevels } from "./detailLevels";
 import { errorAction } from "./errorAction";
 import {
@@ -679,6 +692,124 @@ describe("reopen", () => {
 });
 
 describe("client binding lifetime", () => {
+	it("settles a cold pick on the conversation its resume resolved", async () => {
+		// A cold pick resumes, and the resume's own reconnect replaces the entry's
+		// binding. The resolved ref is the one the daemon now serves, so the
+		// mutation must go there and the mounted conversation must follow it: a
+		// pick that stayed on the retired ref would close the sheet over a session
+		// nobody is showing.
+		const resolved = "ref-1-resolved";
+		const authority = { instanceId: "instance-resolved", bootGeneration: "test-boot" };
+		let accepted: ModelControlSnapshot | null = null;
+		const client = hub("ref-1");
+		client.on("thread/resume", () => ({ thread: thread(resolved) }));
+		client.on("thread/read", (params) => {
+			const ref = String((params as { ref: string }).ref);
+			if (ref !== resolved) {
+				const cold = thread("ref-1");
+				return {
+					thread: {
+						...cold,
+						status: { type: "notLoaded" },
+						evener: { ...cold.evener, capabilities: PAST_CAPABILITIES },
+					},
+				};
+			}
+			const live = thread(resolved);
+			return {
+				thread: {
+					...live,
+					evener: {
+						...live.evener,
+						instanceId: authority.instanceId,
+						capabilities: { ...PAST_CAPABILITIES, modelControlVersion: 1 },
+						modelControl: accepted ?? {
+							authority,
+							revision: 1,
+							active: {
+								modelProvider: "anthropic",
+								model: "claude-sonnet-5",
+								reasoningEffortLevels: [],
+								supportsReasoning: false,
+							},
+						},
+					},
+				},
+				bootGeneration: authority.bootGeneration,
+			};
+		});
+		client.on("thread/model/set", (params) => {
+			const response = acceptedModelControl(params);
+			accepted = response.modelControl ?? null;
+			return response;
+		});
+
+		connected(client);
+		const a = sessions.attach("hub-1", "ref-1");
+		await vi.waitFor(() => expect(a.entry.store.getState().status).toBe("open"));
+		const cold = a.entry.store.getState().conversation;
+		if (!cold) throw new Error("the cold read did not publish");
+		expect(cold.modelControlState.kind).toBe("unsupported");
+
+		// The reconnect a resume performs: the entry loses its binding and
+		// rebinds to the same client.
+		const resume = client.resumeThread.bind(client);
+		client.resumeThread = async (ref, options) => {
+			client.emitStateChange("reconnecting");
+			sessions.setConnection("hub-1", null);
+			client.emitStateChange("ready");
+			sessions.setConnection("hub-1", client);
+			return resume(ref, options);
+		};
+		const controls = new SessionControls(
+			a.entry.service!,
+			async () => {},
+			() => {},
+			() => true,
+			() => cold,
+			() => true,
+			{
+				data: [
+					{
+						provider: "anthropic",
+						model: "claude-haiku-5",
+						displayName: "Claude Haiku 5",
+						supportsVision: false,
+					},
+				],
+				recent: [],
+			},
+		);
+		// The process runtime is this suite's own (getNativeMutationRuntime is
+		// pointed at it), and subscribeIdentities is the seam the mounted
+		// conversation's subscribeNativeIdentities wires.
+		const changes: NativeMutationIdentityChange[] = [];
+		onTestFinished(runtime.subscribeIdentities((change) => changes.push(change)));
+
+		expect(await controls.changeModel("anthropic", "claude-haiku-5")).toBe(true);
+		await a.entry.readSettled();
+
+		const setCalls = client.calls.filter((call) => call.method === "thread/model/set");
+		expect(setCalls).toHaveLength(1);
+		expect(setCalls[0]?.params).toMatchObject({ ref: resolved });
+		// The mounted conversation follows the identity the resume resolved, which
+		// is what moves the screen off the ref the daemon retired.
+		expect(changes).toEqual([{ hubId: "hub-1", from: "ref-1", to: resolved }]);
+		expect(a.entry.store.getState().ref).toBe(resolved);
+		expect(modelControlDisplay(a.entry.store.getState().conversation!).model).toBe("claude-haiku-5");
+
+		// The reconnect already released the retired binding's own subscription:
+		// the resolved binding is the only holder left. A pick that reopened the
+		// retired service would hold a second lease on the resolved ref that the
+		// last view's release cannot reach, so the ref would never unsubscribe.
+		const unsubscribes = () =>
+			client.calls.filter((call) => call.method === "thread/unsubscribe").map((call) => call.params);
+		expect(unsubscribes()).toEqual([{ ref: "ref-1" }]);
+		a.release();
+		await settle();
+		expect(unsubscribes()).toEqual([{ ref: "ref-1" }, { ref: resolved }]);
+	});
+
 	it("a replaced client's held read cannot publish or reconcile the new binding", async () => {
 		const held = deferred<ThreadReadResponse>();
 		let oldReads = 0;
