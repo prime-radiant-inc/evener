@@ -219,11 +219,10 @@ func prepareGeneration(opts GenerateOptions) (*generationState, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Measured once here beside tool preparation so per-dispatch estimates never
-	// re-marshal the catalog, while accounting for the closed empty schema that
-	// strict-capable built-in OpenAI adapters emit for eligible parameterless
-	// tools.
-	toolDefsJSONBytes := toolCatalogJSONBytes(client, opts.Provider, opts.Model, toolDefs)
+	// Measured once here beside tool preparation as the declared catalog length;
+	// dispatch applies any adapter-specific parameterless-schema delta once on a
+	// shallow copy without touching credentials during preparation.
+	toolDefsJSONBytes := ToolsJSONBytes(toolDefs)
 	hasActiveTool := false
 	for _, t := range opts.Tools {
 		if t.Execute != nil {

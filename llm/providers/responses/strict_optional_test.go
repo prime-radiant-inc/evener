@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -817,6 +818,38 @@ func compileWireSchema(t *testing.T, schema map[string]any) *jsonschema.Schema {
 	return compiled
 }
 
+// assertAllNodesTyped mirrors Codex Responses Lite's explicit-type check from
+// agent/session_tools_hub_provider_schema_test.go.
+func assertAllNodesTyped(t *testing.T, schema map[string]any, path string) {
+	t.Helper()
+	if schema["type"] == nil {
+		t.Fatalf("%s: schema node has no explicit type: %#v", path, schema)
+	}
+	for _, keyword := range []string{"properties", "$defs", "definitions", "patternProperties"} {
+		if children, ok := schema[keyword].(map[string]any); ok {
+			for name, child := range children {
+				if sub, ok := child.(map[string]any); ok {
+					assertAllNodesTyped(t, sub, path+"."+keyword+"."+name)
+				}
+			}
+		}
+	}
+	for _, keyword := range []string{"items", "not", "additionalProperties"} {
+		if child, ok := schema[keyword].(map[string]any); ok {
+			assertAllNodesTyped(t, child, path+"."+keyword)
+		}
+	}
+	for _, keyword := range []string{"anyOf", "oneOf", "allOf"} {
+		if children, ok := schema[keyword].([]any); ok {
+			for i, child := range children {
+				if sub, ok := child.(map[string]any); ok {
+					assertAllNodesTyped(t, sub, fmt.Sprintf("%s.%s[%d]", path, keyword, i))
+				}
+			}
+		}
+	}
+}
+
 // Codex Responses Lite checks that every schema node declares an explicit type
 // in both strict and non-strict tools. When every branch of a typeless union
 // guarantees the same scalar type, the enclosing argument node must state that
@@ -1000,6 +1033,146 @@ func TestCodexResponsesLiteUnionEmitsEnclosingScalarType(t *testing.T) {
 			t.Fatal("emitted Draft 7 schema accepted non-numeric string")
 		}
 	})
+
+	t.Run("property-level container and mixed unions emit explicit types on Codex Lite", func(t *testing.T) {
+		t.Parallel()
+		containerCases := []struct {
+			name     string
+			params   map[string]any
+			prop     string
+			wantType any
+			accepts  []map[string]any
+			rejects  []map[string]any
+		}{
+			{
+				name: "closed object union",
+				params: map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"choice": map[string]any{
+							"anyOf": []any{
+								map[string]any{
+									"type":                 "object",
+									"additionalProperties": false,
+									"properties":           map[string]any{"kind": map[string]any{"type": "string", "enum": []any{"a"}}},
+									"required":             []string{"kind"},
+								},
+								map[string]any{
+									"type":                 "object",
+									"additionalProperties": false,
+									"properties":           map[string]any{"kind": map[string]any{"type": "string", "enum": []any{"b"}}},
+									"required":             []string{"kind"},
+								},
+							},
+						},
+					},
+					"required": []string{"choice"},
+				},
+				prop:     "choice",
+				wantType: "object",
+				accepts: []map[string]any{
+					{"choice": map[string]any{"kind": "a"}},
+					{"choice": map[string]any{"kind": "b"}},
+				},
+				rejects: []map[string]any{
+					{"choice": map[string]any{"kind": "c"}},
+					{"choice": map[string]any{"kind": "a", "extra": 1}},
+					{"choice": "a"},
+				},
+			},
+			{
+				name: "typed array union",
+				params: map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"items_union": map[string]any{
+							"anyOf": []any{
+								map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+								map[string]any{"type": "array", "items": map[string]any{"type": "integer"}},
+							},
+						},
+					},
+					"required": []string{"items_union"},
+				},
+				prop:     "items_union",
+				wantType: "array",
+				accepts: []map[string]any{
+					{"items_union": []any{"a", "b"}},
+					{"items_union": []any{1, 2}},
+				},
+				rejects: []map[string]any{
+					{"items_union": "a"},
+					{"items_union": []any{"a", 1}},
+				},
+			},
+			{
+				name: "mixed string and typed array union",
+				params: map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"targets": map[string]any{
+							"anyOf": []any{
+								map[string]any{"type": "string"},
+								map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+							},
+						},
+					},
+					"required": []string{"targets"},
+				},
+				prop:     "targets",
+				wantType: []string{"array", "string"},
+				accepts: []map[string]any{
+					{"targets": "main"},
+					{"targets": []any{"main", "backup"}},
+				},
+				rejects: []map[string]any{
+					{"targets": 123},
+					{"targets": []any{1}},
+				},
+			},
+		}
+		for _, tc := range containerCases {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				req := userReq("hi")
+				req.Tools = []llm.ToolDefinition{{Name: "choose", Parameters: tc.params}}
+				body := build(t, req, resolved(codexCaps))
+				wireTools := body["input"].([]any)[0].(map[string]any)["tools"].([]any)
+				tool := wireTools[0].(map[string]any)
+				if tool["strict"] != false {
+					t.Fatalf("strict = %#v, want false on Codex Lite when enclosing union requires container/multi type", tool["strict"])
+				}
+				params := tool["parameters"].(map[string]any)
+				assertAllNodesTyped(t, params, "additional_tools.parameters")
+				prop := params["properties"].(map[string]any)[tc.prop].(map[string]any)
+				switch want := tc.wantType.(type) {
+				case string:
+					if prop["type"] != want {
+						t.Fatalf("%s.type = %#v, want %q", tc.prop, prop["type"], want)
+					}
+				case []string:
+					got, ok := prop["type"].([]string)
+					if !ok || !slices.Equal(got, want) {
+						t.Fatalf("%s.type = %#v, want %v", tc.prop, prop["type"], want)
+					}
+				}
+				compiled := compileWireSchema(t, params)
+				for _, valid := range tc.accepts {
+					if err := compiled.Validate(valid); err != nil {
+						t.Fatalf("codex wire schema rejected %#v: %v", valid, err)
+					}
+				}
+				for _, invalid := range tc.rejects {
+					if err := compiled.Validate(invalid); err == nil {
+						t.Fatalf("codex wire schema accepted invalid %#v", invalid)
+					}
+				}
+			})
+		}
+	})
 }
 
 // Generate's admission budget must agree with the schema the Responses adapter
@@ -1122,27 +1295,41 @@ func TestGenerateParameterlessBudgetMatchesEmittedSchema(t *testing.T) {
 
 			// Direct unstamped Client.Complete and CountInputTokens must agree with
 			// the same emitted-schema boundary for both prepared and unprepared nil
-			// parameterless tools.
+			// parameterless tools, whether unstamped or caller-stamped.
 			unpreparedDef := llm.ToolDefinition{Name: "current_time", Strict: tc.toolStrict}
 			for _, direct := range []struct {
-				label string
-				def   llm.ToolDefinition
+				label   string
+				def     llm.ToolDefinition
+				stamped bool
 			}{
-				{label: "prepared", def: probeDef},
-				{label: "unprepared nil", def: unpreparedDef},
+				{label: "prepared unstamped", def: probeDef, stamped: false},
+				{label: "prepared caller-stamped", def: probeDef, stamped: true},
+				{label: "unprepared nil unstamped", def: unpreparedDef, stamped: false},
+				{label: "unprepared nil caller-stamped", def: unpreparedDef, stamped: true},
 			} {
-				before = requests.Load()
+				tools := []llm.ToolDefinition{direct.def}
 				directReq := llm.Request{
 					Provider: instance,
 					Model:    model,
 					Messages: []llm.Message{llm.User(prompt)},
-					Tools:    []llm.ToolDefinition{direct.def},
+					Tools:    tools,
 				}
+				if direct.stamped {
+					directReq.ToolsJSONBytes = llm.ToolsJSONBytes(tools)
+				}
+				before = requests.Load()
 				if _, err := loadClient(&tight).Complete(context.Background(), directReq); !errors.As(err, &budgetErr) || budgetErr.Limit != "max_input" {
-					t.Fatalf("direct unstamped (%s) Complete was not refused at tight ceiling %d: err = %v, requests = %d", direct.label, tight, err, requests.Load()-before)
+					t.Fatalf("direct (%s) Complete was not refused at tight ceiling %d: err = %v, requests = %d", direct.label, tight, err, requests.Load()-before)
 				}
 				if requests.Load() != before {
-					t.Fatalf("direct unstamped (%s) request reached HTTP server despite exceeding max_input under emitted schema", direct.label)
+					t.Fatalf("direct (%s) Complete reached HTTP server despite exceeding max_input under emitted schema", direct.label)
+				}
+				before = requests.Load()
+				if _, err := loadClient(&tight).Stream(context.Background(), directReq); !errors.As(err, &budgetErr) || budgetErr.Limit != "max_input" {
+					t.Fatalf("direct (%s) Stream was not refused at tight ceiling %d: err = %v, requests = %d", direct.label, tight, err, requests.Load()-before)
+				}
+				if requests.Load() != before {
+					t.Fatalf("direct (%s) Stream reached HTTP server despite exceeding max_input under emitted schema", direct.label)
 				}
 				counted, err := loadClient(&generous).CountInputTokens(context.Background(), directReq)
 				if err != nil {

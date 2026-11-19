@@ -151,7 +151,7 @@ func StrictifyJSONSchema(in map[string]any) map[string]any {
 		cp = map[string]any{}
 	}
 	strictifyJSONSchemaInPlace(cp)
-	supplyDerivedTypes(cp, dialectOf(cp))
+	supplyDerivedTypes(cp, dialectOf(cp), false)
 	return cp
 }
 
@@ -171,8 +171,65 @@ func SupplyDerivedTypes(schema map[string]any) map[string]any {
 	if cp == nil {
 		return map[string]any{}
 	}
-	supplyDerivedTypes(cp, dialectOf(cp))
+	supplyDerivedTypes(cp, dialectOf(cp), false)
 	return cp
+}
+
+// SupplyExplicitTypes returns a deep copy of schema with derived explicit types
+// stated for closed scalar value sets and for unions (anyOf/oneOf) whose
+// branches all guarantee explicit JSON types, including container ("object",
+// "array") and multi-type unions. It is used on non-strict Codex Responses Lite
+// schemas where every node must carry an explicit "type".
+func SupplyExplicitTypes(schema map[string]any) map[string]any {
+	cp, _ := copySchema(schema).(map[string]any)
+	if cp == nil {
+		return map[string]any{}
+	}
+	supplyDerivedTypes(cp, dialectOf(cp), true)
+	return cp
+}
+
+// HasExplicitTypes reports whether every reachable schema node carries a
+// non-nil "type" keyword. Codex Responses Lite rejects schemas containing any
+// typeless node even when strict mode is enabled.
+func HasExplicitTypes(schema map[string]any) bool {
+	if schema == nil || schema["type"] == nil {
+		return false
+	}
+	for _, keyword := range singleSubschemaKeywords {
+		if sub, ok := schema[keyword].(map[string]any); ok {
+			if !HasExplicitTypes(sub) {
+				return false
+			}
+		}
+	}
+	for _, keyword := range listSubschemaKeywords {
+		arr, ok := schema[keyword].([]any)
+		if !ok {
+			continue
+		}
+		for _, it := range arr {
+			if sub, ok := it.(map[string]any); ok {
+				if !HasExplicitTypes(sub) {
+					return false
+				}
+			}
+		}
+	}
+	for _, keyword := range mapSubschemaKeywords {
+		named, ok := schema[keyword].(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, v := range named {
+			if sub, ok := v.(map[string]any); ok {
+				if !HasExplicitTypes(sub) {
+					return false
+				}
+			}
+		}
+	}
+	return true
 }
 
 // supplyDerivedTypes states the explicit type implied by a closed scalar value
@@ -227,7 +284,7 @@ var (
 	}
 )
 
-func supplyDerivedTypes(m map[string]any, dialect schemaDialect) {
+func supplyDerivedTypes(m map[string]any, dialect schemaDialect, allowContainerAndMulti bool) {
 	if m == nil {
 		return
 	}
@@ -245,7 +302,7 @@ func supplyDerivedTypes(m map[string]any, dialect schemaDialect) {
 	// alternative guarantees the same scalar type.
 	for _, keyword := range singleSubschemaKeywords {
 		if sub, ok := m[keyword].(map[string]any); ok {
-			supplyDerivedTypes(sub, dialect)
+			supplyDerivedTypes(sub, dialect, allowContainerAndMulti)
 		}
 	}
 	for _, keyword := range listSubschemaKeywords {
@@ -255,7 +312,7 @@ func supplyDerivedTypes(m map[string]any, dialect schemaDialect) {
 		}
 		for _, it := range arr {
 			if sub, ok := it.(map[string]any); ok {
-				supplyDerivedTypes(sub, dialect)
+				supplyDerivedTypes(sub, dialect, allowContainerAndMulti)
 			}
 		}
 	}
@@ -266,7 +323,7 @@ func supplyDerivedTypes(m map[string]any, dialect schemaDialect) {
 		}
 		for _, v := range named {
 			if sub, ok := v.(map[string]any); ok {
-				supplyDerivedTypes(sub, dialect)
+				supplyDerivedTypes(sub, dialect, allowContainerAndMulti)
 			}
 		}
 	}
@@ -276,104 +333,113 @@ func supplyDerivedTypes(m map[string]any, dialect schemaDialect) {
 		if _, has := m["type"]; !has {
 			if name, ok := derivedScalarType(m, dialect); ok {
 				m["type"] = name
-			} else if name, ok := derivedUnionScalarType(m); ok {
-				m["type"] = name
+			} else if typ, ok := derivedUnionType(m, allowContainerAndMulti); ok {
+				m["type"] = typ
 			}
 		}
 	}
 }
 
-// derivedUnionScalarType returns the single scalar JSON type guaranteed by
-// every alternative of a node's anyOf or oneOf combinator after each branch has
-// already received its own derived type. Container types ("object", "array")
-// are intentionally excluded because stating them on an enclosing union without
-// properties or items violates strict schema dialects.
-func derivedUnionScalarType(m map[string]any) (string, bool) {
+// derivedUnionType returns the enclosing JSON type guaranteed by every
+// alternative of a node's anyOf or oneOf combinator after each branch has
+// received its own derived type. When allowContainerAndMulti is false, only a
+// single scalar type is emitted so strict schemas do not acquire bare container
+// or multi-type enclosing nodes; when true (non-strict Codex Responses Lite),
+// container types ("object", "array") and sorted multi-type lists are also
+// emitted without changing the accepted values.
+func derivedUnionType(m map[string]any, allowContainerAndMulti bool) (any, bool) {
 	for _, keyword := range []string{"anyOf", "oneOf"} {
-		if name, ok := alternativesScalarType(m[keyword]); ok {
-			return name, true
+		if typ, ok := alternativesType(m[keyword], allowContainerAndMulti); ok {
+			return typ, true
 		}
 	}
-	return "", false
+	return nil, false
 }
 
-func alternativesScalarType(raw any) (string, bool) {
+func alternativesType(raw any, allowContainerAndMulti bool) (any, bool) {
 	arr, ok := raw.([]any)
 	if !ok || len(arr) == 0 {
-		return "", false
+		return nil, false
 	}
-	common := ""
+	seen := map[string]bool{}
 	for _, item := range arr {
 		branch, ok := item.(map[string]any)
 		if !ok {
-			return "", false
+			return nil, false
 		}
 		// Draft 4/6/7 ignore siblings of $ref, so a branch carrying an unresolved
 		// $ref cannot guarantee its sibling type on the enclosing union.
 		if _, hasRef := branch["$ref"]; hasRef {
-			return "", false
+			return nil, false
 		}
-		typ, ok := explicitScalarType(branch["type"])
+		branchTypes, ok := explicitJSONTypes(branch["type"], allowContainerAndMulti)
 		if !ok {
-			return "", false
+			return nil, false
 		}
-		if common == "" {
-			common = typ
-			continue
+		for _, name := range branchTypes {
+			seen[name] = true
 		}
-		merged, ok := commonScalarType(common, typ)
-		if !ok {
-			return "", false
-		}
-		common = merged
 	}
-	return common, common != ""
+	// Every JSON integer is also a JSON number, so integer+number collapses to number.
+	if seen["integer"] && seen["number"] {
+		delete(seen, "integer")
+	}
+	if len(seen) == 0 {
+		return nil, false
+	}
+	if len(seen) == 1 {
+		for name := range seen {
+			return name, true
+		}
+	}
+	if !allowContainerAndMulti {
+		return nil, false
+	}
+	names := make([]string, 0, len(seen))
+	for name := range seen {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names, true
 }
 
-func explicitScalarType(raw any) (string, bool) {
+func explicitJSONTypes(raw any, allowContainers bool) ([]string, bool) {
+	valid := isScalarJSONType
+	if allowContainers {
+		valid = isValidJSONType
+	}
 	switch t := raw.(type) {
 	case string:
-		if isScalarJSONType(t) {
-			return t, true
+		if valid(t) {
+			return []string{t}, true
 		}
-		return "", false
+		return nil, false
 	case []string:
-		return commonScalarTypeList(t)
+		if len(t) == 0 {
+			return nil, false
+		}
+		for _, name := range t {
+			if !valid(name) {
+				return nil, false
+			}
+		}
+		return t, true
 	case []any:
+		if len(t) == 0 {
+			return nil, false
+		}
 		names := make([]string, len(t))
 		for i, item := range t {
 			name, ok := item.(string)
-			if !ok {
-				return "", false
+			if !ok || !valid(name) {
+				return nil, false
 			}
 			names[i] = name
 		}
-		return commonScalarTypeList(names)
+		return names, true
 	default:
-		return "", false
+		return nil, false
 	}
-}
-
-func commonScalarTypeList(names []string) (string, bool) {
-	if len(names) == 0 {
-		return "", false
-	}
-	common := ""
-	for _, name := range names {
-		if !isScalarJSONType(name) {
-			return "", false
-		}
-		if common == "" {
-			common = name
-			continue
-		}
-		merged, ok := commonScalarType(common, name)
-		if !ok {
-			return "", false
-		}
-		common = merged
-	}
-	return common, common != ""
 }
 
 func isScalarJSONType(name string) bool {
@@ -385,14 +451,11 @@ func isScalarJSONType(name string) bool {
 	}
 }
 
-func commonScalarType(a, b string) (string, bool) {
-	if a == b {
-		return a, true
+func isValidJSONType(name string) bool {
+	if isScalarJSONType(name) {
+		return true
 	}
-	if (a == "integer" && b == "number") || (a == "number" && b == "integer") {
-		return "number", true
-	}
-	return "", false
+	return name == "object" || name == "array"
 }
 
 // StrictExpressible reports whether schema can be projected into OpenAI

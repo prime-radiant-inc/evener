@@ -165,25 +165,31 @@ func TestParameterlessToolIsPricedByTheSchemaTheAdapterSends(t *testing.T) {
 			if _, _, err := ApplyTokenBudget(wireReq, res); !errors.As(err, &budgetErr) || budgetErr.Limit != "max_input" {
 				t.Fatalf("wire catalog not refused at %d ceiling: err = %v", tight, err)
 			}
-			if _, _, err := ApplyTokenBudget(adapterReq, res); !errors.As(err, &budgetErr) || budgetErr.Limit != "max_input" {
+			if _, _, err := applyTokenBudgetForTarget(adapterReq, res, tc.override); !errors.As(err, &budgetErr) || budgetErr.Limit != "max_input" {
 				t.Fatalf("adapter catalog admitted under %d ceiling, but emitted schema exceeds it: err = %v", tight, err)
 			}
 
 			// The exact ceiling admits both requests with identical output headroom,
 			// proving non-strict, opted-out, and override paths are not over-billed
-			// by the closed schema's extra bytes.
+			// by the closed schema's extra bytes, and keeps the declared stamp
+			// unchanged so repeated calls never double-count the delta.
 			exact := wirePrice + SafetyReserveTokens(tight)
 			res.Caps.MaxInputTokens = &exact
-			if _, _, err := ApplyTokenBudget(adapterReq, res); err != nil {
+			admitted, _, err := applyTokenBudgetForTarget(adapterReq, res, tc.override)
+			if err != nil {
 				t.Fatalf("adapter catalog refused at exact emitted ceiling %d: %v", exact, err)
+			}
+			if admitted.ToolsJSONBytes != adapterReq.ToolsJSONBytes {
+				t.Fatalf("ToolsJSONBytes mutated from %d to %d: declared-catalog stamp must survive admission",
+					adapterReq.ToolsJSONBytes, admitted.ToolsJSONBytes)
 			}
 
 			window := exact + 100
 			res.Caps.MaxInputTokens = nil
 			res.Caps.ContextWindow = &window
-			_, adapterBudget, err := ApplyTokenBudget(adapterReq, res)
+			_, adapterBudget, err := applyTokenBudgetForTarget(adapterReq, res, tc.override)
 			if err != nil {
-				t.Fatalf("ApplyTokenBudget (adapter) at %d window: %v", window, err)
+				t.Fatalf("applyTokenBudgetForTarget (adapter) at %d window: %v", window, err)
 			}
 			_, wireBudget, err := ApplyTokenBudget(wireReq, res)
 			if err != nil {
@@ -251,8 +257,13 @@ func TestParameterlessToolIsPricedByTheSchemaTheAdapterSends(t *testing.T) {
 		for _, tc := range protoCases {
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
-				if got := toolsJSONBytesForResolved(nilDef, tc.res, tc.override); got != tc.want {
-					t.Fatalf("toolsJSONBytesForResolved = %d, want %d", got, tc.want)
+				unstamped := Request{Tools: nilDef}
+				if got := effectiveToolsJSONBytes(unstamped, tc.res, tc.override); got != tc.want {
+					t.Fatalf("effectiveToolsJSONBytes(unstamped) = %d, want %d", got, tc.want)
+				}
+				stamped := Request{Tools: nilDef, ToolsJSONBytes: ToolsJSONBytes(nilDef)}
+				if got := effectiveToolsJSONBytes(stamped, tc.res, tc.override); got != tc.want {
+					t.Fatalf("effectiveToolsJSONBytes(caller-stamped) = %d, want %d", got, tc.want)
 				}
 			})
 		}
@@ -294,9 +305,9 @@ func TestParameterlessToolIsPricedByTheSchemaTheAdapterSends(t *testing.T) {
 		if err != nil {
 			t.Fatalf("prepareGeneration: %v", err)
 		}
-		wantClosed := ToolsJSONBytes([]ToolDefinition{{Name: "current_time", Parameters: closedEmptyToolParameters()}})
-		if gs.toolDefsJSONBytes != wantClosed {
-			t.Fatalf("toolDefsJSONBytes = %d, want closed schema size %d", gs.toolDefsJSONBytes, wantClosed)
+		wantDeclared := ToolsJSONBytes(gs.toolDefs)
+		if gs.toolDefsJSONBytes != wantDeclared {
+			t.Fatalf("toolDefsJSONBytes = %d, want declared schema size %d", gs.toolDefsJSONBytes, wantDeclared)
 		}
 		if data, err := os.ReadFile(marker); err == nil {
 			t.Fatalf("prepareGeneration executed credential command %d time(s), want 0", len(data))
@@ -325,6 +336,10 @@ func TestParameterlessToolIsPricedByTheSchemaTheAdapterSends(t *testing.T) {
 		}
 		if res.Credential.Value != "secret-token" {
 			t.Fatalf("resolved credential = %q, want secret-token", res.Credential.Value)
+		}
+		wantClosed := ToolsJSONBytes([]ToolDefinition{{Name: "current_time", Parameters: closedEmptyToolParameters()}})
+		if got := effectiveToolsJSONBytes(gs.request(opts, gs.history), res, false); got != wantClosed {
+			t.Fatalf("effectiveToolsJSONBytes = %d, want closed schema size %d", got, wantClosed)
 		}
 		data, err := os.ReadFile(marker)
 		if err != nil || len(data) != 1 {

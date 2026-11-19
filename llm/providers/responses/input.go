@@ -36,7 +36,7 @@ func toResponsesResponseFormat(rf llm.ResponseFormat, structured bool) any {
 // toolSchema is the schema one tool is sent with, and whether that tool rides
 // the request under strict enforcement. The rules are stated below in the order
 // the builder applies them.
-func toolSchema(t llm.ToolDefinition, strict bool) (params map[string]any, toolStrict bool) {
+func toolSchema(t llm.ToolDefinition, strict, responsesLite bool) (params map[string]any, toolStrict bool) {
 	toolStrict = strict
 	if toolStrict && t.Strict != nil {
 		toolStrict = *t.Strict
@@ -67,15 +67,20 @@ func toolSchema(t llm.ToolDefinition, strict bool) (params map[string]any, toolS
 		// has no legal strict form: projecting it would make that argument
 		// mandatory on every call. Such a tool keeps its advertised schema and
 		// is sent non-strict.
-		if !openaichat.StrictExpressible(params) {
-			toolStrict = false
+		if openaichat.StrictExpressible(params) {
+			projected := openaichat.StrictifyJSONSchema(params)
+			// Codex Responses Lite requires an explicit type on every node in
+			// additional_tools. A strict-certified union of objects, arrays, or
+			// mixed types cannot carry an enclosing type in strict mode without
+			// changing its contract, so on Lite routes it falls back to
+			// non-strict emission with its enclosing union type stated.
+			if !responsesLite || openaichat.HasExplicitTypes(projected) {
+				return projected, true
+			}
 		}
 	}
-	if toolStrict {
-		// StrictifyJSONSchema states the derived type itself at the end of its
-		// walk, so the strict and refused paths agree on the emitted schema
-		// without a second pass here.
-		return openaichat.StrictifyJSONSchema(params), true
+	if responsesLite {
+		return openaichat.SupplyExplicitTypes(params), false
 	}
 	// A refused tool keeps the schema it advertised, because the projection
 	// would change which arguments it accepts. The provider still requires an
@@ -100,7 +105,7 @@ func toolSchema(t llm.ToolDefinition, strict bool) (params map[string]any, toolS
 // no flag: that is what a compatible endpoint which does not implement the
 // field receives today, and the capability's absence is not a decision to
 // announce.
-func toResponsesTools(tools []llm.ToolDefinition, capsStrict bool, stated bool) []map[string]any {
+func toResponsesTools(tools []llm.ToolDefinition, capsStrict, stated, responsesLite bool) []map[string]any {
 	out := make([]map[string]any, 0, len(tools))
 	for _, t := range tools {
 		// The per-tool opt-out is read before the fallback is synthesized: a
@@ -109,7 +114,7 @@ func toResponsesTools(tools []llm.ToolDefinition, capsStrict bool, stated bool) 
 		// validator allows. Only a tool that will actually be sent in strict
 		// mode gets the closed empty object, because strict mode accepts that
 		// and only that.
-		params, toolStrict := toolSchema(t, capsStrict)
+		params, toolStrict := toolSchema(t, capsStrict, responsesLite)
 		entry := map[string]any{
 			"type":        "function",
 			"name":        t.Name,

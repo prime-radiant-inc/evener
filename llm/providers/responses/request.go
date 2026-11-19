@@ -57,7 +57,7 @@ func buildBody(req llm.Request, res registry.Resolved, stream bool) (out map[str
 				}
 			}
 		}
-		tools = toResponsesTools(req.Tools, registry.BoolValue(caps.StrictTools), caps.StrictTools != nil)
+		tools = toResponsesTools(req.Tools, registry.BoolValue(caps.StrictTools), caps.StrictTools != nil, lite)
 	}
 	if req.WebSearch && (caps.WebSearch == nil || *caps.WebSearch) {
 		tools = append(tools, map[string]any{"type": "web_search"})

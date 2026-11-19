@@ -159,53 +159,42 @@ func emittedParameterlessParameters(t ToolDefinition, res registry.Resolved) map
 	return nil
 }
 
-// toolsJSONBytesForResolved returns the serialized byte length of defs as the
-// resolved adapter will emit them. Overrides keep defs unchanged; built-in
-// adapters substitute the closed or open empty schema wherever the adapter
-// emits one.
-func toolsJSONBytesForResolved(defs []ToolDefinition, res registry.Resolved, override bool) int {
+// parameterlessToolsJSONDelta returns the net serialized byte delta introduced
+// by the resolved built-in adapter substituting closed or open empty schemas for
+// parameterless tools in defs. Overrides return 0.
+func parameterlessToolsJSONDelta(defs []ToolDefinition, res registry.Resolved, override bool) int {
 	if len(defs) == 0 || override {
-		return ToolsJSONBytes(defs)
+		return 0
 	}
-	var adjusted []ToolDefinition
+	delta := 0
 	for i := range defs {
 		emitted := emittedParameterlessParameters(defs[i], res)
 		if emitted == nil {
 			continue
 		}
-		if adjusted == nil {
-			adjusted = make([]ToolDefinition, len(defs))
-			copy(adjusted, defs)
+		declaredBytes := ToolsJSONBytes(defs[i : i+1])
+		adjusted := defs[i]
+		adjusted.Parameters = emitted
+		emittedBytes := ToolsJSONBytes([]ToolDefinition{adjusted})
+		if declaredBytes > 0 && emittedBytes > 0 {
+			delta += emittedBytes - declaredBytes
 		}
-		adjusted[i].Parameters = emitted
 	}
-	if adjusted == nil {
-		return ToolsJSONBytes(defs)
-	}
-	return ToolsJSONBytes(adjusted)
+	return delta
 }
 
-// toolCatalogJSONBytes measures defs as the target resolved by client will emit
-// them, falling back to ToolsJSONBytes when an override owns the provider or
-// resolution does not succeed yet. It reads model facts without materializing
-// credentials so preparation never runs command-backed credentials before
-// dispatch and timeouts are in place.
-func toolCatalogJSONBytes(client *Client, provider, model string, defs []ToolDefinition) int {
-	if len(defs) == 0 {
+// effectiveToolsJSONBytes returns the tool-catalog byte length priced against
+// the resolved adapter's wire emission. Both caller-stamped declared-catalog
+// lengths and unstamped requests receive the parameterless-schema delta once.
+func effectiveToolsJSONBytes(req Request, res registry.Resolved, override bool) int {
+	if len(req.Tools) == 0 {
 		return 0
 	}
-	name := normalizeProviderName(provider)
-	if name == "" {
-		name = client.DefaultProvider()
+	base := req.ToolsJSONBytes
+	if base <= 0 {
+		base = ToolsJSONBytes(req.Tools)
 	}
-	if name == "" || client.isOverride(name) {
-		return ToolsJSONBytes(defs)
-	}
-	res, err := client.Registry().ResolveInstanceModelFacts(name, model)
-	if err != nil {
-		return ToolsJSONBytes(defs)
-	}
-	return toolsJSONBytesForResolved(defs, res, false)
+	return base + parameterlessToolsJSONDelta(req.Tools, res, override)
 }
 
 // EstimateMessagesInputTokens estimates only a message list. It is useful for
@@ -1079,8 +1068,8 @@ func localInputEstimate(req Request, callerProvider string, t dispatchTarget) In
 	}
 	estimateReq := req
 	estimateReq.Provider = callerProvider
-	if estimateReq.ToolsJSONBytes <= 0 && len(estimateReq.Tools) > 0 {
-		estimateReq.ToolsJSONBytes = toolsJSONBytesForResolved(estimateReq.Tools, t.res, t.override != nil)
+	if len(estimateReq.Tools) > 0 {
+		estimateReq.ToolsJSONBytes = effectiveToolsJSONBytes(estimateReq, t.res, t.override != nil)
 	}
 	return EstimateInputTokensForResolved(t.res, estimateReq)
 }

@@ -592,25 +592,64 @@ func TestChatGenerateParameterlessBudgetMatchesEmittedSchema(t *testing.T) {
 				t.Fatal("admitted request did not reach HTTP server")
 			}
 
-			before = requests.Load()
-			directReq := llm.Request{
-				Provider: instance,
-				Model:    model,
-				Messages: []llm.Message{llm.User(prompt)},
-				Tools:    []llm.ToolDefinition{probeDef},
+			unpreparedDef := llm.ToolDefinition{Name: "current_time", Strict: tc.toolStrict}
+			// For unprepared nil on non-strict/opted-out Chat Completions, the
+			// adapter omits "parameters", so its wire price is the nil definition's.
+			unpreparedWirePrice := wirePrice
+			if !tc.wantClosed {
+				unpreparedRef := llm.Request{
+					Model:    model,
+					Provider: instance,
+					Messages: []llm.Message{llm.User(prompt)},
+					Tools:    []llm.ToolDefinition{unpreparedDef},
+				}
+				unpreparedWirePrice = llm.EstimateInputTokensForResolved(res, unpreparedRef).Tokens
 			}
-			if _, err := loadClient(&tight).Complete(context.Background(), directReq); !errors.As(err, &budgetErr) || budgetErr.Limit != "max_input" {
-				t.Fatalf("direct unstamped Complete was not refused at tight ceiling %d: err = %v, requests = %d", tight, err, requests.Load()-before)
-			}
-			if requests.Load() != before {
-				t.Fatal("direct unstamped request reached HTTP server despite exceeding max_input under emitted schema")
-			}
-			counted, err := loadClient(&generous).CountInputTokens(context.Background(), directReq)
-			if err != nil {
-				t.Fatalf("CountInputTokens: %v", err)
-			}
-			if counted.Tokens != wirePrice {
-				t.Fatalf("CountInputTokens = %d, want emitted schema price %d", counted.Tokens, wirePrice)
+			unpreparedTight := unpreparedWirePrice + llm.SafetyReserveTokens(unpreparedWirePrice) - 1
+
+			for _, direct := range []struct {
+				label     string
+				def       llm.ToolDefinition
+				stamped   bool
+				wantPrice int
+				wantTight int
+			}{
+				{label: "prepared unstamped", def: probeDef, stamped: false, wantPrice: wirePrice, wantTight: tight},
+				{label: "prepared caller-stamped", def: probeDef, stamped: true, wantPrice: wirePrice, wantTight: tight},
+				{label: "unprepared nil unstamped", def: unpreparedDef, stamped: false, wantPrice: unpreparedWirePrice, wantTight: unpreparedTight},
+				{label: "unprepared nil caller-stamped", def: unpreparedDef, stamped: true, wantPrice: unpreparedWirePrice, wantTight: unpreparedTight},
+			} {
+				tools := []llm.ToolDefinition{direct.def}
+				directReq := llm.Request{
+					Provider: instance,
+					Model:    model,
+					Messages: []llm.Message{llm.User(prompt)},
+					Tools:    tools,
+				}
+				if direct.stamped {
+					directReq.ToolsJSONBytes = llm.ToolsJSONBytes(tools)
+				}
+				before = requests.Load()
+				if _, err := loadClient(&direct.wantTight).Complete(context.Background(), directReq); !errors.As(err, &budgetErr) || budgetErr.Limit != "max_input" {
+					t.Fatalf("direct (%s) Complete was not refused at tight ceiling %d: err = %v, requests = %d", direct.label, direct.wantTight, err, requests.Load()-before)
+				}
+				if requests.Load() != before {
+					t.Fatalf("direct (%s) Complete reached HTTP server despite exceeding max_input", direct.label)
+				}
+				before = requests.Load()
+				if _, err := loadClient(&direct.wantTight).Stream(context.Background(), directReq); !errors.As(err, &budgetErr) || budgetErr.Limit != "max_input" {
+					t.Fatalf("direct (%s) Stream was not refused at tight ceiling %d: err = %v, requests = %d", direct.label, direct.wantTight, err, requests.Load()-before)
+				}
+				if requests.Load() != before {
+					t.Fatalf("direct (%s) Stream reached HTTP server despite exceeding max_input", direct.label)
+				}
+				counted, err := loadClient(&generous).CountInputTokens(context.Background(), directReq)
+				if err != nil {
+					t.Fatalf("CountInputTokens (%s): %v", direct.label, err)
+				}
+				if counted.Tokens != direct.wantPrice {
+					t.Fatalf("CountInputTokens (%s) = %d, want emitted schema price %d", direct.label, counted.Tokens, direct.wantPrice)
+				}
 			}
 		})
 	}

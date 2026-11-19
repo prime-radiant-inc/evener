@@ -420,16 +420,24 @@ func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 
 func shapeAndApplyTokenBudget(req Request, res registry.Resolved, override bool) (Request, error) {
 	req = ShapeRequest(req, res)
+	budgeted, _, err := applyTokenBudgetForTarget(req, res, override)
+	return budgeted, err
+}
+
+// applyTokenBudgetForTarget runs ApplyTokenBudget with the resolved adapter's
+// parameterless-schema byte adjustment applied once to a shallow copy, keeping
+// req.ToolsJSONBytes equal to the caller's declared-catalog stamp.
+func applyTokenBudgetForTarget(req Request, res registry.Resolved, override bool) (Request, TokenBudget, error) {
 	budgetReq := req
-	if budgetReq.ToolsJSONBytes <= 0 && len(budgetReq.Tools) > 0 {
-		budgetReq.ToolsJSONBytes = toolsJSONBytesForResolved(budgetReq.Tools, res, override)
+	if len(budgetReq.Tools) > 0 {
+		budgetReq.ToolsJSONBytes = effectiveToolsJSONBytes(budgetReq, res, override)
 	}
-	budgeted, _, err := ApplyTokenBudget(budgetReq, res)
+	budgeted, budget, err := ApplyTokenBudget(budgetReq, res)
 	if err != nil {
-		return req, err
+		return req, budget, err
 	}
 	budgeted.ToolsJSONBytes = req.ToolsJSONBytes
-	return budgeted, nil
+	return budgeted, budget, nil
 }
 
 // ModelListing is what Models returns: the instance's visible live-authoritative
