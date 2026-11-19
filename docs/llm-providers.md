@@ -521,9 +521,8 @@ no catalog entry). Either shape carries `includeThoughts: true`. Clearing
 `fields."generationConfig.thinkingConfig"` on a row prunes the object
 entirely, for a model that takes no thinking fields at all.
 
-**Replay.** Chat drops plain display reasoning by default and preserves
-compatible continuation details and the text that fills an empty signed detail.
-A row with `thinking_as_text` merges display reasoning into assistant content.
+**Replay.** Chat replays its full-history display reasoning by default. A
+`reasoning = false` row sends none; `thinking_as_text` merges it into content.
 Scalar replay writes back to whichever field the reasoning arrived
 on — `reasoning_content`, `reasoning`, or `reasoning_text` as a plain string
 field, or `reasoning_details` as OpenRouter's array form. The value comes from
