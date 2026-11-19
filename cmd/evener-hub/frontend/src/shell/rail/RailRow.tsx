@@ -487,6 +487,9 @@ function RailQuotaWait({ session }: { session: RailSession }): ReactNode {
       data-testid="rail-row-quota-wait"
       // The wait's phase as a fact, matching the pane's line's marker.
       data-passed-reset={quota.phase === "pending" ? "true" : undefined}
+      // The computed runway as a fact beside the sentence: tests assert
+      // this, never the copy.
+      data-remaining-ms={quota.phase === "counting" ? String(quota.remainingMs) : undefined}
       className={CLASS.quotaWait}
     >
       {text}

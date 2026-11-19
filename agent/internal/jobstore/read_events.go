@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -48,6 +47,29 @@ type ScanLimits struct {
 	// and returns no partial result, because a single line that long is
 	// corruption, not a legitimately large journal.
 	MaxLineBytes int64
+	// EndOffset, when positive, is the last byte this scan may read: the
+	// scan behaves as though the file ended there, returning cleanly at that
+	// boundary rather than reporting a limit error and rather than reading
+	// the bytes past it. A reader that folds a journal being appended to
+	// sets it to the committed length the owning store reports
+	// (Store.CommittedJournal), so an append still in flight — and one whose
+	// fsync then rolls it back — cannot enter the fold. 0 means read to the
+	// file's own end, unless Bounded says otherwise.
+	EndOffset int64
+	// Bounded makes EndOffset authoritative even when it is zero: an empty
+	// committed prefix is EOF at byte 0, not an unbounded scan of whatever the
+	// file holds. A reader that samples a committed length sets both, because
+	// the first append to a journal it opened empty is exactly the append it
+	// must not fold. A caller with no boundary to respect leaves both zero and
+	// keeps the historical unbounded read.
+	Bounded bool
+}
+
+// bounded reports whether EndOffset constrains this scan. A positive offset
+// always does; Bounded adds the empty-prefix case, which a committed length of
+// zero would otherwise turn into "read everything".
+func (l ScanLimits) bounded() bool {
+	return l.Bounded || l.EndOffset > 0
 }
 
 // ErrScanLimitExceeded reports that ScanEvents stopped because a journal
@@ -191,7 +213,32 @@ func scanEventsFromWithDiagnostics(ctx context.Context, path string, fromOffset 
 		return nil, 0, ReadDiagnostics{}, fmt.Errorf("jobstore: read %s: %w", path, err)
 	}
 	defer func() { _ = f.Close() }()
-	if fromOffset > 0 {
+	// The file's own length, which is what makes "unterminated" accountable. A
+	// record with no newline is one of two different things, and the boundary
+	// alone cannot tell them apart:
+	//
+	//   - bytes still arriving. The boundary sits short of the file, so the
+	//     newline may yet land. Withhold the record; the next read picks it up.
+	//   - the journal's actual final record. The boundary IS physical EOF: a
+	//     complete JSON record with no trailing newline is what a replacement
+	//     journal or an out-of-band writer leaves. Nothing more is coming, and
+	//     withholding it hides the last completed job on every refresh, forever,
+	//     because a stable file never grows a newline.
+	//
+	// The length comes from the handle rather than a path stat, so the file this
+	// scan reads is the file it sizes. A handle that cannot be sized leaves
+	// physicalEOF false, which keeps the conservative behaviour: withhold.
+	//
+	// Sizing seeks, so the read position is always restored to the offset this
+	// scan starts at. A scan from zero has no later seek to put it back, and a
+	// handle left at EOF would read no events at all.
+	var physicalEOF bool
+	if limits.bounded() {
+		if end, seekErr := f.Seek(0, io.SeekEnd); seekErr == nil {
+			physicalEOF = limits.EndOffset >= end
+		}
+	}
+	if fromOffset > 0 || limits.bounded() {
 		if _, err := f.Seek(fromOffset, io.SeekStart); err != nil {
 			return nil, 0, ReadDiagnostics{}, fmt.Errorf("jobstore: seek %s: %w", path, err)
 		}
@@ -201,8 +248,22 @@ func scanEventsFromWithDiagnostics(ctx context.Context, path string, fromOffset 
 	if maxLineBytes <= 0 {
 		maxLineBytes = DefaultMaxLineBytes
 	}
+	// Cap the source at the committed boundary BEFORE buffering: the boundary
+	// is not advice. Bytes past it belong to an append that has not committed,
+	// so they must not be read, buffered, or decoded — a buffered reader over
+	// the whole file reads them ahead of the scan, and a boundary landing
+	// inside a line would then decode that line in full. Capped here, such a
+	// line is cut short and fails to decode, which the trailing-line tolerance
+	// below already treats as an append still in flight: withheld, never
+	// decoded.
+	var source io.Reader = f
+	if limits.bounded() {
+		// A caller resuming past the committed boundary has nothing left to
+		// read, which max states without a branch.
+		source = io.LimitReader(f, max(limits.EndOffset-fromOffset, 0))
+	}
 	// 64 KiB matches the doctor's bounded readers.
-	reader := bufio.NewReaderSize(f, 64*1024)
+	reader := bufio.NewReaderSize(source, 64*1024)
 	events := make([]Event, 0)
 	var diagnostics ReadDiagnostics
 	totalBytes := fromOffset
@@ -211,6 +272,13 @@ func scanEventsFromWithDiagnostics(ctx context.Context, path string, fromOffset 
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, 0, ReadDiagnostics{}, err
+		}
+		// The committed boundary is EOF for this scan. The capped source above
+		// is what keeps uncommitted bytes from being read at all; this check
+		// is what makes reaching the boundary a clean completion — every byte
+		// in between belongs to a complete line — rather than a limit breach.
+		if limits.bounded() && offset >= limits.EndOffset {
+			return events, offset, diagnostics, nil
 		}
 		// Checked before reading the next line, not just before decoding
 		// it: a MaxEvents-only scan (MaxLineBytes left at its generous
@@ -274,7 +342,11 @@ func scanEventsFromWithDiagnostics(ctx context.Context, path string, fromOffset 
 			continue
 		}
 		var e Event
-		if err := json.Unmarshal(line, &e); err != nil {
+		// DecodeJournalEvent rather than json.Unmarshal directly: this is the other
+		// place in the package that parses a journal line, and a caller measuring
+		// what a read costs must be able to count both. Counting only the store's
+		// own decode reports a full fold rescan as zero records read.
+		if err := DecodeJournalEvent(line, &e); err != nil {
 			if !terminated && isIncompleteTrailingJSON(line, err) {
 				// Tolerate only an unterminated, syntactically incomplete final
 				// line from an in-flight append. A newline-terminated or
@@ -292,6 +364,23 @@ func scanEventsFromWithDiagnostics(ctx context.Context, path string, fromOffset 
 			// because the scan did NOT reach a resumable record boundary.
 			diagnostics.Corrupt = true
 			return events, 0, diagnostics, fmt.Errorf("jobstore: parse event line %d in %s: %w", lineNum, path, err)
+		}
+		if !terminated && limits.bounded() && offset+consumed >= limits.EndOffset && !physicalEOF {
+			// The boundary landed exactly on the last byte of a line whose
+			// newline has not been committed. The record decodes, so the check
+			// below would include it and advance past a byte the store has not
+			// acknowledged — and a boundary one byte short of the newline is
+			// exactly what a reader sees mid-append. Withhold it: the next read
+			// picks it up once the newline is committed, which is the same
+			// contract the incomplete-line tolerance above states. An unbounded
+			// scan is unaffected — limits.bounded() is false there — so a
+			// complete record at a natural EOF is still included.
+			//
+			// physicalEOF carves out the other reading of the same shape: the
+			// boundary is not short of the file, it IS the file. Nothing is
+			// still arriving, so withholding the record would hide it from every
+			// future read of an unchanged journal.
+			break
 		}
 		// A successful decode makes this record complete and final
 		// regardless of whether its trailing newline has landed yet (see

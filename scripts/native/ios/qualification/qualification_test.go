@@ -313,7 +313,7 @@ func TestLinuxRefusesBeforeCreatingOutput(t *testing.T) {
 	}
 	t.Parallel()
 	out := filepath.Join(t.TempDir(), "not-created")
-	if err := qualify(context.Background(), out, false); !errors.Is(err, errMacRequired) {
+	if err := qualify(context.Background(), out); !errors.Is(err, errMacRequired) {
 		t.Fatalf("expected Mac prerequisite refusal, got %v", err)
 	}
 	if _, err := os.Stat(out); !errors.Is(err, os.ErrNotExist) {

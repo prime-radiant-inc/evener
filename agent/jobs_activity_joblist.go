@@ -3,9 +3,18 @@ package agent
 import (
 	"iter"
 	"maps"
+	"slices"
+	"strings"
+	"sync/atomic"
 
 	"primeradiant.com/evener/agent/internal/jobstore"
 )
+
+// activityJobDurableVisits counts the fold records a durable-membership walk
+// examined. It exists so a test can assert that a refresh which publishes
+// nothing does not walk the history, which is a cost claim a duration cannot
+// state reliably. Production only increments it.
+var activityJobDurableVisits atomic.Int64
 
 // activityJobChunkRecords is how many records one activityJobList chunk
 // holds. A page skips whole chunks by their counts and scans within at most
@@ -20,6 +29,242 @@ const activityJobChunkRecords = 512
 // shares every chunk the extension does not touch.
 type activityJobList struct {
 	chunks []*activityJobChunk
+	// live overlays the in-memory records of running jobs on the entries
+	// above, keyed by job ID. A live record replaces the durable record with
+	// the same ID as the list is read, so an overlay costs the live set: the
+	// folded history stays shared, unread and uncopied.
+	//
+	// Sharing the chunks instead of replacing the records is only equivalent
+	// to substituting them when the substitution moves nothing a page filters
+	// or counts by: a chunk's owner counts and each record's classification
+	// are the DURABLE ones, so a page skips and filters by them.
+	//
+	// On the ordinary path a live entry exists only once its job_started event
+	// is durable, so the fold the overlay sits on carries a row for the same
+	// job ID and that row's projection class (Type) and owner are the ones the
+	// event set — the same ones the live record carries. That is what lets
+	// withLive share every chunk.
+	//
+	// A rebuild can break the premise, and when it does the shared counts are
+	// wrong rather than merely stale: truncating a journal past a running job's
+	// start leaves its completion as the only durable row, which classifies as
+	// an unsupported record owned by nobody while the live record is a shell job
+	// owned by its session. withLiveRebuilt substitutes exactly those rows; the
+	// caller decides which ones by comparing the two, so nothing here has to
+	// scan for them.
+	live map[string]*jobstore.JobRecord
+}
+
+// withLive returns the list with live overlaid on it. The receiver is
+// unchanged, so a fold-cache list can keep being handed to other readers. See
+// the live field's doc comment for the invariant that makes sharing the chunks
+// equivalent to substituting the records.
+//
+// The overlay replaces a durable row; it does not add one. That is exact while
+// the fold still holds every start record the live set names, which is the
+// normal case: liveJobRecords only contains jobs whose start is durable, so the
+// fold it overlays carries a row for each. A rebuild can break that premise —
+// truncating the journal past a running job's start removes the row while the
+// job keeps running — and only the caller knows that happened. It says so by
+// calling withLiveStranded instead.
+func (l *activityJobList) withLive(live map[string]*jobstore.JobRecord) *activityJobList {
+	if l == nil || len(live) == 0 {
+		return l
+	}
+	return &activityJobList{chunks: l.chunks, live: live}
+}
+
+// withLiveRebuilt is withLive for a list a rebuild produced, which may have lost
+// rows and may hold rows that are no longer the ones the live set describes.
+//
+// Two questions, both answered by the caller against the fold's own bytes and
+// passed in, because establishing either one reads the whole history and a
+// refresh that publishes nothing must not pay that twice (see
+// liveJobFold.overlayLive):
+//
+//   - stranded holds the live IDs the list does not name at all. Those records
+//     are kept — the job is still running, its process is alive, and the
+//     manager's own listing still shows it, so dropping it would report a
+//     running job as gone — in their own chunk after the durable ones. The row
+//     that placed them earlier is exactly what the rebuild took, so there is no
+//     position left to put them back at.
+//   - changed holds the rows whose projection the live record alters: a class or
+//     an owner that differs from the durable row's. A truncation past a running
+//     job's start can leave its completion as the only durable row, and that row
+//     classifies as an unsupported record under no owner while the live record
+//     is a shell job under one. Sharing that chunk would count and filter the
+//     wrong row, so the row is substituted in place and the chunk's counts are
+//     corrected with it.
+//
+// Chunks neither list touches stay shared, so the cost is the live set plus the
+// chunks it actually changes.
+func (l *activityJobList) withLiveRebuilt(live map[string]*jobstore.JobRecord, stranded map[string]struct{}, changed map[string]activityJobDurableRow) *activityJobList {
+	if l == nil || len(live) == 0 {
+		return l
+	}
+	next := &activityJobList{chunks: l.chunks, live: live}
+	if len(changed) > 0 {
+		// Copy the chunk list and each chunk a substitution writes, and nothing
+		// else: the rest keep being shared with the fold's own list.
+		//
+		// The copy is a real one, not slices.Clip: Clip only caps the length and
+		// keeps the same backing array, so writing a chunk pointer through it
+		// would write INTO the published fold's own slice. That is two defects at
+		// once — the fold every other reader is holding silently changes under
+		// them, and two overlays writing at the same index race. A caller that
+		// replaces one entry must not be able to change the list it was given.
+		chunks := make([]*activityJobChunk, len(l.chunks))
+		copy(chunks, l.chunks)
+		written := make(map[int]bool, len(changed))
+		for jobID, row := range changed {
+			if !row.row || jobID == "" {
+				continue
+			}
+			rec := live[jobID]
+			if rec == nil {
+				continue
+			}
+			// A row describes a slot in ONE list. A caller that resolved it
+			// against a different publication can name a slot this list does not
+			// have — including a whole chunk it does not have. Callers scope their
+			// lookups to the list they carry (see liveJobFoldResult.durableRowAt),
+			// so this is a second lock on a door that is already shut; but the
+			// failure it prevents is an out-of-range panic in the middle of
+			// rendering a page, which is not a cost worth paying to discover a
+			// caller bug. A row that does not fit is skipped, and the live record
+			// still overlays through the stranded path.
+			if row.chunk < 0 || row.chunk >= len(chunks) {
+				continue
+			}
+			if row.slot < 0 || row.slot >= len(chunks[row.chunk].records) {
+				continue
+			}
+			if !written[row.chunk] {
+				base := chunks[row.chunk]
+				records := make([]*jobstore.JobRecord, len(base.records))
+				copy(records, base.records)
+				chunks[row.chunk] = &activityJobChunk{records: records, owners: maps.Clone(base.owners)}
+				written[row.chunk] = true
+			}
+			chunk := chunks[row.chunk]
+			chunk.count(chunk.records[row.slot], -1)
+			chunk.records[row.slot] = rec
+			chunk.count(rec, 1)
+		}
+		next.chunks = chunks
+	}
+	if len(stranded) == 0 {
+		return next
+	}
+	kept := make([]*jobstore.JobRecord, 0, len(stranded))
+	for jobID, rec := range live {
+		if rec == nil || jobID == "" {
+			continue
+		}
+		if _, missing := stranded[jobID]; !missing {
+			continue
+		}
+		kept = append(kept, rec)
+	}
+	if len(kept) == 0 {
+		return next
+	}
+	// Map iteration is randomized, so order by start time then ID: a page that
+	// renders these must render the same order twice, and a continuation's
+	// index is only meaningful over a stable sequence.
+	slices.SortFunc(kept, func(a, b *jobstore.JobRecord) int {
+		if byStart := a.StartedAt.Compare(b.StartedAt); byStart != 0 {
+			return byStart
+		}
+		return strings.Compare(a.JobID, b.JobID)
+	})
+	chunk := &activityJobChunk{records: kept, owners: make(map[string]activityJobCounts, len(kept))}
+	for _, rec := range kept {
+		chunk.count(rec, 1)
+	}
+	// Capped at its length before appending, for the same reason the chunk
+	// pointers above are copied rather than Clipped: a slice with spare
+	// capacity shares its backing array with the list it came from, so an
+	// append writes a stranded chunk INTO the published fold's own slice.
+	//
+	// Nothing is visible until a slot past the fold's length is written, and
+	// then two things go wrong at once: the fold every other reader holds grows
+	// a chunk it never built, and a second request over the same fold with a
+	// different live snapshot overwrites that slot with its own stranded set.
+	// A page built from either list then renders the other request's jobs.
+	// Clip caps the capacity at the length, which makes the append below
+	// allocate rather than write into the array this slice still shares.
+	next.chunks = append(slices.Clip(next.chunks), chunk)
+	return next
+}
+
+// activityJobDurableRow is what the fold itself says about one live job ID: no
+// row at all, or the row's own projection class and owner plus where it sits.
+//
+// The class and owner are here because a live overlay is only equivalent to
+// substituting a record when it moves nothing a page filters or counts by. A
+// rebuild can leave a row that is NOT the start record — truncating the journal
+// past a running job's start leaves its completion behind — and that row
+// classifies as unsupported under an empty owner while the live record is a
+// shell job under a real one. The caller compares the two and substitutes the
+// rows that disagree.
+type activityJobDurableRow struct {
+	row   bool
+	chunk int
+	slot  int
+	class activityJobClass
+	owner string
+}
+
+// durableRows reports what the list's own bytes say, per id in want. It reads
+// the fold, never the overlay, so it answers for the journal. Every asked id is
+// present in the result, including the ones with no row: "this fold does not
+// name it" is an answer a caller memoizes, so it must not be indistinguishable
+// from "not asked".
+func (l *activityJobList) durableRows(want map[string]struct{}) map[string]activityJobDurableRow {
+	found := make(map[string]activityJobDurableRow, len(want))
+	if l == nil || len(want) == 0 {
+		return found
+	}
+	for jobID := range want {
+		found[jobID] = activityJobDurableRow{}
+	}
+	remaining := len(want)
+	for chunkIndex, chunk := range l.chunks {
+		for slot, rec := range chunk.records {
+			activityJobDurableVisits.Add(1)
+			if rec == nil || rec.JobID == "" {
+				continue
+			}
+			if _, asked := want[rec.JobID]; !asked {
+				continue
+			}
+			if found[rec.JobID].row {
+				continue
+			}
+			found[rec.JobID] = activityJobDurableRow{
+				row: true, chunk: chunkIndex, slot: slot,
+				class: classifyActivityJob(rec), owner: rec.OwnerSessionID,
+			}
+			remaining--
+			if remaining == 0 {
+				return found
+			}
+		}
+	}
+	return found
+}
+
+// record returns the record to report for a durable record: the live one when
+// a running job with the same ID overlays it.
+func (l *activityJobList) record(rec *jobstore.JobRecord) *jobstore.JobRecord {
+	if len(l.live) == 0 || rec == nil {
+		return rec
+	}
+	if live := l.live[rec.JobID]; live != nil {
+		return live
+	}
+	return rec
 }
 
 type activityJobChunk struct {
@@ -76,20 +321,6 @@ func activityJobOwnedBy(sessionID, owner string) bool {
 	return sessionID == "" || owner == "" || owner == sessionID
 }
 
-// newActivityJobList lists records, already one per job ID in the order a
-// page shows them (mergeActivityRecords' output), dropping nil records. The
-// list holds the records themselves, so the caller hands over records it
-// will not mutate.
-func newActivityJobList(records []*jobstore.JobRecord) *activityJobList {
-	b := newActivityJobListBuilder(nil, nil)
-	for _, rec := range records {
-		if rec != nil {
-			b.push(rec)
-		}
-	}
-	return b.list()
-}
-
 // counts totals sessionID's shell and unsupported records.
 func (l *activityJobList) counts(sessionID string) activityJobCounts {
 	var total activityJobCounts
@@ -125,7 +356,7 @@ func (l *activityJobList) records(sessionID string, class activityJobClass, skip
 					skip--
 					continue
 				}
-				if !yield(rec) {
+				if !yield(l.record(rec)) {
 					return
 				}
 			}
@@ -141,7 +372,7 @@ func (l *activityJobList) all() iter.Seq[*jobstore.JobRecord] {
 		}
 		for _, chunk := range l.chunks {
 			for _, rec := range chunk.records {
-				if !yield(rec) {
+				if !yield(l.record(rec)) {
 					return
 				}
 			}

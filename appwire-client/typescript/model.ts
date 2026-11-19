@@ -513,10 +513,11 @@ export interface ThreadModel {
   // thread, so a session that reloads can still say when its call resumes —
   // and a stamped live start announcement, which names the same instant as
   // its own resumesAt so a pane already open when the limit hits holds the
-  // absolute deadline too. Only a legacy unstamped announcement (an older
-  // daemon) leaves the receipt-clock delay as the fallback. The next read
-  // refreshes the instant, and clears it with an explicit undefined when
-  // that read's failure names no resume time.
+  // absolute deadline too. An unstamped frame (a daemon that predates the
+  // stamp) installs none — there is no receipt clock — so an older daemon
+  // shows no wait in the pane, period. The next read refreshes the instant,
+  // and clears it with an explicit undefined when that read's failure names
+  // no resume time.
   quotaResumesAt?: string;
   // The identity of the wait quotaResumesAt names: the daemon-issued
   // waitStartedAt sequence the wait's start announcement and the read's
@@ -527,10 +528,12 @@ export interface ThreadModel {
   // when the two waits' reset deadlines match exactly. Every ordering
   // decision between waits compares these stamps: never turn ids, which name
   // only the call site, and never clocks, which can repeat or step back.
-  // Undefined for a legacy unstamped wait (an older daemon), which
-  // reconciles by turn ownership alone and may never clear or overwrite a
-  // stamped wait. Produced by the same sources as quotaResumesAt: the read's
-  // failure summary and a stamped start announcement.
+  // An unstamped frame (a daemon that predates the stamp) installs no wait
+  // at all — this field is what gates the install, so without it no deadline
+  // and no chip arrive either — and an unstamped frame's only power is to
+  // END a held wait by turn ownership. Produced by the same sources as
+  // quotaResumesAt: the read's failure summary and a stamped start
+  // announcement.
   quotaWaitStartedAt?: number;
   // The stamp of the newest wait whose end the client has observed, kept
   // after the wait's deadline, stamp and chip are gone. A frame whose own

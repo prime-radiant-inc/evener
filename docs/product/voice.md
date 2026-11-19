@@ -1,8 +1,12 @@
 # Voice conversations
 
-The native iOS app can bind voice to an existing live manager session. Voice is
-an additional input and presentation channel for that session. The manager keeps
-its normal tools, context, typed input and durable transcript.
+The native iOS app has a voice module that can bind voice to an existing live
+manager session. The app build excludes that module: `mobile-native/package.json`
+sets `expo.autolinking.ios.exclude` to `evener-voice`, so the installed app has
+no voice controls. The voice code, tests and resources stay in the tree, and
+removing the exclusion returns the module to the app. With the module built,
+voice is an additional input and presentation channel for that session. The
+manager keeps its normal tools, context, typed input and durable transcript.
 
 Voice makes that one session a persistent spoken chief of staff: the person
 asks what is happening, starts work through the manager's existing tools,
@@ -218,24 +222,25 @@ cleanup. Ordinary deletion works again when the blocking condition clears.
 
 ## Client and qualification boundaries
 
-Voice controls are native iOS controls; browser and ordinary text input retain
-their existing owners. Persistent voice targets the phone, including
-listening while it is locked: the app ships the `audio` background mode
-(`mobile-native/app.config.js`), and locked-phone lifetime is a qualification
-gate, not a deferral. Browser-tab voice is not part of this scope. The native
-module exposes Talk, Stop speaking and a local
-openWakeWord detector. The shipped default is the custom **Hey Evener.**
-classifier at threshold **0.99**, not pretrained Alexa. The model is integrated,
-not physically qualified. Attached presentation evidence supports
-references such as "the second one"; model
-reference-resolution quality requires a separate live qualification.
+Voice controls are native iOS controls owned by the voice module that the app
+build excludes, so the installed app shows no voice controls; browser and
+ordinary text input retain their existing owners. With the module built,
+persistent voice targets the phone, including listening while it is locked: the
+app ships the `audio` background mode (`mobile-native/app.config.js`), and
+locked-phone lifetime is a qualification gate, not a deferral. Browser-tab voice
+is not part of this scope. The module exposes Talk, Stop speaking and a local
+openWakeWord detector. Its default classifier is the custom **Hey Evener.** at
+threshold **0.99**, not pretrained Alexa; the app ships that default only when
+it builds the module. The model is integrated, not physically qualified.
+Attached presentation evidence supports references such as "the second one";
+model reference-resolution quality requires a separate live qualification.
 
-The shipped classifier comes from this repository's own
+The module's classifier comes from this repository's own
 [`tools/wake-word/`](../../mobile-native/modules/evener-voice/tools/wake-word/README.md)
 training pipeline, not from openWakeWord's pretrained set: the openWakeWord
 frontend and speech-embedding models are Apache-2.0, while openWakeWord's
 pretrained phrase classifiers are CC BY-NC-SA and personal-use only, so the
-pretrained Alexa model stays an optional preview and can never be the shipped
+pretrained Alexa model stays an optional preview and can never be the module's
 default. See the [model notices](../../mobile-native/modules/evener-voice/resources/wake-word/NOTICE.md).
 
 ```mermaid
@@ -295,7 +300,8 @@ artifact location. The [native module's model-swap procedure](../../mobile-nativ
 copies a selected local classifier into the resource bundle without moving or
 rewriting the training lane's artifact. From `mobile-native`, run
 `node modules/evener-voice/ensure-model.mjs --wake-manifest /absolute/custom-wake.json`,
-then rebuild through the normal pod/prebuild flow. With no option, postinstall
+then remove the `evener-voice` exclusion from `mobile-native/package.json` and
+rebuild through the normal pod/prebuild flow. With no option, postinstall
 selects `wake-models.custom.json` and its paired feature models. CocoaPods bundles
 only the selected models and notices, not unused pretrained ONNX copies.
 `wake-models.pretrained.json` remains an optional CC BY-NC-SA 4.0 Alexa preview.

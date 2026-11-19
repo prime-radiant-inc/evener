@@ -49,3 +49,51 @@ func TestIOSQualificationChecksOutTheWorkflowTree(t *testing.T) {
 		t.Error("simulator-build does not check out the selector's chosen tree")
 	}
 }
+
+// The lane splits the cold Release build from the installed-app journeys so
+// the build signal lands without waiting for the UI run. The build job owns
+// the test products the journeys need; the journeys job needs that job and
+// restores the artifact it uploads.
+func TestIOSQualificationSplitsBuildFromJourneys(t *testing.T) {
+	workflow := readWorkflow(t, ".github/workflows/ios-qualification.yml")
+	build, ok := workflow.Jobs["simulator-build"]
+	if !ok {
+		t.Fatal("ios-qualification is missing the simulator-build job")
+	}
+	journeys, ok := workflow.Jobs["ui-journeys"]
+	if !ok {
+		t.Fatal("ios-qualification is missing the ui-journeys job")
+	}
+	if !workflowNeeds(journeys.Needs, "simulator-build") {
+		t.Fatal("ui-journeys does not need simulator-build")
+	}
+	if !workflowRuns(build.Steps, "build-simulator.sh") {
+		t.Error("simulator-build does not run the build runner")
+	}
+	if workflowRuns(build.Steps, "run-ui-journeys.sh --products") {
+		t.Error("simulator-build still runs the installed-app journeys")
+	}
+	if workflowRuns(build.Steps, "--with-ui") {
+		t.Error("simulator-build still asks the build runner for the journeys")
+	}
+	if !workflowRuns(journeys.Steps, "run-ui-journeys.sh --products") {
+		t.Error("ui-journeys does not run the journeys entry")
+	}
+	upload, download := false, false
+	for _, step := range build.Steps {
+		if strings.HasPrefix(step.Uses, "actions/upload-artifact@") && strings.Contains(fmt.Sprint(step.With["name"]), "ios-build-products-") {
+			upload = true
+			if got := fmt.Sprint(step.With["if-no-files-found"]); got != "error" {
+				t.Errorf("products artifact if-no-files-found = %q, want error", got)
+			}
+		}
+	}
+	for _, step := range journeys.Steps {
+		if strings.HasPrefix(step.Uses, "actions/download-artifact@") && strings.Contains(fmt.Sprint(step.With["name"]), "ios-build-products-") {
+			download = true
+		}
+	}
+	if !upload || !download {
+		t.Errorf("products artifact handoff missing: upload=%v download=%v", upload, download)
+	}
+}

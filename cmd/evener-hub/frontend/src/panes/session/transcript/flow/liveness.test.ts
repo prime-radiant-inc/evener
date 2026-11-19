@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { STUCK_AFTER_MS } from "@evener/appwire-client";
-import { passedQuotaResetText, waitingForQuotaText } from "@evener/appwire-client/state/navigation";
+
 import { expect, test } from "vitest";
 import {
   describeLiveness,
@@ -394,9 +394,13 @@ test("describeLiveness: attemptCap 0 renders the attempt number without a denomi
 // would say them.
 
 test("describeLiveness: a known usage-limit wait explains the silence with the shared wait words", () => {
-  const { level, text } = describeLiveness(30_000, true, 0, undefined, { remainingMs: 21_600_000, passedReset: false });
-  expect(level).toBe("quota");
-  expect(text).toBe(waitingForQuotaText(21_600_000));
+  const info = describeLiveness(30_000, true, 0, undefined, { remainingMs: 21_600_000, passedReset: false });
+  expect(info.level).toBe("quota");
+  // The wait's phase and computed runway as facts; the words themselves are
+  // the renderer's, from the one shared source - never asserted here.
+  expect(info.quota?.passedReset).toBe(false);
+  expect(info.quota?.remainingMs).toBe(21_600_000);
+  expect(info.text).not.toContain("21600s");
 });
 
 // The quiet gate exists for silence nobody explained. A wait that named its
@@ -446,9 +450,9 @@ test("describeLiveness: no quota wait leaves the ordinary quiet decision untouch
 // wait ends it. The words come from the same shared source the row reads,
 // asserted through the function, never a literal.
 test("describeLiveness: past the reset instant the wait reads pending, not absent", () => {
-  const { level, text } = describeLiveness(30_000, true, 0, undefined, { passedReset: true });
-  expect(level).toBe("quota");
-  expect(text).toBe(passedQuotaResetText());
+  const info = describeLiveness(30_000, true, 0, undefined, { passedReset: true });
+  expect(info.level).toBe("quota");
+  expect(info.quota?.passedReset).toBe(true);
 });
 
 // Scenario 13's rendering half: the model tag and the elapsed time survive
@@ -462,7 +466,9 @@ test("describeLiveness: the wait's model tag and elapsed ride both halves identi
     elapsedMs: 14 * 60_000,
   });
   expect(counting.level).toBe("quota");
-  expect(counting.text).toBe(`${waitingForQuotaText(21_600_000)} (gpt-5) — 14m on this call`);
+  expect(counting.quota?.model).toBe("gpt-5");
+  expect(counting.quota?.elapsedMs).toBe(14 * 60_000);
+  expect(counting.quota?.passedReset).toBe(false);
 
   const pending = describeLiveness(30_000, true, 0, undefined, {
     passedReset: true,
@@ -470,19 +476,25 @@ test("describeLiveness: the wait's model tag and elapsed ride both halves identi
     elapsedMs: 14 * 60_000,
   });
   expect(pending.level).toBe("quota");
-  expect(pending.text).toBe(`${passedQuotaResetText()} (gpt-5) — 14m on this call`);
+  // The crossing changed the promise, never the facts: both halves carry the
+  // identical tag and elapsed, only the phase differs.
+  expect(pending.quota?.model).toBe("gpt-5");
+  expect(pending.quota?.elapsedMs).toBe(14 * 60_000);
+  expect(pending.quota?.passedReset).toBe(true);
 });
 
 // Contract point 4: a snapshot-only wait (deadline from a read, no live
 // announcement) carries no model tag and no elapsed — the snapshot cannot
 // attribute them. The line says the wait alone.
 test("describeLiveness: a snapshot-only wait carries no model tag and no elapsed", () => {
-  const { level, text } = describeLiveness(30_000, true, 0, undefined, {
+  const info = describeLiveness(30_000, true, 0, undefined, {
     remainingMs: 21_600_000,
     passedReset: false,
   });
-  expect(level).toBe("quota");
-  expect(text).toBe(waitingForQuotaText(21_600_000));
+  expect(info.level).toBe("quota");
+  expect(info.quota?.remainingMs).toBe(21_600_000);
+  expect(info.quota?.model).toBeUndefined();
+  expect(info.quota?.elapsedMs).toBeUndefined();
 });
 
 // A quota_exceeded retry reaching the retry line (a daemon whose generic retry

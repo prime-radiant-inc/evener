@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/base64"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -122,26 +123,34 @@ func TestAggregateActivity_CountsWorkUnitsRecursively(t *testing.T) {
 	}
 }
 
-func TestMergeActivityRecords_LiveOverlayHasNoDuplicate(t *testing.T) {
+func TestActivityJobListLiveOverlayHasNoDuplicate(t *testing.T) {
 	t.Parallel()
-	durable := []*jobstore.JobRecord{
+	durable := newActivityJobList([]*jobstore.JobRecord{
 		{JobID: "job_b", Status: jobstore.StatusRunning, StartedAt: time.Unix(2, 0)},
 		{JobID: "job_a", Status: jobstore.StatusCompleted, StartedAt: time.Unix(1, 0)},
-	}
+	})
 	live := map[string]*jobstore.JobRecord{
 		"job_b": {JobID: "job_b", Status: jobstore.StatusCompleted, StartedAt: time.Unix(2, 0)},
 		"job_c": {JobID: "job_c", Status: jobstore.StatusRunning, StartedAt: time.Unix(3, 0)},
 	}
-	got := mergeActivityRecords(durable, live)
-	if ids := activityRecordIDs(got); !reflect.DeepEqual(ids, []string{"job_b", "job_a", "job_c"}) {
+	overlaid := durable.withLive(live)
+	if ids := activityRecordIDs(slices.Collect(overlaid.all())); !reflect.DeepEqual(ids, []string{"job_b", "job_a"}) {
 		t.Fatalf("ids=%v", ids)
 	}
-	if got[0].Status != jobstore.StatusCompleted {
-		t.Fatalf("live overlay not applied: %+v", got[0])
+	var first *jobstore.JobRecord
+	for rec := range overlaid.all() {
+		first = rec
+		break
 	}
-	got[0].Status = jobstore.StatusFailed
-	if live["job_b"].Status != jobstore.StatusCompleted {
-		t.Fatal("merge returned an un-cloned live record")
+	if first.Status != jobstore.StatusCompleted {
+		t.Fatalf("live overlay not applied: %+v", first)
+	}
+	// The base fold the overlay is layered on keeps its own record: another
+	// page reading that shared list must not see this request's live state.
+	for rec := range durable.all() {
+		if rec.JobID == "job_b" && rec.Status != jobstore.StatusRunning {
+			t.Fatalf("base list job_b = %+v, want its own running record", rec)
+		}
 	}
 }
 

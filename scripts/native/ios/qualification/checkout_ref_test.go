@@ -64,6 +64,7 @@ func TestCheckoutRefChoosesHeadOrMerge(t *testing.T) {
 	write("scripts/native/ios/build-simulator.sh", "#!/bin/sh\n")
 	write("scripts/native/ios/qualification/policy.go", "package main\n")
 	write("scripts/native/ios/run-ui-tests.sh", "#!/bin/sh\n")
+	write("scripts/native/ios/run-ui-journeys.sh", "#!/bin/sh\n")
 	base := commit("add the qualification harness")
 
 	// A stale PR branch from before the harness, touching an unrelated native
@@ -96,6 +97,7 @@ func TestCheckoutRefChoosesHeadOrMerge(t *testing.T) {
 			"scripts/native/ios/build-simulator.sh",
 			"scripts/native/ios/qualification",
 			"scripts/native/ios/run-ui-tests.sh",
+			"scripts/native/ios/run-ui-journeys.sh",
 		)
 		cmd.Dir = dir
 		out, err := cmd.CombinedOutput()
