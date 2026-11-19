@@ -84,7 +84,7 @@ func TestSessionEndHookDescendantIsReapedWhileDiagnosticsRemain(t *testing.T) {
 	var mu sync.Mutex
 	var hookEnds []events.HookEndData
 	r := NewRunner(nil, "")
-	r.SetEventCallback(func(kind events.EventKind, data events.EventData) {
+	r.SetEventCallbackContext(func(_ context.Context, kind events.EventKind, data events.EventData) {
 		if kind != events.EventHookEnd {
 			return
 		}

@@ -237,6 +237,17 @@ type JobRecord struct {
 	NotifyState            NotifyState        `json:"terminal_notification_state"`
 	Provenance             *provenance.Causal `json:"provenance,omitempty"`
 	NotificationProvenance *provenance.Causal `json:"notification_provenance,omitempty"`
+	// StatusFromMalformedFinish reports that the record's current Status was
+	// copied from a job_finished event that declared no END — a nonterminal
+	// status on the very event that says the run is over. Such a status is not a
+	// statement about the running job, it is the absence of one recorded where the
+	// answer should be.
+	//
+	// Derived state about the event that supplied Status, not a durable field:
+	// nothing writes it and it never round-trips, which is why it stays out of the
+	// JSON encoding. A later TERMINAL finish replaces the status and clears it, so
+	// a repaired journal records confidence again.
+	StatusFromMalformedFinish bool `json:"-"`
 }
 
 func NewJobID(ownerSessionID string) string {

@@ -61,7 +61,9 @@ func TestChatReasoningCharsBillsSignatureText(t *testing.T) {
 		if withText {
 			thinking.Text = text
 		}
-		return chatReasoningChars(targetInfo{}, ContentPart{Kind: ContentThinking, Thinking: thinking})
+		var estimate chatReasoningEstimate
+		estimate.add(targetInfo{}, ContentPart{Kind: ContentThinking, Thinking: thinking})
+		return estimate.chars(targetInfo{})
 	}
 	if got, want := on(true), len(signatureReasoningItem)+len(text); got != want {
 		t.Fatalf("signature text billing = %d, want %d", got, want)
@@ -71,7 +73,9 @@ func TestChatReasoningCharsBillsSignatureText(t *testing.T) {
 	}
 	off := targetInfo{reasoningOff: true}
 	part := ContentPart{Kind: ContentThinking, Thinking: &ThinkingData{EncryptedContent: signatureReasoningItem, Text: text}}
-	if got := chatReasoningChars(off, part); got != 0 {
+	var estimate chatReasoningEstimate
+	estimate.add(off, part)
+	if got := estimate.chars(off); got != 0 {
 		t.Fatalf("a declared non-reasoning row bills %d, want 0: the details array never rides", got)
 	}
 }

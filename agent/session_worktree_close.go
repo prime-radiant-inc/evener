@@ -234,7 +234,75 @@ func ensureCloseBudget(ctx context.Context) (context.Context, context.CancelFunc
 	if closeBudgetMintHook != nil {
 		closeBudgetMintHook()
 	}
-	return context.WithTimeout(ctx, budget)
+	timed, cancelTimeout := context.WithTimeout(ctx, budget)
+	// The cascade's ONE publication cutoff is minted HERE, on the context every
+	// descendant of this close inherits, rather than by the first disposal pass
+	// that happens to need one. A cutoff minted by a pass lived only on that
+	// pass's own derived context, so the next pass -- a resident child, or the
+	// root after its children -- found no value, minted another, and reserved a
+	// fresh slice of what was left. N children therefore spent the removals'
+	// time in N serial waits even though each pass looked like one reservation.
+	if cutoff, ok := closeStopJoinCutoff(timed); ok {
+		timed = context.WithValue(timed, closeCascadePublicationKey{}, cutoff)
+	}
+	return timed, cancelTimeout
+}
+
+// closeStopJoinCutoff reports the absolute deadline closeStopJoinContext would
+// mint for ctx, without creating a context and without reporting an
+// ObserveCloseStopJoinBudget observation. ensureCloseBudget needs the deadline
+// alone to record the cascade's single publication cutoff, and the observer's
+// readers count the stop joins a close performs -- a cutoff recorded for
+// publication is not one of those joins.
+func closeStopJoinCutoff(ctx context.Context) (time.Time, bool) {
+	cascadeDeadline, bounded := ctx.Deadline()
+	if !bounded {
+		return time.Time{}, false
+	}
+	return time.Now().Add(closeStopJoinBudget(time.Until(cascadeDeadline), closePassBudget(ctx))), true
+}
+
+// closeCascadePublicationKey carries the ONE publication cutoff a close cascade
+// mints, so successive passes reuse it instead of each reserving a fresh slice.
+type closeCascadePublicationKey struct{}
+
+// closeCascadePublicationContext returns the close cascade's single publication
+// cutoff, creating it on the first call and reusing it for every later pass in
+// the same cascade.
+//
+// closeStopJoinContext derives its budget from what is LEFT of the cascade, so
+// calling it once per pass charges the reservation repeatedly: each resident
+// child's disposal pass created a fresh cutoff before the root began its own,
+// and several children publishing to a full root stream halved the remainder
+// again and again. Eight such waits took the default 30-second cascade under 120
+// milliseconds before any Git work ran, and the root's collectible lanes were
+// left on disk for a later prune.
+//
+// One cutoff per cascade makes the reservation what it was meant to be: a single
+// slice, shared by every publisher in the pass, so the time the removals need
+// cannot be spent by the number of children that happen to exist. A nil
+// returned cancel is valid and means the cutoff was already minted upstream.
+func closeCascadePublicationContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	deadline, minted := ctx.Value(closeCascadePublicationKey{}).(time.Time)
+	if !minted {
+		// No inherited cutoff: this pass is not running under a close cascade
+		// that minted one (a direct caller, or a context carrying a deadline of
+		// its own). Reserve a slice for this pass alone. The cascade's shared
+		// case is minted once by ensureCloseBudget, on the context every
+		// descendant inherits.
+		cutoff, cancel := closeStopJoinContext(ctx)
+		if d, ok := cutoff.Deadline(); ok {
+			cutoff = context.WithValue(cutoff, closeCascadePublicationKey{}, d)
+		}
+		return cutoff, cancel
+	}
+	// A later pass: reuse the same cutoff. It ends when the cascade's slice
+	// ends, not when this pass's own share would have.
+	cutoff, cancel := context.WithDeadline(ctx, deadline)
+	return context.WithValue(cutoff, closeCascadePublicationKey{}, deadline), cancel
 }
 
 // laneCloseReleaseBudget bounds one session's close-time lock-release pass. It

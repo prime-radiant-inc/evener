@@ -10,6 +10,16 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// ErrNotRegularFile reports that a path exists but is not a regular file, so
+// reading it would either block (a FIFO with no writer, a socket) or mean
+// something other than data (a device). Callers that can answer without the
+// bytes check for it with errors.Is instead of matching the message.
+var ErrNotRegularFile = errors.New("not a regular file")
+
+// ErrGitPointerTooLarge reports that a ".git" pointer file exceeded the size a
+// pointer can occupy. It is neither read whole nor parsed.
+var ErrGitPointerTooLarge = errors.New("git pointer file is larger than any pointer")
+
 // OpenRegularNoFollow opens path for reading through a single descriptor that
 // is validated before any read: the open refuses a symlink at the final
 // component (ELOOP, the target is never touched) and never blocks — a
@@ -38,7 +48,7 @@ func OpenRegularNoFollow(path string) (*os.File, error) {
 	}
 	if !info.Mode().IsRegular() {
 		_ = file.Close()
-		return nil, fmt.Errorf("open %q: not a regular file", path)
+		return nil, fmt.Errorf("open %q: %w", path, ErrNotRegularFile)
 	}
 	return file, nil
 }

@@ -1,19 +1,41 @@
 package jobstore
 
 import (
+	"errors"
+	"fmt"
 	"sort"
 
 	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/invariant"
 )
+
+// orderedBySeq returns events in seq order, the durable append order every fold
+// applies them in, without mutating the caller's slice.
+func orderedBySeq(events []Event) []Event {
+	sorted := append([]Event(nil), events...)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Seq < sorted[j].Seq })
+	return sorted
+}
 
 // Fold reconstructs the current JobRecord for each job by applying events in
 // seq order. The first job_finished for a job fixes its terminal_generation and
 // terminal status; later terminal writes do not overwrite them.
 func Fold(events []Event) map[string]*JobRecord {
-	sorted := append([]Event(nil), events...)
-	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Seq < sorted[j].Seq })
+	return foldOrderedEvents(orderedBySeq(events))
+}
 
+// ErrIncompleteLifecycle reports a job history whose events do not describe a
+// whole job: a terminal or notification event with no preceding start, a start
+// with no type, a start whose OwnerSessionID contradicts the owner the job ID
+// encodes, or a job event carrying no job ID at all. Fold accepts these
+// fragments by design — it reconstructs the best record the log supports, and
+// the live runtime repairs what it can — so a reader that must report whether a
+// history is COMPLETE checks this sentinel from FoldCheckedOrdered instead.
+var ErrIncompleteLifecycle = errors.New("jobstore: incomplete job lifecycle")
+
+// foldOrderedEvents applies already-ordered events to a record map.
+func foldOrderedEvents(sorted []Event) map[string]*JobRecord {
 	recs := make(map[string]*JobRecord)
 	for _, e := range sorted {
 		applyJobEvent(recs, e)
@@ -21,14 +43,104 @@ func Fold(events []Event) map[string]*JobRecord {
 	return recs
 }
 
+// checkJobLifecycles reports the first event that leaves a job's lifecycle
+// unaccounted for, in seq order so the report is deterministic. It validates
+// what a reader can prove from the journal alone: every job event carries a
+// job ID, a start exists before any terminal or notification event for that
+// job, a start names the type it started, and a start's declared owner agrees
+// with the owner its job ID encodes.
+//
+// A finish must also STATE a terminal status. The fold copies a finish's status
+// onto the record, so a finish carrying "running" produces a row that reads as
+// a live job while the journal has already recorded its end. Nothing about that
+// row is a settled state, and a reader that ranked it above another branch's
+// observed finish would drop a known exit code and end time.
+//
+// An EMPTY owner is accepted: rows written before OwnerSessionID existed fold
+// with it unset, and rejecting them would make every pre-owner journal
+// unreadable rather than merely old.
+func checkJobLifecycles(sorted []Event) error {
+	started := make(map[string]bool, len(sorted))
+	for _, e := range sorted {
+		if !IsJobRecordEvent(e.Kind) {
+			continue
+		}
+		// A job event with no ID cannot be attributed to any lifecycle, yet it
+		// still folds into an empty-ID row that a forensic surface renders. That
+		// row has no start by construction, so report it rather than letting the
+		// check skip the very event that made it.
+		if e.JobID == "" {
+			return fmt.Errorf("%w: a %s event (seq %d) carries no job ID",
+				ErrIncompleteLifecycle, e.Kind, e.Seq)
+		}
+		if e.Kind == EventJobStarted {
+			if err := checkJobStart(e); err != nil {
+				return err
+			}
+			started[e.JobID] = true
+			continue
+		}
+		if !started[e.JobID] {
+			return fmt.Errorf("%w: job %q has a %s event (seq %d) with no preceding start",
+				ErrIncompleteLifecycle, e.JobID, e.Kind, e.Seq)
+		}
+		if e.Kind == EventJobFinished && !e.Status.IsTerminal() {
+			return fmt.Errorf("%w: job %q finishes (seq %d) with status %q, which is not terminal",
+				ErrIncompleteLifecycle, e.JobID, e.Seq, e.Status)
+		}
+	}
+	return nil
+}
+
+// checkJobStart reports a start event that cannot describe a runnable job.
+// Type is required of every start: a record with no type is what a projection
+// classifies as unsupported, and a start that cannot say what it started is a
+// fragment, not a lifecycle. StartedAt deliberately is NOT required: the fold
+// treats it as optional (a start without one folds to the zero time and the
+// activity projections render that), so demanding it here would report real
+// journals as damaged.
+func checkJobStart(e Event) error {
+	if e.Type == "" {
+		return fmt.Errorf("%w: job %q starts (seq %d) with no type",
+			ErrIncompleteLifecycle, e.JobID, e.Seq)
+	}
+	if e.OwnerSessionID == "" {
+		return nil
+	}
+	encoded, err := identifier.JobOwnerSessionID(e.JobID)
+	if err != nil {
+		// A non-conforming job ID is not this check's business: synthetic IDs
+		// such as tests' and older tooling's "job_x" carry no owner, and the
+		// owner comparison below is what the contract is about.
+		return nil //nolint:nilerr // unparseable ID carries no owner to contradict
+	}
+	if encoded != e.OwnerSessionID {
+		return fmt.Errorf("%w: job %q names owner %q but its job ID encodes %q",
+			ErrIncompleteLifecycle, e.JobID, e.OwnerSessionID, encoded)
+	}
+	return nil
+}
+
 // FoldOrdered folds events to records (like Fold) and returns them ordered by
 // each job's FIRST event seq — the durable append order. Two records appended in
 // sequence sort by which was created first; this is the total order the
 // append-only log defines, independent of any wall-clock field.
 func FoldOrdered(events []Event) []*JobRecord {
-	sorted := append([]Event(nil), events...)
-	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Seq < sorted[j].Seq })
+	return orderedRecords(orderedBySeq(events))
+}
 
+// FoldCheckedOrdered is FoldOrdered plus the lifecycle verdict, from one
+// ordering of the events. It is the read a forensic surface wants: the report's
+// rows and its honesty about those rows come from the same pass, so a journal
+// cannot be folded one way for display and judged another way for diagnostics.
+func FoldCheckedOrdered(events []Event) ([]*JobRecord, error) {
+	sorted := orderedBySeq(events)
+	return orderedRecords(sorted), checkJobLifecycles(sorted)
+}
+
+// orderedRecords folds already-ordered events to records ordered by each job's
+// FIRST event seq — the durable append order.
+func orderedRecords(sorted []Event) []*JobRecord {
 	recs := make(map[string]*JobRecord)
 	order := make([]string, 0, len(sorted))
 	for _, e := range sorted {
@@ -64,11 +176,8 @@ func IsJobRecordEvent(kind EventKind) bool {
 }
 
 func FoldWatches(events []Event) map[string]*WatchRecord {
-	sorted := append([]Event(nil), events...)
-	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Seq < sorted[j].Seq })
-
 	watches := make(map[string]*WatchRecord)
-	for _, e := range sorted {
+	for _, e := range orderedBySeq(events) {
 		applyWatchEvent(watches, e)
 	}
 	return watches
@@ -165,9 +274,7 @@ func applyWatchEvent(watches map[string]*WatchRecord, e Event) {
 
 // FoldWatchSends reconstructs pending watch-send frames from durable events.
 func FoldWatchSends(events []Event) WatchSendRecord {
-	sorted := append([]Event(nil), events...)
-	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Seq < sorted[j].Seq })
-
+	sorted := orderedBySeq(events)
 	rec := WatchSendRecord{Pending: make(map[WatchSendKey]*WatchSendState)}
 	terminalSeq := make(map[WatchSendKey]uint64)
 	for _, e := range sorted {
@@ -239,6 +346,11 @@ func applyEvent(r *JobRecord, e Event) {
 			r.StartedAt = *e.StartedAt
 		}
 		if r.Status == "" {
+			// The start supplied this status, so the record's status is no
+			// longer the one a malformed finish named. Without this the flag
+			// keeps claiming "running" came from an end that declared no end,
+			// and a reader ranking that row treats a live job as a fragment.
+			r.StatusFromMalformedFinish = false
 			r.Status = StatusRunning
 		}
 	case EventJobFinished:
@@ -246,6 +358,13 @@ func applyEvent(r *JobRecord, e Event) {
 		if r.Status.IsTerminal() {
 			return
 		}
+		// The event says the run is over, so the status it carries must state what
+		// the end was. A nonterminal status here is a malformed finish: the record
+		// still takes it — the fold reconstructs the best record the log supports —
+		// but it records that the status came from an end that named no end, so a
+		// reader can rank it as the fragment it is. A later terminal finish
+		// overwrites both, which is how a repaired journal gets its confidence back.
+		r.StatusFromMalformedFinish = !e.Status.IsTerminal()
 		r.Status = e.Status
 		r.Reason = e.Reason
 		r.ExhaustionBudget = e.ExhaustionBudget

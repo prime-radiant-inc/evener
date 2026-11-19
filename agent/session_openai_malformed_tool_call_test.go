@@ -1,12 +1,14 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -23,6 +25,10 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 	t.Parallel()
 	dir := t.TempDir()
 	const malformedArgs = `{"value": broken`
+	const correctedArgs = `{"value":"\u0066ixed"}`
+	const firstReasoning = "\tα\n\nβ\r\n"
+	reasoningText := func(text string) map[string]any { return map[string]any{"type": "reasoning_text", "text": text} }
+	summaryText := func(text string) map[string]any { return map[string]any{"type": "summary_text", "text": text} }
 
 	var mu sync.Mutex
 	var requestBodies [][]byte
@@ -52,8 +58,19 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 		case 1:
 			writeResponsesFunctionCall(t, w, flusher, "resp_bad", "call_bad", "my_strict_tool", malformedArgs)
 		case 2:
-			args := mustJSON(t, map[string]any{"value": "fixed"})
-			writeResponsesFunctionCall(t, w, flusher, "resp_fixed", "call_fixed", "my_strict_tool", args)
+			writeResponsesTerminal(t, w, flusher, "resp_fixed", []any{
+				map[string]any{
+					"type": "reasoning", "id": "rs_mixed", "encrypted_content": "opaque",
+					"content": []any{reasoningText(firstReasoning), summaryText("s_1 "), reasoningText(""), reasoningText(" \t")},
+					"summary": []any{summaryText(" s_2 "), summaryText("")},
+				},
+				map[string]any{"type": "reasoning", "id": "rs_untyped", "content": []any{map[string]any{"text": " r_0\n\n "}}},
+				map[string]any{"type": "reasoning", "id": "rs_plain", "content": []any{reasoningText(firstReasoning)}},
+				map[string]any{"type": "reasoning", "id": "rs_blank", "content": []any{reasoningText(" \t"), reasoningText("")}},
+				map[string]any{"type": "reasoning", "id": "rs_summary", "summary": []any{summaryText("")}},
+				map[string]any{"type": "function_call", "id": "fc_fixed", "call_id": "call_fixed"},
+				map[string]any{"type": "function_call", "id": "fc_repeat", "call_id": "call_fixed", "name": "my_strict_tool", "arguments": correctedArgs},
+			})
 		case 3:
 			args := mustJSON(t, map[string]any{
 				"message":  "recovered",
@@ -171,6 +188,42 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 		t.Fatalf("readTranscript skipped %d records, want 0", skipped)
 	}
 	durableHistory := ResumeHistory(entries)
+	type thinkingRecord struct {
+		Text             string
+		Content, Summary []llm.ResponsesReasoningPart
+	}
+	wantThinking := map[string]thinkingRecord{
+		"rs_mixed": {
+			Text: firstReasoning + "\n\ns_1 ",
+			Content: []llm.ResponsesReasoningPart{
+				{Type: "reasoning_text", Text: firstReasoning},
+				{Type: "summary_text", Text: "s_1 "},
+				{Type: "reasoning_text", Text: ""},
+				{Type: "reasoning_text", Text: " \t"},
+			},
+			Summary: []llm.ResponsesReasoningPart{{Type: "summary_text", Text: " s_2 "}, {Type: "summary_text", Text: ""}},
+		},
+		"rs_untyped": {Text: " r_0\n\n "},
+		"rs_plain":   {Text: firstReasoning, Content: []llm.ResponsesReasoningPart{{Type: "reasoning_text", Text: firstReasoning}}},
+		"rs_blank":   {Content: []llm.ResponsesReasoningPart{{Type: "reasoning_text", Text: " \t"}, {Type: "reasoning_text", Text: ""}}},
+		"rs_summary": {Summary: []llm.ResponsesReasoningPart{{Type: "summary_text", Text: ""}}},
+	}
+	checkThinking := func(stage string, history []schema.Turn) {
+		t.Helper()
+		got := map[string]thinkingRecord{}
+		for _, turn := range history {
+			for _, part := range turn.Message.Content {
+				if thinking := part.Thinking; thinking != nil {
+					got[thinking.ID] = thinkingRecord{thinking.Text, thinking.ResponsesContentParts, thinking.ResponsesSummaryParts}
+				}
+			}
+		}
+		if !reflect.DeepEqual(got, wantThinking) {
+			t.Errorf("%s reasoning = %#v, want %#v", stage, got, wantThinking)
+		}
+	}
+	checkThinking("live history", sess.history)
+	checkThinking("reopened transcript", durableHistory)
 	durableCall, ok := findToolCallInHistory(durableHistory, "call_bad")
 	if !ok || string(durableCall.Arguments) != "{}" {
 		t.Fatalf("durable call_bad = %+v, want arguments {}", durableCall)
@@ -212,6 +265,7 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
 	}
+	checkThinking("cold restore", restored.history)
 	restoredEventsDone := make(chan struct{})
 	go func() {
 		defer close(restoredEventsDone)
@@ -276,6 +330,60 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 	}
 	if !strings.Contains(output, "near byte") {
 		t.Fatalf("function_call_output.output = %q, want failing-input excerpt", output)
+	}
+
+	var firstReplay []json.RawMessage
+	const wantReasoning = `{"encrypted_content":"opaque","id":"rs_mixed","summary":[{"text":"s_2","type":"summary_text"}],"type":"reasoning"}`
+	for _, requestIndex := range []int{2, 3} {
+		var request struct {
+			Input []json.RawMessage `json:"input"`
+		}
+		if err := json.Unmarshal(bodies[requestIndex], &request); err != nil {
+			t.Fatal(err)
+		}
+		if requestIndex == 2 {
+			firstReplay = request.Input
+		} else {
+			if len(request.Input) <= len(firstReplay) {
+				t.Fatalf("cold replay input has %d items after %d on first replay", len(request.Input), len(firstReplay))
+			}
+			for i, want := range firstReplay {
+				if got := request.Input[i]; !bytes.Equal(want, got) {
+					t.Fatalf("cold replay input[%d] = %s, first replay = %s", i, got, want)
+				}
+			}
+		}
+		var calls, reasoning int
+		for _, rawItem := range request.Input {
+			var item struct {
+				Type      string `json:"type"`
+				CallID    string `json:"call_id"`
+				Name      string `json:"name"`
+				Arguments string `json:"arguments"`
+			}
+			if err := json.Unmarshal(rawItem, &item); err != nil {
+				t.Fatal(err)
+			}
+			if item.Type == "reasoning" {
+				reasoning++
+				if string(rawItem) != wantReasoning {
+					t.Fatalf("request %d reasoning = %s, want %s", requestIndex+1, rawItem, wantReasoning)
+				}
+			}
+			if item.Type != "function_call" || item.CallID != "call_fixed" {
+				continue
+			}
+			calls++
+			if item.Name != "my_strict_tool" || item.Arguments != correctedArgs {
+				t.Fatalf("request %d replayed call = %s", requestIndex+1, rawItem)
+			}
+		}
+		if calls != 1 {
+			t.Fatalf("request %d replayed the corrected call %d times, want once", requestIndex+1, calls)
+		}
+		if reasoning != 1 {
+			t.Errorf("request %d replayed %d reasoning items, want one", requestIndex+1, reasoning)
+		}
 	}
 }
 
@@ -455,13 +563,18 @@ func writeResponsesFunctionCall(t *testing.T, w io.Writer, flusher http.Flusher,
 		"type": "response.output_item.done",
 		"item": item,
 	})
+	writeResponsesTerminal(t, w, flusher, responseID, []any{item})
+}
+
+func writeResponsesTerminal(t *testing.T, w io.Writer, flusher http.Flusher, responseID string, output []any) {
+	t.Helper()
 	writeSSE(t, w, flusher, "response.completed", map[string]any{
 		"type": "response.completed",
 		"response": map[string]any{
 			"id":     responseID,
 			"model":  "gpt-5.2",
 			"status": "completed",
-			"output": []any{item},
+			"output": output,
 			"usage": map[string]any{
 				"input_tokens":  1,
 				"output_tokens": 1,
