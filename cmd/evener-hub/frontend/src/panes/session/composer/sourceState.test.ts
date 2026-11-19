@@ -941,6 +941,84 @@ test("an activated recovery restores the adoption its row carries", async () => 
   }
 });
 
+// The record only grows a range list for an ADOPTED occurrence. An anchor this
+// composer staged itself needs none: its bytes are the tile, so the number list
+// is the whole provenance.
+test("a draft whose only anchor this composer staged writes no range list", async () => {
+  const source = createTestComposerSource("root");
+  installControlledImageEncoding();
+  const view = renderHook(() => useAttachments(source.editor, source.attachments));
+  try {
+    act(() => view.result.current.ingestFiles([image()], (message) => pushToast("error", message)));
+    const text = source.editor.read().text;
+    expect(text).toContain("[image 1]");
+    expect(source.persistDraft(text));
+    const snapshot = readComposerDraftSnapshot("root");
+    expect(snapshot.stagedImageMarkers).toEqual([1]);
+    // Absent, not empty: the writer says nothing extra about where the anchor
+    // sits, because its own tile holds those bytes.
+    expect(snapshot).not.toHaveProperty("stagedImageRanges");
+  } finally {
+    view.unmount();
+    source.dispose();
+  }
+});
+
+// The persisted draft names WHICH spelling of a duplicated number its writer
+// staged. A literal the person typed beside an adopted "[image 1]" is prose:
+// it must survive the reload unmarked, and the record's own ranges must come
+// back naming only the adopted occurrence - otherwise a reloading reader marks
+// both, and the one repair the notice offers removes the person's text.
+test("a reloaded draft keeps the literal beside an adopted duplicate sendable", () => {
+  const text = "[image 1] tail [image 1]";
+  const adopted = { marker: 1, start: 15, end: 24 };
+  writeComposerDraft("root", { text, skillNames: [], stagedImageMarkers: [1], stagedImageRanges: [adopted] });
+  const source = createTestComposerSource("root");
+  try {
+    expect(source.getSnapshot().text).toBe(text);
+    expect(source.getSnapshot().adoptedImageMarkers).toEqual([1]);
+    expect(source.getSnapshot().adoptedImageRanges).toEqual([adopted]);
+  } finally {
+    source.dispose();
+  }
+});
+
+// The durable plane says the same thing: an autosave that carries a duplicate
+// keeps its offsets on the recovery row, and activating that row gives back a
+// source whose repair names the adopted occurrence only.
+test("an activated recovery restores the exact occurrence a duplicate record names", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const text = "[image 1] tail [image 1]";
+  const adopted = { marker: 1, start: 15, end: 24 };
+  const input = [{ type: "text" as const, text }];
+  const original = await storage.enqueueIntent({
+    targetRef: "root",
+    method: "turn/queue",
+    payload: { ref: "root", input },
+    attachments: [],
+    optimisticDisplay: { method: "turn/queue", input },
+    composerText: text,
+    adoptedImageMarkers: [1],
+    adoptedImageRanges: [adopted],
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+  expect(recovery.adoptedImageRanges).toEqual([adopted]);
+
+  const source = createTestComposerSource("root");
+  try {
+    await expect(source.activateRecovery(recovery)).resolves.toBe(true);
+    expect(source.getSnapshot().text).toBe(text);
+    expect(source.getSnapshot().adoptedImageRanges).toEqual([adopted]);
+    // The literal at 0 is not adopted: only the occurrence the record named is.
+    expect(unbackedImageMarkersIn(source.getSnapshot().text, source.getSnapshot().adoptedImageMarkers)).toEqual([1]);
+  } finally {
+    source.dispose();
+  }
+});
+
 // A retained composer's tiles outlive the draft another pane replaced. If that
 // draft spells the same number as literal prose, Send must not pair the literal
 // with this composer's older bytes: the tile moves off it and the incoming text

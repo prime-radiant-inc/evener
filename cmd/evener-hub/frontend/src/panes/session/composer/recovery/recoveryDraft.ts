@@ -1,4 +1,4 @@
-import type { ComposerMention } from "@evener/appwire-client";
+import type { ComposerMention, ImageMarkerRange } from "@evener/appwire-client";
 import { mergeComposerCompositions, recoverMutationComposition } from "@evener/appwire-client";
 import type { MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
 import type { PendingAttachment } from "../attachments/useAttachments";
@@ -19,6 +19,10 @@ export interface RecoveredComposerDraft {
    * the adopted occurrence stays distinguishable from an attachment-owned one
    * at the same number. */
   adoptedImageMarkers?: number[];
+  /** Those same occurrences by exact UTF-16 position, so the repair offered
+   * after a restore deletes the adopted spelling and not an identical literal
+   * before it (see ComposerComposition.adoptedImageRanges). */
+  adoptedImageRanges?: ImageMarkerRange[];
 }
 
 const unavailableImageReferences = new WeakSet<RecoveredComposerDraft>();
@@ -44,6 +48,9 @@ export function recoveryComposerDraft(record: MutationRecoveryRecord): Recovered
     // refused until the person repairs the reference, on BOTH the automatic
     // and the explicit Edit restore.
     ...(recovered.adoptedImageMarkers?.length ? { adoptedImageMarkers: [...recovered.adoptedImageMarkers] } : {}),
+    ...(recovered.adoptedImageRanges?.length
+      ? { adoptedImageRanges: recovered.adoptedImageRanges.map((range) => ({ ...range })) }
+      : {}),
   };
   if (recovered.imageReferences === "unavailable") unavailableImageReferences.add(draft);
   return draft;
@@ -87,6 +94,7 @@ export function mergeRecoveryComposerDraft(
   currentCommandNames: readonly string[] = [],
   currentMentions?: readonly ComposerMention[],
   currentAdoptedImageMarkers?: readonly number[],
+  currentAdoptedImageRanges?: readonly ImageMarkerRange[],
 ): RecoveredComposerDraft {
   // skillDocument is browser-owned parsing state. The shared merge accepts
   // explicit UTF-16 locations, so this wrapper fills either missing side with
@@ -114,6 +122,9 @@ export function mergeRecoveryComposerDraft(
       commandNames: [...currentCommandNames],
       ...(currentLocations !== undefined ? { mentions: [...currentLocations] } : {}),
       ...(currentAdoptedImageMarkers?.length ? { adoptedImageMarkers: [...currentAdoptedImageMarkers] } : {}),
+      ...(currentAdoptedImageRanges?.length
+        ? { adoptedImageRanges: currentAdoptedImageRanges.map((range) => ({ ...range })) }
+        : {}),
     },
     {
       text: recovered.text,
@@ -122,6 +133,9 @@ export function mergeRecoveryComposerDraft(
       commandNames: recovered.commandNames ?? [],
       ...(recoveredLocations !== undefined ? { mentions: [...recoveredLocations] } : {}),
       ...(recovered.adoptedImageMarkers?.length ? { adoptedImageMarkers: [...recovered.adoptedImageMarkers] } : {}),
+      ...(recovered.adoptedImageRanges?.length
+        ? { adoptedImageRanges: recovered.adoptedImageRanges.map((range) => ({ ...range })) }
+        : {}),
       imageReferences: unavailableImageReferences.has(recovered) ? "unavailable" : "recorded",
     },
   );
@@ -133,5 +147,8 @@ export function mergeRecoveryComposerDraft(
     ...(merged.commandNames.length ? { commandNames: merged.commandNames } : {}),
     ...(merged.mentions ? { mentions: merged.mentions } : {}),
     ...(merged.adoptedImageMarkers?.length ? { adoptedImageMarkers: [...merged.adoptedImageMarkers] } : {}),
+    ...(merged.adoptedImageRanges?.length
+      ? { adoptedImageRanges: merged.adoptedImageRanges.map((range) => ({ ...range })) }
+      : {}),
   };
 }

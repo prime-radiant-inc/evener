@@ -18,7 +18,7 @@
 // {text, skillNames} as a single atomic localStorage value, so a draft's
 // canonical skill selections survive a reload next to its text. The v1 key
 // held plain text only; see readComposerDraft for the approved transition.
-import { canonicalSkillNames } from "@evener/appwire-client";
+import { canonicalSkillNames, type ImageMarkerRange, validMarkerRanges } from "@evener/appwire-client";
 import { ownClientId } from "../../../stores/mutationClientIdentity";
 import { createSecureUUID } from "../../../stores/secureUUID";
 import { patchSelectionText, type SkillEditorValue } from "./skillDocument";
@@ -50,6 +50,13 @@ export interface ComposerDraft extends SkillEditorValue {
   // guaranteed absent to whoever reads this record next. Absent on records an
   // older build wrote: no provenance, so its markers stay prose.
   stagedImageMarkers?: number[];
+  // WHERE those staged anchors are. With two identical spellings of one
+  // number - a literal the person typed before an anchor the writer staged -
+  // the number list cannot say which occurrence has no image behind it, and a
+  // reloading reader would mark both. Each range must still name exactly
+  // markerText(marker) when the record is read, or it is discarded: a range
+  // that no longer matches its text would delete the wrong bytes.
+  stagedImageRanges?: ImageMarkerRange[];
 }
 
 // A remount inherits the same draft revision. Editing or replacing its
@@ -136,6 +143,7 @@ function isStoredComposerDraft(value: unknown): value is ComposerDraft {
     (record.stagedImageMarkers === undefined ||
       (Array.isArray(record.stagedImageMarkers) &&
         record.stagedImageMarkers.every((marker) => Number.isSafeInteger(marker) && marker > 0))) &&
+    (record.stagedImageRanges === undefined || Array.isArray(record.stagedImageRanges)) &&
     (record.mentions === undefined ||
       (Array.isArray(record.mentions) &&
         record.mentions.every(
@@ -164,7 +172,12 @@ export function readComposerDraft(ref: string): ComposerDraft {
   // says which of its markers a writer with bytes staged. Callers that need
   // them read readComposerDraftSnapshot; a caller composing or rendering a
   // draft gets only what the person sees.
-  const { revisionId: _revisionId, stagedImageMarkers: _staged, ...draft } = readComposerDraftSnapshot(ref);
+  const {
+    revisionId: _revisionId,
+    stagedImageMarkers: _staged,
+    stagedImageRanges: _stagedRanges,
+    ...draft
+  } = readComposerDraftSnapshot(ref);
   return draft;
 }
 
@@ -184,6 +197,10 @@ export function readComposerDraftSnapshot(ref: string): ComposerDraft {
       // hand padded, empty or repeated names straight to the chips. Canonical
       // names are the contract everywhere else; enforce it here too.
       if (isStoredComposerDraft(parsed)) {
+        // A stored range is re-validated against the text it names: a
+        // hand-edited or stale record must not hand a repair an offset that
+        // no longer holds markerText(marker).
+        const stagedImageRanges = validMarkerRanges(parsed.text, parsed.stagedImageRanges);
         return {
           text: parsed.text,
           skillNames: canonicalSkillNames(parsed.skillNames),
@@ -191,6 +208,7 @@ export function readComposerDraftSnapshot(ref: string): ComposerDraft {
           ...(parsed.mentions ? { mentions: parsed.mentions } : {}),
           ...(parsed.revisionId ? { revisionId: parsed.revisionId } : {}),
           ...(parsed.stagedImageMarkers ? { stagedImageMarkers: parsed.stagedImageMarkers } : {}),
+          ...(stagedImageRanges.length > 0 ? { stagedImageRanges } : {}),
         };
       }
     }

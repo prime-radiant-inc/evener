@@ -1,4 +1,10 @@
-import type { ComposerMention } from "@evener/appwire-client";
+import {
+  adoptedMarkerRanges,
+  type ComposerMention,
+  type ImageMarkerRange,
+  markerNumbersOf,
+  validMarkerRanges,
+} from "@evener/appwire-client";
 import { createStore } from "zustand/vanilla";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import { createSecureUUID } from "../../../stores/secureUUID";
@@ -37,7 +43,7 @@ import {
   type SkillEditorValue,
   serializeSkillDocument,
 } from "./skillDocument";
-import { pushRecoveryRefusal, spelledImageMarkers, unbackedImageMarkersIn } from "./submitProtocol";
+import { pushRecoveryRefusal, spelledImageMarkers } from "./submitProtocol";
 
 type RevisionRef<T> = { current: T };
 export type RecoveryOwnerLease = { clientMutationId: string; compositionRevision: number };
@@ -72,6 +78,11 @@ export interface ComposerSourceSnapshot {
    * editor undo that restores it brings the refusal back. It never contains a
    * marker the writer typed, which is what keeps literal prose sendable. */
   adoptedImageMarkers: number[];
+  /** Those same occurrences by exact UTF-16 position, so a repair deletes the
+   * adopted spelling and not an identical literal beside it. Derived from the
+   * editor document's own stagedAnchor marks, so it follows an edit or an undo
+   * exactly; the number list above stays the render-time view. */
+  adoptedImageRanges: ImageMarkerRange[];
   activeRecoveryId: string | null;
   recoveryActivating: boolean;
   recoveryOperationBusy: boolean;
@@ -126,6 +137,11 @@ export interface ComposerSourceState {
    * Every number this ever names stays reserved for `nextComposerImageMarker`
    * until clearAdoptedImageMarkers retires the record with a replaced draft. */
   setAdoptedImageMarkers(markers: readonly number[]): void;
+  /** Replaces the exact adopted occurrences. Always sent together with the
+   * marker list derived from them: the editor's own marks are what both
+   * describe, and a caller that moved one without the other would leave the
+   * render and the repair disagreeing about which spelling is the anchor. */
+  setAdoptedImageRanges(ranges: readonly ImageMarkerRange[], markers?: readonly number[]): void;
   /** Retires the adoption record AND its reservations, because the whole draft
    * this source carried is being replaced: nothing left in the editor can put
    * one of its occurrences back with an undo. */
@@ -157,6 +173,7 @@ export interface ComposerSourceState {
     mentions?: readonly ComposerMention[],
     composerText?: string,
     adoptedImageMarkers?: readonly number[],
+    adoptedImageRanges?: readonly ImageMarkerRange[],
   ): Promise<boolean>;
   clearIfUnchanged(
     text: string,
@@ -184,9 +201,20 @@ export function restoredSkillNames(value: SkillEditorValue): string[] {
  * carries none at all. So this is the one place a reader can tell an anchor
  * whose image is missing from literal prose that merely looks like one - at
  * BOTH entry points, since which writer produced the record does not change
- * the answer once the bytes are gone. */
-function adoptedAnchorsIn(draft: { text: string; stagedImageMarkers?: number[] }): number[] {
-  return unbackedImageMarkersIn(draft.text, draft.stagedImageMarkers ?? []);
+ * the answer once the bytes are gone.
+ *
+ * The exact ranges win when the record carries them: they say WHICH spelling
+ * of a number the writer staged, which is what keeps a literal beside an
+ * adopted "[image 1]" sendable after a reload. A record from before ranges
+ * existed carries only numbers, and every occurrence of one is adopted - the
+ * reading those builds implemented. */
+function adoptedAnchorsIn(draft: {
+  text: string;
+  stagedImageMarkers?: number[];
+  stagedImageRanges?: ImageMarkerRange[];
+}): { markers: number[]; ranges: ImageMarkerRange[] } {
+  const ranges = adoptedMarkerRanges(draft.text, draft.stagedImageMarkers, draft.stagedImageRanges);
+  return { markers: markerNumbersOf(ranges), ranges };
 }
 
 function recoveryCompositionRevision(record: MutationRecoveryRecord): number {
@@ -232,6 +260,7 @@ export function recoverySubmissionInFlight(clientMutationId: string): boolean {
 export function createComposerSourceState(ref: string, ownerId?: string): ComposerSourceState {
   const compositionOwnerId = ownerId ?? defaultCompositionOwner(ref);
   const initial = readComposerDraftSnapshot(ref);
+  const initialAdoption = adoptedAnchorsIn(initial);
   let currentDraftRevisionId = initial.revisionId;
   const state = createStore<ComposerSourceSnapshot>(() => ({
     text: initial.text,
@@ -243,7 +272,8 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     // here, whether this ref mounted for the first time or was remounted after
     // a reload. The record is the provenance; a marker it does not name is
     // literal prose and stays sendable.
-    adoptedImageMarkers: adoptedAnchorsIn(initial),
+    adoptedImageMarkers: initialAdoption.markers,
+    adoptedImageRanges: initialAdoption.ranges,
     activeRecoveryId: null,
     recoveryActivating: false,
     recoveryOperationBusy: false,
@@ -441,14 +471,33 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     // has removed or retyped never travels as provenance. Typed markers are in
     // neither source, which is why literal prose stays sendable.
     const adopted = state.getState().adoptedImageMarkers;
+    const adoptedRanges = state.getState().adoptedImageRanges;
     // Nothing staged lies behind this text, so no provenance can exist: skip
     // spelling the text to filter an empty set.
     let staged: number[] = [];
+    // The exact occurrences to persist beside those numbers. The record has to
+    // name WHICH spelling was staged: with a literal "[image 1]" and an
+    // adopted one, the number alone makes a reloading reader mark both.
+    const stagedRanges: ImageMarkerRange[] = [];
     if (operations.items.length > 0 || adopted.length > 0) {
       const spelled = new Set(spelledImageMarkers(text));
       staged = [...new Set([...operations.items.map((item) => item.marker), ...adopted])]
         .filter((marker) => spelled.has(marker))
         .sort((left, right) => left - right);
+      // This composer's own tiles back the occurrences of their numbers
+      // everywhere in the text, so a range is only a fact about an ADOPTED
+      // occurrence when no tile holds those bytes.
+      const held = new Set(operations.items.map((item) => item.marker));
+      stagedRanges.push(
+        ...validMarkerRanges(
+          text,
+          adoptedRanges.filter((range) => !held.has(range.marker)),
+        ),
+      );
+      // An occurrence this composer staged itself needs no range here - its
+      // bytes are the tile, and a reader holding no bytes marks the whole
+      // number from `staged`. A range list that says nothing extra is dropped
+      // so records keep the shape they had.
     }
     currentDraftRevisionId = writeComposerDraft(ref, {
       text,
@@ -456,6 +505,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
       ...(selectionMetaRef.current.commandNames.length ? { commandNames: selectionMetaRef.current.commandNames } : {}),
       ...(selectionMetaRef.current.mentions ? { mentions: selectionMetaRef.current.mentions } : {}),
       ...(staged.length > 0 ? { stagedImageMarkers: staged } : {}),
+      ...(stagedRanges.length > 0 ? { stagedImageRanges: stagedRanges } : {}),
     });
     // writeComposerDraft minted this revision, so this source owns it - even
     // when the write removed the record outright (undefined).
@@ -467,7 +517,15 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     const next = [...new Set(markers)].sort((left, right) => left - right);
     const current = state.getState().adoptedImageMarkers;
     if (next.length === current.length && next.every((marker, index) => marker === current[index])) return;
-    state.setState({ adoptedImageMarkers: next });
+    // The numbers changed, so any exact positions the old set carried describe
+    // occurrences this set may no longer mean. Keep the ranges that still name
+    // a number in the new set; the caller that has better positions
+    // (setAdoptedImageRanges) supplies them.
+    const allowed = new Set(next);
+    state.setState({
+      adoptedImageMarkers: next,
+      adoptedImageRanges: state.getState().adoptedImageRanges.filter((range) => allowed.has(range.marker)),
+    });
     // Reservations only ever GROW here. A number enters because some draft this
     // source read named it, and it stays reserved even after the person deletes
     // the occurrence: the editor can put it back with an undo, and reusing it
@@ -475,9 +533,29 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     // occurrence. Only a replaced draft retires the whole reservation set.
     publishReservedMarkers([...new Set([...attachments.getState().reservedMarkersRef.current, ...next])]);
   }
+  function setAdoptedImageRanges(ranges: readonly ImageMarkerRange[], markers?: readonly number[]): void {
+    if (disposed) return;
+    const exact = ranges.map((range) => ({ ...range })).sort((left, right) => left.start - right.start);
+    const next = [...new Set(markers ?? markerNumbersOf(exact))].sort((left, right) => left - right);
+    const currentMarkers = state.getState().adoptedImageMarkers;
+    const currentRanges = state.getState().adoptedImageRanges;
+    const sameMarkers =
+      next.length === currentMarkers.length && next.every((marker, index) => marker === currentMarkers[index]);
+    const sameRanges =
+      exact.length === currentRanges.length &&
+      exact.every(
+        (range, index) =>
+          range.marker === currentRanges[index]?.marker &&
+          range.start === currentRanges[index]?.start &&
+          range.end === currentRanges[index]?.end,
+      );
+    if (sameMarkers && sameRanges) return;
+    state.setState({ adoptedImageMarkers: next, adoptedImageRanges: exact });
+    publishReservedMarkers([...new Set([...attachments.getState().reservedMarkersRef.current, ...next])]);
+  }
   function clearAdoptedImageMarkers(): void {
     if (disposed) return;
-    state.setState({ adoptedImageMarkers: [] });
+    state.setState({ adoptedImageMarkers: [], adoptedImageRanges: [] });
     publishReservedMarkers([]);
   }
   function markRestore(): void {
@@ -494,6 +572,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
         skillNames: skillNamesRef.current,
         ...selectionMetaRef.current,
         adoptedImageMarkers: state.getState().adoptedImageMarkers,
+        adoptedImageRanges: state.getState().adoptedImageRanges,
       },
       text,
     );
@@ -504,7 +583,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     // what keeps the record agreeing with the marks the editor is about to
     // apply - and what stops a stale list from making every later value look
     // like a non-echo rebuild.
-    setAdoptedImageMarkers(next.adoptedImageMarkers ?? []);
+    setAdoptedImageRanges(next.adoptedImageRanges ?? [], next.adoptedImageMarkers ?? []);
     if (source === "submission") {
       updateText(text);
       // React can batch exact marker removals, so restore their already mapped atoms.
@@ -541,6 +620,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     nextMentions: readonly ComposerMention[] | undefined = selectionMetaRef.current.mentions,
     nextComposerText?: string,
     nextAdoptedImageMarkers: readonly number[] = state.getState().adoptedImageMarkers,
+    nextAdoptedImageRanges: readonly ImageMarkerRange[] = state.getState().adoptedImageRanges,
   ): Promise<boolean> {
     if (disposed) return Promise.resolve(false);
     const isEmptyCleanup = compositionIsEmpty({
@@ -626,6 +706,9 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
           // the "[image N]" anchor but dropped this fact is exactly what let a
           // reload send an adopted anchor as prose.
           nextAdoptedImageMarkers,
+          // ...and by exact position, so a reload marks the adopted spelling
+          // and not an identical literal beside it.
+          nextAdoptedImageRanges,
         );
         if (!updated) {
           if (!disposed && currentRecoveryId() === clientMutationId) {
@@ -725,6 +808,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
         compositionOwnerId,
         localDraftRevisionId,
         state.getState().adoptedImageMarkers,
+        state.getState().adoptedImageRanges,
       );
     } catch (error) {
       if (!disposed)
@@ -779,6 +863,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
               skipLocalDraft ? [] : selectionMetaRef.current.commandNames,
               skipLocalDraft ? undefined : selectionMetaRef.current.mentions,
               skipLocalDraft ? undefined : state.getState().adoptedImageMarkers,
+              skipLocalDraft ? undefined : state.getState().adoptedImageRanges,
             );
           };
           const merged = merge();
@@ -817,6 +902,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
             // The merge's own provenance, so a row opened for editing keeps
             // refusing exactly the anchors this composer now refuses.
             merged.adoptedImageMarkers ?? [],
+            merged.adoptedImageRanges ?? [],
           );
           if (!updated || disposed || recoveryReplacementEpochRef.current !== replacementEpoch) return false;
           recoveryOwnerLeaseRef.current = {
@@ -844,7 +930,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
           // while moving the tile that number used to own, so the record has to
           // survive the merge intact for the send-time check to refuse it
           // (composerRecovery's adoptedImageMarkers).
-          setAdoptedImageMarkers(latest.adoptedImageMarkers ?? []);
+          setAdoptedImageRanges(latest.adoptedImageRanges ?? [], latest.adoptedImageMarkers ?? []);
           operations.replaceWithSettled(latest.attachments);
           markRestore();
           committedRecoveryComposition = recoveryCompositionFingerprint({
@@ -1033,6 +1119,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     updateSelectionMeta,
     setActiveRecoveryId,
     setAdoptedImageMarkers,
+    setAdoptedImageRanges,
     clearAdoptedImageMarkers,
     ownsDraftRevision,
     claimDraftRevision,
@@ -1059,7 +1146,8 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
         // produced this text. Which of its markers that writer STAGED is the
         // record's own provenance - not every marker the text happens to
         // spell, which would refuse prose a person typed.
-        setAdoptedImageMarkers(adoptedAnchorsIn(draft));
+        const adoption = adoptedAnchorsIn(draft);
+        setAdoptedImageRanges(adoption.ranges, adoption.markers);
         // This composer's retained tiles outlive the draft another pane
         // replaced, so a tile's number can name an occurrence in the incoming
         // text that is ordinary prose there. Moving the tile off that number

@@ -94,6 +94,8 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     skillNames,
     commandNames,
     mentions,
+    adoptedImageMarkers,
+    adoptedImageRanges,
     activeRecoveryId,
     recoveryActivating,
     recoveryOperationBusy,
@@ -114,7 +116,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     editSkillNames,
     updateSelectionMeta,
     setActiveRecoveryId,
-    setAdoptedImageMarkers,
+    setAdoptedImageRanges,
     markRestore,
     queueRecoveryPersistence,
     clearIfUnchanged,
@@ -211,6 +213,9 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
       skillNames,
       selectionMeta.commandNames,
       selectionMeta.mentions,
+      undefined,
+      adoptedImageMarkers,
+      adoptedImageRanges,
     );
   }, [
     activeRecoveryId,
@@ -220,6 +225,8 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     text,
     skillNames,
     selectionMeta,
+    adoptedImageMarkers,
+    adoptedImageRanges,
   ]);
 
   useEffect(() => {
@@ -273,7 +280,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     updateSelectionMeta(recovered);
     // A bounced composition keeps its missing-reference provenance across the
     // reload that mounts this pane, so Send stays refused until it is repaired.
-    setAdoptedImageMarkers(recovered.adoptedImageMarkers ?? []);
+    setAdoptedImageRanges(recovered.adoptedImageRanges ?? [], recovered.adoptedImageMarkers ?? []);
     attachments.replaceWithSettled(recovered.attachments);
     clearPersistedDraft(ref);
   }, [
@@ -286,7 +293,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     recoveryEntries,
     recoveryOwnsLocalDraftRef,
     ref,
-    setAdoptedImageMarkers,
+    setAdoptedImageRanges,
     setActiveRecoveryId,
     skillNamesRef,
     selectionMetaRef,
@@ -349,12 +356,13 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
       // a dormant adoption from claiming a literal "[image N]" the edited entry
       // happens to spell - and what keeps an adoption the person still means.
       source.getSnapshot().adoptedImageMarkers,
+      source.getSnapshot().adoptedImageRanges,
     );
     const value = serializeSkillDocument(parseSkillDocument(merged));
     const text = value.text;
     editSkillNames(value.skillNames);
     updateSelectionMeta(value);
-    setAdoptedImageMarkers(merged.adoptedImageMarkers ?? []);
+    setAdoptedImageRanges(merged.adoptedImageRanges ?? [], merged.adoptedImageMarkers ?? []);
     // A queued entry's selections are named, not spelled out, so the value that
     // carries them is authoritative here exactly as a recovery activation's is:
     // without this the merge is a partial append, the references land as plain
@@ -442,6 +450,11 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     const submittedSkillNames = [...skillNamesRef.current];
     const submittedCommandNames = [...selectionMetaRef.current.commandNames];
     const submittedMentions = selectionMetaRef.current.mentions;
+    // Press-time adoption: the row this press persists must name the same
+    // occurrences its own `submittedText` spells, not whatever the editor
+    // marks by the time the write lands.
+    const submittedAdoptedImageMarkers = source.getSnapshot().adoptedImageMarkers;
+    const submittedAdoptedImageRanges = source.getSnapshot().adoptedImageRanges;
     const submittedRevision = draftEditRevisionRef.current;
     const submittedDraftRevision = readDraftRevision(ref);
     const payload = attachments.toInputAttachments();
@@ -526,6 +539,8 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
                 submittedCommandNames,
                 submittedMentions,
                 clearDraftText,
+                submittedAdoptedImageMarkers,
+                submittedAdoptedImageRanges,
               );
               if (!persisted) {
                 throw recoveryWriteRefusal;
@@ -594,6 +609,11 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
               skillNames: submittedSkillNames,
               commandNames: submittedCommandNames,
               mentions: submittedMentions,
+              // The record a refusal bounces back must refuse exactly the
+              // occurrences this text spells - a literal beside an adopted
+              // "[image 1]" is not one of them.
+              adoptedImageMarkers: submittedAdoptedImageMarkers,
+              adoptedImageRanges: submittedAdoptedImageRanges,
             },
             // This pane's seat rides the send: a refusal's bounced row is
             // this pane's own work and restores here, never elsewhere.
@@ -672,6 +692,9 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
             skillNamesRef.current,
             selectionMetaRef.current.commandNames,
             selectionMetaRef.current.mentions,
+            undefined,
+            source.getSnapshot().adoptedImageMarkers,
+            source.getSnapshot().adoptedImageRanges,
           );
         }
       }

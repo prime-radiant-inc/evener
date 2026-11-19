@@ -1,4 +1,5 @@
 import type { ComposerMention } from "../../composerInput";
+import type { ImageMarkerRange } from "../../textareaMarkers";
 import type { SecureRandomSource } from "./secureUUID";
 import { createSecureUUID, tryOrUndefined } from "./secureUUID";
 
@@ -100,6 +101,13 @@ export interface MutationIntent<A extends MutationAttachmentRef = MutationAttach
   // rows no composer assembled, and on every composition with no adoption; a
   // marker is only ever here when a staging gesture could not have written it.
   adoptedImageMarkers?: readonly number[];
+  // WHERE those anchors are, when the writer knew. The number list alone cannot
+  // tell an adopted "[image 1]" from an identical literal the person typed
+  // before it, so a repair after a reload would delete the first spelling -
+  // the person's own prose - and leave the missing reference refusing Send.
+  // Absent on rows written before the field existed; a reader then marks every
+  // occurrence of an adopted number, as those builds did.
+  adoptedImageRanges?: readonly ImageMarkerRange[];
   // The composer pane's durable seat that authored this composition. It
   // rides the outbox record into the recovery row a refusal creates, so the
   // authoring pane's mount restore can find its own bounced work - and no

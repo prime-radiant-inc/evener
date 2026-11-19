@@ -736,8 +736,18 @@ export {
   EMPTY_TASKS_PANEL_ENTRY,
   panelLoadFailure,
 } from "./taskPanelState";
-export type { TextEdit, TextEditWithUnknownCursor } from "./textareaMarkers";
-export { insertMarker, markerPattern, markerText, stripMarker } from "./textareaMarkers";
+export type { ImageMarkerRange, TextEdit, TextEditWithUnknownCursor } from "./textareaMarkers";
+export {
+  adoptedMarkerRanges,
+  insertMarker,
+  markerNumbersOf,
+  markerPattern,
+  markerRanges,
+  markerText,
+  reconcileMarkerRanges,
+  stripMarker,
+  validMarkerRanges,
+} from "./textareaMarkers";
 export type {
   ThreadSubscriptionClient,
   ThreadSubscriptionLease,

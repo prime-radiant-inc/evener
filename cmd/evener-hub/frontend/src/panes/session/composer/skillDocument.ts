@@ -1,14 +1,21 @@
 import {
+  adoptedMarkerRanges,
   type ComposerMention,
   canonicalSkillNames,
   completeSkillReferenceAt,
-  markerPattern,
+  type ImageMarkerRange,
+  markerNumbersOf,
   reconcileComposerMentions,
+  reconcileMarkerRanges,
+  sharedPrefixLength,
+  sharedSuffixLength,
+  validMarkerRanges,
 } from "@evener/appwire-client";
 import { type Mark, type Node as ProseMirrorNode, Schema } from "prosemirror-model";
 
 export {
   completeSkillReferenceAt,
+  type ImageMarkerRange,
   isSkillTokenCharacter,
   sharedPrefixLength,
   sharedSuffixLength,
@@ -26,6 +33,14 @@ export interface SkillEditorValue {
    * restores the occurrence restores the provenance with it. A marker the
    * person types is an unmarked text node and never enters this set. */
   adoptedImageMarkers?: number[];
+  /** Those same occurrences by EXACT UTF-16 position. A number alone cannot
+   * distinguish an adopted "[image 1]" from an identical literal beside it, so
+   * the repair that offers to delete the missing reference would delete the
+   * first spelling - the person's own prose. Derived from the marks on every
+   * serialize, so it agrees with the document; `adoptedImageMarkers` stays as
+   * the marker-number view of the same set for readers that only ask whether
+   * any occurrence of a number is unbacked. */
+  adoptedImageRanges?: ImageMarkerRange[];
 }
 
 /** Flat inline content: newlines are text, and skills occupy one document position. */
@@ -79,20 +94,25 @@ function stagedAnchorMark(marker: number): Mark {
   return skillSchema.marks.stagedAnchor.create({ marker });
 }
 
-/** Text nodes for one run of prose, splitting out the occurrences the caller
- * adopted. Anything the adopted set does not name stays plain text. */
-function textNodes(text: string, adopted: ReadonlySet<number>): ProseMirrorNode[] {
+/** Text nodes for one run of prose, splitting out the exact occurrences the
+ * caller adopted. `base` is the run's own UTF-16 offset in the whole
+ * serialized text, so an adopted range names the occurrence in THIS run and
+ * an identical literal beside it stays plain text. */
+function textNodes(text: string, base: number, adopted: readonly ImageMarkerRange[]): ProseMirrorNode[] {
   if (text === "") return [];
-  if (adopted.size === 0) return [skillSchema.text(text)];
+  if (adopted.length === 0) return [skillSchema.text(text)];
+  const end = base + text.length;
+  const here = adopted.filter((range) => range.start >= base && range.end <= end);
+  if (here.length === 0) return [skillSchema.text(text)];
   const nodes: ProseMirrorNode[] = [];
   let start = 0;
-  for (const match of text.matchAll(markerPattern())) {
-    const marker = Number(match[1]);
-    if (!adopted.has(marker)) continue;
-    const offset = match.index ?? 0;
-    if (start < offset) nodes.push(skillSchema.text(text.slice(start, offset)));
-    nodes.push(skillSchema.text(match[0], [stagedAnchorMark(marker)]));
-    start = offset + match[0].length;
+  for (const range of here) {
+    const localStart = range.start - base;
+    const localEnd = range.end - base;
+    if (localStart < start) continue;
+    if (start < localStart) nodes.push(skillSchema.text(text.slice(start, localStart)));
+    nodes.push(skillSchema.text(text.slice(localStart, localEnd), [stagedAnchorMark(range.marker)]));
+    start = localEnd;
   }
   if (start < text.length) nodes.push(skillSchema.text(text.slice(start)));
   return nodes;
@@ -102,7 +122,10 @@ function textNodes(text: string, adopted: ReadonlySet<number>): ProseMirrorNode[
 export function parseSkillDocument(value: SkillEditorValue): ProseMirrorNode {
   const skills = canonicalSkillNames(value.skillNames);
   const commands = canonicalSkillNames(value.commandNames);
-  const adopted = new Set(value.adoptedImageMarkers ?? []);
+  // A value carrying exact ranges names the occurrences it means; one from an
+  // older build carries only numbers, and then every occurrence of a number is
+  // adopted - the reading those builds implemented.
+  const adopted = adoptedMarkerRanges(value.text, value.adoptedImageMarkers, value.adoptedImageRanges);
   const names = [...new Set([...skills, ...commands])].sort((a, b) => b.length - a.length);
   const usedSkills = new Set<string>();
   const nodes: ProseMirrorNode[] = [];
@@ -116,14 +139,14 @@ export function parseSkillDocument(value: SkillEditorValue): ProseMirrorNode {
       mention?.kind ??
       (skills.includes(name) && (!commands.includes(name) || !usedSkills.has(name)) ? "skill" : "command");
     if (!(kind === "skill" ? skills : commands).includes(name)) continue;
-    nodes.push(...textNodes(value.text.slice(textStart, offset), adopted));
+    nodes.push(...textNodes(value.text.slice(textStart, offset), textStart, adopted));
     const type = kind === "skill" ? skillSchema.nodes.skill : skillSchema.nodes.command;
     nodes.push(type.create({ name }));
     if (kind === "skill") usedSkills.add(name);
     offset += name.length;
     textStart = offset + 1;
   }
-  nodes.push(...textNodes(value.text.slice(textStart), adopted));
+  nodes.push(...textNodes(value.text.slice(textStart), textStart, adopted));
   return skillSchema.nodes.doc.create(null, nodes);
 }
 
@@ -133,22 +156,20 @@ export function serializeSkillDocument(doc: ProseMirrorNode): SkillEditorValue {
   const names: string[] = [];
   const commands: string[] = [];
   const mentions: ComposerMention[] = [];
-  const adopted = new Set<number>();
+  const adopted: ImageMarkerRange[] = [];
   doc.forEach((node) => {
     if (node.isText) {
       const run = node.text ?? "";
-      text += run;
       // A mark proves provenance only for the occurrence it actually covers:
-      // the exact literal, not an adjacent run of text that inherited it.
-      const marked = new Set(
-        node.marks.filter((mark) => mark.type.name === "stagedAnchor").map((mark) => Number(mark.attrs.marker)),
-      );
-      if (marked.size > 0) {
-        for (const match of run.matchAll(markerPattern())) {
-          const marker = Number(match[1]);
-          if (marked.has(marker)) adopted.add(marker);
-        }
+      // the exact literal, not an adjacent run of text that inherited it. The
+      // node's own offset in the serialized text is what makes this an exact
+      // range: two identical spellings are two nodes, and only the marked one
+      // is adopted.
+      for (const mark of node.marks) {
+        if (mark.type.name !== "stagedAnchor") continue;
+        adopted.push({ marker: Number(mark.attrs.marker), start: text.length, end: text.length + run.length });
       }
+      text += run;
     } else {
       const kind = node.type.name === "command" ? "command" : "skill";
       mentions.push({ kind, name: node.attrs.name, offset: text.length });
@@ -156,11 +177,16 @@ export function serializeSkillDocument(doc: ProseMirrorNode): SkillEditorValue {
       (kind === "command" ? commands : names).push(node.attrs.name);
     }
   });
-  const adoptedImageMarkers = [...adopted].sort((left, right) => left - right);
+  // The marks are the truth, but only where the node really is one whole
+  // marker literal: an integrity edit can split or extend a run after a mark
+  // was set, and a range whose slice is not markerText(marker) names an
+  // occurrence that no longer exists.
+  const adoptedImageRanges = validMarkerRanges(text, adopted);
+  const adoptedImageMarkers = markerNumbersOf(adoptedImageRanges);
   const value = {
     text,
     skillNames: canonicalSkillNames(names),
-    ...(adoptedImageMarkers.length ? { adoptedImageMarkers } : {}),
+    ...(adoptedImageRanges.length ? { adoptedImageMarkers, adoptedImageRanges } : {}),
   };
   // Names alone suffice only when every matching reference is an actual skill
   // atom. Keep locations when commands or same-spelling prose need distinct
@@ -177,9 +203,30 @@ export function serializeSkillDocument(doc: ProseMirrorNode): SkillEditorValue {
 
 /** Shift existing atom identities across a plain-text splice without selecting new prose. */
 export function patchSelectionText(value: SkillEditorValue, text: string): SkillEditorValue {
-  if (!value.mentions) return serializeSkillDocument(parseSkillDocument({ ...value, text }));
+  // The adoption is re-derived from the marks, so a splice that removes or
+  // moves an adopted occurrence has to move its range too: without this the
+  // patched document would mark whatever now sits at the old offset, or mark
+  // all of a number's occurrences when the stale range came up empty.
+  const ranges = reconcileAdoptionAcrossSplice(value, text);
+  const adopted: SkillEditorValue = {
+    ...value,
+    adoptedImageMarkers: markerNumbersOf(ranges),
+    adoptedImageRanges: ranges,
+  };
+  if (!value.mentions) return serializeSkillDocument(parseSkillDocument({ ...adopted, text }));
   const mentions = reconcileComposerMentions(value.text, text, value.mentions);
-  return serializeSkillDocument(parseSkillDocument({ ...value, text, mentions }));
+  return serializeSkillDocument(parseSkillDocument({ ...adopted, text, mentions }));
+}
+
+/** The adoption a plain-text splice leaves behind, from the value's own pair. */
+function reconcileAdoptionAcrossSplice(value: SkillEditorValue, text: string): ImageMarkerRange[] {
+  // The ranges this value actually names in its own text: an explicit range
+  // list when it has one, otherwise every occurrence of an adopted number.
+  const current = adoptedMarkerRanges(value.text, value.adoptedImageMarkers, value.adoptedImageRanges);
+  if (current.length === 0) return [];
+  const prefix = sharedPrefixLength(value.text, text);
+  const suffix = sharedSuffixLength(value.text, text, prefix);
+  return reconcileMarkerRanges(value.text, text, current, prefix, suffix);
 }
 
 /**
@@ -232,6 +279,7 @@ export function materializeSelectionReferences(value: SkillEditorValue): SkillEd
           // Appending a reference must not retire the anchors this value
           // already carried as unbacked.
           ...(current.adoptedImageMarkers ? { adoptedImageMarkers: current.adoptedImageMarkers } : {}),
+          ...(current.adoptedImageRanges ? { adoptedImageRanges: current.adoptedImageRanges } : {}),
         }),
       );
     }

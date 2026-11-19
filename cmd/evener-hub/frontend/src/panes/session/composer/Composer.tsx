@@ -29,6 +29,7 @@ import {
   sessionActionError,
   slashCommandInvocation,
   stripMarker,
+  validMarkerRanges,
 } from "@evener/appwire-client";
 import {
   type FormEvent,
@@ -268,8 +269,16 @@ function ComposerWithSubmission({
     cursorToRestoreRef.current = cursor;
     setCursorRestoreSeq((seq) => seq + 1);
   }, []);
-  const { text, skillNames, commandNames, mentions, restoreEpoch, activeRecoveryId, adoptedImageMarkers } =
-    useSyncExternalStore(source.subscribe, source.getSnapshot, source.getSnapshot);
+  const {
+    text,
+    skillNames,
+    commandNames,
+    mentions,
+    restoreEpoch,
+    activeRecoveryId,
+    adoptedImageMarkers,
+    adoptedImageRanges,
+  } = useSyncExternalStore(source.subscribe, source.getSnapshot, source.getSnapshot);
   // The anchors this composer read out of a draft it did not write and cannot
   // back with bytes: the source's adoption record intersected with the text as
   // it stands. Read once here so the refusal, the reason beside the draft, and
@@ -302,7 +311,7 @@ function ComposerWithSubmission({
     editSkillNames,
     updateSelectionMeta,
     setActiveRecoveryId,
-    setAdoptedImageMarkers,
+    setAdoptedImageRanges,
     clearAdoptedImageMarkers,
     markRestore,
     persistDraft,
@@ -1046,7 +1055,7 @@ function ComposerWithSubmission({
     // occurrences are unbacked: a delete takes its mark with it, and the undo
     // that restores the text restores the mark. Read before persistDraft so the
     // record this keystroke writes already agrees with what Send will see.
-    setAdoptedImageMarkers(value.adoptedImageMarkers ?? []);
+    setAdoptedImageRanges(value.adoptedImageRanges ?? [], value.adoptedImageMarkers ?? []);
     if (recoveryOwnerLeaseRef.current === null) persistDraft(value.text);
     // Every keystroke re-evaluates the trailing-token match fresh - a token
     // Escape just closed (useSlashCompletion's token) reopens on the
@@ -1054,34 +1063,50 @@ function ComposerWithSubmission({
     setSlashToken(parseSlashToken(maskSkillAtoms(value), caret));
   }
 
-  // The repair the notice offers. One write per marker, exactly as
-  // useAttachments.clearSubmitted removes submitted anchors: each write
-  // describes one splice, so the editor's selection patching maps every atom
-  // BETWEEN the removed markers against the text it actually sits in. A single
-  // write covering both deletions reads as one replacement span, and
-  // patchSelectionText then drops the command or skill chip in the middle of
-  // it - the anchors are removed, the person's selection is not.
+  // The repair the notice offers. It removes the exact occurrences that carry
+  // the stagedAnchor mark - not "the first [image 1] in the text" - in ONE
+  // editor transaction, so an identical literal beside them is left alone and
+  // an atom BETWEEN two removals keeps its identity (a single text-splice
+  // covering both would read as one replacement span and drop that chip).
+  //
+  // A mounted editor is the authority for which occurrences are marked. A
+  // source with no bound editor (a detached continuation, a test driving the
+  // source directly) still has the value's own exact ranges, and those name
+  // the same occurrences one splice at a time - the path used before the mark
+  // carried a position.
   function handleRemoveUnbackedMarkers(): void {
     if (!hasUnbackedImage) return;
+    const editor = editorRef.current;
+    if (editor) {
+      // The marks name exactly the occurrences to delete; `unbackedImageMarkers`
+      // is only the render's "is any occurrence of this number unbacked" view.
+      editor.removeStagedAnchors();
+      return;
+    }
+    // No editor: derive the exact occurrences from the value the source holds.
+    // Only the ranges the text still spells are removed, and each splice is
+    // applied to the text as it stands after the previous one.
     let { text, cursor } = textEditor.read();
     let changed = false;
-    for (const marker of unbackedImageMarkers) {
-      const stripped = stripMarker(text, cursor, marker);
-      if (stripped.value === text) continue;
-      text = stripped.value;
-      cursor = stripped.cursor ?? cursor;
+    for (const range of validMarkerRanges(text, adoptedImageRanges).reverse()) {
+      text = `${text.slice(0, range.start)}${text.slice(range.end)}`;
+      if (cursor > range.start) cursor = Math.max(range.start, cursor - (range.end - range.start));
       changed = true;
-      textEditor.write(text, cursor);
+    }
+    if (!changed) {
+      // A source value that carries no ranges at all (a legacy record) falls
+      // back to the number list, exactly as before.
+      for (const marker of unbackedImageMarkers) {
+        const stripped = stripMarker(text, cursor, marker);
+        if (stripped.value === text) continue;
+        text = stripped.value;
+        cursor = stripped.cursor ?? cursor;
+        changed = true;
+      }
     }
     if (!changed) return;
-    // Each write above describes one splice, which keeps an atom BETWEEN two
-    // removals mapped. React can still batch those writes into one commit, and
-    // a batched commit reads as a single replacement span - the same reason
-    // useAttachments.clearSubmitted asks for an authoritative restore after its
-    // per-marker writes. The value already carries the mapped mentions, so this
-    // only asks the editor to rebuild from it instead of editing its atoms.
+    textEditor.write(text, cursor);
     markRestore();
-    editorRef.current?.focus();
   }
 
   // A chip's details: the skill's own description, or - when the live catalog
@@ -1478,7 +1503,7 @@ function ComposerWithSubmission({
                 field={
                   <SkillEditor
                     ref={editorRef}
-                    value={{ text, skillNames, ...selectionMeta, adoptedImageMarkers }}
+                    value={{ text, skillNames, ...selectionMeta, adoptedImageMarkers, adoptedImageRanges }}
                     restoreEpoch={restoreEpoch}
                     skillDetails={skillChipDetails}
                     commandDetails={(name) =>

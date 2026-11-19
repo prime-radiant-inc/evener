@@ -318,6 +318,51 @@ test("recoverMutationComposition restores the adoption a record carries", () => 
   expect(recovered.adoptedImageMarkers).toEqual([1]);
 });
 
+// The range survives the durable hop, so a record holding a literal beside an
+// adopted spelling of one number comes back naming WHICH occurrence it means.
+// The number alone cannot distinguish them, and a reader that guesses removes
+// the person's prose.
+test("recoverMutationComposition restores the exact occurrence a record names", () => {
+  const text = "[image 1] tail [image 1]";
+  const record = mutationRecord([{ type: "text", text }], {
+    composerText: text,
+    adoptedImageMarkers: [1],
+    adoptedImageRanges: [{ marker: 1, start: 15, end: 24 }],
+  });
+
+  const recovered = recoverMutationComposition(record);
+  expect(recovered.adoptedImageMarkers).toEqual([1]);
+  expect(recovered.adoptedImageRanges).toEqual([{ marker: 1, start: 15, end: 24 }]);
+});
+
+// A merge that appends the recovered text moves its adopted occurrence by the
+// append offset. The range must travel with it, or the repaired record would
+// name an offset that now holds someone else's prose.
+test("a merged recovered adoption keeps its range at the offset it lands on", () => {
+  const current: ComposerComposition<InputAttachment> = {
+    text: "mine ",
+    attachments: [],
+    skillNames: [],
+    commandNames: [],
+  };
+  const queuedText = "[image 1] tail";
+  const recovered = recoverMutationComposition(
+    mutationRecord([{ type: "text", text: queuedText }], {
+      composerText: queuedText,
+      adoptedImageMarkers: [1],
+      adoptedImageRanges: [{ marker: 1, start: 0, end: 9 }],
+    }),
+  );
+
+  const merged = mergeComposerCompositions(current, recovered);
+  // The merge joins the two sides with a blank line: "mine " is 5 units, the
+  // separator 2, so the adopted occurrence lands at 7.
+  const expected = merged.text.indexOf("[image 1]");
+  expect(expected).toBe(7);
+  expect(merged.adoptedImageRanges).toEqual([{ marker: 1, start: expected, end: expected + 9 }]);
+  expect(merged.text.slice(expected, expected + 9)).toBe("[image 1]");
+});
+
 // The record's provenance is only ever about anchors its own text spells. A
 // repair that removed one retires nothing durable, so a stale number must be
 // filtered rather than restored as a refusal the text no longer earns.

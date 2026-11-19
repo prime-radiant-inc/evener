@@ -1,6 +1,13 @@
 import { type ComposerMention, canonicalSkillNames, type InputAttachment } from "./composerInput";
 import type { MutationRecord } from "./state/mutation/records";
-import { markerPattern, markerText } from "./textareaMarkers";
+import {
+  adoptedMarkerRanges,
+  type ImageMarkerRange,
+  markerNumbersOf,
+  markerPattern,
+  markerText,
+  validMarkerRanges,
+} from "./textareaMarkers";
 import type { InputItem } from "./types.gen";
 
 export interface ComposerComposition<A extends { marker: number }> {
@@ -19,6 +26,14 @@ export interface ComposerComposition<A extends { marker: number }> {
    * rewrite the adopted prose into a reference carrying somebody else's bytes.
    */
   adoptedImageMarkers?: readonly number[];
+  /**
+   * Those same occurrences by EXACT UTF-16 position. A number alone cannot
+   * tell an adopted "[image 1]" from an identical literal the person typed
+   * beside it, so the repair offered on restore would delete the first
+   * spelling. Absent on records written before ranges existed; a reader then
+   * marks every occurrence of an adopted number, exactly as those builds did.
+   */
+  adoptedImageRanges?: readonly ImageMarkerRange[];
 }
 
 export interface RecoveredComposition<A extends { marker: number }> extends ComposerComposition<A> {
@@ -72,7 +87,7 @@ export function recoverMutationComposition(record: MutationRecord): RecoveredCom
   });
   const hasComposerSnapshot = record.composerText !== undefined;
   const mentions = hasComposerSnapshot ? record.composerMentions : fallback.mentions;
-  const adoptedImageMarkers = adoptedInRecord(record, hasComposerSnapshot, attachments);
+  const adoption = adoptedInRecord(record, hasComposerSnapshot, attachments);
 
   return {
     text: record.composerText ?? fallback.text,
@@ -80,7 +95,9 @@ export function recoverMutationComposition(record: MutationRecord): RecoveredCom
     skillNames: inputNames(input, "skill"),
     commandNames: inputNames(input, "command"),
     ...(mentions !== undefined ? { mentions: mentions.map((mention) => ({ ...mention })) } : {}),
-    ...(adoptedImageMarkers.length > 0 ? { adoptedImageMarkers } : {}),
+    ...(adoption.ranges.length > 0
+      ? { adoptedImageMarkers: adoption.markers, adoptedImageRanges: adoption.ranges }
+      : {}),
     imageReferences: hasComposerSnapshot ? "recorded" : "unavailable",
   };
 }
@@ -98,17 +115,23 @@ function adoptedInRecord(
   record: MutationRecord,
   hasComposerSnapshot: boolean,
   attachments: readonly InputAttachment[],
-): number[] {
+): { markers: number[]; ranges: ImageMarkerRange[] } {
   const adopted = record.adoptedImageMarkers;
-  if (adopted === undefined || adopted.length === 0) return [];
+  const storedRanges = record.adoptedImageRanges;
+  if ((adopted === undefined || adopted.length === 0) && (storedRanges === undefined || storedRanges.length === 0)) {
+    return { markers: [], ranges: [] };
+  }
   // Without a composer snapshot the text is the wire's own translation, so no
   // occurrence in it is the anchor anybody staged.
-  if (!hasComposerSnapshot) return [];
+  if (!hasComposerSnapshot) return { markers: [], ranges: [] };
+  const text = record.composerText ?? "";
   const backed = new Set(attachments.map((attachment) => attachment.marker));
-  const spelled = new Set(markerNumbers(record.composerText ?? ""));
-  return [...new Set(adopted)]
-    .filter((marker) => spelled.has(marker) && !backed.has(marker))
-    .sort((left, right) => left - right);
+  // Ranges first: an occurrence a tile backs is not missing here, so its range
+  // is dropped - and dropping ONE spelling's range must not fall back to
+  // marking every occurrence of that number.
+  // adoptedMarkerRanges already validates every range against `text`.
+  const ranges = adoptedMarkerRanges(text, adopted, storedRanges).filter((range) => !backed.has(range.marker));
+  return { markers: markerNumbersOf(ranges), ranges };
 }
 
 interface MarkerShift {
@@ -118,6 +141,13 @@ interface MarkerShift {
 
 function markerNumbers(text: string): number[] {
   return Array.from(text.matchAll(markerPattern()), (match) => Number(match[1]));
+}
+
+/** Where `offset` lands after every shift that starts before it. A shift AT the
+ * offset is excluded: it describes a literal rewritten from that point on, so
+ * the offset already sits after the change. */
+function foldedShift(offset: number, shifts: readonly MarkerShift[]): number {
+  return shifts.filter((shift) => shift.offset < offset).reduce((delta, shift) => delta + shift.delta, 0);
 }
 
 function nextUnusedMarker(used: Set<number>): number {
@@ -146,11 +176,32 @@ function shiftedMentions(
 ): ComposerMention[] {
   return (mentions ?? []).map((mention) => ({
     ...mention,
-    offset:
-      mention.offset +
-      appendOffset +
-      shifts.filter((shift) => shift.offset < mention.offset).reduce((delta, shift) => delta + shift.delta, 0),
+    offset: mention.offset + appendOffset + foldedShift(mention.offset, shifts),
   }));
+}
+
+/** An adopted range after `remapMarkers` rewrote the text it names.
+ *
+ * A rename only rewrites digits, so a same-width rename leaves every offset
+ * alone; a width change contributes a shift at its own offset, folded in
+ * exactly as a mention's offset is. The range's own marker is looked up in
+ * `remapping`, and its end is recomputed from the new literal's length -
+ * which is why a shift AT the range's start is excluded rather than added. */
+function shiftedAdoptedRanges(
+  before: string,
+  after: string,
+  ranges: readonly ImageMarkerRange[],
+  remapping: ReadonlyMap<number, number>,
+  shifts: readonly MarkerShift[],
+): ImageMarkerRange[] {
+  const valid = validMarkerRanges(before, ranges);
+  if (valid.length === 0) return [];
+  const shifted = valid.map((range) => {
+    const marker = remapping.get(range.marker) ?? range.marker;
+    const start = range.start + foldedShift(range.start, shifts);
+    return { marker, start, end: start + markerText(marker).length };
+  });
+  return validMarkerRanges(after, shifted);
 }
 
 export function mergeComposerCompositions<A extends { marker: number }>(
@@ -161,6 +212,11 @@ export function mergeComposerCompositions<A extends { marker: number }>(
   let currentAttachments = [...current.attachments];
   let currentMentions = current.mentions?.map((mention) => ({ ...mention }));
   const adopted = new Set(current.adoptedImageMarkers ?? []);
+  // This side's adopted occurrences by position, carried through every rewrite
+  // below. A range the rewrites do not touch keeps its offset; a rename moves
+  // it; an occurrence the rewrite does not spell in its new text is dropped
+  // by validMarkerRanges.
+  let currentAdoptedRanges = adoptedMarkerRanges(current.text, current.adoptedImageMarkers, current.adoptedImageRanges);
   const recoveredAttachmentMarkers = new Set(recovered.attachments.map((attachment) => attachment.marker));
   const literalMarkers = new Set(
     markerNumbers(recovered.text).filter(
@@ -189,8 +245,16 @@ export function mergeComposerCompositions<A extends { marker: number }>(
       // can never be paired with this tile's bytes.
       const ownedMapping = new Map([...currentMapping].filter(([marker]) => !adopted.has(marker)));
       const remapped = remapMarkers(currentText, ownedMapping);
+      const before = currentText;
       currentText = remapped.text;
       currentMentions = shiftedMentions(currentMentions, remapped.shifts);
+      currentAdoptedRanges = shiftedAdoptedRanges(
+        before,
+        currentText,
+        currentAdoptedRanges,
+        new Map(),
+        remapped.shifts,
+      );
       currentAttachments = currentAttachments.map((attachment) => {
         const marker = currentMapping.get(attachment.marker);
         return marker === undefined ? attachment : { ...attachment, marker };
@@ -219,8 +283,16 @@ export function mergeComposerCompositions<A extends { marker: number }>(
     const adoptedMapping = new Map<number, number>();
     for (const marker of adoptedCollisions) adoptedMapping.set(marker, nextUnusedMarker(used));
     const remapped = remapMarkers(currentText, adoptedMapping);
+    const before = currentText;
     currentText = remapped.text;
     currentMentions = shiftedMentions(currentMentions, remapped.shifts);
+    currentAdoptedRanges = shiftedAdoptedRanges(
+      before,
+      currentText,
+      currentAdoptedRanges,
+      adoptedMapping,
+      remapped.shifts,
+    );
     adoptedAfterMerge = new Set([...adopted].map((marker) => adoptedMapping.get(marker) ?? marker));
   }
 
@@ -286,13 +358,40 @@ export function mergeComposerCompositions<A extends { marker: number }>(
   const currentSpelled = new Set(markerNumbers(currentText));
   const mergedAdopted = [...[...adoptedAfterMerge].filter((marker) => currentSpelled.has(marker)), ...recoveredAdopted];
   const adoptedImageMarkers = [...new Set(mergedAdopted)].sort((left, right) => left - right);
+  // The ranges, from the same two sides. The recovered side's are first
+  // expressed in ITS OWN text (renumbered with its attachments and adoption),
+  // then moved past the join - which is the only step that changes their
+  // offsets without changing their text.
+  const recoveredSpelledMarkers = new Set(recoveredAdopted);
+  const recoveredOwnedRanges =
+    recovered.imageReferences === "recorded"
+      ? shiftedAdoptedRanges(
+          recovered.text,
+          remappedRecovered.text,
+          adoptedMarkerRanges(recovered.text, recovered.adoptedImageMarkers, recovered.adoptedImageRanges).filter(
+            (range) => recoveredSpelledMarkers.has(recoveredMapping.get(range.marker) ?? range.marker),
+          ),
+          recoveredMapping,
+          remappedRecovered.shifts,
+        )
+      : [];
+  const adoptedRanges = validMarkerRanges(text, [
+    ...currentAdoptedRanges.filter((range) => currentSpelled.has(range.marker)),
+    ...recoveredOwnedRanges.map((range) => ({
+      ...range,
+      start: range.start + appendOffset,
+      end: range.end + appendOffset,
+    })),
+  ]);
   return {
     text,
     attachments: [...currentAttachments, ...recoveredAttachments],
     skillNames: canonicalSkillNames([...current.skillNames, ...recovered.skillNames]),
     commandNames: canonicalSkillNames([...current.commandNames, ...recovered.commandNames]),
     ...(mentions !== undefined ? { mentions } : {}),
-    ...(adoptedImageMarkers.length > 0 ? { adoptedImageMarkers } : {}),
+    ...(adoptedImageMarkers.length > 0
+      ? { adoptedImageMarkers, ...(adoptedRanges.length > 0 ? { adoptedImageRanges: adoptedRanges } : {}) }
+      : {}),
   };
 }
 

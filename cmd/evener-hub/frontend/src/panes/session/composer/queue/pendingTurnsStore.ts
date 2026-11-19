@@ -1,4 +1,4 @@
-import type { ComposerMention } from "@evener/appwire-client";
+import type { ComposerMention, ImageMarkerRange } from "@evener/appwire-client";
 import {
   awaitingFirstFrameSend,
   blockedEntriesIncludingDisplayed,
@@ -727,6 +727,7 @@ export function updateRecoveryPendingTurn(
   compositionOwnerId?: string,
   composerText?: string,
   adoptedImageMarkers?: readonly number[],
+  adoptedImageRanges?: readonly ImageMarkerRange[],
 ): ReturnType<typeof updateRecoveryMutation> {
   // Composer serializes edits before resending. A committed edit must release
   // that chain even when the recovery tray cannot refresh yet.
@@ -747,6 +748,7 @@ export function updateRecoveryPendingTurn(
         compositionOwnerId,
         composerText,
         adoptedImageMarkers,
+        adoptedImageRanges,
       );
       void refreshPendingTurnsProjection(ref);
       return updated;
@@ -765,6 +767,7 @@ export function preserveRecoveryPendingTurn(
   compositionOwnerId?: string,
   localDraftRevisionId?: string,
   adoptedImageMarkers?: readonly number[],
+  adoptedImageRanges?: readonly ImageMarkerRange[],
 ): ReturnType<typeof preserveRecoveryMutation> {
   return trackProjectionWork(
     (async () => {
@@ -779,6 +782,7 @@ export function preserveRecoveryPendingTurn(
         compositionOwnerId,
         localDraftRevisionId,
         adoptedImageMarkers,
+        adoptedImageRanges,
       );
       void refreshPendingTurnsProjection(ref);
       return preserved;

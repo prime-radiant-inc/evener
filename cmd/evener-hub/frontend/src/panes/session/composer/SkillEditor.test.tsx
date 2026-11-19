@@ -364,7 +364,12 @@ describe("SkillEditor real ProseMirror view", () => {
     expect(result.editor.textContent).toBe("[image 1] tail");
     act(() => result.ref.current?.setSelection(result.editor.textContent?.length ?? 0));
     paste(result.editor, "!");
-    expect(result.value()).toEqual({ text: "[image 1] tail!", skillNames: [], adoptedImageMarkers: [1] });
+    expect(result.value()).toEqual({
+      text: "[image 1] tail!",
+      skillNames: [],
+      adoptedImageMarkers: [1],
+      adoptedImageRanges: [{ marker: 1, start: 0, end: 9 }],
+    });
     // The mark survived the ordinary edit and its echo, and one undo still
     // reaches back to the document this case opened.
     key(result.editor, "z", { ctrlKey: true });

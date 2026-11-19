@@ -37,7 +37,7 @@ import {
   testThread,
   textarea,
 } from "./composerTestUtils";
-import { readComposerDraft, readDraft, writeComposerDraft } from "./draft";
+import { readComposerDraft, readComposerDraftSnapshot, readDraft, writeComposerDraft } from "./draft";
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./queue/testing/flushPendingTurnsProjection";
 import { resetQuoteInsertStoreForTests } from "./quoteInsert";
@@ -927,6 +927,90 @@ test("removing two missing references preserves a selected command between them"
   expect(draft.text).toBe("before  /inspect  after");
   expect(draft.commandNames).toEqual(["inspect"]);
   expect(draft.mentions).toEqual([{ kind: "command", name: "inspect", offset: "before  ".length }]);
+});
+
+// Two spellings of ONE number in one draft: the person typed a literal
+// "[image 1]", and a staging gesture later appended an adopted occurrence of
+// the same number. The record names the adopted occurrence by its offsets, so
+// the repair removes THAT one and leaves the literal the person typed - which
+// is prose, and sendable.
+test("removing a missing reference leaves an identical literal the person typed", async () => {
+  const user = userEvent.setup();
+  const ref = "ref_unbacked_duplicate_literal";
+  const text = "[image 1] tail [image 1]";
+  const adoptedStart = text.indexOf("[image 1]", 1);
+  writeComposerDraft(ref, {
+    text,
+    skillNames: [],
+    stagedImageMarkers: [1],
+    stagedImageRanges: [{ marker: 1, start: adoptedStart, end: adoptedStart + "[image 1]".length }],
+  });
+  const fake = await mountComposer(ref);
+  fake.on("turn/start", (params) => ({
+    receipt: appliedReceipt(params.clientMutationId, "thread_a"),
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
+  expect(screen.getByTestId("composer-unbacked-image")).toBeTruthy();
+  await waitFor(() => expect(submitButton().disabled).toBe(true));
+
+  await user.click(screen.getByRole("button", { name: "Remove the reference" }));
+
+  // The literal keeps its exact place; only the adopted occurrence is gone.
+  await waitFor(() => expect(textarea().textContent).toBe("[image 1] tail "));
+  expect(screen.queryByTestId("composer-unbacked-image")).toBeNull();
+  await waitFor(() => expect(submitButton().disabled).toBe(false));
+
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  const call = fake.calls.find((candidate) => candidate.method === "turn/start");
+  if (call === undefined) throw new Error("expected the repaired draft to send");
+  expect(call.params).toMatchObject({ input: [{ type: "text", text: "[image 1] tail " }] });
+});
+
+// The same duplicate survives a reload. The persisted record carries offsets,
+// so the reader marks the adopted occurrence and NOT the identical literal -
+// and one repair is enough to send.
+test("a reloaded duplicate marks only the adopted occurrence and repairs in one press", async () => {
+  const user = userEvent.setup();
+  const ref = "ref_unbacked_duplicate_reload";
+  const text = "[image 1] tail [image 1]";
+  const adoptedStart = text.indexOf("[image 1]", 1);
+  writeComposerDraft(ref, {
+    text,
+    skillNames: [],
+    stagedImageMarkers: [1],
+    stagedImageRanges: [{ marker: 1, start: adoptedStart, end: adoptedStart + "[image 1]".length }],
+  });
+
+  // The first mount is the writer: what it persists is what the second reads.
+  const first = await mountComposerWithHandle(ref);
+  expect(screen.getByTestId("composer-unbacked-image")).toBeTruthy();
+  first.unmount();
+  // The raw snapshot, not readComposerDraft: the provenance fields are exactly
+  // what a reloading reader needs, and readComposerDraft strips them so a
+  // rendering caller sees only what the person typed.
+  expect(readComposerDraftSnapshot(ref)).toMatchObject({
+    text,
+    stagedImageMarkers: [1],
+    stagedImageRanges: [{ marker: 1, start: adoptedStart, end: adoptedStart + "[image 1]".length }],
+  });
+
+  const second = await mountComposerWithHandle(ref);
+  second.fake.on("turn/start", (params) => ({
+    receipt: appliedReceipt(params.clientMutationId, "thread_a"),
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
+  expect(textarea().textContent).toBe(text);
+  expect(screen.getByTestId("composer-unbacked-image")).toBeTruthy();
+
+  await user.click(screen.getByRole("button", { name: "Remove the reference" }));
+
+  await waitFor(() => expect(textarea().textContent).toBe("[image 1] tail "));
+  expect(screen.queryByTestId("composer-unbacked-image")).toBeNull();
+  await waitFor(() => expect(submitButton().disabled).toBe(false));
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  expect(second.fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
 });
 
 // Deleting the missing reference clears the refusal while it is absent, and a

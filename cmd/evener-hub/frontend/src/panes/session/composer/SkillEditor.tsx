@@ -11,6 +11,7 @@ import {
   documentPositionToTextOffset,
   sharedPrefixLength as documentSharedPrefixLength,
   sharedSuffixLength as documentSharedSuffixLength,
+  type ImageMarkerRange,
   isSkillTokenCharacter,
   parseSkillDocument,
   type SkillEditorValue,
@@ -33,6 +34,11 @@ export interface SkillEditorHandle {
    * that never landed. */
   insertSkill(start: number, end: number, name: string): boolean;
   insertCommand(start: number, end: number, name: string): boolean;
+  /** Deletes every occurrence the document marks as an adopted anchor - or
+   * only those naming `markers` - in ONE transaction, and reports how many
+   * occurrences it removed. The marks are the exact occurrences, so an
+   * identical literal beside one of them is untouched. */
+  removeStagedAnchors(markers?: readonly number[]): number;
 }
 
 export interface SkillEditorProps {
@@ -198,6 +204,31 @@ function sameMarkerSet(a: readonly number[], b: readonly number[]): boolean {
   return b.every((marker) => markers.has(marker)) && markers.size === new Set(b).size;
 }
 
+/** Whether two range lists name the same occurrences: same marker, same
+ * position. Order carries no meaning and a repeat of one range is the same
+ * assertion twice, so both are normalised before comparing. */
+function sameRangeSet(a: readonly ImageMarkerRange[], b: readonly ImageMarkerRange[]): boolean {
+  const keys = (ranges: readonly ImageMarkerRange[]) =>
+    [...new Set(ranges.map((range) => `${range.marker}:${range.start}:${range.end}`))].sort();
+  const left = keys(a);
+  const right = keys(b);
+  return left.length === right.length && left.every((key, index) => key === right[index]);
+}
+
+/** Whether two values carry the same adoption: the same numbers AND the same
+ * occurrences. Two values that agree on the numbers but disagree on WHICH
+ * spelling is adopted are different values, and applying one over the other
+ * must move the mark. */
+function sameAdoption(
+  a: Pick<SkillEditorValue, "adoptedImageMarkers" | "adoptedImageRanges">,
+  b: Pick<SkillEditorValue, "adoptedImageMarkers" | "adoptedImageRanges">,
+): boolean {
+  return (
+    sameMarkerSet(a.adoptedImageMarkers ?? [], b.adoptedImageMarkers ?? []) &&
+    sameRangeSet(a.adoptedImageRanges ?? [], b.adoptedImageRanges ?? [])
+  );
+}
+
 function sameEditorValue(a: SkillEditorValue, b: SkillEditorValue): boolean {
   return (
     a.text === b.text &&
@@ -209,7 +240,7 @@ function sameEditorValue(a: SkillEditorValue, b: SkillEditorValue): boolean {
     // carries those marks, so a value that names them is not the same value as
     // one that does not. Without this, every keystroke would re-apply the
     // caller's value as a non-echo replace and rebuild the document.
-    sameMarkerSet(a.adoptedImageMarkers ?? [], b.adoptedImageMarkers ?? [])
+    sameAdoption(a, b)
   );
 }
 
@@ -239,6 +270,24 @@ function insertAtom(
   view.dispatch(tr);
   view.focus();
   return true;
+}
+
+/** Every document position covered by a stagedAnchor mark naming one of
+ * `markers` (all of them when the list is absent), as [from, to) document
+ * ranges. A marked node IS one whole literal - parseSkillDocument and
+ * serializeSkillDocument both refuse a range whose slice is not markerText -
+ * so the node's own boundaries are the occurrence's. */
+function stagedAnchorDocRanges(doc: ProseMirrorNode, markers?: readonly number[]): { from: number; to: number }[] {
+  const wanted = markers === undefined ? undefined : new Set(markers);
+  const ranges: { from: number; to: number }[] = [];
+  doc.forEach((node, position) => {
+    if (!node.isText) return;
+    const marked = node.marks.some(
+      (mark) => mark.type.name === "stagedAnchor" && (wanted === undefined || wanted.has(Number(mark.attrs.marker))),
+    );
+    if (marked) ranges.push({ from: position, to: position + node.nodeSize });
+  });
+  return ranges;
 }
 
 /** A controlled value boundary around a persistent real ProseMirror editor. */
@@ -281,6 +330,23 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
       },
       insertSkill: (start, end, name) => insertAtom(viewRef.current, start, end, name, "skill"),
       insertCommand: (start, end, name) => insertAtom(viewRef.current, start, end, name, "command"),
+      removeStagedAnchors: (markers) => {
+        const view = viewRef.current;
+        if (!view || view.composing) return 0;
+        const ranges = stagedAnchorDocRanges(view.state.doc, markers);
+        if (ranges.length === 0) return 0;
+        // ONE transaction. Every range is a marked literal, and an unmarked
+        // node is never touched - so a literal "[image 1]" beside an adopted
+        // "[image 1]" survives a repair that removes the adopted one. Back to
+        // front, so an earlier deletion never moves a later position; the
+        // atoms BETWEEN the ranges are outside every replaced span and keep
+        // their identity, which is what a text-splice repair could not do.
+        const tr = closeHistory(view.state.tr);
+        for (const range of ranges.reverse()) tr.delete(range.from, range.to);
+        view.dispatch(tr);
+        view.focus();
+        return ranges.length;
+      },
     }),
     [],
   );
@@ -361,7 +427,7 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
       // marks), and a plain-text splice cannot add or remove a mark. A value
       // that changes the adoption therefore rebuilds from the value rather than
       // patching, even when its text is byte-identical.
-      const adoptionChanged = !sameMarkerSet(current.adoptedImageMarkers ?? [], props.value.adoptedImageMarkers ?? []);
+      const adoptionChanged = !sameAdoption(current, props.value);
       if (authoritative || splitsAtom || adoptionChanged || (prefix === 0 && end === current.text.length)) {
         const replacement = parseSkillDocument(props.value);
         if (!replacement.eq(view.state.doc))
