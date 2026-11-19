@@ -14,7 +14,7 @@ import { requestComposerFocus } from "../panes/session/composer/composerFocus";
 import { conversationContextIncludes } from "../panes/session/transcript/openTranscript";
 import { isKnownSettingsSection, resolveSettingsSection } from "../panes/settings/sections";
 import { zoomParamsCoverConversation } from "../panes/zoom/cascadeCoverage";
-import { cascadeReturnedOriginForURL, isCascadeReturnedOrigin } from "../panes/zoom/inspectionOrigin";
+import { isCascadeReturnedOrigin } from "../panes/zoom/inspectionOrigin";
 import { type SessionZoomParams, zoomIntentOf } from "../panes/zoom/intent";
 import { startBackgroundTranscripts } from "../stores/backgroundTranscripts";
 import { useConnectionStore } from "../stores/connection";
@@ -206,14 +206,6 @@ function routePlacementIsApplied(
 ): boolean {
   const route = urlToPane(pathname);
   if (route === null || route.type === "welcome") return true;
-
-  if (!locationGone && route.type === "session") {
-    const routeRef = refParam(route.params);
-    const returnedOriginPane = routeRef !== null ? cascadeReturnedOriginForURL(pathname) : null;
-    if (returnedOriginPane?.type === "session" && refParam(returnedOriginPane.params) === routeRef) {
-      return true;
-    }
-  }
 
   const workspace = workspaceStore.getState();
   const mainRecord = workspace.mainPane();
@@ -445,12 +437,7 @@ function openRouteAsPane(
     workspaceStore.getState().replacePrimary("spawn", route.params);
     return;
   }
-  const ws = workspaceStore.getState();
-  ws.openPane(
-    "welcome",
-    {},
-    cascadeReturnedOriginForURL(pathname) !== null ? { keepExistingFocus: true, focusNew: false } : undefined,
-  );
+  workspaceStore.getState().openPane("welcome", {});
 }
 
 function reconcileWelcomeRouteWithLocation(location: NavigationSessionLocation | null): void {
@@ -837,13 +824,14 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
         setAttentionRestoreEpoch((epoch) => epoch + 1);
       }
     }
-    if (attentionToken !== null && restoredAttentionTokenRef.current === attentionToken) {
+    if (attentionToken !== null && !locationGone && restoredAttentionTokenRef.current === attentionToken) {
       pendingSessionRef.current = null;
       placedPathnameRef.current = pathname;
       return;
     }
     if (
       attentionToken !== null &&
+      !locationGone &&
       restoredAttentionTokenRef.current !== attentionToken &&
       restoreCurrentAttentionEntry()
     ) {

@@ -3,52 +3,20 @@ import {
   existingConversationPaneLifetime,
   type PaneLifetime,
 } from "../../shell/paneLifetime";
-import { navigate, observeRouteHistory, paneToURL, refParam, routeHistoryEntryId } from "../../shell/routing";
-import { type OpenPaneRecord, onWorkspaceRestore, presentedPanes, workspaceStore } from "../../shell/workspace";
+import { refParam } from "../../shell/routing";
+import { type OpenPaneRecord, onWorkspaceRestore, workspaceStore } from "../../shell/workspace";
 import { type SessionZoomParams, zoomIntentOf } from "./intent";
 
 const bindings = new WeakMap<PaneLifetime, PaneLifetime | null>();
 let returnedOrigin: PaneLifetime | null = null;
-let returnedURLOwner: { lifetime: PaneLifetime; url: string; entryId: string | null } | null = null;
-let publishingReturnURL = false;
 
 export function recordCascadeReturnedOrigin(origin: OpenPaneRecord | null): void {
   returnedOrigin = origin ? conversationPaneLifetime(origin) : null;
 }
 
 export function isCascadeReturnedOrigin(pane: OpenPaneRecord | undefined): boolean {
-  if (!pane || !returnedOrigin?.alive) return false;
-  return existingConversationPaneLifetime(pane) === returnedOrigin;
-}
-
-export function publishCascadeReturnURL(pane: OpenPaneRecord, url: string, opts?: { replace?: boolean }): void {
-  if (!isCascadeReturnedOrigin(pane)) {
-    navigate(url, opts);
-    return;
-  }
-  const lifetime = conversationPaneLifetime(pane);
-  publishingReturnURL = true;
-  try {
-    returnedURLOwner = { lifetime, url, entryId: null };
-    navigate(url, opts);
-    if (returnedURLOwner) {
-      returnedURLOwner.entryId = typeof window !== "undefined" ? routeHistoryEntryId(window.history.state) : null;
-    }
-  } finally {
-    publishingReturnURL = false;
-  }
-}
-
-export function cascadeReturnedOriginForURL(pathname: string): OpenPaneRecord | null {
-  if (returnedURLOwner === null || !returnedURLOwner.lifetime.alive) return null;
-  if (pathname !== returnedURLOwner.url) return null;
-  const currentEntryId = typeof window !== "undefined" ? routeHistoryEntryId(window.history.state) : null;
-  if (currentEntryId !== returnedURLOwner.entryId) return null;
-  const ownerLifetime = returnedURLOwner.lifetime;
   return (
-    presentedPanes(workspaceStore.getState().panes).find(
-      (pane) => existingConversationPaneLifetime(pane) === ownerLifetime,
-    ) ?? null
+    pane !== undefined && returnedOrigin?.alive === true && existingConversationPaneLifetime(pane) === returnedOrigin
   );
 }
 
@@ -118,7 +86,6 @@ export function associatedCascade(origin: OpenPaneRecord): OpenPaneRecord | null
 // inherit the old inspector's Return destination.
 onWorkspaceRestore((panes) => {
   returnedOrigin = null;
-  returnedURLOwner = null;
   for (const pane of panes) {
     const params = zoomIntentOf(pane);
     if (!params?.inspection) continue;
@@ -128,38 +95,7 @@ onWorkspaceRestore((panes) => {
   }
 });
 
-observeRouteHistory((_prevState, nextState, _prevURL, nextURL) => {
-  if (publishingReturnURL) {
-    if (returnedURLOwner !== null) returnedURLOwner.entryId = routeHistoryEntryId(nextState);
-    return;
-  }
-  returnedOrigin = null;
-  if (
-    returnedURLOwner !== null &&
-    (nextURL !== returnedURLOwner.url || routeHistoryEntryId(nextState) !== returnedURLOwner.entryId)
-  ) {
-    returnedURLOwner = null;
-  }
-});
-
 workspaceStore.subscribe((state, previous) => {
-  if (returnedURLOwner !== null) {
-    const owner = returnedURLOwner;
-    const ownerPresent =
-      owner.lifetime.alive && state.panes.some((pane) => existingConversationPaneLifetime(pane) === owner.lifetime);
-    if (!ownerPresent) {
-      const ownsCurrentReturnEntry =
-        typeof window !== "undefined" &&
-        window.location.pathname === owner.url &&
-        routeHistoryEntryId(window.history.state) === owner.entryId;
-      returnedURLOwner = null;
-      if (ownsCurrentReturnEntry) {
-        const survivingMain = state.panes.find((pane) => pane.slot === "main");
-        const fallbackURL = survivingMain ? paneToURL(survivingMain.type, survivingMain.params) : null;
-        navigate(fallbackURL ?? "/", { replace: true });
-      }
-    }
-  }
   if (returnedOrigin !== null) {
     const focused = state.panes.find((pane) => pane.id === state.focusedPaneId);
     if (!returnedOrigin.alive || !focused || existingConversationPaneLifetime(focused) !== returnedOrigin) {

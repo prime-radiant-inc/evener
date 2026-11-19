@@ -39,7 +39,7 @@
 // separate "last mobile screen" memory to restore independently of that.
 import { type ReactNode, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { returnFromAgentCascade } from "../../panes/zoom/actions";
-import { isCascadeReturnedOrigin, publishCascadeReturnURL } from "../../panes/zoom/inspectionOrigin";
+import { isCascadeReturnedOrigin } from "../../panes/zoom/inspectionOrigin";
 import { parseZoomParams } from "../../panes/zoom/intent";
 import {
   conversationHandoffGeneration,
@@ -49,7 +49,7 @@ import {
 import { Chevron, IconButton } from "../../widgets";
 import { ActivitySidebar } from "../activitybar/ActivitySidebar";
 import { useActivitySidebarStore } from "../activitybar/activitySidebarStore";
-import { attentionEntryOwnsReader, goBackInAttentionHistory } from "../attentionHistory";
+import { attentionEntryOwnsReader, goBackInAttentionHistory, publishFocusedPaneURL } from "../attentionHistory";
 import { ConversationHandoffBoundary } from "../ConversationHandoffBoundary";
 import { useChromeStore } from "../chromeStore";
 import { paneFor } from "../paneRegistry";
@@ -369,8 +369,11 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
     if (singlePaneRouteNames(window.location.pathname, focusedPane)) return;
     const url = paneToURL(focusedPane.type, focusedPane.params);
     if (url) {
-      if (isCascadeReturnedOrigin(focusedPane)) publishCascadeReturnURL(focusedPane, url);
-      else navigate(url);
+      if (focusedPane.slot === "secondary" && isCascadeReturnedOrigin(focusedPane)) {
+        publishFocusedPaneURL(url);
+      } else {
+        navigate(url);
+      }
     }
   }, [focusedPane, routeDeferred]);
 

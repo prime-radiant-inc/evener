@@ -1,4 +1,3 @@
-import { isCascadeReturnedOrigin, publishCascadeReturnURL } from "../panes/zoom/inspectionOrigin";
 import { createSecureUUID } from "../stores/secureUUID";
 import {
   type AttentionPlacementEntry,
@@ -158,12 +157,25 @@ function retireAttentionEntry(binding: HistoryBinding): void {
   // makes the observer treat this as a fresh branch, which drops every other
   // entry and releases their parked readers - including a source Back can
   // still reach, with its staged attachments.
-  if (survivor && isCascadeReturnedOrigin(survivor)) {
-    publishCascadeReturnURL(survivor, url ?? "/", { replace: true });
+  if (survivor && survivor.slot === "secondary" && url) {
+    publishFocusedPaneURL(url, { replace: true });
   } else {
     navigate(url ?? "/", { replace: true });
   }
   entries.delete(key(binding.token));
+}
+
+/** Publish a URL bound to the currently focused pane so AppShell keeps its
+ * exact slot and sibling panes and retires the entry if that pane closes. */
+export function publishFocusedPaneURL(url: string, opts?: { replace?: boolean }): void {
+  const placement = captureAttentionPlacement();
+  if (!placement) {
+    navigate(url, opts);
+    return;
+  }
+  const token = { generation, id: `entry-${++serial}` };
+  entries.set(key(token), { token, url, placement });
+  navigate(url, { ...opts, attentionEntry: token });
 }
 
 // A drill inside the cascade an attention entry owns keeps the same pane and
