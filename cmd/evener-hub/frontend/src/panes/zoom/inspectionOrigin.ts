@@ -3,17 +3,22 @@ import {
   existingConversationPaneLifetime,
   type PaneLifetime,
 } from "../../shell/paneLifetime";
-import { navigate, observeRouteHistory, refParam } from "../../shell/routing";
-import { type OpenPaneRecord, onWorkspaceRestore, workspaceStore } from "../../shell/workspace";
+import { navigate, observeRouteHistory, refParam, routeHistoryEntryId } from "../../shell/routing";
+import { type OpenPaneRecord, onWorkspaceRestore, presentedPanes, workspaceStore } from "../../shell/workspace";
 import { type SessionZoomParams, zoomIntentOf } from "./intent";
 
 const bindings = new WeakMap<PaneLifetime, PaneLifetime | null>();
 let returnedOrigin: PaneLifetime | null = null;
 let returnedOriginURL: string | null = null;
+let returnedOriginEntryId: string | null = null;
+let publishingReturnURL = false;
 
 export function recordCascadeReturnedOrigin(origin: OpenPaneRecord | null): void {
   const next = origin ? conversationPaneLifetime(origin) : null;
-  if (next !== returnedOrigin) returnedOriginURL = null;
+  if (next !== returnedOrigin) {
+    returnedOriginURL = null;
+    returnedOriginEntryId = null;
+  }
   returnedOrigin = next;
 }
 
@@ -27,25 +32,25 @@ export function publishCascadeReturnURL(pane: OpenPaneRecord, url: string, opts?
     navigate(url, opts);
     return;
   }
-  returnedOriginURL = url;
-  navigate(url, opts);
+  publishingReturnURL = true;
+  try {
+    returnedOriginURL = url;
+    navigate(url, opts);
+    returnedOriginEntryId = typeof window !== "undefined" ? routeHistoryEntryId(window.history.state) : null;
+  } finally {
+    publishingReturnURL = false;
+  }
 }
 
-function matchesReturnedOriginOrInspector(pane: OpenPaneRecord | undefined, panes: readonly OpenPaneRecord[]): boolean {
-  if (!pane || !returnedOrigin?.alive) return false;
-  if (existingConversationPaneLifetime(pane) === returnedOrigin) return true;
-  const params = zoomIntentOf(pane);
-  if (!params?.inspection) return false;
-  const lifetime = conversationPaneLifetime(pane);
-  const origin = bindings.has(lifetime) ? boundOrigin(lifetime) : restoredOrigin(params, panes);
-  return origin !== null && existingConversationPaneLifetime(origin) === returnedOrigin;
-}
-
-export function isCascadeReturnedOriginURL(pane: OpenPaneRecord | undefined, pathname: string): boolean {
+export function cascadeReturnedOriginForURL(pathname: string): OpenPaneRecord | null {
+  if (returnedOrigin === null || !returnedOrigin.alive || returnedOriginURL === null) return null;
+  if (pathname !== returnedOriginURL) return null;
+  const currentEntryId = typeof window !== "undefined" ? routeHistoryEntryId(window.history.state) : null;
+  if (currentEntryId !== returnedOriginEntryId) return null;
   return (
-    returnedOriginURL !== null &&
-    pathname === returnedOriginURL &&
-    matchesReturnedOriginOrInspector(pane, workspaceStore.getState().panes)
+    presentedPanes(workspaceStore.getState().panes).find(
+      (pane) => existingConversationPaneLifetime(pane) === returnedOrigin,
+    ) ?? null
   );
 }
 
@@ -116,6 +121,7 @@ export function associatedCascade(origin: OpenPaneRecord): OpenPaneRecord | null
 onWorkspaceRestore((panes) => {
   returnedOrigin = null;
   returnedOriginURL = null;
+  returnedOriginEntryId = null;
   for (const pane of panes) {
     const params = zoomIntentOf(pane);
     if (!params?.inspection) continue;
@@ -125,18 +131,34 @@ onWorkspaceRestore((panes) => {
   }
 });
 
-observeRouteHistory((_prevState, _nextState, _prevURL, nextURL) => {
-  if (returnedOriginURL !== null && nextURL !== returnedOriginURL) {
+observeRouteHistory((_prevState, nextState, _prevURL, nextURL) => {
+  if (publishingReturnURL) {
+    returnedOriginEntryId = routeHistoryEntryId(nextState);
+    return;
+  }
+  if (
+    returnedOriginURL !== null &&
+    (nextURL !== returnedOriginURL || routeHistoryEntryId(nextState) !== returnedOriginEntryId)
+  ) {
     returnedOriginURL = null;
+    returnedOriginEntryId = null;
   }
 });
 
 workspaceStore.subscribe((state, previous) => {
   if (returnedOrigin !== null) {
-    const focused = state.panes.find((pane) => pane.id === state.focusedPaneId);
-    if (!matchesReturnedOriginOrInspector(focused, state.panes)) {
+    const originPresent =
+      returnedOrigin.alive &&
+      presentedPanes(state.panes).some((pane) => existingConversationPaneLifetime(pane) === returnedOrigin);
+    if (!originPresent) {
       returnedOrigin = null;
       returnedOriginURL = null;
+      returnedOriginEntryId = null;
+    } else if (returnedOriginURL === null) {
+      const focused = state.panes.find((pane) => pane.id === state.focusedPaneId);
+      if (!focused || existingConversationPaneLifetime(focused) !== returnedOrigin) {
+        returnedOrigin = null;
+      }
     }
   }
   if (state.panes === previous.panes) return;

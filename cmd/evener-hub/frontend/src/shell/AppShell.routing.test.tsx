@@ -1643,6 +1643,22 @@ test("phone Back from a secondary session's inspector publishes its URL without 
   expect(mainLifetime.alive).toBe(true);
   expect(mainAttachments.getState().items.map((item) => item.marker)).toEqual([1]);
 
+  // Opening a contextual pane (e.g. Tasks) for the returned secondary source
+  // without navigating must keep the task pane focused and keep the original
+  // main pane and its staged attachment intact.
+  const tasksId = await act(async () =>
+    workspaceStore.getState().openPane("sessionTasks", { ref: "local:unrelated" }, { slot: "secondary" }),
+  );
+  expect(workspaceStore.getState().focusedPaneId).toBe(tasksId);
+  expect(workspaceStore.getState().panes.some((pane) => pane.id === tasksId)).toBe(true);
+  expect(workspaceStore.getState().mainPane()).toBe(mainPane);
+  expect(mainLifetime.alive).toBe(true);
+  expect(mainAttachments.getState().items.map((item) => item.marker)).toEqual([1]);
+  await act(async () => {
+    workspaceStore.getState().closePane(tasksId);
+    workspaceStore.getState().focusPane(unrelatedId);
+  });
+
   // Returning to desktop and drilling again from the same returned secondary
   // source must open the new inspector without promoting the source or
   // discarding the original main pane and its staged attachment.
