@@ -99,7 +99,7 @@ func TestHandleAppThreadModelSet_SuccessReturnsTypedResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handleAppThreadModelSet: %v", err)
 	}
-	if resp.ModelControlVersion != appwire.ModelControlVersion1 || resp.ModelControl == nil || resp.ModelControl.Revision != source.modelControl.Revision {
+	if resp.ModelControl == nil || resp.ModelControl.Revision != source.modelControl.Revision {
 		t.Fatalf("typed response = %#v", resp)
 	}
 	if !called || got != "claude-x" {

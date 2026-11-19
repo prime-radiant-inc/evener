@@ -18,7 +18,7 @@ import type { ModelPickerEntry, ModelSection } from "../modelPickerEntries";
 import type { MobileConversation } from "../projectedRows";
 import type { Routes } from "../screens";
 import { modelPickCanSend } from "../conversation/services/conversation";
-import { type SessionControls, useControlsState } from "../sessionControls";
+import { type ActionOutcome, type SessionControls, useControlsState } from "../sessionControls";
 import { SearchField } from "../sheet/SearchField";
 import { Segmented } from "../sheet/Grouped";
 import { Sheet } from "../sheet/Sheet";
@@ -72,6 +72,11 @@ function ModelSheetBody({
 	const list = useRef<SectionList<ModelPickerEntry, ModelSection>>(null);
 	const { session, controls, ready } = host;
 	const state = useControlsState(controls);
+	// An initiator never reads its outcome from state.error: that channel is
+	// the behind-screen observer's. The refusal this sheet's own action got is
+	// held here, from the promise, so it survives the reconnect that replaced
+	// the controls while the pick was out.
+	const [refusal, setRefusal] = useState<string | null>(null);
 	// The screen loads the catalog when it opens; a sheet opened before that
 	// finished, after it failed, or while the hub was away asks again.
 	useEffect(() => {
@@ -96,20 +101,30 @@ function ModelSheetBody({
 			? modelTarget.model
 			: `${modelTarget.modelProvider}/${modelTarget.model}`;
 	const canChange = vision ? session.capabilities.changeVisionModel : session.capabilities.changeModel;
-	const error = state?.modelError ?? (state?.lastAction && MODEL_ACTIONS.has(state.lastAction) ? state.error : null);
-	const revealError = () => {
+	const error =
+		refusal ?? state?.modelError ?? (state?.lastAction && MODEL_ACTIONS.has(state.lastAction) ? state.error : null);
+	const revealError = (outcome: ActionOutcome) => {
 		// Each refusal reveals the first header row, even when it repeats the
 		// previous message after the user has scrolled away to try again.
-		if (controls?.getSnapshot().error) list.current?.getScrollResponder()?.scrollTo({ y: 0, animated: true });
+		if (outcome.disposition !== "refused") return;
+		list.current?.getScrollResponder()?.scrollTo({ y: 0, animated: true });
 	};
-	const closeOn = (change: Promise<boolean>, then?: () => void) =>
-		void change.then((changed) => {
-			if (!changed) {
-				revealError();
+	// A refusal the sheet shows keeps it open; a notSent the guards already
+	// explained (an unchanged pick, an unoffered level, a stale catalog) closes
+	// nothing and says nothing new.
+	const applyOutcome = (outcome: ActionOutcome) => {
+		setRefusal(outcome.disposition === "refused" ? outcome.message : null);
+		revealError(outcome);
+	};
+	const closeOn = (change: Promise<ActionOutcome>, then?: () => void) =>
+		void change.then((outcome) => {
+			if (outcome.disposition === "accepted") {
+				setRefusal(null);
+				finish();
+				then?.();
 				return;
 			}
-			finish();
-			then?.();
+			applyOutcome(outcome);
 		});
 	const choose = (model: ModelDescriptor) => {
 		if (!vision && !modelPickCanSend(session)) return;
@@ -128,6 +143,7 @@ function ModelSheetBody({
 			return;
 		}
 		if (!controls) return;
+		setRefusal(null);
 		if (vision) closeOn(controls.changeVisionModel(model.provider, model.model));
 		else
 			closeOn(controls.changeModel(model.provider, model.model), () =>
@@ -150,7 +166,11 @@ function ModelSheetBody({
 					levels={levels}
 					current={session.reasoningEffort ?? ""}
 					disabled={busy}
-					choose={(level) => void controls?.setReasoningEffort(level).then(revealError)}
+					choose={(level) =>
+						void controls?.setReasoningEffort(level).then((outcome) => {
+							applyOutcome(outcome);
+						})
+					}
 				/>
 			) : null}
 		</View>

@@ -22,7 +22,6 @@ function acceptModelSet(params: {
   expectedBootGeneration: string;
 }) {
   return {
-    modelControlVersion: 1,
     disposition: "accepted" as const,
     modelControl: {
       authority: {
@@ -32,7 +31,6 @@ function acceptModelSet(params: {
       revision: 2,
       active: { modelProvider: "anthropic", model: "claude", reasoningEffortLevels: [], supportsReasoning: false },
       desired: {
-        requestSequence: 1,
         clientMutationId: params.clientMutationId,
         modelProvider: params.modelProvider,
         model: params.model,

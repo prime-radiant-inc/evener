@@ -8,7 +8,7 @@ import { activityFixture } from "./subagents/sessionActivityTestUtils";
 import type { ComponentProps } from "react";
 import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { type AnyNotification, type SessionDelegatesResponse, type Thread } from "@evener/appwire-client";
+import { type AnyNotification, type SessionDelegatesResponse, type Thread, WireError } from "@evener/appwire-client";
 import { hasTestID, markers } from "./markerTestUtils";
 import { nativeDrafts } from "./nativeDrafts";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
@@ -264,6 +264,9 @@ const READ_HISTORY_IDENTITY = {
 // Whether model/list refuses, as a hub mid-restart does.
 const catalogHub = { fails: false };
 
+// Whether thread/model/set refuses, as a daemon without the provider does.
+const modelSetRefusal = { message: null as string | null };
+
 // Keep diagnostics visible and check the entire case, including afterEach teardown.
 beforeEach(({ onTestFinished }) => {
 	const errors = vi.spyOn(console, "error");
@@ -288,6 +291,7 @@ afterEach(async () => {
 	displayPrefs.hubId = null;
 	displayPrefs.config = null;
 	catalogHub.fails = false;
+	modelSetRefusal.message = null;
 	readHistory.live = false;
 	keyboard.reset();
 	systemGlass.reset();
@@ -343,6 +347,10 @@ function hubClient(
 				const thread = otherThreads.get(String(params.ref)) ?? served;
 				return {
 					thread,
+					// A resolved session's read carries the resumed daemon's boot
+					// generation, which is what makes its model-control snapshot
+					// an authority a pick can dispatch under.
+					...(otherThreads.has(String(params.ref)) ? { bootGeneration: "test-boot" } : {}),
 					...(olderCursor ? { olderCursor } : {}),
 					...(readHistory.live ? READ_HISTORY_IDENTITY : {}),
 				};
@@ -358,6 +366,22 @@ function hubClient(
 				return {
 					data: [{ provider: "anthropic", model: "claude-sonnet-5", displayName: "Claude Sonnet 5" }],
 				};
+			if (method === "thread/model/set") {
+				if (modelSetRefusal.message !== null) throw new WireError(modelSetRefusal.message, -32000);
+				return {
+					disposition: "accepted" as const,
+					modelControl: {
+						authority: { instanceId: "instance", bootGeneration: "test-boot" },
+						revision: 2,
+						active: {
+							modelProvider: params.modelProvider,
+							model: params.model,
+							reasoningEffortLevels: [],
+							supportsReasoning: false,
+						},
+					},
+				};
+			}
 			if (method === "notes/human/set")
 				return {
 					note: params.note,
@@ -1025,6 +1049,65 @@ it("asks to try a typed /queue again when the phone couldn't keep it", async () 
 	// Nothing left the phone, so the command goes back to the composer.
 	expect(field(tree)?.props.value).toBe("/queue check the logs");
 	expect(ghostStates(tree)).toEqual([]);
+});
+
+// RoboRev's open medium, composer half: a typed /model on a cold session
+// resumes behind the pick, the resume can resolve a different identity, and
+// the daemon can still refuse the pick itself. The refusal must reach the
+// composer's action-error line even though the store followed the resolved
+// identity - today the catch's currentBinding() gate (screens.tsx:2042)
+// drops it, because the resume's read moved the store's instance while the
+// screen's captured binding stayed on the departed one.
+it("says why a typed /model was refused across a resume that resolved a new identity", async () => {
+	const served = thread("ref-cold-model", "idle");
+	// The hub's cold read: the past-thread capabilities, no model control.
+	(served as unknown as { status: { type: string } }).status = { type: "notLoaded" };
+	(served as unknown as { evener: Record<string, unknown> }).evener.capabilities = {
+		...CAPABILITIES,
+		changeModel: true,
+	};
+	const resolvedRef = "ref-cold-model-resolved";
+	const resolved = thread(resolvedRef, "idle");
+	(resolved as unknown as { evener: Record<string, unknown> }).evener.capabilities = {
+		...CAPABILITIES,
+		changeModel: true,
+		modelControlVersion: 1,
+	};
+	(resolved as unknown as { evener: Record<string, unknown> }).evener.modelControl = {
+		authority: { instanceId: "instance-resolved", bootGeneration: "test-boot" },
+		revision: 1,
+		active: {
+			modelProvider: "anthropic",
+			model: "claude-sonnet-5",
+			reasoningEffortLevels: [],
+			supportsReasoning: false,
+		},
+	};
+	(resolved as unknown as { evener: Record<string, unknown> }).evener.instanceId = "instance-resolved";
+	otherThreads.set(resolvedRef, resolved);
+	modelSetRefusal.message = "The provider is not available to this session.";
+	const { tree, hub } = await mount(served);
+	const resumeThread = hub.client.resumeThread.bind(hub.client);
+	hub.client.resumeThread = async (ref: string) => {
+		const response = await resumeThread(ref);
+		return { thread: resolved } as unknown as typeof response;
+	};
+
+	await type(tree, "/model anthropic/claude-sonnet-5");
+	await press(tree, "Set model");
+
+	// One resume behind the pick, and one refused mutation on the identity
+	// the resume resolved.
+	expect(hub.requests.filter((request) => request.method === "resumeThread")).toHaveLength(1);
+	const setCalls = hub.requests.filter((request) => request.method === "thread/model/set");
+	expect(setCalls).toHaveLength(1);
+	expect(setCalls[0]?.params).toMatchObject({ ref: resolvedRef });
+	// The refusal is what the composer says, not a send to confirm.
+	expect(actionErrors(tree)).toContain("refused");
+	expect(renderedText(tree)).toContain("The provider is not available to this session.");
+	// A refused pick is not the phone's to take back: its text stands as the
+	// unconfirmed send it became (R5's boundary), alongside the reason.
+	expect(ghostStates(tree)).toEqual(["unconfirmed"]);
 });
 
 // A typed /interrupt the phone couldn't keep says so, and stays to try again.

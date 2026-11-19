@@ -2596,7 +2596,6 @@ export interface ModelControlAuthority {
 }
 
 export interface ModelControlDesired {
-  requestSequence: number;
   clientMutationId: string;
   modelProvider: string;
   model: string;
@@ -5251,7 +5250,13 @@ export interface ThreadModelSetParams {
 }
 
 export interface ThreadModelSetResponse {
-  modelControlVersion: number;
+  /**
+   * Only a peer that speaks the model-control protocol answers this method
+   * (a connection below v8 refuses the mutation pre-send; a daemon below the
+   * capability version carries no model-control authority), so the response
+   * carries no version field: it could only ever be 1. The snapshot stays
+   * required and validated.
+   */
   disposition: string;
   modelControl: ModelControlSnapshot | null;
 }

@@ -1171,7 +1171,10 @@ const (
 )
 
 type ModelControlDesired struct {
-	RequestSequence  uint64                `json:"requestSequence"`
+	// The daemon's internal issue order for the accepted request, unique per
+	// request under its session lock. Not serialized: clients settle a desired
+	// record by its clientMutationId.
+	RequestSequence  uint64                `json:"-"`
 	ClientMutationID string                `json:"clientMutationId"`
 	ModelProvider    string                `json:"modelProvider"`
 	Model            string                `json:"model"`
@@ -1228,9 +1231,13 @@ func (p ThreadModelSetParams) Validate() error {
 }
 
 type ThreadModelSetResponse struct {
-	ModelControlVersion uint                    `json:"modelControlVersion"`
-	Disposition         ModelControlDisposition `json:"disposition"`
-	ModelControl        *ModelControlSnapshot   `json:"modelControl"`
+	// Only a peer that speaks the model-control protocol answers this method
+	// (a connection below v8 refuses the mutation pre-send; a daemon below the
+	// capability version carries no model-control authority), so the response
+	// carries no version field: it could only ever be 1. The snapshot stays
+	// required and validated.
+	Disposition  ModelControlDisposition `json:"disposition"`
+	ModelControl *ModelControlSnapshot   `json:"modelControl"`
 }
 
 type requiredModelControlSnapshotJSON struct {
@@ -1256,16 +1263,17 @@ func validateRequiredModelControlSnapshotJSON(snapshot *requiredModelControlSnap
 func validateRawModelControlResponse(method string, raw json.RawMessage) error {
 	switch method {
 	case MethodThreadModelSet:
+		// The response is model-control shaped unconditionally: only a peer
+		// that speaks the model-control protocol answers the method. Preserve
+		// required-field presence before Go's zero values erase the
+		// distinction between an omitted boolean and an explicit false.
 		var response struct {
-			ModelControlVersion *uint                             `json:"modelControlVersion"`
-			ModelControl        *requiredModelControlSnapshotJSON `json:"modelControl"`
+			ModelControl *requiredModelControlSnapshotJSON `json:"modelControl"`
 		}
 		if err := json.Unmarshal(raw, &response); err != nil {
 			return err
 		}
-		if response.ModelControlVersion != nil && *response.ModelControlVersion == ModelControlVersion1 {
-			return validateRequiredModelControlSnapshotJSON(response.ModelControl)
-		}
+		return validateRequiredModelControlSnapshotJSON(response.ModelControl)
 	case MethodThreadRead, MethodThreadHistoryRead:
 		// Read the advertised version while the snapshot is still raw bytes.
 		// Decoding it into version-1 types first would let a newer version's
@@ -1303,9 +1311,6 @@ func validateRawModelControlResponse(method string, raw json.RawMessage) error {
 // ValidateThreadModelSetResponse verifies a successful model mutation carries
 // one complete version-1 snapshot instead of a partial or legacy success.
 func ValidateThreadModelSetResponse(response ThreadModelSetResponse) error {
-	if response.ModelControlVersion != ModelControlVersion1 {
-		return fmt.Errorf("unsupported model-control response version %d", response.ModelControlVersion)
-	}
 	switch response.Disposition {
 	case ModelControlDispositionAccepted, ModelControlDispositionSuperseded:
 	default:
@@ -1331,7 +1336,7 @@ func ValidateThreadModelSetResponse(response ThreadModelSetResponse) error {
 		return nil
 	}
 	desired := snapshot.Desired
-	if desired.RequestSequence == 0 || desired.ClientMutationID == "" || desired.ModelProvider == "" || desired.Model == "" {
+	if desired.ClientMutationID == "" || desired.ModelProvider == "" || desired.Model == "" {
 		return errors.New("model-control desired target is incomplete")
 	}
 	switch desired.Lifecycle {

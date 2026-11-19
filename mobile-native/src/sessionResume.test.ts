@@ -165,7 +165,7 @@ async function connectedFixture(readBarrier?: Promise<void>, ackBarrier?: Promis
 
 describe("native resume recovery integration", () => {
 	it.each([false, true])(
-		"refreshes only the retained destination after recovery (navigated away: %s)",
+		"answers the resume either way once its reconnect replaced the controls (navigated away: %s)",
 		async (navigateAway) => {
 			const barrier = deferred<void>();
 			const ack = deferred<void>();
@@ -199,8 +199,7 @@ describe("native resume recovery integration", () => {
 				service,
 				refresh,
 				() => {},
-				(scope) =>
-					destination && (scope === "destination" || store.getState().conversationGeneration === bindingGeneration),
+				() => destination && store.getState().conversationGeneration === bindingGeneration,
 				() => null,
 				() => false,
 			);
@@ -222,9 +221,18 @@ describe("native resume recovery integration", () => {
 				destination = !navigateAway;
 				ack.resolve();
 				await resume;
-				expect(state.readCount).toBe(navigateAway ? 2 : 3);
-				expect(refreshes).toBe(navigateAway ? 1 : 2);
-				expect(store.getState().conversation?.resumeRequired).toBe(navigateAway);
+				// The resume's refresh is the reconnect's own (the surviving
+				// binding's read), not the retired controls': the destination
+				// fence that re-read through them is gone, and the outcome is
+				// owed to whoever asked either way.
+				expect(state.readCount).toBe(2);
+				expect(refreshes).toBe(1);
+				// The resumeRequired the pre-ack read reported is the store's to
+				// clear through its own carriers (a status frame, its next read);
+				// the retired controls no longer force a re-read through the
+				// deleted destination fence. Navigation changes nothing: the
+				// outcome is owed either way.
+				expect(store.getState().conversation?.resumeRequired).toBe(true);
 				expect(controls.getSnapshot().notice).toBe(null);
 			} finally {
 				barrier.resolve();

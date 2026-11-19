@@ -82,7 +82,6 @@ function modelControlSnapshot(
   const desired =
     options.desiredProvider && options.desiredModel
       ? {
-          requestSequence: revision,
           clientMutationId: options.clientMutationId ?? `fixture-mutation-${revision}`,
           modelProvider: options.desiredProvider,
           model: options.desiredModel,
@@ -127,7 +126,6 @@ function resumedModelRead(ref: string, snapshot: ModelControlSnapshot): ThreadRe
 
 function acceptedModelResponse(snapshot: ModelControlSnapshot) {
   return {
-    modelControlVersion: 1 as const,
     disposition: "accepted" as const,
     modelControl: snapshot,
   };
@@ -909,7 +907,6 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     vi.spyOn(crypto, "randomUUID").mockReturnValue("11111111-1111-4111-8111-111111111111");
 
     const response = deferred<{
-      modelControlVersion: number;
       disposition: string;
       modelControl: ModelControlSnapshot;
     }>();
@@ -1067,8 +1064,8 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
   test.each([
     ["empty", {}],
     ["version-only", { modelControlVersion: 1 }],
-    ["disposition-only", { modelControlVersion: 1, disposition: "accepted" }],
-    ["snapshot-only", { modelControlVersion: 1, modelControl: modelControlSnapshot(2) }],
+    ["disposition-only", { disposition: "accepted" }],
+    ["snapshot-only", { modelControl: modelControlSnapshot(2) }],
   ])("an %s dispatched response enters one-read recovery and is never replayed", async (_shape, response) => {
     const fake = connectFakeClient();
     fake.on("thread/read", () => capableModelRead("ref_a", modelControlSnapshot(1)));
@@ -1218,7 +1215,6 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
       clientMutationId: "55555555-5555-4555-8555-555555555555",
     });
     fake.on("thread/model/set", () => ({
-      modelControlVersion: 1,
       disposition: "accepted",
       modelControl: accepted,
     }));
@@ -1295,7 +1291,6 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     fake.on("thread/read", () => capableModelRead("ref_a", initial));
     await threadsStore.getState().ensureThread("ref_a");
     fake.on("thread/model/set", () => ({
-      modelControlVersion: 1,
       disposition: "accepted",
       modelControl: modelControlSnapshot(2, { activeProvider: "google", activeModel: "gemini-3-pro" }),
     }));
@@ -1425,7 +1420,6 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     // winner's snapshot and the `superseded` disposition.
     const winner = modelControlSnapshot(3, { activeProvider: "google", activeModel: "gemini-3-pro" });
     fake.on("thread/model/set", () => ({
-      modelControlVersion: 1,
       disposition: "superseded",
       modelControl: winner,
     }));
@@ -1463,7 +1457,7 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     fake.emitReady();
     await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.modelControlState.kind === "ready");
 
-    reply.resolve({ modelControlVersion: 1, disposition: "superseded", modelControl: refreshed });
+    reply.resolve({ disposition: "superseded", modelControl: refreshed });
 
     await expect(pick).rejects.toBeInstanceOf(ConflictError);
     // The refresh's own read owns publication, and its snapshot stands. The
@@ -1484,7 +1478,6 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     fake.on("thread/read", () => capableModelRead("ref_a", modelControlSnapshot(1)));
     await threadsStore.getState().ensureThread("ref_a");
     fake.on("thread/model/set", (params) => ({
-      modelControlVersion: 1,
       disposition: "accepted",
       modelControl: modelControlSnapshot(2, {
         desiredProvider: "openai",
@@ -1507,7 +1500,6 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     fake.on("thread/read", () => capableModelRead("ref_a", modelControlSnapshot(1)));
     await threadsStore.getState().ensureThread("ref_a");
     fake.on("thread/model/set", (params) => ({
-      modelControlVersion: 1,
       disposition: "accepted",
       modelControl: modelControlSnapshot(2, {
         desiredProvider: "openai",
@@ -1544,7 +1536,6 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.modelControlState.kind === "ready");
 
     reply.resolve({
-      modelControlVersion: 1,
       disposition: "accepted",
       modelControl: modelControlSnapshot(4, {
         desiredProvider: "openai",
@@ -1622,7 +1613,6 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
 
     let pickSettled = false;
     fake.on("thread/model/set", () => ({
-      modelControlVersion: 1,
       disposition: "accepted",
       modelControl: modelControlSnapshot(4, {
         activeProvider: "openai",
@@ -1729,7 +1719,6 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
       clientMutationId: "33333333-3333-4333-8333-333333333333",
     });
     fake.on("thread/model/set", () => ({
-      modelControlVersion: 1,
       disposition: "accepted",
       modelControl: responseSnapshot,
     }));
@@ -1846,7 +1835,6 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     expect(threadsStore.getState().threads.get("ref_a")?.modelControlState).toEqual({
       kind: "unsupported",
       canonicalDisplay: { modelProvider: "future-canonical", model: "future-canonical" },
-      observedVersion: 2,
     });
     await expect(threadsStore.getState().setModel("ref_a", "openai", "gpt-5.5")).rejects.toThrow();
     expect(fake.calls.filter((call) => call.method === "thread/model/set")).toHaveLength(0);
@@ -1858,7 +1846,6 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     fake.on("thread/read", () => capableModelRead("ref_a", initial));
     await threadsStore.getState().ensureThread("ref_a");
     const response = deferred<{
-      modelControlVersion: number;
       disposition: string;
       modelControl: ModelControlSnapshot;
     }>();
@@ -1879,7 +1866,6 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     await replacementReadStarted;
 
     response.resolve({
-      modelControlVersion: 1,
       disposition: "accepted",
       modelControl: modelControlSnapshot(9, {
         desiredProvider: "openai",

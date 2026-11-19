@@ -222,7 +222,6 @@ test("wires the model-switch trigger in, acting on the SAME sessionRef passed to
   fake.on("thread/model/set", (params) => {
     called = params;
     return {
-      modelControlVersion: 1,
       disposition: "accepted" as const,
       modelControl: {
         authority: {
@@ -237,7 +236,6 @@ test("wires the model-switch trigger in, acting on the SAME sessionRef passed to
           supportsReasoning: false,
         },
         desired: {
-          requestSequence: 1,
           clientMutationId: params.clientMutationId,
           modelProvider: params.modelProvider,
           model: params.model,

@@ -346,9 +346,8 @@ func modelControlResponseForHubTest() appwire.ThreadModelSetResponse {
 		},
 	}
 	return appwire.ThreadModelSetResponse{
-		ModelControlVersion: appwire.ModelControlVersion1,
-		Disposition:         appwire.ModelControlDispositionAccepted,
-		ModelControl:        &snapshot,
+		Disposition:  appwire.ModelControlDispositionAccepted,
+		ModelControl: &snapshot,
 	}
 }
 
@@ -644,7 +643,7 @@ func TestHubRPCThreadModelSetResumesPastThread(t *testing.T) {
 		modelCalled = params.ModelProvider + "/" + params.Model
 		modelControl.Revision++
 		modelControl.Active = appwire.ModelControlActive{ModelProvider: params.ModelProvider, Model: params.Model, ReasoningEffortLevels: []string{}}
-		return appwire.ThreadModelSetResponse{ModelControlVersion: appwire.ModelControlVersion1, Disposition: appwire.ModelControlDispositionAccepted, ModelControl: &modelControl}, nil
+		return appwire.ThreadModelSetResponse{Disposition: appwire.ModelControlDispositionAccepted, ModelControl: &modelControl}, nil
 	})
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
 	defer daemonHTTP.Close()

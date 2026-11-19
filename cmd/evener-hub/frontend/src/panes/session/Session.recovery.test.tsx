@@ -129,7 +129,6 @@ function modelControlRead(ref: string, lifecycle: "pending" | "rejected"): Threa
       supportsReasoning: false,
     },
     desired: {
-      requestSequence: 1,
       clientMutationId: "11111111-1111-4111-8111-111111111111",
       modelProvider: "openai",
       model: "gpt-5.5",

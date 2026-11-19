@@ -72,7 +72,6 @@ function modelControl(
 		...(desired
 			? {
 					desired: {
-						requestSequence: revision,
 						clientMutationId: `request-${revision}`,
 						modelProvider: "openai",
 						model: desired.model,

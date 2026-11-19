@@ -575,7 +575,6 @@ describe("AppwireClient", () => {
 
     expect(sockets).toHaveLength(1);
     const complete: ThreadModelSetResponse = {
-      modelControlVersion: 1,
       disposition: "accepted",
       modelControl: {
         authority: { instanceId: "instance_1", bootGeneration: "7" },
@@ -910,7 +909,6 @@ describe("AppwireClient", () => {
     expect(mutationErrorData(error)?.clientMutationId).toBe("cm_malformed");
 
     const complete: ThreadModelSetResponse = {
-      modelControlVersion: 1,
       disposition: "accepted",
       modelControl: {
         authority: { instanceId: "instance_1", bootGeneration: "7" },
@@ -1026,7 +1024,6 @@ describe("AppwireClient", () => {
       expectedBootGeneration: "7",
     };
     const nullLevels = {
-      modelControlVersion: 1,
       disposition: "accepted",
       modelControl: {
         authority: { instanceId: "instance_1", bootGeneration: "7" },

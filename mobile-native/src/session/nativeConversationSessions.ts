@@ -396,10 +396,8 @@ class SessionEntry implements NativeConversationSession {
 	 * also resolve a different identity, and the daemon will only accept the
 	 * pick on that one - so the entry follows it here, the same way a flush's
 	 * resume moves a mounted conversation, and leaves the draft behind on the
-	 * ref this entry was opened on. It answers with the identity the frame went
-	 * to, so the screen that started the pick can judge its destination
-	 * against it. */
-	async #runModelPick(client: AppwireClientLike, threadRef: string, pick: ModelPickRequest): Promise<string> {
+	 * ref this entry was opened on. */
+	async #runModelPick(client: AppwireClientLike, threadRef: string, pick: ModelPickRequest): Promise<void> {
 		let service: NativeConversationService;
 		try {
 			if (this.#retired) throw new Error("This session is no longer open.");
@@ -438,7 +436,7 @@ class SessionEntry implements NativeConversationSession {
 		// applied, which the caller must not treat as unsent.
 		this.#dispatchingPick = true;
 		try {
-			return await service.changeModel(pick.modelProvider, pick.model);
+			await service.changeModel(pick.modelProvider, pick.model);
 		} finally {
 			this.#dispatchingPick = false;
 		}

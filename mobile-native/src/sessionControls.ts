@@ -18,6 +18,35 @@ type Operation =
 	| "setReasoningEffort"
 	| "setVisionModel"
 	| "changeModel";
+
+/** How one controls action went.
+ *
+ * `accepted` is the action's own yes, with the notice the screen may show. A
+ * resolved action is accepted whatever became of these controls meanwhile:
+ * the reconnects a pick or a resume causes retire this binding, so the
+ * answer is owed to whoever asked, not to whoever is current.
+ *
+ * `refused` is an action that did reach the wire and was refused - the
+ * daemon's answer, or a confirmation that could not be read. It is derived
+ * purely from the operation's catch; nothing here re-classifies a refusal
+ * from the state the answer left behind.
+ *
+ * `notSent` is the phone's own refusal before anything left it: a catalog
+ * that does not carry the pick, another action holding the session, a
+ * binding that moved on, or nothing to change. Nothing left the phone, so
+ * the caller may keep the user's text and offer a retry. An empty message
+ * is the silent no-op a guard already explained on its own screen.
+ *
+ * An initiator never reads its outcome from `ControlsState.error`: that
+ * channel is the behind-screen observer's, published only while the binding
+ * is current, so a reconnect that replaces these controls would swallow
+ * exactly the refusals this type exists to deliver. The promise is the only
+ * channel an initiator reads. */
+export type ActionOutcome =
+	| { disposition: "accepted"; notice: string | null }
+	| { disposition: "refused"; message: string }
+	| { disposition: "notSent"; message: string };
+
 export interface ControlsState {
 	pending: Operation | null;
 	lastAction: Operation | null;
@@ -27,6 +56,20 @@ export interface ControlsState {
 	loadingModels: boolean;
 	modelError: string | null;
 }
+
+/** The notice each completed action offers the screen, by kind. A shutdown
+ * narrates nothing: the session's own toast confirms it and the screen stays
+ * (ruling 19). */
+const NOTICE: Record<Operation, string | null> = {
+	rename: "Session renamed.",
+	compact: "Compaction requested. Progress appears in the conversation.",
+	shutdown: null,
+	forceStop: "Runtime stopped. Saved history is available to resume.",
+	resume: "Runtime resumed.",
+	setReasoningEffort: "Reasoning effort updated.",
+	setVisionModel: "Vision model updated.",
+	changeModel: "Model updated.",
+};
 
 /** Own actions for one conversation binding, independently of its sheet. */
 export class SessionControls {
@@ -52,7 +95,7 @@ export class SessionControls {
 			ConversationModelCatalog,
 		private refresh: () => Promise<void>,
 		private stopped: () => void,
-		private isCurrent: (scope?: "destination", ref?: string) => boolean,
+		private isCurrent: () => boolean,
 		private getReasoning: () => Pick<
 			MobileConversation,
 			"supportsReasoning" | "reasoningEffort" | "reasoningEffortLevels"
@@ -79,33 +122,33 @@ export class SessionControls {
 		this.disposed = true;
 		this.listeners.clear();
 	}
-	rename(name: string) {
+	rename(name: string): Promise<ActionOutcome> {
 		const trimmed = name.trim();
-		if (!trimmed) return Promise.resolve();
+		if (!trimmed) return Promise.resolve({ disposition: "notSent", message: "" });
 		return this.run("rename", () => this.service.rename(trimmed));
 	}
-	compact() {
+	compact(): Promise<ActionOutcome> {
 		return this.run("compact", () => this.service.compact());
 	}
-	shutdown() {
+	shutdown(): Promise<ActionOutcome> {
 		return this.run("shutdown", () => this.service.shutdown());
 	}
-	forceStop() {
+	forceStop(): Promise<ActionOutcome> {
 		return this.run("forceStop", () => this.service.forceStop());
 	}
-	resume() {
+	resume(): Promise<ActionOutcome> {
 		return this.run("resume", () => this.service.resume());
 	}
-	setReasoningEffort(effort: string) {
+	setReasoningEffort(effort: string): Promise<ActionOutcome> {
 		const current = this.getReasoning();
-		if (!current) return Promise.resolve();
+		if (!current) return Promise.resolve({ disposition: "notSent", message: "" });
 		const levels = sessionEffortLevels(current.reasoningEffortLevels, current.supportsReasoning);
 		const selected = current.reasoningEffort ?? "";
 		if (!levels.length || !effortOptionLevels(levels, selected).includes(effort) || selected === effort)
-			return Promise.resolve();
+			return Promise.resolve({ disposition: "notSent", message: "" });
 		return this.run("setReasoningEffort", () => this.service.setReasoningEffort(effort));
 	}
-	setVisionModel(visionModel: string) {
+	setVisionModel(visionModel: string): Promise<ActionOutcome> {
 		return this.run("setVisionModel", () => this.service.setVisionModel(visionModel));
 	}
 	/** Reads the model catalog. The catalog it has stays until the new one
@@ -160,31 +203,34 @@ export class SessionControls {
 			// A failed refresh keeps the catalog on screen.
 		}
 	}
-	changeModel(provider: string, model: string): Promise<boolean> {
+	/** A catalog the screen's last read no longer carries never reaches the
+	 * wire: nothing left the phone, so the caller may offer the choice again
+	 * once a fresh catalog lands. */
+	changeModel(provider: string, model: string): Promise<ActionOutcome> {
 		if (!this.state.catalog?.data.some((entry) => entry.provider === provider && entry.model === model))
-			return Promise.resolve(false);
+			return Promise.resolve({ disposition: "notSent", message: "" });
 		return this.run("changeModel", () => this.service.changeModel(provider, model));
 	}
-	changeVisionModel(provider: string, model: string): Promise<boolean> {
+	changeVisionModel(provider: string, model: string): Promise<ActionOutcome> {
 		if (
 			!this.state.catalog?.data.some(
 				(entry) => entry.provider === provider && entry.model === model && entry.supportsVision !== false,
 			)
 		)
-			return Promise.resolve(false);
+			return Promise.resolve({ disposition: "notSent", message: "" });
 		return this.run("setVisionModel", () => this.service.setVisionModel(`${provider}/${model}`));
 	}
-	/** Runs one action. An action that lands on an identity reports it, so the
-	 * destination fence can judge that identity rather than the one the screen
-	 * was opened on. */
-	private async run(kind: Operation, operation: () => Promise<string | void>): Promise<boolean> {
+	/** Runs one action and answers with how it went. The promise is the
+	 * initiator's channel; the state these controls publish is the
+	 * behind-screen observer's, and only a current binding may write it. */
+	private async run(kind: Operation, operation: () => Promise<void>): Promise<ActionOutcome> {
 		if (
 			this.disposed ||
 			!this.isCurrent() ||
 			(kind !== "forceStop" && kind !== "resume" && !this.canMutate()) ||
 			this.state.pending
 		)
-			return false;
+			return { disposition: "notSent", message: "" };
 		this.publish({
 			pending: kind,
 			lastAction: kind,
@@ -192,77 +238,54 @@ export class SessionControls {
 			notice: null,
 		});
 		try {
-			const landedOn = await operation();
-			// A changeModel that resolved reached the hub and was answered. The
-			// reconnects a pick causes retire this binding, so these controls are
-			// disposed by the time the answer lands; the screen that started the
-			// pick is still mounted behind the sheet and its own reconnect read
-			// reports the accepted snapshot. The destination is judged on the
-			// identity the pick landed on, because a resume behind a cold pick can
-			// resolve a different ref than the one the screen was opened on, and
-			// the sheet holds the route's ref until it closes. A pick whose screen
-			// left is not confirmed. A pick refused before dispatch or refused by
-			// the daemon throws into the catch below, so neither is reported done.
-			if (kind === "changeModel" && (this.disposed || !this.isCurrent()))
-				return this.isCurrent("destination", typeof landedOn === "string" ? landedOn : undefined);
-			// resumeThread may recycle the transport, which can dispose these
-			// controls before its acknowledgement arrives. The bound screen still
-			// owns this refresh when its identity fence is current.
-			if (kind === "resume") {
-				if (!this.isCurrent("destination")) return false;
+			await operation();
+			// The reconnects a pick or a resume causes retire this binding, so
+			// these controls can be disposed by the time the answer lands; the
+			// answer is still accepted. The screen behind reports the session's
+			// new state through its own read of whichever binding survived.
+			if (kind === "resume" && !this.disposed && this.isCurrent()) {
 				await this.refresh();
 			}
-			if (this.disposed || !this.isCurrent()) return false;
 			if (kind === "shutdown" || kind === "forceStop") {
-				// A shutdown narrates nothing here: the session's own toast
-				// confirms it and the screen stays (ruling 19).
-				this.publish({
-					pending: null,
-					error: null,
-					notice: kind === "forceStop" ? "Runtime stopped. Saved history is available to resume." : null,
-				});
-				this.stopped();
-				return true;
+				if (!this.disposed && this.isCurrent()) {
+					this.publish({ pending: null, error: null, notice: NOTICE[kind] });
+					this.stopped();
+				}
+				return { disposition: "accepted", notice: NOTICE[kind] };
 			}
-			if (kind !== "resume") await this.refresh();
-			if (this.disposed || !this.isCurrent()) return false;
-			this.publish({
+			if (kind !== "resume" && !this.disposed && this.isCurrent()) await this.refresh();
+			this.publishIfCurrent({
 				pending: null,
 				error: null,
-				notice:
-					kind === "resume"
-						? "Runtime resumed."
-						: kind === "compact"
-							? "Compaction requested. Progress appears in the conversation."
-							: kind === "setReasoningEffort"
-								? "Reasoning effort updated."
-								: kind === "setVisionModel"
-									? "Vision model updated."
-									: kind === "changeModel"
-										? "Model updated."
-										: "Session renamed.",
+				notice: NOTICE[kind],
 			});
-			return true;
+			return { disposition: "accepted", notice: NOTICE[kind] };
 		} catch (cause) {
-			if (this.disposed || !this.isCurrent()) return false;
 			if (cause instanceof WireError && cause.evenerErrorInfo === "actionUnavailable") {
-				try {
-					await this.refresh();
-				} catch {
-					// Preserve the original server rejection; refresh is confirmation only.
+				// The confirmation read only matters to a binding still on
+				// screen; a retired one would discard it on publish anyway.
+				if (!this.disposed && this.isCurrent()) {
+					try {
+						await this.refresh();
+					} catch {
+						// Preserve the original server rejection; refresh is confirmation only.
+					}
 				}
-				if (this.disposed || !this.isCurrent()) return false;
 			}
-			this.publish({
-				pending: null,
-				notice: null,
-				error:
-					cause instanceof WireError
-						? `Could not confirm the action: ${cause.message}`
-						: "Could not confirm the action. Check the session before trying again; it may have been applied.",
-			});
-			return false;
+			const message =
+				cause instanceof WireError
+					? `Could not confirm the action: ${cause.message}`
+					: "Could not confirm the action. Check the session before trying again; it may have been applied.";
+			this.publishIfCurrent({ pending: null, notice: null, error: message });
+			return { disposition: "refused", message };
 		}
+	}
+	/** The behind-screen observer channel: it only publishes while the
+	 * binding is current, so the controls a reconnect replaced never write
+	 * the state their successor owns. */
+	private publishIfCurrent(state: Partial<ControlsState>) {
+		if (this.disposed || !this.isCurrent()) return;
+		this.publish(state);
 	}
 }
 

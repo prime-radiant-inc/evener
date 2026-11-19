@@ -89,7 +89,6 @@ func (s *Server) handleAppThreadModelSet(_ context.Context, params appwire.Threa
 		return appwire.ThreadModelSetResponse{}, appwire.InvalidParams(err.Error())
 	}
 	if snapshot := s.refreshModelControlFacet(authority, binding.Envelope); snapshot != nil {
-		response.ModelControlVersion = appwire.ModelControlVersion1
 		response.ModelControl = snapshot
 	}
 	return response, nil

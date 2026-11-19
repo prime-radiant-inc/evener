@@ -525,9 +525,7 @@ export class FakeConversationService implements LiveConversationService {
 	}
 	async compact(): Promise<void> {}
 	async shutdown(): Promise<void> {}
-	async changeModel(_p: string, _m: string): Promise<string> {
-		return this.ref ?? "";
-	}
+	async changeModel(_p: string, _m: string): Promise<void> {}
 	async setReasoningEffort(_e: string): Promise<void> {}
 	async setVisionModel(_v: string): Promise<void> {}
 	async rename(_n: string): Promise<void> {}

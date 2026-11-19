@@ -31,7 +31,7 @@ import {
 } from "../renderNative.testkit";
 import { markers } from "../markerTestUtils";
 import type { Routes } from "../screens";
-import { SessionControls } from "../sessionControls";
+import { type ActionOutcome, SessionControls } from "../sessionControls";
 import { Sheet } from "../sheet/Sheet";
 import { sheetKey } from "../sheet/sheetHosts";
 import { type ModelHost, ModelSheet, modelHosts } from "./ModelSheet";
@@ -132,21 +132,21 @@ function fakeControls(calls: string[], over: Partial<ControlsState> = {}) {
 		subscribe: () => () => {},
 		getSnapshot: () => state,
 		loadModels: vi.fn(async () => void calls.push("loadModels")),
-		changeModel: vi.fn(async (provider: string, model: string) => {
+		changeModel: vi.fn(async (provider: string, model: string): Promise<ActionOutcome> => {
 			calls.push(`changeModel:${provider}/${model}`);
-			return true;
+			return { disposition: "accepted", notice: "Model updated." };
 		}),
-		changeVisionModel: vi.fn(async (provider: string, model: string) => {
+		changeVisionModel: vi.fn(async (provider: string, model: string): Promise<ActionOutcome> => {
 			calls.push(`changeVisionModel:${provider}/${model}`);
-			return true;
+			return { disposition: "accepted", notice: "Vision model updated." };
 		}),
-		setVisionModel: vi.fn(async (value: string) => {
+		setVisionModel: vi.fn(async (value: string): Promise<ActionOutcome> => {
 			calls.push(`setVisionModel:${value}`);
-			return true;
+			return { disposition: "accepted", notice: "Vision model updated." };
 		}),
-		setReasoningEffort: vi.fn(async (level: string) => {
+		setReasoningEffort: vi.fn(async (level: string): Promise<ActionOutcome> => {
 			calls.push(`setReasoningEffort:${level}`);
-			return true;
+			return { disposition: "accepted", notice: "Reasoning effort updated." };
 		}),
 	};
 }
@@ -154,14 +154,12 @@ function fakeControls(calls: string[], over: Partial<ControlsState> = {}) {
 let owner: object | undefined;
 const mounted: ReactTestRenderer[] = [];
 
-/** The two fences the screen owning a pick installs (screens.tsx:868-890).
- * `store` is what the store reports, `route` is the ref the route names, and
- * `madeOn` is the identity the controls were built for. A sheet above the
- * screen holds a resume's move in pendingIdentity, so `route` keeps its ref
- * across one while `store` follows it. */
-function screenFence(refs: { route: () => string; store: () => string; madeOn: string }) {
-	return (scope?: "destination", ref?: string) =>
-		scope === "destination" ? refs.store() === (ref ?? refs.route()) : refs.store() === refs.madeOn;
+/** The fence the screen owning a pick installs (screens.tsx): the store is
+ * still open on the binding the controls were made for. A resume the pick
+ * causes can move the store to another identity; the promise carries the
+ * answer anyway. */
+function screenFence(refs: { store: () => string; madeOn: string }) {
+	return () => refs.store() === refs.madeOn;
 }
 
 function provide(session: MobileConversation, state: Partial<ControlsState> = {}, over: Partial<ModelHost> = {}) {
@@ -276,7 +274,6 @@ describe("choosing a model (spec 8.5)", () => {
 							supportsReasoning: true,
 						},
 						desired: {
-							requestSequence: 2,
 							clientMutationId: "request-2",
 							modelProvider: "anthropic",
 							model: "claude-haiku-5",
@@ -371,7 +368,7 @@ describe("choosing a model (spec 8.5)", () => {
 		const { calls, controls } = provide(conversation());
 		controls.changeModel.mockImplementation(async () => {
 			calls.push("changeModel");
-			return false;
+			return { disposition: "notSent", message: "" } as const;
 		});
 		const tree = sheet();
 		act(() => pressable(tree, "Claude Haiku 5")?.props.onPress());
@@ -436,7 +433,6 @@ function snapshotFor(
 			? {}
 			: {
 					desired: {
-						requestSequence: revision,
 						clientMutationId: `request-${revision}`,
 						modelProvider: "anthropic",
 						model: desired,
@@ -502,7 +498,7 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 			const accepted = snapshotFor(2, RESUMED_AUTHORITY, params.model);
 			// The daemon keeps the change, so the screen's refresh read sees it.
 			live = { ...live, evener: { ...live.evener, modelControl: accepted } };
-			return { modelControlVersion: 1, disposition: "accepted" as const, modelControl: accepted };
+			return { disposition: "accepted" as const, modelControl: accepted };
 		});
 		const service = createConversationService(client);
 		const cold = await service.open(REF);
@@ -514,7 +510,7 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 				refreshed = await service.open(REF);
 			},
 			() => {},
-			screenFence({ route: () => REF, store: () => refreshed?.ref ?? cold.ref, madeOn: cold.ref }),
+			screenFence({ store: () => refreshed?.ref ?? cold.ref, madeOn: cold.ref }),
 			() => cold,
 			() => true,
 			CATALOG,
@@ -571,7 +567,6 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 				: { thread: liveThread(THIS_AUTHORITY), bootGeneration: THIS_AUTHORITY.bootGeneration },
 		);
 		client.on("thread/model/set", () => ({
-			modelControlVersion: 1,
 			disposition: "accepted" as const,
 			modelControl: snapshotFor(2, RESUMED_AUTHORITY, "claude-haiku-5"),
 		}));
@@ -599,7 +594,7 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 			service,
 			async () => {},
 			() => {},
-			screenFence({ route: () => REF, store: () => stale.ref, madeOn: stale.ref }),
+			screenFence({ store: () => stale.ref, madeOn: stale.ref }),
 			() => stale,
 			() => true,
 			CATALOG,
@@ -650,7 +645,7 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 			// The daemon keeps the change: the read the reconnected screen takes
 			// reports it.
 			live = { ...live, evener: { ...live.evener, modelControl: accepted } };
-			return { modelControlVersion: 1, disposition: "accepted" as const, modelControl: accepted };
+			return { disposition: "accepted" as const, modelControl: accepted };
 		});
 		const service = createConversationService(client);
 		const cold = await service.open(REF);
@@ -660,16 +655,10 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 		const hostOwner = {};
 		owner = hostOwner;
 		let controls: SessionControls | null = null;
-		// The screen's two fences (screens.tsx:868-890). The binding fence
-		// (bindingGeneration/bindingInstance) is captured by the memo and dies
-		// with the reconnect; the destination fence is the same store, client and
-		// route, still in front behind the sheet, and survives it.
+		// The screen's fence (screens.tsx): the binding the controls' memo
+		// captured, retired by the reconnect. The pick's answer rides its
+		// promise, so the sheet that started it learns what the daemon said.
 		let binding = 1;
-		// The route this screen was opened on. A sheet above holds a resume's move
-		// in pendingIdentity, so this stays put while the store follows the
-		// identity the resume resolved.
-		const routeRef = REF;
-		let storeRef = cold.ref;
 		const screen = (connected: boolean) => {
 			if (connected) {
 				const mine = binding;
@@ -677,9 +666,8 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 					service,
 					async () => {},
 					() => {},
-					(scope, ref) => {
+					() => {
 						if (client.state !== "ready") return false;
-						if (scope === "destination") return storeRef === (ref ?? routeRef);
 						return binding === mine;
 					},
 					() => cold,
@@ -755,9 +743,8 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 		// on until the sheet closes (screens.tsx's pendingIdentity), so the
 		// store's ref and the route's ref disagree when the daemon answers.
 		//
-		// This fence is the screen's own (screens.tsx:868-890), including that
-		// disagreement: storeRef is what the store reports, routeRef is the route
-		// the sheet opened over, and only the first follows the resume.
+		// The store follows the resume; the sheet's answer rides the pick's
+		// promise regardless of where the store landed.
 		const RESUMED_REF = "local:resumed";
 		let accepted: ModelControlSnapshot | null = null;
 		const client = new FakeClient("ready");
@@ -786,7 +773,7 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 		});
 		client.on("thread/model/set", (params) => {
 			const modelControl = snapshotFor(2, RESUMED_AUTHORITY, params.model);
-			return { modelControlVersion: 1, disposition: "accepted" as const, modelControl };
+			return { disposition: "accepted" as const, modelControl };
 		});
 		const service = createConversationService(client);
 		const cold = await service.open(REF);
@@ -798,13 +785,14 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 		const document = new DraftDocument(() => repository, { hubId: HUB, sessionRef: REF });
 		document.edit("half a thought");
 
-		const routeRef = REF;
-		let storeRef = cold.ref;
 		const toast = vi.fn();
 		const hostOwner = {};
 		owner = hostOwner;
 		let controls: SessionControls | null = null;
 		let binding = 1;
+		// What the store reports, as the screen's refresh keeps it: the resume
+		// moves it onto the identity the daemon resolved.
+		let storeRef = cold.ref;
 		const screen = (connected: boolean) => {
 			if (connected) {
 				const mine = binding;
@@ -815,9 +803,8 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 						storeRef = resumedSession.ref;
 					},
 					() => {},
-					(scope, ref) => {
+					() => {
 						if (client.state !== "ready") return false;
-						if (scope === "destination") return storeRef === (ref ?? routeRef);
 						return binding === mine;
 					},
 					() => cold,
@@ -841,7 +828,6 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 			client.emitStateChange("reconnecting");
 			screen(false);
 			client.emitStateChange("ready");
-			storeRef = RESUMED_REF;
 			screen(true);
 			return resume(ref, options);
 		};
@@ -867,9 +853,8 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 			expectedBootGeneration: RESUMED_AUTHORITY.bootGeneration,
 		});
 		// The sheet that started the pick closed on the acceptance, and announced
-		// it once, even though its route still named the original ref: the resume
-		// moved the store to a different identity while the route stayed on REF,
-		// so the destination fence's two operands disagreed for the whole pick.
+		// it once, even though the store had followed the resume onto a
+		// different identity than the route the sheet was opened over.
 		expect(navigation.goBack).toHaveBeenCalledTimes(1);
 		expect(toast).toHaveBeenCalledTimes(1);
 
@@ -878,6 +863,102 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 		const original = repository.read({ hubId: HUB, sessionRef: REF });
 		expect(original.draft).toBe("half a thought");
 		expect(repository.read({ hubId: HUB, sessionRef: RESUMED_REF }).draft).toBe("");
+	});
+
+	it("R1: shows a refused pick's reason after an identity-changing resume, and stays open", async () => {
+		// RoboRev's open medium: the resume behind a cold pick resolves a
+		// different ref, the reconnect replaces the controls that started the
+		// pick, and the daemon then REFUSES the frame. The refusal may not be
+		// swallowed: the sheet stays open on it and says why. Before outcomes,
+		// the refusal answered only through controls state, which a disposed
+		// binding may not publish - the promise is what must carry it.
+		const RESUMED_REF = "local:resumed";
+		const client = new FakeClient("ready");
+		client.on("thread/unsubscribe", () => ({}));
+		client.on("thread/resume", () => {
+			const thread = liveThread(RESUMED_AUTHORITY);
+			return { thread: { ...thread, evener: { ...thread.evener, ref: RESUMED_REF } } };
+		});
+		client.on("thread/read", (params) => {
+			const ref = String((params as { ref: string }).ref);
+			if (ref !== RESUMED_REF) return { thread: COLD_THREAD };
+			const thread = liveThread(RESUMED_AUTHORITY);
+			return {
+				thread: { ...thread, evener: { ...thread.evener, ref } },
+				bootGeneration: RESUMED_AUTHORITY.bootGeneration,
+			};
+		});
+		client.on("thread/model/set", () => {
+			throw new WireError("The provider is not available to this session.", -32000);
+		});
+		const service = createConversationService(client);
+		const cold = await service.open(REF);
+		expect(cold.modelControlState.kind).toBe("unsupported");
+
+		const toast = vi.fn();
+		const hostOwner = {};
+		owner = hostOwner;
+		let controls: SessionControls | null = null;
+		let binding = 1;
+		// What the store reports, as the screen's refresh keeps it: the resume
+		// moves it onto the identity the daemon resolved.
+		let storeRef = cold.ref;
+		const screen = (connected: boolean) => {
+			if (connected) {
+				const mine = binding;
+				controls = new SessionControls(
+					service,
+					async () => {
+						const resumedSession = await service.open(storeRef);
+						storeRef = resumedSession.ref;
+					},
+					() => {},
+					() => {
+						if (client.state !== "ready") return false;
+						return binding === mine;
+					},
+					() => cold,
+					() => true,
+					CATALOG,
+				);
+			} else {
+				binding += 1;
+				controls?.dispose();
+				controls = null;
+			}
+			modelHosts.provide(sheetKey(HUB, REF), hostOwner, { session: cold, controls, ready: connected, toast });
+		};
+		const resume = client.resumeThread.bind(client);
+		client.resumeThread = async (ref, options) => {
+			client.emitStateChange("reconnecting");
+			screen(false);
+			client.emitStateChange("ready");
+			storeRef = RESUMED_REF;
+			screen(true);
+			return resume(ref, options);
+		};
+		onTestFinished(() => {
+			controls?.dispose();
+			service.close();
+		});
+		screen(true);
+		const tree = sheet();
+		act(() => pressable(tree, "Claude Haiku 5")?.props.onPress?.());
+		await settle();
+
+		// Exactly one resume and one refused frame: the refusal reached the
+		// daemon on the identity the resume resolved.
+		expect(client.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+		const setCalls = client.calls.filter((call) => call.method === "thread/model/set");
+		expect(setCalls).toHaveLength(1);
+		expect(setCalls[0]?.params).toMatchObject({ ref: RESUMED_REF });
+		// The refusal is what the sheet shows: it stays open, with the daemon's
+		// reason visible, and closes nothing.
+		expect(navigation.goBack).toHaveBeenCalledTimes(0);
+		expect(toast).not.toHaveBeenCalled();
+		expect(renderedText(tree)).toContain("The provider is not available to this session.");
+		// The choice may be taken again: the sheet stays usable.
+		expect(pressable(tree, "Claude Haiku 5")?.props.disabled).toBe(false);
 	});
 
 	it("reports a refused pick that never dispatched as refused, even after its controls were replaced", async () => {
@@ -911,8 +992,6 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 		owner = hostOwner;
 		let controls: SessionControls | null = null;
 		let binding = 1;
-		const routeRef = REF;
-		let storeRef = cold.ref;
 		const screen = (connected: boolean) => {
 			if (connected) {
 				const mine = binding;
@@ -920,9 +999,8 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 					service,
 					async () => {},
 					() => {},
-					(scope, ref) => {
+					() => {
 						if (client.state !== "ready") return false;
-						if (scope === "destination") return storeRef === (ref ?? routeRef);
 						return binding === mine;
 					},
 					() => cold,
@@ -983,7 +1061,7 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 			service,
 			async () => {},
 			() => {},
-			screenFence({ route: () => REF, store: () => live.ref, madeOn: live.ref }),
+			screenFence({ store: () => live.ref, madeOn: live.ref }),
 			() => live,
 			() => true,
 			CATALOG,
@@ -1028,7 +1106,6 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 			};
 		});
 		client.on("thread/model/set", () => ({
-			modelControlVersion: 1,
 			disposition: "accepted" as const,
 			modelControl: snapshotFor(2, RESUMED_AUTHORITY, "claude-haiku-5"),
 		}));
@@ -1039,7 +1116,7 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 			service,
 			async () => {},
 			() => {},
-			screenFence({ route: () => REF, store: () => cold.ref, madeOn: cold.ref }),
+			screenFence({ store: () => cold.ref, madeOn: cold.ref }),
 			() => cold,
 			() => true,
 			CATALOG,
@@ -1092,7 +1169,6 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 					},
 		);
 		client.on("thread/model/set", () => ({
-			modelControlVersion: 1,
 			disposition: "accepted" as const,
 			modelControl: snapshotFor(3, RESUMED_AUTHORITY, "claude-haiku-5"),
 		}));
@@ -1116,7 +1192,7 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 			service,
 			async () => {},
 			() => {},
-			screenFence({ route: () => REF, store: () => stale.ref, madeOn: stale.ref }),
+			screenFence({ store: () => stale.ref, madeOn: stale.ref }),
 			() => stale,
 			() => true,
 			CATALOG,
@@ -1213,7 +1289,7 @@ describe.each([
 				service,
 				async () => {},
 				() => {},
-				screenFence({ route: () => REF, store: () => session.ref, madeOn: session.ref }),
+				screenFence({ store: () => session.ref, madeOn: session.ref }),
 				() => session,
 				() => true,
 				CATALOG,
@@ -1245,9 +1321,7 @@ describe.each([
 					if (attempt < 2) response.reject(new WireError("rejection-sentinel", -32603));
 					else
 						response.resolve(
-							(method === "thread/model/set"
-								? { modelControlVersion: 1, disposition: "accepted", modelControl: modelSnapshot }
-								: {}) as never,
+							(method === "thread/model/set" ? { disposition: "accepted", modelControl: modelSnapshot } : {}) as never,
 						);
 					await settled;
 				});
@@ -1392,7 +1466,7 @@ describe("the vision model (ruling 17)", () => {
 			service,
 			async () => {},
 			() => {},
-			screenFence({ route: () => REF, store: () => cold.ref, madeOn: cold.ref }),
+			screenFence({ store: () => cold.ref, madeOn: cold.ref }),
 			() => cold,
 			() => true,
 			CATALOG,

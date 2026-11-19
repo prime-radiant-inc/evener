@@ -178,7 +178,7 @@ func TestE2E_ModelSwitchOnColdSessionReachesTheResumedSubscriber(t *testing.T) {
 	if err != nil {
 		t.Fatalf("thread/model/set on the cold session: %v", err)
 	}
-	if modelControl.ModelControlVersion != appwire.ModelControlVersion1 || modelControl.ModelControl == nil || modelControl.ModelControl.Active.Model != fakellm.SwitchTargetID {
+	if modelControl.ModelControl == nil || modelControl.ModelControl.Active.Model != fakellm.SwitchTargetID {
 		t.Fatalf("cold-session model response = %+v, want version 1 active %q", modelControl, fakellm.SwitchTargetID)
 	}
 
@@ -283,7 +283,7 @@ func TestE2E_ModelSwitchQueuesMidTurnAndPushesAtRest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mid-turn thread/model/set: %v", err)
 	}
-	if midTurnControl.ModelControlVersion != appwire.ModelControlVersion1 || midTurnControl.Disposition != appwire.ModelControlDispositionAccepted || midTurnControl.ModelControl == nil || midTurnControl.ModelControl.Desired == nil || midTurnControl.ModelControl.Desired.ClientMutationID != mutationID || midTurnControl.ModelControl.Desired.Model != fakellm.SwitchTargetID || midTurnControl.ModelControl.Desired.Lifecycle != appwire.ModelControlLifecyclePending {
+	if midTurnControl.Disposition != appwire.ModelControlDispositionAccepted || midTurnControl.ModelControl == nil || midTurnControl.ModelControl.Desired == nil || midTurnControl.ModelControl.Desired.ClientMutationID != mutationID || midTurnControl.ModelControl.Desired.Model != fakellm.SwitchTargetID || midTurnControl.ModelControl.Desired.Lifecycle != appwire.ModelControlLifecyclePending {
 		t.Fatalf("mid-turn model response = %+v, want the exact pending accepted intent", midTurnControl)
 	}
 
@@ -344,7 +344,7 @@ func TestE2E_ModelSwitchQueuesMidTurnAndPushesAtRest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("at-rest thread/model/set: %v", err)
 	}
-	if atRestControl.ModelControlVersion != appwire.ModelControlVersion1 || atRestControl.ModelControl == nil || atRestControl.ModelControl.Active.Model != fakellm.ModelID {
+	if atRestControl.ModelControl == nil || atRestControl.ModelControl.Active.Model != fakellm.ModelID {
 		t.Fatalf("at-rest model response = %+v, want version 1 active %q", atRestControl, fakellm.ModelID)
 	}
 	if params := awaitModelChanged(ctx, t, modelChanged, fakellm.ModelID); params.ModelProvider != "fake" {

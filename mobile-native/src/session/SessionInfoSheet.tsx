@@ -72,6 +72,10 @@ export function SessionInfoSheet({ route }: NativeStackScreenProps<Routes, "Sess
 	// The name being typed, and the name it started from. Null while the
 	// title isn't being edited.
 	const [editing, setEditing] = useState<{ text: string; from: string } | null>(null);
+	// Why the rename the sheet itself started was refused, read off its
+	// promise: an initiator never reads its outcome from state.error, which
+	// the reconnect that replaced the controls may have left behind.
+	const [renameRefusal, setRenameRefusal] = useState<string | null>(null);
 	const sheet = useSheet({
 		dirty: editing !== null && editing.text !== editing.from,
 		discardTitle: "Discard the new name?",
@@ -86,6 +90,8 @@ export function SessionInfoSheet({ route }: NativeStackScreenProps<Routes, "Sess
 				sessionRef={ref}
 				editing={editing}
 				setEditing={setEditing}
+				renameRefusal={renameRefusal}
+				setRenameRefusal={setRenameRefusal}
 				finish={sheet.finish}
 				toast={toast}
 			/>
@@ -99,6 +105,8 @@ function SessionInfoBody({
 	sessionRef,
 	editing,
 	setEditing,
+	renameRefusal,
+	setRenameRefusal,
 	finish,
 	toast,
 }: {
@@ -107,6 +115,8 @@ function SessionInfoBody({
 	sessionRef: string;
 	editing: { text: string; from: string } | null;
 	setEditing(editing: { text: string; from: string } | null): void;
+	renameRefusal: string | null;
+	setRenameRefusal(message: string | null): void;
 	finish(then?: () => void): void;
 	toast: ToastController;
 }) {
@@ -133,16 +143,20 @@ function SessionInfoBody({
 		if (!editing) return;
 		if (editing.text.trim() === "" || editing.text.trim() === session.name) {
 			setEditing(null);
+			setRenameRefusal(null);
 			return;
 		}
 		// The new name waits in the field until the hub can take it.
 		if (!host.controls || !ready) return;
-		if ((await host.controls.rename(editing.text)) === true) {
+		setRenameRefusal(null);
+		const outcome = await host.controls.rename(editing.text);
+		if (outcome.disposition === "accepted") {
 			setEditing(null);
 			toast.show({ kind: "rename:done", text: "Session renamed" });
-		}
+		} else if (outcome.disposition === "refused" && outcome.message) setRenameRefusal(outcome.message);
 	};
-	const error = state?.error && !(state.lastAction && MODEL_ACTIONS.has(state.lastAction)) ? state.error : null;
+	const error =
+		renameRefusal ?? (state?.error && !(state.lastAction && MODEL_ACTIONS.has(state.lastAction)) ? state.error : null);
 	return (
 		<GroupedPage>
 			<View style={{ paddingHorizontal: space.margin, paddingTop: 4, gap: 4 }}>

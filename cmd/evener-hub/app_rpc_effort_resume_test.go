@@ -191,7 +191,7 @@ func TestHubRPCThreadReasoningEffortSetReachesSubscriberAfterColdModelSet(t *tes
 			Model:                 params.Model,
 			ReasoningEffortLevels: []string{},
 		}
-		return appwire.ThreadModelSetResponse{ModelControlVersion: appwire.ModelControlVersion1, Disposition: appwire.ModelControlDispositionAccepted, ModelControl: &modelControl}, nil
+		return appwire.ThreadModelSetResponse{Disposition: appwire.ModelControlDispositionAccepted, ModelControl: &modelControl}, nil
 	})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadReasoningEffortSet, func(_ context.Context, params appwire.ThreadReasoningEffortSetParams) (appwire.EmptyResponse, error) {
 		currentEffort.Store(params.ReasoningEffort)
@@ -353,7 +353,7 @@ func TestHubRPCThreadModelSetCarriesReasoningProfileToColdSubscriber(t *testing.
 			ReasoningEffortLevels: []string{"low", "medium", "high", "xhigh", "max"},
 			SupportsReasoning:     true,
 		})
-		return appwire.ThreadModelSetResponse{ModelControlVersion: appwire.ModelControlVersion1, Disposition: appwire.ModelControlDispositionAccepted, ModelControl: &modelControl}, nil
+		return appwire.ThreadModelSetResponse{Disposition: appwire.ModelControlDispositionAccepted, ModelControl: &modelControl}, nil
 	})
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
 	defer daemonHTTP.Close()

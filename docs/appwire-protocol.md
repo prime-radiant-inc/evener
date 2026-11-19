@@ -2882,7 +2882,6 @@ Underlying Go kind: `struct` (no struct fields).
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `requestSequence` | uint64 |  |  |
 | `clientMutationId` | string |  |  |
 | `modelProvider` | string |  |  |
 | `model` | string |  |  |
@@ -5007,7 +5006,6 @@ Underlying Go kind: `string` (no struct fields).
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `modelControlVersion` | uint |  |  |
 | `disposition` | [appwire.ModelControlDisposition](#modelcontroldisposition) |  |  |
 | `modelControl` | \*[appwire.ModelControlSnapshot](#modelcontrolsnapshot) |  |  |
 

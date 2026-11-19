@@ -761,15 +761,11 @@ describe("client binding lifetime", () => {
 			sessions.setConnection("hub-1", client);
 			return resume(ref, options);
 		};
-		// The screen's destination fence (screens.tsx:868-890). The sheet above
-		// holds the move, so the route keeps the ref the pick was made on while
-		// the store follows the identity the resume resolved.
-		const routeRef = "ref-1";
 		const controls = new SessionControls(
 			a.entry.service!,
 			async () => {},
 			() => {},
-			(scope, ref) => (scope === "destination" ? a.entry.store.getState().ref === (ref ?? routeRef) : true),
+			() => true,
 			() => cold,
 			() => true,
 			{
@@ -790,7 +786,9 @@ describe("client binding lifetime", () => {
 		const changes: NativeMutationIdentityChange[] = [];
 		onTestFinished(runtime.subscribeIdentities((change) => changes.push(change)));
 
-		expect(await controls.changeModel("anthropic", "claude-haiku-5")).toBe(true);
+		await expect(controls.changeModel("anthropic", "claude-haiku-5")).resolves.toMatchObject({
+			disposition: "accepted",
+		});
 		await a.entry.readSettled();
 
 		const setCalls = client.calls.filter((call) => call.method === "thread/model/set");
@@ -900,7 +898,9 @@ describe("client binding lifetime", () => {
 			},
 		);
 
-		expect(await controls.changeModel("anthropic", "claude-haiku-5")).toBe(true);
+		await expect(controls.changeModel("anthropic", "claude-haiku-5")).resolves.toMatchObject({
+			disposition: "accepted",
+		});
 		await a.entry.readSettled();
 
 		const setCalls = client.calls.filter((call) => call.method === "thread/model/set");

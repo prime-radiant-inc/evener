@@ -113,7 +113,12 @@ function fakeControls(over: Partial<ControlsState> = {}) {
 	return {
 		subscribe: () => () => {},
 		getSnapshot: () => state,
-		rename: vi.fn(async () => true),
+		rename: vi.fn(
+			async (): Promise<ReturnType<SessionControls["rename"]>> => ({
+				disposition: "accepted",
+				notice: "Session renamed.",
+			}),
+		),
 	};
 }
 
@@ -544,6 +549,36 @@ describe("renaming", () => {
 		const tree = sheet();
 		expect(pressable(tree, "Fix the settle race, rename")).toBeUndefined();
 		expect(tree.root.findAll((node) => String(node.type) === "TextInput")).toEqual([]);
+	});
+
+	it("shows why a rename was refused after its controls were replaced by a reconnect", async () => {
+		// RoboRev R4: the reconnect a resume causes replaces the controls the
+		// rename ran on, so the refusal cannot be published through their
+		// state - the promise the sheet awaited must say it. The new name stays
+		// in the field and the reason renders under the actions.
+		const { host } = provide(conversation({ capabilities: { ...NONE, rename: true } }));
+		const refused = fakeControls();
+		// The replaced controls answer the promise, not their state.
+		refused.rename = vi.fn(
+			async (): Promise<ReturnType<SessionControls["rename"]>> => ({
+				disposition: "refused",
+				message: "The hub refused the new name.",
+			}),
+		);
+		replaceHost({ ...host, controls: refused as unknown as SessionControls });
+		const tree = sheet();
+		press(tree, "Fix the settle race, rename");
+		const field = tree.root.find((node) => String(node.type) === "TextInput");
+		act(() => field.props.onChangeText("Settle race"));
+		await act(async () => field.props.onSubmitEditing());
+		expect(refused.rename).toHaveBeenCalledWith("Settle race");
+		// Nothing confirmed the rename: no toast, no goBack...
+		expect(markers(tree, "toast")).toEqual([]);
+		expect(navigation.goBack).not.toHaveBeenCalled();
+		// ...and the reason the hub refused is visible in the sheet, announced
+		// to VoiceOver like every failed action.
+		expect(renderedText(tree)).toContain("The hub refused the new name.");
+		expect(tree.root.findAll((node) => node.props.accessibilityRole === "alert")).toHaveLength(1);
 	});
 });
 

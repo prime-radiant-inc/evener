@@ -19,7 +19,7 @@ export type ModelControlClientState =
   | { kind: "uninitialized"; canonicalDisplay: ModelControlDisplay }
   | { kind: "ready"; snapshot: ModelControlSnapshot }
   | { kind: "recovering"; lastSafeDisplay: ModelControlDisplay }
-  | { kind: "unsupported"; canonicalDisplay: ModelControlDisplay; observedVersion?: number };
+  | { kind: "unsupported"; canonicalDisplay: ModelControlDisplay };
 
 export type ModelControlInput =
   | { kind: "connectionRetired" }
@@ -209,7 +209,7 @@ function normalizedSnapshot(snapshot: ModelControlSnapshot): ModelControlSnapsho
   return { ...snapshot, active: { ...snapshot.active, reasoningEffortLevels: [] } };
 }
 
-export function projectModelControlSnapshot(model: ThreadModel, snapshot: ModelControlSnapshot): ThreadModel {
+function projectModelControlSnapshot(model: ThreadModel, snapshot: ModelControlSnapshot): ThreadModel {
   return {
     ...model,
     modelControlState: { kind: "ready", snapshot },
@@ -288,11 +288,7 @@ export function reduceModelControl(model: ThreadModel, input: ModelControlInput)
       return {
         model: {
           ...model,
-          modelControlState: {
-            kind: "unsupported",
-            canonicalDisplay: display,
-            ...(input.version === undefined ? {} : { observedVersion: input.version }),
-          },
+          modelControlState: { kind: "unsupported", canonicalDisplay: display },
         },
         decision: "unsupported",
         replacementReadRequired: false,
@@ -369,9 +365,6 @@ function isCompleteSnapshot(value: unknown, requireLevels = false): value is Mod
   if (value.desired === undefined) return true;
   if (!isRecord(value.desired)) return false;
   return (
-    typeof value.desired.requestSequence === "number" &&
-    Number.isSafeInteger(value.desired.requestSequence) &&
-    value.desired.requestSequence > 0 &&
     isNonEmptyString(value.desired.clientMutationId) &&
     isNonEmptyString(value.desired.modelProvider) &&
     isNonEmptyString(value.desired.model) &&
@@ -454,7 +447,6 @@ export function modelSetReplyRejected(
 export function validateThreadModelSetResponse(value: unknown, clientMutationId: string): ThreadModelSetResponse {
   if (
     !isRecord(value) ||
-    value.modelControlVersion !== 1 ||
     (value.disposition !== "accepted" && value.disposition !== "superseded") ||
     !isCompleteSnapshot(value.modelControl, true)
   ) {

@@ -219,6 +219,12 @@ func TestRemoteHubSetThreadModelPreservesTypedResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetThreadModel: %v", err)
 	}
+	// The hop is the wire: the desired record's request sequence is the
+	// daemon's internal counter and does not travel, so the forwarded answer
+	// matches the response as the wire carries it.
+	if want.ModelControl != nil && want.ModelControl.Desired != nil {
+		want.ModelControl.Desired.RequestSequence = 0
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("response = %+v, want %+v", got, want)
 	}
@@ -238,12 +244,9 @@ func TestRemoteHubSetThreadModelBlocksMalformedSuccess(t *testing.T) {
 		result any
 	}{
 		{name: "empty", result: map[string]any{}},
-		{name: "version only", result: map[string]any{"modelControlVersion": 1}},
 		{name: "disposition only", result: map[string]any{"disposition": "accepted"}},
 		{name: "snapshot only", result: map[string]any{"modelControl": snapshot}},
-		{name: "version and disposition", result: map[string]any{"modelControlVersion": 1, "disposition": "accepted"}},
-		{name: "version and snapshot", result: map[string]any{"modelControlVersion": 1, "modelControl": snapshot}},
-		{name: "disposition and snapshot", result: map[string]any{"disposition": "accepted", "modelControl": snapshot}},
+		{name: "disposition and incomplete snapshot", result: map[string]any{"disposition": "accepted", "modelControl": map[string]any{"revision": 3}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			source, _ := newScriptedRemote(t, "host", func(string, json.RawMessage) scriptedReply {
@@ -557,9 +560,8 @@ func TestRemoteHubLostModelResponseCannotReplaceNewerPick(t *testing.T) {
 		canonical.Revision++
 		canonical.Active = appwire.ModelControlActive{ModelProvider: params.ModelProvider, Model: params.Model, ReasoningEffortLevels: []string{}}
 		return appwire.ThreadModelSetResponse{
-			ModelControlVersion: appwire.ModelControlVersion1,
-			Disposition:         appwire.ModelControlDispositionAccepted,
-			ModelControl:        &canonical,
+			Disposition:  appwire.ModelControlDispositionAccepted,
+			ModelControl: &canonical,
 		}
 	}
 
