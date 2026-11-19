@@ -2045,4 +2045,92 @@ describe("current transcript checkpoints", () => {
     expect(resumed.overlay).toEqual({});
     expect(resumed.turns.flatMap((turn) => turn.items).map((item) => item.text)).toEqual(["alpha"]);
   });
+
+  // A wait the daemon retired between two reads must not survive the second
+  // read's merge: the fresh read's failure summary is the authority on which
+  // wait stands, and one carrying a NEWER stamp retires the older wait's chip
+  // and deadline together, recording the older stamp as ended so a frame
+  // still naming it cannot restamp it.
+  it("a read carrying a newer stamped wait retires the older wait through the model merge", () => {
+    const ref = "local:quota-merge";
+    const firstDeadline = Date.parse("2026-11-07T14:30:00Z");
+    const secondDeadline = Date.parse("2026-11-07T20:30:00Z");
+    const held = hydrateThread(currentRead(ref), ref, 10);
+    const waiting = applyNotification(
+      held,
+      {
+        method: "evener/thread/modelRetry",
+        params: {
+          threadId: `thr_${ref}`,
+          ref,
+          turnId: "turn_1",
+          attempt: 1,
+          maxAttempts: 0,
+          delayMs: 21_600_000,
+          errorClass: "quota_exceeded",
+          model: "first/model",
+          groupElapsedMs: 5_000,
+          attemptCap: 0,
+          waitStartedAt: 1,
+          resumesAt: firstDeadline,
+        },
+      },
+      11,
+    );
+    expect(waiting.quotaWaitStartedAt).toBe(1);
+    expect(waiting.modelRetry?.model).toBe("first/model");
+
+    const secondRead = currentRead(ref);
+    secondRead.thread = {
+      ...secondRead.thread,
+      status: { type: "active" },
+      evener: {
+        ...secondRead.thread.evener,
+        activeTurnId: "turn_1",
+        failure: { title: "Usage limit reached", resumesAt: secondDeadline, waitStartedAt: 2 },
+      },
+    };
+    const fresh = hydrateThread(secondRead, ref, 12);
+    const after = applyReadModel(waiting, fresh);
+
+    expect(after.quotaWaitStartedAt).toBe(2);
+    expect(after.quotaResumesAt).toBe(new Date(secondDeadline).toISOString());
+    expect(after.modelRetry?.model).toBeUndefined();
+  });
+
+  // A wait-free read through the same merge clears the held wait whole and
+  // leaves the retirement marker: the instant the pane held must not survive
+  // a read the daemon answered after the retry went out.
+  it("a wait-free read clears the held stamped wait through the model merge", () => {
+    const ref = "local:quota-clear";
+    const deadline = Date.parse("2026-11-07T14:30:00Z");
+    const held = hydrateThread(currentRead(ref), ref, 10);
+    const waiting = applyNotification(
+      held,
+      {
+        method: "evener/thread/modelRetry",
+        params: {
+          threadId: `thr_${ref}`,
+          ref,
+          turnId: "turn_1",
+          attempt: 1,
+          maxAttempts: 0,
+          delayMs: 21_600_000,
+          errorClass: "quota_exceeded",
+          groupElapsedMs: 5_000,
+          attemptCap: 0,
+          waitStartedAt: 3,
+          resumesAt: deadline,
+        },
+      },
+      11,
+    );
+    expect(waiting.quotaWaitStartedAt).toBe(3);
+
+    const fresh = hydrateThread(currentRead(ref), ref, 12);
+    const after = applyReadModel(waiting, fresh);
+    expect(after.quotaResumesAt).toBeUndefined();
+    expect(after.quotaWaitStartedAt).toBeUndefined();
+    expect(after.quotaWaitEndedStamp).toBe(3);
+  });
 });

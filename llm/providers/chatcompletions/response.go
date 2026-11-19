@@ -19,7 +19,6 @@ type chatCompletionResponse struct {
 }
 
 type chatChoice struct {
-	Index        int            `json:"index"`
 	Message      chatMessage    `json:"message"`
 	FinishReason string         `json:"finish_reason"`
 	Usage        map[string]any `json:"usage,omitempty"`
@@ -55,7 +54,8 @@ type reasoningDetailItem struct {
 	Type   string `json:"type"`
 	Text   string `json:"text,omitempty"`
 	Format string `json:"format,omitempty"`
-	Index  int    `json:"index,omitempty"`
+	// Pointer: an absent index differs from index 0.
+	Index *float64 `json:"index,omitempty"`
 	// Signature carries the provider's continuation signature on
 	// reasoning.text items (OpenRouter's Anthropic route: streamed as a
 	// trailing text-less item, non-stream merged with the text). It must
@@ -116,19 +116,19 @@ func encodeEncryptedDetails(items []reasoningDetailItem) string {
 // order AND every field the provider sent (decoded from the item's verbatim
 // Raw JSON — replay must be lossless or continuation can break). Used both to
 // build EncryptedContent and to accumulate streamed items.
-func collectEncryptedDetails(items []reasoningDetailItem) []map[string]any {
-	var enc []map[string]any
+func collectEncryptedDetails(items []reasoningDetailItem) []json.RawMessage {
+	var enc []json.RawMessage
 	for _, d := range items {
 		if !d.carriesContinuation() {
 			continue
 		}
-		var verbatim map[string]any
-		if len(d.Raw) > 0 && json.Unmarshal(d.Raw, &verbatim) == nil {
-			enc = append(enc, verbatim)
+		if len(d.Raw) > 0 {
+			enc = append(enc, d.Raw)
 			continue
 		}
 		// Raw missing (item built programmatically): fall back to known fields.
-		enc = append(enc, map[string]any{"type": d.Type, "id": d.ID, "data": d.Data})
+		fallback, _ := json.Marshal(map[string]any{"type": d.Type, "id": d.ID, "data": d.Data})
+		enc = append(enc, fallback)
 	}
 	return enc
 }
@@ -321,13 +321,14 @@ func extractScalarReasoning(reasoningContent, reasoning, reasoningText string) (
 // path is used (args come from the lossy map, already U+FFFD-coerced for
 // invalid UTF-8).
 func fromChatCompletionResponse(raw map[string]any, finishMap map[string]string, body []byte) (llm.Response, error) {
-	b, err := json.Marshal(raw)
-	if err != nil {
-		return llm.Response{}, err
-	}
 	var parsed chatCompletionResponse
-	if err := json.Unmarshal(b, &parsed); err != nil {
-		return llm.Response{}, fmt.Errorf("failed to parse chat completion response: %w", err)
+	err := json.Unmarshal(body, &parsed)
+	if len(body) == 0 || err != nil {
+		if b, merr := json.Marshal(raw); merr != nil {
+			return llm.Response{}, merr
+		} else if err = json.Unmarshal(b, &parsed); err != nil {
+			return llm.Response{}, fmt.Errorf("failed to parse chat completion response: %w", err)
+		}
 	}
 
 	if len(parsed.Choices) == 0 {
@@ -375,16 +376,10 @@ func fromChatCompletionResponse(raw map[string]any, finishMap map[string]string,
 		// both candidates parses large argument objects twice and throws the
 		// first result away.
 		args = rescueClaudeXMLArgs(args)
-		parts = append(parts, llm.ContentPart{
-			Kind: llm.ContentToolCall,
-			ToolCall: &llm.ToolCallData{
-				ID:               tc.ID,
-				Name:             tc.Function.Name,
-				Arguments:        json.RawMessage(args),
-				Type:             "function",
-				ThoughtSignature: thoughtSignatureFromExtraContent(tc.ExtraContent),
-			},
-		})
+		canonical, spelling := llm.NormalizeToolArguments([]byte(args))
+		parts = append(parts, llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+			ID: tc.ID, Name: tc.Function.Name, Arguments: canonical, Type: "function",
+			ArgumentsSpelling: spelling, ThoughtSignature: thoughtSignatureFromExtraContent(tc.ExtraContent)}})
 	}
 
 	msg := llm.Message{Role: llm.RoleAssistant, Content: parts}

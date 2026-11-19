@@ -49,13 +49,11 @@ func fromAnthropicResponse(raw map[string]any, requestedModel string, body []byt
 				if contentIdx < len(rawInputs) && rawInputs[contentIdx] != nil {
 					argsRaw = rawInputs[contentIdx]
 				}
+				argsRaw, spelling := llm.NormalizeToolArguments(argsRaw)
 				msg.Content = append(msg.Content, llm.ContentPart{
 					Kind: llm.ContentToolCall,
 					ToolCall: &llm.ToolCallData{
-						ID:        id,
-						Name:      name,
-						Arguments: argsRaw,
-						Type:      "function",
+						ID: id, Name: name, Arguments: argsRaw, Type: "function", ArgumentsSpelling: spelling,
 					},
 				})
 			case "thinking":

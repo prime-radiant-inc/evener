@@ -277,31 +277,37 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		// one: a fold landing in between leaves the earlier boundary indexing
 		// turns this snapshot no longer holds, and an in-flight turn that falls
 		// below it loses the replay exemption that keeps its thinking.
-		projection := s.delegateModelHistorySnapshotWithCoverage()
-		snapshot := projection.turns
-		historyCoverage = projection.coverage
-		scope.InFlightFrom = projection.inFlightFrom
-		inFlightFrom = projection.inFlightFrom
-		presentedBoundary = len(snapshot)
+		var projection delegateModelProjection
+		var droppedAt []int
 		if ctx.Value(delegateAttentionRunContextKey{}) != nil {
 			// An automatic attention drive projects the resident history,
 			// including the turns a reopen retained — a user-stopped run's
 			// held row would ride this drive's presentation, the immediate
-			// restart the stop exists to prevent — so its turn is kept out
-			// of the projection. A send builds no attention run and still
-			// presents it. Each drop shifts every later turn one position
-			// left, so the in-flight boundary — an index into the
-			// projection — moves with each drop strictly before it, the
-			// same rule the resident drop applies to the baseline.
-			filtered, droppedAt := s.dropHeldDelegateAttentionTurns(snapshot)
+			// restart the stop exists to prevent — so the drive's snapshot
+			// settles the holds and keeps the held turns out in one critical
+			// section. A send builds no attention run and still presents them.
+			projection, droppedAt = s.delegateAutomaticAttentionHistorySnapshotWithCoverage()
 			heldDropped = len(droppedAt) > 0
+			// Each drop shifts every later turn one position left, so the
+			// in-flight boundary — an index into the projection — moves with
+			// each drop strictly before it, the same rule the resident drop
+			// applies to the baseline.
+			unfilteredInFlight := projection.inFlightFrom
 			for _, at := range droppedAt {
-				if at < inFlightFrom {
-					scope.InFlightFrom--
+				if at < unfilteredInFlight {
+					projection.inFlightFrom--
 				}
 			}
-			snapshot = filtered
+		} else {
+			projection = s.delegateModelHistorySnapshotWithCoverage()
 		}
+		snapshot := projection.turns
+		historyCoverage = projection.coverage
+		scope.InFlightFrom = projection.inFlightFrom
+		// The boundary is the unfiltered snapshot's length: the skill-rebuild
+		// path below measures what was appended since this capture against it,
+		// and a filtered projection must not reopen that window.
+		presentedBoundary = len(snapshot) + len(droppedAt)
 		presentedTurns = snapshot
 		history, claimErr = s.delegateController.CompleteModelRequest(claim, snapshot, scope)
 		if claimErr != nil {
@@ -2170,19 +2176,22 @@ func (rs replayScope) webSearchReplayEligible(t schema.Turn) bool {
 }
 
 // projectThinkingPart applies the N4 provenance rule and the target's thinking
-// policy to one part. provenanceKeeps is the per-turn rule (true for an
-// eligible turn or an in-flight round); false drops every thinking part.
-// Otherwise the target policy drops plain reasoning, but keeps an encrypted
-// reasoning_details array — wire continuation state the chat adapter must
-// round-trip, not the text #4563 measured — with its display text removed so
-// only the opaque detail rides. The returned part is the input unchanged when
-// nothing applies.
+// policy to one part. provenanceKeeps is the per-turn rule; false drops every
+// thinking part, except that a Responses target takes the portable plaintext of
+// a foreign turn without its opaque state (#6891). Otherwise the target policy
+// drops plain reasoning, but keeps an encrypted reasoning_details array — wire
+// continuation state the chat adapter must round-trip, not the text #4563
+// measured — with its display text removed. The returned part is the input
+// unchanged when nothing applies.
 func (rs replayScope) projectThinkingPart(p llm.ContentPart, provenanceKeeps bool) (llm.ContentPart, bool) {
 	if p.Kind != llm.ContentThinking && p.Kind != llm.ContentRedThinking {
 		return p, false
 	}
 	if !provenanceKeeps {
-		return p, true
+		if rs.Protocol != registry.ProtocolOpenAIResponses {
+			return p, true
+		}
+		return llm.StripOpaqueThinkingForCrossProvider(p)
 	}
 	return llm.TrimThinkingForReplay(p, rs.DropThinking)
 }

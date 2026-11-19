@@ -1659,3 +1659,14 @@ func TestEstimateMessagesInputTokensForResolved_BillsResponsesToolItemID(t *test
 		t.Fatalf("chat billed the Responses-only item id")
 	}
 }
+
+func TestEstimateInputTokens_ToolCallArgsBillWhatTheWireSends(t *testing.T) {
+	call := ToolCallData{ID: "c", Name: "n"}
+	call.Arguments, call.ArgumentsSpelling = NormalizeToolArguments([]byte("  {\"a\":\"<&>\"}  "))
+	msgs := []Message{{Role: RoleAssistant, Content: []ContentPart{{Kind: ContentToolCall, ToolCall: &call}}}}
+	for p, args := range map[string]string{registry.ProtocolOpenAIResponses: strings.TrimSpace(call.WireArguments()), registry.ProtocolOpenAIChat: strings.TrimSpace(call.WireArguments()), registry.ProtocolAnthropic: string(call.Arguments)} {
+		if got, want := EstimateMessagesInputTokensForResolved(registry.Resolved{Protocol: p}, msgs).Tokens, (2+len(args))/4; got != want {
+			t.Errorf("%s estimate = %d, want %d for %q", p, got, want, args)
+		}
+	}
+}

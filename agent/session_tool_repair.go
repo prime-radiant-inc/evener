@@ -50,7 +50,7 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 	if strings.TrimSpace(res.Call.ID) == "" {
 		res.Call.ID = tool.SynthesizedCallID()
 	}
-	if err := tool.ValidateRawArguments(res.Call.Arguments); err != nil {
+	if err := tool.ValidateRawArguments([]byte(res.Call.WireArguments())); err != nil {
 		res.RawArgumentsRejected = true
 		if t != nil {
 			res.PrevalErr = err.Error()

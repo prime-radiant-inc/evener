@@ -3,6 +3,7 @@ import type { NavigationManifest, NavigationSessionSummary } from "../../types.g
 import { normalizedGraphFromSnapshot } from "./codec";
 import {
   quotaWaitRemainingMs,
+  quotaWaitState,
   selectDisplaySources,
   selectSectionCanDemand,
   selectSectionRemaining,
@@ -46,6 +47,20 @@ test.each([
   ],
 ] as const)("navigation view scope matches Go parity vector %#", (key, expected) => {
   expect(navigationViewScope(key as ResourceKey)).toBe(expected);
+});
+
+// The tri-state view the pane's quota line reads: a recorded instant is one
+// wait, counting while it is ahead and pending once it has passed — null
+// only when no instant is recorded at all, so a wait the daemon still holds
+// past its reset never disappears for lack of a countdown. The countdown view
+// above stays as the row's countdown-only rule.
+test("quotaWaitState splits a wait's countdown from its pending past-reset half", () => {
+  const now = Date.parse("2026-11-07T12:00:00Z");
+  expect(quotaWaitState("2026-11-07T14:30:00Z", now)).toEqual({ phase: "counting", remainingMs: 150 * 60_000 });
+  // The instant itself reads pending: the call cannot resume in the past.
+  expect(quotaWaitState("2026-11-07T12:00:00Z", now)).toEqual({ phase: "pending" });
+  expect(quotaWaitState("2026-11-07T11:00:00Z", now)).toEqual({ phase: "pending" });
+  expect(quotaWaitState(undefined, now)).toBeNull();
 });
 
 const key = { kind: "section", section: "live", offset: 0, limit: 50 } as const;

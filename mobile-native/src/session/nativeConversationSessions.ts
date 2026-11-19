@@ -26,8 +26,10 @@ import {
 } from "../nativeMutationRuntime";
 import { outboxFlush } from "../outbox/nativeOutboxFlush";
 import { reconnectDelay } from "../hubConnection";
+import { type ControlsSession, sessionFacts } from "../sessionControls";
 import { type DetailLevels, displayForLevel } from "./detailLevels";
 import { detailLevels as levelsForHub } from "./nativeDetailLevels";
+import { qualifiedModelIdentity } from "./sessionFacts";
 
 export type NativeConversationStore = ReturnType<typeof createConversationStore>;
 /** The service factory's complete return type: screens need the recovery,
@@ -52,6 +54,13 @@ export interface NativeConversationSession {
 	readonly ref: string;
 	readonly key: string;
 	readonly store: NativeConversationStore;
+	/** The session's shared facts: the values its writes were acknowledged for
+	 * and no publication has established yet, as one record every view and
+	 * binding reads. It lives here because it is a fact about the session, not
+	 * about a view: two mounted views of one session read one projection, so a
+	 * record kept per view would let one dismiss a correction the other knew
+	 * was outstanding. */
+	readonly sessionFacts: ControlsSession;
 	/** The stable submitter the store admits mutations through, shared so a
 	 * view's command and steer paths use the same live host lookup. */
 	readonly mutationSubmitter: ConversationMutationSubmitter;
@@ -101,6 +110,7 @@ class SessionEntry implements NativeConversationSession {
 	readonly ref: string;
 	readonly key: string;
 	readonly store: NativeConversationStore;
+	readonly sessionFacts: ControlsSession;
 	readonly mutationSubmitter: ConversationMutationSubmitter;
 	readonly readActor: NativeConversationReadActor;
 
@@ -155,6 +165,45 @@ class SessionEntry implements NativeConversationSession {
 			mutationSubmitter: this.mutationSubmitter,
 			displayConfig: this.#displayConfig,
 		});
+		// A read the store discarded returns normally, so "the refresh resolved"
+		// is not the same fact as "the projection is the one that read
+		// published". The store says which it is.
+		this.sessionFacts = sessionFacts(
+			() => this.store.getState().latestReadState === "ready",
+			// The store's own read identity, not a count this entry keeps: a
+			// rehydrate that supersedes a read still in flight starts after a
+			// write without the state ever leaving `reading`, and counting
+			// transitions would give both reads one identity. Then the read that
+			// started later and published the value could not retire the record of
+			// the write it answered, and a later tap on the row it shows would send
+			// the setter again - starting a stopped daemon to reapply what it
+			// already holds.
+			() => this.store.getState().latestReadAttempt,
+			// What the published projection says each setting holds, in the same
+			// shape a pick records. The model is one provider/model string: the
+			// snapshot names the bare id and the provider apart, and a live update
+			// names both, so the comparison goes through the app's one identity
+			// rule rather than reading either layout's raw fields. A picker row
+			// and the record it checks then agree about which model is running.
+			(setting) => {
+				const session = this.store.getState().canonicalSession();
+				if (session === null) return null;
+				if (setting === "vision") return session.visionModel ?? null;
+				return qualifiedModelIdentity(session);
+			},
+			// A pick sent during a turn is queued for the next one, and the
+			// daemon's projection then names the running model whether it took the
+			// pick or never saw it. Only a read that found the session between
+			// turns can say the write did not apply, so the record needs to know
+			// whether one is running. The canonical projection is where that fact
+			// lives: the store only publishes it while a read is accepted, so a
+			// stale display model never answers here.
+			() => {
+				const session = this.store.getState().canonicalSession();
+				if (session === null) return false;
+				return session.status.type === "active" || session.activeTurnId !== undefined;
+			},
+		);
 		const entry = this;
 		this.readActor = {
 			get failures() {
@@ -406,6 +455,11 @@ class SessionEntry implements NativeConversationSession {
 	#observeRead(): void {
 		if (this.#retired) return;
 		const state = this.store.getState();
+		if (state.latestReadState === "ready") {
+			// The projection has caught up with every write a read begun after it
+			// can have observed, so nothing is outstanding for a picker to doubt.
+			this.sessionFacts.retirePublished();
+		}
 		// A rehydrate failure keeps the retained display model readable and only
 		// moves latestReadState to "error"; following status alone would never
 		// arm the retry. Both the status failure and the read-state failure are
