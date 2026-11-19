@@ -184,17 +184,17 @@ func (a *StreamAccumulator) Process(ev StreamEvent) {
 func mergeFallbackReasoning(content, reasoning []ContentPart) []ContentPart {
 	if content[0].Kind == ContentThinking {
 		const separator = "\n\n"
-		thinking := content[0].Thinking
-		text := separator + thinking.Text + separator
-		for _, part := range reasoning {
-			for _, summary := range part.Thinking.Summary {
-				text = strings.Replace(text, separator+summary+separator, separator, 1)
-			}
-		}
-		if text == separator {
-			content = content[1:]
-		} else {
-			thinking.Text = text[len(separator) : len(text)-len(separator)]
+		streamed := separator + content[0].Thinking.Text + separator
+		reasoning = slices.Clone(reasoning)
+		for i, part := range reasoning {
+			thinking := *part.Thinking
+			thinking.Summary = slices.DeleteFunc(slices.Clone(thinking.Summary), func(summary string) bool {
+				remaining := strings.Replace(streamed, separator+summary+separator, separator, 1)
+				overlap := remaining != streamed
+				streamed = remaining
+				return overlap
+			})
+			reasoning[i].Thinking = &thinking
 		}
 	}
 	return slices.Insert(content, 0, reasoning...)

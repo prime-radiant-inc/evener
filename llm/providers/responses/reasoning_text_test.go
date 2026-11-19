@@ -98,10 +98,11 @@ func TestStreamTerminalTypedReasoningPreservesAccumulatedAnswer(t *testing.T) {
 		t.Fatalf("settled response = %+v, want accumulated answer", final)
 	}
 	want := []llm.ResponsesReasoningPart{{Type: "summary_text", Text: "summary"}, {Type: "summary_text", Text: "terminal only"}}
-	if th := final.Message.Content[0].Thinking; th == nil || !slices.Equal(th.ResponsesSummaryParts, want) {
-		t.Fatalf("settled reasoning = %+v, want %v", th, want)
+	if th := final.Message.Content[0].Thinking; th == nil ||
+		!slices.Equal(th.ResponsesSummaryParts, want) || !slices.Equal(th.Summary, []string{"terminal only"}) {
+		t.Fatalf("settled reasoning = %+v, want %v with only the terminal-only display summary", th, want)
 	}
-	if th := final.Message.Content[1].Thinking; th == nil || th.Text != "streamed only" {
-		t.Fatalf("accumulated reasoning = %+v, want the portion absent from the terminal", th)
+	if got := final.ReasoningText(); got != "summary\n\nstreamed only" {
+		t.Fatalf("settled display reasoning = %q, want both streamed parts", got)
 	}
 }
