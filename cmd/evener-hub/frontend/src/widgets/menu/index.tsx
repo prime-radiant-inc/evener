@@ -1670,6 +1670,10 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         // at, so this key activates nothing - an arrow, Home, End or Tab puts
         // real focus on a row first, and from then on this is the ordinary
         // case.
+        //
+        // Space stays the menu's key even with no row focused: left to the
+        // browser, it would scroll the focused popup itself.
+        if (event.key === " ") event.preventDefault();
         if (focused === -1) break;
         const item = items[current];
         if (item !== undefined) {
