@@ -616,6 +616,193 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 		expect(navigation.goBack).toHaveBeenCalledTimes(1);
 	});
 
+	it("settles the accepted pick when the resume's reconnect replaces the controls", async () => {
+		// resumeThread recycles the transport on purpose (client.ts:432-479:
+		// handleSocketLoss, close, retryNow, then the resume RPC). screens.tsx
+		// builds SessionControls in a useMemo whose dependency list includes
+		// `connected`, so the recycle disposes the controls that started the pick
+		// and hands the screen a replacement before the daemon's answer arrives.
+		// The acknowledgement still belongs to the retired instance: reporting
+		// `false` there leaves the sheet open on a change the daemon accepted.
+		let live = liveThread(RESUMED_AUTHORITY);
+		let resumed = false;
+		const client = new FakeClient("ready");
+		client.on("thread/unsubscribe", () => ({}));
+		client.on("thread/resume", () => {
+			resumed = true;
+			return { thread: live };
+		});
+		client.on("thread/read", () =>
+			resumed ? { thread: live, bootGeneration: RESUMED_AUTHORITY.bootGeneration } : { thread: COLD_THREAD },
+		);
+		client.on("thread/model/set", (params) => {
+			const accepted = snapshotFor(2, RESUMED_AUTHORITY, params.model);
+			// The daemon keeps the change: the read the reconnected screen takes
+			// reports it.
+			live = { ...live, evener: { ...live.evener, modelControl: accepted } };
+			return { modelControlVersion: 1, disposition: "accepted" as const, modelControl: accepted };
+		});
+		const service = createConversationService(client);
+		const cold = await service.open(REF);
+		expect(cold.modelControlState.kind).toBe("unsupported");
+
+		const toasts: string[] = [];
+		const toast = vi.fn((message: { text: string }) => void toasts.push(message.text));
+		const hostOwner = {};
+		owner = hostOwner;
+		let controls: SessionControls | null = null;
+		// The screen's two fences (screens.tsx:873-888). The binding fence
+		// (bindingGeneration/bindingInstance) is captured by the memo and dies
+		// with the reconnect; the destination fence is the same store, client and
+		// ref, still in front behind the sheet, and survives it.
+		let binding = 1;
+		const screen = (connected: boolean) => {
+			if (connected) {
+				const mine = binding;
+				controls = new SessionControls(
+					service,
+					async () => {},
+					() => {},
+					(scope) => client.state === "ready" && (scope === "destination" || binding === mine),
+					() => cold,
+					() => true,
+					CATALOG,
+				);
+			} else {
+				binding += 1;
+				// The memo's cleanup: the pair that started the pick is disposed.
+				controls?.dispose();
+				controls = null;
+			}
+			modelHosts.provide(sheetKey(HUB, REF), hostOwner, { session: cold, controls, ready: connected, toast });
+		};
+		const resume = client.resumeThread.bind(client);
+		client.resumeThread = async (ref, options) => {
+			// The recycle resumeThread performs: the transport goes down and the
+			// screen's `connected` follows it, replacing the controls before the
+			// resume RPC goes out.
+			client.emitStateChange("reconnecting");
+			screen(false);
+			client.emitStateChange("ready");
+			screen(true);
+			return resume(ref, options);
+		};
+		onTestFinished(() => {
+			controls?.dispose();
+			service.close();
+		});
+		screen(true);
+		const starter = controls;
+		const tree = sheet();
+		act(() => pressable(tree, "Claude Haiku 5")?.props.onPress?.());
+		await settle();
+
+		// The reconnect replaced the controls that started the pick.
+		expect(controls).not.toBe(starter);
+		// Exactly one resume and one authority-bound mutation: the replacement
+		// never resends what the retired pair already had answered.
+		expect(client.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+		const setCalls = client.calls.filter((call) => call.method === "thread/model/set");
+		expect(setCalls).toHaveLength(1);
+		expect(setCalls[0]?.params).toMatchObject({
+			ref: REF,
+			modelProvider: "anthropic",
+			model: "claude-haiku-5",
+			expectedInstanceId: RESUMED_AUTHORITY.instanceId,
+			expectedBootGeneration: RESUMED_AUTHORITY.bootGeneration,
+		});
+		// The daemon accepted the pick, so the sheet closed on it and said so.
+		expect(navigation.goBack).toHaveBeenCalledTimes(1);
+		expect(toasts).toEqual(["Model changed. Applies from the next turn."]);
+
+		// The reconnected screen's own read is what shows the accepted model.
+		const resumedSession = await service.open(REF);
+		act(() =>
+			modelHosts.provide(sheetKey(HUB, REF), hostOwner, {
+				session: resumedSession,
+				controls,
+				ready: true,
+				toast,
+			}),
+		);
+		const after = sheet();
+		expect(pressable(after, "Claude Haiku 5")?.props.accessibilityState).toMatchObject({ selected: true });
+		expect(pressable(after, "Claude Sonnet 5")?.props.accessibilityState).toMatchObject({ selected: false });
+	});
+
+	it("reports a refused pick that never dispatched as refused, even after its controls were replaced", async () => {
+		// The other half of attemptControl's distinction: a step that was refused
+		// before it sent anything is not done. The resume answers, but its read
+		// establishes no model-control authority, so changeModel fails before any
+		// thread/model/set exists. The sheet must stay open rather than confirm a
+		// pick the daemon never received.
+		let resumed = false;
+		const client = new FakeClient("ready");
+		client.on("thread/unsubscribe", () => ({}));
+		client.on("thread/resume", () => {
+			resumed = true;
+			// A live daemon that advertises changeModel but carries no snapshot:
+			// nothing here can accept a pick.
+			const thread = { ...liveThread(RESUMED_AUTHORITY, "idle") };
+			delete (thread.evener as { modelControl?: unknown }).modelControl;
+			(thread.evener.capabilities as { modelControlVersion?: number }).modelControlVersion = undefined;
+			return { thread };
+		});
+		client.on("thread/read", () =>
+			resumed ? { thread: liveThread(RESUMED_AUTHORITY, "idle") } : { thread: COLD_THREAD },
+		);
+		client.on("thread/model/set", () => {
+			throw new Error("thread/model/set must not be dispatched");
+		});
+		const service = createConversationService(client);
+		const cold = await service.open(REF);
+		const toast = vi.fn();
+		const hostOwner = {};
+		owner = hostOwner;
+		let controls: SessionControls | null = null;
+		let binding = 1;
+		const screen = (connected: boolean) => {
+			if (connected) {
+				const mine = binding;
+				controls = new SessionControls(
+					service,
+					async () => {},
+					() => {},
+					(scope) => client.state === "ready" && (scope === "destination" || binding === mine),
+					() => cold,
+					() => true,
+					CATALOG,
+				);
+			} else {
+				binding += 1;
+				controls?.dispose();
+				controls = null;
+			}
+			modelHosts.provide(sheetKey(HUB, REF), hostOwner, { session: cold, controls, ready: connected, toast });
+		};
+		const resume = client.resumeThread.bind(client);
+		client.resumeThread = async (ref, options) => {
+			client.emitStateChange("reconnecting");
+			screen(false);
+			client.emitStateChange("ready");
+			screen(true);
+			return resume(ref, options);
+		};
+		onTestFinished(() => {
+			controls?.dispose();
+			service.close();
+		});
+		screen(true);
+		const tree = sheet();
+		act(() => pressable(tree, "Claude Haiku 5")?.props.onPress?.());
+		await settle();
+
+		expect(client.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+		expect(client.calls.filter((call) => call.method === "thread/model/set")).toHaveLength(0);
+		expect(navigation.goBack).not.toHaveBeenCalled();
+		expect(toast).not.toHaveBeenCalled();
+	});
+
 	it("holds the pick on a LIVE session whose daemon reports no model-control snapshot", async () => {
 		// server/appwire_thread_projection.go: ChangeModel does not require a
 		// model-control version, but ModelControlVersion is set only for a

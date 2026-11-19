@@ -190,6 +190,22 @@ export class SessionControls {
 		});
 		try {
 			await operation();
+			// attemptControl's distinction, for the one action that recycles the
+			// transport as it goes out: a changeModel that resolved reached the
+			// hub and was answered, so it counts as done even when the reconnect
+			// the pick itself caused disposed these controls before the answer
+			// arrived. They are the only instance that saw the acknowledgement,
+			// and the screen's own reconnect read reports the accepted snapshot,
+			// so nothing here refreshes through a lost binding.
+			//
+			// The destination fence decides whether the screen that started the
+			// pick is still there to hear it: the reconnect retires the binding
+			// the pick began under, but the same store, client and ref are still
+			// bound behind the sheet. A pick whose screen left is not confirmed
+			// there is nothing left to close. A pick refused before dispatch
+			// (ModelPickNotSentError) and a pick the daemon refused both throw
+			// into the catch below, so neither is ever reported as done.
+			if (kind === "changeModel" && (this.disposed || !this.isCurrent()) && this.isCurrent("destination")) return true;
 			// resumeThread may recycle the transport, which can dispose these
 			// controls before its acknowledgement arrives. The bound screen still
 			// owns this refresh when its identity fence is current.
