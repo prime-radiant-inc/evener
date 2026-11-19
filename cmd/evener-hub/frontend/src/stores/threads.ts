@@ -4041,6 +4041,7 @@ export async function updateRecoveryMutation(
   expectedRecoveryRevisions?: Readonly<Record<string, number>>,
   compositionOwnerId?: string,
   composerText?: string,
+  adoptedImageMarkers?: readonly number[],
 ): Promise<MutationRecoveryRecord | undefined> {
   const runtime = requireMutationRuntime();
   await runtime.start;
@@ -4055,6 +4056,7 @@ export async function updateRecoveryMutation(
     expectedCompositionRevision,
     expectedRecoveryRevisions,
     compositionOwnerId,
+    adoptedImageMarkers,
   );
   if (!record) return undefined;
   notifyMutationPersistence([targetRef]);
@@ -4074,6 +4076,7 @@ export async function preserveRecoveryMutation(
   mentions?: readonly ComposerMention[],
   compositionOwnerId?: string,
   localDraftRevisionId?: string,
+  adoptedImageMarkers?: readonly number[],
 ): Promise<MutationRecoveryRecord | undefined> {
   const runtime = requireMutationRuntime();
   await runtime.start;
@@ -4085,6 +4088,7 @@ export async function preserveRecoveryMutation(
     mentions,
     compositionOwnerId,
     localDraftRevisionId,
+    adoptedImageMarkers,
   );
   if (!record) return undefined;
   notifyMutationPersistence([targetRef]);

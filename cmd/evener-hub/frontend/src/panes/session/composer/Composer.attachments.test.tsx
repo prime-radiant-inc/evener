@@ -761,12 +761,12 @@ test("a photo taken on Android is staged like any picked image", async () => {
   await waitFor(() => expect(screen.getByRole("button", { name: /remove/i })).toBeTruthy());
 });
 
-// Issue #4826's step 4-5 sequence, driven through the real Composer, the real
-// draft store and the real attachment pipeline: one reader stages an image and
-// its draft lands under the shared ref, then the OTHER reader - whose source
-// existed before that write, so it no longer owns the ref's draft revision -
-// is mounted and adopts the text with an empty attachment list. Bytes never
-// enter localStorage, so the adopted anchor has nothing behind it and
+// Driven through the real Composer, the real draft store and the real
+// attachment pipeline: one reader stages an image and its draft lands under
+// the shared ref, then the OTHER reader - whose source existed before that
+// write, so it no longer owns the ref's draft revision - is mounted and
+// adopts the text with an empty attachment list. Bytes never enter
+// localStorage, so the adopted anchor has nothing behind it and
 // buildComposerInput would ship it as literal text with no image item: the
 // model is told about an image it cannot see.
 test("an adopted draft with a marker and no bytes refuses to send and keeps the draft", async () => {
@@ -879,20 +879,23 @@ test("a marker the person typed with no attachment still sends as literal text",
   expect(input).toEqual([{ type: "text", text: "look at [image 1]" }]);
 });
 
-// Review M2: removing two missing references around a selected COMMAND must
-// not turn that command into plain text. A command has no skill of the same
-// name to re-derive from, so its chip exists only while the draft's own
-// mention carries it - which is exactly what one write covering both deletions
-// destroys: patchSelectionText reads the write as a single replacement span and
-// drops every atom inside it.
+// Removing two missing references around a selected COMMAND must not turn
+// that command into plain text. A command has no skill of the same name to
+// re-derive from, so its chip exists only while the draft's own mention
+// carries it - which is exactly what one write covering both deletions
+// destroys: patchSelectionText reads the write as a single replacement span
+// and drops every atom inside it.
 test("removing two missing references preserves a selected command between them", async () => {
   const user = userEvent.setup();
   const ref = "ref_unbacked_around_command";
+  // Prose on both sides, so the two removals are real splices inside a
+  // sentence rather than the whole document. The command sits between them.
+  const text = "before [image 1] /inspect [image 2] after";
   writeComposerDraft(ref, {
-    text: "[image 1] /inspect [image 2]",
+    text,
     skillNames: [],
     commandNames: ["inspect"],
-    mentions: [{ kind: "command", name: "inspect", offset: 10 }],
+    mentions: [{ kind: "command", name: "inspect", offset: text.indexOf("/inspect") }],
     stagedImageMarkers: [1, 2],
   });
   await mountComposer(ref, {
@@ -907,19 +910,23 @@ test("removing two missing references preserves a selected command between them"
 
   await user.click(screen.getByRole("button", { name: "Remove the reference" }));
 
-  // Both anchors are gone and the command is still an atom in its new place.
+  // Both anchors are gone, the prose around them survives, and the command is
+  // still an atom in its new place. React can batch the two splices into one
+  // commit, which the editor reads as a single replacement span - that is the
+  // shape that used to turn the selected command back into plain text, so the
+  // chip's survival here is the assertion that the repair restores atomically.
   expect(screen.queryByTestId("composer-unbacked-image")).toBeNull();
   expect(within(textarea()).getAllByTestId("composer-command-chip")).toHaveLength(1);
   const draft = readComposerDraft(ref);
-  expect(draft.text).toBe(" /inspect ");
+  expect(draft.text).toBe("before  /inspect  after");
   expect(draft.commandNames).toEqual(["inspect"]);
-  expect(draft.mentions).toEqual([{ kind: "command", name: "inspect", offset: 1 }]);
+  expect(draft.mentions).toEqual([{ kind: "command", name: "inspect", offset: "before  ".length }]);
 });
 
-// Review M3: deleting the missing reference clears the refusal while it is
-// absent, and when the occurrence comes back the refusal must come back with
-// it. ProseMirror restores the TEXT, not the composer's provenance, so the
-// record has to outlive the deletion rather than be pruned with it.
+// Deleting the missing reference clears the refusal while it is absent, and
+// when the occurrence comes back the refusal must come back with it.
+// ProseMirror restores the TEXT, not the composer's provenance, so the record
+// has to outlive the deletion rather than be pruned with it.
 test("an occurrence restored after the repair refuses again", async () => {
   const user = userEvent.setup();
   const ref = "ref_unbacked_undo";
@@ -954,11 +961,11 @@ test("an occurrence restored after the repair refuses again", async () => {
   expect(delivered).toEqual([]);
 });
 
-// Review L2: while an agent question is pending the composer's own surface is
-// hidden and inert, so the repair beside it must not be reachable - it edits a
-// draft the person cannot see. It is gated on the same askPending the editor
-// is, so resolving the question brings it back (the ungated tests above cover
-// that half).
+// While an agent question is pending the composer's own surface is hidden and
+// inert, so the repair beside it must not be reachable - it edits a draft the
+// person cannot see. It is gated on the same askPending the editor is, so
+// resolving the question brings it back (the ungated tests above cover that
+// half).
 test("the missing-reference repair is unreachable while an agent question is pending", async () => {
   const ref = "ref_unbacked_ask";
   writeComposerDraft(ref, { text: "kept [image 1]", skillNames: [], stagedImageMarkers: [1] });
@@ -982,9 +989,9 @@ test("the missing-reference repair is unreachable while an agent question is pen
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
 
-// Review L3: an adopted missing image leaves Steer with nothing it can do, so
-// both Steer surfaces must say so instead of accepting a press that silently
-// returns. The press-time guard stays for the keyboard chord.
+// An adopted missing image leaves Steer with nothing it can do, so both Steer
+// surfaces must say so instead of accepting a press that silently returns.
+// The press-time guard stays for the keyboard chord.
 test("steer states the missing-reference refusal rather than silently returning", async () => {
   const user = userEvent.setup();
   const ref = "ref_unbacked_steer";

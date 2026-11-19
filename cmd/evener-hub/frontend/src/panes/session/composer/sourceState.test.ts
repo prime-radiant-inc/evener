@@ -18,6 +18,7 @@ import {
   markDraftEdited,
   readComposerDraft,
   readComposerDraftRevisionId,
+  readComposerDraftSnapshot,
   readDraftRevision,
   writeComposerDraft,
 } from "./draft";
@@ -135,14 +136,13 @@ test("detached command-only recovery persists instead of being discarded", async
   });
 });
 
-// RoboRev round-1 M5: an edit-recovery born of a retargeted row is
-// associated with the displayed session by displayedRef while its durable
-// destination is the resumed session. The displayed composer must activate
-// its associated record, or the row the strip surfaced stays inert. The
-// fixture is built the way the product builds it: the recovery row is the
-// canceled retargeted RESEND the strip surfaces (displayedRef is the
-// resend's displayed barrier, never a retarget stamp), moved to recovery by
-// the strip's own Edit.
+// An edit-recovery born of a retargeted row is associated with the displayed
+// session by displayedRef while its durable destination is the resumed
+// session. The displayed composer must activate its associated record, or the
+// row the strip surfaced stays inert. The fixture is built the way the
+// product builds it: the recovery row is the canceled retargeted RESEND the
+// strip surfaces (displayedRef is the resend's displayed barrier, never a
+// retarget stamp), moved to recovery by the strip's own Edit.
 test("the displayed composer activates a recovery record associated by displayed ref", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
@@ -458,10 +458,10 @@ test("rebound composer adopts and consumes the exact persisted draft revision on
   }
 });
 
-// Issue #4826, direction one: a marker the OTHER writer typed is prose, not a
-// staged anchor, so adopting the draft must not put it in the record. A rebind
-// that recorded every marker the text spelled would offer to delete valid
-// prose and block Send on it.
+// A marker the OTHER writer typed is prose, not a staged anchor, so adopting
+// the draft must not put it in the record. A rebind that recorded every
+// marker the text spelled would offer to delete valid prose and block Send on
+// it.
 test("a rebind does not adopt a marker the other writer typed", () => {
   const source = createTestComposerSource("root");
   const detach = source.bindEditor({ read: () => source.editor.read(), write: () => {} });
@@ -477,10 +477,10 @@ test("a rebind does not adopt a marker the other writer typed", () => {
   }
 });
 
-// Issue #4826, direction two: the writer STAGED that anchor with this very
-// revision, so its bytes are gone with it even though this reader never saw
-// the writer. A fresh source that records nothing leaks the orphaned marker
-// onto the wire as literal text.
+// The writer STAGED that anchor with this very revision, so its bytes are
+// gone with it even though this reader never saw the writer. A fresh source
+// that records nothing leaks the orphaned marker onto the wire as literal
+// text.
 test("a fresh source adopts an anchor the record says its writer staged", () => {
   writeComposerDraft("root", { text: "look at [image 1]", skillNames: [], stagedImageMarkers: [1] });
   const source = createTestComposerSource("root");
@@ -516,9 +516,9 @@ test("staged provenance for a marker the text does not spell adopts nothing", ()
   }
 });
 
-// Issue #4826's M3: the record survives an edit that stops spelling the anchor,
-// so an undo (which restores the text, not the record) brings the refusal back.
-// Deleting the anchor must clear the refusal on its own while it is absent.
+// The record survives an edit that stops spelling the anchor, so an undo
+// (which restores the text, not the record) brings the refusal back. Deleting
+// the anchor must clear the refusal on its own while it is absent.
 test("adoption survives an edit so undo can restore the refusal", () => {
   writeComposerDraft("root", { text: "kept [image 1]", skillNames: [], stagedImageMarkers: [1] });
   const source = createTestComposerSource("root");
@@ -739,3 +739,204 @@ test.each(["success", "failure"] as const)(
     );
   },
 );
+
+// Staging is ONE write. The text and the provenance that says this writer
+// staged its marker land together, so a reload between the gesture and its
+// async encode reads a record that already knows the anchor was staged.
+test("staging persists the marker and its provenance in one write", () => {
+  const source = createTestComposerSource("root");
+  installControlledImageEncoding();
+  const view = renderHook(() => useAttachments(source.editor, source.attachments));
+  try {
+    source.editor.write("staged ", 7);
+    act(() => view.result.current.ingestFiles([image()], (message) => pushToast("error", message)));
+    // Read straight from storage: the encode is still held, so a provenance
+    // that depended on the tile SETTLING would not be here yet.
+    expect(readComposerDraftSnapshot("root").text).toBe("staged [image 1]");
+    expect(readComposerDraftSnapshot("root").stagedImageMarkers).toEqual([1]);
+    expect(source.attachments.getState().items.map((item) => item.pending)).toEqual([true]);
+  } finally {
+    view.unmount();
+    source.dispose();
+  }
+});
+
+// A successful encode must not rewrite the draft. The tile update is
+// in-memory; writing here would push this tab's older text over any edit
+// another tab made while the encode ran.
+test("a successful encode leaves the persisted draft untouched", async () => {
+  const encoding = installControlledImageEncoding();
+  const source = createTestComposerSource("root");
+  const view = renderHook(() => useAttachments(source.editor, source.attachments));
+  try {
+    act(() => view.result.current.ingestFiles([image()], (message) => pushToast("error", message)));
+    const revisionId = readComposerDraftRevisionId("root");
+    await act(async () => {
+      await encoding.resolve();
+    });
+    expect(readComposerDraftRevisionId("root")).toBe(revisionId);
+    expect(source.attachments.getState().items).toEqual([
+      { marker: 1, name: "source.png", mediaType: "image/png", pending: false, data: "AQID", width: 8, height: 4 },
+    ]);
+    expect(readComposerDraftSnapshot("root").stagedImageMarkers).toEqual([1]);
+  } finally {
+    view.unmount();
+    source.dispose();
+  }
+});
+
+// Two tabs, one draft. Tab A's encode settles after Tab B replaced the shared
+// draft; A's background continuation must not put its own older text back.
+// Ownership is the persisted revision identity, which B's write changed.
+test("a settle in one tab never overwrites another tab's newer draft", async () => {
+  const encoding = installControlledImageEncoding();
+  const source = createTestComposerSource("root");
+  const view = renderHook(() => useAttachments(source.editor, source.attachments));
+  try {
+    source.editor.write("tab A ", 6);
+    act(() => view.result.current.ingestFiles([image()], (message) => pushToast("error", message)));
+    // Tab B owns the same ref and replaces the draft.
+    writeComposerDraft("root", { text: "tab B newer", skillNames: [] });
+    expect(source.ownsDraftRevision()).toBe(false);
+    await act(async () => {
+      await encoding.resolve();
+    });
+    expect(readComposerDraft("root")).toEqual({ text: "tab B newer", skillNames: [] });
+  } finally {
+    view.unmount();
+    source.dispose();
+  }
+});
+
+// A detached write cannot claim another tab's draft either. The old tab-local
+// counter read as "mine" here, which is the write that clobbered B.
+test("a detached write refuses a draft another tab replaced", () => {
+  const source = createTestComposerSource("root");
+  try {
+    source.editor.write("tab A ", 6);
+    expect(readComposerDraft("root").text).toBe("tab A ");
+    writeComposerDraft("root", { text: "tab B", skillNames: [] });
+    source.editor.write("tab A late", 10);
+    expect(readComposerDraft("root")).toEqual({ text: "tab B", skillNames: [] });
+  } finally {
+    source.dispose();
+  }
+});
+
+// A number a dormant adoption still names is not handed to a new attachment.
+// Reusing it would pair fresh bytes with an anchor the person never staged,
+// and the stale refusal would block the replacement image.
+test("a replacement image takes a number a dormant adoption reserves", () => {
+  writeComposerDraft("root", { text: "kept [image 1]", skillNames: [], stagedImageMarkers: [1] });
+  const source = createTestComposerSource("root");
+  installControlledImageEncoding();
+  const view = renderHook(() => useAttachments(source.editor, source.attachments));
+  try {
+    expect(unbackedImageMarkersIn(source.getSnapshot().text, source.getSnapshot().adoptedImageMarkers)).toEqual([1]);
+    // The person removes the reference before attaching its replacement.
+    source.editText("kept ");
+    act(() => view.result.current.ingestFiles([image()], (message) => pushToast("error", message)));
+    expect(source.attachments.getState().items.map((item) => item.marker)).toEqual([2]);
+    expect(source.getSnapshot().text).toBe("kept [image 2]");
+    expect(unbackedImageMarkersIn(source.getSnapshot().text, source.getSnapshot().adoptedImageMarkers)).toEqual([]);
+  } finally {
+    view.unmount();
+    source.dispose();
+  }
+});
+
+// Retiring the reservation must not erase the adoption itself. Removing then
+// restoring the anchor within the same draft still refuses.
+test("an undo within the same draft restores the original refusal", () => {
+  writeComposerDraft("root", { text: "kept [image 1]", skillNames: [], stagedImageMarkers: [1] });
+  const source = createTestComposerSource("root");
+  try {
+    source.editText("kept ");
+    expect(unbackedImageMarkersIn(source.getSnapshot().text, source.getSnapshot().adoptedImageMarkers)).toEqual([]);
+    source.editText("kept [image 1]");
+    expect(unbackedImageMarkersIn(source.getSnapshot().text, source.getSnapshot().adoptedImageMarkers)).toEqual([1]);
+    expect(source.attachments.getState().reservedMarkersRef.current).toEqual([1]);
+  } finally {
+    source.dispose();
+  }
+});
+
+// Replacing the draft retires the adoption. The replaced anchors are not in
+// the new text, so keeping them would reserve numbers forever.
+test("clearing the draft retires its adoption", () => {
+  writeComposerDraft("root", { text: "kept [image 1]", skillNames: [], stagedImageMarkers: [1] });
+  const source = createTestComposerSource("root");
+  try {
+    expect(source.getSnapshot().adoptedImageMarkers).toEqual([1]);
+    source.clearIfUnchanged("kept [image 1]", 0, readDraftRevision("root"), []);
+    expect(source.getSnapshot().adoptedImageMarkers).toEqual([]);
+    expect(source.attachments.getState().reservedMarkersRef.current).toEqual([]);
+  } finally {
+    source.dispose();
+  }
+});
+
+// Editing a durable queued message while the composer holds an adopted anchor
+// must keep that provenance on the row. Without it a reload lets Send emit
+// the orphan as prose.
+test("an autosave keeps the adoption its composition carries", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const text = "kept [image 1]";
+  const input = [{ type: "text" as const, text }];
+  const original = await storage.enqueueIntent({
+    targetRef: "root",
+    method: "turn/queue",
+    payload: { ref: "root", input },
+    attachments: [],
+    optimisticDisplay: { method: "turn/queue", input },
+    composerText: text,
+    adoptedImageMarkers: [1],
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+  expect(recovery.adoptedImageMarkers).toEqual([1]);
+  const source = createTestComposerSource("root");
+  try {
+    source.setActiveRecoveryId(recovery);
+    await source.queueRecoveryPersistence(original.clientMutationId, text, [], [], [], undefined, text, [1]);
+    expect(await storage.getRecovery(original.clientMutationId)).toMatchObject({
+      composerText: text,
+      adoptedImageMarkers: [1],
+    });
+  } finally {
+    source.dispose();
+  }
+});
+
+// Restore, end to end: a reloaded pane opens the row and Send is still
+// refused on the anchor whose bytes never came back. A recovered tile whose
+// bytes DID travel is not adopted.
+test("an activated recovery restores the adoption its row carries", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const text = "kept [image 1]";
+  const input = [{ type: "text" as const, text }];
+  const original = await storage.enqueueIntent({
+    targetRef: "root",
+    method: "turn/queue",
+    payload: { ref: "root", input },
+    attachments: [],
+    optimisticDisplay: { method: "turn/queue", input },
+    composerText: text,
+    adoptedImageMarkers: [1],
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+  const source = createTestComposerSource("root");
+  try {
+    await expect(source.activateRecovery(recovery)).resolves.toBe(true);
+    expect(source.getSnapshot().text).toBe(text);
+    expect(source.getSnapshot().adoptedImageMarkers).toEqual([1]);
+    expect(unbackedImageMarkersIn(source.getSnapshot().text, source.getSnapshot().adoptedImageMarkers)).toEqual([1]);
+  } finally {
+    source.dispose();
+  }
+});

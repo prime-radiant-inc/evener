@@ -1216,12 +1216,21 @@ async function assertOverlap(ref, text, label) {
   assert.deepEqual(atoms, overlapMentions(text), `${label}, atom kind and exact text-owned offsets`);
   const stored = await read(`JSON.parse(localStorage.getItem(${q(`evener.composer.draft.v2.${ref}`)}))`);
   const { editedAt, ...record } = stored;
+  // Every anchor in this journey's draft was written by a staging gesture that
+  // appended the tile holding its bytes, so the record's provenance names each
+  // one. It is provenance rather than a copy of the text: the marker enters it
+  // only because a gesture staged it, which is the fact a reloading reader uses
+  // to tell an orphaned anchor from literal prose.
+  const stagedImageMarkers = [...new Set(text.match(/\[image \d+\]/g) ?? [])]
+    .map((marker) => Number(marker.slice('[image '.length, -1)))
+    .sort((left, right) => left - right);
   assert.deepEqual(record, {
     text,
     skillNames:['cascade-overlap'],
     commandNames:['cascade-overlap'],
     mentions:overlapMentions(text),
     revisionId: record.revisionId,
+    ...(stagedImageMarkers.length > 0 ? { stagedImageMarkers } : {}),
   }, `${label}, complete real persisted draft`);
   assert.equal(typeof record.revisionId, 'string', `${label}, draft record carries its revision identity`);
   assert.ok(record.revisionId.length > 0, `${label}, revision identity is non-empty`);

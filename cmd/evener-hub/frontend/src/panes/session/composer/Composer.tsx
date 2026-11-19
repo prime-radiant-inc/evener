@@ -20,6 +20,7 @@
 
 import {
   decideSteerRoute,
+  markerText,
   mergeDraftText,
   mergeSlashCommands,
   NO_ACTIVE_TURN,
@@ -88,7 +89,6 @@ import {
   steerTooltipLabel,
   submitTooltipLabel,
 } from "./controlTooltips";
-import { readDraftRevision } from "./draft";
 import { useDuoCoverLayout, useNarrowComposer } from "./narrowComposer";
 import {
   editQueuedPendingTurn,
@@ -275,7 +275,7 @@ function ComposerWithSubmission({
   // it stands. Read once here so the refusal, the reason beside the draft, and
   // Send's own disabled state all describe the same draft.
   const unbackedImageMarkers = unbackedImageMarkersIn(text, adoptedImageMarkers);
-  const unbackedImageNoticeId = useId();
+  const hasUnbackedImage = unbackedImageMarkers.length > 0;
   const restoredRecoveryRef = useRef(activeRecoveryId);
   useLayoutEffect(() => {
     if (restoredRecoveryRef.current === activeRecoveryId) return;
@@ -288,7 +288,6 @@ function ComposerWithSubmission({
   }, [activeRecoveryId, scheduleCursorRestore, source]);
   const selectionMeta = useMemo(() => ({ commandNames, mentions }), [commandNames, mentions]);
   const {
-    ownedDraftRevisionRef,
     textRef,
     skillNamesRef,
     selectionMetaRef,
@@ -303,6 +302,8 @@ function ComposerWithSubmission({
     editSkillNames,
     updateSelectionMeta,
     setActiveRecoveryId,
+    setAdoptedImageMarkers,
+    markRestore,
     persistDraft,
     writeDraft,
   } = source;
@@ -569,11 +570,11 @@ function ComposerWithSubmission({
         // menu item's own surface cannot show a tooltip, so the reason reaches
         // the person through the notice beside the draft, which is what the
         // press-time guard leaves in place.
-        disabled: actionPending || unbackedImageMarkers.length > 0,
+        disabled: actionPending || hasUnbackedImage,
       };
     }
     return items;
-  }, [narrow, model, actionPending, unbackedImageMarkers.length]);
+  }, [narrow, model, actionPending, hasUnbackedImage]);
 
   // The composer's own single command line (2026-08-14: "the composer is
   // where you act on this session"): the session-scoped BUILT-IN registry
@@ -599,16 +600,17 @@ function ComposerWithSubmission({
             : { start: cursor, end: cursor };
         return { text: textRef.current, cursor, selection };
       },
-      write: (nextText, cursor, source) => {
+      write: (nextText, cursor, editSource) => {
         // Background cleanup changes this editor without claiming a shared
-        // draft that another composer has edited in the meantime.
-        const mayPersist =
-          source === undefined || source === "edit" || ownedDraftRevisionRef.current === readDraftRevision(ref);
-        writeDraft(nextText, mayPersist, source);
+        // draft that another composer has edited in the meantime. Ownership is
+        // the persisted revision identity, not a tab-local counter: two tabs
+        // share one draft, and the counter cannot see the other tab's write.
+        const mayPersist = editSource === undefined || editSource === "edit" || source.ownsDraftRevision();
+        writeDraft(nextText, mayPersist, editSource);
         scheduleCursorRestore(cursor);
       },
     }),
-    [ref, textRef, ownedDraftRevisionRef, writeDraft, scheduleCursorRestore],
+    [textRef, source, writeDraft, scheduleCursorRestore],
   );
   // Scoped by `ref`: dockview can have several session panes - and so several
   // mounted Composers - open at once, and a bare literal id would collide.
@@ -650,6 +652,9 @@ function ComposerWithSubmission({
     recoveryOwnsLocalDraftRef.current = false;
     setActiveRecoveryId(null);
     attachments.reset();
+    // A new draft ends the replaced one's adoption: its anchors are not in this
+    // text, so keeping them would reserve numbers no image can ever take.
+    setAdoptedImageMarkers([]);
     updateSkillNames([]);
     updateSelectionMeta({ text: "", skillNames: [] });
     resetSlashCompletion();
@@ -1049,7 +1054,7 @@ function ComposerWithSubmission({
   // patchSelectionText then drops the command or skill chip in the middle of
   // it - the anchors are removed, the person's selection is not.
   function handleRemoveUnbackedMarkers(): void {
-    if (unbackedImageMarkers.length === 0) return;
+    if (!hasUnbackedImage) return;
     let { text, cursor } = textEditor.read();
     let changed = false;
     for (const marker of unbackedImageMarkers) {
@@ -1061,6 +1066,13 @@ function ComposerWithSubmission({
       textEditor.write(text, cursor);
     }
     if (!changed) return;
+    // Each write above describes one splice, which keeps an atom BETWEEN two
+    // removals mapped. React can still batch those writes into one commit, and
+    // a batched commit reads as a single replacement span - the same reason
+    // useAttachments.clearSubmitted asks for an authoritative restore after its
+    // per-marker writes. The value already carries the mapped mentions, so this
+    // only asks the editor to rebuild from it instead of editing its atoms.
+    markRestore();
     editorRef.current?.focus();
   }
 
@@ -1086,9 +1098,9 @@ function ComposerWithSubmission({
     }
     // A marker whose bytes this composer does not hold is not sendable: the
     // request would carry the anchor as literal text and no image item, telling
-    // the model about an image it cannot see (#4826). Refuse, keep the draft,
-    // and let the notice beside it name the repair.
-    if (unbackedImageMarkers.length > 0) return;
+    // the model about an image it cannot see. Refuse, keep the draft, and let
+    // the notice beside it name the repair.
+    if (hasUnbackedImage) return;
     if (submitBuiltin()) return;
     // Hand off before Send becomes disabled. Never refocus on completion:
     // the user may have moved to another control or session while submitting.
@@ -1124,7 +1136,7 @@ function ComposerWithSubmission({
     // at the press for the chords, which reach here with no control to
     // disable - and it names its reason, because a press that returns in
     // silence is what made the enabled-and-inert control a bug.
-    if (unbackedImageMarkers.length > 0) {
+    if (hasUnbackedImage) {
       toasts.push("error", STEER_UNBACKED_IMAGE_REASON);
       return;
     }
@@ -1431,9 +1443,8 @@ function ComposerWithSubmission({
                 question is pending that card is hidden and inert, so a repair
                 here would change a draft the person cannot see or reach. One
                 condition, not a second parallel check that could drift. */}
-            {!askPending && unbackedImageMarkers.length > 0 && (
+            {!askPending && hasUnbackedImage && (
               <InlineNotice
-                id={unbackedImageNoticeId}
                 tone="danger"
                 live="off"
                 data-testid="composer-unbacked-image"
@@ -1444,7 +1455,7 @@ function ComposerWithSubmission({
                 }
               >
                 {`The image ${unbackedImageMarkers
-                  .map((marker) => `[image ${marker}]`)
+                  .map((marker) => markerText(marker))
                   .join(
                     ", ",
                   )} referred to here is not attached in this composer. Remove it, or select it and attach the image again, before sending.`}
@@ -1528,7 +1539,7 @@ function ComposerWithSubmission({
                             // anyway - so do not offer a control that can only
                             // fail. The notice above the field says why and
                             // carries the repair.
-                            unbackedImageMarkers.length > 0 ||
+                            hasUnbackedImage ||
                             !hasContent ||
                             !(ended
                               ? (canSendWhenEnded || fence.sendDriven) && canCompose && !fence.stillFenced
@@ -1544,7 +1555,7 @@ function ComposerWithSubmission({
                       <Tooltip
                         label={steerTooltipLabel({
                           recoveryFenced: steerRecoveryFenced,
-                          unbackedImage: unbackedImageMarkers.length > 0,
+                          unbackedImage: hasUnbackedImage,
                           enterToSend,
                         })}
                       >
@@ -1562,7 +1573,7 @@ function ComposerWithSubmission({
                           // an aria-disabled refusal, not the native attribute, so
                           // the button keeps focus and hover and that reason
                           // stays reachable.
-                          aria-disabled={steerRecoveryFenced || unbackedImageMarkers.length > 0 || undefined}
+                          aria-disabled={steerRecoveryFenced || hasUnbackedImage || undefined}
                           disabled={actionPending}
                         >
                           Steer

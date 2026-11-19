@@ -90,6 +90,16 @@ export interface MutationIntent<A extends MutationAttachmentRef = MutationAttach
   // records all carry them in the one record they already persist.
   composerText?: string;
   composerMentions?: readonly ComposerMention[];
+  // The markers of composerText this composition's writer did NOT stage: an
+  // anchor another writer's draft spelled whose bytes never travelled with
+  // that text. The composer refuses to send one (the web's
+  // unbackedImageMarkersIn), and a record without this fact would restore the
+  // text as if it had staged every marker it names - so a reload would ship
+  // the orphaned anchor as literal prose, or pair it with a retained tile at
+  // the same number. Absent on records written before the field existed, on
+  // rows no composer assembled, and on every composition with no adoption; a
+  // marker is only ever here when a staging gesture could not have written it.
+  adoptedImageMarkers?: readonly number[];
   // The composer pane's durable seat that authored this composition. It
   // rides the outbox record into the recovery row a refusal creates, so the
   // authoring pane's mount restore can find its own bounced work - and no

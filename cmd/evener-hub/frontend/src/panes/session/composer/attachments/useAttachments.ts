@@ -137,6 +137,12 @@ export function createAttachmentStore() {
     nextMarkerRef: { current: 0 },
     removedWhilePendingRef: { current: new Set<symbol>() },
     generationRef: { current: 0 },
+    // Numbers a staged image may not take: an adoption record this composer
+    // carries (a draft it read but cannot back with bytes) still names them.
+    // The composer source fills this from its own provenance; a store nothing
+    // fills reserves nothing, which is the mounted-composer-only path's
+    // pre-existing behavior.
+    reservedMarkersRef: { current: [] as number[] },
   }));
 }
 
@@ -150,7 +156,7 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
   // (which shrinks on removal) - a plain ref persists across renders without
   // re-triggering one, exactly mirroring composer-attachments.js's own
   // pendingState.__nextMarker bookkeeping.
-  const { nextMarkerRef, removedWhilePendingRef, generationRef } = store.getState();
+  const { nextMarkerRef, removedWhilePendingRef, generationRef, reservedMarkersRef } = store.getState();
   // kata kt4j: operation tokens removed via removeItem while decode was still
   // in flight. The browser's Image/canvas pipeline has no cancellation hook,
   // so a reencodeToPng call started before removal keeps running and still
@@ -222,6 +228,7 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
         editor.read().text,
         store.getState().items,
         nextMarkerRef.current,
+        reservedMarkersRef.current,
       );
       accepted.push({ file, marker: nextMarkerRef.current, token: Symbol("pending attachment") });
     }
@@ -242,8 +249,15 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
         operationTokens.set(item, token);
         return item;
       });
-      editor.write(text, start);
       setItems((prev) => [...prev, ...newItems]);
+      // The text and the tile that backs its marker are one gesture, so the
+      // persisted record is written once, AFTER the tile exists: the write
+      // carries the marker in stagedImageMarkers because the bytes are in the
+      // store by then. Writing the text first would persist an anchor with no
+      // provenance, and the store's own change notification would then depend
+      // on a second write to repair it - which is the window a reload, or an
+      // encode settling late, could read the wrong draft through.
+      editor.write(text, start);
 
       for (const { file, token } of accepted) {
         reencodeToPng(file)

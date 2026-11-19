@@ -726,6 +726,7 @@ export function updateRecoveryPendingTurn(
   expectedRecoveryRevisions?: Readonly<Record<string, number>>,
   compositionOwnerId?: string,
   composerText?: string,
+  adoptedImageMarkers?: readonly number[],
 ): ReturnType<typeof updateRecoveryMutation> {
   // Composer serializes edits before resending. A committed edit must release
   // that chain even when the recovery tray cannot refresh yet.
@@ -745,6 +746,7 @@ export function updateRecoveryPendingTurn(
         expectedRecoveryRevisions,
         compositionOwnerId,
         composerText,
+        adoptedImageMarkers,
       );
       void refreshPendingTurnsProjection(ref);
       return updated;
@@ -762,6 +764,7 @@ export function preserveRecoveryPendingTurn(
   mentions?: readonly ComposerMention[],
   compositionOwnerId?: string,
   localDraftRevisionId?: string,
+  adoptedImageMarkers?: readonly number[],
 ): ReturnType<typeof preserveRecoveryMutation> {
   return trackProjectionWork(
     (async () => {
@@ -775,6 +778,7 @@ export function preserveRecoveryPendingTurn(
         mentions,
         compositionOwnerId,
         localDraftRevisionId,
+        adoptedImageMarkers,
       );
       void refreshPendingTurnsProjection(ref);
       return preserved;

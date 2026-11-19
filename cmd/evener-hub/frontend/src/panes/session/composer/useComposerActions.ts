@@ -102,7 +102,6 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
   } = useSyncExternalStore(source.subscribe, source.getSnapshot, source.getSnapshot);
   const {
     draftEditRevisionRef,
-    ownedDraftRevisionRef,
     textRef,
     skillNamesRef,
     selectionMetaRef,
@@ -115,6 +114,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     editSkillNames,
     updateSelectionMeta,
     setActiveRecoveryId,
+    setAdoptedImageMarkers,
     markRestore,
     queueRecoveryPersistence,
     clearIfUnchanged,
@@ -271,6 +271,9 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     updateText(recovered.text);
     updateSkillNames(restoredSkillNames(recovered));
     updateSelectionMeta(recovered);
+    // A bounced composition keeps its missing-reference provenance across the
+    // reload that mounts this pane, so Send stays refused until it is repaired.
+    setAdoptedImageMarkers(recovered.adoptedImageMarkers ?? []);
     attachments.replaceWithSettled(recovered.attachments);
     clearPersistedDraft(ref);
   }, [
@@ -283,6 +286,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     recoveryEntries,
     recoveryOwnsLocalDraftRef,
     ref,
+    setAdoptedImageMarkers,
     setActiveRecoveryId,
     skillNamesRef,
     selectionMetaRef,
@@ -340,11 +344,17 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
       current.skillNames,
       current.commandNames,
       skillAtomMentions(parseSkillDocument(current)),
+      // What THIS composer already adopted. The shared merge scopes provenance
+      // to the side that supplied each occurrence, so passing it is what stops
+      // a dormant adoption from claiming a literal "[image N]" the edited entry
+      // happens to spell - and what keeps an adoption the person still means.
+      source.getSnapshot().adoptedImageMarkers,
     );
     const value = serializeSkillDocument(parseSkillDocument(merged));
     const text = value.text;
     editSkillNames(value.skillNames);
     updateSelectionMeta(value);
+    setAdoptedImageMarkers(merged.adoptedImageMarkers ?? []);
     // A queued entry's selections are named, not spelled out, so the value that
     // carries them is authoritative here exactly as a recovery activation's is:
     // without this the merge is a partial append, the references land as plain
@@ -614,9 +624,13 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
         options.text !== options.clearDraftText &&
         submittedEditorMatches
       ) {
-        if (ownedDraftRevisionRef.current === readDraftRevision(ref)) {
+        // Only the tab that still owns the persisted record may delete it: a
+        // peer's newer write is that peer's draft, not this submission's leavings.
+        if (source.ownsDraftRevision()) {
           clearDraft(ref);
-          ownedDraftRevisionRef.current = readDraftRevision(ref);
+          // clearDraft bumped the tab-local counter, so the source has to
+          // re-claim the record it now owns.
+          source.claimDraftRevision();
         }
       }
       clearSubmittedAttachments(submittedAttachments);

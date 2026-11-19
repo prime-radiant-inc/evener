@@ -37,7 +37,7 @@ import {
   type SkillEditorValue,
   serializeSkillDocument,
 } from "./skillDocument";
-import { pushRecoveryRefusal, spelledImageMarkers } from "./submitProtocol";
+import { pushRecoveryRefusal, spelledImageMarkers, unbackedImageMarkersIn } from "./submitProtocol";
 
 type RevisionRef<T> = { current: T };
 export type RecoveryOwnerLease = { clientMutationId: string; compositionRevision: number };
@@ -95,6 +95,14 @@ export interface ComposerSourceState {
     skillNamesRef: RevisionRef<string[]>;
     selectionMetaRef: RevisionRef<SelectionMeta>;
     draftEditRevisionRef: RevisionRef<number>;
+    /** The persisted draft revision id this source last wrote or read AND still
+     * owns. Compared against readComposerDraftRevisionId(ref), never against
+     * the tab-local counter: the draft is shared by every tab, so a counter
+     * bump of ours says nothing about a write that happened in another tab. */
+    ownedDraftRevisionIdRef: RevisionRef<string | undefined>;
+    /** The tab-local counter at this source's last sync. Necessary, never
+     * sufficient: a legacy v1 record carries no revision id, so only the
+     * counter can show that another writer in THIS tab produced it. */
     ownedDraftRevisionRef: RevisionRef<number>;
     recoveryOwnerLeaseRef: RevisionRef<RecoveryOwnerLease | null>;
     recoveryWriteVersionRef: RevisionRef<number>;
@@ -111,6 +119,20 @@ export interface ComposerSourceState {
   updateSelectionMeta(value: SkillEditorValue): void;
   setActiveRecoveryId(record: MutationRecoveryRecord | null): void;
   markRestore(): void;
+  /** Replaces the adopted-anchor provenance this source carries. The set is
+   * provenance, not state about the text: it is intersected with whatever the
+   * text spells at send time, so deleting an anchor clears the refusal and an
+   * undo that brings it back restores it. */
+  setAdoptedImageMarkers(markers: readonly number[]): void;
+  /** Whether this source still owns the draft currently persisted under `ref`.
+   * Ownership is the PERSISTED revision identity, so another tab's write - or
+   * a background rewrite of ours - ends it. Never a tab-local counter: two
+   * tabs share one draft, and a counter cannot see the other tab's write. */
+  ownsDraftRevision(): boolean;
+  /** Adopt the draft currently persisted under `ref` (or its absence) as this
+   * source's own. Both ownership signals are snapshotted together, so callers
+   * that change the persisted record out of band never move only one of them. */
+  claimDraftRevision(): void;
   persistDraft(text: string): void;
   writeDraft(text: string, mayPersist: boolean, source?: TextEditSource): void;
   refreshRecovery(): void;
@@ -128,6 +150,7 @@ export interface ComposerSourceState {
     commands?: readonly string[],
     mentions?: readonly ComposerMention[],
     composerText?: string,
+    adoptedImageMarkers?: readonly number[],
   ): Promise<boolean>;
   clearIfUnchanged(
     text: string,
@@ -157,10 +180,7 @@ export function restoredSkillNames(value: SkillEditorValue): string[] {
  * BOTH entry points, since which writer produced the record does not change
  * the answer once the bytes are gone. */
 function adoptedAnchorsIn(draft: { text: string; stagedImageMarkers?: number[] }): number[] {
-  const staged = draft.stagedImageMarkers;
-  if (staged === undefined || staged.length === 0) return [];
-  const spelled = new Set(spelledImageMarkers(draft.text));
-  return [...new Set(staged)].filter((marker) => spelled.has(marker)).sort((left, right) => left - right);
+  return unbackedImageMarkersIn(draft.text, draft.stagedImageMarkers ?? []);
 }
 
 function recoveryCompositionRevision(record: MutationRecoveryRecord): number {
@@ -230,6 +250,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     skillNamesRef: { current: state.getState().skillNames },
     selectionMetaRef: { current: { commandNames: initial.commandNames ?? [], mentions: initial.mentions } },
     draftEditRevisionRef: { current: 0 },
+    ownedDraftRevisionIdRef: { current: initial.revisionId },
     ownedDraftRevisionRef: { current: readDraftRevision(ref) },
     recoveryOwnerLeaseRef: { current: null },
     recoveryWriteVersionRef: { current: 0 },
@@ -241,6 +262,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     skillNamesRef,
     selectionMetaRef,
     draftEditRevisionRef,
+    ownedDraftRevisionIdRef,
     ownedDraftRevisionRef,
     recoveryOwnerLeaseRef,
     recoveryWriteVersionRef,
@@ -248,6 +270,15 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     recoveryOwnsLocalDraftRef,
   } = continuity;
   const attachments = createAttachmentStore();
+  // Numbers this composer's adoption record still names are unavailable to a
+  // new staging gesture: the marker is spelled in prose this draft carries, so
+  // reusing it would pair a fresh tile's bytes with an occurrence the person
+  // never staged. Kept in the attachment store because that is where
+  // allocation reads it.
+  function publishReservedMarkers(markers: readonly number[]): void {
+    attachments.getState().reservedMarkersRef.current = [...markers];
+  }
+  publishReservedMarkers(state.getState().adoptedImageMarkers);
   let disposed = false;
   let boundEditor: TextEditor | null = null;
   let recoveryWrites: Promise<void> = Promise.resolve();
@@ -311,16 +342,34 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     }, delay);
   }
 
-  const ownsDraft = () => ownedDraftRevisionRef.current === readDraftRevision(ref);
+  /** Claim the draft record currently persisted under `ref` (or the absence of
+   * one). Both ownership signals are snapshotted here; a caller that forgets one
+   * would silently disable one of the two checks. */
+  function claimDraftRevision(): void {
+    ownedDraftRevisionIdRef.current = readComposerDraftRevisionId(ref);
+    ownedDraftRevisionRef.current = readDraftRevision(ref);
+  }
+  function ownsDraftRevision(): boolean {
+    // Undefined on both sides means "no record has been written yet", which the
+    // source that is about to write the first one does own. Undefined on only
+    // one side means another writer produced or removed the record.
+    return (
+      ownedDraftRevisionIdRef.current === readComposerDraftRevisionId(ref) &&
+      // Both are required. The id sees a peer tab's write, which the counter
+      // cannot; the counter sees a legacy v1 write, which has no id to compare.
+      ownedDraftRevisionRef.current === readDraftRevision(ref)
+    );
+  }
   function reconcileRecoveryTarget(targetRef: string): void {
     recoveryTargetRef = targetRef;
   }
   function currentDraftText(): string {
-    return ownsDraft() ? textRef.current : readComposerDraft(ref).text;
+    return ownsDraftRevision() ? textRef.current : readComposerDraft(ref).text;
   }
   function updateText(text: string): void {
     if (disposed) return;
-    if (text.trim() !== "") cancelCleanupRetry();
+    const blank = text.trim() === "";
+    if (!blank) cancelCleanupRetry();
     textRef.current = text;
     // The adopted set is provenance, not state about the current text: it is
     // intersected with whatever the text spells at the moment of sending
@@ -329,6 +378,14 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     // occurrence back restores it - there is no separate record an undo could
     // fail to restore.
     state.setState({ text });
+    // A cleared composition is a REPLACED draft: every anchor the adoption
+    // named was in text the person just deleted, and no staging gesture is
+    // holding bytes that could bring one back. Keeping the record would reserve
+    // its numbers forever, so the replacement image could never take one. An
+    // edit that leaves any prose keeps the record, which is what lets an undo
+    // restore the original refusal.
+    if (blank && operations.items.length === 0 && state.getState().adoptedImageMarkers.length > 0)
+      setAdoptedImageMarkers([]);
   }
   function updateSkillNames(skillNames: string[]): void {
     if (disposed) return;
@@ -347,7 +404,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     draftEditRevisionRef.current += 1;
     if (currentRecoveryId() !== null) {
       markDraftEdited(ref);
-      ownedDraftRevisionRef.current = readDraftRevision(ref);
+      claimDraftRevision();
     }
   }
   function editText(text: string): void {
@@ -385,12 +442,16 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     // were staged). Filtered to what this text spells, so a marker the person
     // has removed or retyped never travels as provenance. Typed markers are in
     // neither source, which is why literal prose stays sendable.
-    const spelled = new Set(spelledImageMarkers(text));
-    const staged = [
-      ...new Set([...operations.items.map((item) => item.marker), ...state.getState().adoptedImageMarkers]),
-    ]
-      .filter((marker) => spelled.has(marker))
-      .sort((left, right) => left - right);
+    const adopted = state.getState().adoptedImageMarkers;
+    // Nothing staged lies behind this text, so no provenance can exist: skip
+    // spelling the text to filter an empty set.
+    let staged: number[] = [];
+    if (operations.items.length > 0 || adopted.length > 0) {
+      const spelled = new Set(spelledImageMarkers(text));
+      staged = [...new Set([...operations.items.map((item) => item.marker), ...adopted])]
+        .filter((marker) => spelled.has(marker))
+        .sort((left, right) => left - right);
+    }
     currentDraftRevisionId = writeComposerDraft(ref, {
       text,
       skillNames: skillNamesRef.current,
@@ -398,7 +459,18 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
       ...(selectionMetaRef.current.mentions ? { mentions: selectionMetaRef.current.mentions } : {}),
       ...(staged.length > 0 ? { stagedImageMarkers: staged } : {}),
     });
+    // writeComposerDraft minted this revision, so this source owns it - even
+    // when the write removed the record outright (undefined).
+    ownedDraftRevisionIdRef.current = currentDraftRevisionId;
     ownedDraftRevisionRef.current = readDraftRevision(ref);
+  }
+  function setAdoptedImageMarkers(markers: readonly number[]): void {
+    if (disposed) return;
+    const next = [...new Set(markers)].sort((left, right) => left - right);
+    const current = state.getState().adoptedImageMarkers;
+    if (next.length === current.length && next.every((marker, index) => marker === current[index])) return;
+    state.setState({ adoptedImageMarkers: next });
+    publishReservedMarkers(next);
   }
   function markRestore(): void {
     if (!disposed) state.setState((snapshot) => ({ restoreEpoch: snapshot.restoreEpoch + 1 }));
@@ -420,7 +492,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   }
   function writeDetachedSourceDraft(text: string, _cursor: number, source?: TextEditSource): void {
     // A detached continuation cannot claim another pane's newer draft.
-    if (disposed || !ownsDraft()) return;
+    if (disposed || !ownsDraftRevision()) return;
     writeDraft(text, true, source);
   }
   const editor: TextEditor = {
@@ -446,6 +518,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     nextCommandNames: readonly string[] = selectionMetaRef.current.commandNames,
     nextMentions: readonly ComposerMention[] | undefined = selectionMetaRef.current.mentions,
     nextComposerText?: string,
+    nextAdoptedImageMarkers: readonly number[] = state.getState().adoptedImageMarkers,
   ): Promise<boolean> {
     if (disposed) return Promise.resolve(false);
     const isEmptyCleanup = compositionIsEmpty({
@@ -459,8 +532,9 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     const version = ++recoveryWriteVersionRef.current;
     const replacementEpoch = recoveryReplacementEpochRef.current;
     const draftRevision = readDraftRevision(ref);
+    const persistedRevisionId = readComposerDraftRevisionId(ref);
     const localDraftRevisionId =
-      ownsDraft() && currentDraftRevisionId !== undefined && currentDraftRevisionId === readComposerDraftRevisionId(ref)
+      ownsDraftRevision() && currentDraftRevisionId !== undefined && currentDraftRevisionId === persistedRevisionId
         ? currentDraftRevisionId
         : undefined;
     const operation = recoveryWrites
@@ -526,6 +600,10 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
           { [clientMutationId]: lease.compositionRevision },
           compositionOwnerId,
           nextComposerText,
+          // The row's provenance travels with its text: an autosave that kept
+          // the "[image N]" anchor but dropped this fact is exactly what let a
+          // reload send an adopted anchor as prose.
+          nextAdoptedImageMarkers,
         );
         if (!updated) {
           if (!disposed && currentRecoveryId() === clientMutationId) {
@@ -624,6 +702,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
         selectionMetaRef.current.mentions,
         compositionOwnerId,
         localDraftRevisionId,
+        state.getState().adoptedImageMarkers,
       );
     } catch (error) {
       if (!disposed)
@@ -712,6 +791,10 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
                 : { [record.clientMutationId]: recoveryCompositionRevision(record) }),
             },
             compositionOwnerId,
+            merged.text,
+            // The merge's own provenance, so a row opened for editing keeps
+            // refusing exactly the anchors this composer now refuses.
+            merged.adoptedImageMarkers ?? [],
           );
           if (!updated || disposed || recoveryReplacementEpochRef.current !== replacementEpoch) return false;
           recoveryOwnerLeaseRef.current = {
@@ -739,7 +822,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
           // while moving the tile that number used to own, so the record has to
           // survive the merge intact for the send-time check to refuse it
           // (composerRecovery's adoptedImageMarkers).
-          state.setState({ adoptedImageMarkers: latest.adoptedImageMarkers ?? [] });
+          setAdoptedImageMarkers(latest.adoptedImageMarkers ?? []);
           operations.replaceWithSettled(latest.attachments);
           markRestore();
           committedRecoveryComposition = recoveryCompositionFingerprint({
@@ -813,8 +896,12 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     submittedAttachments: PendingAttachment[],
   ): void {
     if (disposed || currentRecoveryId() !== clientMutationId) return;
-    if (draftUnchanged) ownedDraftRevisionRef.current = readDraftRevision(ref);
-    const owns = ownsDraft();
+    // The submission's own write (or the unchanged draft it left) is the
+    // persisted revision this source still owns.
+    if (draftUnchanged) claimDraftRevision();
+    // A submission whose draft it left unchanged just claimed that draft, so
+    // the ownership it implies needs no second read of localStorage.
+    const owns = draftUnchanged ? true : ownsDraftRevision();
     recoveryOwnsLocalDraftRef.current = false;
     recoveryWriteVersionRef.current += 1;
     cancelCleanupRetry();
@@ -866,7 +953,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
         sameSkillSelections(skillNamesRef.current, submittedSkillNames) &&
         sameSkillSelections(selectionMetaRef.current.commandNames, submittedCommandNames ?? [])
       ) {
-        ownedDraftRevisionRef.current = readDraftRevision(ref);
+        claimDraftRevision();
         updateText("");
         updateSkillNames([]);
         updateSelectionMeta({ text: "", skillNames: [] });
@@ -900,14 +987,6 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   }
   const unsubscribeAttachments = attachments.subscribe(() => {
     if (operations.items.length > 0) cancelCleanupRetry();
-    // A staging gesture writes "[image N]" into the text BEFORE the tile that
-    // holds the bytes exists, so that text change persists a record with no
-    // provenance for the marker it just wrote. The tile landing (or being
-    // removed) is what makes the marker staged-with-bytes, so the record is
-    // rewritten here - otherwise a reload between those two moments would leave
-    // a marker nothing claims as staged, and the next reader would send it as
-    // literal text (#4826's under-adoption direction).
-    if (currentRecoveryId() === null && ownsDraft()) persistDraft(textRef.current);
     persistDetachedRecovery();
   });
   const unsubscribeDraft = state.subscribe(persistDetachedRecovery);
@@ -931,6 +1010,9 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     editSkillNames,
     updateSelectionMeta,
     setActiveRecoveryId,
+    setAdoptedImageMarkers,
+    ownsDraftRevision,
+    claimDraftRevision,
     markRestore,
     persistDraft,
     writeDraft,
@@ -943,18 +1025,18 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     activateRecovery,
     bindEditor(nextEditor) {
       if (disposed) return () => {};
-      if (!ownsDraft() && currentRecoveryId() === null) {
+      if (!ownsDraftRevision() && currentRecoveryId() === null) {
         const draft = readComposerDraftSnapshot(ref);
         updateText(draft.text);
         updateSkillNames(restoredSkillNames(draft));
         updateSelectionMeta(draft);
         currentDraftRevisionId = draft.revisionId;
-        ownedDraftRevisionRef.current = readDraftRevision(ref);
+        claimDraftRevision();
         // The revision this source last held is gone, so another writer
         // produced this text. Which of its markers that writer STAGED is the
         // record's own provenance - not every marker the text happens to
         // spell, which would refuse prose a person typed.
-        state.setState({ adoptedImageMarkers: adoptedAnchorsIn(draft) });
+        setAdoptedImageMarkers(adoptedAnchorsIn(draft));
       }
       markRestore();
       boundEditor = nextEditor;
@@ -980,9 +1062,17 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
         updateText("");
         updateSkillNames([]);
         updateSelectionMeta({ text: "", skillNames: [] });
-        if (readDraftRevision(ref) === draftRevision) {
+        // Only a draft this source still owns may be cleared: another tab's
+        // write since the submit owns the record now, and clearing it would
+        // delete that tab's text. Both checks are required - the tab-local
+        // counter catches our own later write, the persisted revision id
+        // catches another tab's.
+        if (readDraftRevision(ref) === draftRevision && ownsDraftRevision()) {
           clearDraft(ref);
-          ownedDraftRevisionRef.current = readDraftRevision(ref);
+          claimDraftRevision();
+          // The draft this adoption described is gone, so its numbers are free
+          // again - and must be, or a replacement image could never take one.
+          setAdoptedImageMarkers([]);
         }
       }
       return true;

@@ -308,7 +308,7 @@ export function carryComposerDraft(fromRef: string, toRef: string): void {
   // The snapshots, not readComposerDraft: the destination composer stages no
   // tiles, so every carried marker's bytes are already gone and its provenance
   // must travel with the text or the new composer would send the anchor as
-  // prose (#4826).
+  // prose.
   const from = readComposerDraftSnapshot(fromRef);
   if (isBlankDraft(from)) return;
   const to = readComposerDraftSnapshot(toRef);

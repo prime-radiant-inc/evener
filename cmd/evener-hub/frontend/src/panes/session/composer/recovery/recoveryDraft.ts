@@ -39,6 +39,11 @@ export function recoveryComposerDraft(record: MutationRecoveryRecord): Recovered
     skillNames: recovered.skillNames,
     ...(recovered.commandNames.length ? { commandNames: recovered.commandNames } : {}),
     ...(recovered.mentions ? { mentions: recovered.mentions } : {}),
+    // An adopted anchor has no tile in `attachments` and never will: the bytes
+    // never travelled with the text. Carrying the fact here is what keeps Send
+    // refused until the person repairs the reference, on BOTH the automatic
+    // and the explicit Edit restore.
+    ...(recovered.adoptedImageMarkers?.length ? { adoptedImageMarkers: [...recovered.adoptedImageMarkers] } : {}),
   };
   if (recovered.imageReferences === "unavailable") unavailableImageReferences.add(draft);
   return draft;

@@ -72,6 +72,7 @@ export function recoverMutationComposition(record: MutationRecord): RecoveredCom
   });
   const hasComposerSnapshot = record.composerText !== undefined;
   const mentions = hasComposerSnapshot ? record.composerMentions : fallback.mentions;
+  const adoptedImageMarkers = adoptedInRecord(record, hasComposerSnapshot, attachments);
 
   return {
     text: record.composerText ?? fallback.text,
@@ -79,8 +80,35 @@ export function recoverMutationComposition(record: MutationRecord): RecoveredCom
     skillNames: inputNames(input, "skill"),
     commandNames: inputNames(input, "command"),
     ...(mentions !== undefined ? { mentions: mentions.map((mention) => ({ ...mention })) } : {}),
+    ...(adoptedImageMarkers.length > 0 ? { adoptedImageMarkers } : {}),
     imageReferences: hasComposerSnapshot ? "recorded" : "unavailable",
   };
+}
+
+/** The adopted anchors this record's composition carries.
+ *
+ * The durable provenance is the one fact that survives a reload; a record an
+ * older build wrote has none, and its markers are prose (the same rule the
+ * draft's own stagedImageMarkers follows). Intersected with what the text
+ * still spells and with the attachments that did NOT travel: a marker this
+ * record holds bytes for is backed here, so the reader has no missing
+ * reference to refuse - which is also what keeps a legitimate recovered tile
+ * sendable. */
+function adoptedInRecord(
+  record: MutationRecord,
+  hasComposerSnapshot: boolean,
+  attachments: readonly InputAttachment[],
+): number[] {
+  const adopted = record.adoptedImageMarkers;
+  if (adopted === undefined || adopted.length === 0) return [];
+  // Without a composer snapshot the text is the wire's own translation, so no
+  // occurrence in it is the anchor anybody staged.
+  if (!hasComposerSnapshot) return [];
+  const backed = new Set(attachments.map((attachment) => attachment.marker));
+  const spelled = new Set(markerNumbers(record.composerText ?? ""));
+  return [...new Set(adopted)]
+    .filter((marker) => spelled.has(marker) && !backed.has(marker))
+    .sort((left, right) => left - right);
 }
 
 interface MarkerShift {
@@ -184,7 +212,7 @@ export function mergeComposerCompositions<A extends { marker: number }>(
   let adoptedAfterMerge = new Set(adopted);
   if (adoptedCollisions.size > 0) {
     const used = new Set([
-      ...markerNumbers(currentText),
+      ...spelledHere,
       ...currentAttachments.map((attachment) => attachment.marker),
       ...literalMarkers,
     ]);
@@ -211,6 +239,28 @@ export function mergeComposerCompositions<A extends { marker: number }>(
     }
     return { ...attachment, marker };
   });
+  // The recovered side's OWN adoption travels with its own text: those
+  // occurrences are ones that side's writer could not back, so they take the
+  // same renumbering its attachments took. A number this side already spells
+  // - in its text or as a tile's marker - belongs to this side's occurrence,
+  // so the recovered one moves off it, the mirror of the current side's rule.
+  const recoveredAdopted: number[] = [];
+  if (recovered.imageReferences === "recorded") {
+    const recoveredSpelled = new Set(markerNumbers(recovered.text));
+    const currentUsed = new Set([
+      ...markerNumbers(currentText),
+      ...currentAttachments.map((attachment) => attachment.marker),
+    ]);
+    for (const marker of new Set(recovered.adoptedImageMarkers ?? [])) {
+      if (!recoveredSpelled.has(marker)) continue;
+      // Its bytes travelled with this record, so nothing is missing here.
+      if (recoveredMapping.has(marker)) continue;
+      const target = currentUsed.has(marker) ? nextUnusedMarker(used) : marker;
+      used.add(target);
+      recoveredMapping.set(marker, target);
+      recoveredAdopted.push(target);
+    }
+  }
   const remappedRecovered =
     recovered.imageReferences === "recorded"
       ? remapMarkers(recovered.text, recoveredMapping)
@@ -225,22 +275,24 @@ export function mergeComposerCompositions<A extends { marker: number }>(
     ? [...(currentMentions ?? []), ...shiftedMentions(recovered.mentions, remappedRecovered.shifts, appendOffset)]
     : undefined;
 
-  // Adoption survives the merge unchanged: those occurrences are still in the
-  // text, still backed by nothing here, and still the send-time check's to
-  // refuse. The recovered side carries its own provenance as
-  // imageReferences, which the browser wrapper already classifies.
-  // Provenance the merged text no longer spells belongs to no occurrence: keep
-  // the record exact, so a marker typed later is never mistaken for the anchor
-  // this composition adopted (the over-adoption half of the same bug).
-  const mergedSpelled = new Set(markerNumbers(text));
-  const mergedAdopted = [...adoptedAfterMerge].filter((marker) => mergedSpelled.has(marker)).sort((a, b) => a - b);
+  // Adoption is scoped to the side that supplied its occurrence. A dormant
+  // record on this side - an anchor the person removed while the record kept
+  // its provenance for an undo - names an occurrence THIS text no longer has,
+  // so it must never latch onto one the recovered message brought: that prose
+  // is somebody else's, and the repair that deletes the "missing" reference
+  // would delete the queued text instead. Keeping each side's record to its
+  // own occurrences is what makes the refusal follow the anchor rather than
+  // the number.
+  const currentSpelled = new Set(markerNumbers(currentText));
+  const mergedAdopted = [...[...adoptedAfterMerge].filter((marker) => currentSpelled.has(marker)), ...recoveredAdopted];
+  const adoptedImageMarkers = [...new Set(mergedAdopted)].sort((left, right) => left - right);
   return {
     text,
     attachments: [...currentAttachments, ...recoveredAttachments],
     skillNames: canonicalSkillNames([...current.skillNames, ...recovered.skillNames]),
     commandNames: canonicalSkillNames([...current.commandNames, ...recovered.commandNames]),
     ...(mentions !== undefined ? { mentions } : {}),
-    ...(mergedAdopted.length > 0 ? { adoptedImageMarkers: mergedAdopted } : {}),
+    ...(adoptedImageMarkers.length > 0 ? { adoptedImageMarkers } : {}),
   };
 }
 
@@ -248,8 +300,17 @@ export function nextComposerImageMarker(
   text: string,
   attachments: readonly { marker: number }[],
   highWaterMark = 0,
+  reservedMarkers: readonly number[] = [],
 ): number {
-  const used = new Set([...markerNumbers(text), ...attachments.map((attachment) => attachment.marker)]);
+  // A reserved number is one a staged image may not take: the draft's own
+  // dormant adoption record still names it, so a new tile there would be
+  // refused as the missing image it is not. Reservations are skipped, never
+  // claimed.
+  const used = new Set([
+    ...markerNumbers(text),
+    ...attachments.map((attachment) => attachment.marker),
+    ...reservedMarkers,
+  ]);
   let marker = Math.max(highWaterMark, ...attachments.map((attachment) => attachment.marker), 0) + 1;
   while (used.has(marker)) marker += 1;
   return marker;
