@@ -22,6 +22,7 @@ var subcommands = map[string]func(args []string) int{
 	"gate-surface":       gateSurfaceMain,
 	"hub-shards":         runHubShards,
 	"list-build-flags":   listBuildFlagsMain,
+	"merge-enqueue":      mergeEnqueueMain,
 	"repo-audit":         repoAuditMain,
 	"root-test-flags":    rootTestFlagsMain,
 	"test-cpu-exec":      testCPUExecMain,

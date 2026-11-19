@@ -8,6 +8,9 @@
         "buildFromSource": [
           "expo-modules-core",
           "expo-camera"
+        ],
+        "exclude": [
+          "evener-voice"
         ]
       }
     }

@@ -1072,13 +1072,32 @@ async function acceptEntryTranscriptHydration(
   fixture.unsubscribeRepository ??= repository.subscribe(() => publishEntryTranscriptModel(ref));
   if (productionRoute && heldCountsAtStore(ref) && !fixture.reader) fixture.reader = repository.attachReader();
   if (productionRoute && authorities && lifetime?.freshForegroundLifetime) settleCacheLifetimeAfterHydration(ref);
+  // Wait starts the POST-CUT tail already installed live into this
+  // repository while the hydration was pending (their buffered updates carry
+  // acceptedEntry): the read's cut predates them, so its wait-free
+  // reconciliation may neither retire the wait nor record its stamp as
+  // ended — the tail re-publishes the wait after the read applies, and an
+  // ended stamp recorded here would refuse that replay as stale.
+  const postCutWaitStamps = new Set<number>();
+  for (const update of pending.notifications) {
+    if (
+      update.acceptedEntry?.repository !== repository ||
+      update.acceptedEntry.lifetime !== fixture.lifetime ||
+      update.notification.method !== "evener/thread/modelRetry"
+    )
+      continue;
+    const params = update.notification.params as { waitStartedAt?: number; delayMs: number };
+    if (params.waitStartedAt !== undefined && params.waitStartedAt > 0 && params.delayMs > 0)
+      postCutWaitStamps.add(params.waitStartedAt);
+  }
   const adoptedRead = repository.acceptRead(response, {
     lifetime: fixture.lifetime,
     ...nextTranscriptReadIdentity(),
+    ...(postCutWaitStamps.size > 0 ? { postCutWaitStamps } : {}),
   });
   repository.acceptBeforeReadCut(
     hydration.fixtureNotifications.map((update) => update.notification),
-    { lifetime: fixture.lifetime },
+    { lifetime: fixture.lifetime, adoptedRead },
   );
   return adoptedRead;
 }

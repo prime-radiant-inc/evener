@@ -45,8 +45,21 @@ export function LayerFocusScope({
   trap = false,
   autoFocus = true,
   released,
+  restoreWithoutScroll,
   children,
-}: FocusScopeProps & { released: boolean }) {
+}: FocusScopeProps & {
+  released: boolean;
+  /** Read at the moment the scope is released, not when it mounted: a caller
+   * whose close is LAYOUT's doing (Menu, when layout hid the trigger) must put
+   * focus back where it came from without moving the page, and the decision
+   * belongs to the close. A ref rather than a boolean because a prop would
+   * have to sit in the effect's dependencies, and re-running that effect to
+   * read a new value would capture the target and move focus a second time.
+   * Escape and outside presses leave it false: those are the reader's own
+   * navigation, and the ordinary restore - which may bring the control back
+   * into view - is what they asked for. */
+  restoreWithoutScroll?: { current: boolean };
+}) {
   const ref = useRef<HTMLDivElement>(null);
   const restoreTargetRef = useRef<Element | null>(null);
   const ownerDocumentRef = useRef<Document | null>(null);
@@ -56,6 +69,7 @@ export function LayerFocusScope({
   // in the document.
   // Skipped entirely for autoFocus={false} scopes (combobox popovers), whose
   // anchoring input must keep focus for continued typing.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: restoreWithoutScroll is read at the CLOSE, by design - putting a ref's .current in the dependency list would re-run this effect whenever the value changed, and re-running it re-captures the restore target and moves focus a second time. The close that sets it is the only thing that should decide it.
   useEffect(() => {
     if (!autoFocus || released) return;
     const scope = ref.current;
@@ -85,7 +99,14 @@ export function LayerFocusScope({
       // moved into, not to the one this scope mounted in.
       const home = focusable?.ownerDocument ?? doc;
       if (focusable !== null && home.contains(focusable) && typeof focusable.focus === "function") {
-        focusable.focus();
+        // A layout-driven close hands focus back without scrolling: the
+        // control it goes to can be exactly the one layout has just pushed out
+        // of sight. Focusing the trigger with preventScroll upstream is not
+        // enough on its own - a pointer click that opened the menu never
+        // focused the trigger, so the recorded target is some OTHER control,
+        // and this restore is the path that would scroll to it.
+        const withoutScroll = restoreWithoutScroll?.current === true;
+        focusable.focus(withoutScroll ? { preventScroll: true } : undefined);
       }
     };
   }, [autoFocus, released]);

@@ -3,9 +3,20 @@
 package execenv
 
 import (
+	"errors"
 	"fmt"
 	"os"
 )
+
+// ErrNotRegularFile reports that a path exists but is not a regular file, so
+// reading it would either block (a FIFO with no writer, a socket) or mean
+// something other than data (a device). Callers that can answer without the
+// bytes check for it with errors.Is instead of matching the message.
+var ErrNotRegularFile = errors.New("not a regular file")
+
+// ErrGitPointerTooLarge reports that a ".git" pointer file exceeded the size a
+// pointer can occupy. It is neither read whole nor parsed.
+var ErrGitPointerTooLarge = errors.New("git pointer file is larger than any pointer")
 
 // OpenRegularNoFollow is the portable fallback: this platform has no
 // O_NOFOLLOW, so a leaf symlink is followed there (creating one requires
@@ -25,7 +36,7 @@ func OpenRegularNoFollow(path string) (*os.File, error) {
 	}
 	if !info.Mode().IsRegular() {
 		_ = file.Close()
-		return nil, fmt.Errorf("open %q: not a regular file", path)
+		return nil, fmt.Errorf("open %q: %w", path, ErrNotRegularFile)
 	}
 	return file, nil
 }

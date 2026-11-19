@@ -73,7 +73,9 @@ func TestThreadSnapshotsCarryAQuotaWaitWhileWorking(t *testing.T) {
 	}
 	srv.SetState(appwire.ThreadStatusActive)
 
-	waiting := &appwire.ThreadFailure{Title: "Usage limit reached", Cause: &appwire.DiagnosticCause{Kind: "provider", Provider: "openai", Status: 429}, ResumesAt: 1_800_000_000_000}
+	// The summary carries the wait's stamp beside its resume instant, so a
+	// client can order two waits of one turn that share a reset.
+	waiting := &appwire.ThreadFailure{Title: "Usage limit reached", Cause: &appwire.DiagnosticCause{Kind: "provider", Provider: "openai", Status: 429}, ResumesAt: 1_800_000_000_000, WaitStartedAt: 4}
 	for _, ended := range []events.EventData{
 		// The retry that ends the wait is announced as it goes out, so the
 		// row drops the wait before the retry's response streams.
@@ -95,5 +97,60 @@ func TestThreadSnapshotsCarryAQuotaWaitWhileWorking(t *testing.T) {
 		if got := listed(); got != nil {
 			t.Fatalf("after %s the row still carries the wait %+v", events.KindOf(ended), got)
 		}
+	}
+}
+
+// The cached wait summary belongs to the execution that supplied it. A user
+// can stop turn A mid-wait and start turn B before the bridge's drain
+// goroutine has consumed A's end — the drain runs behind the session loop,
+// so B's SetProcessingTurn can commit while the envelope still holds A's
+// wait. A read in that window must not pair B's running turn with A's wait
+// summary: the client's pre-cut reconciliation would (correctly) ignore
+// A's Stop — its endedTurnId names A — and the pane would show a quota
+// wait for B while B works. The summary serves only while the execution it
+// was sampled under is still the running one, and a wait sampled under no
+// published execution keeps serving (nothing can replace it; the first turn
+// that does publish un-matches it).
+func TestCachedWaitSummaryBelongsToItsExecution(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	src := publishEnvelope(srv, &stubThreadEnvelopeSource{})
+	waiting := &appwire.ThreadFailure{Title: "Usage limit reached", Cause: &appwire.DiagnosticCause{Kind: "provider", Provider: "openai", Status: 429}, ResumesAt: 1_800_000_000_000, WaitStartedAt: 4}
+	read := func() *appwire.ThreadFailure {
+		t.Helper()
+		return srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:root"}).Thread.Evener.Failure
+	}
+
+	// Turn A runs and its model call meets the limit: MODEL_RETRY samples
+	// the wait summary while A is the published turn.
+	srv.SetProcessingTurn("turn_a")
+	src.failure = waiting
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventModelRetry, SessionID: "root", Data: events.ModelRetryData{Attempt: 1, DelayMS: 7_200_000}}, nil)
+	got := read()
+	if got == nil || got.ResumesAt != waiting.ResumesAt || got.WaitStartedAt != waiting.WaitStartedAt {
+		t.Fatalf("while A runs the read carries %+v, want the wait with its stamp and deadline", got)
+	}
+
+	// A stops mid-wait and its end has not drained: no execution runs, so
+	// the wait is over and the read must stop carrying it even though the
+	// cache still holds it.
+	srv.SetProcessing(false)
+	if got := read(); got != nil {
+		t.Fatalf("after A's execution ended the read still carries %+v; the wait died with it", got)
+	}
+
+	// B starts before the bridge drains A's end — the replacement window.
+	// The stale summary must not pair with B.
+	srv.SetProcessingTurn("turn_b")
+	if got := read(); got != nil {
+		t.Fatalf("after B started the read carries %+v, want no wait: the cached summary is A's, and A is over", got)
+	}
+
+	// Once the bridge drains A's end, the facet re-samples and the cache
+	// clears, which is also what ends the window for good.
+	src.failure = nil
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "root", Data: events.SessionEndData{Reason: "interrupted", State: appwire.ThreadStatusIdle, Interrupted: true}}, nil)
+	if got := read(); got != nil {
+		t.Fatalf("after A's end drained the read carries %+v, want none", got)
 	}
 }

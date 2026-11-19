@@ -40,6 +40,22 @@ test("resolveAxis clamps when neither side fits", () => {
   // primary 950 overflows; flipped -5 < 8 -> clamp into [8, 1000-100-8=892]
   expect(resolveAxis(950, -5, 100, 1000)).toBe(892);
 });
+test("resolveAxis flips rather than letting primary use the trailing margin", () => {
+  // primary 615 + 180 = 795, inside 800 but only 5px of clear space where the
+  // reserved margin is 8 -> flip to 620, which keeps the full margin.
+  expect(resolveAxis(615, 620, 180, 800)).toBe(620);
+});
+test("resolveAxis accepts a flip that uses the trailing margin but stays on screen", () => {
+  // primary overflows; flipped 813 + 180 = 993 is on screen in a 1000px
+  // viewport with 7px to spare - one short of the 8px margin, so requiring the
+  // margin would clamp to 1000 - 180 - 8 = 812 instead. The flip is the
+  // fallback that exists for exactly this case.
+  expect(resolveAxis(1000, 813, 180, 1000)).toBe(813);
+});
+test("resolveAxis rejects a flip that runs past the far edge", () => {
+  // primary overflows, flipped 900 + 180 = 1080 is offscreen -> clamp.
+  expect(resolveAxis(1000, 900, 180, 1000)).toBe(1000 - 180 - EDGE_MARGIN);
+});
 test("computePopoverPosition opens below the trigger by TRIGGER_GAP", () => {
   const rect = { left: 20, right: 120, top: 30, bottom: 50 } as DOMRect;
   const pos = computePopoverPosition(rect, { width: 80, height: 40 });

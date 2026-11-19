@@ -178,7 +178,7 @@ func apiLogResultTranscriptPlaceholder(call llm.ToolCallData, result tool.ExecRe
 	// raw validator is the presentation-free boundary that tells projection
 	// whether decoding them is safe. Valid canceled API-log calls are not
 	// prevalidation-only and retain the usual private-evidence placeholder.
-	if result.PrevalOnly && tool.ValidateRawArguments(call.Arguments) != nil {
+	if result.PrevalOnly && tool.ValidateRawArguments([]byte(call.WireArguments())) != nil {
 		return "", false
 	}
 

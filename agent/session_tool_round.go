@@ -154,7 +154,7 @@ func (s *Session) recordDispatchedToolArguments(call llm.ToolCallData) {
 	if s.dispatchedToolArgs == nil {
 		s.dispatchedToolArgs = map[string][]byte{}
 	}
-	s.dispatchedToolArgs[call.ID] = append([]byte(nil), call.Arguments...)
+	s.dispatchedToolArgs[call.ID] = append([]byte(nil), call.WireArguments()...)
 	s.mu.Unlock()
 }
 

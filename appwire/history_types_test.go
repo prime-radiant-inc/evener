@@ -330,6 +330,56 @@ func TestThreadReadResponseHistoryVocabularyJSONRoundTrip(t *testing.T) {
 		t.Fatalf("ThreadStatusChangedParams JSON %s missing activeTurnId", raw)
 	}
 
+	// The quota-wait wire vocabulary: the status frame's endedTurnId, the
+	// retry announcement's waitStartedAt/resumesAt, and the failure
+	// summary's waitStartedAt are machine-contract field names a client
+	// keys on; each must keep its camelCase tag and stay omitempty so an
+	// older daemon's frames parse with the fields absent.
+	statusEnded := ThreadStatusChangedParams{ThreadID: "thread", Ref: "local:thread", EndedTurnID: "turn_1"}
+	raw, err = json.Marshal(statusEnded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"endedTurnId":"turn_1"`) {
+		t.Fatalf("ThreadStatusChangedParams JSON %s missing endedTurnId", raw)
+	}
+	retryWait := ThreadModelRetryParams{ThreadID: "thread", Ref: "local:thread", WaitStartedAt: 2, ResumesAt: 3}
+	raw, err = json.Marshal(retryWait)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"waitStartedAt":2`, `"resumesAt":3`} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("ThreadModelRetryParams JSON %s missing %s", raw, want)
+		}
+	}
+	failureWait := ThreadFailure{ResumesAt: 3, WaitStartedAt: 2}
+	raw, err = json.Marshal(failureWait)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"waitStartedAt":2`, `"resumesAt":3`} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("ThreadFailure JSON %s missing %s", raw, want)
+		}
+	}
+	// Zero values stay absent, so an older daemon's frames (and ordinary
+	// retries, and unstamped failures) parse without the new fields.
+	for _, absent := range []string{`"waitStartedAt"`, `"resumesAt"`, `"endedTurnId"`} {
+		if raw, err = json.Marshal(ThreadModelRetryParams{ThreadID: "thread", Ref: "local:thread", Attempt: 1}); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(raw), absent) {
+			t.Fatalf("ThreadModelRetryParams JSON %s unexpectedly carries %s", raw, absent)
+		}
+		if raw, err = json.Marshal(ThreadStatusChangedParams{ThreadID: "thread", Ref: "local:thread"}); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(raw), absent) {
+			t.Fatalf("ThreadStatusChangedParams JSON %s unexpectedly carries %s", raw, absent)
+		}
+	}
+
 	fork := ThreadForkParams{Ref: "local:thread", SourceItemKey: "item-key-1"}
 	raw, err = json.Marshal(fork)
 	if err != nil {

@@ -64,8 +64,14 @@ func (e *terminalRecordPersistError) Unwrap() error {
 type jobManager struct {
 	// retirementOwner is installed before publication and never rebound. Unlike
 	// stable-parent routing, process admission follows the Session's atomic pointer.
-	retirementOwner        *Session
-	mu                     sync.Mutex
+	retirementOwner *Session
+	mu              sync.Mutex
+	// liveActivityFold folds this manager's own journal for the live activity
+	// path. It lives here, not in the process-wide fold cache, so the activity
+	// read has a committed boundary (this manager's store), a lifetime tied to
+	// its waiters, and retention a descendant-heavy tree cannot evict. See
+	// liveJobFold.
+	liveActivityFold       liveJobFold
 	watchActivityMu        sync.Mutex
 	watchActivityReceivers map[string]struct{}
 	watchNotifyMu          sync.Mutex

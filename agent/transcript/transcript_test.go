@@ -341,3 +341,19 @@ func TestOpenWriter_SetsLastSync(t *testing.T) {
 		t.Errorf("lastSync = %v, expected >= %v", ls, before)
 	}
 }
+
+func TestTranscriptPreservesToolArgumentsSpellingAndHTMLChars(t *testing.T) {
+	const spelled = `{ "b" : 2, "a" : "<a&b>" }`
+	spell := llm.ToolCallData{ID: "spelled", Name: "w"}
+	spell.Arguments, spell.ArgumentsSpelling = llm.NormalizeToolArguments([]byte(spelled))
+	w, path := newRecordWriter(t)
+	calls := []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &spell}}
+	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: calls})); err != nil {
+		t.Fatal(err)
+	}
+	last := readTranscriptLines(t, path)
+	entry, err := DecodeEntry([]byte(last[len(last)-1]))
+	if got := entry.Turn.Message.Content; err != nil || !reflect.DeepEqual(got, calls) || got[0].ToolCall.WireArguments() != spelled {
+		t.Fatalf("restored %+v (%v), want live %+v replaying %q", got, err, calls, spelled)
+	}
+}

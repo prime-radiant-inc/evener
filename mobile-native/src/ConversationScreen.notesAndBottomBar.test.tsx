@@ -623,6 +623,41 @@ describe("a session that can't take a message yet (ruling 20)", () => {
 		expect(pressable(tree, "Restart session")?.props.disabled).toBe(false);
 	});
 
+	// An accepted stop refreshes the session, and that read takes the service's
+	// thread away while it is out: the store stays open, so the status alone
+	// says a resume can go. A resume admitted then throws before reaching the
+	// hub, and the restart reads the throw as a failure and gives up on the
+	// step the reader already paid for with a stop. The resume belongs to the
+	// read settling, not to the status staying put.
+	it("resumes once the stop's own read settles, though the store stayed open", async () => {
+		const { tree, hub } = await mount(restartNeeded("ref-restart-mid-read"));
+		const answer = hub.client.request;
+		const held = Promise.withResolvers<void>();
+		let reads = 0;
+		hub.client.request = async (method, params) => {
+			if (method === "thread/read" && reads === 0) {
+				reads += 1;
+				await held.promise;
+			}
+			return answer(method, params);
+		};
+		await press(tree, "Restart session");
+		await until(() => expect(reads).toBe(1));
+		// The stop was accepted and its read is out. Nothing went out against a
+		// thread the service cannot address, so the reader is owed no failure.
+		expect(hub.requests.filter((request) => request.method === "resumeThread")).toEqual([]);
+		expect(hasTestID(tree, "session-notice-error")).toBe(false);
+		// The read lands, and the resume the stop owed goes out.
+		await act(async () => held.resolve());
+		hub.client.request = answer;
+		await until(() =>
+			expect(
+				hub.requests.filter((request) => request.method === "resumeThread").map((request) => request.params.ref),
+			).toEqual(["ref-restart-mid-read"]),
+		);
+		expect(hasTestID(tree, "session-notice-error")).toBe(false);
+	});
+
 	it("says so in the notice when the stop fails", async () => {
 		const { tree, hub } = await mount(restartNeeded("ref-stop-fails"));
 		hub.client.forceStop = async () => {

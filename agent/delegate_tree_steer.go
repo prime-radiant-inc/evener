@@ -455,6 +455,12 @@ type delegateModelProjection struct {
 func (s *Session) delegateModelHistorySnapshotWithCoverage() delegateModelProjection {
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
+	return s.delegateModelHistorySnapshotWithCoverageLocked()
+}
+
+// delegateModelHistorySnapshotWithCoverageLocked copies the same transcript,
+// coverage and in-flight boundary. Callers hold attentionMu.
+func (s *Session) delegateModelHistorySnapshotWithCoverageLocked() delegateModelProjection {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	turns := append([]schema.Turn(nil), s.history...)
