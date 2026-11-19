@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -16,6 +18,13 @@ import (
 // ingress writes. Classification by this prefix is what lets the unleased
 // projection tell a watch row apart from any other delegate attention.
 const stableWatchAttentionIDPrefix = "watchdiag:"
+
+// stableWatchReminderAttentionIDPrefix names the durable rows a
+// long-running-jobs reminder writes. It is nested under
+// stableWatchAttentionIDPrefix, so a reminder is still a watch row, and
+// narrower than it, so replacing a stale reminder retires only older reminders
+// and leaves this ingress's other attention rows pending.
+const stableWatchReminderAttentionIDPrefix = stableWatchAttentionIDPrefix + "reminder:"
 
 // stableWatchOwner snapshots the stable delegate owner and its controller under
 // jm.mu. Every reader of stableOwner takes this snapshot: a new generation
@@ -71,8 +80,12 @@ func stableWatchNoticeAttentionID(n jobNotification) string {
 	if scope == "" {
 		scope = n.JobID
 	}
+	prefix := stableWatchAttentionIDPrefix
+	if n.isLongRunningJobsReminder() {
+		prefix = stableWatchReminderAttentionIDPrefix
+	}
 	sum := sha256.Sum256([]byte(n.Reason))
-	return stableWatchAttentionIDPrefix + scope + ":" + n.JobID + ":" + hex.EncodeToString(sum[:8]) + ":" + stableWatchNoticeOccurrence(n)
+	return prefix + scope + ":" + n.JobID + ":" + hex.EncodeToString(sum[:8]) + ":" + stableWatchNoticeOccurrence(n)
 }
 
 // stableWatchNoticeOccurrence is what distinguishes one fire, tick or snapshot
@@ -175,47 +188,108 @@ func isStableWatchAttentionID(attentionID string) bool {
 	return strings.HasPrefix(attentionID, stableWatchAttentionIDPrefix)
 }
 
-// dropUnresolvedWatchAttentionTurns removes the turns whose watch attention is
-// still unresolved on the durable ledger.
+// isStableWatchReminderAttentionID reports whether attentionID names a
+// long-running-jobs reminder this ingress wrote. Only these rows are superseded
+// by a newer reminder snapshot.
+func isStableWatchReminderAttentionID(attentionID string) bool {
+	return strings.HasPrefix(attentionID, stableWatchReminderAttentionIDPrefix)
+}
+
+// watchAttentionFilterState reads the session's attention ledger ONCE and
+// reports which watch identities are still pending and which were resolved as
+// discarded.
 //
-// It exists for the ADMITTED unleased turn of a stable child (LIFE-01, #2340
-// review M3). A watch notice can land after such a turn's drive has started but
-// before it snapshots history: the ingress appends it as a steering turn, and
-// its own leased wake is deferred by the drive guard. The unleased request would
-// then carry the notice to the provider, and the leased re-drive would present
-// it again -- once outside a committed generation, which is the whole point of
-// the gate. Dropping the unresolved row leaves the notice pending for the drive
-// that can present it under a lease, the same trade the held-attention drop
-// makes for a stopped run.
-//
-// A turn whose attention has already resolved is kept: the model has not seen
-// it yet, and resolution can only happen through a turn that presented it.
-func (s *Session) dropUnresolvedWatchAttentionTurns(turns []schema.Turn) (kept []schema.Turn, droppedAt []int) {
+// Both sets come from the same fold, so a caller deciding what a projection may
+// present can never see one identity as pending from one read and discarded
+// from another. The read happens under attentionMu, the lock every ledger write
+// holds.
+func (s *Session) watchAttentionFilterState() (pendingWatch, discardedWatch map[string]struct{}, err error) {
 	if s == nil {
-		return turns, nil
+		return nil, nil, nil
 	}
-	pending, err := s.pendingDelegateAttentionIDs()
-	if err != nil || len(pending) == 0 {
-		return turns, nil
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	fold, err := s.delegateAttentionFoldLocked()
+	if err != nil {
+		return nil, nil, err
 	}
-	watch := make(map[string]struct{}, len(pending))
-	for _, id := range pending {
-		if isStableWatchAttentionID(id) {
-			watch[id] = struct{}{}
+	for _, id := range fold.order {
+		if !isStableWatchAttentionID(id) {
+			continue
 		}
+		if _, resolved := fold.resolutions[id]; resolved {
+			continue
+		}
+		if pendingWatch == nil {
+			pendingWatch = make(map[string]struct{})
+		}
+		pendingWatch[id] = struct{}{}
 	}
-	if len(watch) == 0 {
+	for id, disposition := range fold.resolutions {
+		if disposition != delegateAttentionDiscarded || !isStableWatchAttentionID(id) {
+			continue
+		}
+		if discardedWatch == nil {
+			discardedWatch = make(map[string]struct{})
+		}
+		discardedWatch[id] = struct{}{}
+	}
+	return pendingWatch, discardedWatch, nil
+}
+
+// filterWatchAttentionTurns removes the watch attention turns a model request
+// or a compaction input must not present. The same filter decides every
+// projection — leased and unleased, live and restored — so no builder can hand
+// the model a row the ledger already retracted.
+//
+// A watch row resolved as discarded is always dropped. The clear that discarded
+// it retracted the row before any request presented it, and the row
+// deliberately stays in the transcript as the audit record of what happened. A
+// terminal one-shot fire is never discarded, so its row survives.
+//
+// When dropUnresolved is true — an unleased stable-delegate turn, whose
+// generation cannot consume what it presents — a watch row still pending on the
+// ledger is dropped as well. The row stays pending, so the leased drive that
+// can present it under a committed generation still owes it; presenting it here
+// would show it twice and once outside that generation.
+//
+// An unreadable ledger drops every watch row: the projection cannot confirm
+// which rows were retracted, so they wait for a later drive instead of reaching
+// the model on a guess. Turns without a watch identity, and watch rows the
+// ledger reports resolved without a discard, always project.
+//
+// droppedAt holds the ORIGINAL indices of the dropped turns in ascending order,
+// so a caller holding an index into the input can shift it with
+// shiftReplayBoundaryForDrops.
+func (s *Session) filterWatchAttentionTurns(turns []schema.Turn, dropUnresolved bool) (kept []schema.Turn, droppedAt []int) {
+	if s == nil || len(turns) == 0 {
 		return turns, nil
 	}
-	kept = make([]schema.Turn, 0, len(turns))
+	// Most projections hold no watch row at all, and a transcript read for them
+	// would buy nothing: answer before touching the ledger.
+	if !slices.ContainsFunc(turns, func(turn schema.Turn) bool { return isStableWatchAttentionID(turn.AttentionID) }) {
+		return turns, nil
+	}
+	pending, discarded, err := s.watchAttentionFilterState()
 	for i, turn := range turns {
-		if turn.AttentionID != "" {
-			if _, held := watch[turn.AttentionID]; held {
+		if isStableWatchAttentionID(turn.AttentionID) {
+			_, retracted := discarded[turn.AttentionID]
+			_, unresolved := pending[turn.AttentionID]
+			if err != nil || retracted || (dropUnresolved && unresolved) {
+				if kept == nil {
+					kept = make([]schema.Turn, 0, len(turns)-1)
+					kept = append(kept, turns[:i]...)
+				}
 				droppedAt = append(droppedAt, i)
 				continue
 			}
 		}
-		kept = append(kept, turn)
+		if kept != nil {
+			kept = append(kept, turn)
+		}
+	}
+	if len(droppedAt) == 0 {
+		return turns, nil
 	}
 	return kept, droppedAt
 }
@@ -246,13 +320,20 @@ type retainedStableWatchNotice struct {
 	notification jobNotification
 	attentionID  string
 	content      string
+	// delivery, when set, is the resolved watch-send this notice carries. Its
+	// durable append IS that delivery reaching the model, so the send is
+	// acknowledged the moment a retry lands and never before.
+	delivery *deliverableJobNotification
 }
 
 // retainStableWatchPending records a notice whose durable append failed and
 // schedules the session's existing notification retry wake. The notice is NOT
 // put back on the ordinary queue: that queue is the unleased route this ingress
 // exists to close (LIFE-01, #2340 review M4).
-func (s *Session) retainStableWatchPending(n jobNotification, attentionID, content string) {
+//
+// delivery carries the resolved watch-send the notice acknowledges once it is
+// durable, or nil for a notice that owes no acknowledgement.
+func (s *Session) retainStableWatchPending(n jobNotification, attentionID, content string, delivery *deliverableJobNotification) {
 	if s == nil || attentionID == "" {
 		return
 	}
@@ -262,7 +343,7 @@ func (s *Session) retainStableWatchPending(n jobNotification, attentionID, conte
 	}
 	// Last write wins for one identity: the same occurrence retried describes
 	// the same statement, and a newer statement carries its own identity.
-	s.stableWatchRetained[attentionID] = retainedStableWatchNotice{notification: n, attentionID: attentionID, content: content}
+	s.stableWatchRetained[attentionID] = retainedStableWatchNotice{notification: n, attentionID: attentionID, content: content, delivery: delivery}
 	s.scheduleJobNotificationRetryLocked()
 	s.pendingJobNotifsMu.Unlock()
 }
@@ -292,8 +373,17 @@ func (s *Session) retryRetainedStableWatchPending() {
 			continue
 		}
 		s.pendingJobNotifsMu.Lock()
+		// One claim per identity: a concurrent retry that already retired the
+		// notice owes neither a second settle nor a second arm.
+		if _, still := s.stableWatchRetained[r.attentionID]; !still {
+			s.pendingJobNotifsMu.Unlock()
+			continue
+		}
 		delete(s.stableWatchRetained, r.attentionID)
 		s.pendingJobNotifsMu.Unlock()
+		if r.delivery != nil {
+			s.settleDeliveredWatchNotification(context.Background(), *r.delivery)
+		}
 		if err := s.armDelegateAttention(r.attentionID); err != nil {
 			s.emit(warningDataFromError("arm stable watch attention", err))
 		}
@@ -319,7 +409,7 @@ func (s *Session) retireSupersededStableWatchPending(n jobNotification, attentio
 	}
 	var superseded []string
 	for _, id := range pending {
-		if id != attentionID && isStableWatchAttentionID(id) {
+		if id != attentionID && isStableWatchReminderAttentionID(id) {
 			superseded = append(superseded, id)
 		}
 	}
@@ -335,6 +425,20 @@ func (jm *jobManager) persistStableWatchPending(n jobNotification) bool {
 	owner, controller := jm.stableWatchOwner()
 	if owner == nil || owner.owningDelegateID == "" {
 		return false
+	}
+	// A watch-send token names a pending send rather than carrying its frame,
+	// so the frame and the delivery identity must be loaded here, before the
+	// row is built and before the attention identity is minted.
+	var delivery *deliverableJobNotification
+	if n.WatchSend != nil {
+		resolved, ok := owner.resolveStableWatchSend(&n)
+		if !ok {
+			// The token no longer names a current pending send: replaced,
+			// cleared, dropped, or already settled. There is no frame to
+			// persist and no delivery to acknowledge.
+			return true
+		}
+		delivery = &resolved
 	}
 	// A repeating tick is dropped here when its timer has already been cleared
 	// (LIFE-01, #2340 review Low). The queue applies this check at delivery
@@ -376,7 +480,7 @@ func (jm *jobManager) persistStableWatchPending(n jobNotification) bool {
 		// SAME identity through the session's existing notification retry
 		// wake; a retry reproduces stableWatchNoticeAttentionID, so the second
 		// attempt is a replay rather than a second item.
-		owner.retainStableWatchPending(n, attentionID, content)
+		owner.retainStableWatchPending(n, attentionID, content, delivery)
 		owner.emit(warningDataFromError("persist stable watch attention", err))
 		return true
 	}
@@ -400,6 +504,12 @@ func (jm *jobManager) persistStableWatchPending(n jobNotification) bool {
 			owner.pendingJobNotifsMu.Unlock()
 		}
 	}
+	// The row is durable, so a watch-send it carries has reached the model:
+	// acknowledge that exact delivery. A replay of an already-present row
+	// settles too -- the earlier attempt's ack is what may have been lost.
+	if delivery != nil {
+		owner.settleDeliveredWatchNotification(context.Background(), *delivery)
+	}
 	if err := owner.armDelegateAttention(attentionID); err != nil {
 		// The row IS durable; only its wake failed. armDelegateAttention
 		// already retains the id for its own paced re-arm, so the notice is
@@ -407,6 +517,30 @@ func (jm *jobManager) persistStableWatchPending(n jobNotification) bool {
 		owner.emit(warningDataFromError("arm stable watch attention", err))
 	}
 	return true
+}
+
+// resolveStableWatchSend loads the CURRENT frame a watch-send token names and
+// stamps the fields its durable row renders from. It reports false for a stale
+// token, which is the same answer filterDeliverableJobNotifications gives one:
+// the pending send was replaced, cleared, dropped, or already settled, so
+// neither a frame nor an acknowledgement is owed.
+//
+// The occurrence is the delivery id: the same watch fires again under a fresh
+// delivery, and a retry of one delivery reproduces its own id.
+func (s *Session) resolveStableWatchSend(n *jobNotification) (deliverableJobNotification, bool) {
+	jm, cfg, state, ok := s.resolveWatchSendToken(n.WatchSend)
+	if !ok {
+		return deliverableJobNotification{}, false
+	}
+	n.watchSendFrame = state.Frame
+	if n.backstopFires = jm.watchSendBackstopFires(cfg, state); n.backstopFires > 0 && n.OriginWatchID == "" {
+		n.OriginWatchID = cfg.watchID
+	}
+	n.Provenance = provenance.Union(n.Provenance, state.Provenance)
+	if state.DeliveryID != "" {
+		n.Occurrence = "send:" + state.DeliveryID
+	}
+	return deliverableJobNotification{notification: *n, watchJM: jm, watchCfg: cfg, watchState: state}, true
 }
 
 func (jm *jobManager) watchNotificationFromWatch(cfg *watchConfig, jobID, reason string, root *provenance.Causal) jobNotification {
@@ -435,6 +569,12 @@ func (jm *jobManager) watchNotificationWithDelivery(cfg *watchConfig, jobID, rea
 		visibleSessionID = jm.sessionID
 	}
 	n.Provenance = provenance.WithWatch(root, cfg.watchID, cfg.generation, deliveryID, visibleSessionID, jobID)
+	// Two no-send fires of one watch with the same job and reason differ only
+	// by their delivery, so the delivery id is what makes the second a new
+	// occurrence rather than a replay of the first.
+	if deliveryID != "" && n.Occurrence == "" {
+		n.Occurrence = "delivery:" + deliveryID
+	}
 	if cfg.receiverSessionID != "" {
 		n.receiverSessionID = cfg.receiverSessionID
 		n.receiverNotify = cfg.receiverNotify

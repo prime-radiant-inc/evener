@@ -330,6 +330,11 @@ type watchConfig struct {
 	// the model last heard from this watch". Both are stamped under jm.mu.
 	tickFired           bool
 	lastTickOutputBytes int64
+	// tickSeq counts the clock fires this config has delivered, stamped under
+	// jm.mu in the same locked step that stamps lastClockFire. A tick's durable
+	// occurrence is built from it, so two fires of one watch never share an
+	// occurrence even when they land on the same clock instant.
+	tickSeq uint64
 }
 
 type watchArgs struct {

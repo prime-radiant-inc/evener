@@ -5145,7 +5145,7 @@ func TestDelegateResourceSupervision_UnleasedTurnDoesNotCarryAWatchDiagnostic(t 
 	child.mu.Lock()
 	history := append([]schema.Turn{}, child.history...)
 	child.mu.Unlock()
-	kept, droppedAt := child.dropUnresolvedWatchAttentionTurns(history)
+	kept, droppedAt := child.filterWatchAttentionTurns(history, true)
 	if len(droppedAt) == 0 {
 		t.Fatal("an unresolved watch attention turn survived the unleased projection: the diagnostic would be presented with no lease")
 	}
@@ -5169,4 +5169,576 @@ func TestDelegateResourceSupervision_UnleasedTurnDoesNotCarryAWatchDiagnostic(t 
 	if got := shiftReplayBoundaryForDrops(3, []int{0, 1}); got != 1 {
 		t.Fatalf("in-flight boundary after two drops before it = %d, want 1", got)
 	}
+}
+
+// stableWatchSendChild arms a stable-delegate child over its own job manager:
+// the shape persistStableWatchPending requires, an owner that is a delegate
+// child with a controller, and a transcript to append durable rows to.
+func stableWatchSendChild(t *testing.T) (*Session, *jobManager, *delegateTreeController) {
+	t.Helper()
+	child := newDelegateAttentionTestSession(t)
+	jm := newTestJM(t)
+	cleanupJobManager(t, jm)
+	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
+	child.jobManager = jm
+	child.owningDelegateID = "dlg_stable_send"
+	child.delegateController = controller
+	jm.bindDelegateParent(controller, delegateLease{delegateID: child.owningDelegateID, generation: 1}, nil, child)
+	return child, jm, controller
+}
+
+// TestStableDelegateCallerWatchSendRendersItsFrameAndSettles pins the
+// caller-targeted watch-send branch of the durable ingress.
+//
+// A watch-send token names a pending send and carries no frame, so the ingress
+// must load the CURRENT frame before building the row; without that the model
+// receives an empty watch frame. It must also acknowledge that exact send once
+// the row is durable, or the send stays pending forever and re-renders on the
+// next pass.
+func TestStableDelegateCallerWatchSendRendersItsFrameAndSettles(t *testing.T) {
+	t.Parallel()
+	child, jm, _ := stableWatchSendChild(t)
+
+	const frame = "sentinel frame: the watched job finished"
+	cfg, key, deliveryID := installCallerSendWatchWithCurrentFrame(t, jm, frame)
+	jm.mu.Lock()
+	state := *cfg.pending[key]
+	jm.mu.Unlock()
+	token := watchSendTokenNotification("", state)
+
+	child.enqueueJobNotificationAndNotify(token)
+
+	if !jm.watchSendDelivered(deliveryID) {
+		t.Fatal("the watch send is not settled delivered: the model has the row, but the send stays pending and re-renders on the next pass")
+	}
+	jm.mu.Lock()
+	pending := len(cfg.pending)
+	jm.mu.Unlock()
+	if pending != 0 {
+		t.Fatalf("%d watch send(s) still pending after the durable append, want 0", pending)
+	}
+
+	// The row itself must carry the loaded frame, under an identity naming this
+	// delivery, so a second delivery of the same watch is a new row.
+	fold, err := readDelegateAttentionFold(transcriptPath(child.stateDir, child.id), child.id)
+	if err != nil {
+		t.Fatalf("read attention fold: %v", err)
+	}
+	var content, attentionID string
+	for id, message := range fold.content {
+		if strings.HasPrefix(id, stableWatchAttentionIDPrefix) {
+			attentionID = id
+			content = message.Text()
+		}
+	}
+	if content == "" {
+		t.Fatalf("no watch row was appended: %v", fold.pendingIDs())
+	}
+	if want := "send:" + deliveryID; !strings.HasSuffix(attentionID, want) {
+		t.Fatalf("appended row identity = %q, want the occurrence %q so each delivery has its own durable identity", attentionID, want)
+	}
+	if !strings.Contains(content, frame) {
+		t.Fatalf("the appended row does not carry the pending send's frame %q, so the model received an empty watch frame: %q", frame, content)
+	}
+}
+
+// TestStableDelegateCallerWatchSendStaleTokenPersistsNothing pins the stale
+// branch: a token whose pending send was replaced must neither persist a row nor
+// acknowledge anything.
+func TestStableDelegateCallerWatchSendStaleTokenPersistsNothing(t *testing.T) {
+	t.Parallel()
+	child, jm, _ := stableWatchSendChild(t)
+
+	cfg, key, _ := installCallerSendWatchWithCurrentFrame(t, jm, "stale frame")
+	stale := watchSendTokenNotification("", *cfg.pending[key])
+	// A newer fire coalesces over the same pending entry: the token's
+	// updateSeq no longer names the current state.
+	onSessionEventKD(jm, events.EventCommunicate, nil)
+
+	before, err := child.pendingDelegateAttentionIDs()
+	if err != nil {
+		t.Fatalf("read pending attention: %v", err)
+	}
+	child.jobManager.enqueueWatchNotifications([]jobNotification{stale})
+
+	after, err := child.pendingDelegateAttentionIDs()
+	if err != nil {
+		t.Fatalf("read pending attention after the stale token: %v", err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("a stale watch-send token appended a durable row: %v -> %v", before, after)
+	}
+	jm.mu.Lock()
+	pending := len(cfg.pending)
+	jm.mu.Unlock()
+	if pending == 0 {
+		t.Fatal("a stale token settled the newer pending send, which the model has not been given")
+	}
+}
+
+// TestStableDelegateCallerWatchSendRetrySettlesOnlyAfterDurableAppend pins the
+// ordering between durability and acknowledgement: a failed append must leave
+// the send pending, and the retry that lands it must settle.
+func TestStableDelegateCallerWatchSendRetrySettlesOnlyAfterDurableAppend(t *testing.T) {
+	t.Parallel()
+	child, jm, _ := stableWatchSendChild(t)
+
+	cfg, key, deliveryID := installCallerSendWatchWithCurrentFrame(t, jm, "retry frame")
+	token := watchSendTokenNotification("", *cfg.pending[key])
+
+	child.mu.Lock()
+	writer, ready := child.transcript, child.transcriptReady
+	child.transcript, child.transcriptReady = nil, false
+	child.mu.Unlock()
+
+	child.enqueueJobNotificationAndNotify(token)
+
+	if jm.watchSendDelivered(deliveryID) {
+		t.Fatal("a failed durable append acknowledged the watch send, so the frame is marked delivered without ever reaching the model")
+	}
+	child.pendingJobNotifsMu.Lock()
+	retained := len(child.stableWatchRetained)
+	child.pendingJobNotifsMu.Unlock()
+	if retained != 1 {
+		t.Fatalf("a failed durable append left %d notice(s) retained, want 1", retained)
+	}
+
+	child.mu.Lock()
+	child.transcript, child.transcriptReady = writer, ready
+	child.mu.Unlock()
+	child.retryRetainedStableWatchPending()
+
+	if !jm.watchSendDelivered(deliveryID) {
+		t.Fatal("the retry appended the row but never acknowledged the send: it stays pending and re-renders")
+	}
+	child.pendingJobNotifsMu.Lock()
+	remaining := len(child.stableWatchRetained)
+	child.pendingJobNotifsMu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("the retry left %d notice(s) retained, want 0", remaining)
+	}
+}
+
+// TestStableDelegateConditionFireDeliveryIDsAreDistinctOccurrences pins the
+// occurrence of two no-send condition fires that share a watch, job and reason:
+// only the delivery id distinguishes them.
+func TestStableDelegateConditionFireDeliveryIDsAreDistinctOccurrences(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	cleanupJobManager(t, jm)
+
+	args := watchArgs{Target: runtimeMessageAliasCaller, Events: []string{"communicate"}}
+	cfg, err := newWatchConfig(args, jm.now(), "")
+	if err != nil {
+		t.Fatalf("newWatchConfig: %v", err)
+	}
+	first := jm.watchNotificationWithDelivery(cfg, "job:delivery", "output_match", nil, "delivery-one")
+	second := jm.watchNotificationWithDelivery(cfg, "job:delivery", "output_match", nil, "delivery-two")
+
+	if first.Occurrence == second.Occurrence {
+		t.Fatalf("two condition fires share occurrence %q, so the second reads as a replay of the first", first.Occurrence)
+	}
+	if stableWatchNoticeAttentionID(first) == stableWatchNoticeAttentionID(second) {
+		t.Fatal("two condition fires share an attention identity: the second would be dropped as a replay")
+	}
+	if got, want := stableWatchNoticeAttentionID(first), stableWatchNoticeAttentionID(jm.watchNotificationWithDelivery(cfg, "job:delivery", "output_match", nil, "delivery-one")); got != want {
+		t.Fatalf("a retried delivery identity = %q, want %q: a retry must replay, not duplicate", got, want)
+	}
+}
+
+// TestWatchProgressTickOccurrenceIsUniquePerFire pins the occurrence of a
+// progress-interval tick: two ticks that both carry new output are two
+// statements, and each must reach the model.
+func TestWatchProgressTickOccurrenceIsUniquePerFire(t *testing.T) {
+	t.Parallel()
+	h := newCoalesceHarness(t)
+
+	if !h.tick(t, 1) {
+		t.Fatal("the first progress tick retired the watch")
+	}
+	h.produce(t, "first")
+	if !h.tick(t, 2) {
+		t.Fatal("the second progress tick retired the watch")
+	}
+	if len(h.notified) != 2 {
+		t.Fatalf("%d progress ticks notified, want 2", len(h.notified))
+	}
+	first, second := h.notified[0], h.notified[1]
+	if first.Occurrence == "" || second.Occurrence == "" {
+		t.Fatalf("progress tick occurrences = %q and %q, want both set: an unstamped tick shares the source identity of the first", first.Occurrence, second.Occurrence)
+	}
+	if first.Occurrence == second.Occurrence {
+		t.Fatalf("both progress ticks share occurrence %q, so the second reads as a replay of the first", first.Occurrence)
+	}
+	if stableWatchNoticeAttentionID(first) == stableWatchNoticeAttentionID(second) {
+		t.Fatal("two progress ticks share an attention identity: the second would be dropped as a replay")
+	}
+}
+
+// TestStableDelegateReminderRetirementLeavesOtherWatchAttentionPending pins the
+// scope of reminder replacement: a newer snapshot retires older reminders and
+// nothing else.
+func TestStableDelegateReminderRetirementLeavesOtherWatchAttentionPending(t *testing.T) {
+	t.Parallel()
+	child, _, _ := stableWatchSendChild(t)
+
+	tick := jobNotification{Kind: jobNotificationKindWatch, WatchID: "watch:tick", Reason: "repeat", Fires: 1, IntervalSeconds: 60}
+	tick.Occurrence = "tick:watch:tick:1"
+	tickID := stableWatchNoticeAttentionID(tick)
+	diagnostic := watchSendDiagnosticNotification("watch:diag", "job:diag", "watch send failed")
+	diagnosticID := stableWatchNoticeAttentionID(diagnostic)
+	older := watchNotification("", longRunningJobsReason)
+	older.Note = "- job_a: running 20m"
+	olderID := stableWatchNoticeAttentionID(older)
+	newer := watchNotification("", longRunningJobsReason)
+	newer.Note = "- job_a: running 25m"
+	newerID := stableWatchNoticeAttentionID(newer)
+
+	for _, pair := range []struct{ id, content string }{
+		{tickID, "tick row"},
+		{diagnosticID, "diagnostic row"},
+		{olderID, "older reminder"},
+	} {
+		if _, err := child.appendDelegateNotificationDurably(pair.id, pair.content); err != nil {
+			t.Fatalf("append %q: %v", pair.content, err)
+		}
+	}
+	if _, err := child.appendDelegateNotificationDurably(newerID, "newer reminder"); err != nil {
+		t.Fatalf("append the newer reminder: %v", err)
+	}
+	child.retireSupersededStableWatchPending(newer, newerID)
+
+	pending, err := child.pendingDelegateAttentionIDs()
+	if err != nil {
+		t.Fatalf("read pending attention: %v", err)
+	}
+	if slices.Contains(pending, olderID) {
+		t.Fatal("the superseded reminder is still pending: a stale listing keeps prompting for jobs that may be done")
+	}
+	for _, id := range []string{tickID, diagnosticID, newerID} {
+		if !slices.Contains(pending, id) {
+			t.Fatalf("%q is no longer pending after a reminder was replaced (%v): retirement reached beyond reminders", id, pending)
+		}
+	}
+}
+
+// TestJobNotificationRetryRearmsForRetainedWatchNotice pins the retry chain: a
+// retained watch notice whose retry fails again must leave a timer armed, or the
+// notice sits retained with nothing to re-attempt it.
+func TestJobNotificationRetryRearmsForRetainedWatchNotice(t *testing.T) {
+	t.Parallel()
+	child, _, _ := stableWatchSendChild(t)
+	clk := agenttest.NewFakeClockAt(time.Unix(1_700_000_000, 0).UTC())
+	child.clock = clk
+
+	child.mu.Lock()
+	writer, ready := child.transcript, child.transcriptReady
+	child.transcript, child.transcriptReady = nil, false
+	child.mu.Unlock()
+	t.Cleanup(func() {
+		child.mu.Lock()
+		child.transcript, child.transcriptReady = writer, ready
+		child.mu.Unlock()
+	})
+
+	notice := watchSendDiagnosticNotification("watch:retry", "job:retry", "watch send failed")
+	child.retainStableWatchPending(notice, stableWatchNoticeAttentionID(notice), "retained row", nil)
+	child.pendingJobNotifsMu.Lock()
+	armed := child.jobNotifyRetry.active
+	child.pendingJobNotifsMu.Unlock()
+	if !armed {
+		t.Fatal("retaining a notice left no retry timer armed")
+	}
+
+	clk.Advance(jobNotificationRetryInitialDelay)
+	clk.Drain()
+
+	child.pendingJobNotifsMu.Lock()
+	retained := len(child.stableWatchRetained)
+	armed = child.jobNotifyRetry.active
+	delay := child.jobNotifyRetry.delay
+	child.pendingJobNotifsMu.Unlock()
+	if retained != 1 {
+		t.Fatalf("%d notice(s) retained after a retry whose append failed, want 1", retained)
+	}
+	if !armed {
+		t.Fatal("a failed retry left the notice retained with no timer armed, so nothing re-attempts it")
+	}
+	if delay <= jobNotificationRetryInitialDelay {
+		t.Fatalf("retry delay after a failed retry = %s, want it backed off past %s", delay, jobNotificationRetryInitialDelay)
+	}
+
+	// Once the append can land, the chain ends: no notice is retained and the
+	// timer is not re-armed.
+	child.mu.Lock()
+	child.transcript, child.transcriptReady = writer, ready
+	child.mu.Unlock()
+	clk.Advance(delay)
+	clk.Drain()
+
+	child.pendingJobNotifsMu.Lock()
+	retained = len(child.stableWatchRetained)
+	armed = child.jobNotifyRetry.active
+	child.pendingJobNotifsMu.Unlock()
+	if retained != 0 {
+		t.Fatalf("%d notice(s) retained after the retry landed, want 0", retained)
+	}
+	if armed {
+		t.Fatal("the retry chain stayed armed after the last retained notice landed")
+	}
+}
+
+// newWatchFilterSession builds a durable session so attention rows can be
+// written to a real transcript.
+func newWatchFilterSession(t *testing.T) *Session {
+	t.Helper()
+	stateDir := t.TempDir()
+	if err := os.MkdirAll(schema.SessionsDir(stateDir), 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	return newSession(t, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: stateDir}))
+}
+
+// TestStableWatchAttentionFilterDropsRetractedRows pins the one projection rule
+// every builder applies to watch attention rows.
+//
+// A row the ledger resolved as discarded was retracted before any request
+// presented it and is kept in the transcript only as the audit record, so it is
+// dropped from every projection. A row still pending is dropped only where the
+// turn cannot consume it -- an unleased stable-delegate turn -- and is kept
+// otherwise, because resolution can only happen through a turn that presents
+// it. An unreadable ledger cannot confirm which rows were retracted, so watch
+// rows wait for a later drive while ordinary work proceeds.
+func TestStableWatchAttentionFilterDropsRetractedRows(t *testing.T) {
+	t.Parallel()
+	sess := newWatchFilterSession(t)
+
+	discardedID := stableWatchNoticeAttentionID(watchSendDiagnosticNotification("watch:filter", "job:filter-retracted", "retracted notice"))
+	if _, err := sess.appendDelegateNotificationDurably(discardedID, "retracted watch notice"); err != nil {
+		t.Fatalf("append the retracted watch row: %v", err)
+	}
+	if err := sess.resolveAttentionDurably([]string{discardedID}, delegateAttentionDiscarded); err != nil {
+		t.Fatalf("discard the retracted watch row: %v", err)
+	}
+	pendingID := stableWatchNoticeAttentionID(watchSendDiagnosticNotification("watch:filter", "job:filter-pending", "pending notice"))
+	if _, err := sess.appendDelegateNotificationDurably(pendingID, "pending watch notice"); err != nil {
+		t.Fatalf("append the pending watch row: %v", err)
+	}
+
+	sess.mu.Lock()
+	history := append([]schema.Turn{}, sess.history...)
+	sess.mu.Unlock()
+	if len(history) != 2 {
+		t.Fatalf("resident history holds %d turn(s), want the two watch rows the test appended", len(history))
+	}
+
+	// A leased turn, and any turn that is not an unleased stable-delegate turn,
+	// may present an unresolved row: only the retracted one is dropped.
+	kept, droppedAt := sess.filterWatchAttentionTurns(history, false)
+	if len(droppedAt) != 1 || droppedAt[0] != 0 {
+		t.Fatalf("leased projection dropped turn(s) at %v, want only the retracted row at index 0", droppedAt)
+	}
+	if len(kept) != 1 || kept[0].AttentionID != pendingID {
+		t.Fatalf("leased projection kept %d turn(s), want the pending watch row alone", len(kept))
+	}
+
+	// An unleased stable-delegate turn cannot consume what it presents, so the
+	// unresolved row is deferred to the leased drive that owes it.
+	kept, droppedAt = sess.filterWatchAttentionTurns(history, true)
+	if len(droppedAt) != 2 || droppedAt[0] != 0 || droppedAt[1] != 1 {
+		t.Fatalf("unleased projection dropped turn(s) at %v, want both watch rows", droppedAt)
+	}
+	if len(kept) != 0 {
+		t.Fatalf("unleased projection kept %d watch turn(s), want none", len(kept))
+	}
+
+	// Dropping the rows from a projection must not lose the ledger: the
+	// retracted row stays on disk as the audit record and the pending row stays
+	// pending for the drive that can present it.
+	fold, err := sess.readDelegateAttentionFold(transcriptPath(sess.stateDir, sess.id), sess.id)
+	if err != nil {
+		t.Fatalf("read the attention fold: %v", err)
+	}
+	if fold.content[discardedID].Text() != "retracted watch notice" {
+		t.Fatal("the retracted row is gone from the transcript, so the audit record of the retraction was lost")
+	}
+	// A restored session reads the same file cold. Both the row and the marker
+	// that retracted it must be there, so the restored projection drops the row
+	// from the model's history and still holds the audit record.
+	_, entries, _, err := readTranscript(context.Background(), transcriptPath(sess.stateDir, sess.id), sess.stateDir)
+	if err != nil {
+		t.Fatalf("read the transcript cold: %v", err)
+	}
+	coldFold, err := foldDelegateAttention(entries)
+	if err != nil {
+		t.Fatalf("fold the transcript cold: %v", err)
+	}
+	if coldFold.resolutions[discardedID] != delegateAttentionDiscarded {
+		t.Fatal("a cold read of the transcript does not report the retraction, so a restored session would present the retracted row")
+	}
+	if coldFold.content[discardedID].Text() != "retracted watch notice" {
+		t.Fatal("a cold read of the transcript lost the retracted row's audit record")
+	}
+	pending, err := sess.pendingDelegateAttentionIDs()
+	if err != nil {
+		t.Fatalf("read pending attention: %v", err)
+	}
+	if !slices.Contains(pending, pendingID) {
+		t.Fatal("the dropped unresolved row is no longer pending: dropping it from a projection lost it instead of deferring it")
+	}
+
+	// An unreadable ledger cannot confirm which rows were retracted: every watch
+	// row waits, and ordinary turns still project.
+	sess.cfg.testOnly.delegateAttentionReadFold = func(string, string) (delegateAttentionFold, error) {
+		return delegateAttentionFold{}, errors.New("attention ledger unreadable")
+	}
+	defer func() { sess.cfg.testOnly.delegateAttentionReadFold = nil }()
+	ordinary := schema.NewTurn(schema.TurnUserInput, llm.User("ordinary work"))
+	withOrdinary := append([]schema.Turn{ordinary}, history...)
+	kept, droppedAt = sess.filterWatchAttentionTurns(withOrdinary, false)
+	if len(droppedAt) != 2 || droppedAt[0] != 1 || droppedAt[1] != 2 {
+		t.Fatalf("projection over an unreadable ledger dropped turn(s) at %v, want both watch rows", droppedAt)
+	}
+	if len(kept) != 1 || kept[0].Kind != schema.TurnUserInput || kept[0].AttentionID != "" {
+		t.Fatalf("projection over an unreadable ledger kept %d turn(s), want the ordinary turn alone", len(kept))
+	}
+}
+
+// TestStableWatchAttentionSkillRebuildExcludesAppendedRow pins the skill rebuild
+// to the same watch-eligibility rule the snapshot projection applies.
+//
+// A watch row can land after a request's history snapshot and before the
+// appended-skill rebuild re-reads the tail. The rebuild appends that tail to the
+// projected history, so without the filter the row reaches the provider on an
+// unleased turn, before any leased generation could present it.
+func TestStableWatchAttentionSkillRebuildExcludesAppendedRow(t *testing.T) {
+	t.Parallel()
+	sess := newWatchFilterSession(t)
+	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
+	sess.owningDelegateID = "dlg_skill_rebuild"
+	sess.delegateController = controller
+
+	sess.mu.Lock()
+	sess.history = []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("earlier work"))}
+	// An obligation with no recorded identity cannot be delivered, so
+	// prepareSkillDelivery appends its typed explanation and the request
+	// rebuilds through the appended-skill path.
+	sess.skillLifecycle.Obligations = append(sess.skillLifecycle.Obligations, schema.SkillDeliveryObligation{
+		InvocationID: "inv-watch-rebuild",
+		Route:        "model_tool",
+	})
+	sess.skillLifecycle.Revision++
+	sess.mu.Unlock()
+
+	const watchContent = "watch row that landed after the snapshot"
+	attentionID := stableWatchNoticeAttentionID(watchSendDiagnosticNotification("watch:rebuild", "job:rebuild", "rebuild notice"))
+	var landOnce sync.Once
+	updateSessionTestConfig(sess, func(cfg *testConfig) {
+		cfg.afterModelHistorySnapshot = func() {
+			landOnce.Do(func() {
+				if _, err := sess.appendDelegateNotificationDurably(attentionID, watchContent); err != nil {
+					t.Errorf("append the watch row after the snapshot: %v", err)
+				}
+			})
+		}
+	})
+
+	var timings events.RoundTimings
+	_, _, _, req, _, _, err := sess.prepareModelRequestWithError(context.Background(), 0, &timings)
+	if err != nil {
+		t.Fatalf("prepare the unleased stable-child request: %v", err)
+	}
+	if got := strings.Count(requestText(req), watchContent); got != 0 {
+		t.Fatalf("the request presented the watch row that landed after the snapshot %d time(s), want 0: it would reach the provider with no lease", got)
+	}
+	// Dropping it from the request must DEFER it, not lose it.
+	pending, err := sess.pendingDelegateAttentionIDs()
+	if err != nil {
+		t.Fatalf("read pending delegate attention: %v", err)
+	}
+	if !slices.Contains(pending, attentionID) {
+		t.Fatal("the watch row is no longer pending: excluding it from the rebuilt request lost it instead of deferring it")
+	}
+}
+
+// TestStableWatchAttentionFoldDoesNotDuplicateSnapshottedTail pins the fold's
+// tail merge to the UNFILTERED snapshot length.
+//
+// foldHistoryBeforeRequest hands a filtered copy of history to context
+// management, but the turns it omitted are still resident and still sit after
+// the snapshot. Publishing with the filtered length makes the merge boundary
+// fall inside the snapshot, so turns the fold already accounts for are appended
+// a second time.
+func TestStableWatchAttentionFoldDoesNotDuplicateSnapshottedTail(t *testing.T) {
+	t.Parallel()
+	sess := newWatchFilterSession(t)
+	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
+	sess.owningDelegateID = "dlg_fold_tail"
+	sess.delegateController = controller
+
+	const toolResultText = "tool result the fold already accounted for"
+	attentionID := stableWatchNoticeAttentionID(watchSendDiagnosticNotification("watch:fold", "job:fold", "fold notice"))
+	if _, err := sess.appendDelegateNotificationDurably(attentionID, "watch row before the tool result"); err != nil {
+		t.Fatalf("append the watch row: %v", err)
+	}
+	sess.mu.Lock()
+	watchTurn := sess.history[0]
+	sess.history = []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("run the tool")),
+		watchTurn,
+		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call:fold", Name: "shell", Arguments: json.RawMessage(`{}`), Type: "function"}},
+		}}),
+		schema.NewTurn(schema.TurnToolResults, llm.ToolResult("call:fold", toolResultText, false)),
+	}
+	sess.mu.Unlock()
+
+	// A turn landing during context management is the production shape the
+	// merge boundary exists for: it must appear once, like the snapshot turns.
+	concurrent := schema.NewTurn(schema.TurnUserInput, llm.User("turn that landed during the fold"))
+	sess.strategy = &appendingFoldStrategy{sess: sess, turn: concurrent}
+
+	if !sess.foldHistoryBeforeRequest(context.Background(), 1, 0) {
+		t.Fatal("the fold did not publish, so the test never exercised the tail merge")
+	}
+	sess.mu.Lock()
+	published := append([]schema.Turn{}, sess.history...)
+	sess.mu.Unlock()
+
+	var toolResults, concurrentTurns int
+	for _, turn := range published {
+		for _, part := range turn.Message.Content {
+			if part.Kind == llm.ContentToolResult && part.ToolResult != nil && part.ToolResult.Content == toolResultText {
+				toolResults++
+			}
+		}
+		if turn.Message.Text() == "turn that landed during the fold" {
+			concurrentTurns++
+		}
+	}
+	if toolResults != 1 {
+		t.Fatalf("the published history holds the tool result %d time(s), want 1: the filtered pre-length moved the merge boundary inside the snapshot", toolResults)
+	}
+	if concurrentTurns != 1 {
+		t.Fatalf("the published history holds the turn that landed during the fold %d time(s), want 1", concurrentTurns)
+	}
+}
+
+// appendingFoldStrategy appends one turn to the session's history while context
+// management runs, between the fold's snapshot and its publish.
+type appendingFoldStrategy struct {
+	sess *Session
+	turn schema.Turn
+}
+
+func (s *appendingFoldStrategy) Name() string                    { return "appending-fold" }
+func (s *appendingFoldStrategy) Tools() []toolpkg.RegisteredTool { return nil }
+
+func (s *appendingFoldStrategy) ManageContext(context.Context, *[]schema.Turn, int, func(events.EventKind, events.EventData)) error {
+	s.sess.recordTurn(s.turn, s.turn)
+	return nil
+}
+
+func (s *appendingFoldStrategy) AfterAction(context.Context, []schema.Turn, *llm.Client) error {
+	return nil
 }

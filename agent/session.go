@@ -1852,6 +1852,16 @@ func (s *Session) scheduleJobNotificationRetryLocked() {
 		// rather than only delivering queued notifications (LIFE-01, #2340
 		// review M4).
 		s.retryRetainedStableWatchPending()
+		// A retry that failed again left the notice retained with this firing
+		// spent, so the chain is re-armed here. Without it the notice sits
+		// retained with no timer, and only an unrelated wake would re-attempt
+		// it. The delay keeps backing off because the retained notice still
+		// counts as owed work; it stops once none remain.
+		s.pendingJobNotifsMu.Lock()
+		if len(s.stableWatchRetained) > 0 {
+			s.scheduleJobNotificationRetryLocked()
+		}
+		s.pendingJobNotifsMu.Unlock()
 		if pending {
 			s.notify()
 		}
