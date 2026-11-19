@@ -216,16 +216,47 @@ func (s *Session) failedClosedRefusal() error {
 // announceFailClosed emits the one diagnostic of a session that failed closed.
 // Callers hold no session lock: the event's notification hook takes them.
 func (s *Session) announceFailClosed() {
+	s.announceFailClosedOn(noBound)
+}
+
+// announceFailClosedOn is announceFailClosed for a caller that carries a close
+// publication bound. noBound is the ordinary path, unchanged.
+//
+// The bound is what a close-dispatched hook completion records under, and the
+// diagnostic it may have just latched must not be the thing that spends the
+// cascade: on the ordinary path a full authoritative buffer holds this send until
+// the whole close budget is gone, leaving no time for worktree disposal. So a
+// bounded send that cannot be delivered leaves the diagnostic PENDING -- the
+// latch is not taken -- and a later announcement on a live bound still reports
+// it. Taking the latch first and sending second is what loses the diagnostic;
+// sending first and latching on delivery is what makes "announced" mean it.
+func (s *Session) announceFailClosedOn(bound context.Context) {
 	refusal := s.failedClosedRefusal()
 	if refusal == nil || !s.failedClosed.announced.CompareAndSwap(false, true) {
 		return
 	}
-	s.emit(events.ErrorData{
+	data := events.ErrorData{
 		Error: refusal.Error(),
 		Title: "Session stopped",
 		Hint:  "Its transcript can no longer record new history. Restart the session to continue from what the transcript holds.",
 		Cause: &events.ErrorCause{Kind: failClosedCause},
-	})
+	}
+	if !suppliedCallerBound(bound) {
+		// The ordinary path, unchanged: emit owns the fan-out and any hook.
+		s.emit(data)
+		return
+	}
+	_, ev, delivered := s.sendEventContext(bound, data, s.activeCausalProvenance())
+	if !delivered {
+		// Pending, not announced: the latch goes back so a later call on a live
+		// bound still reports it. Losing the diagnostic is the one outcome the
+		// latch must not cause.
+		s.failedClosed.announced.Store(false)
+		return
+	}
+	if s.jobManager != nil {
+		s.jobManager.onSessionEventContext(bound, ev)
+	}
 }
 
 // trackExecutionCancel lets failClosed interrupt the execution whose context

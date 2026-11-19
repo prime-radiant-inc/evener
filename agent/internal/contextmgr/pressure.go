@@ -380,12 +380,19 @@ func estimateTokenPartsFor(res registry.Resolved, turns []schema.Turn) llm.Token
 			continue
 		}
 		message := t.Message
-		if dropPlainThinking {
+		if dropPlainThinking || foreignReasoningTurn(res, t) {
 			message = llm.TrimThinkingForReplayMessage(message, true)
 		}
 		parts = parts.Add(estimator.Parts(message))
 	}
 	return parts
+}
+
+// foreignReasoningTurn reports a turn whose reasoning another deployment issued.
+// A Responses item only replays where it was issued, so it never bills here.
+func foreignReasoningTurn(res registry.Resolved, t schema.Turn) bool {
+	return res.Protocol == registry.ProtocolOpenAIResponses &&
+		t.ResponseProvider != "" && t.ResponseProvider != res.Instance
 }
 
 func attentionTransparentTurnCount(history []schema.Turn) int {

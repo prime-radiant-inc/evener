@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>tab-close-narrow-group layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  /* Mirrors dockview-react/dist/styles/dockview.css base layout rules for a
+   * horizontal tab strip inside a 200px group beside a neighbor pane. */
+  .stage {
+    display: flex;
+    width: 600px;
+    height: 200px;
+  }
+  .dv-groupview {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  #inspector-group {
+    width: 200px;
+    flex: none;
+  }
+  #neighbor-group {
+    flex: 1 1 auto;
+  }
+  .dv-tabs-and-actions-container {
+    display: flex;
+    height: 35px;
+    box-sizing: border-box;
+    font-size: var(--dv-tabs-and-actions-container-font-size);
+  }
+  .dv-scrollable {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+  }
+  .dv-tabs-container {
+    display: flex;
+    height: 100%;
+    overflow: hidden;
+  }
+  .dv-tab {
+    flex-shrink: 0;
+    padding: 0.25rem 0.5rem;
+    box-sizing: border-box;
+    margin: var(--dv-tab-margin);
+  }
+  .dv-default-tab {
+    display: flex;
+    align-items: center;
+    height: 100%;
+    width: 100%;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .dv-default-tab-content {
+    flex-grow: 1;
+    margin-right: 4px;
+  }
+  .dv-default-tab-action {
+    padding: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    width: 20px;
+    height: 20px;
+  }
+</style>
+</head>
+<body class="dockview-theme-evener">
+  <div class="stage">
+    <div id="inspector-group" class="dv-groupview dv-active-group">
+      <div class="dv-tabs-and-actions-container">
+        <div class="dv-scrollable">
+          <div class="dv-tabs-container dv-horizontal">
+            <div id="inspector-tab" class="dv-tab dv-active-tab">
+              <span class="tab">
+                <div class="dv-default-tab">
+                  <div id="inspector-title" class="dv-default-tab-content">Fix Appwire Client Review Findings With A Very Long Subagent Name</div>
+                  <div id="inspector-close" class="dv-default-tab-action" role="button" aria-label="Close">×</div>
+                </div>
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div id="neighbor-group" class="dv-groupview dv-inactive-group">
+      <div id="neighbor-content">Neighbor pane</div>
+    </div>
+  </div>
+  <script>
+    window.measure = () => {
+      const group = document.getElementById("inspector-group");
+      const tab = document.getElementById("inspector-tab");
+      const title = document.getElementById("inspector-title");
+      const close = document.getElementById("inspector-close");
+      const groupRect = group.getBoundingClientRect();
+      const tabRect = tab.getBoundingClientRect();
+      const closeRect = close.getBoundingClientRect();
+      const cx = closeRect.left + closeRect.width / 2;
+      const cy = closeRect.top + closeRect.height / 2;
+      const hit = document.elementFromPoint(cx, cy);
+      return {
+        groupLeft: groupRect.left,
+        groupRight: groupRect.right,
+        tabRight: tabRect.right,
+        closeLeft: closeRect.left,
+        closeRight: closeRect.right,
+        closeWidth: closeRect.width,
+        closeHeight: closeRect.height,
+        titleClientWidth: title.clientWidth,
+        titleScrollWidth: title.scrollWidth,
+        hitIsClose: hit !== null && close.contains(hit),
+        hitId: hit ? hit.id : null,
+      };
+    };
+  </script>
+</body>
+</html>

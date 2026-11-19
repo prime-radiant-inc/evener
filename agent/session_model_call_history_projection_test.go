@@ -103,9 +103,8 @@ func historyProjectionContractTurns() []schema.Turn {
 	}
 }
 
-// newHistoryProjectionContractSession builds a session on a text-only
-// OpenAI-chat row (a target that drops replayed thinking) carrying the contract
-// fixture in its history.
+// newHistoryProjectionContractSession builds a session on an OpenAI-chat row
+// that replays full-history thinking by default, with the contract fixture.
 func newHistoryProjectionContractSession(t *testing.T) (*Session, *fakeAdapter) {
 	t.Helper()
 	adapter := &fakeAdapter{name: "kimi"}
@@ -183,12 +182,11 @@ func TestHistoryProjectionKeepsDispatchedMessages(t *testing.T) {
 		t.Fatalf("first dispatched message is not a single-part system prompt:\n%s", describeHistoryProjectionWire(got))
 	}
 
-	// The target is a text-only chat row: the replayed thinking part is dropped
-	// by the target's policy, and the answer text, tool call and tool result
-	// arrive unchanged and in turn order.
+	// The target is a reasoning-capable chat row: replay is default-on, so the
+	// thinking part, answer text and tool call arrive unchanged, in turn order.
 	want := []historyProjectionWireMessage{
 		{Role: llm.RoleUser, Parts: []string{"text:text=first user turn"}},
-		{Role: llm.RoleAssistant, Parts: []string{"text:text=assistant answer", "tool_call:call=call_1/read_file"}},
+		{Role: llm.RoleAssistant, Parts: []string{"thinking:thinking=reasoning text", "text:text=assistant answer", "tool_call:call=call_1/read_file"}},
 		{Role: llm.RoleTool, Parts: []string{"tool_result:result=call_1"}},
 		{Role: llm.RoleUser, Parts: []string{"text:text=steering text"}},
 		{Role: llm.RoleUser, Parts: []string{"text:text=second user turn"}},
@@ -275,8 +273,8 @@ func TestTargetProjectionsSkipUnchangedList(t *testing.T) {
 	if dropsReplayedThinking(keepsEverything) {
 		t.Fatal("test premise: the fixture target must replay thinking")
 	}
-	// A chat row drops replayed thinking but has none here to drop.
-	dropsThinking := newOpenAICompatProfile("kimi", "kimi-k3", 0)
+	// A reasoning = false chat row drops replayed thinking but has none to drop.
+	dropsThinking := nonReasoningProfile(t, "tiny-chat")
 	if !dropsReplayedThinking(dropsThinking) {
 		t.Fatal("test premise: the chat fixture target must drop replayed thinking")
 	}

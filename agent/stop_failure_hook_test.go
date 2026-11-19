@@ -27,8 +27,8 @@ import (
 // draft, and the mapping has to read the rate limit through the wrapper rather
 // than call it unknown.
 //
-// The runner here has no SetEventCallback, while production wires one that
-// records a TurnHookCompleted per hook. Production's history therefore ends
+// The runner here has no hook lifecycle callback, while production wires one
+// that records a TurnHookCompleted per hook. Production's history therefore ends
 // TURN_FAILURE followed by one HOOK_COMPLETED per StopFailure hook; this test's
 // ends at the TURN_FAILURE. Assertions that need the turn tail therefore walk
 // the last non-hook turns rather than hardcode production's indices.
@@ -133,7 +133,7 @@ func TestStopFailure_FiresOnceAndNotStop(t *testing.T) {
 }
 
 // nonHookTurns drops the TurnHookCompleted records a configured runner's
-// SetEventCallback appends, so a test can assert on the turn tail a session
+// lifecycle callback appends, so a test can assert on the turn tail a session
 // without that callback builds.
 func nonHookTurns(turns []schema.Turn) []schema.Turn {
 	out := make([]schema.Turn, 0, len(turns))
