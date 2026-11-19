@@ -172,7 +172,7 @@ func TestIOSQualificationRestoresAndSavesTheDerivedDataBuild(t *testing.T) {
 			t.Errorf("cache key %s = %q, want %q", env, got, want)
 		}
 	}
-	for _, want := range []string{"ios-deriveddata-", xcodeKeyFragment, podLockKeyFragment, packageLockKeyFragment} {
+	for _, want := range []string{"ios-deriveddata-", "xcode-${XCODE_VERSION}", "${POD_LOCK_HASH}", "${PACKAGE_LOCK_HASH}"} {
 		if !strings.Contains(keyStep.Run, want) {
 			t.Errorf("cache key step lacks %q:\n%s", want, keyStep.Run)
 		}
@@ -229,9 +229,3 @@ func TestIOSQualificationRestoresAndSavesTheDerivedDataBuild(t *testing.T) {
 		t.Errorf("products step does not pack the restored build tree with the pre-cache fallback:\n%s", job.Steps[products].Run)
 	}
 }
-
-const (
-	xcodeKeyFragment       = "xcode-${XCODE_VERSION}"
-	podLockKeyFragment     = "${POD_LOCK_HASH}"
-	packageLockKeyFragment = "${PACKAGE_LOCK_HASH}"
-)
