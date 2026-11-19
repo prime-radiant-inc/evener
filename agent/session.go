@@ -555,6 +555,12 @@ type Session struct {
 	// these cannot be re-settled: the close gets one retry on the budget left
 	// after the worktree removals, and this is the only place they survive.
 	closeDrainWarnings atomic.Pointer[[]events.WarningData]
+	// closeDrainHooksWG tracks the Notification hooks a close drain dispatched
+	// asynchronously on the live cascade (session_events.go). The hook's command
+	// may run for as long as its own timeout, so it must not hold the worktree
+	// removals that follow the publication; Close joins it here after those
+	// removals and before the retries and teardown it can still publish through.
+	closeDrainHooksWG sync.WaitGroup
 
 	steeringQueue []steeringMessage
 	// steeringInFlight holds the client steers popSteeringHead has taken out of

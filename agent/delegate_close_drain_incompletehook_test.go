@@ -52,6 +52,9 @@ func TestIncompleteCloseWarningDispatchesItsHookDespiteAFullBuffer(t *testing.T)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	s.warnIncompleteCloseBeforeDisposal(ctx, "delegate tree", context.DeadlineExceeded)
+	// The dispatch is asynchronous: join it before reading the file, or this
+	// would race the hook command it is counting.
+	s.waitCloseDrainHooks()
 	// The post-removal retry must not be the thing that delivers it, and must not
 	// duplicate it if the first attempt did.
 	s.retryCloseDrainWarnings(ctx)

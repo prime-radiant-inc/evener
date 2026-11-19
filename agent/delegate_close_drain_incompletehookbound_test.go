@@ -76,14 +76,15 @@ func TestIncompleteCloseHookRunsOnTheCascadeWhileItsLifecycleTakesTheCutoff(t *t
 
 	select {
 	case <-done:
-	// TRIPWIRE: the dispatch is in-process and both bounds are controlled by this
-	// test; this ceiling only fires if a lifecycle send parked, which is the
-	// defect it names.
+	// TRIPWIRE: emitCloseDrainWarnings starts the hook and returns, so this
+	// ceiling only fires if the publication itself parked on the full buffer.
 	case <-time.After(10 * time.Second):
-		t.Fatal("the incomplete-close dispatch never returned on a full buffer: a send in the hook's " +
-			"lifecycle took the live cascade instead of the publication cutoff, so a stalled consumer " +
-			"holds the drain and the worktree removals lose their budget")
+		t.Fatal("the incomplete-close publication never returned on a full buffer: a send in the " +
+			"hook's lifecycle took the live cascade instead of the publication cutoff, so a stalled " +
+			"consumer holds the drain and the worktree removals lose their budget")
 	}
+	// The hook itself runs asynchronously; join it before reading the file.
+	s.waitCloseDrainHooks()
 
 	// The premise: the cascade really is live, so nothing below is a consequence
 	// of it having ended.

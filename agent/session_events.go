@@ -843,8 +843,30 @@ var ObserveCloseDrainPublication func(bound context.Context)
 // publication cutoff would skip it for exactly the failure it reports. It still
 // runs at most once: the post-removal retry publishes the channel event only,
 // and nothing redispatches the hook.
+//
+// That dispatch runs ASYNCHRONOUSLY, on a goroutine this session joins in
+// waitCloseDrainHooks. A matching hook is a user's command and may run for its
+// whole configured timeout; running it inline on this goroutine held the caller
+// (warnIncompleteCloseBeforeDisposal) until the cascade budget expired, so every
+// worktree removal that followed started on a spent budget and left collectible
+// lanes on disk even though the consumer was healthy. Returning here lets those
+// removals proceed concurrently on the live cascade. releasePublish, when
+// non-nil, is called once the hook's goroutine has finished, so the caller's
+// publication context cannot be torn down under a send still using it.
 func (s *Session) emitCloseDrainWarnings(ctx context.Context, hookCtx context.Context, warnings []events.WarningData, hook closeWarningHook) {
+	s.emitCloseDrainWarningsReleasing(ctx, hookCtx, warnings, hook, nil)
+}
+
+// emitCloseDrainWarningsReleasing is emitCloseDrainWarnings with releasePublish
+// called once the asynchronously dispatched hook (if any) has finished. It owns
+// that release so a caller's publication context outlives exactly the work
+// published on it, and so it is released on every path -- including one where
+// the session publishes nothing at all.
+func (s *Session) emitCloseDrainWarningsReleasing(ctx context.Context, hookCtx context.Context, warnings []events.WarningData, hook closeWarningHook, releasePublish func()) {
 	if s == nil || s.events == nil {
+		if releasePublish != nil {
+			releasePublish()
+		}
 		return
 	}
 	// Recorded at the publication rather than at each caller: every bounded
@@ -853,6 +875,10 @@ func (s *Session) emitCloseDrainWarnings(ctx context.Context, hookCtx context.Co
 	if observe := ObserveCloseDrainPublication; observe != nil {
 		observe(ctx)
 	}
+	// Deferred until the loop is over so one tracked goroutine can join every
+	// hook this publication dispatches and then release the caller's context:
+	// releasing here would cancel it under a hook this call had already started.
+	var hooks []func()
 	// The bound travels with the warning, not with the session. Every send this
 	// publication causes -- the warning itself, the Notification hook it fires,
 	// that hook's own lifecycle events and its output -- is made on the drain's
@@ -897,8 +923,41 @@ func (s *Session) emitCloseDrainWarnings(ctx context.Context, hookCtx context.Co
 		// over -- there is no budget left to run anything on.
 		// The PUBLICATION is always ctx: the hook's lifecycle and output sends stay
 		// on the cascade's cutoff even when its command runs on the live cascade.
+		if hook == hookOnAttempt {
+			// Started, not awaited: the command is the user's and may run for its
+			// whole timeout, which is exactly the budget the removals that follow
+			// this publication need.
+			hooks = append(hooks, func() {
+				s.fireNotificationHookBounded(dispatchCtx, ctx, message, title)
+			})
+			continue
+		}
 		s.fireNotificationHookBounded(dispatchCtx, ctx, message, title)
 	}
+	if len(hooks) == 0 {
+		if releasePublish != nil {
+			releasePublish()
+		}
+		return
+	}
+	// One goroutine owns every hook this call dispatched, so the publication
+	// context is released exactly once and only after the last of them stops
+	// publishing on it. It is tracked by closeDrainHooksWG, so a close that joins
+	// that group also waits out the release.
+	s.closeDrainHooksWG.Add(1)
+	go func() {
+		defer s.closeDrainHooksWG.Done()
+		defer func() {
+			if releasePublish != nil {
+				releasePublish()
+			}
+		}()
+		// In publication order, as the synchronous loop dispatched them: a hook
+		// that has to finish before the next one starts still does.
+		for _, fire := range hooks {
+			fire()
+		}
+	}()
 }
 
 // closeWarningHook decides when a close publication dispatches the warning's

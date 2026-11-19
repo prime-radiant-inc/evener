@@ -107,11 +107,10 @@ type Runner struct {
 	hooks          map[plugin.HookEvent][]plugin.RegisteredHook
 	client         promptHookClient
 	model          string
-	onEvent        func(events.EventKind, events.EventData) // optional event callback
-	// onEventContext, when set, takes precedence over onEvent and additionally
-	// carries the context the dispatch is running under. A caller that launched a
-	// hook under its own bound uses it so the hook's lifecycle events are
-	// published on that same bound rather than the session's.
+	// onEventContext, when set, publishes this runner's lifecycle events and
+	// carries the context the dispatch is running under, so a caller that launched
+	// a hook under its own bound has that hook's lifecycle events published on the
+	// same bound rather than the session's.
 	onEventContext func(context.Context, events.EventKind, events.EventData)
 	// commandHookRuntime is a per-runner process/environment boundary. Production
 	// uses systemCommandHookRuntime; deterministic callers may provide a fake.
@@ -123,16 +122,10 @@ type Runner struct {
 	sandboxWrapper *sandbox.Wrapper
 }
 
-// SetEventCallback sets an optional callback that is invoked for hook
-// lifecycle events (HookStart, HookEnd).
-func (r *Runner) SetEventCallback(fn func(events.EventKind, events.EventData)) {
-	r.onEvent = fn
-}
-
-// SetEventCallbackContext installs a context-aware lifecycle callback. It takes
-// precedence over the one SetEventCallback installs, so a caller that launched
-// a hook on a bound of its own can publish that hook's start and end on the same
-// bound instead of the session's.
+// SetEventCallbackContext installs the callback that publishes hook lifecycle
+// events (HookStart, HookEnd). It carries the context the dispatch runs under, so
+// a caller that launched a hook on a bound of its own can publish that hook's
+// start and end on the same bound instead of the session's.
 func (r *Runner) SetEventCallbackContext(fn func(context.Context, events.EventKind, events.EventData)) {
 	r.onEventContext = fn
 }
@@ -785,18 +778,9 @@ func (r *Runner) runMatched(ctx context.Context, event plugin.HookEvent, matched
 }
 
 // lifecyclePublisher returns the callback that publishes this runner's hook
-// lifecycle events, preferring the context-aware one when it is installed so the
-// dispatch's own bound reaches the publication.
+// lifecycle events, carrying the dispatch's own bound to the publication.
 func (r *Runner) lifecyclePublisher() func(context.Context, events.EventKind, events.EventData) {
-	if r.onEventContext != nil {
-		return r.onEventContext
-	}
-	if r.onEvent != nil {
-		return func(_ context.Context, kind events.EventKind, data events.EventData) {
-			r.onEvent(kind, data)
-		}
-	}
-	return nil
+	return r.onEventContext
 }
 
 // collectTerminalSequences gathers the non-empty terminalSequence each output

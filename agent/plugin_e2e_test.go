@@ -185,7 +185,7 @@ func TestPlugin_EndToEnd_HookExecution(t *testing.T) {
 		data events.EventData
 	}
 	var evs []capturedEvent
-	runner.SetEventCallback(func(kind events.EventKind, data events.EventData) {
+	runner.SetEventCallbackContext(func(_ context.Context, kind events.EventKind, data events.EventData) {
 		evs = append(evs, capturedEvent{kind, data})
 	})
 

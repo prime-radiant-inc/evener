@@ -341,12 +341,25 @@ func (s *Session) closeTerminal(ctx context.Context, options closeOptions) {
 	// mark is a durable append); it closes below.
 	s.disposeLaneResidueAtClose(budgetCtx)
 	s.unlockOwnManagedWorktreeAtClose(budgetCtx)
+	// The incomplete-close Notification hook dispatched before those removals is
+	// joined here: it publishes on the cascade's publication cutoff, so nothing
+	// below may race it for the context its sends are made on, and the retries
+	// that follow must not run while a hook they did not dispatch is still
+	// writing to the stream.
+	s.waitCloseDrainHooks()
 	// A lost-result warning whose bounded publication expired is retried here,
 	// on what is left of the cascade, now that the removals it was competing
 	// with have run. Its receipt is gone from the store, so this close is the
 	// last chance to report it and the budget it may spend is what the removals
 	// above did not need.
 	s.retryCloseDrainWarnings(budgetCtx)
+	// A fail-closed diagnostic a close-dispatched hook completion latched while
+	// the stream was full is still pending: announceFailClosedOn leaves the latch
+	// untaken when its bounded send cannot deliver, and only a later announcement
+	// on a live bound reports it. This is that later announcement, on the budget
+	// the removals did not spend, and it runs before the stream closes so a
+	// consumer that resumes with cascade time left still receives it.
+	s.announceFailClosedOn(budgetCtx)
 
 	if s.jobManager != nil {
 		jobManagerCloseErr = errors.Join(jobManagerCloseErr, s.jobManager.closeStoreOnly())
@@ -613,13 +626,35 @@ func (s *Session) warnIncompleteCloseBeforeDisposal(ctx context.Context, what st
 	}
 	warning := events.WarningData{Message: fmt.Sprintf("%s close incomplete: %v", what, err)}
 	publishCtx, cancelPublish := closeCascadePublicationContext(ctx)
-	defer cancelPublish()
 	// The send is capped at the cascade's publication cutoff, but the HOOK runs
 	// on the live cascade: the failure this warning reports can happen because
 	// that cutoff expired, and dispatching on it would skip the notification for
 	// exactly the case it exists for. One dispatch, on the cascade that is still
 	// live.
-	s.emitCloseDrainWarnings(publishCtx, ctx, []events.WarningData{warning}, hookOnAttempt)
+	//
+	// The hook is dispatched asynchronously on the live cascade, so this returns
+	// while it runs and the removals below start on the budget it would otherwise
+	// have spent. The publication context therefore cannot be released here: a
+	// send the hook still makes through the publication bound would observe a
+	// cancelled deadline. The dispatcher releases it when the dispatch finishes,
+	// which waitCloseDrainHooks also waits out.
+	s.emitCloseDrainWarningsReleasing(publishCtx, ctx, []events.WarningData{warning}, hookOnAttempt, cancelPublish)
+}
+
+// waitCloseDrainHooks joins the Notification hooks a close drain dispatched
+// asynchronously, and the publication-context release each one owns.
+//
+// The close joins here, after the worktree removals and before the passes that
+// still publish (retryCloseDrainWarnings, announceFailClosedOn) and the teardown
+// that closes the stream. A hook that is still running past the point where the
+// removals no longer need the cascade has nothing left to hold: it publishes on
+// the cascade it was given, and once this returns nothing publishes through a
+// hook dispatch that close did not see.
+func (s *Session) waitCloseDrainHooks() {
+	if s == nil {
+		return
+	}
+	s.closeDrainHooksWG.Wait()
 }
 
 // closeOwnedArtifactStore closes the root-owned artifact store after

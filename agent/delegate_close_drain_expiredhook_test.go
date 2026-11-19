@@ -56,6 +56,9 @@ func TestIncompleteCloseHookDispatchesOnceWhenThePublicationCutoffExpired(t *tes
 		Message: "delegate tree close incomplete",
 		Source:  "delegate",
 	}}, hookOnAttempt)
+	// The dispatch is asynchronous: join it before reading the file, or this
+	// would race the hook command it is counting.
+	s.waitCloseDrainHooks()
 	// The post-removal retry must not dispatch a second time.
 	s.retryCloseDrainWarnings(cascade)
 

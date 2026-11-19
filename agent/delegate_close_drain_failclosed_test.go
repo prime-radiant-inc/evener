@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -117,4 +118,145 @@ func warningOrErrorOnStream(s *Session) bool {
 		}
 	}
 	return false
+}
+
+// A fail-closed diagnostic a close-dispatched hook completion latched while the
+// stream was full must still reach a consumer that resumes during the close.
+//
+// announceFailClosedOn leaves the diagnostic PENDING when its bounded send cannot
+// deliver, and the latch exists so a later announcement on a live bound reports
+// it. Nothing made that later announcement during a close: after the worktree
+// removals the close retried its retained warnings and went straight to
+// teardown, so the one diagnostic a session that can no longer record its
+// history owes its operator was lost even though the cascade still had time.
+func TestCloseAnnouncesAPendingFailClosedDiagnosticBeforeClosingTheStream(t *testing.T) {
+	// Not parallel: shortenCloseCascadeBudget pushes the package-wide budget.
+	shortenCloseCascadeBudget(t, closeDrainCascadeBudget)
+
+	s := newQueuePersistTestSession(t, t.TempDir())
+	// ONE slot, so a single filler event is the whole buffer. Replaced before the
+	// drain is registered, so the drain is the only reader of this channel.
+	s.events = make(chan events.SessionEvent, 1)
+
+	consumer := newGatedFailClosedConsumer()
+	// Served: failClosed only latches for a daemon-drained session, and a send
+	// only parks for an authoritative consumer.
+	s.ConsumeEventsLossless(consumer.record, func() { close(consumer.drained) })
+
+	// Put the consumer behind and fill the only slot: it takes one filler and
+	// parks, and the second filler the test sends behind it is the full buffer the
+	// diagnostic will find.
+	consumer.fillAndHold(t, s)
+
+	// A partial write that poisons the writer and cannot be rolled back, which is
+	// the branch that latches the fail-closed refusal.
+	attachEnvironmentPoisoningWrite(t, s,
+		errors.New("injected partial transcript write"),
+		errors.New("injected transcript rollback failure"))
+
+	// The completion records on the cascade's publication cutoff. The cutoff is
+	// expired here, exactly as it is when a hook overran the publication half of
+	// the cascade, so neither the completion's warning nor the fail-closed
+	// diagnostic it latches can ride it onto the full stream.
+	cutoff, cancelCutoff := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+	cancelCutoff()
+	s.recordHookCompletionOn(cutoff, events.HookEndData{
+		Event: "Notification", HookType: "command", Matcher: "*", ExitCode: 0,
+	})
+
+	// The premise: the recording poisoned the writer and latched a refusal, and
+	// the diagnostic is still pending because the cutoff could not carry it.
+	if !s.attachedTranscript().Poisoned() {
+		t.Fatal("the injected partial write did not poison the transcript writer: this test would prove " +
+			"nothing about the fail-closed latch")
+	}
+	if s.failedClosedRefusal() == nil {
+		t.Fatal("the poisoned writer did not latch a fail-closed refusal: the recording did not reach " +
+			"the path whose announcement is under test")
+	}
+	if s.failedClosed.announced.Load() {
+		t.Fatal("the bounded announcement recorded itself as announced even though the cutoff could not " +
+			"deliver it: the diagnostic is then lost to every later reader")
+	}
+
+	// The consumer resumes, which is what a healthy daemon does while the close is
+	// still spending its cascade.
+	consumer.resume()
+
+	// The close must deliver the pending diagnostic on what the removals did not
+	// need, before it closes the stream.
+	s.Close()
+	<-consumer.drained
+
+	if got := consumer.failClosedDiagnostics(); got != 1 {
+		t.Fatalf("the close delivered %d typed fail-closed diagnostic(s), want exactly 1: a diagnostic "+
+			"left pending by a full stream must be retried on what the worktree removals did not need, "+
+			"and a retry that ran twice would announce one refusal as two", got)
+	}
+	if !s.failedClosed.announced.Load() {
+		t.Fatal("the diagnostic reached the stream but the session never marked it announced: the latch " +
+			"must record delivery, or a later pass would announce one refusal again")
+	}
+}
+
+// gatedFailClosedConsumer is a served session's authoritative consumer that
+// stops after taking one event, so a test can fill the buffer behind it
+// deterministically, and that counts the typed fail-closed diagnostics it
+// records.
+type gatedFailClosedConsumer struct {
+	drained chan struct{}
+	gate    chan struct{}
+	held    chan struct{}
+	started sync.Once
+	resumed sync.Once
+
+	mu    sync.Mutex
+	diags int
+}
+
+func newGatedFailClosedConsumer() *gatedFailClosedConsumer {
+	return &gatedFailClosedConsumer{
+		drained: make(chan struct{}),
+		gate:    make(chan struct{}),
+		held:    make(chan struct{}),
+	}
+}
+
+// record is the consumer callback. It accepts the first event, then parks until
+// resumed: from then on the buffer behind it stays full until the test lets it
+// drain, which is the shape a healthy-but-behind consumer has.
+func (c *gatedFailClosedConsumer) record(ev events.SessionEvent) {
+	c.started.Do(func() {
+		close(c.held)
+		<-c.gate
+	})
+	if ev.Kind != events.EventError {
+		return
+	}
+	data, ok := ev.Data.(events.ErrorData)
+	if !ok || data.Cause == nil || data.Cause.Kind != failClosedCause {
+		return
+	}
+	c.mu.Lock()
+	c.diags++
+	c.mu.Unlock()
+}
+
+// fillAndHold sends the filler the consumer accepts and parks on, then fills the
+// session's only slot. It returns with the consumer parked and the buffer full.
+func (c *gatedFailClosedConsumer) fillAndHold(t *testing.T, s *Session) {
+	t.Helper()
+	s.events <- events.New(events.HookStartData{Event: "the consumer takes this one"})
+	// Await the park rather than the buffer: once the consumer is parked it has
+	// already taken the filler, so the slot this test fills next is the only one.
+	<-c.held
+	s.events <- events.New(events.HookStartData{Event: "occupies the only slot"})
+}
+
+func (c *gatedFailClosedConsumer) resume() { c.resumed.Do(func() { close(c.gate) }) }
+
+func (c *gatedFailClosedConsumer) failClosedDiagnostics() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.diags
 }
