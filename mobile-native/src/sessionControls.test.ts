@@ -896,7 +896,10 @@ describe("conversation-owned session controls", () => {
 				throw new Error("a lost binding must not be refreshed through");
 			},
 			() => {},
-			() => !disposed,
+			// screens.tsx's two fences: the reconnect retires the binding the memo
+			// captured, while the destination (same store, client and ref, still
+			// in front behind the sheet) survives it.
+			(scope) => scope === "destination" || !disposed,
 			() => null,
 			() => true,
 		);
@@ -918,6 +921,29 @@ describe("conversation-owned session controls", () => {
 					disposed = true;
 					controls.dispose();
 					throw new Error("ConversationService: no thread open");
+				},
+			}),
+			async () => {},
+			() => {},
+			() => !disposed,
+			() => null,
+			() => true,
+		);
+		await controls.loadModels();
+		expect(await controls.changeModel("one", "model")).toBe(false);
+	});
+	it("does not confirm an acknowledged pick whose screen has left", async () => {
+		// The destination fence is the other half: an acknowledgement is owed to
+		// the screen that sent the pick, and one that has left with its sheet has
+		// nothing left to close.
+		let disposed = false;
+		let controls!: SessionControls;
+		controls = new SessionControls(
+			await boundary({
+				models: async () => ({ data: [{ provider: "one", model: "model" }] }),
+				model: async () => {
+					disposed = true;
+					controls.dispose();
 				},
 			}),
 			async () => {},

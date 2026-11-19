@@ -651,10 +651,10 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 		const hostOwner = {};
 		owner = hostOwner;
 		let controls: SessionControls | null = null;
-		// The screen's binding, as screens.tsx captures it in the memo
-		// (bindingGeneration/bindingInstance) and its isCurrent re-reads. The
-		// reconnect retires that binding, so the controls it built are stale even
-		// before their cleanup disposes them.
+		// The screen's two fences (screens.tsx:873-888). The binding fence
+		// (bindingGeneration/bindingInstance) is captured by the memo and dies
+		// with the reconnect; the destination fence is the same store, client and
+		// ref, still in front behind the sheet, and survives it.
 		let binding = 1;
 		const screen = (connected: boolean) => {
 			if (connected) {
@@ -663,7 +663,7 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 					service,
 					async () => {},
 					() => {},
-					() => client.state === "ready" && binding === mine,
+					(scope) => client.state === "ready" && (scope === "destination" || binding === mine),
 					() => cold,
 					() => true,
 					CATALOG,
@@ -768,7 +768,7 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 					service,
 					async () => {},
 					() => {},
-					() => client.state === "ready" && binding === mine,
+					(scope) => client.state === "ready" && (scope === "destination" || binding === mine),
 					() => cold,
 					() => true,
 					CATALOG,
