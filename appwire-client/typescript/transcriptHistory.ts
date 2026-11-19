@@ -1236,15 +1236,14 @@ function reconcileQuotaWait(
     };
   }
   // The read names no STAMPED wait. A read that still carries an unstamped
-  // deadline (a legacy daemon's failure summary) speaks for that wait: the
-  // held chip retires — the read is the authority on presence whatever
-  // stamped the wait — and the read's own deadline stands. A read naming no
-  // wait at all ends a held stamped wait here, its stamp surviving as the
-  // retirement marker, chip and all. A model holding no quota wait keeps
-  // every chip it has: an ordinary provider retry is not this
-  // reconciliation's to retire.
-  const heldQuotaChip = held.modelRetry?.errorClass === "quota_exceeded";
-  const readNamesLegacyWait = fresh.quotaResumesAt !== undefined;
+  // deadline (a daemon that predates the stamp) installs nothing — threadFields
+  // refused its instant at the hydrate, so `fresh` cannot even reach here
+  // with one — and it is not a clear either: an unstamped frame never
+  // installs, and a read's silence about a wait it cannot name retires
+  // nothing. A read naming no wait at all ends a held stamped wait here, its
+  // stamp surviving as the retirement marker, chip and all. A model holding
+  // no quota wait keeps every chip it has: an ordinary provider retry is not
+  // this reconciliation's to retire.
   if (runtimeChanged && (heldStamp > 0 || held.quotaWaitEndedStamp !== undefined)) {
     // The previous runtime's stamps die with it — held and ended alike: the
     // restored daemon's sequence starts over, so no old stamp may outlive
@@ -1264,17 +1263,10 @@ function reconcileQuotaWait(
       retireChip: true,
     };
   }
-  if (held.modelRetry !== undefined && heldQuotaChip) {
-    if (readNamesLegacyWait) {
-      // The read's own unstamped wait replaces the held one: same legacy
-      // shape, the read's deadline, no stamp to record.
-      return { quotaResumesAt: fresh.quotaResumesAt, quotaWaitStartedAt: undefined, retireChip: true };
-    }
-    // No wait on the read: the legacy unstamped wait ends, same retirement.
-    return { quotaResumesAt: undefined, quotaWaitStartedAt: undefined, retireChip: true };
-  }
   return {
-    quotaResumesAt: fresh.quotaResumesAt,
+    // The held model's wait fields (a stamped daemon's ordinary read): a
+    // read naming no wait and no held stamp has nothing to change here.
+    quotaResumesAt: held.quotaResumesAt,
     quotaWaitStartedAt: undefined,
     ...(endedStamp > 0 ? { quotaWaitEndedStamp: endedStamp } : {}),
   };

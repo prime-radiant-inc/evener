@@ -661,8 +661,7 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
       // stamp — a strictly increasing daemon sequence, never a clock — so
       // every ordering decision between waits compares stamps. A frame for an
       // older wait of the same turn is never news: a turn id names only the
-      // call site, and the turn-ownership fallback below exists only for a
-      // legacy unstamped wake. No lastFrameAt restamp on purpose — see
+      // call site. No lastFrameAt restamp on purpose — see
       // ThreadModel.modelRetry. The quiet/stall clock is measuring a real
       // silence; this explains it rather than resetting it.
       if (params.errorClass !== "quota_exceeded") return { ...model, modelRetry: chip };
@@ -686,8 +685,9 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
           if (stamp <= endedStamp || (heldStamp > 0 && stamp < heldStamp)) return model;
           // A new wait: its stamp, its own deadline when it named one, and
           // its chip replace the record as one unit. A start that names no
-          // instant installs none — the receipt clock is the fallback only
-          // when no absolute deadline exists at all.
+          // instant installs no deadline: there is no receipt clock to fall
+          // back to, so the wait shows nothing until a read carries the
+          // instant.
           const installed: M = { ...model, modelRetry: chip, quotaWaitStartedAt: stamp };
           if (deadlineFromFrame !== undefined) installed.quotaResumesAt = deadlineFromFrame;
           else delete installed.quotaResumesAt;
@@ -712,47 +712,30 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
         if (stamp <= endedStamp) return model;
         return { ...model, quotaWaitEndedStamp: stamp };
       }
-      // A legacy unstamped frame (a daemon that predates the stamp)
-      // reconciles by turn ownership alone and may never clear or overwrite
-      // a stamped wait. An unstamped start installs no deadline: a delay is
-      // not an absolute time, and this client's clock is not the daemon's.
-      if (heldStamp > 0) return model;
-      // Ownership first, before anything changes — but only where there is a
-      // wait to own: a read-set deadline, a chip, or both. A legacy frame
-      // naming a different turn than the held wait's own may not install its
-      // chip over that wait, or the stale chip would make the held turn's own
-      // wake fail this same check and leave the countdown standing. Which
-      // turn owns the held wait: the snapshot's running turn while the
-      // read's deadline stands (the wait is the snapshot's word — the chip
-      // beside it can be another turn's stale leftover), the chip's turn
-      // only for a chip-only wait no deadline ever named. With no wait held,
-      // the frame is the first word about its turn and installs freely.
-      const heldLegacyWait =
-        model.quotaResumesAt !== undefined ||
-        (model.modelRetry !== undefined && model.modelRetry.errorClass === "quota_exceeded");
-      if (heldLegacyWait && params.turnId !== undefined) {
-        const waitOwnerTurn =
-          model.quotaResumesAt !== undefined && model.runningTurnId !== undefined
-            ? model.runningTurnId
-            : (model.modelRetry?.turnId ?? model.runningTurnId);
-        const ownsHeldTurn = waitOwnerTurn === undefined || params.turnId === waitOwnerTurn;
-        if (!ownsHeldTurn) return model;
-      }
-      // No lastFrameAt restamp on purpose — see ThreadModel.modelRetry. The
-      // quiet/stall clock is measuring a real silence; this explains it rather
-      // than resetting it.
-      const next: M = {
+      // An unstamped frame (a daemon that predates the stamp) never
+      // INSTALLS a wait — no deadline, no chip, no elapsed attribution. A
+      // delay is not an absolute time, and this client's clock is not the
+      // daemon's, so there is no receipt clock either: a daemon that predates
+      // the stamp shows no wait in the pane, period (its row still shows the
+      // wait from the owning root's roster sample — a different producer).
+      // The one thing an unstamped frame may do is END a wait, and only by
+      // turn ownership: a zero-delay wake naming the wait's owning turn
+      // clears the held wait whole (stamped or not), the same retirement a
+      // turn boundary applies; a wake naming any other turn changes nothing.
+      if (params.delayMs !== 0) return model;
+      const waitOwnerTurn = model.modelRetry?.turnId ?? model.runningTurnId;
+      if (waitOwnerTurn === undefined || params.turnId !== waitOwnerTurn) return model;
+      const waitEnded: M = {
         ...model,
         modelRetry: chip,
+        // The held stamp, when the wait carried one, dies as the retirement
+        // marker the same way a turn boundary records it — the ended stamp
+        // survives to refuse a later frame or read still naming this wait.
+        ...(heldStamp > 0 ? { quotaWaitEndedStamp: Math.max(endedStamp, heldStamp) } : {}),
       };
-      // A zero-delay frame that reached here owns whatever wait the model
-      // held: the ownership guard above refused every other shape.
-      if (params.delayMs === 0) {
-        const waitEnded: M = { ...next };
-        delete waitEnded.quotaResumesAt;
-        return waitEnded;
-      }
-      return next;
+      delete waitEnded.quotaResumesAt;
+      delete waitEnded.quotaWaitStartedAt;
+      return waitEnded;
     }
 
     default:

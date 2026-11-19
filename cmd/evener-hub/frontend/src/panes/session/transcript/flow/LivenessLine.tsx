@@ -19,7 +19,7 @@
 // that activity stops.
 
 import type { ModelRetryState } from "@evener/appwire-client";
-import { type QuotaWaitState, quotaWaitState } from "@evener/appwire-client/state/navigation";
+import { quotaWaitState } from "@evener/appwire-client/state/navigation";
 import { useSubagentCounts } from "../../../../stores/sessionActivity";
 import { useThreadsStore } from "../../../../stores/threads";
 import { requireClass } from "../../../../widgets/internal/requireClass";
@@ -59,15 +59,6 @@ const CLASS = {
   line: requireClass(styles.line, "livenessline.module.css", "line"),
   stalled: requireClass(styles.stalled, "livenessline.module.css", "stalled"),
 };
-
-// The receipt-clock fallback's phase from the runway its own announcement
-// still has: counting while any remains, pending once it has run out — the
-// same phase rule the absolute instant renders, on the only basis an
-// announcement without one can offer.
-function receiptWaitState(remainingMs: number | null): QuotaWaitState | null {
-  if (remainingMs === null) return null;
-  return remainingMs > 0 ? { phase: "counting", remainingMs } : { phase: "pending" };
-}
 
 export function LivenessLine({ lastFrameAt, now, active, sessionRef, turnId, retry, primaryModel }: LivenessLineProps) {
   const delegates = useThreadsStore((s) => {
@@ -117,30 +108,20 @@ export function LivenessLine({ lastFrameAt, now, active, sessionRef, turnId, ret
     inProgress: lastFrameAt > retry.receivedAt || now - retry.receivedAt >= retry.delayMs,
   };
   // The countdown rule is the shared tri-state one every surface reads, so
-  // the pane and the row agree on the wait's state. The deadline the read
-  // carried is absolute, and while the model holds it, it is the WHOLE
+  // the pane and the row agree on the wait's state. The deadline the model
+  // holds is absolute, and while the model holds it, it is the WHOLE
   // countdown: past it the wait is pending — the daemon keeps serving the
   // wait's own summary with its original instant while the wait stands (a
   // delegate held at its reset while every execution slot is occupied can
   // stay waiting for hours), so a passed deadline is still a live wait, and
   // no client clock may end it.
   const fromRead = quotaWaitState(quotaResumesAt, now);
-  // A pane OPEN when the limit hits gets only the live retry, and that
-  // notification never invalidates history, so no read has set an instant for
-  // it yet. Without this the wait would render as the retry line's own
-  // seconds countdown and then as unexplained silence - the very reading this
-  // issue is about - for the whole wait. `delayMs` is how long the call waits
-  // from `receivedAt`, both on this client's clock, so the distance to `now`
-  // needs no daemon clock and is off only by delivery latency.
-  //
-  // The receipt clock is a FALLBACK ONLY, and only while the model holds no
-  // absolute deadline at all (quotaWaitState returned null). It is never a
-  // second life for a passed one: an unstamped start installs no deadline
-  // (the reducer's own rule), so this fallback serves only the pane-open
-  // case, and once its own delay has run out the wait reads pending exactly
-  // as the absolute one does — a late announcement with receipt runway can
-  // never leap the line back to a countdown past a deadline the model knows
-  // has passed (scenario 11).
+  // No receipt clock exists: an unstamped start installs no deadline (the
+  // reducer's own rule), so a wait with no absolute instant on the model is
+  // no wait this line can name. A pane OPEN when the limit hits on a daemon
+  // that predates the stamp shows no wait — the documented limitation —
+  // while the daemon's own read summary (stamped) carries the instant a
+  // reload needs.
   //
   // The wait never ends on `lastFrameAt`: that is RetryWait's rule for a
   // short backoff, but a six-hour wait sees unrelated frames (a finished
@@ -150,20 +131,6 @@ export function LivenessLine({ lastFrameAt, now, active, sessionRef, turnId, ret
   // turn (modelRetry is not cleared on Stop), so the guard against showing
   // a dead turn's wait is the retry's own turn identity, never a frame
   // clock: only a retry naming THIS pane's running turn speaks for it.
-  const receiptRunwayMs =
-    fromRead === null &&
-    retry !== undefined &&
-    retry.errorClass === "quota_exceeded" &&
-    retry.delayMs > 0 &&
-    retry.turnId !== undefined &&
-    retry.turnId === turnId
-      ? retry.delayMs - (now - retry.receivedAt)
-      : null;
-  const liveWait = receiptWaitState(receiptRunwayMs);
-  // One time basis per wait: the absolute deadline the model holds wins over
-  // any receipt-clock fallback whenever it exists, including past-reset —
-  // a wait with a known deadline never re-derives its phase from a timer.
-  const waitState = fromRead ?? liveWait;
   // The wait's own chip metadata: the model tag, the elapsed sample, and the
   // receipt instant the advance keys on, all from the announcement that
   // established the wait. The stamp matching is the reducer's fold (an
@@ -177,28 +144,28 @@ export function LivenessLine({ lastFrameAt, now, active, sessionRef, turnId, ret
   const chipMatchesWait =
     retry !== undefined &&
     retry.errorClass === "quota_exceeded" &&
-    waitState !== null &&
+    fromRead !== null &&
     retry.turnId !== undefined &&
     retry.turnId === turnId;
   // Elapsed advances from the announcement's receipt instant, clamped so it
   // never goes negative across the pane's tick boundary (the tick can land
   // marginally before the receipt stamp a later frame recorded) - but only a
-  // MEASURED sample may display. The stamp is the discriminator: a stamped
-  // announcement's sample is real (including a valid zero), where an
-  // unstamped daemon's default zero measures nothing and would display pure
-  // time-since-announcement as the call's elapsed. The legacy wait itself is
-  // unaffected: its countdown and its pending phase stand; only the elapsed
-  // attribution is refused.
+  // MEASURED sample may display, and the stamp is what says the sample was
+  // measured: a stamped announcement's sample is real (including a valid
+  // zero), where a daemon that predates the stamp sends a default zero that
+  // measures nothing. An unstamped frame installs no wait at all (the
+  // reducer's rule), so this gate is structural defense for that contract:
+  // time-since-announcement must never dress itself up as the call's elapsed.
   const chipElapsedMs =
     chipMatchesWait && quotaWaitStartedAt !== undefined
       ? Math.max(0, retry.groupElapsedMs + (now - retry.receivedAt))
       : undefined;
   const quotaWait: QuotaWait | undefined =
-    waitState === null
+    fromRead === null
       ? undefined
       : {
-          passedReset: waitState.phase === "pending",
-          ...(waitState.phase === "counting" ? { remainingMs: waitState.remainingMs } : {}),
+          passedReset: fromRead.phase === "pending",
+          ...(fromRead.phase === "counting" ? { remainingMs: fromRead.remainingMs } : {}),
           ...(chipMatchesWait && retry.model !== undefined && retry.model !== primaryModel
             ? { model: retry.model }
             : {}),
