@@ -39,8 +39,11 @@ var (
 	// zero Placement.
 	PlaceVerbatim = Placement{}
 	// PlaceSession places a session's own write: the running execution, else
-	// the prelude of a fresh transcript before its first execution, else the
-	// open gap turn, minting one when none is open.
+	// the prelude of a fresh transcript, else the open gap turn, minting one
+	// when none is open. A fresh transcript's prelude ends at its first
+	// execution OR at a standalone delivery (PlaceAsync, PlaceDelivery): a
+	// delivery is a turn of its own, and rejoining the prelude after one would
+	// stamp a single id onto two spans another turn separates.
 	PlaceSession = Placement{mode: placeSession}
 	// PlaceAsync places a session's asynchronous write — attention delivered
 	// from another goroutine: the running execution, else a delivery turn of
@@ -122,6 +125,15 @@ func (state *turnPlacement) place(turn *schema.Turn, p Placement) (skip bool, er
 		if err := stampDelivery(turn); err != nil {
 			return false, err
 		}
+		// A delivery is a turn of its own, so it ends the prelude's span.
+		// Rejoining the prelude after one would stamp a single id onto two
+		// spans that another turn separates, and no reader can show that as
+		// one turn: its items would sit at positions on both sides of the
+		// delivery's, so any turn list either repeats the id (which a client
+		// keyed by turn id cannot hold) or emits positions out of order
+		// (which item paging rejects). A later pre-execution write therefore
+		// opens a gap turn of its own.
+		state.prelude = openTurn{}
 	case placeSession:
 		switch {
 		case state.running.id != "":

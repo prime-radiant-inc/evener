@@ -2347,7 +2347,10 @@ func awaitRelayResync(t *testing.T, notifications <-chan appwire.Notification, w
 	timer := time.After(bound)
 	for {
 		select {
-		case got := <-notifications:
+		case got, ok := <-notifications:
+			if !ok {
+				t.Fatalf("notification stream closed while waiting for a thread resync for %s", wantRef)
+			}
 			if got.Method != appwire.NotifyEvenerThreadResync {
 				continue
 			}

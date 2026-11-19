@@ -51,7 +51,7 @@ func generateContentBody(req llm.Request, caps registry.Caps, system string, con
 		"contents":         contents,
 		"generationConfig": genCfg,
 	}
-	if strings.TrimSpace(system) != "" {
+	if system != "" {
 		body["systemInstruction"] = map[string]any{
 			"parts": []map[string]any{{"text": system}},
 		}
@@ -466,7 +466,7 @@ func toGeminiContents(model string, msgs []llm.Message, multimodalToolResults bo
 		}
 		switch m.Role {
 		case llm.RoleSystem, llm.RoleDeveloper:
-			if t := strings.TrimSpace(m.Text()); t != "" {
+			if t := m.Text(); t != "" {
 				sysParts = append(sysParts, t)
 			}
 		case llm.RoleUser:
@@ -474,7 +474,7 @@ func toGeminiContents(model string, msgs []llm.Message, multimodalToolResults bo
 			for _, p := range m.Content {
 				switch p.Kind {
 				case llm.ContentText:
-					if strings.TrimSpace(p.Text) != "" {
+					if p.Text != "" {
 						parts = append(parts, map[string]any{"text": p.Text})
 					}
 				case llm.ContentImage:

@@ -529,8 +529,7 @@ func TestApplyTokenBudget_NonReasoningOpenAIChatRowDoesNotBillUnsignedThinking(t
 // The resolved row decides, not the name: an openai-named provider bills
 // nothing under the curated Responses rows, and a resolved row that does
 // replay thinking bills it even under that name. A resolved openai-chat row
-// bills nothing for plain thinking either — request assembly strips it
-// (#4563) — which is the row's answer, not the name's.
+// bills it too, because the chat adapter replays it — the row's answer.
 func TestEstimateInputTokens_ResolvedRowBeatsTheNameFallback(t *testing.T) {
 	t.Parallel()
 	const text = 400
@@ -542,6 +541,27 @@ func TestEstimateInputTokens_ResolvedRowBeatsTheNameFallback(t *testing.T) {
 	res := registry.Resolved{Protocol: registry.ProtocolOpenAIChat, Caps: registry.Caps{Reasoning: &reasoning}}
 	if got, want := EstimateInputTokensForResolved(res, req).Tokens, text/4; got != want {
 		t.Fatalf("resolved estimate = %d, want %d: the row says openai-chat, which serializes the text", got, want)
+	}
+}
+
+// ReplaysAssistantThinking is default-on for chat unless the row is reasoning = false.
+func TestReplaysAssistantThinkingChatDefaultOnAndDisabledRow(t *testing.T) {
+	t.Parallel()
+	off, asText := false, true
+	chat := registry.Resolved{Protocol: registry.ProtocolOpenAIChat}
+	chatOff := registry.Resolved{Protocol: registry.ProtocolOpenAIChat, Caps: registry.Caps{Reasoning: &off}}
+	if !ReplaysAssistantThinking(chat) || ReplaysAssistantThinking(chatOff) ||
+		!ReplaysAssistantThinking(registry.Resolved{Protocol: registry.ProtocolOpenAIChat, Caps: registry.Caps{Reasoning: &off, ThinkingAsText: &asText}}) ||
+		!ReplaysAssistantThinking(registry.Resolved{Protocol: registry.ProtocolOpenAIResponses, Caps: registry.Caps{Reasoning: &off}}) {
+		t.Fatalf("chat replay policy is not default-on with reasoning = false as the only chat suppression")
+	}
+	const text = 400
+	req := thinkingOnlyRequest("gw", "chat-row", strings.Repeat("t", text))
+	if got, want := EstimateInputTokensForResolved(chat, req).Tokens, text/4; got != want {
+		t.Errorf("default chat estimate = %d, want %d: a reasoning-capable chat row replays the reasoning", got, want)
+	}
+	if got := EstimateInputTokensForResolved(chatOff, req).Tokens; got != 0 {
+		t.Errorf("reasoning=false chat estimate = %d, want 0: the row drops the part", got)
 	}
 }
 
@@ -1046,6 +1066,11 @@ func TestEstimateMessagesInputTokensForResolved_BillsThinkingShapesByAdapter(t *
 
 		{"responses bills the blob, id and summaries", row(responses, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: blob, ID: id, Summary: []string{summary}}), (blobChars + idChars + summaryChars) / 4},
 		{"responses drops the display text beside the blob", row(responses, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: blob, Text: text}), blobChars / 4},
+		{"responses bills typed parts once", row(responses, registry.Caps{}), thinking(&ThinkingData{ResponsesContentParts: []ResponsesReasoningPart{{Type: "reasoning_text", Text: text}, {Type: "reasoning_text", Text: text}}}), 2 * textChars / 4},
+		{"responses bills the typed content parts, not the Summary projection", row(responses, registry.Caps{}), thinking(&ThinkingData{ResponsesContentParts: []ResponsesReasoningPart{{Type: "reasoning_text", Text: text}}, Summary: []string{summary}}), textChars / 4},
+		{"responses drops typed parts when reasoning is off", row(responses, declare(false, false)), thinking(&ThinkingData{ResponsesContentParts: []ResponsesReasoningPart{{Type: "reasoning_text", Text: text}}}), 0},
+		{"responses drops an incomplete typed item", row(responses, registry.Caps{}), thinking(&ThinkingData{ResponsesContentParts: []ResponsesReasoningPart{{Type: "reasoning_text", Text: text}}, ResponsesIncomplete: true}), 0},
+		{"responses drops an incomplete typed item carrying a blob", row(responses, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: blob, ResponsesContentParts: []ResponsesReasoningPart{{Type: "reasoning_text", Text: text}}, ResponsesIncomplete: true}), 0},
 		{"responses drops an id and summaries that do not ride", row(responses, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: blob, ID: "  ", Summary: []string{" "}}), blobChars / 4},
 		{"chat drops the opaque blob and replays its text", row(chat, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: blob, Text: text}), textChars / 4},
 		{"chat drops an opaque blob with no text", row(chat, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: blob}), 0},
@@ -1615,5 +1640,22 @@ func TestTokenPartEstimatorMatchesMessageList(t *testing.T) {
 				t.Fatal("no split leaves a prefix whose chars are not a multiple of four: this case cannot detect per-prefix rounding")
 			}
 		})
+	}
+}
+
+func TestEstimateMessagesInputTokensForResolved_BillsResponsesToolItemID(t *testing.T) {
+	t.Parallel()
+	chars := func(res registry.Resolved, m Message) int { return TokenPartEstimatorFor(res).Parts(m).Chars }
+	call := func(itemID string) Message {
+		return Message{Role: RoleAssistant, Content: []ContentPart{{Kind: ContentToolCall,
+			ToolCall: &ToolCallData{ID: "call_1", ItemID: itemID, Name: "f", Arguments: []byte(`{}`)}}}}
+	}
+	responses := registry.Resolved{Protocol: registry.ProtocolOpenAIResponses}
+	bare := chars(responses, call(""))
+	if got := chars(responses, call(" fc_item ")); got != bare+len("fc_item") {
+		t.Fatalf("responses chars = %d, want %d: the trimmed item id rides too", got, bare+len("fc_item"))
+	}
+	if chat := chars(registry.Resolved{Protocol: registry.ProtocolOpenAIChat}, call("fc_item")); chat != chars(registry.Resolved{Protocol: registry.ProtocolOpenAIChat}, call("")) {
+		t.Fatalf("chat billed the Responses-only item id")
 	}
 }

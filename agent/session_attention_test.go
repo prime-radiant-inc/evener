@@ -4293,6 +4293,7 @@ type strandedStopOptions struct {
 	pendingInlineCommit bool
 	otherPending        bool
 	otherWaiter         bool
+	outsidePending      bool
 	staleReceipt        bool
 	topLevel            bool
 	realRoot            bool
@@ -4333,6 +4334,13 @@ func newStrandedStopFixture(t *testing.T, opts strandedStopOptions) *strandedSto
 			c.mu.Unlock()
 			fixture.otherWaiter = waiter
 		}
+	}
+	if opts.outsidePending {
+		// A sibling of the stop target, owned by the root and therefore outside
+		// the subtree: its pending delivery is retryable work the close drain must
+		// leave alone rather than replay.
+		seedDelegateControllerIdle(t, c, "dlg_outside", "")
+		seedDelegateControllerDelivery(t, c, "dlg_outside")
 	}
 	owner := &Session{id: "owner-runtime", delegateController: c}
 	if opts.ownerReachable {

@@ -1,6 +1,7 @@
 package chatcompletions
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -27,6 +28,7 @@ type capturedRequest struct {
 	path   string
 	header http.Header
 	body   map[string]any
+	raw    []byte
 }
 
 // server answers every chat.completions call with the given body and
@@ -36,6 +38,7 @@ func server(t *testing.T, status int, body string) (*httptest.Server, *capturedR
 	got := &capturedRequest{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
+		got.raw = raw
 		got.path, got.header = r.URL.RequestURI(), r.Header.Clone()
 		_ = json.Unmarshal(raw, &got.body)
 		if strings.HasPrefix(body, "data:") {
@@ -54,6 +57,108 @@ func liveRes(srv *httptest.Server, mutate func(c *registry.Caps)) registry.Resol
 	res.Credential = registry.Credential{Value: "k-1", Source: "api_key"}
 	res.Headers = map[string]string{"X-Portkey-Provider": "openai"}
 	return res
+}
+
+func TestCompleteMixedReasoningReplay(t *testing.T) {
+	t.Parallel()
+	scalar := strings.Repeat(" α\n ", 32)
+	display := "step one\nstep two"
+	fixture, err := json.Marshal(chatResponseRaw(map[string]any{
+		"reasoning_text": scalar,
+		"reasoning_details": []map[string]any{
+			{"type": "reasoning.text", "text": "step one"},
+			{"type": "thinking", "thinking": "step two"},
+		},
+	}, "stop"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, got := server(t, 200, string(fixture))
+	res := liveRes(srv, nil)
+	p := &Protocol{Client: srv.Client()}
+	resp, err := p.Complete(t.Context(), userReq("hi"), res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parts := resp.Message.Content; len(parts) != 1 || parts[0].Thinking == nil || parts[0].Thinking.Text != display {
+		t.Fatalf("settled reasoning = %+v", parts)
+	}
+	req := llm.Request{Provider: registry.ProtocolOpenAIChat, Messages: []llm.Message{resp.Message}}
+	if count := llm.EstimateInputTokensForResolved(res, req).Tokens; count != len(scalar)/4 {
+		t.Errorf("scalar replay estimated %d tokens, want %d", count, len(scalar)/4)
+	}
+	if count := llm.EstimateInputTokens(req).Tokens; count != len(scalar)/4 {
+		t.Errorf("named Chat estimated %d tokens, want %d", count, len(scalar)/4)
+	}
+	readWire := func(t *testing.T, req llm.Request, target registry.Resolved) []json.RawMessage {
+		t.Helper()
+		if _, err := p.Complete(t.Context(), req, target); err != nil {
+			t.Fatal(err)
+		}
+		var wire struct{ Messages []json.RawMessage }
+		if err := json.Unmarshal(got.raw, &wire); err != nil || len(wire.Messages) != len(req.Messages) {
+			t.Fatalf("request messages = %s (%v)", got.raw, err)
+		}
+		return wire.Messages
+	}
+	first := readWire(t, req, res)
+	if assistant := got.body["messages"].([]any)[0].(map[string]any); assistant["reasoning_text"] != scalar || assistant["reasoning_details"] != nil {
+		t.Errorf("first replay = %v, want native scalar reasoning_text", assistant)
+	}
+	stored, err := json.Marshal(req.Messages[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resumed llm.Message
+	if err := json.Unmarshal(stored, &resumed); err != nil {
+		t.Fatal(err)
+	}
+	req.Messages = append([]llm.Message{resumed}, userReq("next").Messages...)
+	if cold := readWire(t, req, res); !bytes.Equal(first[0], cold[0]) {
+		t.Errorf("cold replay changed the prior assistant message: %s to %s", first[0], cold[0])
+	}
+	const encrypted = `[{"type":"reasoning.encrypted","id":"e1","data":"d1"}]`
+	for _, mode := range []string{"row details", "option details", "thinking as text", "encrypted in a separate part"} {
+		t.Run(mode, func(t *testing.T) {
+			replay := llm.Request{Messages: []llm.Message{resumed}}
+			target := res
+			wantChars := len(display)
+			switch mode {
+			case "row details":
+				target.Caps.ReasoningField = new("reasoning_details")
+				if llm.EstimatorTargetsEquivalent(res, target) {
+					t.Error("a measurement for scalar Chat replay cannot be reused for an array")
+				}
+			case "option details":
+				replay.ProviderOptions = map[string]any{registry.ProtocolOpenAIChat: map[string]any{"reasoning": map[string]any{"effort": "high"}}}
+			case "thinking as text":
+				target.Caps.ThinkingAsText = new(true)
+			case "encrypted in a separate part":
+				replay.Messages[0].Content = append(replay.Messages[0].Content, llm.ContentPart{
+					Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{EncryptedContent: encrypted},
+				})
+				wantChars += len(encrypted)
+			}
+			readWire(t, replay, target)
+			assistant := got.body["messages"].([]any)[0].(map[string]any)
+			wireText := assistant["content"]
+			details, _ := assistant["reasoning_details"].([]any)
+			if mode != "thinking as text" {
+				if len(details) == 0 {
+					t.Fatalf("array replay = %v", assistant)
+				}
+				wireText = details[0].(map[string]any)["text"]
+			} else if len(details) != 0 {
+				t.Errorf("ordinary text replay also carried details: %v", assistant)
+			}
+			if wireText != display || assistant["reasoning_text"] != nil {
+				t.Errorf("display replay = %v, want %q without a scalar field", assistant, display)
+			}
+			if count := llm.EstimateInputTokensForResolved(target, replay).Tokens; count != wantChars/4 {
+				t.Errorf("display replay estimated %d tokens, want %d", count, wantChars/4)
+			}
+		})
+	}
 }
 
 func TestCompleteDecodesTextToolCallsAndUsage(t *testing.T) {
