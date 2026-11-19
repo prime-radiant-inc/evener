@@ -7,6 +7,9 @@
     "shell/dockview-theme.css",
     "shell/PaneTab.module.css"
   ],
+  "allowlist": {
+    ".dv": "shell/PaneTab.module.css styles dockview's global .dv-default-tab container via :global(...) alongside shell/dockview-theme.css"
+  },
   "viewport": {
     "width": 960,
     "height": 400,

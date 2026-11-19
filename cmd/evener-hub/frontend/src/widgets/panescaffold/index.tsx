@@ -1,6 +1,6 @@
 import { type ReactNode, useEffect, useLayoutEffect, useRef } from "react";
 import { chromeStore } from "../../shell/chromeStore";
-import { cancelPaneFocus, consumePaneFocus } from "../../shell/workspace";
+import { cancelPaneFocus, consumePaneFocus, subscribePaneFocusRequest } from "../../shell/workspace";
 import { requireClass } from "../internal/requireClass";
 import styles from "./panescaffold.module.css";
 
@@ -112,10 +112,16 @@ export function PaneScaffold({
       cancelPaneFocus(paneId);
       return;
     }
-    if (!consumePaneFocus(paneId)) return;
-    const target = focusSelector ? paneRef.current?.querySelector<HTMLElement>(focusSelector) : null;
-    if (target) target.focus({ preventScroll: true });
-    else bodyRef.current?.focus();
+    const applyFocus = () => {
+      if (!consumePaneFocus(paneId)) return;
+      const target = focusSelector ? paneRef.current?.querySelector<HTMLElement>(focusSelector) : null;
+      if (target) target.focus({ preventScroll: true });
+      else bodyRef.current?.focus();
+    };
+    applyFocus();
+    return subscribePaneFocusRequest((requestedId) => {
+      if (requestedId === paneId) applyFocus();
+    });
   }, [focused, paneId, focusSelector]);
 
   const hasHeader = title !== undefined || cadence !== undefined || actions !== undefined;

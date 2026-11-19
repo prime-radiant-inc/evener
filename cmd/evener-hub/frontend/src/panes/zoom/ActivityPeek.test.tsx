@@ -15,6 +15,7 @@ import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { activityDelegate, activitySummary, activityThread } from "../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests } from "../../stores/threads";
+import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
 import { getToasts, pushToast, resetToastStoreForTests } from "../../widgets/toast/store";
 import { useAttachments } from "../session/composer/attachments/useAttachments";
@@ -115,6 +116,15 @@ function leaf() {
   return (pane.params as SessionZoomParams).ref;
 }
 
+function installMobileCascadeViewport(): () => void {
+  const restoreMedia = installMobileViewport();
+  transcriptDisplayStore.getState().setViewport("mobile");
+  return () => {
+    restoreMedia();
+    resetTranscriptDisplayStoreForTests();
+  };
+}
+
 function expectFourPeeks(controls: ReturnType<typeof scope>, ref: string) {
   for (const category of ["Agents", "Jobs", "Watches", "Tasks"]) {
     expect(controls.getByRole("button", { name: new RegExp(`^${category},.* - peek at ${ref}$`) })).toBeTruthy();
@@ -134,9 +144,13 @@ test("desktop cascade spine keeps About out of its four activity peeks while rea
 });
 
 test("mobile cascade column keeps About out of its four activity peeks", async ({ onTestFinished }) => {
-  onTestFinished(installMobileViewport());
+  onTestFinished(installMobileCascadeViewport());
   fixture().mount();
   await conversationMounted("grandchild");
+  expect(screen.getAllByTestId("cascade-column").map((column) => column.getAttribute("data-scope-ref"))).toEqual([
+    "grandchild",
+  ]);
+  expect(screen.queryByTestId("statusbar")).toBeNull();
   expectFourPeeks(scope("grandchild"), "grandchild");
 });
 
@@ -296,7 +310,7 @@ test("an ancestor peek drills its explicit owner and truncates the branch while 
 test("closing a leaf peek releases only its collection while the same-ref sidebar still receives direct delegates", async ({
   onTestFinished,
 }) => {
-  onTestFinished(installMobileViewport());
+  onTestFinished(installMobileCascadeViewport());
   const { client, context, contents, mount } = fixture();
   activitySidebarStore.getState().openWith("agents");
   const { rerender } = mount();

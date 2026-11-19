@@ -1673,6 +1673,33 @@ test("closing a secondary inspector tab returns focus to its surviving origin", 
   }
 });
 
+test("closing a background inspector while its source is already focused moves DOM focus to the source editor", async () => {
+  const fixture = await mountedSecondaryInspector();
+  try {
+    const { mainId, inspectorId } = fixture;
+    const api = getDockviewApi();
+    if (!api) throw new Error("expected dockview api");
+    await act(async () => workspaceStore.getState().focusPane(mainId));
+    expect(workspaceStore.getState().focusedPaneId).toBe(mainId);
+    const originPane = document.querySelector('[data-pane-scaffold="session:root"]')?.parentElement;
+    const originEditor = originPane?.querySelector<HTMLElement>('[role="textbox"]');
+    if (!originEditor) throw new Error("expected source composer textbox");
+    const outsider = document.createElement("button");
+    document.body.append(outsider);
+    try {
+      outsider.focus();
+      expect(document.activeElement).toBe(outsider);
+      await act(async () => api.getPanel(inspectorId)?.api.close());
+      expect(workspaceStore.getState().focusedPaneId).toBe(mainId);
+      expect(document.activeElement).toBe(originEditor);
+    } finally {
+      outsider.remove();
+    }
+  } finally {
+    fixture.dispose();
+  }
+});
+
 test("clicking an inactive group content area activates it even when DOM focus stayed inside that group", async () => {
   const fixture = await mountedSecondaryInspector();
   try {

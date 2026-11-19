@@ -270,8 +270,18 @@ export function currentSessionRef(state: WorkspaceStoreState): string | null {
   return paneSessionRef(focused) ?? paneSessionRef(state.panes.find((pane) => pane.slot === "main"));
 }
 
+const paneFocusListeners = new Set<(paneId: string) => void>();
+
+export function subscribePaneFocusRequest(listener: (paneId: string) => void): () => void {
+  paneFocusListeners.add(listener);
+  return () => {
+    paneFocusListeners.delete(listener);
+  };
+}
+
 export function requestPaneFocus(paneId: string): void {
   pendingPaneFocus.add(paneId);
+  for (const listener of paneFocusListeners) listener(paneId);
 }
 
 export function consumePaneFocus(paneId: string): boolean {
