@@ -214,6 +214,175 @@ test("a rail scrollport that shrinks past the trigger dismisses without moving t
   }
 });
 
+// The dismissal question is "did LAYOUT hide a trigger that was in sight at
+// the last placement", and a placement frame can run BETWEEN the layout change
+// and the observation that reports it. A chip arriving above the rail clips
+// the trigger with the viewport standing still; the rail's ResizeObserver is
+// what names that change. If the pending frame records the newly clipped
+// trigger as "already hidden at placement", the observation that follows reads
+// as a repeat of a change already classified and skips its dismissal - leaving
+// the popup open and focused after its trigger has gone. Until the change is
+// classified, the last VISIBLE baseline has to stand.
+test("a placement frame that runs before the rail's observer still dismisses for a clipped trigger", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  const RAIL_TOP = 100;
+  let railHeight = 300;
+  // The trigger sits in the rail's last visible row - 360..388 of a 100..400
+  // client area - and its own box never changes.
+  const triggerTop = RAIL_TOP + 300 - 40;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
+    if (this.getAttribute("data-testid") === "rail-port") return box(0, RAIL_TOP, 300, railHeight);
+    if (this.getAttribute("data-testid") === "rail-row") return box(0, 120, 300, 40);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.getAttribute("data-testid") === "rail-port") return railHeight;
+    return this.tagName === "UL" ? 120 : 0;
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  class FiringResizeObserver {
+    static callback: ResizeObserverCallback | null = null;
+    constructor(callback: ResizeObserverCallback) {
+      FiringResizeObserver.callback = callback;
+    }
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  vi.stubGlobal("ResizeObserver", FiringResizeObserver);
+  const { flush } = captureFrames();
+  try {
+    render(
+      <div data-testid="rail-port" style={{ overflowY: "auto" }}>
+        <div data-testid="rail-row">Steady live session</div>
+        <Menu trigger="Actions" items={items()} />
+      </div>,
+    );
+    const scroller = screen.getByTestId("rail-port");
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 1200 });
+    scroller.scrollTop = 200;
+    const offsetBefore = scroller.scrollTop;
+    const trigger = screen.getByRole("button", { name: "Actions" });
+    const focus = vi.spyOn(trigger, "focus");
+    await user.click(trigger);
+    expect(screen.getByRole("menu")).toBeTruthy();
+    focus.mockClear();
+
+    // A window event queues the after-layout frame. The window's own height
+    // does not change, and the rail still shows the trigger when the resize
+    // handler places the popup - so this frame is the one that will run after
+    // the chip beneath it.
+    fireEvent(window, new Event("resize"));
+
+    // The Needs You chip arrives above the rail and takes 60px out of its
+    // client area. Nothing scrolled and the viewport is untouched; the trigger
+    // is now past the client bottom. The PENDING placement frame runs first,
+    // before the rail's observer has said anything at all.
+    railHeight = 240;
+    flush();
+    expect(screen.getByRole("menu")).toBeTruthy();
+
+    // The observer now delivers the rail's new box - the first notification
+    // that can name the change - and it is layout's, so the menu dismisses.
+    act(() => {
+      FiringResizeObserver.callback?.([], {} as ResizeObserver);
+    });
+    flush();
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+    expect(scroller.scrollTop).toBe(offsetBefore);
+  } finally {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
+// The other half of the same rule, and the one that keeps it from dismissing on
+// every placement: when the VIEWPORT is what got shorter, the trigger it took
+// is the viewport's and the menu stays open - including on the deliveries that
+// arrive after the placement that recorded it, which is where a baseline
+// preserved against layout's change would otherwise turn into a dismissal.
+test("a viewport shrink that clips the trigger keeps the menu open when the placement runs first", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  const RAIL_TOP = 100;
+  let railHeight = 400;
+  // The trigger keeps its place in the rail's content; the client area closes
+  // upward past it when the window shrinks.
+  const triggerTop = RAIL_TOP + 400 - 40;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
+    if (this.getAttribute("data-testid") === "rail-port") return box(0, RAIL_TOP, 300, railHeight);
+    if (this.getAttribute("data-testid") === "rail-row") return box(0, 120, 300, 40);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.getAttribute("data-testid") === "rail-port") return railHeight;
+    return this.tagName === "UL" ? 120 : 0;
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  class FiringResizeObserver {
+    static callback: ResizeObserverCallback | null = null;
+    constructor(callback: ResizeObserverCallback) {
+      FiringResizeObserver.callback = callback;
+    }
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  vi.stubGlobal("ResizeObserver", FiringResizeObserver);
+  const { flush } = captureFrames();
+  try {
+    render(
+      <div data-testid="rail-port" style={{ overflowY: "auto" }}>
+        <div data-testid="rail-row">Steady live session</div>
+        <Menu trigger="Actions" items={items()} />
+      </div>,
+    );
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menu")).toBeTruthy();
+
+    // The reader shortens the window and the rail with it. The placement that
+    // follows runs before the observer, and records the trigger as gone - by
+    // the viewport's doing, which is what keeps the menu.
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 600 });
+    railHeight = 200;
+    fireEvent(window, new Event("resize"));
+    flush();
+    expect(screen.getByRole("menu")).toBeTruthy();
+
+    // The box deliveries that follow are the same viewport move, one and two
+    // passes later. Neither may be read as layout hiding the trigger.
+    act(() => {
+      FiringResizeObserver.callback?.([], {} as ResizeObserver);
+    });
+    flush();
+    expect(screen.getByRole("menu")).toBeTruthy();
+    act(() => {
+      FiringResizeObserver.callback?.([], {} as ResizeObserver);
+    });
+    flush();
+    expect(screen.getByRole("menu")).toBeTruthy();
+
+    // Still clamped into the window the reader now has.
+    const popupTop = Number.parseFloat(screen.getByRole("menu").style.top);
+    expect(popupTop).toBeGreaterThanOrEqual(0);
+    expect(popupTop + 120).toBeLessThanOrEqual(600);
+  } finally {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
 // The other half of that rule, and the one that keeps it from being a
 // dismiss-everything observer: the SAME observation, with the window having
 // changed height since the last look, is the reader's own resize. A rail that
@@ -5971,6 +6140,179 @@ test("Tab is trapped within the open menu", async () => {
   // it loops right back to itself rather than reaching "Elsewhere" -
   // FocusScope's trap contract (see focusscope.test.tsx), reused as-is.
   expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Rename" }));
+});
+
+// The recovery for a removed focused row puts focus on the POPUP itself, and
+// deliberately activates nothing there. Tab had no direction of its own from
+// that state: FocusScope's trap wraps only from a TABBABLE row, and the popup
+// is not one, so the browser continued from it in DOM order and walked
+// straight out of the still-open menu - where Escape no longer reached the
+// popup's handler. Both directions have to land on an enabled row, revealed
+// inside the popup, and Enter/Space on the popup must stay inert until the
+// reader moves.
+test("Tab from the focused popup lands on an enabled row and keeps Escape reachable", async () => {
+  const user = userEvent.setup();
+  const onStop = vi.fn();
+  const onFind = vi.fn();
+  function WorkingSessionMenu() {
+    const [showFind, setShowFind] = useState(() => window.innerHeight >= 480);
+    useEffect(() => {
+      const onResize = () => setShowFind(window.innerHeight >= 480);
+      window.addEventListener("resize", onResize);
+      return () => window.removeEventListener("resize", onResize);
+    }, []);
+    const list: MenuItem[] = [
+      { id: "stop", label: "Stop", onSelect: onStop },
+      ...(showFind ? [{ id: "find", label: "Find in session…", onSelect: onFind }] : []),
+      { id: "rename", label: "Rename", onSelect: vi.fn() },
+      { id: "archive", label: "Archive", onSelect: vi.fn() },
+    ];
+    return <Menu trigger="Actions" items={list} />;
+  }
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  // Four 44px rows in a 56px scrollport, so the row a Tab lands on has to be
+  // scrolled to before Enter can invoke something the reader cannot see.
+  const PORT = 56;
+  const ROW = 44;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, 300, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 160, PORT);
+    return box(0, 0, 0, 0);
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "UL") return PORT;
+    return this.tagName === "LI" ? ROW : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
+    return this.tagName === "UL" ? 160 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName !== "LI" || !this.parentElement) return 0;
+    return Array.prototype.indexOf.call(this.parentElement.children, this) * ROW;
+  });
+  try {
+    render(
+      <div>
+        <WorkingSessionMenu />
+        <button type="button">Elsewhere</button>
+      </div>,
+    );
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Stop" }));
+    await user.keyboard("{ArrowDown}");
+    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Find in session…" }));
+    const popup = screen.getByRole("menu");
+    // Find is the second row (44..88) in a 56px port: focus brought it in by
+    // the least scroll that fits it.
+    expect(popup.scrollTop).toBe(32);
+
+    // The resize drops Find. The recovery puts focus on the popup itself, and
+    // neither activation key may reach the row that took Find's place.
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 400 });
+    fireEvent(window, new Event("resize"));
+    expect(document.activeElement).toBe(popup);
+    await user.keyboard("{Enter}");
+    await user.keyboard(" ");
+    expect(onStop).not.toHaveBeenCalled();
+    expect(onFind).not.toHaveBeenCalled();
+    expect(screen.getByRole("menu")).toBeTruthy();
+
+    // Shift+Tab wraps backwards to the LAST enabled row, which is what a
+    // backwards step from the popup means. It stays inside the popup and is
+    // revealed there: Archive spans 88..132 in a 56px port at 32.
+    await user.keyboard("{Shift>}{Tab}{/Shift}");
+    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Archive" }));
+    expect(popup.contains(document.activeElement)).toBe(true);
+    expect(popup.scrollTop).toBe(76);
+
+    // Focus is on an item again, so the trap holds and Escape reaches the
+    // menu's own handler.
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Actions" }));
+  } finally {
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
+// The forward direction, in the state where a plain browser Tab would land on
+// the roving row without bringing it into view: the reader has scrolled the
+// popup down past the first row, and the popup itself now holds focus. Tab has
+// to land on the first enabled row AND reveal it inside the popup, or Enter
+// invokes an action whose label the reader cannot see.
+test("Tab from the focused popup goes forward to the first enabled row and reveals it", async () => {
+  const user = userEvent.setup();
+  function WorkingSessionMenu() {
+    const [showFind, setShowFind] = useState(true);
+    useEffect(() => {
+      const onResize = () => setShowFind(false);
+      window.addEventListener("resize", onResize);
+      return () => window.removeEventListener("resize", onResize);
+    }, []);
+    const list: MenuItem[] = [
+      { id: "stop", label: "Stop", onSelect: vi.fn() },
+      ...(showFind ? [{ id: "find", label: "Find in session…", onSelect: vi.fn() }] : []),
+      { id: "rename", label: "Rename", onSelect: vi.fn() },
+      { id: "archive", label: "Archive", onSelect: vi.fn() },
+    ];
+    return <Menu trigger="Actions" items={list} />;
+  }
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  const PORT = 56;
+  const ROW = 44;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, 300, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 160, PORT);
+    return box(0, 0, 0, 0);
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "UL") return PORT;
+    return this.tagName === "LI" ? ROW : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
+    return this.tagName === "UL" ? 160 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName !== "LI" || !this.parentElement) return 0;
+    return Array.prototype.indexOf.call(this.parentElement.children, this) * ROW;
+  });
+  try {
+    render(
+      <div>
+        <WorkingSessionMenu />
+        <button type="button">Elsewhere</button>
+      </div>,
+    );
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    await user.keyboard("{ArrowDown}");
+    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Find in session…" }));
+    const popup = screen.getByRole("menu");
+    // The reader scrolls to the lower rows, and the widget records that as
+    // theirs - so a row above the offset is one only a reveal may bring back.
+    popup.scrollTop = 88;
+    fireEvent.scroll(popup);
+    expect(popup.scrollTop).toBe(88);
+
+    // Find leaves the list, and the recovery puts focus on the popup itself.
+    fireEvent(window, new Event("resize"));
+    expect(screen.queryByRole("menuitem", { name: "Find in session…" })).toBeNull();
+    expect(document.activeElement).toBe(popup);
+
+    await user.keyboard("{Tab}");
+    // The first enabled row, focused and back inside the popup's view: Stop
+    // spans 0..44 and the offset was 88.
+    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Stop" }));
+    expect(popup.contains(document.activeElement)).toBe(true);
+    expect(popup.scrollTop).toBe(0);
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("menu")).toBeNull();
+  } finally {
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
 });
 
 test("ArrowDown on the closed trigger opens the menu and focuses the first item", async () => {

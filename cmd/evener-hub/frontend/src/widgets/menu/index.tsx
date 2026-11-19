@@ -11,6 +11,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { LayerFocusScope } from "../focusscope";
+import { ownerWindowOf } from "../internal/documentRealm";
 import { requireClass } from "../internal/requireClass";
 import { useDismissOnOutsidePress } from "../internal/useDismissOnOutsidePress";
 import { useOwnedDocument } from "../internal/useOwnedDocument";
@@ -123,9 +124,8 @@ function isScrollContainer(element: Element, ownerWindow: Window): boolean {
 }
 
 function scrollContainerOf(element: HTMLElement, ownerWindow: Window): HTMLElement | null {
-  const view = ownerWindow;
   for (let ancestor = element.parentElement; ancestor !== null; ancestor = ancestor.parentElement) {
-    if (isScrollContainer(ancestor, view)) return ancestor;
+    if (isScrollContainer(ancestor, ownerWindow)) return ancestor;
   }
   return null;
 }
@@ -164,13 +164,22 @@ function triggerVisibleOnScreen(element: HTMLElement, ownerWindow: Window): bool
   return intersectsRegion(rect, visibleRegionAround(element, ownerWindow, rect));
 }
 
+/** The window's visible region: the VISUAL viewport where there is one, and the
+ * layout viewport where there is not (jsdom, and any engine predating it), the
+ * two being one region there. */
+function visibleViewportBounds(ownerWindow: Window): { left: number; top: number; width: number; height: number } {
+  const viewport = ownerWindow.visualViewport;
+  if (!viewport) return { left: 0, top: 0, width: ownerWindow.innerWidth, height: ownerWindow.innerHeight };
+  return { left: viewport.offsetLeft, top: viewport.offsetTop, width: viewport.width, height: viewport.height };
+}
+
 function visibleRegionAround(element: HTMLElement, ownerWindow: Window, rect: DOMRect): VisibleRegion {
   if (rect.width <= 0 || rect.height <= 0) return { left: 0, top: 0, right: 0, bottom: 0 };
-  const viewport = ownerWindow.visualViewport;
-  let left = viewport ? viewport.offsetLeft : 0;
-  let top = viewport ? viewport.offsetTop : 0;
-  let right = viewport ? viewport.offsetLeft + viewport.width : ownerWindow.innerWidth;
-  let bottom = viewport ? viewport.offsetTop + viewport.height : ownerWindow.innerHeight;
+  const bounds = visibleViewportBounds(ownerWindow);
+  let left = bounds.left;
+  let top = bounds.top;
+  let right = bounds.left + bounds.width;
+  let bottom = bounds.top + bounds.height;
   for (let node: HTMLElement | null = element.parentElement; node !== null; node = node.parentElement) {
     if (!isScrollContainer(node, ownerWindow)) continue;
     const port = node.getBoundingClientRect();
@@ -216,11 +225,11 @@ function triggerMeasurablyHidden(element: HTMLElement, ownerWindow: Window): boo
  * cannot tell an observation "the reader moved the viewport" from "layout
  * changed while the viewport stood still". */
 function visibleViewportSignature(ownerWindow: Window): string {
-  const viewport = ownerWindow.visualViewport;
+  const { left, top, width, height } = visibleViewportBounds(ownerWindow);
   // Absent rather than null where the platform has no visual viewport: jsdom,
   // and any engine predating it. There the two viewports are one region.
-  if (!viewport) return `${ownerWindow.innerWidth}x${ownerWindow.innerHeight}`;
-  return `${viewport.offsetLeft},${viewport.offsetTop},${viewport.width}x${viewport.height}`;
+  if (!ownerWindow.visualViewport) return `${width}x${height}`;
+  return `${left},${top},${width}x${height}`;
 }
 
 // The outermost ancestor inside the body: everything in normal flow that could
@@ -253,8 +262,13 @@ const CLAMP_ROUNDING = 1;
 // difference within this distance is the reading, not the view.
 const CLIP_ROUNDING = 1;
 
-function firstEnabledIndex(items: MenuEntry[]): number {
+function firstEnabledIndex(items: readonly MenuEntry[]): number {
   return items.findIndex(isActionable);
+}
+
+/** The id of the first entry roving focus can land on, if the list has one. */
+function firstEnabledId(items: readonly MenuEntry[]): string | undefined {
+  return items[firstEnabledIndex(items)]?.id;
 }
 
 /** Scroll `popup` the least that brings `row` back inside its scrollport, and
@@ -326,7 +340,6 @@ function revealRowInline(popup: HTMLElement, row: HTMLElement): void {
 interface RowObservation {
   top: number;
   height: number;
-  width: number;
   portHeight: number;
   portWidth: number;
   /** The popup's scroll offset when this look was taken. Each observation is
@@ -354,7 +367,6 @@ interface RowObservation {
 const observeRow = (popup: HTMLElement, row: HTMLElement): RowObservation => ({
   top: row.offsetTop,
   height: row.offsetHeight,
-  width: row.offsetWidth,
   inlineStart: row.offsetLeft,
   scrollWidth: popup.scrollWidth,
   // The scrollport the reader can see into, for the same reason `revealRow`
@@ -415,8 +427,12 @@ interface ScrollerRecord {
 /** Where `triggerEl` sits inside `scroller`'s content: the difference between
  * two readings is what the content above the trigger did, with the reader's own
  * scroll taken back out. */
-function contentTopOf(triggerEl: HTMLElement, scroller: Element): number {
-  return triggerEl.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop;
+function contentTopOf(
+  triggerEl: HTMLElement,
+  scroller: Element,
+  scrollerTop = scroller.getBoundingClientRect().top,
+): number {
+  return triggerEl.getBoundingClientRect().top - scrollerTop + scroller.scrollTop;
 }
 
 /** How many visible rows are asked whether the browser held them still. The
@@ -621,7 +637,7 @@ function classifyScrollerScroll(
   const now = scroller.scrollTop;
   const previous = records.get(scroller);
   const contentTop = contentTopOf(triggerEl, scroller);
-  records.set(scroller, recordFor(triggerEl, scroller, scroller.ownerDocument.defaultView ?? window));
+  records.set(scroller, recordFor(triggerEl, scroller, ownerWindowOf(scroller)));
   if (previous === undefined) return "scrolled";
   // The same reading on the other axis, and it has to come first: a rail wide
   // enough to scroll sideways clamps its inline offset when the row that made
@@ -723,9 +739,12 @@ function classifyScrollerScroll(
   // A witness the update removed has no position to report, and a detached
   // element's rect is zeros - which would read as a huge movement in whichever
   // direction the numbers happened to fall. It says nothing, so it is skipped.
+  // The scroller's own screen position does not move while its content scrolls,
+  // so it is read once for the whole set rather than once per witness.
+  const scrollerTop = scroller.getBoundingClientRect().top;
   for (const witness of previous.witnesses) {
     if (!witness.node.isConnected) continue;
-    const witnessMoved = contentTopOf(witness.node as HTMLElement, scroller) - witness.top;
+    const witnessMoved = contentTopOf(witness.node as HTMLElement, scroller, scrollerTop) - witness.top;
     if (witnessMoved === 0) continue;
     // Within a pixel, because a rect can be fractional while the offset the
     // browser corrected is whole. Anything larger is a row that moved for its
@@ -807,8 +826,7 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   // activate something the person never chose - "Pin this session..." focused,
   // a resize drops Find, and the stored index now names "Archive".
   const [activeId, setActiveId] = useState<string | undefined>(() => {
-    const first = items[firstEnabledIndex(items)];
-    return first === undefined || isSeparator(first) ? undefined : first.id;
+    return firstEnabledId(items);
   });
   const [position, setPosition] = useState<MenuPosition | null>(null);
   const [origin, setOrigin] = useState<string | undefined>(undefined);
@@ -848,8 +866,15 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // otherwise changes it, so an unmount after a reopen cannot inherit the
     // previous close's layout mode.
     restoreWithoutScrollRef.current = false;
-    const first = items[firstEnabledIndex(items)];
-    setActiveId(first === undefined || isSeparator(first) ? undefined : first.id);
+    // And each open starts with no placement behind it. The visibility
+    // baselines below describe the viewport a popup was last laid out in, and
+    // one left over from a previous open would classify this open's first
+    // clipping as a repeat of that older placement's. Cleared here so the
+    // first pass of every open is the window that has nothing to preserve.
+    visibleViewportAtPlacementRef.current = null;
+    innerHeightAtPlacementRef.current = null;
+    triggerVisibleAtLastPlacementRef.current = true;
+    setActiveId(firstEnabledId(items));
     const triggerRect = triggerRef.current?.getBoundingClientRect();
     setPosition(triggerRect ? { top: triggerRect.bottom + TRIGGER_GAP, left: triggerRect.left } : { top: 0, left: 0 });
     setIsOpen(true);
@@ -883,7 +908,7 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     (restoreWithoutScroll = false) => {
       restoreWithoutScrollRef.current = restoreWithoutScroll;
       if (frameRef.current !== null) {
-        (ownerDocument.defaultView ?? window).cancelAnimationFrame(frameRef.current);
+        ownerWindowOf(ownerDocument).cancelAnimationFrame(frameRef.current);
         frameRef.current = null;
       }
       setIsOpen(false);
@@ -925,7 +950,7 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   // handler, and both observers inside the effect below - because the answer
   // is one fact and two definitions of it drift apart.
   const viewportMovedSincePlacement = useCallback(
-    () => visibleViewportAtPlacementRef.current !== visibleViewportSignature(ownerDocument.defaultView ?? window),
+    () => visibleViewportAtPlacementRef.current !== visibleViewportSignature(ownerWindowOf(ownerDocument)),
     [ownerDocument],
   );
 
@@ -955,6 +980,11 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   // layout change whenever the observer's delivery beats the placement frame -
   // and dismiss the menu for the gesture that was supposed to keep it.
   const visibleViewportAtPlacementRef = useRef<string | null>(null);
+  // The window's own height at that same pass. The signature above covers it
+  // wherever there is no visual viewport; where there is one, the signature
+  // describes only the visible region, and a layout-viewport resize can leave
+  // it unchanged. Read only to classify a placement, never spent.
+  const innerHeightAtPlacementRef = useRef<number | null>(null);
 
   // Where the trigger's rect was at the last placement pass, and whether the
   // window has grown since the pass before it. A scroll of a scroller that
@@ -1181,7 +1211,7 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     if (!triggerEl || !popupEl) return;
     // The trigger's own viewport: a menu in a Dockview popout must flip and
     // clamp against that window's edges, not the opener's.
-    const ownerWindow = ownerDocument.defaultView ?? window;
+    const ownerWindow = ownerWindowOf(ownerDocument);
     const triggerRect = triggerEl.getBoundingClientRect();
     anchoredTriggerRef.current = { left: triggerRect.left, top: triggerRect.top };
     // The popup's own size is its untransformed layout box (offset*), not its
@@ -1197,15 +1227,7 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // coordinates, placing there, and translating back keeps the shared
     // flip-then-clamp math unchanged. Without a visual viewport the two are
     // the same region and the translation is zero.
-    const visualViewport = ownerWindow.visualViewport;
-    const visible = visualViewport
-      ? {
-          left: visualViewport.offsetLeft,
-          top: visualViewport.offsetTop,
-          width: visualViewport.width,
-          height: visualViewport.height,
-        }
-      : { left: 0, top: 0, width: ownerWindow.innerWidth, height: ownerWindow.innerHeight };
+    const visible = visibleViewportBounds(ownerWindow);
     const localTriggerRect = {
       ...triggerRect,
       left: triggerRect.left - visible.left,
@@ -1235,8 +1257,6 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     const availableWidth = visible.width - 2 * EDGE_MARGIN;
     const maxInlineSize = `${Math.max(0, availableWidth)}px`;
     if (popupEl.style.maxInlineSize !== maxInlineSize) popupEl.style.maxInlineSize = maxInlineSize;
-    const minInlineSize = availableWidth < NARROW_POPUP_WIDTH ? "0" : "";
-    if (popupEl.style.minWidth !== minInlineSize) popupEl.style.minWidth = minInlineSize;
     // The inline insets yield when the visible width is too narrow to hold them
     // and a glyph - 52px of viewport caps the popup at 36, which its own 4 and
     // the row's 12 would leave 4px of. They are functions of the visible width
@@ -1245,6 +1265,8 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // decided the class, and the popup would alternate between the two sizes
     // every frame it stayed open.
     const narrowInsets = availableWidth < NARROW_POPUP_WIDTH;
+    const minInlineSize = narrowInsets ? "0" : "";
+    if (popupEl.style.minWidth !== minInlineSize) popupEl.style.minWidth = minInlineSize;
     const inlinePad = narrowInsets ? "0px" : "";
     const rowInlinePad = narrowInsets ? "var(--space-1)" : "";
     if (popupEl.style.getPropertyValue("--menu-inline-pad") !== inlinePad) {
@@ -1316,8 +1338,32 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // What the observer's dismissal question is answered against: a trigger
     // that was already out of sight here was put there by the viewport, and a
     // later observation of the same clipping is not layout's doing.
-    triggerVisibleAtLastPlacementRef.current = !triggerMeasurablyHidden(triggerEl, ownerWindow);
-    visibleViewportAtPlacementRef.current = visibleViewportSignature(ownerWindow);
+    //
+    // Except when this pass is the one that SAW the clipping for the first
+    // time. A layout change that hides the trigger - the Needs You chip taking
+    // height out of the rail - can land between the event that queues this
+    // frame and the frame itself, and the observation that names the change
+    // arrives after it. Recording the newly clipped trigger as "already hidden"
+    // here would make that observation read as a repeat of a viewport move, and
+    // its dismissal would be skipped: the popup stays open and focused after
+    // its trigger has gone. So the last VISIBLE baseline stands until something
+    // classifies the change - a viewport that moved, an initial open (no
+    // baseline yet), or the observer's own dismissal.
+    const currentlyVisible = !triggerMeasurablyHidden(triggerEl, ownerWindow);
+    const nextViewportSignature = visibleViewportSignature(ownerWindow);
+    const viewportMoved =
+      visibleViewportAtPlacementRef.current !== null && visibleViewportAtPlacementRef.current !== nextViewportSignature;
+    const heightChanged = innerHeightAtPlacementRef.current !== ownerWindow.innerHeight;
+    if (currentlyVisible) {
+      triggerVisibleAtLastPlacementRef.current = true;
+    } else if (visibleViewportAtPlacementRef.current === null || viewportMoved || heightChanged) {
+      // The trigger this pass measured was already out of sight because the
+      // viewport took it (or this is the first placement, which has nothing to
+      // preserve). Its later observations are the viewport's, not layout's.
+      triggerVisibleAtLastPlacementRef.current = false;
+    }
+    visibleViewportAtPlacementRef.current = nextViewportSignature;
+    innerHeightAtPlacementRef.current = ownerWindow.innerHeight;
     // The origin is read against the trigger's rect, so it takes the same
     // translated position: `placed` is in the visual viewport's coordinates,
     // and comparing it with a layout-coordinate trigger picks the wrong edge
@@ -1337,7 +1383,7 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   // re-measures once.
   const placeAfterLayout = useCallback(() => {
     if (frameRef.current !== null) return;
-    const ownerWindow = ownerDocument.defaultView ?? window;
+    const ownerWindow = ownerWindowOf(ownerDocument);
     frameRef.current = ownerWindow.requestAnimationFrame(() => {
       frameRef.current = null;
       placeMenu();
@@ -1351,14 +1397,14 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   // usePresence) and re-place it away from where the reader last saw it.
   useEffect(() => {
     if (isOpen || frameRef.current === null) return;
-    (ownerDocument.defaultView ?? window).cancelAnimationFrame(frameRef.current);
+    ownerWindowOf(ownerDocument).cancelAnimationFrame(frameRef.current);
     frameRef.current = null;
   }, [isOpen, ownerDocument]);
   // Unmount, and a move to another document, have no close to cancel the frame.
   useEffect(() => {
     return () => {
       if (frameRef.current === null) return;
-      (ownerDocument.defaultView ?? window).cancelAnimationFrame(frameRef.current);
+      ownerWindowOf(ownerDocument).cancelAnimationFrame(frameRef.current);
       frameRef.current = null;
     };
   }, [ownerDocument]);
@@ -1643,16 +1689,32 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         closeMenu();
         break;
       case "Tab":
-        // Tab is FocusScope's job while focus sits on a menu item, and its
-        // trap wraps at the ends of the tabbable list. A row disabled in place
-        // is focused but NOT tabbable, so it is not one of those ends: the
-        // browser would continue from it in DOM order and, when the single
-        // tab stop sits before it, walk straight out of the open menu. Route
-        // Tab from such a row to the item the roving id resolves to - which
-        // keeps the trap intact - and leave Enter/Space on it doing nothing.
-        if (focused !== -1 && !isActionable(itemAt(items, focused))) {
+        // Tab is FocusScope's job while focus sits on a TABBABLE menu item, and
+        // its trap wraps at the ends of that list. Two states are not one of
+        // those ends, and from both the browser would continue in DOM order and
+        // walk straight out of the open menu - after which Escape no longer
+        // reaches the popup's handler:
+        //
+        // - a row disabled in place is focused but not tabbable, so the trap
+        //   does not see it as an edge;
+        // - the popup ITSELF holds focus when the focused row was removed (see
+        //   the recovery effect), and it is tabIndex -1, so it is not tabbable
+        //   either.
+        //
+        // Both are routed to a real item, which keeps the trap intact: forward
+        // is the item the roving id resolves to when there is one, else the
+        // first enabled row; backward is the last enabled row. `reveal` because
+        // these rows were not chosen by the reader's own scroll and one of them
+        // can be outside the popup's view. An empty or all-disabled list has
+        // nowhere to go, and the key is still consumed so the trap cannot be
+        // escaped with focus left on the popup. Enter and Space stay inert from
+        // the popup (see the case above) until the reader picks a row.
+        if (focused === -1) {
           event.preventDefault();
-          focusIndex(indexOfActive());
+          focusIndex(event.shiftKey ? lastEnabledIndex(items) : firstEnabledIndex(items), true);
+        } else if (!isActionable(itemAt(items, focused))) {
+          event.preventDefault();
+          focusIndex(indexOfActive(), true);
         }
         break;
       default:
@@ -1700,7 +1762,7 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     if (!isOpen) return;
     // The widget's own window: a popout's scrolls and resizes never reach the
     // opener's window.
-    const ownerWindow = ownerDocument.defaultView ?? window;
+    const ownerWindow = ownerWindowOf(ownerDocument);
     // The height the next resize is compared against, and no growth to excuse
     // yet. Seeded here rather than at module scope so a popout's own window is
     // the one measured.
@@ -1861,7 +1923,11 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   // ResizeObserver, and the resize handler above is then the whole behavior.
   useEffect(() => {
     if (!isOpen) return;
-    const ownerWindow = ownerDocument.defaultView ?? window;
+    // `ownerWindowOf` is declared to return the `Window` interface, which omits
+    // the realm's own constructors - the half `defaultView` carries as
+    // `Window & typeof globalThis`. The observers below are read off this
+    // window, so that half is restored here, where they are read.
+    const ownerWindow = ownerWindowOf(ownerDocument) as Window & typeof globalThis;
     // The height the FIRST observation is judged against: whatever the window
     // was when this menu opened. Seeding it here rather than comparing against
     // the ref's initial zero is what keeps a chip that arrives before any
@@ -1884,16 +1950,6 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     visualViewport?.addEventListener("resize", placeAfterLayout);
     visualViewport?.addEventListener("scroll", placeAfterLayout);
     const Observer = ownerWindow.ResizeObserver;
-    // A box changing size is not always good news for the popup's anchor. A
-    // chip appearing above the desktop rail takes height out of the rail's own
-    // box, so the row nearest the bottom falls outside its client area with no
-    // session arriving, no scroll and no DOM change under the trigger - and the
-    // chip itself is outside everything this widget observes. What the observer
-    // DOES see is the scrollport it clips against, so the same visibility
-    // question the mutation path asks is asked of every observed box: a trigger
-    // that no longer intersects what the reader can see dismisses the menu, and
-    // one that still does re-anchors. The dismissal is the non-scrolling one,
-    // because layout hid the trigger and the reader did not ask to move.
     // A box changing size is not always good news for the popup's anchor, and
     // the question "is the trigger hidden" cannot say WHO hid it. Two different
     // events produce the same observation:
@@ -2099,8 +2155,7 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // row that was on screen.
     const onPopupScroll = () => {
       const popup = popupRef.current;
-      const row = itemRefs.current.find((node) => node !== null && node === ownerDocument.activeElement) ?? null;
-      if (popup === null || row === null) return;
+      if (popup === null) return;
       // A scroll tells this widget where the reader is; it does not tell it
       // whether LAYOUT also moved the row. When a reflow and a scroll land in
       // the same frame the scroll event can arrive first, and overwriting the
