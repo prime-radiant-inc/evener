@@ -1,0 +1,16 @@
+{
+  "name": "markdown-table-column-floor",
+  "description": "markdown: in a width-constrained GFM table, no column may collapse below a readable floor while a long-content column takes the width - the observed live failure rendered 'GH Status' at ~3 characters per line because one cell's long max-content line stole the table (2026-11-19, hub session local:0350DTJsY0196rA6MHasBF)",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "widgets/markdown/markdown.module.css"
+  ],
+  "widthMatrix": [{ "width": 422 }, { "width": 700 }],
+  "mutation": {
+    "declaration": "markdown.module.css: .root :where(table) { table-layout: fixed } removed - auto layout returns, the evidence column's long max-content line re-collapses 'GH Status' to ~3 characters per line",
+    "verified": "2026-11-19",
+    "expect": "fail",
+    "note": "Measured 2026-11-19 in the live hub: the same table rendered colW [27, 70, 31, 71, 223] in a 422px transcript column, and the standalone repro measured the 'GH Status' column at 37px (~2 content characters per line) before the fix and 84px after it."
+  }
+}

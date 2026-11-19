@@ -125,11 +125,23 @@
 /* GFM tables are operational evidence inside a reading surface: Inter,
  * tabular figures and fine rules rather than a tinted header band. The
  * sanitized semantic table and its alignment attributes remain unchanged;
- * long header tokens wrap instead of widening the surrounding document. */
+ * long header tokens wrap instead of widening the surrounding document.
+ *
+ * Fixed layout: auto layout distributes a width deficit proportionally to
+ * columns' max-content, and the root's overflow-wrap: anywhere drops every
+ * column's min-content to ~1 character - so one cell's long line (a test
+ * command, a URL, a JSON dump) collapsed every short column to a
+ * ~2-character strip (measured live 2026-11-19: colW [27, 70, 31, 71, 223]
+ * in a 422px column). Fixed layout divides the table's width equally: GFM
+ * carries no column-width syntax, so no author intent is overridden, the
+ * table still never widens past its container, and long content still
+ * wraps within its column. The column floor is pinned by the
+ * markdown-table-column-floor layoutguard case. */
 .root :where(table) {
   margin: 0 0 var(--space-3);
   border-collapse: collapse;
   width: 100%;
+  table-layout: fixed;
   font-family: var(--font-sans);
   font-size: var(--font-size-body);
   font-variant-numeric: tabular-nums;
