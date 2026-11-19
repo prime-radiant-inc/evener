@@ -84,6 +84,7 @@ func TestCompletePreservesAssistantItemOrder(t *testing.T) {
 			content: []llm.ContentPart{
 				thinking("opaque-fixture"), commentary("first"), thinking(""), commentary("second"),
 				{Kind: llm.ContentWebSearch, WebSearch: &llm.WebSearchData{Raw: json.RawMessage(`[]`)}},
+				{Kind: llm.ContentWebSearch, WebSearch: &llm.WebSearchData{Raw: json.RawMessage(`null`)}},
 				commentary("third"),
 				{Kind: llm.ContentWebSearch, WebSearch: &llm.WebSearchData{Raw: json.RawMessage(`{"type":"web_search_call","id":"ws_fixture","status":"completed"}`)}},
 				commentary("fourth"),
@@ -98,10 +99,8 @@ func TestCompletePreservesAssistantItemOrder(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req := userReq("input")
-			req.Messages = append(req.Messages,
-				llm.Message{Role: llm.RoleAssistant, Content: tc.content},
-				llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{result}},
-			)
+			req.Messages = append(req.Messages, llm.Message{Role: llm.RoleAssistant, Content: tc.content},
+				llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{result}})
 			srv, wire := server(t, http.StatusOK, responseJSON)
 			res := liveRes(srv, openaiCaps)
 			if _, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), llm.ShapeRequest(req, res), res); err != nil {
@@ -109,9 +108,10 @@ func TestCompletePreservesAssistantItemOrder(t *testing.T) {
 			}
 			var got [][]string
 			for _, item := range wire.body["input"].([]any) {
-				m := item.(map[string]any)
-				fields := []string{m["type"].(string)}
-				if m["type"] == "function_call" && m["arguments"] != arguments {
+				m, _ := item.(map[string]any)
+				kind, _ := m["type"].(string)
+				fields := []string{kind}
+				if kind == "function_call" && m["arguments"] != arguments {
 					t.Fatalf("tool arguments = %q, want %q", m["arguments"], arguments)
 				}
 				if m["role"] == "assistant" {

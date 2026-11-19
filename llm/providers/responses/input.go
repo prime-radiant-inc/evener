@@ -344,7 +344,7 @@ func replayedWebSearchItem(p llm.ContentPart) (map[string]any, bool) {
 	}
 	var item map[string]any
 	err := json.Unmarshal(p.WebSearch.Raw, &item)
-	return item, err == nil
+	return item, err == nil && item != nil
 }
 
 func reasoningSummaryInput(summary []string) []any {
