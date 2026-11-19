@@ -143,10 +143,10 @@ func decodeGenerateContentStream(sctx context.Context, cancel context.CancelFunc
 									tcEnd := llm.ToolCallData{
 										ID:               id,
 										Name:             name,
-										Arguments:        argsRaw,
 										Type:             "function",
 										ThoughtSignature: thoughtSig,
 									}
+									tcEnd.Arguments, tcEnd.ArgumentsSpelling = llm.NormalizeToolArguments(argsRaw)
 									s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &tcEnd})
 
 									// Preserve tool call in the accumulated response.

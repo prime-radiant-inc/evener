@@ -2328,26 +2328,27 @@ func (a *subagent) finalizeRun(f subagentFinalize) {
 		// deliberately stopped child, a closing receiver and a closing
 		// tree are not reopened: their teardowns own the discard, and a
 		// fresh row would race it (reopenLatchedDelegateAttention guards).
-		reopenID, reopenErr := a.sess.reopenLatchedDelegateAttention()
-		if reopenErr != nil {
-			a.sess.emit(warningDataFromError("reopen unpresented delegate attention", reopenErr))
-		}
 		// A user's stop owns the quiet on the drive's read too: the stopped
 		// generation's commit left the delegate armed for every other
 		// pending row, and that stale armed wake drives without any re-arm,
 		// so the reopened report would ride the next generation it starts.
 		// Hold it from the automatic drives; the rows the stop never touched
 		// keep their presentation, and the arm that later presents them —
-		// or any fresh arm — releases the hold.
-		if userStopped && reopenID != "" {
-			a.sess.holdDelegateAttentionFromAutomaticDrive(reopenID)
+		// or any fresh arm — releases the hold. A row a hook stop reopened
+		// owes the same quiet: re-arming it at once relaunches SubagentStart,
+		// and a hook that keeps refusing would repeat launches, warnings and
+		// durable records without ever presenting the report.
+		//
+		// The quiet is an input to the reopen, not a follow-up to it: the
+		// append that publishes the row takes no note of a hold installed
+		// afterwards, so a drive selecting in that window would consume a
+		// marker for a request whose projection holds the row out.
+		quietAt := uint64(0)
+		if userStopped || f.attentionUnpresented {
+			quietAt = f.lease.generation
 		}
-		// The same hold applies to a row a hook stop reopened: re-arming it at
-		// once relaunches SubagentStart, and a hook that keeps refusing would
-		// repeat launches, warnings and durable records without ever presenting
-		// the report.
-		if f.attentionUnpresented && reopenID != "" {
-			a.sess.holdDelegateAttentionFromAutomaticDrive(reopenID)
+		if _, reopenErr := a.sess.reopenLatchedDelegateAttention(quietAt); reopenErr != nil {
+			a.sess.emit(warningDataFromError("reopen unpresented delegate attention", reopenErr))
 		}
 	}
 	if f.stableRun && a.sess.delegateController != nil {

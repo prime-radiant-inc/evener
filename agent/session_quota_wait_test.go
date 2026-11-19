@@ -1086,7 +1086,7 @@ func TestQuotaWaitRetriesAtOnceForASteerNoDrainCovered(t *testing.T) {
 	s.mu.Unlock()
 	retried := make(chan bool, 1)
 	go func() {
-		retry, err := s.waitOutUsageLimit(trip, limit, "gpt-5.6", wakes)
+		retry, err := s.waitOutUsageLimit(trip, limit, "gpt-5.6", wakes, 0)
 		retried <- retry && err == nil
 	}()
 	select {
@@ -1341,4 +1341,321 @@ func TestAWaitEndingAnnouncesTheRetry(t *testing.T) {
 	}
 	close(answer)
 	run.awaitEnd(t, trip, "the retry finishes the turn")
+}
+
+// quotaWaitAnnouncements collects the wait's own announcements — the
+// ModelRetry events a quota wait emits (its start, and the zero-delay
+// retry that ends it) — through the session's one authoritative consumer.
+type quotaWaitAnnouncements struct {
+	mu      sync.Mutex
+	retries []events.ModelRetryData
+}
+
+func (a *quotaWaitAnnouncements) consume(ev events.SessionEvent) {
+	if data, ok := ev.Data.(events.ModelRetryData); ok && data.WaitStartedAt != 0 {
+		a.mu.Lock()
+		a.retries = append(a.retries, data)
+		a.mu.Unlock()
+	}
+}
+
+func (a *quotaWaitAnnouncements) snapshot() []events.ModelRetryData {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]events.ModelRetryData(nil), a.retries...)
+}
+
+// awaitLen waits until the authoritative consumer has recorded n wait
+// announcements. awaitQuotaWait observes the wait state, which the session
+// publishes under its lock before emitting the start event, and the lossless
+// consumer drains on its own goroutine — so returning from awaitQuotaWait
+// is no evidence the announcement was recorded yet, and an assertion on
+// the recorded count could fail with correct production behavior. Waiting
+// on the consumer's own record, not the state it follows, is the only
+// ordering that cannot race.
+func (a *quotaWaitAnnouncements) awaitLen(t *testing.T, n int) {
+	t.Helper()
+	testwait.Until(t, "the wait announcements to reach the consumer", func() bool {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		return len(a.retries) >= n
+	})
+}
+
+// A quota wait carries a daemon-issued identity on every producer: the
+// start announcement and the zero-delay retry that ends it carry the same
+// stamp, the thread read's failure summary carries it too, and a second
+// wait of the same turn — a steer that wakes the first and meets the limit
+// again — carries a strictly greater one even though both waits began at
+// the same fake-clock instant (a wall clock would collide here). The
+// start announcement's ResumesAt is the same instant the read summary
+// carries; the wake names none.
+func TestQuotaWaitAnnouncementsCarryTheWaitIdentity(t *testing.T) {
+	s, clk, _, adapter := newAttentionLivelockSession(t, usageLimitError(t, "openai", quotaResetAt))
+	var announcements quotaWaitAnnouncements
+	s.ConsumeEventsLossless(announcements.consume, func() {})
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	trip := tripwireCtx(t).Done()
+	run := startInput(context.Background(), s, "start the work", EntryUserInput)
+	run.awaitQuotaWait(t, s)
+
+	failure := s.RestingFailure()
+	if failure == nil {
+		t.Fatal("no failure summary while the call waits")
+	}
+	announcements.awaitLen(t, 1)
+	started := announcements.snapshot()
+	if len(started) != 1 {
+		t.Fatalf("wait start announcements = %+v, want one", started)
+	}
+	if started[0].ResumesAt != failure.ResumesAt {
+		t.Fatalf("start announcement resumes at %d, want the read summary's %d", started[0].ResumesAt, failure.ResumesAt)
+	}
+	if failure.WaitStartedAt != started[0].WaitStartedAt {
+		t.Fatalf("read summary stamp %d, want the start announcement's %d", failure.WaitStartedAt, started[0].WaitStartedAt)
+	}
+
+	// A steer wakes the first wait; the provider still meets the limit, so
+	// the call waits again within the same turn.
+	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "steer-rewaits",
+		Input:            []appwire.InputItem{{Type: "text", Text: "is the quota back"}},
+	}); err != nil {
+		t.Fatalf("steer: %v", err)
+	}
+	testwait.Until(t, "the steer retries the call", func() bool { return streamCalls(adapter) == 2 })
+	run.awaitQuotaWait(t, s)
+
+	second := s.RestingFailure()
+	if second == nil || second.ResumesAt != failure.ResumesAt {
+		t.Fatalf("second wait's summary = %+v, want it to resume at the same reset %d", second, failure.ResumesAt)
+	}
+	announcements.awaitLen(t, 3)
+	got := announcements.snapshot()
+	if len(got) != 3 {
+		t.Fatalf("wait announcements = %+v, want the first's start and wake and the second's start", got)
+	}
+	// The wake for wait 1 carries wait 1's stamp: a client can tell which
+	// wait the retry belongs to.
+	if got[1].WaitStartedAt != started[0].WaitStartedAt {
+		t.Fatalf("the wake carried stamp %d, want the wait it ended's %d", got[1].WaitStartedAt, started[0].WaitStartedAt)
+	}
+	if got[1].ResumesAt != 0 {
+		t.Fatalf("the wake carried resumesAt %d, want none: the retry installs no deadline", got[1].ResumesAt)
+	}
+	// The second wait's start carries a strictly greater stamp than the
+	// first's, though both began at the same wall-clock instant.
+	if got[2].WaitStartedAt <= started[0].WaitStartedAt {
+		t.Fatalf("the second wait's stamp %d does not compare greater than the first's %d", got[2].WaitStartedAt, started[0].WaitStartedAt)
+	}
+	if second.WaitStartedAt != got[2].WaitStartedAt {
+		t.Fatalf("second read summary stamp %d, want the second start's %d", second.WaitStartedAt, got[2].WaitStartedAt)
+	}
+	if got[2].ResumesAt != failure.ResumesAt {
+		t.Fatalf("second start resumes at %d, want the read summary's %d", got[2].ResumesAt, failure.ResumesAt)
+	}
+
+	recoverProvider(adapter)
+	reachReset(clk)
+	run.awaitEnd(t, trip, "the call resumes at the reset")
+}
+
+// The elapsed sample is the RETRY GROUP's time, not the whole model-call
+// phase's: a primary model that fails over a fallback which then hits quota
+// must not bill the fallback's wait the primary's runtime. The primary here
+// spends 90 seconds of session time before failing permanently; the fallback
+// meets the limit the instant it runs, so its wait's sample is the
+// fallback's own short elapsed — not the 90 seconds the phase spans.
+func TestWaitElapsedSampleIsTheQuotaGroupsOwnNotThePhases(t *testing.T) {
+	limit := usageLimitError(t, "openai", quotaResetAt)
+	dir := t.TempDir()
+	// The primary model's stream parks until the test lets the clock run and
+	// releases it; it then fails permanently, which hands the round to the
+	// fallback chain. The fallback model meets the quota limit at once.
+	primaryHeld := make(chan struct{})
+	releasePrimary := make(chan struct{})
+	adapter := &quotaFallbackAdapter{lim: limit, primaryHeld: primaryHeld, releasePrimary: releasePrimary}
+	c := llm.NewClient()
+	c.Register(adapter)
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	clk := agenttest.NewFakeClock()
+	s := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{
+		StateDir:       dir,
+		LLMRetryPolicy: &policy,
+		ModelFallbacks: []string{"openai/gpt-fallback"},
+		clock:          clk,
+	}))
+	var announcements quotaWaitAnnouncements
+	s.ConsumeEventsLossless(announcements.consume, func() {})
+	trip := tripwireCtx(t).Done()
+	run := startInput(context.Background(), s, "start the work", EntryUserInput)
+	select {
+	case <-primaryHeld:
+	case <-trip:
+		t.Fatal("the primary model's call never started")
+	}
+	// The primary spends 90 seconds of session time before failing.
+	clk.Advance(90 * time.Second)
+	clk.Drain()
+	close(releasePrimary)
+	run.awaitQuotaWait(t, s)
+	announcements.awaitLen(t, 1)
+
+	started := announcements.snapshot()
+	if len(started) != 1 {
+		t.Fatalf("wait start announcements = %+v, want one", started)
+	}
+	if got := started[0].GroupElapsedMS; got >= 90_000 {
+		t.Fatalf("wait start elapsed sample = %d ms, want the fallback group's own short elapsed: the primary's 90s must not be billed to the fallback's wait", got)
+	}
+	if got := started[0].Model; got != "gpt-fallback" {
+		t.Fatalf("wait start announcement names model %q, want the fallback's: the limit the fallback met is not the primary's to report", got)
+	}
+
+	adapter.recovered.Store(true)
+	reachReset(clk)
+	run.awaitEnd(t, trip, "the fallback's call resumes at the reset")
+}
+
+// quotaFallbackAdapter scripts the fallback-elapsed scenario at the adapter
+// level, where the request's model is visible: the primary model parks, then
+// fails permanently; every other model (the fallback) meets the usage limit.
+type quotaFallbackAdapter struct {
+	lim            error
+	primaryHeld    chan struct{}
+	releasePrimary chan struct{}
+	once           sync.Once
+	recovered      atomic.Bool
+}
+
+func (*quotaFallbackAdapter) Name() string { return "openai" }
+
+func (a *quotaFallbackAdapter) Complete(context.Context, llm.Request) (llm.Response, error) {
+	return llm.Response{}, llm.ErrStreamUnsupported
+}
+
+func (a *quotaFallbackAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	streamCtx, cancel := context.WithCancel(ctx)
+	st := llm.NewChanStream(cancel)
+	go func() {
+		defer st.CloseSend()
+		switch req.Model {
+		case "gpt-5.2":
+			a.once.Do(func() { close(a.primaryHeld) })
+			select {
+			case <-a.releasePrimary:
+				st.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.ErrorFromHTTPStatus("openai", 401, "unauthorized", nil, nil)})
+			case <-streamCtx.Done():
+			}
+		default:
+			if a.recovered.Load() {
+				call := communicateCall("fallback-done", "back at work")
+				sendCommunicatePreview(st, call)
+				st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &call})
+				finish := llm.FinishReason{Reason: llm.FinishReasonToolCalls}
+				st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &finish})
+				return
+			}
+			st.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: a.lim})
+		}
+	}()
+	return st, nil
+}
+
+// A wait starting less than a millisecond before its reset is still a start:
+// its announcement must not truncate the sub-millisecond delay to zero,
+// because zero is the WAKE's meaning and a client would clear a countdown
+// for a call still waiting (a delegate held at retaking its drive slot can
+// wait real time after the reset). The encoded delay rounds up to at least
+// 1ms; the exact resume instant rides resumesAt untouched.
+func TestSubMillisecondWaitStartStillAnnouncesAWait(t *testing.T) {
+	s, clk, _, _ := newAttentionLivelockSession(t, usageLimitError(t, "openai", quotaResetAt))
+	var announcements quotaWaitAnnouncements
+	s.ConsumeEventsLossless(announcements.consume, func() {})
+	trip := tripwireCtx(t).Done()
+	// Half a millisecond before the reset: a positive wait whose delay
+	// truncates to zero on the wire.
+	clk.Advance(quotaResetAt.Sub(clk.Now()) - 500*time.Microsecond)
+	clk.Drain()
+	wakes := s.quotaWakeCount()
+	limit := usageLimitError(t, "openai", quotaResetAt)
+	retry := make(chan bool, 1)
+	go func() {
+		again, err := s.waitOutUsageLimit(context.Background(), limit, "gpt-5.6", wakes, 0)
+		retry <- again && err == nil
+	}()
+	announcements.awaitLen(t, 1)
+	got := announcements.snapshot()
+	if got[0].DelayMS < 1 {
+		t.Fatalf("a wait starting 0.5ms before its reset announced a %dms delay, want at least 1ms: zero is the wake's meaning", got[0].DelayMS)
+	}
+	if got[0].ResumesAt != quotaResetAt.UnixMilli() {
+		t.Fatalf("the start announced resumesAt %d, want the exact reset instant %d", got[0].ResumesAt, quotaResetAt.UnixMilli())
+	}
+	// The half-millisecond timer fires and the wait ends as a wake.
+	reachReset(clk)
+	select {
+	case <-retry:
+	case <-trip:
+		t.Fatal("the sub-millisecond wait never ended at its reset")
+	}
+	announcements.awaitLen(t, 2)
+	wake := announcements.snapshot()[1]
+	if wake.DelayMS != 0 || wake.ResumesAt != 0 {
+		t.Fatalf("the wake = %+v, want zero delay and no resume instant", wake)
+	}
+}
+
+// The wait-start announcement's elapsed sample is the call's real elapsed
+// time at the limit — time the call already spent in the model before the
+// quota hit, which the chip renders beside the wait — not zero (scenario
+// 20). The call here streams content and then meets the limit mid-stream,
+// with the session clock advanced while it runs, so the sample is exactly the
+// time spent: 90 seconds.
+func TestWaitStartAnnouncesTheCallsRealElapsedSample(t *testing.T) {
+	limit := usageLimitError(t, "openai", quotaResetAt)
+	s, clk, _, adapter := newAttentionLivelockSession(t, nil)
+	var announcements quotaWaitAnnouncements
+	s.ConsumeEventsLossless(announcements.consume, func() {})
+	// The call streams content, then meets the limit mid-stream once the test
+	// has let the clock run: the elapsed sample must span the streamed work.
+	streamed := make(chan struct{})
+	release := make(chan struct{})
+	adapter.mu.Lock()
+	adapter.streamErr = nil
+	adapter.streamScript = func(st *llm.ChanStream) {
+		st.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, Delta: "working on it"})
+		close(streamed)
+		<-release
+		st.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: limit})
+	}
+	adapter.mu.Unlock()
+	trip := tripwireCtx(t).Done()
+	run := startInput(context.Background(), s, "start the work", EntryUserInput)
+	select {
+	case <-streamed:
+	case <-trip:
+		t.Fatal("the call never streamed before meeting the limit")
+	}
+	clk.Advance(90 * time.Second)
+	clk.Drain()
+	close(release)
+	run.awaitQuotaWait(t, s)
+	// The wait's state publishes before its start event reaches this
+	// consumer, so the announcement is awaited, not assumed.
+	announcements.awaitLen(t, 1)
+
+	started := announcements.snapshot()
+	if len(started) != 1 {
+		t.Fatalf("wait start announcements = %+v, want one", started)
+	}
+	if got, want := started[0].GroupElapsedMS, int64(90_000); got != want {
+		t.Fatalf("wait start elapsed sample = %d ms, want %d: the call's real elapsed time at the limit", got, want)
+	}
+
+	recoverProvider(adapter)
+	reachReset(clk)
+	run.awaitEnd(t, trip, "the call resumes at the reset")
 }

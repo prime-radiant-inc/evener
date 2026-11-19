@@ -32,6 +32,12 @@ type quotaWait struct {
 	// failure is what the session's row says while the call waits: the
 	// usage limit, and when the call resumes by itself.
 	failure appwire.ThreadFailure
+	// stamp is the wait's identity (quotaWaitStamps at the wait's start):
+	// the same value on its start announcement, its zero-delay wake, and
+	// the failure summary a read serves. Strictly increasing per session,
+	// never a wall-clock instant, so a later wait of the same turn always
+	// compares greater.
+	stamp uint64
 	// wake asks the wait to retry now.
 	wake chan struct{}
 }
@@ -91,9 +97,12 @@ func (s *Session) waitingForQuota() bool {
 
 // waitOutUsageLimit waits out callErr when it is a usage limit with a future
 // reset time and the session is long-lived, and reports whether the call
-// should be made again. wakesBefore is quotaWakeCount as the call began. A
-// wait that ends because ctx ended returns ctx's error, which the round
-// handles as it handles a cancellation during any model call.
+// should be made again. wakesBefore is quotaWakeCount as the call began, and
+// callElapsed is the time that call already spent before the limit hit — the
+// sample the wait's start announcement carries, so the chip renders how long
+// the call ran instead of restarting at zero. A wait that ends because ctx
+// ended returns ctx's error, which the round handles as it handles a
+// cancellation during any model call.
 //
 // A one-shot run (TurnEndsProcess: `evener run` and every delegate under it)
 // never waits: it has no human to switch models and would hold its process
@@ -104,7 +113,7 @@ func (s *Session) waitingForQuota() bool {
 // Before the retry it applies a model switch picked meanwhile and delivers
 // steering that arrived, as a round boundary does, so the retry runs on the
 // model the user picked and carries what they said.
-func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model string, wakesBefore uint64) (retry bool, err error) {
+func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model string, wakesBefore uint64, callElapsed time.Duration) (retry bool, err error) {
 	resetAt, ok := llm.UsageLimitResetAt(callErr)
 	if !ok || llm.Kind(callErr) != llm.KindQuotaExceeded || s.cfg.TurnEndsProcess {
 		return false, nil
@@ -128,6 +137,11 @@ func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model st
 	// wait is published, so whoever sees the session waiting sees a drive
 	// whose bound no longer runs.
 	drive.waitBegins()
+	// The stamp is minted in the publishing hold, so every wait the session
+	// issues compares greater than the one before it.
+	s.quotaWaitStamps++
+	wait.stamp = s.quotaWaitStamps
+	wait.failure.WaitStartedAt = wait.stamp
 	s.quotaWait = wait
 	// A wake that came while the request was in flight, a switch already
 	// picked, or a steer that arrived after the last steering drain began
@@ -147,7 +161,7 @@ func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model st
 	defer end()
 
 	s.noteParentJobActivity(jobPhaseModelRetrying)
-	s.emitQuotaRetry(callErr, model, resetAt.Sub(now))
+	s.emitQuotaRetry(callErr, model, resetAt.Sub(now), wait.stamp, resetAt.UnixMilli(), callElapsed, &wait.failure)
 	select {
 	case <-ctx.Done():
 		return false, ctx.Err()
@@ -172,7 +186,7 @@ func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model st
 	// event re-samples the session's failure summary (now clear), so a list
 	// row stops saying the session waits as soon as the retry goes out,
 	// not when its response ends.
-	s.emitQuotaRetry(callErr, model, 0)
+	s.emitQuotaRetry(callErr, model, 0, wait.stamp, 0, callElapsed, nil)
 	s.injectDrainedSteering()
 	return true, nil
 }
@@ -214,14 +228,32 @@ func quotaWaitFailure(callErr error, model string, resetAt time.Time) appwire.Th
 // to the reset when the wait begins, and one with no delay when the retry
 // goes out. Like a wall-budgeted rate limit, it counts no attempts against a
 // budget, so every announcement says attempt 1 and clients read only its
-// delay.
-func (s *Session) emitQuotaRetry(callErr error, model string, delay time.Duration) {
+// delay. waitStartedAt is the wait's identity on both announcements;
+// resumesAt is the absolute instant the call resumes, named by the start
+// alone so the wake installs no deadline. A start whose reset is less than a
+// millisecond away still encodes at least 1ms: zero is the wake's meaning
+// alone, and a client reading a zero-delay start would clear a countdown
+// for a call still waiting out its sub-millisecond remainder (a delegate
+// retaking a drive slot can wait real time past the reset). The start's
+// exact instant rides resumesAt regardless. callElapsed is the time the
+// limited call already spent — GroupElapsedMS on both announcements, since
+// the call the retry resumes is the same one that waited. waitFailure is
+// the wait's own failure summary on the start alone: the stamped facts a
+// read-side projection materializes the wait from.
+func (s *Session) emitQuotaRetry(callErr error, model string, delay time.Duration, waitStartedAt uint64, resumesAt int64, callElapsed time.Duration, waitFailure *appwire.ThreadFailure) {
+	if delay > 0 && delay < time.Millisecond {
+		delay = time.Millisecond
+	}
 	data := events.ModelRetryData{
-		Attempt:    1,
-		DelayMS:    delay.Milliseconds(),
-		ErrorClass: llm.Kind(callErr).String(),
-		Message:    callErr.Error(),
-		Model:      model,
+		Attempt:        1,
+		DelayMS:        delay.Milliseconds(),
+		ErrorClass:     llm.Kind(callErr).String(),
+		Message:        callErr.Error(),
+		Model:          model,
+		GroupElapsedMS: callElapsed.Milliseconds(),
+		WaitStartedAt:  waitStartedAt,
+		ResumesAt:      resumesAt,
+		WaitFailure:    waitFailure,
 	}
 	if le, ok := errors.AsType[llm.Error](callErr); ok {
 		data.StatusCode = le.StatusCode()
