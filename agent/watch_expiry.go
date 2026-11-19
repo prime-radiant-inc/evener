@@ -237,6 +237,17 @@ func (jm *jobManager) notifyRestartCancelledCallbackWatches() error {
 	// another.
 	var errs []error
 	for _, receiver := range ids {
+		// A STABLE delegate receiver takes the notice as durable typed watch
+		// attention. Its steering queue cannot carry it: only a leased
+		// generation presents a watch notice, and the notice names a watch, so
+		// presenting it unleased would both misreport it and leave the row
+		// pending. The attention row is a watch row, so an unleased projection
+		// withholds it and the arm wakes the generation that may present it.
+		// Every other receiver keeps the steering fallback: its wake carries
+		// ordinary steering just fine and it holds no leased generation to arm.
+		if jm.watchAttention != nil && jm.watchAttention(receiver, restartCancelledCallbackWatchAttentionID(receiver), callbackWatchesCancelledAtRestartMessage) {
+			continue
+		}
 		if jm.notifySystem != nil {
 			if !jm.notifySystem(receiver, callbackWatchesCancelledAtRestartMessage) {
 				errs = append(errs, fmt.Errorf("route callback cancellation notification to session %q: session unavailable", receiver))
@@ -253,6 +264,16 @@ func (jm *jobManager) notifyRestartCancelledCallbackWatches() error {
 		jm.enqueue(jobNotification{Kind: jobNotificationKindWatch, Status: jobNotificationEventWatch, Reason: callbackWatchesCancelledAtRestartMessage})
 	}
 	return errors.Join(errs...)
+}
+
+// restartCancelledCallbackWatchAttentionID is the durable attention identity of
+// the restart-cancelled callback notice one receiver takes. The notice is
+// per-receiver, not per-watch -- cancellation is coalesced once per receiver --
+// so the receiver names it. A repeat restore derives the same identity and
+// content and the append deduplicates, which is the idempotence the notice
+// needs across two restores with no new watch in between.
+func restartCancelledCallbackWatchAttentionID(receiverSessionID string) string {
+	return watchSendAttentionPrefix + "restart_cancelled_callback_watches:" + receiverSessionID
 }
 
 // watchFrameOrigin identifies the watch config a durable watch-send frame came

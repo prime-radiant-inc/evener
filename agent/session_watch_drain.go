@@ -166,12 +166,19 @@ func stableDelegateChild(sess *Session) bool {
 // tokens (resolveQueuedWatchSendTokens), because a token is not a notice: once
 // resolved, the queue holds only the work a turn could actually carry.
 //
-// Two exemptions keep it from stranding legitimate work:
+// Three exemptions keep it from stranding legitimate work:
 //
 //   - An ordinary notice in the same queue (hasPendingOrdinaryNotification)
 //     makes the drive worth launching: acceptance now defers the watch notice
 //     and carries the completion (see deferUnleasedWatchNotices), so the turn
 //     does real work.
+//   - Steering queued for the child makes ANY drive worth launching, including
+//     one whose notification queue resolved to nothing. acceptNotificationInput
+//     drains steering on its own (injectDrainedSteering), so a turn that carries
+//     no notification still presents the steer and does real work. Skipping the
+//     drive here would strand the steer: a stable child's steering is run only
+//     by a turn some drive launches, and this function is the only gate between
+//     the drive and that turn.
 //   - A TRANSCRIBED watch-send token whose settle the resolution could not
 //     record still needs the drive: its frame is already in the child's
 //     transcript and only its delivered record is outstanding, so skipping
@@ -192,7 +199,14 @@ func (s *Session) driveWouldStrandOnAdmission(child *Session) bool {
 			// empty turn would take a slot only to stand straight back down,
 			// and a stale token would otherwise keep the drain counting work
 			// no turn can drain.
-			return true
+			//
+			// Steering is the exception: it is not a notification, so the
+			// resolution above cannot leave it behind, and the turn carries it
+			// without one. A park (a Stop the user has not answered) is the one
+			// queued shape that turn would NOT carry -- injectDrainedSteering
+			// runs but selectDrainNextAction takes goIdle ahead of the
+			// autonomous rungs -- so a parked steer does not buy a drive.
+			return !child.hasPendingSteering() || child.steeringParkedNow()
 		}
 		return false
 	}

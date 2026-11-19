@@ -32,6 +32,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/execsupport/shellquote"
+	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
@@ -5015,9 +5016,15 @@ func TestDelegateResourceSupervision_UnleasedWatchFilterReadsTheFoldUnderTheAtte
 	}
 	updateSessionTestConfig(sub.sess, func(cfg *testConfig) { cfg.delegateAttentionReadFold = nil })
 
-	// Phase two: the same read against a concurrent writer.
-	var appended atomic.Bool
+	// Phase two: the same read against a concurrent writer. The writer is held
+	// on a channel between its first append and its last, so the reader below
+	// provably evaluates the fold while at least one row is already appended and
+	// the writer is still active. Polling the writer's completion instead made
+	// the observation a scheduling race: a writer that finished first left the
+	// reader no window to see anything, which says nothing about the lock.
 	var writerErr atomic.Value
+	firstAppended := make(chan struct{})
+	releaseWriter := make(chan struct{})
 	var wg sync.WaitGroup
 	wg.Go(func() {
 		for i := range 40 {
@@ -5026,26 +5033,33 @@ func TestDelegateResourceSupervision_UnleasedWatchFilterReadsTheFoldUnderTheAtte
 				"concurrent watch row "+strconv.Itoa(i),
 			); err != nil {
 				writerErr.Store(err)
+				if i == 0 {
+					close(firstAppended)
+				}
 				return
 			}
+			if i == 0 {
+				// One row is durable before the reader runs, and the writer
+				// cannot retire until that read has returned.
+				close(firstAppended)
+				<-releaseWriter
+			}
 		}
-		appended.Store(true)
 	})
-	observed := false
-	for !appended.Load() {
-		if len(sub.sess.pendingDeferredWatchAttention()) > 0 {
-			observed = true
-		}
-		if err, _ := writerErr.Load().(error); err != nil {
-			t.Fatalf("append a concurrent watch row: %v", err)
-		}
+	<-firstAppended
+	if err, _ := writerErr.Load().(error); err != nil {
+		close(releaseWriter)
+		wg.Wait()
+		t.Fatalf("append a concurrent watch row: %v", err)
 	}
+	observed := len(sub.sess.pendingDeferredWatchAttention()) > 0
+	close(releaseWriter)
 	wg.Wait()
-	if !appended.Load() {
-		t.Fatalf("the concurrent writer did not finish: %v", writerErr.Load())
+	if err, _ := writerErr.Load().(error); err != nil {
+		t.Fatalf("append a concurrent watch row: %v", err)
 	}
 	if !observed {
-		t.Fatal("the concurrent reader never saw a pending watch row: the race proof needed the read to run alongside the writes")
+		t.Fatal("the concurrent reader never saw a pending watch row while a write was in flight: the race proof needed the read to run alongside the writes")
 	}
 }
 
@@ -5653,6 +5667,141 @@ func TestDelegateResourceSupervision_OrdinaryCompletionCarriesPastAnUntranscribe
 	}
 }
 
+// TestDelegateResourceSupervision_RestartCancelledCallbackWatchBecomesLeasedAttention
+// pins the route a restart-CANCELLED callback watch takes to a stable delegate
+// receiver. The notice names a watch, and only a leased generation presents a
+// watch notice, so an unleased turn must not carry it: the receiver's steering
+// queue would present it beside a claim that no watch is behind it and leave no
+// durable row for the generation that may present it.
+//
+// The row under the receiver's identity is the durable half, and the
+// controller's committed wake for that identity is the leased half: an arm that
+// published a wake is what a generation may drive from.
+func TestDelegateResourceSupervision_RestartCancelledCallbackWatchBecomesLeasedAttention(t *testing.T) {
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
+	})
+	root := restoreSupervisionRoot(t, fixture, nil)
+	sub := warmDelegateUnservedRoot(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	jm := sub.sess.jobManager
+	if jm == nil || jm.watchAttention == nil {
+		t.Fatal("the stable child's job manager has no watch-attention route wired")
+	}
+	// Hold the wake instead of letting it drive: the arm publishes the wake and
+	// then wakes the receiver, and a driving receiver presents the row and
+	// resolves it before the assertions below can read the armed state.
+	sub.sess.mu.Lock()
+	previousNotify := sub.sess.notifyFunc
+	sub.sess.mu.Unlock()
+	var wakes atomic.Int64
+	sub.sess.SetNotifyFunc(func() { wakes.Add(1) })
+	t.Cleanup(func() { sub.sess.SetNotifyFunc(previousNotify) })
+	// The shape restore leaves: a no-send callback watch whose receiver is the
+	// child itself. A send watch is a different rail and is skipped here.
+	jm.watchesLostAtRestore = []*jobstore.WatchRecord{{
+		WatchID:           "watch_cancelled",
+		Generation:        "1",
+		Target:            "job_gone",
+		ReceiverSessionID: sub.sess.id,
+	}}
+	if err := jm.notifyRestartCancelledCallbackWatches(); err != nil {
+		t.Fatalf("notify restart-cancelled callback watches: %v", err)
+	}
+	if wakes.Load() == 0 {
+		t.Fatal("the cancellation armed no wake: a leased generation would never be driven for the row")
+	}
+
+	attentionID := restartCancelledCallbackWatchAttentionID(sub.sess.id)
+	fold, err := readDelegateAttentionFold(transcriptPath(sub.sess.stateDir, sub.sess.id), sub.sess.id)
+	if err != nil {
+		t.Fatalf("read the child's attention fold: %v", err)
+	}
+	row, ok := fold.content[attentionID]
+	if !ok {
+		t.Fatalf("child attention rows = %v, want the cancellation under %q", fold.order, attentionID)
+	}
+	if !isWatchNoticeAttentionID(attentionID) {
+		t.Fatalf("attention identity %q does not read as a watch notice: an unleased projection would present it", attentionID)
+	}
+	if row.Text() != callbackWatchesCancelledAtRestartMessage {
+		t.Fatalf("attention row = %q, want %q", row.Text(), callbackWatchesCancelledAtRestartMessage)
+	}
+	// The leased half: the controller holds a published wake for the row, which
+	// is what a generation drives from.
+	controller := sub.sess.delegateController
+	controller.mu.Lock()
+	state := controller.attention[fixture.delegateID]
+	_, committed := false, false
+	if state != nil {
+		_, committed = state.committedWakeIDs[attentionID]
+	}
+	controller.mu.Unlock()
+	if !committed {
+		t.Fatalf("controller committed no wake for %q: the row would wait for a drive that never comes", attentionID)
+	}
+	// And it did not ride the steering queue, which is the presentation a leased
+	// generation alone may make.
+	if got := sub.sess.peekNotifications(); got != 0 {
+		t.Fatalf("queued notifications after the cancellation = %d, want 0: the notice is durable attention, not steering", got)
+	}
+	if sub.sess.hasPendingSteering() {
+		t.Fatal("the cancellation landed in the child's steering queue, where an unleased turn would present it")
+	}
+}
+
+// TestDelegateResourceSupervision_StrandCheckKeepsRunnableSteeringDrivable pins
+// the steering exemption in the strand check. A stable child's steering is run
+// only by a turn a drive launches, and the strand check is the only gate between
+// the drive and that turn, so suppressing the drive for a queued steer would
+// strand it with nothing to run it.
+//
+// A PARK is the exception the check must keep: a steer parked by an unanswered
+// Stop is not carried by an unleased turn, so it buys no drive.
+func TestDelegateResourceSupervision_StrandCheckKeepsRunnableSteeringDrivable(t *testing.T) {
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
+	})
+	root := restoreSupervisionRoot(t, fixture, nil)
+	sub := warmDelegateUnservedRoot(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	// The premise: nothing but steering is queued, so the decision below is the
+	// empty-queue branch and not the watch-notice one.
+	if got := sub.sess.peekNotifications(); got != 0 {
+		t.Fatalf("queued notifications = %d, want 0 for the empty-queue premise", got)
+	}
+	if sub.sess.hasPendingWatchNotification() {
+		t.Fatal("a watch notice is pending: the steering branch would not be the one under test")
+	}
+	if !stableDelegateChild(sub.sess) {
+		t.Fatal("the child is not a stable delegate, so the strand check does not apply to it")
+	}
+
+	if ok, err := sub.sess.trySteerEnqueue("carry this to the model", nil, nil, events.SteeringSourceUser, ""); err != nil || !ok {
+		t.Fatalf("queue runnable steering (ok=%t): %v", ok, err)
+	}
+	if !sub.sess.hasPendingSteering() || sub.sess.steeringParkedNow() {
+		t.Fatal("the queue is not holding one runnable steer, so the decision below would prove nothing")
+	}
+	if sub.sess.driveWouldStrandOnAdmission(sub.sess) {
+		t.Fatal("a runnable steer was not driven: its turn is the only thing that runs it, so it stays queued forever")
+	}
+
+	// A park still suppresses the drive: an unleased turn lets goIdle win ahead
+	// of the steering rung, so the wake would settle nothing.
+	sub.sess.parkSteering()
+	if !sub.sess.steeringParkedNow() {
+		t.Fatal("the steer did not read as parked, so the premise of the second assertion is broken")
+	}
+	if !sub.sess.driveWouldStrandOnAdmission(sub.sess) {
+		t.Fatal("a parked steer drove the child: the turn would stand straight back down and leave it queued")
+	}
+}
+
 // TestProgressTicksCarryDistinctDeliveryOrdinals pins the identity half of the
 // progress cadence (LIFE-01, #2340). A progress_interval_ms watch is not a
 // timer, but every tick is still its own delivery: without an ordinal, two
@@ -5684,11 +5833,11 @@ func TestProgressTicksCarryDistinctDeliveryOrdinals(t *testing.T) {
 	}
 }
 
-// TestLongRunningRemindersCarryDistinctDeliveryOrdinals pins the same identity
-// rule on the long-running shell reminder (LIFE-01, #2340). Every fire says the
-// same thing about the same jobs, so without an ordinal the second reminder
-// derives the first reminder's durable attention identity.
-func TestLongRunningRemindersCarryDistinctDeliveryOrdinals(t *testing.T) {
+// TestLongRunningRemindersCarryDistinctDeliveryIDs pins the identity rule on
+// the long-running shell reminder (LIFE-01, #2340). Every fire says the same
+// thing about the same jobs, so each fire carries its own delivery ID and two
+// fires derive two durable attention identities.
+func TestLongRunningRemindersCarryDistinctDeliveryIDs(t *testing.T) {
 	t.Parallel()
 	r := newReminderRig(t)
 	r.startShell(t)
@@ -5703,10 +5852,114 @@ func TestLongRunningRemindersCarryDistinctDeliveryOrdinals(t *testing.T) {
 	if len(second) != 1 {
 		t.Fatalf("second reminder count = %d, want 1", len(second))
 	}
-	if first[0].DeliveryOrdinal <= 0 || second[0].DeliveryOrdinal <= first[0].DeliveryOrdinal {
-		t.Fatalf("reminder ordinals = %d, %d, want increasing and positive", first[0].DeliveryOrdinal, second[0].DeliveryOrdinal)
-	}
 	if deferredWatchAttentionID(first[0]) == deferredWatchAttentionID(second[0]) {
 		t.Fatalf("both reminders derive attention identity %q: the second would be dropped as a replay", deferredWatchAttentionID(first[0]))
+	}
+}
+
+// TestLongRunningReminderAfterRestoreAppendsBesideThePreRestoreRow pins that
+// identity across a restore. A fresh job manager on the same transcript and
+// delegate restarts every in-process counter it owns, while the pre-restore
+// reminder's durable attention row survives in the transcript. An identity
+// derived from such a counter would hand the new reminder the old row's
+// identity, and the append would reject it as conflicting content instead of
+// presenting the new reminder.
+//
+// The retry half is pinned with it: the same notice appended twice keeps one
+// row, so a retry of a reminder that already landed deduplicates.
+func TestLongRunningReminderAfterRestoreAppendsBesideThePreRestoreRow(t *testing.T) {
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
+	})
+	root := restoreSupervisionRoot(t, fixture, nil)
+	sub := warmStableSupervisionDelegate(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	// Two managers over ONE job store, each with its own running shell job and
+	// each firing the real reminder cadence: that is the restore shape, where
+	// the second manager's in-process counters start from zero while the first
+	// manager's durable attention row is still in the transcript. The managers
+	// live under their own session id so they cannot disturb the child's own
+	// job manager; only the attention target is the child.
+	reminderManager := identifier.MustNewSessionID()
+	const command = "go test ./..."
+	fireReminder := func(t *testing.T) jobNotification {
+		t.Helper()
+		var fired []jobNotification
+		jm, err := newJobManagerNoSync(sub.sess.stateDir, reminderManager, func(n jobNotification) {
+			fired = append(fired, n)
+		})
+		if err != nil {
+			t.Fatalf("open reminder job manager: %v", err)
+		}
+		clock := agenttest.NewFakeClock()
+		jm.reminderClock = clock
+		startAt := clock.Now().Add(-2 * longRunningJobReminderInterval)
+		freezeClockAt(jm, startAt)
+		if _, err := jm.createShell(createShellOpts{Command: command}); err != nil {
+			t.Fatalf("create the long-running shell job: %v", err)
+		}
+		freezeClockAt(jm, clock.Now())
+		jm.armLongRunningReminder()
+		clock.Advance(longRunningJobReminderInterval)
+		clock.Drain()
+		// Crash rather than close: the runtime goes away, the store keeps what
+		// it appended, which is what a restart leaves behind.
+		crashJobManager(t, jm)
+		var reminders []jobNotification
+		for _, n := range fired {
+			if n.isLongRunningJobsReminder() {
+				reminders = append(reminders, n)
+			}
+		}
+		if len(reminders) != 1 {
+			t.Fatalf("reminders fired = %d, want 1", len(reminders))
+		}
+		return reminders[0]
+	}
+
+	before := fireReminder(t)
+	if _, err := sub.sess.persistDeferredWatchNotice(before); err != nil {
+		t.Fatalf("persist the pre-restore reminder: %v", err)
+	}
+	beforeID := deferredWatchAttentionID(before)
+
+	after := fireReminder(t)
+	afterID := deferredWatchAttentionID(after)
+	if afterID == beforeID {
+		t.Fatalf("the post-restore reminder reused attention identity %q: the append would reject it as conflicting content", beforeID)
+	}
+	if _, err := sub.sess.persistDeferredWatchNotice(after); err != nil {
+		t.Fatalf("append the post-restore reminder beside the pre-restore row: %v", err)
+	}
+	fold, err := readDelegateAttentionFold(transcriptPath(sub.sess.stateDir, sub.sess.id), sub.sess.id)
+	if err != nil {
+		t.Fatalf("read the child's attention fold: %v", err)
+	}
+	for _, wantID := range []string{beforeID, afterID} {
+		if _, ok := fold.content[wantID]; !ok {
+			t.Fatalf("child attention rows = %v, want %q", fold.order, wantID)
+		}
+	}
+
+	// Retrying the SAME notice re-derives the same identity and content, so the
+	// append is a no-op: the fold keeps exactly one row for it. A retry that
+	// re-derived a fresh identity would add a second row for the same notice.
+	if _, err := sub.sess.persistDeferredWatchNotice(after); err != nil {
+		t.Fatalf("retry the same reminder: %v", err)
+	}
+	retried, err := readDelegateAttentionFold(transcriptPath(sub.sess.stateDir, sub.sess.id), sub.sess.id)
+	if err != nil {
+		t.Fatalf("read the child's attention fold after the retry: %v", err)
+	}
+	rows := 0
+	for _, id := range retried.order {
+		if id == afterID {
+			rows++
+		}
+	}
+	if rows != 1 {
+		t.Fatalf("rows for the retried reminder = %d, want 1: the retry must deduplicate against its own row", rows)
 	}
 }

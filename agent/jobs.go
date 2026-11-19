@@ -165,6 +165,13 @@ type jobManager struct {
 	// that held a callback watch. It uses the durable steering queue rather than
 	// the lost callback closure, so the notice survives the restore boundary.
 	notifySystem func(receiverSessionID, message string) bool
+	// watchAttention routes a restart-owned notice to a STABLE delegate receiver
+	// as durable typed watch attention instead of steering: it appends the notice
+	// under attentionID and arms its wake, reporting whether the receiver was a
+	// stable delegate and took the row. A stable delegate presents a watch notice
+	// only on a leased generation, and its steering queue cannot carry one.
+	// nil for managers with no live session tree, which keep notifySystem.
+	watchAttention func(receiverSessionID, attentionID, content string) bool
 	// currentProvenance reports the owning session's active causal provenance at
 	// call time. A job records this at creation so its detached lifecycle events
 	// and terminal notification carry the origin of whatever input launched it.
@@ -233,12 +240,6 @@ type jobManager struct {
 	// waiters on the job clock, or a test counting them with BlockUntil would
 	// see the 30-minute reminder instead.
 	reminderClock clock.Clock
-	// longRunningReminderOrdinal counts the reminders this manager has fired.
-	// Each fire is its own delivery, so the notice it builds carries the value
-	// as its DeliveryOrdinal: two fires are otherwise identical -- same watch,
-	// same job, same reason -- and would derive one durable attention identity
-	// between them. Guarded by mu.
-	longRunningReminderOrdinal uint64
 	// closeGrace bounds how long closeRuntimeState waits for each still-running
 	// job to finalize before abandoning it. Seeded from defaultCloseGrace at
 	// construction so tests can shrink the graceful-shutdown window.

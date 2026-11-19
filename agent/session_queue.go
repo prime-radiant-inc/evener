@@ -265,6 +265,56 @@ func (s *Session) enqueueSystemNotification(message string) bool {
 	return s.trySteerWithProvenanceAndNotify(message, nil, events.SteeringKindNotification)
 }
 
+// routeStableWatchAttention mirrors routeSystemNotification for a notice that
+// must reach a STABLE delegate receiver as durable typed watch attention. It
+// reports false when the receiver is not a live stable delegate, so the caller
+// keeps the steering fallback that a plain session's wake can carry.
+//
+// A stable delegate's watch notice cannot ride its steering queue: only a leased
+// generation presents a watch notice, and an unleased turn that carried one
+// would misreport it and leave the durable row pending. Appending under a
+// watch-row identity gives the unleased projection something to withhold and the
+// arm gives the generation its wake.
+//
+// The content is the frame WITHOUT its delivery_id lines, exactly as the send
+// rail delivers a stable frame, because the notice carries no delivery of its
+// own.
+func (s *Session) routeStableWatchAttention(receiverSessionID, attentionID, content string) bool {
+	if s == nil || strings.TrimSpace(receiverSessionID) == "" || attentionID == "" {
+		return false
+	}
+	receiver := s.stableDelegateReceiver(receiverSessionID)
+	if receiver == nil {
+		return false
+	}
+	if _, err := receiver.appendDelegateNotificationDurably(attentionID, stableWatchNotificationContent(content)); err != nil {
+		receiver.emit(warningDataFromError("record restart watch cancellation attention", err))
+		return false
+	}
+	if err := receiver.armDelegateAttention(attentionID); err != nil {
+		receiver.emit(warningDataFromError("arm restart watch cancellation attention", err))
+		// The row is durable and the arm's own retry owns it, so the notice is
+		// delivered; reporting false here would also steer, presenting it twice.
+	}
+	return true
+}
+
+// stableDelegateReceiver resolves receiverSessionID to a live STABLE delegate
+// session in this subtree, or nil. An ancestor receiver above this session has
+// no session handle to inspect here and keeps the steering fallback its own
+// manager installs.
+func (s *Session) stableDelegateReceiver(receiverSessionID string) *Session {
+	if s.id == receiverSessionID && stableDelegateChild(s) {
+		return s
+	}
+	for _, descendant := range s.liveDescendantSessions() {
+		if descendant.id == receiverSessionID && stableDelegateChild(descendant) {
+			return descendant
+		}
+	}
+	return nil
+}
+
 func (s *Session) trySteer(msg string) (bool, error) {
 	return s.trySteerWithImages(msg, nil)
 }
