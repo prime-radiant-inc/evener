@@ -192,6 +192,7 @@ import {
   releaseForegroundHold,
   releaseHistory,
   resetThreadOwnersForTests,
+  routingOnlyForegroundHolds,
   setFinalReleaseOwner,
   threadBodyOwned,
   unpinMutation,
@@ -1084,24 +1085,45 @@ async function acceptEntryTranscriptHydration(
       ? (fixture.clearEpoch ?? 0)
       : (authorities?.clearEpoch ?? fixture.clearEpoch ?? 0);
   const historyGeneration = authorities?.historyGeneration ?? fixture.historyGeneration ?? 0;
-  const threadChanged = fixture.repository?.getSnapshot()?.threadId !== response.thread.id;
+  // A pane's bounded cache lookup can install a provisional shell WHILE this
+  // response awaited its durable authorities, and the comparisons below were
+  // captured before it landed: `historyChanged` still describes the route this
+  // response inherited, the shell's thread id, clear epoch and history
+  // generation all agree with the source, and only the incarnation it bound
+  // (an older one) tells the two apart. Left unreplaced, the repository refuses
+  // this response on that incarnation while the route goes on serving the shell
+  // - a model announcing neither Send nor Queue where the source's fresh
+  // snapshot says both are available. The shell marks itself provisional
+  // (`cachedUnverified`), so a current source read is exactly what displaces it,
+  // under the retirement fences already asked above.
+  const provisionalShell = fixture.cachedUnverified === true;
+  const installedSnapshot = fixture.repository?.getSnapshot();
+  const installedIncarnation = provisionalShell ? installedSnapshot?.history?.incarnation : undefined;
+  const supersededShell =
+    provisionalShell && installedIncarnation !== undefined && installedIncarnation !== identity.incarnation;
+  const threadChanged = installedSnapshot?.threadId !== response.thread.id;
   if (
     !fixture.repository ||
     (hydration.discardHeldHistory && !accumulatesHeldHistory) ||
     threadChanged ||
     historyChanged ||
+    supersededShell ||
     fixture.clearEpoch !== clearEpoch ||
     fixture.historyGeneration !== historyGeneration
   ) {
     // Only rebuild the route this acquisition owns; a concurrent replacement is
-    // not this response's to replace.
-    if (fixture.repository !== claimedRepository) return;
+    // not this response's to replace. A PROVISIONAL SHELL is not a concurrent
+    // replacement: a pane's bounded lookup installs it and marks it unverified,
+    // precisely so a source read can displace it, and this response is the read
+    // that lookup's acquisition asked for. Refusing it on the claim mismatch
+    // leaves the route serving an older incarnation's capabilities forever.
+    if (fixture.repository !== claimedRepository && !supersededShell) return;
     // The pending recorded-range work is the route's fact, not the repository
     // instance's: identities the display restored but no current-baseline
     // statement validated yet survive the replacement the stale-cursor
     // fallback retires. Capture them before the retirement disposes the
     // outgoing repository.
-    const pendingUnreconciled = claimedRepository?.unreconciledRecorded();
+    const pendingUnreconciled = fixture.repository?.unreconciledRecorded();
     retireEntryTranscriptRoute(fixture);
     fixture.lifetime += 1;
     fixture.clearEpoch = clearEpoch;
@@ -1136,6 +1158,10 @@ async function acceptEntryTranscriptHydration(
     }
   }
   const repository = fixture.repository;
+  // The displacement above is what keeps a shell from outliving its source
+  // read: either this response rebuilt the route bound to its own identity, or
+  // the repository it claimed is the one that accepted it. Reaching here is the
+  // route serving this response, so its provisional marker is answered.
   fixture.cachedUnverified = false;
   fixture.unsubscribeRepository ??= repository.subscribe(() => publishEntryTranscriptModel(ref));
   if (productionRoute && threadBodyOwned(ref) && !fixture.reader) fixture.reader = repository.attachReader();
@@ -1741,6 +1767,18 @@ function removeWatchedThreadModel(ref: string): void {
 type HydrationOwnerKind = "thread" | "watched";
 type HydrationIntent = "foreground" | "background" | "final";
 
+// How an owner waiting on a hydration lifecycle learns its outcome. A model is
+// the publication it was waiting for. `retired` is the neutral exit: the
+// lifecycle ended with no answer of its own (release, client swap, a new ready
+// generation, a deletion fence), and the waiter re-arms against the current
+// generation under its own fences. `historyFailed` is the hub's terminal answer
+// for the attempt: there is nothing left to pace, so a waiter must not turn it
+// into another read.
+type HydrationSettlement =
+  | { kind: "model"; model: ThreadModel }
+  | { kind: "retired" }
+  | { kind: "historyFailed"; error: unknown };
+
 interface OwnedHydration {
   generation: number;
   retryAttempt: number;
@@ -1748,8 +1786,8 @@ interface OwnedHydration {
   // Settles with the model this lifecycle publishes, or null once the
   // lifecycle is retired (release, client swap, new ready generation) so a
   // waiting owner re-arms against the current generation instead of hanging.
-  firstHydration: Promise<ThreadModel | null>;
-  settle: (model: ThreadModel | null) => void;
+  firstHydration: Promise<HydrationSettlement>;
+  settle: (settlement: HydrationSettlement) => void;
 }
 
 const ownedThreadHydrations = new Map<string, OwnedHydration>();
@@ -4512,6 +4550,15 @@ async function readThreadHydration(
       } else {
         putThreadModel(ref, failedModel);
       }
+      // The hub has given a terminal answer for this attempt, so the lifecycle
+      // that owns it has nothing left to pace: settle it with that answer,
+      // waking every owner parked on its first model. A routing claim is such
+      // an owner and has no diagnostic face - it rejects on the typed failure
+      // and its rollback drops exactly the hold it took. The pane diagnostic
+      // recorded above is the pane's, and it survives this: the publication it
+      // rides is already in the store, and the existing rule against
+      // re-issuing a history-failed read keeps this from becoming a loop.
+      failOwnedHydration(read.kind, ref, err);
     } else {
       scheduleOwnedHydrationRetry(read.kind, ref, pending);
     }
@@ -4587,16 +4634,15 @@ async function readThreadHydration(
 // aborted, instead of this hook growing a second copy of those lines.
 function markThreadDeletedIfFenced(ref: string, err: unknown): void {
   if (mutationErrorData(err)?.mutationOutcome !== "targetDeleted") return;
-  // Settle the owner lifecycle HERE, before the cache work below, because
-  // `markCacheSessionsDeleted` revokes the ref's residency task and an issued
-  // task's abort fires its pending-entry retirement synchronously. A retry
-  // that answers the fence then finds its own pending entry gone and
-  // `scheduleOwnedHydrationRetry` returns before it can settle
-  // `firstHydration` — so a claim waiting on that lifecycle would wait
-  // forever. Deletion is terminal for both kinds: no retry may outlive it, and
-  // every owner waiting on one must be woken rather than left parked.
-  retireOwnedHydration("thread", ref);
-  retireOwnedHydration("watched", ref);
+  // The owner lifecycles are settled by `markCacheSessionsDeleted` below, not
+  // here: it retires both kinds before it revokes the ref's residency task, in
+  // this same synchronous step, so nothing observes a lifecycle un-retired in
+  // between. That order is what matters — the revoke aborts an issued task, and
+  // that abort fires its pending-entry retirement synchronously, so a retry
+  // answering the fence finds its own pending entry gone and
+  // `scheduleOwnedHydrationRetry` returns before it can settle `firstHydration`.
+  // Deletion is terminal for both kinds: no retry may outlive it, and every
+  // owner waiting on one must be woken rather than left parked.
   releaseSubagentRows(ref);
   discardCanceledMutations(ref);
   markCacheSessionsDeleted([ref]);
@@ -7312,8 +7358,8 @@ function openOwnedHydration(kind: HydrationOwnerKind, ref: string): OwnedHydrati
   const existing = lifecycles.get(ref);
   if (existing?.generation === generation) return existing;
   if (existing) retireOwnedHydration(kind, ref);
-  let settle: (model: ThreadModel | null) => void = () => {};
-  const firstHydration = new Promise<ThreadModel | null>((resolve) => {
+  let settle: (settlement: HydrationSettlement) => void = () => {};
+  const firstHydration = new Promise<HydrationSettlement>((resolve) => {
     settle = resolve;
   });
   const owned: OwnedHydration = { generation, retryAttempt: 0, cancelRetry: null, firstHydration, settle };
@@ -7329,14 +7375,14 @@ function openOwnedHydration(kind: HydrationOwnerKind, ref: string): OwnedHydrati
 // invalidate a pending retry — client swap, ready-epoch bump, released claim,
 // dropped pin, superseded owner generation — runs through here first, which is
 // why none of them needs its own check inside the callback. Do not re-add one.
-function closeOwnedHydration(kind: HydrationOwnerKind, ref: string, model: ThreadModel | null): void {
+function closeOwnedHydration(kind: HydrationOwnerKind, ref: string, settlement: HydrationSettlement): void {
   const lifecycles = ownedHydrationsFor(kind);
   const owned = lifecycles.get(ref);
   if (!owned) return;
   lifecycles.delete(ref);
   owned.cancelRetry?.();
   owned.cancelRetry = null;
-  owned.settle(model);
+  owned.settle(settlement);
 }
 
 // A published authoritative model retires the lifecycle that was waiting for
@@ -7345,11 +7391,18 @@ function closeOwnedHydration(kind: HydrationOwnerKind, ref: string, model: Threa
 // retry's own promise) is what keeps an owner from waiting on a lifecycle some
 // other attempt already satisfied, and resets the retry attempt with it.
 function settleOwnedHydration(kind: HydrationOwnerKind, ref: string, model: ThreadModel): void {
-  closeOwnedHydration(kind, ref, model);
+  closeOwnedHydration(kind, ref, { kind: "model", model });
 }
 
 function retireOwnedHydration(kind: HydrationOwnerKind, ref: string): void {
-  closeOwnedHydration(kind, ref, null);
+  closeOwnedHydration(kind, ref, { kind: "retired" });
+}
+
+// The hub's terminal answer for the attempt: nothing will publish for this
+// lifecycle and nothing should read again, so a waiter learns the failure
+// itself rather than the neutral retirement.
+function failOwnedHydration(kind: HydrationOwnerKind, ref: string, error: unknown): void {
+  closeOwnedHydration(kind, ref, { kind: "historyFailed", error });
 }
 
 // Routing state is verified when this ref's route has accepted a source read,
@@ -7360,7 +7413,36 @@ function retireOwnedHydration(kind: HydrationOwnerKind, ref: string): void {
 // that resolves on it and by the read registration that decides whether a
 // waiting claim can join.
 function routingStateVerified(ref: string): boolean {
-  return entryTranscriptRoute(ref)?.cachedUnverified !== true;
+  // existingEntryRoute, not entryTranscriptRoute: asking the registry must not
+  // be what creates and registers a route for a ref that has none.
+  return existingEntryRoute(ref)?.cachedUnverified !== true;
+}
+
+// The answer a routing claim's exit needs, in one place: a destination the hub
+// has confirmed deleted is never routable, whatever model still stands in the
+// store, and a resident model whose route never settled the cache authority it
+// answered against is not routable either. Undefined means the claim may
+// resolve. Shared by every exit so the fence cannot be asked after the model
+// question at one site and before it at another.
+const DELETED_DESTINATION_REJECTION = "The destination was deleted before its routing state was verified";
+const UNVERIFIED_DESTINATION_REJECTION = "The destination was not verified for routing";
+
+function routingRejectionFor(ref: string): string | undefined {
+  if (threadsStore.getState().deletedRefs.has(ref)) return DELETED_DESTINATION_REJECTION;
+  if (!routingStateVerified(ref)) return UNVERIFIED_DESTINATION_REJECTION;
+  return undefined;
+}
+
+// The deletion fence's exit for an acquisition that already holds its claim. A
+// routing lease has nothing to show for a deleted destination: resolving would
+// hand the caller a lease to resend at a ref the hub has confirmed gone, so the
+// acquisition rejects and its own rollback drops exactly the hold it took. A
+// pane resolves and lets the session surface the deleted state. True means the
+// caller must exit.
+function deletionFenceExit(ref: string, routingOnly: boolean): boolean {
+  if (!threadsStore.getState().deletedRefs.has(ref)) return false;
+  if (routingOnly) throw new Error(DELETED_DESTINATION_REJECTION);
+  return true;
 }
 
 // A new client or a new ready epoch owns convergence for every ref: cancel the
@@ -7582,9 +7664,19 @@ async function refreshTrackedThreadNow(
   // and the two reads supersede each other until one wins a race the resend
   // should never have been in. The shell may be JOINED; it still may not
   // certify, which is what `routingStateVerified` decides at the claim's exit.
+  //
+  // A failed predecessor removes its own pending entry, so `previous` is gone
+  // by the time a reconnect refresh runs for the ref a waiting claim still
+  // holds. The refresh is that claim's replacement read, whether or not the
+  // attempt that failed is still recorded: unregistered, the awakened claim
+  // finds no inflight to join and starts a duplicate that supersedes it, and
+  // the resend waits on the duplicate's response or its timeout even when this
+  // read answers first. A standing foreground hold is the signal, the same one
+  // the fan-out used to discover the ref.
   const shelteringUnverifiedShell = hasPublishedModel && !routingStateVerified(ref);
   const trackForActiveLifecycle =
-    (!hasPublishedModel || shelteringUnverifiedShell) && (previous !== undefined || targetedResync);
+    (!hasPublishedModel || shelteringUnverifiedShell) &&
+    (previous !== undefined || targetedResync || routingOnlyForegroundHolds(ref) > 0);
   if (trackForActiveLifecycle) {
     // This registration is machinery's, not a pane's: a retry or a reconnect
     // re-read that began for a ref with no pane behind it (a routing claim's
@@ -8317,14 +8409,15 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // rejection after the increment reaches the caller as a failed acquisition
     // whose rollback already ran - and nothing is left to release it.
     if (routingOnly && threadsStore.getState().deletedRefs.has(ref)) {
-      throw new Error("The destination was deleted before its routing state was verified");
+      throw new Error(DELETED_DESTINATION_REJECTION);
     }
     const count = foregroundHolds(ref);
     // The pane-only count, also read before this call's own hold: a history
     // hold or a mutation pin keeps the ref alive after a Clear but is not the
     // first pane open, and must not stop that pane from beginning the fresh
-    // lifetime its read needs to resume cached writes.
-    const paneBodyOwners = bodyOwners(ref);
+    // lifetime its read needs to resume cached writes. A routing hold never
+    // takes the bodies, so it never asks.
+    const paneBodyOwners = routingOnly ? 0 : bodyOwners(ref);
     if (count === 0) {
       ensureGenerations.set(ref, (ensureGenerations.get(ref) ?? 0) + 1);
       beginCanonicalThreadClaim(ref, true);
@@ -8373,16 +8466,19 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // destination can be gone. A deleted destination is not a verified one -
     // the read that settled the ref answered it as absent, not as routable - so
     // the claim rejects and its rollback drops exactly the count it took.
-    if (routingOnly && threadsStore.getState().threads.has(ref) && routingStateVerified(ref)) {
-      if (threadsStore.getState().deletedRefs.has(ref)) {
-        throw new Error("The destination was deleted before its routing state was verified");
-      }
-      return;
+    if (routingOnly && threadsStore.getState().threads.has(ref)) {
+      // The fence outranks the model: a verified model can be resident while the
+      // destination is gone, and the claim's answer is the destination's
+      // routability, not the model's presence.
+      if (deletionFenceExit(ref, routingOnly)) return;
+      if (routingStateVerified(ref)) return;
+      // A resident model whose route never settled its cache authority is not an
+      // answer: fall through to the read that verifies it.
     }
     // Already hydrated: no re-read. The exception is a clear-suppressed ref
     // whose new explicit foreground lifetime owes an authoritative hydration
     // even while its stale display model is still resident.
-    if (threadsStore.getState().threads.has(ref) && !needsClearLifetimeReconciliation(ref) && !routingOnly) {
+    if (threadsStore.getState().threads.has(ref) && !routingOnly && !needsClearLifetimeReconciliation(ref)) {
       if (bodyOwners(ref) > 1) return; // Another mounted pane already owns the live bodies.
       if (await openEntryTranscript(ref)) return;
       if (!claimStanding()) return;
@@ -8392,23 +8488,14 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       publishEntryTranscriptModel(ref);
     }
 
-    const claimEpoch = getReadyEpoch();
-
-    // The claim's hydration epoch, observed when the pane claimed the ref —
-    // BEFORE the serial cache lookup, because the lookup widens the
-    // claim-to-arming window by milliseconds and a ready transition inside
-    // it must meet the same contract as one during the claim's read. A
-    // lookup MISS arms at the observed epoch, exactly as the pre-lookup
-    // claim did: the epoch-current replacement then comes from the same
-    // machinery as before the seam (handleReady's refresh of a pending
-    // hydration, or the re-arm loop after the stale epoch's publish is
-    // refused), so only a matching client and epoch may share the pending
-    // hydration — Session's deferred-until-ready handshake pins exactly this
-    // claim-then-replace pair (Session.test.tsx). A lookup HIT publishes a
-    // model — the shell — and the arming that follows serves that model, so
-    // it commits to the CURRENT epoch: the ready pass has already gone by
-    // and nothing would ever replace a stale arming, which would strand the
-    // pane on an unverified shell with no live read behind it.
+    // The claim's hydration epoch. A read this claim arms is stamped with the
+    // epoch CURRENT at the arming, never one observed earlier: a claim that
+    // spans a ready transition must join the read that transition already
+    // started for its own ref (handleReady's fan-out registers it), and an
+    // epoch-mismatched attempt would instead be refused at publication and
+    // cost the ref a second, duplicate read through the re-arm loop. The
+    // registration carries its own client and epoch, so the join itself is
+    // still fenced; only the stale stamp is gone.
     // The cached-shell lookup (spec, "The load seam"): serial by necessity —
     // the held identity must exist before issueLatestWindowRead runs — and
     // bounded by its own 250 ms deadline. The creator alone publishes and
@@ -8438,7 +8525,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         return;
       }
       await openCachedEntryTranscript(ref, generation);
-      if (threadsStore.getState().deletedRefs.has(ref)) return;
+      if (deletionFenceExit(ref, routingOnly)) return;
       // Again after the await: the attachment and the publication above run
       // inside the lookup, so a departure during it must not arm the recovery
       // or the hydration that follows.
@@ -8500,7 +8587,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     };
 
     let inflight = inflightHydrates.get(ref);
-    if (!inflight) inflight = startHydration(client, cachedBase !== undefined ? getReadyEpoch() : claimEpoch);
+    if (!inflight) inflight = startHydration(client, getReadyEpoch());
     cachedBase = undefined; // the claim's arming consumed the shell; every re-arm reads the current model
     try {
       for (;;) {
@@ -8519,13 +8606,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
             // fulfilment - so ask the shared question, and reject rather than
             // hand back a lease the caller would resend on.
             if (routingOnly) {
-              if (threadsStore.getState().deletedRefs.has(ref)) {
-                throw new Error("The destination was deleted before its routing state was verified");
-              }
-              // A published model whose route still reads unverified is not
-              // routable either: the read behind it did not settle the cache
-              // authority it answered against.
-              if (!routingStateVerified(ref)) throw new Error("The destination was not verified for routing");
+              // The fence first, for the same reason the shared tail asks it
+              // first: a read that published before a deletion landed leaves a
+              // resident model standing, and a claim must not resolve on one
+              // the hub has already confirmed gone.
+              const settled = routingRejectionFor(ref);
+              if (settled) throw new Error(settled);
               return;
             }
             // A display the claim's publication already completed has no
@@ -8581,10 +8667,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           // The rejection reaches the acquisition's own rollback, which drops
           // exactly the hold this call took. A pane keeps returning: laying out
           // the deleted-session state is its job.
-          if (threadsStore.getState().deletedRefs.has(ref)) {
-            if (routingOnly) throw new Error("The destination was deleted before its routing state was verified");
-            return;
-          }
+          if (deletionFenceExit(ref, routingOnly)) return;
           if (getWiredClient() !== inflightClient || getReadyEpoch() !== inflightEpoch) {
             // A resident model is enough for a pane: its display is folded over
             // the read that is arming behind it. It is NOT enough for a routing
@@ -8593,11 +8676,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
             // on it refuses a resend the refreshed destination would accept. A
             // verified model is the answer; a shell waits for the re-arm below
             // to verify it on the current connection.
-            if (routingOnly) {
-              if (threadsStore.getState().threads.has(ref) && routingStateVerified(ref)) return;
-            } else if (threadsStore.getState().threads.has(ref)) {
-              return;
-            }
+            if (threadsStore.getState().threads.has(ref) && (!routingOnly || routingStateVerified(ref))) return;
             // requireReadyClient re-reads the CURRENT client on the way out,
             // so a client captured before the wait is never stamped onto a
             // hydration that outlived it. Same shape as the re-arm below and
@@ -8616,34 +8695,41 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           // through to join the retry that is about to verify the destination.
           const owned = ownedThreadHydrations.get(ref);
           if (owned?.generation !== hydrationOwnerGeneration("thread", ref)) throw err;
-          await owned.firstHydration;
+          const settlement = await owned.firstHydration;
+          // The hub's terminal answer for this attempt is the claim's answer
+          // too. Rejecting here (rather than re-arming) keeps a routing hold
+          // from parking on a destination whose history the hub has refused,
+          // and the acquisition's own rollback drops exactly its count. A pane
+          // has a diagnostic to show and no lease to hand out, so it keeps the
+          // established behaviour and lets the re-arm below decide.
+          if (settlement.kind === "historyFailed" && routingOnly) throw settlement.error;
           // Fall through to the shared re-arm below: it returns when the claim
           // is gone or a model published, and otherwise rejoins the newest
           // attempt on the current client.
         }
 
         if (!claimStanding()) return;
-        if (threadsStore.getState().threads.has(ref) && (!routingOnly || routingStateVerified(ref))) return;
         // The fence can land while this claim waits on the retry, and the retry
         // answers it by settling rather than publishing. A routing hold has
         // nothing to show for a deleted destination: resolving here would hand
         // the caller a lease to resend at a ref the hub has confirmed gone. The
         // rejection releases exactly this claim's hold. A pane resolves and
         // lets the session surface the deleted state.
-        if (threadsStore.getState().deletedRefs.has(ref)) {
-          if (routingOnly) throw new Error("The destination was deleted before its routing state was verified");
-          return;
-        }
+        //
+        // Asked BEFORE the resident-model question, because the two can disagree
+        // after a wait: a verified model published before the fence still stands
+        // in the store, and accepting it would resolve the claim on a
+        // destination the hub has since confirmed deleted. The fence is the
+        // terminal answer, so it takes precedence over any model still resident.
+        if (deletionFenceExit(ref, routingOnly)) return;
+        if (threadsStore.getState().threads.has(ref) && (!routingOnly || routingStateVerified(ref))) return;
 
         client = await requireReadyClient();
         if (!claimStanding()) return;
         // Recheck after the possibly-long ready wait: a deletion fence can
         // land while this loop is waiting out a reconnect, and a ref known
         // deleted must not start another read on becoming ready.
-        if (threadsStore.getState().deletedRefs.has(ref)) {
-          if (routingOnly) throw new Error("The destination was deleted before its routing state was verified");
-          return;
-        }
+        if (deletionFenceExit(ref, routingOnly)) return;
         inflight = inflightHydrates.get(ref);
         if (!inflight) inflight = startHydration(client, getReadyEpoch());
       }
@@ -8854,7 +8940,11 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         // its own lifecycle reads again. Same contract as ensureThread above.
         const owned = ownedWatchedHydrations.get(ref);
         if (owned?.generation !== generation) throw err;
-        await owned.firstHydration;
+        const settlement = await owned.firstHydration;
+        // Same terminal answer as ensureThread: the hub refused this watcher's
+        // history, and re-reading would loop on a failure it has already told
+        // this caller about.
+        if (settlement.kind === "historyFailed") throw settlement.error;
         // Fall through to the shared re-arm below, which re-checks the
         // rich/lean requirement a published model has to satisfy.
       }
@@ -9773,6 +9863,18 @@ export function markCacheSessionsDeleted(refs: string[]): void {
     return { deletedRefs };
   });
   for (const ref of refs) {
+    // The fence is terminal for the ref's hydration lifecycle, and it is
+    // recorded above before this runs, so every owner waiting on a first model
+    // must be woken here rather than left parked on a lifecycle the deletion is
+    // about to revoke. `residencyIfCreated.revoke` below aborts the ref's issued
+    // hydration task, and that abort retires the task's pending entry
+    // synchronously; an attempt whose entry is already gone never reaches the
+    // rejection handler that would settle this lifecycle. Settling first is
+    // what makes the revoke's cancellation invisible to a waiting claim: it
+    // wakes on the settled promise, re-checks the fence, and rejects instead of
+    // holding its destination forever.
+    retireOwnedHydration("thread", ref);
+    retireOwnedHydration("watched", ref);
     residencyIfCreated?.revoke(ref, "deleted");
     noteEntryRouteRetirement(ref);
   }

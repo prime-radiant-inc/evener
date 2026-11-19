@@ -5,13 +5,14 @@
 // This module never imports threads.ts.
 
 const foregroundCounts = new Map<string, number>();
-// The same holds split by what the acquisition took. The total answers "is this
-// ref kept alive"; it cannot answer "is the hold I am releasing the one I took".
+// Routing holds, counted separately from every other foreground hold: a routing
+// claim is the one caller that must be able to ask "is a routing hold standing"
+// without mistaking a pane's own hold for it. The total answers "is this ref
+// kept alive"; it cannot answer "is the hold I am releasing the one I took".
 // A rollback undoing its own failed acquisition would otherwise spend whichever
 // hold is standing - and once a pane closes during its own read, the only hold
 // left can be a resend's routing lease, which that rollback then retires the
 // model out from under. A release drops a hold of its own kind, or nothing.
-const paneForegroundCounts = new Map<string, number>();
 const routingForegroundCounts = new Map<string, number>();
 // Each individual hold, newest last, per kind. A count answers "is this ref kept
 // alive" and a kind answers "is the hold I am releasing of my kind", but neither
@@ -76,6 +77,14 @@ export function foregroundHeldRefs(): IterableIterator<string> {
   return foregroundCounts.keys();
 }
 
+/** Foreground holds taken by a caller that routes and opens no pane. A routing
+ * claim waits for its destination's routing state on one of these, and a
+ * reconnect read that would answer it has to be joinable: the total count
+ * cannot say whether the holder waiting is a pane, which opens its own lookup. */
+export function routingOnlyForegroundHolds(ref: string): number {
+  return routingForegroundCounts.get(ref) ?? 0;
+}
+
 /** Mints the handle for one foreground hold. Minting takes no count, so an
  * acquisition that throws before it owns anything has moved nothing, and a
  * holder can be handed its handle before the work that makes it live. */
@@ -89,7 +98,7 @@ export function attachForegroundHold(h: ForegroundHold): void {
   if (h.attached) throw new Error("a foreground hold attaches once");
   h.attached = true;
   hold(foregroundCounts, h.ref);
-  hold(h.routing ? routingForegroundCounts : paneForegroundCounts, h.ref);
+  if (h.routing) hold(routingForegroundCounts, h.ref);
   const holds = h.routing ? routingForegroundHolds : paneForegroundHolds;
   const standing = holds.get(h.ref) ?? [];
   standing.push(h);
@@ -111,7 +120,7 @@ export function releaseForegroundHold(h: ForegroundHold): number {
     if (at >= 0) standing.splice(at, 1);
     if (standing.length === 0) holds.delete(h.ref);
   }
-  release(h.routing ? routingForegroundCounts : paneForegroundCounts, h.ref);
+  if (h.routing) release(routingForegroundCounts, h.ref);
   return release(foregroundCounts, h.ref);
 }
 
@@ -134,14 +143,14 @@ export function holdForeground(ref: string, routing = false): ForegroundHold {
  * released: a holder that outlives its frame must carry its own handle and call
  * releaseForegroundHold, or it drops a neighbour's hold. */
 export function releaseForeground(ref: string, routing = false): number {
-  const counts = routing ? routingForegroundCounts : paneForegroundCounts;
-  if ((counts.get(ref) ?? 0) <= 0) return foregroundHolds(ref);
-  const holds = routing ? routingForegroundHolds : paneForegroundHolds;
-  const standing = holds.get(ref);
-  const newest = standing?.[standing.length - 1];
-  if (newest) return releaseForegroundHold(newest);
-  release(counts, ref);
-  return release(foregroundCounts, ref);
+  // The standing handles of this kind are the count: with none left there is
+  // nothing of this kind to drop, and the release must not spend another kind's
+  // hold from the total.
+  const standing = (routing ? routingForegroundHolds : paneForegroundHolds).get(ref);
+  if (standing === undefined || standing.length === 0) return foregroundHolds(ref);
+  const newest = standing[standing.length - 1];
+  if (newest === undefined) return foregroundHolds(ref);
+  return releaseForegroundHold(newest);
 }
 
 /** Foreground holders that own the live transcript bodies. */
@@ -266,7 +275,6 @@ export function nextBackgroundLeaseSequence(ref: string): number {
 
 export function resetThreadOwnersForTests(): void {
   foregroundCounts.clear();
-  paneForegroundCounts.clear();
   routingForegroundCounts.clear();
   paneForegroundHolds.clear();
   routingForegroundHolds.clear();

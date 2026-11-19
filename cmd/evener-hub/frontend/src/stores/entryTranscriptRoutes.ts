@@ -28,6 +28,7 @@ import {
   isFinalReleaseOwner,
   nextBackgroundLeaseSequence,
   setFinalReleaseOwner,
+  threadBodyOwned,
 } from "./threadOwners";
 import type { TranscriptReader, TranscriptRepository, TranscriptRetirementOutcome } from "./transcriptRepository";
 import { getReadyEpoch } from "./wiredClient";
@@ -1302,14 +1303,24 @@ export function scheduleEntryRecordedReconciliation(ref: string): void {
 }
 
 export function releaseEntryTranscriptReader(ref: string, releaseDisplay = false): void {
-  if (heldCountsAtStore(ref)) return;
+  // Body ownership, not the keep-alive count, decides whether a reader is still
+  // owed. A routing lease holds the model, the subscription and the route for a
+  // resend to dispatch on, and never reads bodies: the last pane closing during
+  // that resend must still detach its reader and prune its display. A history
+  // hold or a mutation pin does own the bodies, and still keeps both.
+  if (threadBodyOwned(ref)) return;
   const fixture = entryTranscriptRoute(ref);
   if (!fixture || fixture.ref !== ref) return;
   clearEntryTranscriptLocalOpening(ref);
   fixture.reader?.dispose();
   fixture.reader = undefined;
   const model = store().getState().threads.get(ref);
-  if (releaseDisplay && model && isEntryTranscriptBackgroundOnly(ref)) {
+  // No body owner is left - the guard above returned if one were - so a model
+  // still kept alive is kept for a lease that never reads bodies: a background
+  // download or a resend's routing lease. Its pane's text must not outlive the
+  // pane that rendered it, while identity, status and capabilities stay for the
+  // dispatch that lease is waiting to make.
+  if (releaseDisplay && model && canonicalThreadOwnerActive(ref)) {
     routeHost().putThreadModel(ref, pruneBackgroundHistoryBodies(model));
   }
 }

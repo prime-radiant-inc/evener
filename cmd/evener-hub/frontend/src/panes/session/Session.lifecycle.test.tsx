@@ -259,10 +259,10 @@ test("ensureThread is deferred until the client becomes ready, not attempted whi
   act(() => {
     fake.emitReady();
   });
-  // The connection-store ready notification lets Session claim the ref just
-  // before the client's onReady callback advances the hydration epoch. The
-  // epoch-current replacement read is intentional; only a matching client
-  // and epoch may share the pending hydration.
+  // The ready handshake issues two reads and no more: the pending claim's own,
+  // which the ready transition's refresh leaves alone now that the claim arms
+  // at the current epoch, and the refresh's. A third would mean the claim's
+  // publication was refused and re-armed beside a read it should have joined.
   await waitFor(() => expect(fake.calls.filter((c) => c.method === "thread/read")).toHaveLength(2));
 });
 
