@@ -101,6 +101,7 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 						Type:             "function",
 						ThoughtSignature: tc.thoughtSignature,
 					}
+					tcd.Arguments, tcd.ArgumentsSpelling = llm.NormalizeToolArguments(tcd.Arguments)
 					completedToolCalls = append(completedToolCalls, tcd)
 					s.Send(llm.StreamEvent{
 						Type:     llm.StreamEventToolCallEnd,

@@ -446,7 +446,7 @@ func toolCallsFromParts(parts []llm.ContentPart) []map[string]any {
 				"type": "function",
 				"function": map[string]any{
 					"name":      p.ToolCall.Name,
-					"arguments": openaichat.ToolArgumentsString(p.ToolCall.Arguments),
+					"arguments": openaichat.ToolArgumentsString(json.RawMessage(p.ToolCall.WireArguments())),
 				},
 			}
 			if sig := strings.TrimSpace(p.ToolCall.ThoughtSignature); sig != "" {

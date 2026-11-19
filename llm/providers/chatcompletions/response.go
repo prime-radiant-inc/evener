@@ -376,16 +376,10 @@ func fromChatCompletionResponse(raw map[string]any, finishMap map[string]string,
 		// both candidates parses large argument objects twice and throws the
 		// first result away.
 		args = rescueClaudeXMLArgs(args)
-		parts = append(parts, llm.ContentPart{
-			Kind: llm.ContentToolCall,
-			ToolCall: &llm.ToolCallData{
-				ID:               tc.ID,
-				Name:             tc.Function.Name,
-				Arguments:        json.RawMessage(args),
-				Type:             "function",
-				ThoughtSignature: thoughtSignatureFromExtraContent(tc.ExtraContent),
-			},
-		})
+		canonical, spelling := llm.NormalizeToolArguments([]byte(args))
+		parts = append(parts, llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+			ID: tc.ID, Name: tc.Function.Name, Arguments: canonical, Type: "function",
+			ArgumentsSpelling: spelling, ThoughtSignature: thoughtSignatureFromExtraContent(tc.ExtraContent)}})
 	}
 
 	msg := llm.Message{Role: llm.RoleAssistant, Content: parts}

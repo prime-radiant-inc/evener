@@ -1776,3 +1776,21 @@ func TestRegistry_MarksPreExecutionRejections(t *testing.T) {
 		}
 	})
 }
+
+func TestToolRegistry_SizeCapMeasuresReplayedArguments(t *testing.T) {
+	runs := 0
+	r := NewRegistry()
+	mustRegister(t, r, RegisteredTool{Definition: llm.ToolDefinition{Name: "t"}, Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+		runs++
+		return "ok", nil
+	}})
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	for i, raw := range []string{`{"a":"` + strings.Repeat("<&>", MaxToolArgumentBytes/6+1) + `"}`, `{"a":1}` + strings.Repeat(" ", MaxToolArgumentBytes)} {
+		call := llm.ToolCallData{ID: "c1", Name: "t"}
+		call.Arguments, call.ArgumentsSpelling = llm.NormalizeToolArguments([]byte(raw))
+		r.ExecuteCall(context.Background(), env, call)
+		if ran := runs == i+1; ran != (i == 0) {
+			t.Fatalf("call %d executed = %v, want %v", i, ran, i == 0)
+		}
+	}
+}

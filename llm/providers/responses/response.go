@@ -110,7 +110,7 @@ func responseContentFromOutputItemsRaw(out []any, body []byte, rawItems []json.R
 					args = string(content)
 				}
 			}
-			call.Arguments = json.RawMessage(args)
+			call.Arguments, call.ArgumentsSpelling = llm.NormalizeToolArguments([]byte(args))
 		case "web_search_call":
 			query := ""
 			if action, _ := item["action"].(map[string]any); action != nil {
