@@ -1556,6 +1556,60 @@ func TestFind_ProjectName_SharedOverrideNamedSessions(t *testing.T) {
 	}
 }
 
+// TestFind_ProjectName_SharedBucketDoesNotNameAnOwnerlessLane covers a state
+// directory this process is configured with whose basename spells a shared
+// override: <stateHome>/evener/projects/shared. It sits under the configured
+// root, so it is part of the state tree, but its name is not a project ID and
+// nothing about it establishes that its sessions served one repository.
+//
+// A pruned session-owned lane there has no project of its own, no owner and no
+// parent, so the only evidence left is any sibling that saved an origin. Taking
+// that origin would label the lane with whichever repository last used the
+// shared directory. A bucket with no verified per-project scope may not name
+// such a lane from an unverified sibling.
+func TestFind_ProjectName_SharedBucketDoesNotNameAnOwnerlessLane(t *testing.T) {
+	stateHome := pinStateHome(t)
+
+	// Two repositories used the shared directory, which is what makes it shared
+	// rather than one project's bucket.
+	shared := filepath.Join(stateHome, "evener", "projects", "shared")
+	if err := os.MkdirAll(filepath.Join(shared, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir shared bucket: %v", err)
+	}
+	for _, origin := range []string{
+		"git@github.com:owner/first-shared-repo.git",
+		"git@github.com:owner/second-shared-repo.git",
+	} {
+		sibling := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+		sibling.EnvInfo.GitOriginURL = origin
+		sibling.EnvInfo.WorkingDir = filepath.Join(t.TempDir(), "gone-checkout")
+		if err := schema.SaveSessionMeta(shared, sibling); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	lane := schema.SessionMeta{}
+	lane.EnvInfo.WorkingDir = filepath.Join(shared, "sessions", identifier.MustNewSessionID(), "worktrees", "dlg_shared_lane")
+	if got := projectName(lane, shared); got != "" {
+		t.Fatalf("projectName(pruned lane in a shared bucket whose sessions served several repositories) = %q, want empty: no verified scope ties that origin to this lane", got)
+	}
+
+	// Row-specific evidence still answers: a parent in the same shared directory
+	// is tied to the lane by the bucket, and its live checkout names the project.
+	// The refusal above is about bucket-wide inference, not about the directory
+	// becoming unusable.
+	parent := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	parent.EnvInfo.WorkingDir = newNamedCheckout(t, "shared-parent-repo")
+	if err := schema.SaveSessionMeta(shared, parent); err != nil {
+		t.Fatal(err)
+	}
+	owned := schema.SessionMeta{ParentSessionID: parent.ID}
+	owned.EnvInfo.WorkingDir = filepath.Join(shared, "sessions", identifier.MustNewSessionID(), "worktrees", "dlg_parent_row")
+	if got, want := projectName(owned, shared), "shared-parent-repo"; got != want {
+		t.Fatalf("projectName(pruned lane in a shared bucket whose parent checkout resolves) = %q, want the parent's %q", got, want)
+	}
+}
+
 // TestFind_ProjectName_VerifiedParentOriginSurvivesItsCheckout covers a deleted
 // session-owned lane in another bucket whose parent is verified by matching the
 // owner in the lane path, while that parent's own checkout is also gone. The
@@ -3035,6 +3089,54 @@ func TestFind_ProjectName_LegacyBucketOriginOnlyNeedsMatchingProjectID(t *testin
 	}
 }
 
+// TestFind_ProjectName_EmptyOriginBasenameDoesNotBlockTheScan covers a sibling
+// whose saved origin ends in "/.git", which this resolver reads as a local path
+// and whose last segment after stripping ".git" is empty. Such an origin states
+// no repository name at all, so it is no evidence — and no evidence must not
+// stand in front of the sibling after it or of a restore root that does name
+// something.
+//
+// A name-only row also takes the origin-first pass, so the empty name is tried
+// there first: returning it would answer the row with "" and stop the scan before
+// any usable sibling was read.
+func TestFind_ProjectName_EmptyOriginBasenameDoesNotBlockTheScan(t *testing.T) {
+	stateHome := pinStateHome(t)
+
+	bucket, err := RuntimeDirForProjectWithStateHome(
+		identifier.ProjectFromCanonicalPath(identifier.ResolveClean(newNamedCheckout(t, "useful-repo"))), stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+
+	// The unusable origin is written FIRST, so a scan that stops at it never
+	// reaches the sibling that can answer.
+	empty := schema.SessionMeta{ID: identifier.MustNewSessionID(), UpdatedAt: time.Now().Add(time.Hour).UTC()}
+	empty.EnvInfo.GitOriginURL = "/srv/mirror/checkout/.git"
+	empty.EnvInfo.WorkingDir = filepath.Join(t.TempDir(), "gone-empty-origin-checkout")
+	if err := schema.SaveSessionMeta(bucket, empty); err != nil {
+		t.Fatal(err)
+	}
+
+	// The sibling that can answer, with its checkout gone so only its recorded
+	// restore root names a repository.
+	usable := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	usable.WorktreeRestoreRoot = filepath.Join(testfs.CanonicalTempDir(t), "usable-restore-repo")
+	usable.EnvInfo.WorkingDir = filepath.Join(t.TempDir(), "gone-usable-checkout")
+	if err := schema.SaveSessionMeta(bucket, usable); err != nil {
+		t.Fatal(err)
+	}
+
+	// A name-only row: a pruned ownerless lane with no project of its own.
+	row := schema.SessionMeta{}
+	row.EnvInfo.WorkingDir = filepath.Join(bucket, "worktrees", "dlg_empty_origin")
+	if got, want := projectName(row, bucket), "usable-restore-repo"; got != want {
+		t.Fatalf("projectName(pruned lane beside a sibling whose origin names nothing and one whose restore root does) = %q, want %q", got, want)
+	}
+}
+
 // TestFind_ProjectName_ClassifiesWhereThePathReallyIs covers the two ways the
 // resolver used to decide what kind of path it had from the path's spelling
 // rather than from where it points, in one fixture because they are one
@@ -3821,7 +3923,10 @@ func TestFind_ProjectName_PrunedLaneFallsBackToMovedRestoreRoot(t *testing.T) {
 	}
 
 	// The checkout is gone, and its recorded path is what the lane was cut under.
-	moved := filepath.Join(t.TempDir(), "moved-away-repo")
+	// The path is canonical from the start, because the ID the lane's own path
+	// records was computed from the canonical form: on a host whose temp prefix is
+	// a symlink the lexical spelling hashes to a different ID.
+	moved := filepath.Join(testfs.CanonicalTempDir(t), "moved-away-repo")
 	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(moved))
 
 	row := schema.SessionMeta{}
@@ -3853,6 +3958,98 @@ func TestFind_ProjectName_PrunedLaneKeepsNoLeafWhenProjectIsUnrecorded(t *testin
 	row.EnvInfo.WorkingDir = row.WorktreePath
 	if got := projectName(row, stateDir); got != "" {
 		t.Fatalf("projectName(pruned ownerless lane whose restore root cannot be tied to a recorded project) = %q, want empty, never the lane leaf", got)
+	}
+}
+
+// TestFind_ProjectName_MatchingRestoreRootDoesNotResolveSiblings covers a pruned
+// managed lane whose own record already identifies its project: the recorded
+// restore root hashes to the project ID the lane's path carries. The bucket also
+// holds a sibling whose checkout is live, so resolving that sibling is work that
+// succeeds and leaves a trace.
+//
+// The label is the same whether or not the sibling is resolved, because the
+// row's own record wins. What differs is the work, and on an unavailable mount
+// that work blocks the whole read-only search: the bucket-wide scan must not run
+// for a row whose own record has already answered. pathResolutions is the
+// evidence, since the answer cannot tell the two orders apart.
+func TestFind_ProjectName_MatchingRestoreRootDoesNotResolveSiblings(t *testing.T) {
+	stateHome := pinStateHome(t)
+
+	// The lane's own restore root, gone but recorded. It is canonical from the
+	// start, because the lane's path records the canonical hash.
+	own := filepath.Join(testfs.CanonicalTempDir(t), "own-record-repo")
+	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(own))
+	bucket, err := RuntimeDirForProjectWithStateHome(project, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+
+	// The sibling's checkout is LIVE and names a DIFFERENT project, so it can
+	// never be this lane's label: only the work of asking it is under test.
+	sibling := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	sibling.EnvInfo.WorkingDir = newNamedCheckout(t, "sibling-live-checkout")
+	if err := schema.SaveSessionMeta(bucket, sibling); err != nil {
+		t.Fatal(err)
+	}
+
+	resolver := newProjectNameResolver()
+	row := schema.SessionMeta{}
+	row.WorktreePath = filepath.Join(bucket, "worktrees", project.ID, "dlg_pruned")
+	row.WorktreeRestoreRoot = own
+	row.EnvInfo.WorkingDir = row.WorktreePath
+	if got, want := resolver.projectName(row, bucket), "own-record-repo"; got != want {
+		t.Fatalf("projectName(pruned lane whose recorded restore root matches its project) = %q, want its own record's %q", got, want)
+	}
+	if resolver.pathResolutions != 0 {
+		t.Fatalf("the lookup resolved %d recorded path(s) although the row's own record already named its project; a checkout on an unavailable mount would hold the whole search", resolver.pathResolutions)
+	}
+}
+
+// TestFind_ProjectName_OwnerLabelDoesNotWalkTheParentCheckout covers a pruned
+// session-owned lane whose owner's restore root still resolves. The owner is the
+// row's own record and outranks a parent, so the label is settled before the
+// parent is read — and reading the parent resolves its recorded paths, a
+// filesystem call that an unavailable mount stalls.
+//
+// Both records point at live checkouts, so every resolution succeeds and leaves
+// a trace. Only the owner's one resolution is needed: a lookup that also read
+// the parent's record cannot stop at one.
+func TestFind_ProjectName_OwnerLabelDoesNotWalkTheParentCheckout(t *testing.T) {
+	bucket := newConfiguredBucket(t)
+
+	// The owner's restore root is live, so reading the owner's record resolves
+	// exactly one path and produces the label.
+	ownerRestore := filepath.Join(t.TempDir(), "owner-restore-repo")
+	if err := os.MkdirAll(ownerRestore, 0o755); err != nil {
+		t.Fatalf("mkdir owner restore: %v", err)
+	}
+	ownerID := identifier.MustNewSessionID()
+	owner := schema.SessionMeta{ID: ownerID, WorktreeRestoreRoot: ownerRestore}
+	owner.EnvInfo.WorkingDir = ownerRestore
+	if err := schema.SaveSessionMeta(bucket, owner); err != nil {
+		t.Fatal(err)
+	}
+
+	// The parent's checkout is live as well, so a lookup that consults it is
+	// visible in the resolution count rather than merely slower.
+	parentID := identifier.MustNewSessionID()
+	parent := schema.SessionMeta{ID: parentID}
+	parent.EnvInfo.WorkingDir = newNamedCheckout(t, "parent-live-checkout")
+	if err := schema.SaveSessionMeta(bucket, parent); err != nil {
+		t.Fatal(err)
+	}
+
+	resolver := newProjectNameResolver()
+	row := schema.SessionMeta{ParentSessionID: parentID}
+	row.EnvInfo.WorkingDir = filepath.Join(bucket, "sessions", ownerID, "worktrees", "dlg_pruned")
+	if got, want := resolver.projectName(row, bucket), "owner-restore-repo"; got != want {
+		t.Fatalf("projectName(pruned lane whose owner restore root resolves) = %q, want the owner's %q", got, want)
+	}
+	if resolver.pathResolutions != 1 {
+		t.Fatalf("the lookup resolved %d recorded paths; the owner's restore root needs exactly one, and the parent's live checkout is a second walk an unavailable mount stalls", resolver.pathResolutions)
 	}
 }
 
@@ -3916,8 +4113,9 @@ func TestFind_ProjectName_SiblingRestoreRootLabelsTheProjectItsLaneRecords(t *te
 	stateHome := pinStateHome(t)
 
 	// The sibling's restore root is gone, and its canonical path is the project the
-	// sibling's lane path records.
-	root := filepath.Join(t.TempDir(), "sibling-restore-repo")
+	// sibling's lane path records. The path is canonical from the start for the
+	// reason above.
+	root := filepath.Join(testfs.CanonicalTempDir(t), "sibling-restore-repo")
 	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(root))
 	bucket, err := RuntimeDirForProjectWithStateHome(project, stateHome)
 	if err != nil {
@@ -3968,7 +4166,7 @@ func TestFind_ProjectName_MatchingRestoreRootBeatsAnUnverifiedSibling(t *testing
 	// The lane's own restore root, gone but recorded. The bucket is the project
 	// bucket for that same ID, so the lane's path and its restore root agree, and
 	// the bucket's verified scope makes its sessions one repository.
-	moved := filepath.Join(t.TempDir(), "own-moved-repo")
+	moved := filepath.Join(testfs.CanonicalTempDir(t), "own-moved-repo")
 	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(moved))
 	bucket, err := RuntimeDirForProjectWithStateHome(project, stateHome)
 	if err != nil {
@@ -4163,7 +4361,9 @@ func TestFind_ProjectName_MovedCheckoutKeepsItsRecordedProject(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", stateHome)
 
 	// The recorded path is what the lane was created under; it no longer exists.
-	moved := filepath.Join(t.TempDir(), "moved-repo")
+	// It is canonical from the start, because the lane's recorded project ID was
+	// computed from the canonical form.
+	moved := filepath.Join(testfs.CanonicalTempDir(t), "moved-repo")
 	movedProject := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(moved))
 	bucket, err := RuntimeDirForProjectWithStateHome(movedProject, stateHome)
 	if err != nil {

@@ -844,7 +844,7 @@ type siblingEvidenceKey struct {
 
 // bucketKind classifies the state directory a row was discovered in. Membership
 // in the state tree is proven by the configured state root, never by a path's
-// spelling, and the three outcomes are the only three the rest of the resolver
+// spelling, and the four outcomes are the only four the rest of the resolver
 // needs to distinguish.
 type bucketKind int
 
@@ -860,10 +860,23 @@ const (
 	// sibling evidence still answers. The project ID itself is unknown, and
 	// unknown is not a conflict.
 	bucketLegacy
+	// bucketShared is the shared-override name under the configured state root: a
+	// directory where sessions from several repositories are deliberately pooled,
+	// which is what pointing --state-dir at one is for. It is part of the state
+	// tree, so it stays searchable and every row-specific record in it still
+	// answers, but nothing about it says its sessions served ONE repository, so
+	// an unverified candidate there may not speak for a row.
+	bucketShared
 	// bucketProject is under the configured state root with its project ID in its
 	// basename, which is where RuntimeDirForProjectWithStateHome writes it.
 	bucketProject
 )
+
+// sharedBucketName is the basename the state tree reserves for a shared
+// override: <stateHome>/evener/projects/shared. It is a name, not a layout: the
+// directory sits exactly where a project bucket does, and only the name says
+// that its sessions were pooled from more than one repository.
+const sharedBucketName = "shared"
 
 // projectEvidence is one candidate answer for a row's project label, with the
 // strength of the evidence that produced it. The resolver collects every
@@ -953,8 +966,13 @@ func newProjectNameResolver(bucketMetas ...map[string][]schema.SessionMeta) *pro
 // the row has no project of its own to contradict. A row-specific source that
 // can be verified always beats a bucket-wide source that cannot.
 func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string) string {
+	// An origin whose last segment is empty once ".git" is stripped names no
+	// repository, so it is no evidence. Returning it would answer the row with an
+	// empty name and skip every field after it that still can.
 	if origin := strings.TrimSpace(m.EnvInfo.GitOriginURL); origin != "" {
-		return repoBasename(origin)
+		if name := repoBasename(origin); name != "" {
+			return name
+		}
 	}
 	wd := strings.TrimSpace(m.HomeDir())
 	if wd == "" {
@@ -998,7 +1016,7 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 	// walked relative to this process's directory, which is not where the session
 	// ran. Records are written absolute; one that is not is no evidence here.
 	laneSeen := false
-	laneFallback := ""
+	lanePath := ""
 	laneProjectID := ""
 	for _, recorded := range recordPaths(m) {
 		if !filepath.IsAbs(recorded) {
@@ -1012,7 +1030,13 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 			if !laneSeen {
 				laneSeen = true
 				laneProjectID = managedProjectID
-				laneFallback, _ = r.worktreePathFallback(recorded, bucketDir, m.ParentSessionID)
+				// The path is REMEMBERED, not resolved. Its fallback is bucket-wide
+				// inference — an origin an owner, a parent or a sibling saved — and
+				// resolving those candidates walks recorded paths. The row still has
+				// fields after this one, and its own record may still name the
+				// project; asking the fallback here would do that work before either
+				// question was put, and the work is what an unavailable mount stalls.
+				lanePath = recorded
 			}
 			continue
 		}
@@ -1069,6 +1093,10 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 				return filepath.Base(gone)
 			}
 		}
+		// Only now, with every field of the row's own record asked and none of
+		// them answering, does bucket-wide inference run. It is the weakest
+		// evidence the resolver has, so it answers last rather than first.
+		laneFallback, _ := r.worktreePathFallback(lanePath, bucketDir, m.ParentSessionID)
 		return laneFallback
 	}
 
@@ -1298,8 +1326,11 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 			// name: it wins, and it carries no entry in the rank table.
 			//
 			// An inadmissible origin does not license the shortcut, so the record is
-			// still read for it: it may hold the only evidence this row accepts.
-			if ownerOrigin != "" && admissible("") {
+			// still read for it: it may hold the only evidence this row accepts. An
+			// origin whose last segment is empty names no repository either, and
+			// returning it would answer the row with a name that is not one while
+			// the record still holds its restore root.
+			if ownerOrigin != "" && admissible("") && repoBasename(ownerOrigin) != "" {
 				return repoBasename(ownerOrigin), true
 			}
 			// The owner's record is read as a record, through the same lookup as
@@ -1352,7 +1383,13 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 	// names a repository without needing anything on disk.
 	if parentSessionID != "" {
 		tiedToLane := sameBucket(stateDir, bound) || managedProjectID != "" || parentSessionID == ownerSessionID
-		if tiedToLane {
+		// The whole lookup is gated, not only the shortcut below. Reading the
+		// parent's record resolves every path it carries, and when the owner has
+		// already answered, that resolution cannot change the result: the owner is
+		// the row's own record and outranks a parent at every rank a parent can
+		// reach. A parent recorded on an unavailable mount would otherwise hold a
+		// search whose answer was settled before the read.
+		if tiedToLane && !evidenceWins(found, admissible, evidenceRankParentOrigin) {
 			if parent, ok := r.loadOwnedSessionMeta(bound, parentSessionID); ok {
 				// LOCAL BEFORE REMOTE, and the parent is row-specific evidence, so it
 				// outranks the bucket-wide scan below. A verified parent's saved origin
@@ -1365,14 +1402,7 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 				// A managed lane does need the walk: its path records a project, and a
 				// parent names the lane only by positively identifying that same
 				// project. The origin cannot supply an ID, so that case falls through.
-				//
-				// It is also gated on nothing stronger having answered. The owner is
-				// the row's own record and outranks a parent, so an owner restore root
-				// already in hand makes this origin irrelevant; taking the shortcut
-				// there would let a parent's saved origin replace the owner's answer.
-				// evidenceWins asks that question of the candidates themselves rather
-				// than of a list of sources, which is why it is the test used.
-				if managedProjectID == "" && !foreignProject && !evidenceWins(found, admissible, evidenceRankParentOrigin) {
+				if managedProjectID == "" && !foreignProject {
 					if origin := strings.TrimSpace(parent.EnvInfo.GitOriginURL); origin != "" && repoBasename(origin) != "" {
 						return repoBasename(origin), true
 					}
@@ -1438,15 +1468,27 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 		// A candidate that states NO project is unverified: nothing in it names a
 		// repository, so the only thing that can tie it to this row's project is
 		// the bucket's own verified scope. A project bucket has one — its name is
-		// the project ID — and a legacy or flat bucket does not. Admitting an
+		// the project ID — and a flat or shared bucket does not. Admitting an
 		// unverified label in a bucket without verified scope is how a pruned lane
 		// came to take a different repository's saved origin.
-		verifiedScope := r.classifyBucket(bound) == bucketProject
+		//
+		// The scope is what licenses the candidate, so the SAME test applies to a
+		// row that records no project of its own: having none only means it cannot
+		// refuse the candidate, not that it may inherit anything the bucket ever
+		// saw. A shared override pools sessions from several repositories, and its
+		// last writer's origin is no claim about an ownerless lane there. A legacy
+		// bucket keeps the fallback for exactly those rows, because its sessions
+		// describe one repository even though its name does not record which; a
+		// managed lane there still compares project IDs, and an unverified
+		// candidate gives it nothing to compare.
+		kind := r.classifyBucket(bound)
+		verifiedScope := kind == bucketProject
+		legacyNameOnly := kind == bucketLegacy && managedProjectID == ""
 		for _, cand := range r.siblingEvidenceFor(bound, managedProjectID != "") {
 			// The row's own eligibility, applied to evidence the bucket produced
 			// once. This is why the evidence is not a cached label: the same
 			// sibling is admissible for one row and not for another.
-			if cand.projectID == "" && managedProjectID != "" && !verifiedScope {
+			if cand.projectID == "" && !verifiedScope && !legacyNameOnly {
 				continue
 			}
 			if admissible(cand.projectID) {
@@ -1520,10 +1562,18 @@ func (r *projectNameResolver) bucketMetaSnapshot(bucketDir string) ([]schema.Ses
 // <root>/projects/<id> is not part of the state tree unless the root says so. A
 // flat --state-dir therefore lands in bucketUnrelated, and so does a shared
 // override that spells the layout.
+//
+// Inside the tree, the basename decides between the three recognized kinds. The
+// shared override's name is one of them, because it is the one name that says
+// its directory was pointed at several repositories on purpose; every other
+// non-project name is a legacy bucket, which by convention held one.
 func (r *projectNameResolver) classifyBucket(bucketDir string) bucketKind {
 	home := stateHomeFor(bucketDir)
 	if home == "" || !r.isConfiguredStateHome(home) {
 		return bucketUnrelated
+	}
+	if filepath.Base(bucketDir) == sharedBucketName {
+		return bucketShared
 	}
 	if identifier.ValidateProjectID(filepath.Base(bucketDir)) != nil {
 		return bucketLegacy
@@ -1632,6 +1682,13 @@ func (r *projectNameResolver) siblingEvidenceFor(bucketDir string, needProjectID
 				continue
 			}
 			name := repoBasename(origin)
+			// An origin whose last segment is empty once ".git" is stripped — a
+			// local mirror spelled as a path ending in "/.git" — names no
+			// repository, so it is no evidence. Answering it would stop the pass
+			// with an empty name before a sibling that can answer is read.
+			if name == "" {
+				continue
+			}
 			evidence = []projectEvidence{{name: name, rank: evidenceRankSiblingOrigin}}
 			if snapshot {
 				r.siblingEvidence[key] = evidence
@@ -1651,7 +1708,13 @@ func (r *projectNameResolver) siblingEvidenceFor(bucketDir string, needProjectID
 		// origin is a URL, not a path — so it is resolved only for the rows that
 		// compare IDs. That is a property of the ASKING ROW, not of the bucket, which
 		// is why it is part of this snapshot's cache key.
-		if origin := strings.TrimSpace(sm.EnvInfo.GitOriginURL); origin != "" {
+		//
+		// An origin whose last segment is empty once ".git" is stripped names no
+		// repository, so it is no evidence. It must not be treated as one either
+		// way: not appended as an empty answer, and not allowed to skip the rest of
+		// the record, because the sibling's recorded restore root and checkout can
+		// still name its project.
+		if origin := strings.TrimSpace(sm.EnvInfo.GitOriginURL); origin != "" && repoBasename(origin) != "" {
 			recorded := ""
 			if needProjectID {
 				_, recorded, _, _ = r.recordedProject(sm, bucketDir)
