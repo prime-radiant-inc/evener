@@ -22,9 +22,14 @@ type stubQueue struct {
 	runs       []mergeq.GroupRun
 	enqueueErr error
 	enqueued   []string
+	// calls names every client method invoked, in order, so a test can tell
+	// a run that never reached the client from one whose answers happened to
+	// end the same way.
+	calls []string
 }
 
 func (s *stubQueue) Status(context.Context, string, string) (mergeq.Status, error) {
+	s.calls = append(s.calls, "Status")
 	if len(s.statuses) == 0 {
 		return s.status, nil
 	}
@@ -36,6 +41,7 @@ func (s *stubQueue) Status(context.Context, string, string) (mergeq.Status, erro
 }
 
 func (s *stubQueue) MergedCommit(context.Context, string, string) (string, bool, error) {
+	s.calls = append(s.calls, "MergedCommit")
 	return "", false, nil
 }
 
@@ -45,6 +51,7 @@ func (s *stubQueue) MergedCommit(context.Context, string, string) (string, bool,
 // exercise: what they check is the exit code the command derives from the error,
 // and a nil entry is the reply that named none.
 func (s *stubQueue) Enqueue(_ context.Context, _, prID string, _ bool) (*mergeq.QueueEntry, error) {
+	s.calls = append(s.calls, "Enqueue")
 	if s.enqueueErr != nil {
 		return nil, s.enqueueErr
 	}
@@ -53,10 +60,12 @@ func (s *stubQueue) Enqueue(_ context.Context, _, prID string, _ bool) (*mergeq.
 }
 
 func (s *stubQueue) QueueDrop(context.Context, string, string) (*mergeq.DropEvent, error) {
+	s.calls = append(s.calls, "QueueDrop")
 	return s.drop, nil
 }
 
 func (s *stubQueue) MergeGroupRuns(context.Context, string) ([]mergeq.GroupRun, error) {
+	s.calls = append(s.calls, "MergeGroupRuns")
 	return s.runs, nil
 }
 
@@ -153,27 +162,33 @@ func TestMergeEnqueueSubcommandExitCodes(t *testing.T) {
 
 // TestMergeEnqueueSubcommandRejectsBadArguments pins usage handling: a missing
 // --pr, a negative --wait and a stray positional are exit 2 with nothing on
-// stdout, before any client is touched.
+// stdout, before any client is touched. The exit code and the empty stdout
+// cannot show that last part on their own: a run that reached the empty stub
+// gets no status to report and exits 2 with nothing on stdout as well. The
+// stub's call record is the oracle for it.
 func TestMergeEnqueueSubcommandRejectsBadArguments(t *testing.T) {
 	t.Parallel()
 	for _, args := range [][]string{
 		nil,
 		{"--wait", "5"},
 		{"--pr", "6499", "--wait", "-1"},
-		// A wait has no sign. These two are also pinned at the parser by
-		// TestMergeEnqueueRejectsASignedWait, because the stub's empty answer
-		// reaches exit 2 on its own and so cannot tell the two parsers apart.
+		// A wait has no sign. TestMergeEnqueueRejectsASignedWait also pins
+		// these two at the parser itself.
 		{"--pr", "6499", "--wait", "+1"},
 		{"--pr", "6499", "--wait", "-0"},
 		{"--pr", "6499", "--wait", "nope"},
 		{"--pr", "6499", "stray"},
 	} {
 		var stdout, stderr strings.Builder
-		if code := runMergeEnqueue(args, &stubQueue{}, pausedClock(), &stdout, &stderr); code != 2 {
+		q := &stubQueue{}
+		if code := runMergeEnqueue(args, q, pausedClock(), &stdout, &stderr); code != 2 {
 			t.Fatalf("runMergeEnqueue(%v) = %d, want 2", args, code)
 		}
 		if stdout.Len() != 0 {
 			t.Fatalf("runMergeEnqueue(%v) wrote stdout %q on a usage error", args, stdout.String())
+		}
+		if len(q.calls) != 0 {
+			t.Fatalf("runMergeEnqueue(%v) called the client %v on a usage error, want no calls", args, q.calls)
 		}
 	}
 }
@@ -183,10 +198,8 @@ func TestMergeEnqueueSubcommandRejectsBadArguments(t *testing.T) {
 // and "--wait -0" as no wait at all: both are values the caller cannot have
 // meant, and both must be usage errors instead.
 //
-// The oracle is the parser, not the subcommand's exit code. A run with no
-// status to report reaches exit 2 for its own reason, so a table entry in
-// TestMergeEnqueueSubcommandRejectsBadArguments would pass against either
-// parser.
+// The oracle is the parser itself, so the refusal is pinned where it is made
+// and not only through the subcommand that reports it.
 func TestMergeEnqueueRejectsASignedWait(t *testing.T) {
 	t.Parallel()
 	for _, signed := range []string{"+1", "-0", "-1"} {
