@@ -80,6 +80,24 @@ The registry supplies the instance, model facts, protocol, and surface. The prof
 `resp.Provider` and error labels are stamped back to the instance name
 centrally, in `llm.Client`, not by each protocol package.
 
+### Responses function-call identity
+
+The Responses adapter settles repeated records in the provider's final output
+with the same explicit `call_id` into one tool call at its first position.
+Later records can fill in an omitted item ID, tool name or arguments. The
+decoded call retains the first supplied argument bytes. Warm and cold replay
+follow the existing request and transcript encoding rules. Records with distinct
+or absent call IDs remain separate even when they share an item ID. When the
+final output is empty, recovery keeps streamed completions in order, including
+calls whose ID came from an item ID. Live decoding and API-log recomputation
+apply the same rule.
+
+An explicit incomplete response settles the output, including an empty result.
+If the adapter supplies no settled tool calls, streamed argument deltas remain partial.
+Explicitly unfinished function items remain available as raw provider events.
+
+Responses replay preserves assistant item order and groups same-phase text across omitted parts.
+
 ## Image recovery
 
 The [Chat Completions adapter](../llm/providers/chatcompletions/image_recovery.go)
@@ -348,7 +366,7 @@ openai/gpt-5.6` work on a machine with no key set.
 |---|---|---|---|
 | `anthropic` | `ANTHROPIC_API_KEY` | `ANTHROPIC_BASE_URL` (`https://api.anthropic.com/v1`) | surface `anthropic`, family `claude`; `default_model = claude-opus-5`, `cheap_model = claude-haiku-4-5` |
 | `openai-codex` | none — OAuth only, `api_key_env = []` so a bare `OPENAI_API_KEY` never yields this instance | `OPENAI_CODEX_BASE_URL` (`https://chatgpt.com/backend-api/codex`) | see [The Codex transport](#the-codex-transport) below; `default_model = gpt-5.6`, `cheap_model = gpt-5.6-luna` |
-| `openai` | `OPENAI_API_KEY` | `OPENAI_BASE_URL` (`https://api.openai.com/v1`) | surface `openai`; `default_model = gpt-5.6`, `cheap_model = gpt-4.1-nano`; `strict_tools = true` (strict JSON-schema tool calls on the native Responses path) |
+| `openai` | `OPENAI_API_KEY` | `OPENAI_BASE_URL` (`https://api.openai.com/v1`) | surface `openai`; `default_model = gpt-5.6`, `cheap_model = gpt-4.1-nano`; `strict_tools = true` (strict JSON-schema tool calls on the native Responses path). A tool is certified for strict mode only when **every** node of its schema can be verified: every object explicitly sets `additionalProperties: false` (an omission is implicitly open, and closing it would forbid every key the object never declared), every object's `required` names only keys it declares, and every node states a constraint at all — an empty schema, an array without `items`, and an open object with no declared properties all admit values the projection cannot bound, so all are refused; so is a typeless node whose only keywords annotate it (`description`, `title`) or bound one type (`minLength: 0`, `pattern: ""`), because such a node still accepts every value of every other type. Root-level `anyOf` falls back to non-strict per OpenAI's root-schema rule, while a property-level `anyOf` qualifies for strict mode when every branch is strict-expressible and the emitted schema satisfies the resolved route's requirements (on Codex Responses Lite, where every node requires an explicit `type`, unions that need a container or multi-type enclosing `type` fall back to `strict: false` with that enclosing type stated). A tool with a documented-optional argument is also sent non-strict, because strict mode would make that argument mandatory. So is a shape the projection cannot verify: a nullable `["object", "null"]` type list that is not already strict-valid, anything behind a `$ref` or `$defs`, a `properties` on a node the rewrite does not treat as an object — only a literal `type: "object"` is closed, and any other node's declared properties reach the provider unchecked — and a schema-valued `additionalProperties` whose nested object leaves one of its own properties optional, which strict enforcement still validates. Every refused tool keeps its advertised schema and is sent with `strict: false` on any route whose catalog states the capability (including `strict_tools = false`, because the native endpoint normalizes an omitted flag into strict enforcement), with one exception that changes no accepted value: a typeless node whose closed value set (`enum` or `const`) or union (`anyOf`/`oneOf`) implies a guaranteed type gets that type stated, because the provider requires an explicit type on every node even when strict enforcement is off, and one typeless node rejects the whole request |
 | `google` | `GEMINI_API_KEY`, then `GOOGLE_API_KEY` | `GOOGLE_BASE_URL` (`https://generativelanguage.googleapis.com/v1beta`) | surface `google`; `default_model = gemini-3.8-flash`, `cheap_model = gemini-2.5-flash-lite` |
 | `groq` | `GROQ_API_KEY` | `GROQ_BASE_URL` (`https://api.groq.com/openai/v1`) | `default_model = openai/gpt-oss-120b`, `cheap_model = llama-3.1-8b-instant` |
 | `zai` | `ZHIPU_API_KEY` | `ZAI_BASE_URL` (`https://api.z.ai/api/paas/v4`) | `thinking_format = zai`; `default_model = glm-5.3`, `cheap_model = glm-4.7-flash` |
@@ -462,6 +480,14 @@ effort even with an empty ladder, because the row declares that control. On
 the Responses protocol the encrypted-reasoning `include` and a configured
 summary survive an unvouched effort: no level is sent, but replay stays intact.
 
+**Responses history.** The transcript preserves the order, type, and exact text
+of reasoning `content` and `summary` parts, including blanks with usable output.
+A finished item replays as plaintext by default when it carries those native
+typed parts, and is dropped when the row declares `reasoning: false`. An item
+the provider cut off is marked `ResponsesIncomplete` and never rides back. Across
+a fallback to another instance, a completed foreign turn keeps that plaintext
+while its opaque `encrypted_content` blob stays with the instance that issued it.
+
 **The no-effort verdict.** A gateway can state per model that it accepts no
 effort parameter at all (`supportsReasoningEffort: false` in its
 `client_compat` block). That is narrower than "the model does not reason", and
@@ -500,18 +526,22 @@ no catalog entry). Either shape carries `includeThoughts: true`. Clearing
 `fields."generationConfig.thinkingConfig"` on a row prunes the object
 entirely, for a model that takes no thinking fields at all.
 
-**Replay.** An openai-chat target carries no reasoning as continuation state:
-`reasoning_content` is display output, so request assembly drops prior
-assistant thinking from every replayed message, including the current turn's
-earlier rounds, and the transcript keeps it (#4563). A row that declares
-`thinking_as_text` is the deliberate exception: its adapter merges the
-thinking into assistant text because that gateway wants it there. When
-thinking does reach the chat builder (a `thinking_as_text` row, or a caller
-that builds a request directly), it writes back to whichever field it arrived
+**Replay.** Chat replays its full-history display reasoning by default. A
+`reasoning = false` row sends none; `thinking_as_text` merges it into content.
+Scalar replay writes back to whichever field the reasoning arrived
 on — `reasoning_content`, `reasoning`, or `reasoning_text` as a plain string
 field, or `reasoning_details` as OpenRouter's array form. The value comes from
 models.dev's `interleaved.field` when the catalog states one, else the field
 the text actually arrived on, else `reasoning_content`.
+
+When a Chat response, streaming or not, includes scalar and structured reasoning,
+the adapter keeps its scalar text and wire field for scalar replay. A catalog
+field override still selects the replay field. The assembled text is used for
+display, array replay and thinking-as-text. The local token estimate counts
+the text selected for replay.
+
+The local estimate charges populated signed text through its detail and adds
+assembled text when replay includes it as ordinary content or in the array.
 
 What changed structurally: `thinking_format` is now a `Caps` field set in
 `providers.toml`/the curated overlay (a provider- or model-level TOML key),

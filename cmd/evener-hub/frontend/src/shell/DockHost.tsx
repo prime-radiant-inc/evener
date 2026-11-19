@@ -12,7 +12,8 @@ import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import "dockview-react/dist/styles/dockview.css";
 import "./dockview-theme.css";
 import { navigationSummaryFor, resolveThreadName } from "../panes/session/threadTitle";
-import { parseZoomParams } from "../panes/zoom/intent";
+import { returnFromAgentCascade } from "../panes/zoom/actions";
+import { parseZoomParams, zoomIntentOf } from "../panes/zoom/intent";
 import {
   conversationHandoffGeneration,
   registerConversationHostVisibility,
@@ -211,7 +212,10 @@ function positionFor(
 // so the next pane opened takes it.
 function ensureMainPane(): void {
   const ws = workspaceStore.getState();
-  if (ws.mainPane() === null) ws.openPane("welcome");
+  if (ws.mainPane() !== null) return;
+  const hasSurvivingFocus =
+    ws.focusedPaneId !== null && presentedPanes(ws.panes).some((pane) => pane.id === ws.focusedPaneId);
+  ws.openPane("welcome", {}, hasSurvivingFocus ? { keepExistingFocus: true, focusNew: false } : undefined);
 }
 
 // The MAIN group's header never shows (Jesse: "I despise having the tab bar
@@ -326,8 +330,24 @@ export function DockHost() {
   useEffect(() => {
     if (!api) return;
 
+    // Closing an inspection tab returns focus to its surviving origin; Dockview
+    // synchronously activates a sibling panel during the same close, which must
+    // not overwrite that return focus before React's focus effect activates the
+    // origin panel.
+    let returningToOriginId: string | null = null;
     const removeSub = api.onDidRemovePanel((panel) => {
-      if (!syncingSlots.current) workspaceStore.getState().closePane(panel.id);
+      if (syncingSlots.current) return;
+      const pane = workspaceStore.getState().panes.find((record) => record.id === panel.id);
+      if (pane && zoomIntentOf(pane)?.inspection) {
+        returnFromAgentCascade(panel.id);
+        const targetId = workspaceStore.getState().focusedPaneId;
+        returningToOriginId = targetId;
+        queueMicrotask(() => {
+          if (returningToOriginId === targetId) returningToOriginId = null;
+        });
+        return;
+      }
+      workspaceStore.getState().closePane(panel.id);
     });
     // Dockview moves a group's existing DOM into the popout window without
     // re-rendering its panes, so a scaffold's per-render publication would
@@ -355,12 +375,14 @@ export function DockHost() {
     // task's report for the live dockview probe that found this.
     const activeSub = api.onDidActivePanelChange((e) => {
       if (!syncingSlots.current && e.origin === "user" && e.panel) {
+        if (returningToOriginId !== null && e.panel.id !== returningToOriginId) return;
         workspaceStore.getState().focusPane(e.panel.id);
       }
     });
 
     let saveTimer: ReturnType<typeof setTimeout> | undefined;
     const layoutSub = api.onDidLayoutChange(() => {
+      syncGroupHeaders(api);
       clearTimeout(saveTimer);
       saveTimer = setTimeout(() => {
         saveTimer = undefined;
@@ -694,8 +716,24 @@ export function DockHost() {
     setApi(event.api);
   }
 
+  // Dockview activates a group from its content area only on focusin; after a
+  // programmatic group switch (e.g. history.back()) leaves document.activeElement
+  // inside the old group, clicking that group's content does not cross its
+  // focusTracker boundary and leaves it stuck inactive. Activate the clicked
+  // inactive group's active panel through the workspace store.
+  function handleHostPointerDownCapture(event: React.PointerEvent<HTMLDivElement>) {
+    if (!api) return;
+    const content = (event.target as Element | null)?.closest?.(".dv-content-container") ?? null;
+    if (!content) return;
+    const groupEl = content.closest(".dv-groupview");
+    if (!groupEl || groupEl.classList.contains("dv-active-group")) return;
+    const group = api.groups.find((candidate) => candidate.element === groupEl);
+    const active = group?.activePanel;
+    if (active) workspaceStore.getState().focusPane(active.id);
+  }
+
   return (
-    <div className={styles.host}>
+    <div className={styles.host} onPointerDownCapture={handleHostPointerDownCapture}>
       <DockviewReact
         components={COMPONENTS}
         defaultTabComponent={PaneTab}

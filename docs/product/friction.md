@@ -671,8 +671,14 @@ Waiting alone does not expire the user's instruction. Recheck cancellation,
 applicable budgets and newer instructions before resuming, so recovery continues
 the user's current intent.
 
-A usage limit that names its reset time is handled: the model call waits for
-the reset inside its turn, with the goal active (see S09 in the
+A usage limit that names its reset time is handled end to end: the model call
+waits for the reset inside its turn, with the goal active, and every surface
+says so - the session pane's liveness line at level `quota`, answering first
+and outside any quiet gate, counting down to the resume time and, once it has
+passed, saying the retry is pending while the daemon still holds the wait;
+the rail row and the phone Board read the same shared rule. The wait's
+lifetime is the daemon's, never the client's clock: only the retry going out,
+a turn boundary, or a read showing no wait ends it (see S09 in the
 [subsystem map](subsystems.md)).
 
 **Still pending.** Other temporary provider failures (an outage outlasting the

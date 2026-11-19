@@ -484,10 +484,12 @@ describe("why lines on the fallbacks (spec 7.2, 18)", () => {
 
   // A working session whose model call waits out a usage limit until a
   // known reset resumes by itself: while that time is ahead its line says so;
-  // once it has passed the wait is over and the working line returns.
+  // past it the line says the retry is pending while the row's summary still
+  // names the wait — the daemon serves the wait's summary until the wake, a
+  // turn boundary, or the wait's end clears it.
   it.each([
     ["ahead", 90 * 60_000, true],
-    ["passed", -60_000, false],
+    ["passed", -60_000, true],
   ] as const)(
     "a working row whose quota wait resume time is %s (%d ms away) has the quota line: %s",
     (_when, offsetMs, quota) => {
