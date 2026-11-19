@@ -1937,10 +1937,10 @@ func (s *Session) reapplyProviderSpecificTools(oldProfile, newProfile *provider.
 
 // pendingModelSwitch is a switch picked mid-input, waiting for the turn
 // boundary. The primed instance and listing are the ones the pick-time
-// preflight fetched; the boundary's applyModelSwitch reuses them so a queued
-// switch costs one live enumeration, not two. The seq is the pick generation
-// SetModel stamped, which fences the boundary application against superseding
-// picks. A zero value (empty model) means nothing is queued.
+// preflight fetched; the boundary's applyModelSwitchControl reuses them so a
+// queued switch costs one live enumeration, not two. The seq is the pick
+// generation SetModel stamped, which fences the boundary application against
+// superseding picks. A zero value (empty model) means nothing is queued.
 type pendingModelSwitch struct {
 	model            string
 	primedInstance   string
@@ -2063,8 +2063,8 @@ func (s *Session) turnInFlightLocked() bool {
 // the picker), and membership is preflighted against a live listing. The
 // unrepresentable-history preflight is deliberately skipped - history is
 // being appended to by the running turn - and re-run by the boundary's
-// applyModelSwitch against settled history, reusing the listing this preflight
-// fetched so the boundary pays no second enumeration.
+// applyModelSwitchControl against settled history, reusing the listing this
+// preflight fetched so the boundary pays no second enumeration.
 func (s *Session) queueModelSwitch(model string, fence modelSwitchFence) (appwire.ThreadModelSetResponse, error) {
 	primedInstance, primedListing := s.primeCodexRoster(model)
 	s.mu.Lock()
@@ -2231,8 +2231,8 @@ func (s *Session) applyQueuedModelSwitches(inWaitingCall bool) {
 	}
 }
 
-// applyModelSwitch is SetModel's committed switch: resolve, validate against
-// settled history, swap the profile, record the marker turn, publish
+// applyModelSwitchControl is SetModel's committed switch: resolve, validate
+// against settled history, swap the profile, record the marker turn, publish
 // EventModelChanged, and persist. The caller owns the retirement admission -
 // SetModel and the pending applier each hold one. A primed listing the caller
 // already fetched (the queue's pick-time preflight) is reused instead of a
@@ -2249,11 +2249,6 @@ func (s *Session) applyQueuedModelSwitches(inWaitingCall bool) {
 // validates, so the communicate-override carry, the provider-tool reconciliation,
 // and the marker's from-claim follow the transition that actually happened, never
 // the pick-time classification.
-func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *llm.ModelListing, fence modelSwitchFence) error {
-	_, err := s.applyModelSwitchControl(model, primedInstance, primedListing, fence)
-	return err
-}
-
 func (s *Session) applyModelSwitchControl(model, primedInstance string, primedListing *llm.ModelListing, fence modelSwitchFence) (appwire.ThreadModelSetResponse, error) {
 	if primedListing == nil {
 		// A named Codex model may exist only in the target instance's live
