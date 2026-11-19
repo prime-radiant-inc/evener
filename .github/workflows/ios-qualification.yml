@@ -1,6 +1,33 @@
 name: iOS qualification
 
 on:
+  # Main pushes run the lane so simulator-build saves the DerivedData
+  # cache every run restores; a pull request's own save would serve
+  # only that ref (see "CI Caches" in docs/developing-evener/testing.md).
+  push:
+    branches: [main]
+    paths:
+      - "mobile-native/**"
+      - "appwire-client/typescript/**"
+      - "scripts/native/**"
+      - "scripts/lib/scratch-lib.sh"
+      - "scripts/lib/e2e-lib.sh"
+      - "scripts/ops/build-runtime-pair.sh"
+      - "Makefile"
+      - "make/**"
+      # The lane runs `make build-runtime` on macOS; the required CI lanes run
+      # the same recipes only on Linux, so a macOS-only recipe break is
+      # otherwise unguarded. Hub and daemon Go sources stay out deliberately:
+      # every Go lane builds and gates them, and this lane exists to qualify
+      # native and shared-client changes.
+      - "test/e2e/fakellm/**"
+      - "internal/devtool/procgroup/**"
+      - "execsupport/procgroup/**"
+      - "go.mod"
+      - "go.sum"
+      - "go.work"
+      - "go.work.sum"
+      - ".github/workflows/ios-qualification.yml"
   pull_request:
     branches: [main]
     paths:
@@ -30,17 +57,30 @@ on:
 permissions:
   contents: read
 
+env:
+  # Selected by both jobs and hashed into the DerivedData cache key: a version
+  # bump must invalidate a build tree the old Xcode compiled.
+  XCODE_VERSION: "26.6"
+
 concurrency:
   group: ios-qualification-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # A pull request's newer run supersedes its older one. A main push must
+  # finish: it saves the DerivedData cache every later run restores and serves
+  # as the post-merge combined-state verification, so it queues behind the run
+  # before it instead of being cancelled.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   simulator-build:
     runs-on: macos-26
     timeout-minutes: 120
     steps:
-      - name: Set the run-owned diagnostic output path
-        run: printf 'QUALIFICATION_OUTPUT=%s/ios-qualification-%s-%s\n' "$RUNNER_TEMP" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
+      - name: Set the run-owned output and DerivedData paths
+        run: |
+          printf 'QUALIFICATION_OUTPUT=%s/ios-qualification-%s-%s\n' "$RUNNER_TEMP" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
+          # Outside the run-owned output so a cache restored on one run lands
+          # where xcodebuild reads it on the next.
+          printf 'IOS_DERIVED_DATA=%s/ios-deriveddata\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - name: Check out the merge ref with the PR head in its history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -67,14 +107,40 @@ jobs:
         env:
           CHOSEN_REF: ${{ steps.tree.outputs.ref }}
         run: git checkout --force "$CHOSEN_REF"
-      - name: Select Xcode 26.6
-        run: sudo xcode-select --switch /Applications/Xcode_26.6.app
+      # The key carries everything that changes what xcodebuild compiles: the
+      # runner image, the selected Xcode, and both resolved dependency locks.
+      # A pull request that changes either lock misses and runs cold; one that
+      # leaves them alone restores main's newest entry through Actions'
+      # base-branch fallback. The commit suffix makes each main push a new
+      # generation, which ci.yml's cache-prune job trims.
+      - name: Resolve the DerivedData cache key
+        id: deriveddata-cache
+        env:
+          POD_LOCK_HASH: ${{ hashFiles('mobile-native/Podfile.lock') }}
+          PACKAGE_LOCK_HASH: ${{ hashFiles('mobile-native/package-lock.json') }}
+        run: |
+          echo "prefix=ios-deriveddata-${ImageOS}-xcode-${XCODE_VERSION}-${POD_LOCK_HASH}-${PACKAGE_LOCK_HASH}-" >> "$GITHUB_OUTPUT"
+      # Build/ only. ModuleCache.noindex (987MB raw) stays out: it doubles the
+      # entry to save a second kind of work, and the budget has no room for
+      # that today (see "CI Caches" in docs/developing-evener/testing.md).
+      - name: Restore the DerivedData build cache
+        id: deriveddata-restore
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ env.IOS_DERIVED_DATA }}/Build
+          key: ${{ steps.deriveddata-cache.outputs.prefix }}${{ github.sha }}
+          restore-keys: ${{ steps.deriveddata-cache.outputs.prefix }}
+      - name: Select Xcode ${{ env.XCODE_VERSION }}
+        run: sudo xcode-select --switch "/Applications/Xcode_${XCODE_VERSION}.app"
       - name: Set up Go from repository policy
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.work
-          # No Go or npm cache: this workflow runs only on pull requests,
-          # whose saves serve only themselves (see "CI Caches" in
+          # No built-in toolchain cache: setup-go's saves from whichever ref
+          # first misses its key, pull requests included, and such an entry
+          # serves only that ref. This workflow's one documented Actions cache
+          # is the build job's DerivedData tree, saved on main pushes only and
+          # restored by every run (see "CI Caches" in
           # docs/developing-evener/testing.md).
           cache: false
       - name: Set up Node 22.13.1
@@ -94,6 +160,10 @@ jobs:
           npm ci --prefix appwire-client/typescript
       - name: Test qualification policy
         run: go test ./scripts/native/ios/qualification
+      # Build mode reads IOS_DERIVED_DATA from the environment rather than a
+      # flag: a pull-request head from before the cache change carries this
+      # script without the flag, and the selector tests such a head. It then
+      # builds inside its output and the save step below finds no tree.
       - name: Build, verify and prepare the UI test products
         run: bash scripts/native/ios/build-simulator.sh --output "$QUALIFICATION_OUTPUT"
       # The app bundles must keep their executable bits and the xctestrun its
@@ -102,8 +172,13 @@ jobs:
       - name: Package the products the journeys install and run
         run: |
           set -euo pipefail
-          cd "$QUALIFICATION_OUTPUT/DerivedData"
-          tar -czf "$QUALIFICATION_OUTPUT/ios-build-products.tar.gz" Build/Products
+          derived="$IOS_DERIVED_DATA"
+          if [ ! -d "$derived/Build/Products" ]; then
+            # A PR head from before build mode read IOS_DERIVED_DATA still
+            # writes DerivedData inside its run-owned output.
+            derived="$QUALIFICATION_OUTPUT/DerivedData"
+          fi
+          tar -czf "$QUALIFICATION_OUTPUT/ios-build-products.tar.gz" -C "$derived" Build/Products
           du -sh "$QUALIFICATION_OUTPUT/ios-build-products.tar.gz"
       - name: Upload the build products for the journeys job
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -111,6 +186,24 @@ jobs:
           name: ios-build-products-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.QUALIFICATION_OUTPUT }}/ios-build-products.tar.gz
           if-no-files-found: error
+      # Save only on a push to main. A pull request's save is readable only by
+      # that ref, so it would crowd main's entry out without serving the next
+      # PR. The exact-key guard mirrors the Go caches: a re-run whose restore
+      # hit this commit's key has nothing new to archive. A failed build still
+      # saves (!cancelled()): a cold run that stopped partway has filled much
+      # of the tree, and skipping the save would leave every later run cold.
+      - name: Mark the DerivedData build tree ready to save
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        run: |
+          if [ -d "$IOS_DERIVED_DATA/Build" ]; then
+            echo "IOS_DERIVED_DATA_READY=true" >> "$GITHUB_ENV"
+          fi
+      - name: Save the DerivedData build cache
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.deriveddata-restore.outputs.cache-hit != 'true' && env.IOS_DERIVED_DATA_READY == 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.IOS_DERIVED_DATA }}/Build
+          key: ${{ steps.deriveddata-cache.outputs.prefix }}${{ github.sha }}
       - name: Upload public qualification diagnostics
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -157,22 +250,23 @@ jobs:
         env:
           CHOSEN_REF: ${{ steps.tree.outputs.ref }}
         run: git checkout --force "$CHOSEN_REF"
-      - name: Select Xcode 26.6
-        run: sudo xcode-select --switch /Applications/Xcode_26.6.app
+      - name: Select Xcode ${{ env.XCODE_VERSION }}
+        run: sudo xcode-select --switch "/Applications/Xcode_${XCODE_VERSION}.app"
       - name: Set up Go from repository policy
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.work
-          # No Go or npm cache: this workflow runs only on pull requests,
-          # whose saves serve only themselves (see "CI Caches" in
+          # No built-in toolchain cache: setup-go's saves from whichever ref
+          # first misses its key, pull requests included, and such an entry
+          # serves only that ref (see "CI Caches" in
           # docs/developing-evener/testing.md).
           cache: false
       - name: Set up Node 22.13.1
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           # The runtime pair embeds the frontend SPA, so this job pins the same
-          # Node version the build job uses. No Actions cache, for the same
-          # pull-request-only reason.
+          # Node version the build job uses. No built-in Actions cache, for the
+          # same ref-scoped reason.
           node-version: "22.13.1"
       - name: Download the build products
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8

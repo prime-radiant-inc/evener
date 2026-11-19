@@ -336,6 +336,16 @@ func TestDerivedDataDirUsesTheOverrideOrTheOutputDefault(t *testing.T) {
 	}
 }
 
+// The workflow exports the stable path instead of passing a flag, so a PR head
+// from before the flag existed is not failed by an unknown argument.
+func TestDerivedDataOverrideComesFromTheWorkflowEnvironment(t *testing.T) {
+	restored := filepath.Join(t.TempDir(), "ios-deriveddata")
+	t.Setenv("IOS_DERIVED_DATA", restored)
+	if got := derivedDataFromEnv(); got != restored {
+		t.Fatalf("IOS_DERIVED_DATA = %q, want %q", got, restored)
+	}
+}
+
 // The UI child runs with the identity this run wrote, inside an output
 // directory the parent prepared, and its exit becomes the run's own result.
 // A stub journey proves the wiring without a simulator.
