@@ -529,8 +529,7 @@ func TestApplyTokenBudget_NonReasoningOpenAIChatRowDoesNotBillUnsignedThinking(t
 // The resolved row decides, not the name: an openai-named provider bills
 // nothing under the curated Responses rows, and a resolved row that does
 // replay thinking bills it even under that name. A resolved openai-chat row
-// bills nothing for plain thinking either — request assembly strips it
-// (#4563) — which is the row's answer, not the name's.
+// bills it too, because the chat adapter replays it — the row's answer.
 func TestEstimateInputTokens_ResolvedRowBeatsTheNameFallback(t *testing.T) {
 	t.Parallel()
 	const text = 400
@@ -542,6 +541,27 @@ func TestEstimateInputTokens_ResolvedRowBeatsTheNameFallback(t *testing.T) {
 	res := registry.Resolved{Protocol: registry.ProtocolOpenAIChat, Caps: registry.Caps{Reasoning: &reasoning}}
 	if got, want := EstimateInputTokensForResolved(res, req).Tokens, text/4; got != want {
 		t.Fatalf("resolved estimate = %d, want %d: the row says openai-chat, which serializes the text", got, want)
+	}
+}
+
+// ReplaysAssistantThinking is default-on for chat unless the row is reasoning = false.
+func TestReplaysAssistantThinkingChatDefaultOnAndDisabledRow(t *testing.T) {
+	t.Parallel()
+	off, asText := false, true
+	chat := registry.Resolved{Protocol: registry.ProtocolOpenAIChat}
+	chatOff := registry.Resolved{Protocol: registry.ProtocolOpenAIChat, Caps: registry.Caps{Reasoning: &off}}
+	if !ReplaysAssistantThinking(chat) || ReplaysAssistantThinking(chatOff) ||
+		!ReplaysAssistantThinking(registry.Resolved{Protocol: registry.ProtocolOpenAIChat, Caps: registry.Caps{Reasoning: &off, ThinkingAsText: &asText}}) ||
+		!ReplaysAssistantThinking(registry.Resolved{Protocol: registry.ProtocolOpenAIResponses, Caps: registry.Caps{Reasoning: &off}}) {
+		t.Fatalf("chat replay policy is not default-on with reasoning = false as the only chat suppression")
+	}
+	const text = 400
+	req := thinkingOnlyRequest("gw", "chat-row", strings.Repeat("t", text))
+	if got, want := EstimateInputTokensForResolved(chat, req).Tokens, text/4; got != want {
+		t.Errorf("default chat estimate = %d, want %d: a reasoning-capable chat row replays the reasoning", got, want)
+	}
+	if got := EstimateInputTokensForResolved(chatOff, req).Tokens; got != 0 {
+		t.Errorf("reasoning=false chat estimate = %d, want 0: the row drops the part", got)
 	}
 }
 

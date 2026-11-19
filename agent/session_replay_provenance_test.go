@@ -8,9 +8,13 @@ package agent
 // touched.
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
@@ -75,6 +79,29 @@ var replayProtocolOf = protocolResolver(map[string]string{
 	"openai":      registry.ProtocolOpenAIResponses,
 	"work":        registry.ProtocolOpenAIChat,
 })
+
+// TestChatSessionReplaysFullReasoningAcrossToolRounds: round one's chat reasoning rides its continuation.
+func TestChatSessionReplaysFullReasoningAcrossToolRounds(t *testing.T) {
+	t.Parallel()
+	const thought, sig = "round one chain of thought", "sig-chat"
+	check := func(t *testing.T, want, on bool) {
+		round := agenttest.ToolCallResponse(llm.ToolCallData{ID: "call_unknown", Name: "no_such_tool", Arguments: []byte(`{}`)})
+		round.Message.Content = append([]llm.ContentPart{{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: thought, Signature: sig}}}, round.Message.Content...)
+		adapter := newFakeAdapter("gw", func(llm.Request) llm.Response { return round }, func(llm.Request) llm.Response { return agenttest.FinalResponse("done") })
+		profile := provider.FromResolved(registry.Resolved{Instance: "gw", ModelID: "chat-row", WireID: "chat-row", Protocol: registry.ProtocolOpenAIChat, Surface: registry.SurfaceGeneric, Caps: registry.Caps{Reasoning: new(on)}}, nil)
+		sess := newSession(t, withProfile(profile), withAdapter(adapter))
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: only a genuine hang.
+		defer cancel()
+		_, err := sess.ProcessInput(ctx, "go", nil)
+		if reqs := adapter.Requests(); err != nil || len(reqs) < 2 {
+			t.Fatalf("chat requests = %d, want the tool round and its continuation", len(reqs))
+		} else if got := hasSignedThinking(reqs[1].Messages, thought, sig); got != want {
+			t.Fatalf("continuation replayed reasoning = %v, want %v", got, want)
+		}
+	}
+	t.Run("on", func(t *testing.T) { t.Parallel(); check(t, true, true) })
+	t.Run("off", func(t *testing.T) { t.Parallel(); check(t, false, false) })
+}
 
 // --- the session-side lookups the scope is wired to ---
 

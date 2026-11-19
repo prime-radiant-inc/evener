@@ -960,10 +960,8 @@ func RowSeesToolResultMedia(res registry.Resolved, mediaType string) bool {
 //
 //   - the Anthropic Messages adapter emits the block it is given as
 //     {"type":"thinking","thinking":text} (anthropic/request.go);
-//   - the OpenAI-compatible chat adapter merges the text into assistant
-//     content when the row sets ThinkingAsText (chatcompletions/messages.go);
-//     Evener's request assembly strips the text for every other chat target
-//     (#4563), so that is the only chat shape this estimate bills;
+//   - the OpenAI-compatible chat adapter replays it on the reasoning field, or
+//     merges it into content for thinking_as_text (chatcompletions/messages.go);
 //   - the OpenAI Responses adapter re-sends a reasoning item only when it
 //     carries encrypted_content and keeps raw reasoning_text for display only
 //     (gateway-fronted GLM), and Google drops the part; neither replays this
@@ -979,12 +977,8 @@ func unsignedThinkingReplayed(res registry.Resolved, provider, model string) boo
 	case registry.ProtocolAnthropic:
 		return true
 	case registry.ProtocolOpenAIChat:
-		// The adapter replays the text for a reasoning-enabled row, and merges
-		// it into assistant content for a thinking_as_text row. A request-level
-		// estimate must bill what the builder serializes; the reduced
-		// compaction estimate applies the assembly's replay policy separately
-		// (TrimThinkingForReplay, #4563).
-		return registry.BoolValue(res.Caps.ThinkingAsText) || !res.Caps.ReasoningDisabled()
+		// One replay policy with request assembly: bill what the builder sends.
+		return ReplaysAssistantThinking(res)
 	case "":
 		return unsignedThinkingReplayedByName(provider, model)
 	default:
@@ -994,16 +988,14 @@ func unsignedThinkingReplayed(res registry.Resolved, provider, model string) boo
 
 // ReplaysAssistantThinking reports whether the resolved row's adapter sends
 // assistant thinking back as model-visible request content. An openai-chat
-// target does not: reasoning_content is display output, not continuation
-// state, so Evener's request assembly drops it (#4563), with the deliberate
-// exception of a row that declares thinking_as_text — the adapter merges that
-// form into assistant content. Anthropic, Google and OpenAI Responses do
-// replay their thinking, under the session's per-turn provenance rules.
+// target replays its full history unless the row declares reasoning = false;
+// a thinking_as_text row merges it into assistant content instead. Anthropic,
+// Google and OpenAI Responses replay theirs under provenance rules.
 func ReplaysAssistantThinking(res registry.Resolved) bool {
 	if res.Protocol != registry.ProtocolOpenAIChat {
 		return true
 	}
-	return registry.BoolValue(res.Caps.ThinkingAsText)
+	return !res.Caps.ReasoningDisabled() || registry.BoolValue(res.Caps.ThinkingAsText)
 }
 
 // unsignedThinkingReplayedByName is the fallback for callers with no resolved
