@@ -691,6 +691,29 @@ A selector below the current storage floor returns structured
 changed output generation remains an ordinary read failure. The owning live or
 remote source stays authoritative; only the existing dead-local condition
 permits the hub's saved-output fallback.
+
+The saved-job fallbacks behind that condition (`LoadSessionJobGet` and
+`LoadSessionJobOutputPage`) read durable history owner-authoritatively, by the
+same rule the live descendant walk applies: the record from the job's own
+owner's journal wins, and a forwarded copy — the owner's events as an ancestor
+stored them — is fallback evidence, returned only when no authoritative record
+is available. Authority comes from the owner the job ID encodes
+(`identifier.JobOwnerSessionID`), never from a row's `OwnerSessionID` claim: a
+forwarded copy carries the owner's own claim and is indistinguishable from the
+original by its fields, so only the journal the bytes were read from separates
+them. A row whose claim contradicts the identifier is not authoritative at all.
+
+Authority alone does not decide a read, because a record can be the owner's and
+still not establish the job's state. One rule covers both: **a record that is
+not fully established must not outrank one that is.** A terminal observation is
+complete on its own. A nonterminal row is established only when its own status
+is — a journal that ends in a torn append, stops at a corrupt line, or folds a
+row from a notification alone leaves the finish unaccounted for, so it may not
+displace a settled terminal record from another journal. Launch fields the
+owner left empty (command, type, start time, description, working directory,
+background, explicit output path) fill from the same job's scoped record, and a
+scoped start whose owner claim the identifier contradicts supplies none of them.
+
 The returned end equals `totalBytes` at the current EOF; an empty floor page
 is EOF only when the floor also equals the total. EOF describes that snapshot,
 so a running job can append after an empty read.

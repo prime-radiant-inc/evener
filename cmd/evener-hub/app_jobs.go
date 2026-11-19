@@ -9,6 +9,22 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
+// savedJobOwnerFence adapts the hub's deletion store to the retained-job
+// reader's owner fence. A past-job read resolves the session a job ID encodes
+// and opens that session's journal and log, which may be a session the hub is
+// already deleting — the store knows that before any tombstone lands, and it
+// is the only surface that does. Without a store there is nothing to consult,
+// and a nil fence keeps the reader's on-disk check as the only one.
+func savedJobOwnerFence(store *hubcore.DeletionStore) agent.OwnerDeletionFence {
+	if store == nil {
+		return nil
+	}
+	return func(sessionID string) bool {
+		_, fenced := deletionTargetState(store, "", sessionID)
+		return fenced
+	}
+}
+
 // hubJobsList answers evener/jobs/list. A running daemon's recursive activity
 // tree is authoritative, so it is always tried first; only the specific
 // dead-session condition (isDeadSessionError, app_tasks.go) falls back to the
@@ -105,7 +121,7 @@ func hubJobsOutput(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 			return source.JobOutput(ctx, params)
 		},
 		func(stateDir, sessionID, jobID string) (appwire.JobsOutputResponse, bool, error) {
-			tail, found, err := agent.LoadSessionJobOutputPage(stateDir, sessionID, jobID, params.BeforeBytes, params.MaxBytes)
+			tail, found, err := agent.LoadSessionJobOutputPageWithFence(stateDir, sessionID, jobID, params.BeforeBytes, params.MaxBytes, savedJobOwnerFence(cfg.DeletionStore))
 			return appwire.JobsOutputResponse{Data: tail}, found, err
 		})
 }
@@ -117,7 +133,7 @@ func hubJobsGet(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.R
 			return source.JobGet(ctx, params)
 		},
 		func(stateDir, sessionID, jobID string) (appwire.JobsGetResponse, bool, error) {
-			job, found, err := agent.LoadSessionJobGet(stateDir, sessionID, jobID)
+			job, found, err := agent.LoadSessionJobGetWithFence(stateDir, sessionID, jobID, savedJobOwnerFence(cfg.DeletionStore))
 			return appwire.JobsGetResponse{Data: job}, found, err
 		})
 }
