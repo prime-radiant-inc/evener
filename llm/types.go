@@ -472,13 +472,14 @@ func isEmptyObjectSchema(schema map[string]any) bool {
 }
 
 // WithNoParametersDeclared returns t marked as declaring no parameter schema,
-// with the open empty schema filled in the way preparation fills it. It is what
-// prepareTools produces for a tool the caller declared with nil Parameters, so
-// a caller outside this package can build the same definition to test an
-// adapter against.
+// filling nil Parameters with defaultToolParameters so local validation and
+// open-schema wire pricing see the empty object schema while strict-capable
+// adapters can still distinguish a parameterless declaration from an explicit
+// open schema. prepareTools applies this to every tool declared with nil
+// Parameters.
 func (t ToolDefinition) WithNoParametersDeclared() ToolDefinition {
 	if t.Parameters == nil {
-		t.Parameters = map[string]any{"type": "object", "properties": map[string]any{}}
+		t.Parameters = defaultToolParameters()
 	}
 	t.declaredNoParameters = true
 	return t

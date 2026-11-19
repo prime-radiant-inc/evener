@@ -114,6 +114,77 @@ func ToolsJSONBytes(defs []ToolDefinition) int {
 	return len(b)
 }
 
+// closedEmptyToolParameters is the closed empty object schema emitted by
+// strict-capable built-in OpenAI adapters for a parameterless tool that has not
+// opted out of strict mode.
+func closedEmptyToolParameters() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties":           map[string]any{},
+		"required":             []string{},
+	}
+}
+
+// protocolClosesStrictParameterlessTools reports whether the built-in adapter
+// for res emits closedEmptyToolParameters for non-opted-out parameterless tools.
+func protocolClosesStrictParameterlessTools(res registry.Resolved) bool {
+	if !registry.BoolValue(res.Caps.StrictTools) {
+		return false
+	}
+	switch res.Protocol {
+	case registry.ProtocolOpenAIResponses, registry.ProtocolOpenAIChat:
+		return true
+	default:
+		return false
+	}
+}
+
+// toolsJSONBytesForResolved returns the serialized byte length of defs as the
+// resolved adapter will emit them. Overrides, non-strict routes, non-OpenAI
+// protocols, and opted-out tools preserve open-schema pricing.
+func toolsJSONBytesForResolved(defs []ToolDefinition, res registry.Resolved, override bool) int {
+	if len(defs) == 0 || override || !protocolClosesStrictParameterlessTools(res) {
+		return ToolsJSONBytes(defs)
+	}
+	var adjusted []ToolDefinition
+	for i := range defs {
+		d := defs[i]
+		if (d.DeclaresNoParameters() || d.Parameters == nil) && (d.Strict == nil || *d.Strict) {
+			if adjusted == nil {
+				adjusted = make([]ToolDefinition, len(defs))
+				copy(adjusted, defs)
+			}
+			adjusted[i].Parameters = closedEmptyToolParameters()
+		}
+	}
+	if adjusted == nil {
+		return ToolsJSONBytes(defs)
+	}
+	return ToolsJSONBytes(adjusted)
+}
+
+// toolCatalogJSONBytes measures defs as the target resolved by client will emit
+// them, falling back to ToolsJSONBytes when an override owns the provider or
+// resolution does not succeed yet.
+func toolCatalogJSONBytes(client *Client, provider, model string, defs []ToolDefinition) int {
+	if len(defs) == 0 {
+		return 0
+	}
+	name := normalizeProviderName(provider)
+	if name == "" {
+		name = client.DefaultProvider()
+	}
+	if name == "" || client.isOverride(name) {
+		return ToolsJSONBytes(defs)
+	}
+	res, err := client.Resolve(name + "/" + model)
+	if err != nil {
+		return ToolsJSONBytes(defs)
+	}
+	return toolsJSONBytesForResolved(defs, res, false)
+}
+
 // EstimateMessagesInputTokens estimates only a message list. It is useful for
 // history-only accounting that does not yet have a full Request. Its
 // unsigned-thinking rule is the name fallback, since a bare message list
@@ -985,6 +1056,9 @@ func localInputEstimate(req Request, callerProvider string, t dispatchTarget) In
 	}
 	estimateReq := req
 	estimateReq.Provider = callerProvider
+	if estimateReq.ToolsJSONBytes <= 0 && len(estimateReq.Tools) > 0 {
+		estimateReq.ToolsJSONBytes = toolsJSONBytesForResolved(estimateReq.Tools, t.res, t.override != nil)
+	}
 	return EstimateInputTokensForResolved(t.res, estimateReq)
 }
 

@@ -343,7 +343,7 @@ func (c *Client) Complete(ctx context.Context, req Request) (Response, error) {
 	base := func(ctx context.Context, req Request) (Response, error) {
 		if t.resolved {
 			var err error
-			req, err = shapeAndApplyTokenBudget(req, t.res)
+			req, err = shapeAndApplyTokenBudget(req, t.res, t.override != nil)
 			if err != nil {
 				return Response{}, err
 			}
@@ -385,7 +385,7 @@ func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 	base := func(ctx context.Context, req Request) (Stream, error) {
 		if t.resolved {
 			var err error
-			req, err = shapeAndApplyTokenBudget(req, t.res)
+			req, err = shapeAndApplyTokenBudget(req, t.res, t.override != nil)
 			if err != nil {
 				return nil, err
 			}
@@ -418,10 +418,18 @@ func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 	return newProviderStampStream(st, t.name), nil
 }
 
-func shapeAndApplyTokenBudget(req Request, res registry.Resolved) (Request, error) {
+func shapeAndApplyTokenBudget(req Request, res registry.Resolved, override bool) (Request, error) {
 	req = ShapeRequest(req, res)
-	budgeted, _, err := ApplyTokenBudget(req, res)
-	return budgeted, err
+	budgetReq := req
+	if budgetReq.ToolsJSONBytes <= 0 && len(budgetReq.Tools) > 0 {
+		budgetReq.ToolsJSONBytes = toolsJSONBytesForResolved(budgetReq.Tools, res, override)
+	}
+	budgeted, _, err := ApplyTokenBudget(budgetReq, res)
+	if err != nil {
+		return req, err
+	}
+	budgeted.ToolsJSONBytes = req.ToolsJSONBytes
+	return budgeted, nil
 }
 
 // ModelListing is what Models returns: the instance's visible live-authoritative

@@ -3114,33 +3114,239 @@ func TestConstPointerAndStringAdmitTheSameArgument(t *testing.T) {
 // certify makes the fix cost more than the bug.
 func TestNestedAnyOfOfTypedScalarBranchesIsCertified(t *testing.T) {
 	t.Parallel()
-	schema := map[string]any{
-		"type":                 "object",
-		"additionalProperties": false,
-		"properties": map[string]any{
-			"mode": map[string]any{
-				"anyOf": []any{
-					map[string]any{"enum": []any{"fast", "safe"}},
-					map[string]any{"enum": []any{"careful"}},
+	t.Run("string enum branches emit enclosing type", func(t *testing.T) {
+		t.Parallel()
+		schema := map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"mode": map[string]any{
+					"anyOf": []any{
+						map[string]any{"enum": []any{"fast", "safe"}},
+						map[string]any{"enum": []any{"careful"}},
+					},
 				},
 			},
-		},
-		"required": []string{"mode"},
-	}
-	if !StrictExpressible(schema) {
-		t.Fatal("a union of typed string-enum branches was refused: its accepted set survives the projection")
-	}
-	projected := StrictifyJSONSchema(schema)
-	// The accepted set is unchanged: a member of either branch still validates,
-	// and a value neither branch lists does not.
-	for _, accepted := range []string{"fast", "safe", "careful"} {
-		if !schemaAccepts(t, projected, map[string]any{"mode": accepted}) {
-			t.Fatalf("the projected schema rejects %q, a member its branches accept", accepted)
+			"required": []string{"mode"},
 		}
-	}
-	if schemaAccepts(t, projected, map[string]any{"mode": "reckless"}) {
-		t.Fatal("the projected schema accepts a value neither branch lists")
-	}
+		if !StrictExpressible(schema) {
+			t.Fatal("a union of typed string-enum branches was refused: its accepted set survives the projection")
+		}
+		projected := StrictifyJSONSchema(schema)
+		projectedMode := projected["properties"].(map[string]any)["mode"].(map[string]any)
+		if projectedMode["type"] != "string" {
+			t.Fatalf("projected enclosing mode.type = %#v, want \"string\": every branch guarantees string", projectedMode["type"])
+		}
+		nonStrict := SupplyDerivedTypes(schema)
+		nonStrictMode := nonStrict["properties"].(map[string]any)["mode"].(map[string]any)
+		if nonStrictMode["type"] != "string" {
+			t.Fatalf("non-strict enclosing mode.type = %#v, want \"string\": every branch guarantees string", nonStrictMode["type"])
+		}
+		// The accepted set is unchanged: a member of either branch still validates,
+		// and a value neither branch lists does not.
+		for _, accepted := range []string{"fast", "safe", "careful"} {
+			if !schemaAccepts(t, projected, map[string]any{"mode": accepted}) {
+				t.Fatalf("the projected schema rejects %q, a member its branches accept", accepted)
+			}
+			if !schemaAccepts(t, nonStrict, map[string]any{"mode": accepted}) {
+				t.Fatalf("the non-strict schema rejects %q, a member its branches accept", accepted)
+			}
+		}
+		if schemaAccepts(t, projected, map[string]any{"mode": "reckless"}) {
+			t.Fatal("the projected schema accepts a value neither branch lists")
+		}
+	})
+
+	t.Run("enclosing scalar type across union variants", func(t *testing.T) {
+		t.Parallel()
+		cases := []struct {
+			name     string
+			schema   map[string]any
+			wantType any // nil means type must stay absent
+			accepts  []map[string]any
+			rejects  []map[string]any
+		}{
+			{
+				name: "oneOf of string enum and const",
+				schema: map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"mode": map[string]any{
+							"oneOf": []any{
+								map[string]any{"enum": []any{"fast", "safe"}},
+								map[string]any{"const": "careful"},
+							},
+						},
+					},
+					"required": []string{"mode"},
+				},
+				wantType: "string",
+				accepts:  []map[string]any{{"mode": "fast"}, {"mode": "careful"}},
+				rejects:  []map[string]any{{"mode": "other"}, {"mode": 1}},
+			},
+			{
+				name: "nested anyOf of string branches",
+				schema: map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"mode": map[string]any{
+							"anyOf": []any{
+								map[string]any{
+									"anyOf": []any{
+										map[string]any{"const": "a"},
+										map[string]any{"enum": []any{"b"}},
+									},
+								},
+								map[string]any{"type": "string", "minLength": 2},
+							},
+						},
+					},
+					"required": []string{"mode"},
+				},
+				wantType: "string",
+				accepts:  []map[string]any{{"mode": "a"}, {"mode": "b"}, {"mode": "long"}},
+				rejects:  []map[string]any{{"mode": "x"}, {"mode": 1}},
+			},
+			{
+				name: "integer and number widen to number",
+				schema: map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"mode": map[string]any{
+							"anyOf": []any{
+								map[string]any{"type": "integer", "minimum": 10},
+								map[string]any{"enum": []any{0.5, 1.5}},
+							},
+						},
+					},
+					"required": []string{"mode"},
+				},
+				wantType: "number",
+				accepts:  []map[string]any{{"mode": 10}, {"mode": 0.5}},
+				rejects:  []map[string]any{{"mode": "10"}},
+			},
+			{
+				name: "mixed scalar types stay typeless",
+				schema: map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"mode": map[string]any{
+							"anyOf": []any{
+								map[string]any{"enum": []any{"fast"}},
+								map[string]any{"type": "null"},
+							},
+						},
+					},
+					"required": []string{"mode"},
+				},
+				wantType: nil,
+				accepts:  []map[string]any{{"mode": "fast"}, {"mode": nil}},
+				rejects:  []map[string]any{{"mode": 1}},
+			},
+			{
+				name: "all-array branches stay typeless on enclosing node",
+				schema: map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"mode": map[string]any{
+							"anyOf": []any{
+								map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+								map[string]any{"type": "array", "items": map[string]any{"type": "integer"}},
+							},
+						},
+					},
+					"required": []string{"mode"},
+				},
+				wantType: nil,
+				accepts:  []map[string]any{{"mode": []any{"a"}}, {"mode": []any{1}}},
+				rejects:  []map[string]any{{"mode": "a"}},
+			},
+			{
+				name: "draft-04 const branch prevents enclosing type",
+				schema: map[string]any{
+					"$schema":              "http://json-schema.org/draft-04/schema#",
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"mode": map[string]any{
+							"anyOf": []any{
+								map[string]any{"enum": []any{"fast"}},
+								map[string]any{"const": "safe"},
+							},
+						},
+					},
+					"required": []string{"mode"},
+				},
+				wantType: nil,
+			},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				emitted := SupplyDerivedTypes(tc.schema)
+				mode := emitted["properties"].(map[string]any)["mode"].(map[string]any)
+				gotType, hasType := mode["type"]
+				if tc.wantType == nil {
+					if hasType {
+						t.Fatalf("enclosing type = %#v, want absent", gotType)
+					}
+				} else if gotType != tc.wantType {
+					t.Fatalf("enclosing type = %#v, want %#v", gotType, tc.wantType)
+				}
+				for _, a := range tc.accepts {
+					if !schemaAccepts(t, emitted, a) {
+						t.Fatalf("emitted schema rejected %#v", a)
+					}
+				}
+				for _, r := range tc.rejects {
+					if schemaAccepts(t, emitted, r) {
+						t.Fatalf("emitted schema accepted %#v", r)
+					}
+				}
+			})
+		}
+	})
+
+	t.Run("nested anyOf with typed array alternative is certified", func(t *testing.T) {
+		t.Parallel()
+		unionWithArray := map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"targets": map[string]any{
+					"anyOf": []any{
+						map[string]any{"type": "string"},
+						map[string]any{
+							"type":  "array",
+							"items": map[string]any{"type": "string"},
+						},
+					},
+				},
+			},
+			"required": []string{"targets"},
+		}
+		if !StrictExpressible(unionWithArray) {
+			t.Fatal("nested anyOf with a fully typed array alternative was refused: projection preserves every branch")
+		}
+		projectedUnion := StrictifyJSONSchema(unionWithArray)
+		if !schemaAccepts(t, projectedUnion, map[string]any{"targets": "main"}) {
+			t.Fatal("projected schema rejected scalar branch")
+		}
+		if !schemaAccepts(t, projectedUnion, map[string]any{"targets": []any{"main", "backup"}}) {
+			t.Fatal("projected schema rejected array branch")
+		}
+		if schemaAccepts(t, projectedUnion, map[string]any{"targets": []any{1, 2}}) {
+			t.Fatal("projected schema accepted non-string array elements")
+		}
+		if schemaAccepts(t, projectedUnion, map[string]any{"targets": 123}) {
+			t.Fatal("projected schema accepted integer outside both branches")
+		}
+	})
 }
 
 // The other direction: a union whose branch the projection would narrow must
@@ -3180,6 +3386,20 @@ func TestNestedAnyOfWithAnObjectBranchIsStillRefused(t *testing.T) {
 				map[string]any{
 					"properties": map[string]any{"id": map[string]any{"type": "string"}},
 					"required":   []string{"id"},
+				},
+			},
+		},
+		"object and array type list branch": {
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"id": map[string]any{"type": "string"},
+			},
+			"required": []string{"id"},
+			"anyOf": []any{
+				map[string]any{
+					"type":  []string{"object", "array"},
+					"items": map[string]any{"type": "string"},
 				},
 			},
 		},

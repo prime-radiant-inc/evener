@@ -245,11 +245,9 @@ func supplyDerivedTypes(m map[string]any, dialect schemaDialect) {
 	if _, has := m["$schema"]; has {
 		dialect = dialectOf(m)
 	}
-	if _, has := m["type"]; !has {
-		if name, ok := derivedScalarType(m, dialect); ok {
-			m["type"] = name
-		}
-	}
+	// Descend into subschemas first so each branch of a union has its own
+	// derived scalar type before the enclosing union checks whether every
+	// alternative guarantees the same scalar type.
 	for _, keyword := range singleSubschemaKeywords {
 		if sub, ok := m[keyword].(map[string]any); ok {
 			supplyDerivedTypes(sub, dialect)
@@ -277,6 +275,120 @@ func supplyDerivedTypes(m map[string]any, dialect schemaDialect) {
 			}
 		}
 	}
+	if _, has := m["type"]; !has {
+		if name, ok := derivedScalarType(m, dialect); ok {
+			m["type"] = name
+		} else if name, ok := derivedUnionScalarType(m); ok {
+			m["type"] = name
+		}
+	}
+}
+
+// derivedUnionScalarType returns the single scalar JSON type guaranteed by
+// every alternative of a node's anyOf or oneOf combinator after each branch has
+// already received its own derived type. Container types ("object", "array")
+// are intentionally excluded because stating them on an enclosing union without
+// properties or items violates strict schema dialects.
+func derivedUnionScalarType(m map[string]any) (string, bool) {
+	for _, keyword := range []string{"anyOf", "oneOf"} {
+		if name, ok := alternativesScalarType(m[keyword]); ok {
+			return name, true
+		}
+	}
+	return "", false
+}
+
+func alternativesScalarType(raw any) (string, bool) {
+	arr, ok := raw.([]any)
+	if !ok || len(arr) == 0 {
+		return "", false
+	}
+	common := ""
+	for _, item := range arr {
+		branch, ok := item.(map[string]any)
+		if !ok {
+			return "", false
+		}
+		typ, ok := explicitScalarType(branch["type"])
+		if !ok {
+			return "", false
+		}
+		if common == "" {
+			common = typ
+			continue
+		}
+		merged, ok := commonScalarType(common, typ)
+		if !ok {
+			return "", false
+		}
+		common = merged
+	}
+	return common, common != ""
+}
+
+func explicitScalarType(raw any) (string, bool) {
+	switch t := raw.(type) {
+	case string:
+		if isScalarJSONType(t) {
+			return t, true
+		}
+		return "", false
+	case []string:
+		return commonScalarTypeList(t)
+	case []any:
+		names := make([]string, len(t))
+		for i, item := range t {
+			name, ok := item.(string)
+			if !ok {
+				return "", false
+			}
+			names[i] = name
+		}
+		return commonScalarTypeList(names)
+	default:
+		return "", false
+	}
+}
+
+func commonScalarTypeList(names []string) (string, bool) {
+	if len(names) == 0 {
+		return "", false
+	}
+	common := ""
+	for _, name := range names {
+		if !isScalarJSONType(name) {
+			return "", false
+		}
+		if common == "" {
+			common = name
+			continue
+		}
+		merged, ok := commonScalarType(common, name)
+		if !ok {
+			return "", false
+		}
+		common = merged
+	}
+	return common, common != ""
+}
+
+func isScalarJSONType(name string) bool {
+	switch name {
+	case "string", "number", "integer", "boolean", "null":
+		return true
+	default:
+		return false
+	}
+}
+
+func commonScalarType(a, b string) (string, bool) {
+	if a == b {
+		return a, true
+	}
+	if (a == "integer" && b == "number") || (a == "number" && b == "integer") {
+		return "number", true
+	}
+	return "", false
 }
 
 // StrictExpressible reports whether schema can be projected into OpenAI
@@ -437,7 +549,7 @@ func strictlyExpressibleNode(m map[string]any, visited bool, dialect schemaDiale
 		// rewrite visits them from any node, but it only transforms the ones
 		// whose own type it matches, and a branch that is not transformed has to
 		// be strict-valid on its own terms.
-		if !anyOfExpressible(m, visited, dialect) {
+		if !anyOfExpressible(m, dialect) {
 			return false
 		}
 	}
@@ -1189,7 +1301,7 @@ func keywordsModeled(m map[string]any) bool {
 // schema it advertised. A oneOf or allOf stays refused for the same reason the
 // keyword table gives: their meaning depends on how many branches match, and the
 // projection neither reads nor rewrites that.
-func anyOfExpressible(m map[string]any, visited bool, dialect schemaDialect) bool {
+func anyOfExpressible(m map[string]any, dialect schemaDialect) bool {
 	for keyword := range m {
 		if modeledKeywords[keyword] != notCovered || keyword == "anyOf" {
 			continue
@@ -1209,7 +1321,7 @@ func anyOfExpressible(m map[string]any, visited bool, dialect schemaDialect) boo
 		// an object node can usefully carry: a branch written as
 		// {"properties": {...}, "required": [...]} with no type is closed by the
 		// rewrite exactly as a typed one is.
-		if _, isObject := schemaTypeFlags(branch["type"]); isObject {
+		if isObject, _ := schemaTypeFlags(branch["type"]); isObject {
 			return false
 		}
 		if _, hasProps := branch["properties"]; hasProps {

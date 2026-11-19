@@ -219,11 +219,11 @@ func prepareGeneration(opts GenerateOptions) (*generationState, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Measured here, beside the one place the list is built, rather than by
-	// every estimate: the list is immutable for the generation's life, and one
-	// marshal of an advertised catalog costs far more than the history walk the
-	// estimate is for (#6437).
-	toolDefsJSONBytes := ToolsJSONBytes(toolDefs)
+	// Measured once here beside tool preparation so per-dispatch estimates never
+	// re-marshal the catalog, while accounting for the closed empty schema that
+	// strict-capable built-in OpenAI adapters emit for eligible parameterless
+	// tools.
+	toolDefsJSONBytes := toolCatalogJSONBytes(client, opts.Provider, opts.Model, toolDefs)
 	hasActiveTool := false
 	for _, t := range opts.Tools {
 		if t.Execute != nil {
@@ -406,8 +406,7 @@ func prepareTools(tools []Tool) (map[string]Tool, []ToolDefinition, error) {
 		// measured from this catalog, so a nil here would have the budget admit a
 		// request the wire is larger than.
 		if t.Definition.Parameters == nil {
-			t.Definition.Parameters = defaultToolParameters()
-			t.Definition.declaredNoParameters = true
+			t.Definition = t.Definition.WithNoParametersDeclared()
 		}
 		if err := validateToolParameters(t.Definition.Parameters); err != nil {
 			return nil, nil, err

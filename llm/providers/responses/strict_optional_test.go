@@ -1,8 +1,16 @@
 package responses
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"testing"
+
+	"github.com/santhosh-tekuri/jsonschema/v5"
 
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
@@ -699,5 +707,304 @@ func TestAReplacedSchemaIsNotDiscardedForTheNoParametersFallback(t *testing.T) {
 	}
 	if props, ok := untouchedParams["properties"].(map[string]any); !ok || len(props) != 0 {
 		t.Fatalf("properties = %#v, want an empty object", untouchedParams["properties"])
+	}
+}
+
+func compileWireSchema(t *testing.T, schema map[string]any) *jsonschema.Schema {
+	t.Helper()
+	encoded, err := json.Marshal(schema)
+	if err != nil {
+		t.Fatalf("marshal schema: %v", err)
+	}
+	compiler := jsonschema.NewCompiler()
+	compiler.Draft = jsonschema.Draft2020
+	const uri = "urn:evener:codex-wire-schema"
+	if err := compiler.AddResource(uri, bytes.NewReader(encoded)); err != nil {
+		t.Fatalf("add resource: %v", err)
+	}
+	compiled, err := compiler.Compile(uri)
+	if err != nil {
+		t.Fatalf("compile schema %s: %v", encoded, err)
+	}
+	return compiled
+}
+
+// Codex Responses Lite checks that every schema node declares an explicit type
+// in both strict and non-strict tools. When every branch of a typeless union
+// guarantees the same scalar type, the enclosing argument node must state that
+// type too while accepting every value from every original branch.
+func TestCodexResponsesLiteUnionEmitsEnclosingScalarType(t *testing.T) {
+	t.Parallel()
+	codexCaps := func(c *registry.Caps) {
+		c.StrictTools = new(true)
+		c.ResponsesLite = new(true)
+	}
+	cases := []struct {
+		name       string
+		params     map[string]any
+		wantStrict bool
+		accepts    []map[string]any
+		rejects    []map[string]any
+	}{
+		{
+			name: "strict anyOf of string enums",
+			params: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"mode": map[string]any{
+						"anyOf": []any{
+							map[string]any{"enum": []any{"fast", "safe"}},
+							map[string]any{"enum": []any{"careful"}},
+						},
+					},
+				},
+				"required": []string{"mode"},
+			},
+			wantStrict: true,
+			accepts: []map[string]any{
+				{"mode": "fast"},
+				{"mode": "safe"},
+				{"mode": "careful"},
+			},
+			rejects: []map[string]any{
+				{"mode": "reckless"},
+				{"mode": 42},
+			},
+		},
+		{
+			name: "non-strict anyOf alongside optional property",
+			params: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"mode": map[string]any{
+						"anyOf": []any{
+							map[string]any{"enum": []any{"fast", "safe"}},
+							map[string]any{"const": "careful"},
+						},
+					},
+					"note": map[string]any{"type": "string"},
+				},
+				"required": []string{"mode"},
+			},
+			wantStrict: false,
+			accepts: []map[string]any{
+				{"mode": "fast"},
+				{"mode": "safe"},
+				{"mode": "careful"},
+				{"mode": "careful", "note": "ok"},
+			},
+			rejects: []map[string]any{
+				{"mode": "reckless"},
+				{"mode": true},
+			},
+		},
+		{
+			name: "non-strict oneOf of string branches",
+			params: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"mode": map[string]any{
+						"oneOf": []any{
+							map[string]any{"enum": []any{"fast", "safe"}},
+							map[string]any{"const": "careful"},
+						},
+					},
+				},
+				"required": []string{"mode"},
+			},
+			wantStrict: false,
+			accepts: []map[string]any{
+				{"mode": "fast"},
+				{"mode": "safe"},
+				{"mode": "careful"},
+			},
+			rejects: []map[string]any{
+				{"mode": "reckless"},
+				{"mode": 7},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			req := userReq("hi")
+			req.Tools = []llm.ToolDefinition{{Name: "set_mode", Parameters: tc.params}}
+			body := build(t, req, resolved(codexCaps))
+			input, ok := body["input"].([]any)
+			if !ok || len(input) == 0 {
+				t.Fatalf("codex lite input missing: %#v", body["input"])
+			}
+			additional, ok := input[0].(map[string]any)
+			if !ok || additional["type"] != "additional_tools" {
+				t.Fatalf("input[0] = %#v, want additional_tools item", input[0])
+			}
+			wireTools := additional["tools"].([]any)
+			tool := wireTools[0].(map[string]any)
+			if tool["strict"] != tc.wantStrict {
+				t.Fatalf("strict = %#v, want %v", tool["strict"], tc.wantStrict)
+			}
+			params := tool["parameters"].(map[string]any)
+			mode := params["properties"].(map[string]any)["mode"].(map[string]any)
+			if mode["type"] != "string" {
+				t.Fatalf("enclosing mode.type = %#v, want \"string\": Codex Responses Lite requires an explicit type on the enclosing union node", mode["type"])
+			}
+			compiled := compileWireSchema(t, params)
+			for _, valid := range tc.accepts {
+				if err := compiled.Validate(valid); err != nil {
+					t.Fatalf("codex wire schema rejected %#v: %v", valid, err)
+				}
+			}
+			for _, invalid := range tc.rejects {
+				if err := compiled.Validate(invalid); err == nil {
+					t.Fatalf("codex wire schema accepted invalid input %#v", invalid)
+				}
+			}
+		})
+	}
+}
+
+// Generate's admission budget must agree with the schema the Responses adapter
+// actually emits for a parameterless tool: closed on a strict-capable route,
+// open when strict is disabled or the tool opts out.
+func TestGenerateParameterlessBudgetMatchesEmittedSchema(t *testing.T) {
+	t.Parallel()
+	strictOff := false
+	cases := []struct {
+		name        string
+		strictTools *bool
+		toolStrict  *bool
+		wantClosed  bool
+	}{
+		{name: "strict built-in responses emits closed schema", strictTools: new(true), wantClosed: true},
+		{name: "opted-out tool keeps open schema", strictTools: new(true), toolStrict: &strictOff, wantClosed: false},
+		{name: "non-strict responses route keeps open schema", strictTools: new(false), wantClosed: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var hitServer bool
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				hitServer = true
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(responseJSON))
+			}))
+			defer srv.Close()
+
+			// Probe the adapter's actual emitted schema as the reference.
+			probeDef := llm.ToolDefinition{Name: "current_time", Strict: tc.toolStrict}.WithNoParametersDeclared()
+			probeReq := userReq("hello")
+			probeReq.Tools = []llm.ToolDefinition{probeDef}
+			probeBody := build(t, probeReq, resolved(func(c *registry.Caps) { c.StrictTools = tc.strictTools }))
+			emittedParams := probeBody["tools"].([]map[string]any)[0]["parameters"].(map[string]any)
+			_, hasClosed := emittedParams["additionalProperties"]
+			if hasClosed != tc.wantClosed {
+				t.Fatalf("emitted additionalProperties present = %v, want %v: %#v", hasClosed, tc.wantClosed, emittedParams)
+			}
+
+			const instance = "budget-responses"
+			const model = "gpt-budget-probe"
+			loadClient := func(maxInput *int) *llm.Client {
+				r, err := registry.Load(
+					registry.WithOffline(true),
+					registry.WithoutCache(),
+					registry.WithNoUserLayer(),
+					registry.WithStateRoot(t.TempDir()),
+					registry.WithEnv(func(string) (string, bool) { return "", false }),
+					registry.WithInstances(map[string]registry.Provider{
+						instance: {
+							Base:      "openai",
+							APIKey:    "test-key",
+							Caps:      registry.Caps{StrictTools: tc.strictTools, MaxInputTokens: maxInput},
+							Transport: registry.Transport{BaseURL: srv.URL, CountTokensEndpoint: registry.EndpointUnsupported},
+						},
+					}),
+				)
+				if err != nil {
+					t.Fatalf("registry.Load: %v", err)
+				}
+				return llm.NewClient(llm.WithRegistry(r))
+			}
+
+			generous := 10_000_000
+			res, err := loadClient(&generous).Resolve(instance + "/" + model)
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			refDef := llm.ToolDefinition{Name: "current_time", Strict: tc.toolStrict, Parameters: emittedParams}
+			refReq := llm.Request{
+				Model:    model,
+				Provider: instance,
+				Messages: []llm.Message{llm.User("hello")},
+				Tools:    []llm.ToolDefinition{refDef},
+			}
+			wirePrice := llm.EstimateInputTokensForResolved(res, refReq).Tokens
+			tight := wirePrice + llm.SafetyReserveTokens(wirePrice) - 1
+			if got := wirePrice + llm.SafetyReserveTokens(tight); got != tight+1 {
+				t.Fatalf("reserve at %d makes wire price %d, want %d", tight, got, tight+1)
+			}
+
+			prompt := "hello"
+			noRetry := llm.RetryPolicy{MaxRetries: 0}
+			_, err = llm.Generate(context.Background(), llm.GenerateOptions{
+				Client:      loadClient(&tight),
+				Provider:    instance,
+				Model:       model,
+				Prompt:      &prompt,
+				RetryPolicy: &noRetry,
+				Tools:       []llm.Tool{{Definition: llm.ToolDefinition{Name: "current_time", Strict: tc.toolStrict}}},
+			})
+			var budgetErr *llm.ContextBudgetError
+			if !errors.As(err, &budgetErr) || budgetErr.Limit != "max_input" {
+				t.Fatalf("Generate was not refused at tight ceiling %d (one token below emitted schema price): err = %v, hitServer = %v", tight, err, hitServer)
+			}
+			if hitServer {
+				t.Fatal("request reached HTTP server despite exceeding max_input under emitted schema")
+			}
+
+			// Exact ceiling admits the request (proving open-schema cases are not
+			// over-billed by the closed schema's 43 extra bytes).
+			exact := tight + 1
+			if _, err := llm.Generate(context.Background(), llm.GenerateOptions{
+				Client:      loadClient(&exact),
+				Provider:    instance,
+				Model:       model,
+				Prompt:      &prompt,
+				RetryPolicy: &noRetry,
+				Tools:       []llm.Tool{{Definition: llm.ToolDefinition{Name: "current_time", Strict: tc.toolStrict}}},
+			}); err != nil {
+				t.Fatalf("Generate refused at exact emitted ceiling %d: %v", exact, err)
+			}
+			if !hitServer {
+				t.Fatal("admitted request did not reach HTTP server")
+			}
+
+			// Direct unstamped Client.Complete and CountInputTokens must agree with
+			// the same emitted-schema boundary.
+			hitServer = false
+			directReq := llm.Request{
+				Provider: instance,
+				Model:    model,
+				Messages: []llm.Message{llm.User(prompt)},
+				Tools:    []llm.ToolDefinition{probeDef},
+			}
+			if _, err := loadClient(&tight).Complete(context.Background(), directReq); !errors.As(err, &budgetErr) || budgetErr.Limit != "max_input" {
+				t.Fatalf("direct unstamped Complete was not refused at tight ceiling %d: err = %v, hitServer = %v", tight, err, hitServer)
+			}
+			if hitServer {
+				t.Fatal("direct unstamped request reached HTTP server despite exceeding max_input under emitted schema")
+			}
+			counted, err := loadClient(&generous).CountInputTokens(context.Background(), directReq)
+			if err != nil {
+				t.Fatalf("CountInputTokens: %v", err)
+			}
+			if counted.Tokens != wirePrice {
+				t.Fatalf("CountInputTokens = %d, want emitted schema price %d", counted.Tokens, wirePrice)
+			}
+		})
 	}
 }

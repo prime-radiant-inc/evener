@@ -1,7 +1,10 @@
 package chatcompletions
 
 import (
+	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"testing"
 
@@ -349,6 +352,147 @@ func TestChatReplacedSchemaIsNotDiscardedForTheNoParametersFallback(t *testing.T
 			}
 			if _, has := params["properties"].(map[string]any)["path"]; !has {
 				t.Fatal("the replacement's property is absent: an empty object schema was sent in its place")
+			}
+		})
+	}
+}
+
+// Generate's admission budget must agree with the schema the Chat Completions
+// adapter emits for a parameterless tool: closed on a strict-capable route,
+// open when strict is disabled or the tool opts out.
+func TestChatGenerateParameterlessBudgetMatchesEmittedSchema(t *testing.T) {
+	t.Parallel()
+	strictOff := false
+	cases := []struct {
+		name        string
+		strictTools *bool
+		toolStrict  *bool
+		wantClosed  bool
+	}{
+		{name: "strict built-in chat emits closed schema", strictTools: new(true), wantClosed: true},
+		{name: "opted-out tool keeps open schema", strictTools: new(true), toolStrict: &strictOff, wantClosed: false},
+		{name: "non-strict chat route keeps open schema", strictTools: new(false), wantClosed: false},
+	}
+
+	const chatOK = `{"id":"chatcmpl-1","model":"gpt-budget-probe","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}`
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var hitServer bool
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				hitServer = true
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(chatOK))
+			}))
+			defer srv.Close()
+
+			probeDef := llm.ToolDefinition{Name: "current_time", Strict: tc.toolStrict}.WithNoParametersDeclared()
+			probeReq := userReq("hello")
+			probeReq.Tools = []llm.ToolDefinition{probeDef}
+			probeBody := build(t, probeReq, resolved(func(c *registry.Caps) { c.StrictTools = tc.strictTools }))
+			fn := probeBody["tools"].([]map[string]any)[0]["function"].(map[string]any)
+			emittedParams := fn["parameters"].(map[string]any)
+			_, hasClosed := emittedParams["additionalProperties"]
+			if hasClosed != tc.wantClosed {
+				t.Fatalf("emitted additionalProperties present = %v, want %v: %#v", hasClosed, tc.wantClosed, emittedParams)
+			}
+
+			const instance = "budget-chat"
+			const model = "gpt-budget-probe"
+			loadClient := func(maxInput *int) *llm.Client {
+				r, err := registry.Load(
+					registry.WithOffline(true),
+					registry.WithoutCache(),
+					registry.WithNoUserLayer(),
+					registry.WithStateRoot(t.TempDir()),
+					registry.WithEnv(func(string) (string, bool) { return "", false }),
+					registry.WithInstances(map[string]registry.Provider{
+						instance: {
+							Base:      "openai",
+							Protocol:  registry.ProtocolOpenAIChat,
+							APIKey:    "test-key",
+							Caps:      registry.Caps{StrictTools: tc.strictTools, MaxInputTokens: maxInput},
+							Transport: registry.Transport{BaseURL: srv.URL},
+						},
+					}),
+				)
+				if err != nil {
+					t.Fatalf("registry.Load: %v", err)
+				}
+				return llm.NewClient(llm.WithRegistry(r))
+			}
+
+			generous := 10_000_000
+			res, err := loadClient(&generous).Resolve(instance + "/" + model)
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			refDef := llm.ToolDefinition{Name: "current_time", Strict: tc.toolStrict, Parameters: emittedParams}
+			refReq := llm.Request{
+				Model:    model,
+				Provider: instance,
+				Messages: []llm.Message{llm.User("hello")},
+				Tools:    []llm.ToolDefinition{refDef},
+			}
+			wirePrice := llm.EstimateInputTokensForResolved(res, refReq).Tokens
+			tight := wirePrice + llm.SafetyReserveTokens(wirePrice) - 1
+			if got := wirePrice + llm.SafetyReserveTokens(tight); got != tight+1 {
+				t.Fatalf("reserve at %d makes wire price %d, want %d", tight, got, tight+1)
+			}
+
+			prompt := "hello"
+			noRetry := llm.RetryPolicy{MaxRetries: 0}
+			_, err = llm.Generate(context.Background(), llm.GenerateOptions{
+				Client:      loadClient(&tight),
+				Provider:    instance,
+				Model:       model,
+				Prompt:      &prompt,
+				RetryPolicy: &noRetry,
+				Tools:       []llm.Tool{{Definition: llm.ToolDefinition{Name: "current_time", Strict: tc.toolStrict}}},
+			})
+			var budgetErr *llm.ContextBudgetError
+			if !errors.As(err, &budgetErr) || budgetErr.Limit != "max_input" {
+				t.Fatalf("Generate was not refused at tight ceiling %d: err = %v, hitServer = %v", tight, err, hitServer)
+			}
+			if hitServer {
+				t.Fatal("request reached HTTP server despite exceeding max_input under emitted schema")
+			}
+
+			exact := tight + 1
+			if _, err := llm.Generate(context.Background(), llm.GenerateOptions{
+				Client:      loadClient(&exact),
+				Provider:    instance,
+				Model:       model,
+				Prompt:      &prompt,
+				RetryPolicy: &noRetry,
+				Tools:       []llm.Tool{{Definition: llm.ToolDefinition{Name: "current_time", Strict: tc.toolStrict}}},
+			}); err != nil {
+				t.Fatalf("Generate refused at exact emitted ceiling %d: %v", exact, err)
+			}
+			if !hitServer {
+				t.Fatal("admitted request did not reach HTTP server")
+			}
+
+			hitServer = false
+			directReq := llm.Request{
+				Provider: instance,
+				Model:    model,
+				Messages: []llm.Message{llm.User(prompt)},
+				Tools:    []llm.ToolDefinition{probeDef},
+			}
+			if _, err := loadClient(&tight).Complete(context.Background(), directReq); !errors.As(err, &budgetErr) || budgetErr.Limit != "max_input" {
+				t.Fatalf("direct unstamped Complete was not refused at tight ceiling %d: err = %v, hitServer = %v", tight, err, hitServer)
+			}
+			if hitServer {
+				t.Fatal("direct unstamped request reached HTTP server despite exceeding max_input under emitted schema")
+			}
+			counted, err := loadClient(&generous).CountInputTokens(context.Background(), directReq)
+			if err != nil {
+				t.Fatalf("CountInputTokens: %v", err)
+			}
+			if counted.Tokens != wirePrice {
+				t.Fatalf("CountInputTokens = %d, want emitted schema price %d", counted.Tokens, wirePrice)
 			}
 		})
 	}
