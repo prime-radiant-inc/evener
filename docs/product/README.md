@@ -82,11 +82,13 @@ already written to the transcript.
 The user resolves it from the session itself. The transcript explains the
 mismatch and names the remedy, and **Force shutdown** in the session menu stops
 the older daemon (interrupting anything in progress). The next message starts a
-fresh daemon from the binary the hub spawns with, which is the sibling of the
-running hub unless `--evener` names another
-(`resolveEvenerBinaryPath` in `cmd/evener-hub/main.go`), so the new pair
-matches. The session continues where it stopped, and no work already saved is
-lost.
+fresh daemon from the binary the hub spawns with
+(`resolveEvenerBinaryPath` in `cmd/evener-hub/main.go`): the sibling of the
+running hub, or whatever `--evener` names. That new daemon must be the hub's
+own version, or the session reports `restartRequired` again — a hub started
+with `--evener` pointed at the previous release keeps spawning mismatched
+daemons until the flag names an updated binary. The session continues where it
+stopped, and no work already saved is lost.
 
 This is deliberate rather than a fallback ladder. A hub that spoke the previous
 protocol to a live older daemon would carry model switching to a daemon that
