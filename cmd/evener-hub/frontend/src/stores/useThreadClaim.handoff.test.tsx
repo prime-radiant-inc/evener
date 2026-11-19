@@ -82,7 +82,9 @@ async function mountedConversation() {
     keyboardScrollPaneId: null,
   };
   const ensure = vi.spyOn(threadsStore.getState(), "ensureThread");
-  const release = vi.spyOn(threadsStore.getState(), "releaseThread");
+  // A pane releases the hold its own acquisition took, never the ref: two panes
+  // share one ref, and the ref-keyed release names whichever hold is newest.
+  const release = vi.spyOn(threadsStore.getState(), "releaseThreadHold");
   const tree = (host: string) => (
     <ClientProvider client={client}>
       <ConversationHandoffBoundary
@@ -99,7 +101,7 @@ async function mountedConversation() {
     await ensure.mock.results[0]?.value;
     await settleEntryTranscriptForTests(ref);
   });
-  expect(ensure).toHaveBeenCalledExactlyOnceWith(ref);
+  expect(ensure.mock.calls.map(([claimed]) => claimed)).toEqual([ref]);
   expect(snapshot()).toEqual({
     foreground: 1,
     background: 0,
@@ -154,8 +156,8 @@ test("same logical pane keeps item-backed source through ConversationBody host r
       await settleEntryTranscriptForTests(ref);
     });
     // These assert the actual cleanup/replacement, not a no-op rerender.
-    expect(fixture.release.mock.calls).toEqual([[ref], [ref]]);
-    expect(fixture.ensure.mock.calls).toEqual([[ref], [ref], [ref]]);
+    expect(fixture.release.mock.calls.map(([hold]) => hold.ref)).toEqual([ref, ref]);
+    expect(fixture.ensure.mock.calls.map(([claimed]) => claimed)).toEqual([ref, ref, ref]);
     expect(workspaceStore.getState().panes[0]).toBe(fixture.pane);
     expect(conversationPaneLifetime(fixture.pane)).toBe(fixture.lifetime);
     expect(retainedTranscriptReadView(fixture.lifetime, ref, "session")).toBe(fixture.readView);
@@ -212,7 +214,7 @@ test("final visible departure releases completed bodies while background ownersh
   try {
     expect(fixture.lifetime.alive).toBe(false);
     expect(fixture.readView.alive).toBe(false);
-    expect(fixture.release).toHaveBeenCalledExactlyOnceWith(ref);
+    expect(fixture.release.mock.calls.map(([hold]) => hold.ref)).toEqual([ref]);
     expect(releaseReader).toHaveBeenCalledWith(ref, true);
     expect(pruned.length).toBeGreaterThan(0);
     expect(pruned.map(({ before }) => [before.foreground, before.background])).toEqual(pruned.map(() => [0, 1]));

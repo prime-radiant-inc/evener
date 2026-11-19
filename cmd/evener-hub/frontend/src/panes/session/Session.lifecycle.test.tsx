@@ -264,6 +264,19 @@ test("ensureThread is deferred until the client becomes ready, not attempted whi
   // at the current epoch, and the refresh's. A third would mean the claim's
   // publication was refused and re-armed beside a read it should have joined.
   await waitFor(() => expect(fake.calls.filter((c) => c.method === "thread/read")).toHaveLength(2));
+  // The count alone certifies nothing yet: it reaches two the moment the second
+  // read is ISSUED, so a third read started by a refused publication and
+  // re-armed beside it would land after this assertion and never be seen. Wait
+  // out the pane's acquisition and the ready refresh's convergence first, then
+  // assert the count that stands when the destination is settled.
+  await act(async () => {
+    await settleEntryTranscriptForTests("ref_a");
+  });
+  await waitFor(() => expect(threadsStore.getState().threads.has("ref_a")).toBe(true));
+  expect(
+    fake.calls.filter((c) => c.method === "thread/read"),
+    "the ready transition issues its two reads and no re-armed third",
+  ).toHaveLength(2);
 });
 
 test("unmounting before the client ever becomes ready calls neither ensureThread nor releaseThread", async () => {

@@ -83,7 +83,10 @@ async function mountHost(mobile: boolean, configure?: (client: FakeClient, pane:
   workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
   configure?.(client, pane);
   const ensure = vi.spyOn(threadsStore.getState(), "ensureThread");
-  const release = vi.spyOn(threadsStore.getState(), "releaseThread");
+  // Every holder releases the handle its own acquisition took, never the ref:
+  // the handoff overlap and the pane stand beside each other on one ref, and a
+  // ref-keyed release names whichever hold is newest.
+  const release = vi.spyOn(threadsStore.getState(), "releaseThreadHold");
   let view: ReturnType<typeof render>;
   await act(async () => {
     view = render(<AppShell client={client} />);
@@ -117,6 +120,10 @@ async function mountHost(mobile: boolean, configure?: (client: FakeClient, pane:
   };
 }
 
+function releasedRefs(fixture: Awaited<ReturnType<typeof mountHost>>): string[] {
+  return fixture.release.mock.calls.map(([hold]) => hold.ref);
+}
+
 function assertPreserved(fixture: Awaited<ReturnType<typeof mountHost>>, ordinaryReaders = 1) {
   expect(fixture.publications.map((value) => value.sources)).toEqual(fixture.publications.map(() => sourceIds));
   expect(
@@ -137,7 +144,7 @@ test("real desktop to phone preserves source at every publication", async () => 
     fixture.setMobile(true);
   });
   expect(getDockviewApi()).toBeNull();
-  expect(fixture.release).toHaveBeenCalledWith(ref);
+  expect(releasedRefs(fixture)).toContain(ref);
   expect(fixture.ensure.mock.calls.length).toBeGreaterThanOrEqual(2);
   await act(async () => {
     await settleEntryTranscriptForTests(ref);
@@ -157,7 +164,7 @@ test("held lazy desktop preserves source across separate commits", async () => {
     fixture.setMobile(false);
   });
   expect(getDockviewApi()).toBeNull();
-  expect(fixture.release).toHaveBeenCalledWith(ref);
+  expect(releasedRefs(fixture)).toContain(ref);
   const duringLoading = snapshot();
   await act(async () => {
     resolve(await import("./DockHost"));
@@ -183,7 +190,7 @@ test("real phone to desktop preserves source", async () => {
     fixture.setMobile(false);
   });
   expect(getDockviewApi()?.getPanel(fixture.pane.id)).toBeDefined();
-  expect(fixture.release).toHaveBeenCalledWith(ref);
+  expect(releasedRefs(fixture)).toContain(ref);
   try {
     assertPreserved(fixture);
   } finally {

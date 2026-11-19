@@ -1,5 +1,6 @@
 import type { ViewportClass } from "@evener/appwire-client";
 import type { TranscriptReadView } from "../panes/session/transcript/transcriptReadView";
+import type { ForegroundHold } from "./threadOwners";
 import { threadsStore } from "./threads";
 
 interface Reader {
@@ -9,6 +10,11 @@ interface Reader {
 interface Overlap extends Reader {
   generation: number;
   sessionId: string | undefined;
+  // The hold this overlap's own acquisition took. A handoff overlap can stand
+  // beside the pane's ordinary claim on the same ref, so releasing by ref would
+  // name whichever hold is newest when the overlap ends - the pane's - and
+  // leave the overlap's own hold standing.
+  hold: ForegroundHold | undefined;
   unsubscribe: () => void;
 }
 
@@ -38,7 +44,8 @@ function forget(overlap: Overlap): boolean {
 }
 
 function release(overlap: Overlap): void {
-  if (forget(overlap)) threadsStore.getState().releaseThread(overlap.ref);
+  if (!forget(overlap)) return;
+  if (overlap.hold) threadsStore.getState().releaseThreadHold(overlap.hold);
 }
 
 function validate(overlap: Overlap): void {
@@ -92,12 +99,21 @@ export function prepareConversationHandoff(target: ViewportClass): void {
       continue;
     }
     if (pending || (presented && !presented.has(view.paneId))) continue;
-    const claim = threadsStore.getState().ensureThread(ref);
+    // The handle arrives synchronously, before the acquisition's first await,
+    // so a release that lands while it is still pending still drops this
+    // overlap's own hold.
+    let hold: ForegroundHold | undefined;
+    const claim = threadsStore.getState().ensureThread(ref, {
+      onHold: (taken) => {
+        hold = taken;
+      },
+    });
     const overlap: Overlap = {
       ref,
       view,
       generation,
       sessionId: threadsStore.getState().threads.get(ref)?.imageSessionId,
+      hold,
       unsubscribe: () => {},
     };
     overlaps.set(view, overlap);

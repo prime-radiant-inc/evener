@@ -21,6 +21,7 @@ import {
 } from "./entryTranscriptRoutes";
 import { deleteMutationDatabase } from "./mutationOutboxTestUtils";
 import { entryHistoryKey, setSessionCacheLookupDeadlineForTests } from "./sessionCacheSchema";
+import type { SessionEntryCache } from "./sessionEntryCache";
 import { createEntryCacheFixture } from "./testing/entryCacheFixture";
 import { pumpIndexedDBUntil } from "./testing/indexedDBPump";
 import { bodyOwners, holdHistory, releaseHistory } from "./threadOwners";
@@ -38,6 +39,7 @@ beforeEach(async () => {
   resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetPendingTurnsStoreForTests();
+  setSessionCacheLookupDeadlineForTests(250);
   await deleteMutationDatabase();
 });
 
@@ -65,6 +67,46 @@ function rebuildingRejection(): WireError {
 function historyFailedRejection(): WireError {
   return new WireError("thread history failed at entry 3", -32000, {
     evenerErrorInfo: "transcriptHistoryFailed",
+  });
+}
+
+// Seed the durable shell a pane's bounded lookup installs: a cached header the
+// source read then verifies. `issuedGeneration` is the counter the saving
+// session had issued, restored with the shell. `savedAt` is "now" because the
+// lookup only reports a record inside the cache's freshness window.
+async function seedCachedShell(cache: SessionEntryCache, ref: string, issuedGeneration: number) {
+  const clientId = location.origin;
+  const identity = { clientId, hostId: "local", sessionId: `sess_${ref}`, incarnation: "inc-1" };
+  const savedAt = Date.now();
+  return cache.commitBatch({
+    historyKey: entryHistoryKey(identity),
+    clearEpoch: 0,
+    items: [],
+    sessionMetadata: {
+      historyKey: entryHistoryKey(identity),
+      requestedRefs: [{ clientId, ref }],
+      resolvedIdentity: identity,
+      savedAt,
+      accessedAt: savedAt,
+      formatVersion: 3,
+      cachedHeader: {
+        ref,
+        threadId: `thr_${ref}`,
+        name: "",
+        modelProvider: "test/provider",
+        model: "test/provider",
+        imageSessionId: `sess_${ref}`,
+        savedAt,
+        history: {
+          bootGeneration: "1",
+          epoch: 1,
+          incarnation: "inc-1",
+          length: 0,
+          appliedGeneration: 0,
+          issuedGeneration,
+        },
+      },
+    },
   });
 }
 
@@ -276,6 +318,96 @@ test("a reconnect refresh for a waiting claim registers the read the claim joins
   restoreScheduler();
 }, 20_000);
 
+// A shell restored from disk carries the request generation the session that
+// saved it had issued. That number is no fence this tab's read has to clear: it
+// names a read another session made, and the claim's read carries none at all
+// (there was no held model to issue one). Fencing on it discards the source
+// response while the route keeps serving the shell, whose empty capability set
+// disables Send and Queue for a destination the hub's fresh snapshot allows.
+// The shell's incarnation is the source's own - only then is its repository the
+// one the response is applied to, and only then does the restored generation
+// decide whether the response lands.
+test("a cached shell carrying a saved request generation does not discard the routing read that verifies it", async () => {
+  const ref = "local:shell-saved-generation";
+  const cache = createEntryCacheFixture();
+  setProductionEntryCacheForTests(cache.cache);
+  // The pane's lookup answers at once; only the claim's authority read is held,
+  // so the shell lands while the claim's response awaits it.
+  setSessionCacheLookupDeadlineForTests(30_000);
+  // The saving session had issued a read: its counter is restored with the
+  // shell, and nothing in this tab ever issued that number.
+  const seed = await seedCachedShell(cache.cache, ref, 4);
+  expect(seed.outcome, "the shell is seeded durably with its saved generation").toBe("committed");
+  const authorities = deferred<void>();
+  const readAuthorities = cache.cache.getClearEpoch.bind(cache.cache);
+  let authorityReads = 0;
+  vi.spyOn(cache.cache, "getClearEpoch").mockImplementation(async () => {
+    authorityReads += 1;
+    if (authorityReads === 1) await authorities.promise;
+    return readAuthorities();
+  });
+  const fake = connectMutationClient();
+  // The source answers with the incarnation the shell bound, so nothing in the
+  // identity comparison displaces the shell's repository: the saved generation
+  // is the only fence between this response and the display.
+  fake.on("thread/read", () => readResponse(ref));
+  const claim = acquireUnreadThreadClaim(ref);
+  await flushUntil(() => fake.calls.some((call) => call.method === "thread/read"));
+  // The pane opens over the claim's read and installs the shell while the
+  // source response awaits its authorities.
+  const pane = threadsStore.getState().ensureThread(ref);
+  const shellInstalled = await pumpIndexedDBUntil({
+    turns: 40,
+    until: () => entryRouteOf(ref).repository?.getSnapshot()?.history?.incarnation === "inc-1",
+  });
+  expect(shellInstalled, "the pane installed the shell from disk").toBe(true);
+  authorities.resolve();
+  const lease = await claim;
+  const published = threadsStore.getState().threads.get(ref);
+  expect(published?.capabilities.send, "the claim's lease carries the source's capabilities").toBe(true);
+  expect(published?.capabilities.queue, "a resend may queue at the destination the source verified").toBe(true);
+  expect(entryRouteOf(ref).cachedUnverified, "the source response verified the route").toBe(false);
+  await pane;
+  lease.release();
+  await cache.dispose();
+}, 20_000);
+
+// A resend sharing a pane's pending read takes a routing lease, not the
+// bodies. When the pane closes mid-read the last body owner is gone and the
+// reader is detached - but the pane's own acquisition is still parked on that
+// read, and its post-read certification open reattaches a reader for a pane
+// nobody has open. The hold the acquisition took is what says whether that
+// pane work is still owed.
+test("a pane that closes during a shared read does not reattach its reader after the read lands", async () => {
+  const ref = "local:closed-during-shared-read";
+  const fake = connectMutationClient();
+  const read = deferred<ThreadReadResponse>();
+  fake.on("thread/read", () => read.promise);
+  const pane = threadsStore.getState().ensureThread(ref);
+  await flushUntil(() => fake.calls.some((call) => call.method === "thread/read"));
+  // A resend claims the same destination and joins the pane's read.
+  const claim = acquireUnreadThreadClaim(ref);
+  await pump();
+
+  // The pane closes mid-read: its body ownership and its reader are gone, and
+  // only the resend's routing lease keeps the destination alive.
+  threadsStore.getState().releaseThread(ref);
+  expect(bodyOwners(ref), "the pane's body ownership is gone").toBe(0);
+  expect(entryRouteOf(ref).reader, "the released pane's reader is detached").toBeUndefined();
+
+  // The shared read lands, resolving both the closed pane's acquisition and the
+  // resend's claim.
+  read.resolve(readResponse(ref));
+  await pane;
+  const lease = await claim;
+  await pump();
+
+  expect(bodyOwners(ref), "the closed pane never takes body ownership back").toBe(0);
+  expect(entryRouteOf(ref).reader, "the closed pane's post-read open does not reattach the reader").toBeUndefined();
+  lease.release();
+  await vi.waitFor(() => expect(threadsStore.getState().threads.has(ref)).toBe(false));
+}, 20_000);
+
 // A pane acquiring across the fence keeps its deleted-session display: the
 // same settlement reaches both kinds of wait, and only the claim rejects.
 test("a pane acquiring across a deletion still resolves and shows the deleted state", async () => {
@@ -293,6 +425,33 @@ test("a pane acquiring across a deletion still resolves and shows the deleted st
   expect(threadsStore.getState().deletedRefs.has(ref), "the fence is recorded for the pane").toBe(true);
 }, 20_000);
 
+// The typed history failure is the hub's terminal answer for the attempt, and
+// a destination nobody has opened has no held model to answer it against. The
+// claim waiting on that attempt must learn the answer and stop: pacing a retry
+// over a terminal response repeats it forever while the composer behind the
+// claim stays busy waiting for a decision that never comes.
+test("a history-failed first read on an unopened destination rejects its claim without arming a retry", async () => {
+  const ref = "local:unopened-history-failed";
+  const fake = connectMutationClient();
+  let reads = 0;
+  fake.on("thread/read", () => {
+    reads += 1;
+    throw historyFailedRejection();
+  });
+  let scheduled = 0;
+  const restoreScheduler = installHydrationRetrySchedulerForTests(() => {
+    scheduled += 1;
+    return () => {};
+  });
+  const claim = acquireUnreadThreadClaim(ref);
+
+  expect(await settleOutcome(claim), "the terminal answer rejects the claim").toBe("rejected");
+  expect(reads, "the terminal answer is the only read").toBe(1);
+  expect(scheduled, "a terminal answer arms no retry").toBe(0);
+  expect(bodyOwners(ref), "a rejected acquisition leaves no body hold behind").toBe(0);
+  restoreScheduler();
+}, 20_000);
+
 // The composer's resend gate reads the destination's capabilities. A routing
 // claim's read must not resolve on a cached shell a pane installed while that
 // read awaited its durable authorities: the shell's incarnation is older, so
@@ -306,40 +465,7 @@ test("a cached shell installed during a routing read does not certify the claim"
   // The pane's lookup answers at once; only the claim's authority read is
   // held, so the shell lands while the source response awaits it.
   setSessionCacheLookupDeadlineForTests(30_000);
-  const clientId = location.origin;
-  const older = { clientId, hostId: "local", sessionId: `sess_${ref}`, incarnation: "inc-1" };
-  // The lookup only reports a record inside the cache's freshness window.
-  const savedAt = Date.now();
-  const seed = await cache.cache.commitBatch({
-    historyKey: entryHistoryKey(older),
-    clearEpoch: 0,
-    items: [],
-    sessionMetadata: {
-      historyKey: entryHistoryKey(older),
-      requestedRefs: [{ clientId, ref }],
-      resolvedIdentity: older,
-      savedAt,
-      accessedAt: savedAt,
-      formatVersion: 3,
-      cachedHeader: {
-        ref,
-        threadId: `thr_${ref}`,
-        name: "",
-        modelProvider: "test/provider",
-        model: "test/provider",
-        imageSessionId: `sess_${ref}`,
-        savedAt,
-        history: {
-          bootGeneration: "1",
-          epoch: 1,
-          incarnation: "inc-1",
-          length: 0,
-          appliedGeneration: 0,
-          issuedGeneration: 0,
-        },
-      },
-    },
-  });
+  const seed = await seedCachedShell(cache.cache, ref, 0);
   expect(seed.outcome, "the pane's cached shell is seeded durably").toBe("committed");
   const authorities = deferred<void>();
   const readAuthorities = cache.cache.getClearEpoch.bind(cache.cache);
@@ -381,5 +507,4 @@ test("a cached shell installed during a routing read does not certify the claim"
   await pane;
   lease.release();
   await cache.dispose();
-  setSessionCacheLookupDeadlineForTests(250);
 }, 20_000);

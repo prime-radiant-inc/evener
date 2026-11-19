@@ -1161,7 +1161,14 @@ async function acceptEntryTranscriptHydration(
   // The displacement above is what keeps a shell from outliving its source
   // read: either this response rebuilt the route bound to its own identity, or
   // the repository it claimed is the one that accepted it. Reaching here is the
-  // route serving this response, so its provisional marker is answered.
+  // route serving this response, but only an ACCEPTED response answers its
+  // provisional marker: a repository that refuses this read still serves the
+  // shell, and a routing claim resolving on the cleared flag would send its
+  // resend on capabilities this shell never verified. The flag is lifted for
+  // the accept below - `mayPersist` refuses every write of a provisional route,
+  // and this accepted read's own write must persist - and restored when the
+  // repository refuses. Between the two there is no await, so nothing observes
+  // the cleared marker except the accept itself.
   fixture.cachedUnverified = false;
   fixture.unsubscribeRepository ??= repository.subscribe(() => publishEntryTranscriptModel(ref));
   if (productionRoute && threadBodyOwned(ref) && !fixture.reader) fixture.reader = repository.attachReader();
@@ -1184,11 +1191,27 @@ async function acceptEntryTranscriptHydration(
     if (params.waitStartedAt !== undefined && params.waitStartedAt > 0 && params.delayMs > 0)
       postCutWaitStamps.add(params.waitStartedAt);
   }
-  const adoptedRead = repository.acceptRead(response, {
+  // A generation restored from the disk is not a fence this tab's read has to
+  // clear. A provisional shell's counters belong to the session that saved
+  // them, and a read issued before the shell landed names none at all (there
+  // was no held model to issue one), so the repository discards the source
+  // response on a number no live read ever carried - leaving the route serving
+  // a shell whose empty capabilities never change. Re-stamp this response with
+  // the generation a read issued NOW against the shell would carry. A LIVE read
+  // - one issued against this shell or a base model that preceded it - always
+  // carries more than the model's own issuedGeneration, so the fence of a live
+  // read is untouched; anything at or below it was restored from the disk.
+  const installedGeneration = provisionalShell ? (repository.getSnapshot()?.history?.issuedGeneration ?? 0) : 0;
+  const acceptedResponse =
+    installedGeneration > 0 && (response.requestGeneration ?? 0) <= installedGeneration
+      ? { ...response, requestGeneration: installedGeneration + 1 }
+      : response;
+  const adoptedRead = repository.acceptRead(acceptedResponse, {
     lifetime: fixture.lifetime,
     ...nextTranscriptReadIdentity(),
     ...(postCutWaitStamps.size > 0 ? { postCutWaitStamps } : {}),
   });
+  if (!adoptedRead && provisionalShell) fixture.cachedUnverified = true;
   repository.acceptBeforeReadCut(
     hydration.fixtureNotifications.map((update) => update.notification),
     { lifetime: fixture.lifetime, adoptedRead },
@@ -4548,26 +4571,33 @@ async function readThreadHydration(
     }
     // A structured "history failed" response is not a transport hiccup: the
     // spec says the client shows one visible diagnostic and waits for a later
-    // read to succeed, never auto-retrying in a loop. Applied only against
-    // this hydration's own base model (superseded generations are ignored by
-    // applyHistoryReadFailure itself).
-    if (isTranscriptHistoryFailedError(err) && pending.baseModel) {
-      const failedModel = applyHistoryReadFailure(pending.baseModel, errorText(err), pending.requestGeneration ?? 0);
-      const entry = tracked ? existingEntryRoute(ref) : undefined;
-      if (!tracked) {
-        putWatchedThreadModel(ref, failedModel);
-      } else if (entry?.repository) {
-        if (
-          pending.client === getWiredClient() &&
-          pending.epoch === getReadyEpoch() &&
-          pendingThreadHydrations.get(ref) === pending
-        ) {
-          entry.repository.acceptReadFailure(errorText(err), pending.requestGeneration ?? 0, {
-            lifetime: entry.lifetime,
-          });
+    // read to succeed, never auto-retrying in a loop. The terminal answer is
+    // the same with or without a held model - an unopened destination has no
+    // diagnostic surface, and pacing a retry over the hub's terminal answer
+    // only repeats it while its claim stays busy.
+    if (isTranscriptHistoryFailedError(err)) {
+      // The diagnostic rides a held model: applied against this hydration's own
+      // base model, and only there (superseded generations are ignored by
+      // applyHistoryReadFailure itself). With nothing held there is nothing to
+      // record and nothing a pane could show.
+      if (pending.baseModel) {
+        const failedModel = applyHistoryReadFailure(pending.baseModel, errorText(err), pending.requestGeneration ?? 0);
+        const entry = tracked ? existingEntryRoute(ref) : undefined;
+        if (!tracked) {
+          putWatchedThreadModel(ref, failedModel);
+        } else if (entry?.repository) {
+          if (
+            pending.client === getWiredClient() &&
+            pending.epoch === getReadyEpoch() &&
+            pendingThreadHydrations.get(ref) === pending
+          ) {
+            entry.repository.acceptReadFailure(errorText(err), pending.requestGeneration ?? 0, {
+              lifetime: entry.lifetime,
+            });
+          }
+        } else {
+          putThreadModel(ref, failedModel);
         }
-      } else {
-        putThreadModel(ref, failedModel);
       }
       // The hub has given a terminal answer for this attempt, so the lifecycle
       // that owns it has nothing left to pace: settle it with that answer,
@@ -8645,16 +8675,31 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
             // just without holding consumers. A display with no older
             // frontier has no demand the gate could strand, and keeps the
             // established hold-publication contract.
-            if (
-              !(await openEntryTranscript(
-                ref,
-                false,
-                hydrationRegistrations.get(inflight),
-                holdsCompleteForegroundWindow(model) && olderTranscriptPageKey(ref) != null,
-              ))
-            ) {
-              scheduleEntryOpeningRecovery(ref);
-            }
+            // The open and the recovery after it are the PANE's work, and this
+            // acquisition may have stopped being that pane while its hydration
+            // was in flight: the last pane closed and only a resend's routing
+            // lease remains. The published model is still the claim's answer,
+            // but reattaching the reader and arming recovery over a destination
+            // no pane holds would leave a reader behind the closed pane.
+            //
+            // Asked as pane presence on the ref, not as this acquisition's own
+            // standing: a pane that closed mid-read still owes its
+            // certification to a destination another pane has since opened -
+            // that pane's own open found a published display and deferred, so
+            // nothing else would establish it. Only the absence of every pane
+            // owner, with the routing lease that no pane shares, ends the work.
+            if (bodyOwners(ref) === 0) return;
+            const opened = await openEntryTranscript(
+              ref,
+              false,
+              hydrationRegistrations.get(inflight),
+              holdsCompleteForegroundWindow(model) && olderTranscriptPageKey(ref) != null,
+            );
+            // Asked again after the await: the open itself publishes and
+            // reattaches the reader, so a departure during it must not arm the
+            // recovery that follows.
+            if (bodyOwners(ref) === 0) return;
+            if (!opened) scheduleEntryOpeningRecovery(ref);
             return;
           }
         } catch (err) {

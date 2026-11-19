@@ -19,6 +19,14 @@ export function useThreadClaim(ref: string, readView?: TranscriptReadView): void
   useEffect(() => {
     let started = false;
     let rejected = false;
+    // This mount's own foreground hold, handed over the moment the acquisition
+    // takes it. Unmount releases exactly this handle: two panes can hold one ref
+    // at the same time, and a ref-keyed release names whichever hold is newest
+    // by then - so the older pane's unmount would spend the newer pane's hold,
+    // and if that pane is still opening its `claimStanding()` check ends the
+    // acquisition while the closed pane's handle is the one left counting. The
+    // handle names one hold, so each pane's exit drops its own.
+    let hold: ForegroundHold | undefined;
     let unregister: (() => void) | undefined;
     const tryStart = () => {
       if (started) return;
@@ -28,7 +36,11 @@ export function useThreadClaim(ref: string, readView?: TranscriptReadView): void
       started = true;
       threadsStore
         .getState()
-        .ensureThread(ref)
+        .ensureThread(ref, {
+          onHold: (taken) => {
+            hold = taken;
+          },
+        })
         .catch(() => {
           // `started` marks the call, not the claim: a rejected ensureThread
           // rolled its own claim back, so releasing on unmount would consume
@@ -47,7 +59,9 @@ export function useThreadClaim(ref: string, readView?: TranscriptReadView): void
       // started AND not rejected: a reader that never called ensureThread
       // (mounted during reconnect, unmounted before readiness) owns nothing,
       // and a rejected call rolled its own claim back.
-      if (started && !rejected) threadsStore.getState().releaseThread(ref);
+      if (started && !rejected) {
+        if (hold) threadsStore.getState().releaseThreadHold(hold);
+      }
     };
   }, [ref, readView]);
 }
