@@ -87,10 +87,12 @@ with the same explicit `call_id` into one tool call at its first position.
 Later records can fill in an omitted item ID, tool name or arguments. The
 decoded call retains the first supplied argument bytes. Warm and cold replay
 follow the existing request and transcript encoding rules. Records with distinct
-or absent call IDs remain separate even when they share an item ID. When the
-final output is empty, recovery keeps streamed completions in order, including
-calls whose ID came from an item ID. Live decoding and API-log recomputation
-apply the same rule.
+or absent call IDs remain separate even when they share an item ID. The
+terminal's own text, refusal or finished call wins. When it supplies no answer,
+recovery keeps streamed completions in order, including calls whose ID came from
+an item ID, but not a call the terminal marks unfinished, and never for a
+filtered response, whose answer was retracted. Live decoding and API-log
+recomputation apply the same rule.
 
 An explicit incomplete response settles the output, including an empty result.
 If the adapter supplies no settled tool calls, streamed argument deltas remain partial.

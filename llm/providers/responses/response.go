@@ -158,7 +158,7 @@ func responseContentFromOutputItemsRaw(out []any, body []byte, rawItems []json.R
 
 func retainFallbackReasoning(r *llm.Response) {
 	if !slices.ContainsFunc(r.Message.Content, func(p llm.ContentPart) bool {
-		return p.Kind != llm.ContentThinking || p.Thinking.Text != "" || p.Thinking.EncryptedContent != ""
+		return p.Kind != llm.ContentThinking || p.Thinking == nil || p.Thinking.Text != "" || p.Thinking.EncryptedContent != ""
 	}) {
 		r.FallbackContent, r.Message.Content = r.Message.Content, nil
 	}
@@ -178,16 +178,42 @@ func responsesReasoningParts(raw any) []llm.ResponsesReasoningPart {
 	return parts
 }
 
-// settleResponsesTerminalOutput decides the settled message content and
-// finish reason for a Responses-API terminal (response.completed) payload,
-// given the output items accumulated from the stream en route. When the
-// terminal payload's own "output" array is non-empty it is authoritative
-// (the provider's settled truth); when it's empty but the stream accumulated
-// real items, those are synthesized in its place (observed on affected
-// sessions: the terminal payload carries no output even though earlier
-// response.output_item.done events in the same stream carried real content).
-// Shared by the live streaming decoder (decodeStream) and offline
-// recomputation so both apply the identical terminal-wins rule.
+// responsesAnswered reports whether the terminal settles an answer of its own: text, a refusal or a
+// finished call. Reasoning, a blob and an empty part are not answers, so recovery still runs.
+func responsesAnswered(terminal []any) bool {
+	return slices.ContainsFunc(terminal, func(rawItem any) bool {
+		item, _ := rawItem.(map[string]any)
+		if kind, _ := item["type"].(string); kind == "function_call" {
+			return !responsesFunctionCallUnfinished(item)
+		} else if kind != "message" {
+			return false
+		}
+		content, _ := item["content"].([]any)
+		return slices.ContainsFunc(content, func(cAny any) bool {
+			c, _ := cAny.(map[string]any)
+			refusal, _ := c["refusal"].(string) // a wire refusal carries its text here, not in "text"
+			text, _ := c["text"].(string)
+			return refusal != "" || text != ""
+		})
+	})
+}
+
+// responsesTerminalDisowned reports whether the terminal settles this call as unfinished.
+func responsesTerminalDisowned(terminal []any, keys ...string) bool {
+	return slices.ContainsFunc(terminal, func(rawItem any) bool {
+		item, _ := rawItem.(map[string]any)
+		id, _ := item["id"].(string)
+		callID, _ := item["call_id"].(string)
+		matched := func(k string) bool { return k != "" && slices.Contains(keys, k) }
+		return responsesFunctionCallUnfinished(item) && (matched(id) || matched(callID))
+	})
+}
+
+// settleResponsesTerminalOutput decides the settled message content and finish reason for a
+// Responses-API terminal payload. The terminal is authoritative: its text, refusal or finished call
+// wins. When it settles no answer of its own, the stream's output_item.done events are recovered in
+// its place, minus any call the terminal marks unfinished. A filtered answer is never recovered,
+// because the provider retracted it. Shared by the live decoder and offline recomputation.
 func settleResponsesTerminalOutput(r *llm.Response, rawResp map[string]any, accumulatedOutput []any, accumulatedRawOutput []json.RawMessage, settledItems int) {
 	terminalOutput, _ := rawResp["output"].([]any)
 	inc, recovered := rawResp["status"] == "incomplete", false // an incomplete response settles no finish reason
@@ -202,28 +228,27 @@ func settleResponsesTerminalOutput(r *llm.Response, rawResp map[string]any, accu
 		return content
 	}
 	switch {
-	case len(terminalOutput) == 0 && r.Finish.Reason == llm.FinishReasonContentFilter: // the answer was retracted
-		r.Message.Content, r.FallbackContent = nil, nil
-	case len(terminalOutput) == 0 && len(accumulatedOutput) > 0:
-		// The terminal payload carries no output even though the stream's
-		// output_item.done events carried real content (observed on
-		// affected sessions). Synthesize the settled message from what the
-		// stream actually sent, reusing fromResponses' item-walk.
-		// Accumulated call IDs can be derived from item IDs, so repeated
-		// values do not establish that the provider issued one call.
-		r.Message.Content, recovered = stream(), true
-	case !slices.ContainsFunc(terminalOutput, func(it any) bool { m, _ := it.(map[string]any); return m["type"] != "reasoning" }) && len(r.Message.Content) == 0 && len(r.FallbackContent) > 0 && r.Finish.Reason != llm.FinishReasonContentFilter:
-		streamContent := slices.DeleteFunc(stream(), func(p llm.ContentPart) bool { return p.Kind == llm.ContentToolCall && inc })
-		r.FallbackContent = slices.DeleteFunc(r.FallbackContent, func(f llm.ContentPart) bool {
-			i := slices.IndexFunc(streamContent, func(p llm.ContentPart) bool {
-				return p.Thinking != nil && f.Thinking != nil && f.Thinking.ID != "" && p.Thinking.ID == f.Thinking.ID
-			})
-			if i >= 0 && len(streamContent[i].Thinking.Summary) == 0 { // the terminal summary joins the streamed bytes
-				streamContent[i].Thinking.Summary, streamContent[i].Thinking.ResponsesSummaryParts = f.Thinking.Summary, f.Thinking.ResponsesSummaryParts
+	// A filtered answer was retracted, so never recover the stream; the terminal's own stays.
+	case r.Finish.Reason != llm.FinishReasonContentFilter && !responsesAnswered(terminalOutput) && len(accumulatedOutput) > 0:
+		// The terminal settles no answer of its own, so the stream's events are recovered in its
+		// place, minus any call the terminal marks unfinished. The terminal's own reasoning merges
+		// back by ID, keeping the native content a summary-only repeat leaves out.
+		// Only an incomplete response may disown a call: a settled response keeps every call the
+		// stream completed, so Finish stays tool_calls.
+		if inc {
+			for _, rawItem := range accumulatedOutput {
+				item, _ := rawItem.(map[string]any)
+				id, _ := item["id"].(string)
+				callID, _ := item["call_id"].(string)
+				if responsesTerminalDisowned(terminalOutput, id, callID) {
+					item["status"] = "incomplete"
+				}
 			}
-			return i >= 0
-		})
-		r.Message.Content, r.FallbackContent, recovered = llm.MergeFallbackReasoning(streamContent, r.FallbackContent), nil, true
+		}
+		r.Message.Content, r.FallbackContent, recovered = llm.MergeFallbackReasoning(stream(), r.FallbackContent, r.Message.Content), nil, true
+	case len(terminalOutput) == 0 && r.Finish.Reason == llm.FinishReasonContentFilter:
+		// The answer was retracted, so nothing the stream sent is settled.
+		r.Message.Content, r.FallbackContent = nil, nil
 	case len(terminalOutput) > 0 && settledItems > 0:
 		// The stream accumulator holds only settled items.
 		count := len(terminalOutput)

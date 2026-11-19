@@ -2,8 +2,34 @@ package llm
 
 import (
 	"encoding/json"
+	"slices"
 	"testing"
 )
+
+// A reasoning item the terminal repeats by ID merges into one, keeping what the repeat omitted.
+func TestMergeFallbackReasoningMergesByID(t *testing.T) {
+	t.Parallel()
+	native := ContentPart{Kind: ContentThinking, Thinking: &ThinkingData{ID: "rs_1", Text: "step one\n\nstep two", EncryptedContent: "blob", ResponsesContentParts: []ResponsesReasoningPart{{Type: "reasoning_text", Text: "step one"}}, ResponsesSummaryParts: []ResponsesReasoningPart{{Type: "summary_text", Text: "step one"}}}}
+	repeat := ContentPart{Kind: ContentThinking, Thinking: &ThinkingData{ID: "rs_1", Summary: []string{"step one", "summary"}}}
+	search := ContentPart{Kind: ContentWebSearch, WebSearch: &WebSearchData{Query: "q"}}
+	sources := []ContentPart{repeat, search}
+	got := MergeFallbackReasoning([]ContentPart{native, search, {Kind: ContentText, Text: "answer"}}, sources)
+	if len(got) != 3 || got[0].Thinking == nil || got[1].Kind != ContentWebSearch || got[2].Text != "answer" {
+		t.Fatalf("merge = %#v, want one reasoning part ahead of the single search and answer", got)
+	}
+	if got[0].Thinking.Text != native.Thinking.Text || !slices.Equal(got[0].Thinking.Summary, []string{"summary"}) ||
+		!slices.Equal(got[0].Thinking.ResponsesContentParts, native.Thinking.ResponsesContentParts) ||
+		!slices.Equal(got[0].Thinking.ResponsesSummaryParts, native.Thinking.ResponsesSummaryParts) ||
+		got[0].Thinking.EncryptedContent != "blob" {
+		t.Fatalf("reasoning = %+v, want every native field kept and only the stated summary dropped", got[0].Thinking)
+	}
+	if !slices.Equal(sources[0].Thinking.Summary, []string{"step one", "summary"}) || sources[0].Thinking.Text != "" {
+		t.Fatalf("source = %+v, want the caller's slices untouched", sources[0].Thinking)
+	}
+	if got := MergeFallbackReasoning(nil, []ContentPart{{Kind: ContentThinking, Thinking: &ThinkingData{Text: "t"}}}); len(got) != 1 || got[0].Thinking.Text != "t" {
+		t.Fatalf("empty-content merge = %#v, want the reasoning part alone", got)
+	}
+}
 
 func TestStreamAccumulator_FinishWithResponse_UsesIt(t *testing.T) {
 	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.

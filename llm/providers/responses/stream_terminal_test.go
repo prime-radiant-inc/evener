@@ -58,7 +58,8 @@ func TestSettledResponsesFromEmptyTerminalOutput(t *testing.T) {
 		"stop incomplete(thoughts) one|commentary two|final_answer":      `{"type":"response.reasoning_summary_part.added"}` + nl + `{"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"thought"}` + nl + `{"type":"response.output_item.added","output_index":5,"item":{"type":"message","phase":"final_answer"}}` + nl + `{"type":"response.output_text.delta","output_index":5,"delta":"two"}` + nl + `{"type":"response.output_item.added","output_index":1,"item":{"type":"message","phase":"commentary"}}` + nl + `{"type":"response.output_text.delta","output_index":1,"delta":"one"}` + nl + done,
 		"stop think(+eye) answer|":                                       `{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_1","status":"completed","encrypted_content":"opaque"}}` + nl + `{"type":"response.output_text.delta","output_index":1,"delta":"answer"}` + nl + `{"type":"response.completed","response":{"output":[{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"eye"}]}]}}`,
 		"tool_calls think(+think) call":                                  `{"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","call_id":"c1","name":"probe","arguments":"{}","status":"completed"}}` + nl + `{"type":"response.completed","response":{"status":"completed","output":[{"type":"reasoning","summary":[{"type":"summary_text","text":"think"}]}]}}`,
-		"stop ":                                                          `{"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"thought"}` + nl + `{"type":"response.output_text.delta","output_index":1,"delta":"omitted"}` + nl + `{"type":"response.completed","response":{"output":[{"type":"reasoning","summary":[{"type":"summary_text","text":"thought"}]},{"type":"function_call","call_id":"c","name":"probe","arguments":"{}","status":"incomplete"}]}}`,
+		// The terminal settles no answer, its only call unfinished, so recovery keeps the streamed text.
+		"stop incomplete(thoughts) omitted|": `{"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"thought"}` + nl + `{"type":"response.output_text.delta","output_index":1,"delta":"omitted"}` + nl + `{"type":"response.completed","response":{"output":[{"type":"reasoning","summary":[{"type":"summary_text","text":"thought"}]},{"type":"function_call","call_id":"c","name":"probe","arguments":"{}","status":"incomplete"}]}}`,
 	} {
 		for _, r := range settledBoth(t, frames) {
 			if got := summary(r); got != want {
@@ -87,6 +88,77 @@ func TestIncompleteStreamedSummaryDoesNotReplay(t *testing.T) {
 		_, items, _ := toResponsesInput([]llm.Message{r.Message}, "")
 		if th := r.Message.Content[0].Thinking; !th.ResponsesIncomplete || len(th.ResponsesSummaryParts) == 0 || r.ReasoningText() != "half" || len(items) != 0 {
 			t.Fatalf("reasoning %+v, replay %s: want a display-only summary", th, jsonOf(t, items))
+		}
+	}
+}
+
+// The terminal settles an answer only when it carries text, a refusal or a finished call. Otherwise the
+// stream's answer is recovered, minus a call the terminal marks unfinished. Both paths must settle alike.
+func TestSettledTerminalAnswersAndDisownedCalls(t *testing.T) {
+	t.Parallel()
+	const nl = "\n\n"
+	const reason = `"response":{"id":"r","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},`
+	const blob = `{"type":"reasoning","id":"rs_1","encrypted_content":"blob"}`
+	const think = `{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"think"}]}`
+	const answer = `{"type":"response.output_text.delta","output_index":1,"delta":"answer"}`
+	const call = `{"type":"function_call","call_id":"c1","name":"probe","arguments":"{}"}`
+	for name, c := range map[string]struct {
+		frames, text, finish string
+		calls                int
+	}{
+		// Reasoning alone settles no answer, so the stream's text is recovered beside it.
+		"blob only":    {answer + nl + `{"type":"response.incomplete",` + reason + `"output":[` + blob + `]}}`, "answer", "", 0},
+		"summary only": {answer + nl + `{"type":"response.incomplete",` + reason + `"output":[` + think + `]}}`, "answer", "", 0},
+		// The terminal settles its own answer, so the stream's is not recovered.
+		"terminal text":    {answer + nl + `{"type":"response.incomplete",` + reason + `"output":[{"type":"message","content":[{"type":"output_text","text":"own"}]}]}}`, "own", "", 0},
+		"terminal refusal": {answer + nl + `{"type":"response.incomplete",` + reason + `"output":[{"type":"message","content":[{"type":"refusal","text":"no"}]}]}}`, "", "", 0},
+		// A wire refusal carries its text under "refusal"; an empty placeholder is no answer.
+		"wire refusal":  {answer + nl + `{"type":"response.incomplete",` + reason + `"output":[{"type":"message","content":[{"type":"refusal","refusal":"no"}]}]}}`, "", "", 0},
+		"empty refusal": {answer + nl + `{"type":"response.incomplete",` + reason + `"output":[{"type":"message","content":[{"type":"refusal"}]}]}}`, "answer", "", 0},
+		// The terminal disowns the streamed call, so recovery must not restore it.
+		"disowned call": {`{"type":"response.output_item.done","item":` + call + `}` + nl + `{"type":"response.incomplete",` + reason + `"output":[{"type":"function_call","call_id":"c1","name":"probe","arguments":"{}","status":"incomplete"}]}}`, "", "", 0},
+		// Recovery keeps a call the terminal does not disown and drops the one it does.
+		"recovered call":       {`{"type":"response.output_item.done","item":` + call + `}` + nl + answer + nl + `{"type":"response.incomplete",` + reason + `"output":[` + blob + `]}}`, "answer", "", 1},
+		"disowned with answer": {`{"type":"response.output_item.done","item":` + call + `}` + nl + answer + nl + `{"type":"response.incomplete",` + reason + `"output":[` + blob + `,{"type":"function_call","call_id":"c1","name":"probe","arguments":"{}","status":"in_progress"}]}}`, "answer", "", 0},
+		// A filtered answer was retracted, so nothing the stream sent is recovered.
+		"filtered":                {answer + nl + `{"type":"response.incomplete","response":{"id":"r","status":"incomplete","incomplete_details":{"reason":"content_filter"},"output":[]}}`, "", "", 0},
+		"filtered with reasoning": {answer + nl + `{"type":"response.incomplete","response":{"id":"r","status":"incomplete","incomplete_details":{"reason":"content_filter"},"output":[` + blob + `]}}`, "", "", 0},
+		// Terminal reasoning content is no answer either, so the stream's text is still recovered.
+		"terminal reasoning": {answer + nl + `{"type":"response.incomplete",` + reason + `"output":[{"type":"reasoning","id":"rs_2","content":[{"type":"reasoning_text","text":"thought"}]}]}}`, "answer", "", 0},
+		// A completed response keeps the call the stream finished, even though the terminal lists it
+		// unfinished: only an incomplete response may disown a call.
+		"settled keeps call": {`{"type":"response.output_item.done","item":` + call + `}` + nl + `{"type":"response.completed","response":{"id":"r","status":"completed","output":[` + blob + `,{"type":"function_call","call_id":"c1","name":"probe","arguments":"{}","status":"incomplete"}]}}`, "", "tool_calls", 1},
+	} {
+		for _, r := range settledBoth(t, c.frames) {
+			if got := r.Text(); got != c.text {
+				t.Errorf("%s: settled text %q, want %q", name, got, c.text)
+			}
+			if calls := len(r.ToolCalls()); calls != c.calls {
+				t.Errorf("%s: settled %d tool calls, want %d", name, calls, c.calls)
+			}
+			if c.finish != "" && r.Finish.Reason != c.finish {
+				t.Errorf("%s: settled finish %q, want %q", name, r.Finish.Reason, c.finish)
+			}
+		}
+	}
+}
+
+// A reasoning item the terminal repeats by ID lands once, keeping the native content the repeat
+// omitted, and a search both the terminal and the stream reported is not duplicated by recovery.
+func TestSettledTerminalRepeatKeepsNativeReasoning(t *testing.T) {
+	t.Parallel()
+	const nl = "\n\n"
+	const done = `{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_1","status":"completed","content":[{"type":"reasoning_text","text":"native step"}]}}`
+	const search = `{"type":"web_search_call","id":"ws_1","action":{"query":"q"}}`
+	const answer = `{"type":"response.output_text.delta","output_index":1,"delta":"answer"}`
+	const report = `"response":{"id":"r","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},`
+	frames := done + nl + `{"type":"response.output_item.done","item":` + search + `}` + nl + answer + nl +
+		`{"type":"response.incomplete",` + report + `"output":[{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"short summary"}]},` + search + `]}}`
+	for _, r := range settledBoth(t, frames) {
+		search := slices.DeleteFunc(slices.Clone(r.Message.Content), func(p llm.ContentPart) bool { return p.Kind != llm.ContentWebSearch })
+		if r.Text() != "answer" || len(search) != 1 || r.Message.Content[0].Thinking == nil ||
+			r.Message.Content[0].Thinking.Text != "native step" {
+			t.Errorf("settled %+v, want the recovered answer and one reasoning item keeping the native text", r.Message.Content)
 		}
 	}
 }

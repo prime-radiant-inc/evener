@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"cmp"
 	"slices"
 	"strings"
 	"sync"
@@ -182,24 +183,60 @@ func (a *StreamAccumulator) Process(ev StreamEvent) {
 	}
 }
 
-// MergeFallbackReasoning puts set-aside reasoning in front of content, dropping summaries it repeats.
-func MergeFallbackReasoning(content, reasoning []ContentPart) []ContentPart {
-	if len(content) > 0 && content[0].Kind == ContentThinking {
-		const separator = "\n\n"
-		streamed := separator + content[0].Thinking.Text + separator
-		reasoning = slices.Clone(reasoning)
-		for i, part := range reasoning {
-			thinking := *part.Thinking
-			thinking.Summary = slices.DeleteFunc(slices.Clone(thinking.Summary), func(summary string) bool {
-				remaining := strings.Replace(streamed, separator+summary+separator, separator, 1)
-				overlap := remaining != streamed
-				streamed = remaining
-				return overlap
-			})
-			reasoning[i].Thinking = &thinking
+// MergeFallbackReasoning leads content with provider reasoning. Only thinking parts from sources are
+// kept, in their own order, in a fresh slice: content already holds everything else, and the caller's
+// slices are never mutated. A reasoning item stated twice by ID lands once, at the terminal's copy,
+// which keeps the native fields a summary-only repeat omitted.
+func MergeFallbackReasoning(content []ContentPart, sources ...[]ContentPart) []ContentPart {
+	var reasoning []ContentPart
+	for _, source := range sources {
+		for _, part := range source {
+			if part.Kind != ContentThinking || part.Thinking == nil {
+				continue
+			}
+			mine := *part.Thinking
+			if mine.ID != "" {
+				if j := slices.IndexFunc(content, func(p ContentPart) bool { return p.Thinking != nil && p.Thinking.ID == mine.ID }); j >= 0 {
+					mine.Text = cmp.Or(mine.Text, content[j].Thinking.Text)
+					mine.EncryptedContent = cmp.Or(mine.EncryptedContent, content[j].Thinking.EncryptedContent)
+					if len(mine.ResponsesContentParts) == 0 {
+						mine.ResponsesContentParts = content[j].Thinking.ResponsesContentParts
+					}
+					if len(mine.ResponsesSummaryParts) == 0 {
+						mine.ResponsesSummaryParts = content[j].Thinking.ResponsesSummaryParts
+					}
+					content = slices.Delete(content, j, j+1)
+				}
+			} else if slices.ContainsFunc(content, func(p ContentPart) bool {
+				// Nothing identifies this thought apart from one the stream already states.
+				return p.Thinking != nil && (slices.Equal(p.Thinking.Summary, mine.Summary) || mine.Text != "" && p.Thinking.Text == mine.Text)
+			}) {
+				continue
+			}
+			// A summary the text already states is not repeated, whether the text streamed or was merged.
+			if len(content) > 0 && content[0].Kind == ContentThinking && content[0].Thinking != nil {
+				mine.Summary = repeatedSummaryDropped(mine.Summary, content[0].Thinking.Text)
+			}
+			mine.Summary = repeatedSummaryDropped(mine.Summary, mine.Text)
+			reasoning = append(reasoning, ContentPart{Kind: ContentThinking, Thinking: &mine})
 		}
 	}
 	return slices.Insert(content, 0, reasoning...)
+}
+
+// repeatedSummaryDropped removes each summary the text already states, counting repeats separately.
+func repeatedSummaryDropped(summary []string, text string) []string {
+	remaining := map[string]int{}
+	for part := range strings.SplitSeq(text, "\n\n") {
+		remaining[part]++
+	}
+	return slices.DeleteFunc(slices.Clone(summary), func(s string) bool {
+		if remaining[s] == 0 {
+			return false
+		}
+		remaining[s]--
+		return true
+	})
 }
 
 // Response returns the final accumulated response after FINISH, or nil if the stream
