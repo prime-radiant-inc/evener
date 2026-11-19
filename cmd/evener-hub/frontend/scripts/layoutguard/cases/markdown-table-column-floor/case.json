@@ -1,6 +1,6 @@
 {
   "name": "markdown-table-column-floor",
-  "description": "markdown: in a width-constrained GFM table, no column may collapse below a readable floor while a long-content column takes the width - the observed live failure rendered 'GH Status' at ~3 characters per line because one cell's long max-content line stole the table (2026-11-19, hub session local:0350DTJsY0196rA6MHasBF)",
+  "description": "markdown: in a width-constrained GFM table, no column may collapse below a readable floor while a long-content column takes the width - the observed live failure rendered 'GH Status' at ~2 characters per line because one cell's long max-content line stole the table (2026-11-19, hub session local:0350DTJsY0196rA6MHasBF)",
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",

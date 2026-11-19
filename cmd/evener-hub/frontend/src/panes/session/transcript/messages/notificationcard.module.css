@@ -178,11 +178,10 @@
 /* The key column's readable floor: auto layout distributes a width deficit
  * proportionally to max-content, and the wrap-anywhere key above drops the
  * column's min-content to ~1 character - so one JSON.stringify'd nested
- * object value collapsed "Artifacts"/"Data"/"Message" to ~2 characters per
- * line (measured live 2026-11-19: colW [30, 426]). The floor keeps the
- * label column readable; longer keys still wrap anywhere above it, and the
- * table still never widens past the card. Geometry is pinned by the
- * result-table-key-floor layoutguard case. */
+ * object value collapses "Artifacts"/"Data"/"Message" to a ~2-character
+ * strip. The floor keeps the label column readable; longer keys still wrap
+ * anywhere above it, and the table still never widens past the card.
+ * Geometry is pinned by the result-table-key-floor layoutguard case. */
 .resultKey {
   padding: 7px var(--space-4) 7px 0;
   text-align: left;
