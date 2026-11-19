@@ -52,7 +52,7 @@ export class SessionControls {
 			ConversationModelCatalog,
 		private refresh: () => Promise<void>,
 		private stopped: () => void,
-		private isCurrent: (scope?: "destination") => boolean,
+		private isCurrent: (scope?: "destination", ref?: string) => boolean,
 		private getReasoning: () => Pick<
 			MobileConversation,
 			"supportsReasoning" | "reasoningEffort" | "reasoningEffortLevels"
@@ -174,7 +174,10 @@ export class SessionControls {
 			return Promise.resolve(false);
 		return this.run("setVisionModel", () => this.service.setVisionModel(`${provider}/${model}`));
 	}
-	private async run(kind: Operation, operation: () => Promise<void>): Promise<boolean> {
+	/** Runs one action. An action that lands on an identity reports it, so the
+	 * destination fence can judge that identity rather than the one the screen
+	 * was opened on. */
+	private async run(kind: Operation, operation: () => Promise<string | void>): Promise<boolean> {
 		if (
 			this.disposed ||
 			!this.isCurrent() ||
@@ -189,23 +192,19 @@ export class SessionControls {
 			notice: null,
 		});
 		try {
-			await operation();
-			// attemptControl's distinction, for the one action that recycles the
-			// transport as it goes out: a changeModel that resolved reached the
-			// hub and was answered, so it counts as done even when the reconnect
-			// the pick itself caused disposed these controls before the answer
-			// arrived. They are the only instance that saw the acknowledgement,
-			// and the screen's own reconnect read reports the accepted snapshot,
-			// so nothing here refreshes through a lost binding.
-			//
-			// The destination fence decides whether the screen that started the
-			// pick is still there to hear it: the reconnect retires the binding
-			// the pick began under, but the same store, client and ref are still
-			// bound behind the sheet. A pick whose screen left is not confirmed
-			// there is nothing left to close. A pick refused before dispatch
-			// (ModelPickNotSentError) and a pick the daemon refused both throw
-			// into the catch below, so neither is ever reported as done.
-			if (kind === "changeModel" && (this.disposed || !this.isCurrent()) && this.isCurrent("destination")) return true;
+			const landedOn = await operation();
+			// A changeModel that resolved reached the hub and was answered. The
+			// reconnects a pick causes retire this binding, so these controls are
+			// disposed by the time the answer lands; the screen that started the
+			// pick is still mounted behind the sheet and its own reconnect read
+			// reports the accepted snapshot. The destination is judged on the
+			// identity the pick landed on, because a resume behind a cold pick can
+			// resolve a different ref than the one the screen was opened on, and
+			// the sheet holds the route's ref until it closes. A pick whose screen
+			// left is not confirmed. A pick refused before dispatch or refused by
+			// the daemon throws into the catch below, so neither is reported done.
+			if (kind === "changeModel" && (this.disposed || !this.isCurrent()))
+				return this.isCurrent("destination", typeof landedOn === "string" ? landedOn : undefined);
 			// resumeThread may recycle the transport, which can dispose these
 			// controls before its acknowledgement arrives. The bound screen still
 			// owns this refresh when its identity fence is current.

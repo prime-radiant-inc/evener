@@ -177,9 +177,10 @@ export interface ConversationServiceOptions<ReadLease = unknown> {
 	// the binding that started the pick is replaced before the daemon answers.
 	// The conversation owner survives that replacement: it runs the resume,
 	// follows the identity the daemon resolves to, and dispatches on the
-	// binding it opens for that identity. A host with no owner passes none, and
-	// the service resumes and dispatches on the binding it holds.
-	readonly runModelPick?: (threadRef: string, pick: ModelPickRequest) => Promise<void>;
+	// binding it opens for that identity, answering with that identity. A host
+	// with no owner passes none, and the service resumes and dispatches on the
+	// binding it holds.
+	readonly runModelPick?: (threadRef: string, pick: ModelPickRequest) => Promise<string>;
 }
 
 /** A model pick whose session has to be resumed first. The owner dispatches
@@ -237,7 +238,10 @@ export interface ConversationService {
 	interrupt(): Promise<MutationReceipt>;
 	compact(): Promise<void>;
 	shutdown(): Promise<void>;
-	changeModel(modelProvider: string, model: string): Promise<void>;
+	/** Resolves with the ref the accepted pick landed on. A cold pick resumes
+	 * first, and that resume can resolve a different identity than the one the
+	 * caller was opened on, so the answer comes from the dispatch. */
+	changeModel(modelProvider: string, model: string): Promise<string>;
 	setVisionModel(visionModel: string): Promise<void>;
 	setReasoningEffort(effort: string): Promise<void>;
 	rename(name: string): Promise<void>;
@@ -1480,8 +1484,7 @@ export function createConversationService<ReadLease = unknown>(
 				} catch (error) {
 					throw new ModelPickNotSentError(error instanceof Error ? error.message : String(error));
 				}
-				await owner(threadRef, { modelProvider, model });
-				return;
+				return await owner(threadRef, { modelProvider, model });
 			}
 			const { threadRef, expectedThreadId, fence } = await establishModelPick();
 			const clientMutationId = idFactory();
@@ -1518,15 +1521,15 @@ export function createConversationService<ReadLease = unknown>(
 				// rejected before the daemon refreshes its snapshot, so the
 				// disposition still reads accepted while the switch did not happen.
 				if (modelSetReplyRejected(response, clientMutationId)) throw modelSetRejectedError(clientMutationId, response);
-				return;
+				return threadRef;
 			}
 			const snapshot = response.modelControl;
 			if (!snapshot || !sameAuthority(fence.authority, snapshot.authority)) {
 				recoverModelControl(threadRef, expectedThreadId, fence, { kind: "postDispatchFailure" });
 				validateThreadModelSetResponse(undefined, clientMutationId);
-				return;
+				return threadRef;
 			}
-			if (acceptedModel === null) return;
+			if (acceptedModel === null) return threadRef;
 			const reduced = reduceModelControl(acceptedModel, {
 				kind: "snapshot",
 				source: "response",
@@ -1567,6 +1570,7 @@ export function createConversationService<ReadLease = unknown>(
 			if (modelSetReplyRejected(response, clientMutationId)) {
 				throw modelSetRejectedError(clientMutationId, response);
 			}
+			return threadRef;
 		},
 
 		async setVisionModel(visionModel) {
