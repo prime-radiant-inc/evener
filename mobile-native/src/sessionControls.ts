@@ -208,10 +208,7 @@ export class SessionControls {
 	 * once a fresh catalog lands. */
 	changeModel(provider: string, model: string): Promise<ActionOutcome> {
 		if (!this.state.catalog?.data.some((entry) => entry.provider === provider && entry.model === model))
-			return Promise.resolve({
-				disposition: "notSent",
-				message: "The model list no longer carries that choice.",
-			});
+			return Promise.resolve({ disposition: "notSent", message: "" });
 		return this.run("changeModel", () => this.service.changeModel(provider, model));
 	}
 	changeVisionModel(provider: string, model: string): Promise<ActionOutcome> {
@@ -220,10 +217,7 @@ export class SessionControls {
 				(entry) => entry.provider === provider && entry.model === model && entry.supportsVision !== false,
 			)
 		)
-			return Promise.resolve({
-				disposition: "notSent",
-				message: "The model list no longer carries that choice.",
-			});
+			return Promise.resolve({ disposition: "notSent", message: "" });
 		return this.run("setVisionModel", () => this.service.setVisionModel(`${provider}/${model}`));
 	}
 	/** Runs one action and answers with how it went. The promise is the
@@ -251,7 +245,6 @@ export class SessionControls {
 			// new state through its own read of whichever binding survived.
 			if (kind === "resume" && !this.disposed && this.isCurrent()) {
 				await this.refresh();
-				if (this.disposed || !this.isCurrent()) return { disposition: "accepted", notice: NOTICE[kind] };
 			}
 			if (kind === "shutdown" || kind === "forceStop") {
 				if (!this.disposed && this.isCurrent()) {
@@ -269,10 +262,14 @@ export class SessionControls {
 			return { disposition: "accepted", notice: NOTICE[kind] };
 		} catch (cause) {
 			if (cause instanceof WireError && cause.evenerErrorInfo === "actionUnavailable") {
-				try {
-					await this.refresh();
-				} catch {
-					// Preserve the original server rejection; refresh is confirmation only.
+				// The confirmation read only matters to a binding still on
+				// screen; a retired one would discard it on publish anyway.
+				if (!this.disposed && this.isCurrent()) {
+					try {
+						await this.refresh();
+					} catch {
+						// Preserve the original server rejection; refresh is confirmation only.
+					}
 				}
 			}
 			const message =

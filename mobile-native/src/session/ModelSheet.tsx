@@ -109,6 +109,13 @@ function ModelSheetBody({
 		if (outcome.disposition !== "refused") return;
 		list.current?.getScrollResponder()?.scrollTo({ y: 0, animated: true });
 	};
+	// A refusal the sheet shows keeps it open; a notSent the guards already
+	// explained (an unchanged pick, an unoffered level, a stale catalog) closes
+	// nothing and says nothing new.
+	const applyOutcome = (outcome: ActionOutcome) => {
+		setRefusal(outcome.disposition === "refused" ? outcome.message : null);
+		revealError(outcome);
+	};
 	const closeOn = (change: Promise<ActionOutcome>, then?: () => void) =>
 		void change.then((outcome) => {
 			if (outcome.disposition === "accepted") {
@@ -117,11 +124,7 @@ function ModelSheetBody({
 				then?.();
 				return;
 			}
-			// A refusal the sheet shows keeps it open; a notSent the guards
-			// already explained (an unchanged pick, an unoffered level) closes
-			// nothing and says nothing new.
-			if (outcome.disposition === "refused") setRefusal(outcome.message);
-			revealError(outcome);
+			applyOutcome(outcome);
 		});
 	const choose = (model: ModelDescriptor) => {
 		if (!vision && !modelPickCanSend(session)) return;
@@ -165,9 +168,7 @@ function ModelSheetBody({
 					disabled={busy}
 					choose={(level) =>
 						void controls?.setReasoningEffort(level).then((outcome) => {
-							if (outcome.disposition === "refused") setRefusal(outcome.message);
-							else setRefusal(null);
-							revealError(outcome);
+							applyOutcome(outcome);
 						})
 					}
 				/>

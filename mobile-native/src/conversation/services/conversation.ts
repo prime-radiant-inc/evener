@@ -1483,8 +1483,7 @@ export function createConversationService<ReadLease = unknown>(
 				} catch (error) {
 					throw new ModelPickNotSentError(error instanceof Error ? error.message : String(error));
 				}
-				await owner(threadRef, { modelProvider, model });
-				return;
+				return await owner(threadRef, { modelProvider, model });
 			}
 			const { threadRef, expectedThreadId, fence } = await establishModelPick();
 			const clientMutationId = idFactory();

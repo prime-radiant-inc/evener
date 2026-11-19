@@ -1233,9 +1233,10 @@ function ConversationScreenView({
 						kind: "shut-down:offline",
 					};
 				const stopped = await controls.shutdown();
+				const shutDown = stopped.disposition === "accepted";
 				return {
-					text: stopped.disposition === "accepted" ? "Session shut down" : "Couldn't shut down this session.",
-					kind: stopped.disposition === "accepted" ? "shut-down:stopped" : "shut-down:failed",
+					text: shutDown ? "Session shut down" : "Couldn't shut down this session.",
+					kind: shutDown ? "shut-down:stopped" : "shut-down:failed",
 				};
 			}
 		}
