@@ -56,7 +56,7 @@ func TestLiveActivityBaseAttributesNestedDelegateToCreator(t *testing.T) {
 		t.Fatalf("seed delegates: %v", err)
 	}
 
-	base, err := loadLiveActivityBase(s)
+	base, err := loadLiveActivityBase(context.Background(), s)
 	if err != nil {
 		t.Fatalf("loadLiveActivityBase: %v", err)
 	}
