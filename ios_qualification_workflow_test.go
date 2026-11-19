@@ -158,7 +158,7 @@ func TestIOSQualificationRestoresAndSavesTheDerivedDataBuild(t *testing.T) {
 			t.Fatalf("simulator-build has no %s step", name)
 		}
 	}
-	if !(key < restore && restore < build && build < products && products < mark && mark < save) {
+	if key >= restore || restore >= build || build >= products || products >= mark || mark >= save {
 		t.Fatalf("cache steps out of order: key=%d restore=%d build=%d products=%d save-ready=%d save=%d",
 			key, restore, build, products, mark, save)
 	}
