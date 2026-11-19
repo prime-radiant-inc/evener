@@ -1666,6 +1666,18 @@ test("phone Back from a secondary session's inspector publishes its URL without 
   expect(mainLifetime.alive).toBe(true);
   expect(mainAttachments.getState().items.map((item) => item.marker)).toEqual([1]);
 
+  // Closing the second inspector tab returns to the same secondary source while
+  // the address bar still holds its return URL, so AppShell must keep the
+  // original main pane and its staged attachment intact.
+  await act(async () => {
+    getDockviewApi()?.getPanel(secondInspectorId)?.api.close();
+  });
+  expect(workspaceStore.getState().panes.some((pane) => pane.id === secondInspectorId)).toBe(false);
+  expect(workspaceStore.getState().focusedPaneId).toBe(unrelatedId);
+  expect(workspaceStore.getState().mainPane()).toBe(mainPane);
+  expect(mainLifetime.alive).toBe(true);
+  expect(mainAttachments.getState().items.map((item) => item.marker)).toEqual([1]);
+
   // Explicit navigation to another route remains authoritative.
   await act(async () => navigate("/s/local%3Aother-route"));
   await waitFor(() => expect(refParam(workspaceStore.getState().mainPane()?.params)).toBe("local:other-route"));

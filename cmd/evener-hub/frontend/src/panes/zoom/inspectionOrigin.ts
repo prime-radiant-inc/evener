@@ -12,8 +12,9 @@ let returnedOrigin: PaneLifetime | null = null;
 let returnedOriginURL: string | null = null;
 
 export function recordCascadeReturnedOrigin(origin: OpenPaneRecord | null): void {
-  returnedOrigin = origin ? conversationPaneLifetime(origin) : null;
-  returnedOriginURL = null;
+  const next = origin ? conversationPaneLifetime(origin) : null;
+  if (next !== returnedOrigin) returnedOriginURL = null;
+  returnedOrigin = next;
 }
 
 export function isCascadeReturnedOrigin(pane: OpenPaneRecord | undefined): boolean {
