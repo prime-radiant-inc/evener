@@ -722,7 +722,16 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
       // turn ownership: a zero-delay wake naming the wait's owning turn
       // clears the held wait whole (stamped or not), the same retirement a
       // turn boundary applies; a wake naming any other turn changes nothing.
+      // A wake with no held wait to end changes nothing either: the chip is
+      // an installation (the retry's progress for a wait this client never
+      // saw would attribute elapsed time nothing measured), so the frame is
+      // a quota no-op unless the model holds the wait whose owner it names.
       if (params.delayMs !== 0) return model;
+      const heldQuotaWait =
+        model.quotaResumesAt !== undefined ||
+        model.quotaWaitStartedAt !== undefined ||
+        (model.modelRetry !== undefined && model.modelRetry.errorClass === "quota_exceeded");
+      if (!heldQuotaWait) return model;
       const waitOwnerTurn = model.modelRetry?.turnId ?? model.runningTurnId;
       if (waitOwnerTurn === undefined || params.turnId !== waitOwnerTurn) return model;
       const waitEnded: M = {

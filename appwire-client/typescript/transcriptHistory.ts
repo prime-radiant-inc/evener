@@ -1263,12 +1263,25 @@ function reconcileQuotaWait(
       retireChip: true,
     };
   }
+  // The wait is gone from the model — the wake ended it and left its ended
+  // stamp behind — and the read names none. A leftover quota chip (the wake's
+  // own zero-delay progress state) is the last artifact of that ended wait:
+  // the read is the authority on presence, and keeping the chip would show
+  // stale retry progress with nothing behind it. An ordinary provider retry
+  // (no quota state anywhere) keeps its chip: this reconciliation never
+  // retires what is not quota.
+  const endedQuotaChip =
+    heldStamp === 0 &&
+    endedStamp > 0 &&
+    held.modelRetry !== undefined &&
+    held.modelRetry.errorClass === "quota_exceeded";
   return {
     // The held model's wait fields (a stamped daemon's ordinary read): a
     // read naming no wait and no held stamp has nothing to change here.
     quotaResumesAt: held.quotaResumesAt,
     quotaWaitStartedAt: undefined,
     ...(endedStamp > 0 ? { quotaWaitEndedStamp: endedStamp } : {}),
+    ...(endedQuotaChip ? { retireChip: true } : {}),
   };
 }
 

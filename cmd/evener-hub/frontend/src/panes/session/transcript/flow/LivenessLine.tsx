@@ -181,6 +181,16 @@ export function LivenessLine({ lastFrameAt, now, active, sessionRef, turnId, ret
       // The quota wait's phase, as a fact rather than a sentence: the level
       // says a wait stands, this says which half of it the reader sees.
       data-passed-reset={level === "quota" && quotaWait?.passedReset === true ? "true" : undefined}
+      // The computed times as facts beside the sentence: tests assert these
+      // rather than the copy, and the level's own phase rules stay pinned by
+      // the attributes above.
+      data-remaining-ms={
+        level === "quota" && quotaWait?.remainingMs !== undefined ? String(quotaWait.remainingMs) : undefined
+      }
+      data-elapsed-ms={
+        level === "quota" && quotaWait?.elapsedMs !== undefined ? String(quotaWait.elapsedMs) : undefined
+      }
+      data-model={level === "quota" && quotaWait?.model !== undefined ? quotaWait.model : undefined}
       className={level === "stalled" ? `${CLASS.line} ${CLASS.stalled}` : CLASS.line}
     >
       {text}

@@ -1376,6 +1376,70 @@ test("a wait-free read keeps an ordinary provider retry", () => {
   expect(after.modelRetry?.attempt).toBe(2);
 });
 
+// The wake's zero-delay chip is the retry's progress state, and it survives
+// the boundary as it always has — but it is also the last quota artifact on
+// the model once the wait is gone (the ended stamp records the wait's end).
+// A later authoritative read that names no wait retires that chip: the read
+// is the authority on presence, and a chip left over from an ended wait would
+// show stale retry progress with nothing behind it. An ordinary provider
+// retry's chip is not this reconciliation's to retire (the test above).
+test("a wait-free read retires the ended wait's leftover zero-delay chip", () => {
+  const deadline = Date.parse("2026-11-07T14:30:00Z");
+  let model = testHydrate({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } });
+  // The wait starts...
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 0,
+        delayMs: 21_600_000,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 0,
+        waitStartedAt: 4,
+        resumesAt: deadline,
+      },
+    },
+    1500,
+  );
+  expect(model.quotaWaitStartedAt).toBe(4);
+  // ...and its wake clears the hold, leaving the progress chip and the ended
+  // stamp.
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 0,
+        delayMs: 0,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 0,
+        waitStartedAt: 4,
+      },
+    },
+    1600,
+  );
+  expect(model.quotaResumesAt).toBeUndefined();
+  expect(model.modelRetry?.delayMs).toBe(0);
+  expect(model.quotaWaitEndedStamp).toBe(4);
+
+  // The authoritative wait-free read retires the leftover chip.
+  const resumed = testThread({ status: { type: "active" } });
+  const after = applyReadResponse(model, { thread: resumed }, 2000);
+  expect(after.modelRetry).toBeUndefined();
+  expect(after.quotaWaitEndedStamp).toBe(4);
+});
+
 // The daemon's retired-input list is the only durable evidence that a canceled
 // message will never reach history. A read snapshot must carry it, or the
 // client can never retire the row that message left behind.

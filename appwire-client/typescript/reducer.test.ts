@@ -3672,6 +3672,31 @@ test("an unstamped frame for a different turn installs nothing over a held stamp
   expect(woken.modelRetry?.delayMs).toBe(0);
 });
 
+// A zero-delay unstamped wake with no held wait to end is quota state this
+// client never held: the wake may retire a wait by turn ownership, but with no
+// wait under the named turn there is nothing to retire, and an unstamped
+// frame never installs — the chip included (a progress chip for a wait this
+// client never saw would attribute elapsed time nothing measured). The
+// running turn comes from a live status frame: the plain hydrate seeds no
+// runningTurnId, and a wake matching no turn retires nothing on other grounds.
+test("an unstamped zero-delay wake over a wait-free model installs no chip", () => {
+  let model = testHydrate({ status: { type: "active" } });
+  model = applyNotification(
+    model,
+    {
+      method: "thread/status/changed",
+      params: { threadId: "thr_t", ref: "ref_t", activeTurnId: "turn_1", status: { type: "active" } },
+    },
+    1500,
+  );
+  expect(model.runningTurnId).toBe("turn_1");
+  model = applyNotification(model, quotaRetry({ delayMs: 0, turnId: "turn_1" }), 2000);
+  expect(model.modelRetry).toBeUndefined();
+  expect(model.quotaResumesAt).toBeUndefined();
+  expect(model.quotaWaitStartedAt).toBeUndefined();
+  expect(model.quotaWaitEndedStamp).toBeUndefined();
+});
+
 // The read's wait belongs to the snapshot's running turn. After the cut, a
 // read's unstamped deadline installs nothing at all (the read gate below), so
 // this shape — a read carrying a stamped wait for turn B while the chip of a

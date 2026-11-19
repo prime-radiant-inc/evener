@@ -1,5 +1,5 @@
 import { applyNotification, applyReadResponse, hydrateThread, STUCK_AFTER_MS } from "@evener/appwire-client";
-import { quotaWaitState, waitingForQuotaText } from "@evener/appwire-client/state/navigation";
+import { quotaWaitState } from "@evener/appwire-client/state/navigation";
 import { testThread } from "@evener/appwire-client/testing/reducerTestKit";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
@@ -367,9 +367,10 @@ test("a reloaded session says when its usage-limit wait resumes, without any liv
 
   const el = screen.getByTestId("liveness-line");
   expect(el.getAttribute("data-level")).toBe("quota");
-  // The shared wait words, from the one source both this pane and the rail
-  // read - asserted through the same function, never against a literal.
-  expect(el.textContent).toBe(waitingForQuotaText(6 * 60 * 60_000));
+  // The wait's computed runway as a fact: the level says the wait stands,
+  // this says the instant it promises. No copy is asserted.
+  expect(el.getAttribute("data-remaining-ms")).toBe(String(6 * 60 * 60_000));
+  expect(el.getAttribute("data-elapsed-ms")).toBeNull();
 });
 
 // The anti-installation contract's pane half: a daemon that predates the
@@ -599,8 +600,11 @@ test("a usage-limit wait shows immediately, in hours rather than a seconds count
 
   const el = screen.getByTestId("liveness-line");
   expect(el.getAttribute("data-level")).toBe("quota");
+  // The units are the renderer's; the test pins the computed runway and that
+  // the line never degrades to a raw-seconds countdown of the whole reset
+  // (the promise's own level, not its phrasing).
+  expect(el.getAttribute("data-remaining-ms")).toBe(String(21_600_000));
   expect(el.textContent).not.toContain("21600s");
-  expect(el.textContent).toBe(waitingForQuotaText(21_600_000));
 });
 
 // Contract point 3: the wait's lifetime is the daemon's, never the client's
@@ -661,7 +665,10 @@ test("a stamped wait's model tag and advancing elapsed ride both halves of the l
   );
   const counting = screen.getByTestId("liveness-line");
   expect(counting.getAttribute("data-level")).toBe("quota");
-  expect(counting.textContent).toBe(`${waitingForQuotaText(sixHours)} (wait/model) — 14m 30s on this call`);
+  // The tag and the advanced elapsed ride beside the promise - asserted as
+  // facts, not as the sentence that carries them.
+  expect(counting.getAttribute("data-model")).toBe("wait/model");
+  expect(counting.getAttribute("data-elapsed-ms")).toBe(String(14 * 60_000 + 30_000));
 
   // The reset crosses: same facts, pending promise.
   rerender(
@@ -718,7 +725,11 @@ test("a stamped wait's elapsed advance clamps at zero across the tick boundary",
   );
   const el = screen.getByTestId("liveness-line");
   expect(el.getAttribute("data-level")).toBe("quota");
-  expect(el.textContent).toBe(`${waitingForQuotaText(60_500)} — 0s on this call`);
+  // The clamp's whole point, as a fact: the elapsed never goes negative
+  // across the tick boundary, and the runway is the announcement's own
+  // instant from the receipt stamp.
+  expect(el.getAttribute("data-elapsed-ms")).toBe("0");
+  expect(el.getAttribute("data-remaining-ms")).toBe(String(60_500));
   expect(el.textContent).not.toContain("-");
 });
 
@@ -732,7 +743,11 @@ test("a snapshot-only wait renders the promise alone, without tag or elapsed", (
   render(<LivenessLine lastFrameAt={now - 3_000} now={now} active={true} sessionRef="s1" turnId="turn_0" />);
   const el = screen.getByTestId("liveness-line");
   expect(el.getAttribute("data-level")).toBe("quota");
-  expect(el.textContent).toBe(waitingForQuotaText(21_600_000));
+  // Snapshot-only: the runway is the read's instant; no tag, no elapsed -
+  // the snapshot cannot attribute them. All three as facts.
+  expect(el.getAttribute("data-remaining-ms")).toBe(String(21_600_000));
+  expect(el.getAttribute("data-model")).toBeNull();
+  expect(el.getAttribute("data-elapsed-ms")).toBeNull();
 });
 
 // A daemon that predates the stamp never reaches the elapsed question at all
@@ -777,8 +792,11 @@ test("an unstamped announcement renders no quota line at all", () => {
   );
   const el = screen.getByTestId("liveness-line");
   expect(el.getAttribute("data-level")).not.toBe("quota");
-  expect(el.textContent).not.toContain(waitingForQuotaText(sixHours - 30_000));
-  expect(el.textContent).not.toContain("on this call");
+  // The unstamped frame installs no wait, so no quota facts exist to assert:
+  // the level alone carries the contract (the copy's absence is implied by
+  // the level, not asserted as a phrase).
+  expect(el.getAttribute("data-remaining-ms")).toBeNull();
+  expect(el.getAttribute("data-elapsed-ms")).toBeNull();
 });
 
 // The other side of the discriminator: a stamped announcement's sample IS
@@ -809,10 +827,11 @@ test("a stamped announcement's measured-zero elapsed still displays", () => {
   const el = screen.getByTestId("liveness-line");
   expect(el.getAttribute("data-level")).toBe("quota");
   // The measured zero is real, so it ADVANCES like any sample: 30s since
-  // receipt renders as 30s on this call. The countdown comes from the
-  // announcement's own absolute instant (six hours from receipt), not from
-  // any client-clock runway.
-  expect(el.textContent).toBe(`${waitingForQuotaText(sixHours)} — 30s on this call`);
+  // receipt is the elapsed fact. The countdown comes from the announcement's
+  // own absolute instant measured at this render's now, not from any
+  // client-clock runway. Assert both as computed values, never as the sentence.
+  expect(el.getAttribute("data-elapsed-ms")).toBe(String(30_000));
+  expect(el.getAttribute("data-remaining-ms")).toBe(String(sixHours));
 });
 
 // Scenario 11: a passed read deadline plus a late announcement from a
