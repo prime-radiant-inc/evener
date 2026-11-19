@@ -207,7 +207,24 @@ func (c GHClient) command(ctx context.Context, args ...string) (*exec.Cmd, *ghGa
 	if !c.wantsGroupChannel() {
 		return exec.CommandContext(ctx, gh, args...), &ghGate{}, nil
 	}
-	gated, opened, err := gateGH(ctx, gh, args...)
+	// The gated form hands the executable to `sh`, and `sh` resolves its operand
+	// with its own PATH search from the helper's working directory -- the
+	// checkout root. A relative PATH entry (".", an empty element, a relative
+	// directory) would then let a `gh` planted in the checkout run as this call.
+	//
+	// LookPath applies Go's rule before `sh` can: a match reached through a
+	// relative PATH entry is refused with exec.ErrDot, and a name PATH resolves
+	// is handed down as an absolute path. An explicitly configured path with a
+	// slash is preserved as given, which is the caller's own choice to make.
+	//
+	// A name that cannot be resolved ends the call here rather than in `sh`: a
+	// lookup error says which executable was missing, while sh's own 127 is a
+	// status the helper would have to classify as a call that never ran.
+	resolved, err := exec.LookPath(gh)
+	if err != nil {
+		return nil, nil, fmt.Errorf("resolve the gh executable %q for the gated call: %w", gh, err)
+	}
+	gated, opened, err := gateGH(ctx, resolved, args...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -437,6 +454,17 @@ func (e *RefusalError) Error() string { return e.Detail }
 // are expressed in: a RefusalError is GitHub's own no, ErrOutcomeUnknown is no
 // answer at all, and an error that is neither is a failure the call stated.
 var ErrOutcomeUnknown = errors.New("the call ended without establishing whether GitHub performed the write, so its outcome has to be read back")
+
+// ErrGroupPublish reports a gated call whose process group could not be
+// published on the launcher's channel. The call was never released, so it
+// issued no request: the launcher named a handle, this process could not write
+// to it, and running the call anyway would have started a request nothing could
+// stop.
+//
+// It is its own sentinel because the caller must not reconcile it. The other
+// unknown endings leave open whether GitHub performed the write; here nothing
+// was sent, so a read-back would look for work this invocation never asked for.
+var ErrGroupPublish = errors.New("the gated call's process group could not be published on the launcher's channel, so the call was not started")
 
 // completeReply reports whether out is a whole JSON document.
 //
@@ -670,6 +698,24 @@ func (c GHClient) run(ctx context.Context, args ...string) ([]byte, error) {
 	publishedFD := publishGHGroupFD(groupFD, '+', cmd.Process.Pid)
 	if publishedFD {
 		defer publishGHGroupFD(groupFD, '-', cmd.Process.Pid)
+	}
+	// A channel the launcher supplied but this process cannot write is not a
+	// handle: the launcher would hold no group id for a call that is about to
+	// issue a request, which is the hole the gate exists to close. So the call
+	// fails closed -- the gate is dropped without a release, `sh` reads
+	// end-of-file and exits without exec'ing `gh`, and the staged child is
+	// reaped here so no gate process outlives the failed call.
+	//
+	// Only the descriptor form fails closed. The path form is the compatibility
+	// handle, and a publication there is best effort by design; the descriptor
+	// form is what the launcher itself hands down, so a descriptor it named and
+	// this process cannot write is a launcher failure worth reporting rather
+	// than a reason to run a call nobody can stop.
+	if groupFD > 2 && !publishedFD {
+		gate.close()
+		_ = cmd.Wait()
+		procgroup.KillGroupAfterReap(cmd.Process.Pid)
+		return nil, fmt.Errorf("%w: descriptor %d refused the write, so the call was not started", ErrGroupPublish, groupFD)
 	}
 	// Only a handle this call published is removed when the call ends. The path is
 	// configuration, and a publication that failed has left whatever was there

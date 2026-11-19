@@ -739,25 +739,34 @@ own_group_id=$(ps -o pgid= -p "$$" 2>/dev/null | tr -d ' ' || true)
 # It is 3 when a channel was minted, and read only by the forced stop: it is the
 # one handle that outlives a `gh` wrapper which starts the real CLI and exits.
 #
-# The channel is an unlinked FIFO, not a file. A name would have to be resolved
-# at the moment the launcher reads it, which is exactly when a scratch ancestor
-# may have become writable by another user; a descriptor cannot be replaced by
-# anyone, and it is closed when this script exits. Everything the helper writes
-# arrives here in order and nothing else can write to it.
+# The channel is an unlinked regular file, not a named pipe and not a path. A
+# name would have to be resolved at the moment the launcher reads it, which is
+# exactly when a scratch ancestor may have become writable by another user; a
+# descriptor cannot be replaced by anyone, and it is closed when this script
+# exits. Everything the helper writes is appended in order and nothing else can
+# write to it.
+#
+# The launcher reads through its OWN descriptor, gh_group_read_fd. Two
+# descriptors rather than one read-write descriptor, because a regular file's
+# read end reports end-of-file the moment the file's end is reached: the drain
+# returns at once instead of waiting for a writer, and a helper's publications
+# cannot fill a pipe buffer during a long wait and leave this script blocked
+# behind its own channel.
 gh_group_fd=""
+gh_group_read_fd=""
 # The last group the helper published through the channel, or empty. Updated by
 # drain_gh_group_fd and read by the two census functions.
 published_gh_pgid=""
-# The private directory the FIFO is minted in on the prebuilt path. It exists
-# only between the mint and the unlink, and is normally gone before the helper
-# starts.
+# The private directory the channel file is minted in on the prebuilt path. It
+# exists only between the mint and the unlink, and is normally gone before the
+# helper starts.
 gh_private_dir=""
 # The scratch directory the helper was built in, or empty on the prebuilt path.
 #
 # Declared and assigned here, never read from the environment. scratch_dir writes
 # this variable in this process, so no export is needed -- and an inherited one
 # would be worse than useless: the prebuilt path would take a caller's directory
-# for scratch and create a FIFO in it at launch. That is data written into a
+# for scratch and create a channel file in it at launch. That is data written into a
 # directory this tool never created. The scratch the channel is minted in is
 # passed to the mint explicitly instead, so no code path has to trust a value it
 # did not set.
@@ -792,12 +801,17 @@ child_running() {
 # drain_gh_group_fd — read every line the helper has published on the channel,
 # and stop when it has written none. Sets published_gh_pgid.
 #
-# The read has to end at an empty channel or the forced stop would block with
-# nothing left to read: `read -t 0` is the poll ("is input buffered?"), and the
-# blocking read after it returns at once. A line here is a sign, a decimal group
-# id and a newline, which is far under any pipe buffer, so a poll that succeeds
-# always has a whole line behind it. `-t 0` is a poll rather than a timeout, so
-# an empty drain costs nothing.
+# The read ends at end-of-file on its own, because the channel is a regular file
+# and the read offset is this script's read descriptor: `read <&4` past the last
+# byte returns at once instead of waiting for a writer the way a named pipe's
+# read does. A line here is a sign, a decimal group id and a newline, appended in
+# whole lines by the helper's single write each, so the read never has to
+# reassemble one. An empty drain costs one read that returns empty.
+#
+# Reading through a descriptor this script opened read-only, and not through the
+# helper's write descriptor, is what makes the offset the launcher's: a
+# read-write descriptor shared with the helper would advance under the helper's
+# appends and skip lines.
 #
 # It has to be called from this script's own shell, never through a command
 # substitution: a subshell's drain would consume the channel and throw the
@@ -816,9 +830,8 @@ child_running() {
 # group is never one of them.
 drain_gh_group_fd() {
   local line sign
-  [ -n "${gh_group_fd:-}" ] || return 0
-  while IFS= read -r -t 0 -u "$gh_group_fd"; do
-    IFS= read -r -u "$gh_group_fd" line || break
+  [ -n "${gh_group_read_fd:-}" ] || return 0
+  while IFS= read -r line <&"$gh_group_read_fd"; do
     case "$line" in
       '') continue ;;
     esac
@@ -1148,18 +1161,19 @@ interrupted() {
 finish() {
   local status=$?
   # The channel names a process group while it is open, and a group id is
-  # reused. Closing the descriptor is what retires it: nothing outside this
-  # process holds the FIFO's inode, so nothing outlives the close. Both
-  # directions are closed, because this script opened it both ways.
+  # reused. Closing the descriptors is what retires it: nothing outside this
+  # process holds the file's inode, so nothing outlives the close. Both are
+  # closed, because this script opened both: the helper's write descriptor and
+  # the launcher's read descriptor.
   #
   # Only when this script minted it. A run that never minted a channel has no
-  # claim on descriptor 3, and closing a caller's inherited one would take a
-  # descriptor this script does not own.
-  if [ -n "${gh_group_fd:-}" ]; then
-    { exec 3>&- 3<&-; } 2>/dev/null || true
+  # claim on descriptors 3 and 4, and closing a caller's inherited ones would
+  # take descriptors this script does not own.
+  if [ -n "${gh_group_fd:-}" ] || [ -n "${gh_group_read_fd:-}" ]; then
+    { exec 3>&- 4<&-; } 2>/dev/null || true
   fi
   # The prebuilt path's private directory is normally unlinked and removed by
-  # the mint itself. It survives only when the mint could not unlink the FIFO
+  # the mint itself. It survives only when the mint could not unlink the file
   # there, and it holds nothing else this script needs.
   if [ -n "$gh_private_dir" ]; then
     rmdir "$gh_private_dir" 2>/dev/null || true
@@ -1180,24 +1194,36 @@ finish() {
 # it: a prebuilt helper calls `gh` exactly as a built one does, and the forced
 # stop is the same code.
 #
-# The channel is an UNLINKED FIFO opened read-write on FD 3. Opening both ways
-# means the open never blocks on a missing peer and never sees end-of-file
-# while this script holds it, and the unlink removes the last name for it, so
-# from that moment the descriptor is the only way to reach it. Nothing outside
-# this process can then write a group id into it, or replace it with something
-# else -- which is the whole point: the launcher has to decide whether to signal
-# a group id at a moment when a scratch ancestor may already have become
-# world-writable, and a descriptor cannot be redirected by a rename while a path
-# can.
+# The channel is an UNLINKED REGULAR FILE, opened on two descriptors: FD 3
+# append-only for the helper, FD 4 read-only for this script. The unlink removes
+# the last name for it, so from that moment the descriptors are the only way to
+# reach it. Nothing outside this process can then write a group id into it, or
+# replace it with something else -- which is the whole point: the launcher has to
+# decide whether to signal a group id at a moment when a scratch ancestor may
+# already have become world-writable, and a descriptor cannot be redirected by a
+# rename while a path can.
 #
-# Opening FD 3 rather than an arbitrary descriptor is deliberate: it is the
-# number the helper is told, and a number this script opens itself cannot be a
-# caller's inherited descriptor holding something else.
+# Why a regular file and not a FIFO. A FIFO's writer blocks once the pipe buffer
+# is full (64 KiB), so a helper that published during a long wait could stall
+# behind a channel its own launcher was not draining. A regular file never blocks
+# a write that fits in the filesystem, and its read end reports end-of-file the
+# moment the file is exhausted on every bash (macOS 3.2 included), so the drain
+# returns at once instead of needing a `read -t 0` poll, whose behaviour differs
+# across versions.
 #
-# The FIFO is created inside a private directory, never at a name an attacker
+# The read descriptor is opened BEFORE the helper starts, at offset 0, so every
+# line the helper appends is read exactly once and in order. It is deliberately
+# not passed to the helper: see start_helper.
+#
+# The file is created inside a private directory, never at a name an attacker
 # can predict: a shared TMPDIR that permits symlink traversal would otherwise
-# let another local user pre-create the name. mkfifo refuses an existing entry,
-# so a planted link or file makes the mint fail instead of being opened.
+# let another local user pre-create the name. Creation goes through noclobber
+# (`set -C`), so an entry already at the name -- a planted link or file -- makes
+# the create fail instead of being followed or truncated.
+#
+# Opening FD 3 and FD 4 rather than arbitrary numbers is deliberate: 3 is the
+# number the helper is told, and 4 is a number this script opens itself, so
+# neither can be a caller's inherited descriptor holding something else.
 #
 # The build path already has private scratch (scratch_dir's `mktemp -d`), so it
 # uses that, passed in as this function's argument. The prebuilt path has none,
@@ -1212,14 +1238,15 @@ finish() {
 # directory this tool never created, and the fix is that no code path trusts a
 # variable it did not set.
 #
-# A channel that cannot be minted leaves gh_group_fd empty and the run
+# A channel that cannot be minted leaves the descriptors empty and the run
 # continues. The prebuilt path is the one an operator uses to point at a helper
 # they built themselves, and the channel only widens what a forced stop can
 # reach: the descendant walk still covers a helper with a call in its tree. A
 # hardening change must not become the reason that path cannot start.
 mint_gh_group_channel() {
-  local scratch="${1:-}" dir fifo
+  local scratch="${1:-}" dir channel
   gh_group_fd=""
+  gh_group_read_fd=""
   if [ -n "$scratch" ]; then
     dir="$scratch"
   else
@@ -1240,34 +1267,44 @@ mint_gh_group_channel() {
       return 0
     fi
   fi
-  fifo="$dir/gh-group.fifo"
-  if ! mkfifo -m 0600 "$fifo" 2>/dev/null; then
+  channel="$dir/gh-group"
+  # A fresh, empty, mode-0600 file. `set -C` (noclobber) refuses to truncate an
+  # existing entry, so a name another user planted here fails the create rather
+  # than being opened through.
+  if ! (umask 077 && set -C && : > "$channel") 2>/dev/null; then
     [ -n "$scratch" ] || rmdir "$dir" 2>/dev/null || true
     return 0
   fi
-  # The open is contained: a FIFO that cannot be opened leaves the run without
+  # The opens are contained: a file that cannot be opened leaves the run without
   # a channel rather than ending it. Under set -e a bare redirection failure here
   # would end the script through the EXIT trap with a launcher status.
   #
-  # The redirect belongs to the BRACE GROUP, not to the exec. `exec 3<>"$fifo"
+  # The redirect belongs to the BRACE GROUP, not to the exec. `exec 3>>"$channel"
   # 2>/dev/null` applies both redirections to this shell permanently, so it would
   # send every later message -- the survivor diagnostics included -- to /dev/null.
   # A group redirect is restored when the group ends, and FD 3, which exec applies
   # to the shell, survives it.
-  if ! { exec 3<>"$fifo"; } 2>/dev/null; then
-    rm -f "$fifo" 2>/dev/null || true
+  #
+  # Append-only for the helper, so its writes extend the file rather than writing
+  # over lines already published; read-only for this script, whose offset then
+  # advances only with its own reads. FD 4 is opened before anything can append,
+  # so its offset starts at the beginning of the file.
+  if ! { exec 3>>"$channel"; } 2>/dev/null || ! { exec 4<"$channel"; } 2>/dev/null; then
+    { exec 3>&- 4<&-; } 2>/dev/null || true
+    rm -f "$channel" 2>/dev/null || true
     [ -n "$scratch" ] || rmdir "$dir" 2>/dev/null || true
     return 0
   fi
-  # The unlink is the point, not tidiness: after it, no path names the FIFO and
-  # FD 3 is the only handle. A directory that cannot be removed here is left to
-  # the EXIT trap.
-  rm -f "$fifo" 2>/dev/null || true
+  # The unlink is the point, not tidiness: after it, no path names the file and
+  # the descriptors are the only handles. A directory that cannot be removed
+  # here is left to the EXIT trap.
+  rm -f "$channel" 2>/dev/null || true
   if [ -z "$scratch" ]; then
     gh_private_dir="$dir"
     rmdir "$dir" 2>/dev/null || true
   fi
   gh_group_fd=3
+  gh_group_read_fd=4
   return 0
 }
 
@@ -1299,6 +1336,11 @@ start_helper() {
   # publishes on, and it is not one of the three the shell gives a child, so
   # this is the only fd 3 the helper can see.
   #
+  # FD 4, this script's read end, is closed for the helper: `4<&-` on the launch
+  # command takes it out of the child's descriptor table. The helper is given one
+  # descriptor, the one it writes, so it can neither read the launcher's lines
+  # back nor append through a descriptor whose offsets it does not own.
+  #
   # It is NOT passed in the environment by number alone. The helper is told the
   # number so it can write to it, and the number is 3 because this script opened
   # 3. A wrapper started through EVENER_DEV_BIN inherits the descriptor too: it
@@ -1308,7 +1350,7 @@ start_helper() {
   launching=true
   set -m
   env GOFLAGS= EVENER_MERGEQ_GH_GROUP_FD="${gh_group_fd:-}" "$1" dev merge-enqueue \
-    --repo "$repo" --pr "$pr" --wait "$wait" ${jump[@]+"${jump[@]}"} &
+    --repo "$repo" --pr "$pr" --wait "$wait" ${jump[@]+"${jump[@]}"} 4<&- &
   set +m
   child=$!
   child_is_helper=true

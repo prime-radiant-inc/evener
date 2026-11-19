@@ -5325,7 +5325,10 @@ func TestMergeEnqueueLauncherStopsARecordedBuildGroupAfterItsLeaderDied(t *testi
 func TestMergeEnqueueLauncherReapStopsARecordedBuildGroupWhoseLeaderDied(t *testing.T) {
 	t.Parallel()
 	group, member := startGroupLeaderThatLeavesAMember(t)
-	expr := `child="$2"; child_is_helper=false; child_group="$2"; helper_started=false; gh_group_fd=""; published_gh_pgid=""; reap_child`
+	// Both channel descriptors are cleared, not only the write one: the drain
+	// reads through gh_group_read_fd, and a seam that left it set would drain a
+	// descriptor this shell never opened.
+	expr := `child="$2"; child_is_helper=false; child_group="$2"; helper_started=false; gh_group_fd=""; gh_group_read_fd=""; published_gh_pgid=""; reap_child`
 	if err := runLauncherStopFunc(t, expr, strconv.Itoa(group)); err != nil {
 		t.Fatalf("reap_child on the dead build leader %d failed: %v", group, err)
 	}
@@ -5372,11 +5375,23 @@ set -uo pipefail
 exec 9<>"$EVENER_FIXTURE_GATE"
 set -m
 sh -c 'IFS= read -r _ <&3 || exit 1; exec 3<&-; exec "$@"' _ "$EVENER_FIXTURE_CALL" 3<"$EVENER_FIXTURE_GATE" 9<&- &
-printf 'gate-pid=%s\n' "$!" >> "$EVENER_FIXTURE_LOG"
+child=$!
+printf 'gate-pid=%s\n' "$child" >> "$EVENER_FIXTURE_LOG"
 if [ "${EVENER_FIXTURE_RELEASE:-}" = true ]; then
-  printf '%s\n' "$$" >&"${EVENER_MERGEQ_GH_GROUP_FD:?the launcher named no group channel}"
+  # The gated child's pid, not this helper's: the child is in a group of its
+  # own, so its id is the group a launcher would have to stop. Publishing the
+  # helper's own pid names a group the launcher already recorded at launch.
+  printf '+%s\n' "$child" >&"${EVENER_MERGEQ_GH_GROUP_FD:?the launcher named no group channel}"
   printf 'releasing\n' >> "$EVENER_FIXTURE_LOG"
   printf 'go\n' >&9
+  # Waited, so the released call has ended before this helper exits 0. Without
+  # it the helper can exit while the call is still running, and the launcher's
+  # post-exit census reads the published group as a call left behind: the run
+  # would be reported as 2 for a helper that ended cleanly.
+  wait "$child"
+  # And cleared, because the call it named has ended: a group left published is
+  # one the launcher may signal after its id was reused.
+  printf '%s\n' "-$child" >&"${EVENER_MERGEQ_GH_GROUP_FD}"
   exit 0
 fi
 printf 'helper-dying\n' >> "$EVENER_FIXTURE_LOG"
