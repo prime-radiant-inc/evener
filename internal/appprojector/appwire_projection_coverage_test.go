@@ -3,6 +3,7 @@ package appprojector
 import (
 	"testing"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/appwire"
 )
 
@@ -260,5 +261,97 @@ func TestMergeAppwireDelegateInfoForwardsANewerHoldSequenceWithIdenticalFields(t
 	// An exact duplicate is still suppressed: nothing changed, nothing to send.
 	if _, changed := mergeAppwireDelegateInfo(merged, clearedHold); changed {
 		t.Fatal("an exact duplicate hold frame published an update")
+	}
+}
+
+// A coordinator parked in its finalization drain on open descendant subagents
+// reports that wait instead of its frozen pre-drain intent. The wait is a hold
+// sample like the job hold: it must survive the unchanged-revision merge, clear
+// on release, and obey the source sequence rather than arrival order. Before
+// the fields were carried through the projector the frame was dropped, so a
+// loaded row kept the intent it had when the coordinator parked.
+func TestMergeAppwireDelegateInfoSubagentHoldRidesTheSameSequence(t *testing.T) {
+	base := appwire.EvenerDelegateInfo{
+		DelegateID:         "dlg_1",
+		ProjectionRevision: 4,
+		Status:             "running",
+		LatestActivityAt:   "2024-01-01T00:00:00Z",
+	}
+	held := base
+	held.DrainHeldBySubagents = true
+	held.RunningSubagentCount = 2
+	held.HoldSequence = 7
+
+	merged, changed := mergeAppwireDelegateInfo(base, held)
+	if !changed {
+		t.Fatal("the subagent hold at an unchanged revision was dropped; a loaded row would never learn the wait")
+	}
+	if !merged.DrainHeldBySubagents || merged.RunningSubagentCount != 2 || merged.HoldSequence != 7 {
+		t.Fatalf("merged subagent hold = %v, count = %d, sequence = %d; want the source's two-subagent sample at 7",
+			merged.DrainHeldBySubagents, merged.RunningSubagentCount, merged.HoldSequence)
+	}
+
+	// One descendant finished: the same hold with a smaller count and a later
+	// sequence. It is news, and it must replace the count.
+	one := base
+	one.DrainHeldBySubagents = true
+	one.RunningSubagentCount = 1
+	one.HoldSequence = 8
+	reduced, changed := mergeAppwireDelegateInfo(merged, one)
+	if !changed || reduced.RunningSubagentCount != 1 || reduced.HoldSequence != 8 {
+		t.Fatalf("the reduced subagent hold did not land: changed = %v, count = %d, sequence = %d; want count 1 at 8",
+			changed, reduced.RunningSubagentCount, reduced.HoldSequence)
+	}
+
+	// A sample captured before the hold, delivered after it, cannot clear it.
+	stale := base
+	stale.HoldSequence = 3
+	kept, changed := mergeAppwireDelegateInfo(reduced, stale)
+	if changed {
+		t.Fatal("a sample older than the subagent hold cleared it; the row would lose the wait for its whole duration")
+	}
+	if !kept.DrainHeldBySubagents || kept.RunningSubagentCount != 1 {
+		t.Fatalf("after the stale sample: hold = %v, count = %d; want the held sample kept",
+			kept.DrainHeldBySubagents, kept.RunningSubagentCount)
+	}
+
+	// The release carries a later sequence than the hold it ends.
+	released := base
+	released.HoldSequence = 12
+	done, changed := mergeAppwireDelegateInfo(reduced, released)
+	if !changed || done.DrainHeldBySubagents || done.RunningSubagentCount != 0 {
+		t.Fatalf("the subagent release did not land: changed = %v, hold = %v, count = %d; want it cleared",
+			changed, done.DrainHeldBySubagents, done.RunningSubagentCount)
+	}
+
+	// A strictly newer sequence is news even when the displayed fields match the
+	// cleared ones, so a client that saw the wait from a read can clear it.
+	newerSequence := base
+	newerSequence.HoldSequence = 13
+	if _, changed := mergeAppwireDelegateInfo(done, newerSequence); !changed {
+		t.Fatal("a newer subagent hold sequence with identical displayed fields was dropped")
+	}
+}
+
+// The frame carries the subagent hold into the info the projector merges; a
+// frame that dropped it would erase a wait the capture had filled.
+func TestAppwireDelegateInfoCarriesTheSubagentHold(t *testing.T) {
+	info := appwireDelegateInfo(events.DelegateUpdatedData{
+		DelegateID:           "dlg_1",
+		DrainHeldBySubagents: true,
+		RunningSubagentCount: 3,
+		DrainHeldByJobs:      true,
+		RunningJobCount:      1,
+		HoldSequence:         5,
+		ProjectionRevision:   2,
+		Status:               "running",
+	})
+	if !info.DrainHeldBySubagents || info.RunningSubagentCount != 3 {
+		t.Fatalf("projected subagent hold = %v, count = %d; want the frame's three-subagent sample",
+			info.DrainHeldBySubagents, info.RunningSubagentCount)
+	}
+	if !info.DrainHeldByJobs || info.RunningJobCount != 1 || info.HoldSequence != 5 {
+		t.Fatalf("projected job hold = %v, count = %d, sequence = %d; want the frame's sample",
+			info.DrainHeldByJobs, info.RunningJobCount, info.HoldSequence)
 	}
 }

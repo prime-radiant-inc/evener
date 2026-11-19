@@ -325,10 +325,21 @@ function runningCommand(session: ActivitySessionNode | undefined): string | unde
 	return undefined;
 }
 
+/**
+ * The drain hold a delegate read carries. The activity tree does not carry it
+ * yet, so it is read structurally: a producer that supplies the fields makes a
+ * parked coordinator say what it waits on, and one that omits them leaves the
+ * branch inert.
+ */
+type DrainHeldDelegate = ActivityDelegate & {
+	drainHeldBySubagents?: boolean;
+	runningSubagentCount?: number;
+};
+
 /** The latest activity or outcome (spec 9) from what the tree carries
  * (ruling 6). */
 export function subagentWhy(row: SubagentRow, now: number): SubagentWhy {
-	const delegate = row.delegate;
+	const delegate: DrainHeldDelegate = row.delegate;
 	if (row.state === "failed") return { kind: "failed", word: "Failed", text: delegateEndingText(delegate) ?? "" };
 	if (row.state === "done") {
 		if (row.stopped) return { kind: "stopped", text: "Stopped" };
@@ -336,6 +347,11 @@ export function subagentWhy(row: SubagentRow, now: number): SubagentWhy {
 			typeof delegate.reportPreview === "string" ? firstLine(plainQuoteLine(delegate.reportPreview), 120) : "";
 		return report ? { kind: "report", text: report } : { kind: "finished", text: "Finished" };
 	}
+	// A coordinator parked in its finalization drain on open descendants has a
+	// frozen pre-drain intent: the drain took the run, so nothing moves the
+	// intent until it ends. Name the wait instead of repeating that line.
+	const drainHeld = delegate.drainHeldBySubagents ? (delegate.runningSubagentCount ?? 0) : 0;
+	if (drainHeld > 0) return { kind: "waiting", text: waitingOnSubagents(drainHeld) };
 	// The shared display rule: a running row's non-empty stated intent stands
 	// in for the whole line. The predicate's empty answer is the point — this
 	// line has no word of its own to keep, so the rule alone decides, and

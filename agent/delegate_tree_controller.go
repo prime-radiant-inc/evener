@@ -48,10 +48,18 @@ type delegateTreeControllerConfig struct {
 // decide whether the source sequence must advance. It is comparable so an
 // unchanged re-read reuses the sequence it already had, and nothing is
 // published for a sample that did not move.
+//
+// One sample carries both waits the finalization drain can hold a run open on:
+// the delegate's own managed shells (heldJobs) and the descendant delegates
+// still open below it (heldSubagents). They are one fact to a reader — "this
+// delegate is parked, here is what it waits on" — and one order, so a client
+// that saw one shape can tell a later sample from an older one.
 type delegateHoldSample struct {
-	held   bool
-	count  int
-	oldest time.Time
+	heldJobs      bool
+	jobCount      int
+	oldestJob     time.Time
+	heldSubagents bool
+	subagentCount int
 }
 
 // delegateHoldEntry pairs the last sample handed out for a delegate with the
@@ -967,16 +975,23 @@ func (c *delegateTreeController) delegateOwnerOfSessionLocked(sessionID string) 
 	return ""
 }
 
-// runningJobsForDelegateLocked reports whether the delegate's run is held open
-// by its own finalization drain, and if so how many managed shell jobs that
-// drain is waiting on and when the oldest started.
+// sampleDrainHoldLocked reads what the delegate's run is held open on, without
+// advancing the sequence. It is the pure half of the join so that callers which
+// only need to compare a sample — changedDrainHoldAncestorsLocked — cannot
+// publish a sequence bump as a side effect of asking.
 //
-// The caller holds c.mu. The hold is two facts together, and neither alone is
-// the answer: the child session must be inside its finalization drain
-// (Session.drainHeld), and one of its own managed shells must still be running
-// (runningOwnedShellJobs, which filters with the drain's own isOwnedDrainJob).
-// A delegate mid-turn that merely started a background shell has the count and
-// no hold — it is still working, and its row must keep saying so.
+// The caller holds c.mu. The hold is the session's own state: its child session
+// must be inside its finalization drain (Session.drainHeld). Only then do the
+// two things it can wait on count:
+//
+//   - its own managed shells (runningOwnedShellJobs, filtered by the drain's
+//     isOwnedDrainJob), and
+//   - the descendant delegates still open below it, from this delegate's own
+//     subtree minus any run that is terminal.
+//
+// A delegate mid-turn that merely started a background shell or a subagent has
+// the counts and no hold — it is still working, and its row must keep saying
+// so.
 //
 // A delegate with no live runtime — a retained read, or a released delegate —
 // is not held, because entering the drain appends no durable event for a
@@ -985,20 +1000,102 @@ func (c *delegateTreeController) delegateOwnerOfSessionLocked(sessionID string) 
 //
 // An unstated start time counts as neither the oldest nor zero: a job whose
 // record has no start cannot claim to be the oldest wait.
-func (c *delegateTreeController) runningJobsForDelegateLocked(delegateID string) (bool, int, time.Time, uint64) {
+func (c *delegateTreeController) sampleDrainHoldLocked(delegateID string) delegateHoldSample {
 	if c == nil || delegateID == "" {
-		return false, 0, time.Time{}, 0
+		return delegateHoldSample{}
 	}
 	live := c.live[delegateID]
-	if live == nil || live.runtime == nil || live.runtime.jobManager == nil {
-		return false, 0, time.Time{}, 0
+	if live == nil || live.runtime == nil || !live.runtime.drainHeld.Load() {
+		return delegateHoldSample{}
 	}
-	count, oldest := live.runtime.jobManager.runningOwnedShellJobs()
-	held := live.runtime.drainHeld.Load() && count > 0
-	if !held {
-		count, oldest = 0, time.Time{}
+	var sample delegateHoldSample
+	if live.runtime.jobManager != nil {
+		if count, oldest := live.runtime.jobManager.runningOwnedShellJobs(); count > 0 {
+			sample.heldJobs, sample.jobCount, sample.oldestJob = true, count, oldest
+		}
 	}
-	return held, count, oldest, c.holdSequenceForLocked(delegateID, held, count, oldest)
+	running := 0
+	for id := range c.subtreeMembersLocked(delegateID) {
+		if id == delegateID {
+			continue
+		}
+		aggregate := c.durable[id]
+		if aggregate != nil && !delegateRunTerminal(aggregate.LatestOutcome, aggregate.CurrentRunOpen) {
+			running++
+		}
+	}
+	if running > 0 {
+		sample.heldSubagents, sample.subagentCount = true, running
+	}
+	return sample
+}
+
+// drainHoldForDelegateLocked samples the delegate's hold and returns the
+// sequence that orders it. The caller holds c.mu.
+func (c *delegateTreeController) drainHoldForDelegateLocked(delegateID string) (delegateHoldSample, uint64) {
+	if c == nil || delegateID == "" {
+		return delegateHoldSample{}, 0
+	}
+	sample := c.sampleDrainHoldLocked(delegateID)
+	return sample, c.holdSequenceForLocked(delegateID, sample)
+}
+
+// changedDrainHoldAncestorsLocked returns snapshots of the live ancestors whose
+// drain hold has moved but which the plan does not already publish.
+//
+// An ancestor parked in its drain publishes nothing of its own when the shape
+// of its wait changes: a descendant finishing appends no event for the
+// ancestor, and its drainHeld flag does not move. Only an event from the
+// descendant itself reaches the tree, so the descendant's publication must also
+// carry the ancestors whose sampled hold it just changed — otherwise a
+// coordinator's row would keep the count it had when it parked.
+//
+// The walk is cycle-safe over a corrupt journal's parent loop, and it stops at
+// a released ancestor (no live runtime), whose own release frame closes the
+// wait it could have been reporting. The caller holds c.mu.
+func (c *delegateTreeController) changedDrainHoldAncestorsLocked(rows []delegateSnapshot) []delegateSnapshot {
+	if c == nil || len(rows) == 0 {
+		return nil
+	}
+	already := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		already[row.id] = struct{}{}
+	}
+	visited := make(map[string]struct{})
+	changed := make([]string, 0, len(rows))
+	for _, row := range rows {
+		current := row.parentID
+		for current != "" {
+			if _, seen := visited[current]; seen {
+				break
+			}
+			visited[current] = struct{}{}
+			aggregate := c.durable[current]
+			if aggregate == nil {
+				break
+			}
+			if _, dup := already[current]; !dup {
+				if live := c.live[current]; live != nil && live.runtime != nil {
+					sample := c.sampleDrainHoldLocked(current)
+					prior, known := c.holdSamples[current]
+					// Never sampled: a nonzero sample is news, the zero one is not.
+					moved := sample != (delegateHoldSample{})
+					if known {
+						moved = prior.sample != sample
+					}
+					if moved {
+						changed = append(changed, current)
+					}
+				}
+			}
+			current = aggregate.Descriptor.ParentDelegateID
+		}
+	}
+	if len(changed) == 0 {
+		return nil
+	}
+	sort.Strings(changed)
+	return c.captureDelegateSnapshotsLocked(changed)
 }
 
 // holdSequenceForLocked returns the sequence number of this delegate's sampled
@@ -1015,8 +1112,7 @@ func (c *delegateTreeController) runningJobsForDelegateLocked(delegateID string)
 //
 // The bump is keyed on the sampled value, so re-reading an unchanged hold
 // returns the same sequence and publishes nothing. The caller holds c.mu.
-func (c *delegateTreeController) holdSequenceForLocked(delegateID string, held bool, count int, oldest time.Time) uint64 {
-	sample := delegateHoldSample{held: held, count: count, oldest: oldest}
+func (c *delegateTreeController) holdSequenceForLocked(delegateID string, sample delegateHoldSample) uint64 {
 	if prior, ok := c.holdSamples[delegateID]; ok && prior.sample == sample {
 		return prior.sequence
 	}

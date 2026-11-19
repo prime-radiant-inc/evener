@@ -64,3 +64,90 @@ test("the job count phrases the hold and nothing more", () => {
   // phrase one, and an unphrased hold is not rendered at all.
   expect(delegateWaitText({ terminal: false, drainHeldByJobs: true })).toBe("");
 });
+
+// A coordinator parked in its finalization drain on open descendant subagents
+// is waiting exactly as one parked on its own jobs is. The same hold gates it,
+// so a running delegate with children keeps its intent: only the drain flag
+// makes the count a wait.
+test("a subagent hold reads as a wait, and its count phrases it", () => {
+  const held = { terminal: false, drainHeldBySubagents: true, runningSubagentCount: 2 };
+  const wait = delegateWaitText(held);
+  expect(wait).not.toBe("");
+  expect(wait).toContain("2");
+  // Held outranks the frozen pre-drain intent.
+  expect(delegateWorkText({ ...held, latestIntent: "Retrying the flaky search." }, "working")).toBe(wait);
+
+  // Singular and plural are different claims about how many are still open.
+  const one = delegateWaitText({ terminal: false, drainHeldBySubagents: true, runningSubagentCount: 1 });
+  const many = delegateWaitText({ terminal: false, drainHeldBySubagents: true, runningSubagentCount: 4 });
+  expect(one).not.toBe("");
+  expect(many).not.toBe("");
+  expect(one).not.toBe(many);
+  expect(one).toContain("1");
+
+  // The count alone is a delegate still working, not a wait.
+  const working = { terminal: false, runningSubagentCount: 3 };
+  expect(delegateWaitText(working)).toBe("");
+  expect(delegateWorkText({ ...working, latestIntent: "Reading." }, "working")).toBe("Reading.");
+  // A hold with nothing countable states no wait.
+  expect(delegateWaitText({ terminal: false, drainHeldBySubagents: true })).toBe("");
+  expect(delegateWaitText({ terminal: true, drainHeldBySubagents: true, runningSubagentCount: 2 })).toBe("");
+});
+
+// A delegate can be parked on both at once: its own shells and the descendants
+// below it. Neither count may hide the other.
+test("a hold on both jobs and subagents reports both counts", () => {
+  const both = delegateWaitText({
+    terminal: false,
+    drainHeldByJobs: true,
+    runningJobCount: 2,
+    drainHeldBySubagents: true,
+    runningSubagentCount: 3,
+  });
+  expect(both).not.toBe("");
+  expect(both).toContain("2");
+  expect(both).toContain("3");
+  // It is a different claim from either half alone.
+  expect(both).not.toBe(delegateWaitText({ terminal: false, drainHeldByJobs: true, runningJobCount: 2 }));
+  expect(both).not.toBe(delegateWaitText({ terminal: false, drainHeldBySubagents: true, runningSubagentCount: 3 }));
+});
+
+// A caller that renders the waiting subagents expanded below the row passes
+// omitSubagents so the row does not repeat them. The frozen pre-drain intent
+// must NOT come back in their place: the delegate is still parked, and the
+// intent stopped moving when the drain took the run.
+test("omitting subagents leaves a subagent-only wait blank instead of the frozen intent", () => {
+  const held = {
+    terminal: false,
+    drainHeldBySubagents: true,
+    runningSubagentCount: 2,
+    latestIntent: "Retrying the flaky search.",
+  };
+  expect(delegateWorkText(held, "working", { omitSubagents: true })).toBe("");
+
+  // The jobs the caller is not rendering still show: only the subagent half is
+  // omitted.
+  const both = delegateWorkText({ ...held, drainHeldByJobs: true, runningJobCount: 1 }, "working", {
+    omitSubagents: true,
+  });
+  expect(both).not.toBe("");
+  expect(both).toContain("1");
+  expect(both).not.toContain("subagent");
+
+  // Nothing to omit when the drain holds no subagent: the intent stands.
+  expect(
+    delegateWorkText(
+      { terminal: false, drainHeldBySubagents: false, runningSubagentCount: 0, latestIntent: "Reading." },
+      "working",
+      { omitSubagents: true },
+    ),
+  ).toBe("Reading.");
+  // Nor is a terminal row affected by the option.
+  expect(
+    delegateWorkText(
+      { terminal: true, outcome: "completed", drainHeldBySubagents: true, runningSubagentCount: 2 },
+      "completed",
+      { omitSubagents: true },
+    ),
+  ).toBe("completed");
+});

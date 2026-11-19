@@ -174,6 +174,17 @@ type SessionDelegate struct {
 	// jobs, so a row can say how long the wait has lasted. Empty whenever
 	// RunningJobCount is absent.
 	OldestRunningJobStartedAt string `json:"oldestRunningJobStartedAt,omitempty"`
+	// DrainHeldBySubagents is the same hold for descendant open subagents: this
+	// delegate's finalization drain is holding its run open on the delegates
+	// counted below, so its stated intent is frozen for the whole wait. A
+	// coordinator mid-turn with the same running children is NOT held. Like
+	// DrainHeldByJobs only the live read produces it, so an omission never
+	// reads as "known free".
+	DrainHeldBySubagents bool `json:"drainHeldBySubagents,omitempty"`
+	// RunningSubagentCount is how many descendant delegates are open while that
+	// hold is set: the whole subtree the drain waits on, not just direct
+	// children. Absent whenever the hold is, so it never reports a count alone.
+	RunningSubagentCount int `json:"runningSubagentCount,omitempty"`
 	// HoldSequence orders DrainHeldByJobs against the other samples of the same
 	// delegate's hold. The hold is a per-row fact whose samples can reach a
 	// client out of order — a publisher that sampled before another can send

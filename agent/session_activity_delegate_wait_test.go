@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -15,6 +16,340 @@ import (
 	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
+
+// The four prompts the subagent-drain fixture's adapter routes on. They are
+// distinct so one cannot prefix another, and each appears as the assignment
+// user message of exactly one session.
+const (
+	subagentDrainCoordinatorPrompt = "COORDINATOR_DRAIN_HOLD_TASK"
+	subagentDrainWorkerOnePrompt   = "WORKER_ONE_DRAIN_HOLD_TASK"
+	subagentDrainWorkerTwoPrompt   = "WORKER_TWO_DRAIN_HOLD_TASK"
+	subagentDrainGrandchildPrompt  = "GRANDCHILD_DRAIN_HOLD_TASK"
+)
+
+// subagentDrainAdapter routes each session by its first user message and
+// counts the calls to that session's script. It holds no mutex across a
+// blocking step: the whole point of the fixture is several sessions blocked in
+// Complete at once, and the shared fakeAdapter's lock would serialize them.
+type subagentDrainAdapter struct {
+	name string
+
+	mu    sync.Mutex
+	steps map[string]int
+
+	coordinatorReached chan struct{}
+	coordinatorRelease chan struct{}
+	workerOneReached   chan struct{}
+	workerOneRelease   chan struct{}
+	workerTwoReached   chan struct{}
+	workerTwoSpawn     chan struct{}
+	workerTwoParked    chan struct{}
+	workerTwoRelease   chan struct{}
+	grandchildReached  chan struct{}
+	grandchildRelease  chan struct{}
+
+	coordinatorOnce   sync.Once
+	workerOneOnce     sync.Once
+	workerTwoOnce     sync.Once
+	workerTwoParkOnce sync.Once
+	grandchildOnce    sync.Once
+
+	coordinatorReleaseOnce sync.Once
+	workerOneReleaseOnce   sync.Once
+	workerTwoSpawnOnce     sync.Once
+	workerTwoReleaseOnce   sync.Once
+	grandchildReleaseOnce  sync.Once
+}
+
+// release closes ch exactly once, so a test that releases a step in the middle
+// of its script and again in cleanup cannot panic on the second close.
+func closeStepOnce(once *sync.Once, ch chan struct{}) {
+	once.Do(func() { close(ch) })
+}
+
+func newSubagentDrainAdapter() *subagentDrainAdapter {
+	return &subagentDrainAdapter{
+		name:               "openai",
+		steps:              make(map[string]int),
+		coordinatorReached: make(chan struct{}),
+		coordinatorRelease: make(chan struct{}),
+		workerOneReached:   make(chan struct{}),
+		workerOneRelease:   make(chan struct{}),
+		workerTwoReached:   make(chan struct{}),
+		workerTwoSpawn:     make(chan struct{}),
+		workerTwoParked:    make(chan struct{}),
+		workerTwoRelease:   make(chan struct{}),
+		grandchildReached:  make(chan struct{}),
+		grandchildRelease:  make(chan struct{}),
+	}
+}
+
+func (a *subagentDrainAdapter) Name() string { return a.name }
+
+func (a *subagentDrainAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
+	return nil, llm.ErrStreamUnsupported
+}
+
+func (a *subagentDrainAdapter) Complete(_ context.Context, req llm.Request) (llm.Response, error) {
+	// The session title namer calls with no tools; answering it immediately is
+	// what keeps it from consuming a scripted step.
+	if len(req.Tools) == 0 {
+		return agenttest.FinalResponse("title"), nil
+	}
+	prompt := subagentDrainPrompt(req)
+	a.mu.Lock()
+	a.steps[prompt]++
+	step := a.steps[prompt]
+	a.mu.Unlock()
+	switch prompt {
+	case subagentDrainCoordinatorPrompt:
+		switch step {
+		case 1:
+			return delegateToolCall("coordinator-worker-one", map[string]any{"prompt": subagentDrainWorkerOnePrompt}), nil
+		case 2:
+			return delegateToolCall("coordinator-worker-two", map[string]any{"prompt": subagentDrainWorkerTwoPrompt}), nil
+		default:
+			a.coordinatorOnce.Do(func() { close(a.coordinatorReached) })
+			<-a.coordinatorRelease
+			return agenttest.FinalResponse("coordinator parked in its drain"), nil
+		}
+	case subagentDrainWorkerOnePrompt:
+		a.workerOneOnce.Do(func() { close(a.workerOneReached) })
+		<-a.workerOneRelease
+		return agenttest.FinalResponse("worker one finished"), nil
+	case subagentDrainWorkerTwoPrompt:
+		if step == 1 {
+			a.workerTwoOnce.Do(func() { close(a.workerTwoReached) })
+			<-a.workerTwoSpawn
+			return delegateToolCall("worker-two-grandchild", map[string]any{"prompt": subagentDrainGrandchildPrompt}), nil
+		}
+		a.workerTwoParkOnce.Do(func() { close(a.workerTwoParked) })
+		<-a.workerTwoRelease
+		return agenttest.FinalResponse("worker two finished"), nil
+	case subagentDrainGrandchildPrompt:
+		a.grandchildOnce.Do(func() { close(a.grandchildReached) })
+		<-a.grandchildRelease
+		return agenttest.FinalResponse("grandchild finished"), nil
+	}
+	return agenttest.FinalResponse("unscripted"), nil
+}
+
+// subagentDrainPrompt returns the assignment this session was given. Only user
+// messages are searched: a session's first user message is its environment
+// context, and its task follows it, while the tool-call arguments naming a
+// child's prompt live in assistant messages the walk never reads.
+func subagentDrainPrompt(req llm.Request) string {
+	for _, message := range req.Messages {
+		if message.Role != llm.RoleUser {
+			continue
+		}
+		text := message.Text()
+		for _, prompt := range []string{
+			subagentDrainCoordinatorPrompt,
+			subagentDrainWorkerOnePrompt,
+			subagentDrainWorkerTwoPrompt,
+			subagentDrainGrandchildPrompt,
+		} {
+			if strings.Contains(text, prompt) {
+				return prompt
+			}
+		}
+	}
+	return ""
+}
+
+// A coordinator delegate that ends its turn with child delegates still running
+// parks in its finalization drain for the whole wait, so its stated intent
+// freezes. The row must instead report the descendants it waits on, and every
+// change in that set must reach a loaded row as an ordered hold sample (#6693
+// extended to subagents).
+//
+// The fixture drives real delegates through real tool calls: the coordinator
+// starts two workers, then ends its turn while both are blocked in their
+// provider calls. Nothing is synthesized, and no step completes a subagent's
+// run on its own.
+func TestDelegateActivityRowReportsTheSubagentsItsDrainWaitsOn(t *testing.T) {
+	t.Parallel()
+	adapter := newSubagentDrainAdapter()
+	client := llm.NewClient()
+	client.Register(adapter)
+	parent, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
+		StateDir: t.TempDir(),
+		// Depth 3 is what makes the grandchild legal, and the root's delegation
+		// allowance follows it. Without the wider turn limit the two concurrent
+		// worker turns are refused as start_blocked instead of running.
+		MaxSubagentDepth:           3,
+		MaxConcurrentDelegateTurns: 6,
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			noSyncJobStore:      true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	var recorder sessionEventRecorder
+	stop := make(chan struct{})
+	stream := parent.Events()
+	go func() {
+		for {
+			select {
+			case event, ok := <-stream:
+				if !ok {
+					return
+				}
+				recorder.record(event)
+			case <-stop:
+				return
+			}
+		}
+	}()
+	// Release every blocked step before Close, or the tree's shutdown spends
+	// its join budget on provider calls that ignore cancellation.
+	t.Cleanup(parent.Close)
+	t.Cleanup(func() {
+		closeStepOnce(&adapter.coordinatorReleaseOnce, adapter.coordinatorRelease)
+		closeStepOnce(&adapter.workerOneReleaseOnce, adapter.workerOneRelease)
+		closeStepOnce(&adapter.workerTwoSpawnOnce, adapter.workerTwoSpawn)
+		closeStepOnce(&adapter.workerTwoReleaseOnce, adapter.workerTwoRelease)
+		closeStepOnce(&adapter.grandchildReleaseOnce, adapter.grandchildRelease)
+	})
+	t.Cleanup(func() { close(stop) })
+
+	result := parent.createDelegate(context.Background(), delegateArgs{Task: subagentDrainCoordinatorPrompt})
+	if result.Err != nil {
+		t.Fatalf("createDelegate: %v", result.Err)
+	}
+	coordinatorID := result.DelegateID
+	waitForDelegates(t, adapter.workerOneReached, "worker one to reach its provider call")
+	waitForDelegates(t, adapter.workerTwoReached, "worker two to reach its provider call")
+	waitForDelegates(t, adapter.coordinatorReached, "the coordinator to park before its final response")
+
+	// (a) Mid-turn with the same two running workers is NOT a drain hold: the
+	// coordinator is still working, and the fields must not claim otherwise.
+	midTurn := requireDelegateActivityRow(t, delegateActivityRows(t, parent), coordinatorID)
+	if midTurn.Terminal {
+		t.Fatal("the coordinator reads terminal mid-turn; the negative needs a live row")
+	}
+	if midTurn.DrainHeldBySubagents || midTurn.RunningSubagentCount != 0 {
+		t.Fatalf("mid-turn coordinator reports subagent hold %v / count %d; a running delegate is not parked",
+			midTurn.DrainHeldBySubagents, midTurn.RunningSubagentCount)
+	}
+
+	// (b) End the coordinator's turn. Its drain takes the run while both workers
+	// still run, so the row and the pushed frame report the two-subagent wait.
+	closeStepOnce(&adapter.coordinatorReleaseOnce, adapter.coordinatorRelease)
+	testwait.Until(t, "a pushed frame carrying the two-subagent hold", func() bool {
+		for _, frame := range recordedHoldFrames(&recorder, coordinatorID) {
+			if frame.DrainHeldBySubagents && frame.RunningSubagentCount == 2 {
+				return true
+			}
+		}
+		return false
+	})
+	held := requireDelegateActivityRow(t, delegateActivityRows(t, parent), coordinatorID)
+	if !held.DrainHeldBySubagents || held.RunningSubagentCount != 2 {
+		t.Fatalf("read row reports subagent hold %v / count %d while the drain waits on two workers; want the hold",
+			held.DrainHeldBySubagents, held.RunningSubagentCount)
+	}
+	heldFrame := lastFrameMatching(recordedHoldFrames(&recorder, coordinatorID), func(frame events.DelegateUpdatedData) bool {
+		return frame.DrainHeldBySubagents && frame.RunningSubagentCount == 2
+	})
+	if heldFrame.HoldSequence == 0 {
+		t.Fatal("the held frame carries no hold sequence; a client would have no order to apply")
+	}
+	if held.HoldSequence != heldFrame.HoldSequence {
+		t.Fatalf("read row holdSequence = %d while the frame said %d; the two carriers disagree about the same sample",
+			held.HoldSequence, heldFrame.HoldSequence)
+	}
+
+	// (c) One worker finishing drops the count without moving drainHeld, so the
+	// finishing descendant's own publication must carry the coordinator's
+	// updated sample.
+	closeStepOnce(&adapter.workerOneReleaseOnce, adapter.workerOneRelease)
+	testwait.Until(t, "a frame reporting the coordinator's one-subagent hold", func() bool {
+		for _, frame := range recordedHoldFrames(&recorder, coordinatorID) {
+			if frame.DrainHeldBySubagents && frame.RunningSubagentCount == 1 && frame.HoldSequence > heldFrame.HoldSequence {
+				return true
+			}
+		}
+		return false
+	})
+	one := lastFrameMatching(recordedHoldFrames(&recorder, coordinatorID), func(frame events.DelegateUpdatedData) bool {
+		return frame.DrainHeldBySubagents && frame.RunningSubagentCount == 1
+	})
+	oneRow := requireDelegateActivityRow(t, delegateActivityRows(t, parent), coordinatorID)
+	if !oneRow.DrainHeldBySubagents || oneRow.RunningSubagentCount != 1 || oneRow.HoldSequence != one.HoldSequence {
+		t.Fatalf("after one worker finished: read row hold %v / count %d / sequence %d; want the one-subagent hold at the frame's sequence %d",
+			oneRow.DrainHeldBySubagents, oneRow.RunningSubagentCount, oneRow.HoldSequence, one.HoldSequence)
+	}
+
+	// (d) A grandchild starting under the parked coordinator is a new descendant
+	// in its drain. The coordinator publishes nothing itself, so the
+	// descendant's update must also carry its ancestor's bumped sample.
+	closeStepOnce(&adapter.workerTwoSpawnOnce, adapter.workerTwoSpawn)
+	waitForDelegates(t, adapter.grandchildReached, "the grandchild to reach its provider call")
+	testwait.Until(t, "a frame reporting the coordinator's two-subagent hold again", func() bool {
+		for _, frame := range recordedHoldFrames(&recorder, coordinatorID) {
+			if frame.DrainHeldBySubagents && frame.RunningSubagentCount == 2 && frame.HoldSequence > one.HoldSequence {
+				return true
+			}
+		}
+		return false
+	})
+	two := lastFrameMatching(recordedHoldFrames(&recorder, coordinatorID), func(frame events.DelegateUpdatedData) bool {
+		return frame.DrainHeldBySubagents && frame.RunningSubagentCount == 2 && frame.HoldSequence > one.HoldSequence
+	})
+	twoRow := requireDelegateActivityRow(t, delegateActivityRows(t, parent), coordinatorID)
+	if !twoRow.DrainHeldBySubagents || twoRow.RunningSubagentCount != 2 || twoRow.HoldSequence != two.HoldSequence {
+		t.Fatalf("after the grandchild started: read row hold %v / count %d / sequence %d; want the two-subagent hold at the frame's sequence %d",
+			twoRow.DrainHeldBySubagents, twoRow.RunningSubagentCount, twoRow.HoldSequence, two.HoldSequence)
+	}
+
+	// (e) The remaining descendants finish, ending the drain. The settled row and
+	// the clearing frame both stop claiming the wait, and the clearing sample is
+	// ordered after the last held one.
+	closeStepOnce(&adapter.grandchildReleaseOnce, adapter.grandchildRelease)
+	closeStepOnce(&adapter.workerTwoReleaseOnce, adapter.workerTwoRelease)
+	var settled appwire.SessionDelegate
+	testwait.Until(t, "the coordinator's row to settle with no subagent hold", func() bool {
+		settled = requireDelegateActivityRow(t, delegateActivityRows(t, parent), coordinatorID)
+		return settled.Terminal && !settled.DrainHeldBySubagents && settled.RunningSubagentCount == 0
+	})
+	testwait.Until(t, "a clearing frame for the coordinator ordered after the last held sample", func() bool {
+		for _, frame := range recordedHoldFrames(&recorder, coordinatorID) {
+			if !frame.DrainHeldBySubagents && frame.RunningSubagentCount == 0 && frame.HoldSequence > two.HoldSequence {
+				return true
+			}
+		}
+		return false
+	})
+	if !settled.Terminal {
+		t.Fatal("the coordinator's row never settled after its descendants finished")
+	}
+}
+
+// lastFrameMatching returns the newest matching frame, or the zero value when
+// none matched. Callers have already waited for one to exist.
+func lastFrameMatching(frames []events.DelegateUpdatedData, match func(events.DelegateUpdatedData) bool) events.DelegateUpdatedData {
+	var found events.DelegateUpdatedData
+	for _, frame := range frames {
+		if match(frame) {
+			found = frame
+		}
+	}
+	return found
+}
+
+func waitForDelegates(t *testing.T, ch <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine; 30s only fires on a genuine hang.
+		t.Fatalf("timed out waiting for %s", what)
+	}
+}
 
 func delegateActivityRows(t *testing.T, s *Session) []appwire.SessionDelegate {
 	t.Helper()
