@@ -40,28 +40,32 @@ func (p *Prepared) requestWireModel(c *Call, sent *http.Request) string {
 	if c.ModelEndpoint == "" || sent == nil {
 		return ""
 	}
+	var model string
 	if sent.Body != nil && sent.Body != http.NoBody {
 		// A custom redirect hook can replace or consume Body independently of GetBody.
 		if p.customRedirect {
 			return ""
 		}
-		var body map[string]json.RawMessage
-		var model string
-		if json.Unmarshal(p.Body, &body) == nil && body["model"] != nil {
-			if json.Unmarshal(body["model"], &model) == nil {
-				return llm.SafeRequestWireModel(sent, model, p.material)
-			}
+		var body struct {
+			Model json.RawMessage `json:"model,case:strict"`
+		}
+		if err := json.Unmarshal(p.Body, &body); err != nil ||
+			body.Model != nil && (json.Unmarshal(body.Model, &model) != nil || model == "") {
 			return ""
 		}
 	}
 	templatePath, _, _ := strings.Cut(c.ModelEndpoint, "?")
-	if sent.URL != nil && strings.Contains(templatePath, "{model}") {
+	if strings.Contains(templatePath, "{model}") {
 		original, err := url.Parse(c.URL)
-		if err == nil && sent.URL.Scheme == original.Scheme && sent.URL.Host == original.Host && sent.URL.EscapedPath() == original.EscapedPath() {
-			return llm.SafeRequestWireModel(sent, c.Res.WireID, p.material)
+		if err != nil || sent.URL == nil || sent.URL.Scheme != original.Scheme || sent.URL.Host != original.Host || sent.URL.EscapedPath() != original.EscapedPath() {
+			return ""
 		}
+		if model != "" && model != c.Res.WireID {
+			return ""
+		}
+		model = c.Res.WireID
 	}
-	return ""
+	return llm.SafeRequestWireModel(sent, model, p.material)
 }
 
 // Do performs a non-streaming exchange. finish decodes a 2xx Result into

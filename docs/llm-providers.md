@@ -84,9 +84,9 @@ centrally, in `llm.Client`, not by each protocol package.
 
 The assistant turn records the answering attempt's requested model or alias
 (`response_request_model`) and verified wire model (`response_wire_model`).
-Wire evidence comes from the serialized body or the final model path. The
-field is absent when evidence is unavailable or contains credentials. A
-caller-controlled redirect with a body leaves the wire model unknown.
+Wire evidence comes from the serialized body and verified final model path.
+The field is absent when evidence is unavailable, selectors disagree, or a
+model contains credentials. A custom redirect with a body leaves it unknown.
 `response_model` uses the provider report when present and falls back to the
 requested model when the stream omits it.
 

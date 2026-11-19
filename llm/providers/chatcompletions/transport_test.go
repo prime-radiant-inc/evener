@@ -97,6 +97,9 @@ func TestRecordsFinalWireModel(t *testing.T) {
 		urlModel, stream, redirectHeader    bool
 	}{
 		{name: "raw string", sent: "body-wire", want: "body-wire"},
+		{name: "path only", urlModel: true, want: "m-wire"},
+		{name: "matching selectors", urlModel: true, sent: "m-wire", want: "m-wire"},
+		{name: "conflicting selectors", urlModel: true, sent: "body-wire"},
 		{name: "ordinary replay", location: "/answer", status: 307, sent: "body-wire", want: "body-wire"},
 		{name: "dropped body", location: "/answer", status: 303},
 		{name: "rewritten body", location: "/answer", status: 307, rewrite: "other-wire", sent: "other-wire"},
@@ -110,11 +113,12 @@ func TestRecordsFinalWireModel(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			res := liveRes(&httptest.Server{URL: "https://example.invalid"}, nil)
 			if tc.urlModel {
-				res.Transport.Endpoint = "/models/{model}"
-			} else if tc.name == "raw string" || tc.stream {
-				res.Transport.Body = map[string]any{"model": json.RawMessage(`"body-wire"`)}
-			} else {
-				res.Transport.Body = map[string]any{"model": "body-wire"}
+				res.Transport.Endpoint = "/models/{model}/chat"
+			}
+			if tc.name == "raw string" || tc.stream || tc.rewrite != "" {
+				res.Transport.Body = map[string]any{"model": json.RawMessage(`"body\u002dwire"`)}
+			} else if tc.sent != "" {
+				res.Transport.Body = map[string]any{"model": tc.sent}
 			}
 			response := chatJSON
 			if tc.stream {
