@@ -471,24 +471,27 @@ keep it expanded. Send remains disabled until there is content and sending is
 available. The inline session chrome owns activity discovery at rest and while
 engaged, without a second discovery mount.
 
-The model picker remains available when the session advertises `changeModel`.
-Selecting a model on a live session sends one `thread/model/set` bound to the
-authority the store already holds. On a cold session the thread store resumes
-it first, then sends one `thread/model/set` bound to the authority from the read
-that followed the resume; the hub's own resume-and-retry remains as a fallback
-for a pick whose authority retired in between. After a capable `thread/read`, the
-thread store owns the daemon's versioned model-control snapshot for every view
-of that session.
+The model picker remains available when the session advertises `changeModel`
+and the connection can carry the mutation. Selecting a model on a live session
+sends one `thread/model/set` bound to the authority the store already holds. On
+a cold session the thread store resumes it first, then sends one
+`thread/model/set` bound to the authority from the read that followed the
+resume; the hub's own resume-and-retry remains as a fallback for a pick whose
+authority retired in between. After a capable `thread/read`, the thread store
+owns the daemon's versioned model-control snapshot for every view of that
+session.
 An accepted choice is shown immediately, including while the current turn
 finishes on its old model. The typed response, live model-control notification,
 and later reads all replace that snapshot through the shared reducer, so another
 client's newer accepted choice, a deferred rejection, reconnect, and a daemon
 replacement converge on one display. The store retires authority before a
 reconnect read, and only its `ready` state may send a model change. An
-unsupported read keeps the transcript usable but disables the picker. A failed
-establishing read settles waiting changes. A stale-authority refusal, response
-loss, or malformed response starts one recovery read without replaying the
-mutation. Closing the desktop picker restores focus to its trigger, including
+unsupported read keeps the transcript usable but disables the picker. A
+connection that negotiated a protocol below v8 likewise disables it, for every
+session shape including a cold one, because that connection refuses a model
+change before sending it. A failed establishing read settles waiting changes. A
+stale-authority refusal, response loss, or malformed response starts one
+recovery read without replaying the mutation. Closing the desktop picker restores focus to its trigger, including
 after a selection.
 
 ## Reasoning-effort control
