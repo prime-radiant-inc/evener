@@ -66,6 +66,7 @@ type capturedRequest struct {
 	path   string
 	header http.Header
 	body   map[string]any
+	raw    []byte
 }
 
 func server(t *testing.T, status int, body string) (*httptest.Server, *capturedRequest) {
@@ -73,6 +74,7 @@ func server(t *testing.T, status int, body string) (*httptest.Server, *capturedR
 	got := &capturedRequest{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
+		got.raw = raw
 		got.path, got.header = r.URL.RequestURI(), r.Header.Clone()
 		_ = json.Unmarshal(raw, &got.body)
 		if strings.HasPrefix(body, "event:") {

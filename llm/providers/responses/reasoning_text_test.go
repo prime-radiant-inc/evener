@@ -3,7 +3,6 @@ package responses
 import (
 	"context"
 	"encoding/json"
-	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -154,6 +153,10 @@ func TestStreamSettlesOutputWhenTerminalReasoningHasNoReplayableContent(t *testi
 			}
 			i := 1
 			if tc.output == summaryOutput {
+				if th := response.Message.Content[0].Thinking; th == nil ||
+					!slices.Equal(th.ResponsesSummaryParts, []llm.ResponsesReasoningPart{{Type: "summary_text", Text: "summary"}}) {
+					t.Error("settled response omitted the terminal's native summary")
+				}
 				i++
 			}
 			if th := response.Message.Content[i].Thinking; th == nil || th.ID != "rs_streamed" || th.EncryptedContent != "opaque continuation" || len(th.Summary) != 1 || th.Summary[0] != "settled summary" {
@@ -161,21 +164,28 @@ func TestStreamSettlesOutputWhenTerminalReasoningHasNoReplayableContent(t *testi
 			}
 		}
 		if tc.status == "completed" && !t.Failed() {
-			srv, captured := server(t, 200, responseJSON)
-			req := llm.Request{Model: "gpt-5.5", Messages: []llm.Message{llm.User("hi"), recorded.Message, llm.ToolResultNamed("call_1", "lookup", "ok", false)}}
-			if _, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), req, liveRes(srv, openaiCaps)); err != nil {
-				t.Fatal(err)
+			want := []string{
+				`{"encrypted_content":"opaque continuation","id":"rs_streamed","summary":[{"text":"settled summary","type":"summary_text"}],"type":"reasoning"}`,
+				`{"content":[{"text":"commentary ","type":"output_text"},{"text":"detail ","type":"output_text"}],"phase":"commentary","role":"assistant","type":"message"}`,
+				`{"content":[{"text":"draft ","type":"output_text"},{"text":"answer","type":"output_text"}],"role":"assistant","type":"message"}`,
+				`{"arguments":"{ \"n\" : 1 }","call_id":"call_1","name":"lookup","type":"function_call"}`,
+				`{"call_id":"call_1","output":"ok","type":"function_call_output"}`,
 			}
-			items, _ := captured.body["input"].([]any)
-			want := []any{
-				map[string]any{"type": "reasoning", "id": "rs_streamed", "encrypted_content": "opaque continuation", "summary": []any{map[string]any{"type": "summary_text", "text": "settled summary"}}},
-				map[string]any{"type": "message", "role": "assistant", "phase": "commentary", "content": []any{map[string]any{"type": "output_text", "text": "commentary "}, map[string]any{"type": "output_text", "text": "detail "}}},
-				map[string]any{"type": "message", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": "draft "}, map[string]any{"type": "output_text", "text": "answer"}}},
-				map[string]any{"type": "function_call", "call_id": "call_1", "name": "lookup", "arguments": `{ "n" : 1 }`},
-				map[string]any{"type": "function_call_output", "call_id": "call_1", "output": "ok"},
-			}
-			if len(items) != len(want)+1 || !reflect.DeepEqual(items[1:], want) {
-				t.Errorf("replayed input after user = %+v, want %+v", items, want)
+			for _, response := range []*llm.Response{streamed[len(streamed)-1].Response, &recorded} {
+				srv, captured := server(t, 200, responseJSON)
+				req := llm.Request{Model: "gpt-5.5", Messages: []llm.Message{llm.User("hi"), response.Message, llm.ToolResultNamed("call_1", "lookup", "ok", false)}}
+				if _, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), req, liveRes(srv, openaiCaps)); err != nil {
+					t.Fatal(err)
+				}
+				var wire struct{ Input []json.RawMessage }
+				if err := json.Unmarshal(captured.raw, &wire); err != nil || len(wire.Input) != len(want)+1 {
+					t.Fatalf("replayed request = %s, want %d items, error = %v", captured.raw, len(want)+1, err)
+				}
+				for i, item := range wire.Input[1:] {
+					if got := string(item); got != want[i] {
+						t.Errorf("replayed item %d = %s, want %s", i, got, want[i])
+					}
+				}
 			}
 		}
 	}
