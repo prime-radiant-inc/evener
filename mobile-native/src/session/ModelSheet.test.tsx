@@ -880,6 +880,100 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 		expect(repository.read({ hubId: HUB, sessionRef: RESUMED_REF }).draft).toBe("");
 	});
 
+	it("R1: shows a refused pick's reason after an identity-changing resume, and stays open", async () => {
+		// RoboRev's open medium: the resume behind a cold pick resolves a
+		// different ref, the reconnect replaces the controls that started the
+		// pick, and the daemon then REFUSES the frame. The refusal may not be
+		// swallowed: the sheet stays open on it and says why. The same fence a
+		// production screen installs (screens.tsx:868-890) is what today drops
+		// it - the replaced controls are disposed, so run()'s catch returns
+		// without publishing (sessionControls.ts:247).
+		const RESUMED_REF = "local:resumed";
+		const client = new FakeClient("ready");
+		client.on("thread/unsubscribe", () => ({}));
+		client.on("thread/resume", () => {
+			const thread = liveThread(RESUMED_AUTHORITY);
+			return { thread: { ...thread, evener: { ...thread.evener, ref: RESUMED_REF } } };
+		});
+		client.on("thread/read", (params) => {
+			const ref = String((params as { ref: string }).ref);
+			if (ref !== RESUMED_REF) return { thread: COLD_THREAD };
+			const thread = liveThread(RESUMED_AUTHORITY);
+			return {
+				thread: { ...thread, evener: { ...thread.evener, ref } },
+				bootGeneration: RESUMED_AUTHORITY.bootGeneration,
+			};
+		});
+		client.on("thread/model/set", () => {
+			throw new WireError("The provider is not available to this session.", -32000);
+		});
+		const service = createConversationService(client);
+		const cold = await service.open(REF);
+		expect(cold.modelControlState.kind).toBe("unsupported");
+
+		const toast = vi.fn();
+		const hostOwner = {};
+		owner = hostOwner;
+		let controls: SessionControls | null = null;
+		let binding = 1;
+		const routeRef = REF;
+		let storeRef = cold.ref;
+		const screen = (connected: boolean) => {
+			if (connected) {
+				const mine = binding;
+				controls = new SessionControls(
+					service,
+					async () => {},
+					() => {},
+					(scope, ref) => {
+						if (client.state !== "ready") return false;
+						if (scope === "destination") return storeRef === (ref ?? routeRef);
+						return binding === mine;
+					},
+					() => cold,
+					() => true,
+					CATALOG,
+				);
+			} else {
+				binding += 1;
+				controls?.dispose();
+				controls = null;
+			}
+			modelHosts.provide(sheetKey(HUB, REF), hostOwner, { session: cold, controls, ready: connected, toast });
+		};
+		const resume = client.resumeThread.bind(client);
+		client.resumeThread = async (ref, options) => {
+			client.emitStateChange("reconnecting");
+			screen(false);
+			client.emitStateChange("ready");
+			storeRef = RESUMED_REF;
+			screen(true);
+			return resume(ref, options);
+		};
+		onTestFinished(() => {
+			controls?.dispose();
+			service.close();
+		});
+		screen(true);
+		const tree = sheet();
+		act(() => pressable(tree, "Claude Haiku 5")?.props.onPress?.());
+		await settle();
+
+		// Exactly one resume and one refused frame: the refusal reached the
+		// daemon on the identity the resume resolved.
+		expect(client.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+		const setCalls = client.calls.filter((call) => call.method === "thread/model/set");
+		expect(setCalls).toHaveLength(1);
+		expect(setCalls[0]?.params).toMatchObject({ ref: RESUMED_REF });
+		// The refusal is what the sheet shows: it stays open, with the daemon's
+		// reason visible, and closes nothing.
+		expect(navigation.goBack).toHaveBeenCalledTimes(0);
+		expect(toast).not.toHaveBeenCalled();
+		expect(renderedText(tree)).toContain("The provider is not available to this session.");
+		// The choice may be taken again: the sheet stays usable.
+		expect(pressable(tree, "Claude Haiku 5")?.props.disabled).toBe(false);
+	});
+
 	it("reports a refused pick that never dispatched as refused, even after its controls were replaced", async () => {
 		// The other half of attemptControl's distinction: a step that was refused
 		// before it sent anything is not done. The resume answers, but its read

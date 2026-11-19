@@ -74,6 +74,95 @@ it.each(["queue", "steer"] as const)("captures /%s body metadata before encoding
 	}
 });
 
+// A catalog miss is a notSent: nothing left the phone (the frame names a
+// model the catalog no longer carries), so the composer keeps its text and
+// the user may retry. Today the miss is an ordinary argument refusal, whose
+// text is consumed as an unconfirmed send instead.
+it("returns /model to the composer when the catalog no longer carries the named model", async () => {
+	const { database, port } = openSqliteSyncDouble();
+	try {
+		const destination = { hubId: "hub-1", sessionRef: "ref-1" };
+		const repository = new DraftRepository(port);
+		const document = new DraftDocument(() => repository, destination);
+		const sent: string[] = [];
+		const service = {
+			models: async () => ({ data: [{ provider: "scripted", model: "alternate" }] }),
+			changeModel: async () => {
+				sent.push("changeModel");
+			},
+		} as unknown as Parameters<typeof submitComposerCommand>[1];
+		// The catalog stopped carrying this model between the offer and the
+		// dispatch: the hub's list has only "alternate".
+		document.edit("/model retired-model");
+		await expect(
+			submitComposerCommand(document, service, {
+				isCurrent: () => true,
+				local: async () => {},
+				openAside: () => {},
+				cleared: () => {},
+				turn: () => conversation({ changeModel: true }),
+				drainQueue: async () => {},
+				drainRefusal: () => null,
+				submit: async () => {},
+				stop: async () => {},
+				reasoning: () => null,
+			}),
+		).rejects.toBeInstanceOf(CommandNotSentError);
+		expect(sent).toEqual([]);
+		// Nothing left the phone, so the text goes back to the composer.
+		expect(document.getSnapshot().record).toMatchObject({
+			draft: "/model retired-model",
+			unconfirmed: null,
+		});
+	} finally {
+		database.close();
+	}
+});
+
+// The boundary from the other side: a pick the daemon REFUSED after it was
+// dispatched is not the phone's to take back. The text stays with the send it
+// became (an unconfirmed ghost to confirm or recover), rather than quietly
+// returning to the composer as if nothing had left it.
+it("keeps a refused /model as an unconfirmed send rather than restoring its text", async () => {
+	const { database, port } = openSqliteSyncDouble();
+	try {
+		const destination = { hubId: "hub-1", sessionRef: "ref-1" };
+		const repository = new DraftRepository(port);
+		const document = new DraftDocument(() => repository, destination);
+		const sent: string[] = [];
+		const service = {
+			models: async () => ({ data: [{ provider: "scripted", model: "alternate" }] }),
+			changeModel: async () => {
+				sent.push("changeModel");
+				throw new Error("The provider is not available to this session.");
+			},
+		} as unknown as Parameters<typeof submitComposerCommand>[1];
+		document.edit("/model alternate");
+		await expect(
+			submitComposerCommand(document, service, {
+				isCurrent: () => true,
+				local: async () => {},
+				openAside: () => {},
+				cleared: () => {},
+				turn: () => conversation({ changeModel: true }),
+				drainQueue: async () => {},
+				drainRefusal: () => null,
+				submit: async () => {},
+				stop: async () => {},
+				reasoning: () => null,
+			}),
+		).rejects.toThrow("The provider is not available to this session.");
+		expect(sent).toEqual(["changeModel"]);
+		// The frame left the phone and the daemon refused it: the text is NOT
+		// restored to the composer. It stands as the send it became.
+		const record = document.getSnapshot().record;
+		expect(record.draft).toBe("");
+		expect(record.unconfirmed).toBe("/model alternate");
+	} finally {
+		database.close();
+	}
+});
+
 it.each(["queue", "steer"] as const)("persists distinct captured tokens for two /%s admissions", async (kind) => {
 	const drafts = openSqliteSyncDouble();
 	const mutations = openSqliteSyncDouble();
