@@ -37,7 +37,7 @@ first wait or the second.
   resumes, the same instant the read summary carries. The client renders the
   countdown from it directly — never `identity + delayMs`, which is nonsense
   arithmetic once the identity is a sequence. `delayMs` stays for the
-  ordinary retry line and the receipt-clock fallback.
+  ordinary retry line alone; no client rule derives a wait from it.
 - `endedTurnId` on the terminal thread status frame: the id of the turn the
   Stop ended, which the frame today omits. Without it no client rule can
   always tell whether a buffered Stop ended the snapshot's running turn or
@@ -53,9 +53,16 @@ first wait or the second.
   publisher, or a real root Stop arrives looking like an older-daemon
   frame and Stage 2 ignores it. Stage 2 is gated on observing the correct
   id in emitted Stop frames.
-- **Older-daemon fallback:** a frame with no stamp (a daemon that predates the
-  field) reconciles by turn ownership only, never by clock, and may not clear
-  or overwrite a stamped wait's deadline (see Legacy below).
+- **Older daemons (no stamp) show no wait in the pane.** A frame with no
+  stamp (a daemon that predates the field) never INSTALLS a wait: no
+  deadline, no chip, no elapsed attribution, and no receipt clock derived
+  from `retry.delayMs` on the client's clock. The only thing an unstamped
+  frame may do is END a wait, and only by turn ownership — an unstamped
+  wake/terminal frame naming the wait's owning turn clears a held wait
+  (stamped or not) by the existing turn-ownership rules. This is the
+  documented limitation of the whole design: an older daemon shows no wait
+  in the session pane, period. (The sidebar's roster-sampled row comes from
+  the owning root's tree facts — a different producer, unaffected.)
 - **Acceptance (producer layer):** the stamp is strictly increasing per
   turn and present on start, wake, and read summary; the start announcement
   carries `resumesAt` agreeing with the read summary for the same wait;
@@ -125,8 +132,10 @@ announcement carries.
 A wait carries:
 - `deadline` — absolute resume instant (ISO string). Producers: the thread
   read's failure summary (`resumesAt`), and a stamped live announcement
-  (its own `resumesAt`). An unstamped announcement (older daemon) installs
-  no deadline.
+  (its own `resumesAt`) — both carry the wait's stamp, and neither
+  installs one without it. An unstamped frame (older daemon) installs no
+  deadline, and no deadline is ever derived from `retry.delayMs` on the
+  client's clock.
 - `stamp` — the daemon-issued `waitStartedAt`, stored only as the daemon's
   value, never the client's receipt instant (a fast browser clock would
   otherwise refuse authoritative post-reset reads).
@@ -136,11 +145,9 @@ A wait carries:
   live announcement only.
 
 **One time basis per wait.** When an absolute deadline exists, it is the whole
-countdown; past it, the wait is pending. The receipt clock is a fallback only
-when no absolute deadline exists at all — and past that fallback too, the wait
-is pending, never resurrected onto another basis. A known deadline that has
-passed can never be overridden by a timer that still has runway (a late
-announcement).
+countdown; past it, the wait is pending. There is no second basis: a wait with
+no absolute instant on the model is no wait the pane can name, and no client
+clock ever ends or extends one.
 
 **Authority order:** the daemon's live frame > the thread read's sampled
 summary > the client's inference. The server refreshes the failure facet
@@ -222,20 +229,13 @@ ordinary delivery-order handling, whatever their vintage.
   order. Skipped when older than the held stamp, or when a later buffered
   transition replaces its turn.
   Absence is evidence only from a snapshot that can report waits for the
-  thread it serves: a stamped daemon's read, or a legacy daemon's ROOT read,
-  whose failure facet the daemon refreshes when the wait begins. A legacy
-  daemon's DELEGATE read is not that — the projection forwards the live
-  announcement but stores no wait, so its showing no wait is silence, not a
-  clear. Against such a snapshot, an unstamped buffered start whose turn
-  matches the snapshot's running turn installs the wait on the receipt-clock
-  fallback (its delay from receipt, no absolute deadline, no model tag or
-  elapsed attribution), and the wait ends only by its own unstamped wake, a
-  turn boundary, or a read from a producer that can report waits — never by
-  another absence from the same legacy delegate feed. An unstamped start
-  still never clears or overwrites a stamped wait. Known limitation: a cold
-  reload of a legacy delegate mid-wait, with no live announcement arriving,
-  shows no wait in the pane — nothing the client holds names one. Its row
-  still shows the wait, sampled live from the owning root's roster entry.
+  thread it serves: a stamped daemon's read, whose failure facet the daemon
+  refreshes when the wait begins. An unstamped frame (a daemon that predates
+  the stamp) never installs a wait, buffered or live, whatever turn it names
+  — so a legacy daemon's delegate read showing no wait is simply the truth
+  this client renders: no wait in the pane. An older daemon shows no wait in
+  the session pane, period; its row still shows the wait, sampled live from
+  the owning root's roster entry.
 - **Wait end** (zero-delay wake, or a same-buffer start+wake pair): clears
   the matching wait's deadline, stamp, and chip together; a same-buffer pair
   over a snapshot already showing the resumed output is one cancellation —
@@ -255,10 +255,11 @@ ordinary delivery-order handling, whatever their vintage.
   Post-cut Stops apply in delivery order regardless: a live older-daemon
   Stop still clears the wait through the ordinary reducer rules — only the
   PRE-CUT reconciliation refuses to infer ownership.
-- **Legacy unstamped frames** reconcile by turn ownership: an unstamped wake
-  owning the held legacy wait's turn clears that wait — deadline and chip
-  together, including the chip-only case. An unstamped frame may never clear
-  or overwrite a stamped wait.
+- **Legacy unstamped frames** never install; they only end, by turn
+  ownership: an unstamped wake or terminal frame naming the held wait's
+  owning turn clears that wait — deadline, stamp and chip together,
+  recording the ended stamp the same way a turn boundary does. A wake
+  naming any other turn changes nothing.
 
 ## Stage 3 — Liveness line and sidebar rendering
 
@@ -298,17 +299,19 @@ all of them. Tests assert behavior (levels, computed values, class presence)
    output cancels: ended stamp kept, no countdown, no chip.
 7. A→B replacement with no idle between: the pane publishes B and retires
    A's wait, regardless of B's announcements.
-8. An unstamped wake owning the held legacy wait's turn clears deadline and
-   chip — including the chip-only legacy wait — and never touches a stamped
-   wait.
+8. An unstamped start installs nothing — no deadline, no chip, no stamp —
+   whatever turn it names; an unstamped wake naming the held wait's owning
+   turn clears the held wait (stamped or not) by turn ownership, and a wake
+   naming any other turn changes nothing.
 9. A read the repository refuses drops only its pre-cut quota transitions;
    versioned history, queue updates, and post-cut frames deliver normally,
    each applied at most once.
 10. A buffered terminal status whose `endedTurnId` names the turn a snapshot
     still shows running applies, ending that turn; an older-daemon Stop with
     no `endedTurnId` preserves the snapshot's running turn.
-11. A passed read deadline plus a late unstamped announcement with receipt
-    runway: pending, not a countdown leaping forward.
+11. A passed stamped read deadline plus a late unstamped announcement: the
+    frame installs nothing, so the wait stays pending — no receipt runway
+    exists to leap the line back to a countdown.
 12. An equal-stamp buffered announcement fills model/elapsed/receipt metadata
     without moving the snapshot's deadline; metadata matching is by stamp,
     not turn id.
@@ -344,13 +347,13 @@ all of them. Tests assert behavior (levels, computed values, class presence)
     execution that supplied it, and it does not serve — a wait the read
     still carries names the same turn the read names. Ordinary failure
     summaries survive the next turn's status move untouched.
-23. On an uninterrupted legacy delegate feed, an unstamped buffered start
-    whose turn matches the snapshot's running turn installs the wait on
-    the receipt clock against a delegate read that cannot report waits —
-    the read's absence is not a clear — and a matching unstamped wake or
-    turn boundary ends it. A cold legacy reload with no live announcement
-    shows no wait in the pane, and its row still shows the wait from the
-    owning root's roster sample.
+23. On a daemon that predates the stamp, the pane shows no wait, period: an
+    unstamped start (live, buffered, or replayed) installs nothing against
+    any snapshot, and an unstamped read's failure summary installs no
+    deadline — not at hydrate, not at the merge. Only an unstamped wake or
+    terminal frame naming the wait's owning turn clears a held wait. The
+    row still shows the wait from the owning root's roster sample; the pane
+    does not, and that is the documented limitation.
 
 ## Anti-requirements (what 30 rounds proved NOT to build)
 
@@ -359,16 +362,21 @@ all of them. Tests assert behavior (levels, computed values, class presence)
 - No client-side inference that a wait ended from any clock: no deadline
   expiry, no receipt timer expiry, no `lastFrameAt` heuristic ends a wait.
 - No second time basis for a wait that has one.
+- No receipt clock: no deadline, countdown, or elapsed display derived from
+  `retry.delayMs` measured on the client's clock, for stamped or unstamped
+  frames alike.
 - No storing the client's receipt instant where the daemon's stamp belongs.
 - No phrasing assertions in tests; no copy as an oracle.
-- No unstamped frame clearing or overwriting a stamped wait.
+- No unstamped frame installing a wait; an unstamped frame only ends one,
+  by turn ownership.
 
 ## Staging and surfaces
 
 Dependency order — each stage's acceptance gates the next:
 
 1. **Stage 0, wire:** daemon stamp on all three producers; AppWire fields;
-   older-daemon fallback. Gated on the complete Stage 0 producer contract:
+   older daemons show no wait (the anti-installation contract). Gated on the
+   complete Stage 0 producer contract:
    the stamp is strictly increasing per turn and present on start, wake,
    and read summary; the live start announcement's `resumesAt` matches the
    ROOT read summary's for the same wait (delegate read parity is Stage

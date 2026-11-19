@@ -5636,6 +5636,37 @@ it("a pre-cut wake for an unheld wait records only the ended stamp", async () =>
   owner.dispose();
 });
 
+// The #6961 rule, cut: an unstamped buffered start (a daemon that predates
+// the stamp) installs NOTHING against a wait-free delegate read — no
+// receipt-clock countdown, no chip, no elapsed. The read's absence may be
+// silence rather than a clear on such a daemon, but the pane still shows no
+// wait: that is the documented contract for an older daemon (its row still
+// shows the wait from the owning root's roster sample, a different producer).
+it("an unstamped buffered start installs nothing against a wait-free snapshot", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  expect(
+    owner.acceptRead(quotaRead({ activeTurnId: "turn_1" }), {
+      lifetime: 1,
+      readId: "cut-legacy",
+      boundary: "cut-legacy",
+    }),
+  ).toBe(true);
+  const before = owner.getSnapshot();
+  expect(before?.quotaResumesAt).toBeUndefined();
+  expect(before?.modelRetry).toBeUndefined();
+
+  owner.acceptBeforeReadCut([quotaRetryFrame({ turnId: "turn_1" })], { lifetime: 1, adoptedRead: true });
+
+  const model = owner.getSnapshot();
+  expect(model?.quotaResumesAt).toBeUndefined();
+  expect(model?.quotaWaitStartedAt).toBeUndefined();
+  expect(model?.modelRetry).toBeUndefined();
+  await owner.settled();
+  owner.dispose();
+});
+
 // Scenario 9: a refused read drops only its pre-cut quota transitions; the
 // rest of the buffer still delivers by its own rules.
 it("a refused read drops only the pre-cut quota transitions", async () => {

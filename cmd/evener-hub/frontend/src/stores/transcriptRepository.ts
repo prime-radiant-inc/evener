@@ -1270,7 +1270,11 @@ export class TranscriptRepository {
           // installs nothing (the wake that follows in the same buffer
           // records the ended stamp below). Against a snapshot holding the
           // SAME wait, the start fills chip metadata; an older stamp is not
-          // news.
+          // news. An UNSTAMPED start (a daemon that predates the stamp)
+          // installs nothing against any snapshot — there is no receipt-clock
+          // fallback: an unstamped frame never installs a wait, so a pane on
+          // an older daemon shows no wait, period.
+          if (stamp === 0) continue;
           if (!snapshotHoldsWait) continue;
           if (stamp !== heldStamp) continue;
           admitted.add(notification);
@@ -1278,8 +1282,9 @@ export class TranscriptRepository {
         }
         // A wake: matching the snapshot's held wait clears it whole; a wake
         // for an unheld or older wait records only its ended stamp. An
-        // unstamped wake (a legacy daemon) owns the turn it names: it may
-        // clear a legacy unstamped wait, never a stamped one.
+        // unstamped wake (a daemon that predates the stamp) is admitted and
+        // the reducer's own fold decides: it ends a held wait only by turn
+        // ownership, whatever stamped that wait.
         if (stamp > 0 && stamp !== heldStamp) {
           // Not the held wait. Record the ended stamp only — the reducer's
           // own fold already knows a wake for an unheld wait contributes
