@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/agent"
@@ -124,15 +125,22 @@ var afterSavedSubscriptionCapture func(appwire.ThreadReadParams)
 
 // unavailableThreadReadResponse prefers saved turns, but a confirmed incompatible
 // owner remains readable from roster metadata even before it has a past entry.
+// It establishes nothing about the serving daemon, so a failed saved read
+// underneath it stamps the owner as unknown.
 func unavailableThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, bool, error) {
-	return unavailableThreadReadResponseOwned(ctx, cfg, sources, params, nil)
+	return unavailableThreadReadResponseOwned(ctx, cfg, sources, params, unknownOwnerReadError, nil)
 }
 
+// unavailableThreadReadResponseOwned answers a read from the persisted
+// transcript. stampReadError decides what a failure under it may claim: the
+// caller passes daemonlessReadError only when it established that no daemon
+// serves the thread, and unknownOwnerReadError otherwise.
 func unavailableThreadReadResponseOwned(
 	ctx context.Context,
 	cfg hubcore.WebConfig,
 	sources *appsource.Registry,
 	params appwire.ThreadReadParams,
+	stampReadError func(error) error,
 	configureWindow func(*transcriptWindowPackOptions),
 ) (appwire.ThreadReadResponse, bool, error) {
 	if params.LiveOnly {
@@ -189,7 +197,7 @@ func unavailableThreadReadResponseOwned(
 	}
 	if hasPast {
 		response, ok, err := pastEntryItemReadResponseOwned(ctx, cfg, params, entry, configureWindow)
-		return response, ok, daemonlessReadError(err)
+		return response, ok, stampReadError(err)
 	}
 	if _, required, err := restartRequiredDaemon(ctx, cfg, params.Ref, params.ThreadID); err != nil || !required {
 		return appwire.ThreadReadResponse{}, false, err
@@ -216,14 +224,126 @@ func unavailableThreadReadResponseOwned(
 	return appwire.ThreadReadResponse{}, false, nil
 }
 
-// daemonlessReadError stamps a daemonless history read's error with the
-// generation and epoch it ran under, as a daemon stamps its own: the
-// daemonless token and epoch 0, with no snapshot.
+// daemonlessReadError stamps a failed saved-history read's error with the
+// daemonless generation and epoch 0, with no snapshot. Call it only where
+// absence is established: a failed read must never claim a daemon is gone,
+// because the only evidence it has is that it failed.
 func daemonlessReadError(err error) error {
+	return stampSavedHistoryReadError(err, appwire.DaemonlessBootGeneration)
+}
+
+// unknownOwnerReadError stamps a failed saved-history read's error with the
+// generation and epoch it ran under when the serving daemon was never
+// established: the fallback itself failed, and the live read that made the
+// fallback necessary said nothing about who owned the thread.
+func unknownOwnerReadError(err error) error {
+	return stampSavedHistoryReadError(err, appwire.UnknownOwnerBootGeneration)
+}
+
+func stampSavedHistoryReadError(err error, bootGeneration string) error {
 	if err == nil {
 		return nil
 	}
-	return appwire.WithHistoryReadIdentity(appserver.WireError(err), appwire.DaemonlessBootGeneration, 0)
+	return appwire.WithHistoryReadIdentity(appserver.WireError(err), bootGeneration, 0)
+}
+
+// savedHistoryStampFor picks the token for a saved read that answered another
+// read's failure, given what that failure established about the owner.
+//
+// A local "thread not found" is not proof of absence: the local source's route
+// lookup admits only daemons at this protocol whose status is not
+// restartRequired, so an incompatible owner that the roster has confirmed is
+// skipped and reads as a route miss. The roster therefore decides — it answered
+// that nobody owns the thread, or it could not answer. ErrSourceNotFound is
+// absence on its own, because a daemon the hub cannot route to by ref cannot be
+// serving that thread. Everything else (a relay outage, a protocol refusal, a
+// deadline) says the read failed, not that its owner is gone.
+//
+// The decision is deferred until the saved read actually fails. Only a failure
+// is stamped, and asking the roster costs a snapshot and can walk persisted
+// ancestry; a successful fallback needs neither. Deferring does not split the
+// check across publications: rosterEstablishesAbsence takes its one snapshot at
+// the moment the stamp is chosen, and the stamp runs at most once.
+func savedHistoryStampFor(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadReadParams, readErr error) func(error) error {
+	if errors.Is(readErr, appsource.ErrSourceNotFound) {
+		// Absence on its own, so no roster question is needed even on failure.
+		return daemonlessReadError
+	}
+	if !isDeadSessionError(readErr) && !daemonOwnershipMayHaveChanged(readErr) {
+		return unknownOwnerReadError
+	}
+	return func(err error) error {
+		if err == nil {
+			// The fallback answered. Nothing failed, so nothing is stamped, and
+			// in particular this pays for no roster snapshot or ancestry walk.
+			return nil
+		}
+		if rosterEstablishesAbsence(ctx, cfg, params) {
+			return daemonlessReadError(err)
+		}
+		return unknownOwnerReadError(err)
+	}
+}
+
+// rosterEstablishesAbsence reports whether one roster publication established
+// that no daemon owns the thread: the scan completed, the publication holds no
+// unverified claim, and no live entry — root, workspace route, or delegate
+// parent — owns it.
+//
+// Reading the three facts from one snapshot is the point. Separate calls read
+// separate publications, and a refresh landing between them can show no claims
+// in the older one and no live owner in the newer one, which reads as absence
+// although neither publication established it. Delegate ancestry is part of the
+// same question: a daemon skipped by the local route lookup because it is
+// incompatible still owns its children, and only persisted ancestry can say so.
+func rosterEstablishesAbsence(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadReadParams) bool {
+	if cfg.Roster == nil {
+		return false
+	}
+	// The identity used to look the session up and the identity used to ask who
+	// owns it must be the same string. localPastThreadID is what the saved
+	// lookup resolves through, so it trims a padded ThreadID and parses a ref;
+	// asking the roster about the raw value instead would match no owner for a
+	// session the lookup had just found, and "unknown" would silently become
+	// "absent". A non-local or unparseable target is not absence: nothing here
+	// established who serves it.
+	threadID, ok := localPastThreadID(params)
+	if !ok || threadID == "" {
+		return false
+	}
+	snapshot := rosterOwnershipSnapshot(cfg.Roster)
+	if snapshot.OwnershipError != nil || len(snapshot.Unconfirmed) != 0 {
+		return false
+	}
+	// Every confirmed process, not the per-session listing: two daemons can
+	// overlap on one session, and the entry the listing drops may be the one
+	// whose workspace ref or reported children name this thread. Absence is a
+	// claim about all of them.
+	for _, entry := range snapshot.Confirmed {
+		if entry.Crashed {
+			continue
+		}
+		if entry.SessionID == threadID || entry.ThreadID == threadID || localSpawnWorkspaceRef(entry.Entry) == localAppRef(threadID) {
+			return false
+		}
+		// A daemon reports its in-process children, which have no route of
+		// their own and so never appear as a root match above.
+		if slices.Contains(entry.RunningSubagentIDs, threadID) {
+			return false
+		}
+	}
+	// Persisted ancestry covers the delegate whose parent the publication
+	// cannot name. It is asked from the snapshot just taken, not from the
+	// roster: the walk is part of this decision, so it must not answer from a
+	// later publication that could have retracted an owner this one showed. A
+	// populated owner means some live daemon serves this thread through its
+	// ancestry and its second result only says whether that owner is
+	// incompatible, so both cases leave ownership established, not absent. An
+	// unverifiable chain or incomplete scan comes back as an error.
+	if owner, _, err := lookupDaemonOwnerIn(ctx, cfg, rosterViewOf(snapshot.RosterSnapshot), localAppRef(threadID), threadID, false); err != nil || owner.SessionID != "" {
+		return false
+	}
+	return true
 }
 
 func pastThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, bool, error) {

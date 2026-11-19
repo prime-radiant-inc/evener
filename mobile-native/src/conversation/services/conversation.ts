@@ -251,6 +251,11 @@ export interface ConversationService {
 export interface ConversationRecoveryActions {
 	forceStop(): Promise<void>;
 	resume(): Promise<void>;
+	/** Whether the service has a thread open to address, so a stop or resume
+	 * sent now reaches the hub instead of throwing before it. A read installs
+	 * the thread ref only when it succeeds, and clears it while it is in
+	 * flight, so this is false then. */
+	canAddressThread(): boolean;
 }
 
 // Required live behavior interface for the live read/projection path. This
@@ -1457,6 +1462,10 @@ export function createConversationService<ReadLease = unknown>(
 				throw new Error("ConversationService: resume is unavailable");
 			}
 			await client.resumeThread(threadRef);
+		},
+
+		canAddressThread() {
+			return ref !== null;
 		},
 
 		async models() {

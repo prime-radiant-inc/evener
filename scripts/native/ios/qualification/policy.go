@@ -27,6 +27,9 @@ var (
 	// would move a registry pod, so the resolver surfaces it instead.
 	errPodRefusalName  = errors.New("CocoaPods named a pod the committed lock does not declare as local")
 	errPodRefusalStuck = errors.New("CocoaPods repeated a changed-local-podspec refusal with no new pod")
+	// errIncompleteProducts reports a products tree missing something the
+	// installed-app journeys install, run or read.
+	errIncompleteProducts = errors.New("the build products are incomplete for the installed-app journeys")
 )
 
 // generatedProjectFile is the one generated file whose identity is its complete

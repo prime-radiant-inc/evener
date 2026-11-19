@@ -6,6 +6,7 @@ import {
   navigationRootContainerKey,
   navigationViewScope,
   normalizedGraphFromSnapshot,
+  quotaWaitState,
   type ResourceKey,
   type ResourceState,
 } from "@evener/appwire-client/state/navigation";
@@ -697,12 +698,13 @@ describe("compact session status", () => {
   });
 
   // A working session whose model call waits out a usage limit until a known
-  // reset is not just working: its status says it waits and resumes by itself.
-  // Once the resume time has passed the wait is over, and the status is the
-  // working row's own again.
+  // reset is not just working: its status says it waits and resumes by itself
+  // while the reset is ahead, and past it says the retry is pending while the
+  // row's summary still names the wait - the daemon serves the wait's
+  // summary until its end clears it.
   test.each([
     ["ahead", 90 * 60_000, true],
-    ["passed", -60_000, false],
+    ["passed", -60_000, true],
   ] as const)(
     "a working session whose quota wait resume time is %s (%d ms away) shows the quota status: %s",
     (_when, offsetMs, quota) => {
@@ -722,7 +724,10 @@ describe("compact session status", () => {
   // at the rail must say the session is waiting and not stuck.
   test.each([
     ["working with the resume time ahead", "active", 90 * 60_000, true],
-    ["working with the resume time passed", "active", -60_000, false],
+    // A wait whose resume time has passed is still a wait while the row's
+    // summary names it (the daemon serves the wait's summary until its end
+    // clears it), so the row keeps the line - pending, not gone.
+    ["working with the resume time passed", "active", -60_000, true],
     ["not working with the resume time ahead", "idle", 90 * 60_000, false],
   ] as const)("the row shows the quota wait for a session %s: %s", (_when, state, offsetMs, shown) => {
     const resumesAt = new Date(Date.now() + offsetMs).toISOString();
@@ -736,7 +741,40 @@ describe("compact session status", () => {
     if (line) expect(line.closest("[data-session-ref]")).not.toBeNull();
   });
 
-  test("the row's quota wait counts down with the rail clock and ends at the resume time", () => {
+  // Contract: both surfaces draw the wait's words from one shared source;
+  // this test pins the row's computed fact (the runway from the summary's
+  // instant at this render) and its phase marker, never the sentence —
+  // the copy itself is the shared source's, and wording changes must not
+  // break tests.
+  test("the row's wait line reads the shared wait words the pane's line uses", () => {
+    const resumesAt = new Date(Date.now() + 90 * 60_000).toISOString();
+    renderRow({
+      state: "active",
+      failure: { title: "Usage limit reached", cause_kind: "provider", status: 429, resumes_at: resumesAt },
+    });
+    const line = screen.getByTestId("rail-row-quota-wait");
+    expect(line.getAttribute("data-passed-reset")).toBeNull();
+    // The rendered runway is within one render-tick of the fixture's 90
+    // minutes; the exact tick boundary is not this test's to pin.
+    const remaining = Number(line.getAttribute("data-remaining-ms"));
+    expect(remaining).toBeGreaterThan(89 * 60_000);
+    expect(remaining).toBeLessThanOrEqual(90 * 60_000);
+  });
+
+  test("the row's wait line reads pending once the resume time passes, while its summary still names the wait", () => {
+    const resumesAt = new Date(Date.now() - 60_000).toISOString();
+    renderRow({
+      state: "active",
+      failure: { title: "Usage limit reached", cause_kind: "provider", status: 429, resumes_at: resumesAt },
+    });
+    // The phase, asserted structurally: the row's line carries the pending
+    // marker, and the shared selector agrees about the summary it holds.
+    const line = screen.getByTestId("rail-row-quota-wait");
+    expect(line.getAttribute("data-passed-reset")).toBe("true");
+    expect(quotaWaitState(resumesAt, Date.now())).toEqual({ phase: "pending" });
+  });
+
+  test("the row's quota wait counts down with the rail clock and turns pending at the resume time", () => {
     vi.useFakeTimers();
     try {
       const start = Date.parse("2026-01-01T00:00:00Z");
@@ -765,7 +803,11 @@ describe("compact session status", () => {
       const after = screen.getByTestId("rail-row-quota-wait").textContent;
       expect(after).not.toBe(before);
       act(() => vi.advanceTimersByTime(31 * 60_000));
-      expect(screen.queryByTestId("rail-row-quota-wait")).toBeNull();
+      // Past the instant the row's own summary still names the wait, so the
+      // line stays - pending, never a countdown leaping forward, and never
+      // silence: the row is a read-sampled surface, and only a refreshed
+      // summary showing no wait ends its line.
+      expect(screen.getByTestId("rail-row-quota-wait").getAttribute("data-passed-reset")).toBe("true");
     } finally {
       vi.useRealTimers();
     }

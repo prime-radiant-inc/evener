@@ -3,6 +3,7 @@ package responses
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -51,9 +52,7 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 // encrypted_content) must still land in the settled message as a thinking
 // part, or the transcript loses everything the model thought. Parts are
 // joined with the same blank line the stream emits between them, so the
-// settled text reads like the live view. Replay is unaffected:
-// toResponsesInput sends a reasoning item back only when it has
-// encrypted_content, so the raw text never returns to this API.
+// settled text reads like the live view.
 func TestResponseContentFromOutputItems_KeepsReasoningTextContent(t *testing.T) {
 	t.Parallel()
 	var out []any
@@ -64,7 +63,7 @@ func TestResponseContentFromOutputItems_KeepsReasoningTextContent(t *testing.T) 
 		t.Fatalf("unmarshal fixture: %v", err)
 	}
 
-	content := responseContentFromOutputItems(out, nil)
+	content := responseContentFromOutputItems(out, nil, false)
 	if len(content) != 2 {
 		t.Fatalf("content parts = %d, want 2 (thinking + text): %#v", len(content), content)
 	}
@@ -80,5 +79,42 @@ func TestResponseContentFromOutputItems_KeepsReasoningTextContent(t *testing.T) 
 	}
 	if th.Thinking.EncryptedContent != "" {
 		t.Fatalf("encrypted content = %q, want empty", th.Thinking.EncryptedContent)
+	}
+}
+
+func TestStreamTerminalTypedReasoningPreservesAccumulatedAnswer(t *testing.T) {
+	t.Parallel()
+	_, final := responsesEvents(t,
+		`{"type":"response.reasoning_summary_part.added"}`,
+		`{"type":"response.reasoning_summary_text.delta","delta":"summary"}`,
+		`{"type":"response.reasoning_summary_part.added"}`,
+		`{"type":"response.reasoning_summary_text.delta","delta":"streamed only"}`,
+		`{"type":"response.output_text.delta","delta":"answer"}`,
+		`{"type":"response.completed","response":{"id":"resp_1","output":[{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"summary"},{"type":"summary_text","text":"terminal only"}]}]}}`,
+	)
+	if final == nil || final.Text() != "answer" || len(final.Message.Content) != 3 {
+		t.Fatalf("settled response = %+v, want accumulated answer", final)
+	}
+	want := []llm.ResponsesReasoningPart{{Type: "summary_text", Text: "summary"}, {Type: "summary_text", Text: "terminal only"}}
+	if th := final.Message.Content[0].Thinking; th == nil ||
+		!slices.Equal(th.ResponsesSummaryParts, want) || !slices.Equal(th.Summary, []string{"terminal only"}) {
+		t.Fatalf("settled reasoning = %+v, want %v with only the terminal-only display summary", th, want)
+	}
+	if got := final.ReasoningText(); got != "summary\n\nstreamed only" {
+		t.Fatalf("settled display reasoning = %q, want both streamed parts", got)
+	}
+}
+
+func TestResponsesIncompleteReasoningDoesNotReplay(t *testing.T) {
+	t.Parallel()
+	out := []any{
+		map[string]any{"type": "reasoning", "id": "rs_done", "status": "completed", "content": []any{map[string]any{"type": "reasoning_text", "text": "done"}}},
+		map[string]any{"type": "reasoning", "id": "rs_open", "content": []any{map[string]any{"type": "reasoning_text", "text": "half"}}},
+		map[string]any{"type": "reasoning", "id": "rs_blob", "encrypted_content": "opaque"},
+	}
+	msg := fromResponses(map[string]any{"id": "r", "status": "incomplete", "output": out}, "m", nil).Message
+	_, items, _ := toResponsesInput([]llm.Message{msg}, "")
+	if len(items) != 1 || items[0].(map[string]any)["id"] != "rs_done" {
+		t.Fatalf("replayed items = %s, want only the completed reasoning item", jsonOf(t, items))
 	}
 }

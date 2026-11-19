@@ -520,7 +520,7 @@ func TestSession_PreCompactHookOnlyRunsWhenCompactionEmits(t *testing.T) {
 	eventsPtr, mu, doneCh := collectEvents(sess)
 
 	runner := hooks.NewRunner(nil, "")
-	runner.SetEventCallback(func(kind events.EventKind, data events.EventData) {
+	runner.SetEventCallbackContext(func(_ context.Context, kind events.EventKind, data events.EventData) {
 		sess.emit(data)
 	})
 	runner.Add(plugin.HookPreCompact, plugin.RegisteredHook{
@@ -564,7 +564,7 @@ func TestSession_PreCompactHookRunsAtCompactionBoundary(t *testing.T) {
 	eventsPtr, mu, doneCh := collectEvents(sess)
 
 	runner := hooks.NewRunner(nil, "")
-	runner.SetEventCallback(func(kind events.EventKind, data events.EventData) {
+	runner.SetEventCallbackContext(func(_ context.Context, kind events.EventKind, data events.EventData) {
 		sess.emit(data)
 	})
 	runner.Add(plugin.HookPreCompact, plugin.RegisteredHook{

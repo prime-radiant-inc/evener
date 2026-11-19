@@ -36,7 +36,22 @@ import { Sheet } from "../sheet/Sheet";
 import { sheetKey } from "../sheet/sheetHosts";
 import { type ModelHost, ModelSheet, modelHosts } from "./ModelSheet";
 
-const navigation = vi.hoisted(() => ({ goBack: vi.fn(), navigate: vi.fn(), dispatch: vi.fn() }));
+const navigation = vi.hoisted(() => ({
+	goBack: vi.fn(),
+	navigate: vi.fn(),
+	dispatch: vi.fn(),
+	// The key the sheet's stack has on top. The sheet closes only while its own
+	// route still holds it, so a test that dismisses the picker and lets a newer
+	// sheet open over it moves this.
+	top: "model-sheet",
+	getState: () => ({
+		index: 1,
+		routes: [
+			{ key: "conversation", name: "Conversation" },
+			{ key: navigation.top, name: "ModelSheet" },
+		],
+	}),
+}));
 const viewport = vi.hoisted(() => ({ fontScale: 1, scrolls: [] as { y: number; animated: boolean }[] }));
 
 vi.mock("react-native", async () => {
@@ -63,6 +78,7 @@ vi.mock("@react-navigation/native", () => ({
 const palette = paletteFor("light");
 const HUB = "hub-1";
 const REF = "local:s1";
+const SHEET_ROUTE_KEY = "model-sheet";
 
 const CATALOG: ModelListResponse = {
 	data: [
@@ -91,27 +107,38 @@ const CATALOG: ModelListResponse = {
 const CAPABILITIES = { changeModel: true, changeVisionModel: true } as ThreadCapabilities;
 
 function conversation(over: Partial<MobileConversation> = {}): MobileConversation {
+	const fields = {
+		ref: REF,
+		capabilities: CAPABILITIES,
+		modelProvider: "anthropic/claude-sonnet-5",
+		model: "anthropic/claude-sonnet-5",
+		reasoningEffort: "high",
+		reasoningEffortLevels: ["low", "medium", "high"] as string[],
+		supportsReasoning: true,
+		status: { type: "idle" },
+		visionModel: "",
+		...over,
+	};
+	// A live session's ready snapshot hydrates from the same wire read as its
+	// raw model fields, so its active mirrors them: the provider instance the
+	// snapshot names beside the id (modelProfile, or modelProvider when the
+	// two model fields differ) and the id itself. A fixture that changed one
+	// without the other would describe a state production cannot produce.
+	const model = fields.model || fields.modelProvider;
+	const provider = fields.modelProfile || (fields.modelProvider !== model ? fields.modelProvider : "");
 	const snapshot = {
 		authority: { instanceId: "instance-a", bootGeneration: "7" },
 		revision: 1,
 		active: {
-			modelProvider: "anthropic",
-			model: "claude-sonnet-5",
+			modelProvider: provider === "" ? model : provider,
+			model,
 			reasoningEffortLevels: ["low", "medium", "high"],
 			supportsReasoning: true,
 		},
 	};
 	return {
-		ref: REF,
-		capabilities: CAPABILITIES,
-		modelProvider: "anthropic/claude-sonnet-5",
-		model: "anthropic/claude-sonnet-5",
-		modelControlState: { kind: "ready", snapshot },
-		reasoningEffort: "high",
-		reasoningEffortLevels: ["low", "medium", "high"],
-		supportsReasoning: true,
-		visionModel: "",
-		...over,
+		...fields,
+		modelControlState: over.modelControlState ?? { kind: "ready", snapshot },
 	} as unknown as MobileConversation;
 }
 
@@ -126,6 +153,7 @@ function fakeControls(calls: string[], over: Partial<ControlsState> = {}) {
 		catalog: CATALOG,
 		loadingModels: false,
 		modelError: null,
+		unread: { model: null, vision: null },
 		...over,
 	};
 	return {
@@ -181,7 +209,7 @@ function provide(session: MobileConversation, state: Partial<ControlsState> = {}
 
 function sheet(setting: "model" | "vision" = "model"): ReactTestRenderer {
 	const props = {
-		route: { key: "model-sheet", name: "ModelSheet", params: { hubId: HUB, ref: REF, setting } },
+		route: { key: SHEET_ROUTE_KEY, name: "ModelSheet", params: { hubId: HUB, ref: REF, setting } },
 		navigation,
 	} as unknown as NativeStackScreenProps<Routes, "ModelSheet">;
 	const tree = render(<ModelSheet {...props} />);
@@ -201,9 +229,17 @@ function listed(tree: ReactTestRenderer): string[] {
 		.map((node) => textOf(node));
 }
 
+/** The sheet's refusals: a reason shown for an action is an alert, and which
+ * actions have one is what the retired-refusal tests check. */
+function alerts(target: ReactTestRenderer | ReactTestInstance): ReactTestInstance[] {
+	const root = "root" in target ? target.root : target;
+	return root.findAll((node) => node.props.accessibilityRole === "alert");
+}
+
 beforeEach(() => {
 	navigation.goBack.mockReset();
 	navigation.navigate.mockReset();
+	navigation.top = SHEET_ROUTE_KEY;
 	viewport.fontScale = 1;
 	viewport.scrolls.length = 0;
 });
@@ -341,13 +377,43 @@ describe("choosing a model (spec 8.5)", () => {
 		expect(pressable(tree, "Claude Haiku 5")?.props.accessibilityState).toMatchObject({ selected: false });
 	});
 
-	it("changes the model, closes, and announces it once", async () => {
-		const { host, calls } = provide(conversation());
+	// The daemon names a model two ways. Its snapshot carries the bare model id
+	// in Thread.modelProvider and the provider instance in Thread.evener.profile;
+	// thread/model/changed carries the provider and the id in their own fields.
+	// The picker marks a row by that one qualified identity in both shapes, so
+	// the running row is never left unselected - which would make a tap on it
+	// send a second setter and append a switch to the transcript.
+	it("marks the running model's row from the snapshot's bare id and profile", () => {
+		provide(conversation({ modelProvider: "claude-haiku-5", model: "claude-haiku-5", modelProfile: "anthropic" }));
+		const tree = sheet();
+		expect(pressable(tree, "Claude Haiku 5")?.props.accessibilityState).toMatchObject({ selected: true });
+		expect(pressable(tree, "Claude Sonnet 5")?.props.accessibilityState).toMatchObject({ selected: false });
+	});
+
+	it("marks the running model's row after a live model change", () => {
+		provide(conversation({ modelProvider: "anthropic", model: "claude-haiku-5" }));
+		const tree = sheet();
+		expect(pressable(tree, "Claude Haiku 5")?.props.accessibilityState).toMatchObject({ selected: true });
+		expect(pressable(tree, "Claude Sonnet 5")?.props.accessibilityState).toMatchObject({ selected: false });
+	});
+
+	it("marks the running model's row when the snapshot already names it whole", () => {
+		// A genuinely prequalified snapshot: the one model field names the whole
+		// identity and no provider instance rides beside it.
+		provide(conversation({ modelProvider: "anthropic/claude-haiku-5", model: "anthropic/claude-haiku-5" }));
+		const tree = sheet();
+		expect(pressable(tree, "Claude Haiku 5")?.props.accessibilityState).toMatchObject({ selected: true });
+	});
+
+	it("closes without sending when the running model's row is tapped", async () => {
+		const { calls, controls } = provide(
+			conversation({ modelProvider: "claude-haiku-5", model: "claude-haiku-5", modelProfile: "anthropic" }),
+		);
 		const tree = sheet();
 		act(() => pressable(tree, "Claude Haiku 5")?.props.onPress());
 		await settle();
-		expect(calls).toEqual(["changeModel:anthropic/claude-haiku-5", "goBack"]);
-		expect(host.toast).toHaveBeenCalledTimes(1);
+		expect(controls.changeModel).not.toHaveBeenCalled();
+		expect(calls).toEqual(["goBack"]);
 	});
 
 	it("closes on the already-selected row without sending, while the session is live", async () => {
@@ -364,6 +430,82 @@ describe("choosing a model (spec 8.5)", () => {
 		expect(calls).toEqual(["goBack"]);
 	});
 
+	// The session runs Claude Opus 5 through OpenRouter, whose model id carries
+	// the upstream provider's name: "anthropic/claude-opus-5". Its catalog
+	// identity is therefore "openrouter/anthropic/claude-opus-5", and the rows
+	// for the two providers are different choices. If the picker instead read
+	// the raw id as the whole identity, the direct Anthropic row would look like
+	// the running model and a tap meant as a switch would dismiss without a
+	// write.
+	const ROUTED_CATALOG: ModelListResponse = {
+		data: [
+			{ provider: "anthropic", model: "claude-opus-5", displayName: "Claude Opus 5" },
+			{ provider: "openrouter", model: "anthropic/claude-opus-5", displayName: "Claude Opus 5 (OpenRouter)" },
+		],
+	};
+
+	it.each([
+		// The snapshot's layout: the bare id in both model fields and the
+		// provider instance beside them.
+		[
+			"snapshot",
+			{ modelProvider: "anthropic/claude-opus-5", model: "anthropic/claude-opus-5", modelProfile: "openrouter" },
+		],
+		// The live thread/model/changed layout: the provider instance in
+		// modelProvider, the id in model, no profile.
+		["live update", { modelProvider: "openrouter", model: "anthropic/claude-opus-5", modelProfile: undefined }],
+	] as const)("sends the switch to the other provider from the %s wire shape", async (_shape, running) => {
+		const { calls, controls, host } = provide(conversation(running), { catalog: ROUTED_CATALOG });
+		const tree = sheet();
+		// The running model's own row is the selected one.
+		expect(pressable(tree, "Claude Opus 5 (OpenRouter)")?.props.accessibilityState).toMatchObject({ selected: true });
+		expect(pressable(tree, "Claude Opus 5")?.props.accessibilityState).toMatchObject({ selected: false });
+		act(() => pressable(tree, "Claude Opus 5")?.props.onPress());
+		await settle();
+		// The switch went to the direct Anthropic instance, not to OpenRouter's
+		// namespaced row of the same model.
+		expect(controls.changeModel).toHaveBeenCalledExactlyOnceWith("anthropic", "claude-opus-5");
+		expect(calls).toEqual(["changeModel:anthropic/claude-opus-5", "goBack"]);
+		expect(host.toast).toHaveBeenCalledOnce();
+	});
+
+	// The bundled catalog lists OpenRouter's Auto Router as the raw model id
+	// "openrouter/auto" on the "openrouter" instance, so its catalog identity
+	// is "openrouter/openrouter/auto". Reading the raw id as the whole identity
+	// would leave the running row unselected, and a tap on it - meant as a
+	// no-op - would send a setter that resumes a stopped session.
+	const AUTO_ROUTER_CATALOG: ModelListResponse = {
+		data: [{ provider: "openrouter", model: "openrouter/auto", displayName: "Auto Router" }],
+	};
+
+	it.each([
+		["snapshot", { modelProvider: "openrouter/auto", model: "openrouter/auto", modelProfile: "openrouter" }],
+		["live update", { modelProvider: "openrouter", model: "openrouter/auto", modelProfile: undefined }],
+	] as const)(
+		"closes without a write when the running Auto Router row is tapped from the %s wire shape",
+		async (_shape, running) => {
+			const { calls, controls } = provide(conversation(running), { catalog: AUTO_ROUTER_CATALOG });
+			const tree = sheet();
+			expect(pressable(tree, "Auto Router")?.props.accessibilityState).toMatchObject({ selected: true });
+			act(() => pressable(tree, "Auto Router")?.props.onPress());
+			await settle();
+			expect(controls.changeModel).not.toHaveBeenCalled();
+			expect(calls).toEqual(["goBack"]);
+		},
+	);
+
+	it("changes the model, closes, and confirms once", async () => {
+		const { calls, controls, host } = provide(conversation());
+		const tree = sheet();
+		act(() => pressable(tree, "Claude Haiku 5")?.props.onPress());
+		await settle();
+		expect(controls.changeModel).toHaveBeenCalledExactlyOnceWith("anthropic", "claude-haiku-5");
+		// The request and the dismissal, in order. The confirmation's wording is
+		// not what this asserts.
+		expect(calls).toEqual(["changeModel:anthropic/claude-haiku-5", "goBack"]);
+		expect(host.toast).toHaveBeenCalledOnce();
+	});
+
 	it("stays open, and says nothing, when the change didn't go through", async () => {
 		const { calls, controls } = provide(conversation());
 		controls.changeModel.mockImplementation(async () => {
@@ -374,6 +516,56 @@ describe("choosing a model (spec 8.5)", () => {
 		act(() => pressable(tree, "Claude Haiku 5")?.props.onPress());
 		await settle();
 		expect(calls).toEqual(["changeModel"]);
+	});
+
+	// The hub can refuse a pick after the controls that sent it have been
+	// replaced: a recycle disposes the set mid-pick and the screen provides a
+	// new one. The refusal is recorded on the set that sent the write, and the
+	// header the picker scrolls to reads the replacement's snapshot instead, so
+	// an open picker would show no reason at all for a pick that did not
+	// happen.
+	it("shows the sending binding's refusal after its controls were replaced", async () => {
+		const calls: string[] = [];
+		const answer = Promise.withResolvers<ActionOutcome>();
+		const sending = fakeControls(calls);
+		sending.changeModel.mockImplementation(async (provider, model) => {
+			calls.push(`changeModel:${provider}/${model}`);
+			return answer.promise;
+		});
+		provide(conversation(), {}, { controls: sending as unknown as SessionControls });
+		const tree = sheet();
+		act(() => pressable(tree, "Claude Haiku 5")?.props.onPress());
+		// The recycle lands while the answer is out: the screen provides a
+		// replacement set, and this one recorded nothing.
+		provide(conversation(), {}, { controls: fakeControls(calls) as unknown as SessionControls });
+		await settle();
+		// What publish writes on the set that dispatched, when the hub refuses.
+		Object.assign(sending.getSnapshot(), { lastAction: "changeModel", error: "Could not confirm the action" });
+		answer.resolve({ disposition: "refused", message: "Could not confirm the action" });
+		await settle();
+		// The replacement's snapshot is not what the header reads: the refusal
+		// raised by the set that sent the write is.
+		expect(alerts(tree)).toHaveLength(1);
+		// The picker stays open for the retry, and nothing announces a change.
+		expect(navigation.goBack).not.toHaveBeenCalled();
+	});
+
+	// A set the hub acknowledged whose readback never landed leaves the
+	// projection showing the value from before it. That stale row must not read
+	// as "already set": tapping it is the correction the reader means to make,
+	// and dismissing there is how the change disappears with nothing sent.
+	it("sends the correction for the value a prior pick was acknowledged for", async () => {
+		const { calls, host } = provide(conversation(), {
+			// The hub took the haiku pick; the projection is still one change
+			// behind and draws the sonnet row as selected.
+			unread: { model: { state: "acknowledged", value: "anthropic/claude-haiku-5" }, vision: null },
+		});
+		const tree = sheet();
+		// Tapping the shown row is the correction: it writes sonnet back.
+		act(() => pressable(tree, "Claude Sonnet 5")?.props.onPress());
+		await settle();
+		expect(calls).toEqual(["changeModel:anthropic/claude-sonnet-5", "goBack"]);
+		expect(host.toast).toHaveBeenCalledOnce();
 	});
 
 	it("searches the models", () => {
@@ -407,6 +599,77 @@ describe("choosing a model (spec 8.5)", () => {
 	it("shows why a change failed", () => {
 		provide(conversation(), { lastAction: "changeModel", error: "Could not confirm the action: refused" });
 		expect(renderedText(sheet())).toContain("Could not confirm the action: refused");
+	});
+
+	// A refusal shown for one action is the answer to that action, not to the
+	// next one. Choosing an effort after a refused model pick has to retire it:
+	// left in place it stays on screen when the effort change succeeds, and
+	// hides the new reason when that change fails.
+	it("retires a refused pick when an effort change starts", async () => {
+		const { controls } = provide(conversation());
+		controls.changeModel.mockImplementation(async () => ({ disposition: "refused", message: "refused" }));
+		Object.assign(controls.getSnapshot(), { lastAction: "changeModel", error: "refused" });
+		const tree = sheet();
+		act(() => pressable(tree, "Claude Haiku 5")?.props.onPress());
+		await settle();
+		expect(alerts(tree)).toHaveLength(1);
+		const effort = Promise.withResolvers<void>();
+		controls.setReasoningEffort.mockImplementation(async () => {
+			// The controls that start the attempt record it: the refusal the
+			// previous action left behind is no longer what they say.
+			Object.assign(controls.getSnapshot(), { lastAction: "setReasoningEffort", error: null });
+			await effort.promise;
+			return { disposition: "accepted", notice: "Reasoning effort updated." };
+		});
+		act(() => pressable(tree, "Low")?.props.onPress());
+		// The attempt is the reader's, so the old refusal goes as it starts.
+		expect(alerts(tree)).toHaveLength(0);
+		effort.resolve();
+		await settle();
+		// A successful effort change leaves the sheet open, and it does not bring
+		// the retired refusal back.
+		expect(alerts(tree)).toHaveLength(0);
+		expect(navigation.goBack).not.toHaveBeenCalled();
+	});
+
+	it("reports a refused effort change through the binding that sent it", async () => {
+		const { controls } = provide(conversation());
+		const sent = Promise.withResolvers<void>();
+		controls.setReasoningEffort.mockImplementation(async () => {
+			await sent.promise;
+			Object.assign(controls.getSnapshot(), { lastAction: "setReasoningEffort", error: "refused" });
+			return { disposition: "refused", message: "refused" };
+		});
+		const tree = sheet();
+		act(() => pressable(tree, "Low")?.props.onPress());
+		sent.resolve();
+		await settle();
+		expect(alerts(tree)).toHaveLength(1);
+		expect(navigation.goBack).not.toHaveBeenCalled();
+	});
+
+	// The reader can dismiss the picker while a pick is out, and a newer sheet
+	// can hold the top of the stack by the time the hub answers. The late
+	// success must not issue a back action then: it would pop that newer sheet,
+	// or the conversation under it. The session keeps the acknowledgement and
+	// the readback either way; only the dismissal follows the route.
+	it("does not pop a newer sheet when the pick settles after the picker closed", async () => {
+		const calls: string[] = [];
+		const answer = Promise.withResolvers<ActionOutcome>();
+		const controls = fakeControls(calls);
+		controls.changeModel.mockImplementation(async (provider, model) => {
+			calls.push(`changeModel:${provider}/${model}`);
+			return answer.promise;
+		});
+		provide(conversation(), {}, { controls: controls as unknown as SessionControls });
+		const tree = sheet();
+		act(() => pressable(tree, "Claude Haiku 5")?.props.onPress());
+		// The reader dismisses the picker, and another sheet opens over the
+		// conversation before the hub answers.
+		navigation.top = "notes-sheet";
+		answer.resolve({ disposition: "accepted", notice: "Model updated." });
+		await settle();
+		expect(navigation.goBack).not.toHaveBeenCalled();
 	});
 });
 
@@ -889,7 +1152,10 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 			};
 		});
 		client.on("thread/model/set", () => {
-			throw new WireError("The provider is not available to this session.", -32000);
+			// An opaque sentinel the daemon passes through: what the test proves
+			// is the refusal's visibility, not the wording of one daemon's
+			// refusal.
+			throw new WireError("sentinel-refusal-reason-93f1", -32000);
 		});
 		const service = createConversationService(client);
 		const cold = await service.open(REF);
@@ -956,7 +1222,7 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 		// reason visible, and closes nothing.
 		expect(navigation.goBack).toHaveBeenCalledTimes(0);
 		expect(toast).not.toHaveBeenCalled();
-		expect(renderedText(tree)).toContain("The provider is not available to this session.");
+		expect(renderedText(tree)).toContain("sentinel-refusal-reason-93f1");
 		// The choice may be taken again: the sheet stays usable.
 		expect(pressable(tree, "Claude Haiku 5")?.props.disabled).toBe(false);
 	});
@@ -1340,7 +1606,7 @@ describe.each([
 				} else {
 					expect(controls.getSnapshot().error).toBeNull();
 					expect(viewport.scrolls).toEqual([]);
-					expect(tree.root.findAll((node) => node.props.accessibilityRole === "alert")).toHaveLength(0);
+					expect(alerts(tree)).toHaveLength(0);
 					expect(navigation.goBack).toHaveBeenCalledTimes(closes ? 1 : 0);
 				}
 			}
@@ -1371,7 +1637,7 @@ describe("effort", () => {
 		const choices = list.findAll((node) => node.props.accessibilityRole === "radio");
 		expect(choices).toHaveLength(levels.length);
 		expect(list.findByProps({ accessibilityRole: "radiogroup" }).props.style.flexDirection).toBe("column");
-		expect(list.findAll((node) => node.props.accessibilityRole === "alert")).toHaveLength(1);
+		expect(alerts(list)).toHaveLength(1);
 		expect(list.findAll((node) => node.props.testID === "model-title").length).toBeGreaterThan(0);
 		// Search stays available while the growing header scrolls away.
 		expect(tree.root.findAll((node) => String(node.type) === "TextInput")).toHaveLength(1);

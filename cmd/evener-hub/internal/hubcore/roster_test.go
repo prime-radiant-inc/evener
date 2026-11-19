@@ -2406,3 +2406,39 @@ func TestRosterSubagentStateEmptyID(t *testing.T) {
 		t.Fatalf("SubagentState(\"\") = %q, %v, want empty and not live", state, ok)
 	}
 }
+
+// TestSnapshotSkipsThePerPIDProjection pins the cost separation between the two
+// snapshot shapes. Navigation calls Snapshot and never reads a per-PID
+// projection, so Snapshot must not build one; the ownership question needs every
+// process before the per-session dedup, which only OwnershipSnapshot carries.
+//
+// The assertion is on allocations, not time: the projection deep-copies every
+// entry, so a Snapshot that built it would allocate markedly more than one that
+// does not. Both are measured over an entry carrying real child, job and watch
+// state, which is the state a navigation snapshot pays to copy.
+func TestSnapshotSkipsThePerPIDProjection(t *testing.T) {
+	// Not parallel: testing.AllocsPerRun pins GOMAXPROCS to 1.
+	entry := LiveEntry{
+		Entry:              rendezvous.Entry{PID: 4242, ThreadID: "thread", SessionID: "thread"},
+		SessionID:          "thread",
+		Status:             "active",
+		RunningSubagentIDs: []string{"child-a", "child-b"},
+	}
+	roster := NewRosterWithEntries(entry)
+	if got := len(roster.OwnershipSnapshot().Confirmed); got != 1 {
+		t.Fatalf("ownership snapshot carries %d confirmed processes, want 1", got)
+	}
+	// Snapshot has no per-PID projection to reach for: the shape carries only
+	// the navigation answers. The compile-time absence is the strong claim this
+	// allocation check backs up.
+	navAllocs := testing.AllocsPerRun(50, func() { _ = roster.Snapshot() })
+	ownAllocs := testing.AllocsPerRun(50, func() { _ = roster.OwnershipSnapshot() })
+	// Navigation must be strictly cheaper, which is only true while it builds no
+	// per-PID projection. The measured gap on this fixture is small because the
+	// entry carries little copied state, so the assertion is the direction, not a
+	// hand-picked margin: a Snapshot that also built the projection would land on
+	// the same count as the ownership call.
+	if navAllocs >= ownAllocs {
+		t.Fatalf("navigation snapshot allocated %.0f, ownership snapshot %.0f: navigation is still paying for the per-PID projection", navAllocs, ownAllocs)
+	}
+}

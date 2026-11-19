@@ -1085,7 +1085,9 @@ it("says why a typed /model was refused across a resume that resolved a new iden
 	};
 	(resolved as unknown as { evener: Record<string, unknown> }).evener.instanceId = "instance-resolved";
 	otherThreads.set(resolvedRef, resolved);
-	modelSetRefusal.message = "The provider is not available to this session.";
+	// An opaque sentinel the daemon passes through: what the test proves is the
+	// refusal's visibility, not the wording of one daemon's refusal.
+	modelSetRefusal.message = "sentinel-refusal-reason-93f1";
 	const { tree, hub } = await mount(served);
 	const resumeThread = hub.client.resumeThread.bind(hub.client);
 	hub.client.resumeThread = async (ref: string) => {
@@ -1104,9 +1106,91 @@ it("says why a typed /model was refused across a resume that resolved a new iden
 	expect(setCalls[0]?.params).toMatchObject({ ref: resolvedRef });
 	// The refusal is what the composer says, not a send to confirm.
 	expect(actionErrors(tree)).toContain("refused");
-	expect(renderedText(tree)).toContain("The provider is not available to this session.");
+	expect(renderedText(tree)).toContain("sentinel-refusal-reason-93f1");
 	// A refused pick is not the phone's to take back: its text stands as the
 	// unconfirmed send it became (R5's boundary), alongside the reason.
+	expect(ghostStates(tree)).toEqual(["unconfirmed"]);
+});
+
+// The route-replacement half of the same medium: the identity change a cold
+// pick's resume publishes replaces the topmost conversation route
+// (screens.tsx's replaceForIdentity), so by the time the daemon refuses the
+// pick the initiating route key is no longer in the stack at all. The
+// refusal is still owed to the composer that sent it: delivery rides the
+// promise, gated on the destination that survived the resume - the
+// conversation route mounted after the replacement - while the draft stays
+// associated with its original ref. The suite's earlier test never saw this
+// because its navigation.replace mock left the old route in the stack.
+it("says why a typed /model was refused even when the resume replaced its route", async () => {
+	const served = thread("ref-cold-model-route", "idle");
+	(served as unknown as { status: { type: string } }).status = { type: "notLoaded" };
+	(served as unknown as { evener: Record<string, unknown> }).evener.capabilities = {
+		...CAPABILITIES,
+		changeModel: true,
+	};
+	const resolvedRef = "ref-cold-model-route-resolved";
+	const resolved = thread(resolvedRef, "idle");
+	(resolved as unknown as { evener: Record<string, unknown> }).evener.capabilities = {
+		...CAPABILITIES,
+		changeModel: true,
+		modelControlVersion: 1,
+	};
+	(resolved as unknown as { evener: Record<string, unknown> }).evener.modelControl = {
+		authority: { instanceId: "instance-route-resolved", bootGeneration: "test-boot" },
+		revision: 1,
+		active: {
+			modelProvider: "anthropic",
+			model: "claude-sonnet-5",
+			reasoningEffortLevels: [],
+			supportsReasoning: false,
+		},
+	};
+	(resolved as unknown as { evener: Record<string, unknown> }).evener.instanceId = "instance-route-resolved";
+	otherThreads.set(resolvedRef, resolved);
+	// An opaque sentinel the daemon passes through: what the test proves is the
+	// refusal's visibility, not the wording of one daemon's refusal.
+	modelSetRefusal.message = "sentinel-refusal-reason-93f1";
+	const { tree, hub } = await mount(served);
+	const resumeThread = hub.client.resumeThread.bind(hub.client);
+	hub.client.resumeThread = async (ref: string) => {
+		const response = await resumeThread(ref);
+		return { thread: resolved } as unknown as typeof response;
+	};
+	// The production replacement: the topmost route is swapped for the
+	// resolved identity, and the initiating route key leaves the stack.
+	const oldRoute = navigationState.state.routes[navigationState.state.index];
+	navigation.replace.mockImplementationOnce(((_name: string, params: object) => {
+		const next = {
+			key: `conversation-${resolvedRef}`,
+			name: "Conversation",
+			params: { hubId: "hub-1", ref: resolvedRef, title: "Session" },
+		} as unknown as typeof oldRoute;
+		navigationState.state = {
+			index: 0,
+			routes: [next, ...navigationState.state.routes.filter((route) => route.key !== oldRoute.key)],
+		};
+	}) as unknown as typeof navigation.replace);
+
+	await type(tree, "/model anthropic/claude-sonnet-5");
+	await press(tree, "Set model");
+
+	// The route the pick started from is gone: the stack's topmost route is
+	// the replacement, not the initiating one.
+	const topmost = navigationState.state.routes[navigationState.state.index];
+	expect(topmost.key).toBe(`conversation-${resolvedRef}`);
+	expect(topmost.key).not.toBe(oldRoute.key);
+	// One resume behind the pick, and one refused mutation on the identity the
+	// resume resolved.
+	expect(hub.requests.filter((request) => request.method === "resumeThread")).toHaveLength(1);
+	const setCalls = hub.requests.filter((request) => request.method === "thread/model/set");
+	expect(setCalls).toHaveLength(1);
+	expect(setCalls[0]?.params).toMatchObject({ ref: resolvedRef });
+	// The refusal is visible on the composer the pick came from, not dropped
+	// by a gate on the route key the replacement removed.
+	expect(actionErrors(tree)).toContain("refused");
+	expect(renderedText(tree)).toContain("sentinel-refusal-reason-93f1");
+	// A refused pick is not the phone's to take back: its text stands as the
+	// unconfirmed send it became, associated with the ref it was typed on.
 	expect(ghostStates(tree)).toEqual(["unconfirmed"]);
 });
 

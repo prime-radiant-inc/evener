@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -64,31 +65,6 @@ func TestCloneActivityVisited(t *testing.T) {
 	}
 }
 
-// TestActivityRecordBefore covers activityRecordBefore.
-func TestActivityRecordBefore(t *testing.T) {
-	t.Parallel()
-	t1 := time.Unix(1000, 0)
-	t2 := time.Unix(2000, 0)
-	// Different StartedAt: earlier wins.
-	left := &jobstore.JobRecord{JobID: "job_a", StartedAt: t1}
-	right := &jobstore.JobRecord{JobID: "job_b", StartedAt: t2}
-	if !activityRecordBefore(left, right) {
-		t.Fatal("earlier StartedAt should come before later")
-	}
-	if activityRecordBefore(right, left) {
-		t.Fatal("later StartedAt should not come before earlier")
-	}
-	// Same StartedAt: JobID is the tiebreaker.
-	left2 := &jobstore.JobRecord{JobID: "job_a", StartedAt: t1}
-	right2 := &jobstore.JobRecord{JobID: "job_b", StartedAt: t1}
-	if !activityRecordBefore(left2, right2) {
-		t.Fatal("job_a should come before job_b at same time")
-	}
-	if activityRecordBefore(right2, left2) {
-		t.Fatal("job_b should not come before job_a at same time")
-	}
-}
-
 // TestActivityCurrentRootRevision covers activityCurrentRootRevision including the nil-clock guard.
 func TestActivityCurrentRootRevision(t *testing.T) {
 	t.Parallel()
@@ -111,58 +87,72 @@ func TestActivityCurrentRootID(t *testing.T) {
 	}
 }
 
-// TestMergeActivityRecords covers mergeActivityRecords including overlay and live-only insertion.
-func TestMergeActivityRecords(t *testing.T) {
+// TestActivityJobListLiveOverlay covers the live overlay the activity read
+// applies to a folded list: a running job's record replaces the durable record
+// at the same position, the list keeps its durable order, and a record with no
+// durable counterpart adds no row — a live entry only exists once its
+// job_started event is committed, so the folded list already carries it.
+func TestActivityJobListLiveOverlay(t *testing.T) {
 	t.Parallel()
 	t1 := time.Unix(1000, 0)
 	t2 := time.Unix(2000, 0)
-	t3 := time.Unix(3000, 0)
-	durable := []*jobstore.JobRecord{
+	durable := newActivityJobList([]*jobstore.JobRecord{
 		{JobID: "job_1", StartedAt: t1, Status: jobstore.StatusCompleted},
 		{JobID: "job_2", StartedAt: t2, Status: jobstore.StatusCompleted},
-	}
+	})
 	live := map[string]*jobstore.JobRecord{
-		"job_2": {JobID: "job_2", StartedAt: t2, Status: jobstore.StatusRunning},
-		"job_3": {JobID: "job_3", StartedAt: t3, Status: jobstore.StatusRunning},
+		"job_2": {JobID: "job_2", Status: jobstore.StatusRunning},
+		"job_3": {JobID: "job_3", StartedAt: t2, Status: jobstore.StatusRunning},
 	}
-	merged := mergeActivityRecords(durable, live)
-	if len(merged) != 3 {
-		t.Fatalf("merged count = %d, want 3: %+v", len(merged), merged)
+	overlaid := durable.withLive(live)
+	if got := overlaid.len(); got != 2 {
+		t.Fatalf("overlaid list length = %d, want the durable 2", got)
 	}
-	// job_1 from durable, job_2 from live (overlay), job_3 from live-only.
+	if got := durable.len(); got != 2 {
+		t.Fatalf("base list length changed to %d; withLive must not mutate it", got)
+	}
 	byID := make(map[string]*jobstore.JobRecord)
-	for _, rec := range merged {
+	var order []string
+	for rec := range overlaid.all() {
 		byID[rec.JobID] = rec
+		order = append(order, rec.JobID)
+	}
+	if !reflect.DeepEqual(order, []string{"job_1", "job_2"}) {
+		t.Fatalf("order = %v, want the durable order [job_1 job_2]", order)
 	}
 	if rec := byID["job_1"]; rec == nil || rec.Status != jobstore.StatusCompleted {
 		t.Fatalf("job_1 = %+v, want completed from durable", rec)
 	}
 	if rec := byID["job_2"]; rec == nil || rec.Status != jobstore.StatusRunning {
-		t.Fatalf("job_2 = %+v, want running from live overlay", rec)
+		t.Fatalf("job_2 = %+v, want running from the live overlay", rec)
 	}
-	if rec := byID["job_3"]; rec == nil || rec.Status != jobstore.StatusRunning {
-		t.Fatalf("job_3 = %+v, want running from live-only", rec)
+	// The overlay hands back the live record, not a copy of it: the caller
+	// owns the live snapshot (jobManager.liveJobRecords already cloned it).
+	if got := byID["job_2"]; got != live["job_2"] {
+		t.Fatalf("job_2 = %p, want the live record %p", got, live["job_2"])
 	}
-	// Durable order preserved: job_1 before job_2.
-	if merged[0].JobID != "job_1" || merged[1].JobID != "job_2" {
-		t.Fatalf("order = %v %v, want job_1 then job_2", merged[0].JobID, merged[1].JobID)
-	}
-	// Live-only job_3 inserted last.
-	if merged[2].JobID != "job_3" {
-		t.Fatalf("last = %v, want job_3", merged[2].JobID)
+	// The base list still reports its own, durable record.
+	for rec := range durable.all() {
+		if rec.JobID == "job_2" && rec.Status != jobstore.StatusCompleted {
+			t.Fatalf("base list job_2 = %+v, want the durable completed record", rec)
+		}
 	}
 }
 
-// TestMergeActivityRecordsNilEntries covers the nil-entry skip path.
-func TestMergeActivityRecordsNilEntries(t *testing.T) {
+// TestActivityJobListLiveOverlayWithoutLiveRecords pins the no-overlay case:
+// with no live records the list is returned as-is, so a quiet session serves
+// its page from the fold with no extra work.
+func TestActivityJobListLiveOverlayWithoutLiveRecords(t *testing.T) {
 	t.Parallel()
-	durable := []*jobstore.JobRecord{nil, {JobID: "", StartedAt: time.Unix(0, 0)}}
-	live := map[string]*jobstore.JobRecord{
-		"": nil,
+	durable := newActivityJobList([]*jobstore.JobRecord{
+		{JobID: "job_1", StartedAt: time.Unix(1000, 0), Status: jobstore.StatusCompleted},
+	})
+	if got := durable.withLive(nil); got != durable {
+		t.Fatal("withLive(nil) allocated a new list, want the fold's own list")
 	}
-	merged := mergeActivityRecords(durable, live)
-	if len(merged) != 0 {
-		t.Fatalf("nil/empty entries: merged = %d, want 0", len(merged))
+	var nilList *activityJobList
+	if got := nilList.withLive(map[string]*jobstore.JobRecord{"job_1": {JobID: "job_1"}}); got != nil {
+		t.Fatal("a nil list gained an overlay")
 	}
 }
 

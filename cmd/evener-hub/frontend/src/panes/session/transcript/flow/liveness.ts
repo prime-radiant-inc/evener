@@ -1,8 +1,11 @@
 // Pure "honest liveness" logic: quiet ~Nm -> "may be stalled" - or, when the
-// wait has a known explanation, that explanation instead of either. Two
-// explanations exist, in precedence order: a model call the daemon has told us
-// it is retrying ("rate limited — attempt 9/11 — retrying in 60s", kata 4zn8), and
-// the session's subagents still running ("waiting on N subagents"). Both are
+// wait has a known explanation, that explanation instead of either. Three
+// explanations exist, in precedence order: a model call the daemon has told
+// us is waiting out a usage limit that named its reset (the quota level,
+// which answers first and takes no part in the quiet gate), a model call the
+// daemon has told us it is retrying ("rate limited — attempt 9/11 — retrying
+// in 60s", kata 4zn8), and the session's subagents still running ("waiting on
+// N subagents"). All are
 // design brief principle 6: a wait fully explained is not a stall. The retry
 // wins when both hold, being the more specific and more directly observed of
 // the two. Driven by gap = now - ThreadModel.lastFrameAt, active, a
@@ -17,13 +20,22 @@
 // widgets/cadence). These are session-level thresholds only.
 
 import { isStuck, RUNNING_QUIET_AFTER_MS } from "@evener/appwire-client";
-import { waitingForQuotaText } from "@evener/appwire-client/state/navigation";
+import { passedQuotaResetText, waitingForQuotaText } from "@evener/appwire-client/state/navigation";
 
 export type LivenessLevel = "none" | "quiet" | "stalled" | "waiting" | "retrying" | "quota";
 
 export interface LivenessInfo {
   level: LivenessLevel;
   text: string | null;
+  /** The quota wait's own facts when level is "quota": the phase, the
+   * computed runway, the model tag and the elapsed sample, as structured
+   * values tests assert instead of the copy. */
+  quota?: {
+    passedReset: boolean;
+    remainingMs?: number;
+    model?: string;
+    elapsedMs?: number;
+  };
 }
 
 // The short quiet hint. "Stalled" is the shared stuck rule (isStuck). The
@@ -90,12 +102,25 @@ export interface RetryWait {
 /**
  * A model call waiting out a provider usage limit that named its reset, as the
  * line renders it. Like RetryWait, the caller (LivenessLine.tsx) does the
- * narrowing: ThreadModel.quotaResumesAt is an ISO instant and this type's one
- * field is the distance to it, already decided against the shared countdown
- * rule so that a wait whose instant has passed is absent rather than negative.
+ * narrowing: ThreadModel.quotaResumesAt is an ISO instant and this type
+ * carries the wait's phase against it, already decided against the shared
+ * tri-state rule — counting while the instant is ahead, pending once it has
+ * passed and only the daemon's wake, a turn boundary, or a read showing no
+ * wait can end it. The metadata fields ride both halves identically:
+ * crossing the reset changes the promise, never the facts beside it, and
+ * they are present only when a live announcement established the wait
+ * (a snapshot-only wait carries neither — the snapshot cannot attribute
+ * them).
  */
 export interface QuotaWait {
-  remainingMs: number;
+  /** The distance to the instant while counting; undefined once pending. */
+  remainingMs?: number;
+  /** True once the wait's reset instant has passed: the retry is pending. */
+  passedReset: boolean;
+  /** The waiting call's model, only when it differs from the session's primary. */
+  model?: string;
+  /** The call's elapsed ms, advanced from the announcement's receipt instant. */
+  elapsedMs?: number;
 }
 
 /**
@@ -182,14 +207,35 @@ export function describeLiveness(
   if (!active) return { level: "none", text: null };
   // A call waiting out a usage limit that named its reset is the one wait this
   // line can state outright: the session is working, the daemon said when it
-  // resumes, and that instant came from the read, so it survives a reload the
-  // retry notification beside it cannot. It goes FIRST, ahead of every
-  // silence-derived level, and takes no part in the quiet gate: a wait of six
-  // hours is not 20 seconds of unexplained silence, and counting it in seconds
-  // (as the retry line's delay does) would read as a wedged session. Past the
-  // instant the wait is over, so it stops explaining anything and the ordinary
-  // decision below applies until the next read settles the status.
-  if (quotaWait) return { level: "quota", text: waitingForQuotaText(quotaWait.remainingMs) };
+  // resumes, and that instant survives a reload the retry notification beside
+  // it cannot. It goes FIRST, ahead of every silence-derived level, and takes
+  // no part in the quiet gate: a wait of six hours is not 20 seconds of
+  // unexplained silence, and counting it in seconds (as the retry line's
+  // delay does) would read as a wedged session. Crossing the reset instant
+  // changes the promise — the countdown becomes the pending words — never
+  // the wait itself or the facts beside it: only the daemon's zero-delay
+  // wake, a turn boundary, or a read showing no wait ends it, so both halves
+  // render the same metadata with the same level.
+  if (quotaWait) {
+    const promise =
+      quotaWait.passedReset || quotaWait.remainingMs === undefined
+        ? passedQuotaResetText()
+        : waitingForQuotaText(quotaWait.remainingMs);
+    const tag = quotaWait.model ? ` (${quotaWait.model})` : "";
+    const elapsed = quotaWait.elapsedMs === undefined ? "" : ` — ${formatExactGap(quotaWait.elapsedMs)} on this call`;
+    // The wait's facts ride the return as structured fields beside the
+    // sentence: tests assert these, never the copy.
+    return {
+      level: "quota" as const,
+      text: `${promise}${tag}${elapsed}`,
+      quota: {
+        passedReset: quotaWait.passedReset === true,
+        ...(quotaWait.remainingMs !== undefined ? { remainingMs: quotaWait.remainingMs } : {}),
+        ...(quotaWait.model !== undefined ? { model: quotaWait.model } : {}),
+        ...(quotaWait.elapsedMs !== undefined ? { elapsedMs: quotaWait.elapsedMs } : {}),
+      },
+    };
+  }
   // See this function's own doc comment above (kata gw2c): a retry past its
   // first attempt is known information, not an inference from silence, so
   // it bypasses the ordinary quiet gate below rather than waiting on it.

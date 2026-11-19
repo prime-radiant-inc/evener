@@ -42,7 +42,13 @@ type AppEventProjector struct {
 	// runningTurnID is the running execution's TurnID, from its
 	// EXECUTION_STARTED to its EXECUTION_ENDED (or the session's end).
 	runningTurnID string
-	delegates     map[string]appwire.EvenerDelegateInfo
+	// endedTurnID is the execution the running one ended, kept so a
+	// SESSION_END arriving after it (the root discards the execution end's
+	// own status; a closing session may emit nothing else) still names the
+	// turn that ran. Only the session end that follows reads it; a new
+	// execution start clears it.
+	endedTurnID string
+	delegates   map[string]appwire.EvenerDelegateInfo
 }
 
 func NewAppEventProjector(threadID, ref string) *AppEventProjector {
@@ -129,6 +135,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		}
 		return out
 	case events.EventExecutionStarted:
+		p.endedTurnID = ""
 		p.runningTurnID = eventData[events.ExecutionStartedData](event.Data).TurnID
 		return []AppNotification{p.threadStatus(appwire.ThreadStatusActive)}
 	case events.EventExecutionEnded:
@@ -136,8 +143,13 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			// An end for an execution another one already replaced.
 			return nil
 		}
+		// The frame names the turn it ended, read before the clear, so a
+		// client can tell a Stop for the turn its snapshot still shows
+		// running from one for an older turn.
+		ended := p.runningTurnID
 		p.runningTurnID = ""
-		return []AppNotification{p.threadStatus(appwire.ThreadStatusIdle)}
+		p.endedTurnID = ended
+		return []AppNotification{p.threadStatusEnded(appwire.ThreadStatusIdle, ended)}
 	case events.EventStatusSettled:
 		// A resting session's state moved outside any turn (a needs_response
 		// rest arming awaiting after its quiet period). Only a resting state
@@ -200,6 +212,8 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			Model:          data.Model,
 			GroupElapsedMS: data.GroupElapsedMS,
 			AttemptCap:     data.AttemptCap,
+			WaitStartedAt:  data.WaitStartedAt,
+			ResumesAt:      data.ResumesAt,
 		})}
 	case events.EventQueueChanged:
 		data := eventData[events.QueueChangedData](event.Data)
@@ -433,9 +447,18 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			state = appwire.ThreadStatusClosed
 		}
 		// A session end outlives no execution: the ended one's own event may
-		// never arrive (a closing session stops emitting).
+		// never arrive (a closing session stops emitting), so the frame
+		// names the execution the projector held, read before the clear —
+		// or the one the discarded execution end already ended, when the
+		// root suppressed that end's status and only the session end
+		// publishes the terminal word.
+		ended := p.runningTurnID
+		if ended == "" {
+			ended = p.endedTurnID
+		}
 		p.runningTurnID = ""
-		out := []AppNotification{p.threadStatus(state)}
+		p.endedTurnID = ""
+		out := []AppNotification{p.threadStatusEnded(state, ended)}
 		if state == appwire.ThreadStatusClosed {
 			// Still map[string]any, not appwire.ThreadClosedParams (kcb5):
 			// data.Reason is empty whenever the source reported none (the type's
@@ -666,10 +689,17 @@ func openThreadStatus(state string) string {
 // threadStatus is a thread/status/changed carrying the running execution's
 // TurnID when the thread is active.
 func (p *AppEventProjector) threadStatus(status string) AppNotification {
+	return p.threadStatusEnded(status, "")
+}
+
+// threadStatusEnded is threadStatus naming the turn a terminal status
+// ended, empty when it ended none.
+func (p *AppEventProjector) threadStatusEnded(status string, endedTurnID string) AppNotification {
 	params := appwire.ThreadStatusChangedParams{
-		ThreadID: p.threadID,
-		Ref:      p.ref,
-		Status:   appwire.ThreadStatus{Type: status},
+		ThreadID:    p.threadID,
+		Ref:         p.ref,
+		Status:      appwire.ThreadStatus{Type: status},
+		EndedTurnID: endedTurnID,
 	}
 	if status == appwire.ThreadStatusActive {
 		params.ActiveTurnID = p.runningTurnID

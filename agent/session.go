@@ -549,6 +549,19 @@ type Session struct {
 
 	reg *tool.Registry
 
+	// closeDrainWarnings holds the lost-result warnings a close drain settled
+	// whose bounded publication expired before they reached the stream
+	// (session_events.go). The receipts behind them are already abandoned, so
+	// these cannot be re-settled: the close gets one retry on the budget left
+	// after the worktree removals, and this is the only place they survive.
+	closeDrainWarnings atomic.Pointer[[]events.WarningData]
+	// closeDrainHooksWG tracks the Notification hooks a close drain dispatched
+	// asynchronously on the live cascade (session_events.go). The hook's command
+	// may run for as long as its own timeout, so it must not hold the worktree
+	// removals that follow the publication; Close joins it here after those
+	// removals and before the retries and teardown it can still publish through.
+	closeDrainHooksWG sync.WaitGroup
+
 	steeringQueue []steeringMessage
 	// steeringInFlight holds the client steers popSteeringHead has taken out of
 	// steeringQueue whose incorporation the store has not yet recorded
@@ -870,11 +883,15 @@ type Session struct {
 	// quotaWait is the model call waiting out a provider usage limit, nil
 	// while none waits (session_quota_wait.go). quotaWakes counts the asks
 	// (a user message, a model switch) for such a wait to retry now.
+	// quotaWaitStamps is the last wait identity the session issued, so a
+	// later wait of the same turn always compares greater than an earlier
+	// one even when wall-clock instants collide or step back.
 	// steerArrivals counts accepted user steering and steerArrivalsDrained is
 	// its value as the latest steering drain began, so a wait can tell a
 	// steer that may not be in its request. Guarded by mu.
 	quotaWait            *quotaWait
 	quotaWakes           uint64
+	quotaWaitStamps      uint64
 	steerArrivals        uint64
 	steerArrivalsDrained uint64
 
@@ -1353,15 +1370,16 @@ type Session struct {
 	// attentionMu.
 	attentionAcceptedCause *provenance.Causal
 	// attentionAutomaticDriveHolds names pending rows a user's stop quieted
-	// from automatic drives: the stopped generation's commit left the
-	// delegate armed for every other pending row, and that stale armed wake
-	// drives without a re-arm, so the drive's own reads keep a held row out
-	// of its claim and its riders while the rows the stop never touched
-	// still present. Any successful arm releases the holds — a wake from a
-	// new event may present the row — and the map is in-memory on purpose:
-	// a restart reconciles wakes from the durable fold, which cannot hold
-	// a quiet. Guarded by attentionMu.
-	attentionAutomaticDriveHolds map[string]struct{}
+	// from automatic drives, each stamped with the settled generation whose
+	// quiet it carries: the stopped generation's commit left the delegate
+	// armed for every other pending row, and that stale armed wake drives
+	// without a re-arm, so the drive's own reads keep a held row out of its
+	// claim and its riders while the rows the stop never touched still
+	// present. A wake releases only the holds at or below the generation it
+	// supersedes, so a stop that settles after an arm keeps its quiet. The
+	// map is in-memory on purpose: a restart reconciles wakes from the
+	// durable fold, which cannot hold a quiet. Guarded by attentionMu.
+	attentionAutomaticDriveHolds map[string]uint64
 
 	// turnNameRetryMu guards turnNameRetry alone. The paced wake it schedules
 	// runs while the session goroutine is mid-stand-down, so it must not queue
@@ -1879,15 +1897,63 @@ func (s *Session) SetReasoningEffort(effort string) error {
 	return s.saveMeta()
 }
 
+// modelSwitchTarget is a switch's requested model together with the instance
+// the caller named, if any. The two halves are kept apart because a model id
+// may itself contain slashes: OpenRouter serves "anthropic/claude-opus-5" as
+// one of its own model ids, so the first segment of a joined ref does not say
+// which half was the instance. An empty provider means the caller named only a
+// ref and the current instance decides (SetModel's historic reading).
+type modelSwitchTarget struct {
+	provider string
+	model    string
+}
+
+// ref renders the target as the instance/model reference the resolver and the
+// live-listing calls take.
+func (t modelSwitchTarget) ref() string {
+	if t.provider == "" {
+		return t.model
+	}
+	return t.provider + "/" + t.model
+}
+
+// explicit reports whether the caller named the instance, in which case it
+// decides the target outright rather than the current profile.
+func (t modelSwitchTarget) explicit() bool { return t.provider != "" }
+
+// crossProviderFrom reports whether the target moves the session off base's
+// instance. An explicitly named instance decides it: the current instance may
+// serve the same model id under a namespaced name, and that must not keep it.
+func (t modelSwitchTarget) crossProviderFrom(base *provider.Profile) bool {
+	if t.explicit() {
+		return !strings.EqualFold(t.provider, base.ID())
+	}
+	return base.CrossProviderRef(t.model)
+}
+
 // resolveProfileForRef resolves a model ref to a *provider.Profile. When the
-// ref is classified as a cross-provider switch (prefixActionSwitch) AND the
-// session has a resolver, the resolver is called. Otherwise the current
-// profile's WithModel is used (handles same-provider, strip, and keep cases).
+// ref is classified as a cross-provider switch AND the session has a resolver,
+// the resolver is called. Otherwise the current profile's WithModel is used
+// (handles same-provider, strip, and keep cases).
 func (s *Session) resolveProfileForRef(base *provider.Profile, ref string) (*provider.Profile, bool, error) {
-	if base.CrossProviderRef(ref) && s.resolveProfile != nil {
-		resolved, err := s.resolveProfile(ref)
-		if err != nil {
-			return nil, false, err
+	return s.resolveModelSwitchProfile(base, modelSwitchTarget{model: ref})
+}
+
+// resolveModelSwitchProfile resolves a switch target to the profile it lands
+// on. A target whose instance the caller named resolves on that instance, so a
+// model the current instance also serves under a namespaced id keeps neither
+// the model nor the instance: the reader picked the direct row. A target that
+// names only a ref keeps the historic classification (CrossProviderRef, then
+// WithModel).
+func (s *Session) resolveModelSwitchProfile(base *provider.Profile, target modelSwitchTarget) (*provider.Profile, bool, error) {
+	if target.crossProviderFrom(base) {
+		var resolved *provider.Profile
+		if s.resolveProfile != nil {
+			var err error
+			resolved, err = s.resolveProfile(target.ref())
+			if err != nil {
+				return nil, false, err
+			}
 		}
 		if resolved != nil {
 			if cheapModelRef := base.CheapModelRefString(); cheapModelRef != "" {
@@ -1895,8 +1961,11 @@ func (s *Session) resolveProfileForRef(base *provider.Profile, ref string) (*pro
 			}
 			return resolved, true, nil
 		}
+		if target.explicit() {
+			return nil, false, fmt.Errorf("provider %q is not configured", target.provider)
+		}
 	}
-	return base.WithModel(ref), false, nil
+	return base.WithModel(target.ref()), false, nil
 }
 
 // reapplyProviderSpecificTools updates the live tool registry when the session
@@ -1939,17 +2008,16 @@ func (s *Session) reapplyProviderSpecificTools(oldProfile, newProfile *provider.
 // boundary. The primed instance and listing are the ones the pick-time
 // preflight fetched; the boundary's applyModelSwitchControl reuses them so a
 // queued switch costs one live enumeration, not two. The seq is the pick
-// generation SetModelControl stamped, which fences the boundary application against
-// superseding picks. A zero value (empty model) means nothing is queued.
+// generation SetModelControl stamped, which fences the boundary application
+// against superseding picks. popNewestPendingModelLocked's bool reports
+// whether anything was queued.
 type pendingModelSwitch struct {
-	model            string
+	target           modelSwitchTarget
 	primedInstance   string
 	primedListing    *llm.ModelListing
 	authority        appwire.ModelControlAuthority
 	seq              uint64
 	clientMutationID string
-	modelProvider    string
-	targetModel      string
 }
 
 // modelSwitchFence bounds one switch application's commit to the pick that
@@ -1973,7 +2041,13 @@ type modelSwitchFence struct {
 	queueWhenBusy bool
 }
 
-// SetModelControl validates and sequences one authority-bound model-control request.
+// SetModelControl validates and sequences one authority-bound model-control
+// request. The request names the target as two halves - the instance the picker
+// chose, if it named one, and the model on it - because a joined ref alone
+// cannot say which half a slash belonged to: OpenRouter serves
+// "anthropic/claude-opus-5" as one of its own model ids. An empty
+// ModelProvider keeps the current instance's reading, and Model is then the
+// whole ref.
 // Takes effect on the next request. Returns an error (without changing any
 // session state) when the model ref cannot be resolved to a profile, when the
 // current history contains content the target can't represent (see
@@ -1996,6 +2070,10 @@ func (s *Session) SetModelControl(request ModelControlRequest) (appwire.ThreadMo
 		return appwire.ThreadModelSetResponse{}, admissionErr
 	}
 	defer release()
+	target := modelSwitchTarget{provider: strings.TrimSpace(request.ModelProvider), model: strings.TrimSpace(request.Model)}
+	if target.model == "" {
+		return appwire.ThreadModelSetResponse{}, appwire.InvalidParams("model is required")
+	}
 	s.mu.Lock()
 	if err := s.validateModelControlAuthorityLocked(request); err != nil {
 		s.mu.Unlock()
@@ -2018,10 +2096,10 @@ func (s *Session) SetModelControl(request ModelControlRequest) (appwire.ThreadMo
 	}
 	if !s.turnInFlightLocked() {
 		s.mu.Unlock()
-		return s.applyModelSwitchControl(request.ref(), "", nil, fence)
+		return s.applyModelSwitchControl(target, "", nil, fence)
 	}
 	s.mu.Unlock()
-	return s.queueModelSwitch(request.ref(), fence)
+	return s.queueModelSwitch(target, fence)
 }
 
 // turnInFlightLocked reports whether an input is being processed, from its
@@ -2040,8 +2118,8 @@ func (s *Session) turnInFlightLocked() bool {
 // being appended to by the running turn - and re-run by the boundary's
 // applyModelSwitchControl against settled history, reusing the listing this
 // preflight fetched so the boundary pays no second enumeration.
-func (s *Session) queueModelSwitch(model string, fence modelSwitchFence) (appwire.ThreadModelSetResponse, error) {
-	primedInstance, primedListing := s.primeCodexRoster(model)
+func (s *Session) queueModelSwitch(target modelSwitchTarget, fence modelSwitchFence) (appwire.ThreadModelSetResponse, error) {
+	primedInstance, primedListing := s.primeCodexRoster(target.ref())
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		response := s.modelControlResponseLocked(appwire.ModelControlDispositionSuperseded)
@@ -2053,9 +2131,9 @@ func (s *Session) queueModelSwitch(model string, fence modelSwitchFence) (appwir
 		// the switch can apply directly instead of waiting for a boundary
 		// that already fired.
 		s.mu.Unlock()
-		return s.applyModelSwitchControl(model, primedInstance, primedListing, fence)
+		return s.applyModelSwitchControl(target, primedInstance, primedListing, fence)
 	}
-	nextProfile, _, err := s.resolveProfileForRef(s.profile, model)
+	nextProfile, _, err := s.resolveModelSwitchProfile(s.profile, target)
 	if err != nil {
 		s.mu.Unlock()
 		return s.settleModelControlValidationFailure(fence, err)
@@ -2089,7 +2167,7 @@ func (s *Session) queueModelSwitch(model string, fence modelSwitchFence) (appwir
 	if !s.turnInFlightLocked() {
 		s.mu.Unlock()
 		s.modelControlPublishMu.Unlock()
-		return s.applyModelSwitchControl(model, primedInstance, primedListing, fence)
+		return s.applyModelSwitchControl(target, primedInstance, primedListing, fence)
 	}
 	fence.modelProvider, fence.model = normalizedModelControlTarget(nextProfile, ModelControlRequest{ModelProvider: fence.modelProvider, Model: fence.model})
 	// Storing neither accepts the pick nor displaces an older queued one: the
@@ -2098,11 +2176,13 @@ func (s *Session) queueModelSwitch(model string, fence modelSwitchFence) (appwir
 	// about to be rejected cancel another. Ordering is the pop's job.
 	if fence.pickSeq > s.modelPickAccepted {
 		s.enqueuePendingModelLocked(pendingModelSwitch{
-			model: model, primedInstance: primedInstance, primedListing: primedListing,
+			target: target, primedInstance: primedInstance, primedListing: primedListing,
 			authority: fence.authority,
 			seq:       fence.pickSeq, clientMutationID: fence.clientMutationID,
-			modelProvider: fence.modelProvider, targetModel: fence.model,
 		})
+		// A call waiting out the old model's usage limit retries on this one
+		// now rather than at the turn boundary it is waiting to reach.
+		s.wakeQuotaWaitLocked()
 	}
 	snapshot := s.advanceModelControlLocked(nil, fence, appwire.ModelControlLifecyclePending)
 	response := s.modelControlResponseLocked(appwire.ModelControlDispositionAccepted)
@@ -2190,16 +2270,16 @@ func (s *Session) applyQueuedModelSwitches(inWaitingCall bool) {
 		if admissionErr != nil {
 			return
 		}
-		_, err := s.applyModelSwitchControl(pending.model, pending.primedInstance, pending.primedListing, modelSwitchFence{
+		_, err := s.applyModelSwitchControl(pending.target, pending.primedInstance, pending.primedListing, modelSwitchFence{
 			authority: pending.authority,
 			pickSeq:   pending.seq, clientMutationID: pending.clientMutationID,
-			modelProvider: pending.modelProvider, model: pending.targetModel,
+			modelProvider: pending.target.provider, model: pending.target.model,
 			deferred: true,
 		})
 		release()
 		if err != nil {
 			s.emit(events.WarningData{
-				Message: "queued model switch to " + pending.model + " did not apply: " + err.Error(),
+				Message: "queued model switch to " + pending.target.ref() + " did not apply: " + err.Error(),
 				Source:  "model_switch",
 			})
 		}
@@ -2224,14 +2304,14 @@ func (s *Session) applyQueuedModelSwitches(inWaitingCall bool) {
 // validates, so the communicate-override carry, the provider-tool reconciliation,
 // and the marker's from-claim follow the transition that actually happened, never
 // the pick-time classification.
-func (s *Session) applyModelSwitchControl(model, primedInstance string, primedListing *llm.ModelListing, fence modelSwitchFence) (appwire.ThreadModelSetResponse, error) {
+func (s *Session) applyModelSwitchControl(target modelSwitchTarget, primedInstance string, primedListing *llm.ModelListing, fence modelSwitchFence) (appwire.ThreadModelSetResponse, error) {
 	if primedListing == nil {
 		// A named Codex model may exist only in the target instance's live
 		// roster. List it before s.mu: the strict cross-provider resolve below
 		// runs under the lock and must stay a pure registry lookup, while the
 		// live rows this applies are what let it accept a model the bundled
 		// roster lags.
-		primedInstance, primedListing = s.primeCodexRoster(model)
+		primedInstance, primedListing = s.primeCodexRoster(target.ref())
 	}
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
@@ -2239,7 +2319,7 @@ func (s *Session) applyModelSwitchControl(model, primedInstance string, primedLi
 		s.mu.Unlock()
 		return response, nil
 	}
-	nextProfile, _, err := s.resolveProfileForRef(s.profile, model)
+	nextProfile, _, err := s.resolveModelSwitchProfile(s.profile, target)
 	if err != nil {
 		s.mu.Unlock()
 		return s.settleModelControlValidationFailure(fence, err)
@@ -2311,10 +2391,9 @@ func (s *Session) applyModelSwitchControl(model, primedInstance string, primedLi
 		// that survives.
 		fence.modelProvider, fence.model = normalizedModelControlTarget(nextProfile, ModelControlRequest{ModelProvider: fence.modelProvider, Model: fence.model})
 		s.enqueuePendingModelLocked(pendingModelSwitch{
-			model: model, primedInstance: listedInstance, primedListing: listing,
+			target: target, primedInstance: listedInstance, primedListing: listing,
 			authority: fence.authority,
 			seq:       fence.pickSeq, clientMutationID: fence.clientMutationID,
-			modelProvider: fence.modelProvider, targetModel: fence.model,
 		})
 		snapshot := s.advanceModelControlLocked(nil, fence, appwire.ModelControlLifecyclePending)
 		response := s.modelControlResponseLocked(appwire.ModelControlDispositionAccepted)
@@ -2346,7 +2425,7 @@ func (s *Session) applyModelSwitchControl(model, primedInstance string, primedLi
 		slices.Equal(commitPrev.ReasoningEffortLevels(), nextProfile.ReasoningEffortLevels()) &&
 		profileDefaultReasoningEffort(commitPrev) == profileDefaultReasoningEffort(nextProfile) &&
 		prevWindow == nextWindow && prevWindowSource == nextWindowSource
-	if commitPrev.CrossProviderRef(model) {
+	if target.crossProviderFrom(commitPrev) {
 		nextProfile = nextProfile.WithCommunicateOverridesFrom(commitPrev)
 	}
 	s.profile = nextProfile
@@ -3135,6 +3214,21 @@ func (s *Session) appendPairedTurnVia(kind schema.TurnKind, live, persisted llm.
 // only when a tool exposes explicitly private evidence; every other caller
 // passes the same turn twice. It reports the entry's record.
 func (s *Session) recordTurn(live, persisted schema.Turn) transcript.Record {
+	return s.recordTurnOn(noBound, func(w events.WarningData) { s.emit(w) }, live, persisted)
+}
+
+// recordTurnOn is recordTurn with the sink a recording failure is reported on.
+// A hook completion recorded on a close publication bound passes a sink that
+// publishes on that bound AND cannot redispatch the hook: the failure is an
+// EventWarning, and the ordinary warning path fires the Notification hook, so a
+// writer that keeps refusing would dispatch that hook again on every completion
+// it could not record. Diagnosis, not a fresh dispatch.
+//
+// bound is the publication bound the caller's record runs under, nil on the
+// ordinary path. It reaches the fail-closed announcement too: a poisoned writer
+// latches a refusal, and announcing it on the ordinary path would hold a full
+// authoritative buffer until the whole close cascade expired.
+func (s *Session) recordTurnOn(bound context.Context, warn func(events.WarningData), live, persisted schema.Turn) transcript.Record {
 	live.SkillState = live.SkillState.Clone()
 	persisted.SkillState = persisted.SkillState.Clone()
 	s.attentionMu.Lock()
@@ -3161,9 +3255,9 @@ func (s *Session) recordTurn(live, persisted schema.Turn) transcript.Record {
 	}
 	s.attentionMu.Unlock()
 	if err != nil {
-		s.emit(events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		warn(events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
-	s.surfaceTranscriptWarnings()
+	s.surfaceTranscriptWarningsOn(bound, warn)
 	return rec
 }
 
@@ -3338,6 +3432,19 @@ func (s *Session) drainTranscriptWarnings(sink func(events.WarningData)) {
 func (s *Session) surfaceTranscriptWarnings() {
 	s.drainTranscriptWarnings(func(w events.WarningData) { s.emit(w) })
 	s.announceFailClosed()
+}
+
+// surfaceTranscriptWarningsOn is surfaceTranscriptWarnings for a caller that owns
+// the sink its diagnostics must reach.
+//
+// A poisoned transcript retains a diagnostic for every append it refused, so a
+// hook completion recorded on a close publication bound would publish a burst of
+// warnings -- and the ordinary warning path fires the Notification hook for each
+// of them, re-entering the dispatcher whose own write just failed. The sink the
+// caller supplied is the diagnostic path, which cannot do that.
+func (s *Session) surfaceTranscriptWarningsOn(bound context.Context, warn func(events.WarningData)) {
+	s.drainTranscriptWarnings(warn)
+	s.announceFailClosedOn(bound)
 }
 
 func (s *Session) closeAttachedTranscript() error {

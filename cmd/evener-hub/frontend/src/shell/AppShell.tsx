@@ -14,6 +14,7 @@ import { requestComposerFocus } from "../panes/session/composer/composerFocus";
 import { conversationContextIncludes } from "../panes/session/transcript/openTranscript";
 import { isKnownSettingsSection, resolveSettingsSection } from "../panes/settings/sections";
 import { zoomParamsCoverConversation } from "../panes/zoom/cascadeCoverage";
+import { isCascadeReturnedOrigin } from "../panes/zoom/inspectionOrigin";
 import { type SessionZoomParams, zoomIntentOf } from "../panes/zoom/intent";
 import { startBackgroundTranscripts } from "../stores/backgroundTranscripts";
 import { useConnectionStore } from "../stores/connection";
@@ -30,7 +31,11 @@ import { navigationStore, useNavigationStore } from "../stores/navigation/store"
 import { syncSettingsHostToRoute } from "../stores/settingsHost";
 import { initTranscriptDisplay, transcriptDisplayStore, useTranscriptDisplayStore } from "../stores/transcriptDisplay";
 import { ActivitySidebar } from "./activitybar/ActivitySidebar";
-import { currentAttentionEntryToken, restoreCurrentAttentionEntry } from "./attentionHistory";
+import {
+  currentAttentionEntryToken,
+  restoreCurrentAttentionEntry,
+  retireDeletedAttentionSession,
+} from "./attentionHistory";
 import { ConnectionBanner } from "./ConnectionBanner";
 import { CheatsheetOverlay } from "./cheatsheet/CheatsheetOverlay";
 import { ToastRegion } from "./chrome/ToastRegion";
@@ -324,7 +329,8 @@ function routePlacementIsApplied(
     focusedPane?.type === "sessionDetails" ||
     transcriptMatchesRoute(focusedPane) ||
     conversationMatchesRoute(focusedPane) ||
-    focusedCascadeConversation;
+    focusedCascadeConversation ||
+    isCascadeReturnedOrigin(rawFocused);
   const focusIsApplied = (paneId: string): boolean =>
     workspace.focusedPaneId === paneId || (allowFocusedCompanion && focusedCompanion) || focusedSeparatedInspection;
 
@@ -821,6 +827,13 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
         restoredAttentionTokenRef.current = null;
         setAttentionRestoreEpoch((epoch) => epoch + 1);
       }
+    }
+    const deletedRouteRef = locationGone && route?.type === "session" ? refParam(route.params) : null;
+    if (attentionToken !== null && deletedRouteRef !== null && retireDeletedAttentionSession(deletedRouteRef)) {
+      restoredAttentionTokenRef.current = null;
+      pendingSessionRef.current = null;
+      placedPathnameRef.current = null;
+      return;
     }
     if (attentionToken !== null && restoredAttentionTokenRef.current === attentionToken) {
       pendingSessionRef.current = null;

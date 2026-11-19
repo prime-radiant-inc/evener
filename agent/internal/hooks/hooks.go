@@ -107,7 +107,11 @@ type Runner struct {
 	hooks          map[plugin.HookEvent][]plugin.RegisteredHook
 	client         promptHookClient
 	model          string
-	onEvent        func(events.EventKind, events.EventData) // optional event callback
+	// onEventContext, when set, publishes this runner's lifecycle events and
+	// carries the context the dispatch is running under, so a caller that launched
+	// a hook under its own bound has that hook's lifecycle events published on the
+	// same bound rather than the session's.
+	onEventContext func(context.Context, events.EventKind, events.EventData)
 	// commandHookRuntime is a per-runner process/environment boundary. Production
 	// uses systemCommandHookRuntime; deterministic callers may provide a fake.
 	commandHookRuntime commandHookRuntime
@@ -118,10 +122,12 @@ type Runner struct {
 	sandboxWrapper *sandbox.Wrapper
 }
 
-// SetEventCallback sets an optional callback that is invoked for hook
-// lifecycle events (HookStart, HookEnd).
-func (r *Runner) SetEventCallback(fn func(events.EventKind, events.EventData)) {
-	r.onEvent = fn
+// SetEventCallbackContext installs the callback that publishes hook lifecycle
+// events (HookStart, HookEnd). It carries the context the dispatch runs under, so
+// a caller that launched a hook on a bound of its own can publish that hook's
+// start and end on the same bound instead of the session's.
+func (r *Runner) SetEventCallbackContext(fn func(context.Context, events.EventKind, events.EventData)) {
+	r.onEventContext = fn
 }
 
 // SetSandboxWrapper confines every command hook this runner spawns to the
@@ -743,8 +749,8 @@ func (r *Runner) runMatched(ctx context.Context, event plugin.HookEvent, matched
 	for i, hook := range matched {
 		go func(idx int, h plugin.RegisteredHook) {
 			defer wg.Done()
-			if r.onEvent != nil {
-				r.onEvent(events.EventHookStart, events.HookStartData{
+			if pub := r.lifecyclePublisher(); pub != nil {
+				pub(ctx, events.EventHookStart, events.HookStartData{
 					Event:      string(event),
 					HookType:   h.Type,
 					Matcher:    h.Matcher,
@@ -754,8 +760,8 @@ func (r *Runner) runMatched(ctx context.Context, event plugin.HookEvent, matched
 			start := time.Now()
 			results[idx] = r.runHook(ctx, h, event, input)
 			elapsed := time.Since(start)
-			if r.onEvent != nil {
-				r.onEvent(events.EventHookEnd, events.HookEndData{
+			if pub := r.lifecyclePublisher(); pub != nil {
+				pub(ctx, events.EventHookEnd, events.HookEndData{
 					Event:      string(event),
 					HookType:   h.Type,
 					Matcher:    h.Matcher,
@@ -769,6 +775,12 @@ func (r *Runner) runMatched(ctx context.Context, event plugin.HookEvent, matched
 
 	wg.Wait()
 	return results
+}
+
+// lifecyclePublisher returns the callback that publishes this runner's hook
+// lifecycle events, carrying the dispatch's own bound to the publication.
+func (r *Runner) lifecyclePublisher() func(context.Context, events.EventKind, events.EventData) {
+	return r.onEventContext
 }
 
 // collectTerminalSequences gathers the non-empty terminalSequence each output

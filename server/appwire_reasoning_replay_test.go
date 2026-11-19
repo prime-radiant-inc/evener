@@ -299,7 +299,9 @@ func TestServerAppWireAbandonedCarrierUsesStatusIdentityBeforeAppIdentity(t *tes
 // TestServerAppWireConcurrentCarrierAndCleanupPublishOneTerminal races the
 // published execution's EXECUTION_STARTED against the end of processing while
 // the input before it has a deferred terminal status: whichever wins, the
-// thread ends with exactly one terminal status and no active turn.
+// thread ends with no active turn, exactly one terminal naming the cleared
+// turn (the settlement finishProcessing emits beside the deferred replay),
+// and the deferred frame — when it publishes — naming only the older turn.
 func TestServerAppWireConcurrentCarrierAndCleanupPublishOneTerminal(t *testing.T) {
 	for _, state := range []string{"idle", "closed"} {
 		t.Run(state, func(t *testing.T) {
@@ -330,14 +332,30 @@ func TestServerAppWireConcurrentCarrierAndCleanupPublishOneTerminal(t *testing.T
 					t.Fatalf("attempt %d: read active turn %q after processing ended", attempt, read.Evener.ActiveTurnID)
 				}
 				terminals := 0
+				cleared := 0
 				for _, record := range srv.AppNotificationsAfter(cursor, threadID) {
 					var params appwire.ThreadStatusChangedParams
 					if record.Notification.Method == appwire.NotifyThreadStatusChanged && json.Unmarshal(record.Notification.Params, &params) == nil && params.Status.Type == state {
 						terminals++
+						if params.EndedTurnID == "new-turn" {
+							cleared++
+						}
 					}
 				}
-				if terminals != 1 {
-					t.Fatalf("attempt %d: %d %s statuses published, want 1", attempt, terminals, state)
+				if state == "idle" {
+					if cleared != 1 {
+						t.Fatalf("attempt %d: %d %s statuses name the cleared turn, want exactly 1", attempt, cleared, state)
+					}
+					if terminals > 2 {
+						t.Fatalf("attempt %d: %d %s statuses published, want the settlement and at most the deferred replay", attempt, terminals, state)
+					}
+				} else if terminals != 1 {
+					// A closing end drops every deferred frame and clears
+					// processing inside its own commit, so the projector's own
+					// closed status is the one terminal and no settlement
+					// fires: the closed frame owns the thread's end the way
+					// turn/completed does, not as a turn's Stop.
+					t.Fatalf("attempt %d: %d %s statuses published, want the closed terminal alone", attempt, terminals, state)
 				}
 			}
 		})

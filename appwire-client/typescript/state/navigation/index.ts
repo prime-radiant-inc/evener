@@ -97,11 +97,13 @@ export {
   isRevalidatorDisposed,
   NavigationRevalidator,
 } from "./revalidator";
-export type { NavigationPinSectionSummary } from "./selectors";
+export type { NavigationPinSectionSummary, QuotaWaitState } from "./selectors";
 export {
   findSessionNode,
+  passedQuotaResetText,
   quotaResumeRemainingMs,
   quotaWaitRemainingMs,
+  quotaWaitState,
   relativeAge,
   selectAttentionSummary,
   selectDisplaySources,
