@@ -1533,6 +1533,18 @@ test("closing an inspector tab preserves its unrelated secondary source and edit
   if (!unrelatedEditor) throw new Error("expected unrelated source composer textbox");
   expect(document.activeElement).toBe(unrelatedEditor);
 
+  // Opening a document beside the returned source clears the return marker
+  // without throwing on non-conversation pane params, and records the source.
+  const unrelatedRecord = workspaceStore.getState().panes.find((pane) => pane.id === unrelatedId);
+  if (!unrelatedRecord) throw new Error("expected unrelated source record");
+  await act(async () =>
+    openDocBeside({ session: "local:unrelated", reference: focusFileReference, sourcePaneId: unrelatedId }),
+  );
+  const doc = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+  expect(doc).toBeDefined();
+  expect(doc ? documentPaneState(doc)?.origin : undefined).toBe(unrelatedRecord);
+  expect(workspaceStore.getState().focusedPaneId).toBe(doc?.id);
+
   // Fresh pathname navigation remains authoritative over the returned source.
   await act(async () => navigate("/s/local%3Aother-route"));
   await waitFor(() => expect(refParam(workspaceStore.getState().mainPane()?.params)).toBe("local:other-route"));

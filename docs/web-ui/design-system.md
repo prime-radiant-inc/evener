@@ -320,8 +320,9 @@ is never recreated or replaced by a reused pane ID. Existing saved cascades with
 separated-inspection intent retain their recorded return behavior through phone
 Back or the desktop legacy in-pane Return action. Saved intent preserves the selected
 ref, edges, read-only source and origin locator without serializing transcript
-payloads or image bytes. At the existing phone breakpoint, a saved cascade shows only its selected
-read-only content (using the phone top bar's Back button to leave); ordinary Agents activation keeps transcript
+payloads or image bytes. At the existing phone breakpoint, a saved cascade shows its selected live
+conversation with its composer, runtime state, and single bottom activity strip
+(using the phone top bar's Back button to dismiss); ordinary Agents activation keeps transcript
 navigation. See the [ownership contract](../product/session-activity.md#automatic-agent-cascade)
 and [real Chrome guard](../../cmd/evener-hub/frontend/scripts/cascadeguard/README.md).
 

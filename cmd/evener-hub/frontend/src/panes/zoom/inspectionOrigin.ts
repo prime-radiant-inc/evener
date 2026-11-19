@@ -1,4 +1,8 @@
-import { conversationPaneLifetime, type PaneLifetime } from "../../shell/paneLifetime";
+import {
+  conversationPaneLifetime,
+  existingConversationPaneLifetime,
+  type PaneLifetime,
+} from "../../shell/paneLifetime";
 import { refParam } from "../../shell/routing";
 import { type OpenPaneRecord, onWorkspaceRestore, workspaceStore } from "../../shell/workspace";
 import { type SessionZoomParams, zoomIntentOf } from "./intent";
@@ -12,7 +16,7 @@ export function recordCascadeReturnedOrigin(origin: OpenPaneRecord | null): void
 
 export function isCascadeReturnedOrigin(pane: OpenPaneRecord | undefined): boolean {
   if (!pane || !returnedOrigin?.alive) return false;
-  return conversationPaneLifetime(pane) === returnedOrigin;
+  return existingConversationPaneLifetime(pane) === returnedOrigin;
 }
 
 function isConversation(pane: OpenPaneRecord): boolean {
@@ -93,7 +97,7 @@ onWorkspaceRestore((panes) => {
 workspaceStore.subscribe((state, previous) => {
   if (returnedOrigin !== null) {
     const focused = state.panes.find((pane) => pane.id === state.focusedPaneId);
-    if (!focused || !returnedOrigin.alive || conversationPaneLifetime(focused) !== returnedOrigin) {
+    if (!focused || !returnedOrigin.alive || existingConversationPaneLifetime(focused) !== returnedOrigin) {
       returnedOrigin = null;
     }
   }

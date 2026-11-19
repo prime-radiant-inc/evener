@@ -944,9 +944,9 @@ conversation without desktop columns, spines or an in-pane Return button; the
 phone top bar's Back control closes a new inspector and leaves its original
 source useful (or restores a legacy saved source). The phone's cascade chrome
 stays single-layer: the mobile top bar carries the selected conversation's
-name, the column's own title stays desktop-only, and the column's runtime
-state and Open-conversation action sit in the column's bottom bar with its
-activity controls. The pane footer's status bar and scope crumbs are
+name and Back dismissal control, the column's own title stays desktop-only, and
+the column's runtime state and live conversation composer sit in the column's
+bottom bar above its activity controls. The pane footer's status bar and scope crumbs are
 desktop-only on the cascade: the column's own controls below the transcript
 carry the activity, so the phone never stacks a second chips row at the pane
 bottom.
