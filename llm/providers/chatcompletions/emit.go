@@ -1,6 +1,8 @@
 package chatcompletions
 
 import (
+	"slices"
+
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providers/internal/openaichat"
 	"primeradiant.com/evener/llm/registry"
@@ -26,8 +28,10 @@ import (
 //   - Strict enforcement closes a parameterless tool's schema to the empty
 //     argument set, and projects whatever schema the tool then carries.
 //
-// The boolean reports whether the tool is sent with strict enforcement.
-func toolSchema(req llm.Request, i int, strictCaps bool) (params map[string]any, toolStrict bool, omit bool) {
+// The first boolean reports whether the tool is sent with strict enforcement,
+// and untouched reports that params is the caller's own schema: the decision
+// left the definition exactly as it arrived, so there is nothing to compare.
+func toolSchema(req llm.Request, i int, strictCaps bool) (params map[string]any, toolStrict, omit, untouched bool) {
 	t := req.Tools[i]
 	optedOut := strictCaps && t.Strict != nil && !*t.Strict
 	params = t.Parameters
@@ -53,7 +57,7 @@ func toolSchema(req llm.Request, i int, strictCaps bool) (params map[string]any,
 		// the closed empty object admits exactly {}, the same argument set "no
 		// parameters" names.
 		if !strictCaps || optedOut {
-			return nil, false, true
+			return nil, false, true, false
 		}
 		params = map[string]any{
 			"type":                 "object",
@@ -63,12 +67,17 @@ func toolSchema(req llm.Request, i int, strictCaps bool) (params map[string]any,
 		}
 	}
 	if !strictCaps || optedOut {
-		return params, false, false
+		// The caller's own schema is what this route sends. A route without the
+		// capability makes no decision about any of them, so reporting them
+		// untouched keeps the deriver from walking a map whose only remaining
+		// question is whether it differs from itself — a walk a cyclic map makes
+		// unbounded.
+		return params, false, false, true
 	}
 	if !openaichat.StrictExpressible(params) {
-		return openaichat.SupplyDerivedTypes(params), false, false
+		return openaichat.SupplyDerivedTypes(params), false, false, false
 	}
-	return openaichat.StrictifyJSONSchema(params), true, false
+	return openaichat.StrictifyJSONSchema(params), true, false, false
 }
 
 // EmitToolSchemas implements llm.ToolSchemaDeriver.
@@ -90,15 +99,19 @@ func (*Protocol) EmitToolSchemas(baseline []llm.ToolDefinition, res registry.Res
 	}
 	strictCaps := registry.BoolValue(res.Caps.StrictTools)
 	req := llm.Request{Tools: baseline}
-	sent := make([]llm.ToolDefinition, len(baseline))
-	copy(sent, baseline)
+	var sent []llm.ToolDefinition
 	changed := false
 	for i, t := range baseline {
-		params, _, omit := toolSchema(req, i, strictCaps)
-		if omit {
+		params, _, omit, untouched := toolSchema(req, i, strictCaps)
+		if omit || untouched {
 			// The builder omits the parameters key, so the definition as written
 			// already describes the wire: there are no bytes to price and
 			// nothing to report as changed.
+			//
+			// An untouched schema is the same statement about bytes, and a
+			// stronger one about cost: the builder sends the caller's own map,
+			// so the count it arrived with already describes it and there is
+			// nothing to compare.
 			continue
 		}
 		// A byte count needs a byte oracle. Strict projection sorts each object's
@@ -110,6 +123,9 @@ func (*Protocol) EmitToolSchemas(baseline []llm.ToolDefinition, res registry.Res
 		// a reuse rather than a second marshal on every dispatch.
 		if openaichat.SameSerializedLength(t.Parameters, params) {
 			continue
+		}
+		if sent == nil {
+			sent = slices.Clone(baseline)
 		}
 		sent[i].Parameters = params
 		changed = true

@@ -158,6 +158,18 @@ func priceEmittedToolSchemas(req Request, res registry.Resolved) Request {
 	// different target — an inflated local reading, or a request that fits this
 	// route rejected by a cap that belonged to the other one.
 	req = restoreToolCountBaseline(req, res)
+	// A route that reads a ProviderOptions tools value sends that value instead
+	// of the catalog the builder projected, so the replacement is the list to
+	// price.
+	if replacement, ok := providerToolsReplacement(req, res); ok {
+		return priceReplacementToolList(req, res, replacement)
+	}
+	// A count this target's builder already produced is the answer. Re-deriving
+	// the emission and re-marshaling the catalog would repeat exactly the work
+	// the recorded count exists to avoid.
+	if !req.emittedToolReplacement && req.emittedToolPriceApplies(res) {
+		return req
+	}
 	p, ok := ProtocolFor(res.Protocol)
 	if !ok {
 		return req
@@ -170,13 +182,64 @@ func priceEmittedToolSchemas(req Request, res registry.Resolved) Request {
 	if !changed {
 		return req
 	}
-	// Read before the assignment below overwrites it: the baseline is the count
-	// that describes the list as this request carries it, and after the next
-	// line the field holds this target's emission instead.
+	// Read before withToolEmission overwrites the count: the baseline is the
+	// count that describes the list as this request carries it, while the
+	// recorded count is this target's emission.
 	baseline := req.toolCountBaseline()
-	req.ToolsJSONBytes = ToolsJSONBytes(emitted)
+	return req.withToolEmission(res, ToolsJSONBytes(emitted), baseline, false)
+}
+
+// providerToolsReplacement returns the tool list a request hands the builder
+// through ProviderOptions, and whether that option is present for res's route.
+//
+// The Chat Completions and Responses builders write the request's own tools and
+// then copy ProviderOptions over the body, so an explicit tools value is the
+// list that dispatches. A Codex Responses Lite route is excluded: its tools ride
+// inside the input as an additional_tools item, and a top-level tools value is
+// not the catalog that endpoint reads. The other protocols do not pass request
+// options through to their body at all.
+func providerToolsReplacement(req Request, res registry.Resolved) (any, bool) {
+	if res.Protocol != registry.ProtocolOpenAIChat && res.Protocol != registry.ProtocolOpenAIResponses {
+		return nil, false
+	}
+	if res.Protocol == registry.ProtocolOpenAIResponses && registry.BoolValue(res.Caps.ResponsesLite) {
+		return nil, false
+	}
+	options, _ := req.ProviderOptions[res.Protocol].(map[string]any)
+	replacement, ok := options["tools"]
+	return replacement, ok
+}
+
+// priceReplacementToolList prices the tools value a ProviderOptions replacement
+// hands the builder, recording the catalog's own count as the baseline.
+//
+// The measurement is taken over the replacement as it will be encoded, which is
+// what the local estimate bills. The baseline stays the catalog's count so a
+// retarget to a route that does not read this protocol's options restores the
+// list that route actually sends, and the recorded emission keeps the
+// parameterless-schema delta off a list that is not a catalog of definitions.
+func priceReplacementToolList(req Request, res registry.Resolved, replacement any) Request {
+	baseline := req.toolCountBaseline()
+	measured, err := json.Marshal(replacement)
+	if err != nil {
+		// The encoder rejects the replacement, so it has no wire form to price;
+		// the count the request arrived with stands, exactly as ToolsJSONBytes
+		// bills nothing for a list the encoder rejects.
+		return req
+	}
+	return req.withToolEmission(res, len(measured), baseline, true)
+}
+
+// withToolEmission records count as the price res's builder produced, over
+// baseline, and whether the price describes a ProviderOptions replacement rather
+// than the catalog's emission. The record is what lets a later price restore the
+// list's own count instead of keeping another target's answer.
+func (req Request) withToolEmission(res registry.Resolved, count, baseline int, replacement bool) Request {
+	req.ToolsJSONBytes = count
 	req.emittedToolTarget = emittedToolTargetFor(res)
 	req.emittedToolBaseline = baseline
+	req.emittedToolCount = count
+	req.emittedToolReplacement = replacement
 	return req
 }
 
@@ -187,17 +250,42 @@ func priceEmittedToolSchemas(req Request, res registry.Resolved) Request {
 // request: the deriver path, the local reading, and admission. A route served by
 // a protocol that has no deriver, and one served by an override adapter, both
 // send the definitions they were handed, so for them the baseline is the price.
+//
+// A record only describes a request whose tool count is still the count that
+// record produced. A caller that replaces Tools and stamps the replacement makes
+// ToolsJSONBytes describe bytes this record never measured, and restoring the
+// recorded baseline over the new stamp would price the discarded catalog: the
+// replacement's own count wins, and an unstamped replacement is measured by
+// whoever reads it.
 func restoreToolCountBaseline(req Request, res registry.Resolved) Request {
 	if req.emittedToolTarget == (emittedToolTargetKey{}) {
 		return req
 	}
-	if req.emittedToolTarget == emittedToolTargetFor(res) {
-		return req
+	if !req.recordsEmission() {
+		// The record describes a count this request no longer carries.
+		return dropReplacedToolRecord(req)
 	}
-	req.ToolsJSONBytes = req.emittedToolBaseline
-	req.emittedToolTarget = emittedToolTargetKey{}
-	req.emittedToolBaseline = 0
+	// A substitution is a property of the options this request carries now, not
+	// of the target, so it is re-decided from the list on every price: keeping
+	// the recorded count because the target still matches would leave a
+	// replacement's price standing after the option that produced it was gone.
+	// Another target's charge is not this route's answer either.
+	if req.emittedToolReplacement || req.emittedToolTarget != emittedToolTargetFor(res) {
+		return dropRecordedToolEmission(req)
+	}
 	return req
+}
+
+// recordsEmission reports whether req carries a record that still describes its
+// tool count: a target is recorded and ToolsJSONBytes is still the count that
+// record produced. A caller that replaced Tools and stamped the replacement
+// leaves both bits intact but a count the record never measured, and that case
+// is excluded here.
+func (req Request) recordsEmission() bool {
+	if req.emittedToolTarget == (emittedToolTargetKey{}) {
+		return false
+	}
+	return req.ToolsJSONBytes == req.emittedToolCount
 }
 
 // toolCountBaseline is the count req's tool list measures without the current
@@ -230,10 +318,49 @@ func dropRecordedToolEmission(req Request) Request {
 	if req.emittedToolTarget == (emittedToolTargetKey{}) {
 		return req
 	}
+	if !req.recordsEmission() {
+		return dropReplacedToolRecord(req)
+	}
 	req.ToolsJSONBytes = req.emittedToolBaseline
+	return clearToolEmissionRecord(req)
+}
+
+// clearToolEmissionRecord forgets the recorded emission, leaving ToolsJSONBytes
+// as the caller set it.
+func clearToolEmissionRecord(req Request) Request {
 	req.emittedToolTarget = emittedToolTargetKey{}
 	req.emittedToolBaseline = 0
+	req.emittedToolCount = 0
+	req.emittedToolReplacement = false
 	return req
+}
+
+// dropReplacedToolRecord forgets a record whose count no longer describes this
+// request, keeping the replacement's own count.
+//
+// The caller replaced Tools and stamped the replacement, so that stamp is the
+// price rather than the discarded catalog's baseline. A replacement the caller
+// did not measure is measured here: zero means "measure me" to every reader of
+// the field, and measuring once is what the stamp exists to avoid repeating.
+func dropReplacedToolRecord(req Request) Request {
+	req = clearToolEmissionRecord(req)
+	if req.ToolsJSONBytes == 0 {
+		req.ToolsJSONBytes = ToolsJSONBytes(req.Tools)
+	}
+	return req
+}
+
+// RestoreToolBaseline returns req priced by the tool list it carries, whatever
+// target the recorded emission names.
+//
+// It is for a route that makes no schema decision about the list it is handed:
+// an override adapter marshals the definition it receives, so the count it
+// dispatches with is the list's own measurement. A caller that prices such a
+// route through a protocol's builder records a charge the override never
+// incurs, and both of the fallback history estimates it drives would then
+// describe a catalog the wire never carries.
+func RestoreToolBaseline(req Request) Request {
+	return dropRecordedToolEmission(req)
 }
 
 // emittedToolTargetKey names the target whose schema decision a count was
@@ -377,7 +504,7 @@ func effectiveToolsJSONBytes(req Request, res registry.Resolved, override bool) 
 	if len(req.Tools) == 0 {
 		return 0
 	}
-	if !override && req.emittedToolTarget != (emittedToolTargetKey{}) && req.emittedToolTarget == emittedToolTargetFor(res) {
+	if !override && req.emittedToolPriceApplies(res) {
 		return req.ToolsJSONBytes
 	}
 	base := req.ToolsJSONBytes
@@ -385,6 +512,17 @@ func effectiveToolsJSONBytes(req Request, res registry.Resolved, override bool) 
 		base = ToolsJSONBytes(req.Tools)
 	}
 	return base + parameterlessToolsJSONDelta(req.Tools, res, override)
+}
+
+// emittedToolPriceApplies reports whether the recorded emission describes the
+// count this request carries for res: the record exists, ToolsJSONBytes is
+// still the count that record produced, and the target is this one.
+//
+// A caller that replaced the catalog and stamped the replacement leaves a count
+// the record did not produce, so the record describes a list this request no
+// longer carries and its price must not be reused.
+func (req Request) emittedToolPriceApplies(res registry.Resolved) bool {
+	return req.recordsEmission() && req.emittedToolTarget == emittedToolTargetFor(res)
 }
 
 // EstimateMessagesInputTokens estimates only a message list. It is useful for
@@ -503,11 +641,14 @@ func (c *Client) CountInputTokens(ctx context.Context, req Request) (InputTokenC
 	// override target is included: its row is the zero one, which can never be
 	// the target a pre-priced count was recorded under, so the restore is the
 	// correct answer for it too.
-	req = restoreToolCountBaseline(req, t.res)
 	if t.override != nil {
 		// An override marshals the definition it is handed, so no protocol's
 		// emission describes its wire list and the recorded charge has to go.
+		// The baseline restore would decide the same thing for this route and is
+		// therefore not run beside it.
 		req = dropRecordedToolEmission(req)
+	} else {
+		req = restoreToolCountBaseline(req, t.res)
 	}
 	localEstimate := func() InputTokenCount {
 		// The local reading is the fallback for a route with no exact counter,

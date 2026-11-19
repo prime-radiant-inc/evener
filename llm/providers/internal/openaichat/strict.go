@@ -167,12 +167,21 @@ func StrictifyJSONSchema(in map[string]any) map[string]any {
 // strict mode and nothing else. A node whose value set implies no single type
 // is left exactly as advertised.
 func SupplyDerivedTypes(schema map[string]any) map[string]any {
-	cp, _ := copySchema(schema).(map[string]any)
-	if cp == nil {
-		return map[string]any{}
-	}
-	supplyDerivedTypes(cp, dialectOf(cp), false)
-	return cp
+	out, _ := SupplyDerivedTypesChanged(schema)
+	return out
+}
+
+// SupplyDerivedTypesChanged returns SupplyDerivedTypes' output and whether it
+// stated anything on it.
+//
+// A caller pricing a catalog needs the second answer: a schema whose value sets
+// imply no type is emitted exactly as advertised, so the count it already holds
+// describes the wire and there is nothing to measure. The copy is returned
+// either way, because the copy is what cuts a looping edge — handing the
+// caller's own map back for a schema that contains itself would return the
+// cycle to a caller that has no way to read it.
+func SupplyDerivedTypesChanged(schema map[string]any) (map[string]any, bool) {
+	return supplyTypesReporting(schema, false)
 }
 
 // SupplyExplicitTypes returns a deep copy of schema with derived explicit types
@@ -181,12 +190,25 @@ func SupplyDerivedTypes(schema map[string]any) map[string]any {
 // "array") and multi-type unions. It is used on non-strict Codex Responses Lite
 // schemas where every node must carry an explicit "type".
 func SupplyExplicitTypes(schema map[string]any) map[string]any {
+	out, _ := SupplyExplicitTypesChanged(schema)
+	return out
+}
+
+// SupplyExplicitTypesChanged returns SupplyExplicitTypes' output and whether it
+// stated anything on it.
+func SupplyExplicitTypesChanged(schema map[string]any) (map[string]any, bool) {
+	return supplyTypesReporting(schema, true)
+}
+
+// supplyTypesReporting copies schema, states every derived type
+// allowContainerAndMulti lets it state, and reports the copy alongside whether
+// it stated anything.
+func supplyTypesReporting(schema map[string]any, allowContainerAndMulti bool) (map[string]any, bool) {
 	cp, _ := copySchema(schema).(map[string]any)
 	if cp == nil {
-		return map[string]any{}
+		return map[string]any{}, false
 	}
-	supplyDerivedTypes(cp, dialectOf(cp), true)
-	return cp
+	return cp, supplyDerivedTypes(cp, dialectOf(cp), allowContainerAndMulti)
 }
 
 // HasExplicitTypes reports whether every reachable schema node carries a
@@ -284,10 +306,13 @@ var (
 	}
 )
 
-func supplyDerivedTypes(m map[string]any, dialect schemaDialect, allowContainerAndMulti bool) {
+// supplyDerivedTypes states a derived type on every node whose value set implies
+// one, reporting whether it stated any.
+func supplyDerivedTypes(m map[string]any, dialect schemaDialect, allowContainerAndMulti bool) bool {
 	if m == nil {
-		return
+		return false
 	}
+	stated := false
 	// $schema may be declared again at an embedded schema resource, and it
 	// governs the keywords below that node. A const under a draft-4 resource
 	// asserts nothing, so the outer dialect must not be applied through it.
@@ -302,7 +327,9 @@ func supplyDerivedTypes(m map[string]any, dialect schemaDialect, allowContainerA
 	// alternative guarantees the same scalar type.
 	for _, keyword := range singleSubschemaKeywords {
 		if sub, ok := m[keyword].(map[string]any); ok {
-			supplyDerivedTypes(sub, dialect, allowContainerAndMulti)
+			if supplyDerivedTypes(sub, dialect, allowContainerAndMulti) {
+				stated = true
+			}
 		}
 	}
 	for _, keyword := range listSubschemaKeywords {
@@ -312,7 +339,9 @@ func supplyDerivedTypes(m map[string]any, dialect schemaDialect, allowContainerA
 		}
 		for _, it := range arr {
 			if sub, ok := it.(map[string]any); ok {
-				supplyDerivedTypes(sub, dialect, allowContainerAndMulti)
+				if supplyDerivedTypes(sub, dialect, allowContainerAndMulti) {
+					stated = true
+				}
 			}
 		}
 	}
@@ -323,7 +352,9 @@ func supplyDerivedTypes(m map[string]any, dialect schemaDialect, allowContainerA
 		}
 		for _, v := range named {
 			if sub, ok := v.(map[string]any); ok {
-				supplyDerivedTypes(sub, dialect, allowContainerAndMulti)
+				if supplyDerivedTypes(sub, dialect, allowContainerAndMulti) {
+					stated = true
+				}
 			}
 		}
 	}
@@ -333,11 +364,14 @@ func supplyDerivedTypes(m map[string]any, dialect schemaDialect, allowContainerA
 		if _, has := m["type"]; !has {
 			if name, ok := derivedScalarType(m, dialect); ok {
 				m["type"] = name
+				stated = true
 			} else if typ, ok := derivedUnionType(m, allowContainerAndMulti); ok {
 				m["type"] = typ
+				stated = true
 			}
 		}
 	}
+	return stated
 }
 
 // derivedUnionType returns the enclosing JSON type guaranteed by every
@@ -1691,12 +1725,49 @@ func deepCopyWith(v any, path map[containerKey]bool) any {
 // dropped keyword — is reported as different so the caller measures it.
 // Reporting a difference costs one marshal, while reporting a sameness that
 // does not hold would price a catalog the wire never carries.
+//
+// Two inputs this walk cannot reason about are answered without walking into
+// them. The same container compared with itself is trivially the same length,
+// which is the case whenever a builder leaves a caller's parameters untouched:
+// comparing such a schema is a walk over the caller's own maps with no decision
+// at the end of it. A value that contains itself is reported as different, so
+// the caller measures it; recursing would exhaust the stack, which is what the
+// encoder's own cycle error used to prevent.
 func SameSerializedLength(original, projected map[string]any) bool {
-	return sameLengthValue(original, projected)
+	return sameLengthValueAt(original, projected, nil)
 }
 
-// sameLengthValue compares two schema values for serialized length.
-func sameLengthValue(a, b any) bool {
+// sameLengthValueAt compares two schema values for serialized length, with path
+// holding the identity of every container currently being compared.
+//
+// The walk follows the schema, so a value that contains itself would recurse
+// until the stack runs out. path is the ancestor chain rather than a visited set
+// for the same reason copySchema's is: two siblings may legitimately share one
+// subtree, and a shared value is a DAG rather than a cycle.
+func sameLengthValueAt(a, b any, path map[containerKey]bool) bool {
+	if ka, ok := containerIdentity(a); ok {
+		if kb, ok := containerIdentity(b); ok && kb == ka {
+			// One container compared with itself serializes identically, and it
+			// is the case a builder that leaves the parameters untouched hands
+			// this walk. Answering it here is what keeps the caller's own maps
+			// from being walked at all.
+			return true
+		}
+		next, entered := enterContainer(path, ka)
+		if !entered {
+			return false
+		}
+		path = next
+		defer delete(path, ka)
+	}
+	if kb, ok := containerIdentity(b); ok {
+		next, entered := enterContainer(path, kb)
+		if !entered {
+			return false
+		}
+		path = next
+		defer delete(path, kb)
+	}
 	if am, ok := asSchemaMap(a); ok {
 		bm, ok := asSchemaMap(b)
 		// A nil map marshals as JSON null and an empty one as {}, so the two
@@ -1704,7 +1775,7 @@ func sameLengthValue(a, b any) bool {
 		if !ok || (am == nil) != (bm == nil) {
 			return false
 		}
-		return sameLengthMap(am, bm)
+		return sameLengthMap(am, bm, path)
 	}
 	if as, ok := asSchemaList(a); ok {
 		bs, ok := asSchemaList(b)
@@ -1712,7 +1783,7 @@ func sameLengthValue(a, b any) bool {
 			return false
 		}
 		for i := range as {
-			if !sameLengthValue(as[i], bs[i]) {
+			if !sameLengthValueAt(as[i], bs[i], path) {
 				return false
 			}
 		}
@@ -1724,8 +1795,23 @@ func sameLengthValue(a, b any) bool {
 	return reflect.DeepEqual(a, b)
 }
 
+// enterContainer adds key to the ancestor chain path, allocating the chain on
+// first use, and reports false when key is already on it: a container the walk
+// is inside of is one that contains itself, and following it would recurse until
+// the stack runs out.
+func enterContainer(path map[containerKey]bool, key containerKey) (map[containerKey]bool, bool) {
+	if path[key] {
+		return path, false
+	}
+	if path == nil {
+		path = map[containerKey]bool{}
+	}
+	path[key] = true
+	return path, true
+}
+
 // sameLengthMap compares two schema objects key for key.
-func sameLengthMap(a, b map[string]any) bool {
+func sameLengthMap(a, b map[string]any, path map[containerKey]bool) bool {
 	if len(a) != len(b) {
 		return false
 	}
@@ -1743,7 +1829,7 @@ func sameLengthMap(a, b map[string]any) bool {
 			}
 			continue
 		}
-		if !sameLengthValue(av, bv) {
+		if !sameLengthValueAt(av, bv, path) {
 			return false
 		}
 	}
@@ -1751,13 +1837,18 @@ func sameLengthMap(a, b map[string]any) bool {
 }
 
 // sameNameSet reports whether a and b are lists of the same names in any order.
+//
+// A typed nil slice marshals as JSON null and an empty one as [], so the two
+// spellings are only interchangeable when neither side is nil. The projection
+// writes an empty list for an object with no properties, and restoring an
+// advertised null to that list is two bytes the wire does not carry.
 func sameNameSet(a, b any) bool {
 	as, ok := asSchemaList(a)
 	if !ok {
 		return false
 	}
 	bs, ok := asSchemaList(b)
-	if !ok || len(as) != len(bs) {
+	if !ok || (as == nil) != (bs == nil) || len(as) != len(bs) {
 		return false
 	}
 	seen := make(map[string]int, len(as))

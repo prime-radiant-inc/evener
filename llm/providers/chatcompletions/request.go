@@ -74,7 +74,7 @@ func buildBody(req llm.Request, res registry.Resolved, stream bool) (out map[str
 			}
 			// One decision per tool: the schema it is sent with, whether it
 			// rides strict enforcement, and whether the key is omitted.
-			params, toolStrict, omit := toolSchema(req, i, strictTools)
+			params, toolStrict, omit, _ := toolSchema(req, i, strictTools)
 			if !omit {
 				fn["parameters"] = params
 			}

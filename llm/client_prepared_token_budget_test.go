@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -134,8 +135,7 @@ func capBetweenPrices(t *testing.T, lower, upper int) int {
 // The caller advertises tools with no parameters, so a count measured over the
 // request as written omits the schema the builder supplies. A cap between the
 // two prices must refuse the request: admitting it on the smaller count
-// dispatches a request the budget would have rejected. This is the property the
-// issue names, proven at the call site that budgeted rather than at the helper.
+// dispatches a request the budget would have rejected.
 func TestAdmissionRefusesARequestBilledBeforeTheSubstitution(t *testing.T) {
 	defs := parameterlessCatalog(24)
 	req := Request{
@@ -234,8 +234,7 @@ func TestAdmissionPricesTheStrictProjectionAndOnlyOnACapableRoute(t *testing.T) 
 
 	strict, _, strictBodies := emittedPriceRoute(t, limit, registry.ProtocolOpenAIResponses, true)
 	_, strictErr := strict.Complete(context.Background(), req)
-	var budgetErr *ContextBudgetError
-	if !errors.As(strictErr, &budgetErr) {
+	if _, ok := errors.AsType[*ContextBudgetError](strictErr); !ok {
 		t.Fatalf("strict route error = %v, want *ContextBudgetError: it admitted the request on the advertised "+
 			"price %d, the projection costs %d, and %d request(s) reached the wire",
 			strictErr, advertised, projected, len(strictBodies()))
@@ -263,10 +262,9 @@ func TestAdmissionPricesTheStrictProjectionAndOnlyOnACapableRoute(t *testing.T) 
 // a no-argument declaration carrying the open empty object, so the strict
 // decision is the only thing that can replace it.
 func preparedParameterlessCatalog(n int) []ToolDefinition {
-	defs := make([]ToolDefinition, n)
+	defs := parameterlessCatalog(n)
 	for i := range defs {
-		base := ToolDefinition{Name: "probe_" + string(rune('a'+i%26)) + string(rune('0'+i/26))}
-		defs[i] = base.WithNoParametersDeclared()
+		defs[i] = defs[i].WithNoParametersDeclared()
 	}
 	return defs
 }
@@ -322,7 +320,7 @@ func TestAdmissionPricesWithoutRewritingTheRequest(t *testing.T) {
 	for i := range emitted {
 		a, _ := json.Marshal(wire[i])
 		b, _ := json.Marshal(emitted[i].Parameters)
-		if string(a) != string(b) {
+		if !bytes.Equal(a, b) {
 			t.Fatalf("wire tool %d parameters = %s, priced over %s", i, a, b)
 		}
 	}

@@ -758,9 +758,7 @@ func (s *Session) applyResponsesContinuationShadowEstimate(profile *provider.Pro
 	// request the override could dispatch. The inflated reading would also
 	// outlive the case that produced it: it is recorded on a request that falls
 	// back to full history when the override has no continuation planner.
-	if !s.servesAnOverride(profile) {
-		shadowReq = llm.PriceToolSchemas(shadowReq, resolvedTargetOf(profile))
-	}
+	shadowReq = s.priceToolSchemasForRoute(profile, shadowReq)
 	tokens, ok := s.estimateResponsesContinuationShadow(profile, shadowReq)
 	if !ok {
 		req.HistoryMode = llm.HistoryModeFullHistory
@@ -781,6 +779,19 @@ func (s *Session) servesAnOverride(profile *provider.Profile) bool {
 		return false
 	}
 	return s.client.ServesOverride(profile.ID())
+}
+
+// priceToolSchemasForRoute returns req priced for the route profile serves: the
+// list the route's builder emits when a protocol serves it, and the list it
+// carries when an override does. An override marshals the definition it is
+// handed, so pricing it through a protocol's deriver would bill an emitted list
+// the wire never carries. A nil profile prices against the zero row, which is
+// the name-based fallback its callers already take.
+func (s *Session) priceToolSchemasForRoute(profile *provider.Profile, req llm.Request) llm.Request {
+	if s.servesAnOverride(profile) {
+		return llm.RestoreToolBaseline(req)
+	}
+	return llm.PriceToolSchemas(req, resolvedTargetOf(profile))
 }
 
 func (s *Session) estimateResponsesContinuationShadow(profile *provider.Profile, req llm.Request) (int, bool) {
@@ -1908,7 +1919,7 @@ func responsesContinuationModelFallbackRequest(res registry.Resolved, req llm.Re
 // estimates are computed from the request's tool count. The request arrived
 // carrying the PRIMARY's count, which describes the schemas the primary's
 // builder emits; a fallback that leaves the catalog alone — a same-surface,
-// non-strict Chat route is the case that found this — emits a different list, so
+// non-strict Chat route, for instance — emits a different list, so
 // pricing after the estimates leaves both of them describing a catalog this
 // route never sends. Admission takes the maximum of the local estimate, the
 // delta estimate and the full-history one, so an input cap between the primary's
@@ -1924,9 +1935,11 @@ func (s *Session) responsesContinuationFallbackRequest(profile *provider.Profile
 	}
 	fbReq.Messages = projectThinkingForTarget(profile, fbReq.Messages)
 	fbReq.Messages = projectToolResultMediaFor(profile, fbReq.Messages)
-	if !s.servesAnOverride(profile) {
-		fbReq = llm.PriceToolSchemas(fbReq, res)
-	}
+	// The request arrived carrying the primary's tool count. Both history
+	// estimates below are computed from that field, so the fallback's own route
+	// prices it first: a builder emits its list, and an override marshals the
+	// definition it is handed.
+	fbReq = s.priceToolSchemasForRoute(profile, fbReq)
 	// The continuation builder priced the unprojected messages; the projections
 	// above removed thinking and media this target does not replay or receive, so
 	// reprice both estimates before admission (#4563, #4217).
@@ -1946,11 +1959,15 @@ func budgetModelDispatchRequest(profile *provider.Profile, req llm.Request) (llm
 // answers with fewer input tokens than the dispatch carries whenever the
 // route's builder projects a schema, so the admitted output comes out larger
 // here than the client later admits, and the warning either never fires or
-// reports an allocation the wire never had. A route an override serves is left
-// alone: the override marshals the definition it was handed.
+// reports an allocation the wire never had. A route an override serves restores
+// the list's own count instead: the override marshals the definition it was
+// handed, so no protocol's emission describes its wire list.
 func (s *Session) budgetModelDispatchRequestForSession(profile *provider.Profile, req llm.Request) (llm.Request, llm.TokenBudget, error) {
-	if profile != nil && !s.servesAnOverride(profile) {
-		req = llm.PriceToolSchemas(req, profile.Resolved())
+	if profile != nil {
+		// A count another builder produced describes a list this route never
+		// sends; the budget would then admit or refuse against that route's
+		// catalog.
+		req = s.priceToolSchemasForRoute(profile, req)
 	}
 	return budgetModelDispatchRequestWithBudget(profile, req)
 }

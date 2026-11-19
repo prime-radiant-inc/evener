@@ -72,11 +72,18 @@ func (*Protocol) EmitToolSchemas(baseline []llm.ToolDefinition, res registry.Res
 	}
 	strict := registry.BoolValue(res.Caps.StrictTools)
 	lite := registry.BoolValue(res.Caps.ResponsesLite)
-	sent := make([]llm.ToolDefinition, len(baseline))
-	copy(sent, baseline)
+	var sent []llm.ToolDefinition
 	changed := false
 	for i, t := range baseline {
-		params, _ := toolSchema(t, strict, lite)
+		params, _, untouched := toolSchema(t, strict, lite)
+		if untouched {
+			// The builder sends the caller's own schema, so the count the
+			// request arrived with already describes it. Comparing the value
+			// with itself would be a walk over the caller's parameters with no
+			// decision at the end, and a map that contains itself makes that
+			// walk unbounded.
+			continue
+		}
 		// A byte count needs a byte oracle. The projection sorts each object's
 		// required list, which reorders a schema without changing what it
 		// serializes to: a catalog whose tools are already strictly shaped
@@ -86,6 +93,9 @@ func (*Protocol) EmitToolSchemas(baseline []llm.ToolDefinition, res registry.Res
 		// really costs bytes is reported as changed.
 		if openaichat.SameSerializedLength(t.Parameters, params) {
 			continue
+		}
+		if sent == nil {
+			sent = slices.Clone(baseline)
 		}
 		sent[i].Parameters = params
 		changed = true

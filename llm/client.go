@@ -440,7 +440,14 @@ func shapeAndApplyTokenBudget(req Request, res registry.Resolved, override bool)
 	// the request arrived with. This runs here rather than at either call site
 	// because admission is where the count is consumed, and every route that
 	// reaches the budget passes through this function.
-	if !override {
+	if override {
+		// An override marshals the definition it is handed, so no protocol's
+		// emission describes its wire list. CountInputTokens restores the
+		// baseline for the same request, and if admission kept the recorded
+		// charge instead, a cap between the two counts would let preflight
+		// report that the request fits while dispatch rejects it.
+		req = dropRecordedToolEmission(req)
+	} else {
 		req = priceEmittedToolSchemas(req, res)
 	}
 	budgeted, _, err := applyTokenBudgetForTarget(req, res, override)

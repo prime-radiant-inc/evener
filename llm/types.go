@@ -645,8 +645,23 @@ type Request struct {
 	// set, so a deriver reporting no change leaves a price for a schema this
 	// route never emits. Recording the target and the baseline is what lets the
 	// next price start from the list rather than from another route's answer.
-	emittedToolTarget   emittedToolTargetKey
-	emittedToolBaseline int
+	//
+	// emittedToolCount is the count that record produced. A request whose
+	// ToolsJSONBytes no longer equals it carries a different tool list — a caller
+	// replaced the catalog and stamped the replacement — so the record describes
+	// bytes this request does not carry and is dropped rather than restored over
+	// the new stamp.
+	//
+	// emittedToolReplacement marks a count measured over a ProviderOptions tools
+	// value rather than over the catalog's emission. That substitution is
+	// re-decided on every price, so the record is restored to the catalog's own
+	// count before it is applied again: keeping it because the target still
+	// matches would leave a replacement's price standing after the option that
+	// produced it was gone.
+	emittedToolTarget      emittedToolTargetKey
+	emittedToolBaseline    int
+	emittedToolCount       int
+	emittedToolReplacement bool
 
 	AdapterTimeout *AdapterTimeout `json:"adapter_timeout,omitempty"`
 }

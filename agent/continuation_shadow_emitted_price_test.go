@@ -58,7 +58,7 @@ func TestTheSessionBudgetPricesTheEmittedToolSchema(t *testing.T) {
 	defs := parameterlessTools(24)
 	req := llm.Request{Messages: []llm.Message{llm.User("hello")}, Tools: defs}
 	// Stamped with the advertised count, as a caller that measured its own list
-	// would. Without the fix that is the number the budget keeps and charges.
+	// would.
 	req.ToolsJSONBytes = llm.ToolsJSONBytes(defs)
 
 	priced := llm.PriceToolSchemas(req, row)
@@ -186,8 +186,7 @@ func TestTheSessionBudgetLeavesAnOverrideServedRouteUnpriced(t *testing.T) {
 // catalog the builder has already replaced and the smaller reading is the one
 // that governs.
 //
-// The stub observes the request it is handed rather than the count, because the
-// count is what the fix changes.
+// The stub observes the request it is handed rather than the count it produces.
 func TestContinuationShadowBillsTheSchemasTheRouteEmits(t *testing.T) {
 	t.Parallel()
 	row := responsesRouteOn("budget-emitted", false)
@@ -333,9 +332,9 @@ func TestTheFallbackPricesItsOwnCatalogBeforeItsHistoryEstimates(t *testing.T) {
 
 	// A cap strictly between the two prices. The fallback fits; the primary's
 	// reading does not.
-	applyCap := func(p *provider.Profile, cap int) *provider.Profile {
+	applyCap := func(p *provider.Profile, limit int) *provider.Profile {
 		res := p.Resolved()
-		res.Caps.MaxInputTokens = new(cap)
+		res.Caps.MaxInputTokens = new(limit)
 		res.Caps.ContextWindow = new(1_000_000)
 		return p.WithResolved(res)
 	}
