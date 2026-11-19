@@ -181,24 +181,38 @@ func responsesReasoningParts(raw any) []llm.ResponsesReasoningPart {
 // settleResponsesTerminalOutput decides the settled message content and
 // finish reason for a Responses-API terminal (response.completed) payload,
 // given the output items accumulated from the stream en route. When the
-// terminal payload's own "output" array is non-empty it is authoritative
+// terminal payload's own "output" array supplies content it is authoritative
 // (the provider's settled truth); when it's empty but the stream accumulated
 // real items, those are synthesized in its place (observed on affected
 // sessions: the terminal payload carries no output even though earlier
 // response.output_item.done events in the same stream carried real content).
 // Shared by the live streaming decoder (decodeStream) and offline
 // recomputation so both apply the identical terminal-wins rule.
-func settleResponsesTerminalOutput(r *llm.Response, rawResp map[string]any, accumulatedOutput []any, accumulatedRawOutput []json.RawMessage) {
+func settleResponsesTerminalOutput(r *llm.Response, rawResp map[string]any, acc *responsesOutputAccumulator) {
 	terminalOutput, _ := rawResp["output"].([]any)
+	emptyMessages := !slices.ContainsFunc(terminalOutput, func(rawItem any) bool {
+		item, _ := rawItem.(map[string]any)
+		parts, ok := item["content"].([]any)
+		return item["type"] != "message" || !ok || slices.ContainsFunc(parts, func(rawPart any) bool {
+			part, _ := rawPart.(map[string]any)
+			return part["type"] != "output_text" || part["text"] != ""
+		})
+	})
 	switch {
-	case len(terminalOutput) == 0 && len(accumulatedOutput) > 0:
-		// The terminal payload carries no output even though the stream's
-		// output_item.done events carried real content (observed on
-		// affected sessions). Synthesize the settled message from what the
-		// stream actually sent, reusing fromResponses' item-walk.
-		// Accumulated call IDs can be derived from item IDs, so repeated
-		// values do not establish that the provider issued one call.
-		r.Message.Content = responseContentFromOutputItemsRaw(accumulatedOutput, nil, accumulatedRawOutput, false)
+	case emptyMessages:
+		for index, rawItem := range terminalOutput {
+			item, _ := rawItem.(map[string]any)
+			if phase, _ := item["phase"].(string); phase != "" {
+				id, _ := item["id"].(string)
+				msg := acc.messageItem(id, int64(index), true)
+				msg.phase = cmp.Or(msg.phase, phase)
+			}
+		}
+		recovered := acc.recoverOutput()
+		if len(recovered) == 0 {
+			return
+		}
+		r.Message.Content = recovered
 		retainFallbackReasoning(r)
 		if status, _ := rawResp["status"].(string); status != "incomplete" {
 			if len(r.ToolCalls()) > 0 {
@@ -207,7 +221,7 @@ func settleResponsesTerminalOutput(r *llm.Response, rawResp map[string]any, accu
 				r.Finish = llm.FinishReason{Reason: "stop"}
 			}
 		}
-	case len(terminalOutput) > 0 && len(accumulatedOutput) > 0:
+	case acc.completed > 0:
 		// The stream accumulator holds only settled items.
 		count := len(terminalOutput)
 		for _, rawItem := range terminalOutput {
@@ -216,12 +230,12 @@ func settleResponsesTerminalOutput(r *llm.Response, rawResp map[string]any, accu
 				count--
 			}
 		}
-		if count == len(accumulatedOutput) {
+		if count == acc.completed {
 			return
 		}
 		r.Warnings = append(r.Warnings, llm.Warning{
 			Code:    "responses_output_item_count_mismatch",
-			Message: fmt.Sprintf("terminal output items=%d differ from accumulated stream items=%d", count, len(accumulatedOutput)),
+			Message: fmt.Sprintf("terminal output items=%d differ from accumulated stream items=%d", count, acc.completed),
 		})
 	}
 }

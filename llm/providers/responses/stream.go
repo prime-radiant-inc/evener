@@ -2,10 +2,12 @@ package responses
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/llm"
@@ -21,6 +23,15 @@ type responsesToolState struct {
 	args             bytes.Buffer
 }
 
+type responsesStreamItem struct {
+	id, phase string
+	index     int64
+	message   bool
+	text      strings.Builder
+	completed map[string]any
+	raw       json.RawMessage
+}
+
 // responsesOutputAccumulator tracks response.output_item.added/done and
 // response.function_call_arguments.delta/done events to reconstruct the
 // output array a response.completed payload should have carried, for
@@ -33,8 +44,8 @@ type responsesToolState struct {
 type responsesOutputAccumulator struct {
 	toolStates   map[string]*responsesToolState
 	itemToCallID map[string]string
-	output       []any
-	rawOutput    []json.RawMessage
+	items        []*responsesStreamItem
+	completed    int
 }
 
 func newResponsesOutputAccumulator() *responsesOutputAccumulator {
@@ -44,17 +55,94 @@ func newResponsesOutputAccumulator() *responsesOutputAccumulator {
 	}
 }
 
-// Output returns the accumulated output array, in the wire shape a
-// response.completed payload's "output" field carries.
-func (acc *responsesOutputAccumulator) Output() []any { return acc.output }
+func responsesOutputIndex(payload map[string]any) int64 {
+	number, _ := payload["output_index"].(json.Number)
+	index, err := number.Int64()
+	if err != nil || index < 0 {
+		return -1
+	}
+	return index
+}
 
-// RawOutput returns the raw JSON item tokens aligned with Output. An entry is
-// nil when the source event did not expose a decodable item token.
-func (acc *responsesOutputAccumulator) RawOutput() []json.RawMessage { return acc.rawOutput }
+func (acc *responsesOutputAccumulator) messageItem(id string, index int64, adopting bool) *responsesStreamItem {
+	var pending *responsesStreamItem
+	for _, item := range acc.items {
+		if !item.message || item.completed != nil && (!adopting || item.id == "" && item.index < 0) {
+			continue
+		}
+		sameItem := id == item.id && (id != "" || index == item.index)
+		samePosition := index >= 0 && index == item.index && (id == "" || item.id == "")
+		if sameItem || samePosition {
+			item.id = cmp.Or(item.id, id)
+			if item.index < 0 {
+				item.index = index
+			}
+			return item
+		}
+		if item.id == "" && item.index < 0 {
+			pending = item
+		}
+	}
+	if adopting && pending != nil {
+		pending.id, pending.index = id, index
+		return pending
+	}
+	item := &responsesStreamItem{id: id, index: index, message: true}
+	acc.items = append(acc.items, item)
+	return item
+}
 
-func (acc *responsesOutputAccumulator) appendOutput(item any, rawItem json.RawMessage) {
-	acc.output = append(acc.output, item)
-	acc.rawOutput = append(acc.rawOutput, rawItem)
+func (acc *responsesOutputAccumulator) recordTextDelta(payload map[string]any) string {
+	delta, _ := payload["delta"].(string)
+	if delta == "" {
+		delta, _ = payload["text"].(string)
+	}
+	if delta != "" {
+		id, _ := payload["item_id"].(string)
+		acc.messageItem(id, responsesOutputIndex(payload), false).text.WriteString(delta)
+	}
+	return delta
+}
+
+func (acc *responsesOutputAccumulator) appendOutput(payload, item map[string]any, rawItem json.RawMessage) {
+	index := responsesOutputIndex(payload)
+	if item["type"] == "message" {
+		id, _ := item["id"].(string)
+		msg := acc.messageItem(id, index, true)
+		if phase, supplied := item["phase"].(string); supplied {
+			msg.phase = phase
+		}
+		msg.completed, msg.raw = item, rawItem
+	} else {
+		acc.items = append(acc.items, &responsesStreamItem{index: index, completed: item, raw: rawItem})
+	}
+	acc.completed++
+}
+
+func (acc *responsesOutputAccumulator) recoverOutput() []llm.ContentPart {
+	var indexed []*responsesStreamItem
+	for _, item := range acc.items {
+		if item.index >= 0 {
+			indexed = append(indexed, item)
+		}
+	}
+	slices.SortStableFunc(indexed, func(a, b *responsesStreamItem) int { return cmp.Compare(a.index, b.index) })
+	var output []llm.ContentPart
+	for _, item := range acc.items {
+		if item.index >= 0 {
+			item, indexed = indexed[0], indexed[1:]
+		}
+		parts := responseContentFromOutputItemsRaw([]any{item.completed}, nil, []json.RawMessage{item.raw}, false)
+		if item.message && item.text.Len() != 0 && (llm.Message{Content: parts}).Text() == "" {
+			parts = []llm.ContentPart{{Kind: llm.ContentText, Text: item.text.String(), Phase: item.phase}}
+		} else if item.message {
+			for i := range parts {
+				parts[i].Phase = item.phase
+			}
+		}
+		output = append(output, parts...)
+	}
+	return output
 }
 
 // toolStateFor is the accumulated state for one function call: the entry
@@ -76,12 +164,16 @@ func (acc *responsesOutputAccumulator) toolStateFor(callID, itemID, name string)
 	return st
 }
 
-// HandleOutputItemAdded pre-registers a function_call tool state from a
-// response.output_item.added event's item, keyed by whichever of
-// call_id/item_id are present. Non-function_call items are a no-op (the
-// wire shape carries no other item type worth pre-registering here).
-func (acc *responsesOutputAccumulator) HandleOutputItemAdded(item map[string]any) {
-	if itemType, _ := item["type"].(string); itemType != "function_call" {
+// HandleOutputItemAdded retains announced message phases and tool identities.
+func (acc *responsesOutputAccumulator) HandleOutputItemAdded(payload, item map[string]any) {
+	switch item["type"] {
+	case "message":
+		id, _ := item["id"].(string)
+		phase, _ := item["phase"].(string)
+		acc.messageItem(id, responsesOutputIndex(payload), false).phase = phase
+		return
+	case "function_call":
+	default:
 		return
 	}
 	callID, _ := item["call_id"].(string)
@@ -222,7 +314,7 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 	rawItemToken := captureResponsesOutputItemRaw(eventData)
 	it, _ := item["type"].(string)
 	if it != "function_call" {
-		acc.appendOutput(item, rawItemToken)
+		acc.appendOutput(payload, item, rawItemToken)
 		return item, nil, "", false
 	}
 	if responsesFunctionCallUnfinished(item) {
@@ -259,7 +351,7 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 	if argsStr == "" {
 		argsStr = st.args.String()
 	}
-	acc.appendOutput(map[string]any{
+	acc.appendOutput(payload, map[string]any{
 		"type":      "function_call",
 		"call_id":   st.id,
 		"id":        st.itemID,
@@ -466,13 +558,10 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 			switch typ {
 			case "response.output_item.added":
 				if item, ok := payload["item"].(map[string]any); ok {
-					acc.HandleOutputItemAdded(item)
+					acc.HandleOutputItemAdded(payload, item)
 				}
 			case "response.output_text.delta":
-				delta, _ := payload["delta"].(string)
-				if delta == "" {
-					delta, _ = payload["text"].(string)
-				}
+				delta := acc.recordTextDelta(payload)
 				if delta == "" {
 					return nil
 				}
@@ -555,7 +644,7 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 				// "response", extract that sub-object's raw bytes.
 				respBody := extractResponseObjectRaw(ev.Data)
 				built := fromResponses(rawResp, req.Model, respBody)
-				settleResponsesTerminalOutput(&built, rawResp, acc.Output(), acc.RawOutput())
+				settleResponsesTerminalOutput(&built, rawResp, acc)
 				built.Provider = res.Instance
 				p.stampResponseIDHash(sctx, &built)
 				llm.StampEndpointURL(&built, r.EndpointURL, r.Material)

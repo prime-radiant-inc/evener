@@ -106,3 +106,65 @@ func TestStreamTerminalTypedReasoningPreservesAccumulatedAnswer(t *testing.T) {
 		t.Fatalf("settled display reasoning = %q, want both streamed parts", got)
 	}
 }
+
+func TestStreamRecoversTextWhenTerminalOutputIsEmpty(t *testing.T) {
+	t.Parallel()
+	const delta = `{"type":"response.output_text.delta","delta":"answer"}`
+	const call = `{"type":"response.output_item.done","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"probe","arguments":"{ \"n\" : 1 }"}}`
+	const empty = `{"type":"response.completed","response":{"output":[]}}`
+	const incomplete = `{"type":"response.incomplete","response":{"status":"incomplete","output":[]}}`
+	const added = `{"type":"response.output_item.added","output_index":4,"item":{"type":"message","id":"msg_4","phase":"commentary"}}`
+	const keyedDelta = `{"type":"response.output_text.delta","output_index":4,"delta":"answer"}`
+	for _, tc := range []struct {
+		name, text, phase string
+		calls             int
+		frames            []string
+	}{
+		{"empty-complete", "answer", "", 1, []string{delta, call, empty}},
+		{"empty-incomplete", "answer", "", 1, []string{delta, call, incomplete}},
+		{"phase-only-terminal", "answer", "commentary", 1, []string{delta, call, `{"type":"response.completed","response":{"output":[{"type":"message","phase":"commentary","content":[{"type":"output_text","text":""}]}]}}`}},
+		{"added-commentary", "answer", "commentary", 0, []string{added, keyedDelta, incomplete}},
+		{"completed-commentary", "answer", "commentary", 0, []string{added, keyedDelta,
+			`{"type":"response.output_item.done","item":{"type":"message","id":"msg_4","content":[{"type":"output_text","text":"answer"}]}}`, empty,
+		}},
+		{"completion-phase-wins", "answer", "final_answer", 0, []string{added, keyedDelta,
+			`{"type":"response.output_item.done","item":{"type":"message","id":"msg_4","phase":"final_answer","content":[{"type":"output_text","text":"answer"}]}}`, empty,
+		}},
+		{"late-item-identity", "answer", "", 0, []string{delta,
+			`{"type":"response.output_item.done","item":{"type":"message","id":"msg_1","content":[{"type":"output_text","text":"answer"}]}}`, empty,
+		}},
+		{"interleaved-indexes", "earlier later", "", 0, []string{
+			`{"type":"response.output_text.delta","output_index":0,"item_id":"msg_0","delta":"earlier "}`,
+			`{"type":"response.output_text.delta","output_index":1,"item_id":"msg_1","delta":"later"}`,
+			`{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_0","content":[{"type":"output_text","text":"earlier "}]}}`, empty,
+		}},
+		{"usable-terminal-wins", "other", "", 0, []string{delta, call,
+			`{"type":"response.completed","response":{"output":[{"type":"message","content":[{"type":"output_text","text":"other"}]}]}}`,
+		}},
+		{"unfinished-terminal-wins", "", "", 0, []string{delta, call, `{"type":"response.incomplete","response":{"status":"incomplete","output":[{"type":"function_call","id":"fc_1","call_id":"call_1","status":"incomplete"}]}}`}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := "data: " + strings.Join(tc.frames, "\n\ndata: ") + "\n\n"
+			streamed, _ := responsesEventsFromSSE(t, body)
+			recorded, err := ExtractRecordedResponse([]byte(body), "gpt-5.5")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, r := range []*llm.Response{streamed[len(streamed)-1].Response, &recorded} {
+				var phase string
+				for _, p := range r.Message.Content {
+					if p.Kind == llm.ContentText && p.Text != "" {
+						phase = p.Phase
+						break
+					}
+				}
+				calls := r.ToolCalls()
+				if r.Text() != tc.text || phase != tc.phase || len(calls) != tc.calls {
+					t.Errorf("settled text %q phase %q calls %d", r.Text(), phase, len(calls))
+				} else if len(calls) == 1 && string(calls[0].Arguments) != `{ "n" : 1 }` {
+					t.Errorf("settled arguments = %q", calls[0].Arguments)
+				}
+			}
+		})
+	}
+}
