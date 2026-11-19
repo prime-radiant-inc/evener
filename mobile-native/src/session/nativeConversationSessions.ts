@@ -413,7 +413,20 @@ class SessionEntry implements NativeConversationSession {
 				// will accept it.
 				await this.store.getState().openProjected(service, resolvedRef);
 				this.#runtime().publishIdentityChange({ hubId: this.hubId, from: threadRef, to: resolvedRef });
+			} else {
+				// The resume kept the ref: there is nothing to follow, but the read
+				// the replacement binding started was already in flight when the
+				// resume went out, so it can report the session still cold. A read
+				// taken after the resume is what installs the resumed daemon's
+				// authority; dispatching on the racing one leaves waitForModelControl
+				// nothing to await and refuses a pick the daemon would have taken.
+				await this.#readSettled;
+				await this.store.getState().rehydrate(service);
 			}
+			// The rebind can land after this pick captured its service; the frame
+			// belongs to whichever binding is current, and a stale one would be
+			// refused rather than silently sent.
+			if (this.#service !== service) throw new Error("The session's binding changed while it resumed.");
 		} catch (error) {
 			// Nothing has been written yet: the resume, the binding and the read
 			// that establishes the resumed authority all precede the frame.

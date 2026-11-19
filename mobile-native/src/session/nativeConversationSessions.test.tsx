@@ -810,6 +810,106 @@ describe("client binding lifetime", () => {
 		expect(unsubscribes()).toEqual([{ ref: "ref-1" }, { ref: resolved }]);
 	});
 
+	it("settles a cold pick whose resume keeps the same ref", async () => {
+		// The common resume resolves the ref it was asked about: nothing follows,
+		// and the pick dispatches on the binding the reconnect already started
+		// reading. That read is what establishes the resumed daemon's authority,
+		// so the dispatch has to wait for it rather than assume it settled.
+		const authority = { instanceId: "instance-live", bootGeneration: "test-boot" };
+		let resumed = false;
+		let accepted: ModelControlSnapshot | null = null;
+		const client = hub("ref-1");
+		const live = () => {
+			const base = thread("ref-1");
+			return {
+				...base,
+				evener: {
+					...base.evener,
+					instanceId: authority.instanceId,
+					capabilities: { ...PAST_CAPABILITIES, modelControlVersion: 1 },
+					modelControl: accepted ?? {
+						authority,
+						revision: 1,
+						active: {
+							modelProvider: "anthropic",
+							model: "claude-sonnet-5",
+							reasoningEffortLevels: [],
+							supportsReasoning: false,
+						},
+					},
+				},
+			};
+		};
+		client.on("thread/resume", () => {
+			resumed = true;
+			return { thread: live() as unknown as Thread };
+		});
+		client.on("thread/read", () =>
+			resumed
+				? { thread: live() as unknown as Thread, bootGeneration: authority.bootGeneration }
+				: {
+						thread: {
+							...thread("ref-1"),
+							status: { type: "notLoaded" },
+							evener: { ...thread("ref-1").evener, capabilities: PAST_CAPABILITIES },
+						},
+					},
+		);
+		client.on("thread/model/set", (params) => {
+			const response = acceptedModelControl(params);
+			accepted = response.modelControl ?? null;
+			return response;
+		});
+
+		connected(client);
+		const a = sessions.attach("hub-1", "ref-1");
+		await vi.waitFor(() => expect(a.entry.store.getState().status).toBe("open"));
+		const cold = a.entry.store.getState().conversation;
+		if (!cold) throw new Error("the cold read did not publish");
+		expect(cold.modelControlState.kind).toBe("unsupported");
+
+		const resume = client.resumeThread.bind(client);
+		client.resumeThread = async (ref, options) => {
+			client.emitStateChange("reconnecting");
+			sessions.setConnection("hub-1", null);
+			client.emitStateChange("ready");
+			sessions.setConnection("hub-1", client);
+			return resume(ref, options);
+		};
+		const controls = new SessionControls(
+			a.entry.service!,
+			async () => {},
+			() => {},
+			() => true,
+			() => cold,
+			() => true,
+			{
+				data: [
+					{
+						provider: "anthropic",
+						model: "claude-haiku-5",
+						displayName: "Claude Haiku 5",
+						supportsVision: false,
+					},
+				],
+				recent: [],
+			},
+		);
+
+		expect(await controls.changeModel("anthropic", "claude-haiku-5")).toBe(true);
+		await a.entry.readSettled();
+
+		const setCalls = client.calls.filter((call) => call.method === "thread/model/set");
+		expect(setCalls).toHaveLength(1);
+		expect(setCalls[0]?.params).toMatchObject({
+			ref: "ref-1",
+			expectedInstanceId: authority.instanceId,
+			expectedBootGeneration: authority.bootGeneration,
+		});
+		expect(a.entry.store.getState().ref).toBe("ref-1");
+		expect(modelControlDisplay(a.entry.store.getState().conversation!).model).toBe("claude-haiku-5");
+	});
+
 	it("a replaced client's held read cannot publish or reconcile the new binding", async () => {
 		const held = deferred<ThreadReadResponse>();
 		let oldReads = 0;
