@@ -2,10 +2,13 @@ package responses
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"image"
 	"image/png"
+	"net/http"
+	"reflect"
 	"testing"
 
 	"primeradiant.com/evener/llm"
@@ -48,6 +51,106 @@ func userReq(text string) llm.Request {
 		{Role: llm.RoleSystem, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "be terse"}}},
 		{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: text}}},
 	}}
+}
+
+func TestCompletePreservesAssistantItemOrder(t *testing.T) {
+	t.Parallel()
+	thinking := func(blob string) llm.ContentPart {
+		return llm.ContentPart{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{ID: "rs_fixture", Text: "display", EncryptedContent: blob}}
+	}
+	commentary := func(text string) llm.ContentPart {
+		return llm.ContentPart{Kind: llm.ContentText, Phase: "commentary", Text: text}
+	}
+	const arguments = `{ "id" : "\u0061" }`
+	call := llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_fixture", ItemID: "fc_fixture", Name: "lookup", Arguments: json.RawMessage(arguments)}}
+	result := llm.ContentPart{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call_fixture", Content: "result"}}
+	for _, tc := range []struct {
+		name    string
+		content []llm.ContentPart
+		want    [][]string
+	}{
+		{
+			name:    "encrypted",
+			content: []llm.ContentPart{commentary("before"), thinking("opaque-fixture"), call, commentary("after")},
+			want:    [][]string{{"message"}, {"message", "commentary", "before"}, {"reasoning"}, {"function_call"}, {"message", "commentary", "after"}, {"function_call_output"}},
+		},
+		{
+			name:    "display only",
+			content: []llm.ContentPart{commentary("before"), thinking(""), call, commentary("after")},
+			want:    [][]string{{"message"}, {"message", "commentary", "before"}, {"function_call"}, {"message", "commentary", "after"}, {"function_call_output"}},
+		},
+		{
+			name: "group across omitted parts",
+			content: []llm.ContentPart{
+				thinking("opaque-fixture"), commentary("first"), thinking(""), commentary("second"),
+				{Kind: llm.ContentWebSearch, WebSearch: &llm.WebSearchData{Raw: json.RawMessage(`[]`)}},
+				{Kind: llm.ContentWebSearch, WebSearch: &llm.WebSearchData{Raw: json.RawMessage(`null`)}},
+				commentary("third"),
+				{Kind: llm.ContentWebSearch, WebSearch: &llm.WebSearchData{Raw: json.RawMessage(`{"type":"web_search_call","id":"ws_fixture","status":"completed"}`)}},
+				commentary("fourth"),
+				{Kind: llm.ContentText, Phase: "final_answer", Text: "final"},
+				call,
+			},
+			want: [][]string{
+				{"message"}, {"reasoning"}, {"message", "commentary", "first", "second", "third"}, {"web_search_call"},
+				{"message", "commentary", "fourth"}, {"message", "final_answer", "final"}, {"function_call"}, {"function_call_output"},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := userReq("input")
+			req.Messages = append(req.Messages, llm.Message{Role: llm.RoleAssistant, Content: tc.content},
+				llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{result}})
+			srv, wire := server(t, http.StatusOK, responseJSON)
+			res := liveRes(srv, openaiCaps)
+			if _, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), llm.ShapeRequest(req, res), res); err != nil {
+				t.Fatal(err)
+			}
+			var got [][]string
+			for _, item := range wire.body["input"].([]any) {
+				m, _ := item.(map[string]any)
+				kind, _ := m["type"].(string)
+				fields := []string{kind}
+				if kind == "function_call" && (m["arguments"] != arguments || m["id"] != "fc_fixture") {
+					t.Fatalf("function_call = %q, want the arguments and the item id", jsonOf(t, m))
+				}
+				if m["role"] == "assistant" {
+					fields = append(fields, m["phase"].(string))
+					for _, part := range m["content"].([]any) {
+						fields = append(fields, part.(map[string]any)["text"].(string))
+					}
+				}
+				got = append(got, fields)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("input items = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBuildBody_ReplaysResponsesPlaintextReasoning(t *testing.T) {
+	t.Parallel()
+	replay := func(th *llm.ThinkingData, reasoning bool) []any {
+		req := userReq("input")
+		req.Messages = append(req.Messages, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			{Kind: llm.ContentThinking, Thinking: th},
+		}})
+		return build(t, req, resolved(func(c *registry.Caps) { openaiCaps(c); c.Reasoning = new(reasoning) }))["input"].([]any)
+	}
+	typed := &llm.ThinkingData{ID: "rs_1", Text: "  think  ",
+		ResponsesContentParts: []llm.ResponsesReasoningPart{{Type: "reasoning_text", Text: "  think  "}},
+		ResponsesSummaryParts: []llm.ResponsesReasoningPart{{Type: "summary_text", Text: " sum \n"}}}
+	const want = `{"content":[{"text":"  think  ","type":"reasoning_text"}],"id":"rs_1","summary":[{"text":" sum \n","type":"summary_text"}],"type":"reasoning"}`
+	if got := replay(typed, true); len(got) != 2 || jsonOf(t, got[1]) != want {
+		t.Fatalf("input = %s, want the typed item verbatim: %s", jsonOf(t, got), want)
+	}
+	if got := replay(&llm.ThinkingData{ID: "rs_2", Text: "legacy"}, true); len(got) != 1 {
+		t.Fatalf("a bare Text projection must not replay: %s", jsonOf(t, got))
+	}
+	if got := replay(typed, false); len(got) != 1 {
+		t.Fatalf("reasoning = false input = %s, want the user message alone", jsonOf(t, got))
+	}
 }
 
 func build(t *testing.T, req llm.Request, res registry.Resolved) map[string]any {
@@ -113,7 +216,14 @@ func TestBuildBody_GroqBaselineSendsOnlyTheSpecFields(t *testing.T) {
 func TestBuildBody_OpenAIRow(t *testing.T) {
 	t.Parallel()
 	req := userReq("hi")
-	req.Tools = []llm.ToolDefinition{{Name: "f", Parameters: map[string]any{"type": "object", "properties": map[string]any{"a": map[string]any{"type": "string"}}}}}
+	// Every property is required: a tool that leaves one optional has no legal
+	// strict projection and is sent non-strict instead.
+	req.Tools = []llm.ToolDefinition{{Name: "f", Parameters: map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties":           map[string]any{"a": map[string]any{"type": "string"}},
+		"required":             []string{"a"},
+	}}}
 	req.WebSearch = true
 	req.Store = nil
 	req.Include = []string{"web_search_call.results"}

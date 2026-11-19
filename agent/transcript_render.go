@@ -1625,7 +1625,7 @@ func writeToolCardLine(b *strings.Builder, status, name string, tc *llm.ToolCall
 	// there). The durable record only sets RawArguments for !json.Valid,
 	// so oversized valid JSON has RawArguments="" and would otherwise show
 	// intent on reload.
-	if tc.RawArguments == "" && tool.ValidateRawArguments(tc.Arguments) == nil {
+	if tc.RawArguments == "" && tool.ValidateRawArguments([]byte(tc.WireArguments())) == nil {
 		if intent := schema.ToolIntent(tc.Arguments); intent != "" {
 			fmt.Fprintf(b, " — intent: %s", intent)
 		}

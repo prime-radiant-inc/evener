@@ -120,7 +120,8 @@ a request that carries no model-control authority.
    *during* the drain window — model D, not step 4's model C — with a fresh
    `clientMutationId`, and record that id as `$MUT_D`. It is accepted the same
    way, and `desired.clientMutationId` in its response is `$MUT_D` with a
-   `requestSequence` above step 4's.
+   `lifecycle` of `pending` (the desired record carries no issue counter on
+   the wire; the mutation id is its identity).
 
 7. **[browser-free] The later pick wins.** Wait for the queue to fully drain to
    `idle`, then read the session again on the same socket:
@@ -130,13 +131,18 @@ a request that carries no model-control authority.
    Take the reply whose `id` is `9`, and read from its `result.thread`:
    `modelProvider` and `evener.modelControl.active.model` (the model the daemon
    runs), and `evener.modelControl.desired` (the desired record, carrying
-   `clientMutationId`, `requestSequence` and `lifecycle`).
+   `clientMutationId` and `lifecycle`).
 
-   The active model is model D and the desired record is that pick's own
-   `$MUT_D`, `applied`. Asserting the mutation id is what makes this step
-   falsifiable: with one target used twice, an earlier pick left to apply
-   produces the same final model, so the check passes while supersession is
-   broken. Model D differs from model C for exactly that reason.
+   The active model is model D — `active.modelProvider` names D's provider
+   instance and `active.model` names D's model id — and the desired record is
+   that pick's own `$MUT_D`, `applied`, with `desired.modelProvider` and
+   `desired.model` also naming model D. Asserting the mutation id is what
+   makes this step falsifiable: with one target used twice, an earlier pick
+   left to apply produces the same final model, so the check passes while
+   supersession is broken. Model D differs from model C for exactly that
+   reason, and asserting the desired record's applied target — not just the
+   active model — is what distinguishes the pick that won from a pick whose
+   model merely coincides with the running one.
 
 8. **[browser-free] A request with no authority is refused before admission.**
    Re-issue step 4's payload with `expectedBootGeneration` removed. The wire

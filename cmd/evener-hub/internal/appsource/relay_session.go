@@ -5,10 +5,19 @@ import (
 	"encoding/json"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"primeradiant.com/evener/appwire"
 )
+
+// ObserveRelayCaptureAppend, when non-nil, runs after a notification has been
+// appended to a read's open capture. It is a test-only delivery barrier:
+// writing a frame to a transport proves nothing about when, or whether, the
+// session consumed it, so a test that must interrupt a read with a
+// notification provably pending waits here instead. Production never assigns
+// it; each append pays one atomic load and a nil check.
+var ObserveRelayCaptureAppend atomic.Pointer[func(appwire.Notification)]
 
 type relaySessionConnect func(context.Context, uint64, func(uint64, appwire.Message, error)) (*appwire.Client, appwire.Transport, error)
 
@@ -465,6 +474,7 @@ func (s *relaySession) observe(epoch uint64, message appwire.Message, recvErr er
 		return
 	}
 	capture := s.capture
+	var captured *appwire.Notification
 	switch {
 	case message.Notification != nil:
 		notification := *message.Notification
@@ -474,8 +484,10 @@ func (s *relaySession) observe(epoch uint64, message appwire.Message, recvErr er
 			// A revoked epoch never contributes to the current feed.
 		} else if capture.cutSeen {
 			capture.afterCut = append(capture.afterCut, notification)
+			captured = &notification
 		} else {
 			capture.beforeCut = append(capture.beforeCut, notification)
+			captured = &notification
 		}
 	case (message.Response != nil || message.Error != nil) && capture != nil && capture.epoch == epoch && !capture.cutSeen:
 		// The ordered client invokes this synchronously before waking the
@@ -487,6 +499,11 @@ func (s *relaySession) observe(epoch uint64, message appwire.Message, recvErr er
 		capture.beforeCut = nil
 	}
 	s.mu.Unlock()
+	if captured != nil {
+		if observe := ObserveRelayCaptureAppend.Load(); observe != nil {
+			(*observe)(*captured)
+		}
+	}
 }
 
 func (s *relaySession) disconnect(epoch uint64) {

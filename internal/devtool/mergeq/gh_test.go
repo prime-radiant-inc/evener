@@ -1,0 +1,3074 @@
+//go:build !windows
+
+package mergeq
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"slices"
+	"strconv"
+	"strings"
+	"syscall"
+	"testing"
+	"time"
+
+	"primeradiant.com/evener/execsupport/shellquote"
+	"primeradiant.com/evener/internal/testwait"
+)
+
+// fixtureExecDir returns a private directory this test can execute a program
+// from, under a base whose whole ancestry another local user cannot replace.
+//
+// The fixtures here launch shell scripts, and `t.TempDir()` descends from the
+// ambient TMPDIR, so that made two things assumptions. The first is
+// executability: on a host whose TMPDIR is mounted noexec -- a hardened CI
+// image, a container with a locked-down /tmp -- the script cannot run, the
+// fixture never publishes the PID the case waits for, and the case times out on
+// a failure that says nothing about the client. An executable GOTMPDIR does not
+// help: that is the go command's work directory, not where these fixtures write.
+//
+// The second is trust. A directory's own mode bounds who can write inside it,
+// not who can replace it: another user who can replace an *ancestor* can swap
+// this whole directory for one of their own, and the case then executes their
+// script with this user's privileges. The fixture executes a program out of this
+// directory, so it has to know the path it executes through. That check is the
+// fixture's own (fixtureChainTrusted) and not the launcher's.
+//
+// Both are established before anything is created, written or run, and both are
+// asked of the chain rather than of the leaf. A check that comes after the first
+// mkdir, chmod, write or exec is too late to be a check.
+//
+// Candidate bases are tried cheapest-first -- the ambient temp dir, then the
+// per-session runtime dir, then /tmp, then a directory under $HOME -- so a noexec
+// or replaceable TMPDIR is passed over rather than failing the case. Every
+// directory created here is removed with the test, so a fallback leaves nothing
+// behind.
+func fixtureExecDir(t *testing.T) string {
+	t.Helper()
+	var refusals []string
+	for _, base := range fixtureBaseCandidates() {
+		dir, reason := execDirUnder(t, base)
+		if reason == "" {
+			return dir
+		}
+		refusals = append(refusals, base+": "+reason)
+	}
+	t.Fatalf("no base on this machine can host these fixtures, so a case below would time out waiting for a script that never ran:\n\t%s\nset TMPDIR to an exec-capable directory whose ancestry this user controls, rather than reading the timeout as a client bug", strings.Join(refusals, "\n\t"))
+	return ""
+}
+
+// fixtureBaseCandidates is the bases to try: the environment's own roots first,
+// then the root every Unix has.
+//
+// /tmp is last and named explicitly because the other candidates all descend
+// from the runner's environment, and that environment can offer nothing. Under
+// umask 0002 the module runner makes group-writable components in TMPDIR, which
+// the ancestor rule refuses; a headless run has no XDG_RUNTIME_DIR; and the
+// module gate hands the test a private HOME whose cache lives in a separate
+// XDG_CACHE_HOME, so $HOME/.cache does not exist. Without /tmp those runs failed
+// to start a fixture on a machine with an executable, root-owned, sticky /tmp the
+// whole time. It goes after the environment's own roots so a host that offers a
+// usable one still uses it; the exec probe in execDirUnder decides usability.
+func fixtureBaseCandidates() []string {
+	candidates := []string{os.TempDir()}
+	if dir := os.Getenv("XDG_RUNTIME_DIR"); dir != "" {
+		candidates = append(candidates, dir)
+	}
+	candidates = append(candidates, "/tmp")
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates, filepath.Join(home, ".cache"))
+	}
+	return candidates
+}
+
+// fixtureChainTrusted reports whether every component of path, from / down, is
+// a directory another local user cannot replace, and whether path itself is
+// absolute.
+//
+// This is a property of the fixture, not a restatement of the launcher's rule,
+// and the distinction is the point. The fixtures here write shell scripts and
+// execute them, so a base whose ancestry another user can swap would execute
+// that user's script with this user's privileges. That hazard exists whatever
+// the launcher does with its own scratch roots, and it is why this check lives
+// beside the code it protects.
+//
+// It used to ask the launcher instead, by sed-ing its predicate out of
+// scripts/ops/merge-enqueue.sh and eval-ing it. That coupled a Go test to a
+// shell function's source text: the port moved the decisions out of that script
+// and the tail of the file the predicate lived in was no longer this PR's, so
+// the probe died with `scratch_path_is_trusted: command not found` (exit 127)
+// and every fixture below failed at setup. A fixture that asks the code under
+// test to build its own sandbox is testing the fixture; this one establishes its
+// own chain.
+//
+// The rule is the one the hazard needs and no more:
+//
+//   - A component this user or root owns and that is neither group- nor
+//     other-writable is trusted. /tmp's sticky bit is not special-cased: a
+//     sticky directory still lets another user add entries, and this walk is
+//     about replacing the components of a path this test has already resolved,
+//     which sticky does prevent. Sticky therefore settles an other-writable
+//     component, which is exactly /tmp.
+//   - `other` is read from the mode and is independent of any ACL: no ACL can
+//     widen it, and an ACL that shows a read-only owning group says nothing about
+//     it. A world-writable directory with no sticky bit is replaceable however
+//     tidy its ACL looks.
+//   - An extended ACL is read with getfacl when one is present, because on Linux
+//     the mode's group bits are the ACL MASK rather than the owning group's
+//     permission. Reading the mode there refuses a directory the ACL shows nobody
+//     can write, and on a runner where that directory is the only executable
+//     candidate every fixture then fails at setup. The owning group's own
+//     permission is the `group::` line, capped by the mask, and a named user or
+//     named group entry counts too: its effective permission is its own bits AND
+//     the mask, so a named rwx under a writable mask is a grant even though the
+//     mode's group position is the only place the mask is visible. That reading
+//     is POSIX-only. A Darwin native ACL has no mask, so the mode's group bits
+//     stay the owning group's own permission and are checked whether or not an
+//     ACL is present: a read-only native ACL does not close a 0770 group door.
+//   - Anything that cannot be read is untrusted. "The check failed" and "the
+//     answer is no" are different facts and only one is safe to act on.
+//   - Every component is inspected with Lstat, never Stat. The walk runs over
+//     the path EvalSymlinks already resolved, so a component that is a symlink
+//     now is one that appeared AFTER that resolution: another user replaced it
+//     in the window between the resolve and this check. Following it would
+//     inspect the owner and mode of the target -- which can be this user's own
+//     private directory -- while the path still holds an entry that user can
+//     swap again, and the fixture would then write and execute scripts through
+//     it. A component that resolves to a symlink is refused for that reason and
+//     not because symlinks are unwanted in general: macOS's /var ->
+//     /private/var is resolved away before this walk, which is why EvalSymlinks
+//     happens first and only the resolved path is checked.
+func fixtureChainTrusted(t *testing.T, path string) (reason string) {
+	t.Helper()
+	if !filepath.IsAbs(path) {
+		return path + " is not an absolute path"
+	}
+	for _, component := range pathComponents(filepath.Clean(path)) {
+		if reason := fixtureComponentReplaceable(t, component); reason != "" {
+			return reason
+		}
+	}
+	return ""
+}
+
+// fixtureComponentReplaceable names why component can be replaced by another
+// local user, or "" when it cannot.
+func fixtureComponentReplaceable(t *testing.T, component string) string {
+	t.Helper()
+	// Lstat, not Stat: this walks a path EvalSymlinks already resolved, so a
+	// symlink here is a component that changed after that resolution. Stat would
+	// follow it and describe the target -- a directory this user owns at 0700,
+	// say -- while the name along the way is still one another user can retarget.
+	info, err := os.Lstat(component)
+	if err != nil {
+		return fmt.Sprintf("cannot inspect %s (%v)", component, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, _ := os.Readlink(component)
+		return fmt.Sprintf("%s is a symlink to %q, which appeared after the path was resolved, so the entry another user can retarget is what the fixture would write through rather than the directory it points at", component, target)
+	}
+	if !info.IsDir() {
+		return component + " is not a directory"
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return component + ": cannot read its owner"
+	}
+	if uid := int(stat.Uid); uid != os.Getuid() && uid != 0 {
+		return fmt.Sprintf("%s is owned by uid %d, not by this user or root", component, uid)
+	}
+	if info.Mode()&os.ModeSticky != 0 {
+		// Another user may add entries here but cannot rename or delete one this
+		// user created, so a component already resolved under it is safe.
+		return ""
+	}
+	// `other` first, and from the mode only: no ACL can widen it, and an ACL whose
+	// group question reads clean says nothing about it. Asking the ACL first and
+	// returning on its answer skipped this check entirely, which accepted a
+	// world-writable directory carrying a restrictive ACL.
+	perm := info.Mode().Perm()
+	if perm&0o002 != 0 {
+		return component + " is writable by other users and has no sticky bit, so another user can replace entries in it"
+	}
+	acl, present, evaluable := fixtureReadACL(t, component)
+	if !present {
+		// No extended ACL on this component, so the mode bits above are the whole
+		// answer. This is the ordinary case and it stays cheap: one listing.
+	} else if !evaluable {
+		// An ACL exists and this fixture could not read it. Nothing about it can be
+		// shown harmless, so the component is refused and the fixture relocates.
+		// Passing here is the finding: on macOS a 0700 ancestor carrying a native
+		// grant to another local account was accepted as long as the mode looked
+		// private.
+		return component + " has an access ACL this fixture could not evaluate, so no entry in it can be shown to be harmless"
+	} else {
+		grant, readable := aclForeignGrant(acl)
+		switch {
+		case !readable:
+			return component + " has an access ACL whose entries this fixture could not parse, so no entry in it can be shown to be harmless"
+		case grant.entry != "":
+			return component + " has an access ACL entry that may write: " + grant.entry + ", so another local user can replace entries in it"
+		case grant.syntax == aclSyntaxPOSIX:
+			// A POSIX ACL's mask is what the mode's group position holds once the ACL
+			// is present, so a clean group question there is the whole answer: the
+			// owning group's own permission was read from `group::` and capped by the
+			// mask above.
+			return ""
+		}
+		// A Darwin native ACL has no mask, so the mode's group position is still the
+		// owning group's own permission and remains independently effective. A
+		// nonsticky 0770 directory is writable by every member of that group however
+		// tidy its ACL entries are, so the check below still has to run.
+	}
+	if perm&0o020 != 0 {
+		return fmt.Sprintf("%s is writable by group %d with no sticky bit, so another member of that group can replace entries in it", component, stat.Gid)
+	}
+	return ""
+}
+
+// fixtureACLTools is how the fixture asks the platform about extended ACLs. It
+// is a variable so a test can stand in the platform a finding is about: macOS,
+// where getfacl does not exist and the native ACL is only visible through `ls`.
+var fixtureACLTools = localACLTools()
+
+// aclTools is one platform's way of reading an extended ACL.
+type aclTools struct {
+	// listing runs `ls -ldn` on a component. Its mode field carries `+` when an
+	// extended ACL is present.
+	listing func(component string) (string, error)
+	// listingWithACL runs the listing with ACL entries expanded (`ls -ldne` on
+	// Darwin), or fails when the platform's ls cannot do that.
+	listingWithACL func(component string) (string, error)
+	// getfacl returns getfacl's numeric output, or fails when the platform has no
+	// getfacl.
+	getfacl func(component string) (string, error)
+}
+
+// localACLTools binds the probe to this machine's tools, resolved once.
+func localACLTools() aclTools {
+	have := func(name string) bool {
+		_, err := exec.LookPath(name)
+		return err == nil
+	}
+	ls := have("ls")
+	probe := aclTools{
+		listing: func(string) (string, error) {
+			return "", errors.New("ls is not installed")
+		},
+		listingWithACL: func(string) (string, error) {
+			return "", errors.New("ls cannot expand ACLs here")
+		},
+		getfacl: func(string) (string, error) {
+			return "", errors.New("getfacl is not installed")
+		},
+	}
+	if ls {
+		probe.listing = func(component string) (string, error) {
+			out, err := exec.Command("ls", "-ldn", component).Output()
+			return string(out), err
+		}
+		if runtime.GOOS == "darwin" {
+			// -e is what makes ls print the ACL entries themselves; without it the
+			// listing only says an ACL exists.
+			probe.listingWithACL = func(component string) (string, error) {
+				out, err := exec.Command("ls", "-ldne", component).Output()
+				return string(out), err
+			}
+		}
+	}
+	if have("getfacl") {
+		probe.getfacl = func(component string) (string, error) {
+			out, err := exec.Command("getfacl", "-n", "-p", "-c", component).Output()
+			return string(out), err
+		}
+	}
+	return probe
+}
+
+// fixtureReadACL reads component's access ACL and reports what it learned.
+//
+// Three outcomes, and the middle one is the finding this exists for:
+//
+//   - present=false, evaluable=true: there is no extended ACL. `ls` marks such a
+//     directory without `+`, and then the mode bits ARE the whole story no matter
+//     which platform this is.
+//   - present=true, evaluable=true: an ACL exists and its text came back.
+//   - evaluable=false: an ACL exists and this fixture could not read it.
+//
+// The third case used to be reported as "no ACL", which made the mode answer
+// stand for a directory whose ACL nobody had looked at. On macOS there is no
+// getfacl at all, so every TMPDIR ancestor took that path: a directory at 0700
+// whose native ACL granted another local account write and search was accepted,
+// and the fixture writes and executes scripts through a path that account can
+// replace. A reader that cannot see the grant that matters must not answer "no
+// grant" -- it has to say it does not know, and the caller relocates.
+func fixtureReadACL(t *testing.T, component string) (text string, present, evaluable bool) {
+	t.Helper()
+	listed, err := fixtureACLTools.listing(component)
+	if err != nil {
+		// The ACL marker itself could not be read, so whether an ACL exists is
+		// unknown.
+		return "", false, false
+	}
+	if !fixtureListingHasACL(listed) {
+		return "", false, true
+	}
+	if acl, err := fixtureACLTools.getfacl(component); err == nil {
+		return acl, true, true
+	}
+	if expanded, err := fixtureACLTools.listingWithACL(component); err == nil {
+		if _, ok := darwinACLEntries(expanded); ok {
+			return expanded, true, true
+		}
+	}
+	return "", true, false
+}
+
+// fixtureListingHasACL reports whether an `ls -ldn` line marks an extended ACL.
+//
+// The marker is the `+` suffix of the mode field, read from the first field of
+// the first line rather than from anywhere in the output: a `+` in a timestamp
+// or a file name is not an ACL marker.
+func fixtureListingHasACL(listed string) bool {
+	line, _, _ := strings.Cut(listed, "\n")
+	mode, _, _ := strings.Cut(line, " ")
+	return strings.HasSuffix(mode, "+")
+}
+
+// aclForeignWrite reads numeric getfacl output and names the first entry that
+// lets some user other than this one or root replace an entry in the directory,
+// plus whether the ACL could be read at all.
+//
+// An entry may replace an entry in the directory when it holds BOTH write and
+// search: write alone cannot see or remove a name, and search alone cannot create
+// one. The effective permission is the entry's bits AND the mask, because the mask
+// caps every named entry and the owning group; a named `rwx` under a read-only
+// mask cannot write at all, and refusing that would refuse a directory nobody can
+// tamper with.
+//
+// `user::`, `group::` and `other::` are not consulted: those are the owner,
+// alongside the named ones. `other::` is deliberately absent because it lives in
+// the mode and the caller checks it first: no ACL can widen it.
+//
+// A missing mask is not a pass. Without a mask the named entries cannot be shown
+// to be limited, and the convention here is that an answer that cannot be shown
+// is unsafe.
+func aclForeignWrite(acl string) (entry string, readable bool) {
+	var mask string
+	var seenMask bool
+	type aclEntry struct {
+		kind string
+		name string
+		perm string
+	}
+	var entries []aclEntry
+	for line := range strings.SplitSeq(acl, "\n") {
+		fields := strings.Split(line, ":")
+		if len(fields) < 3 {
+			continue
+		}
+		switch fields[0] {
+		case "mask":
+			seenMask = true
+			mask = fields[2]
+		case "user", "group":
+			entries = append(entries, aclEntry{kind: fields[0], name: fields[1], perm: fields[2]})
+		}
+	}
+	if len(entries) == 0 {
+		return "", false
+	}
+	mayReplace := func(perm string) bool {
+		return strings.Contains(perm, "w") && strings.Contains(perm, "x")
+	}
+	for _, e := range entries {
+		if e.name == "" {
+			// `user::` is the owner, whose grant is this user's own and cannot be
+			// used against them. `group::` is the owning group, whose own permission
+			// the mode's group position does NOT report once an ACL is present: that
+			// position is the mask. It is the one base entry that has to be checked
+			// here rather than from the mode.
+			if e.kind == "user" {
+				continue
+			}
+			if !mayReplace(e.perm) {
+				continue
+			}
+			if seenMask && !mayReplace(mask) {
+				continue
+			}
+			return "group::" + e.perm, true
+		}
+		// A named entry. One naming this user or root is this user's own grant, and
+		// cannot be used to replace an entry out from under the fixture. It is
+		// skipped rather than counted, because refusing it would fail every fixture
+		// on a host that grants the operator access to their own TMPDIR.
+		if e.kind == "user" && (e.name == strconv.Itoa(os.Getuid()) || e.name == "0") {
+			continue
+		}
+		if _, err := strconv.ParseUint(e.name, 10, 32); err != nil {
+			// getfacl -n prints numeric ids; anything else is not an entry this
+			// function can reason about, so it is not counted as a grant.
+			continue
+		}
+		if !mayReplace(e.perm) {
+			continue
+		}
+		if seenMask && !mayReplace(mask) {
+			continue
+		}
+		return e.kind + ":" + e.name + ":" + e.perm, true
+	}
+	return "", true
+}
+
+// darwinACLEntries parses the ACL entries that `ls -le` appends to its listing,
+// and reports whether the text was parseable as a Darwin ACL at all.
+//
+// Darwin prints one entry per line after the listing, indented, in the form
+//
+//	0: user:501 allow read,write,execute
+//	1: group:staff deny write
+//
+// The index prefix is what distinguishes an entry from the listing line above it.
+// A directory with no ACL entries at all is not a parse failure: `ls -e` prints
+// no entry lines, and that is the ordinary case this must keep accepting.
+func darwinACLEntries(listing string) (entries []string, ok bool) {
+	for line := range strings.SplitSeq(listing, "\n") {
+		trimmed := strings.TrimSpace(line)
+		idx, rest, found := strings.Cut(trimmed, ": ")
+		if !found {
+			continue
+		}
+		if _, err := strconv.Atoi(idx); err != nil {
+			// Not an indexed entry line: the listing itself, or a continuation.
+			continue
+		}
+		entries = append(entries, strings.TrimSpace(rest))
+	}
+	// Parseable means the tool ran and its output had the shape of a listing.
+	// No entries is a valid, harmless answer; garbage is not, because the caller
+	// would then accept a path whose ACL it never understood.
+	return entries, strings.Contains(listing, "total ") || len(entries) > 0 || strings.Contains(listing, "\n")
+}
+
+// aclSyntax says which of the two ACL syntaxes a reader returned, because they
+// answer the mode's group position differently. The zero value is neither, and
+// the caller keeps the mode's group question for it: an ACL whose syntax nobody
+// classified cannot be the reason to stop asking.
+type aclSyntax int8
+
+const (
+	// aclSyntaxPOSIX is getfacl output, where the mode's group position is the
+	// ACL mask and `group::` is the owning group's own permission.
+	aclSyntaxPOSIX aclSyntax = iota + 1
+	// aclSyntaxDarwin is a Darwin native ACL from `ls -ldne`. It has no mask, so
+	// the mode's group position stays the owning group's permission.
+	aclSyntaxDarwin
+)
+
+// aclGrant is what a reader found in an ACL: the first entry that lets some
+// account other than this user or root replace an entry in the directory (empty
+// when there is none), which syntax the text was, and whether it could be read
+// at all.
+type aclGrant struct {
+	entry  string
+	syntax aclSyntax
+}
+
+// aclForeignGrant reads either ACL syntax and reports what could replace an
+// entry in the directory, plus whether the text could be read at all.
+//
+// The two syntaxes differ in exactly the way that made the Darwin path unsafe to
+// skip: getfacl caps a named entry with a mask on Linux, and Darwin has no mask
+// because its ACLs are NFSv4-style and apply as written. The syntax is part of
+// the answer rather than inferred again by the caller, so the group question is
+// answered from the ACL that was actually read.
+func aclForeignGrant(text string) (grant aclGrant, readable bool) {
+	if strings.Contains(text, ": ") && !strings.Contains(text, "::") {
+		entry, readable := darwinACLForeignGrant(text)
+		return aclGrant{entry: entry, syntax: aclSyntaxDarwin}, readable
+	}
+	entry, readable := aclForeignWrite(text)
+	return aclGrant{entry: entry, syntax: aclSyntaxPOSIX}, readable
+}
+
+// darwinACLForeignGrant names the first Darwin ACL entry that grants a foreign
+// account write AND search on the directory.
+//
+// Darwin resolves `allow`/`deny` per entry and per permission, so the question
+// is whether some allowed entry names an account that is not this user or root
+// and carries both write (add or remove a name) and execute (traverse to it).
+// A deny entry grants nothing; a `user:` entry with no name is the owner, whose
+// grant cannot be used against this user.
+func darwinACLForeignGrant(listing string) (entry string, readable bool) {
+	entries, ok := darwinACLEntries(listing)
+	if !ok {
+		return "", false
+	}
+	for _, e := range entries {
+		// "user:501 allow read,write,execute" -- the verdict comes BEFORE the
+		// permission list, which is the opposite of getfacl's layout.
+		subject, rest, found := strings.Cut(e, " ")
+		if !found {
+			continue
+		}
+		verdict, perms, found := strings.Cut(strings.TrimSpace(rest), " ")
+		if !found || verdict != "allow" {
+			continue
+		}
+		perms = strings.TrimSpace(perms)
+		if !strings.Contains(perms, "write") || !strings.Contains(perms, "execute") {
+			continue
+		}
+		kind, name, found := strings.Cut(subject, ":")
+		if !found {
+			continue
+		}
+		if kind != "user" && kind != "group" {
+			continue
+		}
+		if name == "" && kind == "user" {
+			// The owner, whose grant is this user's own.
+			continue
+		}
+		if kind == "user" && (name == strconv.Itoa(os.Getuid()) || name == "0") {
+			continue
+		}
+		if kind == "group" && name == strconv.Itoa(os.Getgid()) {
+			// The owning group's grant is already the mode's group question, and
+			// counting it here would refuse every group-writable TMPDIR twice.
+			continue
+		}
+		return kind + ":" + name + " allow " + perms, true
+	}
+	return "", true
+}
+
+// execDirUnder returns a private, exec-capable directory under base, or "" and
+// the reason base cannot host one.
+//
+// The order is the point. base is resolved, every component from the root down
+// is checked, and only a base that passes gets a mkdir, a write or an exec
+// beneath it.
+func execDirUnder(t *testing.T, base string) (dir, reason string) {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		return "", fmt.Sprintf("cannot resolve it (%v)", err)
+	}
+	if reason := replaceableAncestor(t, resolved); reason != "" {
+		return "", reason
+	}
+	// MkdirTemp is 0700 whatever the runner's umask is, which keeps the fixture's
+	// own entry private once the chain above it is trusted.
+	//
+	// The created path is held in its own variable, not in the named result. A
+	// `return "", reason` below clears the result, and a cleanup closing over that
+	// result would then RemoveAll("") and leave the directory and its probe behind
+	// on every rejected candidate -- a leak in the code that exists to refuse
+	// candidates, which is the one place it is least likely to be noticed.
+	created, err := os.MkdirTemp(resolved, "mergeq-fixture.")
+	if err != nil {
+		return "", fmt.Sprintf("cannot create a directory in it (%v)", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(created) })
+	probe := filepath.Join(created, "exec-probe.sh")
+	writeExecutable(t, probe, "#!/usr/bin/env bash\nexit 0\n")
+	if err := exec.Command(probe).Run(); err != nil {
+		return "", fmt.Sprintf("the filesystem cannot execute a program there (%v)", err)
+	}
+	return created, ""
+}
+
+// replaceableAncestor names the first component of path that another local user
+// can replace, or "" when the chain is this user's to control.
+//
+// This is the fixture's own rule, applied to the path the fixture is about to
+// create and execute under. It is deliberately not delegated to
+// scripts/ops/merge-enqueue.sh: that script's copy of this predicate travels
+// with the launcher, and a test does not get its environment by asking the code
+// under test to describe one. See fixtureChainTrusted.
+func replaceableAncestor(t *testing.T, path string) string {
+	t.Helper()
+	return fixtureChainTrusted(t, path)
+}
+
+// widenedFixtureDir creates a directory under the trusted fixture base and
+// returns it, for a case that is about to WIDEN it to a mode another user could
+// write through.
+//
+// The widening is the hazard, so the entry that gets widened has to be one this
+// test already owns. `t.TempDir()` descends from the ambient TMPDIR, and on a
+// TMPDIR whose ancestor another local user can replace, that user can swap the
+// entry between the mkdir and the chmod: the chmod then lands on their target,
+// and a test run changes the permissions of a directory the operator owns. The
+// fixture would be performing the hazard it exists to describe.
+//
+// The base is the same one every other fixture here uses, so it is established
+// rather than inherited: a private directory under a chain this fixture's own
+// rule accepts, on a filesystem that can execute. The ancestry is asked about
+// again after the create, because a base is only as good as what it resolved to.
+func widenedFixtureDir(t *testing.T, name string) string {
+	t.Helper()
+	base := fixtureExecDir(t)
+	dir := filepath.Join(base, name)
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatalf("create %s: %v", dir, err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	created, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", dir, err)
+	}
+	if reason := replaceableAncestor(t, created); reason != "" {
+		t.Fatalf("%s was created under %s, which this fixture's own chain rule does not trust: this case is about to widen that directory, so the widening has to land on an entry this test owns (%s)", created, base, reason)
+	}
+	return dir
+}
+
+// pathComponents lists path's components from the root down.
+func pathComponents(path string) []string {
+	var components []string
+	for probe := filepath.Clean(path); ; probe = filepath.Dir(probe) {
+		components = append(components, probe)
+		if probe == filepath.Dir(probe) {
+			break
+		}
+	}
+	for i, j := 0, len(components)-1; i < j; i, j = i+1, j-1 {
+		components[i], components[j] = components[j], components[i]
+	}
+	return components
+}
+
+// writeExecutable writes an executable script, holding syscall.ForkLock so a
+// concurrent fork in this test binary cannot inherit the write descriptor and
+// fail its own exec with ETXTBSY. execsupport/orphanpipe/orphanpipetest's
+// WriteScript and install_test.go's writeExecutable hold it for the same reason.
+func writeExecutable(t *testing.T, path, body string) {
+	t.Helper()
+	syscall.ForkLock.RLock()
+	defer syscall.ForkLock.RUnlock()
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// pidGone reports whether pid has terminated. A zombie counts: the process is
+// dead, and its parent may not have reaped it yet.
+func pidGone(pid int) bool {
+	state, err := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		return true
+	}
+	trimmed := strings.TrimSpace(string(state))
+	return trimmed == "" || strings.HasPrefix(trimmed, "Z")
+}
+
+// TestGHCancellationKillsTheRealCLIAChildWrapperLeaves pins that a cancelled
+// call stops the request, not just the wait. WaitDelay bounds the captured pipes
+// but kills nothing, so a `gh` that is a wrapper starting the real CLI without
+// `exec` would leave the CLI running after the wrapper died, and the helper
+// would report 130 for a wait whose enqueue was still in flight.
+//
+// The staging is the production shape: the wrapper backgrounds a child that
+// ignores SIGTERM and then exits, exactly as a wrapper that does not `exec`
+// does. The child publishes its pid, the context is cancelled, and the child
+// must be gone. A pipe bound alone cannot pass this: closing the pipe returns
+// from Run, it does not stop the child.
+func TestGHCancellationKillsTheRealCLIAChildWrapperLeaves(t *testing.T) {
+	dir := fixtureExecDir(t)
+	pidFile := filepath.Join(dir, "child.pid")
+	// The child ignores TERM, so only a group KILL reaches it, and it holds no
+	// pipe: this case must fail on the child's survival alone.
+	child := filepath.Join(dir, "child.sh")
+	// Both paths are quoted: t.TempDir() can sit under a TMPDIR with a space in
+	// it, and an unquoted one would make the redirect or the exec a syntax error,
+	// so no pid would be published and the case would time out before it could
+	// cancel anything.
+	writeExecutable(t, child, `#!/usr/bin/env bash
+trap '' TERM
+printf '%s\n' "$$" > `+shellquote.Literal(pidFile)+`
+while :; do sleep 0.05; done
+`)
+	wrapper := filepath.Join(dir, "gh")
+	// No exec: the wrapper starts the child and exits, handing nothing on.
+	writeExecutable(t, wrapper, `#!/usr/bin/env bash
+`+shellquote.Literal(child)+` &
+sleep 0.2
+exit 0
+`)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// An explicit handle. Empty reads EVENER_MERGEQ_GH_GROUP_FILE, and an
+	// inherited value would make this fixture publish over, and then clear, a
+	// live launcher's handle for the helper it is stopping.
+	groupFile := filepath.Join(fixtureExecDir(t), "gh-group")
+	done := make(chan error, 1)
+	go func() {
+		_, err := (GHClient{GH: wrapper, GroupFile: groupFile}).run(ctx, "api", "graphql")
+		done <- err
+	}()
+	var childPID int
+	testwait.Until(t, "the wrapper's child to publish its pid", func() bool {
+		body, err := os.ReadFile(pidFile)
+		if err != nil {
+			return false
+		}
+		parsed, err := strconv.Atoi(strings.TrimSpace(string(body)))
+		if err != nil {
+			return false
+		}
+		childPID = parsed
+		return true
+	})
+	// Registered once the pid is known and before any assertion can abort, so a
+	// regression fails this case instead of leaving the child to PID 1 -- the
+	// same rule the launcher suite's cleanup follows, and the reason a case that
+	// tests for a leak must not leak.
+	t.Cleanup(func() {
+		_ = syscall.Kill(-childPID, syscall.SIGKILL)
+		_ = syscall.Kill(childPID, syscall.SIGKILL)
+	})
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("run did not return after cancellation")
+	}
+	testwait.Until(t, fmt.Sprintf("the wrapper's client child %d to be killed", childPID), func() bool {
+		return pidGone(childPID)
+	})
+}
+
+// TestGHKilledWhileWaitingForItsReplyIsNotARefusal pins the three endings a GitHub
+// call can have, and the one this client used to confuse with a refusal.
+//
+// A gh wrapper prints a diagnostic to stderr -- a progress note, a warning about
+// the gh version -- and is then killed while it is still waiting for the reply,
+// because the enqueue deadline expired. GitHub may have accepted the mutation
+// before the kill. If stderr alone were treated as the refusal, the client would
+// report a definite rejection, Execute would skip the read that finds out, and the
+// operator would be told the enqueue failed for a pull request that is queued.
+//
+// What separates a refusal from an unknown ending is that the process reached its
+// OWN exit status. This case distinguishes them by killing the wrapper with
+// SIGKILL from inside itself -- an exit status is impossible, exactly as it is
+// when the deadline kills the group -- after writing the diagnostic.
+func TestGHKilledWhileWaitingForItsReplyIsNotARefusal(t *testing.T) {
+	t.Parallel()
+	dir := fixtureExecDir(t)
+	killed := filepath.Join(dir, "gh-killed")
+	// A token this test chose, so the check below pins that the reader is handed
+	// whatever gh wrote to stderr rather than that any wording survived.
+	const killDetail = "fixture-kill-detail-4f7c"
+	// SIGKILL, not TERM: this is the ending the enqueue deadline produces (the
+	// client cancels with a group KILL), and it is the one with no exit status.
+	// The diagnostic goes to stderr first, so a client that reads stderr alone
+	// calls this a refusal.
+	writeExecutable(t, killed, `#!/usr/bin/env bash
+printf '%s\n' `+shellquote.Literal("gh: "+killDetail)+` >&2
+kill -9 "$$"
+`)
+	c := GHClient{GH: killed, GroupFile: filepath.Join(dir, "group")}
+	_, err := c.run(context.Background(), "api", "graphql")
+	if err == nil {
+		t.Fatal("a killed call was read as success: nothing answered it")
+	}
+	var refusal *RefusalError
+	if errors.As(err, &refusal) {
+		t.Fatalf("error = %v, reported as a refusal: the process never reached an exit status, so its outcome is unknown and an enqueue that GitHub accepted must still be reconciled", err)
+	}
+	// The diagnostic is still carried, so the operator keeps what gh said. The
+	// opaque token is this fixture's own, so a pass means stderr crossed the
+	// classification rather than that the detail happened to be reused.
+	if !strings.Contains(err.Error(), killDetail) {
+		t.Fatalf("error = %v, want the stderr this fixture emitted (%s) carried as detail: the diagnostic is context a reader needs and is not what makes this a refusal", err, killDetail)
+	}
+
+	// And a call that DID run to its own exit and answered is still a refusal, with
+	// the same stderr: the classification is the reply, and stderr only carries it.
+	rejected := filepath.Join(dir, "gh-rejected")
+	writeExecutable(t, rejected, `#!/usr/bin/env bash
+printf '%s' '{"data":{"enqueuePullRequest":null},"errors":[{"type":"UNPROCESSABLE","message":"protected branch"}]}'
+printf 'gh: could not enqueue: protected branch\n' >&2
+exit 1
+`)
+	c = GHClient{GH: rejected, GroupFile: filepath.Join(dir, "group")}
+	_, err = c.run(context.Background(), "api", "graphql")
+	if !errors.As(err, &refusal) {
+		t.Fatalf("error = %v, want a RefusalError: the process exited 1 on its own, so its answer is no and reconciling it would report another operator's entry as this invocation's work", err)
+	}
+
+	// And a call that reached its own exit WITHOUT a reply body is not a refusal,
+	// whatever it wrote to stderr. That is a transport failure: GitHub may have
+	// performed the mutation before the connection broke. `gh` answers a rejected
+	// GraphQL request with the response body on stdout, so the body -- not the exit
+	// status and not the diagnostic -- is what says GitHub declined.
+	transport := filepath.Join(dir, "gh-transport")
+	// Another opaque token, for the same reason: what is being pinned is that
+	// the transport's own words reach the reader.
+	const transportDetail = "fixture-transport-detail-93ab"
+	writeExecutable(t, transport, `#!/usr/bin/env bash
+printf '%s\n' `+shellquote.Literal("gh: Post https://api.github.com/graphql: read tcp: "+transportDetail)+` >&2
+exit 1
+`)
+	c = GHClient{GH: transport, GroupFile: filepath.Join(dir, "group")}
+	_, err = c.run(context.Background(), "api", "graphql")
+	if err == nil {
+		t.Fatal("a failed call with no reply was read as success")
+	}
+	if errors.As(err, &refusal) {
+		t.Fatalf("error = %v, reported as a refusal: the call exited 1 but GitHub's reply never arrived, so whether the mutation landed is unknown and the run must read the queue back", err)
+	}
+	if !errors.Is(err, ErrOutcomeUnknown) {
+		t.Fatalf("error = %v, want ErrOutcomeUnknown: a body-less failure is an unknown outcome, and calling it a failure is what reported an accepted enqueue as refused", err)
+	}
+	if !strings.Contains(err.Error(), transportDetail) {
+		t.Fatalf("error = %v, want the diagnostic this fixture emitted (%s) carried: the operator needs to read what the transport said", err, transportDetail)
+	}
+
+	// The refusal direction: a rejected GraphQL request answers with a body on
+	// stdout. That is the only ending where the answer is a definite no.
+	deferred := filepath.Join(dir, "gh-graphql-refused")
+	writeExecutable(t, deferred, `#!/usr/bin/env bash
+printf '%s' '{"data":{"enqueuePullRequest":null},"errors":[{"type":"UNPROCESSABLE","message":"Pull request is not mergeable"}]}'
+printf 'gh: Pull request is not mergeable\n' >&2
+exit 1
+`)
+	c = GHClient{GH: deferred, GroupFile: filepath.Join(dir, "group")}
+	_, err = c.run(context.Background(), "api", "graphql")
+	if !errors.As(err, &refusal) {
+		t.Fatalf("error = %v, want a RefusalError: GitHub answered the request and the answer was no, which is an answer and not something to reconcile", err)
+	}
+	if errors.Is(err, ErrOutcomeUnknown) {
+		t.Fatalf("error = %v, also reads as unknown: a refused request has an answer", err)
+	}
+}
+
+// TestGHPublishDoesNotRemoveAHandleItNeverWrote pins that the client only removes
+// a handle it published.
+//
+// The handle path is configuration -- EVENER_MERGEQ_GH_GROUP_FILE or
+// GroupFile -- and a caller can point it anywhere. Publication renames a fresh
+// file over that name; when the rename fails, whatever was at the name is not this
+// client's and must survive the call. Removing it anyway deleted a user's
+// directory: an existing empty directory at the configured path made the rename
+// fail and the deferred cleanup then removed the directory itself.
+func TestGHPublishDoesNotRemoveAHandleItNeverWrote(t *testing.T) {
+	t.Parallel()
+	dir := fixtureExecDir(t)
+	// A directory at the handle name: the rename onto it fails, which is the
+	// publication failure this case needs. It is also the thing a careless cleanup
+	// deletes, because os.Remove removes an empty directory.
+	handle := filepath.Join(dir, "gh-group")
+	if err := os.Mkdir(handle, 0o700); err != nil {
+		t.Fatalf("make a directory at the handle name: %v", err)
+	}
+	gh := filepath.Join(dir, "gh")
+	writeExecutable(t, gh, "#!/usr/bin/env bash\nprintf '{\"data\":{}}'\n")
+	c := GHClient{GH: gh, GroupFile: handle}
+	if _, err := c.run(context.Background(), "api", "graphql"); err != nil {
+		t.Fatalf("run: %v, want the call to succeed: a handle that cannot be published costs the launcher a fallback and must not fail a GitHub call", err)
+	}
+	info, err := os.Lstat(handle)
+	if err != nil {
+		t.Fatalf("the configured handle name is gone: %v -- the client removed something it never wrote, and a caller that pointed it at an existing directory lost it", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("the name is now %v, want the directory the caller had there left untouched", info.Mode())
+	}
+}
+
+// TestGHPublishRefusesAPlantedSymlink pins that the publisher cannot be made to
+// truncate a file an attacker chose.
+//
+// The handle's name is known in advance, and the directory it lives in may be a
+// shared TMPDIR on a host that permits symlink traversal. A local user who
+// pre-creates that name as a link to a file the operator can write would have
+// had the publisher truncate that file, once per GitHub call. The publisher
+// writes to a fresh O_EXCL file and renames it over the handle, so a planted link
+// is replaced rather than followed.
+//
+// The link is planted at two names: the handle itself, and the staging name a
+// publisher that builds its temporary as `path + ".tmp"` would write through.
+// The second is the one that discriminates: rename replaces the handle rather
+// than following it, so a link planted only there was never the danger. The
+// staging name was, because a plain write follows it.
+//
+// The oracle is the victim file's bytes, not an error: a publisher that refused
+// by failing would pass an error check and leave the operator's file intact by
+// accident, and the point is that the handle still gets published.
+// TestGHDrainWithoutAReplyIsNotSuccess pins the rule the drain bound cannot
+// state by itself. orphanpipe reads ErrWaitDelay after a zero exit as success,
+// because normally the child answered and only a descendant kept the pipe open.
+// A gh wrapper that backgrounds the real CLI and returns exits before writing
+// anything, and that case must not read as a reply: Enqueue would report a
+// mutation that never landed.
+func TestGHDrainWithoutAReplyIsNotSuccess(t *testing.T) {
+	t.Parallel()
+	// Both scripts exit 0 and leave a descendant holding the pipe. The first
+	// writes nothing before it goes; the second writes a whole reply first and
+	// then leaves the same kind of descendant behind. Only the first is a
+	// missing answer, and the drain bound must tell them apart.
+	silent := filepath.Join(fixtureExecDir(t), "gh-silent")
+	writeExecutable(t, silent, "#!/usr/bin/env bash\n( sleep 30 ) &\nexit 0\n")
+	answered := filepath.Join(fixtureExecDir(t), "gh-answered")
+	writeExecutable(t, answered, "#!/usr/bin/env bash\nprintf '{\"data\":{\"repository\":{\"pullRequest\":{\"id\":\"PR_1\",\"state\":\"OPEN\"}}}}'\n( sleep 30 ) &\nexit 0\n")
+
+	c := GHClient{GH: silent, GroupFile: filepath.Join(fixtureExecDir(t), "group")}
+	out, err := c.run(context.Background(), "api", "graphql")
+	if err == nil {
+		t.Fatalf("a wrapper that exited before answering was read as a successful call (out %q): an enqueue would be reported as landed on a reply nobody received", string(out))
+	}
+	if !errors.Is(err, ErrIncompleteReply) {
+		t.Fatalf("error = %v, want ErrIncompleteReply", err)
+	}
+
+	// And the case the drain bound exists for still succeeds: a complete reply,
+	// with a descendant merely holding the pipe open.
+	c = GHClient{GH: answered, GroupFile: filepath.Join(fixtureExecDir(t), "group")}
+	out, err = c.run(context.Background(), "api", "graphql")
+	if err != nil {
+		t.Fatalf("a complete reply with a descendant holding the pipe was refused: %v", err)
+	}
+	if len(out) == 0 {
+		t.Fatal("the complete reply was discarded")
+	}
+}
+
+// TestGraphqlRefusalWantsRejectionEvidenceNotAMessage pins what makes a reply a
+// definitive refusal.
+//
+// A refusal is GitHub saying no to the REQUEST, and it says that in the entry's
+// own shape: a `type` (UNPROCESSABLE, FORBIDDEN, NOT_FOUND) and no `path`.
+//
+// What is not a refusal is a field-resolution error -- an entry carrying a
+// `path`, which means GitHub executed the mutation and then failed while
+// building the reply. The write may already have landed, so classifying that as
+// the answer skips the read that would find the PR queued and reports an enqueue
+// GitHub performed as failed. Nor is an entry with no `type` and no `path`: it
+// is an execution failure that says nothing structured about the request.
+//
+// Before this rule any nonempty message was the answer, so both of those were
+// read as refusals.
+func TestGraphqlRefusalWantsRejectionEvidenceNotAMessage(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		body      string
+		want      bool
+		rationale string
+	}{
+		{
+			name: "a request-level rejection is a refusal",
+			body: `{"data":{"enqueuePullRequest":null},"errors":[{"type":"UNPROCESSABLE","message":"protected branch"}]}`,
+			want: true,
+		},
+		{
+			name: "another request-level type is a refusal too",
+			body: `{"data":{"enqueuePullRequest":null},"errors":[{"type":"FORBIDDEN","message":"not authorized to jump the queue"}]}`,
+			want: true,
+		},
+		{
+			name: "a field-resolution error is not",
+			body: `{"data":{"enqueuePullRequest":{"mergeQueueEntry":{"position":3}}},"errors":[{"type":"INTERNAL","path":["enqueuePullRequest"],"message":"something went wrong"}]}`,
+			want: false,
+		},
+		{
+			name: "an untyped execution failure is not",
+			body: `{"data":{"enqueuePullRequest":{"mergeQueueEntry":{"position":3}}},"errors":[{"message":"internal error"}]}`,
+			want: false,
+		},
+		{
+			name: "a whole body with no errors is not",
+			body: `{"data":{"enqueuePullRequest":{"mergeQueueEntry":{"position":3}}}}`,
+			want: false,
+		},
+		{
+			name: "an empty errors array is not",
+			body: `{"data":{"enqueuePullRequest":null},"errors":[]}`,
+			want: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			msg, got := graphqlRefusal([]byte(tc.body))
+			if got != tc.want {
+				t.Fatalf("graphqlRefusal(%s) = %q, %v, want a refusal of %v: reading this the other way either skips the read-back for a write that may have landed or spends one on a request GitHub declined", tc.body, msg, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestGHGatewayBodyIsNotAnAnswerToTheMutation pins that a whole JSON body on a
+// non-zero exit is not, by itself, GitHub's answer.
+//
+// The three endings are refused, succeeded and unknown, and only GitHub's reply
+// separates them. A reply is not the same thing as a body: `gh` prints whatever
+// it received on stdout, and a gateway in front of the API answers a failed
+// request with its own JSON diagnostic -- `{"message":"Server Error","status":
+// "502"}` -- which is valid JSON with no `errors` array, so it is neither cut
+// off nor a refusal.
+//
+// The client used to read a decodable body as "the call ended without a result"
+// and report a plain failure. That is the misreport this PR is named for: the
+// exit status is not an observation about the queue, the 502 establishes nothing
+// about whether GitHub applied the mutation, and reporting a failure skipped the
+// read that would have found the PR queued.
+//
+// Driven through Execute with a real gh on PATH, because the classification is
+// only worth anything if the run acts on it: the enqueue's gateway error has to
+// reach the read-back and let it decide.
+func TestGHGatewayBodyIsNotAnAnswerToTheMutation(t *testing.T) {
+	t.Parallel()
+	dir := fixtureExecDir(t)
+	// A token this test chose, so the detail check below pins that gh's stderr
+	// survives the classification rather than that production wording does. The
+	// literal cannot appear in production copy, which keeps it outside the
+	// error-text rule's subject entirely.
+	const detail = "fixture-gateway-detail-8c41"
+	// One gh, three different calls: the two status reads around the mutation
+	// answer properly, and the enqueue answers with a gateway body and exits 1.
+	// The reply is chosen by the arguments, which is what makes the mutation the
+	// call that fails.
+	gh := filepath.Join(dir, "gh")
+	writeExecutable(t, gh, fmt.Sprintf(`#!/usr/bin/env bash
+for arg in "$@"; do
+	if [[ "$arg" == query=*enqueuePullRequest* ]]; then
+		printf '%%s' '{"message":"%[1]s","status":"502"}'
+		printf 'gh: %[1]s\n' >&2
+		exit 1
+	fi
+done
+reads=$(dirname "$0")/status-reads
+count=$(cat "$reads" 2>/dev/null | wc -l)
+printf 'x\n' >>"$reads"
+if [ "$count" -eq 0 ]; then
+	printf '%%s' '{"data":{"repository":{"pullRequest":{"id":"PR_6499","state":"OPEN","baseRefName":"main","mergeQueueEntry":null}}}}'
+else
+	printf '%%s' '{"data":{"repository":{"pullRequest":{"id":"PR_6499","state":"OPEN","baseRefName":"main","mergeQueueEntry":{"position":3,"state":"QUEUED"}}}}}'
+fi
+`, detail))
+	c := GHClient{GH: gh, GroupFile: filepath.Join(dir, "group")}
+
+	// The client's own classification, before the run acts on it.
+	_, enqueueErr := c.Enqueue(context.Background(), "prime-radiant-inc/evener", "PR_6499", false)
+	if enqueueErr == nil {
+		t.Fatal("an enqueue that exited 1 was reported as success")
+	}
+	if _, isRefusal := errors.AsType[*RefusalError](enqueueErr); isRefusal {
+		t.Fatalf("error = %v, reported as a refusal: a gateway's 502 body is not GitHub declining the mutation", enqueueErr)
+	}
+	if !errors.Is(enqueueErr, ErrOutcomeUnknown) {
+		t.Fatalf("error = %v, want ErrOutcomeUnknown: a whole JSON body that names no error is no answer at all, and calling it a failure is what reported an accepted enqueue as refused", enqueueErr)
+	}
+	// The diagnostic is carried through, checked against an opaque token this
+	// test chose rather than against production copy: what is being pinned is
+	// that the reader is handed whatever gh said, not that any particular
+	// wording survived.
+	if !strings.Contains(enqueueErr.Error(), detail) {
+		t.Fatalf("error = %v, want the detail this fixture emitted (%s) carried: the operator needs to read what answered, and dropping it leaves a 502 with no account of itself", enqueueErr, detail)
+	}
+
+	// And the run reconciles it rather than reporting a refusal. --wait 0 keeps
+	// this to the confirmation read: the mutation is unknown, the confirmation
+	// finds the entry, and the outcome is the position.
+	if err := os.WriteFile(filepath.Join(dir, "status-reads"), nil, 0o600); err != nil {
+		t.Fatalf("reset the status-read counter: %v", err)
+	}
+	out, exitErr := Execute(context.Background(), opts(0), c, SystemClock)
+	if exitErr != nil {
+		t.Fatalf("Execute: %v, want the queue's entry reported: the gateway body left the outcome unknown, so the read decides and it found the PR queued", exitErr)
+	}
+	if out.Kind != Queued || out.Position != 3 {
+		t.Fatalf("outcome = %+v, want Queued at position 3", out)
+	}
+}
+
+func TestGHPublishRefusesAPlantedSymlink(t *testing.T) {
+	t.Parallel()
+	dir := fixtureExecDir(t)
+	victim := filepath.Join(dir, "victim")
+	const original = "keep these bytes\n"
+	if err := os.WriteFile(victim, []byte(original), 0o600); err != nil {
+		t.Fatalf("write the victim file: %v", err)
+	}
+	handle := filepath.Join(dir, "gh-group")
+	// The planted links: the handle, and the staging name beside it.
+	for _, name := range []string{handle, handle + ".tmp"} {
+		if err := os.Symlink(victim, name); err != nil {
+			t.Fatalf("plant the symlink at %s: %v", filepath.Base(name), err)
+		}
+	}
+	publishGHGroup(handle, 4242)
+	if body, err := os.ReadFile(victim); err != nil {
+		t.Fatalf("read the victim file: %v", err)
+	} else if string(body) != original {
+		t.Fatalf("the victim file was truncated to %q: the publisher followed a planted symlink", body)
+	}
+	// And the handle is a real file holding the group, not the link any more.
+	info, err := os.Lstat(handle)
+	if err != nil {
+		t.Fatalf("stat the handle: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("the handle is still a symlink: the publisher did not replace it")
+	}
+	if body, err := os.ReadFile(handle); err != nil {
+		t.Fatalf("read the handle: %v", err)
+	} else if got := strings.TrimSpace(string(body)); got != "4242" {
+		t.Fatalf("the handle holds %q, want the published group", got)
+	}
+}
+
+// TestGHPublishesItsLiveProcessGroup pins the handle the launcher needs to stop a
+// call whose wrapper exited. A `gh` that is a wrapper starting the real CLI
+// without `exec` then exits reparents that CLI out of the helper's tree, so the
+// launcher cannot find it by walking descendants: the group id is the only thing
+// that still names it. The client publishes that id while the call is in flight
+// and removes it when the call ends, so the launcher never reads a stale one.
+//
+// The fake `gh` blocks until the release file appears, so the group the test
+// reads belongs to a live process rather than to one whose group id may be
+// reused. Its context is cancellable and its cleanup is registered before the
+// first assertion: a regression in publishing would otherwise fail the readiness
+// wait with the fake still polling, leaving a live subprocess behind a test
+// binary that has already exited -- a leak that hides the next regression.
+func TestGHPublishesItsLiveProcessGroup(t *testing.T) {
+	t.Parallel()
+	dir := fixtureExecDir(t)
+	groupFile := filepath.Join(dir, "gh-group")
+	release := filepath.Join(dir, "release")
+	gh := filepath.Join(dir, "gh")
+	writeExecutable(t, gh, `#!/usr/bin/env bash
+while [ ! -e `+shellquote.Literal(release)+` ]; do sleep 0.01; done
+printf '{"data":{}}'
+`)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	finished := make(chan struct{})
+	go func() {
+		_, err := (GHClient{GH: gh, GroupFile: groupFile}).run(ctx, "api", "graphql")
+		done <- err
+		close(finished)
+	}()
+	// Registered before the readiness wait and before any assertion, so every
+	// failure path below ends the fake instead of leaving it polling. The wait is
+	// bounded: a gh that ignored cancellation would otherwise hold this cleanup
+	// until the binary's deadline, which reads as an unrelated hang.
+	//
+	// It waits on finished rather than on done, so it cannot consume the result
+	// the success path still has to read.
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-finished:
+		case <-time.After(30 * time.Second):
+			t.Errorf("the fixture gh was still running after cancellation")
+		}
+	})
+	var published int
+	testwait.Until(t, "the client to publish the live gh group", func() bool {
+		body, err := os.ReadFile(groupFile)
+		if err != nil {
+			return false
+		}
+		parsed, err := strconv.Atoi(strings.TrimSpace(string(body)))
+		if err != nil {
+			return false
+		}
+		published = parsed
+		return true
+	})
+	if published <= 1 {
+		t.Fatalf("published group %d, want the gh call's own group", published)
+	}
+	// The published id has to be a group the call is actually in, or a launcher
+	// acting on it would signal something else.
+	assertPidIsItsOwnGroup(t, published)
+	if err := os.WriteFile(release, nil, 0o600); err != nil {
+		t.Fatalf("release the fake gh: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run = %v, want the fake gh's answer", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("run did not return after the fake gh answered")
+	}
+	// And the handle is gone once the call is: a group id is reused, so a file
+	// left behind would point a later forced stop at an unrelated process.
+	if _, err := os.Stat(groupFile); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the handle survived the call: stat = %v", err)
+	}
+}
+
+// The parsers below decode exactly the answers `gh api graphql` and `gh run
+// list` give, keyed by GitHub's camelCase field names. These are the data
+// seam: a fixture of GitHub's own JSON, not a subprocess standing in for gh.
+
+// TestParseStatusReadsTheQueueEntryAndBase pins the fields the decisions act
+// on: the PR id and state, its base branch, its merge commit and its queue
+// entry, all out of one query.
+func TestParseStatusReadsTheQueueEntryAndBase(t *testing.T) {
+	t.Parallel()
+	st, err := parseStatus([]byte(`{"data":{"repository":{"pullRequest":{"id":"PR_6499","state":"OPEN","baseRefName":"main","mergeCommit":null,"mergeQueueEntry":{"position":3,"state":"QUEUED"}}}}}`))
+	if err != nil {
+		t.Fatalf("parseStatus: %v", err)
+	}
+	if st.ID != "PR_6499" || st.State != "OPEN" || st.Base != "main" {
+		t.Fatalf("status = %+v, want id PR_6499, OPEN, base main", st)
+	}
+	if st.Entry == nil || st.Entry.Position != 3 || st.Entry.State != "QUEUED" {
+		t.Fatalf("entry = %+v, want position 3 in QUEUED", st.Entry)
+	}
+	if st.MergeCommit != nil {
+		t.Fatalf("mergeCommit = %v, want nil for a null answer", *st.MergeCommit)
+	}
+}
+
+// TestParseStatusReadsAMergeCommitAndAbsentEntry pins the other half of the
+// optional fields: a MERGED PR carries a merge commit, and a PR that is not
+// queued has no entry at all. A null mergeCommit is not an error.
+func TestParseStatusReadsAMergeCommitAndAbsentEntry(t *testing.T) {
+	t.Parallel()
+	st, err := parseStatus([]byte(`{"data":{"repository":{"pullRequest":{"id":"PR_1","state":"MERGED","baseRefName":"main","mergeCommit":{"oid":"deadbeef"},"mergeQueueEntry":null}}}}`))
+	if err != nil {
+		t.Fatalf("parseStatus: %v", err)
+	}
+	if st.Entry != nil {
+		t.Fatalf("entry = %+v, want nil for a null answer", st.Entry)
+	}
+	if st.MergeSHA() != "deadbeef" {
+		t.Fatalf("MergeSHA() = %q, want deadbeef", st.MergeSHA())
+	}
+}
+
+// TestParseStatusRefusesAMissingPullRequest pins that an answer with no pull
+// request is an error: reading it as an empty status would enqueue an empty id.
+func TestParseStatusRefusesAMissingPullRequest(t *testing.T) {
+	t.Parallel()
+	if _, err := parseStatus([]byte(`{"data":{"repository":{"pullRequest":null}}}`)); err == nil {
+		t.Fatal("a null pullRequest must be an error")
+	}
+}
+
+// TestParseMergedCommitReadsThePRsOwnState pins #6480's read: the PR's own
+// state, not the queue snapshot, is what says MERGED, and a non-MERGED state
+// is not a merge.
+func TestParseMergedCommitReadsThePRsOwnState(t *testing.T) {
+	t.Parallel()
+	sha, merged, err := parseMergedCommit([]byte(`{"state":"MERGED","mergeCommit":{"oid":"cafe"}}`))
+	if err != nil || !merged || sha != "cafe" {
+		t.Fatalf("parseMergedCommit = %q, %v, %v; want cafe, true, nil", sha, merged, err)
+	}
+	sha, merged, err = parseMergedCommit([]byte(`{"state":"OPEN","mergeCommit":null}`))
+	if err != nil {
+		t.Fatalf("parseMergedCommit: %v", err)
+	}
+	if merged || sha != "" {
+		t.Fatalf("parseMergedCommit = %q, %v; a non-MERGED state is not a merge", sha, merged)
+	}
+}
+
+// TestParseDropEventReadsTheQueuesOwnReason pins the field the drop class is
+// decided from, and the one the staleness check needs.
+func TestParseDropEventReadsTheQueuesOwnReason(t *testing.T) {
+	t.Parallel()
+	event, err := parseDropEvent([]byte(`{"data":{"repository":{"pullRequest":{"timelineItems":{"nodes":[{"createdAt":"2026-11-17T12:00:00Z","reason":"failed_checks"}]}}}}}`))
+	if err != nil {
+		t.Fatalf("parseDropEvent: %v", err)
+	}
+	if event == nil {
+		t.Fatal("parseDropEvent returned no event for a timeline with one")
+	}
+	if event.Reason != "failed_checks" {
+		t.Fatalf("Reason = %q, want failed_checks", event.Reason)
+	}
+	if want := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC); !event.CreatedAt.Equal(want) {
+		t.Fatalf("CreatedAt = %v, want %v", event.CreatedAt, want)
+	}
+}
+
+// TestParseDropEventReadsAnEmptyTimelineAsNone pins the no-event answer: nil,
+// not an error and not an empty event with a zero timestamp that the staleness
+// check would treat as ancient.
+// TestEnqueueIncompleteReplyIsReconciled pins the other half of the drain rule.
+// Refusing outright when the reply is lost reports an enqueue that may already
+// have landed, so the run reads the state back and lets it decide. Both
+// directions matter: a reply lost after the mutation landed must report the
+// queue position, and one lost before it landed must still be a refusal.
+func TestEnqueueIncompleteReplyIsReconciled(t *testing.T) {
+	t.Parallel()
+	// The reply is lost, but the PR is in the queue when the run looks again.
+	landed := &fakeClient{
+		enqueueErr: ErrIncompleteReply,
+		statuses: []Status{
+			{ID: "PR_6499", State: "OPEN"},
+			{ID: "PR_6499", State: "OPEN", Entry: queueEntry(2)},
+		},
+	}
+	out, exitErr := Execute(context.Background(), opts(0), landed, SystemClock)
+	if exitErr != nil {
+		t.Fatalf("Execute: %v, want the queue to report where the PR landed", exitErr)
+	}
+	if out.Kind != Queued || out.Position != 2 {
+		t.Fatalf("outcome = %+v, want Queued at position 2", out)
+	}
+
+	// The reply is lost and the PR is still absent, so the mutation did not land.
+	absent := &fakeClient{
+		enqueueErr: ErrIncompleteReply,
+		statuses: []Status{
+			{ID: "PR_6499", State: "OPEN"},
+			{ID: "PR_6499", State: "OPEN"},
+		},
+	}
+	if _, exitErr := Execute(context.Background(), opts(0), absent, SystemClock); exitErr == nil {
+		t.Fatal("an enqueue that could not be confirmed was reported as success")
+	} else if exitErr.Kind != EnqueueFailed {
+		t.Fatalf("kind = %v, want EnqueueFailed", exitErr.Kind)
+	}
+}
+
+func TestParseDropEventReadsAnEmptyTimelineAsNone(t *testing.T) {
+	t.Parallel()
+	event, err := parseDropEvent([]byte(`{"data":{"repository":{"pullRequest":{"timelineItems":{"nodes":[]}}}}}`))
+	if err != nil {
+		t.Fatalf("parseDropEvent: %v", err)
+	}
+	if event != nil {
+		t.Fatalf("event = %+v, want nil for an empty timeline", event)
+	}
+}
+
+// TestParseDropEventReadsANullNodeAsNone pins the literal null the API sends
+// when the selected timeline item is not a removal event. Decoded into a struct
+// rather than a pointer it arrives as a zero value, and the empty timestamp then
+// reads as a malformed removal event -- an absent event reported as an
+// unreadable one, which is the difference between "nothing to explain" and "the
+// reason could not be read".
+func TestParseDropEventReadsANullNodeAsNone(t *testing.T) {
+	t.Parallel()
+	event, err := parseDropEvent([]byte(`{"data":{"repository":{"pullRequest":{"timelineItems":{"nodes":[null]}}}}}`))
+	if err != nil {
+		t.Fatalf("parseDropEvent: %v", err)
+	}
+	if event != nil {
+		t.Fatalf("event = %+v, want nil for a null node", event)
+	}
+}
+
+// TestParseRunsReadsGhsCamelCaseFields pins that `gh run list`'s own JSON keys
+// decode: databaseId, url, conclusion and headBranch are what the prefix match
+// and the run line read.
+func TestParseRunsReadsGhsCamelCaseFields(t *testing.T) {
+	t.Parallel()
+	runs, err := parseRuns([]byte(`[{"databaseId":123456789,"url":"https://example.invalid/run","conclusion":"failure","headBranch":"gh-readonly-queue/main/pr-6499-abc"}]`))
+	if err != nil {
+		t.Fatalf("parseRuns: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("runs = %v, want one", runs)
+	}
+	got := runs[0]
+	if got.DatabaseID != 123456789 || got.URL != "https://example.invalid/run" ||
+		got.Conclusion != "failure" || got.HeadBranch != "gh-readonly-queue/main/pr-6499-abc" {
+		t.Fatalf("run = %+v, want the fixture's four fields", got)
+	}
+}
+
+// TestSplitRepoRefusesANonOwnerNameRepo pins the argument check the two
+// owner/name queries need: splitting "evener" would send an empty name and ask
+// GitHub about a repository that does not exist.
+func TestSplitRepoRefusesANonOwnerNameRepo(t *testing.T) {
+	t.Parallel()
+	for _, repo := range []string{"evener", "/evener", "evener/", ""} {
+		if _, _, err := splitRepo(repo); err == nil {
+			t.Fatalf("splitRepo(%q) succeeded; want a refusal", repo)
+		}
+	}
+	owner, name, err := splitRepo("prime-radiant-inc/evener")
+	if err != nil || owner != "prime-radiant-inc" || name != "evener" {
+		t.Fatalf("splitRepo = %q, %q, %v; want prime-radiant-inc, evener, nil", owner, name, err)
+	}
+}
+
+// TestRunRefRendersTheResolvedRunOrThePrefix pins the two renderings a drop
+// reason can carry, and that an unresolved lookup names the prefix rather than
+// a run it did not find.
+func TestRunRefRendersTheResolvedRunOrThePrefix(t *testing.T) {
+	t.Parallel()
+	resolved := RunRef{Group: &GroupRun{DatabaseID: 42, URL: "https://example.invalid/42", Conclusion: "failure"}}
+	if got := resolved.String(); !strings.Contains(got, "42") || !strings.Contains(got, "https://example.invalid/42") {
+		t.Fatalf("resolved rendering = %q, want the run id and URL", got)
+	}
+	if got := (RunRef{Prefix: "gh-readonly-queue/main/pr-1-"}).String(); !strings.Contains(got, "gh-readonly-queue/main/pr-1-") {
+		t.Fatalf("prefix rendering = %q, want the prefix", got)
+	}
+	// A reference with neither a run nor a prefix still renders something an
+	// operator can read; it is asserted as non-empty rather than compared with
+	// the production phrase, which would only re-read the source. The no-base
+	// case's real claim -- no run and no prefix -- is pinned by
+	// TestDropWithoutABaseSkipsTheRunLookup.
+	if got := (RunRef{}).String(); got == "" {
+		t.Fatal("empty rendering = \"\", want a readable fallback")
+	}
+}
+
+// TestMergEQFixtureBaseIsTrustedAndExecutable pins the two properties the
+// executable fixtures need from their base, and pins them where they are
+// decided rather than through a case that would time out without them.
+//
+// The base these fixtures run from is not only storage: a script written there
+// is executed, so a base another local user can replace is a way to run their
+// program with this user's privileges. Checking the leaf's mode does not answer
+// that -- the leaf is private and the ancestor is the way in. The same base also
+// has to be able to execute a program, or every case under it waits out a
+// deadline for a fixture that never ran.
+//
+// Both are asked directly, because a case that only fails by timing out says
+// "something is wrong" and not which of the two it was.
+func TestMergEQFixtureBaseIsTrustedAndExecutable(t *testing.T) {
+	// Not parallel itself: the last subtest sets TMPDIR for the process.
+	t.Run("a replaceable ancestor is refused", func(t *testing.T) {
+		t.Parallel()
+		// The directory has to be replaceable for the case to mean anything, and
+		// it has to be created somewhere this test owns before it is made so. It
+		// is therefore a child of the trusted fixture base, not of t.TempDir():
+		// t.TempDir() descends from the ambient TMPDIR, and on a TMPDIR whose
+		// ancestor another user can replace, the entry this call creates can be
+		// swapped between the mkdir and the chmod. The chmod would then land on
+		// that user's target, which is an operator-owned directory made writable
+		// by a test run -- the hazard this case exists to describe, performed by
+		// the case itself.
+		dir := widenedFixtureDir(t, "replaceable")
+		if err := os.Chmod(dir, 0o777); err != nil {
+			t.Fatalf("make %s replaceable: %v", dir, err)
+		}
+		// A 0777 directory is only replaceable if no sticky bit protects it. If the
+		// runner's umask or mount options left one on, this case cannot state its
+		// premise and says so instead of passing for the wrong reason.
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatalf("stat %s: %v", dir, err)
+		}
+		if info.Mode()&os.ModeSticky != 0 {
+			t.Skipf("%s came back sticky, so it is not the replaceable base this case needs", dir)
+		}
+		if reason := replaceableAncestor(t, dir); reason == "" {
+			t.Fatalf("%s is writable by other users with no sticky bit, and the ancestor rule accepted it: another user can replace entries in it, so a script this test executes from there may not be the script it wrote", dir)
+		}
+		// And the refusal reaches the function the fixtures actually call, not only
+		// the predicate: handing it this base must not return a directory.
+		if got, reason := execDirUnder(t, dir); reason == "" {
+			t.Fatalf("execDirUnder(%s) returned %s under a replaceable ancestor: the fixture would execute a program from a path another user can swap", dir, got)
+		}
+	})
+	t.Run("a writable ACL mask over a read-only group is accepted", func(t *testing.T) {
+		t.Parallel()
+		// The opposite error, and the one that broke fixture setup rather than
+		// weakening a check: on Linux the mode's group position is the ACL MASK
+		// when an access ACL is present, so a directory whose mask is rwx while
+		// `group::` is r-x and no named entry holds write is NOT group-writable.
+		// A rule that reads the mode alone refuses it.
+		//
+		// On a runner where such a directory is the only executable candidate -- a
+		// noexec /tmp, for instance -- every fixture then fails while setting itself
+		// up, on a host where nothing can actually tamper with it. That is why the
+		// ACL's `group::` line decides when one is present.
+		dir := widenedFixtureDir(t, "acl-mask-readonly-group")
+		if _, err := exec.LookPath("setfacl"); err != nil {
+			t.Skipf("setfacl is not installed, so a POSIX access ACL cannot be manufactured here: %v", err)
+		}
+		if _, err := exec.LookPath("getfacl"); err != nil {
+			t.Skipf("getfacl is not installed, so the ACL could not be read either and this premise has no meaning: %v", err)
+		}
+		if err := exec.Command("setfacl", "-m", "g::r-x", "-m", "m::rwx", dir).Run(); err != nil {
+			t.Skipf("could not set the ACL on %s (%v): the filesystem may not support POSIX ACLs", dir, err)
+		}
+		t.Cleanup(func() { _ = exec.Command("setfacl", "-b", dir).Run() })
+		// The premise, checked rather than assumed: the mask carries write, the
+		// owning group does not, and no named entry does.
+		acl, err := exec.Command("getfacl", "-p", "-c", dir).Output()
+		if err != nil {
+			t.Fatalf("read the ACL of %s: %v", dir, err)
+		}
+		text := string(acl)
+		if !strings.Contains(text, "mask::rwx") || !strings.Contains(text, "group::r-x") {
+			t.Skipf("the ACL came back as %q, which is not the writable-mask/read-only-group shape this case needs", strings.TrimSpace(text))
+		}
+		if reason := replaceableAncestor(t, dir); reason != "" {
+			t.Fatalf("the fixture selector refused %s, whose ACL grants the owning group no write: the mode bits are the ACL mask here, not the owning group's permission, so a selector that decides on them fails on a host where the directory is safe (%s)", dir, reason)
+		}
+		if got, reason := execDirUnder(t, dir); reason != "" {
+			t.Fatalf("execDirUnder(%s) refused a directory whose ACL grants no foreign write (%s): on a runner where this is the only executable candidate, every fixture would fail during setup", dir, reason)
+		} else if !strings.HasPrefix(got, dir+string(os.PathSeparator)) {
+			t.Fatalf("execDirUnder(%s) returned %s, want a directory under it", dir, got)
+		}
+	})
+	t.Run("a group-writable ancestor is refused even for a member", func(t *testing.T) {
+		t.Parallel()
+		// 0770 is writable by the owning group but not by others, so an
+		// other-writable check does not see it. Being in the group is not the
+		// question: another member is another user, and can rename or delete the
+		// fixture's entry and put their own script where the test will execute it.
+		// Under the trusted fixture base for the same reason as the case above:
+		// the directory is deliberately widened, so the entry that is widened has
+		// to be an entry this test already owns.
+		dir := widenedFixtureDir(t, "group-writable")
+		if err := os.Chmod(dir, 0o770); err != nil {
+			t.Fatalf("make %s group-writable: %v", dir, err)
+		}
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatalf("stat %s: %v", dir, err)
+		}
+		if info.Mode()&os.ModeSticky != 0 {
+			t.Skipf("%s came back sticky, so it is not the group-writable base this case needs", dir)
+		}
+		if info.Mode().Perm()&0o002 != 0 {
+			t.Skipf("%s came back other-writable, so it does not isolate the group bit", dir)
+		}
+		// The premise: this process IS in the owning group, which is what made the
+		// old predicate accept it.
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			t.Skip("cannot read the owning group on this platform")
+		}
+		inGroup := int(stat.Gid) == os.Getgid()
+		if !inGroup {
+			if gids, err := os.Getgroups(); err == nil {
+				inGroup = slices.Contains(gids, int(stat.Gid))
+			}
+		}
+		if !inGroup {
+			t.Skipf("%s is owned by group %d, which this process is not in, so the pre-fix acceptance cannot be reproduced here", dir, stat.Gid)
+		}
+		if reason := replaceableAncestor(t, dir); reason == "" {
+			t.Fatalf("%s is writable by group %d and this test was expected to refuse it: another member of that group can replace entries in it", dir, stat.Gid)
+		}
+		if got, reason := execDirUnder(t, dir); reason == "" {
+			t.Fatalf("execDirUnder(%s) returned %s under a group-writable ancestor: the fixture would execute a program from a path another member of the group can swap", dir, got)
+		}
+	})
+	t.Run("a named grant on a private directory is refused", func(t *testing.T) {
+		t.Parallel()
+		// The mode says 0700, so a rule that reads the mode alone calls this
+		// directory private. The ACL says otherwise: one named user holds rwx, and
+		// the mask carries write so the grant is effective. That user can replace
+		// entries in this directory, and the fixture executes scripts through it --
+		// the mode's other and group bits never see a named entry at all.
+		if _, err := exec.LookPath("setfacl"); err != nil {
+			t.Skipf("setfacl is not installed, so a POSIX access ACL cannot be manufactured here: %v", err)
+		}
+		if _, err := exec.LookPath("getfacl"); err != nil {
+			t.Skipf("getfacl is not installed, so the ACL could not be read either: %v", err)
+		}
+		dir := widenedFixtureDir(t, "named-grant")
+		if err := os.Chmod(dir, 0o700); err != nil {
+			t.Fatalf("make %s private: %v", dir, err)
+		}
+		// nobody, so the grantee is a real uid that is neither this user nor root.
+		if err := exec.Command("setfacl", "-m", "u:65534:rwx", dir).Run(); err != nil {
+			t.Skipf("could not grant a named user rwx on %s (%v): the filesystem may not support POSIX ACLs", dir, err)
+		}
+		t.Cleanup(func() { _ = exec.Command("setfacl", "-b", dir).Run() })
+		// The premise, checked rather than assumed: no base entry other than the
+		// named user grants write, and the mask lets the named grant through.
+		//
+		// The `other` field is read from the mode, which is the only place it lives.
+		// The owning group's own permission is NOT: `setfacl` writes the mask into
+		// the mode's group position, so the mode here reads 0770 because `mask::rwx`,
+		// not because `group::` can write. That is the same interaction the
+		// ACL-mask case above is about, and reading the mode for the group answer
+		// here would skip this case on the very hosts it applies to.
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatalf("stat %s: %v", dir, err)
+		}
+		if perm := info.Mode().Perm(); perm&0o007 != 0 {
+			t.Skipf("%s came back %04o, so another user may write through its mode and this case would not isolate the named grant", dir, perm)
+		}
+		acl, err := exec.Command("getfacl", "-n", "-p", "-c", dir).Output()
+		if err != nil {
+			t.Fatalf("read the ACL of %s: %v", dir, err)
+		}
+		text := string(acl)
+		if !strings.Contains(text, "user:65534:rwx") ||
+			!strings.Contains(text, "mask::rwx") ||
+			!strings.Contains(text, "group::---") {
+			t.Skipf("the ACL came back as %q, which is not the effective named grant this case needs", strings.TrimSpace(text))
+		}
+		if reason := replaceableAncestor(t, dir); reason == "" {
+			t.Fatalf("%s is 0700 but its ACL grants uid 65534 rwx through a writable mask, and the fixture rule accepted it: that user can replace an entry, and the suite executes scripts from this path", dir)
+		}
+		if got, reason := execDirUnder(t, dir); reason == "" {
+			t.Fatalf("execDirUnder(%s) returned %s under a named rwx grant: the fixture would execute a program from a path another local user can swap", dir, got)
+		}
+	})
+	t.Run("a world-writable directory is refused even behind a restrictive ACL", func(t *testing.T) {
+		t.Parallel()
+		// The other direction, and the one that skips a check rather than missing a
+		// grant: a directory whose owning group and mask are read-only still has
+		// `other::rwx`, so any local user can replace entries in it. Reading the ACL
+		// first and returning on the group question never asks about `other` at all.
+		//
+		// No ACL can widen `other`; it is the mode's own field, which is why the
+		// world check is independent of the ACL group question.
+		if _, err := exec.LookPath("setfacl"); err != nil {
+			t.Skipf("setfacl is not installed, so a POSIX access ACL cannot be manufactured here: %v", err)
+		}
+		dir := widenedFixtureDir(t, "world-writable-restrictive-acl")
+		if err := os.Chmod(dir, 0o777); err != nil {
+			t.Fatalf("make %s world-writable: %v", dir, err)
+		}
+		if err := exec.Command("setfacl", "-m", "g::r-x", "-m", "m::r-x", dir).Run(); err != nil {
+			t.Skipf("could not set the ACL on %s (%v): the filesystem may not support POSIX ACLs", dir, err)
+		}
+		t.Cleanup(func() { _ = exec.Command("setfacl", "-b", dir).Run() })
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatalf("stat %s: %v", dir, err)
+		}
+		if info.Mode()&os.ModeSticky != 0 {
+			t.Skipf("%s came back sticky, so it is not the replaceable base this case needs", dir)
+		}
+		if perm := info.Mode().Perm(); perm&0o002 == 0 {
+			t.Skipf("%s came back %04o, so it is not world-writable and this case has no premise", dir, perm)
+		}
+		if reason := replaceableAncestor(t, dir); reason == "" {
+			t.Fatalf("%s is world-writable with no sticky bit, and the fixture rule accepted it because the ACL's group question came back clean: another user can replace entries in it", dir)
+		}
+	})
+	t.Run("a component that changed to a symlink is refused", func(t *testing.T) {
+		t.Parallel()
+		// The race the check is for, in miniature. The fixture resolves its base
+		// with EvalSymlinks and then walks the components. A component under a
+		// sticky directory belonging to another user can be renamed away and
+		// replaced with a symlink in that window: the walk would then describe the
+		// TARGET (this user's own 0700 directory, say) while the name along the
+		// path is one that user can retarget again at will.
+		//
+		// Stat follows the link and reports the target, so it accepts the swap. The
+		// step that changes and then the check that reads it are separated here by
+		// construction rather than by timing: the link is planted before the walk
+		// runs, which is exactly the state the race produces.
+		base := fixtureExecDir(t)
+		resolvedTarget := filepath.Join(base, "resolved-target")
+		if err := os.Mkdir(resolvedTarget, 0o700); err != nil {
+			t.Fatalf("make the trusted target: %v", err)
+		}
+		// The parent the fixture walks through: this user owns it, so the only
+		// reason to refuse is the link below.
+		parent := filepath.Join(base, "swapped-parent")
+		if err := os.Mkdir(parent, 0o700); err != nil {
+			t.Fatalf("make the walked parent: %v", err)
+		}
+		link := filepath.Join(parent, "component")
+		if err := os.Symlink(resolvedTarget, link); err != nil {
+			t.Fatalf("plant the swapped component: %v", err)
+		}
+		// The premise: Stat, and therefore the pre-fix check, sees the target and
+		// would have called this component a trusted 0700 directory.
+		if info, err := os.Stat(link); err != nil {
+			t.Fatalf("stat the link: %v", err)
+		} else if !info.IsDir() || info.Mode().Perm() != 0o700 {
+			t.Fatalf("the target reads as %v, so this case does not isolate the symlink: the whole point is that following the link looks safe", info.Mode())
+		}
+		if reason := replaceableAncestor(t, link); reason == "" {
+			t.Fatalf("%s is a symlink that appeared after the path was resolved, and the fixture rule accepted it by following it to a private 0700 directory: another user can retarget that name between the resolve and the check, so the fixture would write and execute scripts through a path they control", link)
+		}
+		// And the same path with the link replaced by the real directory is
+		// accepted, so the rule refuses the symlink rather than the location.
+		if err := os.Remove(link); err != nil {
+			t.Fatalf("remove the link: %v", err)
+		}
+		if err := os.Mkdir(link, 0o700); err != nil {
+			t.Fatalf("make the component a real directory: %v", err)
+		}
+		if reason := replaceableAncestor(t, link); reason != "" {
+			t.Fatalf("a real 0700 directory under a trusted parent was refused (%s): the rule must refuse the swap, not the path", reason)
+		}
+	})
+	t.Run("a Darwin ACL granting a foreign account is refused", func(t *testing.T) {
+		// Not parallel: it swaps the platform seam the ACL reader uses, and a
+		// parallel case reading a real ACL would see the stand-in.
+		//
+		// macOS has no getfacl -- the reason fixtureReadACL used to answer "no ACL"
+		// there -- so an ancestor at 0700 whose NATIVE ACL grants another local
+		// account read,write,execute was accepted on the mode alone, and the
+		// fixture writes and executes scripts through that path. The seam stands
+		// in that platform: ls says `+`, getfacl does not exist, and ls -e is the
+		// only place the grant is visible.
+		dir := widenedFixtureDir(t, "darwin-acl")
+		// A Darwin ACL as `ls -le` prints it, granting uid 424242 write and execute.
+		const foreignACL = `total 0
+drwx------  2 501  staff  64 Nov 18 12:00 darwin-acl
+ 0: user:424242 allow read,write,execute
+ 1: group:staff deny write
+`
+		defer func(tools aclTools) { fixtureACLTools = tools }(fixtureACLTools)
+		fixtureACLTools = aclTools{
+			listing: func(string) (string, error) {
+				// The mode field carries `+`, which is how both platforms say an
+				// extended ACL is present.
+				return "drwx------+ 2 501 staff 64 Nov 18 12:00 darwin-acl\n", nil
+			},
+			listingWithACL: func(string) (string, error) { return foreignACL, nil },
+			getfacl: func(string) (string, error) {
+				return "", errors.New("exec: \"getfacl\": executable file not found in $PATH")
+			},
+		}
+		if reason := fixtureComponentReplaceable(t, dir); reason == "" {
+			t.Fatalf("%s was accepted although its native ACL grants uid 424242 write and execute: the fixture would execute a script from a path that account can replace", dir)
+		}
+
+		// And the ordinary developer path must not refuse. A directory with no
+		// extended ACL has no `+` in its mode, so the mode answer stands on every
+		// platform -- getfacl present or not.
+		fixtureACLTools = aclTools{
+			listing: func(string) (string, error) {
+				return "drwx------ 2 501 staff 64 Nov 18 12:00 darwin-acl\n", nil
+			},
+			listingWithACL: func(string) (string, error) {
+				t.Fatal("ls -e was asked about a directory with no ACL marker: the mode answer stands and no ACL read was needed")
+				return "", nil
+			},
+			getfacl: func(string) (string, error) {
+				t.Fatal("getfacl was asked about a directory with no ACL marker")
+				return "", nil
+			},
+		}
+		if reason := fixtureComponentReplaceable(t, dir); reason != "" {
+			t.Fatalf("%s was refused although it has no extended ACL: refusing the ordinary case would break every fixture on a platform without getfacl (%s)", dir, reason)
+		}
+
+		// A harmless Darwin ACL stays usable: read-only entries cannot replace
+		// anything, so the directory is accepted rather than refused into a
+		// relocation on every developer's machine.
+		fixtureACLTools = aclTools{
+			listing: func(string) (string, error) {
+				return "drwx------+ 2 501 staff 64 Nov 18 12:00 darwin-acl\n", nil
+			},
+			listingWithACL: func(string) (string, error) {
+				return `total 0
+drwx------+ 2 501 staff 64 Nov 18 12:00 darwin-acl
+ 0: user:424242 allow read
+ 1: user:424243 deny read,write,execute
+`, nil
+			},
+			getfacl: func(string) (string, error) {
+				return "", errors.New("getfacl is not installed")
+			},
+		}
+		if reason := fixtureComponentReplaceable(t, dir); reason != "" {
+			t.Fatalf("%s was refused although its ACL grants nobody write and execute: a harmless ACL must stay usable (%s)", dir, reason)
+		}
+
+		// A read-only native ACL does not make the mode's group bits harmless.
+		// Darwin has no ACL mask, so the mode's group position is still the owning
+		// group's own permission and stays independently effective: a nonsticky
+		// 0770 directory is writable by every member of that group however tidy
+		// its ACL entries are, and another member can replace the entry the
+		// fixture executes a script from. Only a POSIX ACL replaces the group
+		// question with its mask.
+		groupWritable := widenedFixtureDir(t, "darwin-acl-group-writable")
+		if err := os.Chmod(groupWritable, 0o770); err != nil {
+			t.Fatalf("make %s group-writable: %v", groupWritable, err)
+		}
+		info, err := os.Stat(groupWritable)
+		if err != nil {
+			t.Fatalf("stat %s: %v", groupWritable, err)
+		}
+		if perm := info.Mode().Perm(); perm&0o020 == 0 || perm&0o002 != 0 || info.Mode()&os.ModeSticky != 0 {
+			t.Skipf("%s came back %04o, which is not the nonsticky group-writable-only directory this case needs", groupWritable, perm)
+		}
+		groupStat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			t.Skip("cannot read the owning group on this platform")
+		}
+		fixtureACLTools = aclTools{
+			listing: func(string) (string, error) {
+				return "drwxrwx---+ 2 501 staff 64 Nov 18 12:00 darwin-acl-group-writable\n", nil
+			},
+			listingWithACL: func(string) (string, error) {
+				return `total 0
+drwxrwx---+ 2 501 staff 64 Nov 18 12:00 darwin-acl-group-writable
+ 0: user:424242 allow read
+ 1: group:staff deny write
+`, nil
+			},
+			getfacl: func(string) (string, error) {
+				return "", errors.New("getfacl is not installed")
+			},
+		}
+		if reason := fixtureComponentReplaceable(t, groupWritable); reason == "" {
+			t.Fatalf("%s is group-writable with no sticky bit and its native ACL merely declines to add a grant: Darwin's native ACL does not turn the mode's group bits into a mask, so a member of group %d can replace an entry there and the fixture would execute their script", groupWritable, groupStat.Gid)
+		}
+
+		// And an ACL that exists but cannot be read at all relocates rather than
+		// passing: what cannot be shown harmless is not harmless.
+		fixtureACLTools = aclTools{
+			listing: func(string) (string, error) {
+				return "drwx------+ 2 501 staff 64 Nov 18 12:00 darwin-acl\n", nil
+			},
+			listingWithACL: func(string) (string, error) {
+				return "", errors.New("ls does not take -e here")
+			},
+			getfacl: func(string) (string, error) {
+				return "", errors.New("getfacl is not installed")
+			},
+		}
+		if reason := fixtureComponentReplaceable(t, dir); reason == "" {
+			t.Fatalf("%s was accepted although an extended ACL is present and neither reader could evaluate it", dir)
+		}
+	})
+	t.Run("an exec-capable base is accepted", func(t *testing.T) {
+		t.Parallel()
+		base := fixtureExecDir(t)
+		if reason := replaceableAncestor(t, base); reason != "" {
+			t.Fatalf("the base the fixtures use is replaceable: %s", reason)
+		}
+		if err := exec.Command(filepath.Join(base, "exec-probe.sh")).Run(); err != nil {
+			t.Fatalf("%s cannot execute a program (%v), and the fixtures there launch scripts", base, err)
+		}
+	})
+	t.Run("a replaceable TMPDIR falls back rather than failing the case", func(t *testing.T) {
+		// Not parallel: it changes the process environment the candidate list
+		// reads, and t.Setenv panics in a parallel test.
+		//
+		// The fallback is established BEFORE TMPDIR is invalidated, and it is the
+		// runtime directory rather than only a validated base. Overriding TMPDIR
+		// otherwise leaves the case depending on whatever XDG_RUNTIME_DIR and HOME
+		// the runner supplies, and the module gate supplies neither a runtime dir
+		// nor a HOME with a .cache -- its cache lives in XDG_CACHE_HOME -- so
+		// fixtureExecDir would fail before reaching the assertion. That is the
+		// vacuous shape: a test that cannot reach its own check proves nothing.
+		// Owning the runtime dir puts a usable candidate immediately after the
+		// replaceable TMPDIR, so the assertion below is about the fallback and not
+		// about which roots this host happens to have.
+		fallback, reason := execDirUnder(t, fixtureExecDir(t))
+		if reason != "" {
+			t.Fatalf("could not establish the fallback this case needs: %s", reason)
+		}
+		t.Setenv("XDG_RUNTIME_DIR", fallback)
+		// Under the trusted fixture base, not t.TempDir(): this directory is
+		// widened to 0777, so the entry that gets widened must be one this test
+		// already owns. Under an ambient TMPDIR another user could replace the
+		// entry between the mkdir and the chmod and the chmod would land on a
+		// directory of theirs.
+		dir := widenedFixtureDir(t, "replaceable-tmp")
+		if err := os.Chmod(dir, 0o777); err != nil {
+			t.Fatalf("make %s replaceable: %v", dir, err)
+		}
+		if info, err := os.Stat(dir); err != nil {
+			t.Fatalf("stat %s: %v", dir, err)
+		} else if info.Mode()&os.ModeSticky != 0 {
+			t.Skipf("%s came back sticky, so it is not the replaceable base this case needs", dir)
+		}
+		t.Setenv("TMPDIR", dir)
+		got := fixtureExecDir(t)
+		if strings.HasPrefix(got, dir+string(os.PathSeparator)) {
+			t.Fatalf("fixtureExecDir returned %s under a replaceable TMPDIR: the fixtures would execute a program from a path another user can swap", got)
+		}
+		if !strings.HasPrefix(got, fallback+string(os.PathSeparator)) {
+			t.Fatalf("fixtureExecDir returned %s, want a directory under the fixture-owned runtime dir %s: that candidate is named before every other and is valid, so a pass over it means the candidate order or its validation is wrong", got, fallback)
+		}
+		if reason := replaceableAncestor(t, got); reason != "" {
+			t.Fatalf("fixtureExecDir fell back to %s, which the fixture's own chain rule does not trust (%s): passing over the replaceable TMPDIR is only a fix if what replaces it is trusted", got, reason)
+		}
+	})
+	t.Run("a widened fixture is created where this user owns the entry", func(t *testing.T) {
+		// The high: a case that widens a directory to 0777 must widen an entry it
+		// already owns. `t.TempDir()` descends from the ambient TMPDIR, so on a
+		// TMPDIR whose ancestor another local user can replace, that user can swap
+		// the entry between the mkdir and the chmod -- and the chmod lands on their
+		// target, which can be a directory the operator owns, made world-writable by
+		// a test run. The case would be performing the hazard it describes.
+		//
+		// The premise is manufactured rather than assumed, because on a host whose
+		// TMPDIR is already trusted (1777 root-owned /tmp is the ordinary case) the
+		// pre-fix shape lands somewhere safe by accident and the case would pass
+		// against it. TMPDIR is pointed at a directory this user owns with 0777, so
+		// t.TempDir() below it is under a replaceable ancestor for real, and the
+		// fixture's own base is not.
+		//
+		// Not parallel: it sets TMPDIR for the process, and t.Setenv panics in a
+		// parallel test.
+		replaceable := widenedFixtureDir(t, "replaceable-tmpdir-for-widening")
+		if err := os.Chmod(replaceable, 0o777); err != nil {
+			t.Fatalf("make %s replaceable: %v", replaceable, err)
+		}
+		if info, err := os.Stat(replaceable); err != nil {
+			t.Fatalf("stat %s: %v", replaceable, err)
+		} else if info.Mode()&os.ModeSticky != 0 {
+			t.Skipf("%s came back sticky, so it is not the replaceable TMPDIR this case needs", replaceable)
+		}
+		if reason := replaceableAncestor(t, replaceable); reason == "" {
+			t.Skipf("%s still reads as trusted on this host, so a directory beneath it is not replaceable and the case has no premise (%s is the base it descends from)", replaceable, fixtureExecDir(t))
+		}
+		t.Setenv("TMPDIR", replaceable)
+		// What the fixture does when it widens a directory under a replaceable
+		// TMPDIR. The pre-fix shape reached for t.TempDir() here, and the helper
+		// asks the question the finding is about: is the entry this test is about
+		// to widen one it already owns?
+		dir := widenedFixtureDir(t, "widened-under-a-replaceable-tmpdir")
+		// The assertion is the ancestry, not a path prefix: t.TempDir() gives a
+		// numbered sibling under the test's own space rather than a child of the
+		// TMPDIR the test just set, so "is it under the replaceable directory" is
+		// the wrong question and answers no on both the fixed and the broken shape.
+		// What the finding is about is whether another user can replace the entry
+		// this call is about to widen, which is exactly what the chain is asked for.
+		if reason := replaceableAncestor(t, dir); reason != "" {
+			t.Fatalf("widenedFixtureDir returned %s, whose ancestry another user can replace, with TMPDIR set to %s: the entry this case is about to widen is not one it owns, so the chmod lands wherever that user pointed (%s)", dir, replaceable, reason)
+		}
+		if err := os.Chmod(dir, 0o777); err != nil {
+			t.Fatalf("widen %s: %v", dir, err)
+		}
+	})
+}
+
+// TestGraphqlRefusalWantsRejectionTypesNotJustAType pins the low: a typed,
+// pathless error is not by itself a definitive refusal.
+//
+// GitHub has answered a pathless INTERNAL while running a GraphQL request whose
+// mutation had already been applied. Treating any nonempty type as the answer
+// called that write refused and skipped the read-back that would have found it,
+// so only the types that establish a REQUEST-level rejection count.
+func TestGraphqlRefusalWantsRejectionTypesNotJustAType(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		body      string
+		want      bool
+		rationale string
+	}{
+		{
+			name:      "an execution-time INTERNAL is not a refusal",
+			body:      `{"data":{"enqueuePullRequest":null},"errors":[{"type":"INTERNAL","message":"something went wrong while running the mutation"}]}`,
+			want:      false,
+			rationale: "INTERNAL names a failure while running the request, so the write may already have landed",
+		},
+		{
+			name:      "an unrecognized type is not a refusal",
+			body:      `{"data":{"enqueuePullRequest":null},"errors":[{"type":"SOMETHING_NEW","message":"..."}]}`,
+			want:      false,
+			rationale: "a classification this reader has not seen establish rejection is not evidence of one",
+		},
+		{
+			name:      "UNPROCESSABLE is still a refusal",
+			body:      `{"data":{"enqueuePullRequest":null},"errors":[{"type":"UNPROCESSABLE","message":"protected branch"}]}`,
+			want:      true,
+			rationale: "a request-level rejection is decided before the mutation runs",
+		},
+		{
+			name:      "UNAUTHENTICATED is a refusal too",
+			body:      `{"data":{"enqueuePullRequest":null},"errors":[{"type":"UNAUTHENTICATED","message":"bad credentials"}]}`,
+			want:      true,
+			rationale: "the request was declined before anything was executed",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			msg, got := graphqlRefusal([]byte(tc.body))
+			if got != tc.want {
+				t.Fatalf("graphqlRefusal(%s) = %q, %v, want a refusal of %v: %s", tc.body, msg, got, tc.want, tc.rationale)
+			}
+		})
+	}
+}
+
+// TestACleanExitWithAWholeReplySurvivesTheDeadlineRace pins the fourth medium.
+//
+// The client sets Cancel, so a context that expires while the child is exiting
+// makes Wait report the context's error rather than the child's status, and
+// ChildErr only clears ErrWaitDelay. A complete MERGED reply was then reported as
+// a timeout by the observation that had just received the merge.
+//
+// The predicate is driven directly: the state it distinguishes is a race whose
+// losing side a test cannot schedule, and what matters is which of the two facts
+// the client trusts -- the child's own status, or the context's timing.
+func TestACleanExitWithAWholeReplySurvivesTheDeadlineRace(t *testing.T) {
+	t.Parallel()
+	// A child that exited zero is described by a ProcessState whose Exited and
+	// ExitCode agree; the fields are not settable, so the states are made by
+	// running the smallest possible processes.
+	clean := exitedProcess(t, 0)
+	failed := exitedProcess(t, 1)
+	complete := []byte(`{"state":"MERGED","mergeCommit":{"oid":"abc"}}`)
+	incomplete := []byte(`{"state":"MERG`)
+
+	if !cleanReplySurvives(context.DeadlineExceeded, clean, complete) {
+		t.Fatal("a cleanly exited child with a whole reply was called a failed read: the deadline raced Wait and the answer was discarded")
+	}
+	if cleanReplySurvives(context.DeadlineExceeded, failed, complete) {
+		t.Fatal("a child that exited non-zero with a whole reply was called a clean read: its error is its own answer")
+	}
+	if cleanReplySurvives(context.DeadlineExceeded, clean, incomplete) {
+		t.Fatal("a cleanly exited child whose reply was cut off was called a whole reply: there is nothing usable in it")
+	}
+	if cleanReplySurvives(nil, clean, complete) {
+		t.Fatal("a read that reported no error was routed through the race rule: there is no race to decide")
+	}
+}
+
+// exitedProcess runs `/bin/true` or `/bin/false` to obtain a ProcessState for the
+// exit code. The struct cannot be built by hand and its fields are unexported.
+func exitedProcess(t *testing.T, code int) *os.ProcessState {
+	t.Helper()
+	cmd := exec.Command("sh", "-c", "exit "+strconv.Itoa(code))
+	if err := cmd.Run(); err != nil && code == 0 {
+		t.Fatalf("run the exit-%d probe: %v", code, err)
+	}
+	return cmd.ProcessState
+}
+
+// readDeadline is a context whose deadline fires when the fixture says so.
+//
+// The ending the deadline rule is about -- a wrapper that wrote a whole reply and
+// was then killed by the read's allowance during cleanup -- is a race with the
+// wall clock, and a test that staged it with a real timeout would depend on the
+// host being fast enough to start a shell before it fired. The moment is
+// therefore chosen: the wrapper signals that it has written, and the fixture then
+// reports the deadline. Everything else is real -- a subprocess, a group kill, and
+// the captured output -- and Err reports the same context.DeadlineExceeded a
+// timed-out context does.
+type readDeadline struct {
+	context.Context
+	done chan struct{}
+	err  error
+}
+
+func newReadDeadline(parent context.Context) *readDeadline {
+	return &readDeadline{Context: parent, done: make(chan struct{})}
+}
+
+func (d *readDeadline) Done() <-chan struct{} { return d.done }
+
+func (d *readDeadline) Err() error {
+	select {
+	case <-d.done:
+		return d.err
+	default:
+		return nil
+	}
+}
+
+// fire ends the context with err, as a deadline or a cancellation would.
+func (d *readDeadline) fire(err error) {
+	d.err = err
+	close(d.done)
+}
+
+// runUntilTheWrapperHasWritten starts call and fires its read deadline once the
+// wrapper has published the marker it writes after its reply, so the reply is in
+// the captured pipe before the group is killed.
+func runUntilTheWrapperHasWritten(t *testing.T, marker string, ending error, call func(context.Context) error) error {
+	t.Helper()
+	ctx := newReadDeadline(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- call(ctx) }()
+	testwait.Until(t, "the wrapper to write its reply", func() bool {
+		_, err := os.Stat(marker)
+		return err == nil
+	})
+	ctx.fire(ending)
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(30 * time.Second):
+		t.Fatal("the read did not return after its deadline fired")
+		return nil
+	}
+}
+
+// TestGHDeadlineTerminatedReadKeepsACompleteReply pins that a read whose own
+// allowance ended the process still answers when the reply arrived whole.
+//
+// The allowance bounds how long the caller waits for an answer, and it does not
+// unread one that arrived. A gh wrapper can write the whole reply and then be
+// killed during cleanup; run hands those bytes back beside the process error, and
+// a caller that discards them reports a timeout or a lookup failure for a query
+// that was answered -- the final observation reporting a timeout immediately
+// after receiving the MERGED reply is the sharpest case.
+//
+// Every read query is covered, because each one discarded its captured bytes the
+// same way.
+func TestGHDeadlineTerminatedReadKeepsACompleteReply(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		args   string
+		body   string
+		verify func(t *testing.T, c GHClient, marker string)
+	}{
+		{
+			name: "MergedCommit",
+			args: "pr view",
+			body: `{"state":"MERGED","mergeCommit":{"oid":"cafe"}}`,
+			verify: func(t *testing.T, c GHClient, marker string) {
+				t.Helper()
+				var sha string
+				var merged bool
+				err := runUntilTheWrapperHasWritten(t, marker, context.DeadlineExceeded, func(ctx context.Context) error {
+					var err error
+					sha, merged, err = c.MergedCommit(ctx, "prime-radiant-inc/evener", "6499")
+					return err
+				})
+				if err != nil {
+					t.Fatalf("MergedCommit: %v, want the MERGED reply the wrapper wrote before the deadline killed it: discarding it reports a timeout for a query that was answered", err)
+				}
+				if !merged || sha != "cafe" {
+					t.Fatalf("MergedCommit = %q, %v, want cafe, true", sha, merged)
+				}
+			},
+		},
+		{
+			name: "Status",
+			args: "api graphql",
+			body: `{"data":{"repository":{"pullRequest":{"id":"PR_6499","state":"MERGED","baseRefName":"main","mergeCommit":{"oid":"cafe"},"mergeQueueEntry":null}}}}`,
+			verify: func(t *testing.T, c GHClient, marker string) {
+				t.Helper()
+				var st Status
+				err := runUntilTheWrapperHasWritten(t, marker, context.DeadlineExceeded, func(ctx context.Context) error {
+					var err error
+					st, err = c.Status(ctx, "prime-radiant-inc/evener", "6499")
+					return err
+				})
+				if err != nil {
+					t.Fatalf("Status: %v, want the status reply that arrived before the deadline: the query was answered", err)
+				}
+				if st.ID != "PR_6499" || st.State != mergedState || st.Base != "main" {
+					t.Fatalf("Status = %+v, want PR_6499 MERGED on main", st)
+				}
+			},
+		},
+		{
+			name: "QueueDrop",
+			args: "api graphql",
+			body: `{"data":{"repository":{"pullRequest":{"timelineItems":{"nodes":[{"createdAt":"2026-11-17T12:00:00Z","reason":"failed_checks"}]}}}}}`,
+			verify: func(t *testing.T, c GHClient, marker string) {
+				t.Helper()
+				var event *DropEvent
+				err := runUntilTheWrapperHasWritten(t, marker, context.DeadlineExceeded, func(ctx context.Context) error {
+					var err error
+					event, err = c.QueueDrop(ctx, "prime-radiant-inc/evener", "6499")
+					return err
+				})
+				if err != nil {
+					t.Fatalf("QueueDrop: %v, want the removal event that arrived before the deadline", err)
+				}
+				if event == nil || event.Reason != "failed_checks" {
+					t.Fatalf("QueueDrop = %+v, want the failed_checks removal event", event)
+				}
+			},
+		},
+		{
+			name: "MergeGroupRuns",
+			args: "run list",
+			body: `[{"databaseId":7,"url":"https://example.invalid/run","conclusion":"failure","headBranch":"gh-readonly-queue/main/pr-6499-abc"}]`,
+			verify: func(t *testing.T, c GHClient, marker string) {
+				t.Helper()
+				var runs []GroupRun
+				err := runUntilTheWrapperHasWritten(t, marker, context.DeadlineExceeded, func(ctx context.Context) error {
+					var err error
+					runs, err = c.MergeGroupRuns(ctx, "prime-radiant-inc/evener")
+					return err
+				})
+				if err != nil {
+					t.Fatalf("MergeGroupRuns: %v, want the run list that arrived before the deadline", err)
+				}
+				if len(runs) != 1 || runs[0].DatabaseID != 7 {
+					t.Fatalf("MergeGroupRuns = %+v, want the one run the wrapper listed", runs)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := fixtureExecDir(t)
+			c, marker := writeHangingReply(t, dir, tc.body)
+			tc.verify(t, c, marker)
+		})
+	}
+}
+
+// TestGHDeadlineTerminatedReadKeepsNoUnusableReply pins the other side of the
+// rule: a deadline that killed a read whose reply was cut off, absent or not the
+// query's answer is still the read failing.
+//
+// The parser is what decides usable, so a body that decodes to "no such pull
+// request" is not an answer to report as one. Nothing is invented from bytes that
+// do not carry the query's result.
+func TestGHDeadlineTerminatedReadKeepsNoUnusableReply(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{name: "no reply at all", body: ""},
+		{name: "a reply cut off mid-write", body: `{"state":"MERG`},
+		{name: "a reply that names no pull request", body: `{"data":{"repository":{"pullRequest":null}}}`},
+		{name: "a decodable body the status query cannot use", body: `{"message":"Server Error","status":"502"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := fixtureExecDir(t)
+			c, marker := writeHangingReply(t, dir, tc.body)
+			st, err := statusUntilTheWrapperHasWritten(t, c, marker)
+			if err == nil {
+				t.Fatalf("Status accepted %q as a reply and returned %+v: a deadline that killed an unusable answer is the read failing", tc.body, st)
+			}
+		})
+	}
+}
+
+// TestGHDeadlineTerminatedReplyMustBeShapedLikeTheQuerysAnswer pins that a
+// recovered reply is the query's own answer, not merely decodable JSON.
+//
+// Every parser this client writes ignores fields it did not ask for, which is
+// what lets GitHub add them. It also means a gateway's diagnostic decodes
+// cleanly into any of them. Reading one as a result reports a state the queue was
+// never asked about -- "not merged" for a request that failed in front of
+// GitHub -- so the recovery asks for the shape as well as the syntax.
+func TestGHDeadlineTerminatedReplyMustBeShapedLikeTheQuerysAnswer(t *testing.T) {
+	t.Parallel()
+	const gateway = `{"message":"Server Error","status":"502"}`
+	for _, tc := range []struct {
+		name   string
+		body   string
+		verify func(t *testing.T, c GHClient, marker string)
+	}{
+		{
+			name: "MergedCommit refuses a body with no state",
+			body: gateway,
+			verify: func(t *testing.T, c GHClient, marker string) {
+				t.Helper()
+				err := runUntilTheWrapperHasWritten(t, marker, context.DeadlineExceeded, func(ctx context.Context) error {
+					_, _, err := c.MergedCommit(ctx, "prime-radiant-inc/evener", "6499")
+					return err
+				})
+				if err == nil {
+					t.Fatal("MergedCommit reported a non-merged pull request from a gateway body: the reply carries no state, so the pull request was never read")
+				}
+			},
+		},
+		{
+			name: "QueueDrop refuses a body with no data",
+			body: gateway,
+			verify: func(t *testing.T, c GHClient, marker string) {
+				t.Helper()
+				err := runUntilTheWrapperHasWritten(t, marker, context.DeadlineExceeded, func(ctx context.Context) error {
+					_, err := c.QueueDrop(ctx, "prime-radiant-inc/evener", "6499")
+					return err
+				})
+				if err == nil {
+					t.Fatal("QueueDrop read a gateway body as a timeline with no removal event: nothing in it answers the query")
+				}
+			},
+		},
+		{
+			name: "MergeGroupRuns refuses a body that is not a list",
+			body: `null`,
+			verify: func(t *testing.T, c GHClient, marker string) {
+				t.Helper()
+				err := runUntilTheWrapperHasWritten(t, marker, context.DeadlineExceeded, func(ctx context.Context) error {
+					_, err := c.MergeGroupRuns(ctx, "prime-radiant-inc/evener")
+					return err
+				})
+				if err == nil {
+					t.Fatal("MergeGroupRuns read a null body as an empty run list: the reply is not the list the query asked for")
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := fixtureExecDir(t)
+			c, marker := writeHangingReply(t, dir, tc.body)
+			tc.verify(t, c, marker)
+		})
+	}
+}
+
+// writeHangingReply installs a fake gh that writes body, creates a marker file,
+// and then hangs until the test's deadline or cancellation kills it.
+func writeHangingReply(t *testing.T, dir, body string) (GHClient, string) {
+	t.Helper()
+	marker := filepath.Join(dir, "replied")
+	gh := filepath.Join(dir, "gh")
+	writeExecutable(t, gh, `#!/usr/bin/env bash
+printf '%s' `+shellquote.Literal(body)+`
+: > `+shellquote.Literal(marker)+`
+while :; do sleep 0.05; done
+`)
+	return GHClient{GH: gh, GroupFile: filepath.Join(dir, "group")}, marker
+}
+
+// statusUntilTheWrapperHasWritten is runUntilTheWrapperHasWritten for a Status
+// read, which returns two values.
+func statusUntilTheWrapperHasWritten(t *testing.T, c GHClient, marker string) (Status, error) {
+	t.Helper()
+	var st Status
+	err := runUntilTheWrapperHasWritten(t, marker, context.DeadlineExceeded, func(ctx context.Context) error {
+		var err error
+		st, err = c.Status(ctx, "prime-radiant-inc/evener", "6499")
+		return err
+	})
+	return st, err
+}
+
+// TestGHDeadlineTerminatedReadStillHonoursCancellation pins that the operator's
+// cancellation outranks a reply, whatever the deadline rule does.
+//
+// The deadline rule covers the read's own allowance, which the operator did not
+// cause. A cancelled invocation is the operator stopping the call, and an answer
+// reported from it tells them a wait they stopped reached its own conclusion.
+func TestGHDeadlineTerminatedReadStillHonoursCancellation(t *testing.T) {
+	t.Parallel()
+	dir := fixtureExecDir(t)
+	c, marker := writeHangingReply(t, dir, `{"state":"MERGED","mergeCommit":{"oid":"cafe"}}`)
+	err := runUntilTheWrapperHasWritten(t, marker, context.Canceled, func(ctx context.Context) error {
+		_, _, err := c.MergedCommit(ctx, "prime-radiant-inc/evener", "6499")
+		return err
+	})
+	if err == nil {
+		t.Fatal("a cancelled read returned the reply as an answer: the operator stopped the call and an answer reported from it says the wait reached its own conclusion")
+	}
+}
+
+// TestGHNonzeroExitWithALiveContextKeepsItsError pins the third case the
+// deadline rule must not swallow: a call that reached its own non-zero exit
+// under a live context failed on its own terms.
+//
+// Nothing about the context killed it, so there is no deadline to blame and no
+// reason to read a body past the exit status: the call's failure is its answer,
+// and reporting the bytes beside it as a result would turn a stated failure into
+// an observation about the queue.
+func TestGHNonzeroExitWithALiveContextKeepsItsError(t *testing.T) {
+	t.Parallel()
+	dir := fixtureExecDir(t)
+	gh := filepath.Join(dir, "gh")
+	writeExecutable(t, gh, `#!/usr/bin/env bash
+printf '%s' '{"state":"MERGED","mergeCommit":{"oid":"cafe"}}'
+exit 1
+`)
+	c := GHClient{GH: gh, GroupFile: filepath.Join(dir, "group")}
+	sha, merged, err := c.MergedCommit(context.Background(), "prime-radiant-inc/evener", "6499")
+	if err == nil {
+		t.Fatalf("MergedCommit = %q, %v, nil from a call that exited non-zero: its own exit is its answer, and a body printed past it is not an observation about the queue", sha, merged)
+	}
+	if sha != "" || merged {
+		t.Fatalf("MergedCommit returned %q, %v beside the error: a failed call's bytes are not a result", sha, merged)
+	}
+}
+
+// TestGHNonzeroExitKeepsTheEntryTheMutationReported pins M3: a reply that both
+// performed the mutation and reported an error is still the record of the write.
+//
+// GitHub answers this shape when it applies the mutation and then fails to
+// resolve a returned field: `{"data":{"enqueuePullRequest":{"mergeQueueEntry":
+// {"position":7}}},"errors":[{"message":"...","path":["enqueuePullRequest"]}]}`,
+// and gh prints it on stdout and exits non-zero. `run` used to discard stdout on
+// any non-zero exit, so Enqueue returned a nil entry and Execute had no evidence
+// the enqueue landed. If a concurrent push rebuilds the merge group before the
+// confirmation read, the read finds no entry and the run reports an enqueue
+// failure for a mutation GitHub confirmed -- and skips the drop diagnostics.
+//
+// Driven through Execute as well as the client, because the entry is only worth
+// preserving if the run uses it: the client keeps the entry through the failed
+// exit, and the run reports the drop instead of a failed enqueue.
+func TestGHNonzeroExitKeepsTheEntryTheMutationReported(t *testing.T) {
+	t.Parallel()
+	dir := fixtureExecDir(t)
+	gh := filepath.Join(dir, "gh")
+	// The mutation performs the write and reports a field-resolution error in the
+	// same reply, then exits non-zero. A field-resolution error carries a path and
+	// no type, so graphqlRefusal does not call it a refusal -- the outcome stays
+	// unknown and the entry is the data that resolves it.
+	writeExecutable(t, gh, `#!/usr/bin/env bash
+for arg in "$@"; do
+	if [[ "$arg" == query=*enqueuePullRequest* ]]; then
+		printf '%s' '{"data":{"enqueuePullRequest":{"mergeQueueEntry":{"position":7,"state":"QUEUED"}}},"errors":[{"message":"field resolution failed","path":["enqueuePullRequest"]}]}'
+		exit 1
+	fi
+done
+for arg in "$@"; do
+	if [[ "$arg" == "view" ]]; then
+		printf '%s' '{"state":"OPEN","mergeCommit":null}'
+		exit 0
+	fi
+done
+# The confirmation reads find the PR open with no entry: a concurrent push
+# rebuilt the merge group, which is exactly the case the saved entry is for.
+printf '%s' '{"data":{"repository":{"pullRequest":{"id":"PR_6499","state":"OPEN","baseRefName":"main","mergeQueueEntry":null}}}}'
+`)
+	c := GHClient{GH: gh, GroupFile: filepath.Join(dir, "group")}
+
+	// The client's own answer: the entry survives the nonzero exit.
+	entry, err := c.Enqueue(context.Background(), "prime-radiant-inc/evener", "PR_6499", false)
+	if err == nil {
+		t.Fatal("an enqueue that exited non-zero was reported as success")
+	}
+	if _, isRefusal := errors.AsType[*RefusalError](err); isRefusal {
+		t.Fatalf("error = %v, reported as a refusal: a field-resolution error says GitHub ran the mutation and failed to build the reply", err)
+	}
+	if !errors.Is(err, ErrOutcomeUnknown) {
+		t.Fatalf("error = %v, want ErrOutcomeUnknown: nothing in a field-resolution error establishes whether the write landed", err)
+	}
+	if entry == nil {
+		t.Fatal("the mutation's reply named a queue entry and it was discarded with the exit status")
+	}
+	if entry.Position != 7 || entry.State != "QUEUED" {
+		t.Fatalf("entry = %+v, want position 7 QUEUED: that is the record of where GitHub put the pull request", entry)
+	}
+
+	// And the run acts on it: the enqueue's outcome is unknown, the read finds the
+	// entry gone, and the reply is what makes that a drop rather than a failure.
+	out, exitErr := Execute(context.Background(), opts(0), c, SystemClock)
+	if exitErr != nil {
+		t.Fatalf("Execute: %v, want the drop reported: the mutation's reply named an entry, so a read that finds it gone is the queue having removed it", exitErr)
+	}
+	if out.Kind != Dropped {
+		t.Fatalf("outcome = %+v, want Dropped", out)
+	}
+}
+
+// channelFile returns a read-write descriptor on an unlinked FIFO: one
+// descriptor both sides can reach, which is what a case running the client and
+// its reader in one process needs. Opening both ways makes the open and every
+// later write non-blocking, and the unlink removes the last name so the
+// descriptor is the only handle.
+//
+// The launcher mints the channel as an unlinked regular file instead, with a
+// separate descriptor for each direction -- see channelRegularFile for that
+// shape. The cases here are about the gate and the publication protocol, not
+// about the file type, and the drain's end-of-file behaviour is pinned by the
+// script's own suite.
+func channelFile(t *testing.T, dir string) *os.File {
+	t.Helper()
+	fifo := filepath.Join(dir, "channel.fifo")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatalf("mkfifo %s: %v", fifo, err)
+	}
+	file, err := os.OpenFile(fifo, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatalf("open %s read-write: %v", fifo, err)
+	}
+	t.Cleanup(func() { _ = file.Close() })
+	if err := os.Remove(fifo); err != nil {
+		t.Fatalf("unlink %s: %v", fifo, err)
+	}
+	return file
+}
+
+// channelRegularFile returns the channel in the shape scripts/ops/merge-enqueue.sh
+// mints it: an empty mode-0600 regular file, opened append-only, with the name
+// unlinked at once so the descriptor is the only handle.
+//
+// A regular file is what the helper publishes into, so a case that hands this
+// descriptor to a child gives the child exactly the channel a real launch does.
+// The launcher's separate read descriptor is not needed here: no case in this
+// file drains the channel.
+func channelRegularFile(t *testing.T, dir string) *os.File {
+	t.Helper()
+	path := filepath.Join(dir, "gh-group")
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatalf("create the channel %s: %v", path, err)
+	}
+	t.Cleanup(func() { _ = file.Close() })
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("unlink the channel %s: %v", path, err)
+	}
+	return file
+}
+
+// readChannelLine waits for one whole line on the channel and returns it without
+// the newline.
+//
+// The descriptor is polled in non-blocking mode, which is how the launcher's own
+// drain asks the same question without waiting: a read that has a line returns it,
+// and one that has none reports EAGAIN. A publication is a sign, a decimal group
+// id and a newline, far under any pipe buffer, so a read that succeeds has a whole
+// line. It fails rather than blocking forever, so a publication that never arrives
+// names itself instead of hanging the binary.
+func readChannelLine(t *testing.T, file *os.File) string {
+	t.Helper()
+	fd := int(file.Fd())
+	if err := syscall.SetNonblock(fd, true); err != nil {
+		t.Fatalf("poll the channel without blocking: %v", err)
+	}
+	t.Cleanup(func() { _ = syscall.SetNonblock(fd, false) })
+	var line string
+	testwait.UntilSeen(t, "the channel to publish a whole line", func() (bool, string) {
+		body := make([]byte, 256)
+		n, err := syscall.Read(fd, body)
+		if err != nil {
+			if err == syscall.EAGAIN {
+				return false, "the channel has published nothing"
+			}
+			t.Fatalf("read the channel: %v", err)
+		}
+		if n == 0 {
+			return false, "the channel has published nothing"
+		}
+		line = strings.TrimSuffix(string(body[:n]), "\n")
+		return true, ""
+	})
+	return line
+}
+
+// assertPidIsItsOwnGroup fails unless pid leads the process group it runs in. A
+// published or recorded id is a decision to signal a group, so an id that names
+// a group some other process leads would signal something else.
+func assertPidIsItsOwnGroup(t *testing.T, pid int) {
+	t.Helper()
+	out, err := exec.Command("ps", "-o", "pgid=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		t.Fatalf("ps for the published group %d: %v", pid, err)
+	}
+	if got := strings.TrimSpace(string(out)); got != strconv.Itoa(pid) {
+		t.Fatalf("published %d, which is in group %s: the handle must name the call's own group", pid, got)
+	}
+}
+
+// TestGHPublishesTheProcessGroupOnTheChannel pins the descriptor form of the
+// launcher's handle: publication writes `+<pid>` while the call is in flight and
+// `-<pid>` once it is not.
+//
+// The lines are read from the descriptor itself, not from a path, because the
+// point of the form is that there is no path: the FIFO is unlinked before the
+// write, and a reader that still sees the lines is reading the inode the launcher
+// opened.
+func TestGHPublishesTheProcessGroupOnTheChannel(t *testing.T) {
+	t.Parallel()
+	dir := fixtureExecDir(t)
+	channel := channelFile(t, dir)
+	release := filepath.Join(dir, "release")
+	gh := filepath.Join(dir, "gh")
+	writeExecutable(t, gh, `#!/usr/bin/env bash
+while [ ! -e `+shellquote.Literal(release)+` ]; do sleep 0.01; done
+printf '{"data":{}}'
+`)
+	c := GHClient{GH: gh, GroupFD: int(channel.Fd())}
+	// The context is cancellable and its cleanup is registered before the
+	// publication is checked, so a failure in the assertions below stops the
+	// waiting fake gh and joins the goroutine instead of leaving both behind for a
+	// binary that has already reported the failure.
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct {
+		out []byte
+		err error
+	}, 1)
+	// returned is closed when the call has finished, whether or not its result has
+	// been read from done. The cleanup joins on this, so it works on the success
+	// path -- where the result is already consumed -- as well as on a failure that
+	// stopped before reading it.
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		out, err := c.run(ctx, "api", "graphql")
+		done <- struct {
+			out []byte
+			err error
+		}{out, err}
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-returned:
+		case <-time.After(testwait.Budget(t)):
+			t.Errorf("the cancelled call did not return, so its fake gh is still running")
+		}
+	})
+	// The fake holds the call, so the publication it made is still in flight when
+	// it is read: a `+` line observed here is the group this call runs in, not a
+	// leftover of one that ended.
+	published := readChannelLine(t, channel)
+	if !strings.HasPrefix(published, "+") {
+		t.Fatalf("the channel's first line is %q, want a publication framed with the plus sign", published)
+	}
+	pid, err := strconv.Atoi(strings.TrimPrefix(published, "+"))
+	if err != nil || pid <= 1 {
+		t.Fatalf("the channel published %q, want a positive group id: %v", published, err)
+	}
+	// The published id has to be a group the call is actually in, or a launcher
+	// acting on it would signal something else.
+	assertPidIsItsOwnGroup(t, pid)
+	if err := os.WriteFile(release, nil, 0o600); err != nil {
+		t.Fatalf("release the fake gh: %v", err)
+	}
+	select {
+	case result := <-done:
+		if result.err != nil {
+			t.Fatalf("run = %v, want the fake gh's answer", result.err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("run did not return after the fake gh answered")
+	}
+	// The call has answered, so its cleanup finds nothing left to stop and only
+	// proves the join does not block on a finished call.
+	if cleared := readChannelLine(t, channel); cleared != "-"+strconv.Itoa(pid) {
+		t.Fatalf("the channel's clearing line is %q, want -%d: a group left published is one a launcher may signal after it was reused", cleared, pid)
+	}
+}
+
+// TestGHGateKeepsTheCallFromRunningUntilItIsReleased pins the pre-exec gate: a
+// call with a channel does not issue a request until the launcher has published
+// the group it can stop.
+//
+// The staging is structural, not a stopwatch. The fake `gh` writes a file when it
+// runs; before the gate is released the file must not exist, and after it the
+// file must. A `gh` that ran early would leave the file behind and fail the first
+// check.
+//
+// The fixture goes through the client's own command builder, so the case covers
+// the wiring as well as the gate: a `run` that built an ungated command would
+// start the fake at once.
+func TestGHGateKeepsTheCallFromRunningUntilItIsReleased(t *testing.T) {
+	t.Parallel()
+	dir := fixtureExecDir(t)
+	channel := channelFile(t, dir)
+	ran := filepath.Join(dir, "gh-ran")
+	gh := filepath.Join(dir, "gh")
+	writeExecutable(t, gh, `#!/usr/bin/env bash
+: > `+shellquote.Literal(ran)+`
+printf '{"data":{}}'
+`)
+	c := GHClient{GH: gh, GroupFD: int(channel.Fd())}
+	cmd, gate, err := c.command(context.Background(), "api", "graphql")
+	if err != nil {
+		t.Fatalf("build the gated call: %v", err)
+	}
+	if len(cmd.ExtraFiles) != 1 {
+		t.Fatalf("a call with a channel built %d inherited descriptors, want one: a gate is what keeps gh from running before its group is published", len(cmd.ExtraFiles))
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start the gated call: %v", err)
+	}
+	// The parent's read end goes with the child's copy, exactly as run does it.
+	gate.closeRead()
+	// Registered before the assertions so a failure stops the waiting `sh`
+	// instead of leaving it behind a binary that already exited.
+	t.Cleanup(func() {
+		gate.close()
+		_ = cmd.Wait()
+	})
+	if _, err := os.Stat(ran); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("the gated gh ran before the gate was released: a request nothing has published a group for cannot be stopped")
+	}
+	gate.release()
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("the released call failed: %v", err)
+	}
+	if _, err := os.Stat(ran); err != nil {
+		t.Fatalf("the released gh did not run: %v", err)
+	}
+}
+
+// TestGHGateRefusesTheCallWhenTheHelperDiesBeforePublishing pins the other half
+// of the gate: a helper killed between the fork and the publication leaves the
+// call unexecuted.
+//
+// Its death closes the gate's write end, the waiting `sh` reads end-of-file, and
+// the fake never runs. That is the shape a SIGKILL of the helper produces, and it
+// is why the gate exists: a request issued before any group was published is a
+// request no launcher can stop.
+func TestGHGateRefusesTheCallWhenTheHelperDiesBeforePublishing(t *testing.T) {
+	t.Parallel()
+	dir := fixtureExecDir(t)
+	channel := channelFile(t, dir)
+	ran := filepath.Join(dir, "gh-ran")
+	gh := filepath.Join(dir, "gh")
+	writeExecutable(t, gh, `#!/usr/bin/env bash
+: > `+shellquote.Literal(ran)+`
+printf '{"data":{}}'
+`)
+	c := GHClient{GH: gh, GroupFD: int(channel.Fd())}
+	cmd, gate, err := c.command(context.Background(), "api", "graphql")
+	if err != nil {
+		t.Fatalf("build the gated call: %v", err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start the gated call: %v", err)
+	}
+	gate.closeRead()
+	t.Cleanup(func() { _ = cmd.Wait() })
+	// The helper's death, with no release.
+	gate.close()
+	if err := cmd.Wait(); err == nil {
+		t.Fatal("the call reported success with the gate unreleased: a call that never ran is not an answered call")
+	}
+	if _, err := os.Stat(ran); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("the gated gh ran although nothing was ever published for it: the call issued a request no launcher could stop")
+	}
+}
+
+// TestGHGateResolvesTheExecutableBeforeTheShell pins where the gated call's
+// executable is resolved.
+//
+// The gate hands the executable to `sh`, and `sh` searches PATH itself from the
+// helper's working directory, which is the checkout root. A PATH holding a
+// relative entry -- "." is the ordinary way to write it -- therefore let a `gh`
+// in the checkout run as this call. Resolving it here applies Go's rule instead:
+// a match reached through a relative PATH entry is refused with exec.ErrDot.
+//
+// The pair is the evidence. The relative entry is refused, and the same
+// executable named by an absolute path runs: a lookup that simply failed would
+// satisfy the first half while breaking every configured helper.
+func TestGHGateResolvesTheExecutableBeforeTheShell(t *testing.T) {
+	dir := fixtureExecDir(t)
+	ran := filepath.Join(dir, "gh-ran")
+	gh := filepath.Join(dir, "gh")
+	writeExecutable(t, gh, `#!/usr/bin/env bash
+: > `+shellquote.Literal(ran)+`
+printf '{"data":{}}'
+`)
+	// The relative entry, computed against this process's directory rather than
+	// reached by changing it: the test binary's directory is shared with every
+	// parallel case, and a chdir here would move them too.
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("read the process directory: %v", err)
+	}
+	relative, err := filepath.Rel(cwd, dir)
+	if err != nil {
+		t.Fatalf("name the fixture directory relative to the process directory: %v", err)
+	}
+	t.Setenv("PATH", relative+string(os.PathListSeparator)+os.Getenv("PATH"))
+	channel := channelFile(t, dir)
+	// Measured directly first, so a pass below is this rule and not a fixture
+	// that happened to have nothing to find.
+	if _, lookErr := exec.LookPath("gh"); !errors.Is(lookErr, exec.ErrDot) {
+		t.Fatalf("LookPath on a bare gh with a relative PATH entry = %v, want exec.ErrDot: this case cannot show the gate resolves the executable if the rule is not in force", lookErr)
+	}
+	t.Run("a relative path entry is refused", func(t *testing.T) {
+		c := GHClient{GH: "gh", GroupFD: int(channel.Fd())}
+		cmd, gate, err := c.command(context.Background(), "api", "graphql")
+		if err == nil {
+			// The gate was built, so the call would run: close it without a
+			// release so `sh` reads end-of-file and exits before this test fails.
+			gate.close()
+			_ = cmd.Wait()
+			t.Fatal("the gated call was built for a gh only reachable through a relative PATH entry: sh would resolve it in the checkout root")
+		}
+		if !errors.Is(err, exec.ErrDot) {
+			t.Fatalf("error = %v, want exec.ErrDot wrapped: the refusal has to be the relative-PATH rule, not an unrelated failure", err)
+		}
+		if _, statErr := os.Stat(ran); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("the checkout-local gh ran (%v): a call the launcher cannot stop was started", statErr)
+		}
+	})
+	t.Run("an explicit path still runs", func(t *testing.T) {
+		c := GHClient{GH: gh, GroupFD: int(channel.Fd())}
+		out, err := c.run(context.Background(), "api", "graphql")
+		if err != nil {
+			t.Fatalf("run with an explicit gh path = %v, want the fake's answer: a configured helper must still run", err)
+		}
+		if string(out) != `{"data":{}}` {
+			t.Fatalf("run = %q, want the fake's answer", out)
+		}
+		if _, err := os.Stat(ran); err != nil {
+			t.Fatalf("the explicitly named gh did not run: %v", err)
+		}
+	})
+}
+
+// TestGHGateFailsClosedWhenTheGroupCannotBePublished pins that a call whose
+// group cannot be published is never released.
+//
+// The launcher names a descriptor because it needs the group of the call it may
+// have to stop. A descriptor that refuses the write leaves it with no handle, so
+// releasing the gate anyway would issue a request nothing can stop -- the hole
+// the gate exists to close. The call must end here, with `gh` unexecuted.
+//
+// The unwritable descriptor is a file opened read-only rather than a number this
+// process never opened: a closed number can be reused by the gate's own pipe
+// between the two statements, which would make the case pass or fail on fd
+// bookkeeping instead of on the rule.
+func TestGHGateFailsClosedWhenTheGroupCannotBePublished(t *testing.T) {
+	t.Parallel()
+	dir := fixtureExecDir(t)
+	ran := filepath.Join(dir, "gh-ran")
+	gh := filepath.Join(dir, "gh")
+	writeExecutable(t, gh, `#!/usr/bin/env bash
+: > `+shellquote.Literal(ran)+`
+printf '{"data":{}}'
+`)
+	// The file has to exist to be opened read-only.
+	if err := os.WriteFile(filepath.Join(dir, "not-a-channel"), nil, 0o600); err != nil {
+		t.Fatalf("create the read-only handle: %v", err)
+	}
+	readOnly, err := os.Open(filepath.Join(dir, "not-a-channel"))
+	if err != nil {
+		t.Fatalf("open the read-only handle: %v", err)
+	}
+	t.Cleanup(func() { _ = readOnly.Close() })
+	c := GHClient{GH: gh, GroupFD: int(readOnly.Fd())}
+	out, err := c.run(context.Background(), "api", "graphql")
+	if err == nil {
+		t.Fatalf("run = %q, want an error: the call's group could not be published and it was released anyway", out)
+	}
+	if !errors.Is(err, ErrGroupPublish) {
+		t.Fatalf("error = %v, want ErrGroupPublish: the run has to know the call was never started, or it will read the queue back for work this invocation never asked for", err)
+	}
+	if errors.Is(err, ErrOutcomeUnknown) {
+		t.Fatalf("error = %v, also reads as an unknown outcome: nothing was sent, so there is nothing to reconcile", err)
+	}
+	if _, statErr := os.Stat(ran); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the fake gh ran (%v): the gate was released for a call whose group the launcher could not be given", statErr)
+	}
+}
+
+// closedChannelProbeEnv marks the subprocess
+// TestGHRefusesAClosedChannelBeforeTheGateOpens starts to arrange a descriptor
+// table with the launcher's closed channel below a free number.
+const closedChannelProbeEnv = "EVENER_MERGEQ_TEST_CLOSED_CHANNEL_PROBE"
+
+// TestGHRefusesAClosedChannelBeforeTheGateOpens pins the ordering that makes a
+// closed channel a refusal rather than a released call.
+//
+// The gate needs a pipe, and os.Pipe() allocates the lowest free descriptor
+// numbers. A channel the launcher named and then closed is such a number, so
+// opening the gate first let the gate's own write end take it. The publication
+// then wrote the group record into the gate pipe -- which is the byte that
+// releases `sh` into `gh` -- and the call ran with the launcher holding no group
+// to stop. Asking the descriptor whether it is open and writable before the pipe
+// exists is what closes that window.
+//
+// The arrangement is exact, not incidental: the channel's number must be the
+// WRITE end's, so the case frees a lower number as well and measures the layout
+// before the call. A channel number that the pipe's read end took would fail the
+// write with EBADF and take the refusal path for a reason this case is not
+// about.
+//
+// It runs in a subprocess so the descriptor table it arranges is its own: the
+// borrowed-descriptor wrappers are retained by number for the life of the
+// process, and a case that planted one at a number the parallel cases also use
+// would hand them a wrapper for a closed descriptor.
+func TestGHRefusesAClosedChannelBeforeTheGateOpens(t *testing.T) {
+	if os.Getenv(closedChannelProbeEnv) == "1" {
+		runClosedChannelProbe(t)
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestGHRefusesAClosedChannelBeforeTheGateOpens$")
+	cmd.Env = append(os.Environ(), closedChannelProbeEnv+"=1")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("the closed-channel probe subprocess failed: %v\n%s", err, out)
+	}
+}
+
+// runClosedChannelProbe is the subprocess half: it arranges the descriptor table,
+// measures it, and then asks the client for a call on the closed channel.
+func runClosedChannelProbe(t *testing.T) {
+	dir := fixtureExecDir(t)
+	ran := filepath.Join(dir, "gh-ran")
+	gh := filepath.Join(dir, "gh")
+	writeExecutable(t, gh, `#!/usr/bin/env bash
+: > `+shellquote.Literal(ran)+`
+printf '{"data":{}}'
+`)
+	// A lower number freed alongside the channel's is what makes the gate's pipe
+	// give the channel's number to its SECOND end. os.Pipe() hands out the lowest
+	// free number first, so with only the channel free the read end takes it.
+	lowR, lowW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("open the lower descriptor: %v", err)
+	}
+	defer func() { _ = lowW.Close() }()
+	channel := channelFile(t, dir)
+	closedFD := int(channel.Fd())
+	if int(lowR.Fd()) >= closedFD {
+		t.Fatalf("the lower descriptor is %d and the channel is %d, so this case cannot put a lower number in front of the channel's", lowR.Fd(), closedFD)
+	}
+	if err := lowR.Close(); err != nil {
+		t.Fatalf("free the lower descriptor: %v", err)
+	}
+	if err := channel.Close(); err != nil {
+		t.Fatalf("close the channel: %v", err)
+	}
+	// The premise, measured: a pipe opened now gives its write end the channel's
+	// number. The client's gate is the same call a few statements later, and
+	// nothing in between opens a descriptor.
+	probeR, probeW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("open the reuse probe: %v", err)
+	}
+	reused := int(probeW.Fd()) == closedFD
+	_ = probeR.Close()
+	_ = probeW.Close()
+	if !reused {
+		t.Fatalf("os.Pipe() did not give its write end the closed channel's number %d, so this host cannot show the reuse this case is about", closedFD)
+	}
+	c := GHClient{GH: gh, GroupFD: closedFD}
+	out, err := c.run(context.Background(), "api", "graphql")
+	if err == nil {
+		t.Fatalf("run = %q, want ErrGroupPublish: a closed channel is not a handle, and the call must not be issued without one", out)
+	}
+	if !errors.Is(err, ErrGroupPublish) {
+		t.Fatalf("error = %v, want ErrGroupPublish: the run has to know the call was never started", err)
+	}
+	if _, statErr := os.Stat(ran); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the fake gh ran (%v): the group record was written into the gate pipe, which released the call with no group published", statErr)
+	}
+}
+
+// TestGHGroupFDComesFromTheEnvironmentWithValidation pins how the launcher's
+// channel number is read.
+//
+// It is configuration, so it is validated rather than trusted: 0, 1 and 2 are the
+// standard streams, and publishing a group id to one of them would corrupt a
+// caller's output. A value that is not a number names no channel either, which
+// leaves the call ungated rather than gated on a descriptor nobody holds.
+func TestGHGroupFDComesFromTheEnvironmentWithValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  string
+		want int
+	}{
+		{name: "the launcher's own channel", env: "3", want: 3},
+		{name: "a higher descriptor", env: "12", want: 12},
+		{name: "unset", env: "", want: 0},
+		{name: "not a number", env: "three", want: 0},
+		{name: "standard input", env: "0", want: 0},
+		{name: "standard output", env: "1", want: 0},
+		{name: "standard error", env: "2", want: 0},
+		{name: "negative", env: "-3", want: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(ghGroupFDEnv, tc.env)
+			t.Setenv(ghGroupFileEnv, "")
+			if got := (GHClient{}).groupFD(); got != tc.want {
+				t.Fatalf("groupFD() = %d for %q, want %d", got, tc.env, tc.want)
+			}
+		})
+	}
+}
+
+// channelProbeEnv marks the subprocess TestGHCallDoesNotInheritTheLaunchersChannel
+// starts to hold the launcher's channel on descriptor 3.
+const channelProbeEnv = "EVENER_MERGEQ_TEST_CHANNEL_PROBE"
+
+// channelProbeDirEnv names the directory that subprocess runs its probe in.
+const channelProbeDirEnv = "EVENER_MERGEQ_TEST_CHANNEL_PROBE_DIR"
+
+// TestGHCallDoesNotInheritTheLaunchersChannel pins that `gh` cannot see the
+// descriptor the helper publishes on.
+//
+// os/exec gives a child the three standard descriptors plus the ones named in
+// ExtraFiles, so the gate's read end is FD 3 in the child and the launcher's own
+// FD 3 is not inherited at all. Without that rule the launcher's channel would
+// land in `gh` at 3, and a `gh` wrapper that wrote to it could publish a group id
+// of its own choosing -- the injection the descriptor form exists to prevent.
+//
+// The probe runs in a subprocess of this test binary, with the channel as that
+// subprocess's descriptor 3 exactly as ExtraFiles delivers it. It is not
+// run against this process's own FD 3: replacing a descriptor in the test
+// runner mutates a shared table, and /proc/self/fd does not exist on macOS, so
+// the observation belongs where the descriptor is planted.
+//
+// The probe is paired with a positive control: the same fake `gh` started with
+// the channel handed to it directly reports OPEN. Without that half a probe that
+// never opens anything would agree with a call that does not leak, and prove
+// nothing.
+func TestGHCallDoesNotInheritTheLaunchersChannel(t *testing.T) {
+	if os.Getenv(channelProbeEnv) == "1" {
+		runChannelInheritanceProbe(t)
+		return
+	}
+	dir := fixtureExecDir(t)
+	channel := channelRegularFile(t, dir)
+	// ExtraFiles is positionally FD 3 in the child, and it is the same open file
+	// description, so the child's publication lands in this file.
+	cmd := exec.Command(os.Args[0], "-test.run=^TestGHCallDoesNotInheritTheLaunchersChannel$", "-test.v")
+	cmd.Env = append(os.Environ(), channelProbeEnv+"=1", channelProbeDirEnv+"="+dir)
+	cmd.ExtraFiles = []*os.File{channel}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("the descriptor probe subprocess failed: %v\n%s", err, out)
+	}
+}
+
+// runChannelInheritanceProbe is the subprocess half: it holds the channel on
+// descriptor 3 and asks the same fake `gh` what it sees there, once through the
+// client's gated call and once as a direct child that does inherit it.
+func runChannelInheritanceProbe(t *testing.T) {
+	dir := os.Getenv(channelProbeDirEnv)
+	if dir == "" {
+		t.Fatal("the probe subprocess was started without a probe directory")
+	}
+	// The probe is a write attempt, not a stat: a descriptor that is open for
+	// writing is what would let a wrapper inject a group id. The shebang is
+	// absolute so the fake does not depend on the PATH this binary was handed.
+	seen := filepath.Join(dir, "fd3")
+	gh := filepath.Join(dir, "gh")
+	writeExecutable(t, gh, `#!/bin/bash
+if ( : >&3 ) 2>/dev/null; then printf 'open' > `+shellquote.Literal(seen)+`; else printf 'closed' > `+shellquote.Literal(seen)+`; fi
+printf '{"data":{}}'
+`)
+	// Each run starts from no answer, so the file read below is that run's.
+	clearProbe := func() {
+		t.Helper()
+		if err := os.Remove(seen); err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("clear the probe's answer: %v", err)
+		}
+	}
+	probeView := func() string {
+		t.Helper()
+		body, err := os.ReadFile(seen)
+		if err != nil {
+			t.Fatalf("read the fake's view of descriptor 3: %v", err)
+		}
+		return string(body)
+	}
+	// The control: the channel is this process's descriptor 3, handed to the fake
+	// as its own descriptor 3. The probe must report OPEN, or it cannot tell an
+	// inherited channel from a closed one.
+	control := exec.Command(gh)
+	// A private copy, so no finalizer on a wrapper for descriptor 3 can close the
+	// channel this process still has to publish on.
+	inheritedFD, err := syscall.Dup(3)
+	if err != nil {
+		t.Fatalf("copy the inherited channel descriptor: %v", err)
+	}
+	// Kept out of every child but the one it is meant for: os/exec clears this
+	// flag for a file it is handed through ExtraFiles and leaves it set
+	// everywhere else.
+	syscall.CloseOnExec(inheritedFD)
+	inherited := os.NewFile(uintptr(inheritedFD), "inherited-channel")
+	control.ExtraFiles = []*os.File{inherited}
+	clearProbe()
+	if out, err := control.CombinedOutput(); err != nil {
+		t.Fatalf("run the positive control: %v\n%s", err, out)
+	}
+	if got := probeView(); got != "open" {
+		t.Fatalf("the probe reported descriptor 3 %q for a child that inherited the channel, so it cannot show that a call does not inherit it", got)
+	}
+	if err := inherited.Close(); err != nil {
+		t.Fatalf("close the channel copy: %v", err)
+	}
+	// The case: the client's gated call. It publishes on this process's
+	// descriptor 3 and releases the gate, so the fake sees exactly what a real
+	// `gh` would.
+	c := GHClient{GH: gh, GroupFD: 3}
+	clearProbe()
+	out, err := c.run(context.Background(), "api", "graphql")
+	if err != nil {
+		t.Fatalf("run = %v", err)
+	}
+	if string(out) != `{"data":{}}` {
+		t.Fatalf("run = %q, want the fake's answer", out)
+	}
+	if got := probeView(); got != "closed" {
+		t.Fatalf("gh saw descriptor 3 %q: the launcher's channel must not be inherited by the call", got)
+	}
+}

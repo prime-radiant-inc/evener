@@ -812,7 +812,7 @@ func TestHookRunner_EmitsHookEvents(t *testing.T) {
 	})
 
 	var collected []events.SessionEvent
-	runner.SetEventCallback(func(kind events.EventKind, data events.EventData) {
+	runner.SetEventCallbackContext(func(_ context.Context, kind events.EventKind, data events.EventData) {
 		collected = append(collected, events.SessionEvent{Kind: kind, Data: data})
 	})
 
@@ -1234,7 +1234,7 @@ func TestMatchHooks_InvalidMatcherEmitsWarning(t *testing.T) {
 
 	// The dispatch path must be silent: skip the hook, emit nothing.
 	var emitted int
-	r.SetEventCallback(func(kind events.EventKind, data events.EventData) {
+	r.SetEventCallbackContext(func(_ context.Context, kind events.EventKind, data events.EventData) {
 		emitted++
 	})
 	if got := r.MatchHooks(plugin.HookPreToolUse, "Bash"); len(got) != 0 {
@@ -2142,7 +2142,7 @@ func TestRunPostToolBatch_EmitsHookLifecycleEvents(t *testing.T) {
 	r := newRunner(nil, "")
 	r.Add(plugin.HookPostToolBatch, plugin.RegisteredHook{Type: "command", Timeout: 5, Command: "true"})
 	var starts, ends int
-	r.SetEventCallback(func(kind events.EventKind, data events.EventData) {
+	r.SetEventCallbackContext(func(_ context.Context, kind events.EventKind, data events.EventData) {
 		switch kind {
 		case events.EventHookStart:
 			if start, ok := data.(events.HookStartData); ok && start.Event == string(plugin.HookPostToolBatch) {
@@ -2210,7 +2210,7 @@ func TestRunPostCompactFor_MatchesTrigger(t *testing.T) {
 	var runs int
 	r.Add(plugin.HookPostCompact, plugin.RegisteredHook{Matcher: "^manual$", Type: "command", Timeout: 5,
 		Command: "true"})
-	r.SetEventCallback(func(kind events.EventKind, data events.EventData) {
+	r.SetEventCallbackContext(func(_ context.Context, kind events.EventKind, data events.EventData) {
 		if kind == events.EventHookStart {
 			if start, ok := data.(events.HookStartData); ok && start.Event == string(plugin.HookPostCompact) {
 				runs++

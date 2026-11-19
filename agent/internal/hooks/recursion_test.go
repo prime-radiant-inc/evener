@@ -12,12 +12,13 @@ import (
 // TestMatchHooks_NoDispatchEmitBreaksRecursion reproduces the production crash
 // cycle at the Runner boundary: a Notification hook with an invalid matcher whose
 // dispatch (RunNotification → runAll → MatchHooks) used to emit an EventWarning
-// via onEvent. In production onEvent is Session.emit, and emit(EventWarning) calls
-// runNotificationHook → RunNotification → MatchHooks → onEvent(EventWarning) → …,
-// an unbounded recursion that overflows the stack.
+// through the lifecycle callback. In production that callback is Session.emit,
+// and emit(EventWarning) calls runNotificationHook → RunNotification →
+// MatchHooks → callback(EventWarning) → …, an unbounded recursion that
+// overflows the stack.
 //
-// Here onEvent re-enters RunNotification on every EventWarning to mimic that
-// wiring, with a hard depth bound. BEFORE the fix MatchHooks emits on the invalid
+// Here the callback re-enters RunNotification on every EventWarning to mimic
+// that wiring, with a hard depth bound. BEFORE the fix MatchHooks emits on the invalid
 // matcher, so the bound is exceeded and the test fails. AFTER the fix MatchHooks
 // skips silently, the chain never starts, and the bound is never reached.
 func TestMatchHooks_NoDispatchEmitBreaksRecursion(t *testing.T) {
@@ -32,7 +33,7 @@ func TestMatchHooks_NoDispatchEmitBreaksRecursion(t *testing.T) {
 
 	const bound = 50
 	depth := 0
-	r.SetEventCallback(func(kind events.EventKind, data events.EventData) {
+	r.SetEventCallbackContext(func(_ context.Context, kind events.EventKind, data events.EventData) {
 		if kind != events.EventWarning {
 			return
 		}
@@ -69,7 +70,7 @@ func TestMatchHooks_InvalidMatcherSkipsSilently(t *testing.T) {
 	})
 
 	var emitted int
-	r.SetEventCallback(func(kind events.EventKind, data events.EventData) {
+	r.SetEventCallbackContext(func(_ context.Context, kind events.EventKind, data events.EventData) {
 		emitted++
 	})
 

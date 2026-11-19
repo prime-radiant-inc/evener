@@ -1,7 +1,9 @@
 package chatcompletions
 
 import (
+	"bytes"
 	"encoding/json"
+	"encoding/json/jsontext"
 	"fmt"
 	"strings"
 
@@ -88,17 +90,23 @@ func toChatMessages(messages []llm.Message, caps registry.Caps, useReasoningDeta
 			}
 			text := textFromParts(content)
 			calls := toolCallsFromParts(content)
-			reasoning := thinkingFromParts(content)
+			var encrypted []json.RawMessage
+			if !reasoningOff {
+				encrypted = encryptedDetailsFromParts(content)
+			}
+			thinkingAsText := registry.BoolValue(caps.ThinkingAsText)
+			scalarReplay := !useReasoningDetails && len(encrypted) == 0 && !thinkingAsText
+			reasoning := thinkingFromParts(content, scalarReplay)
 			if reasoningOff {
 				// A declared non-reasoning model accepts no reasoning fields —
 				// prior-turn thinking (a fallback or model switch can carry it)
 				// is dropped from replay entirely. ThinkingAsText below is the
 				// deliberate exception: it rides ordinary text content.
-				if !registry.BoolValue(caps.ThinkingAsText) {
+				if !thinkingAsText {
 					reasoning = ""
 				}
 			}
-			if reasoning != "" && registry.BoolValue(caps.ThinkingAsText) {
+			if reasoning != "" && thinkingAsText {
 				// Replay thinking as ordinary text (no tags — tagged thinking
 				// teaches the model to mimic the tags). The reasoning field
 				// stays unset.
@@ -109,17 +117,12 @@ func toChatMessages(messages []llm.Message, caps registry.Caps, useReasoningDeta
 				}
 				reasoning = ""
 			}
-			var encrypted []map[string]any
-			if !reasoningOff {
-				encrypted = encryptedDetailsFromParts(content)
-			}
 			// Encrypted reasoning (OpenRouter Gemini/o-series) must round-trip
 			// through reasoning_details regardless of the useReasoningDetails
 			// flag. When present, text rides the same array (text first, then
 			// encrypted) to mirror OpenRouter's unified reasoning_details shape.
 			if reasoning != "" || len(encrypted) > 0 {
 				if useReasoningDetails || len(encrypted) > 0 {
-					var details []map[string]any
 					// A signature-bearing reasoning.text item (OpenRouter's
 					// Anthropic route) absorbs the accumulated text: the
 					// provider's canonical non-stream shape is ONE item with
@@ -127,27 +130,19 @@ func toChatMessages(messages []llm.Message, caps registry.Caps, useReasoningDeta
 					// a text-less signature item.
 					merged := false
 					if reasoning != "" {
-						for _, e := range encrypted {
-							if e["type"] == "reasoning.text" {
-								if t, _ := e["text"].(string); t == "" {
-									e["text"] = reasoning
-								}
-								merged = true
+						for i, e := range encrypted {
+							if spliced, isText := reasoningTextWith(e, reasoning); isText {
+								encrypted[i], merged = spliced, true
 								break
 							}
 						}
 					}
 					if reasoning != "" && !merged {
 						// MiniMax format: {type: "reasoning.text", text: "...", format: "unknown", index: 0}
-						details = append(details, map[string]any{
-							"type":   "reasoning.text",
-							"text":   reasoning,
-							"format": "unknown",
-							"index":  0,
-						})
+						synthetic, _ := json.Marshal(map[string]any{"type": "reasoning.text", "text": reasoning, "format": "unknown", "index": 0})
+						encrypted = append([]json.RawMessage{synthetic}, encrypted...)
 					}
-					details = append(details, encrypted...)
-					msg["reasoning_details"] = details
+					msg["reasoning_details"] = encrypted
 				} else {
 					msg[reasoningReplayField(content, caps)] = reasoning
 				}
@@ -229,8 +224,8 @@ func textFromParts(parts []llm.ContentPart) string {
 // reasoningReplayField returns the wire field assistant thinking replays to:
 // caps.ReasoningField when the row names one (reasoning_details is excluded —
 // that shape is an array, assembled separately, not a scalar replay field);
-// else the field the thinking originally arrived on (recorded in the part's
-// Signature) when it names a known reasoning field; else reasoning_content.
+// else the original scalar field from the first thinking part with text;
+// else reasoning_content.
 // Signatures that aren't field names (e.g. Anthropic crypto blobs riding a
 // cross-provider transcript) fall back to the default.
 func reasoningReplayField(parts []llm.ContentPart, caps registry.Caps) string {
@@ -238,7 +233,13 @@ func reasoningReplayField(parts []llm.ContentPart, caps registry.Caps) string {
 		return f
 	}
 	for _, p := range parts {
-		if p.Kind == llm.ContentThinking && p.Thinking != nil && p.Thinking.Text != "" {
+		if p.Kind == llm.ContentThinking && p.Thinking != nil {
+			if p.Thinking.ScalarReasoningText != "" && llm.IsOpenAICompatReasoningField(p.Thinking.ScalarReasoningField) {
+				return p.Thinking.ScalarReasoningField
+			}
+			if p.Thinking.Text == "" {
+				continue
+			}
 			if llm.IsOpenAICompatReasoningField(p.Thinking.Signature) {
 				return p.Thinking.Signature
 			}
@@ -248,18 +249,48 @@ func reasoningReplayField(parts []llm.ContentPart, caps registry.Caps) string {
 	return "reasoning_content"
 }
 
+// reasoningTextWith merges text into a reasoning.text item without moving a key.
+func reasoningTextWith(item []byte, text string) (json.RawMessage, bool) {
+	d := jsontext.NewDecoder(bytes.NewReader(item), jsontext.AllowInvalidUTF8(true), jsontext.AllowDuplicateNames(true))
+	_, _ = d.ReadToken() // the opening brace; item is JSON that already decoded
+	var isText, has, empty bool
+	var start, end int64
+	for d.PeekKind() == jsontext.KindString {
+		name, _ := d.ReadToken()
+		key := name.String() // ReadValue invalidates the token buffer
+		v, _ := d.ReadValue()
+		switch key {
+		case "type":
+			var s string
+			isText = json.Unmarshal(v, &s) == nil && s == "reasoning.text"
+		case "text":
+			has, empty, end = true, string(v) == "null" || string(v) == `""`, d.InputOffset()
+			start = end - int64(len(v))
+		}
+	}
+	if !isText || has && !empty {
+		return item, isText
+	}
+	quoted, _ := jsontext.AppendQuote(nil, text)
+	if has {
+		return append(append(item[:start:start], quoted...), item[end:]...), true
+	}
+	at := int64(len(item)) - 1
+	return append(append(append(item[:at:at], `,"text":`...), quoted...), item[at:]...), true
+}
+
 // encryptedDetailsFromParts decodes the opaque encrypted reasoning_details
 // items carried on assistant thinking parts (serialized in EncryptedContent),
 // concatenated in part order, ready to replay in the reasoning_details array.
-func encryptedDetailsFromParts(parts []llm.ContentPart) []map[string]any {
-	var out []map[string]any
+func encryptedDetailsFromParts(parts []llm.ContentPart) []json.RawMessage {
+	var out []json.RawMessage
 	for _, p := range parts {
 		if p.Kind == llm.ContentThinking && p.Thinking != nil &&
 			llm.IsOpenAICompatEncryptedReasoning(p.Thinking.EncryptedContent) {
 			// The guard also keeps a foreign provider's opaque blob (OpenAI
 			// Responses encrypted_content) off the wire on a cross-provider
 			// transcript — it would not parse as our item array anyway.
-			var items []map[string]any
+			var items []json.RawMessage
 			if err := json.Unmarshal([]byte(p.Thinking.EncryptedContent), &items); err == nil {
 				out = append(out, items...)
 			}
@@ -268,14 +299,17 @@ func encryptedDetailsFromParts(parts []llm.ContentPart) []map[string]any {
 	return out
 }
 
-func thinkingFromParts(parts []llm.ContentPart) string {
+func thinkingFromParts(parts []llm.ContentPart, scalarReplay bool) string {
 	var b strings.Builder
 	for _, p := range parts {
-		if p.Kind == llm.ContentThinking && p.Thinking != nil && p.Thinking.Text != "" {
+		if p.Kind != llm.ContentThinking || p.Thinking == nil {
+			continue
+		}
+		if text := p.Thinking.ChatReplayText(scalarReplay); text != "" {
 			if b.Len() > 0 {
 				b.WriteString("\n")
 			}
-			b.WriteString(p.Thinking.Text)
+			b.WriteString(text)
 		}
 	}
 	return b.String()
@@ -412,7 +446,7 @@ func toolCallsFromParts(parts []llm.ContentPart) []map[string]any {
 				"type": "function",
 				"function": map[string]any{
 					"name":      p.ToolCall.Name,
-					"arguments": openaichat.ToolArgumentsString(p.ToolCall.Arguments),
+					"arguments": openaichat.ToolArgumentsString(json.RawMessage(p.ToolCall.WireArguments())),
 				},
 			}
 			if sig := strings.TrimSpace(p.ToolCall.ThoughtSignature); sig != "" {

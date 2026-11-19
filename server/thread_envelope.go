@@ -96,8 +96,13 @@ type threadEnvelope struct {
 	FailedToolCalls       *int
 	PendingQuestion       *appwire.PendingQuestion
 	// Failure summarizes the failed turn the session rests on (S1c). The
-	// snapshot shows it only while the status is systemError.
+	// snapshot shows it only while the status is systemError. A wait
+	// summary (ResumesAt > 0) is additionally bound to the execution that
+	// supplied it by failureWaitTurnID: it serves only while that execution
+	// is still the running one, so a replacement turn cannot inherit the
+	// turn it stopped's wait.
 	Failure               *appwire.ThreadFailure
+	failureWaitTurnID     string
 	PendingEscalations    []appwire.SandboxEscalationRequested
 	ReasoningEffort       string
 	ReasoningEffortLevels []string
@@ -399,6 +404,7 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 	cwdCarrierGeneration := s.appEnvelope.cwdCarrierGeneration
 	notesCarrierGeneration := s.appEnvelope.notesCarrierGeneration
 	urlsCarrierGeneration := s.appEnvelope.urlsCarrierGeneration
+	activeTurnID := s.appActiveTurnID
 	ref := s.appRef
 	bootGeneration := s.appBootGeneration
 	s.mu.RUnlock()
@@ -458,6 +464,13 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 	}
 	if facets&facetTurnFailure != 0 {
 		next.Failure = src.RestingFailure()
+		// A wait summary is bound to the execution that supplied it, read
+		// from the same hold as the identity test below so the binding names
+		// the turn that was running when the session wrote this sample.
+		// Ordinary resting failures carry no binding and serve as before.
+		if next.Failure != nil && next.Failure.ResumesAt > 0 {
+			next.failureWaitTurnID = activeTurnID
+		}
 	}
 	if facets&facetEscalations != 0 {
 		next.PendingEscalations = src.PendingEscalations()
@@ -653,6 +666,7 @@ func (e *threadEnvelope) assign(facets envelopeFacet, next threadEnvelope, cwdSt
 	}
 	if facets&facetTurnFailure != 0 {
 		e.Failure = next.Failure
+		e.failureWaitTurnID = next.failureWaitTurnID
 	}
 	if facets&facetEscalations != 0 {
 		e.PendingEscalations = next.PendingEscalations

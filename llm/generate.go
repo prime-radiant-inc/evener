@@ -219,10 +219,9 @@ func prepareGeneration(opts GenerateOptions) (*generationState, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Measured here, beside the one place the list is built, rather than by
-	// every estimate: the list is immutable for the generation's life, and one
-	// marshal of an advertised catalog costs far more than the history walk the
-	// estimate is for (#6437).
+	// Measured once here beside tool preparation as the declared catalog length;
+	// dispatch applies any adapter-specific parameterless-schema delta once on a
+	// shallow copy without touching credentials during preparation.
 	toolDefsJSONBytes := ToolsJSONBytes(toolDefs)
 	hasActiveTool := false
 	for _, t := range opts.Tools {
@@ -251,6 +250,9 @@ func prepareGeneration(opts GenerateOptions) (*generationState, error) {
 
 // request builds the model request for one step from opts and the conversation so far.
 func (gs *generationState) request(opts GenerateOptions, history []Message) Request {
+	// Each definition carries its own declaration, so the adapters can recover
+	// "no arguments" from the same list the budget prices and the override
+	// adapter marshals. Nothing request-scoped has to be marked.
 	return Request{
 		Model:                opts.Model,
 		Provider:             opts.Provider,
@@ -392,8 +394,18 @@ func prepareTools(tools []Tool) (map[string]Tool, []ToolDefinition, error) {
 		if err := ValidateToolName(name); err != nil {
 			return nil, nil, err
 		}
+		// A definition that declares no parameters carries the open empty schema
+		// in this catalog, because that is the schema every adapter puts on the
+		// wire for it and the budget has to price what goes on the wire. What the
+		// declaration was is kept separately: "no arguments" and "the open empty
+		// object" are different claims, and only the first is strict-expressible.
+		//
+		// Keeping the schema here rather than restoring it at dispatch is what
+		// stops the stamp from describing a list no adapter sends: the stamp is
+		// measured from this catalog, so a nil here would have the budget admit a
+		// request the wire is larger than.
 		if t.Definition.Parameters == nil {
-			t.Definition.Parameters = defaultToolParameters()
+			t.Definition = t.Definition.WithNoParametersDeclared()
 		}
 		if err := validateToolParameters(t.Definition.Parameters); err != nil {
 			return nil, nil, err

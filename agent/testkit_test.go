@@ -307,6 +307,15 @@ func adapterInstance(name string) registry.Provider {
 // generation. A closing session installs nothing, for the same reason
 // SetModelControl refuses to apply one: it has no authority to fence on.
 func setModel(sess *Session, model string) error {
+	return setModelOn(sess, "", model)
+}
+
+// setModelOn is setModel for a picker that names the instance it chose. The
+// explicit provider decides the target outright - the OpenRouter case, where
+// "anthropic/claude-opus-5" is one of OpenRouter's own model ids, so a joined
+// ref alone cannot say which half the slash belonged to. An empty provider
+// keeps the current instance's reading, and model is then the whole ref.
+func setModelOn(sess *Session, provider, model string) error {
 	var publish func(string)
 	sess.mu.Lock()
 	if sess.bootGeneration == "" && !sess.closingOrClosedLocked() {
@@ -319,6 +328,7 @@ func setModel(sess *Session, model string) error {
 		publish(generation)
 	}
 	_, err := sess.SetModelControl(ModelControlRequest{
+		ModelProvider:          provider,
 		Model:                  model,
 		ClientMutationID:       "set_model_" + ulid.Make().String(),
 		ExpectedInstanceID:     sess.ID(),

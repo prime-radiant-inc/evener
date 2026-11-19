@@ -747,6 +747,10 @@ function ConversationScreenView({
 	// closes. The draft does not follow: it belongs to the session that owns it.
 	const pendingIdentity = useRef<string | null>(route.params.pendingIdentity ?? null);
 	const currentIdentity = useRef(route.params.ref);
+	// The key of the route replaceForIdentity mounts in this one's place, so a
+	// command's answer can gate on the destination that survived the
+	// replacement (applyCommand's catch) rather than the key it removed.
+	const survivingRouteKey = useRef<string | null>(null);
 	useEffect(() => {
 		currentIdentity.current = route.params.ref;
 	}, [route.params.ref]);
@@ -767,6 +771,12 @@ function ConversationScreenView({
 				ref: to,
 				pendingIdentity: undefined,
 			});
+			// The topmost route is the replacement this just mounted: REPLACE
+			// swaps a route in place, and this screen was topmost when the
+			// replace was dispatched. The state store reads back synchronously,
+			// so the key is already there to record.
+			const state = navigation.getState();
+			survivingRouteKey.current = state.routes[state.index]?.key ?? null;
 		},
 		[navigation, route.key, route.params],
 	);
@@ -850,16 +860,37 @@ function ConversationScreenView({
 	// the model keeps its name across a screen pushed over this one and a
 	// rebinding, while the catalog reads again (audit N6).
 	const knownCatalog = useRef<ModelListResponse | null>(null);
+	// The values a pick was written for and never read back, per setting. They
+	// belong to the session, so the entry owns them: a cold pick can replace the
+	// runtime before its own answer lands, and another view of the same session
+	// reads the same projection, so a record per view would let one dismiss a
+	// correction the other knew was outstanding. Every binding therefore reads
+	// the entry's record rather than a copy of it.
+	const session = entry.sessionFacts;
 	// The last catalog whose read succeeded, kept for naming only: a later
 	// failed read clears the picker's catalog so it offers no stale choices,
 	// but the chip and the Session sheet must keep the model's name rather
 	// than fall back to its raw id (#2988).
 	const namedCatalog = useRef<ModelListResponse | null>(null);
 	const controls = useMemo(() => {
+		// A covering push still rebuilds the controls, as it always has, and the
+		// replacement reads the catalog again. What this binding keeps across a
+		// transport recycle is the session's own record and service: the fence
+		// below answers the destination's question, not this instance's, so a
+		// step the hub already acknowledged can settle on the screen that is
+		// still looking at it (issue #6696).
 		if (!service || !connected || !focused) return null;
 		const refreshSession = async () => {
-			if (store.getState().status === "open") await store.getState().rehydrate(service);
-			else await store.getState().resumeProjected(service, route.params.ref);
+			// The acknowledgement can outlive the service this controller was
+			// built with: a restart replaces the session's service while its
+			// reply is still out. Reading through the captured one would install
+			// a retired service as the store's own binding, and the screen's
+			// replacement would then be ignored by Send and by older-history
+			// reads. The entry is the live binding, so the read resolves it here.
+			const live = entry.service;
+			if (live === null) throw new Error("Could not read the session.");
+			if (store.getState().status === "open") await store.getState().rehydrate(live);
+			else await store.getState().resumeProjected(live, route.params.ref);
 			const current = store.getState();
 			if (current.status !== "open" || current.error) throw new Error("Could not read the session.");
 		};
@@ -871,8 +902,79 @@ function ConversationScreenView({
 			() => {
 				void refreshSession().catch(() => undefined);
 			},
-			() => {
+			(scope) => {
 				const current = store.getState();
+				// Whether the reader is still on this session is a question of route
+				// and session identity alone. A transport that is away is not a reader
+				// who left: it reconnects and reads the same session again, and an
+				// action that outlived its binding is still owed to the screen that
+				// is looking at it. The client is that transport, and going inactive
+				// replaces it with none, so it cannot answer this question — the
+				// session's own store can, because it outlives every client.
+				//
+				// A stack that still contains this conversation and a reader still
+				// looking at it are two questions. The Duo split keeps the detail
+				// stack's routes while an alert opens another conversation on the
+				// root stack over it, so the nested state alone would answer the
+				// first. screenInFront asks the stacks the screen is nested in too,
+				// which is what the announcement needs.
+				if (scope === "route") {
+					return (
+						currentDestination.current.store === store &&
+						screenInFront(navigation, route.key) &&
+						current.ref === route.params.ref
+					);
+				}
+				// The same session, whether or not its screen is the one in front:
+				// an outer screen can cover this conversation without moving the
+				// binding to another one. A cold pick's acknowledgement asks this, so
+				// a covered picker is not left with an action in flight forever.
+				if (scope === "session") {
+					return currentDestination.current.store === store && current.ref === route.params.ref;
+				}
+				// The destination answers "can this binding still read the session
+				// it dispatched to", so a ready transport and the same store decide
+				// it. A pane another screen covers keeps reading back: the picker
+				// has to show the new choice when the reader returns.
+				if (scope === "destination") {
+					return (
+						currentDestination.current.store === store &&
+						currentDestination.current.client === client &&
+						connectionReady.current &&
+						current.ref === route.params.ref
+					);
+				}
+				// An owed resume is work the reader already asked for, not a new
+				// request, so coverage does not refuse it: a root-stack push over a
+				// Duo conversation must not leave the daemon stopped with nothing
+				// left to retry it. It still needs a binding that can actually
+				// send. A ready transport is not enough - a reconnect restores the
+				// client before the replacement service has opened its thread, and
+				// a resume written into that gap throws without reaching the hub,
+				// which the restart reads as a failure and gives up on. The store
+				// says which it is: it is open only once a read of this binding
+				// published this instance, so an opening binding refuses here
+				// instead and the retry survives until it is ready.
+				//
+				// The store's status is not enough on its own: a rehydrate keeps it
+				// open while the service clears its own thread ref for the read, and
+				// a resume admitted then throws before the hub exactly as one in a
+				// reconnect's gap does. The service is the one that knows whether it
+				// can address the thread right now.
+				if (scope === "send") {
+					return (
+						currentDestination.current.store === store &&
+						currentDestination.current.client === client &&
+						connectionReady.current &&
+						current.ref === route.params.ref &&
+						current.status === "open" &&
+						current.conversationGeneration === bindingGeneration &&
+						current.conversation?.instanceId === bindingInstance &&
+						service.canAddressThread()
+					);
+				}
+				// Starting an action is a reader's question, so it keeps the route
+				// fence: a covered pane offers nothing to press.
 				if (
 					currentDestination.current.store !== store ||
 					currentDestination.current.client !== client ||
@@ -894,8 +996,15 @@ function ConversationScreenView({
 			() => store.getState().conversation,
 			() => !commandBusy.current && !document.getSnapshot().submitting && store.getState().pendingSubmission === null,
 			knownCatalog.current,
+			// A read the store discarded still returns normally, so "the refresh
+			// resolved" is not the same fact as "the projection these controls
+			// read from is the one that read published". The store says which it
+			// is; a discarded read leaves its last accepted projection in place and
+			// never marks a fresh one ready.
+			session,
 		);
 	}, [
+		entry,
 		service,
 		store,
 		client,
@@ -2045,10 +2154,15 @@ function ConversationScreenView({
 			// composer that sent it even though the binding moved on.
 			if (currentBinding()) await store.getState().rehydrate(service);
 		} catch (error) {
-			// The error renders while this screen is mounted, whatever became
-			// of the binding meanwhile: a resume that resolved a new identity
-			// must not swallow the command's answer.
-			if (!screenInFront(navigation, route.key)) return;
+			// The gate is the destination that survived the resume: a resume
+			// that resolved a new identity replaces this very route
+			// (replaceForIdentity), so the initiating key is gone from the
+			// stack by the time the daemon answers, and a gate on it would
+			// drop the refusal the composer is owed. The replacement recorded
+			// its own key; with no replacement behind the command, the
+			// destination is still the route the command was typed on. The
+			// draft keeps its association with that original ref either way.
+			if (!screenInFront(navigation, survivingRouteKey.current ?? route.key)) return;
 			setActionError(
 				error instanceof CommandArgumentError
 					? { reason: error instanceof CommandNotSentError ? "not-sent" : "refused", message: error.message }
@@ -2371,7 +2485,14 @@ function ConversationScreenView({
 	// yet (ruling 20). A recovery-fenced session keeps the composer: Send is
 	// how it resumes, so it shows no Resume notice of its own.
 	const notice = conversation?.status.type === "restartRequired" ? "restartNeeded" : null;
-	const restart = useSessionRestart(controls, snapshot.status);
+	// What an owed resume waits to change before it tries again. The store's
+	// status alone misses a read settling under it: a rehydrate keeps the status
+	// open while the service clears the thread ref a resume needs, so the refused
+	// step would wait on a value that never moves. The read's own state and
+	// attempt identity do move when it starts and settles, so the restart retries
+	// then.
+	const restartSettled = `${snapshot.status}\u0000${snapshot.latestReadState}\u0000${snapshot.latestReadAttempt}`;
+	const restart = useSessionRestart(controls, restartSettled);
 	const notesPreview = conversation ? notesBarPreview(conversation) : null;
 	const [stopping, setStopping] = useState(false);
 	const stopBusy = useRef(false);

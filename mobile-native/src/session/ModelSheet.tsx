@@ -19,6 +19,7 @@ import type { MobileConversation } from "../projectedRows";
 import type { Routes } from "../screens";
 import { modelPickCanSend } from "../conversation/services/conversation";
 import { type ActionOutcome, type SessionControls, useControlsState } from "../sessionControls";
+import { type Unread, verifiedSetting } from "../sessionControls";
 import { SearchField } from "../sheet/SearchField";
 import { Segmented } from "../sheet/Grouped";
 import { Sheet } from "../sheet/Sheet";
@@ -26,7 +27,9 @@ import { useSheet } from "../sheet/useSheet";
 import { sheetHosts, sheetKey, useSheetHost } from "../sheet/sheetHosts";
 import type { ToastMessage } from "../Toast";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { effortName } from "./sessionFacts";
+import { effortName, qualifiedModelIdentity } from "./sessionFacts";
+
+const NOTHING_UNREAD: Unread = { model: null, vision: null };
 
 export interface ModelHost {
 	session: MobileConversation;
@@ -43,15 +46,22 @@ export const modelHosts = sheetHosts<ModelHost>();
 // The actions whose errors this sheet shows; the Session sheet shows every other one.
 export const MODEL_ACTIONS = new Set(["changeModel", "setReasoningEffort", "setVisionModel"]);
 
-export function ModelSheet({ route }: NativeStackScreenProps<Routes, "ModelSheet">) {
+export function ModelSheet({ route, navigation }: NativeStackScreenProps<Routes, "ModelSheet">) {
 	const { hubId, ref, setting } = route.params;
 	const sheet = useSheet();
 	const host = useSheetHost(modelHosts, sheetKey(hubId, ref), sheet);
 	const [query, setQuery] = useState("");
 	if (!host) return null;
-	return (
-		<ModelSheetBody host={host} vision={setting === "vision"} query={query} setQuery={setQuery} finish={sheet.finish} />
-	);
+	// A pick can settle after the reader dismissed the picker, and a newer sheet
+	// can hold the top of the stack by then: a bare goBack would pop that sheet,
+	// or the conversation underneath it. Only this exact route, still on top,
+	// is the sheet the answer may close. The session keeps the acknowledgement
+	// and the readback either way; only the dismissal depends on the route.
+	const close = () => {
+		const stack = navigation.getState();
+		if (stack.routes[stack.index]?.key === route.key) sheet.finish();
+	};
+	return <ModelSheetBody host={host} vision={setting === "vision"} query={query} setQuery={setQuery} close={close} />;
 }
 
 function ModelSheetBody({
@@ -59,13 +69,13 @@ function ModelSheetBody({
 	vision,
 	query,
 	setQuery,
-	finish,
+	close,
 }: {
 	host: ModelHost;
 	vision: boolean;
 	query: string;
 	setQuery(query: string): void;
-	finish(): void;
+	close(): void;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
@@ -89,43 +99,73 @@ function ModelSheetBody({
 	// (modelPickCanSend), so the sheet and the browser picker cannot disagree.
 	const modelBusy = busy || (!vision && !modelPickCanSend(session));
 	const levels = vision ? [] : sessionEffortLevels(session.reasoningEffortLevels, session.supportsReasoning);
+	// One qualified identity for the row this sheet marks as current, the pick
+	// it sends and the record it checks. The model-control state carries the
+	// authoritative display target - the live snapshot's desired-or-active one,
+	// the connection's canonical display, or a recovery's last safe one - so
+	// the pending pick and the recovery keep their row while the raw fields
+	// would show the stale active model. A target whose two fields agree names
+	// a bare id, so the snapshot's provider instance (modelProfile) qualifies
+	// it: the id may carry a slash of its own (an OpenRouter row is
+	// "anthropic/claude-opus-5"), so the provider named beside the id is the
+	// only thing that says the identity is whole.
 	const modelTarget = modelControlDisplay(session);
-	// Every model-control state carries a complete display target, and rows are
-	// keyed "provider/model": marking the provider alone during recovery leaves
-	// the last safe model unchecked while the composer still shows it. A saved
-	// session's legacy read holds the whole id in both fields, so joining those
-	// would repeat the id's own path segments (see sessionFacts' modelChipLabel).
 	const current = vision
 		? session.visionModel
 		: modelTarget.modelProvider === modelTarget.model
-			? modelTarget.model
+			? qualifiedModelIdentity({ ...session, modelProvider: modelTarget.modelProvider, model: modelTarget.model })
 			: `${modelTarget.modelProvider}/${modelTarget.model}`;
 	const canChange = vision ? session.capabilities.changeVisionModel : session.capabilities.changeModel;
+	// The rows below decide "already set" by comparing against the session's
+	// projection, and that is only the answer once a read has landed after the
+	// last set. A set the hub acknowledged whose readback could not run leaves
+	// the projection showing the value from before it, so a match there means
+	// "not written yet". The record of the value the hub did take is what says
+	// which of the two a match is.
+	const verified = (setting: "model" | "vision", value: string) =>
+		verifiedSetting(state?.unread ?? NOTHING_UNREAD, setting, value);
 	const error =
 		refusal ?? state?.modelError ?? (state?.lastAction && MODEL_ACTIONS.has(state.lastAction) ? state.error : null);
+	// Each refusal reveals the first header row, even when it repeats the
+	// previous message after the user has scrolled away to try again.
 	const revealError = (outcome: ActionOutcome) => {
-		// Each refusal reveals the first header row, even when it repeats the
-		// previous message after the user has scrolled away to try again.
 		if (outcome.disposition !== "refused") return;
 		list.current?.getScrollResponder()?.scrollTo({ y: 0, animated: true });
 	};
-	// A refusal the sheet shows keeps it open; a notSent the guards already
-	// explained (an unchanged pick, an unoffered level, a stale catalog) closes
-	// nothing and says nothing new.
-	const applyOutcome = (outcome: ActionOutcome) => {
-		setRefusal(outcome.disposition === "refused" ? outcome.message : null);
-		revealError(outcome);
-	};
-	const closeOn = (change: Promise<ActionOutcome>, then?: () => void) =>
+	/** Sends one change through the controls that can take it now, and settles
+	 * the sheet on the outcome the promise carries. The promise is the only
+	 * channel an initiator reads: a recycle can replace this sheet's controls
+	 * while the answer is out, and the outcome still reaches the reader who
+	 * asked, whatever became of the binding that sent it. Every action goes
+	 * through here, so a new attempt always retires the previous refusal.
+	 * `closes` separates a pick, which ends the sheet, from an effort change,
+	 * which stays open behind its result. A `notSent` outcome is the guards'
+	 * own no-op - an unchanged pick, an unoffered level, a stale catalog - and
+	 * closes nothing and says nothing new. */
+	const dispatch = (
+		sentWith: SessionControls | null,
+		change: Promise<ActionOutcome>,
+		closes: boolean,
+		then?: () => void,
+	) => {
+		// A new attempt is the reader's, so the previous refusal stops being the
+		// answer to what the picker now shows.
+		setRefusal(null);
 		void change.then((outcome) => {
+			if (outcome.disposition === "notSent") return;
 			if (outcome.disposition === "accepted") {
-				setRefusal(null);
-				finish();
+				if (!closes) return;
+				close();
 				then?.();
 				return;
 			}
-			applyOutcome(outcome);
+			// The refusal is the daemon's own answer, carried by the promise from
+			// the binding that dispatched it whether or not that binding is still
+			// the set this sheet reads.
+			setRefusal(outcome.message);
+			revealError(outcome);
 		});
+	};
 	const choose = (model: ModelDescriptor) => {
 		if (!vision && !modelPickCanSend(session)) return;
 		// The selected row is only a no-op on a LIVE session. A cold session can
@@ -138,17 +178,33 @@ function ModelSheetBody({
 		// That exception is the primary picker's alone. A vision model is a
 		// setting the saved read already reports as in effect, so re-picking it
 		// changes nothing and must not start a daemon to say so.
-		if (`${model.provider}/${model.model}` === current && (vision || !coldSessionCanResume(session))) {
-			finish();
+		// A verified record short-circuits only what a publication has
+		// established: an acknowledged pick whose readback has not landed must
+		// still send the correction rather than dismiss on the stale projection.
+		if (
+			verified(vision ? "vision" : "model", current) &&
+			`${model.provider}/${model.model}` === current &&
+			(vision || !coldSessionCanResume(session))
+		) {
+			close();
 			return;
 		}
 		if (!controls) return;
-		setRefusal(null);
-		if (vision) closeOn(controls.changeVisionModel(model.provider, model.model));
+		if (vision) dispatch(controls, controls.changeVisionModel(model.provider, model.model), true);
 		else
-			closeOn(controls.changeModel(model.provider, model.model), () =>
+			dispatch(controls, controls.changeModel(model.provider, model.model), true, () =>
 				host.toast({ text: "Model changed. Applies from the next turn." }),
 			);
+	};
+	// Already the setting: the daemon would acknowledge an unchanged value,
+	// and announcing that as a change tells the reader something happened when
+	// nothing did.
+	const chooseVision = (value: string) => {
+		if (verified("vision", session.visionModel) && session.visionModel === value) {
+			close();
+			return;
+		}
+		if (controls) dispatch(controls, controls.setVisionModel(value), true);
 	};
 	const settings = (
 		<View style={{ paddingHorizontal: 16, paddingBottom: 8, gap: 8 }}>
@@ -166,11 +222,9 @@ function ModelSheetBody({
 					levels={levels}
 					current={session.reasoningEffort ?? ""}
 					disabled={busy}
-					choose={(level) =>
-						void controls?.setReasoningEffort(level).then((outcome) => {
-							applyOutcome(outcome);
-						})
-					}
+					choose={(level) => {
+						if (controls) dispatch(controls, controls.setReasoningEffort(level), false);
+					}}
 				/>
 			) : null}
 		</View>
@@ -178,7 +232,7 @@ function ModelSheetBody({
 	return (
 		<Sheet
 			title={vision ? "Vision model" : "Model"}
-			done={{ onPress: () => finish() }}
+			done={{ onPress: () => close() }}
 			accessory={
 				<View style={{ paddingHorizontal: 16, paddingBottom: 8 }}>
 					<SearchField label="Search models" value={query} onChangeText={setQuery} />
@@ -203,13 +257,13 @@ function ModelSheetBody({
 									title="Session model"
 									selected={session.visionModel === ""}
 									disabled={busy || !canChange}
-									onPress={() => controls && closeOn(controls.setVisionModel(""))}
+									onPress={() => chooseVision("")}
 								/>
 								<ChoiceRow
 									title="Off"
 									selected={session.visionModel === "off"}
 									disabled={busy || !canChange}
-									onPress={() => controls && closeOn(controls.setVisionModel("off"))}
+									onPress={() => chooseVision("off")}
 								/>
 							</>
 						) : null}

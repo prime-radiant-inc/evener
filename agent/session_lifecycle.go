@@ -1631,7 +1631,16 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			for _, callID := range modelResp.CommunicatePreviewCallIDs {
 				communicatePreviewCalls[callID] = struct{}{}
 			}
-			retry, waitErr := s.waitOutUsageLimit(ctx, err, req.Model, quotaWakes)
+			// The wait reports the retry group that met the limit — the last
+			// group the round ran, the one whose error this is — not the
+			// phase's: a fallback that hits quota after the primary failed is
+			// neither billed the primary's runtime nor reported under the
+			// primary's name, and the post-call settlement below is not the
+			// call. The wait's start announcement samples both, so a client's
+			// chip renders the call's real runtime, not a wait that starts at
+			// zero, under the model that actually met the limit.
+			sample := quotaGroupFacts(s.roundSalvageRecorder())
+			retry, waitErr := s.waitOutUsageLimit(ctx, err, sample.Model, quotaWakes, sample.Elapsed)
 			if waitErr != nil {
 				err = waitErr
 			}

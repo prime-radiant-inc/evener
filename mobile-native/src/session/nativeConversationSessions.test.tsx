@@ -202,6 +202,206 @@ describe("two attachments", () => {
 		expect(runtime.targetClient("hub-1", "ref-1")).toBe(client);
 	});
 
+	// Two views of one session read one projection, so they have to read one
+	// record of the values a write was acknowledged for and no read has
+	// established. Per-view records would let the second view trust the shared
+	// projection's Off selection after the first view's vision pick lost its
+	// readback, and closing its picker on that match would send nothing.
+	it("share one record of the values no read has established", async () => {
+		connected(hub("ref-1"));
+		const a = sessions.attach("hub-1", "ref-1");
+		const b = sessions.attach("hub-1", "ref-1");
+
+		expect(a.entry.sessionFacts).toBe(b.entry.sessionFacts);
+		a.entry.sessionFacts.record("vision", { state: "unknown" });
+		expect(b.entry.sessionFacts.unread().vision).toEqual({ state: "unknown" });
+		await settle();
+	});
+
+	// An unknown outcome is a doubt about the setting, and the session's own
+	// authoritative read is what answers it. If nothing retires it, the doubt
+	// outlives every read that follows: the Off row the projection now draws as
+	// selected still sends a setter, and on a stopped session that starts the
+	// daemon to reapply the value it already has.
+	it("retires an unknown outcome when the session's own read publishes", async () => {
+		const client = hub("ref-1");
+		connected(client);
+		const a = sessions.attach("hub-1", "ref-1");
+		await vi.waitFor(() => expect(a.entry.store.getState().status).toBe("open"));
+
+		// The write loses its reply, so the setting is doubted rather than known.
+		a.entry.sessionFacts.record("vision", { state: "unknown" });
+		expect(a.entry.sessionFacts.unread().vision).toEqual({ state: "unknown" });
+
+		// A later authoritative read establishes what the session actually holds.
+		await a.entry.store.getState().ensureLatest();
+		await a.entry.readSettled();
+		await settle();
+
+		expect(a.entry.sessionFacts.unread()).toEqual({ model: null, vision: null });
+	});
+
+	// The wire's snapshot carries one qualified model field, and a read fills
+	// both modelProvider and model from it. Joining them again would report the
+	// identifier twice, so the read that shows exactly what the hub
+	// acknowledged could never retire the record - and a later tap on the row
+	// it draws would send the setter again, starting a stopped daemon to
+	// reapply a value it already holds.
+	it("retires an acknowledged model when the read names the wire's qualified identifier", async () => {
+		const served = thread("ref-1");
+		(served as unknown as { modelProvider: string }).modelProvider = "anthropic/claude-haiku-5";
+		connected(hub("ref-1", async () => ({ thread: served })));
+		const a = sessions.attach("hub-1", "ref-1");
+		await vi.waitFor(() => expect(a.entry.store.getState().status).toBe("open"));
+		const shown = a.entry.store.getState().canonicalSession();
+		expect(shown?.modelProvider).toBe("anthropic/claude-haiku-5");
+		expect(shown?.model).toBe("anthropic/claude-haiku-5");
+
+		a.entry.sessionFacts.record("model", { state: "acknowledged", value: "anthropic/claude-haiku-5" });
+		await a.entry.store.getState().ensureLatest();
+		await a.entry.readSettled();
+		await settle();
+
+		expect(a.entry.sessionFacts.unread().model).toBeNull();
+	});
+
+	// The daemon's own layout is split: the bare model id rides in
+	// Thread.modelProvider, and the provider instance in Thread.evener.profile.
+	// The session reads one qualified identity off the pair, so the read that
+	// names the picked model retires the record - and the picker that compares
+	// a catalog row against it selects the running model instead of sending a
+	// second setter.
+	it("reads the qualified model from the daemon's bare id and profile", async () => {
+		const served = thread("ref-1");
+		(served as unknown as { modelProvider: string }).modelProvider = "claude-haiku-5";
+		(served.evener as unknown as { profile: string }).profile = "anthropic";
+		connected(hub("ref-1", async () => ({ thread: served })));
+		const a = sessions.attach("hub-1", "ref-1");
+		await vi.waitFor(() => expect(a.entry.store.getState().status).toBe("open"));
+		const shown = a.entry.store.getState().canonicalSession();
+		// The snapshot's own two fields stay as the daemon sent them; the
+		// provider it names beside them is what qualifies the id.
+		expect(shown?.modelProvider).toBe("claude-haiku-5");
+		expect(shown?.modelProfile).toBe("anthropic");
+		// What a picker asks the session's record: is this row already set?
+		expect(a.entry.sessionFacts.projected?.("model")).toBe("anthropic/claude-haiku-5");
+
+		a.entry.sessionFacts.record("model", { state: "acknowledged", value: "anthropic/claude-haiku-5" });
+		await a.entry.store.getState().ensureLatest();
+		await a.entry.readSettled();
+		await settle();
+
+		expect(a.entry.sessionFacts.unread().model).toBeNull();
+	});
+
+	// A pick the daemon accepted for the next turn leaves the projection naming
+	// the model that is running, and that report is correct: it says nothing
+	// about the queued change. Retiring on it would let the next tap on the
+	// shown row dismiss as "already set" and send no correction.
+	it("keeps a queued next-turn pick while the read still shows the running model", async () => {
+		let status: Thread["status"] = { type: "active" } as Thread["status"];
+		connected(
+			hub("ref-1", async () => {
+				const served = thread("ref-1");
+				(served as unknown as { modelProvider: string }).modelProvider = "anthropic/claude-haiku-5";
+				served.status = status;
+				return { thread: served };
+			}),
+		);
+		const a = sessions.attach("hub-1", "ref-1");
+		await vi.waitFor(() => expect(a.entry.store.getState().status).toBe("open"));
+
+		const queued = { state: "acknowledged", value: "anthropic/claude-sonnet-5" } as const;
+		a.entry.sessionFacts.record("model", queued);
+		await a.entry.store.getState().ensureLatest();
+		await a.entry.readSettled();
+		await settle();
+
+		expect(a.entry.sessionFacts.unread().model).toEqual(queued);
+
+		// The turn ends on the model that ran, so the queued switch has had its
+		// boundary and the pick is not outstanding any more.
+		status = { type: "idle" } as Thread["status"];
+		await a.entry.store.getState().ensureLatest();
+		await a.entry.readSettled();
+		await settle();
+		expect(a.entry.sessionFacts.unread().model).toBeNull();
+	});
+
+	// The same report is also what a read finds when a pick was sent during a
+	// turn whose reply was lost: the daemon names the running model whether it
+	// queued the pick or never saw it. Retiring there would let the next tap on
+	// the running model dismiss as "already set" and leave the queued switch to
+	// land unasked. Only a read that finds the session between turns can say the
+	// write did not apply.
+	it("keeps an unanswered model write that a read during a turn cannot answer", async () => {
+		let status: Thread["status"] = { type: "active" } as Thread["status"];
+		connected(
+			hub("ref-1", async () => {
+				const served = thread("ref-1");
+				(served as unknown as { modelProvider: string }).modelProvider = "anthropic/claude-sonnet-5";
+				served.status = status;
+				return { thread: served };
+			}),
+		);
+		const a = sessions.attach("hub-1", "ref-1");
+		await vi.waitFor(() => expect(a.entry.store.getState().status).toBe("open"));
+
+		a.entry.sessionFacts.record("model", { state: "unknown" });
+		await a.entry.store.getState().ensureLatest();
+		await a.entry.readSettled();
+		await settle();
+		expect(a.entry.store.getState().canonicalSession()?.status.type).toBe("active");
+		expect(a.entry.sessionFacts.unread().model).toEqual({ state: "unknown" });
+
+		status = { type: "idle" } as Thread["status"];
+		await a.entry.store.getState().ensureLatest();
+		await a.entry.readSettled();
+		await settle();
+		expect(a.entry.sessionFacts.unread().model).toBeNull();
+	});
+
+	// A rehydrate that supersedes a read already in flight starts after a write
+	// without the store ever leaving "reading". Counting entries into that
+	// state gives both reads one identity, so the read that started later -
+	// the one that can have observed the write - cannot retire the record of
+	// it, and the picker keeps doubting a value the hub has already confirmed.
+	it("retires a pick answered by a read that started after it while the store stayed reading", async () => {
+		const served = thread("ref-1");
+		(served as unknown as { modelProvider: string }).modelProvider = "anthropic/claude-haiku-5";
+		const held = [deferred<ThreadReadResponse>(), deferred<ThreadReadResponse>()];
+		let reads = 0;
+		const client = hub("ref-1", () => {
+			reads += 1;
+			const waiting = held[reads - 2];
+			return waiting ? waiting.promise : Promise.resolve({ thread: served });
+		});
+		connected(client);
+		const a = sessions.attach("hub-1", "ref-1");
+		await vi.waitFor(() => expect(a.entry.store.getState().status).toBe("open"));
+		const service = a.entry.service;
+		if (service === null) throw new Error("no binding");
+
+		// The first read is out when the write lands, and the second supersedes
+		// it before either publishes.
+		const first = a.entry.store.getState().rehydrate(service);
+		await settle();
+		expect(a.entry.store.getState().latestReadState).toBe("reading");
+		a.entry.sessionFacts.record("model", { state: "acknowledged", value: "anthropic/claude-haiku-5" });
+		const second = a.entry.store.getState().rehydrate(service);
+		await settle();
+
+		held[0]?.resolve({ thread: served });
+		await settle();
+		held[1]?.resolve({ thread: served });
+		await Promise.all([first, second]);
+		await a.entry.readSettled();
+		await settle();
+
+		expect(a.entry.store.getState().latestReadState).toBe("ready");
+		expect(a.entry.sessionFacts.unread().model).toBeNull();
+	});
+
 	it("release one during a held authoritative read, and the survivor sees its publication", async () => {
 		const held = deferred<ThreadReadResponse>();
 		const client = hub("ref-1", () => held.promise);

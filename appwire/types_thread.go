@@ -408,10 +408,17 @@ type SubagentTally struct {
 // with ResumesAt is the waiting call's limit rather than a failed turn's, and
 // it travels on a working thread. It is absent for any other failure, for a
 // usage limit with no known reset, and once the wait ends.
+//
+// WaitStartedAt is the wait's identity on the same summary: a strictly
+// increasing sequence the daemon issues per wait (NOT a wall-clock
+// instant), the same value the wait's live announcements carry. It orders
+// waits the way ResumesAt cannot: two waits of one turn can share a reset
+// instant, but never a stamp.
 type ThreadFailure struct {
-	Title     string           `json:"title,omitempty"`
-	Cause     *DiagnosticCause `json:"cause,omitempty"`
-	ResumesAt int64            `json:"resumesAt,omitempty"`
+	Title         string           `json:"title,omitempty"`
+	Cause         *DiagnosticCause `json:"cause,omitempty"`
+	ResumesAt     int64            `json:"resumesAt,omitempty"`
+	WaitStartedAt uint64           `json:"waitStartedAt,omitempty"`
 }
 
 // PendingQuestion is the first question of a session's pending ask (S1b): what
