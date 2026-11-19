@@ -480,12 +480,13 @@ export function buildCommands(): Command[] {
           }));
         },
         // No client-side turn-in-flight guard: only the daemon knows, and it
-        // answers. It resumes a cold session behind the call and retries
-        // (app_model.go's setThreadModelWithResume), and refuses a genuine
-        // mid-turn switch with a Conflict (server/appwire_thread_settings.go's
-        // handleAppThreadModelSet), which surfaces below as the error toast
-        // plus the palette's own error strip. Guessing here refused switches
-        // the hub would have accepted - the same mistake ModelSwitch.tsx made.
+        // answers. The store resumes a cold session before it sends, and the
+        // daemon queues a switch picked mid-turn for that turn's boundary
+        // rather than swapping the profile under the running turn (agent
+        // session SetModelControl), so the next turn runs on the new model.
+        // Refusals still surface below as the error toast plus the palette's
+        // own error strip. Guessing here refused switches the hub would have
+        // accepted - the same mistake ModelSwitch.tsx made.
         run: (ctx, item) => {
           if (!ctx.sessionRef) return undefined;
           const { provider, model: modelId } = splitModelId(item.id);
