@@ -745,8 +745,11 @@ func TestReleasedReportSurvivesACompactionMarkerBeforeSelection(t *testing.T) {
 	sess, reopenedID, journalPath := deriveHeldFixtureWithJournal(t, delegatestore.OutcomeCancelled, "cancelled")
 	// The newer event: a fresh row is admitted, which journals the release that
 	// ends the stopped generation's quiet.
-	const freshID = "delegate:dlg_worker/delivery/2"
-	if _, err := sess.appendDelegateNotificationDurably(freshID, acceptedTriggerText); err != nil {
+	const (
+		freshID   = "delegate:dlg_worker/delivery/2"
+		freshText = `<delegate-notification delegate_id="dlg_worker" kind="update">FRESH_AFTER_RELEASE</delegate-notification>`
+	)
+	if _, err := sess.appendDelegateNotificationDurably(freshID, freshText); err != nil {
 		t.Fatalf("append the fresh row: %v", err)
 	}
 	if _, _, err := openDelegateAttentionForTest(sess.delegateController, "dlg_hold", freshID); err != nil {
@@ -784,10 +787,151 @@ func TestReleasedReportSurvivesACompactionMarkerBeforeSelection(t *testing.T) {
 	// ...and the request that presents it must carry the report, which a turn
 	// the resumed history dropped cannot.
 	history := currentHistory(t, restored)
-	if at := indexOfTurnText(history, acceptedTriggerText); at < 0 {
+	if at := indexOfAttentionTurn(history, reopenedID); at < 0 {
 		t.Fatal("the released report was presentable with no turn in the resumed history: the drive would consume a row the model never saw")
 	} else if at != len(history)-1 {
 		t.Fatalf("the released report resumed at %d of %d, want the tail so the presenting request ends on it", at, len(history)-1)
+	}
+}
+
+// indexOfAttentionTurn returns the position of attentionID's steering turn in
+// history, or -1 when history holds none. Rows can carry identical content, so
+// a position assertion asks for the row's identity rather than its text.
+func indexOfAttentionTurn(history []schema.Turn, attentionID string) int {
+	return slices.IndexFunc(history, func(turn schema.Turn) bool {
+		return turn.AttentionID == attentionID && turn.Kind == schema.TurnSteering
+	})
+}
+
+// A compaction marker that follows both a reopened report and the fresh
+// delivery that released it cuts both turns from the resumed history. Restoring
+// the released rows alone leaves the fresh row selectable with no turn behind
+// it, so the drive claims it and a successful run consumes it with the model
+// never having read it. Every selectable pending row must be back in history
+// before a drive can select it, and the report the release freed must still be
+// the request's last message.
+func TestReleasedReportAndTheFreshDeliveryBothSurviveACompactionMarker(t *testing.T) {
+	t.Parallel()
+	sess, reopenedID, journalPath := deriveHeldFixtureWithJournal(t, delegatestore.OutcomeCancelled, "cancelled")
+	const (
+		freshID    = "delegate:dlg_worker/delivery/2"
+		freshText  = `<delegate-notification delegate_id="dlg_worker" kind="update">FRESH_DELIVERY</delegate-notification>`
+		reportText = acceptedTriggerText
+	)
+	if _, err := sess.appendDelegateNotificationDurably(freshID, freshText); err != nil {
+		t.Fatalf("append the fresh row: %v", err)
+	}
+	if _, _, err := openDelegateAttentionForTest(sess.delegateController, "dlg_hold", freshID); err != nil {
+		t.Fatalf("admit the fresh wake: %v", err)
+	}
+	sess.releaseAutomaticDriveHolds(delegateHoldReleaseArm, settledGeneration(t, sess))
+	// The compaction lands after both rows, so the resumed history holds
+	// neither turn while the fold still lists both rows pending.
+	appendCompactionMarkerAfterReopenedRow(t, sess.TranscriptPath(), sess.id)
+	data, err := readTranscriptFull(context.Background(), sess.TranscriptPath(), sess.stateDir)
+	if err != nil {
+		t.Fatalf("read the transcript: %v", err)
+	}
+	resumed, _ := resumeHistoryIndexed(data.Entries)
+	for _, text := range []string{reportText, freshText} {
+		if indexOfTurnText(resumed, text) >= 0 {
+			t.Fatalf("premise broken: the resumed history still holds the turn for %q", text)
+		}
+	}
+	restored := coldRestoredDeriveSession(t, sess, journalPath)
+	restored.mu.Lock()
+	restored.history = slices.Clone(resumed)
+	restored.mu.Unlock()
+	restored.deriveHeldDelegateAttentionFromOutcome()
+
+	ids, err := restored.automaticDelegateAttentionIDs()
+	if err != nil {
+		t.Fatalf("read the drive-side rows: %v", err)
+	}
+	for _, want := range []string{reopenedID, freshID} {
+		if !slices.Contains(ids, want) {
+			t.Fatalf("row %q is not offered to the drive: %v", want, ids)
+		}
+	}
+	history := currentHistory(t, restored)
+	reportAt, freshAt := indexOfTurnText(history, reportText), indexOfTurnText(history, freshText)
+	if reportAt < 0 || freshAt < 0 {
+		t.Fatalf("a selectable pending row had no turn in the resumed history (report at %d, fresh at %d): the drive would consume a row the model never saw", reportAt, freshAt)
+	}
+	if reportAt < freshAt {
+		t.Fatalf("the released report resumed at %d, ahead of the fresh delivery at %d: the presenting request must end on the report the release freed", reportAt, freshAt)
+	}
+	if reportAt != len(history)-1 {
+		t.Fatalf("the released report resumed at %d of %d, want the tail so the presenting request ends on it", reportAt, len(history)-1)
+	}
+}
+
+// A report a cold restore still holds behind a compaction marker has no turn in
+// the resumed history. When a later wake clears that hold the row becomes
+// presentable, so the release must put its turn back — and at the tail, behind
+// the rows that arrived while the hold stood — or the drive claims the row and
+// attaches a request with no report in it.
+func TestReleasedHoldRestoresACompactedReportAtTheTail(t *testing.T) {
+	t.Parallel()
+	sess, reopenedID, journalPath := deriveHeldFixtureWithJournal(t, delegatestore.OutcomeCancelled, "cancelled")
+	const (
+		laterID   = "delegate:dlg_worker/delivery/2"
+		laterText = `<delegate-notification delegate_id="dlg_worker" kind="update">LATER_WHILE_HELD</delegate-notification>`
+	)
+	if _, err := sess.appendDelegateNotificationDurably(laterID, laterText); err != nil {
+		t.Fatalf("append the later row: %v", err)
+	}
+	// The marker follows both rows, so the resume holds neither turn.
+	appendCompactionMarkerAfterReopenedRow(t, sess.TranscriptPath(), sess.id)
+	data, err := readTranscriptFull(context.Background(), sess.TranscriptPath(), sess.stateDir)
+	if err != nil {
+		t.Fatalf("read the transcript: %v", err)
+	}
+	resumed, _ := resumeHistoryIndexed(data.Entries)
+	for _, text := range []string{acceptedTriggerText, laterText} {
+		if indexOfTurnText(resumed, text) >= 0 {
+			t.Fatalf("premise broken: the resumed history still holds the turn for %q", text)
+		}
+	}
+	restored := coldRestoredDeriveSession(t, sess, journalPath)
+	restored.mu.Lock()
+	restored.history = slices.Clone(resumed)
+	restored.mu.Unlock()
+	// The restore rebuilds the stop's quiet from the durable outcome, so the
+	// report stays held and its turn stays out of history.
+	restored.deriveHeldDelegateAttentionFromOutcome()
+	restored.attentionMu.Lock()
+	heldAtRestore := restored.delegateAttentionHeldFromAutomaticDriveLocked(reopenedID)
+	restored.attentionMu.Unlock()
+	if !heldAtRestore {
+		t.Fatal("premise broken: the restored session did not rebuild the stop's quiet")
+	}
+	if indexOfAttentionTurn(currentHistory(t, restored), reopenedID) >= 0 {
+		t.Fatal("premise broken: the held row's turn was in the resumed history")
+	}
+	// A later wake supersedes the quiet; its release callback has not moved
+	// anything yet.
+	restored.releaseAutomaticDriveHolds(delegateHoldReleaseArm, settledGeneration(t, restored))
+	restored.attentionMu.Lock()
+	stillHeld := restored.delegateAttentionHeldFromAutomaticDriveLocked(reopenedID)
+	restored.attentionMu.Unlock()
+	if stillHeld {
+		t.Fatal("the release left the row held")
+	}
+	history := currentHistory(t, restored)
+	reportAt := indexOfAttentionTurn(history, reopenedID)
+	if reportAt < 0 {
+		t.Fatal("the released row became presentable with no turn in history: the drive would consume a row the model never saw")
+	}
+	if reportAt != len(history)-1 {
+		t.Fatalf("the released report resumed at %d of %d, want the tail behind the rows that arrived while it was held", reportAt, len(history)-1)
+	}
+	laterAt := indexOfAttentionTurn(history, laterID)
+	if laterAt < 0 {
+		t.Fatalf("the other pending row's turn is missing from history: %v", history)
+	}
+	if laterAt > reportAt {
+		t.Fatalf("the other pending row resumed at %d, behind the released report at %d: the release must put the freed report last", laterAt, reportAt)
 	}
 }
 

@@ -12,6 +12,18 @@ import (
 
 type State map[string]*Aggregate
 
+// SettledGeneration returns the newest generation that has settled,
+// excluding an open run in progress.
+func (a *Aggregate) SettledGeneration() uint64 {
+	if a == nil || a.Generation == 0 {
+		return 0
+	}
+	if a.CurrentRunOpen {
+		return a.Generation - 1
+	}
+	return a.Generation
+}
+
 // Phase is the delegate's durable aggregate phase, declared by the delegate
 // machine in appwire. The fold's legal edges come from that declaration.
 type Phase = appwire.DelegatePhase

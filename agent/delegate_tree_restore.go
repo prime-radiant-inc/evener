@@ -735,27 +735,6 @@ func (c *delegateTreeController) reportDelegateWakeError(err error) {
 	}
 }
 
-// wakeDeliveryReceiver reproduces deliverDelegatePacket's post-commit wake for
-// an acknowledgment the stop retried itself. It runs outside c.mu.
-//
-// It is wakeDeliveryReceiverAt for a caller that holds no journaled sample: it
-// reads the delegate's newest settled generation itself. Every caller that
-// committed an acknowledgment passes the generation the wake funnel sampled
-// instead, because a stop that settles between the acknowledgment and this wake
-// is newer evidence than the delivery and must keep its quiet.
-func (c *delegateTreeController) wakeDeliveryReceiver(receiver delegateDeliveryReceiver, attentionIDs []string) error {
-	generation := uint64(0)
-	if session, ok := receiver.(*Session); ok && session != nil {
-		session.mu.Lock()
-		owningDelegateID := session.owningDelegateID
-		session.mu.Unlock()
-		c.mu.Lock()
-		generation = c.attentionWakeGenerationLocked(owningDelegateID)
-		c.mu.Unlock()
-	}
-	return c.wakeDeliveryReceiverAt(receiver, attentionIDs, generation)
-}
-
 // wakeDeliveryReceiverAt posts the wake for attentionIDs, releasing the
 // receiver's automatic-drive holds against the generation the acknowledgment's
 // release superseded.

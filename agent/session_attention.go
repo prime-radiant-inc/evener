@@ -1104,6 +1104,22 @@ func (s *Session) delegateAttentionHeldFromAutomaticDriveLocked(attentionID stri
 	return held
 }
 
+// delegateAttentionNotPresentableLocked reports whether a row must stay out of
+// the resident history a drive reads: a user's stop still quiets it, or a
+// settled round of the active turn already presented it and a mid-turn fold
+// took its turn away. Restoring either would present a row the quiet or the
+// fold deliberately held back. Callers must hold attentionMu.
+func (s *Session) delegateAttentionNotPresentableLocked(attentionID string) bool {
+	if s.delegateAttentionHeldFromAutomaticDriveLocked(attentionID) {
+		return true
+	}
+	if !s.attentionCoverageActive {
+		return false
+	}
+	_, covered := s.attentionCoveredIDs[attentionID]
+	return covered
+}
+
 // delegateAttentionHoldStands reports whether a hold stamped with held still
 // outranks the newest wake admitted at admitted. A hold stands exactly while
 // it is strictly newer than every admitted wake: at equal generations the wake
@@ -1144,11 +1160,11 @@ func (s *Session) reconcileAutomaticDriveHoldsLocked() {
 	if aggregate := controller.durable[s.owningDelegateID]; aggregate != nil {
 		floor = aggregate.AttentionHoldReleasedGeneration
 	}
-	// An admitted wake supersedes a settled stop even when the journal refused
-	// its release record, which it does for the whole of an open run. The
-	// controller keeps that admission, so a request captured between the wake
-	// and the release callback still reads the quiet as ended instead of
-	// presenting the fresh row while filtering out the report the wake freed.
+	// An admitted wake supersedes a settled stop, and the controller keeps that
+	// admission under the same lock that journals its release. A request
+	// captured between the wake and the release callback therefore still reads
+	// the quiet as ended instead of presenting the fresh row while filtering out
+	// the report the wake freed.
 	if state := controller.attention[s.owningDelegateID]; state != nil &&
 		state.releasedGeneration > floor {
 		floor = state.releasedGeneration
@@ -1197,19 +1213,10 @@ func (s *Session) retainAdmittedPendingTurnsLocked() {
 	if err != nil {
 		return
 	}
-	for _, attentionID := range fold.order {
-		if _, known := admitted[attentionID]; !known {
-			continue
-		}
-		if _, resolved := fold.resolutions[attentionID]; resolved {
-			continue
-		}
-		if turn, ok := fold.turns[attentionID]; ok {
-			// A row already resident keeps its position; the retain only
-			// appends what history is missing.
-			_ = s.retainDelegateAttentionTurn(turn)
-		}
-	}
+	_ = s.retainSelectablePendingTurnsLocked(fold, func(id string) bool {
+		_, known := admitted[id]
+		return !known
+	})
 }
 
 // clearDelegateAttentionHold ends a hold whose quiet the derivation's own
@@ -1344,6 +1351,7 @@ func (s *Session) moveHeldDelegateAttentionTurnsToTail(released []string) {
 	for _, id := range released {
 		releasable[id] = struct{}{}
 	}
+	resident := s.residentAttentionTurnIDsLocked()
 	// Only pending rows move here. A resolved row was presented at a position
 	// the request that carried it already answered for, and moving it again
 	// would put an old report behind the reply that addressed it. The one
@@ -1355,8 +1363,77 @@ func (s *Session) moveHeldDelegateAttentionTurnsToTail(released []string) {
 		if _, ok := releasable[attentionID]; !ok {
 			continue
 		}
+		// A row a compaction marker cut from the resumed history has no
+		// resident turn to move, so it is restored from the fold first.
+		// Without it the release ends the quiet but the row presents with no
+		// report behind it: the drive claims it, attaches a request the model
+		// answers around, and a successful run leaves it durably consumed with
+		// the report unread. The move below re-appends the turn at the tail, so
+		// the restore's own position does not matter — only that the row is in
+		// history when the drive selects it.
+		if _, resident := resident[attentionID]; !resident {
+			turn, ok := fold.turns[attentionID]
+			if !ok {
+				continue
+			}
+			if err := s.retainDelegateAttentionTurn(turn); err != nil {
+				continue
+			}
+		}
 		_ = s.moveResidentDelegateAttentionTurnToTailLocked(attentionID)
 	}
+}
+
+// residentAttentionTurnIDsLocked lists the attention identities whose steering
+// turn the resident history holds. Callers hold attentionMu, which pins the
+// history against the attention paths that add and remove those turns.
+func (s *Session) residentAttentionTurnIDsLocked() map[string]struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	resident := make(map[string]struct{}, len(s.history))
+	for _, turn := range s.history {
+		if turn.AttentionID != "" && turn.Kind == schema.TurnSteering {
+			resident[turn.AttentionID] = struct{}{}
+		}
+	}
+	return resident
+}
+
+// retainSelectablePendingTurnsLocked restores the turn behind every pending row
+// an automatic drive may present that the resident history does not hold. A
+// restore anchors on the last compaction marker, so a row recorded before that
+// marker has no turn in history even though the fold still lists it pending;
+// the drive would claim the row and attach a request with no report, and a
+// successful run would leave it durably consumed with the model never having
+// read it. The restore follows the fold's arrival order, so the rows land in
+// the order they arrived. notPresentable names the rows a drive must not see —
+// a stop still quiets them, or the active turn already presented them — and
+// their turns stay out: a quieted row's position belongs to the release that
+// will eventually move it, and a covered row's turn belongs to the fold that
+// took it. A resident turn keeps the position it already has. The caller holds
+// attentionMu.
+func (s *Session) retainSelectablePendingTurnsLocked(fold delegateAttentionFold, notPresentable func(string) bool) error {
+	resident := s.residentAttentionTurnIDsLocked()
+	var turns []schema.Turn
+	for _, attentionID := range fold.pendingIDs() {
+		if notPresentable(attentionID) {
+			continue
+		}
+		turn, ok := fold.turns[attentionID]
+		if !ok {
+			continue
+		}
+		if _, present := resident[attentionID]; present {
+			continue
+		}
+		turns = append(turns, turn)
+	}
+	for i, turn := range turns {
+		if err := s.retainDelegateAttentionTurn(turn, turns[i+1:]...); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // moveResidentDelegateAttentionTurnToTailLocked re-appends one resident
@@ -1559,37 +1636,35 @@ func (s *Session) deriveHeldDelegateAttentionFromOutcome() {
 		}
 		releasedRows = append(releasedRows, row.attentionID)
 	}
+	// Every pending row an automatic drive may present must be in history
+	// before the drive can select and durably consume it, not only the rows a
+	// release just freed. A marker that follows both a reopened report and the
+	// fresh delivery that released it cuts both turns from the resumed
+	// history, so restoring the released rows alone would still leave the
+	// fresh row selectable with no turn behind it. Consuming such a row
+	// attaches a request with no report in it, and a successful run leaves the
+	// row consumed with the model never having read it. The restore follows the
+	// fold's arrival order, so the rows land in the order they arrived; the
+	// release's tail move below then puts the freed reports behind them. The
+	// retain is ID-keyed and idempotent, so a turn the resumed history already
+	// holds is replaced in place rather than duplicated.
+	heldSet := make(map[string]struct{}, len(heldRows))
+	for _, attentionID := range heldRows {
+		heldSet[attentionID] = struct{}{}
+	}
+	if err := s.retainSelectablePendingTurnsLocked(fold, func(attentionID string) bool {
+		_, held := heldSet[attentionID]
+		return held
+	}); err != nil {
+		// The warning is emitted after attentionMu is released, the same way
+		// this file's other warning site emits: attentionMu is held across this
+		// whole derivation, and emit fans out to the event lock, the job
+		// manager and a plugin notification hook. Holding it across that would
+		// stall every attention path in the session for the length of a hook
+		// call.
+		restoreErr = err
+	}
 	if len(releasedRows) != 0 {
-		// A release makes the row presentable, so its turn must be in history
-		// before the automatic drive can select and durably consume it. The
-		// restore that rebuilt this session anchored on the last compaction
-		// marker, so a reopened row recorded before that marker has no turn in
-		// history even though the fold still lists the row pending. Consuming a
-		// row whose turn is missing attaches a request with no report in it, and
-		// a successful run leaves the row consumed with the model never having
-		// read it. The retain is ID-keyed and idempotent, so a turn the resumed
-		// history already holds is replaced in place rather than duplicated.
-		releasedTurns := make([]schema.Turn, 0, len(releasedRows))
-		for _, attentionID := range fold.order {
-			if !slices.Contains(releasedRows, attentionID) {
-				continue
-			}
-			if turn, ok := fold.turns[attentionID]; ok {
-				releasedTurns = append(releasedTurns, turn)
-			}
-		}
-		for i, turn := range releasedTurns {
-			if err := s.retainDelegateAttentionTurn(turn, releasedTurns[i+1:]...); err != nil {
-				// The warning is emitted after attentionMu is released, the
-				// same way this file's other warning site emits: attentionMu
-				// is held across this whole derivation, and emit fans out to
-				// the event lock, the job manager and a plugin notification
-				// hook. Holding it across that would stall every attention
-				// path in the session for the length of a hook call.
-				restoreErr = err
-				break
-			}
-		}
 		s.moveHeldDelegateAttentionTurnsToTail(releasedRows)
 	}
 	s.attentionMu.Unlock()
@@ -1603,7 +1678,7 @@ func (s *Session) deriveHeldDelegateAttentionFromOutcome() {
 	// reopen claims — so a wake admitted at a later generation ends that hold and
 	// one admitted before it never does.
 	for _, row := range quieted {
-		if !slices.Contains(heldRows, row.attentionID) {
+		if _, held := heldSet[row.attentionID]; !held {
 			continue
 		}
 		s.holdDelegateAttentionFromAutomaticDriveAt(row.attentionID, row.generation)
@@ -1616,16 +1691,27 @@ func (s *Session) deriveHeldDelegateAttentionFromOutcome() {
 // neither claims a generation nor rides another row's, while every other
 // pending row still presents on the same wake.
 func (s *Session) automaticDelegateAttentionIDs() ([]string, error) {
-	pending, err := s.pendingDelegateAttentionIDs()
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	fold, err := s.delegateAttentionFoldLocked()
 	if err != nil {
 		return nil, err
 	}
-	s.attentionMu.Lock()
-	defer s.attentionMu.Unlock()
 	// Presentation is the one point that cannot lose the race against a
 	// release: a wake journals its release before it publishes anything, so a
 	// hold the journal already superseded must not be read as current here.
 	s.reconcileAutomaticDriveHoldsLocked()
+	// No selectable row may reach the drive with no turn behind it: the drive
+	// claims the row, the request it builds carries no report, and a successful
+	// run leaves the row durably consumed with the model never having read it.
+	// A cold restore anchors on the last compaction marker, so a row recorded
+	// before that marker is pending in the fold and absent from history — and a
+	// generation that owes no stop leaves this read to find it, so the restore
+	// cannot ride on the derivation alone.
+	if err := s.retainSelectablePendingTurnsLocked(fold, s.delegateAttentionNotPresentableLocked); err != nil {
+		return nil, err
+	}
+	pending := fold.pendingIDs()
 	if len(s.attentionAutomaticDriveHolds) == 0 {
 		return pending, nil
 	}
@@ -1638,47 +1724,48 @@ func (s *Session) automaticDelegateAttentionIDs() ([]string, error) {
 	return kept, nil
 }
 
-// dropHeldDelegateAttentionTurns keeps a user-stopped run's held rows out of
-// the history an automatic attention drive projects: the reopen retained each
-// held row's turn in the resident history, so without this filter the drive
-// would present the stopped report through it — the immediate restart the
-// stop exists to prevent. The resident history keeps the turn: an explicit
-// send presents it, and so does the fresh arm that releases the hold. Turns
-// without an attention identity, and turns whose row is not held, project
-// unchanged. The positions of the dropped turns are returned in the input's
-// coordinates: a drop shifts every later turn one position left, so the
-// caller's in-flight boundary — an index into the projection — moves with
-// each drop strictly before it.
-func (s *Session) dropHeldDelegateAttentionTurns(turns []schema.Turn) (kept []schema.Turn, droppedAt []int) {
+// delegateAutomaticAttentionHistorySnapshotWithCoverage is the projection an
+// automatic attention drive asks for: the same transcript, coverage and
+// in-flight boundary delegateModelHistorySnapshotWithCoverage returns, plus the
+// user-stopped rows' turns kept out of it. A reopen retains each held row's
+// turn in the resident history, so without the filter the drive would present
+// the stopped report through it — the immediate restart the stop exists to
+// prevent. The resident history keeps the turn: an explicit send presents it,
+// and so does the fresh arm that releases the hold.
+//
+// All of it is one critical section under attentionMu, and the reconcile comes
+// first. An arm that admits a wake journals its release before it publishes
+// anything, so a hold the journal already superseded is not current evidence
+// against this request, and its report must be back at the history's tail
+// before the capture — the release's tail move is what makes the presenting
+// request end on the report. Capturing first and filtering afterwards reads the
+// pre-move order: the fresh row the same wake admitted would present ahead of
+// the report the wake freed.
+func (s *Session) delegateAutomaticAttentionHistorySnapshotWithCoverage() (projection delegateModelProjection, droppedAt []int) {
 	s.attentionMu.Lock()
-	// An arm that admitted a wake journals its release before it publishes
-	// anything, so a hold the journal already superseded is not current
-	// evidence against this request. Only the drive-side ID list reconciled
-	// until now, which left this projection filtering on the raw map: a request
-	// built between the arm and its release callback dropped the report that
-	// same release freed while the fresh row it admitted presented alone.
-	// Reconciling here asks the same evidence the drive-side read asks, in the
-	// same order — attentionMu, then the controller lock.
+	defer s.attentionMu.Unlock()
 	s.reconcileAutomaticDriveHoldsLocked()
-	// The holds map can be written on a live runtime while this projection
-	// iterates outside the lock, so the iteration walks a clone taken under
-	// the lock: the snapshot is race-free by construction.
-	holds := maps.Clone(s.attentionAutomaticDriveHolds)
-	s.attentionMu.Unlock()
-	if len(holds) == 0 {
-		return turns, nil
+	projection = s.delegateModelHistorySnapshotWithCoverageLocked()
+	turns := projection.turns
+	if len(s.attentionAutomaticDriveHolds) == 0 {
+		return projection, nil
 	}
-	kept = make([]schema.Turn, 0, len(turns))
+	kept := make([]schema.Turn, 0, len(turns))
 	for i, turn := range turns {
-		if turn.AttentionID != "" {
-			if _, held := holds[turn.AttentionID]; held {
-				droppedAt = append(droppedAt, i)
-				continue
-			}
+		// The holds map is guarded by the same attentionMu this read holds, so
+		// the filter asks the exact map the reconcile just settled.
+		if turn.AttentionID != "" && s.delegateAttentionHeldFromAutomaticDriveLocked(turn.AttentionID) {
+			// The positions are in the captured history's coordinates: a drop
+			// shifts every later turn one position left, so the caller's
+			// in-flight boundary — an index into the projection — moves with
+			// each drop strictly before it.
+			droppedAt = append(droppedAt, i)
+			continue
 		}
 		kept = append(kept, turn)
 	}
-	return kept, droppedAt
+	projection.turns = kept
+	return projection, droppedAt
 }
 
 // delegateAttentionFoldLocked folds the session's own transcript; the zero fold

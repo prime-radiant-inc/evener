@@ -374,6 +374,51 @@ func TestApplyRejectsStaleGeneration(t *testing.T) {
 	}
 }
 
+// A wake admitted while the delegate's successor run is open is newer evidence
+// than the generation before that run, so its release names that settled
+// generation. The open generation stays outside the record: a stop that settles
+// it afterwards is newer evidence still, and its quiet must stand.
+func TestApplyAttentionHoldReleasedNamesThePrecedingSettledGeneration(t *testing.T) {
+	state := applyEvents(t,
+		createdEvent("dlg_alpha", ""),
+		startedEvent("dlg_alpha", 1, TriggerOwnerInput),
+		finishedEvent("dlg_alpha", 1, OutcomeCompleted, DispositionTerminalError, "dlg_alpha/delivery/1", stoppedPacket()),
+		startedEvent("dlg_alpha", 2, TriggerAttention),
+	)
+	release := func(generation uint64) error {
+		return Apply(state, Event{
+			Kind:                  EventDelegateAttentionHoldReleased,
+			DelegateID:            "dlg_alpha",
+			AttentionHoldReleased: &AttentionHoldReleased{Generation: generation},
+		})
+	}
+	if got := state["dlg_alpha"]; got.Generation != 2 || !got.CurrentRunOpen {
+		t.Fatalf("premise broken: generation %d open = %t, want generation 2 open", got.Generation, got.CurrentRunOpen)
+	}
+	if err := release(0); err == nil {
+		t.Fatal("a release naming no generation was accepted")
+	}
+	if err := release(2); err == nil {
+		t.Fatal("a release named the open generation: the stop that settles it afterwards would lose its quiet")
+	}
+	if err := release(1); err != nil {
+		t.Fatalf("release the settled generation the open run supersedes: %v", err)
+	}
+	if got := state["dlg_alpha"].AttentionHoldReleasedGeneration; got != 1 {
+		t.Fatalf("released generation = %d, want 1", got)
+	}
+
+	// A delegate with no settled generation has no quiet a wake can release.
+	never := applyEvents(t, createdEvent("dlg_beta", ""))
+	if err := Apply(never, Event{
+		Kind:                  EventDelegateAttentionHoldReleased,
+		DelegateID:            "dlg_beta",
+		AttentionHoldReleased: &AttentionHoldReleased{Generation: 1},
+	}); err == nil {
+		t.Fatal("a release on a delegate with no settled generation was accepted")
+	}
+}
+
 func TestApplyStopWinsOverPreparedNormalFinish(t *testing.T) {
 	state := applyEvents(t,
 		createdEvent("dlg_alpha", ""),

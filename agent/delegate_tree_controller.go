@@ -501,6 +501,7 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 	if err != nil {
 		return nil, err
 	}
+	runStarts := delegateRunStartIndex(events)
 	c := &delegateTreeController{
 		store:               cfg.store,
 		durable:             durable,
@@ -535,9 +536,9 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 		reclaiming:          make(map[string]uint64),
 		releasing:           make(map[string]*Session),
 		reconcileOrder:      delegateOpenRunOrder(events, durable),
-		runStarts:           delegateRunStartIndex(events),
+		runStarts:           runStarts,
 		runOutcomes:         delegateRunOutcomeIndex(events),
-		latestAttentionStop: delegateLatestAttentionStopIndex(events),
+		latestAttentionStop: delegateLatestAttentionStopIndex(events, runStarts),
 		owedAdmission:       true,
 	}
 	for _, event := range events {
@@ -578,14 +579,10 @@ func delegateRunOutcomeIndex(events []delegatestore.Event) map[delegateLease]del
 // generation under the controller lock made that quadratic on a long-lived
 // delegate: the floor stays zero when nothing was ever stopped, so the scan
 // never shortened. This index answers the same question in constant time.
-func delegateLatestAttentionStopIndex(events []delegatestore.Event) map[string]uint64 {
-	starts := make(map[delegateLease]delegatestore.RunTrigger)
+// starts is the caller's run-start index over the same events.
+func delegateLatestAttentionStopIndex(events []delegatestore.Event, starts map[delegateLease]delegatestore.RunTrigger) map[string]uint64 {
 	stops := make(map[string]uint64)
 	for _, event := range events {
-		if event.RunStarted != nil {
-			starts[delegateLease{delegateID: event.DelegateID, generation: event.RunStarted.Generation}] = event.RunStarted.Trigger
-			continue
-		}
 		if event.RunFinished == nil {
 			continue
 		}
