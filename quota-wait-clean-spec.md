@@ -141,7 +141,20 @@ announcement).
 **Authority order:** the daemon's live frame > the thread read's sampled
 summary > the client's inference. The server refreshes the failure facet
 before taking the read cut, so a read is authoritative about any wait that
-existed at its cut.
+existed at its cut. A read's authority is also bounded by which execution
+supplied the wait it carries: the daemon binds the cached wait summary to
+the turn that was running when the facet sampled it, and a read serves it
+only while that execution is still the running one. finishProcessing and
+SetProcessingTurn change the running turn without re-sampling the facet, so
+the drain can lag the session loop and a replacement turn can be published
+while the cache still holds the stopped turn's wait — a read taken in that
+window must not pair the new turn with the old turn's deadline. The binding
+is what retires the projected wait with its owning turn: the read that
+observes the ended or replaced execution serves no wait from it, in the same
+read. Ordinary failure summaries (a failed turn the session rests on) carry
+no binding and serve as before: the status gate alone governs them. A wait
+sampled under no published execution is bound to the empty id, which no
+running turn matches, so the first turn that publishes un-matches it.
 
 ## Stage 2 — The reconciliation pass
 
@@ -154,6 +167,14 @@ buffer and the post-cut tail, and the two sides are reconciled differently:
   new wait announced post-cut must publish over an idle snapshot. Versioned
   history and queue-revision checks apply to them exactly as to live frames,
   and a frame the repository already applied once is not applied again.
+  Counting a physical arrival is not the same act as surviving an adopted
+  read: a wait start the repository folded live while its read was in flight
+  is still overwritten by the read's own adoption, because the read's cut
+  predates it. The read therefore neither retires that wait nor records its
+  stamp as ended — the repository is told which wait stamps the tail already
+  installed, its wait-free reconciliation spares exactly those, and the tail
+  re-publishes the wait after the read applies. A frame whose effect the
+  current model still reflects is the only frame replay skips.
 - **Pre-cut reconciliation is enrichment, not establishment.** A pre-cut
   frame may fill what the adopted snapshot lacks: an equal-stamp start's
   metadata, or a terminal status whose `endedTurnId` matches the turn the
@@ -196,6 +217,21 @@ ordinary delivery-order handling, whatever their vintage.
   metadata on an existing wait. New waits are established post-cut, in
   order. Skipped when older than the held stamp, or when a later buffered
   transition replaces its turn.
+  Absence is evidence only from a snapshot that can report waits for the
+  thread it serves: a stamped daemon's read, or a legacy daemon's ROOT read,
+  whose failure facet the daemon refreshes when the wait begins. A legacy
+  daemon's DELEGATE read is not that — the projection forwards the live
+  announcement but stores no wait, so its showing no wait is silence, not a
+  clear. Against such a snapshot, an unstamped buffered start whose turn
+  matches the snapshot's running turn installs the wait on the receipt-clock
+  fallback (its delay from receipt, no absolute deadline, no model tag or
+  elapsed attribution), and the wait ends only by its own unstamped wake, a
+  turn boundary, or a read from a producer that can report waits — never by
+  another absence from the same legacy delegate feed. An unstamped start
+  still never clears or overwrites a stamped wait. Known limitation: a cold
+  reload of a legacy delegate mid-wait, with no live announcement arriving,
+  shows no wait in the pane — nothing the client holds names one. Its row
+  still shows the wait, sampled live from the owning root's roster entry.
 - **Wait end** (zero-delay wake, or a same-buffer start+wake pair): clears
   the matching wait's deadline, stamp, and chip together; a same-buffer pair
   over a snapshot already showing the resumed output is one cancellation —
@@ -293,6 +329,24 @@ all of them. Tests assert behavior (levels, computed values, class presence)
     the snapshot's running one, and nothing infers ownership.
 20. The producer's elapsed sample at wait start reflects real call time
     (nonzero for a call that ran before hitting the limit).
+21. A wait start the repository accepted live while its read was in
+    flight survives the read's own wait-free adoption: the read neither
+    retires the wait nor records its stamp as ended, and the post-cut tail
+    re-publishes it after the read applies — the replay skips only a
+    frame whose effect the current model already reflects.
+22. A root read taken after a Stop or an A→B replacement, with the event
+    bridge paused so the ended turn's end has not drained, pairs no quota
+    wait with the running turn it names: the cached summary belongs to the
+    execution that supplied it, and it does not serve — a wait the read
+    still carries names the same turn the read names. Ordinary failure
+    summaries survive the next turn's status move untouched.
+23. On an uninterrupted legacy delegate feed, an unstamped buffered start
+    whose turn matches the snapshot's running turn installs the wait on
+    the receipt clock against a delegate read that cannot report waits —
+    the read's absence is not a clear — and a matching unstamped wake or
+    turn boundary ends it. A cold legacy reload with no live announcement
+    shows no wait in the pane, and its row still shows the wait from the
+    owning root's roster sample.
 
 ## Anti-requirements (what 30 rounds proved NOT to build)
 
@@ -316,7 +370,11 @@ Dependency order — each stage's acceptance gates the next:
    ROOT read summary's for the same wait (delegate read parity is Stage
    1's gate, which Stage 1's materialization makes possible); and emitted
    root and delegate Stop frames carry the correct `endedTurnId`
-   (captured before settlement clears it).
+   (captured before settlement clears it); and a root read taken after a
+   Stop or an A→B replacement, with the event bridge paused so the ended
+   turn's end has not drained, serves no quota wait for a turn other than
+   the execution that supplied it — the cached summary is bound to that
+   execution (see Authority order).
 2. **Stage 1, projection:** the delegate's wait materialized on its projected
    thread; the elapsed sample produced real at wait start. Gated on read
    behavior: a delegate read restores the wait and clears it at retry.
