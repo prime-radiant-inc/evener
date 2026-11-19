@@ -534,11 +534,55 @@ func ownedSectionEnd(text string, body, end int) int {
 // the model quoted keeps every byte. The section headings, the block headings
 // and the fence delimiters are written by this package and are not touched.
 func EscapeRetainedCheckpoint(text string) (string, bool) {
-	edits := collectFencedEdits(text, "## Earlier Summaries", nil)
+	edits := earlierSummaryEdits(text)
 	edits = append(edits, collectFencedEdits(text, "## Working Notes", nil)...)
 	edits = append(edits, collectFencedEdits(text, checkpointConversationHeading, agentConversationHeading)...)
 	edits = append(edits, sessionLogBodyEdits(text)...)
 	return applyTextEdits(text, edits)
+}
+
+// earlierSummaryEdits returns the edits that defuse a checkpoint's folded
+// summaries: the blocks under "## Earlier Summaries".
+//
+// A summary the renderer wrote is carried whole, so its own layout still names
+// one model-authored body — its fenced text under the summary heading. Only
+// that body is escaped: the block's harness markers, a fenced example the model
+// quoted and the partner's messages the summary carries keep every byte.
+// Escaping such a block as plain Markdown instead would rewrite the harness
+// markers and leave the model's body raw inside its own fence. A summary in an
+// older layout is the model's text throughout, and one whose layout cannot be
+// read is escaped whole, which is where every block under the heading stood
+// before the carried layout was recognized.
+func earlierSummaryEdits(text string) []textEdit {
+	if !strings.Contains(text, "## Earlier Summaries\n") {
+		return nil
+	}
+	_, body, end, ok := markdownSectionSpan(text, "## Earlier Summaries")
+	if !ok {
+		return nil
+	}
+	end = ownedSectionEnd(text, body, end)
+	var edits []textEdit
+	for _, span := range fencedBlockSpans(text[body:end]) {
+		start, stop := body+span.BodyStart, body+span.BodyEnd
+		block := text[start:stop]
+		// writeMarkdownFence ends a body with a newline it does not own, and the
+		// carried layout is compared byte for byte, so the block is read without
+		// that line break and the escape is spliced back under it.
+		carried := strings.TrimSuffix(block, "\n")
+		tail := block[len(carried):]
+		var escaped string
+		if carriesPartnerMessages(carried) {
+			escaped, _ = EscapeRetainedSummary(carried)
+		} else {
+			escaped = sysmsg.EscapeModelAuthoredFrames(carried)
+		}
+		escaped += tail
+		if escaped != block {
+			edits = append(edits, textEdit{start: start, end: stop, body: escaped})
+		}
+	}
+	return edits
 }
 
 // sessionLogCheckpointStart heads a checkpoint the session-log strategy writes.

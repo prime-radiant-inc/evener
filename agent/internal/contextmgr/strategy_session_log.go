@@ -8,6 +8,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/mdfence"
 	"primeradiant.com/evener/agent/internal/sessionlog"
+	"primeradiant.com/evener/agent/internal/sysmsg"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -82,9 +83,16 @@ func (s *SessionLogStrategy) sessionLogCheckpointWithMeta(history []schema.Turn,
 	}
 
 	// Extract original prompt from old history (same logic as checkpoint()).
-	originalPrompt := extractOriginalPrompt(history[:cutoff])
+	originalPrompt, promptModelAuthored := extractOriginalPromptTurn(history[:cutoff])
 	if len(originalPrompt) > 500 {
 		originalPrompt = originalPrompt[:500] + "..."
+	}
+	// The prompt sits in the checkpoint's user-role channel. When another agent
+	// wrote it, a frame it opens must be defused there too — after the
+	// truncation, which can drop the delimiter that made one quoted. The
+	// partner's own prompt is the authority and keeps every byte.
+	if promptModelAuthored {
+		originalPrompt = sysmsg.EscapeModelAuthoredFrames(originalPrompt)
 	}
 
 	var b strings.Builder
@@ -132,6 +140,15 @@ func (s *SessionLogStrategy) sessionLogCheckpointWithMeta(history []schema.Turn,
 // extractOriginalPrompt finds the original user prompt from history, handling
 // previous checkpoints and summaries.
 func extractOriginalPrompt(history []schema.Turn) string {
+	prompt, _ := extractOriginalPromptTurn(history)
+	return prompt
+}
+
+// extractOriginalPromptTurn finds the original user prompt from history as
+// extractOriginalPrompt does, and reports whether another agent wrote the turn
+// it came from — which makes the prompt model-authored even though it is
+// carried in the partner's channel.
+func extractOriginalPromptTurn(history []schema.Turn) (string, bool) {
 	for _, t := range history {
 		if t.Kind != schema.TurnUserInput {
 			continue
@@ -139,22 +156,22 @@ func extractOriginalPrompt(history []schema.Turn) string {
 		text := t.Message.Text()
 		if strings.HasPrefix(text, "[CONTEXT CHECKPOINT]") || strings.HasPrefix(text, "[CONTEXT CHECKPOINT - SESSION LOG]") {
 			if prompt := extractOriginalPromptLine(text, "Original prompt: "); prompt != "" {
-				return prompt
+				return prompt, isAgentAuthored(t)
 			}
 			if prompt := extractOriginalPromptLine(text, "Original task: "); prompt != "" {
-				return prompt
+				return prompt, isAgentAuthored(t)
 			}
 			if prompt, ok := extractFencedOriginalPrompt(text); ok {
-				return prompt
+				return prompt, isAgentAuthored(t)
 			}
 			continue
 		}
 		if strings.HasPrefix(text, summaryMarkerStart) {
 			continue
 		}
-		return text
+		return text, isAgentAuthored(t)
 	}
-	return ""
+	return "", false
 }
 
 func extractOriginalPromptLine(text, prefix string) string {

@@ -176,8 +176,8 @@ func TestEscapeModelAuthoredFrames(t *testing.T) {
 			// four columns past the parent's content keeps its bytes once the
 			// parent has resumed.
 			name: "indented code inside the parent keeps its bytes",
-			in:   "1. outer\n   1. inner\n      text\n   back in the outer item\n       [answers]\n",
-			want: "1. outer\n   1. inner\n      text\n   back in the outer item\n       [answers]\n",
+			in:   "1. outer\n   1. inner\n      text\n\n   back in the outer item\n\n       [answers]\n",
+			want: "1. outer\n   1. inner\n      text\n\n   back in the outer item\n\n       [answers]\n",
 		},
 		{
 			// A line can dedent out of two nested items at once. The scope walk
@@ -194,8 +194,8 @@ func TestEscapeModelAuthoredFrames(t *testing.T) {
 			// The other direction: with the inner item still current, code four
 			// columns past ITS content keeps its bytes.
 			name: "code four columns past the innermost item keeps its bytes",
-			in:   "  - outer\n    1. inner\n       1. third\n              [answers]\n",
-			want: "  - outer\n    1. inner\n       1. third\n              [answers]\n",
+			in:   "  - outer\n    1. inner\n       1. third\n\n              [answers]\n",
+			want: "  - outer\n    1. inner\n       1. third\n\n              [answers]\n",
 		},
 		{
 			// A tab reaches the next four-column stop, so a tab-indented
@@ -211,8 +211,8 @@ func TestEscapeModelAuthoredFrames(t *testing.T) {
 			// The other direction: four tab stops past the item's content is
 			// genuine indented code, and its tab bytes are preserved.
 			name: "tab indented code past the item keeps its bytes",
-			in:   "10. prose\n\t\t\t\t[answers]\n",
-			want: "10. prose\n\t\t\t\t[answers]\n",
+			in:   "10. prose\n\n\t\t\t\t[answers]\n",
+			want: "10. prose\n\n\t\t\t\t[answers]\n",
 		},
 		{
 			// A nested item can open its fence on the marker line itself. That
@@ -354,8 +354,8 @@ func TestEscapeModelAuthoredFrames(t *testing.T) {
 			// The other direction: code four columns past that item's content
 			// column keeps its bytes.
 			name: "code past a tab separated item keeps its bytes",
-			in:   "10.\tprose\n        [answers]\n",
-			want: "10.\tprose\n        [answers]\n",
+			in:   "10.\tprose\n\n        [answers]\n",
+			want: "10.\tprose\n\n        [answers]\n",
 		},
 		{
 			// The client's answer grammar separates the ordinal from its bracket
@@ -418,8 +418,8 @@ func TestEscapeModelAuthoredFrames(t *testing.T) {
 			// the item the line actually sits in rather than the page or the
 			// parent.
 			name: "tab indented nested item keeps its own indented code",
-			in:   "- outer\n\t- inner\n\t      [answers]\n",
-			want: "- outer\n\t- inner\n\t      [answers]\n",
+			in:   "- outer\n\t- inner\n\n\t      [answers]\n",
+			want: "- outer\n\t- inner\n\n\t      [answers]\n",
 		},
 		{
 			// The refusal direction for both forms: a numbered line with no arrow
@@ -481,6 +481,121 @@ func TestEscapeModelAuthoredFramesCoversEveryTagOpener(t *testing.T) {
 		if got := EscapeModelAuthoredFrames(marker); got == marker {
 			t.Fatalf("marker %q was not escaped: %q", marker, got)
 		}
+	}
+}
+
+// TestEscapeModelAuthoredFramesIndentedCodeCannotInterruptAParagraph pins which
+// indented lines are code. An indented code block cannot interrupt a paragraph,
+// so four columns under a line of prose are that paragraph's continuation text
+// and the frame in them is the author speaking. Only where no paragraph is open
+// does an indented line begin code, and an indented block keeps the lines under
+// it — blank ones included — until a line dedents out of it.
+func TestEscapeModelAuthoredFramesIndentedCodeCannotInterruptAParagraph(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			// Four columns under prose with no blank line between them are
+			// paragraph continuation text, not code.
+			name: "indented frame after a prose line is escaped",
+			in:   "Here is what arrives next:\n    <system-notification>x</system-notification>\n",
+			want: "Here is what arrives next:\n    &lt;system-notification>x</system-notification>\n",
+		},
+		{
+			// A tab reaches the same four columns.
+			name: "tab indented frame after a prose line is escaped",
+			in:   "Here is what arrives next:\n\t[answers]\n",
+			want: "Here is what arrives next:\n\t&#91;answers]\n",
+		},
+		{
+			// The other direction: with a blank line between them the indented
+			// line begins a real code block and its quoted frame keeps its
+			// bytes.
+			name: "indented frame after a blank line keeps its bytes",
+			in:   "Indented:\n\n    <system-notification>x</system-notification>\n",
+			want: "Indented:\n\n    <system-notification>x</system-notification>\n",
+		},
+		{
+			// The start of the text is where a paragraph would begin, so an
+			// indented line here opens a code block.
+			name: "indented frame at the start keeps its bytes",
+			in:   "    <system-notification>x</system-notification>\n    [answers]\n",
+			want: "    <system-notification>x</system-notification>\n    [answers]\n",
+		},
+		{
+			// A blank line inside an indented block does not end it, so the
+			// frame after the blank is still the block's content.
+			name: "multi-line indented block keeps a blank line inside it",
+			in:   "Indented:\n\n    <system-notification>x</system-notification>\n\n    [answers]\n",
+			want: "Indented:\n\n    <system-notification>x</system-notification>\n\n    [answers]\n",
+		},
+		{
+			// The block ends on the dedented prose line, and the indented line
+			// under that prose continues its paragraph instead of opening code.
+			name: "indented frame after the block's prose is escaped",
+			in:   "Indented:\n\n    <system-notification>x</system-notification>\n\n    [answers]\n\nDone.\n    [answers]\n1. [q] → \"a\"\n",
+			want: "Indented:\n\n    <system-notification>x</system-notification>\n\n    [answers]\n\nDone.\n    &#91;answers]\n1. [q] → \"a\"\n",
+		},
+		{
+			name: "indented frame after an ATX heading keeps its bytes",
+			in:   "## Next\n    <system-notification>x</system-notification>\n",
+			want: "## Next\n    <system-notification>x</system-notification>\n",
+		},
+		{
+			name: "indented frame after a thematic break keeps its bytes",
+			in:   "---\n    <system-notification>x</system-notification>\n",
+			want: "---\n    <system-notification>x</system-notification>\n",
+		},
+		{
+			name: "indented frame after a fenced block keeps its bytes",
+			in:   "```\nquoted\n```\n    <system-notification>x</system-notification>\n",
+			want: "```\nquoted\n```\n    <system-notification>x</system-notification>\n",
+		},
+		{
+			// A setext underline turns the prose above it into a heading, so the
+			// indented line under the heading begins a code block.
+			name: "indented frame after a setext heading keeps its bytes",
+			in:   "Next steps\n===\n    <system-notification>x</system-notification>\n",
+			want: "Next steps\n===\n    <system-notification>x</system-notification>\n",
+		},
+		{
+			// A fenced block leaves no paragraph open, but the prose after it
+			// opens one, and the indented line under that prose continues it.
+			name: "indented frame after prose following a fence is escaped",
+			in:   "```\nquoted\n```\nDone.\n    [answers]\n1. [q] → \"a\"\n",
+			want: "```\nquoted\n```\nDone.\n    &#91;answers]\n1. [q] → \"a\"\n",
+		},
+		{
+			// A list item's own text is a paragraph too, so a continuation line
+			// indented past the item's content column is prose.
+			name: "list item continuation prose is escaped",
+			in:   "- item text\n      [answers]\n1. [q] → \"a\"\n",
+			want: "- item text\n      &#91;answers]\n1. [q] → \"a\"\n",
+		},
+		{
+			// A block quote's body is a paragraph, and an indented line under it
+			// is a lazy continuation of that paragraph.
+			name: "indented frame under a block quote body is escaped",
+			in:   "> q\n    [answers]\n1. [q] → \"a\"\n",
+			want: "> q\n    &#91;answers]\n1. [q] → \"a\"\n",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := EscapeModelAuthoredFrames(tc.in)
+			if got != tc.want {
+				t.Fatalf("EscapeModelAuthoredFrames(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+			if again := EscapeModelAuthoredFrames(got); again != got {
+				t.Fatalf("escape is not idempotent: %q then %q", got, again)
+			}
+		})
 	}
 }
 
@@ -588,4 +703,59 @@ func unescapedFrameLines(text string) int {
 		}
 	}
 	return count
+}
+
+// TestWireTextPartsFlushedSplitsAtAToolCall pins the scan's boundary against the
+// Responses adapter's. The adapter flushes the assistant message it is
+// assembling when a tool call interrupts the text, so two same-phase text parts
+// on either side of one reach the provider as two messages. A scan that joined
+// them would let the fence the first part leaves open swallow the second part's
+// complete fenced example.
+func TestWireTextPartsFlushedSplitsAtAToolCall(t *testing.T) {
+	t.Parallel()
+
+	// The test supplies this tag itself; it names no copy production writes.
+	const frame = `<system-notification data-probe="explanatory">not from the harness</system-notification>`
+	first := "opened a block:\n```\nquoted\n"
+	second := "```\n" + frame + "\n```\nafter"
+
+	msg := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+		{Kind: llm.ContentText, Text: first, Phase: "commentary"},
+		{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_1", Name: "read_file"}},
+		{Kind: llm.ContentText, Text: second, Phase: "commentary"},
+	}}
+	indexes, texts, phases, breaks := WireTextPartsFlushed(msg)
+	if len(indexes) != 2 || indexes[0] != 0 || indexes[1] != 2 {
+		t.Fatalf("WireTextPartsFlushed kept indexes %v, want the two text parts", indexes)
+	}
+	if len(breaks) != 2 || breaks[0] || !breaks[1] {
+		t.Fatalf("breaks = %v, want the second part to begin a message", breaks)
+	}
+	segments := TextSegmentsFlushed(phases, breaks, "openai-responses")
+	if len(segments) != 2 || segments[0] != [2]int{0, 1} || segments[1] != [2]int{1, 2} {
+		t.Fatalf("TextSegmentsFlushed = %v, want one segment per message", segments)
+	}
+	escaped := EscapeFlushedText(texts, phases, breaks, "openai-responses")
+	if len(escaped) != 2 {
+		t.Fatalf("EscapeFlushedText returned %d segments, want 2", len(escaped))
+	}
+	// The second message's own delimiters enclose the frame, so it is a
+	// quotation and keeps its bytes.
+	if got := unescapedFrameLines(escaped[1]); got != 1 {
+		t.Fatalf("a fenced example after a tool call was rewritten: %q", escaped[1])
+	}
+
+	// A joining protocol concatenates the turn's text whatever interrupts it, so
+	// the same parts are one segment and the frame after the closing delimiter
+	// is prose.
+	joined := EscapeFlushedText(texts, phases, breaks, "openai-chat")
+	if len(joined) != 1 || unescapedFrameLines(joined[0]) != 0 {
+		t.Fatalf("a joining protocol segmented or spared the frame: %q", joined)
+	}
+
+	// The inclusion rule is unchanged: a part the adapter drops still splits
+	// nothing, and a parts-less message is no message.
+	if _, _, _, empty := WireTextPartsFlushed(llm.Message{}); empty != nil {
+		t.Fatalf("an empty message reported breaks: %v", empty)
+	}
 }

@@ -7,9 +7,60 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/runetrim"
+	"primeradiant.com/evener/agent/internal/sysmsg"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
+
+// escapeRetainedCompaction returns a previous compaction's text with the frames
+// the model authored defused, as its kind's layout defines them: a summary names
+// one fenced model body, and a checkpoint names a body per section. Whatever the
+// layout, the harness markers and the partner's messages keep every byte.
+//
+// It is the seam between the stored turn and the copy a later request carries,
+// so the caller hands it the text it is about to send — truncated, at the cap
+// that request applied — rather than the stored bytes. A cap can cut a summary's
+// carried messages away, and the turn then no longer recomposes as the layout it
+// was written in, so its own fenced body is escaped by the opening that still
+// names it.
+func escapeRetainedCompaction(text string, kind schema.TurnKind) string {
+	switch kind {
+	case schema.TurnSummary:
+		if escaped, changed := EscapeRetainedSummary(text); changed {
+			return escaped
+		}
+		if escaped, changed := escapeSummaryModelBody(text); changed {
+			return escaped
+		}
+	case schema.TurnCheckpoint:
+		escaped, _ := EscapeRetainedCheckpoint(text)
+		return escaped
+	}
+	return text
+}
+
+// escapeSummaryModelBody escapes the fenced body under a summary turn's own
+// heading when the text before that heading is the opening this package writes.
+//
+// It covers the summary whose carried conversation a cap cut away: the layout
+// check cannot recompose it, but the opening and the heading still name the one
+// body the model wrote.
+func escapeSummaryModelBody(text string) (string, bool) {
+	start, body, end, ok := markdownSectionSpan(text, summaryModelTextHeading)
+	if !ok || !isSummaryTurnOpening(text[:start]) {
+		return text, false
+	}
+	spans := fencedBlockSpans(text[body:end])
+	if len(spans) != 1 {
+		return text, false
+	}
+	from, to := body+spans[0].BodyStart, body+spans[0].BodyEnd
+	escaped := sysmsg.EscapeModelAuthoredFrames(text[from:to])
+	if escaped == text[from:to] {
+		return text, false
+	}
+	return text[:from] + escaped + text[to:], true
+}
 
 // foldCutoff is where a compaction of history that keeps preserveRecent
 // recent turns cuts it: history[:cutoff] is folded. It is -1 when no safe cut
@@ -133,8 +184,18 @@ historyLoop:
 			// MaybeCompact and ForceCompact paths the checkpoint layer has
 			// already folded these turns, so their user messages arrive inside
 			// the checkpoint (a previous compaction) instead of here.
+			//
+			// The request is a user-role message, so a turn another agent wrote
+			// reads there in the partner's channel without being their words. It
+			// is escaped after the cap, because a cut can drop the delimiter
+			// that made a frame quoted. An unstamped or human-stamped turn is
+			// the partner's own and keeps every byte.
+			text := truncate(t.Message.Text(), 5000)
+			if isAgentAuthored(t) {
+				text = sysmsg.EscapeModelAuthoredFrames(text)
+			}
 			b.WriteString("User: ")
-			b.WriteString(truncate(t.Message.Text(), 5000))
+			b.WriteString(text)
 			b.WriteString("\n")
 		case schema.TurnCheckpoint, schema.TurnSummary:
 			// A previous compaction is the only record of the conversation it
@@ -145,8 +206,15 @@ historyLoop:
 			// both summary prompts put the permissions and holds it quotes.
 			// Left-out partner messages written first take their share of
 			// the budget from it.
+			//
+			// A compaction is carried whole, and its own layout decides what is
+			// model-authored: the escape runs after the cap so a cut that
+			// exposes a frame is defused too. Its harness markers and the
+			// partner's messages keep every byte.
+			text := truncate(t.Message.Text(), min(maxCheckpointChars, max(maxHistoryChars-b.Len(), 0)))
+			text = escapeRetainedCompaction(text, t.Kind)
 			b.WriteString("Previous compaction: ")
-			b.WriteString(truncate(t.Message.Text(), min(maxCheckpointChars, max(maxHistoryChars-b.Len(), 0))))
+			b.WriteString(text)
 			b.WriteString("\n")
 		case schema.TurnAssistant:
 			// Extract communicate calls so the summarizer sees how the agent
@@ -155,7 +223,11 @@ historyLoop:
 			text := t.Message.Text()
 			if text != "" {
 				b.WriteString("Assistant: ")
-				b.WriteString(truncate(text, 500))
+				// The reply is the model's own words, and the request is a
+				// user-role message: a frame it invented is defused, after the
+				// cap so a cut that exposes one is covered. An intact fenced
+				// example the reply quotes keeps every byte.
+				b.WriteString(sysmsg.EscapeModelAuthoredFrames(truncate(text, 500)))
 				b.WriteString("\n")
 			}
 			truncated := false
@@ -166,6 +238,9 @@ historyLoop:
 						if msg == "" {
 							continue
 						}
+						// The message the model sent the partner is its own text
+						// too, and reaches the request the same way.
+						msg = sysmsg.EscapeModelAuthoredFrames(msg)
 						var entry string
 						switch {
 						case endTurn:
@@ -216,7 +291,14 @@ historyLoop:
 			} else {
 				b.WriteString("System: ")
 			}
-			b.WriteString(t.Message.Text())
+			// A parent agent's steer or an agent-authored one is model text in
+			// a user-role request; the human partner's own steer is the
+			// authority and keeps every byte.
+			text := t.Message.Text()
+			if isParentSteering(t) || isAgentAuthored(t) {
+				text = sysmsg.EscapeModelAuthoredFrames(text)
+			}
+			b.WriteString(text)
 			b.WriteString("\n")
 		}
 		// The cap is checked after each turn, so the history can run past it

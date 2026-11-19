@@ -94,7 +94,7 @@ func renderHistoryForElicit(history []schema.Turn, maxChars int) string {
 				// start. The escape is run again on the clipped segment so that
 				// exposure is defused; an example the clip left whole is still
 				// fenced and keeps its bytes.
-				if h.Kind == schema.TurnAssistant {
+				if isModelAuthoredForElicit(h) {
 					clipped = sysmsg.EscapeModelAuthoredFrames(clipped)
 				}
 				parts = append(parts, "[... earlier history truncated ...]\n"+clipped)
@@ -139,28 +139,42 @@ func renderTurnForElicit(t schema.Turn) string {
 	if strings.TrimSpace(b.String()) == "" {
 		return ""
 	}
+	modelAuthored := isModelAuthoredForElicit(t)
 	label := ""
 	switch t.Kind {
 	case schema.TurnUserInput:
 		label = "User: "
 	case schema.TurnAssistant:
-		// The label takes its own line so a turn that opens with a fenced
-		// example still opens a fence there. Sharing that line made Markdown read
-		// the example as prose, and every frame it quotes looked unfenced.
-		label = "Assistant:\n"
+		label = "Assistant: "
 	case schema.TurnSteering, schema.TurnCheckpoint, schema.TurnSummary:
 		label = "Context: "
+	}
+	// A model-authored turn's label takes its own line for the same reason an
+	// assistant turn's does: sharing it hides the opening delimiter of a fenced
+	// example from the scan, and the example's real closing delimiter then opens
+	// a fence that spares the frame below it.
+	if modelAuthored && label != "" {
+		label = strings.TrimSuffix(label, " ") + "\n"
 	}
 	body := b.String()
 	// The elicitor's prompt is a user-role message, and its renderer puts the
 	// label only at the START of the turn. A model-authored turn whose later
 	// lines open a reserved frame therefore copied those lines into that
 	// user-role prompt verbatim, so the elicitor could read a fabricated
-	// decision as its own context and restate it in the note (#6493 review).
-	// Only assistant text is escaped: the partner's turns are the authority and
-	// the tool output is data, neither of which this escape may rewrite.
-	if t.Kind == schema.TurnAssistant {
+	// decision as its own context and restate it in the note.
+	// The partner's own turns are the authority and the tool output is data,
+	// neither of which this escape may rewrite.
+	if modelAuthored {
 		body = sysmsg.EscapeModelAuthoredFrames(body)
 	}
 	return label + body
+}
+
+// isModelAuthoredForElicit reports whether a turn's text is model-authored even
+// though the elicitor renders it in its own user-role channel: the assistant's
+// reply, an input turn another agent wrote (a delegate's task from its parent),
+// and a steer from the parent agent or written by an agent. The human partner's
+// own input and steer are the authority and answer false.
+func isModelAuthoredForElicit(t schema.Turn) bool {
+	return t.Kind == schema.TurnAssistant || isAgentAuthored(t) || isParentSteering(t)
 }

@@ -222,7 +222,7 @@ func escapeModelAuthoredTurnFramesReporting(msg llm.Message, protocol string, pr
 	// split the scan's phase run, or a fence one part opens and the next closes
 	// reads as two blocks and the frame after the close is spared (#6493
 	// review).
-	indexes, texts, textPhases := sysmsg.WireTextParts(msg)
+	indexes, texts, textPhases, textBreaks := sysmsg.WireTextPartsFlushed(msg)
 	var reasoningIndexes []int
 	var reasoningTexts []string
 	if promotesReasoning {
@@ -332,8 +332,8 @@ func escapeModelAuthoredTurnFramesReporting(msg llm.Message, protocol string, pr
 	phases := textPhases
 	// The scan itself is shared with checkpoint capture, so the two readers
 	// cannot disagree about where a fence is (#6493 review).
-	segments := sysmsg.TextSegments(phases, protocol)
-	escapedSegments := sysmsg.EscapePhasedText(texts, phases, protocol)
+	segments := sysmsg.TextSegmentsFlushed(phases, textBreaks, protocol)
+	escapedSegments := sysmsg.EscapeFlushedText(texts, phases, textBreaks, protocol)
 	for s, span := range segments {
 		segmentTexts := texts[span[0]:span[1]]
 		joined := strings.Join(segmentTexts, "\n")

@@ -65,11 +65,11 @@ func escapeWorkingNote(msg llm.Message) string {
 	// So the scan runs over the wire parts, its rewrites go back at the indexes
 	// they came from, and the note is the original parts concatenated. The
 	// second pass then reads the note as its own flat reader will.
-	wireIndexes, _, _ := sysmsg.WireTextParts(msg)
+	wireIndexes, _, _, breaks := sysmsg.WireTextPartsFlushed(msg)
 	escaped := make([]string, len(texts))
 	copy(escaped, texts)
-	segments := sysmsg.TextSegments(phases, "openai-responses")
-	escapedSegments := sysmsg.EscapePhasedText(texts, phases, "openai-responses")
+	segments := sysmsg.TextSegmentsFlushed(phases, breaks, "openai-responses")
+	escapedSegments := sysmsg.EscapeFlushedText(texts, phases, breaks, "openai-responses")
 	for s, span := range segments {
 		pieces, ok := sysmsg.SplitJoinedEscape(escapedSegments[s], texts[span[0]:span[1]])
 		if !ok {

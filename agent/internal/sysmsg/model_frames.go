@@ -81,6 +81,21 @@ func CarriesWireText(p llm.ContentPart) bool {
 	return p.Kind == llm.ContentText && (strings.TrimSpace(p.Text) != "" || p.Phase != "")
 }
 
+// FlushesTextRun reports whether p ends the assistant message the Responses
+// adapter is assembling, so a text part after it starts a new message.
+//
+// The adapter appends text to the open message and flushes it whenever a part
+// that replays as an output item interrupts the run. A tool call is the output
+// item whose replay does not depend on a policy the scan would have to hold:
+// the adapter emits the item for every part carrying a tool call. A thinking
+// or web-search part also interrupts the run, but whether it replays at all is
+// the request's reasoning and provenance policy, which this package is not
+// given; treating one as a boundary where the adapter drops it would split a
+// run the wire joins, so only the unconditional case is a boundary.
+func flushesTextRun(p llm.ContentPart) bool {
+	return p.Kind == llm.ContentToolCall && p.ToolCall != nil
+}
+
 // WireTextParts returns an assistant message's text parts as EscapePhasedText
 // consumes them: the index, text and phase of every part CarriesWireText keeps,
 // in stored order.
@@ -91,15 +106,35 @@ func CarriesWireText(p llm.ContentPart) bool {
 // callers each writing their own loop is how the scan and the wire drifted
 // apart (#6493 review).
 func WireTextParts(msg llm.Message) (indexes []int, texts, phases []string) {
+	indexes, texts, phases, _ = WireTextPartsFlushed(msg)
+	return indexes, texts, phases
+}
+
+// WireTextPartsFlushed is WireTextParts plus, per kept part, whether the
+// adapter begins a new message at that part.
+//
+// breaks[i] is true when a part FlushesTextRun reports intervenes between kept
+// part i-1 and kept part i. A break is the adapter's message boundary as much
+// as a Phase change is, and a scan that joined across it would read two bodies
+// as one document: the second body's own delimiters would close the first
+// body's fence, and a frame the model quoted inside them would be escaped.
+func WireTextPartsFlushed(msg llm.Message) (indexes []int, texts, phases []string, breaks []bool) {
+	flushed := false
 	for i, p := range msg.Content {
+		if flushesTextRun(p) {
+			flushed = true
+			continue
+		}
 		if !CarriesWireText(p) {
 			continue
 		}
 		indexes = append(indexes, i)
 		texts = append(texts, p.Text)
 		phases = append(phases, p.Phase)
+		breaks = append(breaks, flushed && len(texts) > 1)
+		flushed = false
 	}
-	return indexes, texts, phases
+	return indexes, texts, phases, breaks
 }
 
 // TextSegments splits text parts at the message boundaries the given protocol
@@ -108,6 +143,18 @@ func WireTextParts(msg llm.Message) (indexes []int, texts, phases []string) {
 // a segment per run of equal Phase. Callers escape each segment as one block,
 // which is what the model will read as one message.
 func TextSegments(phases []string, protocol string) [][2]int {
+	return TextSegmentsFlushed(phases, nil, protocol)
+}
+
+// TextSegmentsFlushed is TextSegments plus the flush boundaries WireTextParts-
+// Flushed reports. breaks is aligned with phases; a true entry ends the
+// segment just as a Phase change does, because the adapter starts a new message
+// there too.
+//
+// A protocol that joins a turn's text ignores breaks: the Chat Completions
+// adapter concatenates every text part of the turn into one body, tool call or
+// not, so its message boundary is the turn's edge alone.
+func TextSegmentsFlushed(phases []string, breaks []bool, protocol string) [][2]int {
 	if len(phases) == 0 {
 		return nil
 	}
@@ -117,7 +164,7 @@ func TextSegments(phases []string, protocol string) [][2]int {
 	var segments [][2]int
 	start := 0
 	for i := 1; i <= len(phases); i++ {
-		if i == len(phases) || phases[i] != phases[start] {
+		if i == len(phases) || phases[i] != phases[start] || (i < len(breaks) && breaks[i]) {
 			segments = append(segments, [2]int{start, i})
 			start = i
 		}
@@ -137,10 +184,17 @@ func TextSegments(phases []string, protocol string) [][2]int {
 // in the next (#6493 review). protocol is the dispatch target's: the adapter
 // that will send the text, not the one that recorded it.
 func EscapePhasedText(texts, phases []string, protocol string) []string {
+	return EscapeFlushedText(texts, phases, nil, protocol)
+}
+
+// EscapeFlushedText is EscapePhasedText over the boundaries
+// WireTextPartsFlushed reports: each segment is escaped as one block, and no
+// segment spans a flush.
+func EscapeFlushedText(texts, phases []string, breaks []bool, protocol string) []string {
 	if len(texts) == 0 {
 		return nil
 	}
-	segments := TextSegments(phases, protocol)
+	segments := TextSegmentsFlushed(phases, breaks, protocol)
 	out := make([]string, 0, len(segments))
 	for _, span := range segments {
 		out = append(out, EscapeModelAuthoredFrames(strings.Join(texts[span[0]:span[1]], "\n")))
@@ -280,7 +334,7 @@ func harnessTagMatches(line string, tag harnessTagPrefix) (rest string, ok bool)
 //
 // Code is not prose and is left alone, as the doctor's detector leaves it: a
 // line inside a fenced block (including one opened inside a list item),
-// indented four or more columns, or beginning with a block quote marker is the
+// inside an indented code block, or beginning with a block quote marker is the
 // model quoting a frame rather than emitting one, and escaping it would
 // corrupt a legitimate example. A two-space list continuation line is prose to
 // both readers and is escaped.
@@ -297,6 +351,7 @@ func EscapeModelAuthoredFrames(text string) string {
 	created := false
 	var fence mdfence.Tracker
 	var lists listContainer
+	var blocks blockState
 	pos := 0
 	// The last numbered answer line's offset, found once. A marker carrying a
 	// note is a frame only when an answer line follows it, and "an answer
@@ -322,12 +377,13 @@ func EscapeModelAuthoredFrames(text string) string {
 		// four-column prose would hand this line scope zero, the prose would read
 		// as page-indented code, and a model-authored frame in it would survive
 		// in both replay and checkpoint capture.
-		container, enclosing := 0, 0
+		container, enclosing, openedItem := 0, 0, false
 		if !fence.Inside() || fence.LeavesItem(content) {
-			container, enclosing = lists.step(content)
+			container, enclosing, openedItem = lists.step(content)
 		}
 		inBlock := fence.StepInBlockIn(content, container, enclosing)
-		if !inBlock && !indentedCode(content, container) && !isQuotedLine(content) {
+		inCode := blocks.step(content, container, openedItem, inBlock)
+		if !inBlock && !inCode && !isQuotedLine(content) {
 			if escaped, ok := escapeFrameOpener(content, pos+len(line) <= lastAnswer); ok {
 				out = escaped + line[len(content):]
 			}
@@ -542,8 +598,10 @@ func isQuotedLine(content string) bool {
 	return strings.HasPrefix(strings.TrimLeft(content, " "), ">")
 }
 
-// indentedCode reports whether content is Markdown-indented code, whose text is
-// literal content rather than prose.
+// indentedCode reports whether content is indented far enough to be Markdown
+// code, which is only one of the two questions code asks: an indented line
+// under an open paragraph is that paragraph's continuation text rather than a
+// block, and blockState is what answers whether a code block may begin here.
 //
 // The four columns are measured from the enclosing list item's content
 // indentation, not from the page. A list nested far enough in reaches four
@@ -560,6 +618,180 @@ func indentedCode(content string, container int) bool {
 		return false
 	}
 	return mdfence.LeadingColumns(content) >= container+4
+}
+
+// blockState tracks the block structure that decides whether an indented line
+// is code, so the escape reads the text as its reader parses it.
+//
+// An indented code block cannot interrupt a paragraph: four columns under a
+// line of prose are that paragraph's continuation text, so a frame there is
+// the author speaking and is escaped. The block begins only where no paragraph
+// is open — at the start of the text or after another block ends — and once
+// begun it holds the lines under it, blank ones included, until a non-blank
+// line dedents out of it.
+//
+// The paragraph state is read from the lines themselves, so it models the
+// block openers a model actually writes: ATX headings, thematic breaks, setext
+// underlines, block quotes and list items. An HTML block is not modelled, and
+// an indented line under one is read as paragraph continuation text, which
+// escapes a frame there rather than sparing it.
+type blockState struct {
+	// inParagraph reports that the lines so far leave paragraph text open, so
+	// an indented line continuing it is prose.
+	inParagraph bool
+	// inCode reports that the lines so far leave an indented code block open,
+	// so a blank line or a line still indented four columns stays code.
+	inCode bool
+}
+
+// step advances over one line and reports whether the line is indented code.
+// content is the line without its line ending, container is the enclosing list
+// item's content indentation, openedItem reports that the line opens a list
+// item, and inFenced reports that the line belongs to a fenced block.
+func (b *blockState) step(content string, container int, openedItem, inFenced bool) bool {
+	// A fenced block is not paragraph text and what it holds is not an
+	// indented code block: the opener interrupts any paragraph, and the block
+	// leaves none open behind it.
+	if inFenced {
+		b.inParagraph, b.inCode = false, false
+		return false
+	}
+	// A blank line ends a paragraph and stays inside an indented code block.
+	if strings.TrimSpace(content) == "" {
+		b.inParagraph = false
+		return b.inCode
+	}
+	indented := indentedCode(content, container)
+	// An indented line begins or continues a code block only where no
+	// paragraph is open.
+	if indented && (b.inCode || !b.inParagraph) {
+		b.inCode, b.inParagraph = true, false
+		return true
+	}
+	b.inCode = false
+	if indented {
+		// The paragraph above is still open, so this line continues it.
+		return false
+	}
+	// A setext heading's underline turns the paragraph above it into a heading,
+	// so the indented line under the underline begins a code block rather than
+	// continuing a paragraph. Only a paragraph can be underlined, which is why
+	// this is read here and not as a block opener of its own.
+	if b.inParagraph && setextUnderline(content, container) {
+		b.inParagraph = false
+		return false
+	}
+	b.inParagraph = opensParagraph(content, container, openedItem)
+	return false
+}
+
+// opensParagraph reports whether the block a non-blank, non-indented line
+// begins leaves paragraph text open under it.
+//
+// A heading and a thematic break open no paragraph, and neither does a block
+// quote or list item carrying no text of its own; the quote's or item's own
+// text begins one.
+func opensParagraph(content string, container int, openedItem bool) bool {
+	if openedItem {
+		rest, ok := itemText(content)
+		if !ok || rest == "" {
+			return false
+		}
+		return opensParagraph(rest, 0, false)
+	}
+	if atxHeading(content, container) || thematicBreak(content, container) {
+		return false
+	}
+	if rest, ok := blockQuoteMarker(content, container); ok {
+		return strings.TrimSpace(rest) != ""
+	}
+	return true
+}
+
+// setextUnderline reports whether content is a setext heading underline at or
+// within three columns past container: a run of "=", whose heading it makes.
+// The "-" form is a thematic break to this scan either way, so it needs no
+// separate rule.
+func setextUnderline(content string, container int) bool {
+	at := mdfence.LeadingIndentEnd(content)
+	if mdfence.LeadingColumns(content[:at])-container > 3 {
+		return false
+	}
+	run := strings.TrimRight(content[at:], " \t")
+	return run != "" && strings.Trim(run, "=") == ""
+}
+
+// atxHeading reports whether content begins an ATX heading at or within three
+// columns past container: one to six "#" followed by whitespace or the end of
+// the line.
+func atxHeading(content string, container int) bool {
+	at := mdfence.LeadingIndentEnd(content)
+	if mdfence.LeadingColumns(content[:at])-container > 3 {
+		return false
+	}
+	hashes := content[at:]
+	n := len(hashes) - len(strings.TrimLeft(hashes, "#"))
+	if n == 0 || n > 6 {
+		return false
+	}
+	return n == len(hashes) || hashes[n] == ' ' || hashes[n] == '\t'
+}
+
+// thematicBreak reports whether content is a thematic break at or within three
+// columns past container: three or more of "-", "_" or "*", with only spaces
+// and tabs between them and nothing after the last one.
+func thematicBreak(content string, container int) bool {
+	at := mdfence.LeadingIndentEnd(content)
+	if mdfence.LeadingColumns(content[:at])-container > 3 {
+		return false
+	}
+	run := strings.TrimRight(content[at:], " \t")
+	if run == "" {
+		return false
+	}
+	mark := run[0]
+	if mark != '-' && mark != '_' && mark != '*' {
+		return false
+	}
+	n := 0
+	for i := 0; i < len(run); i++ {
+		switch run[i] {
+		case mark:
+			n++
+		case ' ', '\t':
+		default:
+			return false
+		}
+	}
+	return n >= 3
+}
+
+// blockQuoteMarker reports whether content begins a block quote at or within
+// three columns past container, returning the text after the marker.
+func blockQuoteMarker(content string, container int) (rest string, ok bool) {
+	at := mdfence.LeadingIndentEnd(content)
+	if mdfence.LeadingColumns(content[:at])-container > 3 {
+		return "", false
+	}
+	rest, ok = strings.CutPrefix(content[at:], ">")
+	if !ok {
+		return "", false
+	}
+	return strings.TrimLeft(rest, " \t"), true
+}
+
+// itemText returns the text a list item's marker line carries after the marker
+// and the whitespace separating it, and whether the line opens an item.
+func itemText(content string) (string, bool) {
+	at := mdfence.LeadingIndentEnd(content)
+	if at >= len(content) {
+		return "", false
+	}
+	n, ok := mdfence.ListMarker(content[at:])
+	if !ok {
+		return "", false
+	}
+	return strings.TrimLeft(content[at+n:], " \t"), true
 }
 
 // listContainer tracks the content indentation of every Markdown list item the
@@ -600,17 +832,18 @@ func (l *listContainer) enclosing() int {
 
 // step returns the content indentation that applies to line — the innermost item
 // whose content the line still reaches, taken from a marker line, or 0 when the
-// line sits outside any item — and the content indentation of the item that
-// ENCLOSES it, resolved after the dedent and before the line's own item opens.
+// line sits outside any item — the content indentation of the item that
+// ENCLOSES it, resolved after the dedent and before the line's own item opens,
+// and whether the line opens an item.
 //
 // The enclosing scope is what a fence opened on the line belongs to, and it is
 // not the scope the scan has just moved to: a sibling item's marker line has
 // already left the previous sibling, so its enclosing item is the one above both
 // of them. Only this walk knows that, which is why it is returned rather than
 // left for the tracker to infer from the column it recorded last.
-func (l *listContainer) step(content string) (scope, enclosing int) {
+func (l *listContainer) step(content string) (scope, enclosing int, openedItem bool) {
 	if strings.TrimSpace(content) == "" {
-		return l.current(), l.enclosing()
+		return l.current(), l.enclosing(), false
 	}
 	indent := mdfence.LeadingColumns(content)
 	// Leave every item the line is indented out of. Popping one level at a time
@@ -641,7 +874,7 @@ func (l *listContainer) step(content string) (scope, enclosing int) {
 	// (#6493 review).
 	if itemContent, ok := mdfence.ListItemContent(content, mdfence.LeadingIndentEnd(content)); ok && indent-enclosing <= 3 {
 		l.items = append(l.items, itemContent)
-		return l.current(), enclosing
+		return l.current(), enclosing, true
 	}
-	return l.current(), enclosing
+	return l.current(), enclosing, false
 }

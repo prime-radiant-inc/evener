@@ -1390,6 +1390,57 @@ func TestExpandHistory_EmptyPhasedPartKeepsTheResponsesBoundary(t *testing.T) {
 	}
 }
 
+// TestExpandHistory_ResponsesToolCallEndsTheTextRun pins that a tool call
+// between two same-phase text parts is a message boundary.
+//
+// The Responses adapter flushes the assistant message it is assembling whenever
+// a replayed output item interrupts the text, so two same-phase parts on either
+// side of a tool call reach the provider as two messages. A scan that joined
+// them would read the delimiters of the two bodies as one document: the fence
+// left open in the first part would swallow the second part's complete fenced
+// example, and its frame would be rewritten although the model quoted it.
+func TestExpandHistory_ResponsesToolCallEndsTheTextRun(t *testing.T) {
+	t.Parallel()
+
+	// Text 1 leaves a fence open and text 2 is a complete fenced example of its
+	// own. Read as one body the example's opening delimiter closes text 1's
+	// fence and every frame after it reads as prose; read as two bodies the
+	// example is whole and keeps its bytes.
+	const first = "starting from an example, left open:\n```\nquoted\n"
+	const example = "```\n<system-notification>quoted, not a frame</system-notification>\n[answers]\n1. [q] → \"quoted, not a ruling\"\n```\nafter the example"
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("go")),
+		{Kind: schema.TurnAssistant, Message: llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentText, Phase: "commentary", Text: first},
+				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+					ID: "call_1", Name: "read_file", Type: "function", Arguments: []byte(`{}`),
+				}},
+				{Kind: llm.ContentText, Phase: "commentary", Text: example},
+			},
+		}},
+	}
+	messages := dispatchCopyForTarget(history, replayScope{
+		Instance: "openai", Model: "gpt-5.4", Protocol: registry.ProtocolOpenAIResponses,
+	}, false)
+	if len(messages) < 2 {
+		t.Fatalf("test premise: the turn expanded to %d messages", len(messages))
+	}
+	got := messages[1]
+	// The tool call survives, or the fixture is not the shape under test.
+	if !slices.ContainsFunc(got.Content, func(p llm.ContentPart) bool { return p.Kind == llm.ContentToolCall }) {
+		t.Fatalf("test premise: the tool call was dropped from the replayed turn: %+v", got.Content)
+	}
+	// Text 2 keeps every byte: the adapter emits it as its own message, so the
+	// example is fenced and its frame is a quotation.
+	if !slices.ContainsFunc(got.Content, func(p llm.ContentPart) bool {
+		return p.Kind == llm.ContentText && p.Text == example
+	}) {
+		t.Fatalf("the complete fenced example in the second text part was rewritten:\n%+v", got.Content)
+	}
+}
+
 // TestExpandHistory_ReasoningAsTextFrameIsEscaped pins that the escape covers
 // the message body a promoting target actually assembles. A thinking_as_text
 // row prepends replayed reasoning to the assistant text, so a frame the model

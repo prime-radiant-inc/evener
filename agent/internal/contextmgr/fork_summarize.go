@@ -73,9 +73,32 @@ func buildSummarizePrompt(turns []schema.Turn) string {
 	// modelSpans records where the model-authored excerpts land in the finished
 	// prompt, so the escape can read the whole prompt and rewrite only those.
 	var modelSpans [][2]int
+	// writeLabel writes an excerpt's label. A model-authored excerpt's label
+	// takes its own line: sharing the line with the excerpt's first line hides
+	// an opening fence delimiter from the scan, so the example's real closing
+	// delimiter opens a new fence and the frame below it survives raw.
+	writeLabel := func(label string, modelAuthored bool) {
+		if modelAuthored {
+			label += "\n"
+		} else {
+			label += " "
+		}
+		b.WriteString(label)
+	}
 	writeSegment := func(text string, modelAuthored bool) {
 		start := b.Len()
 		b.WriteString(text)
+		if modelAuthored {
+			modelSpans = append(modelSpans, [2]int{start, b.Len()})
+		}
+	}
+	// writeExcerpt renders one excerpt: its label, then its text escaped after
+	// the cap so a cut that exposes a frame is covered too.
+	writeExcerpt := func(label, text string, modelAuthored bool) {
+		start := b.Len()
+		writeLabel(label, modelAuthored)
+		b.WriteString(text)
+		b.WriteString("\n")
 		if modelAuthored {
 			modelSpans = append(modelSpans, [2]int{start, b.Len()})
 		}
@@ -89,11 +112,9 @@ func buildSummarizePrompt(turns []schema.Turn) string {
 			// An input turn another agent wrote reads in the partner's channel
 			// without being their words; an unstamped or human-stamped turn is
 			// their own and keeps its bytes.
-			writeSegment("User: "+truncate(t.Message.Text(), 500)+"\n", isAgentAuthored(t))
+			writeExcerpt("User:", truncate(t.Message.Text(), 500), isAgentAuthored(t))
 		case schema.TurnAssistant:
-			// The label is this package's text, but it shares the line with the
-			// reply's first line, so both are one excerpt to the escape.
-			writeSegment("Assistant: "+truncate(t.Message.Text(), 500)+"\n", true)
+			writeExcerpt("Assistant:", truncate(t.Message.Text(), 500), true)
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolCall && p.ToolCall != nil {
 					writeSegment("  [tool_call: "+p.ToolCall.Name+"("+truncate(string(p.ToolCall.Arguments), 200)+")]\n", true)
@@ -113,7 +134,7 @@ func buildSummarizePrompt(turns []schema.Turn) string {
 		case schema.TurnSteering:
 			// A parent agent's steer or an agent-authored one is model text too;
 			// the human partner's steer is theirs.
-			writeSegment("System: "+truncate(t.Message.Text(), 200)+"\n", isParentSteering(t) || isAgentAuthored(t))
+			writeExcerpt("System:", truncate(t.Message.Text(), 200), isParentSteering(t) || isAgentAuthored(t))
 		}
 	}
 
