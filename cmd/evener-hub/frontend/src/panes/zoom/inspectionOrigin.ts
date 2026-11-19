@@ -3,7 +3,7 @@ import {
   existingConversationPaneLifetime,
   type PaneLifetime,
 } from "../../shell/paneLifetime";
-import { navigate, observeRouteHistory, refParam, routeHistoryEntryId } from "../../shell/routing";
+import { navigate, observeRouteHistory, paneToURL, refParam, routeHistoryEntryId } from "../../shell/routing";
 import { type OpenPaneRecord, onWorkspaceRestore, presentedPanes, workspaceStore } from "../../shell/workspace";
 import { type SessionZoomParams, zoomIntentOf } from "./intent";
 
@@ -151,9 +151,19 @@ workspaceStore.subscribe((state, previous) => {
       returnedOrigin.alive &&
       presentedPanes(state.panes).some((pane) => existingConversationPaneLifetime(pane) === returnedOrigin);
     if (!originPresent) {
+      const ownsCurrentReturnEntry =
+        returnedOriginURL !== null &&
+        typeof window !== "undefined" &&
+        window.location.pathname === returnedOriginURL &&
+        routeHistoryEntryId(window.history.state) === returnedOriginEntryId;
       returnedOrigin = null;
       returnedOriginURL = null;
       returnedOriginEntryId = null;
+      if (ownsCurrentReturnEntry) {
+        const survivingMain = state.panes.find((pane) => pane.slot === "main");
+        const fallbackURL = survivingMain ? paneToURL(survivingMain.type, survivingMain.params) : null;
+        navigate(fallbackURL ?? "/", { replace: true });
+      }
     } else if (returnedOriginURL === null) {
       const focused = state.panes.find((pane) => pane.id === state.focusedPaneId);
       if (!focused || existingConversationPaneLifetime(focused) !== returnedOrigin) {

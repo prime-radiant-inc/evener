@@ -563,7 +563,9 @@ test("desktop delegate rows build six nested edges beside the mounted center and
     expect(activitySidebarStore.getState().tab).toBe("agents");
     fireEvent.click(sidebar.getByRole("radio", { name: "About" }));
     await sidebar.findByText("wire-remote:grandchild");
-    const inspectorChip = within(screen.getByTestId(`inspection-${inspectorId}`)).getByRole("button", {
+    const inspectorChip = within(
+      within(screen.getByTestId(`inspection-${inspectorId}`)).getByTestId("statusbar"),
+    ).getByRole("button", {
       name: /^Agents,/,
     });
     inspectorChip.focus();
