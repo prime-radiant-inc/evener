@@ -681,10 +681,10 @@ func TestStrictExpressible(t *testing.T) {
 			},
 			want: false,
 		},
-		// An anyOf branch that is already closed and requires every declared
-		// property is preserved identically by the projection, so it is certified.
+		// OpenAI strict mode forbids anyOf at the root parameter object even when
+		// every branch is already closed and fully required.
 		{
-			name: "anyOf branches already closed and fully required",
+			name: "root-level anyOf is refused even when branches are closed and fully required",
 			in: map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,
@@ -706,6 +706,35 @@ func TestStrictExpressible(t *testing.T) {
 						"required":             []string{"kind"},
 					},
 				},
+			},
+			want: false,
+		},
+		// The same closed, fully-required union nested under a property is
+		// supported by OpenAI strict mode and preserved identically by projection.
+		{
+			name: "property-nested anyOf branches already closed and fully required",
+			in: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"choice": map[string]any{
+						"anyOf": []any{
+							map[string]any{
+								"type":                 "object",
+								"additionalProperties": false,
+								"properties":           map[string]any{"kind": map[string]any{"type": "string", "enum": []any{"a"}}},
+								"required":             []string{"kind"},
+							},
+							map[string]any{
+								"type":                 "object",
+								"additionalProperties": false,
+								"properties":           map[string]any{"kind": map[string]any{"type": "string", "enum": []any{"b"}}},
+								"required":             []string{"kind"},
+							},
+						},
+					},
+				},
+				"required": []string{"choice"},
 			},
 			want: true,
 		},
@@ -3449,40 +3478,47 @@ func TestNestedAnyOfOfTypedScalarBranchesIsCertified(t *testing.T) {
 			rejects []map[string]any
 		}{
 			{
-				name: "closed root with closed anyOf enum branches",
+				name: "property object with closed anyOf enum branches",
 				schema: map[string]any{
 					"type":                 "object",
 					"additionalProperties": false,
 					"properties": map[string]any{
-						"kind": map[string]any{"type": "string"},
-					},
-					"required": []string{"kind"},
-					"anyOf": []any{
-						map[string]any{
+						"choice": map[string]any{
 							"type":                 "object",
 							"additionalProperties": false,
 							"properties": map[string]any{
-								"kind": map[string]any{"type": "string", "enum": []any{"alpha"}},
+								"kind": map[string]any{"type": "string"},
 							},
 							"required": []string{"kind"},
-						},
-						map[string]any{
-							"type":                 "object",
-							"additionalProperties": false,
-							"properties": map[string]any{
-								"kind": map[string]any{"type": "string", "enum": []any{"beta"}},
+							"anyOf": []any{
+								map[string]any{
+									"type":                 "object",
+									"additionalProperties": false,
+									"properties": map[string]any{
+										"kind": map[string]any{"type": "string", "enum": []any{"alpha"}},
+									},
+									"required": []string{"kind"},
+								},
+								map[string]any{
+									"type":                 "object",
+									"additionalProperties": false,
+									"properties": map[string]any{
+										"kind": map[string]any{"type": "string", "enum": []any{"beta"}},
+									},
+									"required": []string{"kind"},
+								},
 							},
-							"required": []string{"kind"},
 						},
 					},
+					"required": []string{"choice"},
 				},
 				accepts: []map[string]any{
-					{"kind": "alpha"},
-					{"kind": "beta"},
+					{"choice": map[string]any{"kind": "alpha"}},
+					{"choice": map[string]any{"kind": "beta"}},
 				},
 				rejects: []map[string]any{
-					{"kind": "gamma"},
-					{"kind": "alpha", "extra": true},
+					{"choice": map[string]any{"kind": "gamma"}},
+					{"choice": map[string]any{"kind": "alpha", "extra": true}},
 				},
 			},
 			{
@@ -3554,6 +3590,28 @@ func TestNestedAnyOfOfTypedScalarBranchesIsCertified(t *testing.T) {
 func TestNestedAnyOfWithAnObjectBranchIsStillRefused(t *testing.T) {
 	t.Parallel()
 	cases := map[string]map[string]any{
+		"root-level anyOf of closed object branches": {
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"kind": map[string]any{"type": "string"},
+			},
+			"required": []string{"kind"},
+			"anyOf": []any{
+				map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties":           map[string]any{"kind": map[string]any{"type": "string", "enum": []any{"alpha"}}},
+					"required":             []string{"kind"},
+				},
+				map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties":           map[string]any{"kind": map[string]any{"type": "string", "enum": []any{"beta"}}},
+					"required":             []string{"kind"},
+				},
+			},
+		},
 		"open object branch": {
 			"type":                 "object",
 			"additionalProperties": false,

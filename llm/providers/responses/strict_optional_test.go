@@ -664,40 +664,40 @@ func TestStrictToolsTrueRouteStillCertifiesFullyRequiredSchemas(t *testing.T) {
 		t.Fatalf("additionalProperties = %#v, want false (strictified)", params["additionalProperties"])
 	}
 
-	t.Run("nested closed object union stays strict and accepts both alternatives", func(t *testing.T) {
+	closedBranchA := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"kind": map[string]any{"type": "string", "enum": []any{"a"}},
+		},
+		"required": []string{"kind"},
+	}
+	closedBranchB := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"kind": map[string]any{"type": "string", "enum": []any{"b"}},
+		},
+		"required": []string{"kind"},
+	}
+
+	t.Run("root-level anyOf stays non-strict and preserves both alternatives", func(t *testing.T) {
 		t.Parallel()
-		unionSchema := map[string]any{
+		rootUnion := map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"kind": map[string]any{"type": "string"},
 			},
 			"required": []string{"kind"},
-			"anyOf": []any{
-				map[string]any{
-					"type":                 "object",
-					"additionalProperties": false,
-					"properties": map[string]any{
-						"kind": map[string]any{"type": "string", "enum": []any{"a"}},
-					},
-					"required": []string{"kind"},
-				},
-				map[string]any{
-					"type":                 "object",
-					"additionalProperties": false,
-					"properties": map[string]any{
-						"kind": map[string]any{"type": "string", "enum": []any{"b"}},
-					},
-					"required": []string{"kind"},
-				},
-			},
+			"anyOf":    []any{closedBranchA, closedBranchB},
 		}
 		unionReq := userReq("hi")
-		unionReq.Tools = []llm.ToolDefinition{{Name: "choose_kind", Parameters: unionSchema}}
+		unionReq.Tools = []llm.ToolDefinition{{Name: "choose_kind", Parameters: rootUnion}}
 		unionBody := build(t, unionReq, resolved(strictCaps))
 		unionTool := unionBody["tools"].([]map[string]any)[0]
-		if unionTool["strict"] != true {
-			t.Fatalf("strict = %#v, want true for closed object union", unionTool["strict"])
+		if unionTool["strict"] != false {
+			t.Fatalf("strict = %#v, want false: OpenAI strict mode forbids root-level anyOf", unionTool["strict"])
 		}
 		compiled := compileWireSchema(t, unionTool["parameters"].(map[string]any))
 		for _, valid := range []map[string]any{{"kind": "a"}, {"kind": "b"}} {
@@ -706,6 +706,44 @@ func TestStrictToolsTrueRouteStillCertifiesFullyRequiredSchemas(t *testing.T) {
 			}
 		}
 		for _, invalid := range []map[string]any{{"kind": "c"}, {"kind": "a", "extra": 1}} {
+			if err := compiled.Validate(invalid); err == nil {
+				t.Fatalf("emitted schema accepted invalid %#v", invalid)
+			}
+		}
+	})
+
+	t.Run("property-nested closed object union stays strict and accepts both alternatives", func(t *testing.T) {
+		t.Parallel()
+		nestedUnion := map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"choice": map[string]any{
+					"anyOf": []any{closedBranchA, closedBranchB},
+				},
+			},
+			"required": []string{"choice"},
+		}
+		unionReq := userReq("hi")
+		unionReq.Tools = []llm.ToolDefinition{{Name: "choose_nested_kind", Parameters: nestedUnion}}
+		unionBody := build(t, unionReq, resolved(strictCaps))
+		unionTool := unionBody["tools"].([]map[string]any)[0]
+		if unionTool["strict"] != true {
+			t.Fatalf("strict = %#v, want true for property-nested closed object union", unionTool["strict"])
+		}
+		compiled := compileWireSchema(t, unionTool["parameters"].(map[string]any))
+		for _, valid := range []map[string]any{
+			{"choice": map[string]any{"kind": "a"}},
+			{"choice": map[string]any{"kind": "b"}},
+		} {
+			if err := compiled.Validate(valid); err != nil {
+				t.Fatalf("emitted schema rejected %#v: %v", valid, err)
+			}
+		}
+		for _, invalid := range []map[string]any{
+			{"choice": map[string]any{"kind": "c"}},
+			{"choice": map[string]any{"kind": "a", "extra": 1}},
+		} {
 			if err := compiled.Validate(invalid); err == nil {
 				t.Fatalf("emitted schema accepted invalid %#v", invalid)
 			}

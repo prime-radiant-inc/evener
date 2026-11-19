@@ -436,6 +436,12 @@ func StrictExpressible(schema map[string]any) bool {
 	if CyclicSchema(schema) {
 		return false
 	}
+	// OpenAI strict mode forbids anyOf at the root parameter object, even when
+	// every branch is already closed and fully required; equivalent unions nested
+	// under a property remain certifiable.
+	if _, hasAnyOf := schema["anyOf"]; hasAnyOf {
+		return false
+	}
 	return strictlyExpressibleNode(schema, true, dialectOf(schema))
 }
 
