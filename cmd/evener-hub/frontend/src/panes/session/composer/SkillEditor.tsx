@@ -191,13 +191,25 @@ function createAtomView(node: ProseMirrorNode, kind: "skill" | "command", props:
   return { dom };
 }
 
+/** Whether two marker lists name the same numbers. Order carries no meaning, and
+ * neither does a repeat of one number. */
+function sameMarkerSet(a: readonly number[], b: readonly number[]): boolean {
+  const markers = new Set(a);
+  return b.every((marker) => markers.has(marker)) && markers.size === new Set(b).size;
+}
+
 function sameEditorValue(a: SkillEditorValue, b: SkillEditorValue): boolean {
   return (
     a.text === b.text &&
     a.skillNames.length === b.skillNames.length &&
     a.skillNames.every((name, index) => b.skillNames[index] === name) &&
     JSON.stringify(a.commandNames ?? []) === JSON.stringify(b.commandNames ?? []) &&
-    JSON.stringify(a.mentions ?? []) === JSON.stringify(b.mentions ?? [])
+    JSON.stringify(a.mentions ?? []) === JSON.stringify(b.mentions ?? []) &&
+    // The adoption is part of the value the editor is rendering: the document
+    // carries those marks, so a value that names them is not the same value as
+    // one that does not. Without this, every keystroke would re-apply the
+    // caller's value as a non-echo replace and rebuild the document.
+    sameMarkerSet(a.adoptedImageMarkers ?? [], b.adoptedImageMarkers ?? [])
   );
 }
 
@@ -335,9 +347,8 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
       // cleared submission must not put the sent message back.
       const apply = (transaction: typeof view.state.tr) =>
         view.dispatch(transaction.setMeta("addToHistory", false).setMeta(externalSync, true));
-      const current = serializeSkillDocument(view.state.doc).text;
-      const prefix = sharedPrefixLength(current, props.value.text);
-      const end = current.length - sharedSuffixLength(current, props.value.text, prefix);
+      const prefix = sharedPrefixLength(current.text, props.value.text);
+      const end = current.text.length - sharedSuffixLength(current.text, props.value.text, prefix);
       // A boundary strictly inside an atom cannot be mapped to a position that
       // replaces that atom, and the value as a whole is authoritative whenever
       // the caller marked it a restore or it replaces everything - a goal
@@ -346,14 +357,19 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
       // text: a spliced command or quote that happens to spell a selected name
       // must not become an activation the user never chose.
       const splitsAtom = atomInteriorAt(view.state.doc, prefix) || atomInteriorAt(view.state.doc, end);
-      if (authoritative || splitsAtom || (prefix === 0 && end === current.length)) {
+      // Which occurrences are unbacked is document STRUCTURE (the stagedAnchor
+      // marks), and a plain-text splice cannot add or remove a mark. A value
+      // that changes the adoption therefore rebuilds from the value rather than
+      // patching, even when its text is byte-identical.
+      const adoptionChanged = !sameMarkerSet(current.adoptedImageMarkers ?? [], props.value.adoptedImageMarkers ?? []);
+      if (authoritative || splitsAtom || adoptionChanged || (prefix === 0 && end === current.text.length)) {
         const replacement = parseSkillDocument(props.value);
         if (!replacement.eq(view.state.doc))
           apply(view.state.tr.replaceWith(0, view.state.doc.content.size, replacement.content));
       } else {
         const from = textOffsetToDocumentPosition(view.state.doc, prefix, 1);
         const to = textOffsetToDocumentPosition(view.state.doc, end, -1);
-        const inserted = props.value.text.slice(prefix, props.value.text.length - (current.length - end));
+        const inserted = props.value.text.slice(prefix, props.value.text.length - (current.text.length - end));
         apply(view.state.tr.replaceWith(from, to, inserted ? skillSchema.text(inserted) : Fragment.empty));
       }
       // The applied value is not the last word: the integrity plugin separates

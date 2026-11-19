@@ -18,6 +18,7 @@ import { type SetStateAction, useMemo, useState } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import type { InputAttachment } from "../../../../stores/threads";
+import { spelledImageMarkers } from "../submitProtocol";
 import { reencodeToPng } from "./encodePng";
 
 export interface PendingAttachment {
@@ -86,6 +87,14 @@ export interface UseAttachmentsResult {
    * restored into Composer state. Their marker high-water mark remains
    * authoritative for attachments added afterward. */
   replaceWithSettled(items: PendingAttachment[]): void;
+  /** Moves every staged item whose marker `text` spells to a free number,
+   * leaving `text` exactly as it arrived. A retained composer keeps its tiles
+   * across the draft another pane replaced, so a tile's number can name an
+   * occurrence the incoming text owns as ordinary prose; leaving the tile
+   * there would pair that literal with this tile's bytes at Send. The tile's
+   * identity (its bytes and its encode continuation) moves with it - only the
+   * number changes. `reserved` names numbers this move must also skip. */
+  renumberOff(text: string, reserved?: readonly number[]): void;
   /** Clears every staged item, restarts marker numbering, and invalidates all
    * encode continuations already in flight. The editor text is owned by the
    * caller and is deliberately left untouched. */
@@ -205,6 +214,40 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
     removedWhilePendingRef.current.clear();
     nextMarkerRef.current = 0;
     setItems([]);
+  };
+
+  const renumberOff = (text: string, reserved: readonly number[] = []) => {
+    // A marker the text spells is that text's own occurrence - whoever wrote
+    // it, it is not an anchor this composer staged for this text.
+    const spelled = new Set(spelledImageMarkers(text));
+    if (spelled.size === 0) return;
+    const blocked = [...new Set([...reserved, ...reservedMarkersRef.current])];
+    const items = store.getState().items;
+    let highWater = nextMarkerRef.current;
+    // Nothing moved means the text spells none of this composer's numbers, which
+    // is the ordinary rebind and must stay a no-op.
+    let moved = false;
+    // The accumulating list starts as the current tiles and takes each new
+    // number as it is assigned, so `nextComposerImageMarker` sees both the
+    // unmoved tiles' numbers and the ones this same call already handed out.
+    const assigned: PendingAttachment[] = [...items];
+    for (const [index, item] of items.entries()) {
+      if (!spelled.has(item.marker)) continue;
+      // Each assignment starts above the previous one, so two moved tiles never
+      // land on the same number and no move can land on a tile that is staying.
+      const marker = nextComposerImageMarker(text, assigned, highWater, blocked);
+      highWater = marker;
+      assigned[index] = { ...item, marker };
+      moved = true;
+    }
+    if (!moved) return;
+    // replaceWithSettled matches each item against the one at its own index, so
+    // a moved tile keeps its operation token and therefore its in-flight encode
+    // (and, once settled, its bytes).
+    replaceWithSettled(assigned);
+    // The assigned numbers are this high-water mark now; a later gesture starts
+    // above them.
+    nextMarkerRef.current = highWater;
   };
 
   const ingestFiles = (files: File[], onRejected: (message: string) => void) => {
@@ -357,6 +400,7 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
       return store.getState().items;
     },
     replaceWithSettled,
+    renumberOff,
     reset,
     get hasPending() {
       return store.getState().items.some((item) => item.pending);

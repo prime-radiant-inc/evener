@@ -146,4 +146,72 @@ describe("skill document", () => {
     expect(textOffsetToDocumentPosition(doc, -1)).toBe(0);
     expect(textOffsetToDocumentPosition(doc, 100)).toBe(6);
   });
+  it("marks exactly the adopted occurrences and round trips them", () => {
+    // Only marker 2 is adopted: marker 1 is prose the same text spells, and a
+    // marker the caller did not name must never gain a mark.
+    const doc = parseSkillDocument({ text: "a [image 1] b [image 2]", skillNames: [], adoptedImageMarkers: [2] });
+    const marked = doc.content.content.filter((node) => node.marks.some((mark) => mark.type.name === "stagedAnchor"));
+    expect(marked.map((node) => node.text)).toEqual(["[image 2]"]);
+    expect(serializeSkillDocument(doc)).toEqual({
+      text: "a [image 1] b [image 2]",
+      skillNames: [],
+      adoptedImageMarkers: [2],
+    });
+  });
+
+  it("keeps the mark on the literal only, not on text that follows it", () => {
+    // A mark that leaked past its own occurrence would refuse a person's prose.
+    const doc = parseSkillDocument({ text: "[image 1] tail", skillNames: [], adoptedImageMarkers: [1] });
+    const runs = doc.content.content.map((node) => ({
+      text: node.text,
+      marked: node.marks.some((mark) => mark.type.name === "stagedAnchor"),
+    }));
+    expect(runs).toEqual([
+      { text: "[image 1]", marked: true },
+      { text: " tail", marked: false },
+    ]);
+  });
+
+  it("drops the adoption when the occurrence is gone and restores nothing it did not mark", () => {
+    // What a delete does to the document: no literal, so nothing to report.
+    expect(
+      serializeSkillDocument(parseSkillDocument({ text: "a b", skillNames: [], adoptedImageMarkers: [2] })),
+    ).toEqual({
+      text: "a b",
+      skillNames: [],
+    });
+    // A marker with no adoption is not provenance, whatever the number.
+    expect(serializeSkillDocument(parseSkillDocument({ text: "[image 2]", skillNames: [] }))).toEqual({
+      text: "[image 2]",
+      skillNames: [],
+    });
+  });
+
+  it("splits a run so an adopted occurrence between atoms keeps its mark", () => {
+    const doc = parseSkillDocument({
+      text: "/cleanup and [image 1] done",
+      skillNames: [],
+      commandNames: ["cleanup"],
+      adoptedImageMarkers: [1],
+    });
+    expect(serializeSkillDocument(doc)).toEqual({
+      text: "/cleanup and [image 1] done",
+      skillNames: [],
+      commandNames: ["cleanup"],
+      mentions: [{ kind: "command", name: "cleanup", offset: 0 }],
+      adoptedImageMarkers: [1],
+    });
+  });
+
+  it("keeps the adoption across a plain-text patch that leaves the occurrence alone", () => {
+    const value = { text: "kept [image 1]", skillNames: [], adoptedImageMarkers: [1] };
+    expect(patchSelectionText(value, "😀 kept [image 1]")).toEqual({
+      text: "😀 kept [image 1]",
+      skillNames: [],
+      adoptedImageMarkers: [1],
+    });
+    // The same patch with the occurrence deleted reflects that, because the
+    // patched document no longer holds the mark.
+    expect(patchSelectionText(value, "kept ")).toEqual({ text: "kept ", skillNames: [] });
+  });
 });

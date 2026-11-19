@@ -940,3 +940,124 @@ test("an activated recovery restores the adoption its row carries", async () => 
     source.dispose();
   }
 });
+
+// A retained composer's tiles outlive the draft another pane replaced. If that
+// draft spells the same number as literal prose, Send must not pair the literal
+// with this composer's older bytes: the tile moves off it and the incoming text
+// is delivered byte-identical. The adopted anchors the incoming record names are
+// still refused, so the repair story for a genuinely missing image is unchanged.
+test("a rebind moves a retained tile off a literal the incoming draft spells", () => {
+  const source = createTestComposerSource("root");
+  installControlledImageEncoding();
+  const view = renderHook(() => useAttachments(source.editor, source.attachments));
+  try {
+    // This composer holds tile 1's bytes...
+    act(() => view.result.current.ingestFiles([image()], (message) => pushToast("error", message)));
+    expect(source.attachments.getState().items.map((item) => item.marker)).toEqual([1]);
+    view.unmount();
+
+    // ...and another pane then saves a draft whose text spells "[image 1]" as
+    // something that writer staged and whose bytes did not travel, next to a
+    // second, missing anchor the record also names.
+    const incoming = "look at [image 1] and [image 2]";
+    writeComposerDraft("root", { text: incoming, skillNames: [], stagedImageMarkers: [1, 2] });
+    const unbind = source.bindEditor({ read: () => source.editor.read(), write: () => {} });
+    try {
+      // The tile moved off the incoming text's own occurrence.
+      expect(source.attachments.getState().items.map((item) => item.marker)).toEqual([3]);
+      // Byte-identical: the rebind never rewrites the text it adopted.
+      expect(source.getSnapshot().text).toBe(incoming);
+      expect(readComposerDraft("root").text).toBe(incoming);
+      // The record's anchors are still refused, and the adopted tile's new
+      // number is not one of them.
+      expect(source.getSnapshot().adoptedImageMarkers).toEqual([1, 2]);
+      expect(unbackedImageMarkersIn(source.getSnapshot().text, source.getSnapshot().adoptedImageMarkers)).toEqual([
+        1, 2,
+      ]);
+      // The moved tile's bytes are the ones this composer staged, not a
+      // re-encode: identity survives the renumber.
+      expect(source.attachments.getState().items).toEqual([
+        { marker: 3, name: "source.png", mediaType: "image/png", pending: true },
+      ]);
+    } finally {
+      unbind();
+    }
+  } finally {
+    source.dispose();
+  }
+});
+
+// The same rebind with NO adopted provenance: the incoming text's marker is
+// prose a person typed, so nothing is refused - but the retained tile still
+// cannot keep a number that text spells, because Send would translate the
+// literal into a reference to the older tile's bytes.
+test("a rebind moves a retained tile off typed prose that spells its number", () => {
+  const source = createTestComposerSource("root");
+  source.editor.write("mine ", 5);
+  const operations = createAttachmentOperations(source.editor, source.attachments);
+  operations.replaceWithSettled([
+    { marker: 1, name: "retained.png", mediaType: "image/png", data: "AQID", pending: false },
+  ]);
+  const detach = source.bindEditor({ read: () => source.editor.read(), write: () => {} });
+  detach();
+
+  writeComposerDraft("root", { text: "typed [image 1]", skillNames: [] });
+  const unbind = source.bindEditor({ read: () => source.editor.read(), write: () => {} });
+  try {
+    expect(source.attachments.getState().items.map((item) => item.marker)).toEqual([2]);
+    expect(source.getSnapshot().text).toBe("typed [image 1]");
+    // Nothing was staged by the record's writer, so the literal stays sendable.
+    expect(source.getSnapshot().adoptedImageMarkers).toEqual([]);
+    expect(unbackedImageMarkersIn(source.getSnapshot().text, source.getSnapshot().adoptedImageMarkers)).toEqual([]);
+  } finally {
+    unbind();
+    source.dispose();
+  }
+});
+
+// A number a dormant adoption reserves survives an edit that stops spelling it,
+// so attaching the replacement image takes a fresh number. That is the library
+// half of "the undo still refuses": the restored occurrence must never find a
+// tile sitting on its number. The mark-and-undo half is the editor's, proven
+// through the real composer in Composer.attachments.test.tsx.
+test("a replacement image after deleting the only occurrence takes a fresh number", () => {
+  writeComposerDraft("root", { text: "[image 1]", skillNames: [], stagedImageMarkers: [1] });
+  const source = createTestComposerSource("root");
+  installControlledImageEncoding();
+  const view = renderHook(() => useAttachments(source.editor, source.attachments));
+  try {
+    expect(source.getSnapshot().adoptedImageMarkers).toEqual([1]);
+    // Deleting the only occurrence BLANKS the draft. Provenance lives in the
+    // editor's marks now, so this edit retires nothing: the number stays
+    // reserved, because the editor can put the occurrence back with an undo.
+    source.editText("");
+    expect(source.attachments.getState().reservedMarkersRef.current).toEqual([1]);
+    expect(unbackedImageMarkersIn(source.getSnapshot().text, source.getSnapshot().adoptedImageMarkers)).toEqual([]);
+
+    act(() => view.result.current.ingestFiles([image()], (message) => pushToast("error", message)));
+    expect(source.attachments.getState().items.map((item) => item.marker)).toEqual([2]);
+    expect(source.getSnapshot().text).toBe("[image 2]");
+  } finally {
+    view.unmount();
+    source.dispose();
+  }
+});
+
+// Reservation numbers only grow while the source lives: an edit that removes
+// the occurrence and a later undo that restores it may not have its number
+// handed to a tile in between, or the restored occurrence would be paired with
+// that tile's bytes.
+test("the reserved set keeps a number after the active adoption stops spelling it", () => {
+  writeComposerDraft("root", { text: "kept [image 1]", skillNames: [], stagedImageMarkers: [1] });
+  const source = createTestComposerSource("root");
+  try {
+    expect(source.attachments.getState().reservedMarkersRef.current).toEqual([1]);
+    source.setAdoptedImageMarkers([]);
+    // The active set is empty - nothing in the current text is refused.
+    expect(source.getSnapshot().adoptedImageMarkers).toEqual([]);
+    // ...but the number stays reserved, because the editor can put it back.
+    expect(source.attachments.getState().reservedMarkersRef.current).toEqual([1]);
+  } finally {
+    source.dispose();
+  }
+});

@@ -120,10 +120,16 @@ export interface ComposerSourceState {
   setActiveRecoveryId(record: MutationRecoveryRecord | null): void;
   markRestore(): void;
   /** Replaces the adopted-anchor provenance this source carries. The set is
-   * provenance, not state about the text: it is intersected with whatever the
-   * text spells at send time, so deleting an anchor clears the refusal and an
-   * undo that brings it back restores it. */
+   * read from the editor document's own stagedAnchor marks, so it follows an
+   * edit or an undo exactly: deleting the occurrence clears the refusal, and
+   * the undo that brings the occurrence back brings this set back with it.
+   * Every number this ever names stays reserved for `nextComposerImageMarker`
+   * until clearAdoptedImageMarkers retires the record with a replaced draft. */
   setAdoptedImageMarkers(markers: readonly number[]): void;
+  /** Retires the adoption record AND its reservations, because the whole draft
+   * this source carried is being replaced: nothing left in the editor can put
+   * one of its occurrences back with an undo. */
+  clearAdoptedImageMarkers(): void;
   /** Whether this source still owns the draft currently persisted under `ref`.
    * Ownership is the PERSISTED revision identity, so another tab's write - or
    * a background rewrite of ours - ends it. Never a tab-local counter: two
@@ -371,21 +377,13 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     const blank = text.trim() === "";
     if (!blank) cancelCleanupRetry();
     textRef.current = text;
-    // The adopted set is provenance, not state about the current text: it is
-    // intersected with whatever the text spells at the moment of sending
-    // (submitProtocol's unbackedImageMarkersIn). Deleting an anchor therefore
-    // clears the refusal on its own, and an editor undo that brings the
-    // occurrence back restores it - there is no separate record an undo could
-    // fail to restore.
     state.setState({ text });
-    // A cleared composition is a REPLACED draft: every anchor the adoption
-    // named was in text the person just deleted, and no staging gesture is
-    // holding bytes that could bring one back. Keeping the record would reserve
-    // its numbers forever, so the replacement image could never take one. An
-    // edit that leaves any prose keeps the record, which is what lets an undo
-    // restore the original refusal.
-    if (blank && operations.items.length === 0 && state.getState().adoptedImageMarkers.length > 0)
-      setAdoptedImageMarkers([]);
+    // Nothing about the adopted set is decided here. Provenance lives in the
+    // editor document as the stagedAnchor mark, so the editor's own history
+    // carries it: deleting the only occurrence and pressing Undo restores the
+    // mark and the refusal with it. Only replacing the draft outright
+    // (clearIfUnchanged, replaceComposerWithGoalDraft) retires the record,
+    // because there is then no document left to undo into.
   }
   function updateSkillNames(skillNames: string[]): void {
     if (disposed) return;
@@ -470,7 +468,17 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     const current = state.getState().adoptedImageMarkers;
     if (next.length === current.length && next.every((marker, index) => marker === current[index])) return;
     state.setState({ adoptedImageMarkers: next });
-    publishReservedMarkers(next);
+    // Reservations only ever GROW here. A number enters because some draft this
+    // source read named it, and it stays reserved even after the person deletes
+    // the occurrence: the editor can put it back with an undo, and reusing it
+    // for a new tile in the meantime would pair fresh bytes with a marked
+    // occurrence. Only a replaced draft retires the whole reservation set.
+    publishReservedMarkers([...new Set([...attachments.getState().reservedMarkersRef.current, ...next])]);
+  }
+  function clearAdoptedImageMarkers(): void {
+    if (disposed) return;
+    state.setState({ adoptedImageMarkers: [] });
+    publishReservedMarkers([]);
   }
   function markRestore(): void {
     if (!disposed) state.setState((snapshot) => ({ restoreEpoch: snapshot.restoreEpoch + 1 }));
@@ -478,11 +486,25 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   function writeDraft(text: string, mayPersist: boolean, source?: TextEditSource): void {
     if (disposed) return;
     const next = patchSelectionText(
-      { text: textRef.current, skillNames: skillNamesRef.current, ...selectionMetaRef.current },
+      // The adoption travels with the patch: patchSelectionText re-derives the
+      // marks a marker keeps from this list, so omitting it would silently
+      // retire every OTHER missing reference's provenance on one repair write.
+      {
+        text: textRef.current,
+        skillNames: skillNamesRef.current,
+        ...selectionMetaRef.current,
+        adoptedImageMarkers: state.getState().adoptedImageMarkers,
+      },
       text,
     );
     updateSkillNames(next.skillNames);
     updateSelectionMeta(next);
+    // This write patched the document from the adoption it started with, so
+    // what it returns is exactly which anchors it kept. Adopting that back is
+    // what keeps the record agreeing with the marks the editor is about to
+    // apply - and what stops a stale list from making every later value look
+    // like a non-echo rebuild.
+    setAdoptedImageMarkers(next.adoptedImageMarkers ?? []);
     if (source === "submission") {
       updateText(text);
       // React can batch exact marker removals, so restore their already mapped atoms.
@@ -1011,6 +1033,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     updateSelectionMeta,
     setActiveRecoveryId,
     setAdoptedImageMarkers,
+    clearAdoptedImageMarkers,
     ownsDraftRevision,
     claimDraftRevision,
     markRestore,
@@ -1037,6 +1060,13 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
         // record's own provenance - not every marker the text happens to
         // spell, which would refuse prose a person typed.
         setAdoptedImageMarkers(adoptedAnchorsIn(draft));
+        // This composer's retained tiles outlive the draft another pane
+        // replaced, so a tile's number can name an occurrence in the incoming
+        // text that is ordinary prose there. Moving the tile off that number
+        // (the text is left exactly as it arrived) is what stops Send pairing
+        // the literal with this tile's older bytes. Runs after the adoption so
+        // the move already sees the numbers that adoption reserves.
+        operations.renumberOff(draft.text);
       }
       markRestore();
       boundEditor = nextEditor;
@@ -1072,7 +1102,9 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
           claimDraftRevision();
           // The draft this adoption described is gone, so its numbers are free
           // again - and must be, or a replacement image could never take one.
-          setAdoptedImageMarkers([]);
+          // A cleared draft is a replacement, not an edit, so it retires the
+          // reservations too: setAdoptedImageMarkers alone only grows them.
+          clearAdoptedImageMarkers();
         }
       }
       return true;

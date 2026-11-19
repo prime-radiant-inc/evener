@@ -303,6 +303,7 @@ function ComposerWithSubmission({
     updateSelectionMeta,
     setActiveRecoveryId,
     setAdoptedImageMarkers,
+    clearAdoptedImageMarkers,
     markRestore,
     persistDraft,
     writeDraft,
@@ -653,8 +654,10 @@ function ComposerWithSubmission({
     setActiveRecoveryId(null);
     attachments.reset();
     // A new draft ends the replaced one's adoption: its anchors are not in this
-    // text, so keeping them would reserve numbers no image can ever take.
-    setAdoptedImageMarkers([]);
+    // text, so keeping them would reserve numbers no image can ever take. The
+    // record and its reservations retire together, because the editor's own
+    // history is what would otherwise bring an occurrence back.
+    clearAdoptedImageMarkers();
     updateSkillNames([]);
     updateSelectionMeta({ text: "", skillNames: [] });
     resetSlashCompletion();
@@ -1039,6 +1042,11 @@ function ComposerWithSubmission({
     editSkillNames(value.skillNames);
     updateSelectionMeta(value);
     editText(value.text);
+    // The document's own stagedAnchor marks are the source of truth for which
+    // occurrences are unbacked: a delete takes its mark with it, and the undo
+    // that restores the text restores the mark. Read before persistDraft so the
+    // record this keystroke writes already agrees with what Send will see.
+    setAdoptedImageMarkers(value.adoptedImageMarkers ?? []);
     if (recoveryOwnerLeaseRef.current === null) persistDraft(value.text);
     // Every keystroke re-evaluates the trailing-token match fresh - a token
     // Escape just closed (useSlashCompletion's token) reopens on the
@@ -1470,7 +1478,7 @@ function ComposerWithSubmission({
                 field={
                   <SkillEditor
                     ref={editorRef}
-                    value={{ text, skillNames, ...selectionMeta }}
+                    value={{ text, skillNames, ...selectionMeta, adoptedImageMarkers }}
                     restoreEpoch={restoreEpoch}
                     skillDetails={skillChipDetails}
                     commandDetails={(name) =>

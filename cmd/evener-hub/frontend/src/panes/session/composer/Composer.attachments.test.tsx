@@ -202,6 +202,12 @@ test.each([
     await waitFor(() => expect(actionButton().disabled).toBe(false));
     const submittedText = textarea().textContent;
     const originalAttachment = recovery ? "proof.png" : "original.png";
+    // Remounting re-adopts the submitted marker: the text still spells
+    // "[image 1]" but its bytes went with the request. That number stays
+    // reserved while an undo could bring the occurrence back, so the
+    // replacement image takes the next free one instead of pairing its bytes
+    // with the adopted literal at 1. Every other branch is the same text.
+    const expectedAfterReplacement = remount ? "[image 2]" : submittedText;
 
     const hold = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
     const committed = hold.reached;
@@ -222,12 +228,12 @@ test.each([
         replaceEditorText(textarea(), `${submittedText} edited`);
         replaceEditorText(textarea(), submittedText);
       }
-      expect(textarea().textContent).toBe(submittedText);
+      expect(textarea().textContent).toBe(expectedAfterReplacement);
     } finally {
       await act(async () => hold.release());
       await flushPendingTurnsProjectionForTests();
     }
-    const remainingText = remount ? submittedText : edited && recovery ? "edit me " : "";
+    const remainingText = remount ? expectedAfterReplacement : edited && recovery ? "edit me " : "";
     expect(textarea().textContent).toBe(remainingText);
     expect(readDraft("ref_a")).toBe(remainingText);
     const retainedAttachment = remount ? "replacement.png" : originalAttachment;
@@ -923,11 +929,12 @@ test("removing two missing references preserves a selected command between them"
   expect(draft.mentions).toEqual([{ kind: "command", name: "inspect", offset: "before  ".length }]);
 });
 
-// Deleting the missing reference clears the refusal while it is absent, and
-// when the occurrence comes back the refusal must come back with it.
-// ProseMirror restores the TEXT, not the composer's provenance, so the record
-// has to outlive the deletion rather than be pruned with it.
-test("an occurrence restored after the repair refuses again", async () => {
+// Deleting the missing reference clears the refusal while it is absent, and a
+// REAL undo must bring the refusal back with it. This is the whole reason the
+// provenance is a document mark rather than a number list beside the text:
+// the editor's own history restores the mark and the occurrence together, so
+// there is no record a delete could retire and an undo could fail to restore.
+test("a real undo after deleting the only missing reference restores the refusal", async () => {
   const user = userEvent.setup();
   const ref = "ref_unbacked_undo";
   writeComposerDraft(ref, { text: "kept [image 1]", skillNames: [], stagedImageMarkers: [1] });
@@ -942,16 +949,16 @@ test("an occurrence restored after the repair refuses again", async () => {
   });
   expect(screen.getByTestId("composer-unbacked-image")).toBeTruthy();
 
-  await user.click(screen.getByRole("button", { name: "Remove the reference" }));
+  // Delete the ONLY occurrence, so the draft is blank. The adoption record must
+  // survive that: the undo below brings the occurrence back with its mark.
+  selectEditorText(textarea(), "kept ".length, "kept [image 1]".length);
+  await user.keyboard("{Backspace}");
   await waitFor(() => expect(textarea().textContent).toBe("kept "));
   expect(screen.queryByTestId("composer-unbacked-image")).toBeNull();
   await waitFor(() => expect(submitButton().disabled).toBe(false));
 
-  // The editor restores the occurrence - what an undo does to the document,
-  // which is the only half of the pair the document owns. (Driving ProseMirror's
-  // own undo keybinding is not reliable under jsdom; this seam is the same text
-  // change it produces.)
-  replaceEditorText(textarea(), "kept [image 1]");
+  // The editor's own history, through its own keybinding.
+  await user.keyboard("{Control>}z{/Control}");
   await waitFor(() => expect(textarea().textContent).toBe("kept [image 1]"));
   expect(screen.getByTestId("composer-unbacked-image")).toBeTruthy();
   await waitFor(() => expect(submitButton().disabled).toBe(true));
@@ -1015,4 +1022,86 @@ test("steer states the missing-reference refusal rather than silently returning"
   fireEvent.keyDown(textarea(), { key: "Enter", shiftKey: true });
   await flushPendingTurnsProjectionForTests();
   expect(fake.calls.filter((call) => call.method === "turn/steer")).toEqual([]);
+});
+
+// Provenance is a mark on the occurrence itself, so a RETYPED occurrence is
+// not the adopted one: it is a plain text node with no mark, and it sends as
+// the prose it is. With prose remaining beside it, the person gets their own
+// text back out.
+test("retyping the missing reference after deleting it sends as literal prose", async () => {
+  const user = userEvent.setup();
+  const ref = "ref_unbacked_retyped";
+  writeComposerDraft(ref, { text: "kept [image 1]", skillNames: [], stagedImageMarkers: [1] });
+  const fake = await mountComposer(ref);
+  fake.on("turn/start", (params) => ({
+    receipt: appliedReceipt(params.clientMutationId, "thread_a"),
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
+  expect(screen.getByTestId("composer-unbacked-image")).toBeTruthy();
+
+  // Delete the occurrence, leaving the prose around it.
+  selectEditorText(textarea(), "kept ".length, "kept [image 1]".length);
+  await user.keyboard("{Backspace}");
+  await waitFor(() => expect(textarea().textContent).toBe("kept "));
+
+  // Type the same literal again, by hand. It is NOT the adopted occurrence.
+  await user.type(textarea(), "[[image 1]");
+  await waitFor(() => expect(textarea().textContent).toBe("kept [image 1]"));
+  expect(screen.queryByTestId("composer-unbacked-image")).toBeNull();
+  await waitFor(() => expect(submitButton().disabled).toBe(false));
+
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  const calls = fake.calls.filter((candidate) => candidate.method === "turn/start");
+  expect(calls).toHaveLength(1);
+  const call = calls[0];
+  if (call === undefined) throw new Error("expected the retyped literal to send");
+  const input = (call.params as { input: Array<{ type: string; text?: string }> }).input;
+  // The wire carries the literal exactly as typed, with no image item.
+  expect(input).toEqual([{ type: "text", text: "kept [image 1]" }]);
+});
+
+// The replacement image takes a fresh number even when the deleted occurrence
+// was the whole draft, and the undo that follows still refuses the restored
+// occurrence. Both halves have to hold at once: a reservation retired with the
+// text would let the replacement take number 1, which the undo brings back.
+test("attaching after deleting the only occurrence takes a fresh marker and the undo still refuses", async () => {
+  installCanvasStubs();
+  const user = userEvent.setup();
+  const ref = "ref_unbacked_replacement";
+  writeComposerDraft(ref, { text: "[image 1]", skillNames: [], stagedImageMarkers: [1] });
+  const fake = await mountComposer(ref);
+  const delivered: unknown[] = [];
+  fake.on("turn/start", (params) => {
+    delivered.push(params.input);
+    return {
+      receipt: appliedReceipt(params.clientMutationId, "thread_a"),
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  expect(screen.getByTestId("composer-unbacked-image")).toBeTruthy();
+
+  // Delete the only occurrence, making the draft blank.
+  replaceEditorText(textarea(), "");
+  await waitFor(() => expect(textarea().textContent).toBe(""));
+  expect(screen.queryByTestId("composer-unbacked-image")).toBeNull();
+
+  // Attach a replacement: it must NOT reuse number 1, which the undo below
+  // brings back.
+  pastePngInto(textarea(), "replacement.png");
+  await screen.findByRole("button", { name: "View replacement.png" });
+  expect(textarea().textContent).toBe("[image 2]");
+  expect(screen.queryByTestId("composer-unbacked-image")).toBeNull();
+  await waitFor(() => expect(submitButton().disabled).toBe(false));
+
+  // Undo the deletion. The restored occurrence comes back WITH its mark, so
+  // the refusal returns beside the replacement tile's own marker.
+  await user.keyboard("{Control>}z{/Control}");
+  await waitFor(() => expect(screen.getByTestId("composer-unbacked-image")).toBeTruthy());
+  await waitFor(() => expect(submitButton().disabled).toBe(true));
+  expect(screen.getByRole("button", { name: "View replacement.png" })).toBeTruthy();
+
+  fireEvent.submit(screen.getByTestId("composer-form"));
+  await flushPendingTurnsProjectionForTests();
+  expect(delivered).toEqual([]);
 });

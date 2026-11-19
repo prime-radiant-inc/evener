@@ -2,9 +2,10 @@ import {
   type ComposerMention,
   canonicalSkillNames,
   completeSkillReferenceAt,
+  markerPattern,
   reconcileComposerMentions,
 } from "@evener/appwire-client";
-import { type Node as ProseMirrorNode, Schema } from "prosemirror-model";
+import { type Mark, type Node as ProseMirrorNode, Schema } from "prosemirror-model";
 
 export {
   completeSkillReferenceAt,
@@ -18,6 +19,13 @@ export interface SkillEditorValue {
   skillNames: string[];
   commandNames?: string[];
   mentions?: ComposerMention[];
+  /** The "[image N]" occurrences in `text` whose image this value's writer
+   * staged but whose bytes this composer does not hold. Carried as a document
+   * mark (stagedAnchor) rather than a number list alone, so it lives in the
+   * editor's own history: deleting the occurrence removes it, and an undo that
+   * restores the occurrence restores the provenance with it. A marker the
+   * person types is an unmarked text node and never enters this set. */
+  adoptedImageMarkers?: number[];
 }
 
 /** Flat inline content: newlines are text, and skills occupy one document position. */
@@ -52,12 +60,49 @@ export const skillSchema = new Schema({
       leafText: (node) => `/${node.attrs.name}`,
     },
   },
+  marks: {
+    // An occurrence of a staged image marker this composer cannot back with
+    // bytes. It is invisible (a bare span) and exists only so ProseMirror's
+    // history carries the fact with the text it belongs to: a deletion takes
+    // it away, an undo brings it back, and a retyped marker is a fresh,
+    // unmarked node that sends as the literal prose it is. inclusive: false so
+    // typing against the boundary never adopts the person's own keystrokes.
+    stagedAnchor: {
+      attrs: { marker: {} },
+      inclusive: false,
+      toDOM: () => ["span", 0],
+    },
+  },
 });
+
+function stagedAnchorMark(marker: number): Mark {
+  return skillSchema.marks.stagedAnchor.create({ marker });
+}
+
+/** Text nodes for one run of prose, splitting out the occurrences the caller
+ * adopted. Anything the adopted set does not name stays plain text. */
+function textNodes(text: string, adopted: ReadonlySet<number>): ProseMirrorNode[] {
+  if (text === "") return [];
+  if (adopted.size === 0) return [skillSchema.text(text)];
+  const nodes: ProseMirrorNode[] = [];
+  let start = 0;
+  for (const match of text.matchAll(markerPattern())) {
+    const marker = Number(match[1]);
+    if (!adopted.has(marker)) continue;
+    const offset = match.index ?? 0;
+    if (start < offset) nodes.push(skillSchema.text(text.slice(start, offset)));
+    nodes.push(skillSchema.text(match[0], [stagedAnchorMark(marker)]));
+    start = offset + match[0].length;
+  }
+  if (start < text.length) nodes.push(skillSchema.text(text.slice(start)));
+  return nodes;
+}
 
 /** Only complete visible mentions in skillNames become atoms; never append hidden selections. */
 export function parseSkillDocument(value: SkillEditorValue): ProseMirrorNode {
   const skills = canonicalSkillNames(value.skillNames);
   const commands = canonicalSkillNames(value.commandNames);
+  const adopted = new Set(value.adoptedImageMarkers ?? []);
   const names = [...new Set([...skills, ...commands])].sort((a, b) => b.length - a.length);
   const usedSkills = new Set<string>();
   const nodes: ProseMirrorNode[] = [];
@@ -71,14 +116,14 @@ export function parseSkillDocument(value: SkillEditorValue): ProseMirrorNode {
       mention?.kind ??
       (skills.includes(name) && (!commands.includes(name) || !usedSkills.has(name)) ? "skill" : "command");
     if (!(kind === "skill" ? skills : commands).includes(name)) continue;
-    if (textStart < offset) nodes.push(skillSchema.text(value.text.slice(textStart, offset)));
+    nodes.push(...textNodes(value.text.slice(textStart, offset), adopted));
     const type = kind === "skill" ? skillSchema.nodes.skill : skillSchema.nodes.command;
     nodes.push(type.create({ name }));
     if (kind === "skill") usedSkills.add(name);
     offset += name.length;
     textStart = offset + 1;
   }
-  if (textStart < value.text.length) nodes.push(skillSchema.text(value.text.slice(textStart)));
+  nodes.push(...textNodes(value.text.slice(textStart), adopted));
   return skillSchema.nodes.doc.create(null, nodes);
 }
 
@@ -88,19 +133,40 @@ export function serializeSkillDocument(doc: ProseMirrorNode): SkillEditorValue {
   const names: string[] = [];
   const commands: string[] = [];
   const mentions: ComposerMention[] = [];
+  const adopted = new Set<number>();
   doc.forEach((node) => {
-    if (node.isText) text += node.text;
-    else {
+    if (node.isText) {
+      const run = node.text ?? "";
+      text += run;
+      // A mark proves provenance only for the occurrence it actually covers:
+      // the exact literal, not an adjacent run of text that inherited it.
+      const marked = new Set(
+        node.marks.filter((mark) => mark.type.name === "stagedAnchor").map((mark) => Number(mark.attrs.marker)),
+      );
+      if (marked.size > 0) {
+        for (const match of run.matchAll(markerPattern())) {
+          const marker = Number(match[1]);
+          if (marked.has(marker)) adopted.add(marker);
+        }
+      }
+    } else {
       const kind = node.type.name === "command" ? "command" : "skill";
       mentions.push({ kind, name: node.attrs.name, offset: text.length });
       text += `/${node.attrs.name}`;
       (kind === "command" ? commands : names).push(node.attrs.name);
     }
   });
-  const value = { text, skillNames: canonicalSkillNames(names) };
+  const adoptedImageMarkers = [...adopted].sort((left, right) => left - right);
+  const value = {
+    text,
+    skillNames: canonicalSkillNames(names),
+    ...(adoptedImageMarkers.length ? { adoptedImageMarkers } : {}),
+  };
   // Names alone suffice only when every matching reference is an actual skill
   // atom. Keep locations when commands or same-spelling prose need distinct
-  // intent, including after deletion of the final command.
+  // intent, including after deletion of the final command. The re-parse carries
+  // the document's own adoption so a marked occurrence cannot read as prose
+  // the parse would have re-derived differently.
   const needsMentions = commands.length > 0 || (value.skillNames.length > 0 && !parseSkillDocument(value).eq(doc));
   return {
     ...value,
@@ -163,6 +229,9 @@ export function materializeSelectionReferences(value: SkillEditorValue): SkillEd
           skillNames: kind === "skill" ? [...current.skillNames, name] : current.skillNames,
           commandNames: kind === "command" ? [...(current.commandNames ?? []), name] : current.commandNames,
           mentions: [...mentions, { kind, name, offset }],
+          // Appending a reference must not retire the anchors this value
+          // already carried as unbacked.
+          ...(current.adoptedImageMarkers ? { adoptedImageMarkers: current.adoptedImageMarkers } : {}),
         }),
       );
     }

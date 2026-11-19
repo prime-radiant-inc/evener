@@ -352,4 +352,49 @@ describe("SkillEditor real ProseMirror view", () => {
     result.rerender(<SkillEditor ref={ref} {...props} skillDetails={() => "New"} />);
     expect(editor.querySelector("[data-skill-name]")?.getAttribute("title")).toBe("New");
   });
+
+  it("keeps an unchanged adopted value an echo so typing does not rebuild the document", () => {
+    // The adoption is part of the value the editor renders (the document holds
+    // those marks), so a value that still names the same markers is the SAME
+    // value. If it compared as a change, every keystroke's echo would re-apply
+    // the caller's value as a non-echo replace and rebuild the document - which
+    // ends the undo history the marks depend on.
+    const initial = { text: "[image 1] tail", skillNames: [], adoptedImageMarkers: [1] };
+    const result = mount(initial);
+    expect(result.editor.textContent).toBe("[image 1] tail");
+    act(() => result.ref.current?.setSelection(result.editor.textContent?.length ?? 0));
+    paste(result.editor, "!");
+    expect(result.value()).toEqual({ text: "[image 1] tail!", skillNames: [], adoptedImageMarkers: [1] });
+    // The mark survived the ordinary edit and its echo, and one undo still
+    // reaches back to the document this case opened.
+    key(result.editor, "z", { ctrlKey: true });
+    expect(result.editor.textContent).toBe("[image 1] tail");
+  });
+
+  it("applies a value whose adoption changed even when its text did not", () => {
+    // The other half of comparing the adoption: a caller that RETIRES the
+    // record (a replaced draft) sends the same text with no markers. If the
+    // comparison ignored the field, that value would read as an echo and the
+    // document would keep a mark nothing stands behind.
+    const ref = createRef<SkillEditorHandle>();
+    const changed = vi.fn();
+    const withAdoption = { text: "[image 1] tail", skillNames: [], adoptedImageMarkers: [1] };
+    const result = render(<SkillEditor ref={ref} value={withAdoption} onChange={changed} aria-label="Message" />);
+    const editor = result.getByRole("textbox");
+    expect(editor.textContent).toBe("[image 1] tail");
+    result.rerender(
+      <SkillEditor
+        ref={ref}
+        value={{ text: "[image 1] tail", skillNames: [] }}
+        onChange={changed}
+        aria-label="Message"
+      />,
+    );
+    // Same text on screen, and the document no longer marks it: an ordinary
+    // edit reports an adoption that still names nothing.
+    expect(editor.textContent).toBe("[image 1] tail");
+    act(() => ref.current?.setSelection(0));
+    paste(editor, ">");
+    expect(changed.mock.lastCall?.[0]).toEqual({ text: ">[image 1] tail", skillNames: [] });
+  });
 });
