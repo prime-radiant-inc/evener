@@ -17,6 +17,7 @@ import { activityDelegate, activitySummary, activityThread } from "../../stores/
 import { resetThreadsStoreForTests } from "../../stores/threads";
 import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
+import { emptyStateReasons } from "../../widgets/emptystate/emptyStateTestUtils";
 import { getToasts, pushToast, resetToastStoreForTests } from "../../widgets/toast/store";
 import { useAttachments } from "../session/composer/attachments/useAttachments";
 import { readComposerDraft } from "../session/composer/draft";
@@ -125,19 +126,27 @@ function installMobileCascadeViewport(): () => void {
   };
 }
 
-function expectFourPeeks(controls: ReturnType<typeof scope>, ref: string) {
+async function expectFourPeeks(controls: ReturnType<typeof scope>, ref: string) {
   for (const category of ["Agents", "Jobs", "Watches", "Tasks"]) {
     expect(controls.getByRole("button", { name: new RegExp(`^${category},.* - peek at ${ref}$`) })).toBeTruthy();
   }
-  expect(controls.getByRole("button", { name: `Tasks, 0 of 0 settled - peek at ${ref}` })).toBeTruthy();
   expect(controls.queryByRole("button", { name: `About - peek at ${ref}` })).toBeNull();
   expect(controls.getAllByRole("button", { name: new RegExp(` - peek at ${ref}$`) })).toHaveLength(4);
+  const tasksTrigger = controls.getByRole("button", { name: new RegExp(`^Tasks,.* - peek at ${ref}$`) });
+  await act(async () => fireEvent.click(tasksTrigger));
+  const peek = await screen.findByTestId("activity-peek");
+  expect(within(peek).getByRole("dialog", { name: `Tasks for ${ref}` })).toBeTruthy();
+  await waitFor(() => expect(emptyStateReasons(peek)).toContain("empty"));
+  await act(async () => fireEvent.click(within(peek).getByRole("button", { name: "Close activity peek" })));
+  await waitFor(() => expect(screen.queryByTestId("activity-peek")).toBeNull());
 }
 
 test("desktop cascade spine keeps About out of its four activity peeks while readable columns omit duplicate controls", async () => {
-  fixture().mount();
+  const { client, mount } = fixture();
+  client.on("evener/tasks/list", () => ({ data: [] }));
+  mount();
   await conversationMounted("child");
-  expectFourPeeks(scope("root"), "root");
+  await expectFourPeeks(scope("root"), "root");
   for (const ref of ["child", "grandchild"]) {
     expect(scope(ref).queryByTestId("cascade-activity-controls")).toBeNull();
   }
@@ -145,13 +154,15 @@ test("desktop cascade spine keeps About out of its four activity peeks while rea
 
 test("mobile cascade column keeps About out of its four activity peeks", async ({ onTestFinished }) => {
   onTestFinished(installMobileCascadeViewport());
-  fixture().mount();
+  const { client, mount } = fixture();
+  client.on("evener/tasks/list", () => ({ data: [] }));
+  mount();
   await conversationMounted("grandchild");
   expect(screen.getAllByTestId("cascade-column").map((column) => column.getAttribute("data-scope-ref"))).toEqual([
     "grandchild",
   ]);
   expect(screen.queryByTestId("statusbar")).toBeNull();
-  expectFourPeeks(scope("grandchild"), "grandchild");
+  await expectFourPeeks(scope("grandchild"), "grandchild");
 });
 
 test.each(["success", "failure"] as const)(

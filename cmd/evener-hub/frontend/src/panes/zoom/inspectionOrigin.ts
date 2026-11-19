@@ -3,20 +3,35 @@ import {
   existingConversationPaneLifetime,
   type PaneLifetime,
 } from "../../shell/paneLifetime";
-import { refParam } from "../../shell/routing";
+import { navigate, observeRouteHistory, refParam } from "../../shell/routing";
 import { type OpenPaneRecord, onWorkspaceRestore, workspaceStore } from "../../shell/workspace";
 import { type SessionZoomParams, zoomIntentOf } from "./intent";
 
 const bindings = new WeakMap<PaneLifetime, PaneLifetime | null>();
 let returnedOrigin: PaneLifetime | null = null;
+let returnedOriginURL: string | null = null;
 
 export function recordCascadeReturnedOrigin(origin: OpenPaneRecord | null): void {
   returnedOrigin = origin ? conversationPaneLifetime(origin) : null;
+  returnedOriginURL = null;
 }
 
 export function isCascadeReturnedOrigin(pane: OpenPaneRecord | undefined): boolean {
   if (!pane || !returnedOrigin?.alive) return false;
   return existingConversationPaneLifetime(pane) === returnedOrigin;
+}
+
+export function publishCascadeReturnURL(pane: OpenPaneRecord, url: string, opts?: { replace?: boolean }): void {
+  if (!isCascadeReturnedOrigin(pane)) {
+    navigate(url, opts);
+    return;
+  }
+  returnedOriginURL = url;
+  navigate(url, opts);
+}
+
+export function isCascadeReturnedOriginURL(pane: OpenPaneRecord | undefined, pathname: string): boolean {
+  return returnedOriginURL !== null && pathname === returnedOriginURL && isCascadeReturnedOrigin(pane);
 }
 
 function isConversation(pane: OpenPaneRecord): boolean {
@@ -85,6 +100,7 @@ export function associatedCascade(origin: OpenPaneRecord): OpenPaneRecord | null
 // inherit the old inspector's Return destination.
 onWorkspaceRestore((panes) => {
   returnedOrigin = null;
+  returnedOriginURL = null;
   for (const pane of panes) {
     const params = zoomIntentOf(pane);
     if (!params?.inspection) continue;
@@ -94,11 +110,18 @@ onWorkspaceRestore((panes) => {
   }
 });
 
+observeRouteHistory((_prevState, _nextState, _prevURL, nextURL) => {
+  if (returnedOriginURL !== null && nextURL !== returnedOriginURL) {
+    returnedOriginURL = null;
+  }
+});
+
 workspaceStore.subscribe((state, previous) => {
   if (returnedOrigin !== null) {
     const focused = state.panes.find((pane) => pane.id === state.focusedPaneId);
     if (!focused || !returnedOrigin.alive || existingConversationPaneLifetime(focused) !== returnedOrigin) {
       returnedOrigin = null;
+      returnedOriginURL = null;
     }
   }
   if (state.panes === previous.panes) return;

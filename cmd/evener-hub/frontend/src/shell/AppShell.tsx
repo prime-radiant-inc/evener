@@ -14,7 +14,7 @@ import { requestComposerFocus } from "../panes/session/composer/composerFocus";
 import { conversationContextIncludes } from "../panes/session/transcript/openTranscript";
 import { isKnownSettingsSection, resolveSettingsSection } from "../panes/settings/sections";
 import { zoomParamsCoverConversation } from "../panes/zoom/cascadeCoverage";
-import { isCascadeReturnedOrigin } from "../panes/zoom/inspectionOrigin";
+import { isCascadeReturnedOrigin, isCascadeReturnedOriginURL } from "../panes/zoom/inspectionOrigin";
 import { type SessionZoomParams, zoomIntentOf } from "../panes/zoom/intent";
 import { startBackgroundTranscripts } from "../stores/backgroundTranscripts";
 import { useConnectionStore } from "../stores/connection";
@@ -268,6 +268,13 @@ function routePlacementIsApplied(
     return parentRef !== undefined && conversationContextIncludes(parentRef, ref);
   };
   const rawFocused = workspace.panes.find((pane) => pane.id === workspace.focusedPaneId);
+  if (
+    rawFocused?.type === "session" &&
+    sessionRefOf(rawFocused) === ref &&
+    isCascadeReturnedOriginURL(rawFocused, pathname)
+  ) {
+    return true;
+  }
   const focusedIntent = rawFocused === undefined ? null : zoomIntentOf(rawFocused);
   const focusedSeparatedInspection =
     (allowFocusedCompanion || allowRestoredInspection) &&
@@ -437,7 +444,13 @@ function openRouteAsPane(
     workspaceStore.getState().replacePrimary("spawn", route.params);
     return;
   }
-  workspaceStore.getState().openPane("welcome", {});
+  const ws = workspaceStore.getState();
+  const focused = ws.panes.find((pane) => pane.id === ws.focusedPaneId);
+  ws.openPane(
+    "welcome",
+    {},
+    isCascadeReturnedOrigin(focused) ? { keepExistingFocus: true, focusNew: false } : undefined,
+  );
 }
 
 function reconcileWelcomeRouteWithLocation(location: NavigationSessionLocation | null): void {

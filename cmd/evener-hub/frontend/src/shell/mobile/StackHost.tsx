@@ -39,6 +39,7 @@
 // separate "last mobile screen" memory to restore independently of that.
 import { type ReactNode, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { returnFromAgentCascade } from "../../panes/zoom/actions";
+import { isCascadeReturnedOrigin, publishCascadeReturnURL } from "../../panes/zoom/inspectionOrigin";
 import { parseZoomParams } from "../../panes/zoom/intent";
 import {
   conversationHandoffGeneration,
@@ -367,7 +368,10 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
     if (attentionEntryOwnsPane(focusedPane)) return;
     if (singlePaneRouteNames(window.location.pathname, focusedPane)) return;
     const url = paneToURL(focusedPane.type, focusedPane.params);
-    if (url) navigate(url);
+    if (url) {
+      if (isCascadeReturnedOrigin(focusedPane)) publishCascadeReturnURL(focusedPane, url);
+      else navigate(url);
+    }
   }, [focusedPane, routeDeferred]);
 
   // Backstop, same reasoning as DockHost's own onReady fallback: a blank

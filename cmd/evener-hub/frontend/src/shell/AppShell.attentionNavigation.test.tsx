@@ -11,6 +11,7 @@ import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } fr
 import { initNotifications, resetNotificationsForTests } from "../notifications";
 import { retainedTranscriptReadView } from "../panes/session/transcript/transcriptReadView";
 import { enterAgentCascade } from "../panes/zoom/actions";
+import { cascadeClient, cascadeContext } from "../panes/zoom/cascadeTestUtils";
 import { StubResizeObserver } from "../resizeObserverTestUtils";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { resetAuthStatusesStoreForTests } from "../stores/authStatuses";
@@ -450,6 +451,55 @@ test("same-URL attention entries restore distinct cascade and session readers on
   expect(workspaceStore.getState().panes).toContain(session);
   expect(conversationPaneLifetime(session)).toBe(sessionLifetime);
   expect(retainedTranscriptReadView(sessionLifetime, "local:same", "session")).toBe(sessionView);
+});
+
+test("clicking Return on an attention-owned main-slot inspector keeps the surviving secondary source editor focused after routing settles", async () => {
+  const client = cascadeClient((ref) => cascadeContext(ref, ref === "local:leaf" ? ["local:source"] : []));
+  installLocationForRoute("local:main-session");
+  installLocationForRoute("local:source");
+  installLocationForRoute("local:leaf");
+  window.history.pushState({}, "", "/s/local%3Amain-session");
+  await act(async () => {
+    render(<AppShell client={client} />);
+  });
+  await waitFor(() =>
+    expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:main-session" }),
+  );
+  const sourceId = await act(async () =>
+    workspaceStore.getState().openPane("session", { ref: "local:source" }, { slot: "secondary" }),
+  );
+  const inspectorId = await act(async () =>
+    enterAgentCascade(
+      activityDelegate({ ownerRef: "local:source", childRef: "local:leaf", delegateId: "d-leaf" }),
+      sourceId,
+    ),
+  );
+  await screen.findByTestId("cascade-column");
+
+  // Simulate Needs You bringing the inspector into the desktop main slot under
+  // an attention entry while its source survives in a secondary pane.
+  await act(async () => {
+    const mainPane = workspaceStore.getState().mainPane();
+    const inspectorPane = workspaceStore.getState().panes.find((pane) => pane.id === inspectorId);
+    if (!mainPane || !inspectorPane) throw new Error("missing fixture panes");
+    workspaceStore.getState().closePane(mainPane.id);
+    inspectorPane.slot = "main";
+    workspaceStore.setState({ panes: [...workspaceStore.getState().panes], focusedPaneId: inspectorId });
+    openAttentionSession("local:leaf");
+  });
+  expect(currentAttentionEntryToken()).not.toBeNull();
+  const returnButton = await screen.findByRole("button", { name: "Return to previous view" });
+
+  await act(async () => {
+    fireEvent.click(returnButton);
+  });
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.type).toBe("welcome"));
+  expect(workspaceStore.getState().panes.some((pane) => pane.id === inspectorId)).toBe(false);
+  expect(workspaceStore.getState().focusedPaneId).toBe(sourceId);
+  const sourcePaneEl = document.querySelector('[data-pane-scaffold="session:local:source"]')?.parentElement;
+  const sourceEditor = sourcePaneEl?.querySelector<HTMLElement>('[role="textbox"]');
+  if (!sourceEditor) throw new Error("expected surviving source composer textbox");
+  expect(document.activeElement).toBe(sourceEditor);
 });
 
 test.each(["session", "cascade"] as const)(

@@ -30,6 +30,7 @@ import {
   installLocation,
   installLocationForRoute,
   installMobileViewport,
+  installSwitchableViewport,
   navClient,
   navigationRead,
   retypeMainToCascade,
@@ -1549,6 +1550,72 @@ test("closing an inspector tab preserves its unrelated secondary source and edit
   await act(async () => navigate("/s/local%3Aother-route"));
   await waitFor(() => expect(refParam(workspaceStore.getState().mainPane()?.params)).toBe("local:other-route"));
   expect(workspaceStore.getState().focusedPaneId).toBe(workspaceStore.getState().mainPane()?.id);
+});
+
+test("phone Back from a secondary session's inspector publishes its URL without discarding the main pane or its staged attachments", async () => {
+  const setMobile = installSwitchableViewport();
+  setMobile(false);
+  const client = cascadeClient((ref) =>
+    cascadeContext(ref, ref === "local:unrelated-child" ? ["local:unrelated"] : []),
+  );
+  installLocationForRoute("local:main-session");
+  installLocationForRoute("local:unrelated");
+  installLocationForRoute("local:other-route");
+  window.history.pushState({}, "", "/s/local%3Amain-session");
+  await act(async () => {
+    render(<AppShell client={client} />);
+  });
+  await waitFor(() => expect(refParam(workspaceStore.getState().mainPane()?.params)).toBe("local:main-session"));
+  const mainPane = workspaceStore.getState().mainPane();
+  if (!mainPane) throw new Error("expected main session pane");
+  const mainLifetime = conversationPaneLifetime(mainPane);
+  const mainAttachments = mainLifetime.composer?.attachments;
+  if (!mainAttachments) throw new Error("expected main composer attachments store");
+  act(() => {
+    mainAttachments.setState({
+      items: [
+        {
+          marker: 1,
+          name: "staged.png",
+          mediaType: "image/png",
+          data: "iVBORw0KGgo=",
+          pending: false,
+        },
+      ],
+    });
+  });
+
+  const unrelatedId = await act(async () =>
+    workspaceStore.getState().openPane("session", { ref: "local:unrelated" }, { slot: "secondary" }),
+  );
+  const inspectorId = await act(async () =>
+    enterAgentCascade(
+      activityDelegate({
+        ownerRef: "local:unrelated",
+        childRef: "local:unrelated-child",
+        delegateId: "d-phone-unrelated",
+      }),
+      unrelatedId,
+    ),
+  );
+  await screen.findByTestId("cascade-column");
+
+  await act(async () => {
+    setMobile(true);
+  });
+  await screen.findByRole("button", { name: "Back" });
+
+  await userEvent.setup().click(screen.getByRole("button", { name: "Back" }));
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aunrelated"));
+  expect(workspaceStore.getState().panes.some((pane) => pane.id === inspectorId)).toBe(false);
+  expect(workspaceStore.getState().focusedPaneId).toBe(unrelatedId);
+  expect(workspaceStore.getState().mainPane()).toBe(mainPane);
+  expect(mainLifetime.alive).toBe(true);
+  expect(mainAttachments.getState().items.map((item) => item.marker)).toEqual([1]);
+
+  // Explicit navigation to another route remains authoritative.
+  await act(async () => navigate("/s/local%3Aother-route"));
+  await waitFor(() => expect(refParam(workspaceStore.getState().mainPane()?.params)).toBe("local:other-route"));
 });
 
 test("a fresh child pathname waits for real location then focuses its existing conversation over inspection", async () => {

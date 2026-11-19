@@ -1,3 +1,4 @@
+import { isCascadeReturnedOrigin, publishCascadeReturnURL } from "../panes/zoom/inspectionOrigin";
 import { createSecureUUID } from "../stores/secureUUID";
 import {
   type AttentionPlacementEntry,
@@ -157,7 +158,11 @@ function retireAttentionEntry(binding: HistoryBinding): void {
   // makes the observer treat this as a fresh branch, which drops every other
   // entry and releases their parked readers - including a source Back can
   // still reach, with its staged attachments.
-  navigate(url ?? "/", { replace: true });
+  if (survivor && url && isCascadeReturnedOrigin(survivor)) {
+    publishCascadeReturnURL(survivor, url, { replace: true });
+  } else {
+    navigate(url ?? "/", { replace: true });
+  }
   entries.delete(key(binding.token));
 }
 

@@ -172,18 +172,26 @@ export function returnFromAgentCascade(paneId: string): void {
   if (params.inspection) {
     const origin = cascadeOrigin(pane);
     const originLifetime = origin ? conversationPaneLifetime(origin) : null;
-    cancelPaneFocus(pane.id);
-    workspace.closePane(pane.id);
-    const current = origin ? workspaceStore.getState().panes.find((record) => record.id === origin.id) : undefined;
-    if (
+    const current = origin ? workspace.panes.find((record) => record.id === origin.id) : undefined;
+    const survivingOrigin =
       current &&
       current.slot !== "parked" &&
       originLifetime?.alive &&
       conversationPaneLifetime(current) === originLifetime
-    ) {
-      recordCascadeReturnedOrigin(current);
-      workspaceStore.getState().focusPane(current.id);
-      requestPaneFocus(current.id);
+        ? current
+        : null;
+    cancelPaneFocus(pane.id);
+    // Focus the surviving origin BEFORE closePane so close-time observers
+    // (attentionHistory retirement, DockHost ensureMainPane) see the returned
+    // source as the live survivor rather than a null focus fallback to "/".
+    if (survivingOrigin !== null) {
+      recordCascadeReturnedOrigin(survivingOrigin);
+      workspace.focusPane(survivingOrigin.id);
+    }
+    workspace.closePane(pane.id);
+    if (survivingOrigin !== null && workspaceStore.getState().panes.includes(survivingOrigin)) {
+      workspaceStore.getState().focusPane(survivingOrigin.id);
+      requestPaneFocus(survivingOrigin.id);
     }
     return;
   }
