@@ -12,8 +12,9 @@ import (
 )
 
 func responsesFunctionCallUnfinished(item map[string]any) bool {
+	kind, _ := item["type"].(string)
 	status, _ := item["status"].(string)
-	return status == "incomplete" || status == "in_progress"
+	return kind == "function_call" && (status == "incomplete" || status == "in_progress")
 }
 
 // responseContentFromOutputItems converts a Responses API output-item array
@@ -178,12 +179,21 @@ func settleResponsesTerminalOutput(r *llm.Response, rawResp map[string]any, accu
 				r.Finish = llm.FinishReason{Reason: "stop"}
 			}
 		}
-	case len(terminalOutput) > 0 && len(accumulatedOutput) > 0 && len(terminalOutput) != len(accumulatedOutput):
-		// Terminal output is authoritative when non-empty, but a count
-		// mismatch against what the stream accumulated is worth surfacing.
+	case len(terminalOutput) > 0 && len(accumulatedOutput) > 0:
+		// The stream accumulator holds only settled items.
+		count := len(terminalOutput)
+		for _, rawItem := range terminalOutput {
+			item, _ := rawItem.(map[string]any)
+			if responsesFunctionCallUnfinished(item) {
+				count--
+			}
+		}
+		if count == len(accumulatedOutput) {
+			return
+		}
 		r.Warnings = append(r.Warnings, llm.Warning{
 			Code:    "responses_output_item_count_mismatch",
-			Message: fmt.Sprintf("terminal output items=%d differ from accumulated stream items=%d", len(terminalOutput), len(accumulatedOutput)),
+			Message: fmt.Sprintf("terminal output items=%d differ from accumulated stream items=%d", count, len(accumulatedOutput)),
 		})
 	}
 }

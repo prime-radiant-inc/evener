@@ -23,17 +23,21 @@ func TestIncompleteResponseKeepsUnsettledToolArgumentsOutOfFinalResponse(t *test
 	const unstamped = `{"type":"function_call","call_id":"call_unstamped","name":"probe","arguments":"{}"}`
 	frame := func(payload string) string { return "data: " + payload + "\n\n" }
 	for _, terminalType := range []string{"response.completed", "response.incomplete"} {
-		for _, mode := range []string{"empty", "terminal", "streamed"} {
+		for _, mode := range []string{"empty", "terminal", "streamed", "both", "mismatch"} {
 			t.Run(terminalType+"/"+mode, func(t *testing.T) {
 				var wire strings.Builder
 				wire.WriteString(frame(delta))
 				output := "[]"
 				var wantCalls []string
-				switch mode {
-				case "terminal":
+				if mode == "terminal" || mode == "both" || mode == "mismatch" {
 					output = "[" + unfinished + "," + running + "," + completed + "," + unstamped + "]"
-				case "streamed":
-					for _, item := range []string{unfinished, running, completed, unstamped} {
+				}
+				if mode == "streamed" || mode == "both" || mode == "mismatch" {
+					items := []string{unfinished, running, completed, unstamped}
+					if mode == "mismatch" {
+						items = items[:3]
+					}
+					for _, item := range items {
 						wire.WriteString(frame(`{"type":"response.output_item.done","item":` + item + `}`))
 					}
 				}
@@ -60,6 +64,12 @@ func TestIncompleteResponseKeepsUnsettledToolArgumentsOutOfFinalResponse(t *test
 					}
 					if !slices.Equal(ids, wantCalls) {
 						t.Errorf("settled tool calls = %v, want %v", ids, wantCalls)
+					}
+					mismatch := slices.ContainsFunc(response.Warnings, func(w llm.Warning) bool {
+						return w.Code == "responses_output_item_count_mismatch"
+					})
+					if mismatch != (mode == "mismatch") {
+						t.Errorf("settled count mismatch warning = %v, want %v", mismatch, mode == "mismatch")
 					}
 				}
 				if mode == "streamed" && !hasEventType(events, llm.StreamEventProviderEvent) {
