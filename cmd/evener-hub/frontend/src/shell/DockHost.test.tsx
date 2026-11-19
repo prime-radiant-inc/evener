@@ -1700,6 +1700,39 @@ test("closing a background inspector while its source is already focused moves D
   }
 });
 
+test("returning from a main-slot inspector keeps its surviving secondary source active and focused after Welcome fills main", async () => {
+  const fixture = await mountedSecondaryInspector();
+  try {
+    const { mainId, inspectorId } = fixture;
+    const api = getDockviewApi();
+    if (!api) throw new Error("expected dockview api");
+    const sourcePane = inspectionRecord(mainId);
+    const inspectorPane = inspectionRecord(inspectorId);
+    await act(async () => {
+      sourcePane.slot = "secondary";
+      inspectorPane.slot = "main";
+      workspaceStore.setState({
+        panes: [...workspaceStore.getState().panes],
+        focusedPaneId: inspectorId,
+      });
+    });
+    const returnButton = await screen.findByRole("button", { name: "Return to previous view" });
+    await act(async () => {
+      fireEvent.click(returnButton);
+    });
+    await screen.findByText("No session open");
+    expect(workspaceStore.getState().mainPane()?.type).toBe("welcome");
+    expect(workspaceStore.getState().focusedPaneId).toBe(mainId);
+    expect(api.activePanel?.id).toBe(mainId);
+    const originPane = document.querySelector('[data-pane-scaffold="session:root"]')?.parentElement;
+    const originEditor = originPane?.querySelector<HTMLElement>('[role="textbox"]');
+    if (!originEditor) throw new Error("expected surviving source composer textbox");
+    expect(document.activeElement).toBe(originEditor);
+  } finally {
+    fixture.dispose();
+  }
+});
+
 test("clicking an inactive group content area activates it even when DOM focus stayed inside that group", async () => {
   const fixture = await mountedSecondaryInspector();
   try {
