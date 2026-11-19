@@ -49,11 +49,11 @@ func TestTrimThinkingForReplay(t *testing.T) {
 	})
 }
 
-// TestChatReasoningEstimateBillsSignatureText pins the estimate side of the same
+// TestChatReasoningCharsBillsSignatureText pins the estimate side of the same
 // rule: a signature-bearing reasoning.text item's text is serialized by the
 // builder, so it must be billed even for a row whose plain text is otherwise
 // kept off the wire (and not at all when the details array is off the wire).
-func TestChatReasoningEstimateBillsSignatureText(t *testing.T) {
+func TestChatReasoningCharsBillsSignatureText(t *testing.T) {
 	t.Parallel()
 	text := strings.Repeat("t", 400)
 	on := func(withText bool) int {

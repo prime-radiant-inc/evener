@@ -354,7 +354,13 @@ func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
 //   - responses/input.go replays one reasoning item carrying a non-compat
 //     encrypted blob with its trimmed id and non-blank summaries, and drops every
 //     other shape, the part's display text included;
+//   - chatcompletions/messages.go replays the part's text (kept off the wire by a
+//     declared non-reasoning row that does not replay thinking as text) and the
+//     compat reasoning_details array (kept off the wire by any declared
+//     non-reasoning row), and drops a redacted part and an opaque Responses blob;
 //   - the Google adapter emits no thinking shape at all.
+//
+// Chat reasoning is priced across the message by estimateMessageInputParts.
 func thinkingReplayChars(target targetInfo, p ContentPart) int {
 	if p.Thinking == nil {
 		return 0
@@ -451,7 +457,7 @@ func responsesReasoningChars(t *ThinkingData) int {
 // first text detail may already contain the signed text it sends.
 type chatReasoningEstimate struct {
 	displayChars, detailChars int
-	hasTextDetail, populated  bool
+	detailArrays              []string
 }
 
 type reasoningTextPresence bool
@@ -471,28 +477,36 @@ func (r *chatReasoningEstimate) add(target targetInfo, p ContentPart) {
 		return
 	}
 	r.detailChars += len(p.Thinking.EncryptedContent)
-	if r.hasTextDetail {
-		return
-	}
-	// The writer reads exact object keys, even when legacy array validation
-	// accepts a case-folded type. Ignore unrelated fields such as opaque data.
-	var details []struct {
-		Type string                `json:"type"`
-		Text reasoningTextPresence `json:"text"`
-	}
-	if jsonv2.Unmarshal([]byte(p.Thinking.EncryptedContent), &details, jsontext.AllowDuplicateNames(true), jsontext.AllowInvalidUTF8(true)) != nil {
-		return
-	}
-	for _, detail := range details {
-		if detail.Type == "reasoning.text" {
-			r.hasTextDetail, r.populated = true, bool(detail.Text)
-			break
-		}
+	if !target.chatThinkingAsText {
+		r.detailArrays = append(r.detailArrays, p.Thinking.EncryptedContent)
 	}
 }
 
+func (r chatReasoningEstimate) countsDisplay(target targetInfo) bool {
+	if r.displayChars == 0 || target.chatThinkingAsText {
+		return target.chatThinkingAsText
+	}
+	// The writer reads exact object keys, even when legacy array validation
+	// accepts a case-folded type. Ignore unrelated fields such as opaque data.
+	for _, raw := range r.detailArrays {
+		var details []struct {
+			Type string                `json:"type"`
+			Text reasoningTextPresence `json:"text"`
+		}
+		if jsonv2.Unmarshal([]byte(raw), &details, jsontext.AllowDuplicateNames(true), jsontext.AllowInvalidUTF8(true)) != nil {
+			continue
+		}
+		for _, detail := range details {
+			if detail.Type == "reasoning.text" {
+				return !bool(detail.Text)
+			}
+		}
+	}
+	return target.unsignedThinking
+}
+
 func (r chatReasoningEstimate) chars(target targetInfo) int {
-	if target.chatThinkingAsText || (!r.populated && (target.unsignedThinking || r.hasTextDetail)) {
+	if r.countsDisplay(target) {
 		return r.detailChars + r.displayChars
 	}
 	return r.detailChars
