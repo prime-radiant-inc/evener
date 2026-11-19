@@ -125,8 +125,14 @@ model call that met it waits inside the turn, so the session stays working and
 notifications and fresh delegate events queue behind the turn as behind any
 running turn. Its working row carries the limit's summary with the resume time
 (the hub keeps it on the working row), so clients say it waits for quota and
-when it resumes, until the reset, a model switch, or a sent message the provider
-accepts.
+when it resumes. The summary lasts until the wait's retry goes out — at the
+reset, at once on a model switch, or woken by a sent message — or until the
+turn ends. The reset passing alone does not end it: the retry can queue past
+the reset before it goes out (a drive retakes its budget slot first), and a
+delegate's own thread read serves the same stored wait across that window,
+clearing it only when the retry goes out or the turn ends, never on the
+deadline. A woken retry that meets the limit again starts a fresh wait in the
+same turn.
 
 Question resolution returns to working presentation while children run. Once
 the last running child settles, each client resumes its normal parent-state and
