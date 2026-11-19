@@ -1474,6 +1474,38 @@ test("deleting a staged marker and undoing restores its staged provenance across
   expect(screen.queryByTestId("composer-unbacked-image")).toBeNull();
 });
 
+test("attaching a replacement over a selected missing reference preserves undo for an earlier prose edit", async () => {
+  const user = userEvent.setup();
+  writeComposerDraft("ref_a", {
+    text: "hello [image 1] world",
+    skillNames: [],
+    stagedImageMarkers: [1],
+    stagedImageRanges: [{ marker: 1, start: 6, end: 15 }],
+  });
+  await mountComposerWithHandle("ref_a");
+  await user.click(textarea());
+  expect(screen.getByTestId("composer-unbacked-image")).toBeTruthy();
+
+  // Edit prose before the missing reference.
+  selectEditorText(textarea(), 5);
+  await user.paste(" there");
+  expect(textarea().textContent).toBe("hello there [image 1] world");
+
+  // Select the missing reference and attach its replacement.
+  selectEditorText(textarea(), "hello there ".length, "hello there [image 1]".length);
+  act(() => {
+    pastePngInto(textarea(), "replacement.png");
+  });
+  await waitFor(() => expect(screen.getByRole("button", { name: "Remove replacement.png" })).toBeTruthy());
+  expect(textarea().textContent).toBe("hello there [image 2] world");
+  expect(screen.queryByTestId("composer-unbacked-image")).toBeNull();
+
+  // Undo reverses the earlier prose edit while keeping the replacement image attached.
+  fireEvent.keyDown(textarea(), { key: "z", ctrlKey: true });
+  expect(textarea().textContent).toBe("hello [image 2] world");
+  expect(screen.getByRole("button", { name: "Remove replacement.png" })).toBeTruthy();
+});
+
 // The other order: the person deletes the staged ANCHOR and leaves the tile
 // behind - a tile whose text reference is gone but which is still attached.
 // The persistence pass must not read "a tile holds this number" as "the

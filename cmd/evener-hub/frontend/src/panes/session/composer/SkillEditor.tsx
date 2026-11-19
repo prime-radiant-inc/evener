@@ -1,4 +1,4 @@
-import { validMarkerRanges } from "@evener/appwire-client";
+import { adoptedMarkerRanges, validMarkerRanges } from "@evener/appwire-client";
 import { baseKeymap, deleteSelection } from "prosemirror-commands";
 import { closeHistory, history, redo, undo } from "prosemirror-history";
 import { keymap } from "prosemirror-keymap";
@@ -18,6 +18,7 @@ import {
   type SkillEditorValue,
   serializeSkillDocument,
   skillSchema,
+  stagedAnchorMark,
   stagedAnchorSpans,
   stagedImageMark,
   textOffsetToDocumentPosition,
@@ -232,11 +233,19 @@ function sameAdoption(
   );
 }
 
-/** Applies `stagedImage` marks in place on `tr` without rebuilding the doc. */
-function syncStagedImageMarks(tr: EditorState["tr"], ranges: readonly ImageMarkerRange[] | undefined): void {
+/** Applies both `stagedAnchor` and `stagedImage` marks in place on `tr` without
+ * rebuilding the document, so earlier prose edits stay in ProseMirror's undo
+ * history when an attachment replaces a selected missing reference. */
+function syncImageMarks(tr: EditorState["tr"], value: SkillEditorValue): void {
   const text = serializeSkillDocument(tr.doc).text;
+  tr.removeMark(0, tr.doc.content.size, skillSchema.marks.stagedAnchor);
   tr.removeMark(0, tr.doc.content.size, skillSchema.marks.stagedImage);
-  for (const range of validMarkerRanges(text, ranges)) {
+  for (const range of adoptedMarkerRanges(text, value.adoptedImageMarkers, value.adoptedImageRanges)) {
+    const from = textOffsetToDocumentPosition(tr.doc, range.start, 1);
+    const to = textOffsetToDocumentPosition(tr.doc, range.end, -1);
+    if (from < to) tr.addMark(from, to, stagedAnchorMark(range.marker));
+  }
+  for (const range of validMarkerRanges(text, value.stagedImageRanges)) {
     const from = textOffsetToDocumentPosition(tr.doc, range.start, 1);
     const to = textOffsetToDocumentPosition(tr.doc, range.end, -1);
     if (from < to) tr.addMark(from, to, stagedImageMark(range.marker));
@@ -431,12 +440,7 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
       // text: a spliced command or quote that happens to spell a selected name
       // must not become an activation the user never chose.
       const splitsAtom = atomInteriorAt(view.state.doc, prefix) || atomInteriorAt(view.state.doc, end);
-      // Which occurrences are unbacked is document STRUCTURE (the stagedAnchor
-      // marks), and a plain-text splice cannot add or remove a mark. A value
-      // that changes the adoption therefore rebuilds from the value rather than
-      // patching, even when its text is byte-identical.
-      const adoptionChanged = !sameAdoption(current, props.value);
-      if (authoritative || splitsAtom || adoptionChanged || (prefix === 0 && end === current.text.length)) {
+      if (authoritative || splitsAtom || (prefix === 0 && end === current.text.length)) {
         const replacement = parseSkillDocument(props.value);
         if (!replacement.eq(view.state.doc))
           apply(view.state.tr.replaceWith(0, view.state.doc.content.size, replacement.content));
@@ -445,7 +449,7 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
         const to = textOffsetToDocumentPosition(view.state.doc, end, -1);
         const inserted = props.value.text.slice(prefix, props.value.text.length - (current.text.length - end));
         const tr = view.state.tr.replaceWith(from, to, inserted ? skillSchema.text(inserted) : Fragment.empty);
-        syncStagedImageMarks(tr, props.value.stagedImageRanges);
+        syncImageMarks(tr, props.value);
         apply(tr);
       }
       // The applied value is not the last word: the integrity plugin separates
@@ -459,7 +463,7 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
       }
     } else if (!sameRangeSet(current.stagedImageRanges ?? [], props.value.stagedImageRanges ?? [])) {
       const tr = view.state.tr;
-      syncStagedImageMarks(tr, props.value.stagedImageRanges);
+      syncImageMarks(tr, props.value);
       if (tr.docChanged) apply(tr);
     }
     view.setProps({

@@ -3,7 +3,7 @@
 // selections, how a draft reaches the threads store, and what the user hears
 // when a recovery row was changed or consumed elsewhere.
 
-import { type ComposerMention, type ImageMarkerRange, markerPattern } from "@evener/appwire-client";
+import { type ComposerMention, markerPattern } from "@evener/appwire-client";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import type { DisplayedRecoveryStopCapture } from "../../../stores/mutationOutboxIndexedDB";
 import { type InputAttachment, readRecoveryWithStopEpoch, threadsStore } from "../../../stores/threads";
@@ -110,11 +110,6 @@ export type DraftPayload = {
   skillNames?: readonly string[];
   commandNames?: readonly string[];
   mentions?: readonly ComposerMention[];
-  /** Which "[image N]" occurrences the request carries with no bytes behind
-   * them. The store records it on the intent so a refusal's bounced row keeps
-   * refusing exactly those occurrences after a reload. */
-  adoptedImageMarkers?: readonly number[];
-  adoptedImageRanges?: readonly ImageMarkerRange[];
 };
 
 // One store call for all four routes; "drain" is the store's drainAsSteer.
@@ -125,7 +120,6 @@ export function submitDraftToStore(
   compositionOwnerId?: string,
 ): Promise<void> {
   const store = threadsStore.getState();
-  const adoption = { adoptedImageMarkers: draft.adoptedImageMarkers, adoptedImageRanges: draft.adoptedImageRanges };
   const args = [
     ref,
     draft.text,
@@ -134,7 +128,6 @@ export function submitDraftToStore(
     draft.commandNames,
     draft.mentions,
     compositionOwnerId,
-    adoption,
   ] as const;
   const call = (method: (typeof store)["send"] | (typeof store)["drainAsSteer"]) => method(...args);
   return route === "drain" ? call(store.drainAsSteer) : call(store[route]);

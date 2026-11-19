@@ -438,7 +438,6 @@ export interface ThreadsStoreState {
     commandNames?: readonly string[],
     mentions?: readonly ComposerMention[],
     compositionOwnerId?: string,
-    adoption?: ComposerAdoption,
   ): Promise<void>;
   // Re-issues the failed turn's continuation. `expectedTurnId` is the failure
   // the rendered action belonged to: activation rechecks the canonical latest
@@ -453,7 +452,6 @@ export interface ThreadsStoreState {
     commandNames?: readonly string[],
     mentions?: readonly ComposerMention[],
     compositionOwnerId?: string,
-    adoption?: ComposerAdoption,
   ): Promise<void>;
   queue(
     ref: string,
@@ -463,7 +461,6 @@ export interface ThreadsStoreState {
     commandNames?: readonly string[],
     mentions?: readonly ComposerMention[],
     compositionOwnerId?: string,
-    adoption?: ComposerAdoption,
   ): Promise<void>;
   interrupt(ref: string): Promise<void>;
   // drainAsSteer atomically appends the composer's current text/attachments
@@ -480,7 +477,6 @@ export interface ThreadsStoreState {
     commandNames?: readonly string[],
     mentions?: readonly ComposerMention[],
     compositionOwnerId?: string,
-    adoption?: ComposerAdoption,
   ): Promise<void>;
   // Removes one queued message by index and injects it as steering into the
   // in-flight turn (issue #22). expectedEntryId, when non-empty, must match
@@ -4709,10 +4705,6 @@ interface ComposerSubmission {
   adoptedImageMarkers?: readonly number[];
   adoptedImageRanges?: readonly ImageMarkerRange[];
 }
-
-/** The missing-reference provenance a composer's submission carries: which
- * occurrences of "[image N]" its writer could not back with bytes. */
-export type ComposerAdoption = Pick<ComposerSubmission, "adoptedImageMarkers" | "adoptedImageRanges">;
 
 function composerMutationIntent(
   ref: string,
@@ -8983,12 +8975,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     }
   },
 
-  async send(ref, text, attachments, skillNames, commandNames, mentions, compositionOwnerId, adoption) {
+  async send(ref, text, attachments, skillNames, commandNames, mentions, compositionOwnerId) {
     await sendMutationIntent(
       composerMutationIntent(
         ref,
         "send",
-        { text, attachments, skillNames, commandNames, mentions, ...adoption },
+        { text, attachments, skillNames, commandNames, mentions },
         compositionOwnerId,
       ),
     );
@@ -9036,18 +9028,18 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     }
   },
 
-  async steer(ref, text, attachments, skillNames, commandNames, mentions, compositionOwnerId, adoption) {
+  async steer(ref, text, attachments, skillNames, commandNames, mentions, compositionOwnerId) {
     await enqueueMutationIntent(
       composerMutationIntent(
         ref,
         "steer",
-        { text, attachments, skillNames, commandNames, mentions, ...adoption },
+        { text, attachments, skillNames, commandNames, mentions },
         compositionOwnerId,
       ),
     );
   },
 
-  async queue(ref, text, attachments, skillNames, commandNames, mentions, compositionOwnerId, adoption) {
+  async queue(ref, text, attachments, skillNames, commandNames, mentions, compositionOwnerId) {
     // A queue is composer input too: mark the shared guard for the enqueue's
     // window so Retry cannot enqueue a continuation ahead of the queued row
     // becoming visible in the projection.
@@ -9057,7 +9049,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         composerMutationIntent(
           ref,
           "queue",
-          { text, attachments, skillNames, commandNames, mentions, ...adoption },
+          { text, attachments, skillNames, commandNames, mentions },
           compositionOwnerId,
         ),
       );
@@ -9091,12 +9083,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     );
   },
 
-  async drainAsSteer(ref, text, attachments, skillNames, commandNames, mentions, compositionOwnerId, adoption) {
+  async drainAsSteer(ref, text, attachments, skillNames, commandNames, mentions, compositionOwnerId) {
     await enqueueMutationIntent(
       composerMutationIntent(
         ref,
         "drain",
-        { text, attachments, skillNames, commandNames, mentions, ...adoption },
+        { text, attachments, skillNames, commandNames, mentions },
         compositionOwnerId,
       ),
     );

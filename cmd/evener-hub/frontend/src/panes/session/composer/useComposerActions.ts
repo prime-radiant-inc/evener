@@ -609,11 +609,6 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
               skillNames: submittedSkillNames,
               commandNames: submittedCommandNames,
               mentions: submittedMentions,
-              // The record a refusal bounces back must refuse exactly the
-              // occurrences this text spells - a literal beside an adopted
-              // "[image 1]" is not one of them.
-              adoptedImageMarkers: submittedAdoptedImageMarkers,
-              adoptedImageRanges: submittedAdoptedImageRanges,
             },
             // This pane's seat rides the send: a refusal's bounced row is
             // this pane's own work and restores here, never elsewhere.
