@@ -140,23 +140,44 @@ func protocolClosesStrictParameterlessTools(res registry.Resolved) bool {
 	}
 }
 
+// emittedParameterlessParameters returns the schema a built-in adapter emits
+// for a tool with no declared parameters, or nil when the adapter leaves
+// t.Parameters unchanged (including omitting a direct caller's nil).
+func emittedParameterlessParameters(t ToolDefinition, res registry.Resolved) map[string]any {
+	if !t.DeclaresNoParameters() && t.Parameters != nil {
+		return nil
+	}
+	if protocolClosesStrictParameterlessTools(res) && (t.Strict == nil || *t.Strict) {
+		return closedEmptyToolParameters()
+	}
+	if t.Parameters == nil {
+		switch res.Protocol {
+		case registry.ProtocolOpenAIResponses, registry.ProtocolAnthropic, registry.ProtocolGoogle:
+			return defaultToolParameters()
+		}
+	}
+	return nil
+}
+
 // toolsJSONBytesForResolved returns the serialized byte length of defs as the
-// resolved adapter will emit them. Overrides, non-strict routes, non-OpenAI
-// protocols, and opted-out tools preserve open-schema pricing.
+// resolved adapter will emit them. Overrides keep defs unchanged; built-in
+// adapters substitute the closed or open empty schema wherever the adapter
+// emits one.
 func toolsJSONBytesForResolved(defs []ToolDefinition, res registry.Resolved, override bool) int {
-	if len(defs) == 0 || override || !protocolClosesStrictParameterlessTools(res) {
+	if len(defs) == 0 || override {
 		return ToolsJSONBytes(defs)
 	}
 	var adjusted []ToolDefinition
 	for i := range defs {
-		d := defs[i]
-		if (d.DeclaresNoParameters() || d.Parameters == nil) && (d.Strict == nil || *d.Strict) {
-			if adjusted == nil {
-				adjusted = make([]ToolDefinition, len(defs))
-				copy(adjusted, defs)
-			}
-			adjusted[i].Parameters = closedEmptyToolParameters()
+		emitted := emittedParameterlessParameters(defs[i], res)
+		if emitted == nil {
+			continue
 		}
+		if adjusted == nil {
+			adjusted = make([]ToolDefinition, len(defs))
+			copy(adjusted, defs)
+		}
+		adjusted[i].Parameters = emitted
 	}
 	if adjusted == nil {
 		return ToolsJSONBytes(defs)

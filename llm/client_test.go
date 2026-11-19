@@ -1237,12 +1237,10 @@ func TestNilClientMiddlewareSnapshotIsEmpty(t *testing.T) {
 	}
 }
 
-// An override adapter marshals the definition it is handed, so a parameterless
-// tool has to carry the open empty schema the local validator compiled it
-// against. Preparation leaves the nil so a built-in adapter can choose between
-// the closed and open empty schemas itself; an override has no such decision,
-// and omitting the key would have the provider read "no schema" where the
-// validator reads "any object".
+// Preparation fills a parameterless tool's Parameters with the open empty
+// schema and records the original parameterless declaration separately, so an
+// override adapter receives and prices the same open schema the local validator
+// compiled against while strict-capable built-in adapters can still close it.
 func TestClient_OverrideReceivesOpenSchemaForParameterlessTools(t *testing.T) {
 	// Not parallel: Generate mutates package-level seams in other tests, and this
 	// drives the full preparation path.

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"sync/atomic"
 	"testing"
 
 	"github.com/santhosh-tekuri/jsonschema/v5"
@@ -596,8 +597,8 @@ func TestRefusedDraft7TupleStillTypesItsPositions(t *testing.T) {
 
 // A route configured strict_tools = false must say so on every tool. The native
 // endpoint normalizes an omitted flag into strict enforcement, so omitting it
-// here would run the tool strictly anyway and force the optional argument the
-// gate just refused to force — the #6200 harm reintroduced by configuration.
+// here would run the tool strictly anyway and force optional arguments on every
+// call.
 //
 // The control is the same row with the capability unstated: a compatible
 // endpoint that does not implement the field must still receive no flag.
@@ -865,6 +866,53 @@ func TestCodexResponsesLiteUnionEmitsEnclosingScalarType(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("draft-07 ref branch with sibling type preserves fractional arguments", func(t *testing.T) {
+		t.Parallel()
+		schema := map[string]any{
+			"$schema": "http://json-schema.org/draft-07/schema#",
+			"definitions": map[string]any{
+				"num": map[string]any{"type": "number"},
+			},
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"amount": map[string]any{
+					"anyOf": []any{
+						map[string]any{"type": "integer"},
+						map[string]any{"$ref": "#/definitions/num", "type": "integer"},
+					},
+				},
+			},
+			"required": []string{"amount"},
+		}
+		advertised := compileWireSchema(t, schema)
+		if err := advertised.Validate(map[string]any{"amount": 1.5}); err != nil {
+			t.Fatalf("advertised Draft 7 schema rejected fractional value: %v", err)
+		}
+		req := userReq("hi")
+		req.Tools = []llm.ToolDefinition{{Name: "set_amount", Parameters: schema}}
+		body := build(t, req, resolved(codexCaps))
+		wireTools := body["input"].([]any)[0].(map[string]any)["tools"].([]any)
+		tool := wireTools[0].(map[string]any)
+		if tool["strict"] != false {
+			t.Fatalf("strict = %#v, want false for $ref schema", tool["strict"])
+		}
+		params := tool["parameters"].(map[string]any)
+		amount := params["properties"].(map[string]any)["amount"].(map[string]any)
+		if got, has := amount["type"]; has {
+			t.Fatalf("enclosing amount.type = %#v, want absent when a branch carries $ref", got)
+		}
+		emitted := compileWireSchema(t, params)
+		for _, valid := range []map[string]any{{"amount": 1}, {"amount": 1.5}} {
+			if err := emitted.Validate(valid); err != nil {
+				t.Fatalf("emitted Draft 7 schema rejected %#v: %v", valid, err)
+			}
+		}
+		if err := emitted.Validate(map[string]any{"amount": "1.5"}); err == nil {
+			t.Fatal("emitted Draft 7 schema accepted non-numeric string")
+		}
+	})
 }
 
 // Generate's admission budget must agree with the schema the Responses adapter
@@ -887,9 +935,9 @@ func TestGenerateParameterlessBudgetMatchesEmittedSchema(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			var hitServer bool
+			var requests atomic.Int32
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				hitServer = true
+				requests.Add(1)
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(responseJSON))
 			}))
@@ -950,6 +998,7 @@ func TestGenerateParameterlessBudgetMatchesEmittedSchema(t *testing.T) {
 
 			prompt := "hello"
 			noRetry := llm.RetryPolicy{MaxRetries: 0}
+			before := requests.Load()
 			_, err = llm.Generate(context.Background(), llm.GenerateOptions{
 				Client:      loadClient(&tight),
 				Provider:    instance,
@@ -960,15 +1009,16 @@ func TestGenerateParameterlessBudgetMatchesEmittedSchema(t *testing.T) {
 			})
 			var budgetErr *llm.ContextBudgetError
 			if !errors.As(err, &budgetErr) || budgetErr.Limit != "max_input" {
-				t.Fatalf("Generate was not refused at tight ceiling %d (one token below emitted schema price): err = %v, hitServer = %v", tight, err, hitServer)
+				t.Fatalf("Generate was not refused at tight ceiling %d (one token below emitted schema price): err = %v, requests = %d", tight, err, requests.Load()-before)
 			}
-			if hitServer {
+			if requests.Load() != before {
 				t.Fatal("request reached HTTP server despite exceeding max_input under emitted schema")
 			}
 
 			// Exact ceiling admits the request (proving open-schema cases are not
 			// over-billed by the closed schema's 43 extra bytes).
 			exact := tight + 1
+			before = requests.Load()
 			if _, err := llm.Generate(context.Background(), llm.GenerateOptions{
 				Client:      loadClient(&exact),
 				Provider:    instance,
@@ -979,31 +1029,41 @@ func TestGenerateParameterlessBudgetMatchesEmittedSchema(t *testing.T) {
 			}); err != nil {
 				t.Fatalf("Generate refused at exact emitted ceiling %d: %v", exact, err)
 			}
-			if !hitServer {
+			if requests.Load() != before+1 {
 				t.Fatal("admitted request did not reach HTTP server")
 			}
 
 			// Direct unstamped Client.Complete and CountInputTokens must agree with
-			// the same emitted-schema boundary.
-			hitServer = false
-			directReq := llm.Request{
-				Provider: instance,
-				Model:    model,
-				Messages: []llm.Message{llm.User(prompt)},
-				Tools:    []llm.ToolDefinition{probeDef},
-			}
-			if _, err := loadClient(&tight).Complete(context.Background(), directReq); !errors.As(err, &budgetErr) || budgetErr.Limit != "max_input" {
-				t.Fatalf("direct unstamped Complete was not refused at tight ceiling %d: err = %v, hitServer = %v", tight, err, hitServer)
-			}
-			if hitServer {
-				t.Fatal("direct unstamped request reached HTTP server despite exceeding max_input under emitted schema")
-			}
-			counted, err := loadClient(&generous).CountInputTokens(context.Background(), directReq)
-			if err != nil {
-				t.Fatalf("CountInputTokens: %v", err)
-			}
-			if counted.Tokens != wirePrice {
-				t.Fatalf("CountInputTokens = %d, want emitted schema price %d", counted.Tokens, wirePrice)
+			// the same emitted-schema boundary for both prepared and unprepared nil
+			// parameterless tools.
+			unpreparedDef := llm.ToolDefinition{Name: "current_time", Strict: tc.toolStrict}
+			for _, direct := range []struct {
+				label string
+				def   llm.ToolDefinition
+			}{
+				{label: "prepared", def: probeDef},
+				{label: "unprepared nil", def: unpreparedDef},
+			} {
+				before = requests.Load()
+				directReq := llm.Request{
+					Provider: instance,
+					Model:    model,
+					Messages: []llm.Message{llm.User(prompt)},
+					Tools:    []llm.ToolDefinition{direct.def},
+				}
+				if _, err := loadClient(&tight).Complete(context.Background(), directReq); !errors.As(err, &budgetErr) || budgetErr.Limit != "max_input" {
+					t.Fatalf("direct unstamped (%s) Complete was not refused at tight ceiling %d: err = %v, requests = %d", direct.label, tight, err, requests.Load()-before)
+				}
+				if requests.Load() != before {
+					t.Fatalf("direct unstamped (%s) request reached HTTP server despite exceeding max_input under emitted schema", direct.label)
+				}
+				counted, err := loadClient(&generous).CountInputTokens(context.Background(), directReq)
+				if err != nil {
+					t.Fatalf("CountInputTokens (%s): %v", direct.label, err)
+				}
+				if counted.Tokens != wirePrice {
+					t.Fatalf("CountInputTokens (%s) = %d, want emitted schema price %d", direct.label, counted.Tokens, wirePrice)
+				}
 			}
 		})
 	}

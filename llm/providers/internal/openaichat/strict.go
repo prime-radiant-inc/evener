@@ -117,9 +117,7 @@ func dialectURI(raw any) string {
 //
 // A predicate in this file decides whether a value the projection will rewrite
 // still means the same thing afterwards, and every one of them asks that
-// question about the value rather than about a stand-in for it. Three review
-// rounds each found one check answering about the wrong thing, so the rule is
-// written down once here:
+// question about the value rather than about a stand-in for it:
 //
 //   - Read the value, not its Go presence. A const is present when the key is
 //     present, and null is a value a closed set can name; reading `m["const"] !=
@@ -185,11 +183,8 @@ func SupplyDerivedTypes(schema map[string]any) map[string]any {
 // the ones strictifyJSONSchemaInPlace never descends into — a child of a
 // nullable object, say — because the certification covers those too.
 //
-// The positions below are the whole schema-bearing keyword set, not the subset
-// a run of reviews happened to name. A keyword that holds a subschema and is
-// missing from these tables leaves a typeless node on the wire, which costs the
-// whole request; the tables are what keeps that a one-line fix rather than
-// another round in which the next missing keyword is found.
+// The tables below enumerate the full schema-bearing keyword set across Draft 7
+// and Draft 2020-12 so every nested subschema receives its derived type.
 //
 // The shape is written down rather than guessed from the value, because
 // properties is a map of names to schemas and not a schema: reading its keys as
@@ -275,11 +270,15 @@ func supplyDerivedTypes(m map[string]any, dialect schemaDialect) {
 			}
 		}
 	}
-	if _, has := m["type"]; !has {
-		if name, ok := derivedScalarType(m, dialect); ok {
-			m["type"] = name
-		} else if name, ok := derivedUnionScalarType(m); ok {
-			m["type"] = name
+	// Draft 4/6/7 ignore keywords beside $ref, so sibling const, enum, or union
+	// keywords on a $ref node cannot guarantee a type for that node.
+	if _, hasRef := m["$ref"]; !hasRef {
+		if _, has := m["type"]; !has {
+			if name, ok := derivedScalarType(m, dialect); ok {
+				m["type"] = name
+			} else if name, ok := derivedUnionScalarType(m); ok {
+				m["type"] = name
+			}
 		}
 	}
 }
@@ -307,6 +306,11 @@ func alternativesScalarType(raw any) (string, bool) {
 	for _, item := range arr {
 		branch, ok := item.(map[string]any)
 		if !ok {
+			return "", false
+		}
+		// Draft 4/6/7 ignore siblings of $ref, so a branch carrying an unresolved
+		// $ref cannot guarantee its sibling type on the enclosing union.
+		if _, hasRef := branch["$ref"]; hasRef {
 			return "", false
 		}
 		typ, ok := explicitScalarType(branch["type"])
@@ -952,8 +956,7 @@ func enumMembers(raw any) ([]any, bool) {
 // which a strict-enforcing provider requires on every node, and the accepted
 // set is unchanged because every member already has that type.
 //
-// One rule with three inputs decides it, because the three failures it has had
-// were each one input read partially:
+// One rule with three inputs decides it:
 //
 //   - representation: how the caller spelled the value. A typed slice, a
 //     decoded []any and a json.Number all carry the same JSON scalar, and

@@ -399,12 +399,11 @@ func TestExecuteToolCalls_UnknownToolDefaultsNonReadOnly(t *testing.T) {
 	})
 }
 
-// A tool that declares no parameters must stay distinguishable from one that
-// advertises the open empty object, because the Responses adapter emits a
-// different schema for each: a closed empty object it can certify strict, and
-// the open object it must send non-strict. Preparation is where that
-// distinction is lost if it fills the nil in, so it must validate the default
-// without writing it back.
+// Preparation stores the open empty object schema for a parameterless tool and
+// records the original parameterless declaration separately, so strict-capable
+// adapters can still distinguish a parameterless tool (which closes to strict)
+// from a tool that explicitly advertised an open empty object (which stays
+// non-strict).
 func TestPrepareToolsPreservesTheNoArgumentDefinition(t *testing.T) {
 	t.Parallel()
 	idx, defs, err := prepareTools([]Tool{

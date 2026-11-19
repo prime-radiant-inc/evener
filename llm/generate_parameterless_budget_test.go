@@ -194,4 +194,63 @@ func TestParameterlessToolIsPricedByTheSchemaTheAdapterSends(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("unprepared nil parameterless tool matches each built-in protocol emission", func(t *testing.T) {
+		t.Parallel()
+		nilDef := []ToolDefinition{{Name: "current_time"}}
+		openDef := []ToolDefinition{{Name: "current_time", Parameters: defaultToolParameters()}}
+		closedDef := []ToolDefinition{{Name: "current_time", Parameters: closedEmptyToolParameters()}}
+
+		protoCases := []struct {
+			name     string
+			res      registry.Resolved
+			override bool
+			want     int
+		}{
+			{
+				name: "strict openai-responses closes nil",
+				res:  registry.Resolved{Protocol: registry.ProtocolOpenAIResponses, Caps: registry.Caps{StrictTools: new(true)}},
+				want: ToolsJSONBytes(closedDef),
+			},
+			{
+				name: "non-strict openai-responses synthesizes open object",
+				res:  registry.Resolved{Protocol: registry.ProtocolOpenAIResponses, Caps: registry.Caps{StrictTools: new(false)}},
+				want: ToolsJSONBytes(openDef),
+			},
+			{
+				name: "strict openai-chat closes nil",
+				res:  registry.Resolved{Protocol: registry.ProtocolOpenAIChat, Caps: registry.Caps{StrictTools: new(true)}},
+				want: ToolsJSONBytes(closedDef),
+			},
+			{
+				name: "non-strict openai-chat omits nil",
+				res:  registry.Resolved{Protocol: registry.ProtocolOpenAIChat, Caps: registry.Caps{StrictTools: new(false)}},
+				want: ToolsJSONBytes(nilDef),
+			},
+			{
+				name: "anthropic synthesizes open object",
+				res:  registry.Resolved{Protocol: registry.ProtocolAnthropic},
+				want: ToolsJSONBytes(openDef),
+			},
+			{
+				name: "google synthesizes open object",
+				res:  registry.Resolved{Protocol: registry.ProtocolGoogle},
+				want: ToolsJSONBytes(openDef),
+			},
+			{
+				name:     "override keeps caller nil",
+				res:      registry.Resolved{Protocol: registry.ProtocolOpenAIResponses, Caps: registry.Caps{StrictTools: new(true)}},
+				override: true,
+				want:     ToolsJSONBytes(nilDef),
+			},
+		}
+		for _, tc := range protoCases {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				if got := toolsJSONBytesForResolved(nilDef, tc.res, tc.override); got != tc.want {
+					t.Fatalf("toolsJSONBytesForResolved = %d, want %d", got, tc.want)
+				}
+			})
+		}
+	})
 }

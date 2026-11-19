@@ -1489,9 +1489,8 @@ func TestSupplyDerivedTypesReadsEveryConcreteEnumShape(t *testing.T) {
 // combinators. A provider requiring an explicit type rejects a typeless node
 // anywhere it appears, and a tool carrying any of these keywords is refused
 // strict mode, so the whole schema reaches the provider as advertised and the
-// fallback walk is the only thing that can state the type. This covers the
-// whole schema-bearing keyword set, so a missing position is a failing row
-// rather than a review finding.
+// fallback walk is the only thing that can state the type. This table covers
+// the full schema-bearing keyword set so any unwalked position fails directly.
 func TestSupplyDerivedTypesReachesEverySchemaPosition(t *testing.T) {
 	t.Parallel()
 	typeless := func(t *testing.T, m map[string]any, path ...string) map[string]any {
@@ -1623,10 +1622,8 @@ func TestSupplyDerivedTypesReachesEverySchemaPosition(t *testing.T) {
 //
 // The walk tables are written down by keyword, and a table written that way is
 // only as complete as the person who last edited it: twice now a sibling
-// keyword was left out while the shape it holds was added — a Draft 7 tuple
-// under items, then additionalItems and dependencies beside it. This
-// enumeration is the other direction of the same question, so a missing
-// sibling is a failing case rather than a review finding.
+// Every schema-bearing keyword and value shape across Draft 7 and Draft 2020-12
+// is enumerated here so an unwalked sibling fails directly.
 //
 // A keyword's shape is named rather than guessed from the value, because
 // several keywords admit more than one: items is a schema or a tuple list,
@@ -1693,9 +1690,8 @@ func schemaWithEnum() map[string]any {
 
 // Every keyword that can hold a subschema is reached by the supply walk, in
 // every shape it admits, and every schema inside one gets the type its closed
-// value set implies. The enumeration is iterated rather than its members being
-// named, so a keyword added here without a walk that reaches it fails as a
-// case rather than as a review finding.
+// value set implies. Iterating the enumeration directly ensures every listed
+// keyword is walked.
 func TestSupplyDerivedTypesWalksEverySchemaBearingKeyword(t *testing.T) {
 	t.Parallel()
 	for i, pos := range schemaBearingPositions {
@@ -3284,10 +3280,103 @@ func TestNestedAnyOfOfTypedScalarBranchesIsCertified(t *testing.T) {
 				},
 				wantType: nil,
 			},
+			{
+				name: "draft-07 ref branch with sibling type does not narrow enclosing union",
+				schema: map[string]any{
+					"$schema": "http://json-schema.org/draft-07/schema#",
+					"definitions": map[string]any{
+						"num": map[string]any{"type": "number"},
+					},
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"mode": map[string]any{
+							"anyOf": []any{
+								map[string]any{"type": "integer"},
+								map[string]any{"$ref": "#/definitions/num", "type": "integer"},
+							},
+						},
+					},
+					"required": []string{"mode"},
+				},
+				wantType: nil,
+				accepts:  []map[string]any{{"mode": 1}, {"mode": 1.5}},
+				rejects:  []map[string]any{{"mode": "1.5"}},
+			},
+			{
+				name: "draft-07 ref branch with sibling const does not type ref or enclosing union",
+				schema: map[string]any{
+					"$schema": "http://json-schema.org/draft-07/schema#",
+					"definitions": map[string]any{
+						"num": map[string]any{"type": "number"},
+					},
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"mode": map[string]any{
+							"anyOf": []any{
+								map[string]any{"type": "integer"},
+								map[string]any{"$ref": "#/definitions/num", "const": 1},
+							},
+						},
+					},
+					"required": []string{"mode"},
+				},
+				wantType: nil,
+				accepts:  []map[string]any{{"mode": 1}, {"mode": 1.5}},
+				rejects:  []map[string]any{{"mode": "1.5"}},
+			},
+			{
+				name: "standalone ref node with sibling const does not acquire derived type",
+				schema: map[string]any{
+					"$schema": "http://json-schema.org/draft-07/schema#",
+					"definitions": map[string]any{
+						"num": map[string]any{"type": "number"},
+					},
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"mode": map[string]any{
+							"$ref":  "#/definitions/num",
+							"const": "ignored",
+						},
+					},
+					"required": []string{"mode"},
+				},
+				wantType: nil,
+				accepts:  []map[string]any{{"mode": 1.5}},
+				rejects:  []map[string]any{{"mode": "ignored"}},
+			},
+			{
+				name: "undeclared dialect ref branch with sibling type skips union inference",
+				schema: map[string]any{
+					"$defs": map[string]any{
+						"num": map[string]any{"type": "number"},
+					},
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"mode": map[string]any{
+							"anyOf": []any{
+								map[string]any{"type": "integer"},
+								map[string]any{"$ref": "#/$defs/num", "type": "integer"},
+							},
+						},
+					},
+					"required": []string{"mode"},
+				},
+				wantType: nil,
+				accepts:  []map[string]any{{"mode": 1}},
+			},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
+				for _, a := range tc.accepts {
+					if !schemaAccepts(t, tc.schema, a) {
+						t.Fatalf("advertised schema rejected %#v", a)
+					}
+				}
 				emitted := SupplyDerivedTypes(tc.schema)
 				mode := emitted["properties"].(map[string]any)["mode"].(map[string]any)
 				gotType, hasType := mode["type"]

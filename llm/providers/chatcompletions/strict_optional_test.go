@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"sync/atomic"
 	"testing"
 
 	"primeradiant.com/evener/llm"
@@ -209,11 +210,10 @@ func TestChatDirectCallKeepsParameterlessToolWithoutParameters(t *testing.T) {
 	}
 }
 
-// The chat adapter carries the same parameterless-tool rule as Responses. A
-// definition that declares no parameters keeps its nil through preparation, so
-// the adapter has to supply the closed empty object itself: omitting
-// "parameters" entirely would send strict mode a function with no schema, and
-// advertising the open empty object would drop the tool to non-strict.
+// The chat adapter carries the same parameterless-tool rule as Responses:
+// preparation stores the open empty object and records the parameterless
+// declaration separately, so on a strict route the adapter replaces it with the
+// closed empty object and keeps the tool strict.
 func TestChatStrictToolsKeepParameterlessToolsClosed(t *testing.T) {
 	t.Parallel()
 	req := userReq("hi")
@@ -379,9 +379,9 @@ func TestChatGenerateParameterlessBudgetMatchesEmittedSchema(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			var hitServer bool
+			var requests atomic.Int32
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				hitServer = true
+				requests.Add(1)
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(chatOK))
 			}))
@@ -443,6 +443,7 @@ func TestChatGenerateParameterlessBudgetMatchesEmittedSchema(t *testing.T) {
 
 			prompt := "hello"
 			noRetry := llm.RetryPolicy{MaxRetries: 0}
+			before := requests.Load()
 			_, err = llm.Generate(context.Background(), llm.GenerateOptions{
 				Client:      loadClient(&tight),
 				Provider:    instance,
@@ -453,13 +454,14 @@ func TestChatGenerateParameterlessBudgetMatchesEmittedSchema(t *testing.T) {
 			})
 			var budgetErr *llm.ContextBudgetError
 			if !errors.As(err, &budgetErr) || budgetErr.Limit != "max_input" {
-				t.Fatalf("Generate was not refused at tight ceiling %d: err = %v, hitServer = %v", tight, err, hitServer)
+				t.Fatalf("Generate was not refused at tight ceiling %d: err = %v, requests = %d", tight, err, requests.Load()-before)
 			}
-			if hitServer {
+			if requests.Load() != before {
 				t.Fatal("request reached HTTP server despite exceeding max_input under emitted schema")
 			}
 
 			exact := tight + 1
+			before = requests.Load()
 			if _, err := llm.Generate(context.Background(), llm.GenerateOptions{
 				Client:      loadClient(&exact),
 				Provider:    instance,
@@ -470,11 +472,11 @@ func TestChatGenerateParameterlessBudgetMatchesEmittedSchema(t *testing.T) {
 			}); err != nil {
 				t.Fatalf("Generate refused at exact emitted ceiling %d: %v", exact, err)
 			}
-			if !hitServer {
+			if requests.Load() != before+1 {
 				t.Fatal("admitted request did not reach HTTP server")
 			}
 
-			hitServer = false
+			before = requests.Load()
 			directReq := llm.Request{
 				Provider: instance,
 				Model:    model,
@@ -482,9 +484,9 @@ func TestChatGenerateParameterlessBudgetMatchesEmittedSchema(t *testing.T) {
 				Tools:    []llm.ToolDefinition{probeDef},
 			}
 			if _, err := loadClient(&tight).Complete(context.Background(), directReq); !errors.As(err, &budgetErr) || budgetErr.Limit != "max_input" {
-				t.Fatalf("direct unstamped Complete was not refused at tight ceiling %d: err = %v, hitServer = %v", tight, err, hitServer)
+				t.Fatalf("direct unstamped Complete was not refused at tight ceiling %d: err = %v, requests = %d", tight, err, requests.Load()-before)
 			}
-			if hitServer {
+			if requests.Load() != before {
 				t.Fatal("direct unstamped request reached HTTP server despite exceeding max_input under emitted schema")
 			}
 			counted, err := loadClient(&generous).CountInputTokens(context.Background(), directReq)
