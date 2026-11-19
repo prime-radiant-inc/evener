@@ -207,9 +207,11 @@ a request that carries no model-control authority.
   could authorize it, and `restartRequired` is a live daemon on an
   incompatible protocol whose `thread/resume` the hub refuses. A live-looking
   model chip on a finished session is the
-  design. Note that the *REST* route refuses a non-live session earlier, with
-  `404 session not live` (`web_api.go`) — so the two paths legitimately
-  differ, and this card's browser-free steps must run against a live session.
+  design. The hub serves model switching only through AppWire on `/rpc`; it
+  registers no REST route for it, so a browser-free step cannot fall back to
+  one. Drive those steps over `/rpc` and start from a live session: a
+  `thread/model/set` on a session with no daemon has to resume it first, and
+  that resume changes the very state the steps then assert on.
 - The busy signal the daemon reads is its own `s.processing` — **not**
   `ActiveFlags` (Evener daemons never populate it). Don't assert on
   `ActiveFlags`.
