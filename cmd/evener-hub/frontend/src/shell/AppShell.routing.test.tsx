@@ -1764,6 +1764,117 @@ test("phone Back from a secondary session's inspector publishes its URL without 
   await waitFor(() => expect(refParam(workspaceStore.getState().mainPane()?.params)).toBe("local:other-route"));
 });
 
+test.each(["explicit-navigation", "confirmed-deletion"] as const)(
+  "phone Back from a main-slot inspector preserves secondary panes and staged attachments while %s still reconciles",
+  async (followUp) => {
+    const setMobile = installSwitchableViewport();
+    setMobile(true);
+    const client = cascadeClient((ref) => cascadeContext(ref, ref === "local:source-child" ? ["local:source"] : []));
+    installLocationForRoute("local:source");
+    installLocationForRoute("local:other-secondary");
+    installLocationForRoute("local:other-route");
+    const sourcePane: OpenPaneRecord = {
+      id: "pane_session_source",
+      type: "session",
+      slot: "secondary",
+      params: { ref: "local:source" },
+    };
+    const otherPane: OpenPaneRecord = {
+      id: "pane_session_other",
+      type: "session",
+      slot: "secondary",
+      params: { ref: "local:other-secondary" },
+    };
+    const inspectorPane: OpenPaneRecord = {
+      id: "pane_zoom_main",
+      type: "sessionZoom",
+      slot: "main",
+      params: {
+        ref: "local:source-child",
+        source: { type: "session", params: { ref: "local:source" } },
+        edges: [{ ownerRef: "local:source", childRef: "local:source-child", delegateId: "d-main-inspector" }],
+        inspection: { origin: { paneId: sourcePane.id, type: "session", ref: "local:source" } },
+      },
+    };
+    window.history.pushState({}, "", "/");
+    setMobile(false);
+    await act(async () => {
+      render(<AppShell client={client} />);
+    });
+    await screen.findByText("No session open");
+
+    const { recordCascadeOrigin } = await import("../panes/zoom/inspectionOrigin");
+    await act(async () => {
+      workspaceStore.setState({
+        panes: [inspectorPane, sourcePane, otherPane],
+        focusedPaneId: inspectorPane.id,
+      });
+      recordCascadeOrigin(inspectorPane, sourcePane);
+      setMobile(true);
+    });
+    const otherLifetime = conversationPaneLifetime(otherPane);
+    const otherAttachments = otherLifetime.composer?.attachments;
+    if (!otherAttachments) throw new Error("expected other secondary composer attachments store");
+    act(() => {
+      otherAttachments.setState({
+        items: [
+          {
+            marker: 1,
+            name: "staged.png",
+            mediaType: "image/png",
+            data: "iVBORw0KGgo=",
+            pending: false,
+          },
+        ],
+      });
+    });
+    await screen.findByTestId("cascade-column");
+    await screen.findByRole("button", { name: "Back" });
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "Back" }));
+    await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Asource"));
+    expect(workspaceStore.getState().panes.some((pane) => pane.id === inspectorPane.id)).toBe(false);
+    expect(workspaceStore.getState().focusedPaneId).toBe(sourcePane.id);
+    expect(workspaceStore.getState().panes).toContain(sourcePane);
+    expect(workspaceStore.getState().panes).toContain(otherPane);
+    expect(otherLifetime.alive).toBe(true);
+    expect(otherAttachments.getState().items.map((item) => item.marker)).toEqual([1]);
+
+    if (followUp === "explicit-navigation") {
+      await act(async () => navigate("/s/local%3Aother-route"));
+      await waitFor(() => expect(refParam(workspaceStore.getState().mainPane()?.params)).toBe("local:other-route"));
+    } else {
+      const key = { kind: "location", ref: "local:source" } as const;
+      await act(async () => {
+        const resources = new Map(navigationStore.getState().resources);
+        resources.set(keyID(key), {
+          key,
+          data: null,
+          normalized: {
+            key,
+            graph: { metadata: {}, entities: new Map(), containers: new Map() },
+            version: { generationId: "generation_test", revision: 2, etag: '"gone"' },
+            presence: "gone",
+          },
+          loadedRevision: 2,
+          targetRevision: null,
+          forceToken: 0,
+          etag: '"gone"',
+          loading: false,
+          stale: false,
+          error: null,
+          generationID: "generation_test",
+        });
+        navigationStore.setState({
+          clientGenerationID: "generation_test",
+          resources,
+        });
+      });
+      await waitFor(() => expect(workspaceStore.getState().mainPane()?.type).toBe("welcome"));
+    }
+  },
+);
+
 test("a fresh child pathname waits for real location then focuses its existing conversation over inspection", async () => {
   const { mainId, cascadeId } = await saveRealSecondaryCascadeLayout("local:owner");
   resetNavigationStoreForTests();

@@ -207,6 +207,14 @@ function routePlacementIsApplied(
   const route = urlToPane(pathname);
   if (route === null || route.type === "welcome") return true;
 
+  if (!locationGone && route.type === "session") {
+    const routeRef = refParam(route.params);
+    const returnedOriginPane = routeRef !== null ? cascadeReturnedOriginForURL(pathname) : null;
+    if (returnedOriginPane?.type === "session" && refParam(returnedOriginPane.params) === routeRef) {
+      return true;
+    }
+  }
+
   const workspace = workspaceStore.getState();
   const mainRecord = workspace.mainPane();
   if (mainRecord === null) return false;
@@ -268,10 +276,6 @@ function routePlacementIsApplied(
     return parentRef !== undefined && conversationContextIncludes(parentRef, ref);
   };
   const rawFocused = workspace.panes.find((pane) => pane.id === workspace.focusedPaneId);
-  const returnedOriginPane = cascadeReturnedOriginForURL(pathname);
-  if (returnedOriginPane?.type === "session" && sessionRefOf(returnedOriginPane) === ref) {
-    return true;
-  }
   const focusedIntent = rawFocused === undefined ? null : zoomIntentOf(rawFocused);
   const focusedSeparatedInspection =
     (allowFocusedCompanion || allowRestoredInspection) &&
