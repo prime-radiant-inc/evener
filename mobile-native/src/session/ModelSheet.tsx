@@ -39,15 +39,22 @@ export const modelHosts = sheetHosts<ModelHost>();
 // The actions whose errors this sheet shows; the Session sheet shows every other one.
 export const MODEL_ACTIONS = new Set(["changeModel", "setReasoningEffort", "setVisionModel"]);
 
-export function ModelSheet({ route }: NativeStackScreenProps<Routes, "ModelSheet">) {
+export function ModelSheet({ route, navigation }: NativeStackScreenProps<Routes, "ModelSheet">) {
 	const { hubId, ref, setting } = route.params;
 	const sheet = useSheet();
 	const host = useSheetHost(modelHosts, sheetKey(hubId, ref), sheet);
 	const [query, setQuery] = useState("");
 	if (!host) return null;
-	return (
-		<ModelSheetBody host={host} vision={setting === "vision"} query={query} setQuery={setQuery} finish={sheet.finish} />
-	);
+	// A pick can settle after the reader dismissed the picker, and a newer sheet
+	// can hold the top of the stack by then: a bare goBack would pop that sheet,
+	// or the conversation underneath it. Only this exact route, still on top,
+	// is the sheet the answer may close. The session keeps the acknowledgement
+	// and the readback either way; only the dismissal depends on the route.
+	const close = () => {
+		const stack = navigation.getState();
+		if (stack.routes[stack.index]?.key === route.key) sheet.finish();
+	};
+	return <ModelSheetBody host={host} vision={setting === "vision"} query={query} setQuery={setQuery} close={close} />;
 }
 
 function ModelSheetBody({
@@ -55,13 +62,13 @@ function ModelSheetBody({
 	vision,
 	query,
 	setQuery,
-	finish,
+	close,
 }: {
 	host: ModelHost;
 	vision: boolean;
 	query: string;
 	setQuery(query: string): void;
-	finish(): void;
+	close(): void;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
@@ -99,19 +106,32 @@ function ModelSheetBody({
 		refused ?? state?.modelError ?? (state?.lastAction && MODEL_ACTIONS.has(state.lastAction) ? state.error : null);
 	// Each refusal reveals the first header row, even when it repeats the
 	// previous message after the user has scrolled away to try again.
-	const revealError = (from: SessionControls | null = controls) => {
+	const revealError = (from: SessionControls | null) => {
 		if (from?.getSnapshot().error) list.current?.getScrollResponder()?.scrollTo({ y: 0, animated: true });
 	};
 	/** Sends one change through the controls that can take it now, and settles
 	 * the sheet on what the hub answered them. `sentWith` is the binding that
-	 * dispatched, which may be replaced while the answer is out. */
-	const closeOn = (sentWith: SessionControls | null, change: Promise<boolean>, then?: () => void) => {
+	 * dispatched, which may be replaced while the answer is out. Every action
+	 * goes through here, so a new attempt always retires the previous refusal
+	 * and a failure always reports the binding that recorded it. `closes`
+	 * separates a pick, which ends the sheet, from an effort change, which
+	 * stays open behind its result. A change that reports no outcome at all -
+	 * the effort the session already runs, or one it cannot take - is no
+	 * attempt: it neither closes nor speaks. */
+	const dispatch = (
+		sentWith: SessionControls | null,
+		change: Promise<boolean | void>,
+		closes: boolean,
+		then?: () => void,
+	) => {
 		// A new attempt is the reader's, so the previous refusal stops being the
 		// answer to what the picker now shows.
 		setRefused(null);
 		void change.then((changed) => {
+			if (changed === undefined) return;
 			if (changed) {
-				finish();
+				if (!closes) return;
+				close();
 				then?.();
 				return;
 			}
@@ -123,15 +143,25 @@ function ModelSheetBody({
 	};
 	const choose = (model: ModelDescriptor) => {
 		if (verified(vision ? "vision" : "model", current) && `${model.provider}/${model.model}` === current) {
-			finish();
+			close();
 			return;
 		}
 		if (!controls) return;
-		if (vision) closeOn(controls, controls.changeVisionModel(model.provider, model.model));
+		if (vision) dispatch(controls, controls.changeVisionModel(model.provider, model.model), true);
 		else
-			closeOn(controls, controls.changeModel(model.provider, model.model), () =>
+			dispatch(controls, controls.changeModel(model.provider, model.model), true, () =>
 				host.toast({ text: "Model changed. Applies from the next turn." }),
 			);
+	};
+	// Already the setting: the daemon would acknowledge an unchanged value,
+	// and announcing that as a change tells the reader something happened when
+	// nothing did.
+	const chooseVision = (value: string) => {
+		if (verified("vision", session.visionModel) && session.visionModel === value) {
+			close();
+			return;
+		}
+		if (controls) dispatch(controls, controls.setVisionModel(value), true);
 	};
 	const settings = (
 		<View style={{ paddingHorizontal: 16, paddingBottom: 8, gap: 8 }}>
@@ -149,7 +179,9 @@ function ModelSheetBody({
 					levels={levels}
 					current={session.reasoningEffort ?? ""}
 					disabled={busy}
-					choose={(level) => void controls?.setReasoningEffort(level).then(() => revealError())}
+					choose={(level) => {
+						if (controls) dispatch(controls, controls.setReasoningEffort(level), false);
+					}}
 				/>
 			) : null}
 		</View>
@@ -157,7 +189,7 @@ function ModelSheetBody({
 	return (
 		<Sheet
 			title={vision ? "Vision model" : "Model"}
-			done={{ onPress: () => finish() }}
+			done={{ onPress: () => close() }}
 			accessory={
 				<View style={{ paddingHorizontal: 16, paddingBottom: 8 }}>
 					<SearchField label="Search models" value={query} onChangeText={setQuery} />
@@ -182,24 +214,13 @@ function ModelSheetBody({
 									title="Session model"
 									selected={session.visionModel === ""}
 									disabled={busy || !canChange}
-									// Already the setting: the daemon would acknowledge an
-									// unchanged value, and announcing that as a change tells the
-									// reader something happened when nothing did.
-									onPress={() =>
-										verified("vision", session.visionModel) && session.visionModel === ""
-											? finish()
-											: controls && closeOn(controls, controls.setVisionModel(""))
-									}
+									onPress={() => chooseVision("")}
 								/>
 								<ChoiceRow
 									title="Off"
 									selected={session.visionModel === "off"}
 									disabled={busy || !canChange}
-									onPress={() =>
-										verified("vision", session.visionModel) && session.visionModel === "off"
-											? finish()
-											: controls && closeOn(controls, controls.setVisionModel("off"))
-									}
+									onPress={() => chooseVision("off")}
 								/>
 							</>
 						) : null}

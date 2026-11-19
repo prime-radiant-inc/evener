@@ -49,10 +49,9 @@ function frontScreen(state: NestedState): NestedState["routes"][number] | undefi
  * since a sheet is a route on the stack it is presented over: a stack that
  * holds it there is showing it, and `inFront` is what says so. */
 function holds(state: NestedState, key: string): boolean {
+	if (inFront(state as StackState, key)) return true;
 	const front = frontScreen(state);
 	if (!front) return false;
-	if (front.key === key) return true;
-	if (inFront(state as StackState, key)) return true;
 	const inside = nestedState(front.state);
 	return inside ? holds(inside, key) : false;
 }

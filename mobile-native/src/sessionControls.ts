@@ -138,6 +138,14 @@ export function sessionFacts(
 	// publication is the answer, which is what every such caller meant before
 	// the session entry started supplying one.
 	projected?: (setting: Setting) => string | null,
+	// Whether a turn is in flight right now. A model pick sent during a turn is
+	// queued for the next one, and the projection then correctly keeps naming
+	// the running model whether the hub took the pick or never saw it, so a read
+	// taken then says nothing about the write. A record built without this
+	// answer cannot tell a queued switch from a write that never applied, and
+	// treats every newer publication as the answer - what a caller with no store
+	// to ask meant before there was a status to read.
+	turnInFlight?: () => boolean,
 ): ControlsSession {
 	let unread: Unread = { model: null, vision: null };
 	// The read count each setting's outcome was recorded at. An outcome says the
@@ -178,7 +186,7 @@ export function sessionFacts(
 		},
 		retirePublished: () => {
 			const started = readsStarted();
-			const kept: Setting[] = [];
+			const next: Unread = { ...unread };
 			let retired = false;
 			for (const setting of ["model", "vision"] as const) {
 				const outcome = unread[setting];
@@ -187,6 +195,7 @@ export function sessionFacts(
 				// and no projection to compare with; a publication is the whole of
 				// the answer there, as it always was for such a caller.
 				if (projected === undefined) {
+					next[setting] = null;
 					retired = true;
 					continue;
 				}
@@ -195,19 +204,27 @@ export function sessionFacts(
 				// projection names it: a pick the daemon accepted for the next turn
 				// leaves the projection naming the running model, and that report is
 				// correct and says nothing about the queued change. An unknown is
-				// established by any newer publication, which reports what the hub
-				// actually holds whichever way the lost write went.
-				const shown = projected(setting);
-				const answered =
-					recordedAt[setting] < started && (outcome.state === "unknown" || (shown !== null && shown === outcome.value));
-				if (answered) retired = true;
-				else if (unread[setting] !== null) kept.push(setting);
+				// established by a newer publication that can account for the write's
+				// fate: a vision write is never queued for a turn, so any newer read
+				// does; a model write sent during a turn may be queued for the next
+				// one, and a read taken while that turn runs reports the running model
+				// either way, so only a read that found the session between turns can
+				// answer it.
+				let answerable: boolean;
+				if (outcome.state === "unknown") {
+					answerable = setting !== "model" || turnInFlight === undefined || !turnInFlight();
+				} else {
+					const shown = projected(setting);
+					answerable = shown !== null && shown === outcome.value;
+				}
+				const answered = recordedAt[setting] < started && answerable;
+				if (answered) {
+					next[setting] = null;
+					retired = true;
+				}
 			}
 			if (!retired) return;
-			unread = {
-				model: kept.includes("model") ? unread.model : null,
-				vision: kept.includes("vision") ? unread.vision : null,
-			};
+			unread = next;
 			changed();
 		},
 		watch: (listener) => {
@@ -257,6 +274,11 @@ export class SessionControls {
 	private disposed = false;
 	// The record can change after this binding was built, so the session's
 	// record is a subscription rather than a value sampled in the constructor.
+	// It is established by the first listener rather than the constructor: the
+	// screen builds these controls in useMemo, and a render React discards
+	// never runs the cleanup effect that would dispose them, so a subscription
+	// taken there would outlive every use of the controller and keep its
+	// listener on the session until the entry was retired.
 	private unwatch: (() => void) | null = null;
 	// Counts catalog reads (a refresh or a load), so a refresh publishes only
 	// when no newer read has started.
@@ -286,20 +308,43 @@ export class SessionControls {
 		private session: ControlsSession = detachedSession(),
 	) {
 		this.state = { ...this.state, catalog, unread: session.unread() };
-		// A set this binding dispatched can settle after it is superseded, or
-		// before it was built: either way the record changes underneath it and
-		// the picker reading this snapshot has to hear about it.
-		this.unwatch = session.watch(() => {
-			if (!this.disposed) this.publish({ unread: session.unread() });
-		});
 	}
-	getSnapshot = () => this.state;
+	/** The controls' snapshot, with the session's record read through it. A set
+	 * this binding dispatched can settle after it is superseded, and a
+	 * replacement can be built while the write it did not send is still out, so
+	 * the record is a value that moves rather than one sampled once. Reading it
+	 * here keeps the answer true for a caller that never subscribed, such as
+	 * one asking whether a value may be trusted. The reference only changes
+	 * when the record does, so a render repeated on an unchanged record sees
+	 * the same snapshot. */
+	getSnapshot = () => {
+		const unread = this.session.unread();
+		if (unread !== this.state.unread) this.state = { ...this.state, unread };
+		return this.state;
+	};
 	subscribe = (listener: () => void) => {
 		this.listeners.add(listener);
+		if (this.listeners.size === 1) this.watchSession();
 		return () => {
-			this.listeners.delete(listener);
+			if (!this.listeners.delete(listener)) return;
+			if (this.listeners.size === 0) this.unwatchSession();
 		};
 	};
+	/** Tells the listeners about a record that changes while this binding is
+	 * subscribed, and agrees with one that moved before the first listener
+	 * arrived. */
+	private watchSession() {
+		if (this.unwatch !== null || this.disposed) return;
+		this.unwatch = this.session.watch(() => {
+			if (!this.disposed) this.publish({ unread: this.session.unread() });
+		});
+		const unread = this.session.unread();
+		if (unread !== this.state.unread) this.publish({ unread });
+	}
+	private unwatchSession() {
+		this.unwatch?.();
+		this.unwatch = null;
+	}
 	private publish(state: Partial<ControlsState>) {
 		this.state = { ...this.state, ...state };
 		for (const listener of this.listeners) listener();
@@ -350,8 +395,7 @@ export class SessionControls {
 	dispose() {
 		this.disposed = true;
 		this.listeners.clear();
-		this.unwatch?.();
-		this.unwatch = null;
+		this.unwatchSession();
 	}
 	rename(name: string) {
 		const trimmed = name.trim();
@@ -370,7 +414,12 @@ export class SessionControls {
 	resume() {
 		return this.run("resume", () => this.service.resume());
 	}
-	setReasoningEffort(effort: string) {
+	/** Sets the effort, or reports that there was nothing to send: a choice the
+	 * model does not offer, or the one already running, resolves with no
+	 * outcome. A caller that settles a sheet on this answer needs the three
+	 * apart - no attempt, refused, applied - so it does not read a no-op as a
+	 * refusal. */
+	setReasoningEffort(effort: string): Promise<boolean | void> {
 		const current = this.getReasoning();
 		if (!current) return Promise.resolve();
 		const levels = sessionEffortLevels(current.reasoningEffortLevels, current.supportsReasoning);

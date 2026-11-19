@@ -1,3 +1,10 @@
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { describe, expect, it, vi } from "vitest";
+import { WireError } from "@evener/appwire-client";
+import type { ModelListResponse, Thread } from "@evener/appwire-client";
+import { type ConversationClientLike, createConversationService } from "./conversation/services/conversation";
+import { SessionControls, sessionFacts, verifiedSetting } from "./sessionControls";
+
 // The hub's receipt is the acknowledgement; the read that follows is
 // catch-up. A read that fails must not turn an accepted action into an
 // unconfirmed one, or the reader is told to retry something already done.
@@ -14,7 +21,7 @@ it.each(["rename", "compact", "setReasoningEffort"] as const)(
 				throw new Error("The session read failed.");
 			},
 			() => {},
-			(scope) => (scope === "route" ? true : true),
+			() => true,
 			() => ({ supportsReasoning: true, reasoningEffortLevels: ["low", "high"], reasoningEffort: "low" }),
 			() => true,
 		);
@@ -30,12 +37,6 @@ it.each(["rename", "compact", "setReasoningEffort"] as const)(
 		expect(controls.getSnapshot()).toMatchObject({ pending: null, error: null });
 	},
 );
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { describe, expect, it, vi } from "vitest";
-import { WireError } from "@evener/appwire-client";
-import type { ModelListResponse, Thread } from "@evener/appwire-client";
-import { type ConversationClientLike, createConversationService } from "./conversation/services/conversation";
-import { SessionControls, sessionFacts, verifiedSetting } from "./sessionControls";
 
 async function boundary(actions: {
 	rename?: (name: string) => Promise<void>;
@@ -1332,6 +1333,66 @@ describe("conversation-owned session controls", () => {
 			vision: { state: "acknowledged", value: "one/vision" },
 		});
 	});
+	// The screen builds these controls in useMemo, and a render React discards
+	// never runs the cleanup effect that would dispose them. A session watch
+	// taken in the constructor would then outlive every use of the controller
+	// and keep its listener on the session until the entry was retired. It
+	// follows the listeners instead: the first one attaches it, the last one
+	// lets it go, and the record is read again when it attaches so a write that
+	// landed in between is not lost.
+	it("watches the session only while a consumer is subscribed", async () => {
+		const session = sessionFacts(() => true);
+		const controls = new SessionControls(
+			await boundary({ vision: async () => {} }),
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+			null,
+			session,
+		);
+		// Nobody is listening, so the record moving reaches nothing.
+		session.record("vision", { state: "unknown" });
+		expect(controls.getSnapshot().unread.vision).toEqual({ state: "unknown" });
+		let told = 0;
+		const unsubscribe = controls.subscribe(() => {
+			told += 1;
+		});
+		// The first listener reads the record as it stands rather than a copy
+		// sampled before the write.
+		expect(told).toBe(0);
+		session.record("vision", { state: "acknowledged", value: "off" });
+		expect(told).toBe(1);
+		expect(controls.getSnapshot().unread.vision).toEqual({ state: "acknowledged", value: "off" });
+		unsubscribe();
+		// The last listener leaving lets the watch go, so a settled write no
+		// longer reaches a controller nobody holds.
+		session.record("vision", null);
+		expect(told).toBe(1);
+		expect(controls.getSnapshot().unread.vision).toBeNull();
+		controls.dispose();
+	});
+	it("starts a listener from the record a write settled on before it subscribed", async () => {
+		const session = sessionFacts(() => true);
+		const controls = new SessionControls(
+			await boundary({ vision: async () => {} }),
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+			null,
+			session,
+		);
+		session.record("model", { state: "acknowledged", value: "two/next" });
+		const seen = vi.fn();
+		const unsubscribe = controls.subscribe(seen);
+		expect(seen).toHaveBeenCalledOnce();
+		expect(controls.getSnapshot().unread.model).toEqual({ state: "acknowledged", value: "two/next" });
+		unsubscribe();
+		controls.dispose();
+	});
 	// A write the hub never answered is not a write it refused, and it is not a
 	// value either. A request that times out while the phone is reconnecting can
 	// still reach the hub, and a cold set is applied inside the hub's own resume,
@@ -1485,6 +1546,65 @@ describe("conversation-owned session controls", () => {
 		// What the reader then sees: the Off row matches the projection, so a tap
 		// on it is a verified no-op and the picker closes without writing.
 		expect(verifiedSetting(session.unread(), "vision", "off")).toBe(true);
+	});
+	// A model pick sent while a turn runs is queued for the next one, and the
+	// daemon's projection then names the running model whether it took the pick
+	// or never saw it. A read taken during that turn therefore cannot say the
+	// lost write did not apply: retiring the doubt on it lets the reader tap the
+	// running model's row and close the picker while the queued switch is still
+	// waiting for the next turn. Only a read that found the session between
+	// turns can answer it.
+	it("keeps an unanswered model write that a read during a turn cannot answer", async () => {
+		let reads = 0;
+		let running = true;
+		const session = sessionFacts(
+			() => true,
+			() => reads,
+			() => "one/running",
+			() => running,
+		);
+		session.record("model", { state: "unknown" });
+		reads += 1;
+		session.retirePublished();
+		expect(session.unread().model).toEqual({ state: "unknown" });
+		expect(verifiedSetting(session.unread(), "model", "one/running")).toBe(false);
+		// The turn ends, and the read begun after it reports the session at rest:
+		// the queued switch has been applied by then or never reached the hub, so
+		// the projection is the answer again.
+		running = false;
+		reads += 1;
+		session.retirePublished();
+		expect(session.unread().model).toBeNull();
+	});
+	// A vision write is never queued for a turn, so a turn says nothing about
+	// it and a newer read answers it either way.
+	it("retires an unanswered vision write during a turn", async () => {
+		let reads = 0;
+		const session = sessionFacts(
+			() => true,
+			() => reads,
+			() => "off",
+			() => true,
+		);
+		session.record("vision", { state: "unknown" });
+		reads += 1;
+		session.retirePublished();
+		expect(session.unread().vision).toBeNull();
+	});
+	// A record built with no answer to give cannot tell a queued switch from a
+	// write that never applied, and keeps the answer a caller with no store has
+	// always had: the next publication.
+	it("retires an unanswered model write on the next read when it cannot know of a turn", async () => {
+		let reads = 0;
+		const session = sessionFacts(
+			() => true,
+			() => reads,
+			() => "one/running",
+		);
+		session.record("model", { state: "unknown" });
+		reads += 1;
+		session.retirePublished();
+		expect(session.unread().model).toBeNull();
 	});
 	// The other direction, and the reason the record counts reads rather than
 	// trusting the next publication: a read already out when the write was

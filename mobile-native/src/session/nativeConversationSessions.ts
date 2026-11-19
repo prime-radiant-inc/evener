@@ -194,6 +194,18 @@ class SessionEntry implements NativeConversationSession {
 				// the qualified identifier.
 				return session.model === session.modelProvider ? session.model : `${session.modelProvider}/${session.model}`;
 			},
+			// A pick sent during a turn is queued for the next one, and the
+			// daemon's projection then names the running model whether it took the
+			// pick or never saw it. Only a read that found the session between
+			// turns can say the write did not apply, so the record needs to know
+			// whether one is running. The canonical projection is where that fact
+			// lives: the store only publishes it while a read is accepted, so a
+			// stale display model never answers here.
+			() => {
+				const session = this.store.getState().canonicalSession();
+				if (session === null) return false;
+				return session.status.type === "active" || session.activeTurnId !== undefined;
+			},
 		);
 		const entry = this;
 		this.readActor = {

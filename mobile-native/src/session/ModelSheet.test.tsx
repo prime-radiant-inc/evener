@@ -26,7 +26,22 @@ import { Sheet } from "../sheet/Sheet";
 import { sheetKey } from "../sheet/sheetHosts";
 import { type ModelHost, ModelSheet, modelHosts } from "./ModelSheet";
 
-const navigation = vi.hoisted(() => ({ goBack: vi.fn(), navigate: vi.fn(), dispatch: vi.fn() }));
+const navigation = vi.hoisted(() => ({
+	goBack: vi.fn(),
+	navigate: vi.fn(),
+	dispatch: vi.fn(),
+	// The key the sheet's stack has on top. The sheet closes only while its own
+	// route still holds it, so a test that dismisses the picker and lets a newer
+	// sheet open over it moves this.
+	top: "model-sheet",
+	getState: () => ({
+		index: 1,
+		routes: [
+			{ key: "conversation", name: "Conversation" },
+			{ key: navigation.top, name: "ModelSheet" },
+		],
+	}),
+}));
 const viewport = vi.hoisted(() => ({ fontScale: 1, scrolls: [] as { y: number; animated: boolean }[] }));
 
 vi.mock("react-native", async () => {
@@ -53,6 +68,7 @@ vi.mock("@react-navigation/native", () => ({
 const palette = paletteFor("light");
 const HUB = "hub-1";
 const REF = "local:s1";
+const SHEET_ROUTE_KEY = "model-sheet";
 
 const CATALOG: ModelListResponse = {
 	data: [
@@ -152,7 +168,7 @@ function provide(session: MobileConversation, state: Partial<ControlsState> = {}
 
 function sheet(setting: "model" | "vision" = "model"): ReactTestRenderer {
 	const props = {
-		route: { key: "model-sheet", name: "ModelSheet", params: { hubId: HUB, ref: REF, setting } },
+		route: { key: SHEET_ROUTE_KEY, name: "ModelSheet", params: { hubId: HUB, ref: REF, setting } },
 		navigation,
 	} as unknown as NativeStackScreenProps<Routes, "ModelSheet">;
 	const tree = render(<ModelSheet {...props} />);
@@ -175,6 +191,7 @@ function listed(tree: ReactTestRenderer): string[] {
 beforeEach(() => {
 	navigation.goBack.mockReset();
 	navigation.navigate.mockReset();
+	navigation.top = SHEET_ROUTE_KEY;
 	viewport.fontScale = 1;
 	viewport.scrolls.length = 0;
 });
@@ -335,6 +352,77 @@ describe("choosing a model (spec 8.5)", () => {
 	it("shows why a change failed", () => {
 		provide(conversation(), { lastAction: "changeModel", error: "Could not confirm the action: refused" });
 		expect(renderedText(sheet())).toContain("Could not confirm the action: refused");
+	});
+
+	// A refusal shown for one action is the answer to that action, not to the
+	// next one. Choosing an effort after a refused model pick has to retire it:
+	// left in place it stays on screen when the effort change succeeds, and
+	// hides the new reason when that change fails.
+	it("retires a refused pick when an effort change starts", async () => {
+		const { controls } = provide(conversation());
+		controls.changeModel.mockImplementation(async () => false);
+		Object.assign(controls.getSnapshot(), { lastAction: "changeModel", error: "refused-model-sentinel" });
+		const tree = sheet();
+		act(() => pressable(tree, "Claude Haiku 5")?.props.onPress());
+		await settle();
+		expect(renderedText(tree)).toContain("refused-model-sentinel");
+		const effort = Promise.withResolvers<void>();
+		controls.setReasoningEffort.mockImplementation(async () => {
+			// The controls that start the attempt record it: the refusal the
+			// previous action left behind is no longer what they say.
+			Object.assign(controls.getSnapshot(), { lastAction: "setReasoningEffort", error: null });
+			await effort.promise;
+			return true;
+		});
+		act(() => pressable(tree, "Low")?.props.onPress());
+		// The attempt is the reader's, so the old refusal goes as it starts.
+		expect(renderedText(tree)).not.toContain("refused-model-sentinel");
+		effort.resolve();
+		await settle();
+		// A successful effort change leaves the sheet open, and it does not bring
+		// the retired refusal back.
+		expect(renderedText(tree)).not.toContain("refused-model-sentinel");
+		expect(navigation.goBack).not.toHaveBeenCalled();
+	});
+
+	it("reports a refused effort change through the binding that sent it", async () => {
+		const { controls } = provide(conversation());
+		const sent = Promise.withResolvers<void>();
+		controls.setReasoningEffort.mockImplementation(async () => {
+			await sent.promise;
+			Object.assign(controls.getSnapshot(), { lastAction: "setReasoningEffort", error: "refused-effort-sentinel" });
+			return false;
+		});
+		const tree = sheet();
+		act(() => pressable(tree, "Low")?.props.onPress());
+		sent.resolve();
+		await settle();
+		expect(renderedText(tree)).toContain("refused-effort-sentinel");
+		expect(navigation.goBack).not.toHaveBeenCalled();
+	});
+
+	// The reader can dismiss the picker while a pick is out, and a newer sheet
+	// can hold the top of the stack by the time the hub answers. The late
+	// success must not issue a back action then: it would pop that newer sheet,
+	// or the conversation under it. The session keeps the acknowledgement and
+	// the readback either way; only the dismissal follows the route.
+	it("does not pop a newer sheet when the pick settles after the picker closed", async () => {
+		const calls: string[] = [];
+		const answer = Promise.withResolvers<boolean>();
+		const controls = fakeControls(calls);
+		controls.changeModel.mockImplementation(async (provider, model) => {
+			calls.push(`changeModel:${provider}/${model}`);
+			return answer.promise;
+		});
+		provide(conversation(), {}, { controls: controls as unknown as SessionControls });
+		const tree = sheet();
+		act(() => pressable(tree, "Claude Haiku 5")?.props.onPress());
+		// The reader dismisses the picker, and another sheet opens over the
+		// conversation before the hub answers.
+		navigation.top = "notes-sheet";
+		answer.resolve(true);
+		await settle();
+		expect(navigation.goBack).not.toHaveBeenCalled();
 	});
 });
 

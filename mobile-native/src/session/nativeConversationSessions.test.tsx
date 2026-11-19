@@ -272,6 +272,39 @@ describe("two attachments", () => {
 		expect(a.entry.sessionFacts.unread().model).toEqual(queued);
 	});
 
+	// The same report is also what a read finds when a pick was sent during a
+	// turn whose reply was lost: the daemon names the running model whether it
+	// queued the pick or never saw it. Retiring there would let the next tap on
+	// the running model dismiss as "already set" and leave the queued switch to
+	// land unasked. Only a read that finds the session between turns can say the
+	// write did not apply.
+	it("keeps an unanswered model write that a read during a turn cannot answer", async () => {
+		let status: Thread["status"] = { type: "active" } as Thread["status"];
+		connected(
+			hub("ref-1", async () => {
+				const served = thread("ref-1");
+				(served as unknown as { modelProvider: string }).modelProvider = "anthropic/claude-sonnet-5";
+				served.status = status;
+				return { thread: served };
+			}),
+		);
+		const a = sessions.attach("hub-1", "ref-1");
+		await vi.waitFor(() => expect(a.entry.store.getState().status).toBe("open"));
+
+		a.entry.sessionFacts.record("model", { state: "unknown" });
+		await a.entry.store.getState().ensureLatest();
+		await a.entry.readSettled();
+		await settle();
+		expect(a.entry.store.getState().canonicalSession()?.status.type).toBe("active");
+		expect(a.entry.sessionFacts.unread().model).toEqual({ state: "unknown" });
+
+		status = { type: "idle" } as Thread["status"];
+		await a.entry.store.getState().ensureLatest();
+		await a.entry.readSettled();
+		await settle();
+		expect(a.entry.sessionFacts.unread().model).toBeNull();
+	});
+
 	// A rehydrate that supersedes a read already in flight starts after a write
 	// without the store ever leaving "reading". Counting entries into that
 	// state gives both reads one identity, so the read that started later -
