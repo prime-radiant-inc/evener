@@ -1072,15 +1072,58 @@ test("a reload rehydrates the instant a usage-limit wait resumes from the read's
   const resumesAt = Date.parse("2026-11-07T14:30:00Z");
   const thread = testThread({
     status: { type: "active" },
-    evener: { failure: { title: "Usage limit reached", resumesAt } },
+    evener: { failure: { title: "Usage limit reached", resumesAt, waitStartedAt: 1 } },
   });
 
   const reloaded = hydrateThread({ thread }, thread.evener.ref, 1000);
 
   expect(reloaded.quotaResumesAt).toBe(new Date(resumesAt).toISOString());
+  expect(reloaded.quotaWaitStartedAt).toBe(1);
   // The live retry state is ephemeral by design (the read carries none), which
   // is exactly why the instant cannot live on it.
   expect(reloaded.modelRetry).toBeUndefined();
+});
+
+// The anti-installation contract's read half: a daemon that predates the
+// stamp sends the failure summary with a resume instant and no stamp, and that
+// summary installs NOTHING on the pane's model — no deadline at hydrate, so a
+// cold reload shows no wait in the pane. The sidebar's row still shows the
+// wait from the owning root's roster sample, which is a different producer
+// this merge never touches. This is the documented limitation: an older
+// daemon shows no wait in the pane, period.
+test("an unstamped failure summary installs no deadline on hydrate", () => {
+  const resumesAt = Date.parse("2026-11-07T14:30:00Z");
+  const thread = testThread({
+    status: { type: "active" },
+    evener: { failure: { title: "Usage limit reached", resumesAt } },
+  });
+
+  const reloaded = hydrateThread({ thread }, thread.evener.ref, 1000);
+
+  expect(reloaded.quotaResumesAt).toBeUndefined();
+  expect(reloaded.quotaWaitStartedAt).toBeUndefined();
+  expect(reloaded.modelRetry).toBeUndefined();
+});
+
+// The same gate on the live merge: an unstamped read's deadline installs
+// nothing. A daemon that predates the stamp never stamps its own waits, so a
+// model holding a stamped wait cannot meet one of its reads (the wait's
+// producer and the read's producer are the same daemon); the shape to pin is
+// the install refusal itself — the merge leaves a wait-free model exactly as
+// it was, and a hold that predates the cut is unaffected.
+test("an unstamped read's deadline installs nothing through the merge", () => {
+  const resumesAt = Date.parse("2026-11-07T14:30:00Z");
+  const model = testHydrate({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } });
+  const legacyRead = testThread({
+    status: { type: "active" },
+    evener: { activeTurnId: "turn_1", failure: { title: "Usage limit reached", resumesAt: resumesAt + 3_600_000 } },
+  });
+  const after = applyReadResponse(model, { thread: legacyRead }, 2000);
+
+  // Nothing installed: no deadline, no stamp, no chip.
+  expect(after.quotaResumesAt).toBeUndefined();
+  expect(after.quotaWaitStartedAt).toBeUndefined();
+  expect(after.modelRetry).toBeUndefined();
 });
 
 // The wait ends at its reset OR early - a steer or a model switch retries at
@@ -1090,15 +1133,17 @@ test("a later read whose failure names no resume time clears the held instant", 
   const resumesAt = Date.parse("2026-11-07T14:30:00Z");
   const waiting = testThread({
     status: { type: "active" },
-    evener: { failure: { title: "Usage limit reached", resumesAt } },
+    evener: { failure: { title: "Usage limit reached", resumesAt, waitStartedAt: 1 } },
   });
   const held = hydrateThread({ thread: waiting }, waiting.evener.ref, 1000);
   expect(held.quotaResumesAt).toBeDefined();
+  expect(held.quotaWaitStartedAt).toBe(1);
 
   const resumed = testThread({ status: { type: "active" } });
   const after = applyReadResponse(held, { thread: resumed }, 2000);
 
   expect(after.quotaResumesAt).toBeUndefined();
+  expect(after.quotaWaitStartedAt).toBeUndefined();
 });
 
 // A read is the authority on which wait stands: the server refreshes the
@@ -1329,6 +1374,70 @@ test("a wait-free read keeps an ordinary provider retry", () => {
   const after = applyReadResponse(model, { thread: resumed }, 2000);
   expect(after.modelRetry?.errorClass).toBe("rate_limit");
   expect(after.modelRetry?.attempt).toBe(2);
+});
+
+// The wake's zero-delay chip is the retry's progress state, and it survives
+// the boundary as it always has — but it is also the last quota artifact on
+// the model once the wait is gone (the ended stamp records the wait's end).
+// A later authoritative read that names no wait retires that chip: the read
+// is the authority on presence, and a chip left over from an ended wait would
+// show stale retry progress with nothing behind it. An ordinary provider
+// retry's chip is not this reconciliation's to retire (the test above).
+test("a wait-free read retires the ended wait's leftover zero-delay chip", () => {
+  const deadline = Date.parse("2026-11-07T14:30:00Z");
+  let model = testHydrate({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } });
+  // The wait starts...
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 0,
+        delayMs: 21_600_000,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 0,
+        waitStartedAt: 4,
+        resumesAt: deadline,
+      },
+    },
+    1500,
+  );
+  expect(model.quotaWaitStartedAt).toBe(4);
+  // ...and its wake clears the hold, leaving the progress chip and the ended
+  // stamp.
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 0,
+        delayMs: 0,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 0,
+        waitStartedAt: 4,
+      },
+    },
+    1600,
+  );
+  expect(model.quotaResumesAt).toBeUndefined();
+  expect(model.modelRetry?.delayMs).toBe(0);
+  expect(model.quotaWaitEndedStamp).toBe(4);
+
+  // The authoritative wait-free read retires the leftover chip.
+  const resumed = testThread({ status: { type: "active" } });
+  const after = applyReadResponse(model, { thread: resumed }, 2000);
+  expect(after.modelRetry).toBeUndefined();
+  expect(after.quotaWaitEndedStamp).toBe(4);
 });
 
 // The daemon's retired-input list is the only durable evidence that a canceled

@@ -1,33 +1,32 @@
 #!/usr/bin/env bash
-# run-ui-tests.sh — the installed-app qualification journeys, run inside the
-# build runner's owned simulator lifetime.
+# run-ui-tests.sh — the installed-app qualification journeys, run against the
+# products the build job produced.
 #
 # WHY: build success proves the app compiled and its bundles carry the right
 # identity; it does not prove an installed app saves credentials, renders
 # native Markdown, keeps an unsent draft across a cold launch, or answers its
 # share scheme. Those journeys need the real app on the run's own simulator,
 # a real hub whose only provider is the scripted loopback fixture, and the
-# generated XCTest target from add-ui-test-target.rb. This runner owns all of
-# that except the simulator: the parent build runner stays the sole
-# simulator cleanup owner, and this script never touches simctl.
+# generated test-run configuration the build job wrote. This runner owns the
+# private hub, provider and connection state; the simulator is created and
+# deleted by the qualification binary that starts this child, never here.
 #
 # WHAT IT DOES: builds the runtime pair and the evener binary, starts the
 # fixture provider and an isolated hub under private XDG directories with
 # HOME inherited, reads the fixture-only connection data from a mode-0600
 # private file, injects it into the generated test-run configuration in
-# place, registers the UI test target, runs the three journeys against the
-# Release app the parent built on the parent's simulator, and validates the
-# xcresult: every intended test identity executed, none skipped, zero
-# failures. The private state never reaches the output directory or any
-# uploaded artifact, with two deliberate exceptions: this run's own daemon
-# logs, whose round diagnostics (steers, turn completions, the reason a round
-# stopped) are copied out before the state goes, and XCTest's own activity
-# record of the onboarding typing, which lands in the uploaded test log and
-# result bundle. Both carry only fixture-only data — the connection data
-# guards a throwaway loopback hub that dies with the run — and neither
-# carries a real credential.
+# place, runs the three journeys against the downloaded Release app, and
+# validates the xcresult: every intended test identity executed, none
+# skipped, zero failures. The private state never reaches the output
+# directory or any uploaded artifact, with two deliberate exceptions: this
+# run's own daemon logs, whose round diagnostics (steers, turn completions,
+# the reason a round stopped) are copied out before the state goes, and
+# XCTest's own activity record of the onboarding typing, which lands in the
+# uploaded test log and result bundle. Both carry only fixture-only data —
+# the connection data guards a throwaway loopback hub that dies with the run —
+# and neither carries a real credential.
 #
-# USAGE (from the build runner only, on macOS):
+# USAGE (from the qualification journeys runner only, on macOS):
 #   run-ui-tests.sh --build-identity ABSOLUTE_JSON --output ABSOLUTE_DIR
 #
 # END-USAGE
@@ -322,57 +321,20 @@ chmod 600 "$connection"
 hub_origin="$(jq -r .origin "$connection")"
 hub_token="$(jq -r .token "$connection")"
 
-# The red before the wiring: naming the intended tests against the project
-# as prebuild generated it must fail, because the qualification target does
-# not exist yet. An invocation that somehow succeeds here means the harness
-# is lying about what it runs, and the run must not continue.
-log "confirming the intended journeys fail without the qualification target"
-set +e
-run_xcodebuild "$output/absent-target-red.log" \
-	xcodebuild test \
-	-workspace mobile-native/ios/Evener.xcworkspace \
-	-scheme Evener \
-	-configuration Release \
-	-only-testing:EvenerQualificationUITests/testSavedHubMarkdownAndDraftRecovery \
-	-destination "id=$sim_udid" \
-	-derivedDataPath "$derived_data" \
-	ONLY_ACTIVE_ARCH=YES
-red_exit=$?
-set -e
-echo "$red_exit" >"$output/absent-target-red.exit"
-if [ "$red_exit" -eq 0 ]; then
-	echo "$SCRIPT_NAME: the intended journey ran before the qualification target existed; the harness cannot be trusted" >&2
-	exit 1
-fi
-
-log "registering the generated UI test target"
-(
-	cd mobile-native
-	bundle exec ruby ../scripts/native/ios/add-ui-test-target.rb ios/Evener.xcodeproj
-) >"$output/add-ui-target.log" 2>&1
-
-log "building the test bundles against the parent's products"
-run_xcodebuild "$output/build-for-testing.log" \
-	xcodebuild build-for-testing \
-	-workspace mobile-native/ios/Evener.xcworkspace \
-	-scheme Evener \
-	-configuration Release \
-	-destination "id=$sim_udid" \
-	-derivedDataPath "$derived_data" \
-	ONLY_ACTIVE_ARCH=YES \
-	-quiet
-
+# The build job proved the red side and compiled the test products against
+# this same layout; restoring it verbatim keeps the run configuration's
+# relative product paths resolvable.
 generated_run="$(find "$derived_data/Build/Products" -name '*.xctestrun' -print -quit)"
 if [ -z "$generated_run" ]; then
-	echo "build-for-testing produced no xctestrun under $derived_data" >&2
+	echo "$SCRIPT_NAME: the downloaded products carry no xctestrun under $derived_data" >&2
 	exit 1
 fi
 
 # The generated test-run configuration carries the connection data as the
 # test process environment. It is modified in place because its product paths
-# resolve relative to its own location; the file lives in the parent's
-# DerivedData, which the run owns, never reuses and never uploads, and the
-# mode is tightened so the fixture-only credentials stay unreadable.
+# resolve relative to its own location; the file lives in this run's restored
+# products tree, which the run owns and never uploads, and the mode is
+# tightened so the fixture-only credentials stay unreadable.
 private_run="$generated_run"
 ui_key="$(plutil -convert json -o - "$private_run" | jq -r 'keys[] | select(startswith("EvenerQualificationUITests"))')"
 if [ -z "$ui_key" ]; then
