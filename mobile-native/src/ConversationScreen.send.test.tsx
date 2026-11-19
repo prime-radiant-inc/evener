@@ -74,7 +74,7 @@ const harness = vi.hoisted(() => ({
 // suite isn't exercising sheet coverage or a pushed screen, unlike
 // ConversationScreen.sheets.test.tsx.
 const navigationState = vi.hoisted(() => ({
-	state: { index: 0, routes: [] as { key: string; name: string }[] },
+	state: { index: 0, routes: [] as { key: string; name: string; params?: object }[] },
 }));
 
 // Who alerted you most recently, and Next's word that it moved you on.
@@ -1159,7 +1159,7 @@ it("says why a typed /model was refused even when the resume replaced its route"
 	// The production replacement: the topmost route is swapped for the
 	// resolved identity, and the initiating route key leaves the stack.
 	const oldRoute = navigationState.state.routes[navigationState.state.index];
-	navigation.replace.mockImplementationOnce(((_name: string, params: object) => {
+	vi.mocked(navigation.replace).mockImplementationOnce(() => {
 		const next = {
 			key: `conversation-${resolvedRef}`,
 			name: "Conversation",
@@ -1169,7 +1169,7 @@ it("says why a typed /model was refused even when the resume replaced its route"
 			index: 0,
 			routes: [next, ...navigationState.state.routes.filter((route) => route.key !== oldRoute.key)],
 		};
-	}) as unknown as typeof navigation.replace);
+	});
 
 	await type(tree, "/model anthropic/claude-sonnet-5");
 	await press(tree, "Set model");
@@ -1190,8 +1190,102 @@ it("says why a typed /model was refused even when the resume replaced its route"
 	expect(actionErrors(tree)).toContain("refused");
 	expect(renderedText(tree)).toContain("sentinel-refusal-reason-93f1");
 	// A refused pick is not the phone's to take back: its text stands as the
-	// unconfirmed send it became, associated with the ref it was typed on.
+	// unconfirmed send it became, associated with the ref it was typed on:
+	// the original ref's draft document holds it, and the resolved identity's
+	// document - the one the replacement screen opens - holds nothing.
 	expect(ghostStates(tree)).toEqual(["unconfirmed"]);
+	expect(nativeDrafts().read({ hubId: "hub-1", sessionRef: "ref-cold-model-route" })).toMatchObject({
+		unconfirmed: "/model anthropic/claude-sonnet-5",
+	});
+	expect(nativeDrafts().read({ hubId: "hub-1", sessionRef: resolvedRef })).toMatchObject({
+		unconfirmed: null,
+	});
+});
+
+// The same medium on a subagent's screen: the route a subagent's composer
+// lives on is named "Subagent", and replaceForIdentity preserves that name,
+// so the replacement mounted for the resolved identity is a "Subagent" route
+// too. The gate must not read the route's name - the destination that
+// survived is still where the refusal is owed.
+it("says why a typed /model was refused even when the replaced route was a subagent's", async () => {
+	const served = thread("ref-cold-model-subagent", "idle");
+	(served as unknown as { status: { type: string } }).status = { type: "notLoaded" };
+	(served as unknown as { evener: Record<string, unknown> }).evener.capabilities = {
+		...CAPABILITIES,
+		changeModel: true,
+	};
+	const resolvedRef = "ref-cold-model-subagent-resolved";
+	const resolved = thread(resolvedRef, "idle");
+	(resolved as unknown as { evener: Record<string, unknown> }).evener.capabilities = {
+		...CAPABILITIES,
+		changeModel: true,
+		modelControlVersion: 1,
+	};
+	(resolved as unknown as { evener: Record<string, unknown> }).evener.modelControl = {
+		authority: { instanceId: "instance-subagent-resolved", bootGeneration: "test-boot" },
+		revision: 1,
+		active: {
+			modelProvider: "anthropic",
+			model: "claude-sonnet-5",
+			reasoningEffortLevels: [],
+			supportsReasoning: false,
+		},
+	};
+	(resolved as unknown as { evener: Record<string, unknown> }).evener.instanceId = "instance-subagent-resolved";
+	otherThreads.set(resolvedRef, resolved);
+	// An opaque sentinel the daemon passes through: what the test proves is the
+	// refusal's visibility, not the wording of one daemon's refusal.
+	modelSetRefusal.message = "sentinel-refusal-reason-93f1";
+	const { tree, hub } = await mount(served);
+	const resumeThread = hub.client.resumeThread.bind(hub.client);
+	hub.client.resumeThread = async (ref: string) => {
+		const response = await resumeThread(ref);
+		return { thread: resolved } as unknown as typeof response;
+	};
+	// The route this screen's composer lives on is a subagent's: same key,
+	// "Subagent" name, a coordinator in its params. The production replacement
+	// preserves the name, so the replacement route is a "Subagent" route too.
+	const coordinator = { hubId: "hub-1", ref: "ref-coordinator", title: "Coordinator" };
+	const route = navigationState.state.routes[navigationState.state.index];
+	navigationState.state = {
+		index: 0,
+		routes: [
+			{
+				key: route.key,
+				name: "Subagent",
+				params: { ...route.params, coordinator },
+			},
+		],
+	};
+	vi.mocked(navigation.replace).mockImplementationOnce(() => {
+		const next = {
+			key: `conversation-${resolvedRef}`,
+			name: "Subagent",
+			params: { hubId: "hub-1", ref: resolvedRef, title: "Subagent", coordinator },
+		} as unknown as typeof route;
+		navigationState.state = {
+			index: 0,
+			routes: [next],
+		};
+	});
+
+	await type(tree, "/model anthropic/claude-sonnet-5");
+	await press(tree, "Set model");
+
+	// The stack's topmost route is the replacement, still a "Subagent" route.
+	const topmost = navigationState.state.routes[navigationState.state.index];
+	expect(topmost.key).toBe(`conversation-${resolvedRef}`);
+	expect(topmost.name).toBe("Subagent");
+	// One resume behind the pick, and one refused mutation on the identity the
+	// resume resolved.
+	expect(hub.requests.filter((request) => request.method === "resumeThread")).toHaveLength(1);
+	const setCalls = hub.requests.filter((request) => request.method === "thread/model/set");
+	expect(setCalls).toHaveLength(1);
+	expect(setCalls[0]?.params).toMatchObject({ ref: resolvedRef });
+	// The refusal is visible on the composer the pick came from: the route's
+	// name is no reason to drop it.
+	expect(actionErrors(tree)).toContain("refused");
+	expect(renderedText(tree)).toContain("sentinel-refusal-reason-93f1");
 });
 
 // A typed /interrupt the phone couldn't keep says so, and stays to try again.

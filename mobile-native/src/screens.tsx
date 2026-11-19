@@ -747,6 +747,10 @@ function ConversationScreenView({
 	// closes. The draft does not follow: it belongs to the session that owns it.
 	const pendingIdentity = useRef<string | null>(route.params.pendingIdentity ?? null);
 	const currentIdentity = useRef(route.params.ref);
+	// The key of the route replaceForIdentity mounts in this one's place, so a
+	// command's answer can gate on the destination that survived the
+	// replacement (applyCommand's catch) rather than the key it removed.
+	const survivingRouteKey = useRef<string | null>(null);
 	useEffect(() => {
 		currentIdentity.current = route.params.ref;
 	}, [route.params.ref]);
@@ -767,6 +771,12 @@ function ConversationScreenView({
 				ref: to,
 				pendingIdentity: undefined,
 			});
+			// The topmost route is the replacement this just mounted: REPLACE
+			// swaps a route in place, and this screen was topmost when the
+			// replace was dispatched. The state store reads back synchronously,
+			// so the key is already there to record.
+			const state = navigation.getState();
+			survivingRouteKey.current = state.routes[state.index]?.key ?? null;
 		},
 		[navigation, route.key, route.params],
 	);
@@ -2144,10 +2154,15 @@ function ConversationScreenView({
 			// composer that sent it even though the binding moved on.
 			if (currentBinding()) await store.getState().rehydrate(service);
 		} catch (error) {
-			// The error renders while this screen is mounted, whatever became
-			// of the binding meanwhile: a resume that resolved a new identity
-			// must not swallow the command's answer.
-			if (!screenInFront(navigation, route.key)) return;
+			// The gate is the destination that survived the resume: a resume
+			// that resolved a new identity replaces this very route
+			// (replaceForIdentity), so the initiating key is gone from the
+			// stack by the time the daemon answers, and a gate on it would
+			// drop the refusal the composer is owed. The replacement recorded
+			// its own key; with no replacement behind the command, the
+			// destination is still the route the command was typed on. The
+			// draft keeps its association with that original ref either way.
+			if (!screenInFront(navigation, survivingRouteKey.current ?? route.key)) return;
 			setActionError(
 				error instanceof CommandArgumentError
 					? { reason: error instanceof CommandNotSentError ? "not-sent" : "refused", message: error.message }

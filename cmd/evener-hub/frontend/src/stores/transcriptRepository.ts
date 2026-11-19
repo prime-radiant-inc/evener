@@ -1282,8 +1282,7 @@ export class TranscriptRepository {
       // provider is not this model's announcement at all.
       this.#acceptBeforeCutDefaultTier(notification);
     } else if (notification.method === "thread/model/controlChanged") {
-      const held =
-        this.#model?.modelControlState.kind === "ready" ? this.#model.modelControlState.snapshot : undefined;
+      const held = this.#model?.modelControlState.kind === "ready" ? this.#model.modelControlState.snapshot : undefined;
       const incoming = notification.params.modelControl;
       // A frame with no snapshot cannot match a held authority, and reading
       // through it threw away an otherwise valid read.
