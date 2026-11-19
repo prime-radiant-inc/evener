@@ -325,7 +325,7 @@ func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
 				}
 			}
 		case ContentThinking, ContentRedThinking:
-			if t.protocol == registry.ProtocolOpenAIChat {
+			if t.protocol == registry.ProtocolOpenAIChat || t.namedChat {
 				chatReasoning.add(t, p)
 			} else {
 				chars += thinkingReplayChars(t, p)
@@ -548,6 +548,7 @@ type targetInfo struct {
 	reasoningOff       bool
 	chatThinkingAsText bool
 	chatUsesDetails    bool
+	namedChat          bool
 	// dropsToolResultImages marks a resolved row whose adapter leaves a
 	// tool-result image off the wire entirely (dropsToolResultImages).
 	dropsToolResultImages bool
@@ -664,7 +665,9 @@ func genericModelFamily(family string) bool {
 // targetFromNames builds the name-based view used by the exported entry points
 // that take a bare Request or message list.
 func targetFromNames(provider, model string) targetInfo {
-	return targetInfo{provider: provider, model: model, unsignedThinking: unsignedThinkingReplayedByName(provider, model)}
+	name := strings.ToLower(strings.TrimSpace(provider))
+	return targetInfo{provider: provider, model: model, unsignedThinking: unsignedThinkingReplayedByName(provider, model),
+		namedChat: name == registry.ProtocolOpenAIChat || name == "openai-compatible"}
 }
 
 // targetFromResolved builds the exact view from a resolved registry row. Names
@@ -1060,6 +1063,10 @@ func EstimatorTargetsEquivalent(a, b registry.Resolved) bool {
 		return false
 	}
 	if registry.BoolValue(a.Caps.ThinkingAsText) != registry.BoolValue(b.Caps.ThinkingAsText) {
+		return false
+	}
+	if a.Protocol == registry.ProtocolOpenAIChat && !a.Caps.ReasoningDisabled() && !registry.BoolValue(a.Caps.ThinkingAsText) &&
+		(registry.StringValue(a.Caps.ReasoningField) == "reasoning_details") != (registry.StringValue(b.Caps.ReasoningField) == "reasoning_details") {
 		return false
 	}
 	if registry.StringValue(a.Caps.ImageDetail) != registry.StringValue(b.Caps.ImageDetail) {

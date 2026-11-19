@@ -83,13 +83,16 @@ func TestCompleteMixedReasoningReplay(t *testing.T) {
 	if parts := resp.Message.Content; len(parts) != 1 || parts[0].Thinking == nil || parts[0].Thinking.Text != display {
 		t.Fatalf("settled reasoning = %+v", parts)
 	}
-	req := llm.Request{Messages: []llm.Message{resp.Message}}
+	req := llm.Request{Provider: registry.ProtocolOpenAIChat, Messages: []llm.Message{resp.Message}}
 	if count := llm.EstimateInputTokensForResolved(res, req).Tokens; count != len(scalar)/4 {
 		t.Errorf("scalar replay estimated %d tokens, want %d", count, len(scalar)/4)
 	}
-	readWire := func(req llm.Request) []json.RawMessage {
+	if count := llm.EstimateInputTokens(req).Tokens; count != len(scalar)/4 {
+		t.Errorf("named Chat estimated %d tokens, want %d", count, len(scalar)/4)
+	}
+	readWire := func(t *testing.T, req llm.Request, target registry.Resolved) []json.RawMessage {
 		t.Helper()
-		if _, err := p.Complete(t.Context(), req, res); err != nil {
+		if _, err := p.Complete(t.Context(), req, target); err != nil {
 			t.Fatal(err)
 		}
 		var wire struct{ Messages []json.RawMessage }
@@ -98,7 +101,7 @@ func TestCompleteMixedReasoningReplay(t *testing.T) {
 		}
 		return wire.Messages
 	}
-	first := readWire(req)
+	first := readWire(t, req, res)
 	if assistant := got.body["messages"].([]any)[0].(map[string]any); assistant["reasoning_text"] != scalar || assistant["reasoning_details"] != nil {
 		t.Errorf("first replay = %v, want native scalar reasoning_text", assistant)
 	}
@@ -111,7 +114,7 @@ func TestCompleteMixedReasoningReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Messages = append([]llm.Message{resumed}, userReq("next").Messages...)
-	if cold := readWire(req); !bytes.Equal(first[0], cold[0]) {
+	if cold := readWire(t, req, res); !bytes.Equal(first[0], cold[0]) {
 		t.Errorf("cold replay changed the prior assistant message: %s to %s", first[0], cold[0])
 	}
 	const encrypted = `[{"type":"reasoning.encrypted","id":"e1","data":"d1"}]`
@@ -123,6 +126,9 @@ func TestCompleteMixedReasoningReplay(t *testing.T) {
 			switch mode {
 			case "row details":
 				target.Caps.ReasoningField = new("reasoning_details")
+				if llm.EstimatorTargetsEquivalent(res, target) {
+					t.Error("a measurement for scalar Chat replay cannot be reused for an array")
+				}
 			case "option details":
 				replay.ProviderOptions = map[string]any{registry.ProtocolOpenAIChat: map[string]any{"reasoning": map[string]any{"effort": "high"}}}
 			case "thinking as text":
@@ -133,9 +139,7 @@ func TestCompleteMixedReasoningReplay(t *testing.T) {
 				})
 				wantChars += len(encrypted)
 			}
-			if _, err := p.Complete(t.Context(), replay, target); err != nil {
-				t.Fatal(err)
-			}
+			readWire(t, replay, target)
 			assistant := got.body["messages"].([]any)[0].(map[string]any)
 			wireText := assistant["content"]
 			details, _ := assistant["reasoning_details"].([]any)
