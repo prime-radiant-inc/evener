@@ -14,6 +14,83 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
+func settledBoth(t *testing.T, frames string) []*llm.Response {
+	body := []byte("data: " + strings.ReplaceAll(frames, "\n\n", "\n\ndata: ") + "\n\n")
+	_, live := responsesEventsFromSSE(t, string(body))
+	recorded, err := ExtractRecordedResponse(body, "gpt-5.5") // both paths must settle the same body
+	if err != nil {
+		t.Fatal(err)
+	}
+	return []*llm.Response{live, &recorded}
+}
+
+func summary(r *llm.Response) string {
+	var parts []string
+	for _, p := range r.Message.Content {
+		if p.ToolCall != nil {
+			parts = append(parts, "call")
+		} else if p.Thinking == nil {
+			parts = append(parts, p.Text+"|"+p.Phase)
+		} else if p.Thinking.ResponsesIncomplete {
+			parts = append(parts, "incomplete("+p.Thinking.Text+map[bool]string{true: "s", false: "c"}[len(p.Thinking.ResponsesSummaryParts) > 0]+")")
+		} else {
+			parts = append(parts, "think("+p.Thinking.Text+"+"+strings.Join(p.Thinking.Summary, "+")+")")
+		}
+	}
+	return r.Finish.Reason + " " + strings.Join(parts, " ")
+}
+
+// A terminal payload settles only what the stream settled, whatever its own output holds.
+func TestSettledResponsesFromEmptyTerminalOutput(t *testing.T) {
+	t.Parallel()
+	const nl, open, done = "\n\n", `{"type":"response.function_call_arguments.delta","call_id":"call_open","name":"probe","delta":"{}"}`, `{"type":"response.completed","response":{"id":"r","status":"completed","output":[]}}`
+
+	for want, frames := range map[string]string{
+		"content_filter ": `{"type":"response.output_text.delta","output_index":0,"delta":"filtered answer"}` + nl + `{"type":"response.incomplete","response":{"id":"r","status":"incomplete","incomplete_details":{"reason":"content_filter"},"output":[]}}`,
+		"length incomplete(truncated thoughts) Hello world|final_answer": `{"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"truncated thought"}` + nl + `{"type":"response.output_item.added","output_index":1,"item":{"type":"message","phase":"final_answer"}}` + nl + `{"type":"response.output_text.delta","output_index":1,"delta":"Hello"}` + nl + `{"type":"response.output_text.delta","output_index":1,"delta":" world"}` + nl + open + nl + `{"type":"response.output_item.done","output_index":1,"item":{"type":"message","content":[{"type":"output_text","text":""}]}}` + nl + `{"type":"response.incomplete","response":{"id":"r","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[]}}`,
+		"stop one|commentary two!|final_answer ten|commentary":           `{"type":"response.output_item.added","output_index":2,"item":{"type":"message","phase":"final_answer"}}` + nl + `{"type":"response.output_text.delta","output_index":2,"delta":"two"}` + nl + `{"type":"response.output_item.added","output_index":10,"item":{"type":"message","phase":"commentary"}}` + nl + `{"type":"response.output_text.delta","output_index":10,"delta":"ten"}` + nl + `{"type":"response.output_item.added","output_index":1,"item":{"type":"message","phase":"commentary"}}` + nl + `{"type":"response.output_text.delta","output_index":1,"delta":"one"}` + nl + `{"type":"response.output_text.delta","output_index":2,"delta":"!"}` + nl + done,
+		"length incomplete(cut offc)":                                    `{"type":"response.reasoning_text.delta","output_index":0,"delta":"cut off"}` + nl + `{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","status":"incomplete"}}` + nl + `{"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[]}}`,
+		"stop think(think+)":                                             `{"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"think"}` + nl + `{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","status":"completed","content":[{"type":"reasoning_text","text":"think"}]}}` + nl + done,
+		"stop think(+think) answer|":                                     open + nl + `{"type":"response.output_text.delta","output_index":0,"delta":"answer"}` + nl + `{"type":"response.completed","response":{"output":[{"type":"reasoning","summary":[{"type":"summary_text","text":"think"}]}]}}`,
+		"stop think(one\n\ntwo+one+two)":                                 `{"type":"response.reasoning_summary_part.added"}` + nl + `{"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"one"}` + nl + `{"type":"response.reasoning_summary_part.added"}` + nl + `{"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"two"}` + nl + `{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","status":"completed"}}` + nl + done,
+		"stop think(thought+think) answer|":                              `{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_1","status":"completed","content":[{"type":"reasoning_text","text":"thought"}],"summary":[{"type":"summary_text","text":"think"}]}}` + nl + `{"type":"response.output_text.delta","output_index":1,"delta":"answer"}` + nl + `{"type":"response.completed","response":{"output":[{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"think"}]}]}}`,
+		"stop first|commentary second|final_answer":                      `{"type":"response.output_item.added","item":{"type":"message","id":"m1","phase":"commentary"}}` + nl + `{"type":"response.output_item.added","item":{"type":"message","id":"m2","phase":"final_answer"}}` + nl + `{"type":"response.output_text.delta","item_id":"m1","delta":"first"}` + nl + `{"type":"response.output_text.delta","item_id":"m2","delta":"second"}` + nl + done,
+		"stop incomplete(thoughts) one|commentary two|final_answer":      `{"type":"response.reasoning_summary_part.added"}` + nl + `{"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"thought"}` + nl + `{"type":"response.output_item.added","output_index":5,"item":{"type":"message","phase":"final_answer"}}` + nl + `{"type":"response.output_text.delta","output_index":5,"delta":"two"}` + nl + `{"type":"response.output_item.added","output_index":1,"item":{"type":"message","phase":"commentary"}}` + nl + `{"type":"response.output_text.delta","output_index":1,"delta":"one"}` + nl + done,
+		"stop think(+eye) answer|":                                       `{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_1","status":"completed","encrypted_content":"opaque"}}` + nl + `{"type":"response.output_text.delta","output_index":1,"delta":"answer"}` + nl + `{"type":"response.completed","response":{"output":[{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"eye"}]}]}}`,
+		"tool_calls think(+think) call":                                  `{"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","call_id":"c1","name":"probe","arguments":"{}","status":"completed"}}` + nl + `{"type":"response.completed","response":{"status":"completed","output":[{"type":"reasoning","summary":[{"type":"summary_text","text":"think"}]}]}}`,
+		"stop ":                                                          `{"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"thought"}` + nl + `{"type":"response.output_text.delta","output_index":1,"delta":"omitted"}` + nl + `{"type":"response.completed","response":{"output":[{"type":"reasoning","summary":[{"type":"summary_text","text":"thought"}]},{"type":"function_call","call_id":"c","name":"probe","arguments":"{}","status":"incomplete"}]}}`,
+	} {
+		for _, r := range settledBoth(t, frames) {
+			if got := summary(r); got != want {
+				t.Errorf("settled = %q, want %q", got, want)
+			}
+		}
+	}
+}
+
+func TestRecoveredSummaryDisplaysAndReplaysAsSummary(t *testing.T) {
+	t.Parallel()
+	const frames = `{"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"thought"}` + "\n\n" + `{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_1","status":"completed"}}` + "\n\n" + `{"type":"response.output_text.delta","output_index":1,"delta":"answer"}` + "\n\n" + `{"type":"response.completed","response":{"output":[{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"thought"}]}]}}`
+	for _, r := range settledBoth(t, frames) {
+		_, items, _ := toResponsesInput([]llm.Message{r.Message}, "")
+		if got := jsonOf(t, items); r.ReasoningText() != "thought" || r.Text() != "answer" || !strings.Contains(got, `"summary_text"`) {
+			t.Fatalf("reasoning %q, replay %s: want the summary shown and replayed as summary", r.ReasoningText(), got)
+		}
+	}
+}
+
+// An incomplete summary stays display-only: it shows as thought text, never as replayed content.
+func TestIncompleteStreamedSummaryDoesNotReplay(t *testing.T) {
+	t.Parallel()
+	const frames = `{"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"half"}` + "\n\n" + `{"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[]}}`
+	for _, r := range settledBoth(t, frames) {
+		_, items, _ := toResponsesInput([]llm.Message{r.Message}, "")
+		if th := r.Message.Content[0].Thinking; !th.ResponsesIncomplete || len(th.ResponsesSummaryParts) == 0 || r.ReasoningText() != "half" || len(items) != 0 {
+			t.Fatalf("reasoning %+v, replay %s: want a display-only summary", th, jsonOf(t, items))
+		}
+	}
+}
+
 func TestIncompleteResponseKeepsUnsettledToolArgumentsOutOfFinalResponse(t *testing.T) {
 	t.Parallel()
 	const delta = `{"type":"response.function_call_arguments.delta","call_id":"call_unfinished","name":"probe","delta":"{}"}`

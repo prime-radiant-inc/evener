@@ -95,6 +95,9 @@ apply the same rule.
 An explicit incomplete response settles the output, including an empty result.
 If the adapter supplies no settled tool calls, streamed argument deltas remain partial.
 Explicitly unfinished function items remain available as raw provider events.
+An empty final output at `max_output_tokens` recovers the streamed text and
+reasoning, while `content_filter` leaves the answer empty because the provider
+retracted it.
 
 Responses replay preserves assistant item order and groups same-phase text across omitted parts.
 

@@ -188,9 +188,22 @@ func responsesReasoningParts(raw any) []llm.ResponsesReasoningPart {
 // response.output_item.done events in the same stream carried real content).
 // Shared by the live streaming decoder (decodeStream) and offline
 // recomputation so both apply the identical terminal-wins rule.
-func settleResponsesTerminalOutput(r *llm.Response, rawResp map[string]any, accumulatedOutput []any, accumulatedRawOutput []json.RawMessage) {
+func settleResponsesTerminalOutput(r *llm.Response, rawResp map[string]any, accumulatedOutput []any, accumulatedRawOutput []json.RawMessage, settledItems int) {
 	terminalOutput, _ := rawResp["output"].([]any)
+	inc, recovered := rawResp["status"] == "incomplete", false // an incomplete response settles no finish reason
+	r.OutputSettled = true                                     // settles here, so a draft call never reaches ToolCalls
+	stream := func() []llm.ContentPart {                       // a summary displays as thought text, its typed parts as summary
+		content := responseContentFromOutputItemsRaw(accumulatedOutput, nil, accumulatedRawOutput, false, rawResp["status"] == "incomplete")
+		for _, p := range content {
+			if th := p.Thinking; th != nil && th.Text == "" && len(th.Summary) > 0 {
+				th.Text = strings.Join(th.Summary, reasoningPartSeparator)
+			}
+		}
+		return content
+	}
 	switch {
+	case len(terminalOutput) == 0 && r.Finish.Reason == llm.FinishReasonContentFilter: // the answer was retracted
+		r.Message.Content, r.FallbackContent = nil, nil
 	case len(terminalOutput) == 0 && len(accumulatedOutput) > 0:
 		// The terminal payload carries no output even though the stream's
 		// output_item.done events carried real content (observed on
@@ -198,16 +211,20 @@ func settleResponsesTerminalOutput(r *llm.Response, rawResp map[string]any, accu
 		// stream actually sent, reusing fromResponses' item-walk.
 		// Accumulated call IDs can be derived from item IDs, so repeated
 		// values do not establish that the provider issued one call.
-		r.Message.Content = responseContentFromOutputItemsRaw(accumulatedOutput, nil, accumulatedRawOutput, false, rawResp["status"] == "incomplete")
-		retainFallbackReasoning(r)
-		if status, _ := rawResp["status"].(string); status != "incomplete" {
-			if len(r.ToolCalls()) > 0 {
-				r.Finish = llm.FinishReason{Reason: "tool_calls"}
-			} else {
-				r.Finish = llm.FinishReason{Reason: "stop"}
+		r.Message.Content, recovered = stream(), true
+	case !slices.ContainsFunc(terminalOutput, func(it any) bool { m, _ := it.(map[string]any); return m["type"] != "reasoning" }) && len(r.Message.Content) == 0 && len(r.FallbackContent) > 0 && r.Finish.Reason != llm.FinishReasonContentFilter:
+		streamContent := slices.DeleteFunc(stream(), func(p llm.ContentPart) bool { return p.Kind == llm.ContentToolCall && inc })
+		r.FallbackContent = slices.DeleteFunc(r.FallbackContent, func(f llm.ContentPart) bool {
+			i := slices.IndexFunc(streamContent, func(p llm.ContentPart) bool {
+				return p.Thinking != nil && f.Thinking != nil && f.Thinking.ID != "" && p.Thinking.ID == f.Thinking.ID
+			})
+			if i >= 0 && len(streamContent[i].Thinking.Summary) == 0 { // the terminal summary joins the streamed bytes
+				streamContent[i].Thinking.Summary, streamContent[i].Thinking.ResponsesSummaryParts = f.Thinking.Summary, f.Thinking.ResponsesSummaryParts
 			}
-		}
-	case len(terminalOutput) > 0 && len(accumulatedOutput) > 0:
+			return i >= 0
+		})
+		r.Message.Content, r.FallbackContent, recovered = llm.MergeFallbackReasoning(streamContent, r.FallbackContent), nil, true
+	case len(terminalOutput) > 0 && settledItems > 0:
 		// The stream accumulator holds only settled items.
 		count := len(terminalOutput)
 		for _, rawItem := range terminalOutput {
@@ -216,13 +233,16 @@ func settleResponsesTerminalOutput(r *llm.Response, rawResp map[string]any, accu
 				count--
 			}
 		}
-		if count == len(accumulatedOutput) {
+		if count == settledItems {
 			return
 		}
 		r.Warnings = append(r.Warnings, llm.Warning{
 			Code:    "responses_output_item_count_mismatch",
-			Message: fmt.Sprintf("terminal output items=%d differ from accumulated stream items=%d", count, len(accumulatedOutput)),
+			Message: fmt.Sprintf("terminal output items=%d differ from accumulated stream items=%d", count, settledItems),
 		})
+	}
+	if recovered && !inc {
+		r.Finish = llm.FinishReason{Reason: map[bool]string{true: "stop", false: "tool_calls"}[len(r.ToolCalls()) == 0]}
 	}
 }
 

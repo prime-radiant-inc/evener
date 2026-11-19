@@ -105,8 +105,14 @@ func extractResponsesFromSSE(body []byte, requestedModel string) (llm.Response, 
 		switch typ {
 		case "response.output_item.added":
 			if item, ok := payload["item"].(map[string]any); ok {
-				acc.HandleOutputItemAdded(item)
+				acc.HandleOutputItemAdded(payload, item)
 			}
+		case "response.output_text.delta":
+			acc.HandleDelta(payload, "message", false)
+		case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
+			acc.HandleDelta(payload, "reasoning", typ == "response.reasoning_summary_text.delta")
+		case "response.reasoning_summary_part.added", "response.reasoning_part.added":
+			acc.HandleReasoningPart(payload)
 		case "response.function_call_arguments.delta":
 			acc.HandleFunctionCallArgumentsDelta(payload, ev.Data)
 		case "response.function_call_arguments.done":
@@ -131,7 +137,8 @@ func extractResponsesFromSSE(body []byte, requestedModel string) (llm.Response, 
 	}
 
 	r := fromResponses(terminal, requestedModel, terminalRaw)
-	settleResponsesTerminalOutput(&r, terminal, acc.Output(), acc.RawOutput())
+	accumulated, accumulatedRaw, settled := acc.recoveredOutput()
+	settleResponsesTerminalOutput(&r, terminal, accumulated, accumulatedRaw, settled)
 	return r, nil
 }
 

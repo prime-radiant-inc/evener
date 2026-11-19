@@ -165,7 +165,7 @@ func (a *StreamAccumulator) Process(ev StreamEvent) {
 				cp = *a.buildResponseLocked()
 				copyResponseMetadata(&cp, ev.Response)
 				if len(ev.Response.FallbackContent) > 0 && (cp.Text() != "" || len(cp.ToolCalls()) != 0) {
-					cp.Message.Content = mergeFallbackReasoning(cp.Message.Content, ev.Response.FallbackContent)
+					cp.Message.Content = MergeFallbackReasoning(cp.Message.Content, ev.Response.FallbackContent)
 				}
 			}
 			a.final = &cp
@@ -182,8 +182,9 @@ func (a *StreamAccumulator) Process(ev StreamEvent) {
 	}
 }
 
-func mergeFallbackReasoning(content, reasoning []ContentPart) []ContentPart {
-	if content[0].Kind == ContentThinking {
+// MergeFallbackReasoning puts set-aside reasoning in front of content, dropping summaries it repeats.
+func MergeFallbackReasoning(content, reasoning []ContentPart) []ContentPart {
+	if len(content) > 0 && content[0].Kind == ContentThinking {
 		const separator = "\n\n"
 		streamed := separator + content[0].Thinking.Text + separator
 		reasoning = slices.Clone(reasoning)
