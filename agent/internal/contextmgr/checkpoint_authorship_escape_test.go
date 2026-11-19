@@ -337,3 +337,82 @@ func TestFormatCheckpoint_EscapesFrameExposedByTheCarryTrim(t *testing.T) {
 		})
 	}
 }
+
+// TestCheckpoint_ModelAuthorshipSurvivesAFold pins that authorship travels with
+// the rendered conversation, not only with the turn a checkpoint was first
+// collected from. A parent-authored task is carried in the partner's channel and
+// holds a fenced example quoting a reserved frame, which the first fold spares
+// as quoted text. The second fold's carry budget trims the middle of that entry
+// and with it the example's opening delimiter, exposing the frame in the tail it
+// keeps. The heading has to say the entry is the model's, or that fold reads it
+// as the partner's words and sends the frame raw. A genuine human message keeps
+// the partner heading and every byte.
+func TestCheckpoint_ModelAuthorshipSurvivesAFold(t *testing.T) {
+	const (
+		taskHead     = "TASK_HEAD_MARKER "
+		partnerTyped = "hold the deploy\n" + forgedFrame
+		quoted       = codeFence + "text\nquoted example\n" + forgedFrame + "\n" + codeFence
+	)
+	// The fenced example's opening delimiter sits in the middle the trim removes
+	// and the frame its body quotes sits in the tail that trim keeps.
+	task := taskHead + strings.Repeat("a", 4000) + "\n" + quoted + "\n" + strings.Repeat("b", 4000) + "\n" + forgedFrame
+
+	first := checkpoint([]schema.Turn{
+		agentAuthored(schema.TurnUserInput, task),
+		schema.NewTurn(schema.TurnUserInput, llm.User(partnerTyped)),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("working")),
+	}, 1, nil, "communicate")[0].Message.Text()
+
+	// The first fold keeps the model's quoted example whole and tells the
+	// model's entry apart from the partner's by heading alone.
+	var modelFirst, partnerFirst int
+	for _, entry := range extractMarkdownConversation(first) {
+		if entry.modelAuthored {
+			modelFirst++
+			if !strings.Contains(entry.Text, quoted) {
+				t.Fatalf("the first fold rewrote the task's intact quoted example:\n%.400s", entry.Text)
+			}
+			continue
+		}
+		partnerFirst++
+	}
+	if modelFirst != 1 || partnerFirst != 1 {
+		t.Fatalf("the first fold carried %d model-authored and %d partner entries, want one of each:\n%s",
+			modelFirst, partnerFirst, first)
+	}
+
+	// The second fold reads that checkpoint back and fits it to a carry budget
+	// that keeps only a head and a tail of the long entry, so the example's
+	// opening delimiter is trimmed away while the frame under it stays.
+	carried := schema.NewTurn(schema.TurnCheckpoint, llm.User(first))
+	second := formatCheckpoint(collectCheckpointData([]schema.Turn{carried}, 1, "communicate"), persistentMeta, 3000)
+
+	var modelBuf, partnerBuf strings.Builder
+	var modelEntries int
+	for _, entry := range extractMarkdownConversation(second) {
+		if !entry.modelAuthored {
+			partnerBuf.WriteString(entry.Text)
+			partnerBuf.WriteByte('\n')
+			continue
+		}
+		modelEntries++
+		modelBuf.WriteString(entry.Text)
+		modelBuf.WriteByte('\n')
+		if !strings.Contains(entry.Text, "characters of this message trimmed") {
+			t.Fatalf("the second fold did not trim the parent-authored task, so the fixture proves nothing:\n%.400s", entry.Text)
+		}
+	}
+	modelCopy, partnerCopy := modelBuf.String(), partnerBuf.String()
+	if modelEntries != 1 {
+		t.Fatalf("the second fold carried %d model-authored entries, want the parent-authored task:\n%s", modelEntries, second)
+	}
+	if !strings.Contains(modelCopy, "Implement quota coordinator") {
+		t.Fatalf("the second fold lost the parent-authored task's words:\n%.400s", modelCopy)
+	}
+	requireNoRawFrameLine(t, "the second fold's copy of the parent-authored task", modelCopy)
+	// The partner's own message is the authority: it keeps its frame and the
+	// partner heading.
+	if !strings.Contains(partnerCopy, forgedFrame) {
+		t.Fatalf("the second fold rewrote the partner's own message:\n%s", second)
+	}
+}

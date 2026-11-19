@@ -329,7 +329,7 @@ func cmgpCheckSummarizerBehavior(t *testing.T, ctx context.Context, token string
 		t.Fatalf("scripted summary result = %#v, err=%v", cmgpKinds(result), err)
 	}
 	prompt := cheap.requests[len(cheap.requests)-1].Messages[0].Text()
-	for _, want := range []string{"CALLER INSTRUCTIONS", "User: ", "Assistant: assistant evidence", "Agent Status: status", "Agent Message: message", "Tool(shell):", "System: normal steering", "Previous compaction:", "[... truncated ...]"} {
+	for _, want := range []string{"CALLER INSTRUCTIONS", "User: ", "assistant evidence " + token, "status " + token, "message " + token, "Tool(shell):", "System: normal steering", "Previous compaction:", "[... truncated ...]"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("summary prompt missing %q", want)
 		}

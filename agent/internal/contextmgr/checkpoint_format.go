@@ -43,7 +43,12 @@ func renderCheckpointConversation(entries []checkpointConversationEntry) string 
 		case "agent":
 			b.WriteString("### Agent\n\n")
 		default:
-			b.WriteString("### User\n\n")
+			// A partner-role entry another model wrote is headed as the model's,
+			// so a later fold reconstructs its authorship instead of reading it as
+			// the partner's words. The escape that runs on this copy already
+			// defuses its frames; the heading is what carries the fact past a
+			// fold, where the entry is read back from Markdown alone.
+			b.WriteString(modelAuthoredConversationHeading(entry) + "\n\n")
 		}
 		text := entry.Text
 		if entry.modelAuthored {
@@ -56,6 +61,16 @@ func renderCheckpointConversation(entries []checkpointConversationEntry) string 
 		writeMarkdownFence(&b, text)
 	}
 	return b.String()
+}
+
+// modelAuthoredConversationHeading is the block heading a partner-role entry
+// another model wrote is rendered under. The partner's own entries keep the
+// partner heading, so the two stay distinct across a fold.
+func modelAuthoredConversationHeading(entry checkpointConversationEntry) string {
+	if entry.modelAuthored {
+		return "### Parent Agent"
+	}
+	return "### User"
 }
 
 // trimBlockEdges drops a block's leading and trailing blank lines and reports
@@ -330,7 +345,11 @@ func extractMarkdownConversation(text string) []checkpointConversationEntry {
 	entries := make([]checkpointConversationEntry, 0, len(blocks))
 	for _, block := range blocks {
 		if role, ok := conversationRoleForHeading(block.Heading); ok {
-			entries = append(entries, checkpointConversationEntry{Role: role, Text: block.Text})
+			entries = append(entries, checkpointConversationEntry{
+				Role:          role,
+				Text:          block.Text,
+				modelAuthored: conversationHeadingIsModelAuthored(block.Heading),
+			})
 		}
 	}
 	return cleanCheckpointConversation(entries)
@@ -479,11 +498,13 @@ func fencedBlockSpans(section string) []fencedBlockSpan {
 	return spans
 }
 
-// agentConversationHeading reports whether a conversation block's heading names
-// the model as its author, in either spelling the renderer writes.
+// conversationRoleForHeading reports which channel a conversation block's
+// modelAuthoredConversationRole is the heading name a partner-role entry another
+// conversationRoleForHeading reports which channel a conversation block's
+// heading puts it in: the partner's, or the model's own reply.
 func conversationRoleForHeading(heading string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(heading)) {
-	case "user":
+	case "user", modelAuthoredConversationRole:
 		return "user", true
 	case "agent", "assistant":
 		return "agent", true
@@ -491,7 +512,24 @@ func conversationRoleForHeading(heading string) (string, bool) {
 	return "", false
 }
 
-func agentConversationHeading(heading string) bool {
+// modelAuthoredConversationRole is the heading name a partner-role entry another
+// model wrote is rendered under, in the lower-cased form the heading reader
+// compares against.
+const modelAuthoredConversationRole = "parent agent"
+
+// conversationHeadingIsModelAuthored reports whether a conversation block's
+// heading names another model as its author rather than the human partner.
+func conversationHeadingIsModelAuthored(heading string) bool {
+	return strings.ToLower(strings.TrimSpace(heading)) == modelAuthoredConversationRole
+}
+
+// modelAuthoredConversationBlock reports whether a conversation block's heading
+// names a model as its author: the model's own reply, or a partner-role entry
+// another model wrote.
+func modelAuthoredConversationBlock(heading string) bool {
+	if conversationHeadingIsModelAuthored(heading) {
+		return true
+	}
 	role, ok := conversationRoleForHeading(heading)
 	return ok && role == "agent"
 }
@@ -550,11 +588,12 @@ func ownedSectionEnd(text string, body, end int) int {
 //
 // A folded summary is the model's text throughout, and so is a working note, so
 // every block under those headings is escaped. Under the conversation heading
-// the author is per block: an agent or assistant block is the model's reply and
-// is escaped, while a user block is the partner's own message and keeps its
-// bytes even when it contains a heading-shaped line or a frame the partner
-// typed. A session-log checkpoint's log body is a rendering of the model's own
-// summarized actions and is escaped too.
+// the author is per block: an agent or assistant block is the model's reply, and
+// a parent-agent block is a partner-role entry another model wrote, so both are
+// escaped; a user block is the partner's own message and keeps its bytes even
+// when it contains a heading-shaped line or a frame the partner typed. A
+// session-log checkpoint's log body is a rendering of the model's own summarized
+// actions and is escaped too.
 //
 // Each complete block body is escaped as one string rather than line by line, so
 // fence state is read on the text the block actually holds: a frame whose
@@ -571,7 +610,7 @@ func EscapeRetainedCheckpoint(text string) (string, bool) {
 func retainedCheckpointModelSpans(text string) []textSpan {
 	spans := earlierSummarySpans(text)
 	spans = append(spans, collectFencedSpans(text, "## Working Notes", nil)...)
-	spans = append(spans, collectFencedSpans(text, checkpointConversationHeading, agentConversationHeading)...)
+	spans = append(spans, collectFencedSpans(text, checkpointConversationHeading, modelAuthoredConversationBlock)...)
 	return append(spans, sessionLogBodySpans(text)...)
 }
 
@@ -604,11 +643,21 @@ func earlierSummarySpans(text string) []textSpan {
 		// carried layout is compared byte for byte, so the block is read without
 		// that line break and the escape is spliced back under it.
 		carried := strings.TrimSuffix(block, "\n")
-		if !carriesPartnerMessages(carried) {
+		inner := summaryModelSpans(carried)
+		if len(inner) == 0 {
+			// The checkpoint's own budget can cut a summary before its carried
+			// messages and end marker, so it no longer recomposes as the layout
+			// it was written in. The opening and heading that still name its one
+			// body do: escaping those keeps the harness framing, which a whole
+			// block's escape would rewrite.
+			inner = summaryModelSpanByOpening(carried)
+		}
+		if len(inner) == 0 {
+			// A summary in an older layout is the model's text throughout.
 			spans = append(spans, textSpan{start: start, end: stop})
 			continue
 		}
-		for _, inner := range summaryModelSpans(carried) {
+		for _, inner := range inner {
 			spans = append(spans, textSpan{start: start + inner.start, end: start + inner.end})
 		}
 	}

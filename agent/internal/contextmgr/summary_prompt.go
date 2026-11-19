@@ -6,6 +6,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/mdfence"
+	"primeradiant.com/evener/agent/internal/sysmsg"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -199,6 +200,12 @@ func summarySectionHeading(line string) (section, rest string, ok bool) {
 // When instructions are empty the default prompt is used unchanged.
 func buildSummaryPrompt(historyText, instructions string) string {
 	if instructions != "" {
+		// The caller's instructions are model-authored: they arrive from the
+		// compact_context call. This prompt is a user-role message, so a
+		// reserved frame the instructions open is defused while the ordinary
+		// guidance around it and the harness's own instructions keep every
+		// byte.
+		instructions = sysmsg.EscapeModelAuthoredFrames(instructions)
 		return `You are performing a CONTEXT CHECKPOINT COMPACTION for an agent continuing its own work.
 
 ## CALLER INSTRUCTIONS (these take precedence over the general guidance, never over your human partner's permissions and holds)

@@ -217,19 +217,20 @@ func escapeModelAuthoredTurnFramesReporting(msg llm.Message, protocol string, pr
 	// replay the model's imitation verbatim, so the flag is not consulted here
 	// (#6493 review).
 	//
-	// The parts this function reads are the parts the adapter sends, by one
-	// shared rule: a whitespace-only unphased part the adapter drops must not
-	// split the scan's phase run, or a fence one part opens and the next closes
-	// reads as two blocks and the frame after the close is spared (#6493
-	// review).
+	// The parts this function reads are the parts the adapter sends, by that
+	// adapter's own inclusion rule: a part it drops must not split the scan's
+	// phase run, and a part it keeps must not be invisible to the scan. The
+	// rules differ per adapter — a whitespace-only part is a blank line to Chat
+	// Completions and nothing to Anthropic or Google — so the rule is answered
+	// for the protocol that will send the text.
 	//
-	// stripsEmptyContent is that rule's other half: a target whose own
-	// serializer drops empty text parts drops the message an empty
-	// phase-bearing part would open, so the scan must drop it too. Keeping the
-	// part where the serializer removes it reads a paragraph as ended and treats
-	// the indented frame under it as code, which is the one reading that spares
-	// a frame the wire exposes.
-	indexes, texts, textPhases, textBreaks := sysmsg.WireTextPartsFlushed(msg, stripsEmptyContent)
+	// stripsEmptyContent is that rule's other half on the one adapter that has
+	// an empty-content policy: a target whose serializer drops empty text parts
+	// drops the message an empty phase-bearing part would open, so the scan must
+	// drop it too. Keeping the part where the serializer removes it reads a
+	// paragraph as ended and treats the indented frame under it as code, which
+	// is the one reading that spares a frame the wire exposes.
+	indexes, texts, textPhases, textBreaks := sysmsg.WireTextPartsFlushedFor(protocol, msg, stripsEmptyContent)
 	var reasoningIndexes []int
 	var reasoningTexts []string
 	if promotesReasoning {

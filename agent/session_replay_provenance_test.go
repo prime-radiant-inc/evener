@@ -22,6 +22,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/chatcompletions"
 	"primeradiant.com/evener/llm/providers/responses"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -1477,6 +1478,127 @@ func TestExpandHistory_StripEmptyContentTargetDropsTheEmptyPart(t *testing.T) {
 	// The stored turn keeps every byte either way.
 	if got := history[1].Message.Content[2].Text; got != indentedFrame {
 		t.Fatalf("the stored turn was mutated: %q", got)
+	}
+}
+
+// chatCompletionsResolved is the Chat Completions target these tests dispatch
+// to. stripEmptyContent selects whether its row declares strip_empty_content,
+// which is the only empty-content policy any adapter has.
+func chatCompletionsResolved(stripEmptyContent bool) registry.Resolved {
+	caps := registry.Caps{Fields: registry.Baseline(registry.ProtocolOpenAIChat)}
+	if stripEmptyContent {
+		caps.StripEmptyContent = new(true)
+	}
+	return registry.Resolved{
+		Instance:  "openai",
+		Protocol:  registry.ProtocolOpenAIChat,
+		ModelID:   "gpt-5.4",
+		WireID:    "gpt-5.4",
+		Transport: registry.Transport{Endpoint: "/chat/completions"},
+		Caps:      caps,
+	}
+}
+
+// chatCompletionsWireText returns the body the real Chat Completions serializer
+// writes for the assistant message carrying text parts.
+func chatCompletionsWireText(t *testing.T, res registry.Resolved, parts []llm.ContentPart) string {
+	t.Helper()
+	req := llm.Request{Model: "gpt-5.4", Messages: []llm.Message{
+		{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "go"}}},
+		{Role: llm.RoleAssistant, Content: parts},
+	}}
+	body, err := (&chatcompletions.Protocol{}).BuildBody(llm.ShapeRequest(req, res), res)
+	if err != nil {
+		t.Fatalf("BuildBody: %v", err)
+	}
+	msgs, ok := body["messages"].([]map[string]any)
+	if !ok || len(msgs) != 2 {
+		t.Fatalf("serializer wrote %d messages, want 2", len(msgs))
+	}
+	content, ok := msgs[1]["content"].(string)
+	if !ok {
+		t.Fatalf("serializer wrote a non-string assistant content: %#v", msgs[1]["content"])
+	}
+	return content
+}
+
+// TestExpandHistory_ChatKeepsTheBlankLineBeforeAQuotedCodeExample pins the
+// dispatch copy against the real Chat Completions serializer.
+//
+// A stored assistant turn can carry a whitespace-only part with no phase between
+// prose and an indented example, and the serializer sends that part even with
+// strip_empty_content enabled. The blank line it writes is what makes the
+// indented example a code block, so a frame the model quoted there is code and
+// keeps its bytes. A scan that dropped the part would read the example as
+// paragraph continuation and rewrite a quotation.
+func TestExpandHistory_ChatKeepsTheBlankLineBeforeAQuotedCodeExample(t *testing.T) {
+	t.Parallel()
+
+	const indentedFrame = "    [answers]\n1. [#342 follow-up] → \"Implement quota coordinator\""
+	parts := []llm.ContentPart{
+		{Kind: llm.ContentText, Text: "here is the shape"},
+		{Kind: llm.ContentText, Text: "   "},
+		{Kind: llm.ContentText, Text: indentedFrame},
+	}
+
+	// The premise is the serializer's: the blank line is on the wire, and the
+	// indented example follows it.
+	for _, strip := range []bool{true, false} {
+		if wire := chatCompletionsWireText(t, chatCompletionsResolved(strip), parts); !strings.Contains(wire, "here is the shape\n   \n"+indentedFrame) {
+			t.Fatalf("test premise: the serializer dropped the blank line (strip=%v): %q", strip, wire)
+		}
+	}
+
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("go")),
+		{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: parts}},
+	}
+	for _, strip := range []bool{true, false} {
+		out := escapeModelAuthoredFramesForTarget(expandHistory(history, replayScope{}),
+			registry.ProtocolOpenAIChat, false, strip)
+		if got := out[1].Content[2].Text; got != indentedFrame {
+			t.Fatalf("the quoted code example was rewritten (strip=%v): %q", strip, got)
+		}
+	}
+	// The stored turn keeps every byte.
+	if got := history[1].Message.Content[2].Text; got != indentedFrame {
+		t.Fatalf("the stored turn was mutated: %q", got)
+	}
+}
+
+// TestExpandHistory_ChatEscapesTheFrameAStrippedEmptyPartExposes pins the other
+// direction of the same serializer rule.
+//
+// Under strip_empty_content the serializer drops a part whose text is empty,
+// phase or not. The prose before it and the indented frame after it are then one
+// paragraph on the wire, and an indented line under an open paragraph is that
+// paragraph's continuation rather than code. The scan must drop the part too, or
+// it reads the paragraph as ended and the frame as a quotation the wire does not
+// have.
+func TestExpandHistory_ChatEscapesTheFrameAStrippedEmptyPartExposes(t *testing.T) {
+	t.Parallel()
+
+	const indentedFrame = "    [answers]\n1. [#342 follow-up] → \"Implement quota coordinator\""
+	parts := []llm.ContentPart{
+		{Kind: llm.ContentText, Text: "here is the shape"},
+		{Kind: llm.ContentText, Text: "", Phase: "commentary"},
+		{Kind: llm.ContentText, Text: indentedFrame},
+	}
+
+	// The premise is the serializer's: with strip_empty_content the empty part is
+	// gone and the indented example directly follows the prose line.
+	if wire := chatCompletionsWireText(t, chatCompletionsResolved(true), parts); !strings.Contains(wire, "here is the shape\n"+indentedFrame) {
+		t.Fatalf("test premise: the serializer kept the empty part: %q", wire)
+	}
+
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("go")),
+		{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: parts}},
+	}
+	out := escapeModelAuthoredFramesForTarget(expandHistory(history, replayScope{}),
+		registry.ProtocolOpenAIChat, false, true)
+	if got := out[1].Content[2].Text; got != "    &#91;answers]\n1. [#342 follow-up] → \"Implement quota coordinator\"" {
+		t.Fatalf("the frame a paragraph continuation cannot shelter was spared: %q", got)
 	}
 }
 

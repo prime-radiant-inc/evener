@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/chatcompletions"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // TestEscapeModelAuthoredFrames pins the escape's documented behaviors by byte:
@@ -821,5 +823,123 @@ func TestWireTextPartsFlushedDropsStrippedEmptyText(t *testing.T) {
 		t.Fatalf("WireTextPartsFlushed kept indexes %v, want only the body", got)
 	} else if len(gotPhases) != 1 || gotPhases[0] != "final_answer" {
 		t.Fatalf("WireTextPartsFlushed lost the kept part's phase: %q", gotPhases)
+	}
+}
+
+// chatWireBody returns the assistant message body the Chat Completions
+// serializer writes for msg, read from the real builder.
+//
+// The inclusion rule the scan applies has to be the serializer's, not a reading
+// of it, so the tests below ask the serializer what the provider receives rather
+// than restating its filtering.
+func chatWireBody(t *testing.T, msg llm.Message, stripsEmptyContent bool) string {
+	t.Helper()
+	caps := registry.Caps{Fields: registry.Baseline(registry.ProtocolOpenAIChat)}
+	if stripsEmptyContent {
+		caps.StripEmptyContent = new(true)
+	}
+	res := registry.Resolved{
+		Instance:  "openai",
+		Protocol:  registry.ProtocolOpenAIChat,
+		ModelID:   "gpt-5.4",
+		WireID:    "gpt-5.4",
+		Transport: registry.Transport{Endpoint: "/chat/completions"},
+		Caps:      caps,
+	}
+	req := llm.Request{Model: "gpt-5.4", Messages: []llm.Message{msg}}
+	body, err := (&chatcompletions.Protocol{}).BuildBody(llm.ShapeRequest(req, res), res)
+	if err != nil {
+		t.Fatalf("BuildBody: %v", err)
+	}
+	msgs, ok := body["messages"].([]map[string]any)
+	if !ok || len(msgs) != 1 {
+		t.Fatalf("serializer wrote %d messages, want 1: %#v", len(msgs), body["messages"])
+	}
+	content, ok := msgs[0]["content"].(string)
+	if !ok {
+		t.Fatalf("serializer wrote a non-string content: %#v", msgs[0]["content"])
+	}
+	return content
+}
+
+// TestWireTextPartsKeepsTheBlankLineThatMakesACodeExample pins the scan's
+// inclusion rule against the real Chat Completions serializer.
+//
+// A stored turn can carry a whitespace-only unphased part between prose and an
+// indented example, and the serializer sends it as a blank line even under
+// strip_empty_content. That blank line is what lets the indented example be a
+// code block rather than paragraph continuation text, so the example's frame
+// keeps the bytes the model quoted it with. A scan that dropped the part would
+// read the example as continuation and rewrite the frame the wire sends as
+// code.
+func TestWireTextPartsKeepsTheBlankLineThatMakesACodeExample(t *testing.T) {
+	t.Parallel()
+
+	const frame = "    [answers]\n1. [#342 follow-up] → \"Implement quota coordinator\""
+	msg := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+		{Kind: llm.ContentText, Text: "here is the shape"},
+		{Kind: llm.ContentText, Text: "\n"},
+		{Kind: llm.ContentText, Text: frame},
+	}}
+
+	// The premise is the serializer's: the blank line really is on the wire.
+	if wire := chatWireBody(t, msg, true); !strings.Contains(wire, "here is the shape\n\n\n    [answers]") {
+		t.Fatalf("test premise: the serializer did not keep the blank line: %q", wire)
+	}
+
+	indexes, texts, phases, breaks := WireTextPartsFlushedFor(registry.ProtocolOpenAIChat, msg, true)
+	if len(indexes) != 3 {
+		t.Fatalf("WireTextPartsFlushedFor kept indexes %v, want the whitespace part too", indexes)
+	}
+	if got := EscapeFlushedText(texts, phases, breaks, registry.ProtocolOpenAIChat); len(got) != 1 || !strings.Contains(got[0], frame) {
+		t.Fatalf("the blank line did not shelter the quoted example: %q", got)
+	}
+}
+
+// TestCarriesWireTextForMatchesEachSerializer pins the inclusion rule per
+// adapter. The rules differ, and the difference is what decides whether a part
+// between two others is a blank line on that wire or nothing at all.
+//
+// Chat Completions keeps a whitespace-only part under either policy and drops
+// only an empty one under strip_empty_content. Responses keeps a part carrying a
+// phase and drops a whitespace-only one that carries none. Anthropic and Google
+// drop any part whose text is only whitespace, phase or not, because each emits
+// one block per part.
+func TestCarriesWireTextForMatchesEachSerializer(t *testing.T) {
+	t.Parallel()
+
+	spacer := llm.ContentPart{Kind: llm.ContentText, Text: "   "}
+	empty := llm.ContentPart{Kind: llm.ContentText}
+	phased := llm.ContentPart{Kind: llm.ContentText, Text: "   ", Phase: "commentary"}
+	body := llm.ContentPart{Kind: llm.ContentText, Text: "body"}
+	cases := []struct {
+		name     string
+		protocol string
+		part     llm.ContentPart
+		strips   bool
+		want     bool
+	}{
+		{"chat keeps a spacer", registry.ProtocolOpenAIChat, spacer, true, true},
+		{"chat keeps a spacer without the policy", registry.ProtocolOpenAIChat, spacer, false, true},
+		{"chat drops an empty part under the policy", registry.ProtocolOpenAIChat, empty, true, false},
+		{"chat keeps an empty part without the policy", registry.ProtocolOpenAIChat, empty, false, true},
+		{"chat keeps a phased spacer", registry.ProtocolOpenAIChat, phased, true, true},
+		{"responses drops a spacer", registry.ProtocolOpenAIResponses, spacer, false, false},
+		{"responses keeps a phased spacer", registry.ProtocolOpenAIResponses, phased, false, true},
+		{"anthropic drops a spacer", registry.ProtocolAnthropic, spacer, false, false},
+		{"anthropic drops a phased spacer", registry.ProtocolAnthropic, phased, false, false},
+		{"anthropic keeps text", registry.ProtocolAnthropic, body, false, true},
+		{"google drops a spacer", registry.ProtocolGoogle, spacer, false, false},
+		{"google drops a phased spacer", registry.ProtocolGoogle, phased, false, false},
+		{"google keeps text", registry.ProtocolGoogle, body, false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := CarriesWireTextFor(tc.protocol, tc.part, tc.strips); got != tc.want {
+				t.Fatalf("CarriesWireTextFor(%q, %+v, strip=%v) = %v, want %v",
+					tc.protocol, tc.part, tc.strips, got, tc.want)
+			}
+		})
 	}
 }

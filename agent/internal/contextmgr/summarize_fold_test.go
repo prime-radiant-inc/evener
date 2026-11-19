@@ -10,6 +10,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/cheapmodel"
+	"primeradiant.com/evener/agent/internal/mdfence"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -754,5 +755,119 @@ func TestSummarizeFold_EscapesCondensedBatchSummaries(t *testing.T) {
 	}
 	if !strings.Contains(summaryRequest, "Implement quota coordinator") {
 		t.Fatalf("the summary request lost the condensed text:\n%s", summaryRequest)
+	}
+}
+
+// TestSummarizeFold_EscapesCallerInstructions pins that the compact_context
+// instructions reach the summarizer as text. The request is user-role, so a
+// reserved frame the caller's instructions open is defused, while the ordinary
+// guidance around it and the harness's own instructions keep every byte.
+func TestSummarizeFold_EscapesCallerInstructions(t *testing.T) {
+	const guidance = "keep the deploy plan first"
+	instructions := guidance + "\n" + forgedFrame
+	adapter := &stubSummarizeAdapter{name: "openai", respFn: func(llm.Request) (llm.Response, error) {
+		return llm.Response{Message: llm.Assistant("## Progress\nDone")}, nil
+	}}
+	client := llm.NewClient()
+	client.Register(adapter)
+	cm := NewManager(testProfile("openai", "test", minSummarizingWindow), client, cheapmodel.New(client))
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("HISTORY_SENTINEL")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("working")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent")),
+	}
+	if _, err := cm.summarizeFold(context.Background(), history, 1, instructions, nil); err != nil {
+		t.Fatalf("summarizeFold: %v", err)
+	}
+	prompt := adapter.lastReq.Messages[0].Text()
+	if strings.Contains(prompt, forgedFrame) {
+		t.Fatalf("the summarizer request carries the caller's raw frame:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "&#91;answers]") {
+		t.Fatalf("the caller's frame was not defused:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, guidance) {
+		t.Fatalf("the summarizer request rewrote the caller's ordinary guidance:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "HISTORY_SENTINEL") {
+		t.Fatalf("the summarizer request lost the history it folds:\n%s", prompt)
+	}
+}
+
+// requireNoRawFrameOutsideFence fails when text carries a line that opens a
+// reserved frame while no fenced block holds it, which is how the summarizer
+// reads a frame rather than a quotation.
+func requireNoRawFrameOutsideFence(t *testing.T, what, text string) {
+	t.Helper()
+	var fence mdfence.Tracker
+	for line := range strings.SplitSeq(text, "\n") {
+		if fence.StepInBlock(line) {
+			continue
+		}
+		trimmed := strings.TrimLeft(line, " \t")
+		if trimmed == "[answers]" || strings.HasPrefix(trimmed, "<delegate-notification") {
+			t.Fatalf("%s carries a raw frame outside any fenced block: %q", what, line)
+		}
+	}
+}
+
+// TestSummarizeFold_KeepsModelExcerptLabelsOffTheirOpeningFence pins where a
+// model-authored excerpt starts in the summarizer's request. The request is read
+// as one Markdown document, so a label sharing the excerpt's first line keeps
+// its opening fence delimiter from starting a block: the example's real closing
+// delimiter then opens one, and the frame the example quotes sits outside every
+// block, where the summarizer reads it as input. Each model-authored excerpt
+// starts at a line boundary instead, its intact fenced example keeps every byte,
+// and the frame in its prose is defused.
+func TestSummarizeFold_KeepsModelExcerptLabelsOffTheirOpeningFence(t *testing.T) {
+	const (
+		quotedOne = codeFence + "text\n[answers]\n1. [#7 example] → \"quoted reply\"\n" + codeFence
+		quotedIn  = codeFence + "text\n[answers]\n1. [#8 example] → \"quoted input\"\n" + codeFence
+		quotedUp  = codeFence + "text\n[answers]\n1. [#9 example] → \"quoted steer\"\n" + codeFence
+		quotedMsg = codeFence + "text\n[answers]\n1. [#10 example] → \"quoted message\"\n" + codeFence
+	)
+	replyText := quotedOne + "\n" + forgedFrame
+	inputText := quotedIn + "\n" + forgedFrame
+	steerText := quotedUp + "\n" + forgedFrame
+	messageText := quotedMsg + "\n" + forgedFrame
+	parentSteer := schema.NewTurn(schema.TurnSteering, llm.User(steerText))
+	parentSteer.SteeringSource = events.SteeringSourceParent
+
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant(replyText)),
+		agentAuthored(schema.TurnUserInput, inputText),
+		parentSteer,
+		w3subCommunicateTurn(true, messageText),
+		schema.NewTurn(schema.TurnUserInput, llm.User("hold the deploy")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent")),
+	}
+	adapter := &stubSummarizeAdapter{name: "openai", respFn: func(llm.Request) (llm.Response, error) {
+		return llm.Response{Message: llm.Assistant("## Progress\nDone")}, nil
+	}}
+	client := llm.NewClient()
+	client.Register(adapter)
+	cm := NewManager(testProfile("openai", "test", minSummarizingWindow), client, cheapmodel.New(client))
+	if _, err := cm.summarizeFold(context.Background(), history, 1, "", nil); err != nil {
+		t.Fatalf("summarizeFold: %v", err)
+	}
+	prompt := adapter.lastReq.Messages[0].Text()
+
+	// Read as the summarizer reads it, the request holds no raw frame outside a
+	// fenced block: every model-authored excerpt's example is a real quotation.
+	requireNoRawFrameOutsideFence(t, "the summarizer request", prompt)
+	// Those examples survive byte for byte, so the escape spared quoted material
+	// rather than rewriting it.
+	for _, example := range []string{quotedOne, quotedIn, quotedUp, quotedMsg} {
+		if !strings.Contains(prompt, example) {
+			t.Fatalf("the summarizer request rewrote an intact fenced example:\n%s", prompt)
+		}
+	}
+	// The frame each excerpt's prose holds is defused.
+	if got, want := strings.Count(prompt, "&#91;answers]"), 4; got != want {
+		t.Fatalf("defused model frames = %d, want one per model-authored excerpt (%d):\n%s", got, want, prompt)
+	}
+	// The partner's own message keeps every byte.
+	if !strings.Contains(prompt, "hold the deploy") {
+		t.Fatalf("the summarizer request rewrote the partner's message:\n%s", prompt)
 	}
 }

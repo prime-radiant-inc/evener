@@ -63,29 +63,18 @@ func EscapePartsIndividually(texts []string) []string {
 	return out
 }
 
-// CarriesWireText reports whether a text part reaches the provider as message
-// text. It is the adapters' inclusion rule, and the frame scan must use it
-// too: a boundary the scan cannot see is a message the scan cannot escape, and
-// the two would then disagree about where a fence ends (#6493 review).
+// CarriesWireText reports whether a text part reaches a reader that has no
+// dispatch target as message text: the reading the transcript itself supports.
 //
-// An empty part still counts when it carries a Phase, because the Responses
-// adapter emits one message per phase and an empty phase-bearing part is a
-// message of its own. A whitespace-only part with no phase opens no message,
-// so it cannot hide one either. The test is TrimSpace, not emptiness: the
-// Responses adapter drops a part whose text is only whitespace
-// (responses/input.go's `strings.TrimSpace(p.Text) == "" && p.Phase == ""`),
-// so a scan that kept such a part would split a phase run the adapter joins —
-// resetting fence state where the adapter carries it across, and sparing the
-// frame after the next delimiter (#6493 review).
+// A caller that knows which adapter will send the message must use
+// CarriesWireTextFor, whose answer is that adapter's own inclusion rule. The
+// two differ, and the difference decides whether a part between two others
+// separates them on the wire.
 //
-// stripsEmptyContent is the target's own policy: a Chat Completions row with
-// strip_empty_content drops every part whose text is empty, phase or not
-// (chatcompletions/messages.go). That removes the message an empty
-// phase-bearing part would otherwise open, so the parts around it are one
-// message on that wire and the scan must read them that way. A scan that kept
-// the part would start a block where the adapter keeps a paragraph open, and
-// the frame under it — a paragraph continuation to the adapter — would be
-// spared as code.
+// An empty part with no phase reaches no reader. A part holding only whitespace
+// reaches one only by carrying a phase, because a phase-bearing part is a
+// message of its own in the transcript; a whitespace-only part with no phase
+// opens no message, so it cannot hide one either.
 func CarriesWireText(p llm.ContentPart, stripsEmptyContent bool) bool {
 	if p.Kind != llm.ContentText {
 		return false
@@ -94,6 +83,44 @@ func CarriesWireText(p llm.ContentPart, stripsEmptyContent bool) bool {
 		return false
 	}
 	return strings.TrimSpace(p.Text) != "" || p.Phase != ""
+}
+
+// CarriesWireTextFor reports whether a text part reaches the provider as
+// message text on the given protocol's wire. It is that adapter's inclusion
+// rule, and the frame scan must use it too: a part the scan cannot see is a
+// blank line it cannot place, and the two would then disagree about where a
+// paragraph stops and a code block begins.
+//
+// Each adapter drops parts by its own test, and the tests are not the same:
+//
+//   - Chat Completions drops a part only when its text is empty, and only under
+//     strip_empty_content (chatcompletions/messages.go). A part holding spaces
+//     or a newline survives either policy and reaches the wire as a blank line.
+//   - Responses drops a part whose text is only whitespace when it carries no
+//     phase (responses/input.go), and keeps it when it does, because that
+//     adapter emits one message per phase.
+//   - Anthropic and Google drop any part whose text is only whitespace, phase
+//     or not (anthropic/request.go, google/request.go): each emits one block per
+//     part, and a blank block carries nothing.
+//
+// A scan that applied Chat Completions' empty-only rule to a whitespace-only
+// part would join the prose above it to the text below and read the indented
+// frame under them as that paragraph's continuation, rewriting a quoted example
+// the dispatched blank line had already made code.
+//
+// stripsEmptyContent is the dispatch target's own policy, and only Chat
+// Completions has one; it is ignored for the other adapters, none of which
+// drops a part for being empty.
+func CarriesWireTextFor(protocol string, p llm.ContentPart, stripsEmptyContent bool) bool {
+	switch protocol {
+	case "openai-chat":
+		return p.Kind == llm.ContentText && (!stripsEmptyContent || p.Text != "")
+	case "anthropic", "google":
+		return p.Kind == llm.ContentText && strings.TrimSpace(p.Text) != ""
+	}
+	// Responses, and any protocol with no rule here, reaches the wire by the
+	// transcript's own reading.
+	return CarriesWireText(p, stripsEmptyContent)
 }
 
 // FlushesTextRun reports whether p ends the assistant message the Responses
@@ -111,34 +138,55 @@ func flushesTextRun(p llm.ContentPart) bool {
 	return p.Kind == llm.ContentToolCall && p.ToolCall != nil
 }
 
-// WireTextPartsFlushed returns an assistant message's text parts as the escape
-// consumes them: the index, text and phase of every part CarriesWireText keeps,
-// in stored order, and per kept part whether the adapter begins a new message
-// there.
+// WireTextPartsFlushed returns an assistant message's text parts as a reader
+// with no dispatch target consumes them: CarriesWireText's answer, which is the
+// reading the transcript itself supports.
+//
+// A caller that knows the adapter must use WireTextPartsFlushedFor instead. The
+// two differ on parts holding only whitespace, and that difference decides
+// whether the parts around such a part are one paragraph or two.
+func WireTextPartsFlushed(msg llm.Message, stripsEmptyContent bool) (indexes []int, texts, phases []string, breaks []bool) {
+	return wireTextPartsFlushed(msg, func(p llm.ContentPart) bool {
+		return CarriesWireText(p, stripsEmptyContent)
+	})
+}
+
+// WireTextPartsFlushedFor returns an assistant message's text parts as the
+// escape consumes them for the given protocol's wire: the index, text and phase
+// of every part that protocol's serializer keeps, in stored order, and per kept
+// part whether the adapter begins a new message there.
 //
 // It exists so a caller cannot filter with one rule and segment with another.
 // Dropping a part is what makes the surrounding parts one message to the
 // adapter, so the drop and the segmentation have to be the same decision; two
 // callers each writing their own loop is how the scan and the wire drifted
-// apart (#6493 review).
+// apart.
 //
-// breaks[i] is true when a part FlushesTextRun reports intervenes between kept
+// breaks[i] is true when a part flushesTextRun reports intervenes between kept
 // part i-1 and kept part i. A break is the adapter's message boundary as much
 // as a Phase change is, and a scan that joined across it would read two bodies
 // as one document: the second body's own delimiters would close the first
 // body's fence, and a frame the model quoted inside them would be escaped.
 //
-// stripsEmptyContent is the dispatch target's empty-content policy, applied the
-// same way CarriesWireText applies it: a target that drops empty text parts
-// must not have its own boundary invented by the scan.
-func WireTextPartsFlushed(msg llm.Message, stripsEmptyContent bool) (indexes []int, texts, phases []string, breaks []bool) {
+// stripsEmptyContent is the dispatch target's own empty-content policy, applied
+// through CarriesWireTextFor: a target that drops empty text parts must not have
+// its own boundary invented by the scan.
+func WireTextPartsFlushedFor(protocol string, msg llm.Message, stripsEmptyContent bool) (indexes []int, texts, phases []string, breaks []bool) {
+	return wireTextPartsFlushed(msg, func(p llm.ContentPart) bool {
+		return CarriesWireTextFor(protocol, p, stripsEmptyContent)
+	})
+}
+
+// wireTextPartsFlushed is the one scan both entry points run, over whichever
+// inclusion rule the caller resolved.
+func wireTextPartsFlushed(msg llm.Message, carries func(llm.ContentPart) bool) (indexes []int, texts, phases []string, breaks []bool) {
 	flushed := false
 	for i, p := range msg.Content {
 		if flushesTextRun(p) {
 			flushed = true
 			continue
 		}
-		if !CarriesWireText(p, stripsEmptyContent) {
+		if !carries(p) {
 			continue
 		}
 		indexes = append(indexes, i)
