@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/internal/sysmsg"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -79,97 +80,55 @@ func replaceMessageText(msg llm.Message, text string) llm.Message {
 	return out
 }
 
-// checkpointAgentHeading and checkpointWorkingNotesHeading are the section
-// markers a deterministic checkpoint writes around text the MODEL authored: an
-// agent reply and the extracted working notes. Everything under either belongs
-// to the model; the headings are the format's, so the walk below reads them.
-const (
-	checkpointAgentHeading        = "### Agent"
-	checkpointWorkingNotesHeading = "## Working Notes"
-	checkpointConversationHeading = "## Conversation"
-)
-
-// escapeRetainedCheckpointBody escapes the model-authored sections of a
-// deterministic checkpoint in the model-facing copy.
-//
-// A session restored from a pre-upgrade checkpoint sends that checkpoint as
-// stored: the escape runs when a fold EXTRACTS a checkpoint's entries, and a
-// retained one is not extracted, only replayed. So a checkpoint written before
-// the capture escape existed puts its raw working notes and raw agent replies
-// into a user-role message on the very first request after the upgrade
-// (#6493 review).
-//
-// The sections are read by their own headings rather than by escaping the whole
-// body, because the partner's entries under "### User" are the authority and
-// must keep their bytes. A checkpoint whose shape this does not recognize is
-// returned unchanged: guessing at an unknown format would rewrite text the
-// escape has no business rewriting.
-func escapeRetainedCheckpointBody(msg llm.Message) llm.Message {
-	rendered := msg.Text()
-	if !strings.Contains(rendered, checkpointWorkingNotesHeading) &&
-		!strings.Contains(rendered, checkpointAgentHeading) {
-		return msg
-	}
-	escaped, changed := escapeCheckpointSections(rendered)
+func escapeMessageText(msg llm.Message, escape func(string) (string, bool)) llm.Message {
+	escaped, changed := escape(msg.Text())
 	if !changed {
 		return msg
 	}
 	return replaceMessageText(msg, escaped)
 }
 
-// escapeCheckpointSections escapes the body of every section whose heading
-// marks model-authored text, and reports whether anything changed.
+// escapeRetainedCheckpointBody escapes the model-authored bodies of a
+// deterministic checkpoint in the model-facing copy.
 //
-// A section runs to the next heading at the same or a shallower level, so the
-// walk tracks the level it is inside: "## Working Notes" holds "###" blocks and
-// ends at the next "##". A "### Agent" block ends at the next heading of any
-// level, because the conversation section heads every entry that way.
-func escapeCheckpointSections(text string) (string, bool) {
-	var b strings.Builder
-	b.Grow(len(text))
-	var inAgent, inNotes bool
-	changed := false
-	for line := range strings.Lines(text) {
-		content := strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
-		level, heading := checkpointHeading(content)
-		if level > 0 {
-			switch {
-			case level == 2 && heading == strings.TrimPrefix(checkpointWorkingNotesHeading, "## "):
-				inNotes, inAgent = true, false
-			case level == 2 && heading == strings.TrimPrefix(checkpointConversationHeading, "## "):
-				inNotes, inAgent = false, false
-			case level == 2:
-				inNotes = false
-			case level == 3 && heading == strings.TrimPrefix(checkpointAgentHeading, "### "):
-				inAgent = true
-			case level == 3:
-				inAgent = false
-			}
-		}
-		if (inAgent || inNotes) && level == 0 {
-			if escaped := sysmsg.EscapeModelAuthoredFrames(content); escaped != content {
-				b.WriteString(escaped)
-				b.WriteString(line[len(content):])
-				changed = true
-				continue
-			}
-		}
-		b.WriteString(line)
-	}
-	return b.String(), changed
+// A checkpoint is replayed as stored rather than extracted, so one written
+// before the capture escape existed would otherwise hand the model its own raw
+// working notes and agent replies inside a user-role message. The bodies are
+// read by the same reader that captures them, so the two cannot disagree about
+// where a fence is or which block a line belongs to: a partner's entry keeps
+// every byte even when it holds a heading-shaped line, and a fenced example the
+// model quoted is spared. The stored turn keeps its bytes.
+func escapeRetainedCheckpointBody(msg llm.Message) llm.Message {
+	return escapeMessageText(msg, contextmgr.EscapeRetainedCheckpoint)
 }
 
-// checkpointHeading returns a checkpoint line's heading level and title, or 0
-// when the line is not a Markdown ATX heading.
-func checkpointHeading(line string) (int, string) {
-	level := 0
-	for level < len(line) && line[level] == '#' {
-		level++
+// escapeRetainedSummaryBody escapes the model-authored body of a retained
+// summary in the model-facing copy.
+//
+// The model's text is fenced under the summary heading and so reads in the
+// partner's channel: a frame it opens there is defused. The partner's messages,
+// the harness markers and the stored turn keep every byte.
+func escapeRetainedSummaryBody(msg llm.Message) llm.Message {
+	return escapeMessageText(msg, contextmgr.EscapeRetainedSummary)
+}
+
+// escapeAgentAuthoredUserInputBody escapes a user-role input turn the model
+// authored, in the model-facing copy.
+//
+// A delegate's start task and an idle resume arrive as user-role input stamped
+// with the authoring agent's authorship. The role alone would read that text as
+// the partner speaking, so a reserved frame in it would pass as a decision the
+// partner made. Authorship is the discriminator: an input turn with no stamp or
+// a human stamp is the partner's own words and keeps every byte, as does the
+// stored turn.
+func escapeAgentAuthoredUserInputBody(t schema.Turn, msg llm.Message) llm.Message {
+	if t.Kind != schema.TurnUserInput || t.Authorship == nil || t.Authorship.Author.Kind != schema.TranscriptAuthorAgent {
+		return msg
 	}
-	if level == 0 || level > 6 || level >= len(line) || line[level] != ' ' {
-		return 0, ""
-	}
-	return level, strings.TrimSpace(line[level+1:])
+	return escapeMessageText(msg, func(rendered string) (string, bool) {
+		escaped := sysmsg.EscapeModelAuthoredFrames(rendered)
+		return escaped, escaped != rendered
+	})
 }
 
 // escapeParentSteeringBody escapes the model-authored body of parent steering in

@@ -6,6 +6,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/runetrim"
+	"primeradiant.com/evener/agent/internal/sysmsg"
 	"primeradiant.com/evener/agent/schema"
 )
 
@@ -57,6 +58,11 @@ func (s *OODAStrategy) ManageContext(ctx context.Context, history *[]schema.Turn
 		}
 		logText = runetrim.Cut(logText, maxLogChars) + truncation
 	}
+	// The log holds summaries the model wrote, and the orientation turn is a
+	// user-role steering message: a frame a summary opens must not reach the
+	// model with the spelling the harness writes. The banner around it is this
+	// strategy's own text and is added after; the stored log keeps its bytes.
+	logText = sysmsg.EscapeModelAuthoredFrames(logText)
 
 	orient := fmt.Sprintf("[SESSION ORIENTATION]\nHere is a log of your session actions so far.%s\n\n%s\n[END ORIENTATION]", recovery, logText)
 

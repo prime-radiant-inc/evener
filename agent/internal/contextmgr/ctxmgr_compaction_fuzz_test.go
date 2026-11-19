@@ -318,7 +318,9 @@ func FuzzCtxmgrCheckpointData(f *testing.F) {
 				}
 			}
 			for _, s := range skills {
-				if !strings.Contains(cp, s) {
+				// A skill name is a single-line token in the metadata, so a break
+				// in one is rendered in its encoded form.
+				if !strings.Contains(cp, escapeCheckpointPath(s)) {
 					t.Fatalf("activated skill %q missing from checkpoint", s)
 				}
 			}

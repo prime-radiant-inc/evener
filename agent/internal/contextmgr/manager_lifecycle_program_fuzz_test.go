@@ -289,7 +289,7 @@ func cmgpCheckPureManagerHelpers(t *testing.T, token string, history []schema.Tu
 		t.Fatalf("empty turn rendered as %q", got)
 	}
 	call := cmgpCallTurn("render", "shell", `{"command":"echo `+token+`"}`)
-	if got := renderTurnForElicit(call); !strings.Contains(got, "Assistant: Tool call shell") || !strings.Contains(got, token) {
+	if got := renderTurnForElicit(call); !strings.HasPrefix(got, "Assistant:\nTool call shell") || !strings.Contains(got, token) {
 		t.Fatalf("tool-call turn rendered as %q", got)
 	}
 	result := schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("render", "shell", "exact "+token, false))

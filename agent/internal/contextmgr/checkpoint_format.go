@@ -3,6 +3,7 @@ package contextmgr
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/mdfence"
@@ -313,12 +314,8 @@ func extractMarkdownConversation(text string) []checkpointConversationEntry {
 	blocks := parseMarkdownBlocks(section)
 	entries := make([]checkpointConversationEntry, 0, len(blocks))
 	for _, block := range blocks {
-		role := strings.ToLower(strings.TrimSpace(block.Heading))
-		switch role {
-		case "user":
-			entries = append(entries, checkpointConversationEntry{Role: "user", Text: block.Text})
-		case "agent", "assistant":
-			entries = append(entries, checkpointConversationEntry{Role: "agent", Text: block.Text})
+		if role, ok := conversationRoleForHeading(block.Heading); ok {
+			entries = append(entries, checkpointConversationEntry{Role: role, Text: block.Text})
 		}
 	}
 	return cleanCheckpointConversation(entries)
@@ -357,6 +354,221 @@ func markdownSection(text, heading string) string {
 		return ""
 	}
 	return text[body:end]
+}
+
+// textEdit replaces text[start:end] with body.
+type textEdit struct {
+	start, end int
+	body       string
+}
+
+// applyTextEdits returns text with every edit spliced in, and reports whether
+// any byte changed. The edits' spans are disjoint, so they are applied in start
+// order against the offsets they were taken from. A span overlapping the one
+// before it is skipped rather than spliced over text another edit claimed, which
+// keeps the function total for a document whose sections overlap.
+func applyTextEdits(text string, edits []textEdit) (string, bool) {
+	if len(edits) == 0 {
+		return text, false
+	}
+	slices.SortFunc(edits, func(a, b textEdit) int { return a.start - b.start })
+	var b strings.Builder
+	b.Grow(len(text))
+	pos := 0
+	for _, edit := range edits {
+		if edit.start < pos || edit.end < edit.start || edit.end > len(text) {
+			continue
+		}
+		b.WriteString(text[pos:edit.start])
+		b.WriteString(edit.body)
+		pos = edit.end
+	}
+	b.WriteString(text[pos:])
+	return b.String(), true
+}
+
+// fencedBlockSpan is one fenced code block's interior body: BodyStart is where
+// the body begins, just past the opening delimiter's line, and BodyEnd where the
+// closing delimiter's line begins, or the end of the scanned text when the block
+// is never closed.
+type fencedBlockSpan struct {
+	// Heading is the nearest "### " heading outside a fence above the block, or
+	// "" when no heading precedes it.
+	Heading   string
+	BodyStart int
+	BodyEnd   int
+}
+
+// fencedBlockSpans returns the interior body span of every fenced code block in
+// section, in document order, tracking fences exactly as parseMarkdownBlocks
+// does: the tracker steps a line before a heading is read, so an indented
+// closing delimiter ends a list item's block and the heading below it is read as
+// a heading, while a heading inside an open block is content.
+//
+// Offsets are relative to section. A block that is never closed runs to the end
+// of section, which is where its content ends for a reader too.
+func fencedBlockSpans(section string) []fencedBlockSpan {
+	var spans []fencedBlockSpan
+	var fence mdfence.Tracker
+	var heading string
+	var open *fencedBlockSpan
+	offset := 0
+	for _, line := range strings.SplitAfter(section, "\n") {
+		if line == "" {
+			break
+		}
+		content := strings.TrimSuffix(line, "\n")
+		wasInside := fence.Inside()
+		// A line ends the block it is in either by closing its delimiter, which
+		// leaves no block open, or by leaving the list item that holds it, which
+		// the tracker reports as a step that also left a block open. Its own line
+		// is not part of the body, which is why the body ends where the line
+		// begins.
+		boundary := fence.Step(content)
+		ended := wasInside && (boundary || !fence.Inside())
+		if ended {
+			open.BodyEnd = offset
+			spans = append(spans, *open)
+			open = nil
+		}
+		if fence.Inside() && (!wasInside || ended) {
+			open = &fencedBlockSpan{Heading: heading, BodyStart: offset + len(line)}
+		}
+		// Only a line outside every block can name the one that follows.
+		if !fence.Inside() && strings.HasPrefix(content, "### ") {
+			heading = strings.TrimSpace(strings.TrimPrefix(content, "### "))
+		}
+		offset += len(line)
+	}
+	if open != nil {
+		open.BodyEnd = len(section)
+		spans = append(spans, *open)
+	}
+	return spans
+}
+
+// agentConversationHeading reports whether a conversation block's heading names
+// the model as its author, in either spelling the renderer writes.
+func conversationRoleForHeading(heading string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(heading)) {
+	case "user":
+		return "user", true
+	case "agent", "assistant":
+		return "agent", true
+	}
+	return "", false
+}
+
+func agentConversationHeading(heading string) bool {
+	role, ok := conversationRoleForHeading(heading)
+	return ok && role == "agent"
+}
+
+func collectFencedEdits(text, heading string, include func(string) bool) []textEdit {
+	_, body, end, ok := markdownSectionSpan(text, heading)
+	if !ok {
+		return nil
+	}
+	end = ownedSectionEnd(text, body, end)
+	var edits []textEdit
+	for _, span := range fencedBlockSpans(text[body:end]) {
+		if include != nil && !include(span.Heading) {
+			continue
+		}
+		start, stop := body+span.BodyStart, body+span.BodyEnd
+		escaped := sysmsg.EscapeModelAuthoredFrames(text[start:stop])
+		if escaped != text[start:stop] {
+			edits = append(edits, textEdit{start: start, end: stop, body: escaped})
+		}
+	}
+	return edits
+}
+
+// ownedSectionEnd returns where heading's section body stops being this
+// section's: the next top-level heading line outside a fence, or end.
+//
+// markdownSectionSpan's end is wider by one line, because a body whose FIRST
+// line is the next heading never ends the section there. That reading is right
+// for extracting a section's text, which is why it is kept, and wrong for
+// deciding which section owns a block: a heading written with no body under it
+// would hand every block of the section below to this one, including the
+// partner's messages.
+func ownedSectionEnd(text string, body, end int) int {
+	var fence mdfence.Tracker
+	offset := body
+	for _, line := range strings.SplitAfter(text[body:end], "\n") {
+		if line == "" {
+			break
+		}
+		content := strings.TrimSuffix(line, "\n")
+		if !fence.StepInBlock(content) && strings.HasPrefix(content, "## ") {
+			return offset
+		}
+		offset += len(line)
+	}
+	return end
+}
+
+// EscapeRetainedCheckpoint returns a checkpoint turn's text with the frames the
+// model authored defused, and reports whether any byte changed.
+//
+// A checkpoint is a user-role message, so model-authored text placed in it
+// speaks in the partner's channel. This is the copy handed back to the model, not
+// the stored turn: the checkpoint this session wrote, or one it is about to
+// send again, keeps its own bytes.
+//
+// A working note is the model's own analytical text throughout, so every block
+// under that heading is escaped. Under the conversation heading the author is
+// per block: an agent or assistant block is the model's reply and is escaped,
+// while a user block is the partner's own message and keeps its bytes even when
+// it contains a heading-shaped line or a frame the partner typed.
+//
+// Each complete block body is escaped as one string rather than line by line, so
+// fence state is read on the text the block actually holds: a frame whose
+// numbered answer sits on a later line is still escaped, and a fenced example
+// the model quoted keeps every byte. The section headings, the block headings
+// and the fence delimiters are written by this package and are not touched.
+func EscapeRetainedCheckpoint(text string) (string, bool) {
+	edits := collectFencedEdits(text, "## Working Notes", nil)
+	edits = append(edits, collectFencedEdits(text, checkpointConversationHeading, agentConversationHeading)...)
+	return applyTextEdits(text, edits)
+}
+
+// EscapeRetainedSummary returns a summary turn's text with the frames the model
+// authored defused, and reports whether any byte changed.
+//
+// Only the summary layout the renderer writes has a model-authored body to
+// escape: the model's text fenced under the summary heading, followed by the
+// partner's messages in their own conversation section. A summary in the older
+// layout is the model's text throughout and is returned unchanged, as are turns
+// that carry no summary section.
+//
+// The stored turn keeps its bytes; this is the copy handed back to the model.
+// The turn's markers, the pointer line, the partner-carry reminder, the section
+// and block headings, the fence delimiters and the partner's own messages all
+// keep every byte, and the model's body is escaped as one block so an intact
+// fenced example inside it is spared.
+func EscapeRetainedSummary(text string) (string, bool) {
+	_, body, end, ok := markdownSectionSpan(text, summaryModelTextHeading)
+	if !ok {
+		return text, false
+	}
+	spans := fencedBlockSpans(text[body:end])
+	if len(spans) != 1 {
+		return text, false
+	}
+	start, stop := body+spans[0].BodyStart, body+spans[0].BodyEnd
+	if !strings.ContainsAny(text[start:stop], "<[") {
+		return text, false
+	}
+	if !carriesPartnerMessages(text) {
+		return text, false
+	}
+	escaped := sysmsg.EscapeModelAuthoredFrames(text[start:stop])
+	if escaped == text[start:stop] {
+		return text, false
+	}
+	return text[:start] + escaped + text[stop:], true
 }
 
 // withoutMarkdownSection returns text with heading's section removed, or text

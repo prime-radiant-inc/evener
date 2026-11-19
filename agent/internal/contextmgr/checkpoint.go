@@ -225,22 +225,29 @@ func (d *checkpointData) recordWrite(path string, status checkpointWriteStatus) 
 	d.fileWrites[path] = status
 }
 
-// writePathLine renders a model-supplied file path for the checkpoint's
-// metadata line.
+// escapeCheckpointPath renders a model-supplied single-line token — a file path
+// or a skill name — for a checkpoint metadata line.
 //
-// A path is model-authored: it comes straight from a write or edit call's
-// file_path argument. A path carrying a line break would put everything after
-// it on a line of its own in a user-role checkpoint message, which is where a
-// reserved frame reaches the model as a frame rather than as text (#6493
-// review). The break is written in its escaped form so the path occupies one
-// logical line; the path is otherwise unchanged, and the write statuses
-// (confirmed, failed, no result) are appended by the caller as before.
-func writePathLine(path string) string {
-	if !strings.ContainsAny(path, "\r\n") {
-		return path
+// The token is model-authored: a path comes straight from a write or edit
+// call's file_path argument, and a skill name from a use_skill call. A token
+// carrying a line break would put everything after it on a line of its own in a
+// user-role checkpoint message, which is where a reserved frame reaches the
+// model as a frame rather than as text. The break is written in its encoded form
+// so the token occupies one logical line; it is otherwise unchanged, and the
+// write statuses (confirmed, failed, no result) are appended by the caller.
+func escapeCheckpointPath(token string) string {
+	if !strings.ContainsAny(token, "\r\n") {
+		return token
 	}
-	path = strings.ReplaceAll(path, "\r", `\r`)
-	return strings.ReplaceAll(path, "\n", `\n`)
+	token = strings.ReplaceAll(token, "\r", `\r`)
+	return strings.ReplaceAll(token, "\n", `\n`)
+}
+
+// isAgentAuthored reports whether another agent authored a turn, which makes its
+// text model-authored even in a user-role channel. An unstamped turn and one a
+// human authored both answer false: those are the partner's own words.
+func isAgentAuthored(t schema.Turn) bool {
+	return t.Authorship != nil && t.Authorship.Author.Kind == schema.TranscriptAuthorAgent
 }
 
 // collectCheckpointData walks history[:cutoff] and distills it into a
@@ -264,6 +271,14 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 			// too, and so is a parent agent's steer into its delegate, which
 			// carries its own attribution; daemon nudges are not.
 			if text := t.Message.Text(); (isPartnerSteering(t) || isParentSteering(t)) && text != "" {
+				// A parent's steer is another agent speaking, so its body is
+				// model-authored even though the turn is carried as the
+				// partner's. Only the framing this turn was built with is
+				// spared, and that framing opens no frame. A human partner's
+				// steer is the authority and keeps its bytes.
+				if isParentSteering(t) || isAgentAuthored(t) {
+					text = sysmsg.EscapeModelAuthoredFrames(text)
+				}
 				data.conversation = append(data.conversation, checkpointConversationEntry{Role: "user", Text: text})
 			}
 
@@ -277,6 +292,12 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 			if strings.HasPrefix(text, "[CONTEXT CHECKPOINT]") || strings.HasPrefix(text, summaryMarkerStart) {
 				data.collectCompaction(text, strings.HasPrefix(text, summaryMarkerStart))
 				continue
+			}
+			// A user-role turn another agent authored reads in the partner's
+			// channel without being the partner's words. An unstamped turn and a
+			// human-stamped one are the partner's own and keep their bytes.
+			if isAgentAuthored(t) {
+				text = sysmsg.EscapeModelAuthoredFrames(text)
 			}
 			data.conversation = append(data.conversation, checkpointConversationEntry{Role: "user", Text: text})
 
@@ -410,11 +431,11 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 	for f, status := range data.fileWrites {
 		switch status {
 		case writeConfirmed:
-			modified = append(modified, writePathLine(f))
+			modified = append(modified, escapeCheckpointPath(f))
 		case writeFailed:
-			attempted = append(attempted, writePathLine(f)+" (failed)")
+			attempted = append(attempted, escapeCheckpointPath(f)+" (failed)")
 		default:
-			attempted = append(attempted, writePathLine(f)+" (no result)")
+			attempted = append(attempted, escapeCheckpointPath(f)+" (no result)")
 		}
 	}
 	sort.Strings(modified)
@@ -469,7 +490,7 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 	if len(allSkills) > 0 {
 		skillNames := make([]string, 0, len(allSkills))
 		for s := range allSkills {
-			skillNames = append(skillNames, s)
+			skillNames = append(skillNames, escapeCheckpointPath(s))
 		}
 		sort.Strings(skillNames)
 		fmt.Fprintf(&fixed, "Activated skills: %s\n", strings.Join(skillNames, ", "))

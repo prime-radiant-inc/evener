@@ -88,7 +88,16 @@ func renderHistoryForElicit(history []schema.Turn, maxChars int) string {
 		}
 		if total+len(s) > maxChars {
 			if rem := maxChars - total; rem > 0 {
-				parts = append(parts, "[... earlier history truncated ...]\n"+string(runetrim.TrimLeadingPartial([]byte(s[len(s)-rem:]))))
+				clipped := string(runetrim.TrimLeadingPartial([]byte(s[len(s)-rem:])))
+				// A clip can drop the opening delimiter of a fenced example the
+				// model wrote, which exposes the frames its body quotes at line
+				// start. The escape is run again on the clipped segment so that
+				// exposure is defused; an example the clip left whole is still
+				// fenced and keeps its bytes.
+				if h.Kind == schema.TurnAssistant {
+					clipped = sysmsg.EscapeModelAuthoredFrames(clipped)
+				}
+				parts = append(parts, "[... earlier history truncated ...]\n"+clipped)
 			}
 			break
 		}
@@ -135,7 +144,10 @@ func renderTurnForElicit(t schema.Turn) string {
 	case schema.TurnUserInput:
 		label = "User: "
 	case schema.TurnAssistant:
-		label = "Assistant: "
+		// The label takes its own line so a turn that opens with a fenced
+		// example still opens a fence there. Sharing that line made Markdown read
+		// the example as prose, and every frame it quotes looked unfenced.
+		label = "Assistant:\n"
 	case schema.TurnSteering, schema.TurnCheckpoint, schema.TurnSummary:
 		label = "Context: "
 	}

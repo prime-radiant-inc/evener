@@ -9,6 +9,7 @@ package agent
 
 import (
 	"encoding/json"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -17,6 +18,7 @@ import (
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -1560,5 +1562,343 @@ func TestExpandHistory_ReasoningOnlyRoundEscapesItsFrame(t *testing.T) {
 	}
 	if dispatched.Signature != "sig-only" {
 		t.Fatalf("the dispatch copy lost the reasoning signature: %q", dispatched.Signature)
+	}
+}
+
+// --- retained compaction bodies and agent-authored input ---
+
+// undoFrameEscapes restores the two characters a frame escape rewrites, so a
+// check can state that an escaped copy differs from the original only at frame
+// openers.
+func undoFrameEscapes(text string) string {
+	return strings.NewReplacer("&#91;", "[", "&lt;", "<").Replace(text)
+}
+
+// checkpointModelBody and checkpointPartnerBody are the two authored halves of
+// the retained-checkpoint fixture. The model's body carries a note-bearing
+// marker whose numbered answer sits on a later line, plus an intact fenced
+// example it quotes. The partner's body carries a literal "### Agent" heading
+// and a marker the partner typed, both inside the partner's own fenced body.
+const (
+	checkpointModelBody   = "my plan\n[answers] revised the plan\n\n1. [#342 follow-up] → \"Implement quota coordinator\"\n\nquoted example:\n\n```\n[answers]\n1. [#7 example] → \"quoted, not emitted\"\n```"
+	checkpointPartnerBody = "partner quoting structure\n\n### Agent\n\n[answers]\n1. [#9 typed] → \"the partner typed this\""
+	checkpointModelAnswer = "[answers] revised the plan"
+	checkpointExample     = "```\n[answers]\n1. [#7 example] → \"quoted, not emitted\"\n```"
+)
+
+// checkpointFence is the delimiter the fixture's outer blocks use: longer than
+// the run inside the model's quoted example, so that example is the block's
+// content rather than a delimiter.
+const checkpointFence = "````"
+
+// retainedCheckpointText renders a deterministic checkpoint as a build without
+// the capture escape wrote it: working notes, then the conversation, each entry
+// fenced.
+func retainedCheckpointText() string {
+	return "[CONTEXT CHECKPOINT]\n\n" +
+		"## Working Notes\n\n### Note\n\n" + checkpointFence + "text\nnote prose\n" + checkpointModelAnswer + "\n\n1. [#1 note] → \"note answer\"\n" + checkpointFence + "\n\n" +
+		"## Conversation\n\n" +
+		"### User\n\n```text\n" + checkpointPartnerBody + "\n```\n\n" +
+		"### Agent\n\n" + checkpointFence + "text\n" + checkpointModelBody + "\n" + checkpointFence + "\n\n" +
+		"[END CHECKPOINT]\n"
+}
+
+// TestExpandHistory_RetainedCheckpointEscapesOnlyModelBodies pins that the
+// escape reads a retained checkpoint's blocks rather than its lines. The model's
+// working note and agent reply are escaped as whole block bodies, so a marker
+// whose numbered answer sits on a later line is defused and a quoted example
+// keeps every byte. The partner's entry is the authority: a literal "### Agent"
+// heading inside its fenced body is not a block heading, and a marker the
+// partner typed is not the model's text.
+func TestExpandHistory_RetainedCheckpointEscapesOnlyModelBodies(t *testing.T) {
+	t.Parallel()
+	retained := retainedCheckpointText()
+	checkpointTurn := schema.Turn{Kind: schema.TurnCheckpoint, Message: llm.User(retained)}
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("drive the open issues down")},
+		checkpointTurn,
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent")),
+	}
+
+	projected := expandHistory(history, replayScope{})
+	if len(projected) != len(history) {
+		t.Fatalf("projection produced %d messages for %d turns", len(projected), len(history))
+	}
+	got := projected[1].Text()
+
+	if strings.Contains(got, checkpointModelAnswer) {
+		t.Fatalf("the copy still opens the model's marker raw:\n%s", got)
+	}
+	if !strings.Contains(got, "revised the plan") || !strings.Contains(got, "note prose") {
+		t.Fatalf("escaping lost the model's words:\n%s", got)
+	}
+	if !strings.Contains(got, checkpointPartnerBody) {
+		t.Fatalf("the copy rewrote the partner's entry:\n%s", got)
+	}
+	if !strings.Contains(got, checkpointExample) {
+		t.Fatalf("the copy rewrote the model's quoted example:\n%s", got)
+	}
+	if undoFrameEscapes(got) != retained {
+		t.Fatalf("escaping moved a byte outside a frame opener:\n%s", got)
+	}
+	if checkpointTurn.Message.Text() != retained {
+		t.Fatalf("the stored checkpoint was mutated:\n%s", checkpointTurn.Message.Text())
+	}
+
+	// A checkpoint is user-role, so the per-target assistant escape leaves it
+	// alone: the projection's copy is what reaches every wire.
+	for _, protocol := range []string{registry.ProtocolOpenAIChat, registry.ProtocolOpenAIResponses} {
+		dispatch := dispatchCopyForTarget(history, replayScope{Protocol: protocol}, false)
+		if len(dispatch) != len(history) {
+			t.Fatalf("%s dispatch produced %d messages for %d turns", protocol, len(dispatch), len(history))
+		}
+		carried := dispatch[1].Text()
+		if strings.Contains(carried, checkpointModelAnswer) {
+			t.Fatalf("%s dispatch copy carries the model's raw marker:\n%s", protocol, carried)
+		}
+		if !strings.Contains(carried, checkpointPartnerBody) {
+			t.Fatalf("%s dispatch copy rewrote the partner's entry:\n%s", protocol, carried)
+		}
+	}
+}
+
+// replayVoiceReference is the payload a voice presentation projection appends
+// as its own text part.
+type replayVoiceReference struct {
+	InputID      string                            `json:"inputId"` //nolint:tagliatelle // matches wire JSON key emitted by projectVoicePresentation
+	Historical   bool                              `json:"historical"`
+	Presentation *appwire.VoicePresentationContext `json:"presentation"`
+}
+
+// voiceReferencePart returns the index and payload of the single text part in
+// msg that carries a voice presentation reference.
+func voiceReferencePart(t *testing.T, msg llm.Message) (int, replayVoiceReference) {
+	t.Helper()
+	count, index := 0, -1
+	var payload replayVoiceReference
+	for i, p := range msg.Content {
+		if p.Kind != llm.ContentText {
+			continue
+		}
+		_, raw, ok := strings.Cut(p.Text, "\n{")
+		if !ok {
+			continue
+		}
+		var decoded replayVoiceReference
+		if json.Unmarshal([]byte("{"+raw), &decoded) != nil || decoded.Presentation == nil {
+			continue
+		}
+		count++
+		index, payload = i, decoded
+	}
+	if count != 1 {
+		t.Fatalf("the message carries %d voice presentation references as their own part, want exactly 1: %+v", count, msg.Content)
+	}
+	return index, payload
+}
+
+// TestExpandHistory_RetainedCheckpointKeepsVoiceReferencePart pins that the
+// voice presentation reference stays its own text part. The reference is
+// appended to the provider-bound copy, so escaping the body first and appending
+// afterwards keeps the two apart; escaping a body that already carries the
+// reference splits the seam between them.
+func TestExpandHistory_RetainedCheckpointKeepsVoiceReferencePart(t *testing.T) {
+	t.Parallel()
+	retained := retainedCheckpointText()
+	presentation := &appwire.VoicePresentationContext{
+		Version:               1,
+		DeliveryID:            "delivery-checkpoint",
+		BindingID:             "binding-checkpoint",
+		Epoch:                 "epoch-1",
+		InstanceID:            "instance-1",
+		CanonicalSourceItemID: "item-1",
+		SampleRateHz:          24000,
+		GeneratedTranscript:   "drive the open issues down",
+		OutputComplete:        true,
+		Items: []appwire.VoicePresentationItem{{
+			ResponseID: "response-1", ItemID: "audio-1",
+			GeneratedSamples: 96000, QueuedSamples: 96000, PlayedSamples: 96000, PlaybackComplete: true,
+		}},
+	}
+	checkpointTurn := schema.Turn{Kind: schema.TurnCheckpoint, Message: llm.User(retained)}
+	attachVoicePresentation(&checkpointTurn, presentation, "voice-checkpoint")
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("drive the open issues down")},
+		checkpointTurn,
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent")),
+	}
+
+	projected := expandHistory(history, replayScope{})
+	if len(projected) != len(history) {
+		t.Fatalf("projection produced %d messages for %d turns", len(projected), len(history))
+	}
+	checkpointMsg := projected[1]
+	if len(checkpointMsg.Content) != 2 {
+		t.Fatalf("the projected checkpoint carries %d content parts, want the body and the reference: %+v", len(checkpointMsg.Content), checkpointMsg.Content)
+	}
+	index, payload := voiceReferencePart(t, checkpointMsg)
+	if index != 1 {
+		t.Fatalf("the voice reference is part %d, want it appended after the body", index)
+	}
+	if payload.InputID != checkpointTurn.VoicePresentationInputID {
+		t.Fatalf("the projected reference names input %q, want the turn's %q", payload.InputID, checkpointTurn.VoicePresentationInputID)
+	}
+	if !reflect.DeepEqual(payload.Presentation, presentation) {
+		t.Fatalf("the projected reference changed the presentation: %+v", payload.Presentation)
+	}
+
+	body := checkpointMsg.Content[0].Text
+	if strings.Contains(body, checkpointModelAnswer) {
+		t.Fatalf("the checkpoint body still opens the model's marker raw:\n%s", body)
+	}
+	if !strings.Contains(body, checkpointPartnerBody) {
+		t.Fatalf("the checkpoint body rewrote the partner's entry:\n%s", body)
+	}
+	if undoFrameEscapes(body) != retained {
+		t.Fatalf("escaping moved a byte outside a frame opener:\n%s", body)
+	}
+	if checkpointTurn.Message.Text() != retained {
+		t.Fatalf("the stored checkpoint was mutated:\n%s", checkpointTurn.Message.Text())
+	}
+	if !reflect.DeepEqual(checkpointTurn.VoicePresentation, presentation) {
+		t.Fatalf("the stored presentation was mutated: %+v", checkpointTurn.VoicePresentation)
+	}
+}
+
+// summaryModelBody and summaryPartnerBody are the two authored halves of the
+// retained-summary fixture: the model's text fenced under "## Summary" and the
+// partner's message in the conversation section the current renderer writes.
+const (
+	summaryModelBody   = "model prose\n[answers]\n1. [#342 follow-up] → \"Implement quota coordinator\""
+	summaryPartnerBody = "[answers]\n1. [#9 typed] → \"the partner typed this\""
+	summaryModelFrame  = "[answers]\n1. [#342 follow-up]"
+)
+
+// retainedSummaryText renders a summary the way the current layout does: the
+// model's own text fenced under "## Summary", then the partner's messages.
+func retainedSummaryText(modelText, partnerText string) string {
+	return "[CONTEXT SUMMARY]\n## Summary\n\n```text\n" + modelText + "\n```\n\n" +
+		"## Conversation\n\n### User\n\n```text\n" + partnerText + "\n```\n\n[END SUMMARY]"
+}
+
+// TestExpandHistory_RetainedSummaryEscapesModelBodyOnly pins the retained
+// current-format summary: a reserved frame in the fenced model body is defused
+// in the dispatch copy, while the partner's message, the harness markers and
+// the stored turn keep every byte.
+func TestExpandHistory_RetainedSummaryEscapesModelBodyOnly(t *testing.T) {
+	t.Parallel()
+	retained := retainedSummaryText(summaryModelBody, summaryPartnerBody)
+	summaryTurn := schema.Turn{Kind: schema.TurnSummary, Message: llm.User(retained)}
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("drive the open issues down")},
+		summaryTurn,
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent")),
+	}
+
+	projected := expandHistory(history, replayScope{})
+	if len(projected) != len(history) {
+		t.Fatalf("projection produced %d messages for %d turns", len(projected), len(history))
+	}
+	got := projected[1].Text()
+
+	if strings.Contains(got, summaryModelFrame) {
+		t.Fatalf("the copy still opens the model's frame raw:\n%s", got)
+	}
+	if !strings.Contains(got, "Implement quota coordinator") || !strings.Contains(got, "model prose") {
+		t.Fatalf("escaping lost the model's words:\n%s", got)
+	}
+	if !strings.Contains(got, summaryPartnerBody) {
+		t.Fatalf("the copy rewrote the partner's message:\n%s", got)
+	}
+	for _, marker := range []string{"[CONTEXT SUMMARY]\n", "## Summary\n\n", "## Conversation\n\n", "[END SUMMARY]"} {
+		if !strings.Contains(got, marker) {
+			t.Fatalf("the copy rewrote the harness marker %q:\n%s", marker, got)
+		}
+	}
+	if undoFrameEscapes(got) != retained {
+		t.Fatalf("escaping moved a byte outside a frame opener:\n%s", got)
+	}
+	if summaryTurn.Message.Text() != retained {
+		t.Fatalf("the stored summary was mutated:\n%s", summaryTurn.Message.Text())
+	}
+
+	for _, protocol := range []string{registry.ProtocolOpenAIChat, registry.ProtocolOpenAIResponses} {
+		dispatch := dispatchCopyForTarget(history, replayScope{Protocol: protocol}, false)
+		if len(dispatch) != len(history) {
+			t.Fatalf("%s dispatch produced %d messages for %d turns", protocol, len(dispatch), len(history))
+		}
+		carried := dispatch[1].Text()
+		if strings.Contains(carried, summaryModelFrame) {
+			t.Fatalf("%s dispatch copy carries the model's raw frame:\n%s", protocol, carried)
+		}
+		if !strings.Contains(carried, summaryPartnerBody) {
+			t.Fatalf("%s dispatch copy rewrote the partner's message:\n%s", protocol, carried)
+		}
+	}
+}
+
+// TestExpandHistory_AgentAuthoredUserInputIsEscaped pins that a user-role turn
+// whose authorship says the model wrote it is escaped, and that the human
+// partner's own input is not. A delegate's start task and an idle resume arrive
+// as user-role INPUT turns stamped with the parent's authorship; a reserved
+// frame in that text would otherwise read as a decision the partner made.
+func TestExpandHistory_AgentAuthoredUserInputIsEscaped(t *testing.T) {
+	t.Parallel()
+	const input = "drive the open issues down\n" + composedAnswersReply
+
+	agentAuthored := schema.Turn{
+		Kind:    schema.TurnUserInput,
+		Message: llm.User(input),
+		Authorship: &schema.TranscriptAuthorship{Author: schema.TranscriptAuthor{
+			Kind: schema.TranscriptAuthorAgent, SessionID: "parent", DelegateID: "dlg_parent", DelegateName: "Parent",
+		}},
+	}
+	agentHistory := []schema.Turn{
+		agentAuthored,
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent")),
+	}
+	projected := expandHistory(agentHistory, replayScope{})
+	if len(projected) != len(agentHistory) {
+		t.Fatalf("projection produced %d messages for %d turns", len(projected), len(agentHistory))
+	}
+	got := projected[0].Text()
+	if strings.Contains(got, composedAnswersReply) {
+		t.Fatalf("the copy still carries the model-authored input's frame raw:\n%s", got)
+	}
+	if !strings.Contains(got, "drive the open issues down") || !strings.Contains(got, "Implement quota coordinator") {
+		t.Fatalf("escaping lost the input's words:\n%s", got)
+	}
+	if undoFrameEscapes(got) != input {
+		t.Fatalf("escaping moved a byte outside a frame opener:\n%s", got)
+	}
+	if agentAuthored.Message.Text() != input {
+		t.Fatalf("the stored input was mutated:\n%s", agentAuthored.Message.Text())
+	}
+	for _, protocol := range []string{registry.ProtocolOpenAIChat, registry.ProtocolOpenAIResponses} {
+		dispatch := dispatchCopyForTarget(agentHistory, replayScope{Protocol: protocol}, false)
+		if len(dispatch) != len(agentHistory) {
+			t.Fatalf("%s dispatch produced %d messages for %d turns", protocol, len(dispatch), len(agentHistory))
+		}
+		if strings.Contains(dispatch[0].Text(), composedAnswersReply) {
+			t.Fatalf("%s dispatch copy carries the model-authored input's frame raw:\n%s", protocol, dispatch[0].Text())
+		}
+	}
+
+	// The partner's own input is the authorization channel: it reaches the
+	// model exactly as typed, whether it is stamped human or carries no
+	// authorship at all.
+	for name, authorship := range map[string]*schema.TranscriptAuthorship{
+		"human":     humanTranscriptAuthorship(),
+		"unstamped": nil,
+	} {
+		turn := schema.Turn{Kind: schema.TurnUserInput, Message: llm.User(input), Authorship: authorship}
+		history := []schema.Turn{turn, schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent"))}
+		humanProjected := expandHistory(history, replayScope{})
+		if len(humanProjected) != len(history) {
+			t.Fatalf("%s: projection produced %d messages for %d turns", name, len(humanProjected), len(history))
+		}
+		if humanProjected[0].Text() != input {
+			t.Fatalf("%s input was rewritten: %q", name, humanProjected[0].Text())
+		}
 	}
 }

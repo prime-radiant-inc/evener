@@ -2262,31 +2262,50 @@ func (rs replayScope) projectThinkingPart(p llm.ContentPart, provenanceKeeps boo
 // N4 exemption but still lose thinking the target does not want.
 //
 // The projected copy keeps the assistant's text as the model wrote it; this
-// function does NOT escape frame openers. Escaping belongs to each dispatch
-// copy, because a target's boundaries differ (see
+// function does NOT escape frame openers there. That escape belongs to each
+// dispatch copy, because a target's boundaries differ (see
 // escapeModelAuthoredFramesForTarget), and a caller that reads this as "already
-// escaped" would leave a raw frame on the wire. Tool calls, tool results and
-// images are untouched, and user-role text is left byte-identical: the partner
-// is the authority.
+// escaped" would leave a raw frame on the wire.
+//
+// What is escaped here is the text of the user-role turns whose provenance says
+// the model wrote it, and which no per-target escape can reach by role alone: a
+// note handoff, a retained checkpoint, a retained summary, parent steering, and
+// an agent-authored input. Text with no such provenance is left byte-identical:
+// the partner is the authority. Tool calls, tool results and images are
+// untouched.
 func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Message {
-	t.Message = projectVoicePresentation(t)
 	// The model's own note rides a user-role note-handoff steering turn, which
 	// the assistant-only escape below cannot reach. Its provenance, not its
-	// role, is what says the body is model-authored (#6493 review).
+	// role, is what says the body is model-authored.
 	t.Message = escapeNoteHandoffBody(t, t.Message)
 	// A retained deterministic checkpoint is replayed as stored, never
 	// extracted, so a checkpoint written before the capture escape existed
 	// sends its raw working notes and agent replies on the first request after
 	// an upgrade. Its model-authored sections are escaped here, in the
-	// dispatch copy; the partner's entries keep their bytes (#6493 review).
+	// dispatch copy; the partner's entries keep their bytes.
 	if t.Kind == schema.TurnCheckpoint {
 		t.Message = escapeRetainedCheckpointBody(t.Message)
+	}
+	// A retained summary has the same shape of hole: its fenced model-authored
+	// body reads in the partner's channel, while the partner's carried messages
+	// keep their bytes.
+	if t.Kind == schema.TurnSummary {
+		t.Message = escapeRetainedSummaryBody(t.Message)
 	}
 	// A delegate_send from a running parent arrives as user-role steering whose
 	// body is model-authored. Its provenance is the only thing that says so:
 	// the partner's own steering carries no parent source and keeps its bytes
-	// (#6493 review).
+	// as typed.
 	t.Message = escapeParentSteeringBody(t, t.Message)
+	// A delegate's start task or idle resume is a user-role INPUT turn whose
+	// authorship names the agent that wrote it. Its provenance is likewise the
+	// only thing that separates it from the partner's own words.
+	t.Message = escapeAgentAuthoredUserInputBody(t, t.Message)
+	// The voice presentation reference rides its own text part, appended to the
+	// provider-bound copy. Appending it after the escapes keeps that seam: the
+	// escapes preserve line structure, so a reference appended first would sit
+	// inside the text they split back onto the parts it came from.
+	t.Message = projectVoicePresentation(t)
 	if !rs.active() && !rs.DropThinking {
 		return t.Message
 	}
