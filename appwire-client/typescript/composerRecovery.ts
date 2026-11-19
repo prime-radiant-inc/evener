@@ -216,15 +216,16 @@ function locatedOccurrences(
  * they wrote it. A number-wide rewrite would silently change their prose and
  * shift every mention past it by the wrong amount.
  *
- * `located.markers` distinguishes the two caller generations: a number no
+ * The located numbers distinguish the two caller generations: a number no
  * range locates has no position to respect (a record from before ranges
  * existed), and every occurrence of it is the anchor, as those builds read it. */
 function remapAdoptedOccurrences(
   text: string,
-  located: { keys: Set<string>; markers: Set<number> },
+  ranges: readonly ImageMarkerRange[],
   mapping: ReadonlyMap<number, number>,
 ): { text: string; shifts: MarkerShift[] } {
   if (mapping.size === 0) return { text, shifts: [] };
+  const located = locatedOccurrences(text, ranges);
   return remapOccurrences(text, (marker, start, end) => {
     const target = mapping.get(marker);
     if (target === undefined) return undefined;
@@ -281,10 +282,6 @@ export function mergeComposerCompositions<A extends { marker: number }>(
   // it; an occurrence the rewrite does not spell in its new text is dropped
   // by validMarkerRanges.
   let currentAdoptedRanges = adoptedMarkerRanges(current.text, current.adoptedImageMarkers, current.adoptedImageRanges);
-  // Which of those occurrences a stored range actually located. A number this
-  // names has prose beside it that a rename must leave alone; a number it does
-  // not names came from a caller with no positions at all.
-  const currentLocated = locatedOccurrences(current.text, current.adoptedImageRanges ?? []);
   const recoveredAttachmentMarkers = new Set(recovered.attachments.map((attachment) => attachment.marker));
   const literalMarkers = new Set(
     markerNumbers(recovered.text).filter(
@@ -343,6 +340,8 @@ export function mergeComposerCompositions<A extends { marker: number }>(
   );
   let adoptedAfterMerge = new Set(adopted);
   if (adoptedCollisions.size > 0) {
+    // The ranges are already in the current text's coordinates, which is the
+    // text the rename reads.
     const used = new Set([
       ...spelledHere,
       ...currentAttachments.map((attachment) => attachment.marker),
@@ -354,7 +353,7 @@ export function mergeComposerCompositions<A extends { marker: number }>(
     // literal the person typed at the same number is their prose: rewriting it
     // would change their text, and a shift the text did not take would move
     // every mention past it by a length nobody typed.
-    const remapped = remapAdoptedOccurrences(currentText, currentLocated, adoptedMapping);
+    const remapped = remapAdoptedOccurrences(currentText, currentAdoptedRanges, adoptedMapping);
     const before = currentText;
     currentText = remapped.text;
     currentMentions = shiftedMentions(currentMentions, remapped.shifts);
@@ -416,10 +415,9 @@ export function mergeComposerCompositions<A extends { marker: number }>(
     recovered.adoptedImageMarkers,
     recovered.adoptedImageRanges,
   );
-  const recoveredLocated = locatedOccurrences(recovered.text, recoveredRanges);
   const remappedRecovered =
     recovered.imageReferences === "recorded"
-      ? remapAdoptedOccurrences(recovered.text, recoveredLocated, recoveredMapping)
+      ? remapAdoptedOccurrences(recovered.text, recoveredRanges, recoveredMapping)
       : { text: recovered.text, shifts: [] };
   const appendOffset = currentText.length > 0 && remappedRecovered.text.length > 0 ? currentText.length + 2 : 0;
   const text =

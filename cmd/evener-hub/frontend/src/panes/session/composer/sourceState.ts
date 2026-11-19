@@ -138,13 +138,6 @@ export interface ComposerSourceState {
   updateSelectionMeta(value: SkillEditorValue): void;
   setActiveRecoveryId(record: MutationRecoveryRecord | null): void;
   markRestore(): void;
-  /** Replaces the adopted-anchor provenance this source carries. The set is
-   * read from the editor document's own stagedAnchor marks, so it follows an
-   * edit or an undo exactly: deleting the occurrence clears the refusal, and
-   * the undo that brings the occurrence back brings this set back with it.
-   * Every number this ever names stays reserved for `nextComposerImageMarker`
-   * until clearAdoptedImageMarkers retires the record with a replaced draft. */
-  setAdoptedImageMarkers(markers: readonly number[]): void;
   /** Replaces the exact adopted occurrences. Always sent together with the
    * marker list derived from them: the editor's own marks are what both
    * describe, and a caller that moved one without the other would leave the
@@ -347,6 +340,14 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   publishReservedMarkers(state.getState().adoptedImageMarkers);
   let disposed = false;
   let boundEditor: TextEditor | null = null;
+  // Every marker this source ever recorded a staged RANGE for. A tile whose
+  // number is in here has positional provenance, so the absence of a surviving
+  // range means its anchor was deleted - not that this source never knew where
+  // it was. A tile that never recorded one (a recovery hydration, which
+  // restores settled attachments without a gesture to describe) keeps the
+  // legacy number-only reading, because for it a number really is all the
+  // provenance there is.
+  const positionedStagedMarkers = new Set<number>();
   let recoveryWrites: Promise<void> = Promise.resolve();
   let recoveryOperations: Promise<void> = Promise.resolve();
   let recoveryOperationHeld = false;
@@ -522,23 +523,27 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
       // makes a reloading reader mark both, and one repair press then deletes
       // the person's prose. Both sides are reconciled positions now, so each
       // names the occurrence its own gesture wrote or adopted.
+      const adoptedValid = validMarkerRanges(text, adoptedRanges);
       stagedRanges = validMarkerRanges(text, [
-        ...ownStagedRanges.filter((range) => held.has(range.marker)),
-        ...adoptedRanges.filter((range) => !held.has(range.marker)),
+        ...adoptedValid.filter((range) => !held.has(range.marker)),
+        ...validMarkerRanges(
+          text,
+          ownStagedRanges.filter((range) => held.has(range.marker)),
+        ),
       ]);
       // A marker the text does not spell is not in the draft: the person
       // removed it, or a removal's own write took it away, so it has no
       // provenance to travel with.
       const spelled = new Set(spelledImageMarkers(text));
       const located = new Set(stagedRanges.map((range) => range.marker));
-      // A number whose occurrence this source cannot name - a recovery merge
-      // that moved a tile's number, a composition carried in from an older
-      // build, an adoption whose ranges this source never received - still
-      // names text whose bytes that writer held, so its number travels alone.
-      // That is the legacy reading a record without ranges has always had, and
-      // it is deliberately the LAST resort: a range that names the wrong
-      // occurrence is worse than no range at all.
-      const unlocated = [...new Set([...held, ...adopted])].filter((marker) => spelled.has(marker));
+      // Only a number no range locates falls back to the number-wide reading:
+      // a writer that never recorded a position knew nothing but the number,
+      // while a vanished range means the person deleted that anchor.
+      const adoptedInText = new Set(markerNumbersOf(adoptedValid));
+      const unpositioned = [...held].filter((marker) => !positionedStagedMarkers.has(marker));
+      const unlocated = [...unpositioned, ...adopted].filter(
+        (marker) => spelled.has(marker) && !located.has(marker) && !adoptedInText.has(marker),
+      );
       staged = [...new Set([...located, ...unlocated])].sort((left, right) => left - right);
     }
     currentDraftRevisionId = writeComposerDraft(ref, {
@@ -553,27 +558,6 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     // when the write removed the record outright (undefined).
     ownedDraftRevisionIdRef.current = currentDraftRevisionId;
     ownedDraftRevisionRef.current = readDraftRevision(ref);
-  }
-  function setAdoptedImageMarkers(markers: readonly number[]): void {
-    if (disposed) return;
-    const next = [...new Set(markers)].sort((left, right) => left - right);
-    const current = state.getState().adoptedImageMarkers;
-    if (next.length === current.length && next.every((marker, index) => marker === current[index])) return;
-    // The numbers changed, so any exact positions the old set carried describe
-    // occurrences this set may no longer mean. Keep the ranges that still name
-    // a number in the new set; the caller that has better positions
-    // (setAdoptedImageRanges) supplies them.
-    const allowed = new Set(next);
-    state.setState({
-      adoptedImageMarkers: next,
-      adoptedImageRanges: state.getState().adoptedImageRanges.filter((range) => allowed.has(range.marker)),
-    });
-    // Reservations only ever GROW here. A number enters because some draft this
-    // source read named it, and it stays reserved even after the person deletes
-    // the occurrence: the editor can put it back with an undo, and reusing it
-    // for a new tile in the meantime would pair fresh bytes with a marked
-    // occurrence. Only a replaced draft retires the whole reservation set.
-    publishReservedMarkers([...new Set([...attachments.getState().reservedMarkersRef.current, ...next])]);
   }
   function setAdoptedImageRanges(ranges: readonly ImageMarkerRange[], markers?: readonly number[]): void {
     if (disposed) return;
@@ -595,6 +579,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   function setStagedImageRanges(ranges: readonly ImageMarkerRange[]): void {
     if (disposed) return;
     const exact = ranges.map((range) => ({ ...range })).sort((left, right) => left.start - right.start);
+    for (const range of exact) positionedStagedMarkers.add(range.marker);
     if (sameRanges(exact, state.getState().stagedImageRanges)) return;
     state.setState({ stagedImageRanges: exact });
   }
@@ -610,6 +595,9 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     updateSkillNames([]);
     updateSelectionMeta({ text: "", skillNames: [] });
     setStagedImageRanges([]);
+    // Tile numbering restarts at 1, so a remembered position would outlive the
+    // tile it described.
+    positionedStagedMarkers.clear();
   }
   function markRestore(): void {
     if (!disposed) state.setState((snapshot) => ({ restoreEpoch: snapshot.restoreEpoch + 1 }));
@@ -1173,7 +1161,6 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     editSkillNames,
     updateSelectionMeta,
     setActiveRecoveryId,
-    setAdoptedImageMarkers,
     setAdoptedImageRanges,
     setStagedImageRanges,
     clearAdoptedImageMarkers,
@@ -1245,7 +1232,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
           // The draft this adoption described is gone, so its numbers are free
           // again - and must be, or a replacement image could never take one.
           // A cleared draft is a replacement, not an edit, so it retires the
-          // reservations too: setAdoptedImageMarkers alone only grows them.
+          // reservations too: setAdoptedImageRanges alone only grows them.
           clearAdoptedImageMarkers();
         }
       }

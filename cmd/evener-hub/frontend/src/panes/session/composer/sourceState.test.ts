@@ -1050,6 +1050,49 @@ test("removing the only tile leaves a surviving literal of its number unmarked",
   }
 });
 
+// Deleting the staged ANCHOR is the other half of the same rule, and the tile
+// staying in the store makes it the hard one: the number is still "held", so a
+// save that reasoned from tiles alone would call the surviving literal staged.
+// Every staging gesture records the exact span it wrote, though, so a held
+// number with no surviving range is a tile whose anchor the person deleted -
+// not a fact about the text. Persisting its number alone would make the reload
+// mark the literal they kept, and one repair press would delete their prose.
+test("deleting a staged anchor while its tile remains marks no surviving literal", () => {
+  const source = createTestComposerSource("root");
+  try {
+    source.editText("[image 1] typed [image 1]");
+    source.setStagedImageRanges([{ marker: 1, start: 0, end: 9 }]);
+    source.attachments.setState({
+      items: [{ marker: 1, name: "staged.png", mediaType: "image/png", pending: false, data: "AQID" }],
+    });
+    // The editor's own deletion of the staged occurrence, reported as the exact
+    // splice it was - the same shape a keystroke takes.
+    source.editor.write(" typed [image 1]", 0, undefined, { start: 0, end: 9, insertedLength: 0 });
+
+    expect(source.editor.read().text).toBe(" typed [image 1]");
+    // The tile is still here; its anchor's occurrence is not.
+    expect(source.attachments.getState().items.map((item) => item.marker)).toEqual([1]);
+    expect(source.getSnapshot().stagedImageRanges).toEqual([]);
+    // The surviving literal is prose, so the record names no provenance for it.
+    expect(readComposerDraftSnapshot("root").stagedImageMarkers).toBeUndefined();
+    expect(readComposerDraftSnapshot("root").stagedImageRanges).toBeUndefined();
+
+    // The reload agrees: nothing is missing, so nothing is refused.
+    const reloaded = createTestComposerSource("root");
+    try {
+      expect(reloaded.getSnapshot().text).toBe(" typed [image 1]");
+      expect(reloaded.getSnapshot().adoptedImageMarkers).toEqual([]);
+      expect(unbackedImageMarkersIn(reloaded.getSnapshot().text, reloaded.getSnapshot().adoptedImageMarkers)).toEqual(
+        [],
+      );
+    } finally {
+      reloaded.dispose();
+    }
+  } finally {
+    source.dispose();
+  }
+});
+
 // The durable plane says the same thing: an autosave that carries a duplicate
 // keeps its offsets on the recovery row, and activating that row gives back a
 // source whose repair names the adopted occurrence only.
@@ -1197,7 +1240,9 @@ test("the reserved set keeps a number after the active adoption stops spelling i
   const source = createTestComposerSource("root");
   try {
     expect(source.attachments.getState().reservedMarkersRef.current).toEqual([1]);
-    source.setAdoptedImageMarkers([]);
+    // The editor reporting no adopted occurrences is how an edit that removed
+    // the only one reaches this source.
+    source.setAdoptedImageRanges([], []);
     // The active set is empty - nothing in the current text is refused.
     expect(source.getSnapshot().adoptedImageMarkers).toEqual([]);
     // ...but the number stays reserved, because the editor can put it back.

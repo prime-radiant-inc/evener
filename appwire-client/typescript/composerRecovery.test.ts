@@ -543,3 +543,49 @@ test("a recovered-side adopted rename moves only the occurrence the record locat
   expect(range).toEqual({ marker: 10, start: 103, end: 113 });
   expect(merged.text.slice(range.start, range.end)).toBe("[image 10]");
 });
+
+// Two renumberings in one merge, and the second cannot use the first's offsets.
+// The current draft spells a backed "[image 10]" and, after it, a MISSING
+// "[image 1]"; the queued message spells "[image 10]" and "[image 1]" as its
+// own prose. Detaching the backed tile renames "[image 10]" to "[image 2]",
+// which is one character SHORTER, so the missing anchor and everything after
+// it shift left. The rename that follows must look for the missing occurrence
+// at the position the text has NOW. A lookup built before the first rewrite
+// names the spot it used to occupy, so the adopted occurrence is never
+// renamed, its provenance is filtered away as no-longer-spelled, and Send
+// delivers the missing reference as ordinary text.
+test("a second rename locates its adopted occurrence after the first rewrite moved it", () => {
+  const currentText = "backed [image 10] then missing [image 1]";
+  const missingStart = currentText.indexOf("[image 1]");
+  const current: ComposerComposition<InputAttachment> = {
+    text: currentText,
+    attachments: [{ marker: 10, name: "backed.png", mediaType: "image/png", data: "BACKED_BYTES" }],
+    skillNames: [],
+    commandNames: [],
+    // The occurrence after the tile is the one whose bytes are gone.
+    adoptedImageMarkers: [1],
+    adoptedImageRanges: [{ marker: 1, start: missingStart, end: missingStart + "[image 1]".length }],
+  };
+  const queuedText = "queued [image 10] and [image 1]";
+  const recovered = recoverMutationComposition(mutationRecord([{ type: "text", text: queuedText }]));
+
+  const merged = mergeComposerCompositions(current, recovered);
+
+  // The backed marker moved off the queued literal, and the missing one moved
+  // off BOTH the queued number and the tile's old one.
+  const expectedCurrentText = "backed [image 2] then missing [image 3]";
+  expect(merged.text).toBe(`${expectedCurrentText}\n\n${queuedText}`);
+  // The queued prose keeps the numbers it named, untouched and in place.
+  expect(merged.text.endsWith(queuedText)).toBe(true);
+  expect(merged.attachments.map((item) => item.marker)).toEqual([2]);
+  // The missing occurrence still carries its provenance, at the offset it was
+  // renumbered at - not the one it occupied before the tile's rewrite.
+  expect(merged.adoptedImageMarkers).toEqual([3]);
+  const adopted = merged.adoptedImageRanges?.[0];
+  if (adopted === undefined) throw new Error("expected the missing reference to keep its provenance");
+  const adoptedStart = expectedCurrentText.indexOf("[image 3]");
+  expect(adopted).toEqual({ marker: 3, start: adoptedStart, end: adoptedStart + "[image 3]".length });
+  expect(merged.text.slice(adopted.start, adopted.end)).toBe("[image 3]");
+  // The refusal names that occurrence and not the tile that moved.
+  expect(merged.adoptedImageMarkers).not.toContain(2);
+});

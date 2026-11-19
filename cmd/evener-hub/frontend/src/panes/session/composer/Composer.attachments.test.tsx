@@ -1424,3 +1424,52 @@ test("removing a staged tile leaves a surviving literal of the same number senda
   if (call === undefined) throw new Error("expected the literal to send");
   expect(call.params).toMatchObject({ input: [{ type: "text", text: " typed [image 1]" }] });
 });
+
+// The other order: the person deletes the staged ANCHOR and leaves the tile
+// behind - a tile whose text reference is gone but which is still attached.
+// The persistence pass must not read "a tile holds this number" as "the
+// surviving occurrence was staged". The staging gesture recorded the exact
+// span it wrote, and that span is gone, so the surviving literal is prose. A
+// record that named its number anyway would mark the literal after a reload,
+// disable Send, and let one repair press delete what the person typed.
+test("deleting a staged anchor while its tile remains leaves the surviving literal sendable after a reload", async () => {
+  installCanvasStubs();
+  const user = userEvent.setup();
+  const ref = "ref_unbacked_deleted_anchor_kept_tile";
+
+  const first = await mountComposerWithHandle(ref);
+  selectEditorText(textarea(), 0);
+  pastePngInto(textarea(), "staged.png");
+  await screen.findByRole("button", { name: "View staged.png" });
+  selectEditorText(textarea(), textarea().textContent?.length ?? 0);
+  await user.paste(" typed [image 1]");
+  await waitFor(() => expect(textarea().textContent).toBe("[image 1] typed [image 1]"));
+
+  // Delete the STAGED occurrence (offsets 0..9), leaving the literal and the
+  // tile's own button in place.
+  selectEditorText(textarea(), 0, "[image 1]".length);
+  await user.keyboard("{Backspace}");
+  await waitFor(() => expect(textarea().textContent).toBe(" typed [image 1]"));
+  expect(screen.getByRole("button", { name: "View staged.png" })).toBeTruthy();
+  // The record names no provenance for the surviving literal, so it survives
+  // the reload as the prose it is.
+  expect(readComposerDraftSnapshot(ref).stagedImageMarkers).toBeUndefined();
+  expect(readComposerDraftSnapshot(ref).stagedImageRanges).toBeUndefined();
+  first.unmount();
+
+  const second = await mountComposerWithHandle(ref);
+  second.fake.on("turn/start", (params) => ({
+    receipt: appliedReceipt(params.clientMutationId, "thread_a"),
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
+  expect(textarea().textContent).toBe(" typed [image 1]");
+  // No repair is needed, so nothing is refused and Send is available.
+  expect(screen.queryByTestId("composer-unbacked-image")).toBeNull();
+  await waitFor(() => expect(submitButton().disabled).toBe(false));
+
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  const call = second.fake.calls.find((candidate) => candidate.method === "turn/start");
+  if (call === undefined) throw new Error("expected the literal to send");
+  expect(call.params).toMatchObject({ input: [{ type: "text", text: " typed [image 1]" }] });
+});
