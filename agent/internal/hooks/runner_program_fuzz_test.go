@@ -371,7 +371,7 @@ type hookRunnerProgramEventLog struct {
 	events []hookRunnerProgramEvent
 }
 
-func (l *hookRunnerProgramEventLog) add(kind events.EventKind, data events.EventData) {
+func (l *hookRunnerProgramEventLog) add(_ context.Context, kind events.EventKind, data events.EventData) {
 	var event hookRunnerProgramEvent
 	switch value := data.(type) {
 	case events.HookStartData:
@@ -435,7 +435,7 @@ func runHookRunnerProgram(t *testing.T, mode byte, token string) hookRunnerProgr
 		run:     commandRuntime.Run,
 	}
 	eventLog := &hookRunnerProgramEventLog{}
-	runner.SetEventCallback(eventLog.add)
+	runner.SetEventCallbackContext(eventLog.add)
 	runner.SetSandboxWrapper(nil)
 	addHookRunnerProgramHooks(runner, token, mode)
 
