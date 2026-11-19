@@ -249,6 +249,12 @@ func (e TokenPartEstimator) Parts(m Message) TokenParts {
 	return TokenParts{Chars: chars, Counted: counted}
 }
 
+// PartsForeignReasoning is Parts for a foreign turn: no opaque state rides.
+func (e TokenPartEstimator) PartsForeignReasoning(m Message) TokenParts {
+	e.target.stripOpaqueThinking = true
+	return e.Parts(m)
+}
+
 // TokenParts is the additive decomposition of a local token estimate.
 type TokenParts struct {
 	// Chars is the summed character count, divided by four once in Total.
@@ -415,7 +421,15 @@ func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
 				}
 			}
 		case ContentThinking, ContentRedThinking:
-			if t.protocol == registry.ProtocolOpenAIChat || t.namedChat {
+			if t.stripOpaqueThinking {
+				// The blob never rides and a reasoning-disabled row builds no
+				// item at all; the remaining plaintext bills as built.
+				if p.Kind == ContentThinking && p.Thinking != nil && !t.reasoningOff {
+					kept := *p.Thinking
+					kept.EncryptedContent = ""
+					chars += responsesReasoningChars(&kept)
+				}
+			} else if t.protocol == registry.ProtocolOpenAIChat || t.namedChat {
 				chatReasoning.add(t, p)
 			} else {
 				chars += thinkingReplayChars(t, p)
@@ -657,6 +671,7 @@ type targetInfo struct {
 	// drops images the row cannot see (#4217), so the estimate prices none.
 	seesToolResultImages bool
 	unsignedThinking     bool
+	stripOpaqueThinking  bool // a foreign turn's reasoning, priced without its opaque half
 }
 
 // vendorNameBasis is the provider name the media-family name rule may read. A

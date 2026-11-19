@@ -368,3 +368,23 @@ func TestNormalizeToolArguments(t *testing.T) {
 		t.Errorf("nil empty = %v, mismatched = %q, nil wire = %q, non-string spelling = %v / %q", n == nil, d.WireArguments(), (*ToolCallData)(nil).WireArguments(), bad, tolerated.WireArguments())
 	}
 }
+
+// TestStripOpaqueThinkingForCrossProvider: the kept part loses its blob and a
+// non-compat signature, a shape reasoningItem refuses drops, and the stored part
+// is never mutated. The wire-level cases live in the agent package.
+func TestStripOpaqueThinkingForCrossProvider(t *testing.T) {
+	t.Parallel()
+	native := []ResponsesReasoningPart{{Type: "reasoning_text", Text: "t"}}
+	stored := &ThinkingData{EncryptedContent: "enc_A", Signature: "sig_anth", ResponsesContentParts: native}
+	got, dropped := StripOpaqueThinkingForCrossProvider(ContentPart{Kind: ContentThinking, Thinking: stored})
+	if dropped || got.Thinking.EncryptedContent != "" || got.Thinking.Signature != "" {
+		t.Fatalf("got dropped=%v thinking=%+v, want the portable half without blob or signature", dropped, got.Thinking)
+	}
+	if stored.EncryptedContent != "enc_A" || stored.Signature != "sig_anth" {
+		t.Fatalf("the strip mutated the stored part: %+v", stored)
+	}
+	if _, dropped := StripOpaqueThinkingForCrossProvider(ContentPart{Kind: ContentThinking,
+		Thinking: &ThinkingData{Signature: "reasoning_content", ResponsesSummaryParts: native}}); dropped {
+		t.Fatal("a compat reasoning_details field must survive as wire continuation state")
+	}
+}
