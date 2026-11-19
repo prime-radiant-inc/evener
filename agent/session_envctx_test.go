@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -804,6 +805,8 @@ func TestEnvironmentContextRemovedFullBlockResetsAgainstRetainedChangedBlock(t *
 	}
 	seedNumberedSessionHistory(t, s, 8)
 	now = now.Add(time.Hour)
+	setProfile := func(model string) { s.mu.Lock(); s.profile = NewOpenAIProfile(model); s.mu.Unlock() }
+	setProfile("gpt-5.2-b") // a runtime fact newer than the prompt
 	if err := s.maybeAppendEnvironmentContext(); err != nil {
 		t.Fatal(err)
 	}
@@ -828,11 +831,12 @@ func TestEnvironmentContextRemovedFullBlockResetsAgainstRetainedChangedBlock(t *
 		t.Fatalf("retained environment IDs = %v, want only changed turn %s (old %s)", retainedIDs, changedID, oldID)
 	}
 	before := countEnvironmentTurns(s)
+	setProfile("gpt-5.2") // switching back is a change the prompt never stated
 	if err := s.maybeAppendEnvironmentContext(); err != nil {
 		t.Fatal(err)
 	}
-	if countEnvironmentTurns(s) != before+1 {
-		t.Fatalf("removed full context did not trigger full re-emission: before=%d after=%d", before, countEnvironmentTurns(s))
+	if b := lastTurnOfKind(t, s, schema.TurnEnvironment).Message.Text(); countEnvironmentTurns(s) != before+1 || !strings.Contains(b, "model: gpt-5.2\n") {
+		t.Fatalf("retained runtime diff did not report the switch back: before=%d after=%d\n%s", before, countEnvironmentTurns(s), b)
 	}
 }
 
@@ -887,5 +891,79 @@ func TestEnvironmentContextFirstAppendBetweenFoldSnapshotAndPublicationStaysSile
 	}
 	if got != 1 {
 		t.Fatalf("reloaded environment turns = %d, want 1", got)
+	}
+}
+
+func launchFactSession(t *testing.T, dir, provenance string) *Session {
+	return newSession(t, withDir(dir), withSteps(repeatFinalResponse(8, "ok")...), withConfig(SessionConfig{
+		StateDir: dir, CommitProvenance: provenance, AgentsDocPath: filepath.Join(dir, "AGENTS.md"),
+		testOnly: testConfig{skipGitSnapshot: true, noSyncJobStore: true, envProbes: &envctx.Probes{Now: func() time.Time { return envctxFixedTime }}},
+	}))
+}
+func TestEnvironmentBlockStatesRuntimeFactsOnce(t *testing.T) {
+	t.Parallel()
+	s := launchFactSession(t, t.TempDir(), "coauthor")
+	sendOneUserInput(t, s, "hello")
+	if b := lastTurnOfKind(t, s, schema.TurnEnvironment).Message.Text(); !strings.Contains(b, "cwd: ") || strings.Contains(b, "model: ") || strings.Contains(b, "cutoff: ") || strings.Contains(b, "trailer: ") || strings.Contains(b, "dir: ") || strings.Contains(b, "tools: ") || strings.Contains(b, "skills: ") {
+		t.Fatalf("first block restated the prompt or lost the environment: %q", b)
+	}
+	s.Close()
+	restore := func(id string) *Session {
+		r := restoreQueuePersistTestSessionWith(t, s.stateDir, id, RestoreSessionConfig{CommitProvenance: "off", testOnly: s.cfg.testOnly})
+		r.client.Register(newFakeAdapter("openai", repeatFinalResponse(4, "resumed")...))
+		t.Cleanup(r.Close)
+		return r
+	}
+	first := restore(s.ID())
+	sendOneUserInput(t, first, "resume")
+	if b := lastTurnOfKind(t, first, schema.TurnEnvironment).Message.Text(); !strings.Contains(b, "commit trailer: (disabled)") {
+		t.Fatalf("opting out recorded no disable:\n%s", b)
+	}
+	second := restore(first.ID())
+	settled := countEnvironmentTurns(second)
+	sendOneUserInput(t, second, "resume again")
+	if countEnvironmentTurns(second) != settled {
+		t.Fatal("second restore appended an environment turn")
+	}
+	second.attentionMu.Lock()
+	second.mu.Lock()
+	second.profile, second.cfg.CommitProvenance = NewOpenAIProfile("gpt-5.2-changed"), "off"
+	second.resetEnvContextTrackerLocked()
+	second.mu.Unlock()
+	second.attentionMu.Unlock()
+	if err := second.maybeAppendEnvironmentContext(); err != nil {
+		t.Fatal(err)
+	}
+	if b := lastTurnOfKind(t, second, schema.TurnEnvironment).Message.Text(); !strings.Contains(b, "model: gpt-5.2-changed") || strings.Contains(b, "knowledge cutoff: ") {
+		t.Fatalf("post-compaction block is not a launch-relative diff:\n%s", b)
+	}
+	fresh := launchFactSession(t, t.TempDir(), "")
+	fresh.mu.Lock()
+	fresh.cachedToolDefs = append(append([]llm.ToolDefinition{}, fresh.cachedToolDefs...), llm.ToolDefinition{Name: "update_goal"})
+	fresh.mu.Unlock()
+	fresh.acceptContinuationInput(context.Background(), "keep going", "")
+	if b, n := lastTurnOfKind(t, fresh, schema.TurnEnvironment).Message.Text(), len(fresh.history); !strings.Contains(b, "added tools: update_goal") ||
+		fresh.history[n-2].Kind != schema.TurnEnvironment || fresh.history[n-1].Kind != schema.TurnSteering {
+		t.Fatalf("a tool that became callable crossed no turn, or the driving prompt is not last:\n%s", b)
+	}
+	steady := countEnvironmentTurns(fresh)
+	fresh.acceptContinuationInput(context.Background(), "keep going", "")
+	if countEnvironmentTurns(fresh) != steady {
+		t.Fatal("an unchanged continuation appended an environment turn")
+	}
+	fresh.Close()
+	forkID, err := AsideSession(fresh.stateDir, fresh.ID())
+	if err != nil {
+		t.Fatalf("AsideSession: %v", err)
+	}
+	aside := restoreQueuePersistTestSessionWith(t, fresh.stateDir, forkID, RestoreSessionConfig{testOnly: fresh.cfg.testOnly})
+	aside.client.Register(newFakeAdapter("openai", repeatFinalResponse(4, "aside")...))
+	t.Cleanup(aside.Close)
+	before := len(aside.history)
+	if err := aside.maybeAppendEnvironmentContext(); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(aside.history); n > before && strings.Contains(aside.history[n-1].Message.Text(), "added tools: ") {
+		t.Fatalf("the aside re-announced launch tools as added:\n%s", aside.history[n-1].Message.Text())
 	}
 }
