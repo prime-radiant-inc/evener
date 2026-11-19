@@ -9,6 +9,7 @@ import (
 	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/internal/runetrim"
 	"primeradiant.com/evener/agent/internal/sessionlog"
+	"primeradiant.com/evener/agent/internal/sysmsg"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -59,24 +60,43 @@ func forkSummarize(ctx context.Context, cheap *cheapmodel.Caller, profile *provi
 
 // buildSummarizePrompt renders the recent turns and the summarization
 // instruction into a single prompt string for the cheap model.
+//
+// The prompt is a user-role message, and the model's own reply is quoted into
+// it: a reserved frame the reply opens would read there as a frame rather than
+// as the reply's text. Every model-authored excerpt is therefore escaped, after
+// its truncation — a cut can drop the delimiter that made a frame quoted — and
+// on the boundaries of the rendered prompt, so a fence that one excerpt leaves
+// open and a later one closes is read as the summarizer reads it. The human
+// partner's messages, the tool results and the stored turns keep every byte.
 func buildSummarizePrompt(turns []schema.Turn) string {
 	var b strings.Builder
+	// modelSpans records where the model-authored excerpts land in the finished
+	// prompt, so the escape can read the whole prompt and rewrite only those.
+	var modelSpans [][2]int
+	writeSegment := func(text string, modelAuthored bool) {
+		start := b.Len()
+		b.WriteString(text)
+		if modelAuthored {
+			modelSpans = append(modelSpans, [2]int{start, b.Len()})
+		}
+	}
 	b.WriteString("Summarize the most recent action in this coding agent session.\n\n")
 	b.WriteString("Recent conversation:\n")
 
 	for _, t := range turns {
 		switch t.Kind {
 		case schema.TurnUserInput:
-			b.WriteString("User: ")
-			b.WriteString(truncate(t.Message.Text(), 500))
-			b.WriteString("\n")
+			// An input turn another agent wrote reads in the partner's channel
+			// without being their words; an unstamped or human-stamped turn is
+			// their own and keeps its bytes.
+			writeSegment("User: "+truncate(t.Message.Text(), 500)+"\n", isAgentAuthored(t))
 		case schema.TurnAssistant:
-			b.WriteString("Assistant: ")
-			b.WriteString(truncate(t.Message.Text(), 500))
-			b.WriteString("\n")
+			// The label is this package's text, but it shares the line with the
+			// reply's first line, so both are one excerpt to the escape.
+			writeSegment("Assistant: "+truncate(t.Message.Text(), 500)+"\n", true)
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolCall && p.ToolCall != nil {
-					fmt.Fprintf(&b, "  [tool_call: %s(%s)]\n", p.ToolCall.Name, truncate(string(p.ToolCall.Arguments), 200))
+					writeSegment("  [tool_call: "+p.ToolCall.Name+"("+truncate(string(p.ToolCall.Arguments), 200)+")]\n", true)
 				}
 			}
 		case schema.TurnTool, schema.TurnToolResults:
@@ -91,9 +111,9 @@ func buildSummarizePrompt(turns []schema.Turn) string {
 				}
 			}
 		case schema.TurnSteering:
-			b.WriteString("System: ")
-			b.WriteString(truncate(t.Message.Text(), 200))
-			b.WriteString("\n")
+			// A parent agent's steer or an agent-authored one is model text too;
+			// the human partner's steer is theirs.
+			writeSegment("System: "+truncate(t.Message.Text(), 200)+"\n", isParentSteering(t) || isAgentAuthored(t))
 		}
 	}
 
@@ -112,7 +132,56 @@ IMPORTANT: If the action failed, you MUST:
 
 Respond with ONLY the JSON object, no markdown formatting.
 `)
+	return escapePromptModelSpans(b.String(), modelSpans)
+}
+
+// escapePromptModelSpans returns prompt with the model-authored spans escaped
+// and every other byte kept.
+//
+// The escape is computed once over the whole prompt, so it reads the fence and
+// list state the summarizer will read, and so "an answer line follows" is
+// answered for the prompt rather than for one excerpt. Only the lines inside
+// modelSpans are taken from its result: the human partner's messages and the
+// tool results are the authority and keep their bytes.
+//
+// The escape rewrites a frame's opening character and never adds or removes a
+// line break, so the escaped prompt has exactly the lines the original has and
+// the two are read together, line by line.
+func escapePromptModelSpans(prompt string, modelSpans [][2]int) string {
+	escaped := sysmsg.EscapeModelAuthoredFrames(prompt)
+	if escaped == prompt {
+		return prompt
+	}
+	original := strings.SplitAfter(prompt, "\n")
+	lines := strings.SplitAfter(escaped, "\n")
+	if len(lines) != len(original) {
+		// The scan changed the line structure; keep the prompt as rendered
+		// rather than splice lines that no longer correspond.
+		return prompt
+	}
+	var b strings.Builder
+	b.Grow(len(escaped))
+	offset := 0
+	for i, line := range original {
+		if inModelSpan(modelSpans, offset) {
+			b.WriteString(lines[i])
+		} else {
+			b.WriteString(line)
+		}
+		offset += len(line)
+	}
 	return b.String()
+}
+
+// inModelSpan reports whether the line starting at offset is inside one of the
+// model-authored spans. Spans start and end on line boundaries.
+func inModelSpan(spans [][2]int, offset int) bool {
+	for _, span := range spans {
+		if offset >= span[0] && offset < span[1] {
+			return true
+		}
+	}
+	return false
 }
 
 // truncate shortens s to limit characters, appending "..." if truncated.

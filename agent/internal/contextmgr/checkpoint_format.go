@@ -583,13 +583,19 @@ func withoutMarkdownSection(text, heading string) string {
 
 // markdownSectionSpan locates heading's section in text: start is where the
 // heading line begins, body where the section body begins, and end where the
-// next top-level "## " (or [END CHECKPOINT]) line begins. Both the heading and
-// the end are looked for only OUTSIDE fenced code blocks. Rendered entries are
+// next top-level "## " (or the turn's closing [END CHECKPOINT] or [END SUMMARY])
+// line begins. Both the heading and the end are looked for only OUTSIDE fenced
+// code blocks. Rendered entries are
 // fenced and legitimately contain lines like "## 0" (a user message), a pasted
 // "## Earlier Summaries", or an earlier summary's own "## Working Notes"; a
 // fence-blind scan would take those for section boundaries and misread the
 // checkpoint on a render/extract round-trip. This mirrors the fence tracking
 // parseMarkdownBlocks applies to the section body.
+//
+// A summary turn whose carry is empty writes its closing marker directly after
+// the fenced model text. Recognizing that marker is what keeps it out of the
+// section body, so the body still holds exactly the one fenced block the
+// renderer wrote.
 func markdownSectionSpan(text, heading string) (start, body, end int, ok bool) {
 	var fence mdfence.Tracker
 	start = -1
@@ -607,7 +613,7 @@ func markdownSectionSpan(text, heading string) (start, body, end int, ok bool) {
 				start, body = offset, offset+len(line)
 			}
 		// The body's first line never ends the section.
-		case offset > body && (strings.HasPrefix(content, "## ") || strings.HasPrefix(content, "[END CHECKPOINT]")):
+		case offset > body && (strings.HasPrefix(content, "## ") || strings.HasPrefix(content, "[END CHECKPOINT]") || strings.HasPrefix(content, summaryMarkerEnd)):
 			return start, body, offset, true
 		}
 		offset += len(line)

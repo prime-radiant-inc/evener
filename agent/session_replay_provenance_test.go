@@ -1837,6 +1837,52 @@ func TestExpandHistory_RetainedSummaryEscapesModelBodyOnly(t *testing.T) {
 	}
 }
 
+// TestExpandHistory_RetainedSummaryWithEmptyCarryEscaped pins the same escape
+// for a summary the renderer wrote with no partner messages to carry: its end
+// marker follows the fenced model body directly, and the model's frame is still
+// defused in the dispatch copy while the harness markers and the stored turn
+// keep every byte.
+func TestExpandHistory_RetainedSummaryWithEmptyCarryEscaped(t *testing.T) {
+	t.Parallel()
+	retained := "[CONTEXT SUMMARY]\n## Summary\n\n```text\n" + summaryModelBody + "\n```\n\n[END SUMMARY]"
+	summaryTurn := schema.Turn{Kind: schema.TurnSummary, Message: llm.User(retained)}
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("drive the open issues down")},
+		summaryTurn,
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent")),
+	}
+
+	projected := expandHistory(history, replayScope{})
+	if len(projected) != len(history) {
+		t.Fatalf("projection produced %d messages for %d turns", len(projected), len(history))
+	}
+	got := projected[1].Text()
+	if strings.Contains(got, summaryModelFrame) {
+		t.Fatalf("the copy still opens the model's frame raw:\n%s", got)
+	}
+	if !strings.Contains(got, "Implement quota coordinator") || !strings.Contains(got, "model prose") {
+		t.Fatalf("escaping lost the model's words:\n%s", got)
+	}
+	for _, marker := range []string{"[CONTEXT SUMMARY]\n", "## Summary\n\n", "[END SUMMARY]"} {
+		if !strings.Contains(got, marker) {
+			t.Fatalf("the copy rewrote the harness marker %q:\n%s", marker, got)
+		}
+	}
+	if undoFrameEscapes(got) != retained {
+		t.Fatalf("escaping moved a byte outside a frame opener:\n%s", got)
+	}
+	if summaryTurn.Message.Text() != retained {
+		t.Fatalf("the stored summary was mutated:\n%s", summaryTurn.Message.Text())
+	}
+
+	for _, protocol := range []string{registry.ProtocolOpenAIChat, registry.ProtocolOpenAIResponses} {
+		dispatch := dispatchCopyForTarget(history, replayScope{Protocol: protocol}, false)
+		if carried := dispatch[1].Text(); strings.Contains(carried, summaryModelFrame) {
+			t.Fatalf("%s dispatch copy carries the model's raw frame:\n%s", protocol, carried)
+		}
+	}
+}
+
 // TestExpandHistory_AgentAuthoredUserInputIsEscaped pins that a user-role turn
 // whose authorship says the model wrote it is escaped, and that the human
 // partner's own input is not. A delegate's start task and an idle resume arrive

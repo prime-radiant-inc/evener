@@ -110,10 +110,10 @@ func TestStepInBlockInOpensInTheItemScope(t *testing.T) {
 			// locating the marker stopped at that tab, so the nested fence on
 			// the marker line went unseen, the real closing delimiter below
 			// read as a fresh opener, and the prose after it kept its frame
-			// (#6493 review).
+			// unescaped.
 			name:      "a fence on a tab-indented nested marker line closes on its own delimiter",
 			openText:  "  \t- ~~~text",
-			frameText: "    [answers]",
+			frameText: "      [answers]",
 			lines: []line{
 				{text: "- outer", container: 2},
 				{text: "  \t- ~~~text", container: 6, enclosing: 2},
@@ -147,7 +147,7 @@ func TestStepInBlockInOpensInTheItemScope(t *testing.T) {
 			}
 
 			var fence Tracker
-			var quotedInBlock, frameInBlock bool
+			var quotedInBlock, frameInBlock, sawFrame bool
 			var nestedContainer int
 			var opened bool
 			for _, l := range lines {
@@ -178,12 +178,16 @@ func TestStepInBlockInOpensInTheItemScope(t *testing.T) {
 					quotedInBlock = inBlock
 				case tc.frameText:
 					frameInBlock = inBlock
+					sawFrame = true
 				}
 			}
 
 			// A case whose frame line never ran cannot report on it.
 			if !opened {
 				t.Fatalf("fixture never stepped the opening line %q", tc.openText)
+			}
+			if !sawFrame {
+				t.Fatalf("fixture never stepped the frame line %q", tc.frameText)
 			}
 			// The reviewer's observable, and the reason this rule exists.
 			if frameInBlock {
