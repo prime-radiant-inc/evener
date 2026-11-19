@@ -497,16 +497,19 @@ export interface ThreadModel {
   // reasoning, tool call) - see reducer.ts's applyNotification.
   modelRetry?: ModelRetryState;
   // The instant a model call waiting out a provider usage limit resumes by
-  // itself, as an ISO string (wire: EvenerThread.Failure.ResumesAt, an epoch-ms
-  // instant; absent for any failure that is not a wait, for a usage limit with
-  // no known reset, and once the wait ends). A read is its ONLY producer: the
-  // daemon samples its live quota wait into the same failure summary a failed
-  // turn uses (agent/session_state.go's RestingFailure), and the thread read
-  // carries it on a WORKING thread - so a session that reloads can still say
-  // when its call resumes, where the ephemeral modelRetry above cannot.
-  // Snapshot-only, like the evener.* fields below: hydrateThread sets it and
-  // nothing pushes it live; the next read refreshes it (and clears it with an
-  // explicit undefined when that read's failure names no resume time).
+  // itself, as an ISO string (wire: EvenerThread.Failure.ResumesAt, an
+  // epoch-ms instant; absent for any failure that is not a wait, for a usage
+  // limit with no known reset, and once the wait ends). Two producers: the
+  // thread read's failure summary — the daemon samples its live quota wait
+  // into the same failure summary a failed turn uses
+  // (agent/session_state.go's RestingFailure) and carries it on a WORKING
+  // thread, so a session that reloads can still say when its call resumes —
+  // and a stamped live start announcement, which names the same instant as
+  // its own resumesAt so a pane already open when the limit hits holds the
+  // absolute deadline too. Only a legacy unstamped announcement (an older
+  // daemon) leaves the receipt-clock delay as the fallback. The next read
+  // refreshes the instant, and clears it with an explicit undefined when
+  // that read's failure names no resume time.
   quotaResumesAt?: string;
   // The identity of the wait quotaResumesAt names: the daemon-issued
   // waitStartedAt sequence the wait's start announcement and the read's

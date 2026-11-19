@@ -372,11 +372,15 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
         model.runningTurnId !== undefined &&
         n.params.activeTurnId !== model.runningTurnId;
       const waitEndsHere = status.type !== "active" || replacedTurn;
-      // The turn this terminal frame says it ended — its own endedTurnId —
-      // or, failing that, the running turn the model already shows. A wait
-      // whose chip names a different turn than the one ending is another
-      // turn's word and survives.
-      const endedTurnId = n.params.endedTurnId ?? (status.type === "active" ? undefined : model.runningTurnId);
+      // The turn this frame ended: a terminal frame's own endedTurnId, or
+      // the running turn it leaves; a replacement ends the PREVIOUSLY running
+      // turn — the frame has no endedTurnId, and the model's running turn is
+      // still the replaced one at this point. A wait whose chip names a
+      // different turn than the one ending is another turn's word and
+      // survives.
+      const endedTurnId =
+        n.params.endedTurnId ??
+        (status.type === "active" ? (replacedTurn ? model.runningTurnId : undefined) : model.runningTurnId);
       const endedWaitChip =
         waitEndsHere &&
         heldChip !== undefined &&
@@ -709,14 +713,24 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
       // not an absolute time, and this client's clock is not the daemon's.
       if (heldStamp > 0) return model;
       // Ownership first, before anything changes — but only where there is a
-      // wait to own. A legacy frame naming a different turn than the held
-      // legacy wait's own may not install its chip over that wait, or the
-      // stale chip would make the held turn's own wake fail this same check
-      // and leave the countdown standing. With no wait held, the frame is the
-      // first word about its turn and installs freely.
-      const heldLegacyWait = model.modelRetry !== undefined && model.modelRetry.errorClass === "quota_exceeded";
+      // wait to own: a read-set deadline, a chip, or both. A legacy frame
+      // naming a different turn than the held wait's own may not install its
+      // chip over that wait, or the stale chip would make the held turn's own
+      // wake fail this same check and leave the countdown standing. Which
+      // turn owns the held wait: the snapshot's running turn while the
+      // read's deadline stands (the wait is the snapshot's word — the chip
+      // beside it can be another turn's stale leftover), the chip's turn
+      // only for a chip-only wait no deadline ever named. With no wait held,
+      // the frame is the first word about its turn and installs freely.
+      const heldLegacyWait =
+        model.quotaResumesAt !== undefined ||
+        (model.modelRetry !== undefined && model.modelRetry.errorClass === "quota_exceeded");
       if (heldLegacyWait && params.turnId !== undefined) {
-        const ownsHeldTurn = params.turnId === (model.modelRetry?.turnId ?? model.runningTurnId);
+        const waitOwnerTurn =
+          model.quotaResumesAt !== undefined && model.runningTurnId !== undefined
+            ? model.runningTurnId
+            : (model.modelRetry?.turnId ?? model.runningTurnId);
+        const ownsHeldTurn = waitOwnerTurn === undefined || params.turnId === waitOwnerTurn;
         if (!ownsHeldTurn) return model;
       }
       // No lastFrameAt restamp on purpose — see ThreadModel.modelRetry. The

@@ -1063,7 +1063,7 @@ export function applyReadResponse<M extends ThreadModel>(
   // verdict may drop the held chip: the equal-stamp refresh keeps the chip
   // and its receipt time, an ordinary retry is not this reconciliation's to
   // retire, and the wait-free clear below keeps its own long-standing rule.
-  const quotaWait = reconcileQuotaWait(model, fields, postCutWaitStamps);
+  const quotaWait = reconcileQuotaWait(model, { ...fields, bootGeneration: resp.bootGeneration }, postCutWaitStamps);
   const retireQuotaRetry = quotaWait.retireChip === true;
   const { modelRetry: _retainedRetry, ...baseWithoutRetry } = base;
   const carried = retireQuotaRetry ? baseWithoutRetry : base;
@@ -1159,7 +1159,7 @@ interface QuotaWaitFields {
 }
 function reconcileQuotaWait(
   held: ThreadModel,
-  fresh: { instanceId?: string; quotaResumesAt?: string; quotaWaitStartedAt?: number },
+  fresh: { instanceId?: string; bootGeneration?: string; quotaResumesAt?: string; quotaWaitStartedAt?: number },
   postCutWaitStamps?: ReadonlySet<number>,
 ): QuotaWaitFields {
   // A start the POST-CUT tail already installed: the read's cut predates it,
@@ -1172,12 +1172,18 @@ function reconcileQuotaWait(
     postCutWaitStamps.has(held.quotaWaitStartedAt ?? 0);
   // Wait stamps are a per-runtime sequence: a cold-restored daemon mints them
   // from 1 again, so a fresh runtime's stamp must never be compared against
-  // the previous runtime's. The read names the runtime (EvenerThread.
-  // instanceId); a changed instance voids every stamp the previous runtime
-  // left before any comparison runs. An absent id (an older daemon, or a
-  // hand-built model) keeps the unscoped behavior.
+  // the previous runtime's. The read names the runtime two ways: a changed
+  // instance id (a restored delegate behind a new runtime) or a changed boot
+  // generation (a daemon restart resuming the same session keeps its
+  // instanceId but restarts the numbering — issue #6933's companion). Either
+  // change voids every stamp the previous runtime left before any comparison
+  // runs. Absent values (an older daemon, or a hand-built model) keep the
+  // unscoped behavior.
   const runtimeChanged =
-    fresh.instanceId !== undefined && held.instanceId !== undefined && fresh.instanceId !== held.instanceId;
+    (fresh.instanceId !== undefined && held.instanceId !== undefined && fresh.instanceId !== held.instanceId) ||
+    (fresh.bootGeneration !== undefined &&
+      held.history?.bootGeneration !== undefined &&
+      fresh.bootGeneration !== held.history.bootGeneration);
   const heldStamp = runtimeChanged ? 0 : (held.quotaWaitStartedAt ?? 0);
   const readStamp = fresh.quotaWaitStartedAt ?? 0;
   const endedStamp = runtimeChanged ? 0 : (held.quotaWaitEndedStamp ?? 0);
@@ -1229,13 +1235,16 @@ function reconcileQuotaWait(
       retireChip: false,
     };
   }
-  // The read names no wait. A held stamped wait ends here — the snapshot is
-  // authoritative for presence — and its stamp survives as the retirement
-  // marker, taking its chip with it. A legacy unstamped wait ends the same
-  // way — the read is the authority on presence whatever stamped the wait.
-  // A model holding no quota wait keeps every chip it has: an ordinary
-  // provider retry is not this reconciliation's to retire.
+  // The read names no STAMPED wait. A read that still carries an unstamped
+  // deadline (a legacy daemon's failure summary) speaks for that wait: the
+  // held chip retires — the read is the authority on presence whatever
+  // stamped the wait — and the read's own deadline stands. A read naming no
+  // wait at all ends a held stamped wait here, its stamp surviving as the
+  // retirement marker, chip and all. A model holding no quota wait keeps
+  // every chip it has: an ordinary provider retry is not this
+  // reconciliation's to retire.
   const heldQuotaChip = held.modelRetry?.errorClass === "quota_exceeded";
+  const readNamesLegacyWait = fresh.quotaResumesAt !== undefined;
   if (runtimeChanged && (heldStamp > 0 || held.quotaWaitEndedStamp !== undefined)) {
     // The previous runtime's stamps die with it — held and ended alike: the
     // restored daemon's sequence starts over, so no old stamp may outlive
@@ -1256,7 +1265,12 @@ function reconcileQuotaWait(
     };
   }
   if (held.modelRetry !== undefined && heldQuotaChip) {
-    // The legacy unstamped wait: no stamp to record, same retirement.
+    if (readNamesLegacyWait) {
+      // The read's own unstamped wait replaces the held one: same legacy
+      // shape, the read's deadline, no stamp to record.
+      return { quotaResumesAt: fresh.quotaResumesAt, quotaWaitStartedAt: undefined, retireChip: true };
+    }
+    // No wait on the read: the legacy unstamped wait ends, same retirement.
     return { quotaResumesAt: undefined, quotaWaitStartedAt: undefined, retireChip: true };
   }
   return {
@@ -1387,7 +1401,11 @@ export function applyReadModel<M extends ThreadModel>(
   // summary, ordered by stamp against what the model holds. Only the
   // helper's explicit retireChip verdict may drop the held chip — an
   // equal-stamp refresh keeps it, and an ordinary retry is untouched.
-  const quotaWait = reconcileQuotaWait(model, fresh, postCutWaitStamps);
+  const quotaWait = reconcileQuotaWait(
+    model,
+    { ...fresh, bootGeneration: fresh.history?.bootGeneration },
+    postCutWaitStamps,
+  );
   const retireQuotaRetry = quotaWait.retireChip === true;
   const { modelRetry: _retainedRetry, ...baseWithoutRetry } = base;
   const carried = retireQuotaRetry ? baseWithoutRetry : base;

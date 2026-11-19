@@ -3529,6 +3529,38 @@ test("a terminal status keeps an ordinary retry's zero-delay progress state", ()
   expect(stopped.modelRetry?.errorClass).toBe("server_error");
 });
 
+// Scenario 7's live half: an A→B replacement (an active frame naming a new
+// turn, no idle between) retires the replaced turn's wait as one unit — the
+// frame carries no endedTurnId, so the ended turn is the PREVIOUSLY running
+// one — deadline, stamp, and A's own positive-delay chip together. B's
+// zero-delay progress state, had B announced one, is ordinary retry behavior
+// and survives.
+test("an A-to-B replacement clears the replaced turn's chip with its wait", () => {
+  const resumesAt = Date.parse("2026-11-07T14:30:00Z");
+  let model = testHydrateV6({ status: { type: "active" }, evener: { activeTurnId: "turn_a" } });
+  expect(model.runningTurnId).toBe("turn_a");
+  model = applyNotification(
+    model,
+    quotaRetry({ waitStartedAt: 4, resumesAt, turnId: "turn_a", model: "wait/model" }),
+    2000,
+  );
+  expect(model.modelRetry?.model).toBe("wait/model");
+
+  const replaced = applyNotification(
+    model,
+    {
+      method: "thread/status/changed",
+      params: { threadId: "thr_t", ref: "ref_t", status: { type: "active" }, activeTurnId: "turn_b" },
+    },
+    3000,
+  );
+  expect(replaced.quotaResumesAt).toBeUndefined();
+  expect(replaced.quotaWaitStartedAt).toBeUndefined();
+  expect(replaced.quotaWaitEndedStamp).toBe(4);
+  expect(replaced.modelRetry).toBeUndefined();
+  expect(replaced.runningTurnId).toBe("turn_b");
+});
+
 // A legacy unstamped frame naming a DIFFERENT turn may not install its chip
 // over a held legacy wait: the stale chip would make the held turn's own wake
 // fail the ownership check and leave the countdown standing. Ownership is
@@ -3553,6 +3585,47 @@ test("a legacy frame for a different turn leaves the held legacy wait alone", ()
   const woken = applyNotification(otherTurn, quotaRetry({ delayMs: 0, turnId: "turn_1" }), 2200);
   expect(woken.quotaResumesAt).toBeUndefined();
   expect(woken.modelRetry?.turnId).toBe("turn_1");
+});
+
+// The legacy read's wait belongs to the SNAPSHOT's running turn: a legacy
+// deadline from the read names the wait's turn even when the chip beside it
+// is another turn's stale leftover, and B's own wake clears B's wait. The
+// chip's turn decides only when no deadline was ever set (chip-only).
+test("a legacy wake clears the read's wait against the snapshot's running turn", () => {
+  const resumesAt = Date.parse("2026-11-07T14:30:00Z");
+  // A's chip lingers from A's turn; the read that follows the A→B
+  // replacement carries B's wait, so the deadline names B.
+  let model = testHydrate({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } });
+  model = applyNotification(model, quotaRetry({ turnId: "turn_1" }), 2000);
+  model = applyNotification(
+    model,
+    {
+      method: "thread/status/changed",
+      params: { threadId: "thr_t", ref: "ref_t", status: { type: "active" }, activeTurnId: "turn_2" },
+    },
+    2100,
+  );
+  model = applyReadResponse(
+    model,
+    {
+      thread: testThread({
+        status: { type: "active" },
+        evener: { activeTurnId: "turn_2", failure: { title: "Usage limit reached", resumesAt } },
+      }),
+    },
+    2150,
+  );
+  expect(model.quotaResumesAt).toBe(new Date(resumesAt).toISOString());
+
+  // A buffered start from A (unstamped, legacy): refused — A does not own
+  // the snapshot's running turn.
+  const staleStart = applyNotification(model, quotaRetry({ turnId: "turn_1" }), 2200);
+  expect(staleStart.quotaResumesAt).toBe(new Date(resumesAt).toISOString());
+  expect(staleStart.modelRetry?.turnId).toBeUndefined();
+
+  // B's own wake clears B's wait.
+  const woken = applyNotification(staleStart, quotaRetry({ delayMs: 0, turnId: "turn_2" }), 2300);
+  expect(woken.quotaResumesAt).toBeUndefined();
 });
 
 // A delegate's runtime can be cold-restored: the restored daemon mints wait
@@ -3592,6 +3665,44 @@ test("a changed runtime identity voids the previous runtime's wait stamps", () =
   );
   expect(restarted.quotaWaitStartedAt).toBe(1);
   expect(restarted.quotaResumesAt).toBe(new Date(resumesAt + 7_200_000).toISOString());
+});
+
+// A daemon restart resuming the same session keeps its instanceId but bumps
+// the boot generation and restarts wait numbering (issue #6933's companion:
+// that issue fixes the allocation; this pins the client's guard). The read's
+// boot generation clears the previous boot's stamps before the new boot's
+// first wait reconciles.
+test("a changed boot generation voids the previous boot's wait stamps at the same instance", () => {
+  const resumesAt = Date.parse("2026-11-07T14:30:00Z");
+  let model = testHydrateV6({
+    status: { type: "active" },
+    evener: { activeTurnId: "turn_1", instanceId: "inst_same" },
+  });
+  expect(model.history?.bootGeneration).toBe("");
+  model = applyNotification(model, quotaRetry({ waitStartedAt: 1, resumesAt, turnId: "turn_1" }), 2000);
+  model = applyNotification(model, quotaRetry({ delayMs: 0, waitStartedAt: 1, turnId: "turn_1" }), 3000);
+  expect(model.quotaWaitEndedStamp).toBe(1);
+
+  // The restart: same instance, new boot generation, wait numbering restarted.
+  const restartedRead = {
+    thread: testThread({
+      status: { type: "active" },
+      evener: { activeTurnId: "turn_2", instanceId: "inst_same" },
+    }),
+    bootGeneration: "boot-2",
+    epoch: 0,
+    snapshot: { incarnation: "inc-1", length: 1 },
+  } as ThreadReadResponse;
+  const afterRead = applyReadResponse(model, restartedRead, 3500);
+  expect(afterRead.quotaWaitEndedStamp).toBeUndefined();
+
+  const restarted = applyNotification(
+    afterRead,
+    quotaRetry({ waitStartedAt: 1, resumesAt: resumesAt + 3_600_000, turnId: "turn_2" }),
+    4000,
+  );
+  expect(restarted.quotaWaitStartedAt).toBe(1);
+  expect(restarted.quotaResumesAt).toBe(new Date(resumesAt + 3_600_000).toISOString());
 });
 
 // Deleted: "modelRetry clears when its turn completes" and "modelRetry

@@ -1161,8 +1161,18 @@ export class TranscriptRepository {
       }
       return;
     }
-    this.#reconcilePrecutQuotaTransitions(notifications, context);
+    // Admissibility first, against the adopted snapshot only; then one replay
+    // pass in delivery order, quota transitions and enrichment alike. An
+    // output update accepted between a wait's start and its wake must not
+    // land between them: applying quota frames in an earlier pass than the
+    // history around them lets the update's chip-clearing rule strip a chip
+    // the wait's own start had just installed, in the wrong order.
+    const admitted = this.#admitPrecutQuotaTransitions(notifications);
     for (const notification of notifications) {
+      if (admitted.has(notification)) {
+        this.accept(notification, context);
+        continue;
+      }
       this.#acceptPrecutEnrichment(notification, context, responseOverlayKeys);
     }
   }
@@ -1193,17 +1203,19 @@ export class TranscriptRepository {
     }
   }
 
-  // Folds the buffer's quota-wait and turn-status frames into transitions,
-  // then reconciles each against the adopted snapshot. The fold answers one
-  // question per transition — who supplies turn ownership — and the
-  // reconciliation never infers it: a terminal status carries its own
-  // endedTurnId, and a frame with none preserves the snapshot's running turn.
-  // No frame is admitted or rejected by pairing it with another: the buffer
-  // is folded FIRST (a same-buffer start+wake pair is one cancellation), and
-  // each resulting transition stands on its own facts against the snapshot.
-  #reconcilePrecutQuotaTransitions(notifications: readonly AnyNotification[], context: { lifetime: number }): void {
+  // Decides which of the buffer's quota-wait and turn-status frames the
+  // adopted snapshot admits, and returns exactly those frames. The fold
+  // answers one question per transition — who supplies turn ownership — and
+  // the reconciliation never infers it: a terminal status carries its own
+  // endedTurnId, and a frame with none preserves the snapshot's running
+  // turn. No frame is admitted or rejected by pairing it with another: the
+  // buffer is folded FIRST (a same-buffer start+wake pair is one
+  // cancellation), and each resulting transition stands on its own facts
+  // against the snapshot. Pure over the snapshot: the caller replays the
+  // admitted frames in delivery order.
+  #admitPrecutQuotaTransitions(notifications: readonly AnyNotification[]): Set<AnyNotification> {
     const snapshot = this.#model;
-    if (!snapshot) return;
+    if (!snapshot) return new Set();
     // The fold's own running-turn history: each buffered active frame that
     // named a different turn than the one before it records a replacement,
     // so a terminal status whose endedTurnId names a replaced turn is
@@ -1217,12 +1229,13 @@ export class TranscriptRepository {
       if (bufferedRunningTurn !== undefined) replacedTurns.add(bufferedRunningTurn);
       bufferedRunningTurn = params.activeTurnId;
     }
+    const admitted = new Set<AnyNotification>();
     for (const notification of notifications) {
-      // Re-read the model each iteration: an applied transition mutates the
-      // snapshot, and the next frame reconciles against what the buffer has
-      // actually done so far, never against a stale capture.
-      const model = this.#model;
-      if (!model) return;
+      // Admissibility reads the ADOPTED SNAPSHOT, never the state a prior
+      // admitted frame would have produced: the replay pass applies frames in
+      // delivery order, and the reducer's own stamp ordering decides the
+      // same-buffer facts there (a start followed by its wake, a stale start
+      // after its wake — each stands or falls on the snapshot's word).
       if (notification.method === "thread/status/changed") {
         const params = notification.params as { activeTurnId?: string; endedTurnId?: string };
         // Establishment and replacement are post-cut transitions: an idle
@@ -1233,9 +1246,9 @@ export class TranscriptRepository {
         // end that turn pre-cut.
         if (params.activeTurnId !== undefined) continue;
         if (params.endedTurnId === undefined) continue;
-        if (params.endedTurnId !== model.runningTurnId) continue;
+        if (params.endedTurnId !== snapshot.runningTurnId) continue;
         if (replacedTurns.has(params.endedTurnId)) continue;
-        this.accept(notification, context);
+        admitted.add(notification);
         continue;
       }
       if (notification.method === "evener/thread/modelRetry") {
@@ -1245,12 +1258,12 @@ export class TranscriptRepository {
           waitStartedAt?: number;
         };
         if (params.errorClass !== "quota_exceeded") {
-          this.accept(notification, context);
+          admitted.add(notification);
           continue;
         }
         const stamp = params.waitStartedAt ?? 0;
-        const heldStamp = model.quotaWaitStartedAt ?? 0;
-        const snapshotHoldsWait = model.quotaResumesAt !== undefined || heldStamp > 0;
+        const heldStamp = snapshot.quotaWaitStartedAt ?? 0;
+        const snapshotHoldsWait = snapshot.quotaResumesAt !== undefined || heldStamp > 0;
         if (params.delayMs > 0) {
           // A start. The snapshot is authoritative for wait PRESENCE too: a
           // wait-free snapshot already reflects the wait's end, so a start
@@ -1260,7 +1273,7 @@ export class TranscriptRepository {
           // news.
           if (!snapshotHoldsWait) continue;
           if (stamp !== heldStamp) continue;
-          this.accept(notification, context);
+          admitted.add(notification);
           continue;
         }
         // A wake: matching the snapshot's held wait clears it whole; a wake
@@ -1271,12 +1284,13 @@ export class TranscriptRepository {
           // Not the held wait. Record the ended stamp only — the reducer's
           // own fold already knows a wake for an unheld wait contributes
           // exactly that.
-          this.accept(notification, context);
+          admitted.add(notification);
           continue;
         }
-        this.accept(notification, context);
+        admitted.add(notification);
       }
     }
+    return admitted;
   }
 
   #withoutResolvedEscalations(model: ThreadModel): ThreadModel {

@@ -5776,3 +5776,41 @@ it("a wait-free read does not end a wait the post-cut tail already started", asy
   await owner.settled();
   owner.dispose();
 });
+
+// Pre-cut replay order: an accepted output update outside the read's window
+// delivered BEFORE the wait's matching start must not land after it. The
+// start is the buffer's own word that the wait stood at delivery time, so
+// replaying in delivery order keeps the chip (model tag, elapsed) the start
+// installed — an earlier pass that applied quota frames first let the older
+// update's chip-clearing rule delete the newer start's chip.
+it("a pre-cut output update before a matching start does not strip the start's chip", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const deadline = Date.parse("2026-11-07T14:30:00Z");
+  expect(
+    owner.acceptRead(quotaRead({ waitStartedAt: 31, resumesAt: deadline, activeTurnId: "turn_1" }), {
+      lifetime: 1,
+      readId: "cut-order",
+      boundary: "cut-order",
+    }),
+  ).toBe(true);
+  expect(owner.getSnapshot()?.quotaWaitStartedAt).toBe(31);
+
+  owner.acceptBeforeReadCut(
+    [
+      // The output update arrives first (an item outside the read's window),
+      // then the wait's start re-announcing the same stamp with its chip.
+      historyUpdate("quota-order-output", 9),
+      quotaRetryFrame({ waitStartedAt: 31, resumesAt: deadline, turnId: "turn_1", model: "wait/model" }),
+    ],
+    { lifetime: 1, adoptedRead: true },
+  );
+
+  const model = owner.getSnapshot();
+  expect(model?.modelRetry?.model).toBe("wait/model");
+  expect(model?.quotaWaitStartedAt).toBe(31);
+  expect(model?.quotaResumesAt).toBe(new Date(deadline).toISOString());
+  await owner.settled();
+  owner.dispose();
+});
