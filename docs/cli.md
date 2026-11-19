@@ -242,6 +242,10 @@ runtime meaning across flags.
 
 Negative numeric parser defaults defer to runtime defaults described above. Boolean flags default to false unless shown otherwise. Repeatable path options add entries rather than accepting a JSON array.
 
+A fresh session reads `--system-prompt-append` files at startup and keeps the
+resulting system prompt for later tool rounds and inputs. Start a fresh session
+to pick up edits to those files.
+
 `--ask-responder` executes a shell command and can disclose questions to it. The command must validate its input, protect secrets and fail closed when it cannot answer. Do not use an unconditional approval script.
 
 Sources: [`main.go`](../cmd/evener/main.go), [`run.go`](../cmd/evener/run.go), [`serve.go`](../cmd/evener/serve.go), and [`cliprompt`](../cmd/evener/internal/cliprompt/cliprompt.go).

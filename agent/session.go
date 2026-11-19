@@ -1409,6 +1409,7 @@ type Session struct {
 
 	systemPromptOverride string
 	cachedSystemPrompt   string
+	systemPromptFrozen   bool
 	promptSourceLog      []promptSource
 }
 

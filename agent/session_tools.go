@@ -116,7 +116,7 @@ func (s *Session) registerTool(name, description string, params map[string]any, 
 			return fn(ctx, args)
 		},
 	})
-	// Rebuild caches so the new tool appears in tool defs and system prompt.
+	// Rebuild provider tool definitions and refresh any mutable system prompt.
 	s.mu.Lock()
 	s.rebuildToolDefsCache()
 	promptWarning, _ := s.refreshSystemPromptCache(s.env) // already holding s.mu; currentEnv() would deadlock

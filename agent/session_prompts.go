@@ -49,8 +49,8 @@ func prependSystemPromptToUserMessage(systemPrompt string, user llm.Message) llm
 	return combined
 }
 
-// rebuildPromptCache caches system prompt components that don't change between
-// renders. env is the execution environment to render against: callers that
+// refreshSystemPromptCache renders and caches the prompt until it is frozen.
+// env is the execution environment to render against: callers that
 // already hold s.mu (e.g. SetModel) must pass s.env directly; callers that
 // don't must resolve it via currentEnv() first — renderSystemPrompt cannot
 // call currentEnv() itself since it is invoked from both locked and unlocked
@@ -71,6 +71,9 @@ func prependSystemPromptToUserMessage(systemPrompt string, user llm.Message) llm
 // The empty warning means nothing was omitted or failed; failed reports whether
 // renderSystemPrompt returned its diagnostic text instead of a prompt.
 func (s *Session) refreshSystemPromptCache(env execenv.ExecutionEnvironment) (warning string, failed bool) {
+	if s.systemPromptFrozen {
+		return "", false
+	}
 	if s.cfg.testOnly.minimalSystemPrompt {
 		s.cachedSystemPrompt = "test system prompt"
 		s.promptSourceLog = nil

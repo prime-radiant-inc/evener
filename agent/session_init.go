@@ -614,6 +614,11 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	if err != nil {
 		return nil, err
 	}
+	// Fresh sessions keep the prompt that goes into their transcript header.
+	// A delegate fork with inherited history uses its existing refresh path.
+	s.mu.Lock()
+	s.systemPromptFrozen = inheritedContext == nil
+	s.mu.Unlock()
 	// initSessionState minted this root's process livelock as its last step,
 	// so every failure below this point — a fallible constructor step after
 	// init — must give it back: a construction that never came to life must
@@ -1896,7 +1901,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	s.hubEnabled = s.cfg.Manager
 	s.mu.Unlock()
 
-	// Cache instruction docs once; reused every round for system prompt rebuilds.
+	// Read instruction docs once for system prompt rendering.
 	s.projectDocs, s.projectDocsTruncated = LoadInstructionDocs(s.currentEnv(), personalDocPath(s.cfg.AgentsDocPath), s.profile.ProjectDocFiles()...)
 	if s.projectDocsTruncated {
 		// A truncated doc silently drops the tail of the user's standing

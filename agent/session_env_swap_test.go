@@ -17,17 +17,12 @@ import (
 	"primeradiant.com/evener/gittest"
 )
 
-// TestSwapEnvAndRefresh_UpdatesEnvInfoAndPromptCache proves swapEnvAndRefresh
-// (a) installs the new env, (b) recomputes envInfo (working dir, git branch,
-// etc.) against the NEW root rather than leaving it frozen at the old one,
-// and (c) the eagerly-rendered system prompt cache reflects the new
-// directory — the exact staleness spec §7 exists to prevent (before this
-// fix the model would believe it's still in the old directory).
-func TestSwapEnvAndRefresh_UpdatesEnvInfoAndPromptCache(t *testing.T) {
+func TestSwapEnvAndRefresh_UpdatesLiveEnvironmentAndKeepsLaunchPrompt(t *testing.T) {
 	t.Parallel()
 	sess := newSession(t, withEnvironmentSnapshot())
 
 	oldWD := sess.currentEnv().WorkingDirectory()
+	launchPrompt := sess.cachedSystemPrompt
 
 	repoDir := t.TempDir()
 	gittest.Run(t, repoDir, "init")
@@ -68,11 +63,8 @@ func TestSwapEnvAndRefresh_UpdatesEnvInfoAndPromptCache(t *testing.T) {
 		t.Errorf("envInfo.GitBranch = %q, want %q", ei.GitBranch, "feature-branch")
 	}
 
-	if !strings.Contains(prompt, repoDir) {
-		t.Errorf("cachedSystemPrompt does not mention the new working dir %q:\n%s", repoDir, prompt)
-	}
-	if !strings.Contains(prompt, "feature-branch") {
-		t.Errorf("cachedSystemPrompt does not mention the new git branch %q:\n%s", "feature-branch", prompt)
+	if prompt != launchPrompt {
+		t.Error("environment switch changed the launch system prompt")
 	}
 }
 

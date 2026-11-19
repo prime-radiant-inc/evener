@@ -77,6 +77,8 @@ func TestSetModelReportsRenderFailureWithoutSelfDeadlock(t *testing.T) {
 	}
 	const cachedSentinel = "CACHED_VALID_PROMPT_SENTINEL"
 	sess.mu.Lock()
+	// Exercise the lock and warning contract on a session that allows refreshes.
+	sess.systemPromptFrozen = false
 	sess.cachedSystemPrompt = cachedSentinel
 	sess.mu.Unlock()
 	forceSystemPromptRenderFailure(t)

@@ -13,10 +13,8 @@ import (
 var errSwapWhileClosing = errors.New("manage_worktree: the session is closing; environment swap refused")
 
 // swapEnvAndRefresh atomically installs next as the session's execution
-// environment and refreshes everything derived from it (envInfo, the git
-// snapshot, and the tool/prompt caches). See spec §7 "envInfo +
-// system-prompt refresh" for the full rationale; the two steps below are
-// normative, not incidental structure.
+// environment and refreshes the live environment info, git snapshot, and tool
+// cache. Sessions with a mutable system prompt also refresh its cache.
 //
 // Callers must always construct next via WithWorkingDirectory on the current
 // env (never execenv.NewLocalExecutionEnvironment), so PID tracking and the
