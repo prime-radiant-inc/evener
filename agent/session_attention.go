@@ -1410,12 +1410,17 @@ func (s *Session) residentAttentionTurnIDsLocked() map[string]struct{} {
 // a stop still quiets them, or the active turn already presented them — and
 // their turns stay out: a quieted row's position belongs to the release that
 // will eventually move it, and a covered row's turn belongs to the fold that
-// took it. A resident turn keeps the position it already has. The caller holds
-// attentionMu.
+// took it. A resident turn keeps the position it already has, but it still
+// anchors a restored row that arrived before it: a restore that anchored only
+// on the rows it was itself restoring would append an older row behind a later
+// one the resumed history already holds, and the first request would present
+// them in reverse arrival order, so stale information would read as current.
+// The caller holds attentionMu.
 func (s *Session) retainSelectablePendingTurnsLocked(fold delegateAttentionFold, notPresentable func(string) bool) error {
 	resident := s.residentAttentionTurnIDsLocked()
-	var turns []schema.Turn
-	for _, attentionID := range fold.pendingIDs() {
+	pendingIDs := fold.pendingIDs()
+	turns := make([]schema.Turn, 0, len(pendingIDs))
+	for _, attentionID := range pendingIDs {
 		if notPresentable(attentionID) {
 			continue
 		}
@@ -1423,12 +1428,12 @@ func (s *Session) retainSelectablePendingTurnsLocked(fold delegateAttentionFold,
 		if !ok {
 			continue
 		}
-		if _, present := resident[attentionID]; present {
-			continue
-		}
 		turns = append(turns, turn)
 	}
 	for i, turn := range turns {
+		if _, present := resident[turn.AttentionID]; present {
+			continue
+		}
 		if err := s.retainDelegateAttentionTurn(turn, turns[i+1:]...); err != nil {
 			return err
 		}
@@ -2918,6 +2923,7 @@ func (s *Session) retainDelegateAttentionTurn(turn schema.Turn, later ...schema.
 	}
 	var at int
 	s.history, at = insertAttentionTurn(s.history, turn, later)
+	s.growTurnHistoryBaseline([]int{at})
 	if at < len(s.history)-1 {
 		s.bumpHistoryRevisionLocked()
 	}

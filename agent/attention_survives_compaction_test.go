@@ -935,6 +935,131 @@ func TestReleasedHoldRestoresACompactedReportAtTheTail(t *testing.T) {
 	}
 }
 
+// Restoring a pending row a compaction marker cut from the resumed history must
+// keep it ahead of the rows that arrived after it, including a later row whose
+// turn the resumed history still holds. Such a row is the anchor the restore
+// inserts the older turn before; a restore that collects only the missing turns
+// drops it, appends the older row at the tail, and the first request presents
+// the rows in reverse arrival order, so stale information reads as current. The
+// report a hold release frees still ends the request, at the tail.
+func TestRestoredOlderPendingTurnPrecedesALaterResidentTurn(t *testing.T) {
+	t.Parallel()
+	const (
+		olderID   = "delegate:dlg_worker/delivery/3"
+		olderText = `<delegate-notification delegate_id="dlg_worker" kind="update">OLDER_BEFORE_MARKER</delegate-notification>`
+		newerID   = "delegate:dlg_worker/delivery/4"
+		newerText = `<delegate-notification delegate_id="dlg_worker" kind="update">NEWER_AFTER_MARKER</delegate-notification>`
+	)
+	sess, releasedID, journalPath := deriveHeldFixtureWithJournal(t, delegatestore.OutcomeCancelled, "cancelled")
+	// The plain older row arrives before the marker, behind the report the stop
+	// quieted.
+	if _, err := sess.appendDelegateNotificationDurably(olderID, olderText); err != nil {
+		t.Fatalf("append the older row: %v", err)
+	}
+	// A newer wake journals the release that ends the stop's quiet, so the
+	// restored session presents the freed report instead of holding it.
+	journalDeriveHeldRelease(t, sess, 1)
+	// The marker lands after both older rows, cutting their turns from the
+	// resumed history.
+	appendCompactionMarkerAfterReopenedRow(t, sess.TranscriptPath(), sess.id)
+	// The newer row arrives after the marker, so the resumed history already
+	// holds its turn: it is the later arrival the restore must anchor the older
+	// row on.
+	if _, err := sess.appendDelegateNotificationDurably(newerID, newerText); err != nil {
+		t.Fatalf("append the newer row: %v", err)
+	}
+	data, err := readTranscriptFull(context.Background(), sess.TranscriptPath(), sess.stateDir)
+	if err != nil {
+		t.Fatalf("read the transcript: %v", err)
+	}
+	resumed, _ := resumeHistoryIndexed(data.Entries)
+	for _, attentionID := range []string{releasedID, olderID} {
+		if indexOfAttentionTurn(resumed, attentionID) >= 0 {
+			t.Fatalf("premise broken: the resumed history still holds the turn for %q", attentionID)
+		}
+	}
+	if indexOfAttentionTurn(resumed, newerID) < 0 {
+		t.Fatal("premise broken: the resumed history does not hold the newer row's turn")
+	}
+	restored := coldRestoredDeriveSession(t, sess, journalPath)
+	restored.mu.Lock()
+	restored.history = slices.Clone(resumed)
+	restored.mu.Unlock()
+	restored.deriveHeldDelegateAttentionFromOutcome()
+	// The drive-side read every automatic presentation passes through restores
+	// what the resumed history is missing before the request is captured.
+	ids, err := restored.automaticDelegateAttentionIDs()
+	if err != nil {
+		t.Fatalf("read the drive-side rows: %v", err)
+	}
+	for _, want := range []string{olderID, newerID, releasedID} {
+		if !slices.Contains(ids, want) {
+			t.Fatalf("row %q is not offered to the drive: %v", want, ids)
+		}
+	}
+	// The first request's history is the automatic attention projection.
+	projection, droppedAt := restored.delegateAutomaticAttentionHistorySnapshotWithCoverage()
+	if len(droppedAt) != 0 {
+		t.Fatalf("the projection dropped turns at %v, want none: no row is held after the release", droppedAt)
+	}
+	olderAt := indexOfAttentionTurn(projection.turns, olderID)
+	newerAt := indexOfAttentionTurn(projection.turns, newerID)
+	releasedAt := indexOfAttentionTurn(projection.turns, releasedID)
+	if olderAt < 0 || newerAt < 0 || releasedAt < 0 {
+		t.Fatalf("a selectable pending row had no turn in the first request (older %d, newer %d, released %d)", olderAt, newerAt, releasedAt)
+	}
+	if olderAt > newerAt {
+		t.Fatalf("the first request presents the older row at %d, behind the newer resident row at %d: reverse arrival order makes stale information read as current", olderAt, newerAt)
+	}
+	if releasedAt != len(projection.turns)-1 {
+		t.Fatalf("the freed report resumed at %d of %d, want the tail so the presenting request ends on it", releasedAt, len(projection.turns)-1)
+	}
+}
+
+// Restoring an older pending turn ahead of a later resident one inserts into
+// the middle of the history, which pushes every in-flight turn right by one.
+// The boundary that says where the in-flight turn starts must move with them,
+// or turns that belong to the settled past read as in flight and keep their
+// thinking on a request that must not replay it. The deletion paths carry the
+// same correction in the other direction.
+func TestRestoredOlderPendingTurnMovesTheInFlightBoundary(t *testing.T) {
+	t.Parallel()
+	const (
+		olderID   = "delegate:dlg_worker/delivery/1"
+		olderText = `<delegate-notification delegate_id="dlg_worker" kind="update">OLDER_RESTORED</delegate-notification>`
+		newerID   = "delegate:dlg_worker/delivery/2"
+		newerText = `<delegate-notification delegate_id="dlg_worker" kind="update">NEWER_RESIDENT</delegate-notification>`
+	)
+	sess, _ := newCompactableSession(t)
+	if _, err := sess.appendDelegateNotificationDurably(newerID, newerText); err != nil {
+		t.Fatalf("append the newer row: %v", err)
+	}
+	// The older row is durable in the fold but absent from the resident
+	// history, the shape a compaction marker leaves behind.
+	if _, err := sess.appendDelegateNotificationDurably(olderID, olderText); err != nil {
+		t.Fatalf("append the older row: %v", err)
+	}
+	resident := currentHistory(t, sess)
+	olderTurn := resident[indexOfAttentionTurn(resident, olderID)]
+	sess.mu.Lock()
+	sess.history = slices.DeleteFunc(slices.Clone(resident), func(turn schema.Turn) bool {
+		return turn.AttentionID == olderID
+	})
+	inFlight := len(sess.history)
+	sess.turnHistoryBaseline = inFlight
+	sess.mu.Unlock()
+
+	if err := sess.retainDelegateAttentionTurn(olderTurn, resident[indexOfAttentionTurn(resident, newerID)]); err != nil {
+		t.Fatalf("retain the older turn: %v", err)
+	}
+	sess.mu.Lock()
+	got := sess.turnHistoryBaseline
+	sess.mu.Unlock()
+	if got != inFlight+1 {
+		t.Fatalf("turnHistoryBaseline = %d, want %d: the restored turn landed ahead of the in-flight turn and the boundary must move with it", got, inFlight+1)
+	}
+}
+
 // Once a settled round of the active turn has presented a delegate attention
 // turn, a mid-turn compaction must fold it away rather than re-injecting it
 // after the summary, while still preserving any later attention item that
