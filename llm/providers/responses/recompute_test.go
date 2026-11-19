@@ -73,8 +73,8 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalRawArguments(t *testing.T)
 	if len(calls) != 1 {
 		t.Fatalf("ToolCalls() = %d, want 1", len(calls))
 	}
-	if !bytes.Equal(calls[0].Arguments, []byte(args)) {
-		t.Fatalf("Arguments = %q (% x), want %q (% x)", calls[0].Arguments, calls[0].Arguments, args, []byte(args))
+	if calls[0].WireArguments() != args {
+		t.Fatalf("WireArguments = %q, want %q", calls[0].WireArguments(), args)
 	}
 }
 
@@ -153,8 +153,8 @@ func TestExtractRecordedResponse_ResponsesSSE_AccumulatedRawArguments(t *testing
 	if len(calls) != 1 {
 		t.Fatalf("ToolCalls() = %d, want 1", len(calls))
 	}
-	if !bytes.Equal(calls[0].Arguments, []byte(args)) {
-		t.Fatalf("Arguments = %q (% x), want %q (% x)", calls[0].Arguments, calls[0].Arguments, args, []byte(args))
+	if calls[0].WireArguments() != args {
+		t.Fatalf("WireArguments = %q, want %q", calls[0].WireArguments(), args)
 	}
 }
 
@@ -170,7 +170,7 @@ func TestExtractRecordedResponse_ResponsesSSE_ArgumentsDoneRawArguments(t *testi
 		t.Fatalf("ToolCalls() = %d, want 1", len(calls))
 	}
 	if !bytes.Equal(calls[0].Arguments, want) {
-		t.Fatalf("Arguments = %q (% x), want %q (% x)", calls[0].Arguments, calls[0].Arguments, want, want)
+		t.Fatalf("Arguments = %q, want %q", calls[0].Arguments, want)
 	}
 }
 

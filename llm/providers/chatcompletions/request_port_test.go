@@ -44,11 +44,7 @@ func assistantReasoningDetails(t *testing.T, req llm.Request) []map[string]any {
 		if !ok {
 			return nil
 		}
-		details, ok := rd.([]map[string]any)
-		if !ok {
-			t.Fatalf("reasoning_details not []map[string]any: %T", rd)
-		}
-		return details
+		return reasoningDetailMaps(t, rd)
 	}
 	t.Fatal("no assistant message in body")
 	return nil
@@ -363,12 +359,16 @@ func TestToChatMessages_MergesTextIntoSignatureItem(t *testing.T) {
 	if len(out) != 1 {
 		t.Fatalf("messages = %d, want 1", len(out))
 	}
-	details, _ := out[0]["reasoning_details"].([]map[string]any)
+	details := reasoningDetailMaps(t, out[0]["reasoning_details"])
 	if len(details) != 1 {
 		t.Fatalf("reasoning_details = %#v, want exactly one merged item (not doubled)", out[0]["reasoning_details"])
 	}
 	d := details[0]
 	if d["text"] != "think" || d["signature"] != "SIGBLOB" || d["format"] != "anthropic-claude-v1" {
 		t.Fatalf("merged item = %#v, want text+signature+format together", d)
+	}
+	msgs[0].Content[0].Thinking.Text = ""
+	if out, err = toChatMessages(msgs, caps, false); err != nil || reasoningDetailMaps(t, out[0]["reasoning_details"])[0]["text"] != nil {
+		t.Fatalf("empty text must leave the provider item untouched: %+v", out)
 	}
 }

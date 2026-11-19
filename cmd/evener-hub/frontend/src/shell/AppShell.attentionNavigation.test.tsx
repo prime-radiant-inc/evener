@@ -11,6 +11,7 @@ import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } fr
 import { initNotifications, resetNotificationsForTests } from "../notifications";
 import { retainedTranscriptReadView } from "../panes/session/transcript/transcriptReadView";
 import { enterAgentCascade } from "../panes/zoom/actions";
+import { cascadeClient, cascadeContext } from "../panes/zoom/cascadeTestUtils";
 import { StubResizeObserver } from "../resizeObserverTestUtils";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { resetAuthStatusesStoreForTests } from "../stores/authStatuses";
@@ -450,6 +451,55 @@ test("same-URL attention entries restore distinct cascade and session readers on
   expect(workspaceStore.getState().panes).toContain(session);
   expect(conversationPaneLifetime(session)).toBe(sessionLifetime);
   expect(retainedTranscriptReadView(sessionLifetime, "local:same", "session")).toBe(sessionView);
+});
+
+test("clicking Return on an attention-owned main-slot inspector keeps the surviving secondary source editor focused after routing settles", async () => {
+  const client = cascadeClient((ref) => cascadeContext(ref, ref === "local:leaf" ? ["local:source"] : []));
+  installLocationForRoute("local:main-session");
+  installLocationForRoute("local:source");
+  installLocationForRoute("local:leaf");
+  window.history.pushState({}, "", "/s/local%3Amain-session");
+  await act(async () => {
+    render(<AppShell client={client} />);
+  });
+  await waitFor(() =>
+    expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:main-session" }),
+  );
+  const sourceId = await act(async () =>
+    workspaceStore.getState().openPane("session", { ref: "local:source" }, { slot: "secondary" }),
+  );
+  const inspectorId = await act(async () =>
+    enterAgentCascade(
+      activityDelegate({ ownerRef: "local:source", childRef: "local:leaf", delegateId: "d-leaf" }),
+      sourceId,
+    ),
+  );
+  await screen.findByTestId("cascade-column");
+
+  // Simulate Needs You bringing the inspector into the desktop main slot under
+  // an attention entry while its source survives in a secondary pane.
+  await act(async () => {
+    const mainPane = workspaceStore.getState().mainPane();
+    const inspectorPane = workspaceStore.getState().panes.find((pane) => pane.id === inspectorId);
+    if (!mainPane || !inspectorPane) throw new Error("missing fixture panes");
+    workspaceStore.getState().closePane(mainPane.id);
+    inspectorPane.slot = "main";
+    workspaceStore.setState({ panes: [...workspaceStore.getState().panes], focusedPaneId: inspectorId });
+    openAttentionSession("local:leaf");
+  });
+  expect(currentAttentionEntryToken()).not.toBeNull();
+  const returnButton = await screen.findByRole("button", { name: "Return to previous view" });
+
+  await act(async () => {
+    fireEvent.click(returnButton);
+  });
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.type).toBe("welcome"));
+  expect(workspaceStore.getState().panes.some((pane) => pane.id === inspectorId)).toBe(false);
+  expect(workspaceStore.getState().focusedPaneId).toBe(sourceId);
+  const sourcePaneEl = document.querySelector('[data-pane-scaffold="session:local:source"]')?.parentElement;
+  const sourceEditor = sourcePaneEl?.querySelector<HTMLElement>('[role="textbox"]');
+  if (!sourceEditor) throw new Error("expected surviving source composer textbox");
+  expect(document.activeElement).toBe(sourceEditor);
 });
 
 test.each(["session", "cascade"] as const)(
@@ -2319,4 +2369,222 @@ test("phone host swap keeps attention navigation over the focused session", asyn
   const owner = paneFor("local:owner");
   expect(workspaceStore.getState().focusedPaneId).toBe(owner?.id);
   await screen.findByTestId("next-needs-you-next");
+});
+
+test.each(["main", "secondary"] as const)(
+  "Needs You hop from a phone-Back returned %s session parks it and Back restores it with staged attachments",
+  async (originSlot) => {
+    const setMobile = installSwitchableViewport();
+    setMobile(false);
+    const originRef = originSlot === "main" ? "local:main-session" : "local:secondary-session";
+    const childRef = originSlot === "main" ? "local:main-child" : "local:secondary-child";
+    const client = cascadeClient((ref) => cascadeContext(ref, ref === childRef ? [originRef] : []));
+    installLocationForRoute("local:main-session");
+    installLocationForRoute("local:secondary-session");
+    installLocationForRoute("local:needs-you-target");
+    window.history.pushState({}, "", "/s/local%3Amain-session");
+    await act(async () => {
+      render(<AppShell client={client} />);
+    });
+    await waitFor(() =>
+      expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:main-session" }),
+    );
+    const mainPane = workspaceStore.getState().mainPane();
+    if (!mainPane) throw new Error("expected main session pane");
+
+    let originPane = mainPane;
+    if (originSlot === "secondary") {
+      const secondaryId = await act(async () =>
+        workspaceStore.getState().openPane("session", { ref: originRef }, { slot: "secondary" }),
+      );
+      const found = workspaceStore.getState().panes.find((pane) => pane.id === secondaryId);
+      if (!found) throw new Error("expected secondary session pane");
+      originPane = found;
+    }
+
+    const originLifetime = conversationPaneLifetime(originPane);
+    const originAttachments = originLifetime.composer?.attachments;
+    if (!originAttachments) throw new Error("expected origin composer attachments store");
+    act(() => {
+      originAttachments.setState({
+        items: [
+          {
+            marker: 1,
+            name: "staged.png",
+            mediaType: "image/png",
+            data: "iVBORw0KGgo=",
+            pending: false,
+          },
+        ],
+      });
+    });
+
+    const inspectorId = await act(async () =>
+      enterAgentCascade(
+        activityDelegate({
+          ownerRef: originRef,
+          childRef,
+          delegateId: `d-hop-${originSlot}`,
+        }),
+        originPane.id,
+      ),
+    );
+    await screen.findByTestId("cascade-column");
+
+    await act(async () => {
+      setMobile(true);
+    });
+    await screen.findByRole("button", { name: "Back" });
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "Back" }));
+    const originPath = `/s/${encodeURIComponent(originRef)}`;
+    await waitFor(() => expect(window.location.pathname).toBe(originPath));
+    expect(workspaceStore.getState().panes.some((pane) => pane.id === inspectorId)).toBe(false);
+    expect(workspaceStore.getState().focusedPaneId).toBe(originPane.id);
+
+    await act(async () => {
+      openAttentionSession("local:needs-you-target");
+    });
+    await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aneeds-you-target"));
+    expect(workspaceStore.getState().panes).toContain(originPane);
+    expect(originPane.slot).toBe("parked");
+    expect(originLifetime.alive).toBe(true);
+    expect(originAttachments.getState().items.map((item) => item.marker)).toEqual([1]);
+
+    act(() => {
+      window.history.back();
+    });
+    await waitFor(() => expect(window.location.pathname).toBe(originPath));
+    await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(originPane.id));
+    expect(paneFor(originRef)).toBe(originPane);
+    expect(originPane.slot).toBe(originSlot);
+    expect(originLifetime.alive).toBe(true);
+    expect(originAttachments.getState().items.map((item) => item.marker)).toEqual([1]);
+    if (originSlot === "secondary") {
+      expect(workspaceStore.getState().mainPane()).toBe(mainPane);
+    }
+  },
+);
+
+test("phone Back on a Needs-You-selected inspector whose source is parked focuses the surviving main conversation instead of Welcome", async () => {
+  const setMobile = installSwitchableViewport();
+  setMobile(false);
+  const client = cascadeClient((ref) => cascadeContext(ref, ref === "local:child" ? ["local:source"] : []));
+  installLocationForRoute("local:source");
+  installLocationForRoute("local:other");
+  installLocationForRoute("local:child");
+  window.history.pushState({}, "", "/s/local%3Asource");
+  await act(async () => {
+    render(<AppShell client={client} />);
+  });
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:source" }));
+  const sourcePane = workspaceStore.getState().mainPane();
+  if (!sourcePane) throw new Error("expected source pane");
+
+  const inspectorId = await act(async () =>
+    enterAgentCascade(
+      activityDelegate({
+        ownerRef: "local:source",
+        childRef: "local:child",
+        delegateId: "d-parked-source",
+      }),
+      sourcePane.id,
+    ),
+  );
+  await screen.findByTestId("cascade-column");
+
+  // Focus source, hop via Needs You to an unshown conversation (parking source),
+  // then hop via Needs You to the still-open inspector.
+  await act(async () => {
+    workspaceStore.getState().focusPane(sourcePane.id);
+    openAttentionSession("local:other");
+  });
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:other" }));
+  const otherPane = workspaceStore.getState().mainPane();
+  if (!otherPane) throw new Error("expected surviving main conversation");
+  expect(sourcePane.slot).toBe("parked");
+
+  await act(async () => {
+    openAttentionSession("local:child");
+  });
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(inspectorId));
+
+  await act(async () => {
+    setMobile(true);
+  });
+  await screen.findByRole("button", { name: "Back" });
+
+  await userEvent.setup().click(screen.getByRole("button", { name: "Back" }));
+  expect(workspaceStore.getState().panes.some((pane) => pane.id === inspectorId)).toBe(false);
+  expect(workspaceStore.getState().panes.some((pane) => pane.type === "welcome")).toBe(false);
+  expect(workspaceStore.getState().focusedPaneId).toBe(otherPane.id);
+  expect(workspaceStore.getState().mainPane()).toBe(otherPane);
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aother"));
+});
+
+test("confirmed deletion of desktop URL session A after Back restores healthy secondary session B preserves B and its staged image", async () => {
+  const client = navClient();
+  installLocationForRoute("local:session-a");
+  installLocationForRoute("local:session-b");
+  installLocationForRoute("local:session-c");
+  window.history.pushState({}, "", "/s/local%3Asession-a");
+  await act(async () => {
+    render(<AppShell client={client} />);
+  });
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:session-a" }));
+  const paneBId = await act(async () =>
+    workspaceStore.getState().openPane("session", { ref: "local:session-b" }, { slot: "secondary" }),
+  );
+  const paneB = workspaceStore.getState().panes.find((pane) => pane.id === paneBId);
+  if (!paneB) throw new Error("expected secondary session B");
+  const lifetimeB = conversationPaneLifetime(paneB);
+  const attachmentsB = lifetimeB.composer?.attachments;
+  if (!attachmentsB) throw new Error("expected composer attachments for B");
+  act(() => {
+    attachmentsB.setState({
+      items: [{ marker: 7, name: "keep-b.png", mediaType: "image/png", data: "iVBORw0KGgo=", pending: false }],
+    });
+  });
+
+  // Focus B under A's desktop URL, hop via Needs You to C (binding B to /s/session-a),
+  // then mark A gone and press browser Back.
+  await act(async () => {
+    workspaceStore.getState().focusPane(paneB.id);
+    openAttentionSession("local:session-c");
+  });
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Asession-c"));
+  expect(paneB.slot).toBe("parked");
+
+  const goneKey = { kind: "location", ref: "local:session-a" } as const;
+  await act(async () => {
+    const resources = new Map(navigationStore.getState().resources);
+    resources.set(keyID(goneKey), {
+      key: goneKey,
+      data: null,
+      normalized: {
+        key: goneKey,
+        graph: { metadata: {}, entities: new Map(), containers: new Map() },
+        version: { generationId: "generation_test", revision: 2, etag: '"gone"' },
+        presence: "gone",
+      },
+      loadedRevision: 2,
+      targetRevision: null,
+      forceToken: 0,
+      etag: '"gone"',
+      loading: false,
+      stale: false,
+      error: null,
+      generationID: "generation_test",
+    });
+    navigationStore.setState({ clientGenerationID: "generation_test", resources });
+    window.history.back();
+  });
+
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Asession-b"));
+  expect(workspaceStore.getState().panes).toContain(paneB);
+  expect(workspaceStore.getState().focusedPaneId).toBe(paneB.id);
+  expect(paneB.slot).toBe("secondary");
+  expect(lifetimeB.alive).toBe(true);
+  expect(attachmentsB.getState().items.map((item) => item.marker)).toEqual([7]);
+  expect(paneFor("local:session-a")).toBeUndefined();
 });

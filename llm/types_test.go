@@ -345,3 +345,26 @@ func TestReasoningTextJoinsBlocksWithBlankLine(t *testing.T) {
 		t.Fatalf("ReasoningText() = %q, want joined blocks", got)
 	}
 }
+
+func TestNormalizeToolArguments(t *testing.T) {
+	for _, tc := range []struct{ in, compact, spelled, wire string }{
+		{`{"a":1,"b":"<x&y>"}`, `{"a":1,"b":"\u003cx\u0026y\u003e"}`, `{"a":1,"b":"<x&y>"}`, `{"a":1,"b":"<x&y>"}`},
+		{`{ "a" : 1 , "b" : 2 }`, `{"a":1,"b":2}`, `{ "a" : 1 , "b" : 2 }`, `{ "a" : 1 , "b" : 2 }`},
+		{`{"a":1}`, `{"a":1}`, "", `{"a":1}`}, {"  {\"a\":1}\n", `{"a":1}`, "  {\"a\":1}\n", "  {\"a\":1}\n"},
+		{`{"n": 1.50}`, `{"n":1.50}`, `{"n": 1.50}`, `{"n": 1.50}`}, {`{not json}`, `{not json}`, "", `{not json}`},
+		{`{ "a" : `, `{ "a" : `, "", `{ "a" : `}, {"", "", "", ""}, {"   ", "   ", "", "   "},
+		{"\u00a0{\"a\":1}", "\u00a0{\"a\":1}", "", "\u00a0{\"a\":1}"},
+	} {
+		c, s := NormalizeToolArguments([]byte(tc.in))
+		call := ToolCallData{Arguments: c, ArgumentsSpelling: s}
+		if string(c) != tc.compact || string(s) != tc.spelled || call.WireArguments() != tc.wire {
+			t.Errorf("NormalizeToolArguments(%q) = (%q, %q), WireArguments = %q, want (%q, %q) / %q", tc.in, c, s, call.WireArguments(), tc.compact, tc.spelled, tc.wire)
+		}
+	}
+	d := ToolCallData{Arguments: json.RawMessage(`{"a":1}`), ArgumentsSpelling: `{ "a" : 2 }`}
+	var tolerated ToolCallData
+	bad := json.Unmarshal([]byte(`{"arguments":{"a":1},"arguments_spelling":123}`), &tolerated)
+	if n, _ := NormalizeToolArguments(nil); n != nil || d.WireArguments() != `{"a":1}` || (*ToolCallData)(nil).WireArguments() != "" || bad != nil || tolerated.WireArguments() != `{"a":1}` {
+		t.Errorf("nil empty = %v, mismatched = %q, nil wire = %q, non-string spelling = %v / %q", n == nil, d.WireArguments(), (*ToolCallData)(nil).WireArguments(), bad, tolerated.WireArguments())
+	}
+}

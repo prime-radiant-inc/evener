@@ -70,6 +70,7 @@ func TestStreamAccumulator_FinishWithMetadataOnlyResponse_PreservesAccumulatedCo
 		ID:       "resp_1",
 		Provider: "openai",
 		Model:    "gpt-5.4",
+		Finish:   FinishReason{Raw: "incomplete"},
 		Raw:      map[string]any{"id": "resp_1"},
 	}
 	acc.Process(StreamEvent{Type: StreamEventFinish, Response: &final})
@@ -171,7 +172,7 @@ func TestStreamAccumulator_ToolCallEvents_AccumulatedInResponse(t *testing.T) {
 		ID: "call_1", Name: "get_weather", Type: "function",
 	}})
 	acc.Process(StreamEvent{Type: StreamEventToolCallDelta, ToolCall: &ToolCallData{
-		ID: "call_1", Arguments: json.RawMessage(`{"city":`),
+		ID: "call_1", Arguments: json.RawMessage(`{"city": `),
 	}})
 	acc.Process(StreamEvent{Type: StreamEventToolCallDelta, ToolCall: &ToolCallData{
 		ID: "call_1", Arguments: json.RawMessage(`"SF"}`),
@@ -194,8 +195,9 @@ func TestStreamAccumulator_ToolCallEvents_AccumulatedInResponse(t *testing.T) {
 	if calls[0].Name != "get_weather" {
 		t.Fatalf("tool call name: got %q, want %q", calls[0].Name, "get_weather")
 	}
-	if got := string(calls[0].Arguments); got != `{"city":"SF"}` {
-		t.Fatalf("tool call arguments: got %q, want %q", got, `{"city":"SF"}`)
+	// The delta built these bytes, so a restored call must replay them exactly.
+	if got := string(calls[0].Arguments); got != `{"city":"SF"}` || calls[0].WireArguments() != `{"city": "SF"}` {
+		t.Fatalf("arguments = %q, wire = %q", got, calls[0].WireArguments())
 	}
 }
 

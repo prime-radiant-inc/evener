@@ -1430,7 +1430,7 @@ async function mountedSecondaryInspector() {
   const inspectorId = await act(async () =>
     enterAgentCascade(activityDelegate({ ownerRef: "root", childRef: "child", delegateId: "edge-child" }), mainId),
   );
-  await screen.findByRole("button", { name: "Return to previous view" });
+  await screen.findByTestId("cascade-column");
   const api = getDockviewApi();
   if (!api) throw new Error("Missing actual mounted Dockview API");
   act(() => api.layout(1200, 700));
@@ -1496,6 +1496,35 @@ test("cascade tabs keep the selected leaf title across pop, drill and native rea
     ]);
     expect(screen.queryAllByTestId("cascade-spine")).toEqual([]);
     expect(api.getPanel(inspectorId)?.title).toBe(savedTitle);
+  } finally {
+    fixture.dispose();
+  }
+});
+
+test("docking a secondary inspector into the main group unhides its header so tab close dismisses it and returns focus to its source", async () => {
+  const fixture = await mountedSecondaryInspector();
+  try {
+    const { api, mainId, inspectorId } = fixture;
+    const mainPanel = api.getPanel(mainId);
+    const inspector = api.getPanel(inspectorId);
+    if (!mainPanel || !inspector) throw new Error("Missing main or inspector panel");
+    expect(mainPanel.group.model.header.hidden).toBe(true);
+
+    await act(async () => {
+      inspector.api.moveTo({ group: mainPanel.group, position: "center" });
+    });
+
+    expect(inspector.group).toBe(mainPanel.group);
+    expect(mainPanel.group.model.header.hidden).toBe(false);
+
+    await act(async () => {
+      inspector.api.close();
+    });
+
+    expect(workspaceStore.getState().panes.some((pane) => pane.id === inspectorId)).toBe(false);
+    expect(workspaceStore.getState().focusedPaneId).toBe(mainId);
+    expect(api.activePanel?.id).toBe(mainId);
+    expect(mainPanel.group.model.header.hidden).toBe(true);
   } finally {
     fixture.dispose();
   }
@@ -1645,6 +1674,121 @@ test.each([false, true])(
     }
   },
 );
+
+test("closing a secondary inspector tab returns focus to its surviving origin", async () => {
+  const fixture = await mountedSecondaryInspector();
+  try {
+    const { mainId, neighborId, inspectorId } = fixture;
+    const api = getDockviewApi();
+    if (!api) throw new Error("expected dockview api");
+    const panel = api.getPanel(inspectorId);
+    if (!panel) throw new Error("expected inspector panel");
+    const outsider = document.createElement("button");
+    document.body.append(outsider);
+    try {
+      outsider.focus();
+      expect(document.activeElement).toBe(outsider);
+      await act(async () => panel.api.close());
+      expect(workspaceStore.getState().panes.map((pane) => pane.id)).toEqual([mainId, neighborId]);
+      expect(workspaceStore.getState().focusedPaneId).toBe(mainId);
+      expect(api.activePanel?.id).toBe(mainId);
+      const originPane = document.querySelector('[data-pane-scaffold="session:root"]')?.parentElement;
+      expect(originPane?.contains(document.activeElement)).toBe(true);
+    } finally {
+      outsider.remove();
+    }
+  } finally {
+    fixture.dispose();
+  }
+});
+
+test("closing a background inspector while its source is already focused moves DOM focus to the source editor", async () => {
+  const fixture = await mountedSecondaryInspector();
+  try {
+    const { mainId, inspectorId } = fixture;
+    const api = getDockviewApi();
+    if (!api) throw new Error("expected dockview api");
+    await act(async () => workspaceStore.getState().focusPane(mainId));
+    expect(workspaceStore.getState().focusedPaneId).toBe(mainId);
+    const originPane = document.querySelector('[data-pane-scaffold="session:root"]')?.parentElement;
+    const originEditor = originPane?.querySelector<HTMLElement>('[role="textbox"]');
+    if (!originEditor) throw new Error("expected source composer textbox");
+    const outsider = document.createElement("button");
+    document.body.append(outsider);
+    try {
+      outsider.focus();
+      expect(document.activeElement).toBe(outsider);
+      await act(async () => api.getPanel(inspectorId)?.api.close());
+      expect(workspaceStore.getState().focusedPaneId).toBe(mainId);
+      expect(document.activeElement).toBe(originEditor);
+    } finally {
+      outsider.remove();
+    }
+  } finally {
+    fixture.dispose();
+  }
+});
+
+test("returning from a main-slot inspector keeps its surviving secondary source active and focused after Welcome fills main", async () => {
+  const fixture = await mountedSecondaryInspector();
+  try {
+    const { mainId, inspectorId } = fixture;
+    const api = getDockviewApi();
+    if (!api) throw new Error("expected dockview api");
+    const sourcePane = inspectionRecord(mainId);
+    const inspectorPane = inspectionRecord(inspectorId);
+    await act(async () => {
+      sourcePane.slot = "secondary";
+      inspectorPane.slot = "main";
+      workspaceStore.setState({
+        panes: [...workspaceStore.getState().panes],
+        focusedPaneId: inspectorId,
+      });
+    });
+    const returnButton = await screen.findByRole("button", { name: "Return to previous view" });
+    await act(async () => {
+      fireEvent.click(returnButton);
+    });
+    await waitFor(() => expect(workspaceStore.getState().mainPane()?.type).toBe("welcome"));
+    expect(workspaceStore.getState().focusedPaneId).toBe(mainId);
+    expect(api.activePanel?.id).toBe(mainId);
+    const originPane = document.querySelector('[data-pane-scaffold="session:root"]')?.parentElement;
+    const originEditor = originPane?.querySelector<HTMLElement>('[role="textbox"]');
+    if (!originEditor) throw new Error("expected surviving source composer textbox");
+    expect(document.activeElement).toBe(originEditor);
+  } finally {
+    fixture.dispose();
+  }
+});
+
+test("clicking an inactive group content area activates it even when DOM focus stayed inside that group", async () => {
+  const fixture = await mountedSecondaryInspector();
+  try {
+    const { mainId, neighborId, inspectorId } = fixture;
+    const api = getDockviewApi();
+    if (!api) throw new Error("expected dockview api");
+    await act(async () => api.getPanel(inspectorId)?.api.close());
+    expect(workspaceStore.getState().focusedPaneId).toBe(mainId);
+    const mainBody = document.querySelector<HTMLElement>('[data-pane-scaffold="session:root"]');
+    if (!mainBody) throw new Error("expected main session body");
+    expect(mainBody.parentElement?.contains(document.activeElement)).toBe(true);
+
+    // Programmatic focus move to the secondary group leaves DOM focus inside
+    // the main group; clicking main's content must still activate main.
+    await act(async () => workspaceStore.getState().focusPane(neighborId));
+    expect(api.activePanel?.id).toBe(neighborId);
+    expect(mainBody.closest(".dv-groupview")?.classList.contains("dv-active-group")).toBe(false);
+
+    await act(async () => {
+      fireEvent.pointerDown(mainBody);
+    });
+    expect(workspaceStore.getState().focusedPaneId).toBe(mainId);
+    expect(api.activePanel?.id).toBe(mainId);
+    expect(mainBody.closest(".dv-groupview")?.classList.contains("dv-active-group")).toBe(true);
+  } finally {
+    fixture.dispose();
+  }
+});
 
 test.each(["different root", "missing child"] as const)(
   "secondary inspector cannot retain boot focus over a captured %s conversation",
@@ -1860,7 +2004,7 @@ test("secondary inspector boot with failed real fromJSON preserves live records,
         </ClientProvider>,
       ),
     );
-    await screen.findByRole("button", { name: "Return to previous view" });
+    await screen.findByTestId("cascade-column");
     expect(inspectionRecord(mainId)).toBe(main);
     expect(inspectionRecord(inspectorId)).toBe(inspector);
     expect(workspaceStore.getState().panes.map((pane) => pane.id)).toEqual([mainId, neighborId, inspectorId]);
@@ -1955,11 +2099,11 @@ test.each([
           type: "session",
           params: { ref: "other-root" },
         });
-        expect(screen.queryByRole("button", { name: "Return to previous view" })).toBeNull();
+        expect(screen.queryByTestId("cascade-column")).toBeNull();
         expect(screen.queryByText(/doc pane: kept-secondary/)).toBeNull();
         return;
       }
-      await screen.findByRole("button", { name: "Return to previous view" });
+      await screen.findAllByTestId("cascade-column");
       // A promoted legacy transcript restores with its saved source migrated
       // to the conversation descriptor; the session fixture restores verbatim.
       expect(workspaceStore.getState().panes.find((pane) => pane.id === id)?.params).toEqual(

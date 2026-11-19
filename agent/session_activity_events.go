@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"context"
+
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/appwire"
@@ -9,8 +11,16 @@ import (
 // Activity invalidations travel through the existing bridge without becoming
 // model-facing watch observations. Publication happens outside domain locks.
 func (s *Session) emitSessionActivityChanged(owner string, resource appwire.SessionActivityResource) {
+	s.emitSessionActivityChangedBounded(noBound, owner, resource)
+}
+
+// emitSessionActivityChangedBounded is emitSessionActivityChanged on the bound
+// of the caller whose event caused the change; see publishWatchActivityContext.
+// It reports whether the invalidation reached the stream, so a bounded caller
+// that lost it can keep the receiver pending for the next ordinary flush.
+func (s *Session) emitSessionActivityChangedBounded(ctx context.Context, owner string, resource appwire.SessionActivityResource) bool {
 	if s == nil || owner == "" {
-		return
+		return true
 	}
 	targets := []string{owner}
 	if controller := s.delegateController; controller != nil {
@@ -18,15 +28,48 @@ func (s *Session) emitSessionActivityChanged(owner string, resource appwire.Sess
 		targets = controller.sessionAncestryLocked(owner)
 		controller.mu.Unlock()
 	}
-	s.publishSessionActivityChanged(owner, targets, resource)
+	if !suppliedCallerBound(ctx) {
+		s.publishSessionActivityChanged(owner, targets, resource)
+		return true
+	}
+	return s.publishSessionActivityChangedContext(ctx, owner, targets, resource)
 }
 
 // publishSessionActivityChanged invalidates owner's activity on each target
 // thread; targets is owner's sessionAncestryLocked chain, which a caller that
 // already holds it passes in rather than walking the tree again.
 func (s *Session) publishSessionActivityChanged(owner string, targets []string, resource appwire.SessionActivityResource) {
+	s.publishSessionActivityChangedContext(context.Background(), owner, targets, resource)
+}
+
+// sendActivityInvalidation publishes one target's invalidation and reports
+// whether it reached the stream. An unmarked context keeps the session's own
+// publication path exactly as sendEventOnContext has it.
+func (s *Session) sendActivityInvalidation(ctx context.Context, data events.EventData) bool {
+	if !suppliedCallerBound(ctx) {
+		ctx = context.Background()
+	}
+	_, _, delivered := s.sendEventContext(ctx, data, nil)
+	return delivered
+}
+
+// publishSessionActivityChangedContext is publishSessionActivityChanged on a
+// caller's bound. The invalidation is part of the announcement a close drain's
+// pass publishes, so it must release on that pass's bound rather than the full
+// close budget: a nested pass that parks here still holds the pass open, and the
+// budget it spends is the one that removes the remaining collectible lanes.
+//
+// Only a caller that has a bound passes one. Every other caller reaches this
+// through publishSessionActivityChanged, which supplies context.Background and
+// so keeps today's behavior exactly: the session's published close budget, when
+// there is one, and no caller deadline otherwise.
+// It reports whether EVERY target's invalidation reached the stream. A bounded
+// caller that lost one keeps the receiver pending: a flush that dropped an
+// invalidation and forgot it left an open Watches view stale until a manual
+// refresh, because the receiver set is cleared before the sends.
+func (s *Session) publishSessionActivityChangedContext(ctx context.Context, owner string, targets []string, resource appwire.SessionActivityResource) bool {
 	if s == nil || owner == "" {
-		return
+		return true
 	}
 	rootID := s.ID()
 	if s.delegateController != nil {
@@ -38,9 +81,13 @@ func (s *Session) publishSessionActivityChanged(owner string, targets []string, 
 		index.revision.Add(1)
 	}
 	sessionActivityIndexes.Unlock()
+	delivered := true
 	for _, target := range targets {
-		s.sendEvent(events.SessionActivityChangedData{ThreadID: target, Ref: encodeRef("", target), SessionID: owner, Resources: []appwire.SessionActivityResource{appwire.SessionActivityResourceSummary, resource}}, nil)
+		if !s.sendActivityInvalidation(ctx, events.SessionActivityChangedData{ThreadID: target, Ref: encodeRef("", target), SessionID: owner, Resources: []appwire.SessionActivityResource{appwire.SessionActivityResourceSummary, resource}}) {
+			delivered = false
+		}
 	}
+	return delivered
 }
 
 // sessionAncestryLocked is sessionID followed by each session above it in the
@@ -76,6 +123,22 @@ func (jm *jobManager) noteWatchActivity(receiver string) {
 	jm.watchActivityMu.Unlock()
 }
 func (jm *jobManager) publishWatchActivity() {
+	jm.publishWatchActivityContext(noBound)
+}
+
+// publishWatchActivityContext flushes the receivers whose watch activity moved,
+// on the bound of the caller that caused the move. noBound is the ordinary path
+// and keeps today's behavior exactly: the session's published close budget when
+// there is one, and no caller deadline otherwise.
+//
+// It exists because the flush is SYNCHRONOUS with the send that triggered it.
+// A close drain publishing a lost-result warning can take the last slot in a
+// full authoritative stream; the flush that follows then runs on the drain's
+// goroutine, and on the ordinary path it waits out the whole close cascade --
+// spending the budget the worktree removals need, after the warning itself was
+// already correctly bounded. Undelivered invalidations are simply not published;
+// the receiver's next ordinary event publishes them, exactly as before.
+func (jm *jobManager) publishWatchActivityContext(ctx context.Context) {
 	if jm == nil || jm.retirementOwner == nil {
 		return
 	}
@@ -84,7 +147,15 @@ func (jm *jobManager) publishWatchActivity() {
 	jm.watchActivityReceivers = nil
 	jm.watchActivityMu.Unlock()
 	for receiver := range receivers {
-		jm.retirementOwner.emitSessionActivityChanged(receiver, appwire.SessionActivityResourceWatches)
+		if !jm.retirementOwner.emitSessionActivityChangedBounded(ctx, receiver, appwire.SessionActivityResourceWatches) {
+			// The bounded send expired with the receiver's invalidation still
+			// in it. Dropping it here is permanent: the set was cleared before
+			// the sends, so the next ordinary flush would see nothing pending
+			// and an open Watches view would stay stale until a manual
+			// refresh. Requeue instead; noteWatchActivity merges with any
+			// change recorded while this flush was running.
+			jm.noteWatchActivity(receiver)
+		}
 	}
 }
 func (jm *jobManager) noteAcceptedWatchEvents(batch []jobstore.Event) {
