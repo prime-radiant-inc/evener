@@ -26,10 +26,15 @@ Shutdown (`thread/shutdown`). Interrupt, Compact, Queue, ChangeVisionModel,
 Rename, Goal, SharedNotes, SkillInput, CommandInput, and StopSubagent follow the
 remote daemon's own capability claim because the controller has an implemented
 forwarder and the compatible peer serves the route. ChangeModel is the
-exception: it requires the remote hub to advertise model-control version 1 and
-the controller to forward it, so a peer that only claims the capability is not
-offered a pick the controlled daemon would apply unchecked. PageBefore stays
-masked: the controller cannot yet join a remote page to its paging window.
+exception: it follows the peer's claim only while the peer names no
+model-control version newer than 1 and the controller's forwarded set carries
+version 1. A peer that names a version this controller does not speak is not
+offered the pick, because that daemon could refuse the mutation after the
+resume. A peer that names no version at all keeps the offer: a saved remote
+session's read carries no version because no daemon is running to report one,
+and its pick resolves by resuming that daemon and reading the authority the
+mutation is then fenced on. PageBefore stays masked: the controller cannot yet
+join a remote page to its paging window.
 
 The mask applies to `thread/list`, `thread/read`, `thread/start`,
 `thread/resume`, `thread/fork`, `thread/clear`, and the
