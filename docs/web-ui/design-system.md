@@ -278,11 +278,19 @@ The origin conversation never renders in the cascade — no column and no spine 
 so a first drill shows only the subagent's conversation, and that lone column
 fills the pane. Keep the selected child and immediate parent readable above the
 removed origin; earlier ancestors become live 52px spines, and the spines are
-the breadcrumb: the pane has no title and no separate path nav. The parent is
+the breadcrumb: an ordinary desktop secondary inspector omits its scaffold
+header row (no title, no Return button) and has no separate path nav, while
+horizontal tabs truncate long titles so the active tab's close button stays
+reachable in narrow groups. When the desktop host hides the tab strip (a
+`/thread/{ref}` single-pane route, a main-slot inspector, or a saved legacy
+in-place cascade), the pane retains its in-pane Return action. The parent is
 400px wide. The leaf flexes with a 440px minimum. Narrow desktop surfaces
 scroll horizontally and reveal the selected leaf instead of squeezing either
-reader. Parent and leaf transcript scrollers remain independent, each column's
-activity controls sit below its transcript content, and the pane body hosting
+reader. Parent and leaf transcript scrollers remain independent, desktop leaf
+columns omit per-column activity controls and readable parent columns place
+their compact peeks in their header so the pane's bottom status bar is the
+single bottom activity strip (mobile columns keep their single bottom activity
+strip since the pane status bar is desktop-only), and the pane body hosting
 the spines and columns never scrolls as a unit.
 
 Only ancestor spines use the session list's
@@ -306,14 +314,16 @@ and late ancestry updates preserve geometry and focus. Reduced motion makes
 geometry changes immediate. Unknown ancestry stays visible rather than inventing
 a root or discarding the retained path.
 
-Return closes only the inspector and focuses its exact surviving source lifetime.
+Closing the inspector tab on desktop (or tapping Back on the phone) closes only
+the inspector and focuses its exact surviving source lifetime.
 A session source receives editor focus without moving its reader. A retired source
 is never recreated or replaced by a reused pane ID. Existing saved cascades without
-separated-inspection intent retain their recorded Return behavior. Open conversation
-opens an independent ordinary session pane. Saved intent preserves the selected
+separated-inspection intent retain their recorded return behavior through phone
+Back or the desktop legacy in-pane Return action. Saved intent preserves the selected
 ref, edges, read-only source and origin locator without serializing transcript
-payloads or image bytes. At the existing phone breakpoint, a saved cascade shows only its selected
-read-only content and Return; ordinary Agents activation keeps transcript
+payloads or image bytes. At the existing phone breakpoint, a saved cascade shows its selected live
+conversation with its composer, runtime state, and single bottom activity strip
+(using the phone top bar's Back button to dismiss); ordinary Agents activation keeps transcript
 navigation. See the [ownership contract](../product/session-activity.md#automatic-agent-cascade)
 and [real Chrome guard](../../cmd/evener-hub/frontend/scripts/cascadeguard/README.md).
 
@@ -785,7 +795,7 @@ during implementation (noted inline); this table is the one to trust.
 | **ModelCatalog** (+ **ModelCatalogPanel**) | `{value: string; onChange(qualified); loadCatalog(): Promise<ModelCatalog>; revision?; onPickEntry?(entry); emptyLabel? ("(default)")}`; panel: `{loading; error; catalog; value; onPick(entry); variant?: "default"\|"sheet"}` | The rich model picker. `value` is a qualified `"provider/model"` or `""` for the harness default; `loadCatalog` is injected, so the widget is wire-free. The closed chip is the trigger and opens the panel in a Popover: an ARIA 1.2 combobox whose focus never leaves the search input, over one list of Recent, provider groups, and a dim line per unreachable provider. `ModelCatalogPanel` is the content alone, for a caller with its own trigger; `variant="sheet"` is the mobile bottom-sheet form (no search input, 48px rows). `ModelCatalog` is also the exported catalog shape type. |
 | **Dropzone** | `{children: ReactNode; onFiles(files: File[]); disabled?}` | A generic drag-and-drop file target around `children`: calls `onFiles` with every dropped File in order, shows an active state while a drag is over it. No type/count/size opinion — the caller filters. Pointer-only by nature, so every caller must also offer a keyboard-reachable file-picker button. |
 | **KeyHint** | `{keys: string[]; compact?: boolean}` | One `<kbd>` per key, "+"-separated, each drawn as a keycap: `--surface-1`, a 1px `--edge` hairline, `--radius-chip`, and a heavier `--edge-strong` foot drawn as a shadow so the cap keeps its box; the literal key name `"Mod"` renders as ⌘ on Apple platforms, `Ctrl` elsewhere. `compact` renders one bare glyph run (⇧↵) for a hint inside another control (a Send button), with the same words visually hidden so the enclosing name is unchanged. `chordLabel(keys)` is exported alongside. |
-| **Menu** | `{items: MenuEntry[]; triggerTabIndex?: number; variant?: "default"\|"quiet"} & ({trigger: ReactNode} \| {icon: ReactNode; label: string})` (`MenuEntry` = `{id; label; onSelect; disabled?}` \| `{kind: "separator"; id}`) | Trigger + popup; roving tabindex among items (skipping disabled), no typeahead. The default trigger is a raised control (`--surface-1`, `--edge`, `--shadow-card`); the popup is a `--radius-pane` overlay whose items sit `--space-1` inside its edge and round their own wash. Popup `role="menu"` gets `aria-labelledby` pointing at the trigger `<button>`'s own id (fix-wave — see §4). Traps focus (`FocusScope trap`). `trigger` is visible content that also names the button. The icon-only form takes `icon` (decorative, wrapped `aria-hidden`) and a required `label` that becomes the trigger's `aria-label`; it is square at IconButton's `sm` size (28px) with IconButton's tap floor (≤899px or a coarse pointer), so callers never pad, size or centre the trigger themselves (the rail's row and section "⋯", SessionMenu). `triggerTabIndex={-1}` when nested in a roving-tabindex row; `variant="quiet"` drops the trigger's border for dense rows. |
+| **Menu** | `{items: MenuEntry[]; triggerTabIndex?: number; variant?: "default"\|"quiet"} & ({trigger: ReactNode} \| {icon: ReactNode; label: string})` (`MenuEntry` = `{id; label; onSelect; disabled?}` \| `{kind: "separator"; id}`) | Trigger + popup; roving tabindex among items (skipping disabled), no typeahead. The default trigger is a raised control (`--surface-1`, `--edge`, `--shadow-card`); the popup is a `--radius-pane` overlay whose items sit `--space-1` inside its edge and round their own wash. Popup `role="menu"` gets `aria-labelledby` pointing at the trigger `<button>`'s own id (fix-wave — see §4). Traps focus (`FocusScope trap`). `trigger` is visible content that also names the button. The icon-only form takes `icon` (decorative, wrapped `aria-hidden`) and a required `label` that becomes the trigger's `aria-label`; it is square at IconButton's `sm` size (28px) with IconButton's tap floor (≤899px or a coarse pointer), so callers never pad, size or centre the trigger themselves (the rail's row and section "⋯", SessionMenu). `triggerTabIndex={-1}` when nested in a roving-tabindex row; `variant="quiet"` drops the trigger's border for dense rows. An open menu is anchored to its trigger's current position and to its current item set, not to a snapshot taken when something resized: a viewport resize re-anchors the popup and never closes it (closing on one swallowed the tap that opened the menu when that tap dismissed the software keyboard), for as long as its trigger stays mounted - crossing the mobile breakpoint swaps the workspace host, which unmounts the menu with its pane, and no menu can outlive its trigger, re-measuring after layout via the visual viewport's `resize` and `scroll`, and a `ResizeObserver` on the popup's own box and on every ancestor up to `body`, so a trigger that moves later still takes the popup with it. The popup asks for its label's `max-content` width and the visible viewport caps it, so a long label wraps only when the cap is what decided the width - never when the popup had room. When a placement pass shortens that scrollport, the row holding focus is scrolled back into view by moving the popup's own `scrollTop`, never `scrollIntoView`, which on a zoomed page can pan toward the popup's old coordinates. Keyboard activation resolves against the focused item's stable id, so an entry leaving the list cannot retarget Enter at its neighbour. |
 | **Popover** | `{open; onClose; trigger: ReactElement; children; autoFocus? (true); closeOnScroll? (true); stretchTrigger? (false); "data-testid"?}` | The shared floating panel: `trigger` renders in flow and anchors a panel portaled to `document.body` at a fixed position (flip-then-clamp, shared with Menu), so opening never reflows the page. Outside click, Escape, and (unless `closeOnScroll={false}`) scroll or resize call `onClose`; toggling from the trigger is the caller's job. `autoFocus={false}` keeps focus in an anchoring input (the combobox pattern). |
 | **Dialog** | `{open; onClose; title; children; footer?; size?: "default"\|"large"}` | Modal: centered, enters and leaves on the Float recipe (§5), Escape/scrim-click close, trapped + restored focus. Shares its whole contract with Sheet via the internal `OverlayPanel`. `size="large"` fills almost the whole viewport for lightbox-style content. |
 | **ConfirmDialog** | `{open; title; children; confirmLabel: string; cancelLabel? ("Cancel"); destructive? (true); busy? (false); onConfirm(); onCancel()}` | A Dialog pre-composed for "every destructive action confirms": body copy plus a Cancel / confirm-verb footer, danger-toned unless `destructive={false}` (a consequential but non-destructive action like Install). Controlled — key `open` off one "what's pending" state. Escape and scrim-click call `onCancel`, never `onConfirm`; `busy` disables both buttons against a double submit. |

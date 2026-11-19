@@ -15,11 +15,14 @@ import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { activityDelegate, activitySummary, activityThread } from "../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests } from "../../stores/threads";
+import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
+import { emptyStateReasons } from "../../widgets/emptystate/emptyStateTestUtils";
 import { getToasts, pushToast, resetToastStoreForTests } from "../../widgets/toast/store";
 import { useAttachments } from "../session/composer/attachments/useAttachments";
 import { readComposerDraft } from "../session/composer/draft";
 import { installControlledImageEncoding } from "../session/testing/imageEncoding";
+import { installMobileViewport } from "../session/testing/mobileViewport";
 import { enterAgentCascade } from "./actions";
 import { cascadeClient, cascadeContext, cascadeScope } from "./cascadeTestUtils";
 import type { SessionZoomParams } from "./intent";
@@ -114,20 +117,52 @@ function leaf() {
   return (pane.params as SessionZoomParams).ref;
 }
 
-test.each(["root", "child", "grandchild"])(
-  "cascade scope %s keeps About out of its four activity peeks",
-  async (ref) => {
-    fixture().mount();
-    await conversationMounted("child");
-    const controls = scope(ref);
-    for (const category of ["Agents", "Jobs", "Watches", "Tasks"]) {
-      expect(controls.getByRole("button", { name: new RegExp(`^${category},.* - peek at ${ref}$`) })).toBeTruthy();
-    }
-    expect(controls.getByRole("button", { name: `Tasks, 0 of 0 settled - peek at ${ref}` })).toBeTruthy();
-    expect(controls.queryByRole("button", { name: `About - peek at ${ref}` })).toBeNull();
-    expect(controls.getAllByRole("button", { name: new RegExp(` - peek at ${ref}$`) })).toHaveLength(4);
-  },
-);
+function installMobileCascadeViewport(): () => void {
+  const restoreMedia = installMobileViewport();
+  transcriptDisplayStore.getState().setViewport("mobile");
+  return () => {
+    restoreMedia();
+    resetTranscriptDisplayStoreForTests();
+  };
+}
+
+async function expectFourPeeks(controls: ReturnType<typeof scope>, ref: string) {
+  for (const category of ["Agents", "Jobs", "Watches", "Tasks"]) {
+    expect(controls.getByRole("button", { name: new RegExp(`^${category},.* - peek at ${ref}$`) })).toBeTruthy();
+  }
+  expect(controls.queryByRole("button", { name: `About - peek at ${ref}` })).toBeNull();
+  expect(controls.getAllByRole("button", { name: new RegExp(` - peek at ${ref}$`) })).toHaveLength(4);
+  const tasksTrigger = controls.getByRole("button", { name: new RegExp(`^Tasks,.* - peek at ${ref}$`) });
+  await act(async () => fireEvent.click(tasksTrigger));
+  const peek = await screen.findByTestId("activity-peek");
+  expect(within(peek).getByRole("dialog", { name: `Tasks for ${ref}` })).toBeTruthy();
+  await waitFor(() => expect(emptyStateReasons(peek)).toContain("empty"));
+  await act(async () => fireEvent.click(within(peek).getByRole("button", { name: "Close activity peek" })));
+  await waitFor(() => expect(screen.queryByTestId("activity-peek")).toBeNull());
+}
+
+test("desktop cascade spine and readable parent keep About out of their four activity peeks while leaf omits duplicate controls", async () => {
+  const { client, mount } = fixture();
+  client.on("evener/tasks/list", () => ({ data: [] }));
+  mount();
+  await conversationMounted("child");
+  await expectFourPeeks(scope("root"), "root");
+  await expectFourPeeks(scope("child"), "child");
+  expect(scope("grandchild").queryByTestId("cascade-activity-controls")).toBeNull();
+});
+
+test("mobile cascade column keeps About out of its four activity peeks", async ({ onTestFinished }) => {
+  onTestFinished(installMobileCascadeViewport());
+  const { client, mount } = fixture();
+  client.on("evener/tasks/list", () => ({ data: [] }));
+  mount();
+  await conversationMounted("grandchild");
+  expect(screen.getAllByTestId("cascade-column").map((column) => column.getAttribute("data-scope-ref"))).toEqual([
+    "grandchild",
+  ]);
+  expect(screen.queryByTestId("statusbar")).toBeNull();
+  await expectFourPeeks(scope("grandchild"), "grandchild");
+});
 
 test.each(["success", "failure"] as const)(
   "a pending source encode %s cannot change a same-ID restored cascade source",
@@ -230,7 +265,7 @@ test("only a user drill animates a new scope while late ancestry commits immedia
   );
   mount();
   await conversationMounted("child");
-  const focused = screen.getByRole("button", { name: "Return to previous view" });
+  const focused = scope("root").getByRole("button", { name: "Show root" });
   focused.focus();
   act(() =>
     enterAgentCascade(
@@ -282,11 +317,16 @@ test("an ancestor peek drills its explicit owner and truncates the branch while 
   expect(workspaceStore.getState().panes.find((pane) => pane.id === other.id)).toBe(other);
 });
 
-test("closing a leaf peek releases only its collection while the same-ref sidebar still receives direct delegates", async () => {
+test("closing a leaf peek releases only its collection while the same-ref sidebar still receives direct delegates", async ({
+  onTestFinished,
+}) => {
+  onTestFinished(installMobileCascadeViewport());
   const { client, context, contents, mount } = fixture();
   activitySidebarStore.getState().openWith("agents");
   const { rerender } = mount();
-  await within(await screen.findByTestId("activity-sidebar")).findByRole("button", { name: /grandchild direct child/ });
+  await within(await screen.findByTestId("activity-sidebar")).findByRole("button", {
+    name: /grandchild direct child/,
+  });
   const reads = () =>
     client.calls.filter(
       (call) => call.method === "evener/thread/delegates/list" && (call.params as { ref: string }).ref === "grandchild",
@@ -377,18 +417,31 @@ test("an initially empty incomplete parent page retains its real continuation an
   expect(leaf()).toBe("grandchild");
 });
 
-test("a parent Tasks peek mounts the existing scoped task list and opens no task pane", async () => {
+test("desktop readable parent column exposes compact header Tasks peek while keeping leaf Overview intact", async () => {
   const { client, mount } = fixture();
-  client.on("evener/tasks/list", () => ({
-    data: [{ id: 1, type: "implement", description: "Parent scoped task", prompt: "", status: "open" }],
+  client.on("evener/tasks/list", ({ ref }) => ({
+    data:
+      ref === "child"
+        ? [{ id: 1, type: "implement", description: "Readable parent task", prompt: "", status: "open" }]
+        : [],
   }));
+  activitySidebarStore.getState().openWith("about");
   mount();
   await conversationMounted("child");
-  expect(client.calls.filter((call) => call.method === "evener/tasks/list")).toHaveLength(0);
+  const sidebar = await screen.findByTestId("activity-sidebar");
+  await within(sidebar).findByText("wire-grandchild");
+  // Leaf column omits duplicate controls; parent controls sit in its header,
+  // never as a second bar below the transcript content.
+  expect(scope("grandchild").queryByTestId("cascade-activity-controls")).toBeNull();
+  const parentColumn = cascadeScope("child", "cascade-column");
+  const parentControls = within(parentColumn).getByTestId("cascade-activity-controls");
+  const parentContent = within(parentColumn).getByTestId("cascade-column-content");
+  expect(parentControls.compareDocumentPosition(parentContent) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   const peek = await openPeek("child", "Tasks");
-  expect(await within(peek).findByText("Parent scoped task")).toBeTruthy();
-  expect(workspaceStore.getState().panes).toHaveLength(1);
+  expect(await within(peek).findByText("Readable parent task")).toBeTruthy();
   expect(leaf()).toBe("grandchild");
+  expect(within(sidebar).getByText("wire-grandchild")).toBeTruthy();
+  expect(within(sidebar).queryByText("wire-child")).toBeNull();
 });
 
 test("spine pop and counts are separate keyboard targets and Escape closes the peek before the sidebar", async () => {
@@ -429,4 +482,47 @@ test("a cascade scope's Agents chip counts its subagents at every depth", async 
   }));
   mount();
   expect(await scope("root").findByRole("button", { name: "Agents, 3 of 4 active - peek at root" })).toBeTruthy();
+});
+
+test("desktop readable column keeps compact header peeks when the selected ref is a hidden origin", async () => {
+  const { client } = fixture();
+  const origin = { id: "origin", type: "session" as const, slot: "main" as const, params: { ref: "child" } };
+  const cascadeParams: SessionZoomParams = {
+    ref: "child",
+    source: { type: "session" as const, params: { ref: "child" } },
+    edges: [],
+    inspection: { origin: { paneId: "origin", type: "session" as const, ref: "child" } },
+  };
+  const cascade = {
+    id: "cascade",
+    type: "sessionZoom" as const,
+    slot: "secondary" as const,
+    params: cascadeParams,
+  };
+  workspaceStore.setState({ panes: [origin, cascade], focusedPaneId: "cascade" });
+  const { recordCascadeOrigin } = await import("./inspectionOrigin");
+  recordCascadeOrigin(cascade, origin);
+  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref, scope),
+    context: cascadeContext(ref, ref === "child" ? ["root"] : []),
+  }));
+  await act(async () => {
+    render(
+      <ClientProvider client={client}>
+        <MotionProvider>
+          <Zoom paneId="cascade" params={cascadeParams} focused />
+          <ActivitySidebar />
+        </MotionProvider>
+      </ClientProvider>,
+    );
+  });
+  await conversationMounted("root");
+  // "child" is hidden because it is the live origin beside the inspector, so
+  // "root" is the last rendered column while StatusBar still serves "child".
+  const survivingColumn = cascadeScope("root", "cascade-column");
+  expect(within(survivingColumn).getByTestId("cascade-activity-controls")).toBeTruthy();
+  expect(scope("root").getByRole("button", { name: /Tasks,.*- peek at root/ })).toBeTruthy();
+  expect(scope("root").getByRole("button", { name: /Agents,.*- peek at root/ })).toBeTruthy();
+  expect(scope("root").getByRole("button", { name: /Watches,.*- peek at root/ })).toBeTruthy();
+  expect(scope("root").getByRole("button", { name: /Jobs,.*- peek at root/ })).toBeTruthy();
 });

@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>menu-popup-max-content layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  body {
+    margin: 0;
+    background: var(--surface-1);
+    font-family: var(--font-sans);
+  }
+  /* The popup is `position: fixed` and portals to the body in production, so
+     its width is decided against the VIEWPORT, not against any ancestor. A
+     fixture left at its static position has the whole viewport to shrink into
+     and cannot tell `width: max-content` from `width: auto` - both resolve to
+     the label's width. #roomy therefore sits 1000px along a 1182px viewport:
+     the space its own offset leaves (182px) is narrower than its label, which
+     is exactly the placement where shrink-to-fit collapses the box. #gauge is
+     the same markup with no such limit, so its width IS the label's natural
+     width - the reference #roomy is compared against.
+     The `float` entrance is suppressed here and nowhere else: a box must not be
+     measured while its recipe is still scaling it. */
+  .fixture {
+    position: fixed;
+    top: 20px;
+    margin: 0;
+  }
+  #roomy {
+    left: 1000px;
+    max-inline-size: 1166px;
+  }
+  #capped {
+    left: 20px;
+    max-inline-size: 180px;
+  }
+  /* The narrow form under the same tight offset as #roomy, with a cap that is
+     NOT the binding constraint. This is the only geometry where shrink-to-fit
+     and max-content can differ: wrapping rows have a small min-content, so
+     `width: auto` collapses to the 182px the offset leaves, while max-content
+     still asks for the label's single-line width. */
+  #collapse {
+    left: 1000px;
+    max-inline-size: 1166px;
+  }
+  #gauge {
+    position: absolute;
+    left: -9999px;
+    top: 0;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .popup {
+      animation: none;
+    }
+  }
+</style>
+</head>
+<body data-font-size="m">
+<!-- Real class names throughout (.popup/.item/popupNarrow); the only
+     harness-local names are the fixture ids and .fixture's placement. -->
+<ul id="roomy" class="popup fixture" role="menu">
+  <li role="menuitem" class="item" data-label></li>
+</ul>
+<ul id="capped" class="popup popupNarrow fixture" role="menu">
+  <li role="menuitem" class="item" data-label></li>
+</ul>
+<ul id="collapse" class="popup popupNarrow fixture" role="menu">
+  <li role="menuitem" class="item" data-label></li>
+</ul>
+<ul id="gauge" class="popup" role="menu">
+  <li role="menuitem" class="item" data-label></li>
+</ul>
+<script>
+// The session activity count's shape at the largest text setting: the label
+// long enough to overflow a height-capped popup in the first report of it.
+// One constant, written into every fixture, so the three cannot drift apart.
+const LABEL = "Archive all ten sessions in this workspace and every delegate they started";
+
+for (const node of document.querySelectorAll("[data-label]")) node.textContent = LABEL;
+
+const box = (el) => el.getBoundingClientRect();
+
+// A wrapped inline text node reports one client rect per line, which needs no
+// text measurement of our own. Zero rects (an empty label) surfaces as 0 and
+// the assertion fails on it rather than comparing NaN.
+const lineCount = (el) => {
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  return range.getClientRects().length;
+};
+
+const measurePopup = (id) => {
+  const popup = document.querySelector(`#${id}`);
+  const item = popup.querySelector(".item");
+  const popupRect = box(popup);
+  return {
+    capWidth: Number.parseFloat(getComputedStyle(popup).maxInlineSize),
+    popupWidth: popupRect.width,
+    popupHeight: popupRect.height,
+    itemWidth: box(item).width,
+    labelLines: lineCount(item),
+    horizontalOverflow: popup.scrollWidth - popup.clientWidth,
+  };
+};
+
+window.measure = () => ({
+  roomy: measurePopup("roomy"),
+  capped: measurePopup("capped"),
+  collapse: measurePopup("collapse"),
+  gaugeWidth: box(document.querySelector("#gauge")).width,
+  gaugeLines: lineCount(document.querySelector("#gauge .item")),
+});
+</script>
+</body>
+</html>
