@@ -160,8 +160,7 @@ func (a *StreamAccumulator) Process(ev StreamEvent) {
 		a.usage = ev.Usage
 		if ev.Response != nil {
 			cp := *ev.Response
-			// An explicit incomplete response settles the output even when empty.
-			if !responseHasContent(cp) && cp.Finish.Raw != "incomplete" {
+			if !cp.OutputSettled && !responseHasContent(cp) {
 				cp = *a.buildResponseLocked()
 				copyResponseMetadata(&cp, ev.Response)
 			}

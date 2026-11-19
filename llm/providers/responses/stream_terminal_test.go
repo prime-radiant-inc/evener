@@ -14,10 +14,13 @@ import (
 
 func TestIncompleteResponseKeepsUnsettledToolArgumentsOutOfFinalResponse(t *testing.T) {
 	t.Parallel()
-	_, final := responsesEvents(t,
+	events, final := responsesEvents(t,
 		`{"type":"response.function_call_arguments.delta","call_id":"call_unfinished","name":"probe","delta":"{}"}`,
 		`{"type":"response.completed","response":{"status":"incomplete","output":[]}}`,
 	)
+	if delta := toolEvent(t, events, llm.StreamEventToolCallDelta); delta == nil || delta.ID != "call_unfinished" || string(delta.Arguments) != "{}" {
+		t.Fatalf("transient tool delta = %+v", delta)
+	}
 	if final == nil || len(final.ToolCalls()) != 0 || final.Finish.Raw != "incomplete" {
 		t.Fatalf("incomplete final response = %+v, want no settled tool call", final)
 	}

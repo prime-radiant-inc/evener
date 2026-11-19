@@ -215,6 +215,7 @@ func fromResponses(raw map[string]any, requestedModel string, body []byte) llm.R
 	status, _ := raw["status"].(string)
 	switch {
 	case status == "incomplete":
+		r.OutputSettled = true
 		reason := "length" // default for incomplete
 		if details, ok := raw["incomplete_details"].(map[string]any); ok {
 			if dr, _ := details["reason"].(string); dr != "" {
