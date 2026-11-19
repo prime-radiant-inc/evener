@@ -333,7 +333,7 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 	}
 
 	var firstReplay []json.RawMessage
-	const wantReasoning = `{"encrypted_content":"opaque","id":"rs_mixed","summary":[{"text":"s_2","type":"summary_text"}],"type":"reasoning"}`
+	const wantReasoning = `{"encrypted_content":"opaque","id":"rs_mixed","summary":[{"text":" s_2 ","type":"summary_text"},{"text":"","type":"summary_text"}],"type":"reasoning"}`
 	for _, requestIndex := range []int{2, 3} {
 		var request struct {
 			Input []json.RawMessage `json:"input"`
