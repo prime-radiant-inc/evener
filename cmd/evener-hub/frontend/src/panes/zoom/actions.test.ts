@@ -183,6 +183,78 @@ test("root re-entry reuses its associated inspector after a deeper drill", () =>
   expect(sourceView.readable).toBe(true);
 });
 
+// A delegate clicked from the Overview Agents tab can be nested: its owner is
+// a parent subagent, not the pane's own root. The action takes the parent-to-
+// child chain so the cascade renders every hop, not just the last edge.
+const nestedChain = () => [
+  activityDelegate({ ownerRef: "root", childRef: "parent", delegateId: "d1" }),
+  activityDelegate({ ownerRef: "parent", childRef: "leaf", delegateId: "d2" }),
+];
+const nestedEdges = [
+  { ownerRef: "root", childRef: "parent", delegateId: "d1" },
+  { ownerRef: "parent", childRef: "leaf", delegateId: "d2" },
+];
+
+test("a nested chain from its root session opens the full cascade bound to that origin", () => {
+  const source = pane(workspaceStore.getState().openPane("session", { ref: "root" }));
+  const cascadeId = enterAgentCascade(nestedChain(), source.id);
+  expect(cascadeId).not.toBe(source.id);
+  expect(pane(cascadeId)).toMatchObject({ type: "sessionZoom", slot: "secondary" });
+  expect(pane(cascadeId).params).toMatchObject({
+    ref: "leaf",
+    source: { type: "session", params: { ref: "root" } },
+    edges: nestedEdges,
+    inspection: { origin: { paneId: source.id, type: "session", ref: "root" } },
+  });
+  expect(cascadeOrigin(pane(cascadeId))).toBe(source);
+});
+
+test("a nested chain re-drills an existing associated cascade from the root", () => {
+  const source = pane(workspaceStore.getState().openPane("session", { ref: "root" }));
+  const inspectorId = enterAgentCascade(rootChild(), source.id);
+  expect(enterAgentCascade(nestedChain(), source.id)).toBe(inspectorId);
+  expect(pane(inspectorId).params).toMatchObject({ ref: "leaf", edges: nestedEdges });
+  expect(cascadeOrigin(pane(inspectorId))).toBe(source);
+});
+
+test("a nested chain drills from the deepest cascade scope the target already owns", () => {
+  const cascadeId = workspaceStore.getState().openPane(
+    "sessionZoom",
+    {
+      ref: "parent",
+      source: { type: "session", params: { ref: "root" } },
+      edges: [{ ownerRef: "root", childRef: "parent", delegateId: "d1" }],
+    },
+    { slot: "secondary" },
+  );
+  expect(enterAgentCascade(nestedChain(), cascadeId)).toBe(cascadeId);
+  expect(pane(cascadeId).params).toMatchObject({ ref: "leaf", edges: nestedEdges });
+});
+
+test("a nested chain builds every hop when only its root is already a cascade scope", () => {
+  const cascadeId = workspaceStore
+    .getState()
+    .openPane(
+      "sessionZoom",
+      { ref: "root", source: { type: "session", params: { ref: "root" } }, edges: [] },
+      { slot: "secondary" },
+    );
+  expect(enterAgentCascade(nestedChain(), cascadeId)).toBe(cascadeId);
+  expect(pane(cascadeId).params).toMatchObject({ ref: "leaf", edges: nestedEdges });
+});
+
+test("a nested chain from a non-conversation source opens the generic cascade with every hop", () => {
+  const source = pane(workspaceStore.getState().openPane("doc", { session: "root", path: "notes.md", kind: "file" }));
+  const cascadeId = enterAgentCascade(nestedChain(), source.id);
+  expect(cascadeId).not.toBe(source.id);
+  expect(pane(cascadeId).params).toMatchObject({
+    ref: "leaf",
+    source: { type: "session", params: { ref: "root" } },
+    edges: nestedEdges,
+    inspection: { origin: null },
+  });
+});
+
 test("independent same-ref sources receive different secondary inspection contexts", () => {
   const source = pane(workspaceStore.getState().openPane("session", { ref: "root" }));
   const independent: OpenPaneRecord = { ...source, id: "independent-root", slot: "secondary" };

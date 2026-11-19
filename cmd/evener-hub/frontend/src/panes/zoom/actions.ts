@@ -105,33 +105,91 @@ function updateIntent(pane: OpenPaneRecord, params: SessionZoomParams, userTrans
   return workspaceStore.getState().retypePane(pane, "sessionZoom", params);
 }
 
-export function enterAgentCascade(sub: SessionDelegate, sourcePaneId?: string): string {
+/** `Array.isArray` does not narrow a `readonly` array out of a union in the
+ * false branch, so the chain test is a declared predicate. */
+function isDelegateChain(value: SessionDelegate | readonly SessionDelegate[]): value is readonly SessionDelegate[] {
+  return Array.isArray(value);
+}
+
+/** Fold the chain's hops from `start` onto `intent`. The first hop rebases
+ * onto the scope the cascade already renders (an aliased requested ref), so
+ * the recorded edge names the same ref the path draws. */
+function drillChain(
+  intent: SessionZoomParams,
+  chain: readonly SessionDelegate[],
+  start: number,
+  firstOwnerRef: string,
+): SessionZoomParams {
+  let next = intent;
+  for (const [offset, step] of chain.slice(start).entries()) {
+    next = drillZoomIntent(next, {
+      ownerRef: offset === 0 ? firstOwnerRef : step.ownerRef,
+      childRef: step.childRef,
+      delegateId: step.delegateId,
+    });
+  }
+  return next;
+}
+
+/** Enter a delegate's cascade, or a nested delegate's whole parent-to-child
+ * chain: a caller that knows the nesting passes every hop, so a depth-2 child
+ * opens the full path (root -> parent -> child) with its origin pane still
+ * recorded. */
+export function enterAgentCascade(
+  targetOrChain: SessionDelegate | readonly SessionDelegate[],
+  sourcePaneId?: string,
+): string {
+  const chain: readonly SessionDelegate[] = isDelegateChain(targetOrChain) ? targetOrChain : [targetOrChain];
+  const first = chain[0];
+  const target = chain[chain.length - 1];
+  if (first === undefined || target === undefined) {
+    throw new Error("enterAgentCascade requires at least one delegate");
+  }
   const workspace = workspaceStore.getState();
   const source = presentedPanes(workspace.panes).find((pane) => pane.id === (sourcePaneId ?? workspace.focusedPaneId));
-  const edge = { ownerRef: sub.ownerRef, childRef: sub.childRef, delegateId: sub.delegateId };
   if (source) {
     const intent = intentFor(source);
     if (intent) {
-      const owner = pathFor(intent).scopes.find((scope) => requestedOwner(scope.requestedRef, sub.ownerRef));
-      if (owner) {
-        updateIntent(source, drillZoomIntent(intent, { ...edge, ownerRef: owner.requestedRef }), true);
+      // Deepest first: a chain whose parent is already a rendered scope drills
+      // from the parent straight to the child, while one anchored at the root
+      // rebuilds every hop from it.
+      const scopes = pathFor(intent).scopes;
+      const deepest = [...chain.entries()]
+        .reverse()
+        .map(([index, step]) => ({
+          index,
+          owner: scopes.find((scope) => requestedOwner(scope.requestedRef, step.ownerRef)),
+        }))
+        .find((candidate) => candidate.owner !== undefined);
+      if (deepest?.owner) {
+        updateIntent(source, drillChain(intent, chain, deepest.index, deepest.owner.requestedRef), true);
         return source.id;
       }
     }
     const ref = refParam(source.params);
-    if (ref && source.type === "session" && requestedOwner(ref, sub.ownerRef)) {
+    if (ref && source.type === "session" && requestedOwner(ref, first.ownerRef)) {
+      const edges: DelegateEdgeIntent[] = [
+        { ownerRef: ref, childRef: first.childRef, delegateId: first.delegateId },
+        ...chain.slice(1).map((step) => ({
+          ownerRef: step.ownerRef,
+          childRef: step.childRef,
+          delegateId: step.delegateId,
+        })),
+      ];
       const existing = associatedCascade(source);
       if (existing) {
-        const intent = intentFor(existing);
-        if (!intent) throw new Error("Associated cascade has invalid intent");
-        updateIntent(existing, drillZoomIntent(intent, { ...edge, ownerRef: ref }), true);
+        const existingIntent = intentFor(existing);
+        if (!existingIntent) throw new Error("Associated cascade has invalid intent");
+        let next = existingIntent;
+        for (const edge of edges) next = drillZoomIntent(next, edge);
+        updateIntent(existing, next, true);
         workspaceStore.getState().focusPane(existing.id);
         return existing.id;
       }
       const params: SessionZoomParams = {
-        ref: sub.childRef,
+        ref: target.childRef,
         source: { type: "session", params: { ref } },
-        edges: [{ ...edge, ownerRef: ref }],
+        edges,
         inspection: { origin: { paneId: source.id, type: "session", ref } },
       };
       userTransitions.add(params);
@@ -143,9 +201,13 @@ export function enterAgentCascade(sub: SessionDelegate, sourcePaneId?: string): 
     }
   }
   const params: SessionZoomParams = {
-    ref: sub.childRef,
-    source: { type: "session", params: { ref: sub.ownerRef } },
-    edges: [edge],
+    ref: target.childRef,
+    source: { type: "session", params: { ref: first.ownerRef } },
+    edges: chain.map((step) => ({
+      ownerRef: step.ownerRef,
+      childRef: step.childRef,
+      delegateId: step.delegateId,
+    })),
     inspection: { origin: null },
   };
   userTransitions.add(params);

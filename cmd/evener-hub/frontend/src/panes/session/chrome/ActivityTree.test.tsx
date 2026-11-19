@@ -670,7 +670,7 @@ describe("ActivityTree", () => {
     vi.useRealTimers();
   });
 
-  test("a quiet delegate row dims its dot past the threshold and the tick flips it", () => {
+  test("an open delegate row past the quiet threshold keeps its working dot", () => {
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
     const tree = intentDelegateTree(
@@ -680,11 +680,16 @@ describe("ActivityTree", () => {
     render(<ActivityTree tree={tree} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
     const row = screen.getByRole("treeitem", { name: "inspect" });
     expect(row.querySelector("[data-state]")?.getAttribute("data-state")).toBe("fresh");
-    // Four seconds of silence already elapsed; crossing twenty flips it.
+    // Four seconds of silence already elapsed; crossing twenty must not dim an
+    // open run on the web - the working ring stays until terminal settlement.
     act(() => {
       vi.advanceTimersByTime(21_000);
     });
-    expect(row.querySelector("[data-state]")?.getAttribute("data-state")).toBe("quiet");
+    const alive = row.querySelector("[data-state]");
+    expect(alive?.getAttribute("data-state")).toBe("fresh");
+    expect(alive?.getAttribute("data-shape")).toBe("dot");
+    expect(alive?.className).toContain("alive");
+    expect(alive?.className).toContain("working");
     vi.useRealTimers();
   });
 
