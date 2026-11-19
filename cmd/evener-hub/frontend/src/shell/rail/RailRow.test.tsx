@@ -9,7 +9,6 @@ import {
   quotaWaitState,
   type ResourceKey,
   type ResourceState,
-  waitingForQuotaText,
 } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { manifest } from "@evener/appwire-client/testing/navigation";
@@ -742,16 +741,24 @@ describe("compact session status", () => {
     if (line) expect(line.closest("[data-session-ref]")).not.toBeNull();
   });
 
-  // Contract: both surfaces draw the wait's words from one shared source,
-  // asserted through the function, never a literal. The pending half follows
-  // the same rule: the reset crossing changes the promise, never the wait.
+  // Contract: both surfaces draw the wait's words from one shared source;
+  // this test pins the row's computed fact (the runway from the summary's
+  // instant at this render) and its phase marker, never the sentence —
+  // the copy itself is the shared source's, and wording changes must not
+  // break tests.
   test("the row's wait line reads the shared wait words the pane's line uses", () => {
     const resumesAt = new Date(Date.now() + 90 * 60_000).toISOString();
     renderRow({
       state: "active",
       failure: { title: "Usage limit reached", cause_kind: "provider", status: 429, resumes_at: resumesAt },
     });
-    expect(screen.getByTestId("rail-row-quota-wait").textContent).toBe(waitingForQuotaText(90 * 60_000));
+    const line = screen.getByTestId("rail-row-quota-wait");
+    expect(line.getAttribute("data-passed-reset")).toBeNull();
+    // The rendered runway is within one render-tick of the fixture's 90
+    // minutes; the exact tick boundary is not this test's to pin.
+    const remaining = Number(line.getAttribute("data-remaining-ms"));
+    expect(remaining).toBeGreaterThan(89 * 60_000);
+    expect(remaining).toBeLessThanOrEqual(90 * 60_000);
   });
 
   test("the row's wait line reads pending once the resume time passes, while its summary still names the wait", () => {

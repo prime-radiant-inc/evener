@@ -2690,7 +2690,7 @@ test("thread/status/changed to a non-active status clears the usage-limit resume
     {
       thread: testThread({
         status: { type: "active" },
-        evener: { failure: { title: "Usage limit reached", resumesAt } },
+        evener: { activeTurnId: "turn_1", failure: { title: "Usage limit reached", resumesAt, waitStartedAt: 1 } },
       }),
     },
     "ref_t",
@@ -3223,7 +3223,7 @@ test("a quota wait's no-delay retry drops the resume instant a read set", () => 
     {
       thread: testThread({
         status: { type: "active" },
-        evener: { failure: { title: "Usage limit reached", resumesAt } },
+        evener: { failure: { title: "Usage limit reached", resumesAt, waitStartedAt: 1 } },
       }),
     },
     "ref_t",
@@ -3238,12 +3238,14 @@ test("a quota wait's no-delay retry drops the resume instant a read set", () => 
       params: {
         threadId: "thr_t",
         ref: "ref_t",
+        turnId: "turn_1",
         attempt: 1,
         maxAttempts: 0,
         delayMs: 0,
         errorClass: "quota_exceeded",
         groupElapsedMs: 5_000,
         attemptCap: 0,
+        waitStartedAt: 1,
       },
     },
     2000,
@@ -3262,7 +3264,7 @@ test("a quota wait's announcement leaves the read's resume instant as it was", (
     {
       thread: testThread({
         status: { type: "active" },
-        evener: { failure: { title: "Usage limit reached", resumesAt } },
+        evener: { failure: { title: "Usage limit reached", resumesAt, waitStartedAt: 1 } },
       }),
     },
     "ref_t",
@@ -3423,63 +3425,79 @@ test("a late start whose stamp the wake already ended cannot restamp a wait", ()
   expect(restamped.quotaResumesAt).toBeUndefined();
 });
 
-// Scenario 8: the legacy unstamped wake (an older daemon) reconciles by turn
-// ownership alone — it may clear an UNstamped wait's chip and deadline, but
-// must never touch a stamped wait.
-test("an unstamped wake clears a held unstamped wait by turn ownership", () => {
+// The anti-installation contract's core: an unstamped frame (a daemon that
+// predates the stamp) NEVER installs a wait. An unstamped start is a no-op for
+// quota state — no deadline, no chip, no stamp, no elapsed attribution — so a
+// daemon that predates the stamp shows no wait in the pane, period. Its row
+// (the sidebar's roster-sampled summary) is a different producer this reducer
+// never touches.
+test("an unstamped start installs no deadline and no chip", () => {
   const resumesAt = Date.parse("2026-11-07T14:30:00Z");
-  let model = testHydrate({
-    status: { type: "active" },
-    evener: { activeTurnId: "turn_1", failure: { title: "Usage limit reached", resumesAt } },
-  });
-  // The legacy wait: a read-set deadline with no stamp, and the chip held
-  // from an unstamped live announcement.
+  let model = testHydrate({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } });
+
+  model = applyNotification(model, quotaRetry({ turnId: "turn_1", resumesAt }), 2000);
+  expect(model.quotaResumesAt).toBeUndefined();
+  expect(model.quotaWaitStartedAt).toBeUndefined();
+  expect(model.modelRetry).toBeUndefined();
+});
+
+// An unstamped start over a wait-free model installs no chip either: the chip
+// itself is an installation, and the frame is a no-op for quota state. (A
+// stamped start with no resumesAt still installs its stamp; an unstamped one
+// has nothing to install at all.)
+test("an unstamped start over a wait-free model installs no chip", () => {
+  let model = testHydrate({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } });
   model = applyNotification(model, quotaRetry({ turnId: "turn_1" }), 2000);
+  expect(model.modelRetry).toBeUndefined();
+  expect(model.quotaResumesAt).toBeUndefined();
+  expect(model.quotaWaitStartedAt).toBeUndefined();
+});
+
+// The unstamped wake keeps ONLY its turn-ownership retirement: it may END a
+// held wait by naming the wait's owning turn, and may never touch a stamped
+// wait held by another. After the anti-installation cut no unstamped frame can
+// install a wait, but ending by turn ownership stays — the same rule a Stop's
+// turn boundary applies.
+test("an unstamped wake naming the owning turn clears a held stamped wait", () => {
+  const resumesAt = Date.parse("2026-11-07T14:30:00Z");
+  let model = testHydrate({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } });
+  model = applyNotification(model, quotaRetry({ waitStartedAt: 1, resumesAt, turnId: "turn_1" }), 2000);
   expect(model.quotaResumesAt).toBeDefined();
 
   const unstampedWake = applyNotification(model, quotaRetry({ delayMs: 0, turnId: "turn_1" }), 3000);
+  // The unstamped wake retires the wait the turn owns: the hold ends whole.
   expect(unstampedWake.quotaResumesAt).toBeUndefined();
   expect(unstampedWake.quotaWaitStartedAt).toBeUndefined();
 });
 
 test("an unstamped wake never clears a stamped wait", () => {
   const resumesAt = Date.parse("2026-11-07T14:30:00Z");
+  // A held wait of ANOTHER turn: the unstamped wake names a turn that does not
+  // own the held wait, so it retires nothing.
   let model = testHydrate({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } });
-  model = applyNotification(model, quotaRetry({ waitStartedAt: 1, resumesAt, turnId: "turn_1" }), 2000);
+  model = applyNotification(model, quotaRetry({ waitStartedAt: 1, resumesAt, turnId: "turn_9" }), 2000);
 
   const unstampedWake = applyNotification(model, quotaRetry({ delayMs: 0, turnId: "turn_1" }), 3000);
   expect(unstampedWake.quotaWaitStartedAt).toBe(1);
   expect(unstampedWake.quotaResumesAt).toBe(new Date(resumesAt).toISOString());
 });
 
-// Scenario 8's chip-only half: the legacy wait can arrive as the chip alone
-// (an unstamped live announcement over a read that named no resume instant).
-// The unstamped wake owns the turn and clears the chip.
-test("an unstamped wake clears the chip-only legacy wait of its turn", () => {
-  let model = testHydrate({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } });
-  model = applyNotification(model, quotaRetry({ turnId: "turn_1" }), 2000);
-  expect(model.modelRetry).toBeDefined();
-  expect(model.quotaResumesAt).toBeUndefined();
-
-  const cleared = applyNotification(model, quotaRetry({ delayMs: 0, turnId: "turn_1" }), 3000);
-  expect(cleared.quotaResumesAt).toBeUndefined();
-});
-
 // Scenario 11: one time basis per wait. A read gave the wait an absolute
 // deadline; that deadline is the whole countdown, and past it the wait is
-// pending. A late unstamped announcement with receipt runway must not leap
-// the countdown forward onto the receipt clock: the absolute instant stays.
-test("a late unstamped announcement does not move a deadline the read already set", () => {
+// pending. A late unstamped announcement must not move the deadline a
+// STAMPED read already set: the frame installs nothing.
+test("a late unstamped announcement does not move a stamped deadline the read already set", () => {
   const resumesAt = Date.parse("2026-11-07T14:30:00Z");
   let model = testHydrate({
     status: { type: "active" },
-    evener: { activeTurnId: "turn_1", failure: { title: "Usage limit reached", resumesAt } },
+    evener: { activeTurnId: "turn_1", failure: { title: "Usage limit reached", resumesAt, waitStartedAt: 1 } },
   });
-  // The wait's announcement is unstamped (an older daemon): it has no
-  // deadline of its own to offer, and the read's instant is authoritative.
+  expect(model.quotaWaitStartedAt).toBe(1);
+  // The late announcement is unstamped (an older daemon's frame beside the
+  // stamped read's word): it installs nothing and moves nothing.
   model = applyNotification(model, quotaRetry({ turnId: "turn_1", delayMs: 21_600_000 }), 2000);
   expect(model.quotaResumesAt).toBe(new Date(resumesAt).toISOString());
-  expect(model.quotaWaitStartedAt).toBeUndefined();
+  expect(model.quotaWaitStartedAt).toBe(1);
 });
 
 // Scenario 14's reducer half: a snapshot-only wait (a rehydrated deadline
@@ -3489,9 +3507,10 @@ test("a snapshot-only wait carries no chip metadata", () => {
   const resumesAt = Date.parse("2026-11-07T14:30:00Z");
   const model = testHydrate({
     status: { type: "active" },
-    evener: { activeTurnId: "turn_1", failure: { title: "Usage limit reached", resumesAt } },
+    evener: { activeTurnId: "turn_1", failure: { title: "Usage limit reached", resumesAt, waitStartedAt: 1 } },
   });
   expect(model.quotaResumesAt).toBe(new Date(resumesAt).toISOString());
+  expect(model.quotaWaitStartedAt).toBe(1);
   expect(model.modelRetry).toBeUndefined();
 });
 
@@ -3627,42 +3646,67 @@ test("an A-to-B replacement clears the replaced turn's chip with its wait", () =
   expect(replaced.runningTurnId).toBe("turn_b");
 });
 
-// A legacy unstamped frame naming a DIFFERENT turn may not install its chip
-// over a held legacy wait: the stale chip would make the held turn's own wake
-// fail the ownership check and leave the countdown standing. Ownership is
-// checked before anything changes; on mismatch the held wait keeps chip and
-// deadline both.
-test("a legacy frame for a different turn leaves the held legacy wait alone", () => {
+// An unstamped frame — whatever turn it names — installs nothing. The
+// ownership guard the legacy install path needed (a stale chip over a held
+// wait) dies with the install: there is no chip to guard, so a frame naming
+// another turn changes nothing at all.
+test("an unstamped frame for a different turn installs nothing over a held stamped wait", () => {
   const resumesAt = Date.parse("2026-11-07T14:30:00Z");
-  let model = testHydrate({
-    status: { type: "active" },
-    evener: { activeTurnId: "turn_1", failure: { title: "Usage limit reached", resumesAt } },
-  });
-  // The held legacy wait: an unstamped start on turn_1.
-  model = applyNotification(model, quotaRetry({ turnId: "turn_1" }), 2000);
-  expect(model.quotaResumesAt).toBeDefined();
+  let model = testHydrate({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } });
+  model = applyNotification(model, quotaRetry({ waitStartedAt: 1, resumesAt, turnId: "turn_1" }), 2000);
+  expect(model.quotaWaitStartedAt).toBe(1);
+  expect(model.modelRetry?.turnId).toBe("turn_1");
 
   const otherTurn = applyNotification(model, quotaRetry({ turnId: "turn_9" }), 2100);
-  // The held wait's chip and deadline both survive the other turn's frame.
+  // The held wait survives the other turn's unstamped frame untouched, and no
+  // chip of the other turn's arrives over it.
   expect(otherTurn.modelRetry?.turnId).toBe("turn_1");
   expect(otherTurn.quotaResumesAt).toBe(new Date(resumesAt).toISOString());
+  expect(otherTurn.quotaWaitStartedAt).toBe(1);
 
-  // And the held turn's own wake still clears the wait.
-  const woken = applyNotification(otherTurn, quotaRetry({ delayMs: 0, turnId: "turn_1" }), 2200);
+  // And the held turn's own stamped wake still clears the wait.
+  const woken = applyNotification(otherTurn, quotaRetry({ delayMs: 0, waitStartedAt: 1, turnId: "turn_1" }), 2200);
   expect(woken.quotaResumesAt).toBeUndefined();
-  expect(woken.modelRetry?.turnId).toBe("turn_1");
+  // The wait is gone; the wake's own zero-delay chip (the retry's progress
+  // state) remains, as it always has.
+  expect(woken.modelRetry?.delayMs).toBe(0);
 });
 
-// The legacy read's wait belongs to the SNAPSHOT's running turn: a legacy
-// deadline from the read names the wait's turn even when the chip beside it
-// is another turn's stale leftover, and B's own wake clears B's wait. The
-// chip's turn decides only when no deadline was ever set (chip-only).
-test("a legacy wake clears the read's wait against the snapshot's running turn", () => {
+// A zero-delay unstamped wake with no held wait to end is quota state this
+// client never held: the wake may retire a wait by turn ownership, but with no
+// wait under the named turn there is nothing to retire, and an unstamped
+// frame never installs — the chip included (a progress chip for a wait this
+// client never saw would attribute elapsed time nothing measured). The
+// running turn comes from a live status frame: the plain hydrate seeds no
+// runningTurnId, and a wake matching no turn retires nothing on other grounds.
+test("an unstamped zero-delay wake over a wait-free model installs no chip", () => {
+  let model = testHydrate({ status: { type: "active" } });
+  model = applyNotification(
+    model,
+    {
+      method: "thread/status/changed",
+      params: { threadId: "thr_t", ref: "ref_t", activeTurnId: "turn_1", status: { type: "active" } },
+    },
+    1500,
+  );
+  expect(model.runningTurnId).toBe("turn_1");
+  model = applyNotification(model, quotaRetry({ delayMs: 0, turnId: "turn_1" }), 2000);
+  expect(model.modelRetry).toBeUndefined();
+  expect(model.quotaResumesAt).toBeUndefined();
+  expect(model.quotaWaitStartedAt).toBeUndefined();
+  expect(model.quotaWaitEndedStamp).toBeUndefined();
+});
+
+// The read's wait belongs to the snapshot's running turn. After the cut, a
+// read's unstamped deadline installs nothing at all (the read gate below), so
+// this shape — a read carrying a stamped wait for turn B while the chip of a
+// prior turn lingers — reconciles purely by stamps.
+test("a read's stamped wait reconciles against the snapshot's running turn with stamps alone", () => {
   const resumesAt = Date.parse("2026-11-07T14:30:00Z");
-  // A's chip lingers from A's turn; the read that follows the A→B
-  // replacement carries B's wait, so the deadline names B.
+  // A's wait lingers from A's turn; the read that follows the A→B
+  // replacement carries B's stamped wait.
   let model = testHydrate({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } });
-  model = applyNotification(model, quotaRetry({ turnId: "turn_1" }), 2000);
+  model = applyNotification(model, quotaRetry({ waitStartedAt: 1, resumesAt, turnId: "turn_1" }), 2000);
   model = applyNotification(
     model,
     {
@@ -3676,21 +3720,25 @@ test("a legacy wake clears the read's wait against the snapshot's running turn",
     {
       thread: testThread({
         status: { type: "active" },
-        evener: { activeTurnId: "turn_2", failure: { title: "Usage limit reached", resumesAt } },
+        evener: {
+          activeTurnId: "turn_2",
+          failure: { title: "Usage limit reached", resumesAt, waitStartedAt: 2 },
+        },
       }),
     },
     2150,
   );
   expect(model.quotaResumesAt).toBe(new Date(resumesAt).toISOString());
+  expect(model.quotaWaitStartedAt).toBe(2);
 
-  // A buffered start from A (unstamped, legacy): refused — A does not own
-  // the snapshot's running turn.
+  // A buffered start from A (unstamped, legacy): installs nothing — A's wait
+  // died at the replacement, and the frame carries no stamp to answer B's.
   const staleStart = applyNotification(model, quotaRetry({ turnId: "turn_1" }), 2200);
   expect(staleStart.quotaResumesAt).toBe(new Date(resumesAt).toISOString());
   expect(staleStart.modelRetry?.turnId).toBeUndefined();
 
   // B's own wake clears B's wait.
-  const woken = applyNotification(staleStart, quotaRetry({ delayMs: 0, turnId: "turn_2" }), 2300);
+  const woken = applyNotification(staleStart, quotaRetry({ delayMs: 0, waitStartedAt: 2, turnId: "turn_2" }), 2300);
   expect(woken.quotaResumesAt).toBeUndefined();
 });
 

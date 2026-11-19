@@ -27,6 +27,15 @@ export type LivenessLevel = "none" | "quiet" | "stalled" | "waiting" | "retrying
 export interface LivenessInfo {
   level: LivenessLevel;
   text: string | null;
+  /** The quota wait's own facts when level is "quota": the phase, the
+   * computed runway, the model tag and the elapsed sample, as structured
+   * values tests assert instead of the copy. */
+  quota?: {
+    passedReset: boolean;
+    remainingMs?: number;
+    model?: string;
+    elapsedMs?: number;
+  };
 }
 
 // The short quiet hint. "Stalled" is the shared stuck rule (isStuck). The
@@ -214,7 +223,18 @@ export function describeLiveness(
         : waitingForQuotaText(quotaWait.remainingMs);
     const tag = quotaWait.model ? ` (${quotaWait.model})` : "";
     const elapsed = quotaWait.elapsedMs === undefined ? "" : ` — ${formatExactGap(quotaWait.elapsedMs)} on this call`;
-    return { level: "quota", text: `${promise}${tag}${elapsed}` };
+    // The wait's facts ride the return as structured fields beside the
+    // sentence: tests assert these, never the copy.
+    return {
+      level: "quota" as const,
+      text: `${promise}${tag}${elapsed}`,
+      quota: {
+        passedReset: quotaWait.passedReset === true,
+        ...(quotaWait.remainingMs !== undefined ? { remainingMs: quotaWait.remainingMs } : {}),
+        ...(quotaWait.model !== undefined ? { model: quotaWait.model } : {}),
+        ...(quotaWait.elapsedMs !== undefined ? { elapsedMs: quotaWait.elapsedMs } : {}),
+      },
+    };
   }
   // See this function's own doc comment above (kata gw2c): a retry past its
   // first attempt is known information, not an inference from silence, so
