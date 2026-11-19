@@ -61,7 +61,7 @@ than an error state. The direction of the skew decides who adapts:
 
 | Boundary | Must tolerate | May assume |
 |---|---|---|
-| Hub and its daemons | The hub works with any older daemon. | Daemon code may assume the hub is the same version or newer, and carries no fallback for an older hub. |
+| Hub and its daemons | The hub runs a daemon only at its own protocol version, so an older daemon's session reports `restartRequired`: its transcript stays readable, and it takes no new message until the user stops that daemon and sends again (see [Restarting a daemon the hub refused](#restarting-a-daemon-the-hub-refused)). | Daemon code may assume the hub is the same version or newer, and carries no fallback for an older hub. |
 | Phone or web client and hub | The client works with an older hub, including the combined update/apply path. | Hub code carries no fallback for an older phone app. |
 | Local hub and remote hub over SSH | The local hub works with an older remote hub. | Remote-side code carries no fallback for a newer local hub. |
 | On-disk state | Every persisted format stays readable and every migration stays, because users skip versions. | Nothing is dropped on a time window alone. |
@@ -69,6 +69,30 @@ than an error state. The direction of the skew decides who adapts:
 Code that serves no producer in any direction is dead code, not compatibility,
 and is deleted. New compatibility code names the version direction it serves
 and the condition that removes it in its pull request description.
+
+### Restarting a daemon the hub refused
+
+The handshake compares the protocol version exactly
+([`appwire/types_protocol.go`](../../appwire/types_protocol.go) says why), so a
+hub started by a new binary refuses a daemon an older binary started. That
+daemon is still running the session's turn, so the pair is not an error state to
+repair silently: the session reports `restartRequired` and keeps everything
+already written to the transcript.
+
+The user resolves it from the session itself. The transcript explains the
+mismatch and names the remedy, and **Force shutdown** in the session menu stops
+the older daemon (interrupting anything in progress). The next message starts a
+fresh daemon from the binary the hub spawns with, which is the sibling of the
+running hub unless `--evener` names another
+(`resolveEvenerBinaryPath` in `cmd/evener-hub/main.go`), so the new pair
+matches. The session continues where it stopped, and no work already saved is
+lost.
+
+This is deliberate rather than a fallback ladder. A hub that spoke the previous
+protocol to a live older daemon would carry model switching to a daemon that
+applies a pick without checking the authority the client holds, because that
+authority arrived with v8. Refusing the pair at initialize moves that failure
+to one place where the user can see and act on it.
 
 ## Keeping the guide useful
 
