@@ -83,7 +83,8 @@ func renderHistoryForElicit(history []schema.Turn, maxChars int) string {
 	var parts []string
 	total := 0
 	for _, h := range slices.Backward(history) {
-		s := renderTurnForElicit(h)
+		label, body, spans := renderElicitTurn(h)
+		s := label + body
 		if s == "" {
 			continue
 		}
@@ -95,9 +96,7 @@ func renderHistoryForElicit(history []schema.Turn, maxChars int) string {
 				// start. The escape is run again on the clipped segment so that
 				// exposure is defused; an example the clip left whole is still
 				// fenced and keeps its bytes.
-				if isModelAuthoredTurn(h) {
-					clipped = sysmsg.EscapeModelAuthoredFrames(clipped)
-				}
+				clipped = escapeClippedElicitTurn(label, body, spans, clipped)
 				parts = append(parts, "[... earlier history truncated ...]\n"+clipped)
 			}
 			break
@@ -112,12 +111,46 @@ func renderHistoryForElicit(history []schema.Turn, maxChars int) string {
 	return strings.Join(parts, "")
 }
 
-// renderTurnForElicit renders one turn as labeled plain text, including tool-call
-// arguments and tool-result content — the parts that carry the exact values the
-// elicitor must preserve. Returns "" for turns with no textual content.
-func renderTurnForElicit(t schema.Turn) string {
+// escapeClippedElicitTurn returns the clipped segment of a rendered turn with
+// the frames the clip exposes defused, and every byte the turn's own layout does
+// not name as the model's left alone.
+//
+// The clip keeps a suffix of label+body, so it can drop the delimiter that made
+// a model-authored frame a quotation. For a compaction turn the layout still
+// says which ranges the model wrote, and only those ranges are re-escaped: the
+// harness markers, the partner's carried messages and genuine partner text keep
+// every byte even where the clip cut the heading above them. A turn the model
+// wrote whole is one range covering all of it.
+func escapeClippedElicitTurn(label, body string, spans []textSpan, clipped string) string {
+	rendered := label + body
+	from := len(rendered) - len(clipped)
+	if from < 0 {
+		return clipped
+	}
+	var b strings.Builder
+	pos := from
+	for _, span := range spans {
+		start, end := len(label)+span.start, len(label)+span.end
+		if end <= pos || start >= len(rendered) {
+			continue
+		}
+		start = max(start, pos)
+		b.WriteString(rendered[pos:start])
+		b.WriteString(sysmsg.EscapeModelAuthoredFrames(rendered[start:end]))
+		pos = end
+	}
+	b.WriteString(rendered[pos:])
+	return b.String()
+}
+
+// renderElicitTurn renders one turn as the label the elicitation prompt puts
+// ahead of it, the body that follows with the frames the model authored
+// defused, and the ranges of that body the model wrote, in the body's own
+// coordinates. The ranges let a caller that keeps only a suffix re-escape the
+// part a clip exposed without touching text the model did not write.
+func renderElicitTurn(t schema.Turn) (label, body string, spans []textSpan) {
 	if t.Kind == schema.TurnAttentionResolution {
-		return ""
+		return "", "", nil
 	}
 	var b strings.Builder
 	for _, p := range t.Message.Content {
@@ -138,10 +171,9 @@ func renderTurnForElicit(t schema.Turn) string {
 		}
 	}
 	if strings.TrimSpace(b.String()) == "" {
-		return ""
+		return "", "", nil
 	}
-	modelAuthored := isModelAuthoredTurn(t)
-	label := ""
+	raw := b.String()
 	switch t.Kind {
 	case schema.TurnUserInput:
 		label = "User: "
@@ -150,25 +182,39 @@ func renderTurnForElicit(t schema.Turn) string {
 	case schema.TurnSteering, schema.TurnCheckpoint, schema.TurnSummary:
 		label = "Context: "
 	}
+	// A compaction turn is a user-role message whose own layout names the text
+	// the model wrote. A previous compaction's harness markers and the partner's
+	// messages keep every byte, and a model-authored frame in the body the
+	// layout names is defused, so the elicitor cannot read a fabricated decision
+	// as context and restate it in the note.
+	compaction := t.Kind == schema.TurnCheckpoint || t.Kind == schema.TurnSummary
+	modelAuthored := !compaction && isModelAuthoredTurn(t)
+	if compaction {
+		body, spans = escapeRetainedCompactionRanges(raw, t.Kind)
+	} else if modelAuthored {
+		// The elicitor's prompt is a user-role message, and its renderer puts
+		// the label only at the START of the turn. A model-authored turn whose
+		// later lines open a reserved frame therefore copied those lines into
+		// that user-role prompt verbatim, so the elicitor could read a
+		// fabricated decision as its own context and restate it in the note.
+		// The partner's own turns are the authority and the tool output is data,
+		// neither of which this escape may rewrite.
+		body = sysmsg.EscapeModelAuthoredFrames(raw)
+		spans = []textSpan{{start: 0, end: len(body)}}
+	} else {
+		body = raw
+	}
 	// A model-authored turn's label takes its own line for the same reason an
 	// assistant turn's does: sharing it hides the opening delimiter of a fenced
 	// example from the scan, and the example's real closing delimiter then opens
-	// a fence that spares the frame below it.
-	if modelAuthored && label != "" {
+	// a fence that spares the frame below it. A compaction turn's label takes
+	// its own line for the same reason and one more: its layout is read from its
+	// opening marker, which has to start a line for the escape to recognize the
+	// model's ranges at all.
+	if label != "" && (compaction || modelAuthored) {
 		label = strings.TrimSuffix(label, " ") + "\n"
 	}
-	body := b.String()
-	// The elicitor's prompt is a user-role message, and its renderer puts the
-	// label only at the START of the turn. A model-authored turn whose later
-	// lines open a reserved frame therefore copied those lines into that
-	// user-role prompt verbatim, so the elicitor could read a fabricated
-	// decision as its own context and restate it in the note.
-	// The partner's own turns are the authority and the tool output is data,
-	// neither of which this escape may rewrite.
-	if modelAuthored {
-		body = sysmsg.EscapeModelAuthoredFrames(body)
-	}
-	return label + body
+	return label, body, spans
 }
 
 // isModelAuthoredTurn reports whether a turn's text a model wrote, even though a

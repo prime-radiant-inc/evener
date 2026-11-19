@@ -24,42 +24,55 @@ import (
 // was written in, so its own fenced body is escaped by the opening that still
 // names it.
 func escapeRetainedCompaction(text string, kind schema.TurnKind) string {
-	switch kind {
-	case schema.TurnSummary:
-		if escaped, changed := EscapeRetainedSummary(text); changed {
-			return escaped
-		}
-		if escaped, changed := escapeSummaryModelBody(text); changed {
-			return escaped
-		}
-	case schema.TurnCheckpoint:
-		escaped, _ := EscapeRetainedCheckpoint(text)
-		return escaped
-	}
-	return text
+	escaped, _ := escapeRetainedCompactionRanges(text, kind)
+	return escaped
 }
 
-// escapeSummaryModelBody escapes the fenced body under a summary turn's own
+// escapeRetainedCompactionRanges is escapeRetainedCompaction, and also returns
+// the ranges it escaped in the returned text's coordinates. A caller that keeps
+// only a suffix of the copy — a history cap clips it — uses them to re-escape
+// exactly the part a clip exposed.
+func escapeRetainedCompactionRanges(text string, kind schema.TurnKind) (string, []textSpan) {
+	return escapeModelRanges(text, retainedCompactionModelSpans(text, kind))
+}
+
+// retainedCompactionModelSpans returns the ranges of a previous compaction's
+// text its kind's layout names as the model's: a summary names one fenced body,
+// a checkpoint names a body per section. Whatever the layout, the harness
+// markers and the partner's messages are outside every range.
+//
+// A cap can cut a summary's carried messages away, and the turn then no longer
+// recomposes as the layout it was written in; the opening and the heading that
+// still name its one body are what the fallback reads.
+func retainedCompactionModelSpans(text string, kind schema.TurnKind) []textSpan {
+	switch kind {
+	case schema.TurnSummary:
+		if spans := summaryModelSpans(text); len(spans) > 0 {
+			return spans
+		}
+		return summaryModelSpanByOpening(text)
+	case schema.TurnCheckpoint:
+		return retainedCheckpointModelSpans(text)
+	}
+	return nil
+}
+
+// summaryModelSpanByOpening returns the fenced body under a summary turn's own
 // heading when the text before that heading is the opening this package writes.
 //
 // It covers the summary whose carried conversation a cap cut away: the layout
 // check cannot recompose it, but the opening and the heading still name the one
 // body the model wrote.
-func escapeSummaryModelBody(text string) (string, bool) {
+func summaryModelSpanByOpening(text string) []textSpan {
 	start, body, end, ok := markdownSectionSpan(text, summaryModelTextHeading)
 	if !ok || !isSummaryTurnOpening(text[:start]) {
-		return text, false
+		return nil
 	}
 	spans := fencedBlockSpans(text[body:end])
 	if len(spans) != 1 {
-		return text, false
+		return nil
 	}
-	from, to := body+spans[0].BodyStart, body+spans[0].BodyEnd
-	escaped := sysmsg.EscapeModelAuthoredFrames(text[from:to])
-	if escaped == text[from:to] {
-		return text, false
-	}
-	return text[:from] + escaped + text[to:], true
+	return []textSpan{{start: body + spans[0].BodyStart, end: body + spans[0].BodyEnd}}
 }
 
 // foldCutoff is where a compaction of history that keeps preserveRecent

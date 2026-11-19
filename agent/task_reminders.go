@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/sysmsg"
 	taskpkg "primeradiant.com/evener/agent/task"
 )
 
@@ -14,6 +15,30 @@ const (
 	taskCompletionMachineBlockStart = "<evener-task-completion>"
 	taskCompletionMachineBlockEnd   = "</evener-task-completion>"
 )
+
+// taskFieldLineBreaks flattens a model-authored task field rendered inline.
+var taskFieldLineBreaks = strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ")
+
+// taskFieldInline renders one model-authored task field for a place that
+// interpolates it into a line the harness writes.
+//
+// A task's description, prompt, and notes were written by a model through
+// task_list or seeded from an agent definition, never by the human partner, so
+// a frame opener in them must not arrive with the spelling a harness frame
+// opens with.
+//
+// The stored task keeps its own bytes; this returns a copy.
+func taskFieldInline(text string) string {
+	if strings.ContainsAny(text, "\r\n") {
+		// A line break inside an inline field would end the line the harness
+		// surrounds it with, so the field is flattened to one line.
+		text = taskFieldLineBreaks.Replace(text)
+	}
+	// The shape normalized above is the shape the model reads, so the escape
+	// runs on it: trimming after the escape could lift an opener the escape
+	// had read as indented code onto the line's start.
+	return sysmsg.EscapeModelAuthoredFrames(strings.TrimSpace(text))
+}
 
 // formatCurrentTaskSteering wraps a Task into a SYSTEM-REMINDER block that
 // becomes the agent's next steering message. Variant: v09
@@ -35,10 +60,12 @@ func formatCurrentTaskSteering(task taskpkg.Task, canUseTaskList bool) string {
 // the standalone reminder and the combined startup plan carry.
 func writeCurrentTaskBlock(b *strings.Builder, task taskpkg.Task) {
 	fmt.Fprintf(b, "<CURRENT-TASK id=\"%d\">\n", task.ID)
-	fmt.Fprintf(b, "<TITLE>%s</TITLE>\n", task.Description)
+	fmt.Fprintf(b, "<TITLE>%s</TITLE>\n", taskFieldInline(task.Description))
 	if task.Prompt != "" {
 		b.WriteString("<INSTRUCTIONS>\n")
-		b.WriteString(strings.TrimSpace(task.Prompt))
+		// Trimmed before escaping so the escape reads the first line where
+		// the harness writes it, at the start of a line.
+		b.WriteString(sysmsg.EscapeModelAuthoredFrames(strings.TrimSpace(task.Prompt)))
 		b.WriteString("\n</INSTRUCTIONS>\n")
 	}
 	b.WriteString("</CURRENT-TASK>\n")
@@ -84,7 +111,7 @@ func renderTaskListReminderSkippingPrompt(tasks []taskpkg.Task, withPrompts bool
 	b := systemReminderBlockBuilder()
 	b.WriteString("Task list:\n")
 	for _, t := range tasks {
-		fmt.Fprintf(b, "  [%s] #%d: %s", t.Status, t.ID, t.Description)
+		fmt.Fprintf(b, "  [%s] #%d: %s", t.Status, t.ID, taskFieldInline(t.Description))
 		if t.ReasoningEffort != "" {
 			fmt.Fprintf(b, " [%s]", t.ReasoningEffort)
 		}
@@ -94,13 +121,16 @@ func renderTaskListReminderSkippingPrompt(tasks []taskpkg.Task, withPrompts bool
 		b.WriteString("\n")
 		if withPrompts && t.ID != skipPromptID {
 			if prompt := strings.TrimSpace(t.Prompt); prompt != "" {
-				for line := range strings.SplitSeq(prompt, "\n") {
+				// Escaped as one block so a fenced example inside the prompt
+				// keeps its bytes, then split so each line stays on the
+				// continuation line the harness indents.
+				for line := range strings.SplitSeq(sysmsg.EscapeModelAuthoredFrames(prompt), "\n") {
 					fmt.Fprintf(b, "    prompt: %s\n", line)
 				}
 			}
 		}
 		for _, n := range t.Notes {
-			fmt.Fprintf(b, "    note: %s\n", n)
+			fmt.Fprintf(b, "    note: %s\n", taskFieldInline(n))
 		}
 	}
 	return finishSystemReminderBlock(b)

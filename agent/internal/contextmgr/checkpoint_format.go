@@ -371,35 +371,52 @@ func markdownSection(text, heading string) string {
 	return text[body:end]
 }
 
-// textEdit replaces text[start:end] with body.
-type textEdit struct {
+// textSpan is a byte range of a rendered turn.
+type textSpan struct {
 	start, end int
-	body       string
 }
 
-// applyTextEdits returns text with every edit spliced in, and reports whether
-// any byte changed. The edits' spans are disjoint, so they are applied in start
-// order against the offsets they were taken from. A span overlapping the one
-// before it is skipped rather than spliced over text another edit claimed, which
-// keeps the function total for a document whose sections overlap.
-func applyTextEdits(text string, edits []textEdit) (string, bool) {
-	if len(edits) == 0 {
-		return text, false
+// escapeModelSpans returns text with each span escaped as model-authored prose,
+// and reports whether any byte changed. The spans are the ranges a turn's own
+// layout names as the model's; every byte outside them keeps its own.
+func escapeModelSpans(text string, spans []textSpan) (string, bool) {
+	escaped, _ := escapeModelRanges(text, spans)
+	return escaped, escaped != text
+}
+
+// escapeModelRanges returns text with each span escaped as model-authored prose,
+// and returns the same ranges in the escaped text's coordinates. A caller that
+// keeps only part of the result can then tell which ranges survived and escape
+// an exposed remainder without touching text the model did not write.
+func escapeModelRanges(text string, spans []textSpan) (string, []textSpan) {
+	if len(spans) == 0 {
+		return text, nil
 	}
-	slices.SortFunc(edits, func(a, b textEdit) int { return a.start - b.start })
-	var b strings.Builder
-	b.Grow(len(text))
-	pos := 0
-	for _, edit := range edits {
-		if edit.start < pos || edit.end < edit.start || edit.end > len(text) {
+	sorted := make([]textSpan, 0, len(spans))
+	for _, span := range spans {
+		if span.start < 0 || span.end < span.start || span.end > len(text) {
 			continue
 		}
-		b.WriteString(text[pos:edit.start])
-		b.WriteString(edit.body)
-		pos = edit.end
+		sorted = append(sorted, span)
+	}
+	slices.SortFunc(sorted, func(a, b textSpan) int { return a.start - b.start })
+	var b strings.Builder
+	b.Grow(len(text))
+	moved := make([]textSpan, 0, len(sorted))
+	pos := 0
+	for _, span := range sorted {
+		if span.start < pos {
+			continue
+		}
+		escaped := sysmsg.EscapeModelAuthoredFrames(text[span.start:span.end])
+		b.WriteString(text[pos:span.start])
+		start := b.Len()
+		b.WriteString(escaped)
+		moved = append(moved, textSpan{start: start, end: b.Len()})
+		pos = span.end
 	}
 	b.WriteString(text[pos:])
-	return b.String(), true
+	return b.String(), moved
 }
 
 // fencedBlockSpan is one fenced code block's interior body: BodyStart is where
@@ -479,7 +496,7 @@ func agentConversationHeading(heading string) bool {
 	return ok && role == "agent"
 }
 
-func collectFencedEdits(text, heading string, include func(string) bool) []textEdit {
+func collectFencedSpans(text, heading string, include func(string) bool) []textSpan {
 	if !strings.Contains(text, heading+"\n") {
 		return nil
 	}
@@ -488,18 +505,14 @@ func collectFencedEdits(text, heading string, include func(string) bool) []textE
 		return nil
 	}
 	end = ownedSectionEnd(text, body, end)
-	var edits []textEdit
+	var spans []textSpan
 	for _, span := range fencedBlockSpans(text[body:end]) {
 		if include != nil && !include(span.Heading) {
 			continue
 		}
-		start, stop := body+span.BodyStart, body+span.BodyEnd
-		escaped := sysmsg.EscapeModelAuthoredFrames(text[start:stop])
-		if escaped != text[start:stop] {
-			edits = append(edits, textEdit{start: start, end: stop, body: escaped})
-		}
+		spans = append(spans, textSpan{start: body + span.BodyStart, end: body + span.BodyEnd})
 	}
-	return edits
+	return spans
 }
 
 // ownedSectionEnd returns where heading's section body stops being this
@@ -549,14 +562,20 @@ func ownedSectionEnd(text string, body, end int) int {
 // the model quoted keeps every byte. The section headings, the block headings
 // and the fence delimiters are written by this package and are not touched.
 func EscapeRetainedCheckpoint(text string) (string, bool) {
-	edits := earlierSummaryEdits(text)
-	edits = append(edits, collectFencedEdits(text, "## Working Notes", nil)...)
-	edits = append(edits, collectFencedEdits(text, checkpointConversationHeading, agentConversationHeading)...)
-	edits = append(edits, sessionLogBodyEdits(text)...)
-	return applyTextEdits(text, edits)
+	return escapeModelSpans(text, retainedCheckpointModelSpans(text))
 }
 
-// earlierSummaryEdits returns the edits that defuse a checkpoint's folded
+// retainedCheckpointModelSpans returns the ranges of a checkpoint turn the
+// model wrote, as its layout names them: the folded summaries, the working
+// notes, the agent's own conversation blocks and the session log's body.
+func retainedCheckpointModelSpans(text string) []textSpan {
+	spans := earlierSummarySpans(text)
+	spans = append(spans, collectFencedSpans(text, "## Working Notes", nil)...)
+	spans = append(spans, collectFencedSpans(text, checkpointConversationHeading, agentConversationHeading)...)
+	return append(spans, sessionLogBodySpans(text)...)
+}
+
+// earlierSummarySpans returns the ranges that defuse a checkpoint's folded
 // summaries: the blocks under "## Earlier Summaries".
 //
 // A summary the renderer wrote is carried whole, so its own layout still names
@@ -568,7 +587,7 @@ func EscapeRetainedCheckpoint(text string) (string, bool) {
 // older layout is the model's text throughout, and one whose layout cannot be
 // read is escaped whole, which is where every block under the heading stood
 // before the carried layout was recognized.
-func earlierSummaryEdits(text string) []textEdit {
+func earlierSummarySpans(text string) []textSpan {
 	if !strings.Contains(text, "## Earlier Summaries\n") {
 		return nil
 	}
@@ -577,7 +596,7 @@ func earlierSummaryEdits(text string) []textEdit {
 		return nil
 	}
 	end = ownedSectionEnd(text, body, end)
-	var edits []textEdit
+	var spans []textSpan
 	for _, span := range fencedBlockSpans(text[body:end]) {
 		start, stop := body+span.BodyStart, body+span.BodyEnd
 		block := text[start:stop]
@@ -585,19 +604,15 @@ func earlierSummaryEdits(text string) []textEdit {
 		// carried layout is compared byte for byte, so the block is read without
 		// that line break and the escape is spliced back under it.
 		carried := strings.TrimSuffix(block, "\n")
-		tail := block[len(carried):]
-		var escaped string
-		if carriesPartnerMessages(carried) {
-			escaped, _ = EscapeRetainedSummary(carried)
-		} else {
-			escaped = sysmsg.EscapeModelAuthoredFrames(carried)
+		if !carriesPartnerMessages(carried) {
+			spans = append(spans, textSpan{start: start, end: stop})
+			continue
 		}
-		escaped += tail
-		if escaped != block {
-			edits = append(edits, textEdit{start: start, end: stop, body: escaped})
+		for _, inner := range summaryModelSpans(carried) {
+			spans = append(spans, textSpan{start: start + inner.start, end: start + inner.end})
 		}
 	}
-	return edits
+	return spans
 }
 
 // sessionLogCheckpointStart heads a checkpoint the session-log strategy writes.
@@ -606,10 +621,9 @@ const sessionLogCheckpointStart = "[CONTEXT CHECKPOINT - SESSION LOG]\n"
 // sessionLogLabel heads the fenced block holding the session log.
 const sessionLogLabel = "Session log:"
 
-// sessionLogBodyEdits returns the edit that escapes a session-log checkpoint's
+// sessionLogBodySpans returns the range that escapes a session-log checkpoint's
 // log body: the interior of the fenced block written directly after the
-// checkpoint's own "Session log:" line, or none when the text is not that shape
-// or its log holds no frame.
+// checkpoint's own "Session log:" line, or none when the text is not that shape.
 //
 // The log is a rendering of the model's own summarized actions, so a frame its
 // entries hold reads in the partner's channel. The label is looked for only
@@ -620,7 +634,7 @@ const sessionLogLabel = "Session log:"
 // cannot fall through to the conversation section below it. The rest of the
 // checkpoint — the markers, the fenced prompt, and the partner's messages —
 // keeps every byte.
-func sessionLogBodyEdits(text string) []textEdit {
+func sessionLogBodySpans(text string) []textSpan {
 	if !strings.HasPrefix(text, sessionLogCheckpointStart) {
 		return nil
 	}
@@ -644,11 +658,7 @@ func sessionLogBodyEdits(text string) []textEdit {
 			return nil
 		}
 		start, stop := offset+spans[0].BodyStart, offset+spans[0].BodyEnd
-		escaped := sysmsg.EscapeModelAuthoredFrames(text[start:stop])
-		if escaped == text[start:stop] {
-			return nil
-		}
-		return []textEdit{{start: start, end: stop, body: escaped}}
+		return []textSpan{{start: start, end: stop}}
 	}
 	return nil
 }
@@ -668,26 +678,30 @@ func sessionLogBodyEdits(text string) []textEdit {
 // keep every byte, and the model's body is escaped as one block so an intact
 // fenced example inside it is spared.
 func EscapeRetainedSummary(text string) (string, bool) {
+	return escapeModelSpans(text, summaryModelSpans(text))
+}
+
+// summaryModelSpans returns the ranges of a summary turn the model wrote: the
+// text fenced under the summary heading, when the turn carries the layout
+// summarizeFold writes. A summary in the older layout is the model's text
+// throughout and answers no spans, as does a turn with no summary section.
+func summaryModelSpans(text string) []textSpan {
 	_, body, end, ok := markdownSectionSpan(text, summaryModelTextHeading)
 	if !ok {
-		return text, false
+		return nil
 	}
 	spans := fencedBlockSpans(text[body:end])
 	if len(spans) != 1 {
-		return text, false
+		return nil
 	}
 	start, stop := body+spans[0].BodyStart, body+spans[0].BodyEnd
 	if !strings.ContainsAny(text[start:stop], "<[") {
-		return text, false
+		return nil
 	}
 	if !carriesPartnerMessages(text) {
-		return text, false
+		return nil
 	}
-	escaped := sysmsg.EscapeModelAuthoredFrames(text[start:stop])
-	if escaped == text[start:stop] {
-		return text, false
-	}
-	return text[:start] + escaped + text[stop:], true
+	return []textSpan{{start: start, end: stop}}
 }
 
 // withoutMarkdownSection returns text with heading's section removed, or text

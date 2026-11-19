@@ -259,6 +259,9 @@ func FuzzCtxmgrCheckpointData(f *testing.F) {
 	f.Add([]byte("\x03\x00\x06/x/y.go\x06\x02ls\x040"), uint8(2), "", "")
 	f.Add([]byte{}, uint8(0), "", "")
 	f.Add([]byte("\x07data\x08sum\x09steer\x0a\x02hi\x04think"), uint8(4), "S", "s1")
+	// A write whose file_path carries a line break, which the metadata line
+	// renders in its encoded form.
+	f.Add([]byte("\x03\x00\x08/a/\nx.go"), uint8(9), "", "")
 	// A rich, hand-built history exercising every collectCheckpointData branch
 	// (edit/write/apply_patch/read/grep/use_skill/shell/communicate/web_search/
 	// thinking/checkpoint/summary/steering), walked to the very end (cutoff=all).
@@ -308,8 +311,15 @@ func FuzzCtxmgrCheckpointData(f *testing.F) {
 		// pointer (when there is one) is kept.
 		if truncated := strings.Contains(cp, checkpointMetadataTruncated); !truncated {
 			for fpath := range got.fileWrites {
-				if !strings.Contains(cp, fpath) {
-					t.Fatalf("modified file %q missing from checkpoint", fpath)
+				// The path is a single-line token in the metadata, so a
+				// break in one is rendered in its encoded form and the
+				// token stays on the one line that names it.
+				rendered := escapeCheckpointPath(fpath)
+				if strings.ContainsAny(rendered, "\r\n") {
+					t.Fatalf("rendered file path %q carries a line break", rendered)
+				}
+				if !ctxmgr_singleLineContains(cp, rendered) {
+					t.Fatalf("modified file %q missing from a checkpoint metadata line", rendered)
 				}
 			}
 			for name := range got.toolCounts {
@@ -328,6 +338,17 @@ func FuzzCtxmgrCheckpointData(f *testing.F) {
 			t.Fatalf("truncated checkpoint lost its leading transcript pointer")
 		}
 	})
+}
+
+// ctxmgr_singleLineContains reports whether cp holds want inside one line, so a
+// token that names a metadata entry has not been split across lines.
+func ctxmgr_singleLineContains(cp, want string) bool {
+	for line := range strings.SplitSeq(cp, "\n") {
+		if strings.Contains(line, want) {
+			return true
+		}
+	}
+	return false
 }
 
 // FuzzCtxmgrSummarizeSteered drives summarizeFold against a scripted,
