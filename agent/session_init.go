@@ -1273,6 +1273,8 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// means the next turn must emit a fresh full block even if meta is stale.
 	s.envTracker = envctx.NewTracker(envctx.State{})
 	s.envContextState = nil
+	s.launchEnvBaseline = meta.LaunchEnvBaseline // seed before replaying retained deltas
+	s.envTracker.SeedRuntime(s.launchEnvBaseline)
 	for _, turn := range resumeHistory {
 		if turn.Kind == schema.TurnEnvironment && s.envTracker.ReplayBlock(turn.Message.Text()) {
 			state := s.envTracker.State()
@@ -1925,6 +1927,11 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		// Role preloads join the skill inventory only after the permanent
 		// prompt carrying their complete instructions was admitted.
 		s.seedFrozenSkillPreloads()
+		// A resume already seeded meta's baseline; a launch captures it now.
+		if sessionStartKind != plugin.SessionStartKindResume {
+			s.launchEnvBaseline = s.envRuntimeSnapshot(envctx.Snapshot{})
+			s.envTracker.SeedRuntime(s.launchEnvBaseline)
+		}
 	}
 	if warning := s.commitProvenanceWarning(); warning != "" {
 		s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings,

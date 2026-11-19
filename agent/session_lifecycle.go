@@ -2419,6 +2419,9 @@ func (s *Session) acceptContinuationInput(_ context.Context, input, stableTurnID
 	// the continuation turn's events do not inherit a prior watch origin.
 	s.replaceActiveProvenance(nil)
 	s.repairOrphanedToolResults(context.Background(), "before accepting goal continuation")
+	if s.envRuntimeDrifted() { // the driving prompt below must stay the last message
+		_ = s.maybeAppendEnvironmentContext()
+	}
 
 	// Surface only a compact marker to the UI, not the full rendered continuation
 	// prompt: the appwire projection turns EventGoalContinuation into a systemMessage,
