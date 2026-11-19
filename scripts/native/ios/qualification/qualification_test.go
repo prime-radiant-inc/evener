@@ -313,11 +313,26 @@ func TestLinuxRefusesBeforeCreatingOutput(t *testing.T) {
 	}
 	t.Parallel()
 	out := filepath.Join(t.TempDir(), "not-created")
-	if err := qualify(context.Background(), out); !errors.Is(err, errMacRequired) {
+	if err := qualify(context.Background(), out, ""); !errors.Is(err, errMacRequired) {
 		t.Fatalf("expected Mac prerequisite refusal, got %v", err)
 	}
 	if _, err := os.Stat(out); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("generation/output began on Linux: %v", err)
+	}
+}
+
+// The workflow restores an Actions cache into a stable directory outside the
+// run-owned output, so build mode must read and write DerivedData there. A
+// local run that names no override keeps it inside the output.
+func TestDerivedDataDirUsesTheOverrideOrTheOutputDefault(t *testing.T) {
+	t.Parallel()
+	output := filepath.Join(t.TempDir(), "output")
+	if got := (&runner{output: output}).derivedDataDir(); got != filepath.Join(output, "DerivedData") {
+		t.Fatalf("default DerivedData = %q, want output/DerivedData", got)
+	}
+	restored := filepath.Join(t.TempDir(), "ios-deriveddata")
+	if got := (&runner{output: output, derived: restored}).derivedDataDir(); got != restored {
+		t.Fatalf("overridden DerivedData = %q, want %q", got, restored)
 	}
 }
 

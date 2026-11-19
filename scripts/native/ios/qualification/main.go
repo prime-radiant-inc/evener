@@ -43,10 +43,15 @@ type buildIdentity struct {
 
 type runner struct {
 	root, native, output string
-	uiRunner             string
-	identity             buildIdentity
-	statusReads          int
-	unlockLogs           int
+	// derived is the DerivedData root an explicit --derived-data names. The
+	// workflow points it at a path outside the run-owned output so a restored
+	// build cache lands where xcodebuild reads it; empty means
+	// output/DerivedData.
+	derived     string
+	uiRunner    string
+	identity    buildIdentity
+	statusReads int
+	unlockLogs  int
 }
 
 func main() {
@@ -56,9 +61,10 @@ func main() {
 func runCLI() int {
 	mode := flag.String("mode", "build", "What to run: build (build, verify and prepare the UI test products) or journeys (run the journeys against downloaded products)")
 	output := flag.String("output", "", "New absolute directory for diagnostics (both modes) and DerivedData (build mode), must not exist")
+	derivedData := flag.String("derived-data", "", "New or cache-restored absolute directory for DerivedData in build mode; defaults to DERIVED_DATA inside --output")
 	products := flag.String("products", "", "DerivedData-shaped directory carrying Build/Products from the build job (journeys mode)")
 	flag.Usage = func() {
-		_, _ = fmt.Fprintln(flag.CommandLine.Output(), "Usage: build-simulator.sh --output ABSOLUTE_DIR\n       run-ui-journeys.sh --products ABSOLUTE_DIR --output ABSOLUTE_DIR\nBuild mode builds a Release iPhone simulator app and embedded share extension, proves the intended journeys cannot run, registers the generated UI test target and builds the test products. Journeys mode runs the installed-app journeys against those downloaded products. Each mode creates and deletes its own simulator, requires the pinned macOS toolchain, and never publishes. Build mode also needs the installed npm/gem dependencies. Linux refuses before generation.")
+		_, _ = fmt.Fprintln(flag.CommandLine.Output(), "Usage: build-simulator.sh --output ABSOLUTE_DIR [--derived-data ABSOLUTE_DIR]\n       run-ui-journeys.sh --products ABSOLUTE_DIR --output ABSOLUTE_DIR\nBuild mode builds a Release iPhone simulator app and embedded share extension, proves the intended journeys cannot run, registers the generated UI test target and builds the test products. Journeys mode runs the installed-app journeys against those downloaded products. Each mode creates and deletes its own simulator, requires the pinned macOS toolchain, and never publishes. Build mode also needs the installed npm/gem dependencies. Linux refuses before generation.")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -71,7 +77,7 @@ func runCLI() int {
 	var err error
 	switch *mode {
 	case "build":
-		err = qualify(ctx, *output)
+		err = qualify(ctx, *output, *derivedData)
 	case "journeys":
 		if *products == "" {
 			flag.Usage()
@@ -95,18 +101,22 @@ func runCLI() int {
 // qualify builds and verifies the real app, then prepares the UI test products
 // against the same DerivedData: the red absent-target pass, the generated test
 // target, build-for-testing and the product-completeness check.
-func qualify(ctx context.Context, output string) (result error) {
+func qualify(ctx context.Context, output, derivedData string) (result error) {
 	if runtime.GOOS != "darwin" {
 		return errMacRequired
 	}
 	if !filepath.IsAbs(output) || filepath.Clean(output) != output {
 		return errors.New("--output must be a new, clean absolute path")
 	}
+	if derivedData != "" && (!filepath.IsAbs(derivedData) || filepath.Clean(derivedData) != derivedData) {
+		return errors.New("--derived-data must be a clean absolute path")
+	}
 	root, err := os.Getwd()
 	if err != nil {
 		return err
 	}
 	r := newRunner(root, output)
+	r.derived = derivedData
 	if _, err := os.Lstat(filepath.Join(r.native, "ios")); !errors.Is(err, os.ErrNotExist) {
 		return errors.New("mobile-native/ios already exists; use a fresh qualification checkout to preserve generated work")
 	}
@@ -152,10 +162,11 @@ func qualify(ctx context.Context, output string) (result error) {
 		return err
 	}
 	return r.withOwnedSimulator(ctx, simulatorName(output), func(udid string) error {
-		if _, err := r.commandOutput(ctx, "xcodebuild-release", false, releaseBuildCommand(udid, filepath.Join(output, "DerivedData"))...); err != nil {
+		derived := r.derivedDataDir()
+		if _, err := r.commandOutput(ctx, "xcodebuild-release", false, releaseBuildCommand(udid, derived)...); err != nil {
 			return err
 		}
-		r.identity.AppPath = filepath.Join(output, "DerivedData", "Build", "Products", "Release-iphonesimulator", "Evener.app")
+		r.identity.AppPath = filepath.Join(derived, "Build", "Products", "Release-iphonesimulator", "Evener.app")
 		if err := r.verifyApp(ctx, r.identity.AppPath, "built"); err != nil {
 			return err
 		}
@@ -226,6 +237,16 @@ func newRunner(root, output string) *runner {
 	}
 }
 
+// derivedDataDir is the build mode's DerivedData root. An explicit
+// --derived-data names a stable path the workflow restores a cache into; the
+// default keeps local runs inside their run-owned output.
+func (r *runner) derivedDataDir() string {
+	if r.derived != "" {
+		return r.derived
+	}
+	return filepath.Join(r.output, "DerivedData")
+}
+
 func simulatorName(output string) string {
 	return "Evener-qualification-" + filepath.Base(output)
 }
@@ -261,7 +282,7 @@ func (r *runner) uiJourney(ctx context.Context) error {
 // means the harness cannot be trusted about what it runs.
 func (r *runner) buildForJourneys(ctx context.Context) error {
 	udid := r.identity.SimulatorUDID
-	derived := filepath.Join(r.output, "DerivedData")
+	derived := r.derivedDataDir()
 	_, redErr := r.commandOutput(ctx, "absent-target-red", false, redPassCommand(udid, derived)...)
 	if err := ctx.Err(); err != nil {
 		return err
@@ -386,7 +407,7 @@ func (r *runner) requireJourneyProducts(ctx context.Context) error {
 	if err := r.logDerivedDataSizes(ctx); err != nil {
 		return err
 	}
-	_, err := journeyProducts(filepath.Join(r.output, "DerivedData"))
+	_, err := journeyProducts(r.derivedDataDir())
 	return err
 }
 
@@ -394,7 +415,7 @@ func (r *runner) requireJourneyProducts(ctx context.Context) error {
 // directory size in the build job's output, for the caching change that
 // follows this split.
 func (r *runner) logDerivedDataSizes(ctx context.Context) error {
-	derived := filepath.Join(r.output, "DerivedData")
+	derived := r.derivedDataDir()
 	paths := []string{filepath.Join(derived, "Build", "Products")}
 	entries, err := os.ReadDir(derived)
 	if err != nil {
