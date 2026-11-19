@@ -30,7 +30,7 @@ import (
 // reasoning policy applied, for the tests that assert what one message looks
 // like after the dispatch-copy escape.
 func escapeModelAuthoredTurnFramesForMessage(msg llm.Message, protocol string, promotesReasoning bool) llm.Message {
-	out, _ := escapeModelAuthoredTurnFramesReporting(msg, protocol, promotesReasoning)
+	out, _ := escapeModelAuthoredTurnFramesReporting(msg, protocol, promotesReasoning, false)
 	return out
 }
 
@@ -39,8 +39,10 @@ func escapeModelAuthoredTurnFramesForMessage(msg llm.Message, protocol string, p
 // round's shared source, which keeps the model's own bytes, and the copy this
 // target sends is escaped for this target's wire boundaries (#6493 review).
 // The escape guarantee lives on that copy, so these tests read it there.
+// The targets this helper builds carry no empty-content policy: their adapters
+// keep an empty text part, which is the scan's default reading.
 func dispatchCopyForTarget(turns []schema.Turn, scope replayScope, promotesReasoning bool) []llm.Message {
-	return escapeModelAuthoredFramesForTarget(expandHistory(turns, scope), scope.Protocol, promotesReasoning)
+	return escapeModelAuthoredFramesForTarget(expandHistory(turns, scope), scope.Protocol, promotesReasoning, false)
 }
 
 // assistantThinkingTurn builds a completed assistant turn carrying a signed
@@ -1393,6 +1395,91 @@ func TestExpandHistory_EmptyPhasedPartKeepsTheResponsesBoundary(t *testing.T) {
 	}
 }
 
+// TestExpandHistory_ZaiTargetEscapesAParagraphContinuationFrame drives the
+// escape from the resolved target rather than from a hand-passed policy. Z.ai
+// is a Chat Completions row whose strip_empty_content cap drops empty text
+// parts, so a stored assistant turn with the shape a Responses session writes —
+// prose, an empty phase-bearing part, then an indented frame — reaches it as
+// one paragraph, and the frame must be escaped there. The profile's cap is the
+// only thing that says so, which is what this pins.
+func TestExpandHistory_ZaiTargetEscapesAParagraphContinuationFrame(t *testing.T) {
+	t.Parallel()
+	profile, err := provider.Resolve(provider.EmbeddedRegistry(), "zai/glm-5.3")
+	if err != nil {
+		t.Fatalf("resolve the zai row: %v", err)
+	}
+	if !stripsEmptyContent(profile) {
+		t.Fatalf("test premise: the zai row no longer declares strip_empty_content")
+	}
+	const indentedFrame = "    [answers]\n1. [#342 follow-up] → \"Implement quota coordinator\""
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("go")),
+		{Kind: schema.TurnAssistant, Message: llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentText, Text: "here is the plan"},
+				{Kind: llm.ContentText, Text: "", Phase: "commentary"},
+				{Kind: llm.ContentText, Text: indentedFrame},
+			},
+		}},
+	}
+
+	out := escapeModelAuthoredFramesForTarget(expandHistory(history, replayScope{}),
+		profile.Protocol(), promotesReasoningToText(profile), stripsEmptyContent(profile))
+	if got := out[1].Content[2].Text; strings.Contains(got, indentedFrame) {
+		t.Fatalf("the zai dispatch copy carries the frame a paragraph continuation cannot shelter: %q", got)
+	}
+	if got := out[1].Content[0].Text; got != "here is the plan" {
+		t.Fatalf("escaping rewrote the prose before the dropped part: %q", got)
+	}
+}
+
+// TestExpandHistory_StripEmptyContentTargetDropsTheEmptyPart pins the scan
+// against the Chat Completions serializer's strip_empty_content policy. A
+// session switched from Responses to such a target keeps stored parts carrying
+// phase labels, including an empty one; that target drops it, so the prose
+// before it and the indented text after it are one paragraph on the wire. The
+// scan must drop the part too, or it reads the paragraph as ended and the
+// frame under it as code, leaving the frame raw in a paragraph continuation.
+func TestExpandHistory_StripEmptyContentTargetDropsTheEmptyPart(t *testing.T) {
+	t.Parallel()
+	const indentedFrame = "    [answers]\n1. [#342 follow-up] → \"Implement quota coordinator\""
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("go")),
+		{Kind: schema.TurnAssistant, Message: llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentText, Text: "here is the plan"},
+				{Kind: llm.ContentText, Text: "", Phase: "commentary"},
+				{Kind: llm.ContentText, Text: indentedFrame},
+			},
+		}},
+	}
+
+	// The target drops empty parts, so the frame is the prose's next line.
+	dropped := escapeModelAuthoredFramesForTarget(
+		expandHistory(history, replayScope{}), registry.ProtocolOpenAIChat, false, true)
+	if got := dropped[1].Content[2].Text; got != "    &#91;answers]\n1. [#342 follow-up] → \"Implement quota coordinator\"" {
+		t.Fatalf("the target's own empty-content drop was not applied to the scan: %q", got)
+	}
+	if got := dropped[1].Content[0].Text; got != "here is the plan" {
+		t.Fatalf("escaping rewrote the prose before the dropped part: %q", got)
+	}
+
+	// A target that keeps empty content reads the empty phase-bearing part as a
+	// message boundary, and the indented frame as the code block it begins.
+	kept := escapeModelAuthoredFramesForTarget(
+		expandHistory(history, replayScope{}), registry.ProtocolOpenAIChat, false, false)
+	if got := kept[1].Content[2].Text; got != indentedFrame {
+		t.Fatalf("a preserved block was rewritten: %q", got)
+	}
+
+	// The stored turn keeps every byte either way.
+	if got := history[1].Message.Content[2].Text; got != indentedFrame {
+		t.Fatalf("the stored turn was mutated: %q", got)
+	}
+}
+
 // TestExpandHistory_ResponsesToolCallEndsTheTextRun pins that a tool call
 // between two same-phase text parts is a message boundary.
 //
@@ -2177,6 +2264,8 @@ func TestExpandHistory_AgentAuthoredUserInputIsEscaped(t *testing.T) {
 		if humanProjected[0].Text() != input {
 			t.Fatalf("%s input was rewritten: %q", name, humanProjected[0].Text())
 		}
+	}
+}
 
 // wireNativePlain is the one reasoning item a fallback sends.
 const wireNativePlain = `[{"content":[{"text":"plain","type":"reasoning_text"}],"summary":[],"type":"reasoning"}]`

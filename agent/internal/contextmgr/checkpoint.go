@@ -27,7 +27,12 @@ func escapeWorkingNote(msg llm.Message) string {
 	// The note is read as the adapter would send it, so the parts it carries are
 	// the parts CarriesWireText keeps — the same call the replay projection
 	// makes, through one helper (#6493 review).
-	wireIndexes, texts, phases, breaks := sysmsg.WireTextPartsFlushed(msg)
+	//
+	// The note has no dispatch target, so it applies no target's empty-content
+	// policy: an empty phase-bearing part is a message of its own to the reader
+	// that recorded it, which is the reading that keeps the note's line
+	// structure equal to the parts it came from.
+	wireIndexes, texts, phases, breaks := sysmsg.WireTextPartsFlushed(msg, false)
 	if len(texts) == 0 {
 		return sysmsg.EscapeModelAuthoredFrames(msg.Text())
 	}

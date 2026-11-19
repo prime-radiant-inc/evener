@@ -77,8 +77,23 @@ func EscapePartsIndividually(texts []string) []string {
 // so a scan that kept such a part would split a phase run the adapter joins —
 // resetting fence state where the adapter carries it across, and sparing the
 // frame after the next delimiter (#6493 review).
-func CarriesWireText(p llm.ContentPart) bool {
-	return p.Kind == llm.ContentText && (strings.TrimSpace(p.Text) != "" || p.Phase != "")
+//
+// stripsEmptyContent is the target's own policy: a Chat Completions row with
+// strip_empty_content drops every part whose text is empty, phase or not
+// (chatcompletions/messages.go). That removes the message an empty
+// phase-bearing part would otherwise open, so the parts around it are one
+// message on that wire and the scan must read them that way. A scan that kept
+// the part would start a block where the adapter keeps a paragraph open, and
+// the frame under it — a paragraph continuation to the adapter — would be
+// spared as code.
+func CarriesWireText(p llm.ContentPart, stripsEmptyContent bool) bool {
+	if p.Kind != llm.ContentText {
+		return false
+	}
+	if stripsEmptyContent && p.Text == "" {
+		return false
+	}
+	return strings.TrimSpace(p.Text) != "" || p.Phase != ""
 }
 
 // FlushesTextRun reports whether p ends the assistant message the Responses
@@ -112,14 +127,18 @@ func flushesTextRun(p llm.ContentPart) bool {
 // as a Phase change is, and a scan that joined across it would read two bodies
 // as one document: the second body's own delimiters would close the first
 // body's fence, and a frame the model quoted inside them would be escaped.
-func WireTextPartsFlushed(msg llm.Message) (indexes []int, texts, phases []string, breaks []bool) {
+//
+// stripsEmptyContent is the dispatch target's empty-content policy, applied the
+// same way CarriesWireText applies it: a target that drops empty text parts
+// must not have its own boundary invented by the scan.
+func WireTextPartsFlushed(msg llm.Message, stripsEmptyContent bool) (indexes []int, texts, phases []string, breaks []bool) {
 	flushed := false
 	for i, p := range msg.Content {
 		if flushesTextRun(p) {
 			flushed = true
 			continue
 		}
-		if !CarriesWireText(p) {
+		if !CarriesWireText(p, stripsEmptyContent) {
 			continue
 		}
 		indexes = append(indexes, i)

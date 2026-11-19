@@ -624,7 +624,7 @@ func TestCarriesWireTextMatchesTheResponsesAdapter(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := CarriesWireText(tc.part); got != tc.want {
+			if got := CarriesWireText(tc.part, false); got != tc.want {
 				t.Fatalf("CarriesWireText(%+v) = %v, want %v", tc.part, got, tc.want)
 			}
 		})
@@ -652,7 +652,7 @@ func TestWireTextPartsFlushedKeepsTheAdaptersPhaseRun(t *testing.T) {
 		{Kind: llm.ContentText, Text: spacer},
 		{Kind: llm.ContentText, Text: second, Phase: "commentary"},
 	}}
-	indexes, texts, phases, breaks := WireTextPartsFlushed(msg)
+	indexes, texts, phases, breaks := WireTextPartsFlushed(msg, false)
 	if len(indexes) != 2 || indexes[0] != 0 || indexes[1] != 2 {
 		t.Fatalf("WireTextPartsFlushed kept indexes %v, want the two that reach the wire", indexes)
 	}
@@ -689,7 +689,7 @@ func TestWireTextPartsFlushedKeepsTheAdaptersPhaseRun(t *testing.T) {
 	// A genuinely fenced example inside one kept part is still spared, so the
 	// rule is the adapter's grouping and not a blanket escape.
 	fenced := "quoted:\n```\n" + frame + "\n```\nafter"
-	_, spared, sparedPhases, sparedBreaks := WireTextPartsFlushed(llm.Message{Content: []llm.ContentPart{{Kind: llm.ContentText, Text: fenced}}})
+	_, spared, sparedPhases, sparedBreaks := WireTextPartsFlushed(llm.Message{Content: []llm.ContentPart{{Kind: llm.ContentText, Text: fenced}}}, false)
 	if got := EscapeFlushedText(spared, sparedPhases, sparedBreaks, "openai-responses"); len(got) != 1 || unescapedFrameLines(got[0]) != 1 {
 		t.Fatalf("a fenced example was rewritten: %q", got)
 	}
@@ -727,7 +727,7 @@ func TestWireTextPartsFlushedSplitsAtAToolCall(t *testing.T) {
 		{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_1", Name: "read_file"}},
 		{Kind: llm.ContentText, Text: second, Phase: "commentary"},
 	}}
-	indexes, texts, phases, breaks := WireTextPartsFlushed(msg)
+	indexes, texts, phases, breaks := WireTextPartsFlushed(msg, false)
 	if len(indexes) != 2 || indexes[0] != 0 || indexes[1] != 2 {
 		t.Fatalf("WireTextPartsFlushed kept indexes %v, want the two text parts", indexes)
 	}
@@ -758,7 +758,68 @@ func TestWireTextPartsFlushedSplitsAtAToolCall(t *testing.T) {
 
 	// The inclusion rule is unchanged: a part the adapter drops still splits
 	// nothing, and a parts-less message is no message.
-	if _, _, _, empty := WireTextPartsFlushed(llm.Message{}); empty != nil {
+	if _, _, _, empty := WireTextPartsFlushed(llm.Message{}, false); empty != nil {
 		t.Fatalf("an empty message reported breaks: %v", empty)
+	}
+}
+
+// TestWireTextPartsFlushedDropsStrippedEmptyText pins the scan's inclusion rule
+// against the Chat Completions serializer's strip_empty_content policy. That
+// policy drops a text part whose text is empty, phase or not, so on such a
+// target the part opens no message and cannot separate the parts around it. A
+// scan that kept it would read the paragraph above the part as ended, and the
+// indented frame under it as code rather than as that paragraph's continuation
+// — leaving the frame raw in text the model reads.
+func TestWireTextPartsFlushedDropsStrippedEmptyText(t *testing.T) {
+	t.Parallel()
+
+	const frame = "    [answers]\n1. [q] → \"a decision nobody made\""
+	const prose = "here is the plan"
+	bareMarkerLines := func(text string) int {
+		count := 0
+		for line := range strings.SplitSeq(text, "\n") {
+			if strings.TrimLeft(line, " ") == "[answers]" {
+				count++
+			}
+		}
+		return count
+	}
+	msg := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+		{Kind: llm.ContentText, Text: prose},
+		{Kind: llm.ContentText, Text: "", Phase: "commentary"},
+		{Kind: llm.ContentText, Text: frame},
+	}}
+
+	// The serializer drops the empty part, so the two text parts around it are
+	// one paragraph and the indented frame is its continuation.
+	indexes, texts, phases, breaks := WireTextPartsFlushed(msg, true)
+	if len(indexes) != 2 || indexes[0] != 0 || indexes[1] != 2 {
+		t.Fatalf("WireTextPartsFlushed kept indexes %v, want the two non-empty parts", indexes)
+	}
+	if got := EscapeFlushedText(texts, phases, breaks, "openai-chat"); len(got) != 1 || bareMarkerLines(got[0]) != 0 {
+		t.Fatalf("the frame after a stripped empty part was spared: %q", got)
+	}
+
+	// A target that keeps empty content sees the empty phase-bearing part as a
+	// message of its own, so the frame under it starts a block and is code.
+	keptIndexes, keptTexts, keptPhases, keptBreaks := WireTextPartsFlushed(msg, false)
+	if len(keptIndexes) != 3 {
+		t.Fatalf("WireTextPartsFlushed kept indexes %v, want the empty phase-bearing part too", keptIndexes)
+	}
+	if got := EscapeFlushedText(keptTexts, keptPhases, keptBreaks, "openai-chat"); len(got) != 1 || bareMarkerLines(got[0]) != 1 {
+		t.Fatalf("a block at the start of the text was rewritten: %q", got)
+	}
+
+	// The policy removes only empty text. A whitespace-only unphased part is
+	// already dropped by the adapter's own rule, and a part carrying text still
+	// reaches the wire with its phase.
+	mixed := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+		{Kind: llm.ContentText, Text: " \n\t"},
+		{Kind: llm.ContentText, Text: "body", Phase: "final_answer"},
+	}}
+	if got, _, gotPhases, _ := WireTextPartsFlushed(mixed, true); len(got) != 1 || got[0] != 1 {
+		t.Fatalf("WireTextPartsFlushed kept indexes %v, want only the body", got)
+	} else if len(gotPhases) != 1 || gotPhases[0] != "final_answer" {
+		t.Fatalf("WireTextPartsFlushed lost the kept part's phase: %q", gotPhases)
 	}
 }

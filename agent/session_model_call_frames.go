@@ -199,7 +199,7 @@ func escapeParentSteeringBody(t schema.Turn, msg llm.Message) llm.Message {
 // promotes reasoning would discard an escape that only touched a thinking
 // block, and its adapter would prepend the original frame to the body (#6493
 // review).
-func escapeModelAuthoredTurnFramesReporting(msg llm.Message, protocol string, promotesReasoning bool) (llm.Message, bool) {
+func escapeModelAuthoredTurnFramesReporting(msg llm.Message, protocol string, promotesReasoning, stripsEmptyContent bool) (llm.Message, bool) {
 	if msg.Role != llm.RoleAssistant {
 		return msg, false
 	}
@@ -222,7 +222,14 @@ func escapeModelAuthoredTurnFramesReporting(msg llm.Message, protocol string, pr
 	// split the scan's phase run, or a fence one part opens and the next closes
 	// reads as two blocks and the frame after the close is spared (#6493
 	// review).
-	indexes, texts, textPhases, textBreaks := sysmsg.WireTextPartsFlushed(msg)
+	//
+	// stripsEmptyContent is that rule's other half: a target whose own
+	// serializer drops empty text parts drops the message an empty
+	// phase-bearing part would open, so the scan must drop it too. Keeping the
+	// part where the serializer removes it reads a paragraph as ended and treats
+	// the indented frame under it as code, which is the one reading that spares
+	// a frame the wire exposes.
+	indexes, texts, textPhases, textBreaks := sysmsg.WireTextPartsFlushed(msg, stripsEmptyContent)
 	var reasoningIndexes []int
 	var reasoningTexts []string
 	if promotesReasoning {

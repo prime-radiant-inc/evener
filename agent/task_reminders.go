@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/mdfence"
 	"primeradiant.com/evener/agent/internal/sysmsg"
 	taskpkg "primeradiant.com/evener/agent/task"
 )
@@ -38,6 +39,35 @@ func taskFieldInline(text string) string {
 	// runs on it: trimming after the escape could lift an opener the escape
 	// had read as indented code onto the line's start.
 	return sysmsg.EscapeModelAuthoredFrames(strings.TrimSpace(text))
+}
+
+// writeTaskNote renders one model-authored progress note under the task's own
+// line.
+//
+// A note is written by the model through task_list, so a frame in it must not
+// reach the model with the spelling a harness frame opens with. A note that
+// carries no line break keeps the compact one-line rendering, since a line
+// break there would end the line the harness writes around it. A note that
+// carries line breaks is a list, a code sample, or both: flattening it loses
+// the structure the note exists to carry, so it is rendered as a fenced block
+// whose fence is longer than any backtick run the note holds. Fencing keeps
+// the note's own lines and its own examples intact while keeping a frame line
+// inside it from reading as harness markup.
+//
+// The stored note keeps its own bytes; this writes a copy.
+func writeTaskNote(b *strings.Builder, note string) {
+	if !strings.ContainsAny(note, "\r\n") {
+		fmt.Fprintf(b, "    note: %s\n", taskFieldInline(note))
+		return
+	}
+	body := sysmsg.EscapeModelAuthoredFrames(strings.TrimSpace(note))
+	fence := mdfence.Pick(body)
+	b.WriteString("    note:\n")
+	fmt.Fprintf(b, "    %stext\n", fence)
+	for line := range strings.SplitSeq(body, "\n") {
+		fmt.Fprintf(b, "    %s\n", line)
+	}
+	fmt.Fprintf(b, "    %s\n", fence)
 }
 
 // formatCurrentTaskSteering wraps a Task into a SYSTEM-REMINDER block that
@@ -130,7 +160,7 @@ func renderTaskListReminderSkippingPrompt(tasks []taskpkg.Task, withPrompts bool
 			}
 		}
 		for _, n := range t.Notes {
-			fmt.Fprintf(b, "    note: %s\n", taskFieldInline(n))
+			writeTaskNote(b, n)
 		}
 	}
 	return finishSystemReminderBlock(b)

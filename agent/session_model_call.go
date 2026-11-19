@@ -335,7 +335,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// copy this target sends, where its text boundaries are the ones the
 	// adapter will assemble.
 	untrimmedHistory := history
-	history = escapeModelAuthoredFramesForTarget(history, profile.Protocol(), promotesReasoningToText(profile))
+	history = escapeModelAuthoredFramesForTarget(history, profile.Protocol(), promotesReasoningToText(profile), stripsEmptyContent(profile))
 	history = projectThinkingForTarget(profile, history)
 	history = projectToolResultMediaFor(profile, history)
 
@@ -406,7 +406,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			// turns join the history the request was built from AFTER its own
 			// escaping pass, so they reach the wire in the model's bytes unless
 			// they are escaped here (#6493 review).
-			history = append(history, escapeModelAuthoredFramesForTarget([]llm.Message{message}, profile.Protocol(), promotesReasoningToText(profile))[0])
+			history = append(history, escapeModelAuthoredFramesForTarget([]llm.Message{message}, profile.Protocol(), promotesReasoningToText(profile), stripsEmptyContent(profile))[0])
 		}
 		presentedTurns = append(slices.Clip(presentedTurns), appended...)
 		req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort, toolDefsJSONBytes)
@@ -1737,7 +1737,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			// fence (#6493 review). Escaping again for this target's boundaries
 			// is safe when it agrees with the primary: escaping is idempotent
 			// and never touches text both scans leave alone.
-			fbReq.Messages = escapeModelAuthoredFramesForTarget(fbReq.Messages, fbProfile.Protocol(), promotesReasoningToText(fbProfile))
+			fbReq.Messages = escapeModelAuthoredFramesForTarget(fbReq.Messages, fbProfile.Protocol(), promotesReasoningToText(fbProfile), stripsEmptyContent(fbProfile))
 			// A fallback reuses the primary's built messages, so it applies its
 			// own media decision here; the budget below then prices exactly what
 			// this target receives (#4217).
@@ -1884,7 +1884,7 @@ func responsesContinuationFullHistoryFallbackRequest(res registry.Resolved, req 
 // target's boundaries differ (phase joining, per-part blocks), which is why the
 // escape happens per target and not in the shared history. Escaping an
 // already-escaped message is a no-op, so a caller may apply it more than once.
-func escapeModelAuthoredFramesForTarget(messages []llm.Message, protocol string, promotesReasoning bool) []llm.Message {
+func escapeModelAuthoredFramesForTarget(messages []llm.Message, protocol string, promotesReasoning, stripsEmptyContent bool) []llm.Message {
 	if protocol == "" {
 		return messages
 	}
@@ -1895,7 +1895,7 @@ func escapeModelAuthoredFramesForTarget(messages []llm.Message, protocol string,
 		// the two messages' Text(), which reads text parts only and cannot see a
 		// rewrite confined to the reasoning a promoting target prepends (#6493
 		// review).
-		escaped, changed := escapeModelAuthoredTurnFramesReporting(msg, protocol, promotesReasoning)
+		escaped, changed := escapeModelAuthoredTurnFramesReporting(msg, protocol, promotesReasoning, stripsEmptyContent)
 		if !changed {
 			continue
 		}
@@ -2157,6 +2157,22 @@ func promotesReasoningToText(p *provider.Profile) bool {
 	}
 	res := p.Resolved()
 	return res.Protocol == registry.ProtocolOpenAIChat && registry.BoolValue(res.Caps.ThinkingAsText)
+}
+
+// stripsEmptyContent reports whether the target's serializer drops text parts
+// whose text is empty. Only the Chat Completions serializer applies the
+// strip_empty_content cap; no other adapter drops a part on emptiness, so a cap
+// carried on another protocol's row is not a boundary on its wire.
+//
+// The answer decides whether an empty phase-bearing part opens a message on the
+// wire, which is a boundary the frame scan must see to be reading the text the
+// provider reads.
+func stripsEmptyContent(p *provider.Profile) bool {
+	if p == nil {
+		return false
+	}
+	res := p.Resolved()
+	return res.Protocol == registry.ProtocolOpenAIChat && registry.BoolValue(res.Caps.StripEmptyContent)
 }
 
 // projectThinkingForTarget returns messages with the target's thinking-replay
