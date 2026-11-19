@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"primeradiant.com/evener/agent/internal/jobstore"
@@ -26,6 +27,33 @@ const (
 	jobOutputPageDefaultBytes = 4096
 	jobOutputPageMaxBytes     = 65536
 )
+
+// OwnerDeletionFence reports whether the session whose journal and output log a
+// retained read would resolve by identifier is already fenced for deletion.
+//
+// It exists because deletion is recorded in two places at two different times.
+// A hub's deletion store knows about a generation the moment it begins, before
+// any file on disk changes, and the tombstone a removed session leaves beside
+// its metadata outlives the session itself. A reader that consulted only one of
+// them would either open a session that is going away or miss one that is gone.
+type OwnerDeletionFence func(sessionID string) bool
+
+// ownerSessionFenced reports whether sessionID's retained state must not be
+// read. An empty session names nothing to resolve, so it is never fenced. The
+// callback answers first — a deletion in flight is known to the store before
+// any marker lands — and the durable tombstone answers when no callback was
+// supplied.
+func ownerSessionFenced(stateDir, sessionID string, fence OwnerDeletionFence) bool {
+	if sessionID == "" {
+		return false
+	}
+	if fence != nil && fence(sessionID) {
+		return true
+	}
+	tombstone := filepath.Join(schema.SessionsDir(stateDir), sessionID+schema.SessionMetaTombstoneSuffix)
+	_, err := os.Stat(tombstone)
+	return err == nil
+}
 
 func clampJobPageBytes(maxBytes int64) int {
 	if maxBytes <= 0 {
@@ -129,6 +157,14 @@ type sessionJobRecordRead struct {
 	// damage report forward, but whether one particular record's state can be
 	// stated is a fact about that record's journal alone.
 	scanErr error
+	// ownerScanErr is the durable-corruption error the RESOLVED OWNER's journal
+	// produced, carried on a read whose selected record came from another
+	// journal. It is separate from scanErr because the two answer different
+	// questions: scanErr is evidence against the record that was folded here,
+	// and ownerScanErr is damage to the journal that would have stated the job's
+	// end. A forwarded copy can be perfectly intact while the owner's history
+	// that would confirm or correct it never decoded.
+	ownerScanErr error
 }
 
 // encodedJobOwner names the owner a job ID encodes, or "" when the ID encodes
@@ -277,14 +313,24 @@ func stateEstablished(read sessionJobRecordRead) bool {
 // later read of this journal gets past it. Reporting such a row as confirmed
 // running is how a finished job reads as permanently running.
 //
-// scanErr is the branch-local error on purpose: an intact owner record that
-// inherited an ancestor's damage has an established status, and only the record's
-// own scan can make its status unreadable.
+// A decoded terminal record is always served: the first terminal write fixes the
+// job's end, so damage anywhere else cannot un-say it.
+//
+// The two damage fields answer the same question from different journals, and
+// either one leaves the end unresolved. scanErr is damage in the journal the
+// selected record came from. ownerScanErr is damage in the owner's journal when
+// the selected record came from somewhere else: the forwarded copy states a
+// nonterminal status, and the only journal that could have said otherwise is the
+// one that stopped decoding. An intact forwarded row is not evidence about an
+// unreadable owner history, so the row's running status is a fragment.
 func statusUnreadable(read sessionJobRecordRead) bool {
-	if read.record == nil || read.scanErr == nil {
+	if read.record == nil || read.record.Status.IsTerminal() {
 		return false
 	}
-	return !stateEstablished(read)
+	if read.scanErr != nil && !stateEstablished(read) {
+		return true
+	}
+	return read.ownerScanErr != nil
 }
 
 // retainedJobReadOutranks reports whether the incoming read replaces the
@@ -293,8 +339,10 @@ func statusUnreadable(read sessionJobRecordRead) bool {
 // corroborated-hint branch — and it composes two rules in a fixed order:
 //
 //  1. Authority (keepIncomingDescendantRow, the live recursive path's own rule
-//     in jobs_nested.go): the record from the owner's journal wins, and between
-//     two records of equal authority the one already held is kept.
+//     in jobs_nested.go): the record from the owner's journal wins. Between two
+//     records of equal authority the one already held is kept — unless only the
+//     incoming one establishes the job's state, which is the same invariant
+//     rule 2 states.
 //  2. Evidence: a record that cannot state the job's state never displaces one
 //     that can. The owner's journal is the authority on what the job IS, but a
 //     scan that stopped at durable corruption hands back a prefix, and a prefix
@@ -317,8 +365,14 @@ func statusUnreadable(read sessionJobRecordRead) bool {
 // row always wins — and it never demotes a record on authority grounds.
 func retainedJobReadOutranks(existingIsOwner bool, existing sessionJobRecordRead, incomingIsOwner bool, incoming sessionJobRecordRead) bool {
 	if !keepIncomingDescendantRow(existing.found, existingIsOwner, incomingIsOwner) {
-		// Authority keeps what is already held; nothing displaces it.
-		return false
+		// Authority keeps what is already held. The one exception is a tie
+		// between two rows of the same authority: neither is the owner, so
+		// holding the earlier one proves nothing, and a statusless forwarded
+		// row may not stand in for the only decoded statement of how the job
+		// ended. A found incoming row of different authority never wins here —
+		// authority is consulted before evidence.
+		return existing.found && existingIsOwner == incomingIsOwner &&
+			stateEstablished(incoming) && !stateEstablished(existing)
 	}
 	// Authority hands the row to the incoming read. It may not take it while
 	// being unable to say whether the job finished, if what it would displace is
@@ -400,6 +454,16 @@ func (d *sessionJobRecordDiagnostics) mergeIntegrity(other sessionJobRecordDiagn
 	d.IncompleteLifecycle = d.IncompleteLifecycle || other.IncompleteLifecycle
 }
 
+// absorbOwnerRead carries an owner journal's diagnostics and scan error onto
+// the scoped copy that was kept instead of it.
+func (r sessionJobRecordRead) absorbOwnerRead(owner sessionJobRecordRead) sessionJobRecordRead {
+	r.diagnostics.mergeIntegrity(owner.diagnostics)
+	if owner.scanErr != nil {
+		r.ownerScanErr = owner.scanErr
+	}
+	return r
+}
+
 // readSessionJobJournal folds one session's durable jobs.jsonl and reports the
 // integrity diagnostics the read produced. A missing or non-regular journal is
 // (no record, nil error): absence is a state, not damage. A journal that is
@@ -458,7 +522,11 @@ func readSessionJobJournal(stateDir, sessionID, jobID string) (sessionJobRecordR
 		// serving a forwarded copy still has to be able to say that the owner's
 		// history is damaged rather than merely absent.
 		if scanErr != nil {
-			return sessionJobRecordRead{diagnostics: diagnostics}, scanErr
+			// The scan error rides the read as well as being returned: a caller
+			// holding a competing branch needs to tell durable corruption in THIS
+			// journal from a journal that merely could not be opened, and the
+			// returned error alone cannot answer that.
+			return sessionJobRecordRead{diagnostics: diagnostics, scanErr: scanErr}, scanErr
 		}
 		return sessionJobRecordRead{diagnostics: diagnostics}, nil
 	}
@@ -505,7 +573,12 @@ func hintIsSessionID(hint string) bool {
 //
 // found=false covers a session with no jobs journal, a journal with no record
 // of the job, and an owner journal that holds none either.
-func loadSessionJobRecord(stateDir, sessionID, jobID string) (sessionJobRecordRead, error) {
+//
+// A resolved owner that is fenced for deletion is not consulted at all: its
+// journal is not this read's to open, so the scoped copy stands as the answer.
+// The fence is checked BEFORE the read for the same reason scope is proven
+// before data is served — opening the journal is the act being refused.
+func loadSessionJobRecord(stateDir, sessionID, jobID string, fence OwnerDeletionFence) (sessionJobRecordRead, error) {
 	if err := schema.ValidateSessionID(sessionID); err != nil {
 		return sessionJobRecordRead{}, err
 	}
@@ -553,6 +626,9 @@ func loadSessionJobRecord(stateDir, sessionID, jobID string) (sessionJobRecordRe
 		// retry. The scoped copy stands, and the flag below says why it is
 		// fallback evidence rather than the owner's.
 		if !hintIsSessionID(hint) {
+			return local, nil
+		}
+		if ownerSessionFenced(stateDir, hint, fence) {
 			return local, nil
 		}
 		corroborated, hintErr := readSessionJobJournal(stateDir, hint, jobID)
@@ -603,11 +679,13 @@ func loadSessionJobRecord(stateDir, sessionID, jobID string) (sessionJobRecordRe
 			preserveLaunchFields(corroborated.record, local.record)
 			return corroborated, nil
 		}
-		local.diagnostics.mergeIntegrity(corroborated.diagnostics)
-		return local, nil
+		return local.absorbOwnerRead(corroborated), nil
 	}
 	if owner == sessionID {
 		// An ID naming this session is already the authoritative branch.
+		return local, nil
+	}
+	if ownerSessionFenced(stateDir, owner, fence) {
 		return local, nil
 	}
 	owned, ownerErr := readSessionJobJournal(stateDir, owner, jobID)
@@ -622,9 +700,10 @@ func loadSessionJobRecord(stateDir, sessionID, jobID string) (sessionJobRecordRe
 		}
 		// The copy already held outranks the owner journal's. It is still the best
 		// evidence available, so it keeps any integrity signal the owner branch
-		// carried rather than losing the damage report with the race.
-		local.diagnostics.mergeIntegrity(owned.diagnostics)
-		return local, nil
+		// carried rather than losing the damage report with the race. The owner's
+		// scan error rides along too: the selected copy states a nonterminal
+		// status, and this is the journal that would have stated the end.
+		return local.absorbOwnerRead(owned), nil
 	}
 	// The owner branch is unreadable or holds nothing. Its absence must not erase
 	// the only surviving evidence, so the scoped record stands as the answer: a
@@ -636,8 +715,10 @@ func loadSessionJobRecord(stateDir, sessionID, jobID string) (sessionJobRecordRe
 	// The owner's OWN damage report still travels: a torn tail or a failed scan
 	// there is a fact about this job's history, and dropping it because no row
 	// survived would present unreadability and corruption as the same thing.
-	local.diagnostics.mergeIntegrity(owned.diagnostics)
-	return local, nil
+	// Durable corruption is the reason no row survived, and it also means the
+	// finish is unaccounted for. A merely absent or unopenable journal states
+	// nothing, so only a scan error makes the selected copy's status unreadable.
+	return local.absorbOwnerRead(owned), nil
 }
 
 // retainedJobOwnerSession names the session whose directory holds a read
@@ -708,11 +789,11 @@ func jobRecordForProjection(rec *jobstore.JobRecord) *jobstore.JobRecord {
 //
 // The default lives beside the journal of the session that ran the job, which
 // after owner-authoritative resolution need not be the session that was asked.
-func jobRecordOutputPath(stateDir, jobID string, read sessionJobRecordRead) string {
-	if rec := read.record; rec != nil && rec.OutputPath != "" && !ownerClaimContradicts(rec) {
+func jobRecordOutputPath(stateDir, jobID, logOwner string, rec *jobstore.JobRecord) string {
+	if rec != nil && rec.OutputPath != "" && !ownerClaimContradicts(rec) {
 		return rec.OutputPath
 	}
-	return filepath.Join(jobsDir(stateDir, retainedJobOwnerSession(jobID, read)), "jobs", jobID+".log")
+	return filepath.Join(jobsDir(stateDir, logOwner), "jobs", jobID+".log")
 }
 
 // jobReadError translates the reader's structural sentinels into the wire
@@ -733,15 +814,37 @@ func jobReadError(jobID string, err error) error {
 // the log is read from where the session that RAN the job wrote it rather than
 // from the session that was asked.
 func LoadSessionJobOutputPage(stateDir, sessionID, jobID string, beforeBytes *int64, maxBytes int64) (JobOutputPage, bool, error) {
-	read, err := loadSessionJobRecord(stateDir, sessionID, jobID)
+	return LoadSessionJobOutputPageWithFence(stateDir, sessionID, jobID, beforeBytes, maxBytes, nil)
+}
+
+// LoadSessionJobOutputPageWithFence is LoadSessionJobOutputPage with the
+// caller's deletion fence (see OwnerDeletionFence). A log owned by a fenced
+// session is not opened: the bytes belong to a session that is going away, and
+// serving them through the asking session's ref would outlive that deletion.
+// found=false is the answer because the fenced owner's state is not this
+// read's to state.
+func LoadSessionJobOutputPageWithFence(stateDir, sessionID, jobID string, beforeBytes *int64, maxBytes int64, fence OwnerDeletionFence) (JobOutputPage, bool, error) {
+	read, err := loadSessionJobRecord(stateDir, sessionID, jobID, fence)
 	if err != nil {
 		return JobOutputPage{}, false, jobReadError(jobID, err)
 	}
 	if !read.found {
 		return JobOutputPage{}, false, nil
 	}
-	outPath := jobRecordOutputPath(stateDir, jobID, read)
-	page, err := readJobOutputPageForRecord(outPath, read.record, beforeBytes, clampJobPageBytes(maxBytes))
+	logOwner := retainedJobOwnerSession(jobID, read)
+	if logOwner != "" && logOwner != sessionID && ownerSessionFenced(stateDir, logOwner, fence) {
+		return JobOutputPage{}, false, nil
+	}
+	outPath := jobRecordOutputPath(stateDir, jobID, logOwner, read.record)
+	// The terminal byte count describes ONE log. A record whose owner claim the
+	// job ID contradicts states a path this read discards above, so its count
+	// belongs to a file that is never opened here; enforcing it against the
+	// default log under the validated owner would refuse this job's own bytes.
+	recordForOutputCheck := read.record
+	if ownerClaimContradicts(recordForOutputCheck) {
+		recordForOutputCheck = nil
+	}
+	page, err := readJobOutputPageForRecord(outPath, recordForOutputCheck, beforeBytes, clampJobPageBytes(maxBytes))
 	return jobOutputPageResult(page, true, err)
 }
 
@@ -780,7 +883,15 @@ func (s *Session) JobGet(jobID string) (JobActivityJob, bool, error) {
 // recover. The owner's identity is not lost — it rides OwnerSessionID, the field
 // that means it.
 func LoadSessionJobGet(stateDir, sessionID, jobID string) (JobActivityJob, bool, error) {
-	read, err := loadSessionJobRecord(stateDir, sessionID, jobID)
+	return LoadSessionJobGetWithFence(stateDir, sessionID, jobID, nil)
+}
+
+// LoadSessionJobGetWithFence is LoadSessionJobGet with the caller's deletion
+// fence (see OwnerDeletionFence). A fenced owner is not consulted, so the
+// asking session's own copy answers — the same fallback a dead descendant's
+// ancestor relies on.
+func LoadSessionJobGetWithFence(stateDir, sessionID, jobID string, fence OwnerDeletionFence) (JobActivityJob, bool, error) {
+	read, err := loadSessionJobRecord(stateDir, sessionID, jobID, fence)
 	if err != nil {
 		return JobActivityJob{}, false, jobReadError(jobID, err)
 	}

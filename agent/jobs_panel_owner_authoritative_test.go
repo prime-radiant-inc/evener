@@ -4,12 +4,14 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/identifier"
 )
@@ -52,6 +54,20 @@ func writeJobJournalLines(t *testing.T, dir string, lines ...string) {
 	content := strings.Join(lines, "")
 	if err := os.WriteFile(filepath.Join(dir, "jobs.jsonl"), []byte(content), 0o644); err != nil {
 		t.Fatalf("write job journal: %v", err)
+	}
+}
+
+// writeSessionTombstone places the durable marker a removed session leaves
+// beside its metadata, so a reader can tell that session was deleted.
+func writeSessionTombstone(t *testing.T, stateDir, sessionID string) {
+	t.Helper()
+	sessionsDir := filepath.Join(stateDir, schema.SessionsSubdir)
+	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
+		t.Fatalf("create sessions dir: %v", err)
+	}
+	path := filepath.Join(sessionsDir, sessionID+schema.SessionMetaTombstoneSuffix)
+	if err := os.WriteFile(path, []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write session tombstone: %v", err)
 	}
 }
 
@@ -248,7 +264,7 @@ func TestLoadSessionJobRecordFallsBackToForwardedCopyWhenOwnerUnavailable(t *tes
 	})
 	closeJobJournal(t, ancestorStore)
 
-	read, err := loadSessionJobRecord(stateDir, ancestorSession, jobID)
+	read, err := loadSessionJobRecord(stateDir, ancestorSession, jobID, nil)
 	if err != nil {
 		t.Fatalf("loadSessionJobRecord: %v", err)
 	}
@@ -862,7 +878,7 @@ func TestLoadSessionJobRecordOwnerJournalTornTailIsReported(t *testing.T) {
 		`{"kind":"job_finished","seq":2,"job_id":"`+jobID+`"`,
 	)
 
-	read, err := loadSessionJobRecord(stateDir, ancestorSession, jobID)
+	read, err := loadSessionJobRecord(stateDir, ancestorSession, jobID, nil)
 	if err != nil {
 		t.Fatalf("loadSessionJobRecord: %v", err)
 	}
@@ -886,7 +902,7 @@ func TestLoadSessionJobRecordOrphanFinishIsReported(t *testing.T) {
 			`","job_id":"`+jobID+`","status":"completed","terminal_generation":"gen_orphan"}`+"\n",
 	)
 
-	read, err := loadSessionJobRecord(stateDir, sessionID, jobID)
+	read, err := loadSessionJobRecord(stateDir, sessionID, jobID, nil)
 	if err != nil {
 		t.Fatalf("loadSessionJobRecord: %v", err)
 	}
@@ -965,5 +981,453 @@ func TestLoadSessionJobGetReportsCorruptStatusAsUnavailable(t *testing.T) {
 	}
 	if job.ExitCode == nil || *job.ExitCode != exit {
 		t.Fatalf("exitCode = %v, want %d", job.ExitCode, exit)
+	}
+}
+
+// TestLoadSessionJobGetFencedOwnerFallsBackToForwardedCopy pins the deletion
+// fence on the resolved owner. The owner's journal holds the terminal details
+// the ancestor never saw forwarded, and the owner's log still exists on disk.
+// A deleted session is out of scope for the reads its ancestor answers: serving
+// its unforwarded finish would report a deleted session's job state, and
+// reading its log would hand out bytes from a session that is going away. The
+// forwarded copy the ancestor already holds is the answer.
+func TestLoadSessionJobGetFencedOwnerFallsBackToForwardedCopy(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	ancestorSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 19, 14, 0, 0, 0, time.UTC)
+	ended := started.Add(30 * time.Second)
+	exit := 5
+
+	// The ancestor holds only the forwarded start, so its copy reads running.
+	ancestorStore := openJobJournal(t, jobsDir(stateDir, ancestorSession))
+	appendJobEvent(t, ancestorStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: ownerSession, VisibleToSession: ancestorSession,
+		Command: "make forwarded", StartedAt: &started,
+	})
+	closeJobJournal(t, ancestorStore)
+
+	// The owner's journal holds the finish the ancestor never received.
+	ownerStore := openJobJournal(t, jobsDir(stateDir, ownerSession))
+	appendJobEvent(t, ownerStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: ownerSession, VisibleToSession: ownerSession,
+		StartedAt: &started,
+	})
+	appendJobEvent(t, ownerStore, jobstore.Event{
+		Kind: jobstore.EventJobFinished, TS: ended, JobID: jobID,
+		Status: jobstore.StatusCommandExitedNonzero, ExitCode: &exit, EndedAt: &ended, TerminalGen: "gen_owner",
+	})
+	closeJobJournal(t, ownerStore)
+
+	// The owner's log survives its journal, so an unfenced read would serve it.
+	ownerLogDir := filepath.Join(jobsDir(stateDir, ownerSession), "jobs")
+	if err := os.MkdirAll(ownerLogDir, 0o755); err != nil {
+		t.Fatalf("create owner log dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(ownerLogDir, jobID+".log"), []byte("fenced bytes"), 0o644); err != nil {
+		t.Fatalf("write owner log: %v", err)
+	}
+
+	// The durable marker a removed session leaves behind.
+	writeSessionTombstone(t, stateDir, ownerSession)
+
+	job, found, err := LoadSessionJobGet(stateDir, ancestorSession, jobID)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the ancestor's forwarded copy")
+	}
+	if job.Status != string(jobstore.StatusRunning) {
+		t.Fatalf("status = %q, want %q from the forwarded copy: the fenced owner's journal is not this read's to open",
+			job.Status, jobstore.StatusRunning)
+	}
+	if job.ExitCode != nil {
+		t.Fatalf("exitCode = %v, want nil: the finish belongs to the fenced owner", *job.ExitCode)
+	}
+	if job.EndedAt != "" {
+		t.Fatalf("endedAt = %q, want empty: the finish belongs to the fenced owner", job.EndedAt)
+	}
+
+	page, pageFound, pageErr := LoadSessionJobOutputPage(stateDir, ancestorSession, jobID, nil, 0)
+	if pageErr != nil {
+		t.Fatalf("LoadSessionJobOutputPage: %v", pageErr)
+	}
+	if pageFound {
+		t.Fatalf("found = true (page %+v), want false: the log belongs to a fenced owner", page)
+	}
+}
+
+// TestLoadSessionJobGetReportsUnavailableWhenOwnerJournalIsCorrupt pins the
+// separation of the owner's scan damage from the selected record's own. The
+// ancestor holds a forwarded start that reads running, and the owner's journal
+// decodes its start but stops at a corrupt finish line. The selected copy is
+// intact, yet no journal consulted can say how the job ended: the finish may be
+// the very line the owner's scan could not decode. Reporting the forwarded
+// running row would assert an end state nothing observed.
+//
+// Three guards keep this narrow: a forwarded terminal observation is still
+// served, output paging is independent of the verdict because the bytes that
+// landed stay readable, and the owner's own decoded finish is served as usual.
+func TestLoadSessionJobGetReportsUnavailableWhenOwnerJournalIsCorrupt(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	ancestorSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 19, 15, 0, 0, 0, time.UTC)
+	ended := started.Add(15 * time.Second)
+	exit := 4
+
+	ancestorStore := openJobJournal(t, jobsDir(stateDir, ancestorSession))
+	appendJobEvent(t, ancestorStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: ownerSession, VisibleToSession: ancestorSession,
+		StartedAt: &started,
+	})
+	closeJobJournal(t, ancestorStore)
+
+	// The owner's start decodes; the finish line cannot.
+	writeJobJournalLines(t, jobsDir(stateDir, ownerSession),
+		jobStartedLine(jobID, ownerSession, started)+"\n",
+		`{"kind":"job_finished","seq":2,"job_id":"`+jobID+`","status":"completed"`+"\n",
+	)
+
+	ownerLogDir := filepath.Join(jobsDir(stateDir, ownerSession), "jobs")
+	if err := os.MkdirAll(ownerLogDir, 0o755); err != nil {
+		t.Fatalf("create owner log dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(ownerLogDir, jobID+".log"), []byte("landed bytes"), 0o644); err != nil {
+		t.Fatalf("write owner log: %v", err)
+	}
+
+	_, found, err := LoadSessionJobGet(stateDir, ancestorSession, jobID)
+	if found {
+		t.Fatal("found = true, want unavailable: the owner's corrupt history left the end unresolved")
+	}
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) {
+		t.Fatalf("error = %v, want a wire error: the job exists, its outcome does not decode", err)
+	}
+	if wireErr.Code != appwire.CodeUnavailable {
+		t.Fatalf("error code = %d, want %d (unavailable)", wireErr.Code, appwire.CodeUnavailable)
+	}
+
+	// Output paging does not consult the status verdict.
+	page, pageFound, pageErr := LoadSessionJobOutputPage(stateDir, ancestorSession, jobID, nil, 0)
+	if pageErr != nil || !pageFound {
+		t.Fatalf("LoadSessionJobOutputPage: found=%v err=%v, want the readable output", pageFound, pageErr)
+	}
+	if !strings.Contains(page.Data, "landed bytes") {
+		t.Fatalf("page data = %q, want the bytes that did land", page.Data)
+	}
+
+	// The ancestor's own terminal observation settles the job on its own: the
+	// owner's damage may not hide a finish that was already forwarded.
+	ancestorStore = openJobJournal(t, jobsDir(stateDir, ancestorSession))
+	appendJobEvent(t, ancestorStore, jobstore.Event{
+		Kind: jobstore.EventJobFinished, TS: ended, JobID: jobID,
+		Status: jobstore.StatusCommandExitedNonzero, ExitCode: &exit, EndedAt: &ended, TerminalGen: "gen_fwd",
+	})
+	closeJobJournal(t, ancestorStore)
+
+	job, found, err := LoadSessionJobGet(stateDir, ancestorSession, jobID)
+	if err != nil || !found {
+		t.Fatalf("forwarded finish: found=%v err=%v, want the settled record", found, err)
+	}
+	if job.Status != string(jobstore.StatusCommandExitedNonzero) {
+		t.Fatalf("status = %q, want %q from the forwarded finish", job.Status, jobstore.StatusCommandExitedNonzero)
+	}
+	if job.ExitCode == nil || *job.ExitCode != exit {
+		t.Fatalf("exitCode = %v, want %d from the forwarded finish", job.ExitCode, exit)
+	}
+}
+
+// TestLoadSessionJobGetReportsUnavailableWhenOwnerJournalHasNoDecodableRecord
+// covers the other shape of the same damage: the owner's journal is corrupt
+// from its first line, so its scan produced no record at all. The absence of a
+// decoded row is not evidence that the journal holds nothing — the damage
+// itself is the answer, and the forwarded running copy cannot state the end
+// either.
+func TestLoadSessionJobGetReportsUnavailableWhenOwnerJournalHasNoDecodableRecord(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	ancestorSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 19, 16, 0, 0, 0, time.UTC)
+
+	ancestorStore := openJobJournal(t, jobsDir(stateDir, ancestorSession))
+	appendJobEvent(t, ancestorStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: ownerSession, VisibleToSession: ancestorSession,
+		StartedAt: &started,
+	})
+	closeJobJournal(t, ancestorStore)
+
+	writeJobJournalLines(t, jobsDir(stateDir, ownerSession),
+		`{"kind":"job_started","seq":1,"job_id":"`+jobID+`","type":"shell"`+"\n",
+	)
+
+	_, found, err := LoadSessionJobGet(stateDir, ancestorSession, jobID)
+	if found {
+		t.Fatal("found = true, want unavailable: the owner's journal is unreadable")
+	}
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeUnavailable {
+		t.Fatalf("error = %v, want wire code %d", err, appwire.CodeUnavailable)
+	}
+}
+
+// TestLoadSessionJobOutputPageServesOwnerLogDespiteContradictoryTerminalTotal
+// pins which log a terminal byte count describes. The selected record claims an
+// owner the job ID contradicts and a byte total from that other job's log; the
+// read deliberately discards its explicit path and serves the default log under
+// the validated owner. The total check must follow the log being read: enforcing
+// the discarded record's count would reject bytes that are this job's own.
+func TestLoadSessionJobOutputPageServesOwnerLogDespiteContradictoryTerminalTotal(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	ancestorSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 19, 17, 0, 0, 0, time.UTC)
+	ended := started.Add(9 * time.Second)
+	foreignPath := filepath.Join(t.TempDir(), "foreign.log")
+
+	// The ancestor's row names itself as owner, which the job ID contradicts,
+	// carries the foreign log's explicit path, and finishes with that log's
+	// byte count.
+	ancestorStore := openJobJournal(t, jobsDir(stateDir, ancestorSession))
+	appendJobEvent(t, ancestorStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: ancestorSession, VisibleToSession: ancestorSession,
+		StartedAt: &started, OutputPath: foreignPath,
+	})
+	appendJobEvent(t, ancestorStore, jobstore.Event{
+		Kind: jobstore.EventJobFinished, TS: ended, JobID: jobID,
+		Status: jobstore.StatusCompleted, OutputBytes: 999, EndedAt: &ended, TerminalGen: "gen_foreign",
+	})
+	closeJobJournal(t, ancestorStore)
+
+	// The owner's default log, which is this job's own output.
+	const ownerOutput = "owner output"
+	ownerLogDir := filepath.Join(jobsDir(stateDir, ownerSession), "jobs")
+	if err := os.MkdirAll(ownerLogDir, 0o755); err != nil {
+		t.Fatalf("create owner log dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(ownerLogDir, jobID+".log"), []byte(ownerOutput), 0o644); err != nil {
+		t.Fatalf("write owner log: %v", err)
+	}
+
+	page, found, err := LoadSessionJobOutputPage(stateDir, ancestorSession, jobID, nil, 0)
+	if err != nil {
+		t.Fatalf("LoadSessionJobOutputPage: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the owner's default log")
+	}
+	if page.Data != ownerOutput || page.TotalBytes != int64(len(ownerOutput)) {
+		t.Fatalf("page = %+v, want %q at %d bytes: a contradicting record's total describes a log this read never opens",
+			page, ownerOutput, len(ownerOutput))
+	}
+}
+
+// TestLoadSessionJobGetPrefersRowThatEstablishesStateOnAuthorityTie pins the
+// authority tie between two rows that are both non-authoritative. The ancestor
+// holds only a notification, which folds a row for the job because the job was
+// NAMED, not because anyone said what it did. The owner's journal holds a
+// contradictory start — so neither row is authoritative — and the only decoded
+// finish. Between two equally unauthoritative rows the settled one answers:
+// keeping the earlier statusless row would discard the only statement of how
+// the job ended.
+func TestLoadSessionJobGetPrefersRowThatEstablishesStateOnAuthorityTie(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	ancestorSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 19, 18, 0, 0, 0, time.UTC)
+	ended := started.Add(21 * time.Second)
+	exit := 8
+
+	// The ancestor's journal names the job only through a notification.
+	writeJobJournalLines(t, jobsDir(stateDir, ancestorSession),
+		`{"kind":"job_notification_pending","seq":1,"ts":"`+started.Format(time.RFC3339)+
+			`","job_id":"`+jobID+`","owner_session_id":"`+ownerSession+`"}`+"\n",
+	)
+
+	// The owner's journal holds a start claiming the ANCESTOR as owner, which
+	// the job ID contradicts, and the decoded finish.
+	ownerStore := openJobJournal(t, jobsDir(stateDir, ownerSession))
+	appendJobEvent(t, ownerStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: ancestorSession, VisibleToSession: ownerSession,
+		StartedAt: &started,
+	})
+	appendJobEvent(t, ownerStore, jobstore.Event{
+		Kind: jobstore.EventJobFinished, TS: ended, JobID: jobID,
+		Status: jobstore.StatusCompleted, ExitCode: &exit, EndedAt: &ended, TerminalGen: "gen_owner",
+	})
+	closeJobJournal(t, ownerStore)
+
+	job, found, err := LoadSessionJobGet(stateDir, ancestorSession, jobID)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the owner journal's decoded finish")
+	}
+	if job.Status != string(jobstore.StatusCompleted) {
+		t.Fatalf("status = %q, want %q: a statusless notification states nothing, and the owner's finish is the only settled row",
+			job.Status, jobstore.StatusCompleted)
+	}
+	if job.ExitCode == nil || *job.ExitCode != exit {
+		t.Fatalf("exitCode = %v, want %d from the owner journal's finish", job.ExitCode, exit)
+	}
+	if job.OwnerSessionID != ownerSession {
+		t.Fatalf("ownerSessionID = %q, want the encoded owner %q", job.OwnerSessionID, ownerSession)
+	}
+}
+
+// TestRetainedJobReadOutranksOnAuthorityTie pins the tie-break as a rule, so
+// the behavior above cannot pass by accident of one fixture. Equal authority
+// keeps the row already held unless the incoming row is the only one that
+// establishes state; a read that finds nothing never wins.
+func TestRetainedJobReadOutranksOnAuthorityTie(t *testing.T) {
+	t.Parallel()
+	running := func(command string) sessionJobRecordRead {
+		return sessionJobRecordRead{
+			record: &jobstore.JobRecord{JobID: "job_x", Status: jobstore.StatusRunning, Command: command},
+			found:  true,
+		}
+	}
+	terminal := sessionJobRecordRead{
+		record: &jobstore.JobRecord{JobID: "job_x", Status: jobstore.StatusCompleted},
+		found:  true,
+	}
+	statusless := sessionJobRecordRead{
+		record: &jobstore.JobRecord{JobID: "job_x"},
+		found:  true,
+	}
+	missing := sessionJobRecordRead{}
+
+	if retainedJobReadOutranks(false, running("kept"), false, running("incoming")) {
+		t.Fatal("equal authority and equal evidence replaced the row already held: the tie keeps the scoped copy")
+	}
+	if !retainedJobReadOutranks(false, statusless, false, terminal) {
+		t.Fatal("a settled incoming row lost the tie to a statusless one, discarding the only statement of how the job ended")
+	}
+	if retainedJobReadOutranks(false, terminal, false, running("incoming")) {
+		t.Fatal("an unestablished incoming row displaced a settled one on a tie")
+	}
+	if retainedJobReadOutranks(true, running("owner"), false, terminal) {
+		t.Fatal("a non-owner row displaced the owner's row: authority is consulted before evidence")
+	}
+	if !retainedJobReadOutranks(false, missing, true, running("owner")) {
+		t.Fatal("the owner's row lost to an absent one")
+	}
+}
+
+// TestLoadSessionJobGetWithFenceConsultsTheCallback pins the callback half of
+// the deletion fence. A hub's in-memory deletion store knows about a deletion
+// that has not yet left a tombstone on disk, so the reader takes the answer
+// from the caller as well as from the durable marker.
+func TestLoadSessionJobGetWithFenceConsultsTheCallback(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	ancestorSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 19, 20, 0, 0, 0, time.UTC)
+	ended := started.Add(11 * time.Second)
+	exit := 2
+
+	ancestorStore := openJobJournal(t, jobsDir(stateDir, ancestorSession))
+	appendJobEvent(t, ancestorStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: ownerSession, VisibleToSession: ancestorSession,
+		StartedAt: &started,
+	})
+	closeJobJournal(t, ancestorStore)
+
+	ownerStore := openJobJournal(t, jobsDir(stateDir, ownerSession))
+	appendJobEvent(t, ownerStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: ownerSession, VisibleToSession: ownerSession,
+		StartedAt: &started,
+	})
+	appendJobEvent(t, ownerStore, jobstore.Event{
+		Kind: jobstore.EventJobFinished, TS: ended, JobID: jobID,
+		Status: jobstore.StatusCompleted, ExitCode: &exit, EndedAt: &ended, TerminalGen: "gen_owner",
+	})
+	closeJobJournal(t, ownerStore)
+
+	ownerLogDir := filepath.Join(jobsDir(stateDir, ownerSession), "jobs")
+	if err := os.MkdirAll(ownerLogDir, 0o755); err != nil {
+		t.Fatalf("create owner log dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(ownerLogDir, jobID+".log"), []byte("fenced bytes"), 0o644); err != nil {
+		t.Fatalf("write owner log: %v", err)
+	}
+
+	// No tombstone on disk: only the callback knows the owner is going away.
+	var consulted []string
+	fence := func(sessionID string) bool {
+		consulted = append(consulted, sessionID)
+		return sessionID == ownerSession
+	}
+
+	job, found, err := LoadSessionJobGetWithFence(stateDir, ancestorSession, jobID, fence)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGetWithFence: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the ancestor's forwarded copy")
+	}
+	if job.Status != string(jobstore.StatusRunning) {
+		t.Fatalf("status = %q, want %q: a callback-fenced owner's journal is not this read's to open",
+			job.Status, jobstore.StatusRunning)
+	}
+	if !slices.Contains(consulted, ownerSession) {
+		t.Fatalf("fence consulted %v, want the resolved owner %q", consulted, ownerSession)
+	}
+
+	page, pageFound, pageErr := LoadSessionJobOutputPageWithFence(stateDir, ancestorSession, jobID, nil, 0, fence)
+	if pageErr != nil {
+		t.Fatalf("LoadSessionJobOutputPageWithFence: %v", pageErr)
+	}
+	if pageFound {
+		t.Fatalf("found = true (page %+v), want false: the log belongs to a fenced owner", page)
+	}
+}
+
+// TestOwnerSessionFencedPrecedence pins the predicate's own order: an empty
+// session is never fenced (there is nothing to look up), the callback answers
+// before the disk is consulted, and the durable tombstone answers when no
+// callback was supplied.
+func TestOwnerSessionFencedPrecedence(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	ownerSession := identifier.MustNewSessionID()
+	writeSessionTombstone(t, stateDir, ownerSession)
+
+	if ownerSessionFenced(stateDir, "", func(string) bool { return true }) {
+		t.Fatal("an empty session id was fenced: there is no owner to resolve")
+	}
+	if !ownerSessionFenced(stateDir, ownerSession, nil) {
+		t.Fatal("the tombstoned owner was not fenced: the durable marker outlives the session")
+	}
+	if ownerSessionFenced(stateDir, identifier.MustNewSessionID(), nil) {
+		t.Fatal("a session with no tombstone was fenced by a nil callback")
+	}
+	// The callback is consulted even when no tombstone exists, because a
+	// deletion in flight is known to the store before the marker lands.
+	if !ownerSessionFenced(stateDir, identifier.MustNewSessionID(), func(string) bool { return true }) {
+		t.Fatal("the callback's answer was ignored when no tombstone existed")
 	}
 }

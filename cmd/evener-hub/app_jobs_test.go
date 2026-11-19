@@ -789,6 +789,106 @@ func TestHubJobsListCorruptJobsLogReturnsErrorNotEmptySuccess(t *testing.T) {
 	}
 }
 
+// writeRawJobJournal writes one session's jobs.jsonl from explicit event maps,
+// assigning seq in append order as a real store would. It exists for fixtures
+// whose events name a session other than the one whose journal holds them.
+func writeRawJobJournal(t *testing.T, stateDir, sessionID string, events ...map[string]any) {
+	t.Helper()
+	dir := filepath.Join(stateDir, "sessions", sessionID)
+	if err := os.MkdirAll(filepath.Join(dir, "jobs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lines := make([]string, 0, len(events))
+	for i, event := range events {
+		event["seq"] = i + 1
+		b, err := json.Marshal(event)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines = append(lines, string(b))
+	}
+	if err := os.WriteFile(filepath.Join(dir, "jobs.jsonl"), []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestHubJobsPastReadsFenceADeletedOwner proves the hub hands its deletion
+// store to the past-job readers as an owner fence. The past session asked about
+// is intact, while the session the job ID encodes is durably deleted — the
+// shape a client reaches by holding an ancestor's ref after a descendant went
+// away. Without the fence the read would open the deleted session's journal and
+// serve the finish it never forwarded; with it the ancestor's own copy answers.
+func TestHubJobsPastReadsFenceADeletedOwner(t *testing.T) {
+	cfg, ancestorSession, stateDir := seedPastSessionWithJobs(t, nil)
+	ownerSession, err := identifier.NewSessionID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Unix(1700000000, 0).UTC()
+	ended := started.Add(20 * time.Second)
+
+	writeRawJobJournal(t, stateDir, ancestorSession, map[string]any{
+		"kind": "job_started", "ts": started.Format(time.RFC3339), "job_id": jobID,
+		"type": "shell", "status": "running", "command": "make forwarded",
+		"owner_session_id": ownerSession, "visible_to_session_id": ancestorSession,
+		"started_at": started.Format(time.RFC3339),
+	})
+	// The deleted owner's journal holds the finish the ancestor never forwarded.
+	writeRawJobJournal(t, stateDir, ownerSession,
+		map[string]any{
+			"kind": "job_started", "ts": started.Format(time.RFC3339), "job_id": jobID,
+			"type": "shell", "status": "running",
+			"owner_session_id": ownerSession, "visible_to_session_id": ownerSession,
+			"started_at": started.Format(time.RFC3339),
+		},
+		map[string]any{
+			"kind": "job_finished", "ts": ended.Format(time.RFC3339), "job_id": jobID,
+			"status": "command_exited_nonzero", "exit_code": 3,
+			"ended_at": ended.Format(time.RFC3339), "terminal_generation": "gen_owner",
+		},
+	)
+	ownerLogDir := filepath.Join(stateDir, "sessions", ownerSession, "jobs")
+	if err := os.MkdirAll(ownerLogDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ownerLogDir, jobID+".log"), []byte("deleted owner bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := hubcore.NewDeletionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.BeginSession("project-jobs-0000000000", hubcore.DeletionTarget{
+		Ref: "local:" + ownerSession, ThreadID: ownerSession,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg.DeletionStore = store
+
+	sources := newExitedLocalRegistry()
+	resp, err := hubJobsGet(context.Background(), cfg, sources, appwire.JobsGetParams{Ref: "local:" + ancestorSession, JobID: jobID})
+	if err != nil {
+		t.Fatalf("hubJobsGet: %v", err)
+	}
+	if resp.Data.Status != "running" {
+		t.Fatalf("status = %q, want %q from the ancestor's forwarded copy: the deleted owner's journal is not this read's to open",
+			resp.Data.Status, "running")
+	}
+	if resp.Data.ExitCode != nil {
+		t.Fatalf("exitCode = %v, want nil: the finish belongs to the deleted owner", *resp.Data.ExitCode)
+	}
+
+	// The fenced owner's log is not served through its ancestor's ref, so the
+	// hub reports the job as unknown under that ref rather than handing out a
+	// deleted session's bytes.
+	_, err = hubJobsOutput(context.Background(), cfg, sources, appwire.JobsOutputParams{
+		Ref: "local:" + ancestorSession, JobID: jobID, MaxBytes: 4,
+	})
+	requireWireError(t, err, appwire.CodeInvalidParams)
+}
+
 // dispatchHubJobsRPC drives one request through the hub app server's real RPC
 // router (app_rpc.go registerMiscHandlers) instead of calling hubJobsList/
 // hubJobsOutput directly: registration, HandleTyped's params decode, the
