@@ -310,9 +310,27 @@ test("hydrate carries the provider the snapshot names apart from the bare model 
   expect(named.modelProfile).toBe("anthropic");
 });
 
+test("hydrate carries the provider even when the model field begins with it", () => {
+  // The producer names the instance apart from the raw model id, and the id
+  // may itself begin with the instance: the bundled catalog lists OpenRouter's
+  // Auto Router as "openrouter/auto" on the "openrouter" instance. The
+  // catalog identity is therefore "openrouter/openrouter/auto", so the
+  // profile has to ride along for the client to build it.
+  const auto = testHydrate({
+    modelProvider: "openrouter/auto",
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, profile: "openrouter" },
+  });
+  expect(auto.modelProvider).toBe("openrouter/auto");
+  expect(auto.model).toBe("openrouter/auto");
+  expect(auto.modelProfile).toBe("openrouter");
+});
+
 test("hydrate carries no separate provider when the model field already names it whole", () => {
+  // A genuinely prequalified snapshot names the whole identity in its one
+  // model field and reports no profile beside it.
   const whole = testHydrate({
-    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, profile: "anthropic" },
+    modelProvider: "anthropic/claude-sonnet-4-5",
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 } },
   });
   expect(whole.modelProvider).toBe("anthropic/claude-sonnet-4-5");
   expect(whole.modelProfile).toBeUndefined();
@@ -323,8 +341,7 @@ test("hydrate carries no separate provider when the model field already names it
 // "openrouter". Reading the slash as "the model field already names the whole
 // identifier" dropped the profile, so the client could not build the catalog
 // identity "openrouter/anthropic/claude-opus-5" and the running row drew
-// unselected. Only the profile's own prefix says the field is already
-// qualified.
+// unselected.
 test("hydrate carries the provider for a model id that contains a slash", () => {
   const routed = testHydrate({
     modelProvider: "anthropic/claude-opus-5",
@@ -333,19 +350,6 @@ test("hydrate carries the provider for a model id that contains a slash", () => 
   expect(routed.modelProvider).toBe("anthropic/claude-opus-5");
   expect(routed.model).toBe("anthropic/claude-opus-5");
   expect(routed.modelProfile).toBe("openrouter");
-});
-
-test("hydrate drops the provider when the model field already begins with it", () => {
-  // A snapshot that already names the whole identifier carries no second
-  // half. A model id's own slash is not that proof, but the profile's prefix
-  // is: joining it again would produce
-  // "openrouter/openrouter/anthropic/claude-opus-5".
-  const qualified = testHydrate({
-    modelProvider: "openrouter/anthropic/claude-opus-5",
-    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, profile: "openrouter" },
-  });
-  expect(qualified.modelProvider).toBe("openrouter/anthropic/claude-opus-5");
-  expect(qualified.modelProfile).toBeUndefined();
 });
 
 test("hydrate carries no provider when the daemon reports no profile", () => {

@@ -117,11 +117,14 @@ export function effortName(level: string): string {
  * meant as a no-op would send a second setter.
  *
  * The model id may carry a slash of its own: an OpenRouter session runs
- * "anthropic/claude-opus-5". A slash is therefore no proof that the identity
- * is already whole. What decides it is the explicit provider named apart from
- * the id - the snapshot's profile, or the live update's modelProvider - and
- * the identity stays unjoined only when that provider is absent or the id
- * already begins with it.
+ * "anthropic/claude-opus-5". The id may even begin with the provider's own
+ * name: the catalog lists that instance's Auto Router as "openrouter/auto" on
+ * the "openrouter" instance, so its identity is "openrouter/openrouter/auto".
+ * A slash in the id is therefore no proof that the identity is already whole.
+ * What decides it is the explicit provider named apart from the id - the
+ * snapshot's profile, or the live update's modelProvider - and when one is
+ * present the identity is always "provider/model". The id stands alone only
+ * when no provider is named beside it.
  */
 export function qualifiedModelIdentity(session: Pick<ThreadModel, "modelProvider" | "model" | "modelProfile">): string {
 	const model = session.model || session.modelProvider;
@@ -131,7 +134,7 @@ export function qualifiedModelIdentity(session: Pick<ThreadModel, "modelProvider
 	// provider to add.
 	const provider = session.modelProfile || (session.modelProvider !== model ? session.modelProvider : "");
 	if (provider === "") return model;
-	return model.startsWith(`${provider}/`) ? model : `${provider}/${model}`;
+	return `${provider}/${model}`;
 }
 
 /** A model as the catalog names it (a model is called one way everywhere

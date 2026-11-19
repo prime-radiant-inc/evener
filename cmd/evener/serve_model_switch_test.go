@@ -767,17 +767,21 @@ func TestServeModelSwitch_ExplicitProviderLeavesOpenRouterForAnthropic(t *testin
 	}
 	// The next turn has to run on the instance the reader picked, not on the
 	// one whose namespaced id happened to match the model.
-	if _, err := client.TurnStart(ctx, appwire.TurnStartParams{
+	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref, Subscribe: true}); err != nil {
+		t.Fatalf("ThreadRead subscribe: %v", err)
+	}
+	frames := collectServeModelSwitchFrames(client, ref)
+	turn, err := client.TurnStart(ctx, appwire.TurnStartParams{
 		ClientMutationID:   "explicit-provider-turn",
 		ExpectedInstanceID: after.Thread.Evener.InstanceID,
 		Ref:                ref,
 		Input:              []appwire.InputItem{{Type: "text", Text: "run on the picked instance"}},
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("TurnStart: %v", err)
 	}
-	deadline := time.Now().Add(30 * time.Second)
-	for len(anthropic.Requests()) == 0 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
+	if err := waitServeTurn(ctx, frames.turnDone, turn.Turn.ID); err != nil {
+		t.Fatalf("turn completion: %v", err)
 	}
 	requests := anthropic.Requests()
 	if len(requests) == 0 {

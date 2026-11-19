@@ -240,13 +240,13 @@ describe("the model's one qualified identity", () => {
 		// A live thread/model/changed: modelProvider is the provider instance and
 		// the profile is cleared.
 		["a live model change", "openrouter", "anthropic/claude-opus-5", undefined],
-		// Already qualified, with or without the snapshot's profile: joining a
-		// provider the id already begins with would double it.
+		// No provider instance beside the id: a genuinely prequalified snapshot
+		// names the whole identity in its one field, so nothing is joined.
 		[
-			"an already-qualified snapshot",
+			"a snapshot with no separate provider",
 			"openrouter/anthropic/claude-opus-5",
 			"openrouter/anthropic/claude-opus-5",
-			"openrouter",
+			undefined,
 		],
 	])(
 		"reads %s as openrouter/anthropic/claude-opus-5 when that is what runs",
@@ -254,6 +254,18 @@ describe("the model's one qualified identity", () => {
 			expect(qualifiedModelIdentity({ modelProvider, model, modelProfile })).toBe("openrouter/anthropic/claude-opus-5");
 		},
 	);
+
+	// The producer names the instance apart from the raw model id, and the id
+	// may itself begin with the instance: the bundled catalog lists OpenRouter's
+	// Auto Router as "openrouter/auto" on the "openrouter" instance. Its
+	// catalog identity is therefore "openrouter/openrouter/auto", and an
+	// identity that kept the id as-is would leave the running row unselected.
+	it.each([
+		["a snapshot", "openrouter/auto", "openrouter/auto", "openrouter"],
+		["a live model change", "openrouter", "openrouter/auto", undefined],
+	])("reads %s of openrouter/auto as openrouter/openrouter/auto", (_shape, modelProvider, model, modelProfile) => {
+		expect(qualifiedModelIdentity({ modelProvider, model, modelProfile })).toBe("openrouter/openrouter/auto");
+	});
 
 	it("reads a direct Anthropic model as anthropic/claude-opus-5", () => {
 		expect(

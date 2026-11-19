@@ -539,22 +539,17 @@ export function threadFields(resp: ThreadReadResponse, ref: string, now: number)
   const imageSessionId = wireImageSessionId(thread);
   const servingFacts = historyServingFacts(resp);
   // The provider instance a snapshot names for its running model, or
-  // undefined when the daemon reports none or the model field already begins
-  // with exactly this instance (so the profile adds nothing, and joining it
-  // again would double it).
+  // undefined when the daemon reports none.
   //
-  // A model id may carry a slash of its own: an OpenRouter session runs
-  // "anthropic/claude-opus-5" with the profile "openrouter". Reading any slash
-  // as "the model field names the whole identifier" dropped that profile and
-  // left the running model unaddressable, so the picker marked no row and a
-  // tap on the direct provider's row compared against the wrong identity.
-  // What decides it is the profile's own prefix, not a slash somewhere in the
-  // id.
-  const namedProfile = thread.evener.profile ?? "";
-  const profile =
-    namedProfile !== "" && thread.modelProvider !== "" && !thread.modelProvider.startsWith(`${namedProfile}/`)
-      ? namedProfile
-      : undefined;
+  // The producer names the instance apart from the raw model id, and the id
+  // may itself carry a slash or even begin with the instance's name: an
+  // OpenRouter session runs "anthropic/claude-opus-5", and the bundled catalog
+  // lists that instance's Auto Router as "openrouter/auto", whose catalog
+  // identity is "openrouter/openrouter/auto". Neither a slash nor a matching
+  // prefix is proof that the field already names the whole identifier, so the
+  // profile rides along whenever the snapshot names one; joining it again
+  // only on a prefix is what left those models unaddressable.
+  const profile = thread.evener.profile && thread.modelProvider ? thread.evener.profile : undefined;
   const fields: Omit<ThreadModel, "turns"> = {
     ref,
     ...(servingFacts ? { servingFacts } : {}),
@@ -582,15 +577,13 @@ export function threadFields(resp: ThreadReadResponse, ref: string, now: number)
     model: thread.modelProvider,
     // The provider instance the same snapshot names for that model
     // (Thread.evener.profile). The two model fields above are the wire's one
-    // overloaded field; this is what turns a bare model id into the qualified
+    // overloaded field; this is what turns the raw model id into the qualified
     // "provider/model" a catalog entry and a pick use, so a picker's selection,
     // a pick's acknowledgement and a readback compare one identity rather than
     // a bare id against a qualified one. Snapshot-only: thread/model/changed
-    // names its own provider and clears it. Set only when the snapshot names a
-    // provider the model field does not already begin with, like the fields
-    // below: a snapshot that names the model whole has no second half to
-    // carry, and adding an absent key would rewrite every stored thread's
-    // shape for nothing.
+    // names its own provider and clears it. Absent when the daemon reports no
+    // profile: adding an absent key would rewrite every stored thread's shape
+    // for nothing.
     ...(profile ? { modelProfile: profile } : {}),
     reasoningEffort: thread.evener.reasoningEffort,
     defaultReasoningEffort: thread.evener.defaultReasoningEffort,

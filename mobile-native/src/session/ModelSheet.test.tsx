@@ -273,13 +273,9 @@ describe("choosing a model (spec 8.5)", () => {
 	});
 
 	it("marks the running model's row when the snapshot already names it whole", () => {
-		provide(
-			conversation({
-				modelProvider: "anthropic/claude-haiku-5",
-				model: "anthropic/claude-haiku-5",
-				modelProfile: "anthropic",
-			}),
-		);
+		// A genuinely prequalified snapshot: the one model field names the whole
+		// identity and no provider instance rides beside it.
+		provide(conversation({ modelProvider: "anthropic/claude-haiku-5", model: "anthropic/claude-haiku-5" }));
 		const tree = sheet();
 		expect(pressable(tree, "Claude Haiku 5")?.props.accessibilityState).toMatchObject({ selected: true });
 	});
@@ -332,6 +328,31 @@ describe("choosing a model (spec 8.5)", () => {
 		expect(calls).toEqual(["changeModel:anthropic/claude-opus-5", "goBack"]);
 		expect(host.toast).toHaveBeenCalledOnce();
 	});
+
+	// The bundled catalog lists OpenRouter's Auto Router as the raw model id
+	// "openrouter/auto" on the "openrouter" instance, so its catalog identity
+	// is "openrouter/openrouter/auto". Reading the raw id as the whole identity
+	// would leave the running row unselected, and a tap on it - meant as a
+	// no-op - would send a setter that resumes a stopped session.
+	const AUTO_ROUTER_CATALOG: ModelListResponse = {
+		data: [{ provider: "openrouter", model: "openrouter/auto", displayName: "Auto Router" }],
+	};
+
+	it.each([
+		["snapshot", { modelProvider: "openrouter/auto", model: "openrouter/auto", modelProfile: "openrouter" }],
+		["live update", { modelProvider: "openrouter", model: "openrouter/auto", modelProfile: undefined }],
+	] as const)(
+		"closes without a write when the running Auto Router row is tapped from the %s wire shape",
+		async (_shape, running) => {
+			const { calls, controls } = provide(conversation(running), { catalog: AUTO_ROUTER_CATALOG });
+			const tree = sheet();
+			expect(pressable(tree, "Auto Router")?.props.accessibilityState).toMatchObject({ selected: true });
+			act(() => pressable(tree, "Auto Router")?.props.onPress());
+			await settle();
+			expect(controls.changeModel).not.toHaveBeenCalled();
+			expect(calls).toEqual(["goBack"]);
+		},
+	);
 
 	it("changes the model, closes, and confirms once", async () => {
 		const { calls, controls, host } = provide(conversation());
