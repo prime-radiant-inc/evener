@@ -103,6 +103,13 @@ func extractResponsesFromSSE(body []byte, requestedModel string) (llm.Response, 
 			typ = ev.Event
 		}
 		switch typ {
+		case "response.output_text.delta":
+			acc.recordTextDelta(payload)
+		case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
+			delta, _ := payload["delta"].(string)
+			acc.reasoning.WriteString(delta)
+		case "response.reasoning_summary_part.added", "response.reasoning_part.added":
+			acc.startReasoningPart()
 		case "response.output_item.added":
 			if item, ok := payload["item"].(map[string]any); ok {
 				acc.HandleOutputItemAdded(item)
@@ -131,7 +138,7 @@ func extractResponsesFromSSE(body []byte, requestedModel string) (llm.Response, 
 	}
 
 	r := fromResponses(terminal, requestedModel, terminalRaw)
-	settleResponsesTerminalOutput(&r, terminal, acc.Output(), acc.RawOutput())
+	settleResponsesTerminalOutput(&r, terminal, acc)
 	return r, nil
 }
 

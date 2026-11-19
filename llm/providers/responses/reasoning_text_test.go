@@ -3,6 +3,7 @@ package responses
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -104,5 +105,78 @@ func TestStreamTerminalTypedReasoningPreservesAccumulatedAnswer(t *testing.T) {
 	}
 	if got := final.ReasoningText(); got != "summary\n\nstreamed only" {
 		t.Fatalf("settled display reasoning = %q, want both streamed parts", got)
+	}
+}
+
+func TestStreamSettlesOutputWhenTerminalReasoningHasNoReplayableContent(t *testing.T) {
+	t.Parallel()
+	events := []string{
+		`{"type":"response.reasoning_summary_text.delta","delta":"streamed thought"}`,
+		`{"type":"response.output_item.done","item":{"type":"reasoning","id":"rs_streamed","encrypted_content":"opaque continuation","summary":[{"type":"summary_text","text":"settled summary"}]}}`,
+		`{"type":"response.output_text.delta","output_index":1,"delta":"comm"}`,
+		`{"type":"response.output_text.delta","output_index":1,"item_id":"msg_commentary","delta":"entary "}`,
+		`{"type":"response.output_item.done","item":{"type":"message","id":"msg_commentary","phase":"commentary","content":[{"type":"output_text","text":"commentary "}]}}`,
+		`{"type":"response.output_text.delta","delta":"detail "}`,
+		`{"type":"response.output_item.done","item":{"type":"message","phase":"commentary","content":[]}}`,
+		`{"type":"response.output_text.delta","delta":"draft "}`,
+		`{"type":"response.function_call_arguments.delta","call_id":"call_unfinished","name":"probe","delta":"{}"}`,
+		`{"type":"response.output_item.done","item":{"type":"message","content":[{"type":"output_text","text":"draft "}]}}`,
+		`{"type":"response.output_text.delta","item_id":"msg_answer","delta":"answer"}`,
+		`{"type":"response.output_item.done","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"lookup","arguments":"{ \"n\" : 1 }"}}`,
+	}
+	const summaryOutput = `[{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"summary"}]}]`
+	for _, tc := range []struct{ event, status, finish, output string }{
+		{"response.completed", "completed", llm.FinishReasonToolCalls, summaryOutput},
+		{"response.completed", "incomplete", llm.FinishReasonLength, summaryOutput},
+		{"response.incomplete", "incomplete", llm.FinishReasonLength, summaryOutput},
+		{"response.incomplete", "incomplete", llm.FinishReasonLength, `[]`},
+	} {
+		events := append(events, `{"type":"`+tc.event+`","response":{"id":"resp_1","status":"`+tc.status+`","output":`+tc.output+`}}`)
+		body := "data: " + strings.Join(events, "\n\ndata: ") + "\n\n"
+		if tc.status == "completed" {
+			body = strings.NewReplacer(`"output_index":1,`, "", `"item_id":"msg_commentary",`, "", `"id":"msg_commentary",`, "", `"item_id":"msg_answer",`, "").Replace(body)
+		}
+		recorded, err := ExtractRecordedResponse([]byte(body), "gpt-5.5")
+		if err != nil {
+			t.Error(err)
+		}
+		streamed, _ := responsesEventsFromSSE(t, body)
+		if len(streamed) == 0 || streamed[len(streamed)-1].Type != llm.StreamEventFinish {
+			t.Fatalf("stream did not emit a finish event: %+v", streamed)
+		}
+		for _, response := range []*llm.Response{streamed[len(streamed)-1].Response, &recorded} {
+			if response == nil || response.Text() != "commentary detail draft answer" || response.ReasoningText() != "streamed thought" || response.Finish.Reason != tc.finish || (tc.status == "incomplete" && response.Finish.Raw != tc.status) {
+				t.Errorf("settled response = %+v, want streamed answer and finish %q", response, tc.finish)
+				continue
+			}
+			if calls := response.ToolCalls(); len(calls) != 1 || calls[0].ID != "call_1" || string(calls[0].Arguments) != `{ "n" : 1 }` {
+				t.Errorf("settled tool calls = %+v, want call_1 with original arguments", calls)
+			}
+			i := 1
+			if tc.output == summaryOutput {
+				i++
+			}
+			if th := response.Message.Content[i].Thinking; th == nil || th.ID != "rs_streamed" || th.EncryptedContent != "opaque continuation" || len(th.Summary) != 1 || th.Summary[0] != "settled summary" {
+				t.Errorf("settled response omitted the completed encrypted reasoning")
+			}
+		}
+		if tc.status == "completed" && !t.Failed() {
+			srv, captured := server(t, 200, responseJSON)
+			req := llm.Request{Model: "gpt-5.5", Messages: []llm.Message{llm.User("hi"), recorded.Message, llm.ToolResultNamed("call_1", "lookup", "ok", false)}}
+			if _, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), req, liveRes(srv, openaiCaps)); err != nil {
+				t.Fatal(err)
+			}
+			items, _ := captured.body["input"].([]any)
+			want := []any{
+				map[string]any{"type": "reasoning", "id": "rs_streamed", "encrypted_content": "opaque continuation", "summary": []any{map[string]any{"type": "summary_text", "text": "settled summary"}}},
+				map[string]any{"type": "message", "role": "assistant", "phase": "commentary", "content": []any{map[string]any{"type": "output_text", "text": "commentary "}, map[string]any{"type": "output_text", "text": "detail "}}},
+				map[string]any{"type": "message", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": "draft "}, map[string]any{"type": "output_text", "text": "answer"}}},
+				map[string]any{"type": "function_call", "call_id": "call_1", "name": "lookup", "arguments": `{ "n" : 1 }`},
+				map[string]any{"type": "function_call_output", "call_id": "call_1", "output": "ok"},
+			}
+			if len(items) != len(want)+1 || !reflect.DeepEqual(items[1:], want) {
+				t.Errorf("replayed input after user = %+v, want %+v", items, want)
+			}
+		}
 	}
 }

@@ -91,6 +91,7 @@ or absent call IDs remain separate even when they share an item ID. When the
 final output is empty, recovery keeps streamed completions in order, including
 calls whose ID came from an item ID. Live decoding and API-log recomputation
 apply the same rule.
+The same recovery applies when a terminal array has no usable content.
 
 An explicit incomplete response settles the output, including an empty result.
 If the adapter supplies no settled tool calls, streamed argument deltas remain partial.

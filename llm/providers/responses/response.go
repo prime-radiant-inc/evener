@@ -186,20 +186,27 @@ func responsesReasoningParts(raw any) []llm.ResponsesReasoningPart {
 // real items, those are synthesized in its place (observed on affected
 // sessions: the terminal payload carries no output even though earlier
 // response.output_item.done events in the same stream carried real content).
+// The fallback also applies to terminal output containing only replay metadata.
 // Shared by the live streaming decoder (decodeStream) and offline
 // recomputation so both apply the identical terminal-wins rule.
-func settleResponsesTerminalOutput(r *llm.Response, rawResp map[string]any, accumulatedOutput []any, accumulatedRawOutput []json.RawMessage) {
+func settleResponsesTerminalOutput(r *llm.Response, rawResp map[string]any, acc *responsesOutputAccumulator) {
 	terminalOutput, _ := rawResp["output"].([]any)
-	switch {
-	case len(terminalOutput) == 0 && len(accumulatedOutput) > 0:
-		// The terminal payload carries no output even though the stream's
-		// output_item.done events carried real content (observed on
-		// affected sessions). Synthesize the settled message from what the
-		// stream actually sent, reusing fromResponses' item-walk.
+	accumulatedOutput := acc.Output()
+	recoverText := len(r.Message.Content) == 0 && (len(terminalOutput) > 0 || r.OutputSettled)
+	if len(terminalOutput) == 0 && len(accumulatedOutput) > 0 || recoverText {
 		// Accumulated call IDs can be derived from item IDs, so repeated
 		// values do not establish that the provider issued one call.
-		r.Message.Content = responseContentFromOutputItemsRaw(accumulatedOutput, nil, accumulatedRawOutput, false)
-		retainFallbackReasoning(r)
+		r.Message.Content = acc.recoveredContent(recoverText)
+		if recoverText && acc.reasoning.Len() > 0 && !slices.ContainsFunc(r.Message.Content, func(p llm.ContentPart) bool {
+			return p.Kind == llm.ContentThinking && p.Thinking.Text != ""
+		}) {
+			r.Message.Content = slices.Insert(r.Message.Content, 0, llm.ContentPart{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: acc.reasoning.String()}})
+		}
+		if len(r.FallbackContent) > 0 && (r.Text() != "" || len(r.ToolCalls()) > 0) {
+			r.Message.Content = llm.MergeFallbackReasoning(r.Message.Content, r.FallbackContent)
+		} else if !recoverText {
+			retainFallbackReasoning(r)
+		}
 		if status, _ := rawResp["status"].(string); status != "incomplete" {
 			if len(r.ToolCalls()) > 0 {
 				r.Finish = llm.FinishReason{Reason: "tool_calls"}
@@ -207,7 +214,8 @@ func settleResponsesTerminalOutput(r *llm.Response, rawResp map[string]any, accu
 				r.Finish = llm.FinishReason{Reason: "stop"}
 			}
 		}
-	case len(terminalOutput) > 0 && len(accumulatedOutput) > 0:
+	}
+	if len(terminalOutput) > 0 && len(accumulatedOutput) > 0 {
 		// The stream accumulator holds only settled items.
 		count := len(terminalOutput)
 		for _, rawItem := range terminalOutput {
