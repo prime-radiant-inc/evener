@@ -25,6 +25,7 @@ import {
 } from "./testing/reducerTestKit";
 import {
   applyReadModel,
+  applyReadResponse,
   collectAuthoritativeMutationIds,
   hydrateThread,
   mergeOlderItemPage,
@@ -3439,7 +3440,7 @@ test("a wait's chip metadata survives the reset crossing", () => {
   let model = testHydrate({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } });
   model = applyNotification(
     model,
-    quotaRetry({ waitStartedAt: 2, resumesAt, turnId: "turn_1", model: "wait/model" }),
+    quotaRetry({ waitStartedAt: 2, resumesAt, turnId: "turn_1", model: "wait/model", groupElapsedMs: 47_000 }),
     2000,
   );
 
@@ -3460,7 +3461,137 @@ test("a wait's chip metadata survives the reset crossing", () => {
   expect(later.quotaResumesAt).toBe(new Date(resumesAt).toISOString());
   expect(later.quotaWaitStartedAt).toBe(2);
   expect(later.modelRetry?.model).toBe("wait/model");
+  // The elapsed sample rides the same survival: crossing the reset changes
+  // the countdown's promise, never the facts beside it — a fold that zeroed
+  // the elapsed at the crossing would strip the chip's second fact.
+  expect(later.modelRetry?.groupElapsedMs).toBe(47_000);
   expect(later.modelRetry?.receivedAt).toBe(2000);
+});
+
+// Stopping a turn mid-wait retires the wait whole: the stamp and deadline go
+// in the same status transition, and so does the positive-delay chip that
+// carried the wait's own facts — the old chip must not survive into the new
+// turn's liveness line. An ordinary retry's zero-delay progress state is
+// untouched: that chip is not a wait.
+test("a terminal status clears the ending turn's quota chip with its wait", () => {
+  const resumesAt = Date.parse("2026-11-07T14:30:00Z");
+  let model = testHydrate({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } });
+  model = applyNotification(
+    model,
+    quotaRetry({ waitStartedAt: 3, resumesAt, turnId: "turn_1", model: "wait/model" }),
+    2000,
+  );
+  expect(model.modelRetry?.model).toBe("wait/model");
+
+  const stopped = applyNotification(
+    model,
+    {
+      method: "thread/status/changed",
+      params: { threadId: "thr_t", ref: "ref_t", status: { type: "idle" }, endedTurnId: "turn_1" },
+    },
+    3000,
+  );
+  expect(stopped.quotaResumesAt).toBeUndefined();
+  expect(stopped.quotaWaitStartedAt).toBeUndefined();
+  expect(stopped.quotaWaitEndedStamp).toBe(3);
+  expect(stopped.modelRetry).toBeUndefined();
+});
+
+test("a terminal status keeps an ordinary retry's zero-delay progress state", () => {
+  let model = testHydrate({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } });
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        attempt: 2,
+        maxAttempts: 3,
+        delayMs: 0,
+        errorClass: "server_error",
+        groupElapsedMs: 10_000,
+        attemptCap: 3,
+      },
+    },
+    2000,
+  );
+  const stopped = applyNotification(
+    model,
+    {
+      method: "thread/status/changed",
+      params: { threadId: "thr_t", ref: "ref_t", status: { type: "idle" }, endedTurnId: "turn_1" },
+    },
+    3000,
+  );
+  expect(stopped.modelRetry?.delayMs).toBe(0);
+  expect(stopped.modelRetry?.errorClass).toBe("server_error");
+});
+
+// A legacy unstamped frame naming a DIFFERENT turn may not install its chip
+// over a held legacy wait: the stale chip would make the held turn's own wake
+// fail the ownership check and leave the countdown standing. Ownership is
+// checked before anything changes; on mismatch the held wait keeps chip and
+// deadline both.
+test("a legacy frame for a different turn leaves the held legacy wait alone", () => {
+  const resumesAt = Date.parse("2026-11-07T14:30:00Z");
+  let model = testHydrate({
+    status: { type: "active" },
+    evener: { activeTurnId: "turn_1", failure: { title: "Usage limit reached", resumesAt } },
+  });
+  // The held legacy wait: an unstamped start on turn_1.
+  model = applyNotification(model, quotaRetry({ turnId: "turn_1" }), 2000);
+  expect(model.quotaResumesAt).toBeDefined();
+
+  const otherTurn = applyNotification(model, quotaRetry({ turnId: "turn_9" }), 2100);
+  // The held wait's chip and deadline both survive the other turn's frame.
+  expect(otherTurn.modelRetry?.turnId).toBe("turn_1");
+  expect(otherTurn.quotaResumesAt).toBe(new Date(resumesAt).toISOString());
+
+  // And the held turn's own wake still clears the wait.
+  const woken = applyNotification(otherTurn, quotaRetry({ delayMs: 0, turnId: "turn_1" }), 2200);
+  expect(woken.quotaResumesAt).toBeUndefined();
+  expect(woken.modelRetry?.turnId).toBe("turn_1");
+});
+
+// A delegate's runtime can be cold-restored: the restored daemon mints wait
+// stamps from its own fresh sequence, so the new runtime's first wait can
+// compare LESS than the ended stamp the previous runtime left on the model.
+// Stamps order only waits the same runtime issued, and the read names the
+// runtime (EvenerThread.instanceId): a changed instance id voids the previous
+// runtime's stamps before any comparison, so the fresh wait installs. The
+// daemon-side fix — keeping allocation monotonic across restores — is
+// stages 0/1 territory; this is the client-side scoping.
+test("a changed runtime identity voids the previous runtime's wait stamps", () => {
+  const resumesAt = Date.parse("2026-11-07T14:30:00Z");
+  let model = testHydrate({
+    status: { type: "active" },
+    evener: { activeTurnId: "turn_1", instanceId: "inst_old" },
+  });
+  // The previous runtime's wait: started, woken, ended stamp 5 held.
+  model = applyNotification(model, quotaRetry({ waitStartedAt: 5, resumesAt, turnId: "turn_1" }), 2000);
+  model = applyNotification(model, quotaRetry({ delayMs: 0, waitStartedAt: 5, turnId: "turn_1" }), 3000);
+  expect(model.quotaWaitEndedStamp).toBe(5);
+
+  // The cold restore surfaces as a read: the addressed delegate is the same,
+  // the runtime behind it is new (instanceId changed) and holds no wait.
+  const restored = testThread({
+    status: { type: "active" },
+    evener: { activeTurnId: "turn_2", instanceId: "inst_new" },
+  });
+  const afterRead = applyReadResponse(model, { thread: restored }, 3500);
+  // The previous runtime's ended stamp died with its runtime.
+  expect(afterRead.quotaWaitEndedStamp).toBeUndefined();
+
+  // The restored runtime's first wait: stamp 1 again, a genuine start.
+  const restarted = applyNotification(
+    afterRead,
+    quotaRetry({ waitStartedAt: 1, resumesAt: resumesAt + 7_200_000, turnId: "turn_2" }),
+    4000,
+  );
+  expect(restarted.quotaWaitStartedAt).toBe(1);
+  expect(restarted.quotaResumesAt).toBe(new Date(resumesAt + 7_200_000).toISOString());
 });
 
 // Deleted: "modelRetry clears when its turn completes" and "modelRetry

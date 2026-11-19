@@ -359,24 +359,37 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
         modelRetry: heldChip,
         ...rest
       } = model;
-      // A replacement: an active frame naming a turn the model does not show
-      // running, with no idle between. The new turn publishes here and the
-      // replaced turn's wait retires as one unit — deadline, stamp, and the
-      // chip that named the replaced turn — never depending on whether the
-      // new turn announces a wait of its own.
+      // A wait ends with its turn — a terminal transition, or a replacement:
+      // an active frame naming a turn the model does not show running, with
+      // no idle between. The wait's whole record retires as one unit —
+      // deadline, stamp, and the chip that carried the wait's own facts —
+      // never depending on whether the new turn announces a wait of its own.
+      // An ordinary retry's chip is not a wait: the zero-delay progress state
+      // a terminal frame can follow survives, as it always has.
       const replacedTurn =
         status.type === "active" &&
         n.params.activeTurnId !== undefined &&
         model.runningTurnId !== undefined &&
         n.params.activeTurnId !== model.runningTurnId;
-      const replacedWaitChip =
-        replacedTurn &&
+      const waitEndsHere = status.type !== "active" || replacedTurn;
+      // The turn this terminal frame says it ended — its own endedTurnId —
+      // or, failing that, the running turn the model already shows. A wait
+      // whose chip names a different turn than the one ending is another
+      // turn's word and survives.
+      const endedTurnId = n.params.endedTurnId ?? (status.type === "active" ? undefined : model.runningTurnId);
+      const endedWaitChip =
+        waitEndsHere &&
         heldChip !== undefined &&
         heldChip.errorClass === "quota_exceeded" &&
-        (heldChip.turnId ?? model.runningTurnId) === model.runningTurnId;
+        // Only the wait's own chip (its start's positive delay): the wake's
+        // zero-delay chip is the retry's progress state, and progress is
+        // ordinary retry behavior that survives the boundary as it always has.
+        heldChip.delayMs > 0 &&
+        endedTurnId !== undefined &&
+        (heldChip.turnId ?? model.runningTurnId) === endedTurnId;
       return {
         ...(rest as M),
-        ...(heldChip !== undefined && !replacedWaitChip ? { modelRetry: heldChip } : {}),
+        ...(heldChip !== undefined && !endedWaitChip ? { modelRetry: heldChip } : {}),
         ...(n.params.activeTurnId ? { runningTurnId: n.params.activeTurnId } : {}),
         status,
         // The work-clock anchor (activeTurnStartedAt) has no live push to
@@ -409,7 +422,7 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
         // A wait ends with its turn: a non-active frame, or the replacement
         // above, records the held stamp as ended so a late frame or read
         // still naming the wait cannot restamp it.
-        ...(heldQuotaStamp !== undefined && (status.type !== "active" || replacedTurn)
+        ...(heldQuotaStamp !== undefined && waitEndsHere
           ? { quotaWaitEndedStamp: Math.max(model.quotaWaitEndedStamp ?? 0, heldQuotaStamp) }
           : {}),
         // The failure count is otherwise snapshot-only, so a client that
@@ -695,8 +708,17 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
       // a stamped wait. An unstamped start installs no deadline: a delay is
       // not an absolute time, and this client's clock is not the daemon's.
       if (heldStamp > 0) return model;
-      const ownsHeldTurn =
-        params.turnId === undefined || params.turnId === (model.modelRetry?.turnId ?? model.runningTurnId);
+      // Ownership first, before anything changes — but only where there is a
+      // wait to own. A legacy frame naming a different turn than the held
+      // legacy wait's own may not install its chip over that wait, or the
+      // stale chip would make the held turn's own wake fail this same check
+      // and leave the countdown standing. With no wait held, the frame is the
+      // first word about its turn and installs freely.
+      const heldLegacyWait = model.modelRetry !== undefined && model.modelRetry.errorClass === "quota_exceeded";
+      if (heldLegacyWait && params.turnId !== undefined) {
+        const ownsHeldTurn = params.turnId === (model.modelRetry?.turnId ?? model.runningTurnId);
+        if (!ownsHeldTurn) return model;
+      }
       // No lastFrameAt restamp on purpose — see ThreadModel.modelRetry. The
       // quiet/stall clock is measuring a real silence; this explains it rather
       // than resetting it.
@@ -704,7 +726,9 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
         ...model,
         modelRetry: chip,
       };
-      if (params.delayMs === 0 && ownsHeldTurn) {
+      // A zero-delay frame that reached here owns whatever wait the model
+      // held: the ownership guard above refused every other shape.
+      if (params.delayMs === 0) {
         const waitEnded: M = { ...next };
         delete waitEnded.quotaResumesAt;
         return waitEnded;

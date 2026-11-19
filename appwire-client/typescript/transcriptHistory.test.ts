@@ -1251,6 +1251,86 @@ test("a read still naming an ended wait's stamp does not resurrect it", () => {
   expect(after.quotaWaitEndedStamp).toBe(5);
 });
 
+// A mid-wait read refreshes the instant and keeps everything the live
+// announcement gave the chip — the read carries no chip metadata of its own,
+// so the model tag, elapsed sample, and receipt instant survive the refresh
+// (finding: the equal-stamp branch used to strip the chip whole).
+test("an equal-stamp read refreshes the deadline and keeps the live chip", () => {
+  const deadline = Date.parse("2026-11-07T14:30:00Z");
+  let model = testHydrate({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } });
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 0,
+        delayMs: 21_600_000,
+        errorClass: "quota_exceeded",
+        model: "wait/model",
+        groupElapsedMs: 42_000,
+        attemptCap: 0,
+        waitStartedAt: 21,
+        resumesAt: deadline,
+      },
+    },
+    1500,
+  );
+  expect(model.modelRetry?.model).toBe("wait/model");
+  expect(model.modelRetry?.groupElapsedMs).toBe(42_000);
+
+  const sameWait = testThread({
+    status: { type: "active" },
+    evener: {
+      activeTurnId: "turn_1",
+      failure: { title: "Usage limit reached", resumesAt: deadline + 1_000, waitStartedAt: 21 },
+    },
+  });
+  const after = applyReadResponse(model, { thread: sameWait }, 2000);
+
+  expect(after.quotaResumesAt).toBe(new Date(deadline + 1_000).toISOString());
+  expect(after.quotaWaitStartedAt).toBe(21);
+  // The chip and every field the live announcement set survive the refresh.
+  expect(after.modelRetry?.model).toBe("wait/model");
+  expect(after.modelRetry?.groupElapsedMs).toBe(42_000);
+  expect(after.modelRetry?.receivedAt).toBe(1500);
+});
+
+// An ordinary provider retry is not a quota wait: a read that carries no wait
+// facts must not retire it, whatever its error class. The wait reconciliation
+// decides only quota-wait state.
+test("a wait-free read keeps an ordinary provider retry", () => {
+  let model = testHydrate({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } });
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        attempt: 2,
+        maxAttempts: 3,
+        delayMs: 1_000,
+        errorClass: "rate_limit",
+        statusCode: 429,
+        groupElapsedMs: 10_000,
+        attemptCap: 3,
+      },
+    },
+    1500,
+  );
+  expect(model.modelRetry?.errorClass).toBe("rate_limit");
+
+  const resumed = testThread({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } });
+  const after = applyReadResponse(model, { thread: resumed }, 2000);
+  expect(after.modelRetry?.errorClass).toBe("rate_limit");
+  expect(after.modelRetry?.attempt).toBe(2);
+});
+
 // The daemon's retired-input list is the only durable evidence that a canceled
 // message will never reach history. A read snapshot must carry it, or the
 // client can never retire the row that message left behind.

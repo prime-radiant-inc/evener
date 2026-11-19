@@ -862,12 +862,18 @@ export class TranscriptRepository {
   /** Accept a complete wire read under its captured reader lifetime. */
   acceptRead(
     response: ThreadReadResponse,
-    request: { lifetime: number; readId: string; boundary: string; preserveEnded?: boolean },
+    request: {
+      lifetime: number;
+      readId: string;
+      boundary: string;
+      preserveEnded?: boolean;
+      postCutWaitStamps?: ReadonlySet<number>;
+    },
   ): boolean {
     if (this.#sealed || !this.#acceptsLifetime(request.lifetime) || !this.#matchesRead(response)) return false;
     const before = this.#model;
     let candidate = before
-      ? applyReadResponse(before, response, this.#now())
+      ? applyReadResponse(before, response, this.#now(), undefined, request.postCutWaitStamps)
       : (() => {
           const hydrated = hydrateThread(response, this.#binding.ref, this.#now());
           return response.changes

@@ -5734,3 +5734,45 @@ it("a post-cut wait start publishes over an idle snapshot", async () => {
   await owner.settled();
   owner.dispose();
 });
+
+// A post-cut wait start the repository already accepted live (the frame
+// carries its acceptance marker) must not be retired by the wait-free read
+// that arrives before it: the read retires only a wait held AT the cut, and
+// the tail's newer start stands as the live wait.
+it("a wait-free read does not end a wait the post-cut tail already started", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const deadline = Date.parse("2026-11-07T14:30:00Z");
+  expect(
+    owner.acceptRead(quotaRead({ activeTurnId: "turn_1" }), { lifetime: 1, readId: "cut-tail", boundary: "cut-tail" }),
+  ).toBe(true);
+  expect(owner.getSnapshot()?.quotaWaitStartedAt).toBeUndefined();
+
+  // The tail frame arrives live and is accepted into the repository.
+  const start = quotaRetryFrame({ waitStartedAt: 22, resumesAt: deadline, turnId: "turn_1" });
+  expect(owner.accept(start, { lifetime: 1 })).toBe(true);
+  expect(owner.getSnapshot()?.quotaWaitStartedAt).toBe(22);
+
+  // The wait-free read lands afterwards (its cut predates the start): the
+  // read's own retirement is refused — the accepted start is the live wait,
+  // named to the read as a post-cut stamp so its wait-free reconciliation
+  // spares it (the tail replays the start after the read applies).
+  const waitFree = quotaRead({ activeTurnId: "turn_1" });
+  waitFree.snapshot = { incarnation: identity.incarnation, length: 2 };
+  expect(
+    owner.acceptRead(waitFree, {
+      lifetime: 1,
+      readId: "cut-tail-2",
+      boundary: "cut-tail-2",
+      postCutWaitStamps: new Set([22]),
+    }),
+  ).toBe(true);
+
+  const model = owner.getSnapshot();
+  expect(model?.quotaWaitStartedAt).toBe(22);
+  expect(model?.quotaResumesAt).toBe(new Date(deadline).toISOString());
+  expect(model?.quotaWaitEndedStamp).toBeUndefined();
+  await owner.settled();
+  owner.dispose();
+});
