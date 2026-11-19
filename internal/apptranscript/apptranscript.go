@@ -991,6 +991,9 @@ func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, re
 			run.WriteString(part.Text)
 			continue
 		}
+		if metadataOnlyResponsesReasoning(part) {
+			continue
+		}
 		flushRun()
 		switch part.Kind {
 		case llm.ContentThinking, llm.ContentRedThinking:
@@ -1045,6 +1048,12 @@ func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, re
 // redactedThinkingText stands in for a redacted-thinking part's content.
 const redactedThinkingText = "[redacted thinking]"
 
+func metadataOnlyResponsesReasoning(part llm.ContentPart) bool {
+	t := part.Thinking
+	return part.Kind == llm.ContentThinking && t != nil && t.Text == "" && len(t.Summary) == 0 && t.EncryptedContent == "" &&
+		(len(t.ResponsesContentParts) != 0 || len(t.ResponsesSummaryParts) != 0)
+}
+
 // identityReasoning returns the index of the entry's first thinking or
 // redacted-thinking part (-1 when there is none) and the entry's reasoning
 // text: each thinking part's Text, or its Summary when Text is empty, and
@@ -1053,7 +1062,7 @@ func identityReasoning(content []llm.ContentPart) (int, string) {
 	first := -1
 	var texts []string
 	for i, part := range content {
-		if part.Kind != llm.ContentThinking && part.Kind != llm.ContentRedThinking {
+		if (part.Kind != llm.ContentThinking && part.Kind != llm.ContentRedThinking) || metadataOnlyResponsesReasoning(part) {
 			continue
 		}
 		if first < 0 {

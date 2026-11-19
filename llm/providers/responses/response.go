@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/invariant"
@@ -24,7 +25,6 @@ func responseContentFromOutputItemsRaw(out []any, body []byte, rawItems []json.R
 	var rawBodyItems []json.RawMessage
 	var rawBodyCaptured bool
 	var content []llm.ContentPart
-	var typedOnlyReasoning int
 	var callsByID map[string]*llm.ToolCallData
 	for itemIdx, itemAny := range out {
 		item, ok := itemAny.(map[string]any)
@@ -128,9 +128,6 @@ func responseContentFromOutputItemsRaw(out []any, body []byte, rawItems []json.R
 			contentParts := responsesReasoningParts(item["content"])
 			summaryParts := responsesReasoningParts(item["summary"])
 			if encryptedContent != "" || text != "" || len(contentParts) > 0 || len(summaryParts) > 0 {
-				if encryptedContent == "" && text == "" {
-					typedOnlyReasoning++
-				}
 				content = append(content, llm.ContentPart{
 					Kind: llm.ContentThinking,
 					Thinking: &llm.ThinkingData{
@@ -147,11 +144,15 @@ func responseContentFromOutputItemsRaw(out []any, body []byte, rawItems []json.R
 			// ignore
 		}
 	}
-	// Typed reasoning alone cannot displace the existing stream fallback.
-	if len(content) == typedOnlyReasoning {
-		return nil
-	}
 	return content
+}
+
+func retainFallbackReasoning(r *llm.Response) {
+	if !slices.ContainsFunc(r.Message.Content, func(p llm.ContentPart) bool {
+		return p.Kind != llm.ContentThinking || p.Thinking.Text != "" || p.Thinking.EncryptedContent != ""
+	}) {
+		r.FallbackContent, r.Message.Content = r.Message.Content, nil
+	}
 }
 
 func responsesReasoningParts(raw any) []llm.ResponsesReasoningPart {
@@ -189,6 +190,7 @@ func settleResponsesTerminalOutput(r *llm.Response, rawResp map[string]any, accu
 		// Accumulated call IDs can be derived from item IDs, so repeated
 		// values do not establish that the provider issued one call.
 		r.Message.Content = responseContentFromOutputItemsRaw(accumulatedOutput, nil, accumulatedRawOutput, false)
+		retainFallbackReasoning(r)
 		if status, _ := rawResp["status"].(string); status != "incomplete" {
 			if len(r.ToolCalls()) > 0 {
 				r.Finish = llm.FinishReason{Reason: "tool_calls"}
@@ -236,6 +238,7 @@ func fromResponses(raw map[string]any, requestedModel string, body []byte) llm.R
 	}
 
 	r.Message = msg
+	retainFallbackReasoning(&r)
 
 	// Check Responses API status/incomplete_details for finish reason.
 	status, _ := raw["status"].(string)

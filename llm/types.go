@@ -690,6 +690,9 @@ func DefaultAdapterTimeout() AdapterTimeout {
 
 // Response is a provider-agnostic chat-completion response.
 type Response struct {
+	// FallbackContent accompanies usable output reconstructed from stream events.
+	FallbackContent []ContentPart `json:"-"`
+
 	ID        string         `json:"id"`
 	Model     string         `json:"model"`
 	Provider  string         `json:"provider"`

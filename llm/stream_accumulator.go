@@ -163,6 +163,9 @@ func (a *StreamAccumulator) Process(ev StreamEvent) {
 			if !responseHasContent(cp) {
 				cp = *a.buildResponseLocked()
 				copyResponseMetadata(&cp, ev.Response)
+				if len(ev.Response.FallbackContent) > 0 && (cp.Text() != "" || len(cp.ToolCalls()) != 0) {
+					cp.Message.Content = slices.Insert(cp.Message.Content, 0, ev.Response.FallbackContent...)
+				}
 			}
 			a.final = &cp
 			a.partial = &cp

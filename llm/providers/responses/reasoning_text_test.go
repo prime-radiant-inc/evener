@@ -99,7 +99,11 @@ func TestStreamTerminalTypedReasoningPreservesAccumulatedAnswer(t *testing.T) {
 		`{"type":"response.output_text.delta","delta":"answer"}`,
 		`{"type":"response.completed","response":{"id":"resp_1","output":[{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"summary"}]}]}}`,
 	)
-	if final == nil || final.Text() != "answer" {
+	if final == nil || final.Text() != "answer" || len(final.Message.Content) != 2 {
 		t.Fatalf("settled response = %+v, want accumulated answer", final)
+	}
+	want := []llm.ResponsesReasoningPart{{Type: "summary_text", Text: "summary"}}
+	if th := final.Message.Content[0].Thinking; th == nil || !slices.Equal(th.ResponsesSummaryParts, want) {
+		t.Fatalf("settled reasoning = %+v, want %v", th, want)
 	}
 }
