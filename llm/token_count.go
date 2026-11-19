@@ -382,7 +382,11 @@ func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
 			if p.ToolCall != nil {
 				chars += len(p.ToolCall.ID)
 				chars += len(p.ToolCall.Name)
-				chars += len(p.ToolCall.Arguments)
+				args := len(p.ToolCall.Arguments) // Zero allocations on the common path.
+				if p.ToolCall.ArgumentsSpelling != "" && (t.protocol == registry.ProtocolOpenAIResponses || t.protocol == registry.ProtocolOpenAIChat || t.namedChat) {
+					args = len(strings.TrimSpace(p.ToolCall.WireArguments()))
+				}
+				chars += args
 				if t.protocol == registry.ProtocolOpenAIResponses {
 					chars += len(strings.TrimSpace(p.ToolCall.ItemID))
 				}

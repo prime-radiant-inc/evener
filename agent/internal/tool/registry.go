@@ -839,7 +839,8 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 	// The fingerprint applies the tool's NormalizeArgs, the same rule dispatch
 	// applies below; an unknown tool's zero RegisteredTool has none, so it is
 	// still judged on its raw arguments.
-	key := newDispatchKey(name, call.Arguments, t.NormalizeArgs)
+	replayed := []byte(call.WireArguments())
+	key := newDispatchKey(name, replayed, t.NormalizeArgs)
 	if judged {
 		if !t.ReadOnly {
 			if failStreak, _, snippets := r.breaker.check(key); failStreak >= breakerThreshold {
@@ -861,7 +862,7 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 		return rejectedResult(name, callID, msg, defaultToolLimit(name))
 	}
 
-	if err := ValidateRawArguments(call.Arguments); err != nil {
+	if err := ValidateRawArguments(replayed); err != nil {
 		return rejectedResult(name, callID, err.Error(), defaultToolLimit(name))
 	}
 

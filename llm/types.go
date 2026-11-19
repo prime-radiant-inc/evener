@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -180,9 +181,39 @@ type ToolCallData struct {
 	// form. It is a diagnostic record — the durable transcript keeps what the
 	// model actually sent — and never feeds provider requests.
 	RawArguments string `json:"raw_arguments,omitempty"`
+	// ArgumentsSpelling keeps the model's own bytes when compacted Arguments differ.
+	ArgumentsSpelling Spelling `json:"arguments_spelling,omitempty"`
 	// ThoughtSignature carries provider-specific thought-signature state (e.g., Gemini)
 	// required to continue tool-calling turns safely.
 	ThoughtSignature string `json:"thought_signature,omitempty"`
+}
+
+// Spelling is a tool call's recorded bytes; a non-string value decodes to empty, not an error.
+type Spelling string
+
+// UnmarshalJSON leaves the field empty for a value that is not a JSON string.
+func (s *Spelling) UnmarshalJSON(raw []byte) error { _ = json.Unmarshal(raw, (*string)(s)); return nil }
+
+// NormalizeToolArguments canonicalizes as session_tools.go and keeps the model's bytes; empty stays empty, not "null".
+func NormalizeToolArguments(raw []byte) (json.RawMessage, Spelling) {
+	canonical, err := json.Marshal(json.RawMessage(raw)) // An error means raw is not JSON.
+	if len(raw) == 0 || err != nil || bytes.Equal(canonical, raw) {
+		return append(json.RawMessage(nil), raw...), ""
+	}
+	return canonical, Spelling(raw)
+}
+
+// WireArguments returns the spelling while it canonicalizes to Arguments, else Arguments.
+func (tc *ToolCallData) WireArguments() string {
+	if tc == nil {
+		return ""
+	}
+	if s := tc.ArgumentsSpelling; s != "" { // Arguments holds canonical bytes.
+		if canonical, _ := NormalizeToolArguments([]byte(s)); bytes.Equal(canonical, tc.Arguments) {
+			return string(s)
+		}
+	}
+	return string(tc.Arguments)
 }
 
 // SentArguments returns the argument bytes the model actually sent: the
