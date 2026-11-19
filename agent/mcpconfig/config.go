@@ -453,6 +453,23 @@ func ProjectConfigPathFreshDefinitive(env execenv.ExecutionEnvironment) (string,
 	return filepath.Join(root, ".evener", "mcp.json"), true
 }
 
+// projectRepoRoot is the canonical main repository root the workspace belongs
+// to, or "" when the workspace is not inside a resolvable repository.
+//
+// It is the identity two checkouts of ONE repository share: the main checkout
+// and every linked worktree of it resolve here, while an unrelated repository
+// resolves somewhere else. Discovery records it on the project layer's evidence
+// so an authorization check can tell "the same committed file, read in a
+// worktree" from "the same bytes, planted in a different repository".
+//
+// Delegates to execenv.ResolveMainRepoRoot (memoized per environment).
+func projectRepoRoot(env execenv.ExecutionEnvironment) string {
+	if env == nil {
+		return ""
+	}
+	return execenv.ResolveMainRepoRoot(env, env.WorkingDirectory())
+}
+
 // LayerEvidence is one configuration layer as discovery read it: the path the
 // layer resolved to and a digest of the exact bytes that were parsed. Digest is
 // empty when the layer was simply absent, and Path is empty when the layer could
@@ -473,6 +490,15 @@ type LayerEvidence struct {
 	// checked by existence alone. Without it, every check had to read the whole
 	// file to discover that it had nothing to compare against.
 	Size int64
+	// RepoRoot is the canonical main repository root the layer's workspace
+	// belonged to when discovery read it: the shared checkout that a
+	// repository's own working tree and each of its linked worktrees resolve
+	// to. It is what lets a sandboxed delegate launched into a worktree of the
+	// SAME repository recognize the committed copy of the bytes the startup
+	// read parsed (see projectLayerAuthorizedByStartup). Empty when the
+	// workspace was not a resolvable repository, and no match may treat two
+	// empty identities as the same repository.
+	RepoRoot string
 }
 
 // ConfigEvidence is the evidence for every layer that can make a CLI-only
@@ -532,6 +558,25 @@ func (e ConfigEvidence) EvidenceCurrent(env execenv.ExecutionEnvironment) bool {
 // path says now. An empty recorded Path is a layer discovery never resolved, and
 // it stays current only while the workspace still resolves to none.
 //
+// A path other than the recorded one is never current: that is a different
+// layer, whatever its bytes say. The one caller that deliberately carries a
+// layer's bytes to another path — a delegate's worktree — asks layerBytesCurrent
+// itself, after proving the two paths are in the same repository.
+func layerEvidenceCurrent(recorded LayerEvidence, path string) bool {
+	if recorded.Path == "" {
+		return path == ""
+	}
+	if path != recorded.Path {
+		return false
+	}
+	return layerBytesCurrent(recorded, path)
+}
+
+// layerBytesCurrent compares one layer's recorded bytes against the file at
+// path, wherever that path is. It is layerEvidenceCurrent without the
+// same-path requirement, for a caller that has already established the path is
+// a different working tree of the same repository.
+//
 // The file's identity is settled by STAT before anything is read, because this
 // runs on every model round:
 //
@@ -545,20 +590,14 @@ func (e ConfigEvidence) EvidenceCurrent(env execenv.ExecutionEnvironment) bool {
 //
 // A path that cannot be statted is UNKNOWN, not absent: the caller reads "not
 // current" as unknown reachability and leaves the names eligible.
-func layerEvidenceCurrent(recorded LayerEvidence, path string) bool {
-	if recorded.Path == "" {
-		return path == ""
-	}
-	if path != recorded.Path {
-		return false
-	}
+func layerBytesCurrent(recorded LayerEvidence, path string) bool {
 	// os.Stat, not Lstat: DISCOVERY follows the path, so a dangling symlink is
 	// recorded absent here exactly as the read that parsed the layer saw it. Lstat
 	// finds the link itself and would call such a layer present, marking unchanged
 	// evidence stale forever and leaving CLI-only tools advertised while the child
 	// discovers no fallback. A link whose target appears is then a change, and the
 	// recorded-absent branch answers it by existence alone.
-	info, err := os.Stat(recorded.Path)
+	info, err := os.Stat(path)
 	if err != nil {
 		// Absent is a successful stat of nothing, which is exactly what a layer
 		// recorded absent continues to be. Any other failure is unknown.
@@ -571,7 +610,7 @@ func layerEvidenceCurrent(recorded LayerEvidence, path string) bool {
 	if info.Mode().IsRegular() && info.Size() != recorded.Size {
 		return false
 	}
-	data, err := execenv.ReadFileCapped(recorded.Path)
+	data, err := execenv.ReadFileCapped(path)
 	if err != nil {
 		return false
 	}
@@ -688,11 +727,37 @@ func DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env execenv.ExecutionEnvironmen
 // outside a repository, or the resolution could not answer — and neither says
 // anything about a .evener/mcp.json that exists now. That file appeared around
 // the session, which is exactly the change this check exists to catch.
+//
+// A path that differs is the worktree case, and it is authorized only when
+// everything the launch read is still exactly what the workspace now presents:
+// the same repository (the recorded RepoRoot and the workspace's own main
+// repository root are the same non-empty canonical path) and the exact same
+// bytes at the new path (layerBytesCurrent's size-then-digest comparison). That
+// is a user cutting a worktree delegate from a checkout whose committed
+// .evener/mcp.json they launched against: the file the child reads is the file
+// the launch already disclosed, only checked out at a second path. Anything
+// else — a repository that is not this one, a modified file, or an
+// unresolvable identity — stays unauthorized and keeps the restricted
+// expansion environment.
 func projectLayerAuthorizedByStartup(authorized *LayerEvidence, env execenv.ExecutionEnvironment) bool {
 	if authorized == nil || authorized.Path == "" {
 		return false
 	}
-	return layerEvidenceCurrent(*authorized, ProjectConfigPath(env))
+	currentPath := ProjectConfigPath(env)
+	if currentPath == authorized.Path {
+		return layerBytesCurrent(*authorized, currentPath)
+	}
+	if currentPath == "" || authorized.RepoRoot == "" {
+		return false
+	}
+	// Both sides must be the SAME non-empty repository. An empty identity on
+	// either side is not a match: two checkouts discovery could not place are
+	// two unknowns, and one unknown matching another would let any repository's
+	// bytes pass for the launch's.
+	if projectRepoRoot(env) != authorized.RepoRoot {
+		return false
+	}
+	return layerBytesCurrent(*authorized, currentPath)
 }
 
 // discoverLayers is Discover's body with the expansion environment chosen
@@ -741,6 +806,11 @@ func discoverLayers(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []
 			configs, layerEvidence, err := loadLayerEvidence(projPath, func(s string) (string, error) {
 				return expandEnvVarsUntrustedInEnv(s, untrustedEnv)
 			})
+			// The repository the layer belongs to is recorded on every arm,
+			// absence included: it is what a sandboxed delegate's worktree
+			// compares against when the same committed bytes resolve at a
+			// different path (see projectLayerAuthorizedByStartup).
+			layerEvidence.RepoRoot = projectRepoRoot(env)
 			evidence.Project = layerEvidence
 			if err != nil {
 				if !errors.Is(err, os.ErrNotExist) {

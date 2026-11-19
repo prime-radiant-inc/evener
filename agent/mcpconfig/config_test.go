@@ -14,9 +14,11 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/execsupport/valueexpr"
+	"primeradiant.com/evener/gittest"
 )
 
 // The mcpServers map ranges in random order, so the servers reached the
@@ -1133,7 +1135,17 @@ func TestDiscoverForProjectEnv_SandboxedDelegateKeepsAuthorizedStartupLayer(t *t
 	const binName = "MCP_SANDBOXED_AUTHORIZED_BIN"
 	t.Setenv(binName, "authorized-bin")
 
-	root := t.TempDir()
+	// The workspace is entered through a SYMLINK, which is the macOS temp-dir
+	// shape (/var -> /private/var) every fixture has there without asking: Git
+	// root discovery canonicalizes the root, so a startup record built from the
+	// unresolved spelling names a different path than the authorization check
+	// resolves. Capturing the record through production discovery is what keeps
+	// the two spellings one.
+	realRoot := t.TempDir()
+	root := filepath.Join(t.TempDir(), "linked-root")
+	if err := os.Symlink(realRoot, root); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(filepath.Join(root, ".evener"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1143,7 +1155,21 @@ func TestDiscoverForProjectEnv_SandboxedDelegateKeepsAuthorizedStartupLayer(t *t
 		t.Fatal(err)
 	}
 	env := &agenttest.FakeEnv{WorkDir: root, GitRoot: root}
-	startup := LayerEvidence{Path: projectPath, Digest: ConfigDigest(body), Size: int64(len(body))}
+
+	// Startup evidence is captured through production discovery, so the fixture
+	// records exactly the path, digest, and repository identity a real session's
+	// startup read would have recorded.
+	_, _, startupEvidence, _, err := DiscoverWithCLIOnlyAndEvidence(env, nil, nil)
+	if err != nil {
+		t.Fatalf("startup discovery: %v", err)
+	}
+	startup := startupEvidence.Project
+	if startup.Path == "" || startup.Digest == "" {
+		t.Fatalf("startup discovery recorded no project layer: %+v", startup)
+	}
+	if startup.Path == projectPath {
+		t.Fatalf("the fixture did not reproduce the canonicalization it exists to cover: recorded path %q is the unresolved spelling", startup.Path)
+	}
 
 	configs, _, _, warnings, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, nil, nil, &startup, true)
 	if err != nil {
@@ -1154,6 +1180,185 @@ func TestDiscoverForProjectEnv_SandboxedDelegateKeepsAuthorizedStartupLayer(t *t
 	}
 	if len(configs) != 1 || configs[0].Name != "authorized" || configs[0].Command != "authorized-bin" {
 		t.Fatalf("configs = %+v, want the authorized startup layer expanded from the process environment", configs)
+	}
+}
+
+// projectLayerRepo builds a real one-commit repository whose committed
+// .evener/mcp.json is body, and returns the checkout's canonical root.
+//
+// A real repository is what this half of the authorization needs: the identity
+// the check compares is resolved by execenv from the ".git" layout, so a fake
+// environment with a scripted git answer has no identity to compare.
+func projectLayerRepo(t *testing.T, body string) string {
+	t.Helper()
+	base := t.TempDir()
+	main := filepath.Join(base, "main")
+	gittest.Run(t, base, "init", "-q", "main")
+	if err := os.MkdirAll(filepath.Join(main, ".evener"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(main, ".evener", "mcp.json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gittest.Run(t, main, "add", ".evener/mcp.json")
+	gittest.Run(t, main, "commit", "-q", "-m", "project mcp config")
+	return main
+}
+
+// linkedWorktreeOf adds a linked worktree of main on a new branch, so the
+// checkout holds exactly the committed bytes at a different absolute path.
+func linkedWorktreeOf(t *testing.T, main string) string {
+	t.Helper()
+	wt := filepath.Join(t.TempDir(), "wt")
+	gittest.Run(t, main, "worktree", "add", "-q", wt, "-b", "feat")
+	return wt
+}
+
+// serverConfigByName indexes configs by server name for the assertions below.
+func serverConfigByName(configs []ServerConfig) map[string]ServerConfig {
+	byName := make(map[string]ServerConfig, len(configs))
+	for _, c := range configs {
+		byName[c.Name] = c
+	}
+	return byName
+}
+
+// The worktree half of the authorization: a linked worktree of the SAME
+// repository holds the committed .evener/mcp.json at a different absolute
+// path, and that is not a change in the layer — it is the same bytes the
+// launch already read and disclosed. A sandboxed delegate created in that
+// worktree must therefore still expand the layer, or every server in the
+// repository's committed config disappears from every worktree delegate,
+// including the servers that need no expansion at all.
+func TestDiscoverForProjectEnv_WorktreeOfSameRepositoryKeepsAuthorizedLayer(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // no global layer
+
+	const secretName = "MCP_SAME_REPO_WORKTREE_SECRET"
+	const secretValue = "same-repo-credential"
+	t.Setenv(secretName, secretValue)
+
+	main := projectLayerRepo(t, `{"mcpServers":{"committed":{"command":"${`+secretName+`}"}}}`)
+	wt := linkedWorktreeOf(t, main)
+
+	mainEnv := execenv.NewLocalExecutionEnvironment(main)
+	_, _, startupEvidence, _, err := DiscoverWithCLIOnlyAndEvidence(mainEnv, nil, nil)
+	if err != nil {
+		t.Fatalf("startup discovery: %v", err)
+	}
+	startup := startupEvidence.Project
+	if startup.Path == "" || startup.Digest == "" || startup.RepoRoot == "" {
+		t.Fatalf("fixture is wrong: startup project evidence = %+v, want a path, a digest, and a repository identity", startup)
+	}
+
+	// The worktree's copy is at a different path, which is the whole point.
+	wtEnv := execenv.NewLocalExecutionEnvironment(wt)
+	wtPath := ProjectConfigPath(wtEnv)
+	if wtPath == "" || wtPath == startup.Path {
+		t.Fatalf("fixture is wrong: worktree project path = %q, startup path = %q", wtPath, startup.Path)
+	}
+	if got := projectRepoRoot(wtEnv); got != startup.RepoRoot {
+		t.Fatalf("fixture is wrong: worktree repository identity = %q, want the startup's %q", got, startup.RepoRoot)
+	}
+
+	configs, _, _, warnings, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(wtEnv, nil, nil, &startup, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v, want none: the worktree holds the exact bytes the launch read", warnings)
+	}
+	if got, ok := serverConfigByName(configs)["committed"]; !ok || got.Command != secretValue {
+		t.Fatalf("configs = %+v, want the committed server expanded from the process environment", configs)
+	}
+}
+
+// A worktree whose copy of the layer differs from the authorized bytes is a
+// change, however it arrived there, and it stays restricted: the size and
+// digest comparison is on the FILE, not on the repository it sits in. The edit
+// here keeps the length identical, so only the digest can tell the two apart.
+func TestDiscoverForProjectEnv_WorktreeOfSameRepositoryWithModifiedBytesIsRefused(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // no global layer
+
+	const secretName = "MCP_SAME_REPO_WORKTREE_EDIT_SECRET"
+	const secretValue = "same-repo-edit-credential"
+	t.Setenv(secretName, secretValue)
+
+	main := projectLayerRepo(t, `{"mcpServers":{"authmark":{"command":"${`+secretName+`}"}}}`)
+	wt := linkedWorktreeOf(t, main)
+
+	mainEnv := execenv.NewLocalExecutionEnvironment(main)
+	_, _, startupEvidence, _, err := DiscoverWithCLIOnlyAndEvidence(mainEnv, nil, nil)
+	if err != nil {
+		t.Fatalf("startup discovery: %v", err)
+	}
+	startup := startupEvidence.Project
+	if startup.RepoRoot == "" {
+		t.Fatalf("fixture is wrong: startup project evidence = %+v, want a repository identity", startup)
+	}
+
+	// Same length, different bytes: a server renamed in the worktree's copy.
+	edited := `{"mcpServers":{"authmarx":{"command":"${` + secretName + `}"}}}`
+	if len(edited) != int(startup.Size) {
+		t.Fatalf("fixture is wrong: edited body is %d bytes, want the recorded %d", len(edited), startup.Size)
+	}
+	wtPath := filepath.Join(wt, ".evener", "mcp.json")
+	if err := os.WriteFile(wtPath, []byte(edited), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	configs, _, _, warnings, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(
+		execenv.NewLocalExecutionEnvironment(wt), nil, nil, &startup, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(configs) != 0 {
+		t.Fatalf("a modified worktree layer was expanded from the host environment; configs = %+v", configs)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], secretName) {
+		t.Fatalf("warnings = %v; want one expansion failure naming %q", warnings, secretName)
+	}
+}
+
+// Identical BYTES are not identical AUTHORITY. The same file checked into an
+// unrelated repository is that repository's file, written by whoever controls
+// it, and the startup read said nothing about it. The identity comparison is
+// what keeps a copy of the bytes from carrying the launch's trust into a
+// repository the user never launched in.
+func TestDiscoverForProjectEnv_UnrelatedRepositoryWithIdenticalBytesIsRefused(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // no global layer
+
+	const secretName = "MCP_UNRELATED_REPO_SECRET"
+	const secretValue = "unrelated-repo-credential"
+	t.Setenv(secretName, secretValue)
+
+	body := `{"mcpServers":{"copied":{"command":"${` + secretName + `}"}}}`
+	main := projectLayerRepo(t, body)
+	// A second, independent repository with the identical file.
+	other := projectLayerRepo(t, body)
+
+	mainEnv := execenv.NewLocalExecutionEnvironment(main)
+	_, _, startupEvidence, _, err := DiscoverWithCLIOnlyAndEvidence(mainEnv, nil, nil)
+	if err != nil {
+		t.Fatalf("startup discovery: %v", err)
+	}
+	startup := startupEvidence.Project
+	otherEnv := execenv.NewLocalExecutionEnvironment(other)
+	if got := projectRepoRoot(otherEnv); got == "" || got == startup.RepoRoot {
+		t.Fatalf("fixture is wrong: unrelated repository identity = %q, startup's = %q", got, startup.RepoRoot)
+	}
+	if otherPath := ProjectConfigPath(otherEnv); otherPath == "" || otherPath == startup.Path {
+		t.Fatalf("fixture is wrong: unrelated project path = %q, startup path = %q", otherPath, startup.Path)
+	}
+
+	configs, _, _, warnings, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(otherEnv, nil, nil, &startup, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(configs) != 0 {
+		t.Fatalf("an unrelated repository's copy of the bytes was expanded from the host environment; configs = %+v", configs)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], secretName) {
+		t.Fatalf("warnings = %v; want one expansion failure naming %q", warnings, secretName)
 	}
 }
 
