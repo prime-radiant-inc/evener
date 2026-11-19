@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -12,12 +13,37 @@ import (
 )
 
 func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
-	defer jm.publishWatchActivity()
-	kind := ev.Kind
-	var notifications []jobNotification
-	var deliveries []watchSendDelivery
-
 	jm.mu.Lock()
+	notifications, deliveries, emitting := jm.evaluateWatchesLocked(ev)
+	jm.mu.Unlock()
+	jm.finishWatchEvaluation(noBound, notifications, deliveries, emitting)
+}
+
+// onSessionEventContext is onSessionEvent on the bound of the caller that sent
+// the event. noBound is the ordinary path and keeps today's behavior exactly.
+//
+// The bound matters because the flush is SYNCHRONOUS with the send that caused
+// it. A close drain's bounded warning can take the last slot in a full
+// authoritative stream; the flush that follows runs on the drain's goroutine,
+// and on the ordinary path it waits out the whole close cascade -- spending the
+// budget the worktree removals need, immediately after the warning itself was
+// correctly bounded. An invalidation that cannot be delivered on the bound is
+// dropped rather than parked; the receiver's next ordinary event republishes it.
+func (jm *jobManager) onSessionEventContext(ctx context.Context, ev events.SessionEvent) {
+	jm.mu.Lock()
+	notifications, deliveries, emitting := jm.evaluateWatchesLocked(ev)
+	jm.mu.Unlock()
+	jm.finishWatchEvaluation(ctx, notifications, deliveries, emitting)
+}
+
+// evaluateWatchesLocked evaluates every watch against ev. The CALLER holds
+// jm.mu, and each entry point above takes it itself rather than through a shared
+// wrapper: main's lock guard pins jm.mu being acquired unconditionally inside
+// onSessionEvent, so an emit under jobManager.mu self-deadlocks loudly instead
+// of wedging the daemon. A wrapper that acquired the lock one call deeper would
+// satisfy the behaviour and fail the specification.
+func (jm *jobManager) evaluateWatchesLocked(ev events.SessionEvent) (notifications []jobNotification, deliveries []watchSendDelivery, emitting bool) {
+	kind := ev.Kind
 	for _, cfg := range jm.watches {
 		// A watch never wakes its receiver with the receiver's own event.
 		if cfg.receiverSessionID != "" && ev.SessionID == cfg.receiverSessionID {
@@ -50,14 +76,20 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 			jm.countWatchDeliveryLocked(cfg)
 		}
 	}
-	emitting := len(notifications) > 0
+	emitting = len(notifications) > 0
 	if emitting {
 		jm.noticesInFlight++
 	}
-	jm.mu.Unlock()
+	return notifications, deliveries, emitting
+}
 
-	// Called from Session.emit; only persist + wake here so watch delivery does
-	// not re-enter session event emission (spec §3).
+// finishWatchEvaluation persists the sends and wakes, and publishes the watch
+// activity that moved, on the caller's bound (noBound on the ordinary path).
+//
+// Called from Session.emit; only persist + wake here so watch delivery does not
+// re-enter session event emission (spec §3).
+func (jm *jobManager) finishWatchEvaluation(ctx context.Context, notifications []jobNotification, deliveries []watchSendDelivery, emitting bool) {
+	defer jm.publishWatchActivityContext(ctx)
 	jm.recordWatchSendsAndKick(deliveries)
 	jm.enqueueWatchNotifications(notifications)
 	if emitting {

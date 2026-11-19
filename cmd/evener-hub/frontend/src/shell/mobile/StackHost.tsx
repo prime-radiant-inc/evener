@@ -38,6 +38,8 @@
 // sync effect below), the same as any other fresh navigation - there is no
 // separate "last mobile screen" memory to restore independently of that.
 import { type ReactNode, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { returnFromAgentCascade } from "../../panes/zoom/actions";
+import { isCascadeReturnedOrigin } from "../../panes/zoom/inspectionOrigin";
 import { parseZoomParams } from "../../panes/zoom/intent";
 import {
   conversationHandoffGeneration,
@@ -47,7 +49,7 @@ import {
 import { Chevron, IconButton } from "../../widgets";
 import { ActivitySidebar } from "../activitybar/ActivitySidebar";
 import { useActivitySidebarStore } from "../activitybar/activitySidebarStore";
-import { attentionEntryOwnsReader, goBackInAttentionHistory } from "../attentionHistory";
+import { attentionEntryOwnsReader, goBackInAttentionHistory, publishFocusedPaneURL } from "../attentionHistory";
 import { ConversationHandoffBoundary } from "../ConversationHandoffBoundary";
 import { useChromeStore } from "../chromeStore";
 import { paneFor } from "../paneRegistry";
@@ -366,7 +368,13 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
     if (attentionEntryOwnsPane(focusedPane)) return;
     if (singlePaneRouteNames(window.location.pathname, focusedPane)) return;
     const url = paneToURL(focusedPane.type, focusedPane.params);
-    if (url) navigate(url);
+    if (url) {
+      if (focusedPane.slot === "secondary" && isCascadeReturnedOrigin(focusedPane)) {
+        publishFocusedPaneURL(url);
+      } else {
+        navigate(url);
+      }
+    }
   }, [focusedPane, routeDeferred]);
 
   // Backstop, same reasoning as DockHost's own onReady fallback: a blank
@@ -503,15 +511,34 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
         return;
       }
     }
-    // Attention Back belongs to the reader the current entry owns. A cascade
-    // opened over that reader is a local step, and its own Back returns to the
-    // reader rather than jumping past it to the entry's source.
-    if (
-      (focusedPane?.type === "session" || focusedPane?.type === "sessionZoom") &&
-      attentionEntryOwnsPane(focusedPane) &&
-      goBackInAttentionHistory()
-    )
+    // Cascade dismissal takes precedence in the phone toolbar because Back is
+    // the inspector's sole dismissal control on mobile; browser Back still
+    // traverses attention history. Clear wentBackRef/popPendingRef when a
+    // legacy in-place return keeps the same pane id, because the focus-change
+    // effect will not run to clear them before the next forward navigation.
+    if (focusedPane?.type === "sessionZoom") {
+      const previousId = focusedPane.id;
+      wentBackRef.current = true;
+      returnFromAgentCascade(previousId);
+      const after = workspaceStore.getState();
+      if (after.focusedPaneId === previousId) {
+        wentBackRef.current = false;
+        popPendingRef.current = false;
+        return;
+      }
+      if (after.focusedPaneId !== null) return;
+      const fallback =
+        popValidBackTarget(backStackRef.current, presentedPanes(after.panes), previousId) ?? after.mainPane()?.id;
+      if (fallback) {
+        workspaceStore.getState().focusPane(fallback);
+      } else {
+        workspaceStore.getState().openPane("welcome");
+      }
       return;
+    }
+    // Attention Back belongs to the ordinary session reader the current entry
+    // owns.
+    if (focusedPane?.type === "session" && attentionEntryOwnsPane(focusedPane) && goBackInAttentionHistory()) return;
     let target = popValidBackTarget(backStackRef.current, panes, focusedPaneId);
     if (!target && focusedPane?.type === "transcript") {
       const params = focusedPane.params as { ref?: unknown; parentRef?: unknown };

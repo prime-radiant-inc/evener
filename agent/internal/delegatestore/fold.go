@@ -280,6 +280,12 @@ var eventKindSpecs = []eventKindSpec{
 		clone:   func(dst, src *Event) { clonePointee(&dst.IntentStated, &src.IntentStated) },
 		apply:   applyIntentStated,
 	},
+	{
+		kind:    EventDelegateAttentionHoldReleased,
+		present: func(event *Event) bool { return event.AttentionHoldReleased != nil },
+		clone:   func(dst, src *Event) { clonePointee(&dst.AttentionHoldReleased, &src.AttentionHoldReleased) },
+		apply:   applyAttentionHoldReleased,
+	},
 }
 
 func eventKindSpecFor(kind EventKind) (eventKindSpec, bool) {
@@ -588,6 +594,33 @@ func applyAttentionChanged(state State, event Event) error {
 		return err
 	}
 	aggregate.NeedsAttention = event.AttentionChanged.NeedsAttention
+	return nil
+}
+
+// applyAttentionHoldReleased records that a newer event ended the quiet a
+// settled stop at payload.Generation held. The record names a settled
+// generation, never the one an open run is still writing: a wake admitted
+// while a successor run is open supersedes the generation before that run, so
+// that generation is accepted and the open one is refused. A stop that settles
+// the open generation afterwards is newer evidence than the wake, and its
+// quiet must stand. The field is monotonic so a stale release replayed after a
+// newer one cannot move it backwards.
+func applyAttentionHoldReleased(state State, event Event) error {
+	payload := event.AttentionHoldReleased
+	aggregate, err := requireAggregate(state, event.DelegateID)
+	if err != nil {
+		return err
+	}
+	settled := aggregate.SettledGeneration()
+	if payload.Generation == 0 || settled == 0 {
+		return fmt.Errorf("delegate %q attention hold release names no generation", event.DelegateID)
+	}
+	if payload.Generation != settled {
+		return fmt.Errorf("delegate %q attention hold release names generation %d, which is not the settled generation", event.DelegateID, payload.Generation)
+	}
+	if payload.Generation > aggregate.AttentionHoldReleasedGeneration {
+		aggregate.AttentionHoldReleasedGeneration = payload.Generation
+	}
 	return nil
 }
 

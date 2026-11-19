@@ -8,11 +8,16 @@ package agent
 // touched.
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/responses"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -73,8 +78,33 @@ var replayProtocolOf = protocolResolver(map[string]string{
 	"kimi":        registry.ProtocolAnthropic,
 	"google":      registry.ProtocolGoogle,
 	"openai":      registry.ProtocolOpenAIResponses,
+	"openai-a":    registry.ProtocolOpenAIResponses,
+	"openai-b":    registry.ProtocolOpenAIResponses,
 	"work":        registry.ProtocolOpenAIChat,
 })
+
+// TestChatSessionReplaysFullReasoningAcrossToolRounds: round one's chat reasoning rides its continuation.
+func TestChatSessionReplaysFullReasoningAcrossToolRounds(t *testing.T) {
+	t.Parallel()
+	const thought, sig = "round one chain of thought", "sig-chat"
+	check := func(t *testing.T, want, on bool) {
+		round := agenttest.ToolCallResponse(llm.ToolCallData{ID: "call_unknown", Name: "no_such_tool", Arguments: []byte(`{}`)})
+		round.Message.Content = append([]llm.ContentPart{{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: thought, Signature: sig}}}, round.Message.Content...)
+		adapter := newFakeAdapter("gw", func(llm.Request) llm.Response { return round }, func(llm.Request) llm.Response { return agenttest.FinalResponse("done") })
+		profile := provider.FromResolved(registry.Resolved{Instance: "gw", ModelID: "chat-row", WireID: "chat-row", Protocol: registry.ProtocolOpenAIChat, Surface: registry.SurfaceGeneric, Caps: registry.Caps{Reasoning: new(on)}}, nil)
+		sess := newSession(t, withProfile(profile), withAdapter(adapter))
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: only a genuine hang.
+		defer cancel()
+		_, err := sess.ProcessInput(ctx, "go", nil)
+		if reqs := adapter.Requests(); err != nil || len(reqs) < 2 {
+			t.Fatalf("chat requests = %d, want the tool round and its continuation", len(reqs))
+		} else if got := hasSignedThinking(reqs[1].Messages, thought, sig); got != want {
+			t.Fatalf("continuation replayed reasoning = %v, want %v", got, want)
+		}
+	}
+	t.Run("on", func(t *testing.T) { t.Parallel(); check(t, true, true) })
+	t.Run("off", func(t *testing.T) { t.Parallel(); check(t, false, false) })
+}
 
 // --- the session-side lookups the scope is wired to ---
 
@@ -270,7 +300,7 @@ func TestExpandHistory_OpenAIResponses_DifferentProvider_ThinkingAbsent(t *testi
 		InFlightFrom: len(turns), protocolOf: replayProtocolOf,
 	})
 	if hasContentKind(out, llm.ContentThinking) {
-		t.Fatal("openai cross-provider thinking replayed; want it stripped (encrypted_content is deployment-scoped)")
+		t.Fatal("openai cross-provider thinking replayed; want it stripped (a bare Text projection never rides)")
 	}
 	if !hasContentKind(out, llm.ContentText) {
 		t.Fatal("answer text must survive thinking stripping")
@@ -515,5 +545,79 @@ func TestExpandHistory_StoredTranscriptUntouched(t *testing.T) {
 	})
 	if !hasContentKind(back, llm.ContentThinking) {
 		t.Fatal("switching back to the producing model must restore thinking replay")
+	}
+}
+
+// wireNativePlain is the one reasoning item a fallback sends.
+const wireNativePlain = `[{"content":[{"text":"plain","type":"reasoning_text"}],"summary":[],"type":"reasoning"}]`
+
+func reasoningNative(text string) []llm.ResponsesReasoningPart {
+	return []llm.ResponsesReasoningPart{{Type: "reasoning_text", Text: text}}
+}
+
+// responsesWire replays turns to the Responses instance and returns the reasoning
+// items the endpoint receives, as JSON, with the projected messages, so a part
+// the projection keeps and reasoningItem drops fails the test.
+func responsesWire(t *testing.T, turns []schema.Turn, instance string, from int) (string, []llm.Message) {
+	t.Helper()
+	out := expandHistory(turns, replayScope{Instance: instance, Model: "gpt-5.4",
+		Protocol: registry.ProtocolOpenAIResponses, InFlightFrom: from, protocolOf: replayProtocolOf})
+	res := registry.Resolved{Instance: "openai", ModelID: "gpt-5.4", WireID: "gpt-5.4", Protocol: replayProtocolOf("openai")}
+	msgs := append([]llm.Message{{Role: llm.RoleUser}}, out...)
+	body, err := (&responses.Protocol{}).BuildBody(llm.ShapeRequest(llm.Request{Model: "gpt-5.4", Messages: msgs}, res), res)
+	if err != nil {
+		t.Fatalf("BuildBody: %v", err)
+	}
+	var items []any
+	for _, it := range body["input"].([]any) {
+		if m, ok := it.(map[string]any); ok && m["type"] == "reasoning" {
+			items = append(items, m)
+		}
+	}
+	b, _ := json.Marshal(items)
+	return string(b), out
+}
+
+// TestAnthropicPrimaryToResponsesFallbackKeepsPlaintextWithoutSignature: on a
+// fallback to Responses a foreign Responses turn's native plaintext rides the
+// wire without its blob, while an Anthropic turn's bare text and signature drop.
+func TestAnthropicPrimaryToResponsesFallbackKeepsPlaintextWithoutSignature(t *testing.T) {
+	t.Parallel()
+	turns := []schema.Turn{
+		{Kind: schema.TurnAssistant, ResponseProvider: "openai-other", ResponseProtocol: registry.ProtocolOpenAIResponses,
+			Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{EncryptedContent: "enc_other",
+					ResponsesContentParts: reasoningNative("plain")}}, {Kind: llm.ContentText, Text: "answer"}}}},
+		{Kind: schema.TurnAssistant, ResponseProvider: "anthropic", Message: llm.Message{Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "thought", Signature: "sig_anth"}}, {Kind: llm.ContentText, Text: "answer"}}}},
+	}
+	wire, out := responsesWire(t, turns, "openai", len(turns))
+	if wire != wireNativePlain {
+		t.Fatalf("wire reasoning = %s, want %s: the native plaintext rides, the foreign bare text does not", wire, wireNativePlain)
+	}
+	if kept := hasContentKind(out, llm.ContentThinking); !kept {
+		t.Fatal("the projection must keep the Responses turn's portable plaintext, matching the wire")
+	}
+}
+
+// TestCrossInstanceResponsesStripsOpaqueBlobKeepsNativePlaintext pins #6891: a
+// Responses item replayed to another deployment keeps its native plaintext and no
+// foreign blob, so it cannot 400 with "Encrypted content is not supported".
+func TestCrossInstanceResponsesStripsOpaqueBlobKeepsNativePlaintext(t *testing.T) {
+	t.Parallel()
+	turns := []schema.Turn{{Kind: schema.TurnAssistant, ResponseProvider: "openai-a", ResponseProtocol: registry.ProtocolOpenAIResponses,
+		Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{EncryptedContent: "enc_A", ResponsesContentParts: reasoningNative("plain")}},
+			{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{EncryptedContent: "enc_only"}}, {Kind: llm.ContentText, Text: "answer"}}}}}
+	wire, out := responsesWire(t, turns, "openai-b", len(turns))
+	if wire != wireNativePlain {
+		t.Fatalf("wire reasoning = %s, want %s: the plaintext replays verbatim and no blob rides", wire, wireNativePlain)
+	}
+	if !hasContentKind(out, llm.ContentText) {
+		t.Fatal("answer text must survive the strip")
+	}
+	// The issuer keeps its own blobs, so the strip is bound to provenance.
+	if issuer, _ := responsesWire(t, turns, "openai-a", len(turns)); issuer == wireNativePlain {
+		t.Fatalf("the issuer must keep its own blobs, not the bare plaintext: %s", issuer)
 	}
 }

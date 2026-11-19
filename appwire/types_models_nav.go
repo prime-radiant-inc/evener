@@ -424,6 +424,17 @@ type ThreadStatusChangedParams struct {
 	// ActiveTurnID is the currently running turn's id, empty when none. See
 	// EvenerThread.ActiveTurnID.
 	ActiveTurnID string `json:"activeTurnId,omitempty"`
+	// EndedTurnID is the turn a terminal status ended, so a client can tell
+	// a Stop for the turn its snapshot still shows running from one for an
+	// older turn the snapshot already replaced. Set on the frames that end a
+	// running turn: the execution's end, the session's end while one runs,
+	// and the root's settlement of a published turn. ABSENT MEANS "NO
+	// ANSWER" (an older daemon omits it), and its reading is the
+	// reconciliation pass's: a PRE-CUT frame with no id preserves the
+	// snapshot's running turn rather than inferring what the frame ended.
+	// A LIVE (post-cut) Stop keeps ordinary delivery order whatever its
+	// vintage — the absent id never outlives the turn it would have named.
+	EndedTurnID string `json:"endedTurnId,omitempty"`
 }
 
 // ThreadModelRetryParams is the params shape for the evener/thread/modelRetry
@@ -448,6 +459,17 @@ type ThreadStatusChangedParams struct {
 // number. GroupElapsedMS is wall-clock time since the retry group's first
 // attempt (one model call), so a client can render how long the call has
 // been running.
+//
+// A usage-limit wait's announcements carry the wait's identity: the same
+// WaitStartedAt on the start and the zero-delay retry that ends it, so a
+// client can tell which wait a delayed frame belongs to and never let the
+// first wait's wake clear the second. WaitStartedAt is a strictly
+// increasing sequence the daemon issues per wait, NOT a wall-clock
+// instant: a later wait in the same turn always compares greater even
+// when epoch time collides or steps back. ResumesAt is the absolute
+// epoch-ms instant the call resumes, named only by the start
+// announcement — the retry that ends the wait carries none, so it
+// installs no deadline. Ordinary retries carry neither field.
 type ThreadModelRetryParams struct {
 	ThreadID       string `json:"threadId"`
 	Ref            string `json:"ref"`
@@ -461,6 +483,8 @@ type ThreadModelRetryParams struct {
 	Model          string `json:"model,omitempty"`
 	GroupElapsedMS int64  `json:"groupElapsedMs"`
 	AttemptCap     int    `json:"attemptCap"`
+	WaitStartedAt  uint64 `json:"waitStartedAt,omitempty"`
+	ResumesAt      int64  `json:"resumesAt,omitempty"`
 }
 
 // ThreadStartedParams is the params shape for the thread/started

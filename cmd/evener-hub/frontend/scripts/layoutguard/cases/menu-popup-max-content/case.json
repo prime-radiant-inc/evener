@@ -1,0 +1,21 @@
+{
+  "name": "menu-popup-max-content",
+  "description": "Menu's popup asks for its label's max-content width and the visible viewport caps it: a fixed popup whose offset leaves less room than its label still measures the label's natural width rather than collapsing, and the same popup under a narrower cap sits at the cap and wraps its label instead of clipping it",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "styles/motion.module.css",
+    "widgets/menu/menu.module.css"
+  ],
+  "viewport": {
+    "width": 1182,
+    "height": 800,
+    "deviceScaleFactor": 1,
+    "mobile": false
+  },
+  "mutation": {
+    "declaration": "widgets/menu/menu.module.css: .popup { width: max-content } (deleted)",
+    "verified": "2026-11-18",
+    "expect": "fail"
+  }
+}

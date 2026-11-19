@@ -577,12 +577,12 @@ func TestServerAppWireTurnInterruptCancelsTheRunningTurn(t *testing.T) {
 	}
 }
 
-func TestServerAppWireThreadModelSetQualifiesProvider(t *testing.T) {
+func TestServerAppWireThreadModelSetKeepsProviderApart(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	var got string
-	srv.SetModelFunc(func(model string) error {
-		got = model
+	var gotProvider, gotModel string
+	srv.SetModelFunc(func(provider, model string) error {
+		gotProvider, gotModel = provider, model
 		return nil
 	})
 
@@ -596,8 +596,8 @@ func TestServerAppWireThreadModelSetQualifiesProvider(t *testing.T) {
 	if resp.Kind() != appwire.MessageResponse {
 		t.Fatalf("resp=%v error=%+v", resp.Kind(), resp.Error)
 	}
-	if got != "openai/gpt-5" {
-		t.Fatalf("model=%q, want openai/gpt-5", got)
+	if gotProvider != "openai" || gotModel != "gpt-5" {
+		t.Fatalf("hook got provider %q model %q, want openai and gpt-5 apart", gotProvider, gotModel)
 	}
 }
 

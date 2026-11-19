@@ -219,6 +219,37 @@ func TestPlaceInTurnRefusesAnEmptyTurnID(t *testing.T) {
 	}
 }
 
+// A standalone delivery that lands WHILE the prelude is open ends it: a
+// delivery is a turn of its own, so the session's later pre-execution writes
+// must not rejoin the prelude's id and put one id on two spans another turn
+// separates. They share a new gap turn instead, distinct from both.
+//
+// The other delivery tests deliver into idle prose, after an execution has
+// already cleared the prelude, so none of them exercises this window.
+func TestDeliveryWhileThePreludeIsOpenStartsAGapTurn(t *testing.T) {
+	w := newPlacementWriter(t)
+	first := recordPlaced(t, w, steeringTurn("startup"), PlaceSession)
+	if first.TurnID != appwire.SystemPreludeTurnID || first.TurnKind != schema.TurnSpanPrelude {
+		t.Fatalf("the fresh transcript's first write = %+v, want the prelude", first)
+	}
+	delivery := recordPlaced(t, w, steeringTurn("delivered"), PlaceDelivery)
+	if delivery.TurnID == first.TurnID || delivery.TurnKind != schema.TurnSpanDelivery {
+		t.Fatalf("delivery while the prelude is open = %+v, want a delivery turn of its own", delivery)
+	}
+	g1 := recordPlaced(t, w, steeringTurn("after one"), PlaceSession)
+	if g1.TurnID == first.TurnID || g1.TurnID == delivery.TurnID {
+		t.Fatalf("a session write after a delivery rejoined turn %q; want a gap turn distinct from the prelude %q and the delivery %q",
+			g1.TurnID, first.TurnID, delivery.TurnID)
+	}
+	if g1.TurnKind != schema.TurnSpanGap {
+		t.Fatalf("the first write after a delivery = %+v, want a gap turn", g1)
+	}
+	g2 := recordPlaced(t, w, steeringTurn("after two"), PlaceSession)
+	if g2.TurnID != g1.TurnID || g2.TurnKind != "" {
+		t.Fatalf("the second write after a delivery = %+v, want to join the gap turn %q", g2, g1.TurnID)
+	}
+}
+
 func TestBeginExecutionIgnoresAnEmptyTurnID(t *testing.T) {
 	w := newPlacementWriter(t)
 	w.BeginExecution("turn_m1", false)

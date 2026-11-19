@@ -538,6 +538,18 @@ export function threadFields(resp: ThreadReadResponse, ref: string, now: number)
   // re-stamp, or older-producer frames.
   const imageSessionId = wireImageSessionId(thread);
   const servingFacts = historyServingFacts(resp);
+  // The provider instance a snapshot names for its running model, or
+  // undefined when the daemon reports none.
+  //
+  // The producer names the instance apart from the raw model id, and the id
+  // may itself carry a slash or even begin with the instance's name: an
+  // OpenRouter session runs "anthropic/claude-opus-5", and the bundled catalog
+  // lists that instance's Auto Router as "openrouter/auto", whose catalog
+  // identity is "openrouter/openrouter/auto". Neither a slash nor a matching
+  // prefix is proof that the field already names the whole identifier, so the
+  // profile rides along whenever the snapshot names one; joining it again
+  // only on a prefix is what left those models unaddressable.
+  const profile = thread.evener.profile && thread.modelProvider ? thread.evener.profile : undefined;
   const fields: Omit<ThreadModel, "turns"> = {
     ref,
     ...(servingFacts ? { servingFacts } : {}),
@@ -563,6 +575,16 @@ export function threadFields(resp: ThreadReadResponse, ref: string, now: number)
     // "stay[ing] the model field" for this exact reason. thread/model/changed
     // (below) is what later splits provider and model id apart properly.
     model: thread.modelProvider,
+    // The provider instance the same snapshot names for that model
+    // (Thread.evener.profile). The two model fields above are the wire's one
+    // overloaded field; this is what turns the raw model id into the qualified
+    // "provider/model" a catalog entry and a pick use, so a picker's selection,
+    // a pick's acknowledgement and a readback compare one identity rather than
+    // a bare id against a qualified one. Snapshot-only: thread/model/changed
+    // names its own provider and clears it. Absent when the daemon reports no
+    // profile: adding an absent key would rewrite every stored thread's shape
+    // for nothing.
+    ...(profile ? { modelProfile: profile } : {}),
     reasoningEffort: thread.evener.reasoningEffort,
     defaultReasoningEffort: thread.evener.defaultReasoningEffort,
     visionModel: thread.evener.visionModel ?? "",
@@ -619,6 +641,12 @@ export function threadFields(resp: ThreadReadResponse, ref: string, now: number)
     // resumes (EvenerThread.Failure.ResumesAt). Every other failure field is
     // read-only context the transcript's error row already holds.
     quotaResumesAt: epochMsToISO(thread.evener.failure?.resumesAt),
+    // The same summary's wait identity (EvenerThread.Failure.WaitStartedAt):
+    // the daemon-issued stamp the wait's live announcements carry, stored as
+    // the daemon's own value so a read that captured a NEWER wait can retire
+    // an older wait's frames by ordering, never by turn id or clock. Zero is
+    // the wire's absent value (omitempty) and never a stamp.
+    quotaWaitStartedAt: thread.evener.failure?.waitStartedAt || undefined,
     ...(thread.evener.access ? { access: { ...thread.evener.access } } : {}),
     workMillis: thread.evener.workMillis ?? 0,
     activeTurnStartedAt: epochMsToISO(thread.evener.activeTurnStartedAt),

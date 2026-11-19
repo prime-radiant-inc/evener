@@ -157,6 +157,41 @@ func text(s string) []llm.ContentPart { return []llm.ContentPart{{Kind: llm.Cont
 
 var weatherTool = llm.ToolDefinition{Name: "weather", Description: "Current weather", Parameters: map[string]any{"type": "object", "properties": map[string]any{"city": map[string]any{"type": "string"}}}}
 
+// strictWeatherTool is the same tool with its single argument declared
+// required, for rows whose provider sets strict_tools.
+//
+// A schema that leaves an argument optional is not certified: the projection
+// force-requires every property, so certifying one would make a documented-
+// optional argument mandatory, and that is the defect this branch exists to
+// fix. Such a tool is sent unchanged with strict false (see
+// openai-gpt-5-5-optional-argument), which is a different wire schema from
+// this one and is recorded separately rather than by reusing a strict row.
+var strictWeatherTool = llm.ToolDefinition{Name: "weather", Description: "Current weather", Parameters: map[string]any{
+	"type":                 "object",
+	"additionalProperties": false,
+	"properties":           map[string]any{"city": map[string]any{"type": "string"}},
+	"required":             []string{"city"},
+}}
+
+// strictToolsRequest is toolsRequest for a row that turns strict mode on.
+func strictToolsRequest(effort string) llm.Request {
+	req := toolsRequest(effort)
+	req.Tools = []llm.ToolDefinition{strictWeatherTool}
+	return req
+}
+
+// optionalToolsRequest is toolsRequest with the same tool leaving its argument
+// optional, which is what a strict-capable row must still record: the gate
+// refuses to certify it, so it reaches the wire unchanged with strict false.
+// Without a row asserting that, the suite would prove only that an
+// already-fully-required schema survives projection, which is the one shape
+// this branch's refusal never has to handle.
+func optionalToolsRequest(effort string) llm.Request {
+	req := toolsRequest(effort)
+	req.Tools = []llm.ToolDefinition{weatherTool}
+	return req
+}
+
 // toolsRequest is the common fixture: a system prompt, one user turn, one
 // tool with forced tool choice, the session identifiers the Codex headers
 // and the affinity headers read, and a prompt cache key plus 24h retention
@@ -217,12 +252,13 @@ var cases = []wireCase{
 	{"anthropic-opus-4-6-no-effort", "anthropic/claude-opus-4-6", false, toolsRequest("")},
 	{"anthropic-opus-4-7-display", "anthropic/claude-opus-4-7", false, toolsRequest("high")},
 	{"anthropic-opus-4-5-hybrid", "anthropic/claude-opus-4-5", false, toolsRequest("high")},
-	{"openai-gpt-5-5", "openai/gpt-5.5", false, toolsRequest("high")},
-	{"openai-codex-gpt-5-6-lite-stream", "openai-codex/gpt-5.6", true, toolsRequest("")},
+	{"openai-gpt-5-5", "openai/gpt-5.5", false, strictToolsRequest("high")},
+	{"openai-gpt-5-5-optional-argument", "openai/gpt-5.5", false, optionalToolsRequest("high")},
+	{"openai-codex-gpt-5-6-lite-stream", "openai-codex/gpt-5.6", true, strictToolsRequest("")},
 	{"groq-chat-stream", "groq/openai/gpt-oss-120b", true, toolsRequest("high")},
 	{"groq-responses", "groq-responses/openai/gpt-oss-120b", false, toolsRequest("high")},
 	{"openrouter-opus-5-signed-tool-turn", "openrouter/anthropic/claude-opus-5", false, signedToolTurn()},
-	{"work-glm-zai-stream", "work/glm-5.2-nvfp4", true, toolsRequest("high")},
+	{"work-glm-zai-stream", "work/glm-5.2-nvfp4", true, strictToolsRequest("high")},
 	{"azure-gpt55-prod", "azure/gpt55-prod", false, toolsRequest("high")},
 	{"azure-claude-prod", "azure/claude-prod", false, toolsRequest("high")},
 	{"bedrock-sonnet-5-stream", "bedrock/anthropic.claude-sonnet-5", true, webSearchRequest()},
@@ -535,6 +571,77 @@ func TestWireCaptureAssertions(t *testing.T) {
 
 	ollama := byName["ollama-llama3-optional-bearer"]
 	check(ollama.URL == "http://localhost:11434/v1/chat/completions" && ollama.Headers["Authorization"] == "", "ollama: %s %v", ollama.URL, ollama.Headers)
+
+	t.Run("saved prompt", func(t *testing.T) {
+		for _, target := range []struct {
+			ref          string
+			stream       bool
+			system, user []any
+		}{
+			{"openai/gpt-5.5", false, []any{"instructions"}, []any{"input", 0, "content", 0, "text"}},
+			{"openai-codex/gpt-5.6", true, []any{"input", 1, "content", 0, "text"}, []any{"input", 1, "content", 0, "text"}},
+			{"groq/openai/gpt-oss-120b", false, []any{"messages", 0, "content"}, []any{"messages", 0, "content"}},
+			{"anthropic/claude-sonnet-4-5", false, []any{"system", 0, "text"}, []any{"messages", 0, "content", 0, "text"}},
+			{"google/gemini-2.5-flash-lite", false, []any{"systemInstruction", "parts", 0, "text"}, []any{"contents", 0, "parts", 0, "text"}},
+		} {
+			for _, prompt := range []struct{ name, text string }{{"edges", " \t\r\nP_8a7\u2003 "}, {"whitespace", " \t\r\n\u2003 "}} {
+				modes := []string{"system", "developer", "leading-user", "separate-user"}
+				if strings.HasPrefix(target.ref, "anthropic/") {
+					modes = append(modes, "json", "json_schema")
+				}
+				for _, mode := range modes {
+					t.Run(target.ref+"/"+prompt.name+"/"+mode, func(t *testing.T) {
+						task := llm.User("U_2bd")
+						req := llm.Request{Messages: []llm.Message{llm.System(prompt.text), task}}
+						path, want := target.system, prompt.text
+						switch mode {
+						case "developer":
+							req.Messages[0] = llm.Developer(prompt.text)
+						case "separate-user":
+							req.Messages = []llm.Message{llm.User(prompt.text), llm.Assistant("A_3dc"), task}
+							path = target.user
+						case "leading-user":
+							// The session folds the prompt into its own leading text part.
+							want += "\n\n"
+							msg := llm.User(want)
+							msg.Content = append(msg.Content, task.Content...)
+							req.Messages = []llm.Message{msg}
+							path = target.user
+							if path[len(path)-1] == "content" { // Chat Completions joins text parts into one string.
+								want += "\n" + task.Text()
+							}
+						case "json", "json_schema":
+							req.ResponseFormat = &llm.ResponseFormat{Type: mode, JSONSchema: map[string]any{"type": "object"}}
+						}
+						c := h.run(t, wireCase{name: t.Name(), ref: target.ref, stream: target.stream, request: req})
+						var field any = bodyOf(t, c)
+						for _, key := range path {
+							switch k := key.(type) {
+							case string:
+								m, _ := field.(map[string]any)
+								field = m[k]
+							case int:
+								a, _ := field.([]any)
+								if k >= len(a) {
+									t.Fatalf("request omitted %v", path)
+								}
+								field = a[k]
+							}
+						}
+						got, _ := field.(string)
+						if req.ResponseFormat != nil {
+							suffix, ok := strings.CutPrefix(got, want+"\n\n")
+							if !ok || suffix == "" {
+								t.Fatalf("formatted instructions lost their saved prefix: %q", got)
+							}
+						} else if got != want {
+							t.Errorf("wire prompt = %q, want %q", got, want)
+						}
+					})
+				}
+			}
+		}
+	})
 }
 
 func bodyOf(t *testing.T, c capture) map[string]any {

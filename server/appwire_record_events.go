@@ -279,15 +279,20 @@ func (s *Server) finishProcessing() {
 		// SESSION_END will state the resting state, and until then idle
 		// stands in for it rather than the rest from before the turn.
 		awaitingTurnEnd := s.appActiveTurnID != "" && !s.appTurnEndStated
+		// The fallback frame below names the turn this input ran, so the id
+		// is captured before endProcessingLocked clears it.
+		endedTurnID := s.appActiveTurnID
 		s.endProcessingLocked()
 		threadID, ref := s.appRootIdentityLocked()
 		var pending []pendingAppNotification
+		deferredRest := false
 		for _, item := range s.appDeferredTerminalNotifications {
 			if item.threadID != threadID || item.ref != ref {
 				continue
 			}
 			if params, ok := item.params.(appwire.ThreadStatusChangedParams); ok && item.method == appwire.NotifyThreadStatusChanged {
 				s.status.State = params.Status.Type
+				deferredRest = true
 			}
 			pending = append(pending, item)
 		}
@@ -299,7 +304,15 @@ func (s *Server) finishProcessing() {
 		if held != nil {
 			held(s)
 		}
-		if len(pending) == 0 && wasProcessing && threadID != "" {
+		// A deferred end is an OLDER turn's terminal word, not this one's:
+		// the turn finishProcessing is clearing can end with no frame of its
+		// own (a notification wake that found no work emits no SESSION_END,
+		// and the root discards execution-end statuses), so the settlement
+		// below is its only publisher. It is emitted BESIDE the deferred
+		// replay — which keeps naming the turn it ended — and recovers the
+		// resting state from what the deferred status stated, rather than
+		// the rest from before either turn.
+		if wasProcessing && threadID != "" {
 			// The stored state is what the session's own events stated: a
 			// pass that ran no turn left it as it was, and a held rest or an
 			// interrupted turn's end restated it. Nothing runs once processing
@@ -307,7 +320,14 @@ func (s *Server) finishProcessing() {
 			// reads idle, stored and published alike; work that does follow
 			// publishes its own turn.
 			status := appStatus(s.status.State, false)
-			if awaitingTurnEnd || status == appwire.ThreadStatusActive {
+			// The deferred status stated the rest that still stands (the
+			// turn that cleared changed nothing), so the idle placeholder
+			// that stands in for an unstated rest must not overwrite it. An
+			// ACTIVE the deferred frame stated is a forecast, not a rest —
+			// the session's own active meant work would follow, and nothing
+			// follows once processing has ended — so it normalizes wherever
+			// it came from, deferred and stored alike.
+			if (!deferredRest && awaitingTurnEnd) || status == appwire.ThreadStatusActive {
 				s.status.State = appwire.ThreadStatusIdle
 				status = appwire.ThreadStatusIdle
 			}
@@ -315,7 +335,12 @@ func (s *Server) finishProcessing() {
 				threadID: threadID,
 				ref:      ref,
 				method:   appwire.NotifyThreadStatusChanged,
-				params:   appwire.ThreadStatusChangedParams{ThreadID: threadID, Ref: ref, Status: appwire.ThreadStatus{Type: status}},
+				params: appwire.ThreadStatusChangedParams{
+					ThreadID:    threadID,
+					Ref:         ref,
+					Status:      appwire.ThreadStatus{Type: status},
+					EndedTurnID: endedTurnID,
+				},
 			})
 		}
 		s.mu.Unlock()
@@ -451,6 +476,15 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 				pending = append(pending, pendingAppNotification{threadID: threadID, method: item.Method, params: params})
 			case appwire.ThreadStatusChangedParams:
 				projection.thread.Status = params.Status
+				// A wait ends with its turn even when no wake announced the
+				// retry (a Stop cancels the waiting call): the stored wait
+				// must not outlive the turn it belonged to, exactly as the
+				// root's facet is re-sampled at every turn boundary. The
+				// projection stores waits only, never resting failures, so
+				// clearing on a non-working status destroys nothing else.
+				if params.Status.Type != appwire.ThreadStatusActive {
+					projection.thread.Evener.Failure = nil
+				}
 				pending = append(pending, pendingAppNotification{threadID: threadID, method: item.Method, params: params})
 			case appwire.TaskUpdatedParams:
 				if !s.acceptTaskUpdatePublicationLocked(item.TaskStoreOwnerSessionID, item.TaskPublicationEpoch, item.TaskPublicationRevision) {
@@ -472,6 +506,21 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 				pending = append(pending, pendingAppNotification{threadID: threadID, method: item.Method, params: params})
 			case appwire.UrlsUpdatedParams:
 				projection.thread.Evener.SessionURLs = append([]appwire.SessionURL(nil), params.URLs...)
+				pending = append(pending, pendingAppNotification{threadID: threadID, method: item.Method, params: params})
+			case appwire.ThreadModelRetryParams:
+				// A quota wait's announcements are the wait's only durable
+				// trace on a descendant: the child's projection is built from
+				// events and samples no envelope, so the start must materialize
+				// the wait on the stored thread a read serves — deadline, stamp
+				// and summary, from the event's own stamped facts — and the
+				// wake must clear it, so a pane opened or reloaded mid-wait
+				// sees what the row already knows and stops seeing it the
+				// moment the retry goes out.
+				if failure, ok := event.Data.(events.ModelRetryData); ok && failure.WaitFailure != nil {
+					projection.thread.Evener.Failure = appwire.CloneThreadFailure(failure.WaitFailure)
+				} else if params.ResumesAt == 0 && params.WaitStartedAt != 0 {
+					projection.thread.Evener.Failure = nil
+				}
 				pending = append(pending, pendingAppNotification{threadID: threadID, method: item.Method, params: params})
 			default:
 				pending = append(pending, pendingAppNotification{threadID: threadID, method: item.Method, params: item.Params})

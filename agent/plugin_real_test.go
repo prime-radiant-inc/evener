@@ -214,7 +214,7 @@ func TestRealPlugin_Superpowers_HookExecution(t *testing.T) {
 
 	// Track events
 	var evs []events.EventKind
-	runner.SetEventCallback(func(kind events.EventKind, data events.EventData) {
+	runner.SetEventCallbackContext(func(_ context.Context, kind events.EventKind, data events.EventData) {
 		evs = append(evs, kind)
 	})
 

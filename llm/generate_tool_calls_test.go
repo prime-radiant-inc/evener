@@ -398,3 +398,56 @@ func TestExecuteToolCalls_UnknownToolDefaultsNonReadOnly(t *testing.T) {
 		}
 	})
 }
+
+// Preparation stores the open empty object schema for a parameterless tool and
+// records the original parameterless declaration separately, so strict-capable
+// adapters can still distinguish a parameterless tool (which closes to strict)
+// from a tool that explicitly advertised an open empty object (which stays
+// non-strict).
+func TestPrepareToolsPreservesTheNoArgumentDefinition(t *testing.T) {
+	t.Parallel()
+	idx, defs, err := prepareTools([]Tool{
+		{Definition: ToolDefinition{Name: "no_args"}},
+		{Definition: ToolDefinition{Name: "open_args", Parameters: map[string]any{"type": "object", "properties": map[string]any{}}}},
+	})
+	if err != nil {
+		t.Fatalf("prepareTools: %v", err)
+	}
+	if len(defs) != 2 {
+		t.Fatalf("got %d definitions, want 2", len(defs))
+	}
+	// The catalog carries the open empty schema, because that is what every
+	// adapter puts on the wire for a parameterless tool and the budget has to
+	// price it. A nil here would have the stamp describe a list smaller than the
+	// request, which is how admission came to accept requests the wire was over.
+	if defs[0].Parameters == nil {
+		t.Fatal("a tool that declared no parameters came out with nil: the budget and the wire would disagree about this request")
+	}
+	if typ, _ := defs[0].Parameters["type"].(string); typ != "object" {
+		t.Fatalf("parameters = %#v, want the open empty object every adapter sends", defs[0].Parameters)
+	}
+	if props, ok := defs[0].Parameters["properties"].(map[string]any); !ok || len(props) != 0 {
+		t.Fatalf("properties = %#v, want an empty object", defs[0].Parameters["properties"])
+	}
+	if _, has := defs[0].Parameters["additionalProperties"]; has {
+		t.Fatalf("additionalProperties = %#v, want it absent: this is the open schema", defs[0].Parameters["additionalProperties"])
+	}
+	// The declaration is still recoverable, which is what strict projection
+	// needs: an open object cannot be closed without narrowing what the caller
+	// declared, and a no-argument tool can be sent strict.
+	if !defs[0].DeclaresNoParameters() {
+		t.Fatal("the no-argument declaration was lost: strict projection can no longer tell it from an explicitly open schema")
+	}
+	// A caller who supplied a schema is not marked, and keeps the schema as given.
+	if defs[1].DeclaresNoParameters() {
+		t.Fatal("an explicitly supplied open schema was recorded as a no-argument declaration")
+	}
+	if defs[1].Parameters == nil {
+		t.Fatal("an explicitly supplied schema must be preserved as given")
+	}
+	// The compiled validator still accepts an empty argument object for the
+	// no-argument tool, so preserving nil must not cost argument checking.
+	if _, ok := idx["no_args"]; !ok {
+		t.Fatal("the no-argument tool must still be callable")
+	}
+}

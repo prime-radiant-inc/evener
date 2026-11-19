@@ -42,7 +42,7 @@ func renderResourceCapsJSON(cpus float64, memoryMB int64) string {
 func prependSystemPromptToUserMessage(systemPrompt string, user llm.Message) llm.Message {
 	combined := user
 	parts := make([]llm.ContentPart, 0, len(user.Content)+1)
-	if strings.TrimSpace(systemPrompt) != "" {
+	if systemPrompt != "" {
 		parts = append(parts, llm.ContentPart{Kind: llm.ContentText, Text: systemPrompt + "\n\n"})
 	}
 	parts = append(parts, user.Content...)

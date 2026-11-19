@@ -32,7 +32,7 @@
   "TestValidateDeployBinaryAcceptsAGenuineEvenerArtifact": 30
  },
  "packages": {
-  "primeradiant.com/evener": 183.27,
+  "primeradiant.com/evener": 320.0,
   "primeradiant.com/evener/appwire": 2.0,
   "primeradiant.com/evener/appwire/appwiretest": 2.0,
   "primeradiant.com/evener/buildinfo": 2.0,

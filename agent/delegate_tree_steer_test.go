@@ -494,7 +494,7 @@ func TestHeldAttentionDropShiftsTheInFlightBoundary(t *testing.T) {
 	runtime.turnHistoryBaseline = 1
 	runtime.mu.Unlock()
 	runtime.attentionMu.Lock()
-	runtime.attentionAutomaticDriveHolds = map[string]struct{}{heldID: {}}
+	runtime.attentionAutomaticDriveHolds = map[string]uint64{heldID: 1}
 	runtime.attentionMu.Unlock()
 
 	ctx := context.WithValue(context.WithValue(context.Background(), delegateRunLeaseContextKey{}, lease), delegateAttentionRunContextKey{}, struct{}{})

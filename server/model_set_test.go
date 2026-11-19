@@ -16,7 +16,7 @@ import (
 func TestHandleAppThreadModelSet_WhileProcessingReachesTheHook(t *testing.T) {
 	s := NewServer(ServerConfig{})
 	called := false
-	s.SetModelFunc(func(string) error { called = true; return nil })
+	s.SetModelFunc(func(string, string) error { called = true; return nil })
 	s.SetProcessing(true)
 
 	if _, err := s.handleAppThreadModelSet(context.Background(), appwire.ThreadModelSetParams{Model: "claude-x"}); err != nil {
@@ -30,7 +30,7 @@ func TestHandleAppThreadModelSet_WhileProcessingReachesTheHook(t *testing.T) {
 func TestHandleAppThreadModelSet_HookErrorSurfacesAsWireError(t *testing.T) {
 	s := NewServer(ServerConfig{})
 	hookErr := errors.New("unknown instance: nope")
-	s.SetModelFunc(func(string) error { return hookErr })
+	s.SetModelFunc(func(string, string) error { return hookErr })
 
 	_, err := s.handleAppThreadModelSet(context.Background(), appwire.ThreadModelSetParams{Model: "claude-x"})
 	if err == nil {
@@ -46,9 +46,9 @@ func TestHandleAppThreadModelSet_HookErrorSurfacesAsWireError(t *testing.T) {
 
 func TestHandleAppThreadModelSet_SuccessReturnsEmptyResponse(t *testing.T) {
 	s := NewServer(ServerConfig{})
-	var got string
+	var gotProvider, gotModel string
 	called := false
-	s.SetModelFunc(func(m string) error { got = m; called = true; return nil })
+	s.SetModelFunc(func(provider, model string) error { gotProvider, gotModel = provider, model; called = true; return nil })
 
 	resp, err := s.handleAppThreadModelSet(context.Background(), appwire.ThreadModelSetParams{Model: "claude-x"})
 	if err != nil {
@@ -57,15 +57,23 @@ func TestHandleAppThreadModelSet_SuccessReturnsEmptyResponse(t *testing.T) {
 	if resp != (appwire.EmptyResponse{}) {
 		t.Fatalf("expected EmptyResponse, got %#v", resp)
 	}
-	if !called || got != "claude-x" {
-		t.Fatalf("hook not called as expected: called=%v got=%q", called, got)
+	if !called || gotModel != "claude-x" {
+		t.Fatalf("hook not called as expected: called=%v got=%q", called, gotModel)
+	}
+	if gotProvider != "" {
+		t.Fatalf("hook got provider %q for a ref-only request, want an empty provider", gotProvider)
 	}
 }
 
-func TestHandleAppThreadModelSet_JoinsSlashedModelUnconditionally(t *testing.T) {
+// The model id may itself contain slashes (an OpenRouter row is
+// "anthropic/claude-opus-5"), so the provider the picker named must reach the
+// session as its own argument. Folding the pair into one ref would let the
+// resolver read the model's first segment as the instance and keep OpenRouter
+// when the reader picked the direct Anthropic row.
+func TestHandleAppThreadModelSet_PassesProviderAndSlashedModelApart(t *testing.T) {
 	s := NewServer(ServerConfig{})
-	var got string
-	s.SetModelFunc(func(m string) error { got = m; return nil })
+	var gotProvider, gotModel string
+	s.SetModelFunc(func(provider, model string) error { gotProvider, gotModel = provider, model; return nil })
 
 	if _, err := s.handleAppThreadModelSet(context.Background(), appwire.ThreadModelSetParams{
 		ModelProvider: "openrouter",
@@ -73,19 +81,22 @@ func TestHandleAppThreadModelSet_JoinsSlashedModelUnconditionally(t *testing.T) 
 	}); err != nil {
 		t.Fatalf("handleAppThreadModelSet: %v", err)
 	}
-	if got != "openrouter/anthropic/claude-x" {
-		t.Fatalf("expected joined ref %q, got %q", "openrouter/anthropic/claude-x", got)
+	if gotProvider != "openrouter" || gotModel != "anthropic/claude-x" {
+		t.Fatalf("hook got provider %q model %q, want the two halves unjoined", gotProvider, gotModel)
 	}
 }
 
 func TestHandleAppThreadModelSet_ThreadReadReflectsNewModelWithNoInterveningTurn(t *testing.T) {
 	s := NewServer(ServerConfig{})
 	seedStatus(s, StatusInfo{SessionID: "s1", Model: "gpt-5.4", Profile: "openai"})
-	s.SetModelFunc(func(m string) error {
+	s.SetModelFunc(func(provider, model string) error {
 		// Mirrors serve.go: the hook itself refreshes the cached session info
 		// synchronously after a successful switch, rather than waiting for the
-		// next EventSessionStart (which never fires again mid-session).
-		s.UpdateSessionInfo("s1", m, "anthropic")
+		// next EventSessionStart (which never fires again mid-session). It
+		// samples both halves off the committed profile, so the model is the
+		// bare id and the instance is the profile, the way thread/read and the
+		// cost lookup read them.
+		s.UpdateSessionInfo("s1", model, provider)
 		return nil
 	})
 
@@ -97,8 +108,9 @@ func TestHandleAppThreadModelSet_ThreadReadReflectsNewModelWithNoInterveningTurn
 	if err != nil {
 		t.Fatalf("handleAppThreadRead: %v", err)
 	}
-	if thread.Thread.ModelProvider != "anthropic/claude-opus-4-6" {
-		t.Fatalf("thread/read ModelProvider = %q, want anthropic/claude-opus-4-6 with no intervening turn", thread.Thread.ModelProvider)
+	if thread.Thread.ModelProvider != "claude-opus-4-6" || thread.Thread.Evener.Profile != "anthropic" {
+		t.Fatalf("thread/read = %q on profile %q, want claude-opus-4-6 on anthropic with no intervening turn",
+			thread.Thread.ModelProvider, thread.Thread.Evener.Profile)
 	}
 }
 

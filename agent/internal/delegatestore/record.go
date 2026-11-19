@@ -12,6 +12,18 @@ import (
 
 type State map[string]*Aggregate
 
+// SettledGeneration returns the newest generation that has settled,
+// excluding an open run in progress.
+func (a *Aggregate) SettledGeneration() uint64 {
+	if a == nil || a.Generation == 0 {
+		return 0
+	}
+	if a.CurrentRunOpen {
+		return a.Generation - 1
+	}
+	return a.Generation
+}
+
 // Phase is the delegate's durable aggregate phase, declared by the delegate
 // machine in appwire. The fold's legal edges come from that declaration.
 type Phase = appwire.DelegatePhase
@@ -165,24 +177,30 @@ type SandboxSnapshot struct {
 
 type Aggregate struct {
 	// CreatedAt is immutable membership order, independent of later run updates.
-	CreatedAt          time.Time         `json:"created_at,omitzero"`
-	DelegateID         string            `json:"delegate_id"`
-	Descriptor         Descriptor        `json:"descriptor"`
-	Generation         uint64            `json:"generation"`
-	Trigger            RunTrigger        `json:"trigger,omitempty"`
-	Phase              Phase             `json:"phase"`
-	CurrentRunOpen     bool              `json:"current_run_open"`
-	PreparedTerminal   *TerminalPacket   `json:"prepared_terminal,omitempty"`
-	Resumable          bool              `json:"resumable"`
-	NotResumableReason string            `json:"not_resumable_reason,omitempty"`
-	NeedsAttention     bool              `json:"needs_attention"`
-	RunStartedAt       time.Time         `json:"run_started_at,omitzero"`
-	LatestActivityAt   time.Time         `json:"latest_activity_at,omitzero"`
-	LatestIntent       string            `json:"latest_intent,omitempty"`
-	LatestOutcome      *Outcome          `json:"latest_outcome,omitempty"`
-	LatestPacket       *TerminalPacket   `json:"latest_packet,omitempty"`
-	PendingDeliveries  []PendingDelivery `json:"pending_deliveries,omitempty"`
-	PendingStopSeq     uint64            `json:"pending_stop_seq,omitempty"`
+	CreatedAt          time.Time       `json:"created_at,omitzero"`
+	DelegateID         string          `json:"delegate_id"`
+	Descriptor         Descriptor      `json:"descriptor"`
+	Generation         uint64          `json:"generation"`
+	Trigger            RunTrigger      `json:"trigger,omitempty"`
+	Phase              Phase           `json:"phase"`
+	CurrentRunOpen     bool            `json:"current_run_open"`
+	PreparedTerminal   *TerminalPacket `json:"prepared_terminal,omitempty"`
+	Resumable          bool            `json:"resumable"`
+	NotResumableReason string          `json:"not_resumable_reason,omitempty"`
+	NeedsAttention     bool            `json:"needs_attention"`
+	// AttentionHoldReleasedGeneration is the newest generation whose settled
+	// user-stop quiet a later event released. It is monotonic and zero when no
+	// release was ever journaled, and it is deliberately not part of
+	// publicProjection: it orders the quiet against its release for a cold
+	// restore, and no client reads it.
+	AttentionHoldReleasedGeneration uint64            `json:"attention_hold_released_generation,omitempty"`
+	RunStartedAt                    time.Time         `json:"run_started_at,omitzero"`
+	LatestActivityAt                time.Time         `json:"latest_activity_at,omitzero"`
+	LatestIntent                    string            `json:"latest_intent,omitempty"`
+	LatestOutcome                   *Outcome          `json:"latest_outcome,omitempty"`
+	LatestPacket                    *TerminalPacket   `json:"latest_packet,omitempty"`
+	PendingDeliveries               []PendingDelivery `json:"pending_deliveries,omitempty"`
+	PendingStopSeq                  uint64            `json:"pending_stop_seq,omitempty"`
 	// PendingStopAt is when the pending subtree stop was REQUESTED, taken from
 	// the request event's own timestamp, and zero whenever PendingStopSeq is.
 	// PendingStopSeq answers "was a stop asked for"; only this answers "how long

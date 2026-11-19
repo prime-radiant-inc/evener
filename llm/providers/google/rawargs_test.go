@@ -24,7 +24,7 @@ func rawArgsJSON(t *testing.T, argsJSON string) []byte {
 
 // decodeRawArgsComplete runs the google Complete decode path with a
 // scripted response body and returns the tool-call Arguments.
-func decodeRawArgsComplete(t *testing.T, body []byte) []byte {
+func decodeRawArgsComplete(t *testing.T, body []byte) *llm.ToolCallData {
 	t.Helper()
 	srv, _ := protoServer(t, 200, string(body))
 	res := protoLive(srv)
@@ -36,7 +36,7 @@ func decodeRawArgsComplete(t *testing.T, body []byte) []byte {
 	if len(calls) != 1 {
 		t.Fatalf("got %d tool calls, want 1", len(calls))
 	}
-	return calls[0].Arguments
+	return &calls[0]
 }
 
 // TestRawArgs_NonStream_InvalidUTF8 asserts invalid-UTF-8 bytes in the
@@ -45,7 +45,7 @@ func TestRawArgs_NonStream_InvalidUTF8(t *testing.T) {
 	t.Parallel()
 	argsJSON := `{"path":"` + "\xff" + `file.txt"}`
 	body := rawArgsJSON(t, argsJSON)
-	got := decodeRawArgsComplete(t, body)
+	got := []byte(decodeRawArgsComplete(t, body).WireArguments())
 	want := []byte(argsJSON)
 	if !bytes.Equal(got, want) {
 		t.Fatalf("non-stream Arguments = %q (% x), want %q (% x)", got, got, want, want)
@@ -55,16 +55,11 @@ func TestRawArgs_NonStream_InvalidUTF8(t *testing.T) {
 	}
 }
 
-// TestRawArgs_NonStream_NonCanonicalJSON asserts non-canonical valid JSON
-// (spacing/key-order) in the args object survives byte-identical.
+// TestRawArgs_NonStream_NonCanonicalJSON asserts canonical Arguments and the spelling.
 func TestRawArgs_NonStream_NonCanonicalJSON(t *testing.T) {
 	t.Parallel()
-	argsJSON := `{ "b" : 2 , "a" : 1 }`
-	body := rawArgsJSON(t, argsJSON)
-	got := decodeRawArgsComplete(t, body)
-	want := []byte(argsJSON)
-	if !bytes.Equal(got, want) {
-		t.Fatalf("non-stream Arguments = %q, want %q (non-canonical JSON should not be re-marshaled)", got, want)
+	if c := decodeRawArgsComplete(t, rawArgsJSON(t, `{ "b" : 2 , "a" : 1 }`)); string(c.Arguments) != `{"b":2,"a":1}` || c.WireArguments() != `{ "b" : 2 , "a" : 1 }` {
+		t.Fatalf("Arguments = %q, WireArguments = %q", c.Arguments, c.WireArguments())
 	}
 }
 
@@ -122,7 +117,7 @@ func decodeRawArgsStream(t *testing.T, sseBody string) []byte {
 	if len(calls) != 1 {
 		t.Fatalf("got %d tool calls, want 1: %+v", len(calls), final.Message.Content)
 	}
-	return calls[0].Arguments
+	return []byte(calls[0].WireArguments())
 }
 
 // TestRawArgs_Stream_InvalidUTF8 asserts invalid-UTF-8 bytes in streamed
@@ -327,7 +322,7 @@ func googleToolCallArguments(resp llm.Response) [][]byte {
 	calls := resp.ToolCalls()
 	args := make([][]byte, len(calls))
 	for i := range calls {
-		args[i] = calls[i].Arguments
+		args[i] = []byte(calls[i].WireArguments())
 	}
 	return args
 }

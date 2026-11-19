@@ -2,9 +2,11 @@ package chatcompletions
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/internal/protocolhttp"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -13,6 +15,34 @@ func assistantTurn(thinking, sig, text string) llm.Message {
 		{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: thinking, Signature: sig}},
 		{Kind: llm.ContentText, Text: text},
 	}}
+}
+
+func reasoningDetailMaps(t *testing.T, v any) []map[string]any {
+	var items []map[string]any
+	if raw, err := json.Marshal(v); err != nil || json.Unmarshal(raw, &items) != nil {
+		t.Fatalf("reasoning_details = %v, want an item array", v)
+	}
+	return items
+}
+
+func TestChatReplayPreservesReasoningDetailsKeyOrder(t *testing.T) {
+	t.Parallel()
+	const enc = `{"z":1,"type":"reasoning.encrypted","id":"r1","data":"blob","big":9007199254740993,"index":0.0}`
+	caps := registry.Resolved{Protocol: registry.ProtocolOpenAIChat}.Caps
+	for _, tc := range [][2]string{
+		{`[{"signature":"sig-1","type":"reasoning.text","text":null},` + enc + `]`, `[{"signature":"sig-1","type":"reasoning.text","text":"thought"},` + enc + `]`},
+		{`[{"signature":"sig-2","type":"reasoning.text"}]`, `[{"signature":"sig-2","type":"reasoning.text","text":"thought"}]`},
+		{`[{"signature":"sig-3","type":"reasoning\u002etext"}]`, `[{"signature":"sig-3","type":"reasoning\u002etext","text":"thought"}]`},
+	} {
+		resp, err := ExtractRecordedResponse([]byte(`{"choices":[{"message":{"reasoning_text":"thought","reasoning_details":`+tc[0]+`}}]}`), "m")
+		msgs, merr := toChatMessages([]llm.Message{resp.Message}, caps, true)
+		if err != nil || merr != nil {
+			t.Fatal(err, merr)
+		}
+		if wire, err := protocolhttp.MarshalBody(map[string]any{"messages": msgs}); err != nil || !strings.Contains(string(wire), tc[1]) {
+			t.Fatalf("wire = %s (%v), want %s", wire, err, tc[1])
+		}
+	}
 }
 
 func TestToChatMessages_RoleAndContentCaps(t *testing.T) {
@@ -67,8 +97,8 @@ func TestToChatMessages_ReasoningReplay(t *testing.T) {
 	details := base
 	details.ReasoningField = new("reasoning_details")
 	out, _ = toChatMessages(turn, details, true)
-	items, ok := out[0]["reasoning_details"].([]map[string]any)
-	if !ok || len(items) != 1 || items[0]["text"] != "thought" || items[0]["type"] != "reasoning.text" {
+	items := reasoningDetailMaps(t, out[0]["reasoning_details"])
+	if len(items) != 1 || items[0]["text"] != "thought" || items[0]["type"] != "reasoning.text" {
 		t.Fatalf("reasoning_details replay: %v", out[0])
 	}
 
@@ -77,7 +107,7 @@ func TestToChatMessages_ReasoningReplay(t *testing.T) {
 		{Kind: llm.ContentText, Text: "answer"},
 	}}}
 	out, _ = toChatMessages(signed, base, false)
-	items = out[0]["reasoning_details"].([]map[string]any)
+	items = reasoningDetailMaps(t, out[0]["reasoning_details"])
 	if len(items) != 1 || items[0]["text"] != "thought" || items[0]["signature"] != "sig-1" {
 		t.Fatalf("signed item must absorb the text: %v", items)
 	}
@@ -101,6 +131,16 @@ func TestToChatMessages_ReasoningReplay(t *testing.T) {
 	out, _ = toChatMessages([]llm.Message{{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "plain"}}}}, empty, false)
 	if v, has := out[0]["reasoning_content"]; !has || v != "" {
 		t.Fatalf("empty reasoning_content on assistant turns: %v", out[0])
+	}
+}
+
+// TestToChatMessages_ReplaysReasoningAcrossFullHistory pins that every prior assistant turn keeps its own reasoning.
+func TestToChatMessages_ReplaysReasoningAcrossFullHistory(t *testing.T) {
+	t.Parallel()
+	msgs := []llm.Message{assistantTurn("one", "reasoning", "a1"), llm.User("q"), assistantTurn("two", "reasoning", "a2")}
+	out, err := toChatMessages(msgs, registry.Caps{Fields: registry.Baseline(registry.ProtocolOpenAIChat)}, false)
+	if err != nil || out[0]["reasoning"] != "one" || out[2]["reasoning"] != "two" {
+		t.Fatalf("full-history reasoning replay = %v, err %v, want both prior turns", out, err)
 	}
 }
 

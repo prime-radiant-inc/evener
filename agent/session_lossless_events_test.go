@@ -431,7 +431,7 @@ func TestNotificationHookDeclinedOnceTheSessionLifetimeIsOver(t *testing.T) {
 		Timeout: 30,
 	})
 	dispatched := make(chan struct{}, 1)
-	runner.SetEventCallback(func(kind events.EventKind, _ events.EventData) {
+	runner.SetEventCallbackContext(func(_ context.Context, kind events.EventKind, _ events.EventData) {
 		if kind != events.EventHookStart {
 			return
 		}
