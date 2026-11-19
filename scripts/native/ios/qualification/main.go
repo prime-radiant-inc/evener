@@ -61,7 +61,7 @@ func main() {
 func runCLI() int {
 	mode := flag.String("mode", "build", "What to run: build (build, verify and prepare the UI test products) or journeys (run the journeys against downloaded products)")
 	output := flag.String("output", "", "New absolute directory for diagnostics (both modes) and DerivedData (build mode), must not exist")
-	derivedData := flag.String("derived-data", derivedDataFromEnv(), "New or cache-restored absolute directory for DerivedData in build mode; defaults to $IOS_DERIVED_DATA, then DERIVED_DATA inside --output")
+	derivedData := flag.String("derived-data", derivedDataFromEnv(), "New or cache-restored absolute directory for DerivedData in build mode; defaults to $IOS_DERIVED_DATA, then <output>/DerivedData")
 	products := flag.String("products", "", "DerivedData-shaped directory carrying Build/Products from the build job (journeys mode)")
 	flag.Usage = func() {
 		_, _ = fmt.Fprintln(flag.CommandLine.Output(), "Usage: build-simulator.sh --output ABSOLUTE_DIR [--derived-data ABSOLUTE_DIR]\n       run-ui-journeys.sh --products ABSOLUTE_DIR --output ABSOLUTE_DIR\nBuild mode builds a Release iPhone simulator app and embedded share extension, proves the intended journeys cannot run, registers the generated UI test target and builds the test products. Journeys mode runs the installed-app journeys against those downloaded products. Each mode creates and deletes its own simulator, requires the pinned macOS toolchain, and never publishes. Build mode also needs the installed npm/gem dependencies. Linux refuses before generation.")

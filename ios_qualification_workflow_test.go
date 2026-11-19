@@ -222,6 +222,11 @@ func TestIOSQualificationRestoresAndSavesTheDerivedDataBuild(t *testing.T) {
 	if !workflowRuns(job.Steps, "IOS_DERIVED_DATA=%s/ios-deriveddata") {
 		t.Error("simulator-build does not set the stable IOS_DERIVED_DATA path")
 	}
+	// A restored tree alone must not save: the mark step needs the release
+	// build's log, which exists only once xcodebuild started.
+	if !strings.Contains(job.Steps[mark].Run, "xcodebuild-release.log") {
+		t.Errorf("save-ready step does not require the release build to have started:\n%s", job.Steps[mark].Run)
+	}
 	// The handoff is the exported variable, not a flag: a pull-request head
 	// from before the flag exists must still parse its own build script.
 	if strings.Contains(job.Steps[build].Run, "--derived-data") {

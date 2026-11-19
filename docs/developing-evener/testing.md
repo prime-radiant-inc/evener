@@ -1193,7 +1193,10 @@ What is cached, and where it is saved:
   only: 2.4GB raw, roughly 1GB compressed. `ModuleCache.noindex` (987MB raw)
   stays out; if warm runs still spend material time in PrecompileModule,
   measure it before adding the module cache, which would roughly double the
-  entry. The products tarball the journeys job downloads is unchanged.
+  entry. A save also needs `xcodebuild-release.log`, which the runner creates
+  when xcodebuild starts, so a run that failed before the build does not
+  re-archive the restored tree under a new commit key. The products tarball
+  the journeys job downloads is unchanged.
 - **Nothing else.** setup-go's and setup-node's built-in caches stay off: they
   save from whichever ref first misses their key, pull requests and merge-queue
   branches included, an entry saved on a pull request's ref serves only that

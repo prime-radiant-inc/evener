@@ -198,7 +198,12 @@ jobs:
       - name: Mark the DerivedData build tree ready to save
         if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         run: |
-          if [ -d "$IOS_DERIVED_DATA/Build" ]; then
+          # The release build's log exists from the moment xcodebuild starts.
+          # A restored tree alone must not save: a run that failed before the
+          # build (npm ci, say) would archive the unchanged cache under a new
+          # commit key. A build that failed after starting still saves its
+          # partial output.
+          if [ -d "$IOS_DERIVED_DATA/Build" ] && [ -f "$QUALIFICATION_OUTPUT/xcodebuild-release.log" ]; then
             echo "IOS_DERIVED_DATA_READY=true" >> "$GITHUB_ENV"
           fi
       - name: Save the DerivedData build cache
