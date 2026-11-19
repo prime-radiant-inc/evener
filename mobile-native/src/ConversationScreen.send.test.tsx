@@ -369,7 +369,6 @@ function hubClient(
 			if (method === "thread/model/set") {
 				if (modelSetRefusal.message !== null) throw new WireError(modelSetRefusal.message, -32000);
 				return {
-					modelControlVersion: 1,
 					disposition: "accepted" as const,
 					modelControl: {
 						authority: { instanceId: "instance", bootGeneration: "test-boot" },

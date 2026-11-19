@@ -69,9 +69,8 @@ func (s *Session) ModelControlSnapshot() appwire.ModelControlSnapshot {
 func (s *Session) modelControlResponseLocked(disposition appwire.ModelControlDisposition) appwire.ThreadModelSetResponse {
 	snapshot := cloneModelControlSnapshot(s.modelControl)
 	return appwire.ThreadModelSetResponse{
-		ModelControlVersion: appwire.ModelControlVersion1,
-		Disposition:         disposition,
-		ModelControl:        &snapshot,
+		Disposition:  disposition,
+		ModelControl: &snapshot,
 	}
 }
 
@@ -111,9 +110,12 @@ func (s *Session) emitModelControlChanged(snapshot appwire.ModelControlSnapshot)
 
 func (s *Session) modelControlDesiredMatchesLocked(fence modelSwitchFence, lifecycle appwire.ModelControlLifecycle) bool {
 	desired := s.modelControl.Desired
+	// The sequence alone identifies the request: pickSeq is unique per
+	// request under s.mu, so the mutation id conjunct could never change the
+	// answer. The desired record's sequence is the daemon's own counter; it
+	// is not published on the wire.
 	return desired != nil &&
 		desired.RequestSequence == fence.pickSeq &&
-		desired.ClientMutationID == fence.clientMutationID &&
 		desired.Lifecycle == lifecycle
 }
 

@@ -462,13 +462,7 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
         defaultReasoningEffort: n.params.defaultReasoningEffort,
         modelControlState:
           model.modelControlState.kind === "unsupported"
-            ? {
-                kind: "unsupported",
-                canonicalDisplay,
-                ...(model.modelControlState.observedVersion === undefined
-                  ? {}
-                  : { observedVersion: model.modelControlState.observedVersion }),
-              }
+            ? { kind: "unsupported", canonicalDisplay }
             : { kind: "uninitialized", canonicalDisplay },
       };
     }

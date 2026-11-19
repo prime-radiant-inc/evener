@@ -185,8 +185,8 @@ func TestModelControlImmediateAcceptancePublishesDetachedSnapshot(t *testing.T) 
 	if err != nil {
 		t.Fatalf("SetModelControl: %v", err)
 	}
-	if response.ModelControlVersion != appwire.ModelControlVersion1 || response.Disposition != appwire.ModelControlDispositionAccepted {
-		t.Fatalf("response metadata = %+v, want version 1 accepted", response)
+	if response.Disposition != appwire.ModelControlDispositionAccepted {
+		t.Fatalf("response metadata = %+v, want accepted", response)
 	}
 	if response.ModelControl == nil || response.ModelControl.Revision != 2 {
 		t.Fatalf("response snapshot = %+v, want revision 2", response.ModelControl)

@@ -100,7 +100,6 @@ function reduceSequence(initial: ThreadModel, inputs: ModelControlInput[]) {
 
 function completeDesired(): NonNullable<ModelControlSnapshot["desired"]> {
   return {
-    requestSequence: 2,
     clientMutationId: "mutation-2",
     modelProvider: "openai",
     model: "gpt-5.5",
@@ -110,7 +109,6 @@ function completeDesired(): NonNullable<ModelControlSnapshot["desired"]> {
 
 function completeResponse(): ThreadModelSetResponse {
   return {
-    modelControlVersion: 1,
     disposition: "accepted",
     modelControl: snapshot(2, { desired: completeDesired() }),
   };
@@ -245,7 +243,6 @@ describe("explicit model-control state", () => {
     expect(result.model.modelControlState).toEqual({
       kind: "unsupported",
       canonicalDisplay: { modelProvider: "canonical-provider", model: "canonical-model" },
-      ...(version === undefined ? {} : { observedVersion: version }),
     });
     expect(modelControlAuthority(result.model)).toBeUndefined();
   });
@@ -285,7 +282,7 @@ describe("explicit model-control state", () => {
       { kind: "uninitialized", canonicalDisplay: CANONICAL },
       { kind: "ready", snapshot: snapshot(1, { provider: "openai", model: "gpt-5.5" }) },
       { kind: "recovering", lastSafeDisplay: { modelProvider: "deepseek", model: "deepseek-v4" } },
-      { kind: "unsupported", canonicalDisplay: CANONICAL, observedVersion: 9 },
+      { kind: "unsupported", canonicalDisplay: CANONICAL },
     ];
 
     for (const state of states) {
@@ -300,7 +297,6 @@ describe("explicit model-control state", () => {
   test("connection retirement drops an old authority's pending intent and preserves only canonical active display", () => {
     const pending = snapshot(2, {
       desired: {
-        requestSequence: 2,
         clientMutationId: "old-connection-pick",
         modelProvider: "openai",
         model: "gpt-5.5",
@@ -325,7 +321,7 @@ describe("explicit model-control state", () => {
     const states: ModelControlClientState[] = [
       { kind: "uninitialized", canonicalDisplay: CANONICAL },
       { kind: "recovering", lastSafeDisplay: CANONICAL },
-      { kind: "unsupported", canonicalDisplay: CANONICAL, observedVersion: 3 },
+      { kind: "unsupported", canonicalDisplay: CANONICAL },
     ];
 
     for (const state of states) expect(modelControlAuthority(model(state))).toBeUndefined();
@@ -450,7 +446,6 @@ describe("whole-snapshot reconciliation", () => {
   test("a local pending choice yields atomically to a foreign accepted choice", () => {
     const localPending = snapshot(2, {
       desired: {
-        requestSequence: 7,
         clientMutationId: "local-pick",
         modelProvider: "openai",
         model: "gpt-5.5",
@@ -461,7 +456,6 @@ describe("whole-snapshot reconciliation", () => {
       provider: "deepseek",
       model: "deepseek-v4",
       desired: {
-        requestSequence: 8,
         clientMutationId: "foreign-pick",
         modelProvider: "deepseek",
         model: "deepseek-v4",
@@ -483,7 +477,6 @@ describe("whole-snapshot reconciliation", () => {
     for (const lifecycle of ["pending", "applied", "rejected"] as const) {
       const current = snapshot(2, {
         desired: {
-          requestSequence: 8,
           clientMutationId: "mutation-8",
           modelProvider: "openai",
           model: "gpt-5.5",
@@ -503,7 +496,6 @@ describe("whole-snapshot reconciliation", () => {
       levels: ["minimal", "low", "medium", "high"],
       supportsReasoning: true,
       desired: {
-        requestSequence: 2,
         clientMutationId: "same-model",
         modelProvider: "anthropic",
         model: "claude-sonnet-4-5",
@@ -558,11 +550,9 @@ describe("model-set response validation", () => {
 
   test.each([
     ["empty object", {}],
-    ["missing version", { disposition: "accepted", modelControl: completeResponse().modelControl }],
-    ["unknown version", { ...completeResponse(), modelControlVersion: 2 }],
-    ["missing disposition", { modelControlVersion: 1, modelControl: completeResponse().modelControl }],
+    ["missing disposition", { modelControl: completeResponse().modelControl }],
     ["invalid disposition", { ...completeResponse(), disposition: "invalid" }],
-    ["missing snapshot", { modelControlVersion: 1, disposition: "accepted" }],
+    ["missing snapshot", { disposition: "accepted" }],
     ["null snapshot", { ...completeResponse(), modelControl: null }],
     ["missing authority", { ...completeResponse(), modelControl: { revision: 2, active: snapshot(2).active } }],
     [
@@ -601,16 +591,6 @@ describe("model-set response validation", () => {
         modelControl: {
           ...snapshot(2),
           active: { modelProvider: "anthropic", model: "claude", reasoningEffortLevels: [] },
-        },
-      },
-    ],
-    [
-      "zero desired sequence",
-      {
-        ...completeResponse(),
-        modelControl: {
-          ...snapshot(2),
-          desired: { ...completeDesired(), requestSequence: 0 },
         },
       },
     ],

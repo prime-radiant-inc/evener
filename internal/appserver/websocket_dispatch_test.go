@@ -171,8 +171,7 @@ func TestServeWebSocketFastRequestCompletesWhileSlowHandlerRuns(t *testing.T) {
 // answer before the parked one is released.
 func strictModelSetResponse(params appwire.ThreadModelSetParams) appwire.ThreadModelSetResponse {
 	return appwire.ThreadModelSetResponse{
-		ModelControlVersion: appwire.ModelControlVersion1,
-		Disposition:         appwire.ModelControlDispositionAccepted,
+		Disposition: appwire.ModelControlDispositionAccepted,
 		ModelControl: &appwire.ModelControlSnapshot{
 			Authority: appwire.ModelControlAuthority{InstanceID: "instance-1", BootGeneration: "boot-1"},
 			Revision:  1,

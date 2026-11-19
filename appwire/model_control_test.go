@@ -135,12 +135,11 @@ func TestModelControlSnapshotCarriersReuseWholeShape(t *testing.T) {
 	assertJSONKeys(t, snapshot.Authority, "instanceId", "bootGeneration")
 	assertJSONKeys(t, snapshot.Active, "modelProvider", "model", "reasoningEffortLevels", "supportsReasoning")
 	assertJSONKeys(t, *snapshot.Desired,
-		"requestSequence", "clientMutationId", "modelProvider", "model", "lifecycle")
+		"clientMutationId", "modelProvider", "model", "lifecycle")
 
 	response := ThreadModelSetResponse{
-		ModelControlVersion: ModelControlVersion1,
-		Disposition:         ModelControlDispositionAccepted,
-		ModelControl:        &snapshot,
+		Disposition:  ModelControlDispositionAccepted,
+		ModelControl: &snapshot,
 	}
 	notification := ThreadModelControlChangedParams{
 		ThreadID: "th_1", Ref: "local:th_1", ModelControl: snapshot,
@@ -150,7 +149,7 @@ func TestModelControlSnapshotCarriersReuseWholeShape(t *testing.T) {
 		ModelControl: &snapshot,
 	}}}
 
-	assertJSONKeys(t, response, "modelControlVersion", "disposition", "modelControl")
+	assertJSONKeys(t, response, "disposition", "modelControl")
 	assertJSONKeys(t, notification, "threadId", "ref", "modelControl")
 
 	responseJSON := modelControlJSON(t, response, "modelControl")
@@ -194,8 +193,6 @@ func TestValidateThreadModelSetResponseRequiresCompleteVersionOneSnapshot(t *tes
 		name   string
 		mutate func(*ThreadModelSetResponse)
 	}{
-		{"missing version", func(response *ThreadModelSetResponse) { response.ModelControlVersion = 0 }},
-		{"unknown version", func(response *ThreadModelSetResponse) { response.ModelControlVersion = 2 }},
 		{"missing disposition", func(response *ThreadModelSetResponse) { response.Disposition = "" }},
 		{"invalid disposition", func(response *ThreadModelSetResponse) { response.Disposition = "invalid" }},
 		{"missing snapshot", func(response *ThreadModelSetResponse) { response.ModelControl = nil }},
@@ -204,7 +201,6 @@ func TestValidateThreadModelSetResponseRequiresCompleteVersionOneSnapshot(t *tes
 		{"zero revision", func(response *ThreadModelSetResponse) { response.ModelControl.Revision = 0 }},
 		{"missing active provider", func(response *ThreadModelSetResponse) { response.ModelControl.Active.ModelProvider = "" }},
 		{"missing active model", func(response *ThreadModelSetResponse) { response.ModelControl.Active.Model = "" }},
-		{"zero desired sequence", func(response *ThreadModelSetResponse) { response.ModelControl.Desired.RequestSequence = 0 }},
 		{"missing desired mutation", func(response *ThreadModelSetResponse) { response.ModelControl.Desired.ClientMutationID = "" }},
 		{"missing desired provider", func(response *ThreadModelSetResponse) { response.ModelControl.Desired.ModelProvider = "" }},
 		{"missing desired model", func(response *ThreadModelSetResponse) { response.ModelControl.Desired.Model = "" }},
@@ -600,8 +596,7 @@ func modelControlJSON(t *testing.T, value any, path ...string) json.RawMessage {
 
 func completeModelControlResponse() ThreadModelSetResponse {
 	return ThreadModelSetResponse{
-		ModelControlVersion: ModelControlVersion1,
-		Disposition:         ModelControlDispositionAccepted,
+		Disposition: ModelControlDispositionAccepted,
 		ModelControl: &ModelControlSnapshot{
 			Authority: ModelControlAuthority{InstanceID: "instance_1", BootGeneration: "7"},
 			Revision:  9,
@@ -612,7 +607,6 @@ func completeModelControlResponse() ThreadModelSetResponse {
 				SupportsReasoning:     true,
 			},
 			Desired: &ModelControlDesired{
-				RequestSequence:  4,
 				ClientMutationID: "cm_1",
 				ModelProvider:    "anthropic",
 				Model:            "claude-opus-4-6",

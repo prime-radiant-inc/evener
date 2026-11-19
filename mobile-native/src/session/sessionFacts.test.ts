@@ -155,7 +155,6 @@ describe("the model chip (spec 8.5)", () => {
 				supportsReasoning: true,
 			},
 			desired: {
-				requestSequence: 2,
 				clientMutationId: "request-2",
 				modelProvider: "openai",
 				model: "gpt-5.5",

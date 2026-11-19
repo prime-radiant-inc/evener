@@ -73,9 +73,8 @@ func TestHandleAppThreadModelSet_CapableResponseAndReadUseOneSnapshot(t *testing
 			Set: func(params appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
 				got = params
 				return appwire.ThreadModelSetResponse{
-					ModelControlVersion: appwire.ModelControlVersion1,
-					Disposition:         appwire.ModelControlDispositionAccepted,
-					ModelControl:        &snapshot,
+					Disposition:  appwire.ModelControlDispositionAccepted,
+					ModelControl: &snapshot,
 				}, nil
 			},
 		}, nil
@@ -245,7 +244,7 @@ func TestHandleAppThreadModelSet_RemainsBoundAcrossConcurrentClear(t *testing.T)
 		return ModelControlBinding{Envelope: oldSource, Set: func(appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
 			close(started)
 			<-release
-			return appwire.ThreadModelSetResponse{ModelControlVersion: 1, Disposition: appwire.ModelControlDispositionAccepted, ModelControl: &oldSnapshot}, nil
+			return appwire.ThreadModelSetResponse{Disposition: appwire.ModelControlDispositionAccepted, ModelControl: &oldSnapshot}, nil
 		}}, nil
 	})
 	done := make(chan appwire.ThreadModelSetResponse, 1)

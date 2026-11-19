@@ -63,7 +63,6 @@ export function modelControlRead(thread: Thread): ThreadReadResponse {
 
 export function acceptedModelControl(params: ThreadModelSetParams): ThreadModelSetResponse {
 	return {
-		modelControlVersion: 1,
 		disposition: "accepted",
 		modelControl: {
 			authority: {
@@ -78,7 +77,6 @@ export function acceptedModelControl(params: ThreadModelSetParams): ThreadModelS
 				supportsReasoning: false,
 			},
 			desired: {
-				requestSequence: 2,
 				clientMutationId: params.clientMutationId,
 				modelProvider: params.modelProvider,
 				model: params.model,

@@ -231,9 +231,8 @@ func managerModelAuthority(read appwire.ThreadReadResponse) (appwire.ModelContro
 		return appwire.ModelControlAuthority{}, appwire.Unavailable("model control authority unavailable")
 	}
 	if err := appwire.ValidateThreadModelSetResponse(appwire.ThreadModelSetResponse{
-		ModelControlVersion: thread.Capabilities.ModelControlVersion,
-		Disposition:         appwire.ModelControlDispositionAccepted,
-		ModelControl:        thread.ModelControl,
+		Disposition:  appwire.ModelControlDispositionAccepted,
+		ModelControl: thread.ModelControl,
 	}); err != nil {
 		return appwire.ModelControlAuthority{}, appwire.Unavailable("model control authority unavailable")
 	}

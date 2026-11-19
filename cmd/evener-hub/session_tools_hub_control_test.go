@@ -480,9 +480,8 @@ func TestManagerSessionControlModelResumesPastThread(t *testing.T) {
 				},
 			}
 			return appwire.ThreadModelSetResponse{
-				ModelControlVersion: appwire.ModelControlVersion1,
-				Disposition:         appwire.ModelControlDispositionAccepted,
-				ModelControl:        &snapshot,
+				Disposition:  appwire.ModelControlDispositionAccepted,
+				ModelControl: &snapshot,
 			}, nil
 		})
 	})
@@ -542,9 +541,8 @@ func TestManagerSessionControlModelColdResumeAttachesRelay(t *testing.T) {
 				Active:    appwire.ModelControlActive{ModelProvider: params.ModelProvider, Model: params.Model, ReasoningEffortLevels: []string{}},
 			}
 			return appwire.ThreadModelSetResponse{
-				ModelControlVersion: appwire.ModelControlVersion1,
-				Disposition:         appwire.ModelControlDispositionAccepted,
-				ModelControl:        &snapshot,
+				Disposition:  appwire.ModelControlDispositionAccepted,
+				ModelControl: &snapshot,
 			}, nil
 		})
 	})
@@ -655,9 +653,8 @@ func testManagerSessionControlModelResolvedAlias(t *testing.T, stale bool) {
 			},
 		}
 		return appwire.ThreadModelSetResponse{
-			ModelControlVersion: appwire.ModelControlVersion1,
-			Disposition:         appwire.ModelControlDispositionAccepted,
-			ModelControl:        &snapshot,
+			Disposition:  appwire.ModelControlDispositionAccepted,
+			ModelControl: &snapshot,
 		}, nil
 	})
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
@@ -803,9 +800,8 @@ func TestManagerSessionControlModelResumesRemoteSavedThread(t *testing.T) {
 			accepted.Revision++
 			accepted.Active = appwire.ModelControlActive{ModelProvider: params.ModelProvider, Model: params.Model, ReasoningEffortLevels: []string{}}
 			return hostAdminReply{result: appwire.ThreadModelSetResponse{
-				ModelControlVersion: appwire.ModelControlVersion1,
-				Disposition:         appwire.ModelControlDispositionAccepted,
-				ModelControl:        &accepted,
+				Disposition:  appwire.ModelControlDispositionAccepted,
+				ModelControl: &accepted,
 			}}
 		default:
 			t.Fatalf("unexpected remote Manager method %q", method)

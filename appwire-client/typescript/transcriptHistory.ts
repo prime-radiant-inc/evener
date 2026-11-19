@@ -1351,7 +1351,9 @@ export function modelControlReadInputFromHydrated(
   }
   return {
     kind: "readAccepted",
-    version: state.kind === "unsupported" ? state.observedVersion : 1,
+    // An unsupported read advertises no version this client implements; the
+    // reducer's readAccepted branch keeps it unsupported from the absence.
+    version: state.kind === "unsupported" ? undefined : 1,
     authority: {
       instanceId: fresh.instanceId ?? "",
       bootGeneration: fresh.history?.bootGeneration ?? "",

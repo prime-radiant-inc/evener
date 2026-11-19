@@ -274,7 +274,6 @@ describe("choosing a model (spec 8.5)", () => {
 							supportsReasoning: true,
 						},
 						desired: {
-							requestSequence: 2,
 							clientMutationId: "request-2",
 							modelProvider: "anthropic",
 							model: "claude-haiku-5",
@@ -434,7 +433,6 @@ function snapshotFor(
 			? {}
 			: {
 					desired: {
-						requestSequence: revision,
 						clientMutationId: `request-${revision}`,
 						modelProvider: "anthropic",
 						model: desired,
@@ -500,7 +498,7 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 			const accepted = snapshotFor(2, RESUMED_AUTHORITY, params.model);
 			// The daemon keeps the change, so the screen's refresh read sees it.
 			live = { ...live, evener: { ...live.evener, modelControl: accepted } };
-			return { modelControlVersion: 1, disposition: "accepted" as const, modelControl: accepted };
+			return { disposition: "accepted" as const, modelControl: accepted };
 		});
 		const service = createConversationService(client);
 		const cold = await service.open(REF);
@@ -569,7 +567,6 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 				: { thread: liveThread(THIS_AUTHORITY), bootGeneration: THIS_AUTHORITY.bootGeneration },
 		);
 		client.on("thread/model/set", () => ({
-			modelControlVersion: 1,
 			disposition: "accepted" as const,
 			modelControl: snapshotFor(2, RESUMED_AUTHORITY, "claude-haiku-5"),
 		}));
@@ -648,7 +645,7 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 			// The daemon keeps the change: the read the reconnected screen takes
 			// reports it.
 			live = { ...live, evener: { ...live.evener, modelControl: accepted } };
-			return { modelControlVersion: 1, disposition: "accepted" as const, modelControl: accepted };
+			return { disposition: "accepted" as const, modelControl: accepted };
 		});
 		const service = createConversationService(client);
 		const cold = await service.open(REF);
@@ -776,7 +773,7 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 		});
 		client.on("thread/model/set", (params) => {
 			const modelControl = snapshotFor(2, RESUMED_AUTHORITY, params.model);
-			return { modelControlVersion: 1, disposition: "accepted" as const, modelControl };
+			return { disposition: "accepted" as const, modelControl };
 		});
 		const service = createConversationService(client);
 		const cold = await service.open(REF);
@@ -1109,7 +1106,6 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 			};
 		});
 		client.on("thread/model/set", () => ({
-			modelControlVersion: 1,
 			disposition: "accepted" as const,
 			modelControl: snapshotFor(2, RESUMED_AUTHORITY, "claude-haiku-5"),
 		}));
@@ -1173,7 +1169,6 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 					},
 		);
 		client.on("thread/model/set", () => ({
-			modelControlVersion: 1,
 			disposition: "accepted" as const,
 			modelControl: snapshotFor(3, RESUMED_AUTHORITY, "claude-haiku-5"),
 		}));
@@ -1326,9 +1321,7 @@ describe.each([
 					if (attempt < 2) response.reject(new WireError("rejection-sentinel", -32603));
 					else
 						response.resolve(
-							(method === "thread/model/set"
-								? { modelControlVersion: 1, disposition: "accepted", modelControl: modelSnapshot }
-								: {}) as never,
+							(method === "thread/model/set" ? { disposition: "accepted", modelControl: modelSnapshot } : {}) as never,
 						);
 					await settled;
 				});

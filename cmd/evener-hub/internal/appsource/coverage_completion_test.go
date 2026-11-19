@@ -98,6 +98,11 @@ func fuzzScenarioLocalDaemonSourceRPCSurface(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The desired record's request sequence is the daemon's internal counter
+	// and does not travel the wire, so the forwarded answer carries zero.
+	if d := wantModelControl.ModelControl; d != nil && d.Desired != nil {
+		d.Desired.RequestSequence = 0
+	}
 	if !reflect.DeepEqual(modelControl, wantModelControl) {
 		t.Fatalf("model response = %+v, want %+v", modelControl, wantModelControl)
 	}
@@ -149,9 +154,8 @@ func modelControlResponseForAppSourceTest() appwire.ThreadModelSetResponse {
 		},
 	}
 	return appwire.ThreadModelSetResponse{
-		ModelControlVersion: appwire.ModelControlVersion1,
-		Disposition:         appwire.ModelControlDispositionAccepted,
-		ModelControl:        &snapshot,
+		Disposition:  appwire.ModelControlDispositionAccepted,
+		ModelControl: &snapshot,
 	}
 }
 

@@ -885,7 +885,7 @@ func TestHubForceStopRejectsWaitingMutationUntilExplicitResume(t *testing.T) {
 					appserver.HandleTyped(daemon.Router(), method, func(_ context.Context, params appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
 						modelControl.Active = appwire.ModelControlActive{ModelProvider: params.ModelProvider, Model: params.Model, ReasoningEffortLevels: []string{}}
 						modelControl.Revision++
-						return appwire.ThreadModelSetResponse{ModelControlVersion: appwire.ModelControlVersion1, Disposition: appwire.ModelControlDispositionAccepted, ModelControl: &modelControl}, nil
+						return appwire.ThreadModelSetResponse{Disposition: appwire.ModelControlDispositionAccepted, ModelControl: &modelControl}, nil
 					})
 				} else {
 					daemon.Router().Handle(method, func(context.Context, json.RawMessage) (any, error) { return appwire.EmptyResponse{}, nil })

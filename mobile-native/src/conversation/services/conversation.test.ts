@@ -145,7 +145,6 @@ function modelControl(
 		...(desired
 			? {
 					desired: {
-						requestSequence: revision,
 						clientMutationId: `request-${revision}`,
 						modelProvider: "openai",
 						model: desired,
@@ -1028,7 +1027,6 @@ describe("ConversationService", () => {
 			const read = Promise.withResolvers<ThreadReadResponse>();
 			client.on("thread/read", () => read.promise);
 			client.on("thread/model/set", () => ({
-				modelControlVersion: 1,
 				disposition: "accepted",
 				modelControl: modelControl(2, { desired: "gpt-5.5" }),
 			}));
@@ -1088,8 +1086,8 @@ describe("ConversationService", () => {
 		it.each([
 			{},
 			{ modelControlVersion: 1 },
-			{ modelControlVersion: 1, disposition: "accepted" },
-			{ modelControlVersion: 1, disposition: "accepted", modelControl: { revision: 2 } },
+			{ disposition: "accepted" },
+			{ disposition: "accepted", modelControl: { revision: 2 } },
 		])("a partial model response %j starts one recovery read and is never replayed", async (response) => {
 			const { client, service } = setup({ thread: controlledThread() });
 			await service.open("ref-1");
@@ -1104,7 +1102,6 @@ describe("ConversationService", () => {
 				evenerErrorInfo: "mutationOutcomeUnknown",
 			});
 			client.on("thread/model/set", () => ({
-				modelControlVersion: 1,
 				disposition: "accepted",
 				modelControl: modelControl(3, { desired: "gpt-5.5" }),
 			}));
@@ -1138,7 +1135,6 @@ describe("ConversationService", () => {
 
 			await expect(service.changeModel("openai", "gpt-5.5")).rejects.toBe(failure);
 			client.on("thread/model/set", () => ({
-				modelControlVersion: 1,
 				disposition: "accepted",
 				modelControl: modelControl(3, { desired: "gpt-5.5" }),
 			}));
@@ -1153,7 +1149,6 @@ describe("ConversationService", () => {
 			const accepted = modelControl(2, { desired: "gpt-5.5" });
 			const { client, service } = setup({ thread: controlledThread(initial) });
 			client.on("thread/model/set", () => ({
-				modelControlVersion: 1,
 				disposition: "accepted",
 				modelControl: accepted,
 			}));
@@ -1208,7 +1203,6 @@ describe("ConversationService", () => {
 				lifecycle: "applied",
 			});
 			client.on("thread/model/set", () => ({
-				modelControlVersion: 1,
 				disposition: "superseded",
 				modelControl: canonical,
 			}));
@@ -1254,7 +1248,7 @@ describe("ConversationService", () => {
 			client.on("thread/model/set", async () => {
 				dispatched();
 				await held;
-				return { modelControlVersion: 1, disposition: "superseded", modelControl: canonical };
+				return { disposition: "superseded", modelControl: canonical };
 			});
 			const pick = service.changeModel("openai", "gpt-5.5");
 			await sent;
@@ -1280,12 +1274,10 @@ describe("ConversationService", () => {
 			client.on("thread/model/set", (params) => {
 				const sent = params as ThreadModelSetParams;
 				return {
-					modelControlVersion: 1,
 					disposition: "accepted",
 					modelControl: {
 						...modelControl(2, { active: "claude-sonnet-5" }),
 						desired: {
-							requestSequence: 2,
 							clientMutationId: sent.clientMutationId,
 							modelProvider: sent.modelProvider,
 							model: sent.model,
@@ -1339,12 +1331,10 @@ describe("ConversationService", () => {
 				dispatched();
 				await held;
 				return {
-					modelControlVersion: 1,
 					disposition: "accepted",
 					modelControl: {
 						...canonical,
 						desired: {
-							requestSequence: 3,
 							clientMutationId: asked.clientMutationId,
 							modelProvider: asked.modelProvider,
 							model: asked.model,
@@ -1374,12 +1364,10 @@ describe("ConversationService", () => {
 			client.on("thread/model/set", (params) => {
 				const sent = params as ThreadModelSetParams;
 				return {
-					modelControlVersion: 1,
 					disposition: "accepted",
 					modelControl: {
 						...modelControl(2, { active: "claude-sonnet-5" }),
 						desired: {
-							requestSequence: 2,
 							clientMutationId: sent.clientMutationId,
 							modelProvider: sent.modelProvider,
 							model: sent.model,
@@ -1413,7 +1401,6 @@ describe("ConversationService", () => {
 			await store.getState().openProjected(service, "ref-1");
 			const canonical = modelControl(3, { active: "claude-opus-4-6" });
 			client.on("thread/model/set", () => ({
-				modelControlVersion: 1,
 				disposition: "superseded",
 				modelControl: canonical,
 			}));
@@ -1476,7 +1463,6 @@ describe("ConversationService", () => {
 				return makeReadResponse(controlledThread(modelControl(1, { authority: MODEL_AUTHORITY_B })));
 			});
 			client.on("thread/model/set", () => ({
-				modelControlVersion: 1,
 				disposition: "accepted",
 				modelControl: modelControl(2, { authority: MODEL_AUTHORITY_B, desired: "gpt-5.5" }),
 			}));
@@ -1533,7 +1519,6 @@ describe("ConversationService", () => {
 				makeReadResponse(controlledThread(modelControl(1, { authority: MODEL_AUTHORITY_B }))),
 			);
 			client.on("thread/model/set", () => ({
-				modelControlVersion: 1,
 				disposition: "accepted",
 				modelControl: modelControl(2, { authority: MODEL_AUTHORITY_B, desired: "gpt-5.5" }),
 			}));
@@ -1631,17 +1616,12 @@ describe("ConversationService", () => {
 			await service.open("ref-1");
 			const delivered: AnyNotification[] = [];
 			service.subscribeNotifications((notification) => delivered.push(notification));
-			let resolveSet!: (response: {
-				modelControlVersion: number;
-				disposition: string;
-				modelControl: ModelControlSnapshot;
-			}) => void;
+			let resolveSet!: (response: { disposition: string; modelControl: ModelControlSnapshot }) => void;
 			let markSetStarted!: () => void;
 			const setStarted = new Promise<void>((resolve) => (markSetStarted = resolve));
 			client.on("thread/model/set", () => {
 				markSetStarted();
 				return new Promise<{
-					modelControlVersion: number;
 					disposition: string;
 					modelControl: ModelControlSnapshot;
 				}>((resolve) => (resolveSet = resolve));
@@ -1653,7 +1633,6 @@ describe("ConversationService", () => {
 			);
 			await service.readProjection("ref-1");
 			resolveSet({
-				modelControlVersion: 1,
 				disposition: "accepted",
 				modelControl: modelControl(2, { desired: "gpt-5.5" }),
 			});
@@ -1661,7 +1640,6 @@ describe("ConversationService", () => {
 			expect(delivered).toEqual([]);
 
 			client.on("thread/model/set", () => ({
-				modelControlVersion: 1,
 				disposition: "accepted",
 				modelControl: modelControl(2, { authority: MODEL_AUTHORITY_B, desired: "gpt-5.5" }),
 			}));
@@ -1675,7 +1653,6 @@ describe("ConversationService", () => {
 		it("does not dispatch a ready model mutation after close retires its binding", async () => {
 			const { client, service } = setup({ thread: controlledThread(modelControl(1)) });
 			client.on("thread/model/set", () => ({
-				modelControlVersion: 1,
 				disposition: "accepted",
 				modelControl: modelControl(2, { desired: "gpt-5.5" }),
 			}));
@@ -1694,7 +1671,6 @@ describe("ConversationService", () => {
 			let resolveRead!: (response: ThreadReadResponse) => void;
 			client.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => (resolveRead = resolve)));
 			client.on("thread/model/set", () => ({
-				modelControlVersion: 1,
 				disposition: "accepted",
 				modelControl: modelControl(2, { desired: "gpt-5.5" }),
 			}));
@@ -1776,7 +1752,6 @@ describe("ConversationService", () => {
 			let resolveRead!: (response: ThreadReadResponse) => void;
 			client.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => (resolveRead = resolve)));
 			client.on("thread/model/set", () => ({
-				modelControlVersion: 1,
 				disposition: "accepted",
 				modelControl: modelControl(4, { authority: MODEL_AUTHORITY_B, desired: "gpt-5.5" }),
 			}));
@@ -1805,7 +1780,6 @@ describe("ConversationService", () => {
 			let resolveRead!: (response: ThreadReadResponse) => void;
 			client.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => (resolveRead = resolve)));
 			client.on("thread/model/set", () => ({
-				modelControlVersion: 1,
 				disposition: "accepted",
 				modelControl: modelControl(3, { authority: MODEL_AUTHORITY_A, desired: "gpt-5.5" }),
 			}));

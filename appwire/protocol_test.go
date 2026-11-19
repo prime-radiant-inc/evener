@@ -484,7 +484,7 @@ func TestModelControlProtocolCatalog(t *testing.T) {
 			t.Fatalf("thread model set result type = %T, want ThreadModelSetResponse", method.Result)
 		}
 		assertRequiredJSONFields(t, reflect.TypeFor[ThreadModelSetParams](), "clientMutationId", "expectedInstanceId", "expectedBootGeneration")
-		assertRequiredJSONFields(t, reflect.TypeFor[ThreadModelSetResponse](), "modelControlVersion", "disposition", "modelControl")
+		assertRequiredJSONFields(t, reflect.TypeFor[ThreadModelSetResponse](), "disposition", "modelControl")
 		assertRequiredJSONFields(t, reflect.TypeFor[ModelControlDesired](), "clientMutationId")
 		assertGeneratedModelControlFieldsRequired(t)
 		goto notification
@@ -542,7 +542,6 @@ func assertGeneratedModelControlFieldsRequired(t *testing.T) {
 			[]byte("expectedBootGeneration: string;"),
 		}},
 		{"ThreadModelSetResponse", [][]byte{
-			[]byte("modelControlVersion: number;"),
 			[]byte("disposition: string;"),
 			[]byte("modelControl: ModelControlSnapshot | null;"),
 		}},

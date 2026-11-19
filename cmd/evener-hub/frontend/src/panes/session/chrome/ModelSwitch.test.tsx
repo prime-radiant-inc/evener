@@ -123,7 +123,6 @@ function modelControlSnapshot(lifecycle: "pending" | "applied" | "rejected"): Mo
       supportsReasoning: false,
     },
     desired: {
-      requestSequence: 2,
       clientMutationId: "11111111-1111-4111-8111-111111111111",
       modelProvider: "openai",
       model: "gpt-5.5",
@@ -181,7 +180,6 @@ function acceptedModelResponse(
   authority: ModelControlSnapshot["authority"] = { instanceId: "thr_a", bootGeneration: "1" },
 ) {
   return {
-    modelControlVersion: 1 as const,
     disposition: "accepted" as const,
     modelControl: {
       authority,
@@ -193,7 +191,6 @@ function acceptedModelResponse(
         supportsReasoning: false,
       },
       desired: {
-        requestSequence: 2,
         clientMutationId: params.clientMutationId,
         modelProvider: params.modelProvider,
         model: params.model,
