@@ -242,6 +242,9 @@ function columnRefs() {
 function spineRefs() {
   return screen.queryAllByTestId("cascade-spine").map((spine) => spine.getAttribute("data-scope-ref"));
 }
+function statusbarChip(name: RegExp) {
+  return within(screen.getByTestId("statusbar")).getByRole("button", { name });
+}
 function inspectedCascade() {
   const source: OpenPaneRecord = { id: "source", type: "session", params: { ref: "root" }, slot: "main" };
   const inspector: OpenPaneRecord = {
@@ -343,7 +346,7 @@ test("genuine cascade column movement supersedes reflow without Return or neighb
       child.scrollTop = 500;
       fireEvent.scroll(child);
     });
-    const inspect = screen.getByRole("button", { name: "Return to previous view" });
+    const inspect = statusbarChip(/^Agents,/);
     inspect.focus();
     rootGeometry.width = 352;
     rootGeometry.rowHeights[0] = 700;
@@ -372,17 +375,25 @@ test("root and child render through real conversation readers inside one scaffol
   await screen.findByText("child content child-id");
   expect(columnRefs()).toEqual(["root", "child"]);
   expect(mounted.container.querySelectorAll('[data-pane-scaffold="cascade"]')).toHaveLength(1);
+  // Desktop leaf columns omit per-column activity controls so the bottom
+  // StatusBar stays the single activity strip; a desktop non-leaf parent keeps
+  // compact header peeks above its transcript rather than a second bottom bar.
+  // A saved legacy in-place cascade (no params.inspection) still keeps its
+  // desktop Return action because the main group hides its tab strip.
   expect(screen.getAllByTestId("transcript-virtual-list")).toHaveLength(2);
-  // The per-column activity controls render below the transcript content.
-  for (const column of screen.getAllByTestId("cascade-column")) {
-    const content = within(column).getByTestId("cascade-column-content");
-    const controls = within(column).getByTestId("cascade-activity-controls");
-    expect(content.compareDocumentPosition(controls) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  }
+  const [parentColumn, leafColumn] = screen.getAllByTestId("cascade-column");
+  if (!parentColumn || !leafColumn) throw new Error("expected parent and leaf cascade columns");
+  expect(within(leafColumn).queryByTestId("cascade-activity-controls")).toBeNull();
+  const parentControls = within(parentColumn).getByTestId("cascade-activity-controls");
+  const parentContent = within(parentColumn).getByTestId("cascade-column-content");
+  expect(parentControls.compareDocumentPosition(parentContent) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(screen.getByTestId("statusbar")).toBeTruthy();
   // Every readable column renders its conversation: one composer each, no
   // more than the columns on screen.
   expect(screen.getAllByRole("textbox")).toHaveLength(2);
-  expect(screen.getByRole("button", { name: "Return to previous view" })).toBeTruthy();
+  const legacyReturn = screen.getByRole("button", { name: "Return to previous view" });
+  act(() => fireEvent.click(legacyReturn));
+  expect(currentPane()).toMatchObject({ id: "cascade", type: "session", params: { ref: "root" } });
   expect(fake.calls.filter((call) => /send|resume|steer|interrupt/.test(call.method))).toHaveLength(0);
 });
 
@@ -549,8 +560,17 @@ test("separated Zoom Return closes inspection and focuses its surviving source",
   const { source, inspector } = inspectedCascade();
   const sourceLifetime = conversationPaneLifetime(source);
   const inspectorLifetime = conversationPaneLifetime(inspector);
-  mount(fake);
+  const mounted = mount(fake);
   await screen.findByText("child content child-id");
+  // Separated desktop inspectors omit the scaffold header row and per-column
+  // activity controls: the tab close button dismisses inspection and StatusBar
+  // owns the single bottom activity strip.
+  const scaffoldBody = mounted.container.querySelector('[data-pane-scaffold="cascade"]');
+  expect(scaffoldBody?.previousElementSibling).toBeNull();
+  expect(screen.queryByTestId("pane-actions")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Return to previous view" })).toBeNull();
+  expect(within(screen.getByTestId("cascade-column")).queryByTestId("cascade-activity-controls")).toBeNull();
+  expect(screen.getByTestId("statusbar")).toBeTruthy();
   // The origin conversation is already live as its own pane, so the cascade
   // never renders it: the first drill shows only the subagent's conversation.
   expect(columnRefs()).toEqual(["child"]);
@@ -560,7 +580,7 @@ test("separated Zoom Return closes inspection and focuses its surviving source",
   // conversation never renders in the pane.
   expect(inspectorLifetime.composers.get("root")).toBeUndefined();
   requestPaneFocus(inspector.id);
-  act(() => fireEvent.click(screen.getByRole("button", { name: "Return to previous view" })));
+  act(() => returnFromAgentCascade(inspector.id));
   expect(workspaceStore.getState().panes).toEqual([source]);
   expect(workspaceStore.getState().focusedPaneId).toBe(source.id);
   expect(consumePaneFocus(source.id)).toBe(true);
@@ -569,6 +589,33 @@ test("separated Zoom Return closes inspection and focuses its surviving source",
   expect(inspectorLifetime.alive).toBe(false);
   expect(fake.calls.filter((call) => /send|resume|steer|interrupt/.test(call.method))).toHaveLength(0);
 });
+
+test.each(["single-pane-route", "main-slot"] as const)(
+  "a separated desktop inspector exposes in-pane Return when its tab strip is hidden (%s)",
+  async (hiddenReason) => {
+    const previousPath = window.location.pathname;
+    const { fake } = fixture();
+    const { source, inspector } = inspectedCascade();
+    if (hiddenReason === "single-pane-route") {
+      window.history.replaceState({}, "", "/thread/root");
+    } else {
+      source.slot = "secondary";
+      inspector.slot = "main";
+      workspaceStore.setState({ panes: [source, inspector], focusedPaneId: inspector.id });
+    }
+    try {
+      mount(fake);
+      await screen.findByText("child content child-id");
+      const button = screen.getByRole("button", { name: "Return to previous view" });
+      act(() => fireEvent.click(button));
+      expect(workspaceStore.getState().panes.map((pane) => pane.id)).toEqual([source.id]);
+      expect(workspaceStore.getState().focusedPaneId).toBe(source.id);
+      expect(consumePaneFocus(source.id)).toBe(true);
+    } finally {
+      window.history.replaceState({}, "", previousPath);
+    }
+  },
+);
 
 test("a live origin conversation never renders in the pane, at any depth", async () => {
   const { fake } = fixture();
@@ -702,7 +749,7 @@ test.each(["deleted", "missing"] as const)(
     expect(currentParams().ref).toBe("root");
     expect(columnRefs()).toEqual(["root"]);
     expect(screen.getByText("root content old-root")).toBeTruthy();
-    act(() => fireEvent.click(screen.getByRole("button", { name: "Return to previous view" })));
+    act(() => returnFromAgentCascade("cascade"));
     expect(currentPane()).toMatchObject({ id: "cascade", type: "session", params: { ref: "root" } });
     expect(fake.calls.filter((call) => /send|resume|steer|interrupt/.test(call.method))).toHaveLength(0);
   },
@@ -1237,7 +1284,7 @@ test("a rebound root retires old child edges and readers before replacement cont
   });
   observer.observe(mounted.container, { childList: true, subtree: true, characterData: true });
   try {
-    const button = screen.getByRole("button", { name: "Return to previous view" });
+    const button = statusbarChip(/^Agents,/);
     button.focus();
     identities.set("root", "new-root");
     act(() =>
@@ -1274,11 +1321,12 @@ test("a rebound live origin retires its stale descendants even though it never r
   await waitFor(() => expect(currentParams().ref).toBe("root"));
   expect(currentParams().edges).toEqual([]);
   expect(childView.alive).toBe(false);
-  // The popped origin never renders: the emptied pane keeps only the Return
-  // path back to the source conversation.
+  // The popped origin never renders: the emptied cascade pane stays mounted
+  // without rendering the origin column or any Return button clutter.
   expect(columnRefs()).toEqual([]);
   expect(spineRefs()).toEqual([]);
-  expect(screen.getByRole("button", { name: "Return to previous view" })).toBeTruthy();
+  expect(document.querySelector('[data-pane-scaffold="cascade"]')).not.toBeNull();
+  expect(screen.queryByRole("button", { name: "Return to previous view" })).toBeNull();
 });
 
 test("a live origin replaced before its first summary resolves still retires stale descendants", async () => {
@@ -1305,7 +1353,8 @@ test("a live origin replaced before its first summary resolves still retires sta
   expect(currentParams().edges).toEqual([]);
   expect(childView.alive).toBe(false);
   expect(columnRefs()).toEqual([]);
-  expect(screen.getByRole("button", { name: "Return to previous view" })).toBeTruthy();
+  expect(document.querySelector('[data-pane-scaffold="cascade"]')).not.toBeNull();
+  expect(screen.queryByRole("button", { name: "Return to previous view" })).toBeNull();
 });
 
 // Match the mobile browser query and publish the viewport for this standalone
@@ -1350,12 +1399,12 @@ test("a replaced nested origin never renders a non-leaf column on the phone", as
     fake.emitNotification({ method: "evener/thread/resync", params: { ref: "child", threadId: "wire-new-child" } }),
   );
   await waitFor(() => expect(currentParams().ref).toBe("child"));
-  // The popped origin never renders, at any depth: the phone keeps only the
-  // Return path, never the non-leaf root column under the selected
-  // conversation's name.
+  // The popped origin never renders, at any depth: the phone keeps no column
+  // and no in-pane Return button, never the non-leaf root column under the
+  // selected conversation's name.
   expect(columnRefs()).toEqual([]);
   expect(spineRefs()).toEqual([]);
-  expect(screen.getByRole("button", { name: "Return to previous view" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Return to previous view" })).toBeNull();
   expect(chromeStore.getState().paneTitle).toBe("child");
 });
 
@@ -1370,7 +1419,9 @@ test("the phone cascade keeps one title, with the conversation's composer at the
   expect(document.querySelector('[data-testid="cascade-column"] h3')).toBeNull();
   // The pane footer's status bar is desktop-only on the cascade: the
   // column's own controls below the transcript carry the activity, so no
-  // second chips row piles under the transcript.
+  // second chips row piles under the transcript. The phone top bar owns Back,
+  // so no in-pane Return button renders either.
+  expect(screen.queryByRole("button", { name: "Return to previous view" })).toBeNull();
   expect(screen.queryByTestId("statusbar")).toBeNull();
   expect(screen.getByTestId("cascade-activity-controls")).toBeTruthy();
   // The column's runtime state and the conversation's own composer sit

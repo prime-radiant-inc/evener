@@ -278,11 +278,19 @@ The origin conversation never renders in the cascade — no column and no spine 
 so a first drill shows only the subagent's conversation, and that lone column
 fills the pane. Keep the selected child and immediate parent readable above the
 removed origin; earlier ancestors become live 52px spines, and the spines are
-the breadcrumb: the pane has no title and no separate path nav. The parent is
+the breadcrumb: an ordinary desktop secondary inspector omits its scaffold
+header row (no title, no Return button) and has no separate path nav, while
+horizontal tabs truncate long titles so the active tab's close button stays
+reachable in narrow groups. When the desktop host hides the tab strip (a
+`/thread/{ref}` single-pane route, a main-slot inspector, or a saved legacy
+in-place cascade), the pane retains its in-pane Return action. The parent is
 400px wide. The leaf flexes with a 440px minimum. Narrow desktop surfaces
 scroll horizontally and reveal the selected leaf instead of squeezing either
-reader. Parent and leaf transcript scrollers remain independent, each column's
-activity controls sit below its transcript content, and the pane body hosting
+reader. Parent and leaf transcript scrollers remain independent, desktop leaf
+columns omit per-column activity controls and readable parent columns place
+their compact peeks in their header so the pane's bottom status bar is the
+single bottom activity strip (mobile columns keep their single bottom activity
+strip since the pane status bar is desktop-only), and the pane body hosting
 the spines and columns never scrolls as a unit.
 
 Only ancestor spines use the session list's
@@ -306,14 +314,16 @@ and late ancestry updates preserve geometry and focus. Reduced motion makes
 geometry changes immediate. Unknown ancestry stays visible rather than inventing
 a root or discarding the retained path.
 
-Return closes only the inspector and focuses its exact surviving source lifetime.
+Closing the inspector tab on desktop (or tapping Back on the phone) closes only
+the inspector and focuses its exact surviving source lifetime.
 A session source receives editor focus without moving its reader. A retired source
 is never recreated or replaced by a reused pane ID. Existing saved cascades without
-separated-inspection intent retain their recorded Return behavior. Open conversation
-opens an independent ordinary session pane. Saved intent preserves the selected
+separated-inspection intent retain their recorded return behavior through phone
+Back or the desktop legacy in-pane Return action. Saved intent preserves the selected
 ref, edges, read-only source and origin locator without serializing transcript
-payloads or image bytes. At the existing phone breakpoint, a saved cascade shows only its selected
-read-only content and Return; ordinary Agents activation keeps transcript
+payloads or image bytes. At the existing phone breakpoint, a saved cascade shows its selected live
+conversation with its composer, runtime state, and single bottom activity strip
+(using the phone top bar's Back button to dismiss); ordinary Agents activation keeps transcript
 navigation. See the [ownership contract](../product/session-activity.md#automatic-agent-cascade)
 and [real Chrome guard](../../cmd/evener-hub/frontend/scripts/cascadeguard/README.md).
 
