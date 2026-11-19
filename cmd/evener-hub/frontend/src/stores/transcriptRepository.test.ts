@@ -5323,3 +5323,494 @@ it("keeps the held body when a same-version merge supplies ask evidence", () => 
   expect(merged.text).toBe(durable.text);
   expect(merged.resolvedAskCalls).toEqual([{ turnId: "turn_1", callId: "call-6" }]);
 });
+
+// ---------------------------------------------------------------------------
+// Quota-wait reconciliation across the read cut (quota-wait Stage 2). The hub
+// delivers the read response between the pre-cut buffer and the post-cut
+// tail; acceptBeforeReadCut folds the buffered frames into transitions and
+// reconciles each against the adopted snapshot, which is authoritative for
+// turn ownership AND wait presence. Pre-cut frames may only enrich.
+// ---------------------------------------------------------------------------
+
+// A quota retry frame: the wait's start (positive delay, stamp, instant) or
+// its wake (no delay, the same stamp).
+function quotaRetryFrame(overrides: {
+  delayMs?: number;
+  waitStartedAt?: number;
+  resumesAt?: number;
+  turnId?: string;
+  model?: string;
+}): AnyNotification {
+  return {
+    method: "evener/thread/modelRetry",
+    params: {
+      threadId,
+      ref,
+      attempt: 1,
+      maxAttempts: 0,
+      delayMs: overrides.delayMs ?? 21_600_000,
+      errorClass: "quota_exceeded",
+      groupElapsedMs: 5_000,
+      attemptCap: 0,
+      ...(overrides.turnId !== undefined ? { turnId: overrides.turnId } : {}),
+      ...(overrides.model !== undefined ? { model: overrides.model } : {}),
+      ...(overrides.waitStartedAt !== undefined ? { waitStartedAt: overrides.waitStartedAt } : {}),
+      ...(overrides.resumesAt !== undefined ? { resumesAt: overrides.resumesAt } : {}),
+    },
+  } as AnyNotification;
+}
+
+// A thread/status/changed frame; activeTurnId names the running turn a
+// terminal frame left, endedTurnId the turn a Stop ended.
+function statusFrame(overrides: { type: string; activeTurnId?: string; endedTurnId?: string }): AnyNotification {
+  return {
+    method: "thread/status/changed",
+    params: {
+      threadId,
+      ref,
+      status: { type: overrides.type },
+      ...(overrides.activeTurnId !== undefined ? { activeTurnId: overrides.activeTurnId } : {}),
+      ...(overrides.endedTurnId !== undefined ? { endedTurnId: overrides.endedTurnId } : {}),
+    },
+  } as AnyNotification;
+}
+
+// The wire read the daemon answers mid-wait: a running turn with the wait's
+// failure summary, or the same running turn with no wait once the retry went
+// out.
+function quotaRead(overrides: {
+  waitStartedAt?: number;
+  resumesAt?: number;
+  activeTurnId?: string;
+  running?: boolean;
+}): ThreadReadResponse {
+  const response = read(`quota-${overrides.waitStartedAt ?? 0}`);
+  response.thread.status = { type: "active" };
+  response.thread.evener.activeTurnId = overrides.activeTurnId ?? "turn_1";
+  response.thread.evener.failure =
+    overrides.waitStartedAt !== undefined && overrides.resumesAt !== undefined
+      ? { title: "Usage limit reached", resumesAt: overrides.resumesAt, waitStartedAt: overrides.waitStartedAt }
+      : undefined;
+  return response;
+}
+
+// Scenario 6: a same-buffer start+wake pair over a snapshot already showing
+// the resumed output cancels as one transition — ended stamp kept, nothing
+// installed (no countdown, no chip).
+it("a pre-cut start+wake pair over a wait-free snapshot installs nothing and keeps the ended stamp", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const deadline = Date.parse("2026-11-07T14:30:00Z");
+  // The snapshot: the turn still running, no wait (the retry already went
+  // out before the read's cut).
+  expect(
+    owner.acceptRead(quotaRead({ activeTurnId: "turn_1" }), { lifetime: 1, readId: "cut-6", boundary: "cut-6" }),
+  ).toBe(true);
+  const before = owner.getSnapshot();
+  expect(before?.quotaResumesAt).toBeUndefined();
+
+  owner.acceptBeforeReadCut(
+    [
+      quotaRetryFrame({ waitStartedAt: 7, resumesAt: deadline, turnId: "turn_1" }),
+      quotaRetryFrame({ delayMs: 0, waitStartedAt: 7, turnId: "turn_1" }),
+    ],
+    { lifetime: 1, adoptedRead: true },
+  );
+
+  const model = owner.getSnapshot();
+  expect(model?.quotaResumesAt).toBeUndefined();
+  expect(model?.quotaWaitStartedAt).toBeUndefined();
+  expect(model?.modelRetry).toBeUndefined();
+  expect(model?.quotaWaitEndedStamp).toBe(7);
+  await owner.settled();
+  owner.dispose();
+});
+
+// Scenario 5: a buffered active-status + announcement pair behind a Stop the
+// snapshot already reflected must not revive the stopped turn, and the
+// buffered wait start against a wait-free snapshot installs nothing.
+it("a buffered active-status and wait start behind a reflected Stop revive nothing", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const deadline = Date.parse("2026-11-07T14:30:00Z");
+  // The snapshot: idle, no running turn — the Stop is reflected.
+  expect(owner.acceptRead(read("stopped"), { lifetime: 1, readId: "cut-5", boundary: "cut-5" })).toBe(true);
+  expect(owner.getSnapshot()?.status.type).toBe("idle");
+
+  owner.acceptBeforeReadCut(
+    [
+      statusFrame({ type: "active", activeTurnId: "turn_1" }),
+      quotaRetryFrame({ waitStartedAt: 8, resumesAt: deadline, turnId: "turn_1" }),
+    ],
+    { lifetime: 1, adoptedRead: true },
+  );
+
+  const model = owner.getSnapshot();
+  expect(model?.status.type).toBe("idle");
+  expect(model?.runningTurnId).toBeUndefined();
+  expect(model?.quotaResumesAt).toBeUndefined();
+  expect(model?.quotaWaitStartedAt).toBeUndefined();
+  await owner.settled();
+  owner.dispose();
+});
+
+// Scenario 10: a buffered terminal status whose endedTurnId names the turn
+// the snapshot still shows running applies, ending that turn.
+it("a pre-cut terminal status naming the snapshot's running turn ends that turn", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const deadline = Date.parse("2026-11-07T14:30:00Z");
+  expect(
+    owner.acceptRead(quotaRead({ waitStartedAt: 9, resumesAt: deadline, activeTurnId: "turn_1" }), {
+      lifetime: 1,
+      readId: "cut-10",
+      boundary: "cut-10",
+    }),
+  ).toBe(true);
+  expect(owner.getSnapshot()?.runningTurnId).toBe("turn_1");
+
+  owner.acceptBeforeReadCut([statusFrame({ type: "idle", endedTurnId: "turn_1" })], {
+    lifetime: 1,
+    adoptedRead: true,
+  });
+
+  const model = owner.getSnapshot();
+  expect(model?.runningTurnId).toBeUndefined();
+  expect(model?.status.type).toBe("idle");
+  // The wait ended with its turn: cleared whole, stamp recorded.
+  expect(model?.quotaResumesAt).toBeUndefined();
+  expect(model?.quotaWaitStartedAt).toBeUndefined();
+  expect(model?.quotaWaitEndedStamp).toBe(9);
+  await owner.settled();
+  owner.dispose();
+});
+
+// Scenario 10's older-daemon half: a buffered Stop with NO endedTurnId
+// preserves the snapshot's running turn — nothing infers ownership.
+it("a pre-cut Stop with no endedTurnId preserves the snapshot's running turn", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const deadline = Date.parse("2026-11-07T14:30:00Z");
+  expect(
+    owner.acceptRead(quotaRead({ waitStartedAt: 10, resumesAt: deadline, activeTurnId: "turn_1" }), {
+      lifetime: 1,
+      readId: "cut-10b",
+      boundary: "cut-10b",
+    }),
+  ).toBe(true);
+
+  owner.acceptBeforeReadCut([statusFrame({ type: "idle" })], { lifetime: 1, adoptedRead: true });
+
+  const model = owner.getSnapshot();
+  expect(model?.runningTurnId).toBe("turn_1");
+  expect(model?.status.type).toBe("active");
+  expect(model?.quotaResumesAt).toBe(new Date(deadline).toISOString());
+  await owner.settled();
+  owner.dispose();
+});
+
+// Scenario 19: an older buffered Stop (no replacement frame after it) followed
+// by a snapshot naming a NEWER running turn: the snapshot wins, the Stop
+// retires nothing — its endedTurnId names a turn that is not the snapshot's
+// running one.
+it("a pre-cut Stop naming a replaced turn retires nothing against the snapshot's newer turn", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const deadline = Date.parse("2026-11-07T14:30:00Z");
+  expect(
+    owner.acceptRead(quotaRead({ waitStartedAt: 11, resumesAt: deadline, activeTurnId: "turn_2" }), {
+      lifetime: 1,
+      readId: "cut-19",
+      boundary: "cut-19",
+    }),
+  ).toBe(true);
+  expect(owner.getSnapshot()?.runningTurnId).toBe("turn_2");
+
+  owner.acceptBeforeReadCut([statusFrame({ type: "idle", endedTurnId: "turn_1" })], {
+    lifetime: 1,
+    adoptedRead: true,
+  });
+
+  const model = owner.getSnapshot();
+  expect(model?.runningTurnId).toBe("turn_2");
+  expect(model?.status.type).toBe("active");
+  expect(model?.quotaResumesAt).toBe(new Date(deadline).toISOString());
+  expect(model?.quotaWaitStartedAt).toBe(11);
+  await owner.settled();
+  owner.dispose();
+});
+
+// Scenario 7's pre-cut half: the buffer holds an A→B replacement, but the
+// snapshot already names B — the snapshot's own transition wins and the
+// buffered frame publishes nothing pre-cut.
+it("a pre-cut replacement frame publishes nothing against the snapshot's own turn", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const deadline = Date.parse("2026-11-07T14:30:00Z");
+  expect(
+    owner.acceptRead(quotaRead({ waitStartedAt: 12, resumesAt: deadline, activeTurnId: "turn_2" }), {
+      lifetime: 1,
+      readId: "cut-7",
+      boundary: "cut-7",
+    }),
+  ).toBe(true);
+
+  owner.acceptBeforeReadCut([statusFrame({ type: "active", activeTurnId: "turn_2" })], {
+    lifetime: 1,
+    adoptedRead: true,
+  });
+
+  // Enrichment only: the frame matched the snapshot's running turn, so the
+  // status stays as the read set it.
+  const model = owner.getSnapshot();
+  expect(model?.runningTurnId).toBe("turn_2");
+  expect(model?.quotaWaitStartedAt).toBe(12);
+  await owner.settled();
+  owner.dispose();
+});
+
+// Scenario 12: an equal-stamp buffered start fills the chip's metadata
+// without moving the snapshot's deadline, and metadata matching is by stamp —
+// never by turn id (the buffered frame names the same turn here only because
+// that is where the wait lives; the stamp is what admits it).
+it("an equal-stamp pre-cut start fills chip metadata without moving the deadline", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const deadline = Date.parse("2026-11-07T14:30:00Z");
+  expect(
+    owner.acceptRead(quotaRead({ waitStartedAt: 13, resumesAt: deadline, activeTurnId: "turn_1" }), {
+      lifetime: 1,
+      readId: "cut-12",
+      boundary: "cut-12",
+    }),
+  ).toBe(true);
+
+  owner.acceptBeforeReadCut(
+    [quotaRetryFrame({ waitStartedAt: 13, resumesAt: deadline, turnId: "turn_1", model: "wait/model" })],
+    {
+      lifetime: 1,
+      adoptedRead: true,
+    },
+  );
+
+  const model = owner.getSnapshot();
+  expect(model?.quotaResumesAt).toBe(new Date(deadline).toISOString());
+  expect(model?.quotaWaitStartedAt).toBe(13);
+  expect(model?.modelRetry?.model).toBe("wait/model");
+  await owner.settled();
+  owner.dispose();
+});
+
+// Scenario 15: a wake for a wait the model does not hold (the snapshot
+// carries no wait) records only the ended stamp — no chip, no stall restamp.
+it("a pre-cut wake for an unheld wait records only the ended stamp", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  expect(
+    owner.acceptRead(quotaRead({ activeTurnId: "turn_1" }), { lifetime: 1, readId: "cut-15", boundary: "cut-15" }),
+  ).toBe(true);
+  const before = owner.getSnapshot();
+  const beforeFrameAt = before?.lastFrameAt;
+
+  owner.acceptBeforeReadCut([quotaRetryFrame({ delayMs: 0, waitStartedAt: 14, turnId: "turn_1" })], {
+    lifetime: 1,
+    adoptedRead: true,
+  });
+
+  const model = owner.getSnapshot();
+  expect(model?.quotaWaitEndedStamp).toBe(14);
+  expect(model?.modelRetry).toBeUndefined();
+  expect(model?.quotaResumesAt).toBeUndefined();
+  // A pre-cut transition that only enriches restamps nothing: the stall
+  // clock keeps measuring the same silence.
+  expect(model?.lastFrameAt).toBe(beforeFrameAt);
+  await owner.settled();
+  owner.dispose();
+});
+
+// Scenario 9: a refused read drops only its pre-cut quota transitions; the
+// rest of the buffer still delivers by its own rules.
+it("a refused read drops only the pre-cut quota transitions", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const deadline = Date.parse("2026-11-07T14:30:00Z");
+  expect(
+    owner.acceptRead(quotaRead({ waitStartedAt: 15, resumesAt: deadline, activeTurnId: "turn_1" }), {
+      lifetime: 1,
+      readId: "cut-9",
+      boundary: "cut-9",
+    }),
+  ).toBe(true);
+  const adopted = owner.getSnapshot();
+  expect(adopted?.quotaWaitStartedAt).toBe(15);
+
+  // The refused re-read leaves the model exactly as the first read set it.
+  const refused = quotaRead({ activeTurnId: "turn_1" });
+  refused.snapshot = { incarnation: "other", length: 99 };
+  expect(owner.acceptRead(refused, { lifetime: 1, readId: "cut-9-refused", boundary: "cut-9-refused" })).toBe(false);
+
+  owner.acceptBeforeReadCut(
+    [
+      // A quota transition ordered against the refused snapshot: dropped.
+      quotaRetryFrame({ waitStartedAt: 16, resumesAt: deadline + 3_600_000, turnId: "turn_1" }),
+      // History the current owner still takes by its own rules.
+      historyUpdate("quota-refused-history", 9),
+    ],
+    { lifetime: 1, adoptedRead: false },
+  );
+
+  const model = owner.getSnapshot();
+  // The quota transition is gone: no new wait, no deadline move.
+  expect(model?.quotaWaitStartedAt).toBe(15);
+  expect(model?.quotaResumesAt).toBe(new Date(deadline).toISOString());
+  // The history update delivered anyway.
+  expect(model?.turns.flatMap((turn) => turn.items).map((item) => item.transcriptKey)).toContain(
+    "item-quota-refused-history",
+  );
+  await owner.settled();
+  owner.dispose();
+});
+
+// Scenario 3's replay variant: a pre-cut start whose stamp the buffer's own
+// wake already ended cannot restamp a wait — the pair is one cancellation and
+// the ended stamp outlives it.
+it("a pre-cut start after its own wake cannot restamp the ended wait", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const deadline = Date.parse("2026-11-07T14:30:00Z");
+  expect(
+    owner.acceptRead(quotaRead({ activeTurnId: "turn_1" }), { lifetime: 1, readId: "cut-3", boundary: "cut-3" }),
+  ).toBe(true);
+
+  // The buffer holds the wake before the late start (delivery order): the
+  // wake records the ended stamp, and the start that follows names the same
+  // ended wait.
+  owner.acceptBeforeReadCut(
+    [
+      quotaRetryFrame({ delayMs: 0, waitStartedAt: 17, turnId: "turn_1" }),
+      quotaRetryFrame({ waitStartedAt: 17, resumesAt: deadline + 3_600_000, turnId: "turn_1" }),
+    ],
+    { lifetime: 1, adoptedRead: true },
+  );
+
+  const model = owner.getSnapshot();
+  expect(model?.quotaWaitEndedStamp).toBe(17);
+  expect(model?.quotaWaitStartedAt).toBeUndefined();
+  expect(model?.quotaResumesAt).toBeUndefined();
+  await owner.settled();
+  owner.dispose();
+});
+
+// Scenario 18: an idle snapshot followed by a genuine post-cut wait start
+// publishes the new wait over the idle snapshot — post-cut frames apply in
+// delivery order as themselves, through the ordinary accept path.
+it("a post-cut wait start publishes over an idle snapshot", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const deadline = Date.parse("2026-11-07T14:30:00Z");
+  expect(owner.acceptRead(read("idle-snapshot"), { lifetime: 1, readId: "cut-18", boundary: "cut-18" })).toBe(true);
+  expect(owner.getSnapshot()?.status.type).toBe("idle");
+
+  // The frame arrives after the response cut: ordinary delivery order.
+  expect(
+    owner.accept(quotaRetryFrame({ waitStartedAt: 18, resumesAt: deadline, turnId: "turn_1" }), { lifetime: 1 }),
+  ).toBe(true);
+
+  const model = owner.getSnapshot();
+  expect(model?.quotaWaitStartedAt).toBe(18);
+  expect(model?.quotaResumesAt).toBe(new Date(deadline).toISOString());
+  expect(model?.modelRetry?.errorClass).toBe("quota_exceeded");
+  await owner.settled();
+  owner.dispose();
+});
+
+// A post-cut wait start the repository already accepted live (the frame
+// carries its acceptance marker) must not be retired by the wait-free read
+// that arrives before it: the read retires only a wait held AT the cut, and
+// the tail's newer start stands as the live wait.
+it("a wait-free read does not end a wait the post-cut tail already started", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const deadline = Date.parse("2026-11-07T14:30:00Z");
+  expect(
+    owner.acceptRead(quotaRead({ activeTurnId: "turn_1" }), { lifetime: 1, readId: "cut-tail", boundary: "cut-tail" }),
+  ).toBe(true);
+  expect(owner.getSnapshot()?.quotaWaitStartedAt).toBeUndefined();
+
+  // The tail frame arrives live and is accepted into the repository.
+  const start = quotaRetryFrame({ waitStartedAt: 22, resumesAt: deadline, turnId: "turn_1" });
+  expect(owner.accept(start, { lifetime: 1 })).toBe(true);
+  expect(owner.getSnapshot()?.quotaWaitStartedAt).toBe(22);
+
+  // The wait-free read lands afterwards (its cut predates the start): the
+  // read's own retirement is refused — the accepted start is the live wait,
+  // named to the read as a post-cut stamp so its wait-free reconciliation
+  // spares it (the tail replays the start after the read applies).
+  const waitFree = quotaRead({ activeTurnId: "turn_1" });
+  waitFree.snapshot = { incarnation: identity.incarnation, length: 2 };
+  expect(
+    owner.acceptRead(waitFree, {
+      lifetime: 1,
+      readId: "cut-tail-2",
+      boundary: "cut-tail-2",
+      postCutWaitStamps: new Set([22]),
+    }),
+  ).toBe(true);
+
+  const model = owner.getSnapshot();
+  expect(model?.quotaWaitStartedAt).toBe(22);
+  expect(model?.quotaResumesAt).toBe(new Date(deadline).toISOString());
+  expect(model?.quotaWaitEndedStamp).toBeUndefined();
+  await owner.settled();
+  owner.dispose();
+});
+
+// Pre-cut replay order: an accepted output update outside the read's window
+// delivered BEFORE the wait's matching start must not land after it. The
+// start is the buffer's own word that the wait stood at delivery time, so
+// replaying in delivery order keeps the chip (model tag, elapsed) the start
+// installed — an earlier pass that applied quota frames first let the older
+// update's chip-clearing rule delete the newer start's chip.
+it("a pre-cut output update before a matching start does not strip the start's chip", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const deadline = Date.parse("2026-11-07T14:30:00Z");
+  expect(
+    owner.acceptRead(quotaRead({ waitStartedAt: 31, resumesAt: deadline, activeTurnId: "turn_1" }), {
+      lifetime: 1,
+      readId: "cut-order",
+      boundary: "cut-order",
+    }),
+  ).toBe(true);
+  expect(owner.getSnapshot()?.quotaWaitStartedAt).toBe(31);
+
+  owner.acceptBeforeReadCut(
+    [
+      // The output update arrives first (an item outside the read's window),
+      // then the wait's start re-announcing the same stamp with its chip.
+      historyUpdate("quota-order-output", 9),
+      quotaRetryFrame({ waitStartedAt: 31, resumesAt: deadline, turnId: "turn_1", model: "wait/model" }),
+    ],
+    { lifetime: 1, adoptedRead: true },
+  );
+
+  const model = owner.getSnapshot();
+  expect(model?.modelRetry?.model).toBe("wait/model");
+  expect(model?.quotaWaitStartedAt).toBe(31);
+  expect(model?.quotaResumesAt).toBe(new Date(deadline).toISOString());
+  await owner.settled();
+  owner.dispose();
+});
