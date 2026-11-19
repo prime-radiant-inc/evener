@@ -1725,9 +1725,43 @@ test.each(["explicit-navigation", "confirmed-deletion"] as const)(
         navigationStore.setState({ clientGenerationID: "generation_test", resources });
       });
       await waitFor(() => expect(workspaceStore.getState().mainPane()?.type).toBe("welcome"));
+      expect(window.location.pathname).toBe("/");
+      expect(workspaceStore.getState().panes.some((pane) => pane.id === sourcePane.id)).toBe(false);
+      expect(workspaceStore.getState().panes).toContain(otherPane);
+      expect(otherStaged.lifetime.alive).toBe(true);
+      expect(otherStaged.attachments.getState().items.map((item) => item.marker)).toEqual([1]);
     }
   },
 );
+
+test("phone Back to a secondary session whose URL is already active replaces the entry without pushing a duplicate", async () => {
+  const setMobile = installSwitchableViewport();
+  setMobile(false);
+  const client = cascadeClient((ref) => cascadeContext(ref, ref === "local:child-sub" ? ["local:child"] : []));
+  installLocationForRoute("local:child");
+  window.history.pushState({}, "", "/s/local%3Achild");
+  await act(async () => {
+    render(<AppShell client={client} />);
+  });
+  await waitFor(() => expect(paneFor("local:child")?.slot).toBe("secondary"));
+  const childPane = paneFor("local:child");
+  if (!childPane) throw new Error("expected routed nested child pane");
+
+  await act(async () =>
+    enterAgentCascade(
+      activityDelegate({ ownerRef: "local:child", childRef: "local:child-sub", delegateId: "d-nested-back" }),
+      childPane.id,
+    ),
+  );
+  await screen.findByTestId("cascade-column");
+
+  await act(async () => setMobile(true));
+  const historyBefore = window.history.length;
+  await userEvent.setup().click(await screen.findByRole("button", { name: "Back" }));
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(childPane.id));
+  expect(window.location.pathname).toBe("/s/local%3Achild");
+  expect(window.history.length).toBe(historyBefore);
+});
 
 test("a fresh child pathname waits for real location then focuses its existing conversation over inspection", async () => {
   const { mainId, cascadeId } = await saveRealSecondaryCascadeLayout("local:owner");

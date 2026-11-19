@@ -31,7 +31,11 @@ import { navigationStore, useNavigationStore } from "../stores/navigation/store"
 import { syncSettingsHostToRoute } from "../stores/settingsHost";
 import { initTranscriptDisplay, transcriptDisplayStore, useTranscriptDisplayStore } from "../stores/transcriptDisplay";
 import { ActivitySidebar } from "./activitybar/ActivitySidebar";
-import { currentAttentionEntryToken, restoreCurrentAttentionEntry } from "./attentionHistory";
+import {
+  closeCurrentAttentionEntry,
+  currentAttentionEntryToken,
+  restoreCurrentAttentionEntry,
+} from "./attentionHistory";
 import { ConnectionBanner } from "./ConnectionBanner";
 import { CheatsheetOverlay } from "./cheatsheet/CheatsheetOverlay";
 import { ToastRegion } from "./chrome/ToastRegion";
@@ -824,14 +828,19 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
         setAttentionRestoreEpoch((epoch) => epoch + 1);
       }
     }
-    if (attentionToken !== null && !locationGone && restoredAttentionTokenRef.current === attentionToken) {
+    if (attentionToken !== null && locationGone && closeCurrentAttentionEntry()) {
+      restoredAttentionTokenRef.current = null;
+      pendingSessionRef.current = null;
+      placedPathnameRef.current = null;
+      return;
+    }
+    if (attentionToken !== null && restoredAttentionTokenRef.current === attentionToken) {
       pendingSessionRef.current = null;
       placedPathnameRef.current = pathname;
       return;
     }
     if (
       attentionToken !== null &&
-      !locationGone &&
       restoredAttentionTokenRef.current !== attentionToken &&
       restoreCurrentAttentionEntry()
     ) {

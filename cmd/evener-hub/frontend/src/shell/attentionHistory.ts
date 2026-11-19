@@ -175,7 +175,16 @@ export function publishFocusedPaneURL(url: string, opts?: { replace?: boolean })
   }
   const token = { generation, id: `entry-${++serial}` };
   entries.set(key(token), { token, url, placement });
-  navigate(url, { ...opts, attentionEntry: token });
+  navigate(url, { ...opts, replace: opts?.replace || currentURL() === url, attentionEntry: token });
+}
+
+/** Close the reader owned by the current attention entry, letting retirement
+ * update the URL while preserving unrelated sibling panes. */
+export function closeCurrentAttentionEntry(): boolean {
+  const binding = bindingFor(tokenAt(history.state));
+  if (!binding) return false;
+  workspaceStore.getState().closePane(binding.placement.pane.id);
+  return true;
 }
 
 // A drill inside the cascade an attention entry owns keeps the same pane and
