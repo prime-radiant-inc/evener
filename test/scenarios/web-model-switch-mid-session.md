@@ -28,9 +28,11 @@ a request that carries no model-control authority.
   Setup checklist in `docs/developing-evener/agentic-testing.md`). That checklist's `$run`
   directory is where this card writes its scratch files too — never a fixed
   `/tmp/…` name a second concurrent run would clobber (kata `k2rx`). The hub
-  needs a real `openai` and a real `anthropic` instance configured (or two
-  distinct catalogued models on one instance — any two models with different
-  `provider/model` ids work for the assertion).
+  needs a real `openai` and a real `anthropic` instance configured, because the
+  card picks four distinct `provider/model` targets: A (spawn), B (the first UI
+  pick), C (mid-turn), and D (the drain-window pick that must supersede C).
+  Distinct ids matter for D in particular: step 7 is only falsifiable when the
+  surviving pick names a different model from the one it beat.
 - `superpowers-chrome:browsing` with multi-tab support, and a real SPA bundle
   (`make build-web`).
 - A session spawned on model A (e.g. `openai/gpt-5.5`), idle. Capture `SID`.
@@ -114,21 +116,27 @@ a request that carries no model-control authority.
 6. **[browser-free] The queued-input case.** While the turn from step 4 is
    still active, queue a second message (`turn/queue` over `/rpc`, or Send in
    the composer — see `docs/developing-evener/agentic-testing.md`; there is no REST queue verb).
-   Wait for the active turn to finish, then re-issue step 4's request *during*
-   the drain window with a fresh `clientMutationId` and the current authority.
-   It is accepted the same way.
+   Wait for the active turn to finish, then send a **different** target
+   *during* the drain window — model D, not step 4's model C — with a fresh
+   `clientMutationId`, and record that id as `$MUT_D`. It is accepted the same
+   way, and `desired.clientMutationId` in its response is `$MUT_D` with a
+   `requestSequence` above step 4's.
 
-7. **[browser-free] The pick lands.** Wait for the queue to fully drain to
+7. **[browser-free] The later pick wins.** Wait for the queue to fully drain to
    `idle`, then read the session again on the same socket:
    ```json
    {"id":9,"method":"thread/read","params":{"ref":"local:<SID>","includeTurns":false}}
    ```
    Take the reply whose `id` is `9`, and read from its `result.thread`:
-   `modelProvider` (the live model), `evener.modelControl.active.model` (the
-   model the daemon runs), and `evener.modelControl.desired` (the desired
-   record). The active model is the last accepted pick — the newest request
-   sequence wins, so an earlier queued pick that a later one superseded never
-   applies.
+   `modelProvider` and `evener.modelControl.active.model` (the model the daemon
+   runs), and `evener.modelControl.desired` (the desired record, carrying
+   `clientMutationId`, `requestSequence` and `lifecycle`).
+
+   The active model is model D and the desired record is that pick's own
+   `$MUT_D`, `applied`. Asserting the mutation id is what makes this step
+   falsifiable: with one target used twice, an earlier pick left to apply
+   produces the same final model, so the check passes while supersession is
+   broken. Model D differs from model C for exactly that reason.
 
 8. **[browser-free] A request with no authority is refused before admission.**
    Re-issue step 4's payload with `expectedBootGeneration` removed. The wire
@@ -148,11 +156,14 @@ a request that carries no model-control authority.
   model B. Falsification: a 409/conflict, or an `active` that moved mid-turn.
 - **Step 5**: no error toast, and the readout shows the picked model while the
   turn runs. Falsification: a toast, or a readout that snaps back.
-- **Step 6**: the drain-window pick is accepted the same way. Falsification: a
-  conflict while queued input is still draining.
-- **Step 7**: the daemon's `active` model is the last accepted pick, and its
-  `desired` record is `applied`. Falsification: the session running a model
-  nobody picked last.
+- **Step 6**: the drain-window pick for model D is accepted, and its response
+  carries `$MUT_D`. Falsification: a conflict while queued input is still
+  draining, or a response that echoes step 4's mutation id.
+- **Step 7**: the daemon's `active` model is model D, and `desired` is
+  `applied` under `$MUT_D`. Falsification: `active` on model C, or a `desired`
+  record naming step 4's mutation id — either means the earlier pick applied and
+  supersession is broken. A card that sends the same target twice cannot
+  distinguish those from success.
 - **Step 8**: `InvalidParams`, and no state change. This is the strict
   authority contract: a mutation without exact instance and boot generation
   never reaches the daemon.
