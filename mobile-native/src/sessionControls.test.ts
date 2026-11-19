@@ -1591,6 +1591,72 @@ describe("conversation-owned session controls", () => {
 		session.retirePublished();
 		expect(session.unread().vision).toBeNull();
 	});
+	// The daemon acknowledges a pick it queues for the turn boundary, and the
+	// boundary can refuse it: it re-checks the settled history against the
+	// picked model's protocol, and a pick whose content the new protocol cannot
+	// represent is dropped with a transcript warning instead of applied. Every
+	// later read still names the model that ran, so an equality-only answer
+	// would keep the refused pick outstanding for good - and a tap on the row
+	// showing that running model, which the reader means as a no-op, sends
+	// another switch and can resume a session the reader has since stopped.
+	// Once no turn is in flight the queued switch has had its boundary, so a
+	// newer read naming another model has answered the record.
+	it("retires an acknowledged model pick the settled read contradicts", async () => {
+		let reads = 0;
+		let running = true;
+		const session = sessionFacts(
+			() => true,
+			() => reads,
+			() => "one/running",
+			() => running,
+		);
+		session.record("model", { state: "acknowledged", value: "two/next" });
+		// A read during the turn names the running model, which is the truth
+		// either way: the queued switch can still apply at the boundary.
+		reads += 1;
+		session.retirePublished();
+		expect(session.unread().model).toEqual({ state: "acknowledged", value: "two/next" });
+		// The turn ends and the boundary drops the pick; a read begun after it
+		// names the model that ran, so the record is answered.
+		running = false;
+		reads += 1;
+		session.retirePublished();
+		expect(session.unread().model).toBeNull();
+		// What the reader then sees: the running model's row is already set, so
+		// a tap on it is a no-op rather than a redundant switch.
+		expect(verifiedSetting(session.unread(), "model", "one/running")).toBe(true);
+	});
+	// The picked model does apply at the boundary, and the same read retires
+	// the record for the same reason: an acknowledged pick is answered by a
+	// publication that has had its boundary.
+	it("retires an acknowledged model pick the settled read confirms", async () => {
+		let reads = 0;
+		const session = sessionFacts(
+			() => true,
+			() => reads,
+			() => "two/next",
+			() => false,
+		);
+		session.record("model", { state: "acknowledged", value: "two/next" });
+		reads += 1;
+		session.retirePublished();
+		expect(session.unread().model).toBeNull();
+	});
+	// A record built with no answer to give cannot tell a queued switch from a
+	// refused one, so it keeps the equality answer a caller with no store has
+	// always had: only a projection naming the pick establishes it.
+	it("keeps a mismatched acknowledged model pick when the record cannot know of a turn", async () => {
+		let reads = 0;
+		const session = sessionFacts(
+			() => true,
+			() => reads,
+			() => "one/running",
+		);
+		session.record("model", { state: "acknowledged", value: "two/next" });
+		reads += 1;
+		session.retirePublished();
+		expect(session.unread().model).toEqual({ state: "acknowledged", value: "two/next" });
+	});
 	// A record built with no answer to give cannot tell a queued switch from a
 	// write that never applied, and keeps the answer a caller with no store has
 	// always had: the next publication.

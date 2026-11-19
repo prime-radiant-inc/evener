@@ -29,6 +29,7 @@ import { reconnectDelay } from "../hubConnection";
 import { type ControlsSession, sessionFacts } from "../sessionControls";
 import { type DetailLevels, displayForLevel } from "./detailLevels";
 import { detailLevels as levelsForHub } from "./nativeDetailLevels";
+import { qualifiedModelIdentity } from "./sessionFacts";
 
 export type NativeConversationStore = ReturnType<typeof createConversationStore>;
 /** The service factory's complete return type: screens need the recovery,
@@ -179,20 +180,16 @@ class SessionEntry implements NativeConversationSession {
 			// already holds.
 			() => this.store.getState().latestReadAttempt,
 			// What the published projection says each setting holds, in the same
-			// shape a pick records. The model is written as one provider/model
-			// string so a queued next-turn pick and the running model cannot be
-			// mistaken for each other.
+			// shape a pick records. The model is one provider/model string: the
+			// snapshot names the bare id and the provider apart, and a live update
+			// names both, so the comparison goes through the app's one identity
+			// rule rather than reading either layout's raw fields. A picker row
+			// and the record it checks then agree about which model is running.
 			(setting) => {
 				const session = this.store.getState().canonicalSession();
 				if (session === null) return null;
 				if (setting === "vision") return session.visionModel ?? null;
-				// A read hydrates both modelProvider and model from the wire's one
-				// qualified field, so joining them here would report
-				// `anthropic/claude-haiku-5/anthropic/claude-haiku-5` and no
-				// acknowledged pick could ever match it. The pair is split only once
-				// a live thread/model/changed arrives; until then both fields hold
-				// the qualified identifier.
-				return session.model === session.modelProvider ? session.model : `${session.modelProvider}/${session.model}`;
+				return qualifiedModelIdentity(session);
 			},
 			// A pick sent during a turn is queued for the next one, and the
 			// daemon's projection then names the running model whether it took the

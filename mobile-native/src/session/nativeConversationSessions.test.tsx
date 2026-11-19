@@ -252,14 +252,49 @@ describe("two attachments", () => {
 		expect(a.entry.sessionFacts.unread().model).toBeNull();
 	});
 
+	// The daemon's own layout is split: the bare model id rides in
+	// Thread.modelProvider, and the provider instance in Thread.evener.profile.
+	// The session reads one qualified identity off the pair, so the read that
+	// names the picked model retires the record - and the picker that compares
+	// a catalog row against it selects the running model instead of sending a
+	// second setter.
+	it("reads the qualified model from the daemon's bare id and profile", async () => {
+		const served = thread("ref-1");
+		(served as unknown as { modelProvider: string }).modelProvider = "claude-haiku-5";
+		(served.evener as unknown as { profile: string }).profile = "anthropic";
+		connected(hub("ref-1", async () => ({ thread: served })));
+		const a = sessions.attach("hub-1", "ref-1");
+		await vi.waitFor(() => expect(a.entry.store.getState().status).toBe("open"));
+		const shown = a.entry.store.getState().canonicalSession();
+		// The snapshot's own two fields stay as the daemon sent them; the
+		// provider it names beside them is what qualifies the id.
+		expect(shown?.modelProvider).toBe("claude-haiku-5");
+		expect(shown?.modelProfile).toBe("anthropic");
+		// What a picker asks the session's record: is this row already set?
+		expect(a.entry.sessionFacts.projected?.("model")).toBe("anthropic/claude-haiku-5");
+
+		a.entry.sessionFacts.record("model", { state: "acknowledged", value: "anthropic/claude-haiku-5" });
+		await a.entry.store.getState().ensureLatest();
+		await a.entry.readSettled();
+		await settle();
+
+		expect(a.entry.sessionFacts.unread().model).toBeNull();
+	});
+
 	// A pick the daemon accepted for the next turn leaves the projection naming
 	// the model that is running, and that report is correct: it says nothing
 	// about the queued change. Retiring on it would let the next tap on the
 	// shown row dismiss as "already set" and send no correction.
 	it("keeps a queued next-turn pick while the read still shows the running model", async () => {
-		const served = thread("ref-1");
-		(served as unknown as { modelProvider: string }).modelProvider = "anthropic/claude-haiku-5";
-		connected(hub("ref-1", async () => ({ thread: served })));
+		let status: Thread["status"] = { type: "active" } as Thread["status"];
+		connected(
+			hub("ref-1", async () => {
+				const served = thread("ref-1");
+				(served as unknown as { modelProvider: string }).modelProvider = "anthropic/claude-haiku-5";
+				served.status = status;
+				return { thread: served };
+			}),
+		);
 		const a = sessions.attach("hub-1", "ref-1");
 		await vi.waitFor(() => expect(a.entry.store.getState().status).toBe("open"));
 
@@ -270,6 +305,14 @@ describe("two attachments", () => {
 		await settle();
 
 		expect(a.entry.sessionFacts.unread().model).toEqual(queued);
+
+		// The turn ends on the model that ran, so the queued switch has had its
+		// boundary and the pick is not outstanding any more.
+		status = { type: "idle" } as Thread["status"];
+		await a.entry.store.getState().ensureLatest();
+		await a.entry.readSettled();
+		await settle();
+		expect(a.entry.sessionFacts.unread().model).toBeNull();
 	});
 
 	// The same report is also what a read finds when a pick was sent during a

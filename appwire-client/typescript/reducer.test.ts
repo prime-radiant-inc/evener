@@ -295,6 +295,29 @@ test("hydrate carries the thread's location facts (cwd, git branch, project path
   expect(model.projectPath).toBe("/home/u/proj");
 });
 
+// The snapshot names a running model in two fields: the bare id rides in
+// modelProvider, and the provider instance beside it in evener.profile. A
+// client comparing a catalog row or a pick against the snapshot has only the
+// bare id there, so the provider has to ride along for it to build the one
+// qualified identity those comparisons use.
+test("hydrate carries the provider the snapshot names apart from the bare model id", () => {
+  const named = testHydrate({
+    modelProvider: "claude-haiku-5",
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, profile: "anthropic" },
+  });
+  expect(named.modelProvider).toBe("claude-haiku-5");
+  expect(named.model).toBe("claude-haiku-5");
+  expect(named.modelProfile).toBe("anthropic");
+});
+
+test("hydrate carries no separate provider when the model field already names it whole", () => {
+  const whole = testHydrate({
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, profile: "anthropic" },
+  });
+  expect(whole.modelProvider).toBe("anthropic/claude-sonnet-4-5");
+  expect(whole.modelProfile).toBeUndefined();
+});
+
 test("a zero or negative activeTurnStartedAt hydrates as absent, never an epoch anchor", () => {
   const zero = testHydrate({
     evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnStartedAt: 0 },

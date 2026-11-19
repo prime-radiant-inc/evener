@@ -20,7 +20,7 @@ import { useSheet } from "../sheet/useSheet";
 import { sheetHosts, sheetKey, useSheetHost } from "../sheet/sheetHosts";
 import type { ToastMessage } from "../Toast";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { effortName } from "./sessionFacts";
+import { effortName, qualifiedModelIdentity } from "./sessionFacts";
 
 const NOTHING_UNREAD: Unread = { model: null, vision: null };
 
@@ -84,7 +84,11 @@ function ModelSheetBody({
 	}, [controls]);
 	const busy = !controls || !ready || state?.pending != null;
 	const levels = vision ? [] : sessionEffortLevels(session.reasoningEffortLevels, session.supportsReasoning);
-	const current = vision ? session.visionModel : session.modelProvider;
+	// One qualified identity for the row this sheet marks as current, the pick
+	// it sends and the record it checks: the daemon's snapshot and its live
+	// model update name a model in different fields (sessionFacts), and a row
+	// selected from either layout has to match the catalog's own id.
+	const current = vision ? session.visionModel : qualifiedModelIdentity(session);
 	const canChange = vision ? session.capabilities.changeVisionModel : session.capabilities.changeModel;
 	// The rows below decide "already set" by comparing against the session's
 	// projection, and that is only the answer once a read has landed after the

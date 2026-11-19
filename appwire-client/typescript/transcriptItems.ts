@@ -538,6 +538,10 @@ export function threadFields(resp: ThreadReadResponse, ref: string, now: number)
   // re-stamp, or older-producer frames.
   const imageSessionId = wireImageSessionId(thread);
   const servingFacts = historyServingFacts(resp);
+  // The provider instance a snapshot names for its running model, or
+  // undefined when the model field already carries the whole identifier (so
+  // the profile adds nothing) or the daemon reports no profile.
+  const profile = thread.modelProvider === "" || thread.modelProvider.includes("/") ? undefined : thread.evener.profile;
   const fields: Omit<ThreadModel, "turns"> = {
     ref,
     ...(servingFacts ? { servingFacts } : {}),
@@ -563,6 +567,17 @@ export function threadFields(resp: ThreadReadResponse, ref: string, now: number)
     // "stay[ing] the model field" for this exact reason. thread/model/changed
     // (below) is what later splits provider and model id apart properly.
     model: thread.modelProvider,
+    // The provider instance the same snapshot names for that model
+    // (Thread.evener.profile). The two model fields above are the wire's one
+    // overloaded field; this is what turns a bare model id into the qualified
+    // "provider/model" a catalog entry and a pick use, so a picker's selection,
+    // a pick's acknowledgement and a readback compare one identity rather than
+    // a bare id against a qualified one. Snapshot-only: thread/model/changed
+    // names its own provider and clears it. Set only when the snapshot names a
+    // provider the model field lacks, like the fields below: a snapshot that
+    // names the model whole has no second half to carry, and adding an absent
+    // key would rewrite every stored thread's shape for nothing.
+    ...(profile ? { modelProfile: profile } : {}),
     reasoningEffort: thread.evener.reasoningEffort,
     defaultReasoningEffort: thread.evener.defaultReasoningEffort,
     visionModel: thread.evener.visionModel ?? "",

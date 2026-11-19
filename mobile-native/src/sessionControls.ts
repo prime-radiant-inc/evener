@@ -212,10 +212,14 @@ export function sessionFacts(
 				// answer it.
 				let answerable: boolean;
 				if (outcome.state === "unknown") {
-					answerable = setting !== "model" || turnInFlight === undefined || !turnInFlight();
+					answerable = setting !== "model" || turnInFlight?.() !== true;
 				} else {
 					const shown = projected(setting);
-					answerable = shown !== null && shown === outcome.value;
+					// An acknowledged value is answered by a matching projection, or for a
+					// model pick by any post-write read once no turn is in flight (a queued
+					// switch rejected at the turn boundary leaves the running model).
+					answerable =
+						shown !== null && (shown === outcome.value || (setting === "model" && turnInFlight?.() === false));
 				}
 				const answered = recordedAt[setting] < started && answerable;
 				if (answered) {

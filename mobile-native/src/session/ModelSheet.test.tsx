@@ -188,6 +188,13 @@ function listed(tree: ReactTestRenderer): string[] {
 		.map((node) => textOf(node));
 }
 
+/** The sheet's refusals: a reason shown for an action is an alert, and which
+ * actions have one is what the retired-refusal tests check. */
+function alerts(target: ReactTestRenderer | ReactTestInstance): ReactTestInstance[] {
+	const root = "root" in target ? target.root : target;
+	return root.findAll((node) => node.props.accessibilityRole === "alert");
+}
+
 beforeEach(() => {
 	navigation.goBack.mockReset();
 	navigation.navigate.mockReset();
@@ -245,6 +252,48 @@ describe("choosing a model (spec 8.5)", () => {
 		expect(pressable(tree, "Claude Haiku 5")?.props.accessibilityState).toMatchObject({ selected: false });
 	});
 
+	// The daemon names a model two ways. Its snapshot carries the bare model id
+	// in Thread.modelProvider and the provider instance in Thread.evener.profile;
+	// thread/model/changed carries the provider and the id in their own fields.
+	// The picker marks a row by that one qualified identity in both shapes, so
+	// the running row is never left unselected - which would make a tap on it
+	// send a second setter and append a switch to the transcript.
+	it("marks the running model's row from the snapshot's bare id and profile", () => {
+		provide(conversation({ modelProvider: "claude-haiku-5", model: "claude-haiku-5", modelProfile: "anthropic" }));
+		const tree = sheet();
+		expect(pressable(tree, "Claude Haiku 5")?.props.accessibilityState).toMatchObject({ selected: true });
+		expect(pressable(tree, "Claude Sonnet 5")?.props.accessibilityState).toMatchObject({ selected: false });
+	});
+
+	it("marks the running model's row after a live model change", () => {
+		provide(conversation({ modelProvider: "anthropic", model: "claude-haiku-5" }));
+		const tree = sheet();
+		expect(pressable(tree, "Claude Haiku 5")?.props.accessibilityState).toMatchObject({ selected: true });
+		expect(pressable(tree, "Claude Sonnet 5")?.props.accessibilityState).toMatchObject({ selected: false });
+	});
+
+	it("marks the running model's row when the snapshot already names it whole", () => {
+		provide(
+			conversation({
+				modelProvider: "anthropic/claude-haiku-5",
+				model: "anthropic/claude-haiku-5",
+				modelProfile: "anthropic",
+			}),
+		);
+		const tree = sheet();
+		expect(pressable(tree, "Claude Haiku 5")?.props.accessibilityState).toMatchObject({ selected: true });
+	});
+
+	it("closes without sending when the running model's row is tapped", async () => {
+		const { calls } = provide(
+			conversation({ modelProvider: "claude-haiku-5", model: "claude-haiku-5", modelProfile: "anthropic" }),
+		);
+		const tree = sheet();
+		act(() => pressable(tree, "Claude Haiku 5")?.props.onPress());
+		await settle();
+		expect(calls).toEqual(["goBack"]);
+	});
+
 	it("changes the model, closes, and the session says it applies from the next turn", async () => {
 		const { calls } = provide(conversation());
 		const tree = sheet();
@@ -279,7 +328,6 @@ describe("choosing a model (spec 8.5)", () => {
 		const calls: string[] = [];
 		const answer = Promise.withResolvers<boolean>();
 		const sending = fakeControls(calls);
-		const refusal = "Could not confirm the action: refused";
 		sending.changeModel.mockImplementation(async (provider, model) => {
 			calls.push(`changeModel:${provider}/${model}`);
 			return answer.promise;
@@ -292,10 +340,12 @@ describe("choosing a model (spec 8.5)", () => {
 		provide(conversation(), {}, { controls: fakeControls(calls) as unknown as SessionControls });
 		await settle();
 		// What publish writes on the set that dispatched, when the hub refuses.
-		Object.assign(sending.getSnapshot(), { lastAction: "changeModel", error: refusal });
+		Object.assign(sending.getSnapshot(), { lastAction: "changeModel", error: "Could not confirm the action" });
 		answer.resolve(false);
 		await settle();
-		expect(renderedText(tree)).toContain(refusal);
+		// The replacement's snapshot is not what the header reads: the refusal
+		// raised by the set that sent the write is.
+		expect(alerts(tree)).toHaveLength(1);
 		// The picker stays open for the retry, and nothing announces a change.
 		expect(navigation.goBack).not.toHaveBeenCalled();
 	});
@@ -361,11 +411,11 @@ describe("choosing a model (spec 8.5)", () => {
 	it("retires a refused pick when an effort change starts", async () => {
 		const { controls } = provide(conversation());
 		controls.changeModel.mockImplementation(async () => false);
-		Object.assign(controls.getSnapshot(), { lastAction: "changeModel", error: "refused-model-sentinel" });
+		Object.assign(controls.getSnapshot(), { lastAction: "changeModel", error: "refused" });
 		const tree = sheet();
 		act(() => pressable(tree, "Claude Haiku 5")?.props.onPress());
 		await settle();
-		expect(renderedText(tree)).toContain("refused-model-sentinel");
+		expect(alerts(tree)).toHaveLength(1);
 		const effort = Promise.withResolvers<void>();
 		controls.setReasoningEffort.mockImplementation(async () => {
 			// The controls that start the attempt record it: the refusal the
@@ -376,12 +426,12 @@ describe("choosing a model (spec 8.5)", () => {
 		});
 		act(() => pressable(tree, "Low")?.props.onPress());
 		// The attempt is the reader's, so the old refusal goes as it starts.
-		expect(renderedText(tree)).not.toContain("refused-model-sentinel");
+		expect(alerts(tree)).toHaveLength(0);
 		effort.resolve();
 		await settle();
 		// A successful effort change leaves the sheet open, and it does not bring
 		// the retired refusal back.
-		expect(renderedText(tree)).not.toContain("refused-model-sentinel");
+		expect(alerts(tree)).toHaveLength(0);
 		expect(navigation.goBack).not.toHaveBeenCalled();
 	});
 
@@ -390,14 +440,14 @@ describe("choosing a model (spec 8.5)", () => {
 		const sent = Promise.withResolvers<void>();
 		controls.setReasoningEffort.mockImplementation(async () => {
 			await sent.promise;
-			Object.assign(controls.getSnapshot(), { lastAction: "setReasoningEffort", error: "refused-effort-sentinel" });
+			Object.assign(controls.getSnapshot(), { lastAction: "setReasoningEffort", error: "refused" });
 			return false;
 		});
 		const tree = sheet();
 		act(() => pressable(tree, "Low")?.props.onPress());
 		sent.resolve();
 		await settle();
-		expect(renderedText(tree)).toContain("refused-effort-sentinel");
+		expect(alerts(tree)).toHaveLength(1);
 		expect(navigation.goBack).not.toHaveBeenCalled();
 	});
 
@@ -536,7 +586,7 @@ describe.each([
 				} else {
 					expect(controls.getSnapshot().error).toBeNull();
 					expect(viewport.scrolls).toEqual([]);
-					expect(tree.root.findAll((node) => node.props.accessibilityRole === "alert")).toHaveLength(0);
+					expect(alerts(tree)).toHaveLength(0);
 					expect(navigation.goBack).toHaveBeenCalledTimes(closes ? 1 : 0);
 				}
 			}
@@ -567,7 +617,7 @@ describe("effort", () => {
 		const choices = list.findAll((node) => node.props.accessibilityRole === "radio");
 		expect(choices).toHaveLength(levels.length);
 		expect(list.findByProps({ accessibilityRole: "radiogroup" }).props.style.flexDirection).toBe("column");
-		expect(list.findAll((node) => node.props.accessibilityRole === "alert")).toHaveLength(1);
+		expect(alerts(list)).toHaveLength(1);
 		expect(list.findAll((node) => node.props.testID === "model-title").length).toBeGreaterThan(0);
 		// Search stays available while the growing header scrolls away.
 		expect(tree.root.findAll((node) => String(node.type) === "TextInput")).toHaveLength(1);

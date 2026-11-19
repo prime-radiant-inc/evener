@@ -105,6 +105,31 @@ export function effortName(level: string): string {
 	return EFFORT_NAMES[level] ?? `${level.charAt(0).toUpperCase()}${level.slice(1)}`;
 }
 
+/** The one identity this app compares a model by: the qualified
+ * "provider/model" a catalog entry, a pick and a readback all use.
+ *
+ * The daemon names a model two ways. Its snapshot puts the bare model id in
+ * both model fields and the provider instance beside them in
+ * Thread.evener.profile (hydrated as modelProfile); thread/model/changed puts
+ * the provider instance in modelProvider and the bare id in model, clearing
+ * the profile. A comparison that read either layout's raw fields would call
+ * one model two identities: the running row would draw unselected, and a tap
+ * meant as a no-op would send a second setter. A field that already names the
+ * whole identifier is returned unchanged rather than joined against itself.
+ */
+export function qualifiedModelIdentity(session: Pick<ThreadModel, "modelProvider" | "model" | "modelProfile">): string {
+	const model = session.model || session.modelProvider;
+	if (model === "" || model.includes("/")) return model;
+	// The snapshot's own provider, named apart from the bare id it applies to.
+	if (session.modelProfile) return `${session.modelProfile}/${model}`;
+	// The live update's layout: modelProvider holds the provider instance, and
+	// the snapshot's hydration is the only thing that fills both fields from
+	// one, so an equal pair carries no provider to add.
+	const provider = session.modelProvider;
+	if (provider !== "" && provider !== model) return `${provider}/${model}`;
+	return model;
+}
+
 /** A model as the catalog names it (a model is called one way everywhere
  * people read it). While the catalog is away (before the first load, and
  * after a failed load clears it; a reload keeps it) the hub's session row names it (S17's model_name, the
