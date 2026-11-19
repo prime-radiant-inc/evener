@@ -132,9 +132,9 @@ func buildSummarizePrompt(turns []schema.Turn) string {
 				}
 			}
 		case schema.TurnSteering:
-			// A parent agent's steer or an agent-authored one is model text too;
-			// the human partner's steer is theirs.
-			writeExcerpt("System:", truncate(t.Message.Text(), 200), isParentSteering(t) || isAgentAuthored(t))
+			// A parent agent's steer, an agent-authored one and a note handoff are
+			// model text too; the human partner's steer is theirs.
+			writeExcerpt("System:", truncate(t.Message.Text(), 200), isModelAuthoredTurn(t))
 		}
 	}
 

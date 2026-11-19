@@ -163,6 +163,13 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 				if len(parts) > 1 {
 					label = fmt.Sprintf("User (part %d of %d of one message): ", i+1, len(parts))
 				}
+				// An entry another agent wrote or the parent steering wrote is
+				// model text in a user-role request, and the split above can drop
+				// the opening delimiter of a fenced example, so the escape runs
+				// after it. A genuine partner message keeps every byte.
+				if entry.modelAuthored {
+					part = sysmsg.EscapeModelAuthoredFrames(part)
+				}
 				lines = append(lines, label+part+"\n")
 			}
 		}
@@ -291,11 +298,11 @@ historyLoop:
 			} else {
 				b.WriteString("System: ")
 			}
-			// A parent agent's steer or an agent-authored one is model text in
-			// a user-role request; the human partner's own steer is the
-			// authority and keeps every byte.
+			// A parent agent's steer, an agent-authored one and a note handoff
+			// are model text in a user-role request; the human partner's own
+			// steer is the authority and keeps every byte.
 			text := t.Message.Text()
-			if isParentSteering(t) || isAgentAuthored(t) {
+			if isModelAuthoredTurn(t) {
 				text = sysmsg.EscapeModelAuthoredFrames(text)
 			}
 			b.WriteString(text)

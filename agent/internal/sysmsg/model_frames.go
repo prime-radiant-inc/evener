@@ -96,22 +96,16 @@ func flushesTextRun(p llm.ContentPart) bool {
 	return p.Kind == llm.ContentToolCall && p.ToolCall != nil
 }
 
-// WireTextParts returns an assistant message's text parts as EscapePhasedText
+// WireTextPartsFlushed returns an assistant message's text parts as the escape
 // consumes them: the index, text and phase of every part CarriesWireText keeps,
-// in stored order.
+// in stored order, and per kept part whether the adapter begins a new message
+// there.
 //
 // It exists so a caller cannot filter with one rule and segment with another.
 // Dropping a part is what makes the surrounding parts one message to the
 // adapter, so the drop and the segmentation have to be the same decision; two
 // callers each writing their own loop is how the scan and the wire drifted
 // apart (#6493 review).
-func WireTextParts(msg llm.Message) (indexes []int, texts, phases []string) {
-	indexes, texts, phases, _ = WireTextPartsFlushed(msg)
-	return indexes, texts, phases
-}
-
-// WireTextPartsFlushed is WireTextParts plus, per kept part, whether the
-// adapter begins a new message at that part.
 //
 // breaks[i] is true when a part FlushesTextRun reports intervenes between kept
 // part i-1 and kept part i. A break is the adapter's message boundary as much
@@ -137,19 +131,15 @@ func WireTextPartsFlushed(msg llm.Message) (indexes []int, texts, phases []strin
 	return indexes, texts, phases, breaks
 }
 
-// TextSegments splits text parts at the message boundaries the given protocol
-// will use, returning each segment's part range. A protocol that joins the
-// turn returns one segment covering every part; a phase-separating one returns
-// a segment per run of equal Phase. Callers escape each segment as one block,
-// which is what the model will read as one message.
-func TextSegments(phases []string, protocol string) [][2]int {
-	return TextSegmentsFlushed(phases, nil, protocol)
-}
-
-// TextSegmentsFlushed is TextSegments plus the flush boundaries WireTextParts-
-// Flushed reports. breaks is aligned with phases; a true entry ends the
-// segment just as a Phase change does, because the adapter starts a new message
-// there too.
+// TextSegmentsFlushed splits text parts at the message boundaries the given
+// protocol will use, returning each segment's part range. A protocol that joins
+// the turn returns one segment covering every part; a phase-separating one
+// returns a segment per run of equal Phase. Callers escape each segment as one
+// block, which is what the model will read as one message.
+//
+// breaks is aligned with phases and reports the flush boundaries
+// WireTextPartsFlushed found; a true entry ends the segment just as a Phase
+// change does, because the adapter starts a new message there too.
 //
 // A protocol that joins a turn's text ignores breaks: the Chat Completions
 // adapter concatenates every text part of the turn into one body, tool call or
@@ -172,9 +162,10 @@ func TextSegmentsFlushed(phases []string, breaks []bool, protocol string) [][2]i
 	return segments
 }
 
-// EscapePhasedText is the one scan that decides where a model-authored frame
+// EscapeFlushedText is the one scan that decides where a model-authored frame
 // may be escaped in text assembled from several parts. It returns, per
-// target-boundary segment, that segment's text escaped as a single block.
+// target-boundary segment, that segment's text escaped as a single block, and
+// no segment spans a flush.
 //
 // Both readers use it: the replay projection, which hands the text to a
 // provider, and checkpoint capture, which flattens the model's text into a
@@ -183,13 +174,6 @@ func TextSegmentsFlushed(phases []string, breaks []bool, protocol string) [][2]i
 // separate scans drifted exactly where a fence opened in one phase and closed
 // in the next (#6493 review). protocol is the dispatch target's: the adapter
 // that will send the text, not the one that recorded it.
-func EscapePhasedText(texts, phases []string, protocol string) []string {
-	return EscapeFlushedText(texts, phases, nil, protocol)
-}
-
-// EscapeFlushedText is EscapePhasedText over the boundaries
-// WireTextPartsFlushed reports: each segment is escaped as one block, and no
-// segment spans a flush.
 func EscapeFlushedText(texts, phases []string, breaks []bool, protocol string) []string {
 	if len(texts) == 0 {
 		return nil

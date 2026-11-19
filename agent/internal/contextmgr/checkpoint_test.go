@@ -1411,7 +1411,7 @@ func TestCheckpoint_ShedOrder_MiddleTrimsAnOversizedPartnerMessage(t *testing.T)
 
 	entries := extractCheckpointConversation(cp)
 	if len(entries) != 1 || entries[0].Role != "user" {
-		t.Fatalf("want only the partner's message, trimmed; got %q", entries)
+		t.Fatalf("want only the partner's message, trimmed; got %v", entries)
 	}
 	got := entries[0].Text
 	if !strings.HasPrefix(got, "ORIGINAL TASK: ") || !strings.HasSuffix(got, " TASK_TAIL") {

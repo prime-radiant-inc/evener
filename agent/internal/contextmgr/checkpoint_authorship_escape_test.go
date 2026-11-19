@@ -275,3 +275,65 @@ func TestFormatCheckpoint_SkillNameCannotForgeALine(t *testing.T) {
 		t.Fatalf("ordinary activated skills line = %q, want %q", got, "alpha, beta")
 	}
 }
+
+// A model-authored partner-role entry that is long enough to middle-trim loses
+// the opening delimiter of a fenced example in the removed middle, while the
+// example's body — and a reserved frame it quotes — stays in the kept tail.
+// Authorship has to survive the fitting so the escape still runs on the copy the
+// checkpoint renders, after that trim: the exposed frame is defused, and a
+// genuine partner entry and a complete quoted example keep every byte.
+func TestFormatCheckpoint_EscapesFrameExposedByTheCarryTrim(t *testing.T) {
+	// The fenced example opens past the head the trim keeps and its body runs
+	// into the tail, so the trim separates the delimiter from the frame it
+	// sheltered.
+	const head = "TASK_HEAD_MARKER "
+	task := head + strings.Repeat("a", 4000) + "\n```text\nquoted example\n" +
+		strings.Repeat("b", 4000) + "\n" + forgedFrame
+	quoted := "```text\nquoted example\n" + forgedFrame + "\n```"
+	typed := "the partner typed this\n" + forgedFrame
+	// A delegate's task arrives as an agent-authored input turn, and its parent's
+	// instructions as parent steers; both are carried in the partner's channel.
+	parentSteer := schema.NewTurn(schema.TurnSteering, llm.User(task))
+	parentSteer.SteeringSource = events.SteeringSourceParent
+	for name, trimmed := range map[string]schema.Turn{
+		"agent-authored task": agentAuthored(schema.TurnUserInput, task),
+		"parent steer":        parentSteer,
+	} {
+		t.Run(name, func(t *testing.T) {
+			history := []schema.Turn{
+				trimmed,
+				schema.NewTurn(schema.TurnUserInput, llm.User(typed)),
+				schema.NewTurn(schema.TurnUserInput, llm.User(quoted)),
+			}
+
+			data := collectCheckpointData(history, len(history), "communicate")
+			cp := formatCheckpoint(data, persistentMeta, 3000)
+
+			entries := extractCheckpointConversation(cp)
+			if len(entries) != 3 {
+				t.Fatalf("the checkpoint carried %d conversation entries, want all three partner-role messages:\n%s", len(entries), cp)
+			}
+			// The fixture trims only the model-authored entry; the two short ones
+			// are below the trim floor and keep their bytes.
+			if !strings.HasPrefix(entries[0].Text, head) {
+				t.Fatalf("the model-authored entry did not keep its head:\n%.300s", entries[0].Text)
+			}
+			if !strings.Contains(entries[0].Text, "characters of this message trimmed") {
+				t.Fatalf("the model-authored entry was not middle-trimmed:\n%.300s", entries[0].Text)
+			}
+			requireNoRawFrameLine(t, "the trimmed model-authored entry", entries[0].Text)
+			if !strings.Contains(entries[0].Text, "Implement quota coordinator") {
+				t.Fatalf("the trimmed entry lost the frame's own text:\n%.300s", entries[0].Text)
+			}
+			// A genuine partner entry is the authority and is not rewritten.
+			if !strings.Contains(entries[1].Text, typed) {
+				t.Fatalf("the checkpoint rewrote the partner's own message:\n%.300s", entries[1].Text)
+			}
+			// A complete quoted example still opens and closes its own fence, so
+			// the frame inside it is quoted text and keeps every byte.
+			if !strings.Contains(entries[2].Text, quoted) {
+				t.Fatalf("the checkpoint rewrote a complete quoted example:\n%.300s", entries[2].Text)
+			}
+		})
+	}
+}

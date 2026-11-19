@@ -17,6 +17,13 @@ const checkpointConversationHeading = "## Conversation"
 type checkpointConversationEntry struct {
 	Role string `json:"role"`
 	Text string `json:"text"`
+	// modelAuthored reports that Text a model wrote, even though Role may put it
+	// in the partner's channel: a delegate's task from its parent, a parent's
+	// steer, or the model's own reply. It rides beside the text so the escape can
+	// run on the copy a reader finally gets — after any fitting that cut the
+	// text, since a cut can drop the delimiter that made a frame a quotation.
+	// A genuine partner entry answers false and keeps every byte.
+	modelAuthored bool `json:"-"`
 }
 
 type checkpointMarkdownBlock struct {
@@ -38,7 +45,15 @@ func renderCheckpointConversation(entries []checkpointConversationEntry) string 
 		default:
 			b.WriteString("### User\n\n")
 		}
-		writeMarkdownFence(&b, entry.Text)
+		text := entry.Text
+		if entry.modelAuthored {
+			// This is the copy the reader gets, after the fitting the entry's
+			// text went through (fitCheckpointConversation): the escape runs
+			// here so a middle trim that dropped an opening delimiter exposes
+			// no frame in the tail it kept.
+			text = sysmsg.EscapeModelAuthoredFrames(text)
+		}
+		writeMarkdownFence(&b, text)
 	}
 	return b.String()
 }
@@ -826,7 +841,7 @@ func cleanCheckpointConversation(entries []checkpointConversationEntry) []checkp
 		if role == "agent" {
 			text = sysmsg.EscapeModelAuthoredFrames(text)
 		}
-		out = append(out, checkpointConversationEntry{Role: role, Text: text})
+		out = append(out, checkpointConversationEntry{Role: role, Text: text, modelAuthored: entry.modelAuthored})
 	}
 	return out
 }

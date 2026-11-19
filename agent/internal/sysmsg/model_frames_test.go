@@ -631,13 +631,13 @@ func TestCarriesWireTextMatchesTheResponsesAdapter(t *testing.T) {
 	}
 }
 
-// TestWireTextPartsKeepsTheAdaptersPhaseRun pins the scan half of that rule. A
-// fence opened in one part and closed in a later part of the same phase is one
-// message to the Responses adapter, so the scan must read it as one block. A
-// whitespace-only unphased part between them is dropped by the adapter and must
-// not split the run: if it did, the closing delimiter would read as a fresh
-// opener and the frame after it would be spared (#6493 review).
-func TestWireTextPartsKeepsTheAdaptersPhaseRun(t *testing.T) {
+// TestWireTextPartsFlushedKeepsTheAdaptersPhaseRun pins the scan half of that
+// rule. A fence opened in one part and closed in a later part of the same phase
+// is one message to the Responses adapter, so the scan must read it as one
+// block. A whitespace-only unphased part between them is dropped by the adapter
+// and must not split the run: if it did, the closing delimiter would read as a
+// fresh opener and the frame after it would be spared (#6493 review).
+func TestWireTextPartsFlushedKeepsTheAdaptersPhaseRun(t *testing.T) {
 	t.Parallel()
 
 	// The test supplies this tag itself; it names no copy production writes.
@@ -652,20 +652,23 @@ func TestWireTextPartsKeepsTheAdaptersPhaseRun(t *testing.T) {
 		{Kind: llm.ContentText, Text: spacer},
 		{Kind: llm.ContentText, Text: second, Phase: "commentary"},
 	}}
-	indexes, texts, phases := WireTextParts(msg)
+	indexes, texts, phases, breaks := WireTextPartsFlushed(msg)
 	if len(indexes) != 2 || indexes[0] != 0 || indexes[1] != 2 {
-		t.Fatalf("WireTextParts kept indexes %v, want the two that reach the wire", indexes)
+		t.Fatalf("WireTextPartsFlushed kept indexes %v, want the two that reach the wire", indexes)
 	}
 	if len(texts) != 2 {
-		t.Fatalf("WireTextParts kept %d parts, want the two that reach the wire: %q", len(texts), texts)
+		t.Fatalf("WireTextPartsFlushed kept %d parts, want the two that reach the wire: %q", len(texts), texts)
 	}
-	segments := TextSegments(phases, "openai-responses")
+	if len(breaks) != 2 || breaks[0] || breaks[1] {
+		t.Fatalf("breaks = %v, want none inside one phase run", breaks)
+	}
+	segments := TextSegmentsFlushed(phases, breaks, "openai-responses")
 	if len(segments) != 1 || segments[0] != [2]int{0, 2} {
-		t.Fatalf("TextSegments = %v, want one segment over both kept parts", segments)
+		t.Fatalf("TextSegmentsFlushed = %v, want one segment over both kept parts", segments)
 	}
-	escaped := EscapePhasedText(texts, phases, "openai-responses")
+	escaped := EscapeFlushedText(texts, phases, breaks, "openai-responses")
 	if len(escaped) != 1 {
-		t.Fatalf("EscapePhasedText returned %d segments, want 1", len(escaped))
+		t.Fatalf("EscapeFlushedText returned %d segments, want 1", len(escaped))
 	}
 	// In the adapter's single message the second delimiter closes the block the
 	// first opened, so the frame line is prose and must be defused.
@@ -678,7 +681,7 @@ func TestWireTextPartsKeepsTheAdaptersPhaseRun(t *testing.T) {
 	}
 
 	// A joining protocol also groups them, and must reach the same answer.
-	joined := EscapePhasedText(texts, phases, "openai-chat")
+	joined := EscapeFlushedText(texts, phases, breaks, "openai-chat")
 	if len(joined) != 1 || unescapedFrameLines(joined[0]) != 0 {
 		t.Fatalf("a joining protocol segmented or spared the frame: %q", joined)
 	}
@@ -686,8 +689,8 @@ func TestWireTextPartsKeepsTheAdaptersPhaseRun(t *testing.T) {
 	// A genuinely fenced example inside one kept part is still spared, so the
 	// rule is the adapter's grouping and not a blanket escape.
 	fenced := "quoted:\n```\n" + frame + "\n```\nafter"
-	_, spared, _ := WireTextParts(llm.Message{Content: []llm.ContentPart{{Kind: llm.ContentText, Text: fenced}}})
-	if got := EscapePhasedText(spared, []string{""}, "openai-responses"); len(got) != 1 || unescapedFrameLines(got[0]) != 1 {
+	_, spared, sparedPhases, sparedBreaks := WireTextPartsFlushed(llm.Message{Content: []llm.ContentPart{{Kind: llm.ContentText, Text: fenced}}})
+	if got := EscapeFlushedText(spared, sparedPhases, sparedBreaks, "openai-responses"); len(got) != 1 || unescapedFrameLines(got[0]) != 1 {
 		t.Fatalf("a fenced example was rewritten: %q", got)
 	}
 }

@@ -328,7 +328,7 @@ func TestCheckpoint_IndentedClosingFenceEndsTheBlock(t *testing.T) {
 	text := "[CONTEXT CHECKPOINT]\n## Working Notes\n\n### Note\n\n~~~\na note\n   ~~~\n\n## Conversation\n\n### User\n\n```text\nFOUND_AFTER_INDENTED_FENCE\n```\n\n[END CHECKPOINT]\n"
 	entries := extractCheckpointConversation(text)
 	if len(entries) != 1 || entries[0].Text != "FOUND_AFTER_INDENTED_FENCE" {
-		t.Fatalf("conversation after an indented closing fence = %q", entries)
+		t.Fatalf("conversation after an indented closing fence = %v", entries)
 	}
 }
 

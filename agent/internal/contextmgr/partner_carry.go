@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/internal/runetrim"
+	"primeradiant.com/evener/agent/internal/sysmsg"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -289,7 +290,11 @@ func (cm *Manager) condensePartnerMessages(ctx context.Context, prof *provider.P
 				if len(parts) > 1 {
 					label = fmt.Sprintf("Summary of earlier messages (part %d of %d): ", i+1, len(parts))
 				}
-				summaries = append(summaries, label+part+"\n")
+				// The reply is the model's own text, and the next batch request or
+				// the summary prompt carries it in a user-role channel. The escape
+				// runs after the split so a cut that dropped the opening delimiter
+				// of a fenced example exposes no frame in the part it kept.
+				summaries = append(summaries, label+sysmsg.EscapeModelAuthoredFrames(part)+"\n")
 			}
 			start = end
 		}

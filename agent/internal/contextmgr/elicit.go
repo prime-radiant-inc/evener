@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/runetrim"
 	"primeradiant.com/evener/agent/internal/sysmsg"
 	"primeradiant.com/evener/agent/schema"
@@ -94,7 +95,7 @@ func renderHistoryForElicit(history []schema.Turn, maxChars int) string {
 				// start. The escape is run again on the clipped segment so that
 				// exposure is defused; an example the clip left whole is still
 				// fenced and keeps its bytes.
-				if isModelAuthoredForElicit(h) {
+				if isModelAuthoredTurn(h) {
 					clipped = sysmsg.EscapeModelAuthoredFrames(clipped)
 				}
 				parts = append(parts, "[... earlier history truncated ...]\n"+clipped)
@@ -139,7 +140,7 @@ func renderTurnForElicit(t schema.Turn) string {
 	if strings.TrimSpace(b.String()) == "" {
 		return ""
 	}
-	modelAuthored := isModelAuthoredForElicit(t)
+	modelAuthored := isModelAuthoredTurn(t)
 	label := ""
 	switch t.Kind {
 	case schema.TurnUserInput:
@@ -170,11 +171,17 @@ func renderTurnForElicit(t schema.Turn) string {
 	return label + body
 }
 
-// isModelAuthoredForElicit reports whether a turn's text is model-authored even
-// though the elicitor renders it in its own user-role channel: the assistant's
-// reply, an input turn another agent wrote (a delegate's task from its parent),
-// and a steer from the parent agent or written by an agent. The human partner's
-// own input and steer are the authority and answer false.
-func isModelAuthoredForElicit(t schema.Turn) bool {
-	return t.Kind == schema.TurnAssistant || isAgentAuthored(t) || isParentSteering(t)
+// isModelAuthoredTurn reports whether a turn's text a model wrote, even though a
+// request may carry it in a user-role channel: the assistant's reply, an input
+// turn another agent wrote (a delegate's task from its parent), a steer from the
+// parent agent or written by an agent, and a note handoff publishing the note
+// this session's own model pinned before a compaction. Every surface that quotes
+// a turn into its own user-role request asks this one question, so they agree on
+// whose words they are. The human partner's own input and steer are the
+// authority and answer false.
+func isModelAuthoredTurn(t schema.Turn) bool {
+	if t.Kind == schema.TurnAssistant || isAgentAuthored(t) || isParentSteering(t) {
+		return true
+	}
+	return t.Kind == schema.TurnSteering && t.SteeringKind == events.SteeringKindNoteHandoff
 }

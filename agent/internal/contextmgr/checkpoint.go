@@ -27,7 +27,7 @@ func escapeWorkingNote(msg llm.Message) string {
 	// The note is read as the adapter would send it, so the parts it carries are
 	// the parts CarriesWireText keeps — the same call the replay projection
 	// makes, through one helper (#6493 review).
-	_, texts, phases := sysmsg.WireTextParts(msg)
+	wireIndexes, texts, phases, breaks := sysmsg.WireTextPartsFlushed(msg)
 	if len(texts) == 0 {
 		return sysmsg.EscapeModelAuthoredFrames(msg.Text())
 	}
@@ -65,7 +65,6 @@ func escapeWorkingNote(msg llm.Message) string {
 	// So the scan runs over the wire parts, its rewrites go back at the indexes
 	// they came from, and the note is the original parts concatenated. The
 	// second pass then reads the note as its own flat reader will.
-	wireIndexes, _, _, breaks := sysmsg.WireTextPartsFlushed(msg)
 	escaped := make([]string, len(texts))
 	copy(escaped, texts)
 	segments := sysmsg.TextSegmentsFlushed(phases, breaks, "openai-responses")
@@ -276,10 +275,11 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 				// partner's. Only the framing this turn was built with is
 				// spared, and that framing opens no frame. A human partner's
 				// steer is the authority and keeps its bytes.
-				if isParentSteering(t) || isAgentAuthored(t) {
+				modelAuthored := isModelAuthoredTurn(t)
+				if modelAuthored {
 					text = sysmsg.EscapeModelAuthoredFrames(text)
 				}
-				data.conversation = append(data.conversation, checkpointConversationEntry{Role: "user", Text: text})
+				data.conversation = append(data.conversation, checkpointConversationEntry{Role: "user", Text: text, modelAuthored: modelAuthored})
 			}
 
 		case schema.TurnUserInput:
@@ -295,7 +295,7 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 			// wrote is task text whatever its first line spells, and mining it as
 			// a stored compaction would lose the task and carry its body outside
 			// the escape.
-			if isAgentAuthored(t) {
+			if isModelAuthoredTurn(t) {
 				text = sysmsg.EscapeModelAuthoredFrames(text)
 			} else if strings.HasPrefix(text, "[CONTEXT CHECKPOINT]") || strings.HasPrefix(text, summaryMarkerStart) {
 				// Old-format checkpoint/summary stored as TurnUserInput — carry it
@@ -303,7 +303,7 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 				data.collectCompaction(text, strings.HasPrefix(text, summaryMarkerStart))
 				continue
 			}
-			data.conversation = append(data.conversation, checkpointConversationEntry{Role: "user", Text: text})
+			data.conversation = append(data.conversation, checkpointConversationEntry{Role: "user", Text: text, modelAuthored: isModelAuthoredTurn(t)})
 
 		case schema.TurnTool, schema.TurnToolResults:
 			// Extract terminal communicate results (agent responses to the user).
@@ -322,8 +322,9 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 						// partner's entries stay verbatim — they are the
 						// authority, the model is not.
 						data.conversation = append(data.conversation, checkpointConversationEntry{
-							Role: "agent",
-							Text: sysmsg.EscapeModelAuthoredFrames(msg),
+							Role:          "agent",
+							Text:          sysmsg.EscapeModelAuthoredFrames(msg),
+							modelAuthored: true,
 						})
 					}
 					continue

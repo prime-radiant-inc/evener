@@ -446,13 +446,13 @@ func cmgpCheckSessionLogAndOODAStrategies(t *testing.T, ctx context.Context, tok
 	if len(checkpointed) != 2 || checkpointed[0].Kind != schema.TurnCheckpoint || !strings.Contains(checkpointed[0].Message.Text(), "[CONTEXT CHECKPOINT - SESSION LOG]") || !strings.Contains(checkpointed[0].Message.Text(), "...") {
 		t.Fatalf("session-log checkpoint malformed: %+v", checkpointed)
 	}
-	if got := extractOriginalPrompt([]schema.Turn{
+	if got, _ := extractOriginalPromptTurn([]schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User("[CONTEXT CHECKPOINT]\nOriginal prompt: original\n")),
 		schema.NewTurn(schema.TurnUserInput, llm.User("plain")),
 	}); got != "original" {
 		t.Fatalf("checkpoint original prompt = %q", got)
 	}
-	if got := extractOriginalPrompt([]schema.Turn{
+	if got, _ := extractOriginalPromptTurn([]schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User("[CONTEXT CHECKPOINT - SESSION LOG]\nOriginal task: original-task\n")),
 	}); got != "original-task" || extractOriginalPromptLine("no marker", "Original prompt: ") != "" || extractOriginalPromptLine("Original prompt: final", "Original prompt: ") != "final" {
 		t.Fatal("original prompt extraction changed")

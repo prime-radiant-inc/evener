@@ -137,17 +137,10 @@ func (s *SessionLogStrategy) sessionLogCheckpointWithMeta(history []schema.Turn,
 	return result, history[:cutoff:cutoff]
 }
 
-// extractOriginalPrompt finds the original user prompt from history, handling
-// previous checkpoints and summaries.
-func extractOriginalPrompt(history []schema.Turn) string {
-	prompt, _ := extractOriginalPromptTurn(history)
-	return prompt
-}
-
-// extractOriginalPromptTurn finds the original user prompt from history as
-// extractOriginalPrompt does, and reports whether another agent wrote the turn
-// it came from — which makes the prompt model-authored even though it is
-// carried in the partner's channel.
+// extractOriginalPromptTurn finds the original user prompt from history,
+// handling previous checkpoints and summaries, and reports whether another
+// agent wrote the turn it came from — which makes the prompt model-authored
+// even though it is carried in the partner's channel.
 func extractOriginalPromptTurn(history []schema.Turn) (string, bool) {
 	for _, t := range history {
 		if t.Kind != schema.TurnUserInput {

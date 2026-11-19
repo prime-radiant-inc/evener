@@ -152,9 +152,9 @@ func gctStrategyTails(t *testing.T, token string) {
 		schema.NewTurn(schema.TurnUserInput, llm.User("prompt")),
 		schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("orphan", "shell", "x", false)),
 	}, 1)
-	_ = extractOriginalPrompt([]schema.Turn{schema.NewTurn(schema.TurnAssistant, llm.Assistant("skip"))})
-	_ = extractOriginalPrompt([]schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("[CONTEXT CHECKPOINT]\nnone"))})
-	_ = extractOriginalPrompt([]schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("[CONTEXT SUMMARY]\nnone"))})
+	_, _ = extractOriginalPromptTurn([]schema.Turn{schema.NewTurn(schema.TurnAssistant, llm.Assistant("skip"))})
+	_, _ = extractOriginalPromptTurn([]schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("[CONTEXT CHECKPOINT]\nnone"))})
+	_, _ = extractOriginalPromptTurn([]schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("[CONTEXT SUMMARY]\nnone"))})
 	_ = extractOriginalPromptLine("Original task: no newline", "Original task: ")
 
 	sls.cm.PreserveRecentTurns = 1
