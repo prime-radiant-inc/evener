@@ -941,6 +941,56 @@ test("the wake's zero-delay announcement clears the pane's wait immediately", ()
   expect(el?.getAttribute("data-level") ?? "none").not.toBe("quota");
 });
 
+// The pane's clock ticks on its own schedule, so the wake can land between
+// ticks: the line renders with `now` still behind the announcement's receipt
+// stamp. A zero-delay retry has no wait left to count down, so it is under
+// way on arrival rather than "retrying in 0s" until the next tick. A
+// positive delay rendered at the same instant still waits out its delay.
+test("the wake's zero-delay announcement reads as in progress before the pane's next tick", () => {
+  const waitStart = 1_000_000;
+  const wakeAt = waitStart + 5 * 60_000;
+  const tickBeforeWake = wakeAt - 400;
+  let model = hydrateThread({ thread: testThread({ status: { type: "active" } }) }, "s1", waitStart);
+  model = applyNotification(
+    model,
+    quotaRetryFrame(7, { resumesAt: wakeAt, delayMs: wakeAt - waitStart, groupElapsedMs: 5_000 }),
+    waitStart,
+  );
+  model = applyNotification(model, quotaRetryFrame(7, { delayMs: 0, groupElapsedMs: 5 * 60_000 }), wakeAt);
+  expect(model.quotaResumesAt).toBeUndefined();
+  expect(model.modelRetry?.receivedAt).toBe(wakeAt);
+  threadsStore.setState({ threads: new Map([["s1", model]]) });
+
+  const { rerender } = render(
+    <LivenessLine
+      lastFrameAt={model.lastFrameAt}
+      now={tickBeforeWake}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      retry={model.modelRetry}
+    />,
+  );
+  // Past the quiet gate (the wait was minutes of silence), the line reports
+  // the resumed call, and reports it as under way.
+  const el = screen.getByTestId("liveness-line");
+  expect(el.getAttribute("data-level")).toBe("retrying");
+  expect(el.getAttribute("data-retry-in-progress")).toBe("true");
+
+  const delayed = model.modelRetry && { ...model.modelRetry, delayMs: 5_000 };
+  rerender(
+    <LivenessLine
+      lastFrameAt={model.lastFrameAt}
+      now={tickBeforeWake}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      retry={delayed}
+    />,
+  );
+  expect(screen.getByTestId("liveness-line").getAttribute("data-retry-in-progress")).toBe("false");
+});
+
 // --- the hub's count (#3797) ------------------------------------------------
 
 // The hub's count of running subagents, known only from the subtree activity
