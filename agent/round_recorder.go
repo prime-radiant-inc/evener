@@ -165,15 +165,25 @@ func (s *Session) roundSalvageRecorder() *roundRecorder {
 	return s.currentRoundRecorder
 }
 
-// quotaGroupElapsed is the elapsed time of the last retry group the round
-// ran — the group whose error the round holds. Each callModel invocation
-// stamps its own group's Elapsed, and the round's error always comes from
-// the most recently appended group, so the last entry is the quota error's
-// group even when a fallback produced it. Zero when the round ran no group
-// (the error came from request preparation or admission).
-func quotaGroupElapsed(recorder *roundRecorder) time.Duration {
+// quotaGroupSample is the model and elapsed time of one retry group — the
+// pair a quota wait reports. Both come from the same group, so a fallback
+// that meets the limit is neither billed the primary's runtime nor reported
+// under the primary's name.
+type quotaGroupSample struct {
+	Model   string
+	Elapsed time.Duration
+}
+
+// quotaGroupFacts is the sample of the last retry group the round ran — the
+// group whose error the round holds. Each callModel invocation stamps its
+// own group's model and Elapsed, and the round's error always comes from the
+// most recently appended group, so the last entry is the quota error's group
+// even when a fallback produced it. Empty when the round ran no group (the
+// error came from request preparation or admission).
+func quotaGroupFacts(recorder *roundRecorder) quotaGroupSample {
 	if recorder == nil || len(recorder.Groups) == 0 {
-		return 0
+		return quotaGroupSample{}
 	}
-	return recorder.Groups[len(recorder.Groups)-1].Elapsed
+	g := recorder.Groups[len(recorder.Groups)-1]
+	return quotaGroupSample{Model: g.Model, Elapsed: g.Elapsed}
 }

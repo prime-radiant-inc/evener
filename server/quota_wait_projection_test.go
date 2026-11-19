@@ -490,8 +490,18 @@ func TestDelegateReadClearsTheQuotaWaitWhenTheTurnEnds(t *testing.T) {
 func TestDelegateReadServesTheStoredWaitPastItsReset(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	t.Cleanup(srv.Close)
-	srv.SetAppIdentity("local", "root")
+	serveRootWithoutHistory(t, srv, "root")
 	const childID = "quota-wait-child"
+	// The child's history is what its running turn rides on: without it the
+	// read's activeTurnId is always empty, and the assertions below could
+	// not tie the wait to the turn it belongs to.
+	childPath := writeDelegateTranscript(t, childID, "the delegate's work")
+	srv.SetDescendantTranscriptPathFunc(func(threadID string) string {
+		if threadID == childID {
+			return childPath
+		}
+		return ""
+	})
 	srv.RecordDescendantAppEvent("root", threadEvent(childID, events.SessionStartData{WorkingDir: "/work"}))
 	srv.RecordDescendantAppEvent("root", threadEvent(childID, events.ExecutionStartedData{TurnID: "quota-wait-turn"}))
 	resumesAt := time.Now().Add(-time.Second).UnixMilli()
@@ -514,6 +524,9 @@ func TestDelegateReadServesTheStoredWaitPastItsReset(t *testing.T) {
 	if status := read.Thread.Status.Type; status != appwire.ThreadStatusActive {
 		t.Fatalf("the waiting delegate's status = %q, want active: the wait rides a running turn", status)
 	}
+	if got := read.Thread.Evener.ActiveTurnID; got != "quota-wait-turn" {
+		t.Fatalf("the waiting delegate's activeTurnId = %q, want the running turn the wait rides", got)
+	}
 	failure := read.Thread.Evener.Failure
 	if failure == nil {
 		t.Fatal("a read past the reset dropped the stored wait before any wake: the deadline is not the wait's to end")
@@ -532,6 +545,9 @@ func TestDelegateReadServesTheStoredWaitPastItsReset(t *testing.T) {
 	// reached, so the clear is the wake's alone.
 	if status := readChildThread(t, srv, childID).Thread.Status.Type; status != appwire.ThreadStatusActive {
 		t.Fatalf("the woken delegate's status = %q, want still active: the wake clears the wait without ending the turn", status)
+	}
+	if got := readChildThread(t, srv, childID).Thread.Evener.ActiveTurnID; got != "quota-wait-turn" {
+		t.Fatalf("the woken delegate's activeTurnId = %q, want the turn still running under the wait's clear", got)
 	}
 	if failure := readChildThread(t, srv, childID).Thread.Evener.Failure; failure != nil {
 		t.Fatalf("a read after the wake = %+v, want no wait", failure)

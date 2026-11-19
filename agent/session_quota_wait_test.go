@@ -1510,6 +1510,9 @@ func TestWaitElapsedSampleIsTheQuotaGroupsOwnNotThePhases(t *testing.T) {
 	if got := started[0].GroupElapsedMS; got >= 90_000 {
 		t.Fatalf("wait start elapsed sample = %d ms, want the fallback group's own short elapsed: the primary's 90s must not be billed to the fallback's wait", got)
 	}
+	if got := started[0].Model; got != "gpt-fallback" {
+		t.Fatalf("wait start announcement names model %q, want the fallback's: the limit the fallback met is not the primary's to report", got)
+	}
 
 	adapter.recovered.Store(true)
 	reachReset(clk)
