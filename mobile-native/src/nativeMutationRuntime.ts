@@ -476,6 +476,14 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		return () => this.#identityListeners.delete(listener);
 	}
 
+	/** Publishes an identity a resume resolved, for the mounted conversations
+	 * that follow it. A flush's own resume publishes here, and so does a model
+	 * pick's, which the conversation owner runs because the resume replaces the
+	 * binding that asked for it. */
+	publishIdentityChange(change: NativeMutationIdentityChange): void {
+		this.#notify(this.#identityListeners, change, "Native mutation identity listener failed");
+	}
+
 	// The durable records a live frame proves the daemon has moved past
 	// (notificationMutationIdentities): a recorded item, or a queue transition.
 	// Positive evidence settles an accepted record (already applied) and an
@@ -758,7 +766,7 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 				// Subscribers match the composite key, so a bare ref reaches none of
 				// them and both projections would keep showing rows that moved.
 				this.#notifyStorageChange([targetKey, resolvedKey]);
-				this.#notifyIdentityChange({ hubId, from: targetRef, to: resolvedRef });
+				this.publishIdentityChange({ hubId, from: targetRef, to: resolvedRef });
 			}
 			try {
 				// The resume cleared the fence, so read once more and reconcile in
@@ -997,10 +1005,6 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 	#notifyStorageChange(targetRefs: readonly string[]): void {
 		const refs = [...new Set(targetRefs)];
 		this.#notify(this.#storageListeners, refs, "Native mutation storage listener failed");
-	}
-
-	#notifyIdentityChange(change: NativeMutationIdentityChange): void {
-		this.#notify(this.#identityListeners, change, "Native mutation identity listener failed");
 	}
 
 	#notify<T>(listeners: ReadonlySet<(value: T) => void>, value: T, message: string): void {

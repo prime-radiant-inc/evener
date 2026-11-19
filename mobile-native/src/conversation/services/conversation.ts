@@ -173,6 +173,20 @@ export interface ConversationServiceOptions<ReadLease = unknown> {
 	// host that has no runtime passes neither and nothing changes.
 	readonly onReadStart?: (threadRef: string, expectedThreadId?: string) => ReadLease | undefined;
 	readonly onReadComplete?: (lease: ReadLease | undefined, response: ThreadReadResponse) => void | Promise<unknown>;
+	// A cold pick's resume recycles the transport this service reads over, so
+	// the binding that started the pick is replaced before the daemon answers.
+	// The conversation owner survives that replacement: it runs the resume,
+	// follows the identity the daemon resolves to, and dispatches on the
+	// binding it opens for that identity. A host with no owner passes none, and
+	// the service resumes and dispatches on the binding it holds.
+	readonly runModelPick?: (threadRef: string, pick: ModelPickRequest) => Promise<void>;
+}
+
+/** A model pick whose session has to be resumed first. The owner dispatches
+ * it, because the resume replaces the binding that read the request. */
+export interface ModelPickRequest {
+	readonly modelProvider: string;
+	readonly model: string;
 }
 
 export interface ConversationReadProjection {
@@ -976,7 +990,14 @@ export function createConversationService<ReadLease = unknown>(
 		if (typeof client.resumeThread !== "function") {
 			throw new Error("ConversationService: resume is unavailable");
 		}
+		// The resume recycles this service's transport. An owner that holds a
+		// replacement binding has already opened it and closed this one; reopening
+		// here would leave the retired service with a subscription nobody holds.
+		const epoch = openEpoch;
 		const resumed = await client.resumeThread(threadRef);
+		if (openEpoch !== epoch) {
+			throw new Error("ConversationService: the resume replaced this binding");
+		}
 		const resumedRef = resumed.thread.evener.ref;
 		await service.open(resumedRef === "" ? threadRef : resumedRef);
 	}
@@ -1445,6 +1466,23 @@ export function createConversationService<ReadLease = unknown>(
 		},
 
 		async changeModel(modelProvider, model) {
+			// A cold pick's resume recycles this service's transport, so the owner
+			// that survives the recycle runs the pick and dispatches on the binding
+			// it opens for the identity the resume resolved. This service refuses
+			// only what it can see before the pick leaves it; the owner owns the
+			// refusal/dispatch boundary from there.
+			const owner = coldSession() ? options.runModelPick : undefined;
+			if (owner !== undefined) {
+				let threadRef: string;
+				try {
+					requireModelSetConnection();
+					threadRef = requireRef();
+				} catch (error) {
+					throw new ModelPickNotSentError(error instanceof Error ? error.message : String(error));
+				}
+				await owner(threadRef, { modelProvider, model });
+				return;
+			}
 			const { threadRef, expectedThreadId, fence } = await establishModelPick();
 			const clientMutationId = idFactory();
 			let rawResponse: unknown;
