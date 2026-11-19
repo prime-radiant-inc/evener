@@ -262,6 +262,16 @@ type ThinkingData struct {
 	// Chat Completions scalar replay when Text includes structured reasoning.
 	ScalarReasoningField string `json:"scalar_reasoning_field,omitempty"`
 	ScalarReasoningText  string `json:"scalar_reasoning_text,omitempty"`
+
+	// Responses native parts retain their order, type and exact text beside the projections.
+	ResponsesContentParts []ResponsesReasoningPart `json:"responses_content_parts,omitempty"`
+	ResponsesSummaryParts []ResponsesReasoningPart `json:"responses_summary_parts,omitempty"`
+}
+
+// ResponsesReasoningPart is one typed text part of a Responses reasoning item.
+type ResponsesReasoningPart struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
 }
 
 // ChatReplayText selects the text for the Chat Completions replay shape.
@@ -744,6 +754,9 @@ func DefaultAdapterTimeout() AdapterTimeout {
 
 // Response is a provider-agnostic chat-completion response.
 type Response struct {
+	// FallbackContent holds provider reasoning that accompanies usable output reconstructed from stream events.
+	FallbackContent []ContentPart `json:"-"`
+
 	ID        string         `json:"id"`
 	Model     string         `json:"model"`
 	Provider  string         `json:"provider"`

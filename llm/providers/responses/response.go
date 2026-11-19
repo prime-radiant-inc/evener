@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/invariant"
@@ -133,14 +134,18 @@ func responseContentFromOutputItemsRaw(out []any, body []byte, rawItems []json.R
 			// when it has encrypted_content, so the text never returns to
 			// this API.
 			text := strings.Join(parseReasoningSummary(item["content"]), reasoningPartSeparator)
-			if encryptedContent != "" || text != "" {
+			contentParts := responsesReasoningParts(item["content"])
+			summaryParts := responsesReasoningParts(item["summary"])
+			if encryptedContent != "" || text != "" || len(contentParts) > 0 || len(summaryParts) > 0 {
 				content = append(content, llm.ContentPart{
 					Kind: llm.ContentThinking,
 					Thinking: &llm.ThinkingData{
-						ID:               id,
-						Text:             text,
-						EncryptedContent: encryptedContent,
-						Summary:          parseReasoningSummary(item["summary"]),
+						ID:                    id,
+						Text:                  text,
+						EncryptedContent:      encryptedContent,
+						Summary:               parseReasoningSummary(item["summary"]),
+						ResponsesContentParts: contentParts,
+						ResponsesSummaryParts: summaryParts,
 					},
 				})
 			}
@@ -149,6 +154,28 @@ func responseContentFromOutputItemsRaw(out []any, body []byte, rawItems []json.R
 		}
 	}
 	return content
+}
+
+func retainFallbackReasoning(r *llm.Response) {
+	if !slices.ContainsFunc(r.Message.Content, func(p llm.ContentPart) bool {
+		return p.Kind != llm.ContentThinking || p.Thinking.Text != "" || p.Thinking.EncryptedContent != ""
+	}) {
+		r.FallbackContent, r.Message.Content = r.Message.Content, nil
+	}
+}
+
+func responsesReasoningParts(raw any) []llm.ResponsesReasoningPart {
+	items, _ := raw.([]any)
+	var parts []llm.ResponsesReasoningPart
+	for _, item := range items {
+		part, _ := item.(map[string]any)
+		kind, _ := part["type"].(string)
+		text, ok := part["text"].(string)
+		if kind != "" && ok {
+			parts = append(parts, llm.ResponsesReasoningPart{Type: kind, Text: text})
+		}
+	}
+	return parts
 }
 
 // settleResponsesTerminalOutput decides the settled message content and
@@ -172,6 +199,7 @@ func settleResponsesTerminalOutput(r *llm.Response, rawResp map[string]any, accu
 		// Accumulated call IDs can be derived from item IDs, so repeated
 		// values do not establish that the provider issued one call.
 		r.Message.Content = responseContentFromOutputItemsRaw(accumulatedOutput, nil, accumulatedRawOutput, false)
+		retainFallbackReasoning(r)
 		if status, _ := rawResp["status"].(string); status != "incomplete" {
 			if len(r.ToolCalls()) > 0 {
 				r.Finish = llm.FinishReason{Reason: "tool_calls"}
@@ -228,6 +256,7 @@ func fromResponses(raw map[string]any, requestedModel string, body []byte) llm.R
 	}
 
 	r.Message = msg
+	retainFallbackReasoning(&r)
 
 	// Check Responses API status/incomplete_details for finish reason.
 	status, _ := raw["status"].(string)

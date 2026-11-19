@@ -480,6 +480,9 @@ effort even with an empty ladder, because the row declares that control. On
 the Responses protocol the encrypted-reasoning `include` and a configured
 summary survive an unvouched effort: no level is sent, but replay stays intact.
 
+**Responses history.** The transcript preserves the order, type, and exact text
+of reasoning `content` and `summary` parts, including blanks with usable output.
+
 **The no-effort verdict.** A gateway can state per model that it accepts no
 effort parameter at all (`supportsReasoningEffort: false` in its
 `client_compat` block). That is narrower than "the model does not reason", and

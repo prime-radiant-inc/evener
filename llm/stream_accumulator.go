@@ -163,6 +163,9 @@ func (a *StreamAccumulator) Process(ev StreamEvent) {
 			if !cp.OutputSettled && !responseHasContent(cp) {
 				cp = *a.buildResponseLocked()
 				copyResponseMetadata(&cp, ev.Response)
+				if len(ev.Response.FallbackContent) > 0 && (cp.Text() != "" || len(cp.ToolCalls()) != 0) {
+					cp.Message.Content = mergeFallbackReasoning(cp.Message.Content, ev.Response.FallbackContent)
+				}
 			}
 			a.final = &cp
 			a.partial = &cp
@@ -176,6 +179,25 @@ func (a *StreamAccumulator) Process(ev StreamEvent) {
 	default:
 		// ignore
 	}
+}
+
+func mergeFallbackReasoning(content, reasoning []ContentPart) []ContentPart {
+	if content[0].Kind == ContentThinking {
+		const separator = "\n\n"
+		streamed := separator + content[0].Thinking.Text + separator
+		reasoning = slices.Clone(reasoning)
+		for i, part := range reasoning {
+			thinking := *part.Thinking
+			thinking.Summary = slices.DeleteFunc(slices.Clone(thinking.Summary), func(summary string) bool {
+				remaining := strings.Replace(streamed, separator+summary+separator, separator, 1)
+				overlap := remaining != streamed
+				streamed = remaining
+				return overlap
+			})
+			reasoning[i].Thinking = &thinking
+		}
+	}
+	return slices.Insert(content, 0, reasoning...)
 }
 
 // Response returns the final accumulated response after FINISH, or nil if the stream
