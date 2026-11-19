@@ -2172,7 +2172,7 @@ func (rs replayScope) webSearchReplayEligible(t schema.Turn) bool {
 
 // projectThinkingPart applies the N4 provenance rule and the target's thinking
 // policy to one part. provenanceKeeps is the per-turn rule (true for an
-// eligible turn or an in-flight round); false drops every thinking part.
+// eligible turn or an in-flight round). Responses plaintext can cross instances.
 // Otherwise the target policy drops plain reasoning, but keeps an encrypted
 // reasoning_details array — wire continuation state the chat adapter must
 // round-trip, not the text #4563 measured — with its display text removed so
@@ -2182,7 +2182,7 @@ func (rs replayScope) projectThinkingPart(p llm.ContentPart, provenanceKeeps boo
 	if p.Kind != llm.ContentThinking && p.Kind != llm.ContentRedThinking {
 		return p, false
 	}
-	if !provenanceKeeps {
+	if !provenanceKeeps && (rs.Protocol != registry.ProtocolOpenAIResponses || !p.IsNativeResponsesReasoning()) {
 		return p, true
 	}
 	return llm.TrimThinkingForReplay(p, rs.DropThinking)

@@ -205,7 +205,7 @@ func toResponsesInput(msgs []llm.Message, imageCap string) (instructions string,
 					case llm.ContentAudio, llm.ContentDocument:
 						return "", nil, &llm.ConfigurationError{Message: fmt.Sprintf("unsupported content kind for openai: %s", p.Kind)}
 					default:
-						if item, ok := replayedOutputItem(p); ok {
+						if item, ok := replayedOutputItem(p, true); ok {
 							flushText()
 							items = append(items, item)
 						}
@@ -305,7 +305,7 @@ func toResponsesInput(msgs []llm.Message, imageCap string) (instructions string,
 				if p.Kind == llm.ContentWebSearch {
 					continue
 				}
-				if item, ok := replayedOutputItem(p); ok {
+				if item, ok := replayedOutputItem(p, false); ok {
 					items = append(items, item)
 				}
 			}
@@ -374,8 +374,16 @@ func toResponsesInput(msgs []llm.Message, imageCap string) (instructions string,
 	return instructions, items, nil
 }
 
-func replayedOutputItem(p llm.ContentPart) (map[string]any, bool) {
+func replayedOutputItem(p llm.ContentPart, nativeReasoning bool) (map[string]any, bool) {
 	switch {
+	case nativeReasoning && p.IsNativeResponsesReasoning():
+		th := p.Thinking
+		summary := th.ResponsesSummaryParts
+		if summary == nil {
+			summary = []llm.ResponsesReasoningPart{}
+		}
+		return map[string]any{"type": "reasoning", "id": th.ID, "content": th.ResponsesContentParts,
+			"summary": summary}, true
 	// OpenRouter reasoning_details belong to the Chat protocol.
 	case p.Kind == llm.ContentThinking && p.Thinking != nil && p.Thinking.EncryptedContent != "" &&
 		!llm.IsOpenAICompatEncryptedReasoning(p.Thinking.EncryptedContent):

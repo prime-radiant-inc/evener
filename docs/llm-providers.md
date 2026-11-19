@@ -482,6 +482,8 @@ summary survive an unvouched effort: no level is sent, but replay stays intact.
 
 **Responses history.** The transcript preserves the order, type, and exact text
 of reasoning `content` and `summary` parts, including blanks with usable output.
+Responses replays complete native plaintext items as part of full history in
+subsequent requests.
 
 **The no-effort verdict.** A gateway can state per model that it accepts no
 effort parameter at all (`supportsReasoningEffort: false` in its

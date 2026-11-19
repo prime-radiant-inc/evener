@@ -266,12 +266,22 @@ type ThinkingData struct {
 	// Responses native parts retain their order, type and exact text beside the projections.
 	ResponsesContentParts []ResponsesReasoningPart `json:"responses_content_parts,omitempty"`
 	ResponsesSummaryParts []ResponsesReasoningPart `json:"responses_summary_parts,omitempty"`
+	ResponsesIncomplete   bool                     `json:"responses_incomplete,omitempty"`
 }
 
 // ResponsesReasoningPart is one typed text part of a Responses reasoning item.
 type ResponsesReasoningPart struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
+}
+
+// IsNativeResponsesReasoning identifies a plaintext item with replayable part types.
+func (p ContentPart) IsNativeResponsesReasoning() bool {
+	t := p.Thinking
+	return p.Kind == ContentThinking && t != nil && strings.TrimSpace(t.ID) != "" && t.EncryptedContent == "" && !t.ResponsesIncomplete &&
+		len(t.ResponsesContentParts) != 0 &&
+		!slices.ContainsFunc(t.ResponsesContentParts, func(part ResponsesReasoningPart) bool { return part.Type != "reasoning_text" }) &&
+		!slices.ContainsFunc(t.ResponsesSummaryParts, func(part ResponsesReasoningPart) bool { return part.Type != "summary_text" })
 }
 
 // ChatReplayText selects the text for the Chat Completions replay shape.

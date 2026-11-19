@@ -52,9 +52,7 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 // encrypted_content) must still land in the settled message as a thinking
 // part, or the transcript loses everything the model thought. Parts are
 // joined with the same blank line the stream emits between them, so the
-// settled text reads like the live view. Replay is unaffected:
-// toResponsesInput sends a reasoning item back only when it has
-// encrypted_content, so the raw text never returns to this API.
+// settled text reads like the live view.
 func TestResponseContentFromOutputItems_KeepsReasoningTextContent(t *testing.T) {
 	t.Parallel()
 	var out []any

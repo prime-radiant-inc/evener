@@ -98,6 +98,12 @@ func (cm *Manager) LastInputTokens() int {
 	return cm.lastInputTokens
 }
 
+// InputTokenMeasurement snapshots the count with the Responses replay policy that produced it.
+func (cm *Manager) InputTokenMeasurement() (int, bool) {
+	profile, count, _, _ := cm.profileSnapshot()
+	return count, count > 0 && profile != nil && profile.Protocol() == registry.ProtocolOpenAIResponses
+}
+
 // Pressure returns the current context pressure as a fraction of the window.
 // It may exceed 1.0 when the estimated usage is larger than the window.
 func (cm *Manager) Pressure(history []schema.Turn, sysPromptChars int) float64 {

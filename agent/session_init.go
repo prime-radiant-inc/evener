@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -42,6 +43,7 @@ import (
 	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // BuildVersion is recorded in each session's metadata (SessionMeta.BuildVersion).
@@ -1458,6 +1460,13 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		}
 	}()
 
+	nativeReplay := profile.Protocol() == registry.ProtocolOpenAIResponses
+	if meta.LastInputTokens > 0 && meta.LastInputNativeReplay != nativeReplay &&
+		(meta.LastInputNativeReplay || slices.ContainsFunc(s.history, func(turn schema.Turn) bool {
+			return turn.Message.Role == llm.RoleAssistant && slices.ContainsFunc(turn.Message.Content, llm.ContentPart.IsNativeResponsesReasoning)
+		})) {
+		meta.LastInputTokens = 0
+	}
 	// Seed context manager with the meta's token count.
 	if meta.LastInputTokens > 0 && s.contextMgr != nil {
 		s.contextMgr.RecordInputTokens(meta.LastInputTokens, len(s.history))

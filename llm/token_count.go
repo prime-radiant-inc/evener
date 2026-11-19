@@ -411,7 +411,7 @@ func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
 			if t.protocol == registry.ProtocolOpenAIChat || t.namedChat {
 				chatReasoning.add(t, p)
 			} else {
-				chars += thinkingReplayChars(t, p)
+				chars += thinkingReplayChars(t, m.Role, p)
 			}
 		case ContentWebSearch:
 			if p.WebSearch != nil {
@@ -439,8 +439,7 @@ func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
 //     ContentRedThinking; an encrypted blob never rides, and a part with no text
 //     is skipped;
 //   - responses/input.go replays one reasoning item carrying a non-compat
-//     encrypted blob with its trimmed id and non-blank summaries, and drops every
-//     other shape, the part's display text included;
+//     encrypted blob with its trimmed id and non-blank summaries, or typed plaintext;
 //   - chatcompletions/messages.go replays the part's text (kept off the wire by a
 //     declared non-reasoning row that does not replay thinking as text) and the
 //     compat reasoning_details array (kept off the wire by any declared
@@ -448,7 +447,7 @@ func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
 //   - the Google adapter emits no thinking shape at all.
 //
 // Chat reasoning is priced across the message by estimateMessageInputParts.
-func thinkingReplayChars(target targetInfo, p ContentPart) int {
+func thinkingReplayChars(target targetInfo, role Role, p ContentPart) int {
 	if p.Thinking == nil {
 		return 0
 	}
@@ -461,6 +460,15 @@ func thinkingReplayChars(target targetInfo, p ContentPart) int {
 			}
 			return anthropicThinkingChars(t)
 		case registry.ProtocolOpenAIResponses:
+			if role == RoleAssistant && p.IsNativeResponsesReasoning() {
+				chars := len(t.ID)
+				for _, parts := range [][]ResponsesReasoningPart{t.ResponsesContentParts, t.ResponsesSummaryParts} {
+					for _, part := range parts {
+						chars += len(part.Text) + len(part.Type)
+					}
+				}
+				return chars
+			}
 			if p.Kind != ContentThinking {
 				// responses/input.go emits the reasoning item for a ContentThinking
 				// part alone, so a redacted part rides as nothing -- blob, id and
@@ -522,8 +530,7 @@ func anthropicThinkingChars(t *ThinkingData) int {
 
 // responsesReasoningChars is what responses/input.go emits: one reasoning item
 // for a thinking part carrying a non-compat encrypted blob, holding the blob, the
-// trimmed id when it is not blank, and the non-blank summaries. Every other
-// thinking shape is dropped.
+// trimmed id when it is not blank, and the non-blank summaries.
 func responsesReasoningChars(t *ThinkingData) int {
 	if t.EncryptedContent == "" || IsOpenAICompatEncryptedReasoning(t.EncryptedContent) {
 		return 0
@@ -964,10 +971,6 @@ func RowSeesToolResultMedia(res registry.Resolved, mediaType string) bool {
 //     content when the row sets ThinkingAsText (chatcompletions/messages.go);
 //     Evener's request assembly strips the text for every other chat target
 //     (#4563), so that is the only chat shape this estimate bills;
-//   - the OpenAI Responses adapter re-sends a reasoning item only when it
-//     carries encrypted_content and keeps raw reasoning_text for display only
-//     (gateway-fronted GLM), and Google drops the part; neither replays this
-//     text.
 //
 // A row with no resolved protocol falls back to names, because such a row still
 // knows what it was named. Those are the effective provider and model — the row's

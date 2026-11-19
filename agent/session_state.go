@@ -404,6 +404,7 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 	skills := s.skillLifecycle.Clone()
 	skills.PinnedNoteGen = s.pinnedNoteGen
 	contextWindow, contextWindowSource := budgetingWindow(s.profile)
+	lastInputTokens, nativeReplay := s.contextMgr.InputTokenMeasurement()
 	return schema.SessionMeta{
 		ID:                       s.id,
 		ProfileID:                s.profile.ID(),
@@ -419,7 +420,8 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 		TurnCount:                s.modelResponses,
 		AcceptedInputTurns:       s.turns,
 		TurnBudgetWarningEmitted: s.turnBudgetWarningEmitted,
-		LastInputTokens:          s.contextMgr.LastInputTokens(),
+		LastInputTokens:          lastInputTokens,
+		LastInputNativeReplay:    nativeReplay,
 		ContextWindow:            contextWindow,
 		ContextWindowSource:      contextWindowSource,
 		Name:                     s.naming.value,

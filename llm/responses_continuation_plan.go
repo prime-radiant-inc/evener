@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/llm/registry"
@@ -25,8 +26,8 @@ func ResponsesEndpointFamilyFor(res registry.Resolved) ResponsesEndpointFamily {
 // ResponsesRequestFingerprint hashes a built Responses body minus the
 // fields that differ between a continuation request and its full-history
 // twin (spec §7.6): input, previous_response_id, conversation, stream, and
-// on the public family store. The v2 prefix marks the cut-over: v1 was
-// computed from the pre-registry builder.
+// on the public family store. The presence of native plaintext changes the hash
+// so an anchor without it cannot hide replayable content.
 func ResponsesRequestFingerprint(family ResponsesEndpointFamily, body map[string]any) (string, error) {
 	excluded := excludedFingerprintFields(family)
 	filtered := make(map[string]any, len(body))
@@ -40,6 +41,14 @@ func ResponsesRequestFingerprint(family ResponsesEndpointFamily, body map[string
 	b, err := json.Marshal(filtered)
 	if err != nil {
 		return "", fmt.Errorf("marshal request fingerprint body: %w", err)
+	}
+	input, _ := body["input"].([]any)
+	if slices.ContainsFunc(input, func(value any) bool {
+		item, _ := value.(map[string]any)
+		_, native := item["content"].([]ResponsesReasoningPart)
+		return item["type"] == "reasoning" && native
+	}) {
+		b = append(b, "\x00responses-native-reasoning"...)
 	}
 	sum := sha256.Sum256(b)
 	return responsesRequestFingerprintPrefix + base64.RawURLEncoding.EncodeToString(sum[:]), nil

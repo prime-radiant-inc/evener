@@ -262,7 +262,7 @@ func TestExpandHistory_OpenAIResponses_SameProviderDifferentModel_ThinkingReplay
 	}
 }
 
-func TestExpandHistory_OpenAIResponses_DifferentProvider_ThinkingAbsent(t *testing.T) {
+func TestExpandHistory_OpenAIResponses_ForeignThinkingFormats(t *testing.T) {
 	t.Parallel()
 	turns := []schema.Turn{assistantThinkingTurn("anthropic", "claude-opus-4-6", "claude-opus-4-6")}
 	out := expandHistory(turns, replayScope{
@@ -274,6 +274,18 @@ func TestExpandHistory_OpenAIResponses_DifferentProvider_ThinkingAbsent(t *testi
 	}
 	if !hasContentKind(out, llm.ContentText) {
 		t.Fatal("answer text must survive thinking stripping")
+	}
+	turns[0].ResponseProvider, turns[0].ResponseProtocol = "another-responses", registry.ProtocolOpenAIResponses
+	turns[0].Message.Content[0].Thinking = &llm.ThinkingData{EncryptedContent: "ciphertext"}
+	native := llm.ContentPart{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{
+		ID: "rs_native", ResponsesContentParts: []llm.ResponsesReasoningPart{{Type: "reasoning_text", Text: "fixture"}},
+	}}
+	turns[0].Message.Content = append(turns[0].Message.Content, native)
+	out = expandHistory(turns, replayScope{
+		Instance: "openai", Model: "gpt-5.4", Protocol: registry.ProtocolOpenAIResponses, InFlightFrom: len(turns),
+	})
+	if len(out) != 1 || len(out[0].Content) != 2 || out[0].Content[1].Thinking != native.Thinking {
+		t.Fatalf("cross-instance Responses history = %#v, want answer and native item", out)
 	}
 }
 

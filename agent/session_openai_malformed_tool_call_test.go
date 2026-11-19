@@ -64,7 +64,7 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 					"content": []any{reasoningText(firstReasoning), summaryText("s_1 "), reasoningText(""), reasoningText(" \t")},
 					"summary": []any{summaryText(" s_2 "), summaryText("")},
 				},
-				map[string]any{"type": "reasoning", "id": "rs_untyped", "content": []any{map[string]any{"text": " r_0\n\n "}}},
+				map[string]any{"type": "reasoning", "id": "rs_untyped", "content": []any{map[string]any{"text": " r_0\n\n "}, reasoningText("")}},
 				map[string]any{"type": "reasoning", "id": "rs_plain", "content": []any{reasoningText(firstReasoning)}},
 				map[string]any{"type": "reasoning", "id": "rs_blank", "content": []any{reasoningText(" \t"), reasoningText("")}},
 				map[string]any{"type": "reasoning", "id": "rs_summary", "summary": []any{summaryText("")}},
@@ -100,7 +100,8 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 	}))
 	t.Cleanup(srv.Close)
 
-	client := registryClientAt(t, dir, map[string]registry.Provider{"openai": openaiInstance(srv.URL)}, []string{"openai"})
+	instances := map[string]registry.Provider{"openai": openaiInstance(srv.URL)}
+	client := registryClientAt(t, dir, instances, []string{"openai"})
 	profile := resolveClientProfile(t, client, "openai/gpt-5.4")
 
 	sess, err := NewSession(client, withTestSessionNamer(client, profile), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
@@ -151,6 +152,10 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 	transcriptPath := sess.TranscriptPath()
 	sess.Close()
 	<-eventsDone
+	meta, err = schema.LoadSessionMeta(dir, meta.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	storedCall, ok := findToolCallInHistory(sess.history, "call_bad")
 	if !ok {
@@ -203,7 +208,7 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 			},
 			Summary: []llm.ResponsesReasoningPart{{Type: "summary_text", Text: " s_2 "}, {Type: "summary_text", Text: ""}},
 		},
-		"rs_untyped": {Text: " r_0\n\n "},
+		"rs_untyped": {Text: " r_0\n\n ", Content: []llm.ResponsesReasoningPart{{Type: "reasoning_text", Text: ""}}},
 		"rs_plain":   {Text: firstReasoning, Content: []llm.ResponsesReasoningPart{{Type: "reasoning_text", Text: firstReasoning}}},
 		"rs_blank":   {Content: []llm.ResponsesReasoningPart{{Type: "reasoning_text", Text: " \t"}, {Type: "reasoning_text", Text: ""}}},
 		"rs_summary": {Summary: []llm.ResponsesReasoningPart{{Type: "summary_text", Text: ""}}},
@@ -249,7 +254,7 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 	requireDoctorShowsRawArguments(t, dir, meta.ID, malformedArgs)
 
 	restored, err := RestoreSessionFromMetaWithConfig(
-		client,
+		registryClientAt(t, dir, instances, []string{"openai"}),
 		profile,
 		execenv.NewLocalExecutionEnvironment(dir),
 		meta,
@@ -266,6 +271,9 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
 	}
 	checkThinking("cold restore", restored.history)
+	if restored.contextMgr.LastInputTokens() != meta.LastInputTokens {
+		t.Fatal("restore discarded an input measurement taken with native replay")
+	}
 	restoredEventsDone := make(chan struct{})
 	go func() {
 		defer close(restoredEventsDone)
@@ -334,6 +342,10 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 
 	var firstReplay []json.RawMessage
 	const wantReasoning = `{"encrypted_content":"opaque","id":"rs_mixed","summary":[{"text":"s_2","type":"summary_text"}],"type":"reasoning"}`
+	wantReasoningItems := []string{wantReasoning,
+		`{"content":[{"type":"reasoning_text","text":"\tα\n\nβ\r\n"}],"id":"rs_plain","summary":[],"type":"reasoning"}`,
+		`{"content":[{"type":"reasoning_text","text":" \t"},{"type":"reasoning_text","text":""}],"id":"rs_blank","summary":[],"type":"reasoning"}`,
+	}
 	for _, requestIndex := range []int{2, 3} {
 		var request struct {
 			Input []json.RawMessage `json:"input"`
@@ -366,8 +378,8 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 			}
 			if item.Type == "reasoning" {
 				reasoning++
-				if string(rawItem) != wantReasoning {
-					t.Fatalf("request %d reasoning = %s, want %s", requestIndex+1, rawItem, wantReasoning)
+				if reasoning > len(wantReasoningItems) || string(rawItem) != wantReasoningItems[reasoning-1] {
+					t.Fatalf("request %d reasoning item %d = %s, want sequence %q", requestIndex+1, reasoning, rawItem, wantReasoningItems)
 				}
 			}
 			if item.Type != "function_call" || item.CallID != "call_fixed" {
@@ -381,9 +393,20 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 		if calls != 1 {
 			t.Fatalf("request %d replayed the corrected call %d times, want once", requestIndex+1, calls)
 		}
-		if reasoning != 1 {
-			t.Errorf("request %d replayed %d reasoning items, want one", requestIndex+1, reasoning)
+		if reasoning != len(wantReasoningItems) {
+			t.Errorf("request %d replayed %d reasoning items, want %d", requestIndex+1, reasoning, len(wantReasoningItems))
 		}
+	}
+	restored.Close()
+	meta.LastInputNativeReplay = false
+	legacy, err := RestoreSessionFromMetaWithConfig(client, profile, execenv.NewLocalExecutionEnvironment(dir), meta,
+		RestoreSessionConfig{StateDir: dir, testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer legacy.Close()
+	if got := legacy.Meta(); meta.LastInputTokens == 0 || got.LastInputTokens != 0 || got.CumulativeUsage != meta.CumulativeUsage {
+		t.Fatalf("legacy restore input tokens %d from %d, cumulative usage %+v from %+v", got.LastInputTokens, meta.LastInputTokens, got.CumulativeUsage, meta.CumulativeUsage)
 	}
 }
 

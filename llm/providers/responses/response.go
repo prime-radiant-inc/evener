@@ -130,12 +130,10 @@ func responseContentFromOutputItemsRaw(out []any, body []byte, rawItems []json.R
 			// OpenAI returns reasoning as encrypted_content plus summaries;
 			// gateways that expose the raw thinking put reasoning_text parts
 			// in content instead. On this path the raw text feeds display and
-			// the transcript; toResponsesInput replays a reasoning item only
-			// when it has encrypted_content, so the text never returns to
-			// this API.
+			// the transcript. The input writer decides eligibility from typed parts.
 			text := strings.Join(parseReasoningSummary(item["content"]), reasoningPartSeparator)
-			contentParts := responsesReasoningParts(item["content"])
-			summaryParts := responsesReasoningParts(item["summary"])
+			contentParts, contentComplete := responsesReasoningParts(item["content"])
+			summaryParts, summaryComplete := responsesReasoningParts(item["summary"])
 			if encryptedContent != "" || text != "" || len(contentParts) > 0 || len(summaryParts) > 0 {
 				content = append(content, llm.ContentPart{
 					Kind: llm.ContentThinking,
@@ -146,6 +144,7 @@ func responseContentFromOutputItemsRaw(out []any, body []byte, rawItems []json.R
 						Summary:               parseReasoningSummary(item["summary"]),
 						ResponsesContentParts: contentParts,
 						ResponsesSummaryParts: summaryParts,
+						ResponsesIncomplete:   !contentComplete || !summaryComplete || slices.Contains([]any{"incomplete", "in_progress"}, item["status"]),
 					},
 				})
 			}
@@ -164,8 +163,8 @@ func retainFallbackReasoning(r *llm.Response) {
 	}
 }
 
-func responsesReasoningParts(raw any) []llm.ResponsesReasoningPart {
-	items, _ := raw.([]any)
+func responsesReasoningParts(raw any) ([]llm.ResponsesReasoningPart, bool) {
+	items, array := raw.([]any)
 	var parts []llm.ResponsesReasoningPart
 	for _, item := range items {
 		part, _ := item.(map[string]any)
@@ -175,7 +174,7 @@ func responsesReasoningParts(raw any) []llm.ResponsesReasoningPart {
 			parts = append(parts, llm.ResponsesReasoningPart{Type: kind, Text: text})
 		}
 	}
-	return parts
+	return parts, raw == nil || array && len(parts) == len(items)
 }
 
 // settleResponsesTerminalOutput decides the settled message content and

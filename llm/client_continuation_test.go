@@ -82,6 +82,18 @@ func TestPlanContinuationIsStableAcrossBuilds(t *testing.T) {
 	if first.RequestFingerprint != second.RequestFingerprint || first.StorageScopeFingerprint != second.StorageScopeFingerprint {
 		t.Fatalf("fingerprints must ignore input and the anchor: %+v vs %+v", first, second)
 	}
+	again.Messages = append(again.Messages, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+		Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{ID: "rs_native", ResponsesContentParts: []llm.ResponsesReasoningPart{{Type: "reasoning_text", Text: "native"}}},
+	}}})
+	native, err := c.PlanResponsesContinuation(t.Context(), again)
+	if err != nil || native.RequestFingerprint == first.RequestFingerprint || native.StorageScopeFingerprint != first.StorageScopeFingerprint {
+		t.Fatalf("plan with native reasoning = %+v, original = %+v, error = %v", native, first, err)
+	}
+	again.Messages = append(again.Messages, llm.User("later"))
+	later, err := c.PlanResponsesContinuation(t.Context(), again)
+	if err != nil || later.RequestFingerprint != native.RequestFingerprint {
+		t.Fatalf("later native plan = %+v, prior = %+v, error = %v", later, native, err)
+	}
 	req.ConversationID = "conv_1"
 	third, err := c.PlanResponsesContinuation(context.Background(), req)
 	if err != nil {
