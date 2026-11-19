@@ -152,8 +152,12 @@ type liveJobScan struct {
 	// validate re-reads the store's committed boundary. run calls it after the
 	// fold is computed and BEFORE publishing, so a scan whose bytes the store
 	// has since disowned installs nothing. It is the same resample the waiting
-	// caller uses; see records.
-	validate func() (jobstore.CommittedJournalState, error)
+	// caller uses, called with THIS scan's context: the scan outlives the
+	// request that started it, and validation may do real work — a journal
+	// that gained a torn tail during the read enters tail recovery, which
+	// stops on a canceled context. Closing over the starting caller's context
+	// would let a canceled request decide a surviving one's answer.
+	validate func(context.Context) (jobstore.CommittedJournalState, error)
 	// stale reports that the scan computed a fold for content the store no
 	// longer describes, so it published nothing. A waiter must resample and
 	// retry rather than treat the untouched fold as this caller's answer.
@@ -314,7 +318,7 @@ func (f *liveJobFold) liveRows(result liveJobFoldResult, live map[string]*jobsto
 	}
 
 	f.mu.Lock()
-	if f.durableRow != nil && f.durableFor == result.published && sameJobIDs(f.durableLive, want) {
+	if f.durableRow != nil && f.durableFor == result.published && maps.Equal(f.durableLive, want) {
 		rows := f.durableRow
 		f.mu.Unlock()
 		return rows
@@ -368,19 +372,6 @@ func (f *liveJobFold) liveRows(result liveJobFoldResult, live map[string]*jobsto
 	return rows
 }
 
-// sameJobIDs reports whether two ID sets hold the same IDs.
-func sameJobIDs(a, b map[string]struct{}) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for id := range a {
-		if _, ok := b[id]; !ok {
-			return false
-		}
-	}
-	return true
-}
-
 // liveJobRecords folds path through endOffset, extending the last completed
 // fold by the events appended since it, and returns the current list. The
 // returned list is shared and must not be mutated; a page overlays running jobs
@@ -402,7 +393,11 @@ func sameJobIDs(a, b map[string]struct{}) bool {
 // snapshot's length is a boundary for content this fold has already replaced,
 // so reading the current file up to it would both re-admit bytes the store has
 // since disowned and label the result with a generation that is not the file's.
-func (f *liveJobFold) records(ctx context.Context, path string, committed jobstore.CommittedJournalState, resample func() (jobstore.CommittedJournalState, error)) (liveJobFoldResult, error) {
+//
+// records calls it with THIS caller's ctx, because every one of those reads and
+// retries is this caller's own. The shared scan validates with the scan's
+// context instead; see liveJobScan.validate.
+func (f *liveJobFold) records(ctx context.Context, path string, committed jobstore.CommittedJournalState, resample func(context.Context) (jobstore.CommittedJournalState, error)) (liveJobFoldResult, error) {
 	for {
 		f.mu.Lock()
 		obsolete := f.built && committed.Generation < f.gen
@@ -410,7 +405,7 @@ func (f *liveJobFold) records(ctx context.Context, path string, committed jobsto
 		if !obsolete || resample == nil {
 			break
 		}
-		fresh, err := resample()
+		fresh, err := resample(ctx)
 		if err != nil {
 			return liveJobFoldResult{}, err
 		}
@@ -556,7 +551,7 @@ func (f *liveJobFold) records(ctx context.Context, path string, committed jobsto
 				// refusing is the only honest answer.
 				return liveJobFoldResult{}, errors.New("jobstore: journal changed while it was being read")
 			}
-			fresh, resampleErr := resample()
+			fresh, resampleErr := resample(ctx)
 			if resampleErr != nil {
 				return liveJobFoldResult{}, resampleErr
 			}
@@ -606,7 +601,7 @@ func (f *liveJobFold) records(ctx context.Context, path string, committed jobsto
 		// exit. Only the store can say whether the content is still the content,
 		// so ask it before answering, and retry against what it now reports.
 		if resample != nil {
-			fresh, resampleErr := resample()
+			fresh, resampleErr := resample(ctx)
 			if resampleErr != nil {
 				return liveJobFoldResult{}, resampleErr
 			}
@@ -707,7 +702,11 @@ func (f *liveJobFold) run(ctx context.Context, scan *liveJobScan, path string) {
 	abandonedBeforeValidation := scan.abandoned
 	f.mu.Unlock()
 	if err == nil && !abandonedBeforeValidation && scan.validate != nil {
-		fresh, resampleErr := scan.validate()
+		// ctx is the scan's own, detached from any single caller and canceled
+		// only when the last waiter leaves. Validation can read the journal —
+		// tail recovery, on a torn tail that landed during the read — so it must
+		// outlive a caller that left while a second still waits.
+		fresh, resampleErr := scan.validate(ctx)
 		switch {
 		case resampleErr != nil:
 			err = resampleErr

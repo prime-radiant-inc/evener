@@ -727,8 +727,13 @@ func loadLiveActivityBase(ctx context.Context, s *Session) (activityLoadedBase, 
 		if err != nil {
 			return activityLoadedBase{}, err
 		}
-		folded, err := jm.liveActivityFold.records(ctx, committed.Path, committed, func() (jobstore.CommittedJournalState, error) {
-			return jm.store.CommittedJournal(ctx)
+		// The boundary read takes the context it is called with, not this
+		// request's captured one: records calls it with this caller's ctx for
+		// this caller's own retries, and run calls it with the shared scan's ctx
+		// for prepublication validation, which outlives a caller that leaves
+		// while another still waits.
+		folded, err := jm.liveActivityFold.records(ctx, committed.Path, committed, func(readCtx context.Context) (jobstore.CommittedJournalState, error) {
+			return jm.store.CommittedJournal(readCtx)
 		})
 		if err != nil {
 			return activityLoadedBase{}, err

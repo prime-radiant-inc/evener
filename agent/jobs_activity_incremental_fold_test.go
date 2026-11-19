@@ -1887,7 +1887,7 @@ func TestLiveActivityBase_MixedFoldIsNeverPublishedForTheOldGeneration(t *testin
 	scan := &liveJobScan{
 		done: make(chan struct{}), cancel: func() {}, attempted: grown.Size,
 		gen: grown.Generation,
-		validate: func() (jobstore.CommittedJournalState, error) {
+		validate: func(context.Context) (jobstore.CommittedJournalState, error) {
 			changed := grown
 			changed.Generation = grown.Generation + 1
 			return changed, nil
@@ -2037,8 +2037,8 @@ func TestLiveActivityBase_ObsoleteSnapshotIsResampledBeforeScanning(t *testing.T
 	// The stalled request resumes with its obsolete snapshot. Its scan must run
 	// to the store's current boundary, not the length it remembered.
 	calls := spyLiveActivityScans(t)
-	folded, err := s.jobManager.liveActivityFold.records(context.Background(), stale.Path, stale, func() (jobstore.CommittedJournalState, error) {
-		return s.jobManager.store.CommittedJournal(context.Background())
+	folded, err := s.jobManager.liveActivityFold.records(context.Background(), stale.Path, stale, func(ctx context.Context) (jobstore.CommittedJournalState, error) {
+		return s.jobManager.store.CommittedJournal(ctx)
 	})
 	if err != nil {
 		t.Fatalf("stalled read: %v", err)
@@ -2091,8 +2091,8 @@ func TestLiveActivityBase_RebuildsAfterAConfirmedTruncation(t *testing.T) {
 	stale := snapshot
 	stale.Size = snapshot.Size - 1
 	calls := spyLiveActivityScans(t)
-	if _, err := s.jobManager.liveActivityFold.records(context.Background(), stale.Path, stale, func() (jobstore.CommittedJournalState, error) {
-		return s.jobManager.store.CommittedJournal(context.Background())
+	if _, err := s.jobManager.liveActivityFold.records(context.Background(), stale.Path, stale, func(ctx context.Context) (jobstore.CommittedJournalState, error) {
+		return s.jobManager.store.CommittedJournal(ctx)
 	}); err != nil {
 		t.Fatalf("records at an older boundary: %v", err)
 	}
@@ -2266,6 +2266,151 @@ func TestLiveActivityBase_KeepsTheScanForARemainingWaiter(t *testing.T) {
 	}
 	if got := scans.Load(); got != 1 {
 		t.Fatalf("scans = %d, want the one read both callers shared", got)
+	}
+}
+
+// TestLiveActivityBase_SharedScanValidationOutlivesTheCanceledFirstCaller pins
+// the context a shared scan validates with.
+//
+// A scan belongs to every request waiting on it, not to the one that started
+// it: the first caller can be canceled while a second still holds the fold
+// request open, and the scan's own context — detached from that first request —
+// stays live until the last waiter leaves. Prepublication validation runs on
+// the scan, so it must use the scan's context. Closing over the starting
+// caller's context instead makes a canceled request decide a surviving one's
+// answer, and only in the case validation does real work: a journal that gained
+// a torn tail during the scan enters tail recovery, which stops on a canceled
+// context, so the surviving caller is handed the canceled caller's error.
+//
+// The fixture forces exactly that window. The shared scan blocks mid-read; the
+// starting caller is canceled; a partial record is appended behind the store's
+// back; then the scan is released to validate. The surviving request must
+// succeed with the complete fold, the shared scan must record that the content
+// changed under it, and the store's tail repair must have removed the fragment.
+func TestLiveActivityBase_SharedScanValidationOutlivesTheCanceledFirstCaller(t *testing.T) {
+	stateDir := t.TempDir()
+	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}))
+	if s.jobManager == nil || s.jobManager.store == nil {
+		t.Fatal("test session has no job store")
+	}
+	const seeded = 3
+	seedLiveShellStarts(t, s, seeded)
+	if _, err := loadLiveActivityBase(context.Background(), s); err != nil {
+		t.Fatalf("first load: %v", err)
+	}
+	journal, err := s.jobManager.store.CommittedJournal(context.Background())
+	if err != nil {
+		t.Fatalf("CommittedJournal: %v", err)
+	}
+
+	// One committed append for the shared scan to fold, so the scan has work to
+	// do and its boundary sits past the fold the first load published.
+	delta := time.Unix(1_600_000_900, 0).UTC()
+	if err := s.jobManager.store.Append(jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: delta, JobID: "job_shared_delta", Type: jobstore.JobShell,
+		OwnerSessionID: s.ID(), VisibleToSession: s.ID(), StartedAt: &delta,
+	}); err != nil {
+		t.Fatalf("append the delta the shared scan folds: %v", err)
+	}
+	prefix, err := s.jobManager.store.CommittedJournal(context.Background())
+	if err != nil {
+		t.Fatalf("CommittedJournal after the append: %v", err)
+	}
+
+	var scans atomic.Int32
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	original := scanJobJournal
+	scanJobJournal = func(ctx context.Context, path string, fromOffset int64, limits jobstore.ScanLimits) ([]jobstore.Event, int64, error) {
+		if scans.Add(1) == 1 {
+			entered <- struct{}{}
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return nil, 0, ctx.Err()
+			}
+		}
+		return original(ctx, path, fromOffset, limits)
+	}
+	t.Cleanup(func() { scanJobJournal = original })
+
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	first := make(chan error, 1)
+	go func() {
+		_, err := loadLiveActivityBase(firstCtx, s)
+		first <- err
+	}()
+	<-entered
+
+	// A second caller joins that same read rather than starting another, and is
+	// still waiting when the first one leaves.
+	survivor := make(chan error, 1)
+	go func() {
+		_, err := loadLiveActivityBase(context.Background(), s)
+		survivor <- err
+	}()
+	testwait.Until(t, "the second caller to join the shared scan", func() bool {
+		f := &s.jobManager.liveActivityFold
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return f.scanning != nil && f.scanning.waiters == 2
+	})
+	f := &s.jobManager.liveActivityFold
+	f.mu.Lock()
+	shared := f.scanning
+	f.mu.Unlock()
+
+	cancelFirst()
+	if err := <-first; !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled caller = %v, want context.Canceled", err)
+	}
+
+	// A torn trailing record lands on the journal while the shared scan is in
+	// flight and past its boundary, so the scan itself never reads it. The
+	// prepublication boundary read is the next thing to touch the file, and it
+	// has to repair the tail — the part of the read that stops on a canceled
+	// context.
+	torn := []byte(`{"kind":"job_started","seq":99,`)
+	appendRaw(t, journal.Path, torn)
+	if got := scans.Load(); got != 1 {
+		t.Fatalf("scans = %d before the shared scan was released, want the one blocked read", got)
+	}
+
+	close(release)
+	if err := <-survivor; err != nil {
+		t.Fatalf("surviving caller = %v, want the shared scan's result validated on the scan's own context", err)
+	}
+	// Validation is the first boundary read after the fragment landed: the
+	// survivor cannot pass the scan's completion, so nothing else can have
+	// touched the tail before it. A canceled context makes that read fail
+	// outright, which is the error this test did not get.
+	if shared.err != nil {
+		t.Fatalf("shared scan recorded %v, want validation to complete on the scan's own context", shared.err)
+	}
+	if !shared.stale {
+		t.Fatal("the shared scan published a fold without recording the content change validation saw")
+	}
+
+	// Read the journal BEFORE any later load can touch it: validation is the
+	// first boundary read after the fragment landed, the survivor cannot pass
+	// the scan's completion until it returned, and it is back to the committed
+	// prefix with the fragment and nothing else cut.
+	raw := mustReadCurrentJournal(t, journal.Path)
+	if bytes.Contains(raw, torn) {
+		t.Fatalf("the journal still holds the torn trailing record %q: validation never reached tail recovery on a live context", torn)
+	}
+	if len(raw) != int(prefix.Size) {
+		t.Fatalf("journal is %d bytes after the repair, want the committed prefix %d: the tail repair must cut the fragment and nothing else", len(raw), prefix.Size)
+	}
+
+	// The surviving request answered for the repaired content: every seeded row
+	// plus the delta.
+	repaired, err := loadLiveActivityBase(context.Background(), s)
+	if err != nil {
+		t.Fatalf("load after the shared scan: %v", err)
+	}
+	if got, want := repaired.snapshot.Jobs.len(), seeded+1; got != want {
+		t.Fatalf("records after the shared scan = %d, want the complete %d", got, want)
 	}
 }
 

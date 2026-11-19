@@ -233,17 +233,15 @@ func scanEventsFromWithDiagnostics(ctx context.Context, path string, fromOffset 
 	// scan starts at. A scan from zero has no later seek to put it back, and a
 	// handle left at EOF would read no events at all.
 	var physicalEOF bool
-	if end, seekErr := f.Seek(0, io.SeekEnd); seekErr == nil {
-		physicalEOF = limits.EndOffset >= end
+	if limits.bounded() {
+		if end, seekErr := f.Seek(0, io.SeekEnd); seekErr == nil {
+			physicalEOF = limits.EndOffset >= end
+		}
 	}
-	if fromOffset > 0 {
+	if fromOffset > 0 || limits.bounded() {
 		if _, err := f.Seek(fromOffset, io.SeekStart); err != nil {
 			return nil, 0, ReadDiagnostics{}, fmt.Errorf("jobstore: seek %s: %w", path, err)
 		}
-	} else if _, err := f.Seek(0, io.SeekStart); err != nil {
-		// Sizing above seeks to EOF; a scan from zero has no seek of its own to
-		// undo it, and would otherwise read nothing.
-		return nil, 0, fmt.Errorf("jobstore: seek %s: %w", path, err)
 	}
 
 	maxLineBytes := int(limits.MaxLineBytes)
@@ -280,7 +278,7 @@ func scanEventsFromWithDiagnostics(ctx context.Context, path string, fromOffset 
 		// is what makes reaching the boundary a clean completion — every byte
 		// in between belongs to a complete line — rather than a limit breach.
 		if limits.bounded() && offset >= limits.EndOffset {
-			return events, offset, nil
+			return events, offset, diagnostics, nil
 		}
 		// Checked before reading the next line, not just before decoding
 		// it: a MaxEvents-only scan (MaxLineBytes left at its generous

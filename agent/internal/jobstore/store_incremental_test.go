@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand"
 	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1479,85 +1481,131 @@ func TestCommittedJournalAppendAfterTruncationMovesTheGeneration(t *testing.T) {
 }
 
 // TestCommittedJournalBlankTailKeepsTheGeneration pins that a tail holding no
-// record settles.
+// record is removed, and that the journal stays readable afterwards.
 //
-// An out-of-band writer can leave a lone carriage return, or plain spaces, after
-// the last newline. Nothing there can be decoded and the scanner skips a blank
-// line, so the preceding records are readable — but if the boundary reports the
-// tail as unsettled it clears its baseline, and then EVERY later read of the
-// same unchanged file advances the generation again. A fold compares the
-// generation before publishing, so each read discards the scan it just
-// completed and retries: the read either spins until its context is canceled or
-// answers nothing, forever, over bytes that are already fine.
+// An out-of-band writer can leave a lone carriage return, or plain spaces or
+// tabs, after the last newline. Nothing there can be decoded. Terminating such
+// a tail does not make it blank to the reader: the cursor strips only the line
+// terminator, so a run of spaces or tabs becomes a non-empty line that fails to
+// decode, and every later load of the journal fails on it. Cutting the tail is
+// what leaves the bytes a reader can decode.
 //
-// The assertion is the stability, not the repair: repeated reads of the same
-// file must report one generation and must still return the records before the
-// tail.
+// The assertions are the file itself and the reads that follow: the boundary
+// cuts the tail back to the committed end, repeated reads of the unchanged file
+// report one generation, an append after the repair is readable, and a fresh
+// store opened on the same path reads the same records.
 func TestCommittedJournalBlankTailKeepsTheGeneration(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join(t.TempDir(), "jobs.jsonl")
-	s, err := Open(path)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer func() { _ = s.Close() }()
-	if err := s.Append(incrementalTestEvent(0)); err != nil {
-		t.Fatalf("append: %v", err)
-	}
-	committed, err := s.CommittedJournal(context.Background())
-	if err != nil {
-		t.Fatalf("CommittedJournal: %v", err)
-	}
-	// A lone carriage return after the last newline: blank, unterminated, and
-	// not a record any reader can decode.
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		t.Fatalf("open journal: %v", err)
-	}
-	if _, err := f.Write([]byte("\r")); err != nil {
-		_ = f.Close()
-		t.Fatalf("write blank tail: %v", err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatalf("close journal: %v", err)
-	}
+	for _, tc := range []struct {
+		name string
+		tail string
+	}{
+		{name: "spaces", tail: "   "},
+		{name: "tabs", tail: "\t\t"},
+		{name: "mixed", tail: " \t \t"},
+		{name: "carriage_return", tail: "\r"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "jobs.jsonl")
+			s, err := Open(path)
+			if err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			defer func() { _ = s.Close() }()
+			if err := s.Append(incrementalTestEvent(0)); err != nil {
+				t.Fatalf("append: %v", err)
+			}
+			committed, err := s.CommittedJournal(context.Background())
+			if err != nil {
+				t.Fatalf("CommittedJournal: %v", err)
+			}
+			f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
+			if err != nil {
+				t.Fatalf("open journal: %v", err)
+			}
+			if _, err := f.WriteString(tc.tail); err != nil {
+				_ = f.Close()
+				t.Fatalf("write blank tail: %v", err)
+			}
+			if err := f.Close(); err != nil {
+				t.Fatalf("close journal: %v", err)
+			}
 
-	settled, err := s.CommittedJournal(context.Background())
-	if err != nil {
-		t.Fatalf("CommittedJournal over a blank tail: %v", err)
-	}
-	if settled.Size != committed.Size+1 {
-		// The blank tail is terminated rather than cut, so the boundary covers it.
-		if settled.Size < committed.Size {
-			t.Fatalf("boundary size = %d over a blank tail, want at least the committed %d", settled.Size, committed.Size)
-		}
-	}
-	// This read is the one that may legitimately see a change: the foreign
-	// carriage return is content the store did not write.
-	if settled.Generation <= committed.Generation {
-		t.Fatalf("generation = %d after a foreign blank tail, want it past the %d it was", settled.Generation, committed.Generation)
-	}
-
-	// From here the file is unchanged, so nothing may move again.
-	for i := range 3 {
-		again, err := s.CommittedJournal(context.Background())
-		if err != nil {
-			t.Fatalf("repeated CommittedJournal %d: %v", i, err)
-		}
-		if again.Generation != settled.Generation {
-			t.Fatalf("repeated read %d of an unchanged journal moved the generation %d -> %d: a fold discards its completed scan and retries", i, settled.Generation, again.Generation)
-		}
-		if again.Size != settled.Size {
-			t.Fatalf("repeated read %d reported size %d, want the unchanged %d", i, again.Size, settled.Size)
-		}
-	}
-	// And the records before the tail are still readable.
-	events, err := s.LoadEvents()
-	if err != nil {
-		t.Fatalf("LoadEvents over a blank tail: %v", err)
-	}
-	if len(events) != 1 {
-		t.Fatalf("LoadEvents returned %d events over a blank tail, want the 1 record before it", len(events))
+			settled, err := s.CommittedJournal(context.Background())
+			if err != nil {
+				t.Fatalf("CommittedJournal over a blank tail: %v", err)
+			}
+			// The record before the tail must still decode. This is the claim the
+			// terminating implementation broke: a whitespace tail it appended a
+			// newline to stayed a non-empty line, and every read that followed failed
+			// on it.
+			before, err := s.LoadEvents()
+			if err != nil {
+				t.Fatalf("LoadEvents over a blank tail: %v", err)
+			}
+			if len(before) != 1 {
+				t.Fatalf("LoadEvents returned %d events over a blank tail, want the 1 record before it", len(before))
+			}
+			// The tail is cut, not terminated: it carries no record, so the
+			// boundary is the committed end again.
+			if settled.Size != committed.Size {
+				t.Fatalf("boundary size = %d over a %d-byte blank tail, want the committed %d", settled.Size, len(tc.tail), committed.Size)
+			}
+			onDisk, err := os.Stat(path)
+			if err != nil {
+				t.Fatalf("stat repaired journal: %v", err)
+			}
+			if onDisk.Size() != committed.Size {
+				t.Fatalf("journal holds %d bytes after the boundary read, want the blank tail cut back to %d", onDisk.Size(), committed.Size)
+			}
+			// This read is the one that may legitimately see a change: the foreign
+			// whitespace is content the store did not write.
+			if settled.Generation <= committed.Generation {
+				t.Fatalf("generation = %d after a foreign blank tail, want it past the %d it was", settled.Generation, committed.Generation)
+			}
+			// From here the file is unchanged, so nothing may move again.
+			for i := range 3 {
+				again, err := s.CommittedJournal(context.Background())
+				if err != nil {
+					t.Fatalf("repeated CommittedJournal %d: %v", i, err)
+				}
+				if again.Generation != settled.Generation {
+					t.Fatalf("repeated read %d of an unchanged journal moved the generation %d -> %d: a fold discards its completed scan and retries", i, settled.Generation, again.Generation)
+				}
+				if again.Size != settled.Size {
+					t.Fatalf("repeated read %d reported size %d, want the unchanged %d", i, again.Size, settled.Size)
+				}
+			}
+			// The repaired journal still accepts an append, and the record that
+			// append writes decodes — which is the cost of leaving the tail in
+			// place rather than cutting it.
+			if err := s.Append(incrementalTestEvent(1)); err != nil {
+				t.Fatalf("append after the blank-tail repair: %v", err)
+			}
+			events, err := s.LoadEvents()
+			if err != nil {
+				t.Fatalf("LoadEvents after an append over a blank tail: %v", err)
+			}
+			if len(events) != 2 {
+				t.Fatalf("LoadEvents returned %d events after the repair and an append, want the 2 complete records", len(events))
+			}
+			if err := s.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+			reopened, err := Open(path)
+			if err != nil {
+				t.Fatalf("reopen: %v", err)
+			}
+			defer func() { _ = reopened.Close() }()
+			reloaded, err := reopened.LoadEvents()
+			if err != nil {
+				t.Fatalf("LoadEvents after reopening: %v", err)
+			}
+			if len(reloaded) != 2 {
+				t.Fatalf("reopened store returned %d events, want the 2 complete records", len(reloaded))
+			}
+		})
 	}
 }
 
@@ -1738,7 +1786,7 @@ func TestCommittedJournalTailSearchReadsBoundedly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open journal: %v", err)
 	}
-	if _, err := file.Write([]byte(`{"seq":99999,"kind":"job_started","job_id":"job_torn`)); err != nil {
+	if _, err := file.WriteString(`{"seq":99999,"kind":"job_started","job_id":"job_torn`); err != nil {
 		_ = file.Close()
 		t.Fatalf("write torn tail: %v", err)
 	}
@@ -1783,7 +1831,7 @@ func TestCommittedJournalTailSearchHonoursCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open journal: %v", err)
 	}
-	if _, err := file.Write([]byte(`{"seq":2,"kind":"job_started","job_id":"job_torn`)); err != nil {
+	if _, err := file.WriteString(`{"seq":2,"kind":"job_started","job_id":"job_torn`); err != nil {
 		_ = file.Close()
 		t.Fatalf("write torn tail: %v", err)
 	}
@@ -1824,6 +1872,604 @@ func TestCommittedJournalTailSearchHonoursCancellation(t *testing.T) {
 	}
 	if len(events) != 2 {
 		t.Fatalf("journal holds %d events after a canceled boundary read, a repair and an append, want the 2 complete records", len(events))
+	}
+}
+
+// readSpan is one read a recording handle served: the offset it began at and how
+// many bytes it returned.
+type readSpan struct {
+	offset int64
+	length int64
+}
+
+// recordingFs records every read served through the handle it hands out, with
+// the offset each read began at.
+//
+// The tail search's property is about how it READS, not about how many bytes
+// pass through: a search that re-reads an ever-growing window spends its time
+// and its allocations on bytes it has already seen. Recording each read's
+// position is what tells the two apart.
+type recordingFs struct {
+	afero.Fs
+	mu    sync.Mutex
+	spans []readSpan
+}
+
+func (f *recordingFs) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	file, err := f.Fs.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return &recordingFile{File: file, fs: f}, nil
+}
+
+func (f *recordingFs) record(offset, length int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.spans = append(f.spans, readSpan{offset: offset, length: length})
+}
+
+func (f *recordingFs) reset() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.spans = nil
+}
+
+func (f *recordingFs) recorded() []readSpan {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]readSpan(nil), f.spans...)
+}
+
+type recordingFile struct {
+	afero.File
+	fs *recordingFs
+}
+
+func (f *recordingFile) Read(p []byte) (int, error) {
+	at, err := f.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return 0, err
+	}
+	n, err := f.File.Read(p)
+	if n > 0 {
+		f.fs.record(at, int64(n))
+	}
+	return n, err
+}
+
+// TestCommittedJournalTailSearchReadsEachBlockOnce pins that the backward tail
+// search costs linear work in the tail's length.
+//
+// The boundary read holds the store mutex, so the cost of finding the last
+// newline is paid by every append waiting behind it. A search that re-reads an
+// ever-growing window ending at EOF spends that cost on quadratic I/O and
+// repeated allocations, and it does so exactly where the journal is largest.
+// The properties that rule it out are positional and quantitative: each block
+// of the walk is read at its own offset, never a second time, and the total
+// bytes read stay proportional to the tail rather than to its square.
+//
+// A tail spanning many chunks is what makes the difference visible. The
+// assembled line is checked against the bytes on disk, so the test also proves
+// the search found the real line and not a truncated piece of it.
+func TestCommittedJournalTailSearchReadsEachBlockOnce(t *testing.T) {
+	t.Parallel()
+	const path = "/jobs.jsonl"
+	fs := &recordingFs{Fs: afero.NewMemMapFs()}
+	s, err := openFs(fs, path)
+	if err != nil {
+		t.Fatalf("openFs: %v", err)
+	}
+	s.disableSync = true
+	defer func() { _ = s.Close() }()
+
+	if err := s.Append(incrementalTestEvent(0)); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if _, err := s.CommittedJournal(context.Background()); err != nil {
+		t.Fatalf("CommittedJournal: %v", err)
+	}
+	// A torn record several chunks long: the search must walk back through all of
+	// it, which is where a growing-window search re-reads.
+	const chunks = 12
+	tail := bytes.Repeat([]byte("x"), chunks*trailingLineChunk+17)
+	file, err := fs.Fs.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatalf("open journal: %v", err)
+	}
+	if _, err := file.Write(append([]byte(`{"seq":2,"kind":"job_started"`), tail...)); err != nil {
+		_ = file.Close()
+		t.Fatalf("write torn tail: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close journal: %v", err)
+	}
+	onDisk, err := fs.Stat(path)
+	if err != nil {
+		t.Fatalf("stat journal: %v", err)
+	}
+
+	fs.reset()
+	size, line, err := s.trailingLineFromHandleLocked(context.Background(), onDisk.Size())
+	if err != nil {
+		t.Fatalf("trailingLineFromHandleLocked: %v", err)
+	}
+	if _, err := s.f.Seek(0, io.SeekEnd); err != nil {
+		t.Fatalf("restore handle to EOF: %v", err)
+	}
+	raw, err := afero.ReadFile(fs.Fs, path)
+	if err != nil {
+		t.Fatalf("read journal: %v", err)
+	}
+	if got, want := line, raw[size:]; !bytes.Equal(got, want) {
+		t.Fatalf("trailing line = %d bytes, want the %d bytes after offset %d", len(got), len(want), size)
+	}
+	if bytes.IndexByte(line, '\n') >= 0 {
+		t.Fatalf("trailing line holds a newline, so the search returned more than the final line")
+	}
+
+	// Every block the walk inspects has its own offset. A growing-window search
+	// re-reads the same offsets as the window expands, which is the quadratic cost
+	// this replaces.
+	spans := fs.recorded()
+	if len(spans) < 2 {
+		t.Fatalf("tail search issued %d reads over a %d-byte tail, want a backward walk plus the line", len(spans), len(line))
+	}
+	first := map[int64]bool{}
+	for i, span := range spans {
+		if span.length > trailingLineChunk {
+			// The one forward read of the assembled line. There may be exactly one
+			// of these.
+			continue
+		}
+		if first[span.offset] {
+			t.Fatalf("read %d starts at offset %d a second time: the walk re-reads a block it already inspected", i, span.offset)
+		}
+		first[span.offset] = true
+	}
+	var total int64
+	for _, span := range spans {
+		total += span.length
+	}
+	// Linear work: a block walk over the tail, then the line read once. A
+	// growing-window search over this tail reads about half again as many bytes as
+	// the sum of its windows, which is quadratic in the number of chunks.
+	if bound := 2*int64(len(line)) + int64(trailingLineChunk); total > bound {
+		t.Fatalf("tail search read %d bytes for a %d-byte tail, want at most %d: the search reads a growing window instead of walking blocks", total, len(line), bound)
+	}
+}
+
+// TestCommittedJournalRejectsAnOversizedTailWithoutAllocatingIt pins the other
+// half of the same search: a tail larger than the journal's per-line limit is
+// not a record any reader would accept, so the search must stop before holding
+// it.
+//
+// The observable requirements are that the search refuses the tail as a tail
+// rather than as corruption, that its work stops at the limit instead of
+// growing with the file, and that every byte of the oversized tail is left on
+// disk as evidence. Reading the whole tail into memory to discover it does not
+// decode would allocate more than the journal accepts from one corrupt tail,
+// under the store mutex.
+func TestCommittedJournalRejectsAnOversizedTailWithoutAllocatingIt(t *testing.T) {
+	t.Parallel()
+	const path = "/jobs.jsonl"
+	fs := &recordingFs{Fs: afero.NewMemMapFs()}
+	s, err := openFs(fs, path)
+	if err != nil {
+		t.Fatalf("openFs: %v", err)
+	}
+	s.disableSync = true
+	defer func() { _ = s.Close() }()
+	if err := s.Append(incrementalTestEvent(0)); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	committed, err := s.CommittedJournal(context.Background())
+	if err != nil {
+		t.Fatalf("CommittedJournal: %v", err)
+	}
+
+	// One unterminated line past the limit. It is written through the fs rather
+	// than allocated twice: the fixture streams it in blocks.
+	file, err := fs.Fs.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatalf("open journal: %v", err)
+	}
+	block := bytes.Repeat([]byte("x"), 1<<20)
+	oversized := int64(DefaultMaxLineBytes) + 1
+	for written := int64(0); written < oversized; written += int64(len(block)) {
+		chunk := min(int64(len(block)), oversized-written)
+		if _, err := file.Write(block[:chunk]); err != nil {
+			_ = file.Close()
+			t.Fatalf("write oversized tail: %v", err)
+		}
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close journal: %v", err)
+	}
+	before, err := fs.Stat(path)
+	if err != nil {
+		t.Fatalf("stat journal: %v", err)
+	}
+	if before.Size() != committed.Size+oversized {
+		t.Fatalf("fixture journal is %d bytes, want the committed %d plus the %d-byte tail", before.Size(), committed.Size, oversized)
+	}
+
+	fs.reset()
+	if _, _, err := s.trailingLineFromHandleLocked(context.Background(), before.Size()); !errors.Is(err, errTrailingLineTooLong) {
+		t.Fatalf("trailingLineFromHandleLocked over an oversized tail = %v, want errTrailingLineTooLong", err)
+	}
+	if _, err := s.f.Seek(0, io.SeekEnd); err != nil {
+		t.Fatalf("restore handle to EOF: %v", err)
+	}
+	var read int64
+	for _, span := range fs.recorded() {
+		read += span.length
+	}
+	if limit := int64(DefaultMaxLineBytes) + 2*trailingLineChunk; read > limit {
+		t.Fatalf("the tail search read %d bytes of a %d-byte tail, want at most %d: it must stop at the line limit instead of walking the whole tail", read, oversized, limit)
+	}
+	// Through the boundary, the refusal is an unsettled conclusion, not an error:
+	// the read still answers, and the writer's baseline is left unbooked so the
+	// next append inspects the tail rather than joining onto it.
+	if _, err := s.CommittedJournal(context.Background()); err != nil {
+		t.Fatalf("CommittedJournal over an oversized tail = %v, want a clean answer", err)
+	}
+	if s.sampled {
+		t.Fatalf("sampled = true after an oversized tail was left in place; the writer's baseline must stay unverified")
+	}
+	after, err := fs.Stat(path)
+	if err != nil {
+		t.Fatalf("stat journal after the boundary read: %v", err)
+	}
+	if after.Size() != before.Size() {
+		t.Fatalf("journal holds %d bytes after the rejected tail, want the %d it had: an unreadable tail is evidence and must not be cut", after.Size(), before.Size())
+	}
+}
+
+// frozenStatFs serves one frozen metadata snapshot from every stat: the name's
+// and the held handle's alike, which is what a mount whose attributes lag its
+// data reports through both. Reads are never affected — the bytes it hands back
+// are the file's real ones.
+//
+// Freezing both is what keeps the store's identity question answerable: with no
+// Sys on either side, sameJournalFile falls back to length and time, which this
+// fixture holds equal.
+type frozenStatFs struct {
+	afero.Fs
+	frozen atomic.Pointer[snapshotFileInfo]
+}
+
+func (f *frozenStatFs) arm(info os.FileInfo) {
+	snapshot := snapshotInfo(info).(snapshotFileInfo)
+	f.frozen.Store(&snapshot)
+}
+
+func (f *frozenStatFs) Stat(name string) (os.FileInfo, error) {
+	info, err := f.Fs.Stat(name)
+	if err != nil {
+		return nil, err
+	}
+	if frozen := f.frozen.Load(); frozen != nil {
+		return *frozen, nil
+	}
+	return info, nil
+}
+
+func (f *frozenStatFs) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	file, err := f.Fs.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return &frozenStatFile{File: file, fs: f}, nil
+}
+
+type frozenStatFile struct {
+	afero.File
+	fs *frozenStatFs
+}
+
+func (f *frozenStatFile) Stat() (os.FileInfo, error) {
+	if frozen := f.fs.frozen.Load(); frozen != nil {
+		return *frozen, nil
+	}
+	return f.File.Stat()
+}
+
+// TestCommittedJournalTruncatesOnlyTheFragmentWhenStatsLagEOF pins that the tail
+// recovery measures the file's real end instead of trusting a reported length.
+//
+// The shape: a batch was appended, the path's attributes still report the
+// length from before it, and a truncation then cut the batch mid-record. A
+// reported length that ends on an earlier newline makes the region after it
+// look blank when the search starts from that number — and a blank tail is
+// settled by writing a terminator, at the physical end, which turns the
+// fragment into a malformed line the next reader fails on. Measuring the end
+// once is what puts the repair on the fragment.
+//
+// The assertions are the file's length, the boundary, and the records that
+// decode afterwards: recovery must cut exactly the fragment and keep every
+// complete record before it.
+func TestCommittedJournalTruncatesOnlyTheFragmentWhenStatsLagEOF(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "jobs.jsonl")
+	base := afero.NewOsFs()
+	fs := &frozenStatFs{Fs: base}
+	s, err := openFs(fs, path)
+	if err != nil {
+		t.Fatalf("openFs: %v", err)
+	}
+	s.disableSync = true
+	defer func() { _ = s.Close() }()
+
+	if err := s.Append(incrementalTestEvent(0)); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	// The length before the batch, and it ends on a newline: exactly what the
+	// handle will keep reporting.
+	preBatch, err := base.Stat(path)
+	if err != nil {
+		t.Fatalf("stat journal: %v", err)
+	}
+	if err := s.AppendBatch([]Event{incrementalTestEvent(1), incrementalTestEvent(2)}); err != nil {
+		t.Fatalf("append batch: %v", err)
+	}
+	raw, err := afero.ReadFile(base, path)
+	if err != nil {
+		t.Fatalf("read journal: %v", err)
+	}
+	if len(raw) <= int(preBatch.Size()) {
+		t.Fatalf("fixture journal is %d bytes with a pre-batch length of %d", len(raw), preBatch.Size())
+	}
+	// Cut the batch mid-record, the way an interrupted writer leaves it.
+	fragmentStart := int(preBatch.Size())
+	firstRecordEnd := bytes.IndexByte(raw[fragmentStart:], '\n')
+	if firstRecordEnd <= 0 {
+		t.Fatalf("fixture batch holds no complete record")
+	}
+	cut := fragmentStart + firstRecordEnd/2
+	if cut <= fragmentStart {
+		t.Fatalf("fixture cut at %d is not inside the first batch record", cut)
+	}
+	if err := os.Truncate(path, int64(cut)); err != nil {
+		t.Fatalf("truncate journal: %v", err)
+	}
+	fs.arm(preBatch)
+
+	repaired, err := s.CommittedJournal(context.Background())
+	if err != nil {
+		t.Fatalf("CommittedJournal over a truncated batch: %v", err)
+	}
+	if repaired.Size != preBatch.Size() {
+		t.Fatalf("boundary size = %d after a truncated batch, want the %d of complete records", repaired.Size, preBatch.Size())
+	}
+	onDisk, err := base.Stat(path)
+	if err != nil {
+		t.Fatalf("stat repaired journal: %v", err)
+	}
+	if onDisk.Size() != preBatch.Size() {
+		t.Fatalf("journal holds %d bytes after the repair, want the fragment cut back to the %d of complete records", onDisk.Size(), preBatch.Size())
+	}
+	// The complete record before the batch is still there and still decodes.
+	events, err := s.LoadEvents()
+	if err != nil {
+		t.Fatalf("LoadEvents after the repair: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("LoadEvents returned %d events after the repair, want the 1 complete record before the fragment", len(events))
+	}
+}
+
+// TestCommittedJournalStaleLargerStatKeepsTheGenerationStable pins the direction
+// of attribute lag the shorter-report case does not reach.
+//
+// The shape: the path's attributes are frozen at the length of an earlier
+// write, so the append that follows records that they lag it, and a truncation
+// then removes everything after the FIRST record. The file's real end is below
+// the stale report, so from the second read on the reported length is the
+// LARGER number. A reconciliation that only asks the file when the report is
+// shorter never asks again: the boundary answers with a length past EOF, the
+// generation moves on every read of the same bytes, and a fold that compares
+// generations can never publish.
+//
+// The assertions are the boundary's size and its stability: repeated reads of
+// the surviving prefix must report that prefix and one generation.
+func TestCommittedJournalStaleLargerStatKeepsTheGenerationStable(t *testing.T) {
+	t.Parallel()
+	const path = "/jobs.jsonl"
+	base := afero.NewMemMapFs()
+	fs := &staleStatFs{Fs: base}
+	s, err := openFs(fs, path)
+	if err != nil {
+		t.Fatalf("openFs: %v", err)
+	}
+	s.disableSync = true
+	defer func() { _ = s.Close() }()
+
+	if err := s.AppendBatch([]Event{incrementalTestEvent(0), incrementalTestEvent(1)}); err != nil {
+		t.Fatalf("seed append: %v", err)
+	}
+	preBatch, err := base.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	// afero's FileInfo is a live view of the file, so the numbers have to be
+	// copied out before the batch moves them.
+	fs.stale = snapshotInfo(preBatch)
+	staleSize := fs.stale.Size()
+
+	if err := s.AppendBatch([]Event{incrementalTestEvent(2), incrementalTestEvent(3)}); err != nil {
+		t.Fatalf("append batch under a lagging name: %v", err)
+	}
+	confirmed := s.laggingAppendEnd
+	if confirmed <= staleSize {
+		t.Fatalf("fixture did not establish a lagging append end: %d against the stale %d", confirmed, staleSize)
+	}
+	raw, err := afero.ReadFile(base, path)
+	if err != nil {
+		t.Fatalf("read journal: %v", err)
+	}
+	firstRecordEnd := bytes.IndexByte(raw, '\n')
+	if firstRecordEnd < 0 {
+		t.Fatalf("fixture journal holds no complete record")
+	}
+	// Keep the first record only. The survivor is a complete prefix and it is
+	// SHORTER than the stale report, which is the direction this test covers.
+	survivingEnd := int64(firstRecordEnd + 1)
+	if survivingEnd >= staleSize {
+		t.Fatalf("fixture survivor ends at %d, at or past the stale report %d: the reported length would not be the larger number", survivingEnd, staleSize)
+	}
+	if survivingEnd >= confirmed {
+		t.Fatalf("fixture survivor ends at %d, not below the confirmed %d", survivingEnd, confirmed)
+	}
+	cutter, err := base.OpenFile(path, os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatalf("open journal to truncate: %v", err)
+	}
+	if err := cutter.Truncate(survivingEnd); err != nil {
+		_ = cutter.Close()
+		t.Fatalf("truncate journal: %v", err)
+	}
+	if err := cutter.Close(); err != nil {
+		t.Fatalf("close truncated journal: %v", err)
+	}
+
+	first, err := s.CommittedJournal(context.Background())
+	if err != nil {
+		t.Fatalf("CommittedJournal after truncation: %v", err)
+	}
+	if first.Size != survivingEnd {
+		t.Fatalf("boundary size = %d after truncation, want the %d that survived", first.Size, survivingEnd)
+	}
+	// Repeated reads of the same bytes must agree. This is the assertion the
+	// one-directional check fails: with the stale report larger than the file, each
+	// read rediscovered the same EOF, treated it as a fresh change, and moved the
+	// generation.
+	for i := range 3 {
+		again, err := s.CommittedJournal(context.Background())
+		if err != nil {
+			t.Fatalf("repeated CommittedJournal %d: %v", i, err)
+		}
+		if again.Generation != first.Generation {
+			t.Fatalf("repeated read %d moved the generation %d -> %d over the same surviving prefix: every scan is discarded and retried", i, first.Generation, again.Generation)
+		}
+		if again.Size != survivingEnd {
+			t.Fatalf("repeated read %d reported size %d, want the surviving %d", i, again.Size, survivingEnd)
+		}
+	}
+
+	// The same reconciliation has to survive an EMPTIED file, where the measured
+	// end is zero: a claim keyed on a non-zero end cannot see it, so the stale
+	// report would be answered as the boundary and the empty file would look like a
+	// journal of that length on every read.
+	emptier, err := base.OpenFile(path, os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatalf("open journal to empty it: %v", err)
+	}
+	if err := emptier.Truncate(0); err != nil {
+		_ = emptier.Close()
+		t.Fatalf("empty the journal: %v", err)
+	}
+	if err := emptier.Close(); err != nil {
+		t.Fatalf("close emptied journal: %v", err)
+	}
+	emptied, err := s.CommittedJournal(context.Background())
+	if err != nil {
+		t.Fatalf("CommittedJournal over an emptied journal: %v", err)
+	}
+	if emptied.Size != 0 {
+		t.Fatalf("boundary size = %d over an emptied journal, want 0: a claim keyed on a nonzero end misses it", emptied.Size)
+	}
+	for i := range 3 {
+		again, err := s.CommittedJournal(context.Background())
+		if err != nil {
+			t.Fatalf("repeated CommittedJournal %d over an emptied journal: %v", i, err)
+		}
+		if again.Generation != emptied.Generation {
+			t.Fatalf("repeated read %d of an emptied journal moved the generation %d -> %d", i, emptied.Generation, again.Generation)
+		}
+		if again.Size != 0 {
+			t.Fatalf("repeated read %d of an emptied journal reported size %d, want 0", i, again.Size)
+		}
+	}
+}
+
+// TestCommittedJournalAbsenceMovesTheGenerationOnce pins that the journal's
+// absence is part of the reader's baseline.
+//
+// A journal moved aside and put back can return with the same inode, length and
+// modification time, and then nothing in the file distinguishes it from one
+// that never left. The absence is the evidence, and it exists only while the
+// journal is missing: the reader has to record it then, and record it once, so
+// that the disappearance is one change, repeated reads of the missing journal
+// are none, and the return is one more.
+//
+// The assertions are generation transitions, which is what a fold keys on: the
+// generation advances when the journal disappears, holds while it is gone, and
+// advances again when it comes back.
+func TestCommittedJournalAbsenceMovesTheGenerationOnce(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "jobs.jsonl")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+	if err := s.Append(incrementalTestEvent(0)); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	live, err := s.CommittedJournal(context.Background())
+	if err != nil {
+		t.Fatalf("CommittedJournal: %v", err)
+	}
+	if live.Size == 0 {
+		t.Fatalf("boundary size = 0 over a journal with a record")
+	}
+	aside := filepath.Join(dir, "jobs.jsonl.aside")
+	if err := os.Rename(path, aside); err != nil {
+		t.Fatalf("move journal aside: %v", err)
+	}
+
+	gone, err := s.CommittedJournal(context.Background())
+	if err != nil {
+		t.Fatalf("CommittedJournal with the journal absent: %v", err)
+	}
+	if gone.Size != 0 {
+		t.Fatalf("boundary size = %d with the journal absent, want 0", gone.Size)
+	}
+	if gone.Generation <= live.Generation {
+		t.Fatalf("generation = %d when the journal went missing, want it past the %d it was: the return would look like an unchanged file", gone.Generation, live.Generation)
+	}
+	// A second read while it is still gone is the same absence, not a new one.
+	stillGone, err := s.CommittedJournal(context.Background())
+	if err != nil {
+		t.Fatalf("repeated CommittedJournal with the journal absent: %v", err)
+	}
+	if stillGone.Generation != gone.Generation {
+		t.Fatalf("repeated read with the journal absent moved the generation %d -> %d: an unchanged absent journal must not invalidate a fold on every poll", gone.Generation, stillGone.Generation)
+	}
+
+	// Put the SAME file back: same inode, same length, same modification time.
+	if err := os.Rename(aside, path); err != nil {
+		t.Fatalf("restore journal: %v", err)
+	}
+	restored, err := s.CommittedJournal(context.Background())
+	if err != nil {
+		t.Fatalf("CommittedJournal after restoring the journal: %v", err)
+	}
+	if restored.Generation <= gone.Generation {
+		t.Fatalf("generation = %d after the journal came back, want it past the %d it was while absent: the return looks like an unchanged file", restored.Generation, gone.Generation)
+	}
+	if restored.Size != live.Size {
+		t.Fatalf("boundary size = %d after the journal came back, want the %d it held", restored.Size, live.Size)
+	}
+	// The return is one change, and reads of the same restored file are stable.
+	again, err := s.CommittedJournal(context.Background())
+	if err != nil {
+		t.Fatalf("repeated CommittedJournal after the return: %v", err)
+	}
+	if again.Generation != restored.Generation {
+		t.Fatalf("repeated read after the return moved the generation %d -> %d", restored.Generation, again.Generation)
 	}
 }
 
@@ -2174,7 +2820,7 @@ func TestCommittedJournalAppendAfterTruncationWithStalePreStatMovesTheGeneration
 	// The attributes to report as "still current" after the truncation, captured
 	// before it: a caching layer that has not learned about the cut answers with
 	// exactly this.
-	frozen, err := fs.Fs.Stat(path)
+	frozen, err := fs.Stat(path)
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
