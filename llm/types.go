@@ -289,14 +289,29 @@ func IsOpenAICompatReasoningField(sig string) bool {
 // this to skip replaying a foreign provider's value on a cross-provider
 // transcript.
 func IsOpenAICompatEncryptedReasoning(s string) bool {
+	return len(openAICompatReasoningDetails(s)) > 0
+}
+
+type openAICompatReasoningDetail struct {
+	Type string                `json:"type"`
+	Text reasoningTextPresence `json:"text"`
+}
+
+type reasoningTextPresence bool
+
+func (p *reasoningTextPresence) UnmarshalJSON(raw []byte) error {
+	// The JSON decoder passes a validated token. Only nonempty strings supply text.
+	*p = len(raw) > 2 && raw[0] == '"'
+	return nil
+}
+
+func openAICompatReasoningDetails(s string) []openAICompatReasoningDetail {
 	if len(s) == 0 || s[0] != '[' {
-		return false
+		return nil
 	}
-	var items []struct {
-		Type string `json:"type"`
-	}
-	if err := json.Unmarshal([]byte(s), &items); err != nil || len(items) == 0 {
-		return false
+	var items []openAICompatReasoningDetail
+	if err := json.Unmarshal([]byte(s), &items); err != nil {
+		return nil
 	}
 	for _, it := range items {
 		// The array carries every continuation-bearing detail item —
@@ -304,10 +319,10 @@ func IsOpenAICompatEncryptedReasoning(s string) bool {
 		// "reasoning."-typed item marks the value as ours. An OpenAI
 		// Responses opaque blob is not a JSON array of typed items at all.
 		if !strings.HasPrefix(it.Type, "reasoning.") {
-			return false
+			return nil
 		}
 	}
-	return true
+	return items
 }
 
 // OpenAICompatSignatureReasoningNeedsText reports whether the opaque

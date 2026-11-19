@@ -49,11 +49,11 @@ func TestTrimThinkingForReplay(t *testing.T) {
 	})
 }
 
-// TestChatReasoningCharsBillsSignatureText pins the estimate side of the same
+// TestChatReasoningEstimateBillsSignatureText pins the estimate side of the same
 // rule: a signature-bearing reasoning.text item's text is serialized by the
 // builder, so it must be billed even for a row whose plain text is otherwise
 // kept off the wire (and not at all when the details array is off the wire).
-func TestChatReasoningCharsBillsSignatureText(t *testing.T) {
+func TestChatReasoningEstimateBillsSignatureText(t *testing.T) {
 	t.Parallel()
 	text := strings.Repeat("t", 400)
 	on := func(withText bool) int {
@@ -61,7 +61,9 @@ func TestChatReasoningCharsBillsSignatureText(t *testing.T) {
 		if withText {
 			thinking.Text = text
 		}
-		return chatReasoningChars(targetInfo{}, ContentPart{Kind: ContentThinking, Thinking: thinking})
+		var estimate chatReasoningEstimate
+		estimate.add(targetInfo{}, ContentPart{Kind: ContentThinking, Thinking: thinking})
+		return estimate.chars(targetInfo{})
 	}
 	if got, want := on(true), len(signatureReasoningItem)+len(text); got != want {
 		t.Fatalf("signature text billing = %d, want %d", got, want)
@@ -71,7 +73,9 @@ func TestChatReasoningCharsBillsSignatureText(t *testing.T) {
 	}
 	off := targetInfo{reasoningOff: true}
 	part := ContentPart{Kind: ContentThinking, Thinking: &ThinkingData{EncryptedContent: signatureReasoningItem, Text: text}}
-	if got := chatReasoningChars(off, part); got != 0 {
+	var estimate chatReasoningEstimate
+	estimate.add(off, part)
+	if got := estimate.chars(off); got != 0 {
 		t.Fatalf("a declared non-reasoning row bills %d, want 0: the details array never rides", got)
 	}
 }

@@ -274,6 +274,7 @@ func estimateMessagesInputTokens(t targetInfo, messages []Message) int {
 func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
 	chars := len(m.Name) + len(m.ToolCallID)
 	tokens := 0
+	var chatReasoning chatReasoningEstimate
 	for _, p := range m.Content {
 		switch p.Kind {
 		case ContentText:
@@ -318,7 +319,11 @@ func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
 				}
 			}
 		case ContentThinking, ContentRedThinking:
-			chars += thinkingReplayChars(t, p)
+			if t.protocol == registry.ProtocolOpenAIChat {
+				chatReasoning.add(t, p)
+			} else {
+				chars += thinkingReplayChars(t, p)
+			}
 		case ContentWebSearch:
 			if p.WebSearch != nil {
 				chars += len(p.WebSearch.Query)
@@ -329,7 +334,7 @@ func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
 			chars += len(b)
 		}
 	}
-	return chars, tokens
+	return chars + chatReasoning.chars(t), tokens
 }
 
 // thinkingReplayChars counts the characters a thinking part contributes to the
@@ -347,10 +352,6 @@ func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
 //   - responses/input.go replays one reasoning item carrying a non-compat
 //     encrypted blob with its trimmed id and non-blank summaries, and drops every
 //     other shape, the part's display text included;
-//   - chatcompletions/messages.go replays the part's text (kept off the wire by a
-//     declared non-reasoning row that does not replay thinking as text) and the
-//     compat reasoning_details array (kept off the wire by any declared
-//     non-reasoning row), and drops a redacted part and an opaque Responses blob;
 //   - the Google adapter emits no thinking shape at all.
 func thinkingReplayChars(target targetInfo, p ContentPart) int {
 	if p.Thinking == nil {
@@ -372,8 +373,6 @@ func thinkingReplayChars(target targetInfo, p ContentPart) int {
 				return 0
 			}
 			return responsesReasoningChars(t)
-		case registry.ProtocolOpenAIChat:
-			return chatReasoningChars(target, p)
 		default:
 			// The Google adapter and every other protocol along this path emit
 			// no thinking shape.
@@ -446,26 +445,40 @@ func responsesReasoningChars(t *ThinkingData) int {
 	return chars
 }
 
-// chatReasoningChars is what chatcompletions/messages.go emits: the compat
-// reasoning_details array (kept off the wire by a declared non-reasoning row),
-// the part's text (kept off the wire by a declared non-reasoning row that does
-// not replay thinking as text, which is what the target's unsignedThinking
-// records for a chat row), and the text a signature-bearing reasoning item
-// needs merged into it even when the target would otherwise drop the text.
-// A redacted part is never read.
-func chatReasoningChars(target targetInfo, p ContentPart) int {
-	if p.Kind != ContentThinking {
-		return 0
+// The Chat writer chooses a destination for assembled text per message. Its
+// first text detail may already contain the signed text it sends.
+type chatReasoningEstimate struct {
+	displayChars, detailChars int
+	hasTextDetail, populated  bool
+}
+
+func (r *chatReasoningEstimate) add(target targetInfo, p ContentPart) {
+	if p.Kind != ContentThinking || p.Thinking == nil {
+		return
 	}
-	t := p.Thinking
-	chars := 0
-	if !target.reasoningOff && IsOpenAICompatEncryptedReasoning(t.EncryptedContent) {
-		chars += len(t.EncryptedContent)
+	r.displayChars += len(p.Thinking.Text)
+	if target.reasoningOff {
+		return
 	}
-	if target.unsignedThinking || (!target.reasoningOff && OpenAICompatSignatureReasoningNeedsText(t.EncryptedContent)) {
-		chars += len(t.Text)
+	details := openAICompatReasoningDetails(p.Thinking.EncryptedContent)
+	if len(details) > 0 {
+		r.detailChars += len(p.Thinking.EncryptedContent)
 	}
-	return chars
+	if !r.hasTextDetail {
+		for _, detail := range details {
+			if detail.Type == "reasoning.text" {
+				r.hasTextDetail, r.populated = true, bool(detail.Text)
+				break
+			}
+		}
+	}
+}
+
+func (r chatReasoningEstimate) chars(target targetInfo) int {
+	if target.chatThinkingAsText || (!r.populated && (target.unsignedThinking || r.hasTextDetail)) {
+		return r.detailChars + r.displayChars
+	}
+	return r.detailChars
 }
 
 // targetInfo is what the local estimator knows about the request's target: the
@@ -490,7 +503,8 @@ type targetInfo struct {
 	// reasoningOff marks a row that declares reasoning = false: the chat adapter
 	// keeps the reasoning fields and the reasoning_details array off the wire
 	// (chatcompletions/messages.go).
-	reasoningOff bool
+	reasoningOff       bool
+	chatThinkingAsText bool
 	// dropsToolResultImages marks a resolved row whose adapter leaves a
 	// tool-result image off the wire entirely (dropsToolResultImages).
 	dropsToolResultImages bool
@@ -633,6 +647,7 @@ func targetFromResolved(res registry.Resolved, provider, model string) targetInf
 		resolved: true, providerFromCaller: providerFromCaller,
 		imageDetail:           registry.StringValue(res.Caps.ImageDetail),
 		reasoningOff:          res.Caps.ReasoningDisabled(),
+		chatThinkingAsText:    registry.BoolValue(res.Caps.ThinkingAsText),
 		dropsToolResultImages: dropsToolResultImages(res),
 		seenToolResultDocuments: !res.Synthesized && res.Caps.AcceptsModality("pdf") &&
 			deliversToolResultDocuments(res.Protocol),

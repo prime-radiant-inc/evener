@@ -525,6 +525,11 @@ field, or `reasoning_details` as OpenRouter's array form. The value comes from
 models.dev's `interleaved.field` when the catalog states one, else the field
 the text actually arrived on, else `reasoning_content`.
 
+When the first replayed text detail already has signed text, the Chat token
+estimate counts the existing detail payload once. It also counts assembled
+text when the request carries that text as ordinary content or adds it to
+the details array.
+
 What changed structurally: `thinking_format` is now a `Caps` field set in
 `providers.toml`/the curated overlay (a provider- or model-level TOML key),
 not a `[instances.X.compat]` table entry. There's no separate `thinking_levels`
