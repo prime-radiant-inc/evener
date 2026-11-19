@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"slices"
 	"strings"
 
 	"primeradiant.com/evener/llm"
@@ -109,48 +108,50 @@ func toResponsesInput(msgs []llm.Message, imageCap string) (instructions string,
 	}
 	instructions = strings.Join(instrParts, "\n\n")
 
-	for _, m := range orderedReplayMessages(msgs) {
+	for _, m := range msgs {
 		switch m.Role {
 		case llm.RoleSystem, llm.RoleDeveloper:
 			continue
 		case llm.RoleUser, llm.RoleAssistant:
-			if m.Role == llm.RoleAssistant {
-				// Group text parts by phase, emitting one message item per group.
-				type textGroup struct {
-					phase   string
-					content []any
+			switch m.Role {
+			case llm.RoleAssistant:
+				// Group adjacent text by phase across parts omitted from replay.
+				var phase string
+				var content []any
+				flushText := func() {
+					if len(content) == 0 {
+						return
+					}
+					item := map[string]any{"type": "message", "role": "assistant", "content": content}
+					if phase != "" {
+						item["phase"] = phase
+					}
+					items = append(items, item)
+					content = nil
 				}
-				var groups []textGroup
 				for _, p := range m.Content {
 					switch p.Kind {
 					case llm.ContentText:
 						if strings.TrimSpace(p.Text) == "" && p.Phase == "" {
 							continue
 						}
-						entry := map[string]any{"type": "output_text", "text": p.Text}
-						if len(groups) > 0 && groups[len(groups)-1].phase == p.Phase {
-							groups[len(groups)-1].content = append(groups[len(groups)-1].content, entry)
-						} else {
-							groups = append(groups, textGroup{phase: p.Phase, content: []any{entry}})
+						if phase != p.Phase {
+							flushText()
+							phase = p.Phase
 						}
+						content = append(content, map[string]any{"type": "output_text", "text": p.Text})
 					case llm.ContentAudio, llm.ContentDocument:
 						return "", nil, &llm.ConfigurationError{Message: fmt.Sprintf("unsupported content kind for openai: %s", p.Kind)}
 					default:
-						// ignore (tool calls, images, web search handled separately)
+						if item, ok := replayedOutputItem(p); ok {
+							flushText()
+							items = append(items, item)
+						}
 					}
 				}
-				for _, g := range groups {
-					item := map[string]any{
-						"type":    "message",
-						"role":    "assistant",
-						"content": g.content,
-					}
-					if g.phase != "" {
-						item["phase"] = g.phase
-					}
-					items = append(items, item)
-				}
-			} else {
+				flushText()
+				continue
+			case llm.RoleUser:
 				// User messages: no phase grouping needed.
 				content := make([]any, 0, len(m.Content))
 				for _, p := range m.Content {
@@ -239,27 +240,11 @@ func toResponsesInput(msgs []llm.Message, imageCap string) (instructions string,
 				}
 			}
 			for _, p := range m.Content {
-				if replaysEncryptedReasoning(p) {
-					// The guard skips OpenRouter-style encrypted reasoning_details
-					// riding a cross-provider transcript — those are not OpenAI
-					// Responses encrypted_content blobs and the API rejects them.
-					item := map[string]any{
-						"type":              "reasoning",
-						"encrypted_content": p.Thinking.EncryptedContent,
-						"summary":           reasoningSummaryInput(p.Thinking.Summary),
-					}
-					if strings.TrimSpace(p.Thinking.ID) != "" {
-						item["id"] = strings.TrimSpace(p.Thinking.ID)
-					}
-					items = append(items, item)
+				if p.Kind == llm.ContentWebSearch {
+					continue
 				}
-				if p.Kind == llm.ContentToolCall && p.ToolCall != nil {
-					items = append(items, map[string]any{
-						"type":      "function_call",
-						"call_id":   p.ToolCall.ID,
-						"name":      p.ToolCall.Name,
-						"arguments": openaichat.ToolArgumentsString(p.ToolCall.Arguments),
-					})
+				if item, ok := replayedOutputItem(p); ok {
+					items = append(items, item)
 				}
 			}
 			for _, p := range m.Content {
@@ -327,9 +312,30 @@ func toResponsesInput(msgs []llm.Message, imageCap string) (instructions string,
 	return instructions, items, nil
 }
 
-func replaysEncryptedReasoning(p llm.ContentPart) bool {
-	return p.Kind == llm.ContentThinking && p.Thinking != nil && p.Thinking.EncryptedContent != "" &&
-		!llm.IsOpenAICompatEncryptedReasoning(p.Thinking.EncryptedContent)
+func replayedOutputItem(p llm.ContentPart) (map[string]any, bool) {
+	switch {
+	// OpenRouter reasoning_details belong to the Chat protocol.
+	case p.Kind == llm.ContentThinking && p.Thinking != nil && p.Thinking.EncryptedContent != "" &&
+		!llm.IsOpenAICompatEncryptedReasoning(p.Thinking.EncryptedContent):
+		item := map[string]any{
+			"type":              "reasoning",
+			"encrypted_content": p.Thinking.EncryptedContent,
+			"summary":           reasoningSummaryInput(p.Thinking.Summary),
+		}
+		if id := strings.TrimSpace(p.Thinking.ID); id != "" {
+			item["id"] = id
+		}
+		return item, true
+	case p.Kind == llm.ContentToolCall && p.ToolCall != nil:
+		return map[string]any{
+			"type":      "function_call",
+			"call_id":   p.ToolCall.ID,
+			"name":      p.ToolCall.Name,
+			"arguments": openaichat.ToolArgumentsString(p.ToolCall.Arguments),
+		}, true
+	default:
+		return replayedWebSearchItem(p)
+	}
 }
 
 func replayedWebSearchItem(p llm.ContentPart) (map[string]any, bool) {
@@ -339,61 +345,6 @@ func replayedWebSearchItem(p llm.ContentPart) (map[string]any, bool) {
 	var item map[string]any
 	err := json.Unmarshal(p.WebSearch.Raw, &item)
 	return item, err == nil
-}
-
-func replaysNonTextItem(p llm.ContentPart) bool {
-	switch p.Kind {
-	case llm.ContentThinking:
-		return replaysEncryptedReasoning(p)
-	case llm.ContentToolCall:
-		return p.ToolCall != nil
-	case llm.ContentWebSearch:
-		_, ok := replayedWebSearchItem(p)
-		return ok
-	default:
-		return false
-	}
-}
-
-// The assembler groups a message's text before other output items. Feed it
-// spans separated by emitted items so omitted parts do not interrupt grouping.
-func orderedReplayMessages(messages []llm.Message) []llm.Message {
-	var ordered []llm.Message
-	for i, m := range messages {
-		if m.Role != llm.RoleAssistant || !slices.ContainsFunc(m.Content, replaysEncryptedReasoning) {
-			if ordered != nil {
-				ordered = append(ordered, m)
-			}
-			continue
-		}
-		if ordered == nil {
-			ordered = make([]llm.Message, i, len(messages))
-			copy(ordered, messages[:i])
-		}
-		start := 0
-		for i, p := range m.Content {
-			if !replaysNonTextItem(p) {
-				continue
-			}
-			item := m
-			if start < i {
-				item.Content = m.Content[start:i]
-				ordered = append(ordered, item)
-			}
-			item.Content = m.Content[i : i+1]
-			ordered = append(ordered, item)
-			start = i + 1
-		}
-		if start < len(m.Content) {
-			item := m
-			item.Content = m.Content[start:]
-			ordered = append(ordered, item)
-		}
-	}
-	if ordered == nil {
-		return messages
-	}
-	return ordered
 }
 
 func reasoningSummaryInput(summary []string) []any {

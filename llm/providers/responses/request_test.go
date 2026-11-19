@@ -2,12 +2,13 @@ package responses
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"image"
 	"image/png"
+	"net/http"
 	"reflect"
-	"slices"
 	"testing"
 
 	"primeradiant.com/evener/llm"
@@ -52,36 +53,31 @@ func userReq(text string) llm.Request {
 	}}
 }
 
-func TestBuildBodyPreservesEncryptedReasoningOrder(t *testing.T) {
+func TestCompletePreservesAssistantItemOrder(t *testing.T) {
 	t.Parallel()
-	type assistantItem struct {
-		phase string
-		text  []string
-	}
 	thinking := func(blob string) llm.ContentPart {
 		return llm.ContentPart{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{ID: "rs_fixture", Text: "display", EncryptedContent: blob}}
 	}
 	commentary := func(text string) llm.ContentPart {
 		return llm.ContentPart{Kind: llm.ContentText, Phase: "commentary", Text: text}
 	}
-	call := llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_fixture", Name: "lookup"}}
+	const arguments = `{ "id" : "\u0061" }`
+	call := llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_fixture", Name: "lookup", Arguments: json.RawMessage(arguments)}}
+	result := llm.ContentPart{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call_fixture", Content: "result"}}
 	for _, tc := range []struct {
-		name          string
-		content       []llm.ContentPart
-		want          []string
-		wantAssistant []assistantItem
+		name    string
+		content []llm.ContentPart
+		want    [][]string
 	}{
 		{
-			name:          "encrypted",
-			content:       []llm.ContentPart{commentary("before"), thinking("opaque-fixture"), call, commentary("after")},
-			want:          []string{"message", "message", "reasoning", "function_call", "message", "function_call_output"},
-			wantAssistant: []assistantItem{{"commentary", []string{"before"}}, {"commentary", []string{"after"}}},
+			name:    "encrypted",
+			content: []llm.ContentPart{commentary("before"), thinking("opaque-fixture"), call, commentary("after")},
+			want:    [][]string{{"message"}, {"message", "commentary", "before"}, {"reasoning"}, {"function_call"}, {"message", "commentary", "after"}, {"function_call_output"}},
 		},
 		{
-			name:          "display only",
-			content:       []llm.ContentPart{commentary("before"), thinking(""), call, commentary("after")},
-			want:          []string{"message", "message", "function_call", "function_call_output"},
-			wantAssistant: []assistantItem{{"commentary", []string{"before", "after"}}},
+			name:    "display only",
+			content: []llm.ContentPart{commentary("before"), thinking(""), call, commentary("after")},
+			want:    [][]string{{"message"}, {"message", "commentary", "before"}, {"function_call"}, {"message", "commentary", "after"}, {"function_call_output"}},
 		},
 		{
 			name: "group across omitted parts",
@@ -94,11 +90,9 @@ func TestBuildBodyPreservesEncryptedReasoningOrder(t *testing.T) {
 				{Kind: llm.ContentText, Phase: "final_answer", Text: "final"},
 				call,
 			},
-			want: []string{"message", "reasoning", "message", "web_search_call", "message", "message", "function_call", "function_call_output"},
-			wantAssistant: []assistantItem{
-				{"commentary", []string{"first", "second", "third"}},
-				{"commentary", []string{"fourth"}},
-				{"final_answer", []string{"final"}},
+			want: [][]string{
+				{"message"}, {"reasoning"}, {"message", "commentary", "first", "second", "third"}, {"web_search_call"},
+				{"message", "commentary", "fourth"}, {"message", "final_answer", "final"}, {"function_call"}, {"function_call_output"},
 			},
 		},
 	} {
@@ -106,31 +100,30 @@ func TestBuildBodyPreservesEncryptedReasoningOrder(t *testing.T) {
 			req := userReq("input")
 			req.Messages = append(req.Messages,
 				llm.Message{Role: llm.RoleAssistant, Content: tc.content},
-				llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
-					{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call_fixture", Content: "result"}},
-				}},
+				llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{result}},
 			)
-			items := build(t, req, resolved(openaiCaps))["input"].([]any)
-			var got []string
-			var assistant []assistantItem
-			for _, item := range items {
+			srv, wire := server(t, http.StatusOK, responseJSON)
+			res := liveRes(srv, openaiCaps)
+			if _, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), llm.ShapeRequest(req, res), res); err != nil {
+				t.Fatal(err)
+			}
+			var got [][]string
+			for _, item := range wire.body["input"].([]any) {
 				m := item.(map[string]any)
-				got = append(got, m["type"].(string))
-				if m["role"] != "assistant" {
-					continue
+				fields := []string{m["type"].(string)}
+				if m["type"] == "function_call" && m["arguments"] != arguments {
+					t.Fatalf("tool arguments = %q, want %q", m["arguments"], arguments)
 				}
-				phase, _ := m["phase"].(string)
-				group := assistantItem{phase: phase}
-				for _, part := range m["content"].([]any) {
-					group.text = append(group.text, part.(map[string]any)["text"].(string))
+				if m["role"] == "assistant" {
+					fields = append(fields, m["phase"].(string))
+					for _, part := range m["content"].([]any) {
+						fields = append(fields, part.(map[string]any)["text"].(string))
+					}
 				}
-				assistant = append(assistant, group)
+				got = append(got, fields)
 			}
-			if !slices.Equal(got, tc.want) {
-				t.Fatalf("input item order = %v, want %v", got, tc.want)
-			}
-			if !reflect.DeepEqual(assistant, tc.wantAssistant) {
-				t.Fatalf("replayed assistant messages = %+v, want %+v", assistant, tc.wantAssistant)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("input items = %q, want %q", got, tc.want)
 			}
 		})
 	}

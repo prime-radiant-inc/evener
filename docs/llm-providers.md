@@ -92,9 +92,7 @@ final output is empty, recovery keeps streamed completions in order, including
 calls whose ID came from an item ID. Live decoding and API-log recomputation
 apply the same rule.
 
-When an assistant message replays encrypted reasoning, the Responses adapter
-keeps visible text, reasoning, function calls, and web search items in transcript
-order. Assistant text in the same phase stays grouped across omitted parts.
+Responses replay preserves assistant item order and groups same-phase text across omitted parts.
 
 ## Image recovery
 
