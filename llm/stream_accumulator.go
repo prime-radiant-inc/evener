@@ -154,6 +154,7 @@ func (a *StreamAccumulator) Process(ev StreamEvent) {
 				tc.Arguments = slices.Clone(ev.ToolCall.Arguments)
 				a.dirty = true
 			}
+			tc.ArgumentsSpelling = ev.ToolCall.ArgumentsSpelling
 		}
 	case StreamEventFinish:
 		a.finish = ev.FinishReason
@@ -274,6 +275,9 @@ func (a *StreamAccumulator) buildResponseLocked() *Response {
 		tc := a.toolCalls[id]
 		if tc != nil {
 			cp := *tc
+			if cp.ArgumentsSpelling == "" {
+				cp.Arguments, cp.ArgumentsSpelling = NormalizeToolArguments(cp.Arguments)
+			}
 			parts = append(parts, ContentPart{
 				Kind:     ContentToolCall,
 				ToolCall: &cp,

@@ -569,17 +569,35 @@ func thinkingHeavyHistory() []schema.Turn {
 	return history
 }
 
-// A Responses reasoning item replays only where it was issued.
-func TestEstimateTokens_ForeignResponsesReasoningIsNotBilled(t *testing.T) {
-	turn := schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant,
-		Content: []llm.ContentPart{{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{
-			ResponsesContentParts: []llm.ResponsesReasoningPart{{Type: "reasoning_text", Text: strings.Repeat("t", 400)}},
-		}}}})
-	mgr := NewManager(provider.FromResolved(registry.Resolved{Instance: "openai", Protocol: registry.ProtocolOpenAIResponses}, nil), nil, cheapmodel.New(nil))
-	for provider, want := range map[string]int{"openai-eu": 0, "": 100} {
-		turn.ResponseProvider = provider
-		if got := mgr.estimateTokens([]schema.Turn{turn}); got != want {
-			t.Fatalf("provider %q billed %d, want %d", provider, got, want)
-		}
+// TestEstimateTokens_ForeignResponsesKeepsPlaintext is #6891's billing half:
+// only the plaintext BuildBody sends bills, and pricing allocates nothing.
+func TestEstimateTokens_ForeignResponsesKeepsPlaintext(t *testing.T) {
+	item := func(blob string) []schema.Turn {
+		return []schema.Turn{{Kind: schema.TurnAssistant, ResponseProvider: "openai-b", Message: llm.Message{Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{EncryptedContent: blob,
+				ResponsesContentParts: []llm.ResponsesReasoningPart{{Type: "reasoning_text", Text: strings.Repeat("t", 400)}}}}}}}}
+	}
+	plain, withBlob := item(""), item(strings.Repeat("z", 4_000))
+	if got, want := testEstimateTokens(t, withBlob), testEstimateTokens(t, plain); got != want || got == 0 {
+		t.Fatalf("foreign item with a 4KB blob bills %d, without it %d, want equal and nonzero", got, want)
+	}
+	res := pressureBenchmarkManager().currentProfile().Resolved()
+	if allocs := testing.AllocsPerRun(20, func() { _ = estimateTokenPartsFor(res, withBlob) }); allocs != 0 {
+		t.Fatalf("foreign Responses estimate allocates %.0f times per reading, want 0", allocs)
+	}
+	// A bare Text projection never reaches reasoningItem, so it bills nothing.
+	if got := testEstimateTokens(t, []schema.Turn{{Kind: schema.TurnAssistant, ResponseProvider: "openai-b",
+		Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{
+			Text: strings.Repeat("t", 400)}}}}}}); got != 0 {
+		t.Fatalf("bare Text foreign estimate = %d, want 0: the wire drops it", got)
+	}
+	// A row declaring reasoning = false builds no item, so the foreign plaintext
+	// must not bill: pressure equals the same history without the thinking.
+	off := false
+	mgr := NewManager(provider.FromResolved(registry.Resolved{Instance: "openai", Protocol: registry.ProtocolOpenAIResponses,
+		ModelID: "gpt-5.4", WireID: "gpt-5.4", Caps: registry.Caps{Reasoning: &off}}, nil), nil, cheapmodel.New(nil))
+	if got, want := mgr.estimateTokens(plain), mgr.estimateTokens(
+		[]schema.Turn{{Kind: schema.TurnAssistant, ResponseProvider: "openai-b", Message: llm.Message{Role: llm.RoleAssistant}}}); got != want {
+		t.Fatalf("reasoning=false foreign estimate = %d, without thinking %d: BuildBody sends neither", got, want)
 	}
 }

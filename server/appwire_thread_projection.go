@@ -82,10 +82,21 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 	// shows only while the status says so: the next turn moves the status
 	// before any facet re-samples the summary (S1c). The one summary a working
 	// session carries is a model call waiting out a usage limit, which names
-	// when the call resumes.
+	// when the call resumes — and a wait belongs to the execution that
+	// supplied it: the bridge's drain can lag the session loop, so a
+	// replacement turn can be published while the cache still holds the
+	// stopped turn's wait, and serving it would pair the new turn with a
+	// wait the client's pre-cut reconciliation would then (correctly)
+	// refuse to retire. The binding matches only while the supplying
+	// execution is still the running one; a wait sampled under no published
+	// execution is bound to the empty id, which no running turn matches
+	// except none-at-all — the first turn that publishes un-matches it.
 	var failure *appwire.ThreadFailure
 	if statusType == appwire.ThreadStatusSystemError || envelope.Failure != nil && envelope.Failure.ResumesAt > 0 {
 		failure = envelope.Failure
+	}
+	if failure != nil && failure.ResumesAt > 0 && envelope.failureWaitTurnID != activeTurnID {
+		failure = nil
 	}
 	reasoningEffort := envelope.ReasoningEffort
 	reasoningEffortLevels := envelope.ReasoningEffortLevels

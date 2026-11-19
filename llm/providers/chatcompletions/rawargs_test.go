@@ -169,7 +169,7 @@ func decodeRawArgsComplete(t *testing.T, body []byte) []byte {
 	if len(calls) != 1 {
 		t.Fatalf("got %d tool calls, want 1", len(calls))
 	}
-	return calls[0].Arguments
+	return []byte(calls[0].WireArguments())
 }
 
 // TestRawArgs_NonStream_InvalidUTF8 asserts that invalid-UTF-8 bytes in
@@ -332,7 +332,7 @@ func decodeRawArgsStream(t *testing.T, sseBody string) []byte {
 	if len(calls) != 1 {
 		t.Fatalf("got %d tool calls, want 1", len(calls))
 	}
-	return calls[0].Arguments
+	return []byte(calls[0].WireArguments())
 }
 
 // TestRawArgs_Stream_InvalidUTF8 asserts that invalid-UTF-8 bytes in
@@ -857,7 +857,7 @@ func toolCallArguments(resp llm.Response) [][]byte {
 	calls := resp.ToolCalls()
 	args := make([][]byte, len(calls))
 	for i := range calls {
-		args[i] = calls[i].Arguments
+		args[i] = []byte(calls[i].WireArguments())
 	}
 	return args
 }

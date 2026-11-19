@@ -1122,7 +1122,7 @@ func toolCallItem(turnID string, turnIndex, part int, turn schema.Turn) appwire.
 	// there). The durable record only sets RawArguments for !json.Valid, so
 	// oversized valid JSON has RawArguments="" and would otherwise show
 	// intent on reload.
-	if call.RawArguments == "" && argrepair.ValidateRawArguments(call.Arguments) == nil {
+	if call.RawArguments == "" && argrepair.ValidateRawArguments([]byte(call.WireArguments())) == nil {
 		description = schema.ToolIntent(call.Arguments)
 	}
 	item := appwire.ThreadItem{

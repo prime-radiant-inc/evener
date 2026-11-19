@@ -384,7 +384,7 @@ func replayedOutputItem(p llm.ContentPart, reasoningDisabled bool) (map[string]a
 			"type":      "function_call",
 			"call_id":   p.ToolCall.ID,
 			"name":      p.ToolCall.Name,
-			"arguments": openaichat.ToolArgumentsString(p.ToolCall.Arguments),
+			"arguments": openaichat.ToolArgumentsString(json.RawMessage(p.ToolCall.WireArguments())),
 		}
 		if id := strings.TrimSpace(p.ToolCall.ItemID); id != "" {
 			item["id"] = id

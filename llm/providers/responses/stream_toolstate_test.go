@@ -89,7 +89,7 @@ func TestResponsesStreamToolStateMapping(t *testing.T) {
 				continue
 			}
 			for i, call := range calls {
-				got := settledCall{call.ID, call.ItemID, call.Name, string(call.Arguments)}
+				got := settledCall{call.ID, call.ItemID, call.Name, call.WireArguments()}
 				if got != want[i] {
 					t.Errorf("%s call[%d] = %+v, want %+v", response.source, i, got, want[i])
 				}

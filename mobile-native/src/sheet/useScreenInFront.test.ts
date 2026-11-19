@@ -32,6 +32,37 @@ it("answers the same at the moment of a call", () => {
 	expect(screenInFront({ getState: () => ({ index: 0, routes: [session] }) }, "session")).toBe(true);
 });
 
+// The Duo split nests a conversation's stack inside the root stack's Sessions
+// route, so a push on the root stack covers the pane while the conversation's
+// own stack still shows it with its sheet open. The screen's own state alone
+// cannot answer this one, and neither can the root's: both have to say the
+// screen is still the one in front.
+it("follows a conversation nested in a root stack through a push over it", () => {
+	const detail = { index: 1, routes: [session, tasks] };
+	const root = (index: number) => ({
+		index,
+		routes:
+			index === 0
+				? [{ key: "sessions", name: "Sessions", state: detail }]
+				: [
+						{ key: "sessions", name: "Sessions", state: detail },
+						{ key: "reader", name: "Reader" },
+					],
+	});
+	let rootIndex = 0;
+	const navigation = {
+		getState: () => detail,
+		getParent: () => ({ getState: () => root(rootIndex) }),
+	};
+	expect(screenInFront(navigation, "session")).toBe(true);
+	// A root screen is pushed over the pane: this stack's routes are unchanged.
+	rootIndex = 1;
+	expect(screenInFront(navigation, "session")).toBe(false);
+	// Popped, and the conversation is the one in front again.
+	rootIndex = 0;
+	expect(screenInFront(navigation, "session")).toBe(true);
+});
+
 it("leaves with the sheets over the screen, since a covered screen's goBack pops only its top sheet", () => {
 	const leave = (index: number, routes: { key: string; name: string }[]) => {
 		const pop = vi.fn();

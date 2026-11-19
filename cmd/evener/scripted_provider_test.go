@@ -141,8 +141,16 @@ func scriptedRegistryClient(t *testing.T, adapters ...*scriptedProvider) *llm.Cl
 
 // scriptedInstance is the registry entry behind a scripted adapter's name.
 func scriptedInstance(name string) registry.Provider {
-	if name == "kimi-anthropic" {
+	switch name {
+	case "kimi-anthropic":
 		return registry.Provider{Base: "kimi-for-coding", APIKey: "test"}
+	case "openrouter":
+		// The curated openrouter instance inherits its catalog, which serves
+		// upstream-namespaced ids ("anthropic/claude-opus-5") as the
+		// instance's own models.
+		return registry.Provider{Base: "openrouter", APIKey: "test"}
+	case "anthropic":
+		return registry.Provider{Base: "anthropic", APIKey: "test"}
 	}
 	return registry.Provider{Base: "openai", APIKey: "test"}
 }
