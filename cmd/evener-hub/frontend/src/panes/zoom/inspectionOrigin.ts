@@ -30,8 +30,22 @@ export function publishCascadeReturnURL(pane: OpenPaneRecord, url: string, opts?
   navigate(url, opts);
 }
 
+function matchesReturnedOriginOrInspector(pane: OpenPaneRecord | undefined, panes: readonly OpenPaneRecord[]): boolean {
+  if (!pane || !returnedOrigin?.alive) return false;
+  if (existingConversationPaneLifetime(pane) === returnedOrigin) return true;
+  const params = zoomIntentOf(pane);
+  if (!params?.inspection) return false;
+  const lifetime = conversationPaneLifetime(pane);
+  const origin = bindings.has(lifetime) ? boundOrigin(lifetime) : restoredOrigin(params, panes);
+  return origin !== null && existingConversationPaneLifetime(origin) === returnedOrigin;
+}
+
 export function isCascadeReturnedOriginURL(pane: OpenPaneRecord | undefined, pathname: string): boolean {
-  return returnedOriginURL !== null && pathname === returnedOriginURL && isCascadeReturnedOrigin(pane);
+  return (
+    returnedOriginURL !== null &&
+    pathname === returnedOriginURL &&
+    matchesReturnedOriginOrInspector(pane, workspaceStore.getState().panes)
+  );
 }
 
 function isConversation(pane: OpenPaneRecord): boolean {
@@ -119,7 +133,7 @@ observeRouteHistory((_prevState, _nextState, _prevURL, nextURL) => {
 workspaceStore.subscribe((state, previous) => {
   if (returnedOrigin !== null) {
     const focused = state.panes.find((pane) => pane.id === state.focusedPaneId);
-    if (!focused || !returnedOrigin.alive || existingConversationPaneLifetime(focused) !== returnedOrigin) {
+    if (!matchesReturnedOriginOrInspector(focused, state.panes)) {
       returnedOrigin = null;
       returnedOriginURL = null;
     }

@@ -1643,6 +1643,29 @@ test("phone Back from a secondary session's inspector publishes its URL without 
   expect(mainLifetime.alive).toBe(true);
   expect(mainAttachments.getState().items.map((item) => item.marker)).toEqual([1]);
 
+  // Returning to desktop and drilling again from the same returned secondary
+  // source must open the new inspector without promoting the source or
+  // discarding the original main pane and its staged attachment.
+  await act(async () => {
+    setMobile(false);
+  });
+  const secondInspectorId = await act(async () =>
+    enterAgentCascade(
+      activityDelegate({
+        ownerRef: "local:unrelated",
+        childRef: "local:unrelated-child",
+        delegateId: "d-phone-unrelated-2",
+      }),
+      unrelatedId,
+    ),
+  );
+  await screen.findByTestId("cascade-column");
+  expect(workspaceStore.getState().focusedPaneId).toBe(secondInspectorId);
+  expect(workspaceStore.getState().panes.some((pane) => pane.id === secondInspectorId)).toBe(true);
+  expect(workspaceStore.getState().mainPane()).toBe(mainPane);
+  expect(mainLifetime.alive).toBe(true);
+  expect(mainAttachments.getState().items.map((item) => item.marker)).toEqual([1]);
+
   // Explicit navigation to another route remains authoritative.
   await act(async () => navigate("/s/local%3Aother-route"));
   await waitFor(() => expect(refParam(workspaceStore.getState().mainPane()?.params)).toBe("local:other-route"));

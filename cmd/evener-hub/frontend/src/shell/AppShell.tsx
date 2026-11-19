@@ -14,7 +14,7 @@ import { requestComposerFocus } from "../panes/session/composer/composerFocus";
 import { conversationContextIncludes } from "../panes/session/transcript/openTranscript";
 import { isKnownSettingsSection, resolveSettingsSection } from "../panes/settings/sections";
 import { zoomParamsCoverConversation } from "../panes/zoom/cascadeCoverage";
-import { isCascadeReturnedOrigin, isCascadeReturnedOriginURL } from "../panes/zoom/inspectionOrigin";
+import { cascadeOrigin, isCascadeReturnedOrigin, isCascadeReturnedOriginURL } from "../panes/zoom/inspectionOrigin";
 import { type SessionZoomParams, zoomIntentOf } from "../panes/zoom/intent";
 import { startBackgroundTranscripts } from "../stores/backgroundTranscripts";
 import { useConnectionStore } from "../stores/connection";
@@ -268,11 +268,13 @@ function routePlacementIsApplied(
     return parentRef !== undefined && conversationContextIncludes(parentRef, ref);
   };
   const rawFocused = workspace.panes.find((pane) => pane.id === workspace.focusedPaneId);
-  if (
-    rawFocused?.type === "session" &&
-    sessionRefOf(rawFocused) === ref &&
-    isCascadeReturnedOriginURL(rawFocused, pathname)
-  ) {
+  const returnedOriginPane =
+    rawFocused !== undefined && isCascadeReturnedOriginURL(rawFocused, pathname)
+      ? rawFocused.type === "session"
+        ? rawFocused
+        : cascadeOrigin(rawFocused)
+      : null;
+  if (returnedOriginPane?.type === "session" && sessionRefOf(returnedOriginPane) === ref) {
     return true;
   }
   const focusedIntent = rawFocused === undefined ? null : zoomIntentOf(rawFocused);
