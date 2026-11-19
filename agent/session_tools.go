@@ -133,7 +133,7 @@ func (s *Session) canonicalizeToolNames(names []string) []string {
 }
 
 // providerVisibleToolNames reads s.profile directly: its prompt-composition
-// caller chain (buildPromptData -> availableAgentEntries ->
+// caller chain (buildPromptDataWithAppends -> availableAgentEntries ->
 // defaultToolSummaryForAgent) already runs under a held s.mu, and s.mu is not
 // reentrant, so taking the lock here would deadlock prompt rendering.
 func (s *Session) providerVisibleToolNames(names []string) []string {

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"strings"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/tool"
@@ -394,6 +395,15 @@ func (s *Session) readMemoryIndex(scope string) memoryProjection {
 	return p
 }
 
+// cliMCPToolNamesSnapshot returns the excluded CLI-only tool names under the
+// same lock the ceiling build uses, so a caller can assert that a swap kept the
+// classification rather than reading a half-cleared one.
+func (s *Session) cliMCPToolNamesSnapshot() map[string]bool {
+	s.delegateExclusionsMu.RLock()
+	defer s.delegateExclusionsMu.RUnlock()
+	return s.cliMCPToolNames
+}
+
 func (s *Session) defaultToolSummaryForAgent(agent plugin.Agent) string {
 	return formatToolNamesForPrompt(s.defaultToolNamesForAgent(agent))
 }
@@ -411,4 +421,14 @@ func delegateToolNameCeiling(reg *tool.Registry, resultToolName string, allTools
 		return nil
 	}
 	return delegateToolNameCeilingFromRegistered(reg.RegisteredNames(), reg, resultToolName, allTools, allowed, denied, canDelegate, isolation)
+}
+
+// buildPromptData is buildPromptDataWithAppends with the append files read again.
+func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData, []promptSource) {
+	return s.buildPromptDataWithAppends(env, false)
+}
+
+// renderSystemPrompt is renderSystemPromptWithAppends with the append files read again.
+func (s *Session) renderSystemPrompt(env execenv.ExecutionEnvironment) (string, string, bool) {
+	return s.renderSystemPromptWithAppends(env, false)
 }

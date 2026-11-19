@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -49,7 +50,7 @@ func TestChildUnreachableToolsFollowTheDelegateWorkspace(t *testing.T) {
 		s.setManagerOnlyTools(map[string]bool{managerTool: true})
 		s.setCLIMCPToolNames(map[string]bool{cliTool: true})
 		s.setCLIMCPServers(map[string]bool{"svc": true}, nil, evidence)
-		s.refreshCLIEvidenceFreshness()
+		s.refreshCLIEvidenceFreshnessContext(context.Background())
 		return s
 	}
 	ceiling := []string{managerTool, cliTool, ordinary}

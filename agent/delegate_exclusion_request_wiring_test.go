@@ -20,7 +20,7 @@ import (
 // test call into the refresh path.
 //
 // The defect it covers is a refresh nobody called. A test that invokes
-// refreshCachesForExclusionChange itself proves the helper works and says
+// refreshCachesForExclusionChangeContext itself proves the helper works and says
 // nothing about whether the request path uses it, so this test reaches the
 // caches only through prepareModelRequestWithError.
 func TestModelRequestRefreshesTheExclusionCachesWithoutASpawn(t *testing.T) {
@@ -53,7 +53,7 @@ func TestModelRequestRefreshesTheExclusionCachesWithoutASpawn(t *testing.T) {
 	// Settle the caches on the startup answer, so the edit below is the only
 	// thing that can move them.
 	for range 4 {
-		s.refreshCachesForExclusionChange()
+		s.refreshCachesForExclusionChangeContext(context.Background())
 	}
 	if !s.cliMCPExclusionApplied {
 		t.Fatal("the fixture did not start with the exclusion applied")

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"slices"
 	"testing"
 
@@ -46,7 +47,7 @@ func TestNoUserSkillsSuppressionKeepsCLIExclusionWorking(t *testing.T) {
 	s.setManagerOnlyTools(nil)
 	s.setCLIMCPToolNames(map[string]bool{"svc__echo": true})
 	s.setCLIMCPServers(map[string]bool{"svc": true}, nil, evidence)
-	s.refreshCLIEvidenceFreshness()
+	s.refreshCLIEvidenceFreshnessContext(context.Background())
 
 	got := s.removeChildUnreachableTools([]string{"svc__echo", "read_file"}, "")
 	if slices.Contains(got, "svc__echo") {
@@ -56,7 +57,7 @@ func TestNoUserSkillsSuppressionKeepsCLIExclusionWorking(t *testing.T) {
 	// The other direction: agreement must not become "always current". A real
 	// project-layer edit still invalidates the answer.
 	writeInfraFile(t, projectPath, `{"mcpServers":{"svc":{"command":"/bin/b"}}}`, 0o644)
-	s.refreshCLIEvidenceFreshness()
+	s.refreshCLIEvidenceFreshnessContext(context.Background())
 	got = s.removeChildUnreachableTools([]string{"svc__echo", "read_file"}, "")
 	if !slices.Contains(got, "svc__echo") {
 		t.Errorf("the project layer changed, so reachability is unknown and %q must stay eligible: %v", "svc__echo", got)

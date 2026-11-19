@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"slices"
@@ -119,27 +120,53 @@ func TestProjectEvidenceComesFromTheParsedBytes(t *testing.T) {
 // TestCLIClassificationEvidenceRequiresTheCurrentProjectPath is the medium about
 // a session that started outside Git and later had a repository initialized
 // around it: the recorded "no project layer" must not verify forever.
+//
+// Every case starts from the evidence DISCOVERY captured and asserts that the
+// unmodified copy verifies, so a negative below can only come from the project
+// field it changed. Evidence with an empty global half is rejected by the global
+// check before the project path is ever compared, which would let both negatives
+// pass without testing this at all.
 func TestCLIClassificationEvidenceRequiresTheCurrentProjectPath(t *testing.T) {
 	// Not parallel: hermeticInfraEnv calls t.Setenv.
 	hermeticInfraEnv(t)
 	root := realTempDirForTest(t)
 	runInfraGit(t, root, "init", "-q")
-	if err := os.MkdirAll(filepath.Join(root, ".evener"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	layer := filepath.Join(root, ".evener", "mcp.json")
-	if err := os.WriteFile(layer, []byte(`{"mcpServers":{"late_fallback":{"command":"x"}}}`), 0o644); err != nil {
+	writeInfraFile(t, layer, `{"mcpServers":{"late_fallback":{"command":"x"}}}`, 0o644)
+	env := execenv.NewLocalExecutionEnvironment(root)
+	s := &Session{env: env}
+
+	configs, _, evidence, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidence(env, nil, nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	s := &Session{env: execenv.NewLocalExecutionEnvironment(root)}
+	if len(configs) != 1 {
+		t.Fatalf("discovery did not return the project layer: %+v", configs)
+	}
+	if evidence.Project.Path != layer {
+		t.Fatalf("discovery recorded project path %q, want %q", evidence.Project.Path, layer)
+	}
 
-	if s.cliMCPClassificationCurrent(cliMCPClassificationEvidence{}, s.currentEnv()) {
+	// The baseline: the evidence exactly as discovery captured it verifies. Both
+	// negatives below change ONLY the project field of this same value, so the
+	// global layer is known to have passed in each of them.
+	if !s.cliMCPClassificationCurrent(cliMCPClassificationEvidence{layers: evidence}, s.currentEnv()) {
+		t.Fatal("evidence captured by discovery did not verify against the workspace it was read from, so the negative cases below could pass for an unrelated reason")
+	}
+
+	// A recorded "no project layer" — what a session launched outside Git holds —
+	// must not verify once the workspace resolves to a real one.
+	absentProject := evidence
+	absentProject.Project = mcpconfig.LayerEvidence{}
+	if s.cliMCPClassificationCurrent(cliMCPClassificationEvidence{layers: absentProject}, s.currentEnv()) {
 		t.Error("an empty recorded path verified while the workspace resolves to a real project layer")
 	}
-	other := filepath.Join(t.TempDir(), ".evener", "mcp.json")
-	if s.cliMCPClassificationCurrent(cliMCPClassificationEvidence{layers: mcpconfig.ConfigEvidence{
-		Project: mcpconfig.LayerEvidence{Path: other, Digest: "d"},
-	}}, s.currentEnv()) {
+
+	// Evidence recorded for a different project path describes a different
+	// workspace, so it must not verify against this one.
+	movedProject := evidence
+	movedProject.Project.Path = filepath.Join(t.TempDir(), ".evener", "mcp.json")
+	if s.cliMCPClassificationCurrent(cliMCPClassificationEvidence{layers: movedProject}, s.currentEnv()) {
 		t.Error("evidence from a different project path verified against this workspace")
 	}
 }
@@ -201,7 +228,7 @@ func TestVisionModelRebuildLeavesTheRosterStale(t *testing.T) {
 
 	// Settle both caches on the startup answer.
 	for range 4 {
-		s.refreshCachesForExclusionChange()
+		s.refreshCachesForExclusionChangeContext(context.Background())
 	}
 	s.mu.Lock()
 	defsBuiltFrom := s.cachedExclusionVersion
@@ -214,7 +241,7 @@ func TestVisionModelRebuildLeavesTheRosterStale(t *testing.T) {
 	// The project config gains a matching server: the decision flips, and both
 	// caches are now stale.
 	writeInfraFile(t, projectPath, `{"mcpServers":{"svc":{"command":"/bin/a"},"other":{"command":"/bin/c"}}}`, 0o644)
-	s.refreshCLIEvidenceFreshness()
+	s.refreshCLIEvidenceFreshnessContext(context.Background())
 	s.childExclusionDecision("")
 	flipped := s.exclusionVersion()
 	if flipped == defsBuiltFrom {
@@ -235,7 +262,7 @@ func TestVisionModelRebuildLeavesTheRosterStale(t *testing.T) {
 	}
 
 	// And the request path must take it: one refresh, then the prompt agrees.
-	s.refreshCachesForExclusionChange()
+	s.refreshCachesForExclusionChangeContext(context.Background())
 	s.mu.Lock()
 	promptAfterRefresh := s.cachedPromptExclusionVersion
 	s.mu.Unlock()
@@ -379,7 +406,7 @@ func TestFreshEvidenceSeesARepositoryInitializedAroundTheSession(t *testing.T) {
 // session whose project layer gained a fallback server hiding that server's tools
 // until some unrelated action rebuilt the roster. The edit itself must be enough.
 //
-// This drives the real request path (refreshCachesForExclusionChange) on a real
+// This drives the real request path (refreshCachesForExclusionChangeContext) on a real
 // session, with no delegate created anywhere: the only thing that happens between
 // the two observations is a file edit.
 func TestConfigEditAloneInvalidatesTheCachedAnswer(t *testing.T) {
@@ -405,7 +432,7 @@ func TestConfigEditAloneInvalidatesTheCachedAnswer(t *testing.T) {
 	// the one this finding is about: while a rebuild is still pending the rebuild
 	// itself recomputes the ceiling, and the defect hides behind that.
 	for range 4 {
-		s.refreshCachesForExclusionChange()
+		s.refreshCachesForExclusionChangeContext(context.Background())
 	}
 	s.mu.Lock()
 	builtFrom := s.cachedExclusionVersion
@@ -422,7 +449,7 @@ func TestConfigEditAloneInvalidatesTheCachedAnswer(t *testing.T) {
 	writeInfraFile(t, projectPath, `{"mcpServers":{"svc":{"command":"/bin/b"}}}`, 0o644)
 
 	// The next model request.
-	s.refreshCachesForExclusionChange()
+	s.refreshCachesForExclusionChangeContext(context.Background())
 
 	s.mu.Lock()
 	rebuilt := s.cachedExclusionVersion
@@ -465,7 +492,7 @@ func TestWorktreeSpawnDoesNotInvalidateTheSharedRosterCaches(t *testing.T) {
 
 	// Settle both caches on the shared-workspace answer.
 	for range 4 {
-		s.refreshCachesForExclusionChange()
+		s.refreshCachesForExclusionChangeContext(context.Background())
 	}
 	settled := s.exclusionVersion()
 

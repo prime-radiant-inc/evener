@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"slices"
@@ -58,7 +59,7 @@ func TestUnresolvableGitRootKeepsCLINamesEligible(t *testing.T) {
 	confirmed.setManagerOnlyTools(nil)
 	confirmed.setCLIMCPServers(map[string]bool{"svc": true}, nil, evidence)
 	confirmed.setCLIMCPToolNames(map[string]bool{"svc__echo": true})
-	confirmed.refreshCLIEvidenceFreshness()
+	confirmed.refreshCLIEvidenceFreshnessContext(context.Background())
 	if got := confirmed.removeChildUnreachableTools([]string{"svc__echo", "read_file"}, ""); slices.Contains(got, "svc__echo") {
 		t.Fatalf("fixture is wrong: a confirmed absent project layer did not apply the exclusion, so the second half could not show it being lifted: %v", got)
 	}
@@ -74,7 +75,7 @@ func TestUnresolvableGitRootKeepsCLINamesEligible(t *testing.T) {
 	s.setManagerOnlyTools(nil)
 	s.setCLIMCPServers(map[string]bool{"svc": true}, nil, evidence)
 	s.setCLIMCPToolNames(map[string]bool{"svc__echo": true})
-	s.refreshCLIEvidenceFreshness()
+	s.refreshCLIEvidenceFreshnessContext(context.Background())
 
 	got := s.removeChildUnreachableTools([]string{"svc__echo", "read_file"}, "")
 	if !slices.Contains(got, "svc__echo") {

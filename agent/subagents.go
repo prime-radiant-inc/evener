@@ -806,7 +806,7 @@ type cliMCPClassificationEvidence struct {
 //
 // It must be called WITHOUT s.mu. The ceiling build needs this answer and runs
 // under s.mu, so the two are separated: this resolves the verdict and stores it
-// (refreshCLIEvidenceFreshness), and the ceiling path reads the stored answer
+// (refreshCLIEvidenceFreshnessContext), and the ceiling path reads the stored answer
 // through childExclusionDecision. Calling the I/O-bearing version from a ceiling build
 // would put a filesystem read and a git fork inside the session lock, which is
 // how a FIFO-shaped .git entry once wedged request preparation.
@@ -819,16 +819,12 @@ func (s *Session) cliMCPClassificationCurrent(evidence cliMCPClassificationEvide
 	return evidence.layers.EvidenceCurrent(env)
 }
 
-// refreshCLIEvidenceFreshness resolves the freshness verdict and stores it for
-// the ceiling build to read, under delegateExclusionsMu only. It does the I/O
-// itself, so it must be called without s.mu — which is exactly what the request
-// path does before it renders the prompt or the tool definitions.
-func (s *Session) refreshCLIEvidenceFreshness() {
-	s.refreshCLIEvidenceFreshnessContext(context.Background())
-}
-
-// refreshCLIEvidenceFreshnessContext is refreshCLIEvidenceFreshness bounded by
-// the caller's context.
+// refreshCLIEvidenceFreshnessContext resolves the freshness verdict and stores
+// it for the ceiling build to read, under delegateExclusionsMu only. It does the
+// I/O itself, so it must be called without s.mu — which is exactly what the
+// request path does before it renders the prompt or the tool definitions.
+//
+// The caller's context bounds it.
 //
 // The check touches the filesystem and forks git, and the request path calls it
 // before EVERY model request. A workspace mount that stalls makes those calls
@@ -1110,10 +1106,12 @@ func (s *Session) exclusionVersion() uint64 {
 	return s.cliMCPExclusionVersion
 }
 
-// refreshCachesForExclusionChange rebuilds the cached prompt and tool
+// refreshCachesForExclusionChangeContext rebuilds the cached prompt and tool
 // definitions when the exclusion decision differs from the one they were built
 // from, so the next model request sees the current answer. It takes s.mu itself
-// and must be called without it.
+// and must be called without it. The caller's context bounds the freshness check,
+// so Stop can interrupt it instead of leaving preparation blocked on a stalled
+// workspace mount.
 //
 // It RE-EVALUATES the decision rather than only comparing versions, and that
 // order is load-bearing. The version is bumped where a decision is computed, and
@@ -1127,14 +1125,6 @@ func (s *Session) exclusionVersion() uint64 {
 // Recomputing costs at most two capped file reads and connects nothing. It runs
 // on the request path, before the prompt is built, which is exactly where a stale
 // capability list would otherwise be served.
-func (s *Session) refreshCachesForExclusionChange() {
-	s.refreshCachesForExclusionChangeContext(context.Background())
-}
-
-// refreshCachesForExclusionChangeContext is refreshCachesForExclusionChange
-// bounded by the caller's context. The request path passes the TURN's context so
-// Stop can interrupt the freshness check instead of leaving preparation blocked
-// on a stalled workspace mount.
 func (s *Session) refreshCachesForExclusionChangeContext(ctx context.Context) {
 	if s == nil {
 		return
@@ -1271,15 +1261,6 @@ func (s *Session) cliMCPOtherNamespacesSnapshot() []string {
 	s.delegateExclusionsMu.RLock()
 	defer s.delegateExclusionsMu.RUnlock()
 	return s.cliMCPOtherNamespaces
-}
-
-// cliMCPToolNamesSnapshot returns the excluded CLI-only tool names under the
-// same lock the ceiling build uses, so a caller can assert that a swap kept the
-// classification rather than reading a half-cleared one.
-func (s *Session) cliMCPToolNamesSnapshot() map[string]bool {
-	s.delegateExclusionsMu.RLock()
-	defer s.delegateExclusionsMu.RUnlock()
-	return s.cliMCPToolNames
 }
 
 func frozenDelegateSandboxMatches(env execenv.ExecutionEnvironment, want *delegatestore.SandboxSnapshot) bool {
