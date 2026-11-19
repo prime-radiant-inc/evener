@@ -294,6 +294,45 @@ describe("choosing a model (spec 8.5)", () => {
 		expect(calls).toEqual(["goBack"]);
 	});
 
+	// The session runs Claude Opus 5 through OpenRouter, whose model id carries
+	// the upstream provider's name: "anthropic/claude-opus-5". Its catalog
+	// identity is therefore "openrouter/anthropic/claude-opus-5", and the rows
+	// for the two providers are different choices. If the picker instead read
+	// the raw id as the whole identity, the direct Anthropic row would look like
+	// the running model and a tap meant as a switch would dismiss without a
+	// write.
+	const ROUTED_CATALOG: ModelListResponse = {
+		data: [
+			{ provider: "anthropic", model: "claude-opus-5", displayName: "Claude Opus 5" },
+			{ provider: "openrouter", model: "anthropic/claude-opus-5", displayName: "Claude Opus 5 (OpenRouter)" },
+		],
+	};
+
+	it.each([
+		// The snapshot's layout: the bare id in both model fields and the
+		// provider instance beside them.
+		[
+			"snapshot",
+			{ modelProvider: "anthropic/claude-opus-5", model: "anthropic/claude-opus-5", modelProfile: "openrouter" },
+		],
+		// The live thread/model/changed layout: the provider instance in
+		// modelProvider, the id in model, no profile.
+		["live update", { modelProvider: "openrouter", model: "anthropic/claude-opus-5", modelProfile: undefined }],
+	] as const)("sends the switch to the other provider from the %s wire shape", async (_shape, running) => {
+		const { calls } = provide(conversation(running), { catalog: ROUTED_CATALOG });
+		const tree = sheet();
+		// The running model's own row is the selected one.
+		expect(pressable(tree, "Claude Opus 5 (OpenRouter)")?.props.accessibilityState).toMatchObject({ selected: true });
+		expect(pressable(tree, "Claude Opus 5")?.props.accessibilityState).toMatchObject({ selected: false });
+		act(() => pressable(tree, "Claude Opus 5")?.props.onPress());
+		await settle();
+		expect(calls).toEqual([
+			"changeModel:anthropic/claude-opus-5",
+			"goBack",
+			"toast:Model changed. Applies from the next turn.",
+		]);
+	});
+
 	it("changes the model, closes, and the session says it applies from the next turn", async () => {
 		const { calls } = provide(conversation());
 		const tree = sheet();

@@ -114,20 +114,24 @@ export function effortName(level: string): string {
  * the provider instance in modelProvider and the bare id in model, clearing
  * the profile. A comparison that read either layout's raw fields would call
  * one model two identities: the running row would draw unselected, and a tap
- * meant as a no-op would send a second setter. A field that already names the
- * whole identifier is returned unchanged rather than joined against itself.
+ * meant as a no-op would send a second setter.
+ *
+ * The model id may carry a slash of its own: an OpenRouter session runs
+ * "anthropic/claude-opus-5". A slash is therefore no proof that the identity
+ * is already whole. What decides it is the explicit provider named apart from
+ * the id - the snapshot's profile, or the live update's modelProvider - and
+ * the identity stays unjoined only when that provider is absent or the id
+ * already begins with it.
  */
 export function qualifiedModelIdentity(session: Pick<ThreadModel, "modelProvider" | "model" | "modelProfile">): string {
 	const model = session.model || session.modelProvider;
-	if (model === "" || model.includes("/")) return model;
-	// The snapshot's own provider, named apart from the bare id it applies to.
-	if (session.modelProfile) return `${session.modelProfile}/${model}`;
-	// The live update's layout: modelProvider holds the provider instance, and
-	// the snapshot's hydration is the only thing that fills both fields from
-	// one, so an equal pair carries no provider to add.
-	const provider = session.modelProvider;
-	if (provider !== "" && provider !== model) return `${provider}/${model}`;
-	return model;
+	if (model === "") return "";
+	// The provider named apart from the model id it applies to. The snapshot
+	// hydrates both model fields from one wire field, so an equal pair names no
+	// provider to add.
+	const provider = session.modelProfile || (session.modelProvider !== model ? session.modelProvider : "");
+	if (provider === "") return model;
+	return model.startsWith(`${provider}/`) ? model : `${provider}/${model}`;
 }
 
 /** A model as the catalog names it (a model is called one way everywhere

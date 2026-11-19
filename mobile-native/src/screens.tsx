@@ -944,6 +944,12 @@ function ConversationScreenView({
 				// says which it is: it is open only once a read of this binding
 				// published this instance, so an opening binding refuses here
 				// instead and the retry survives until it is ready.
+				//
+				// The store's status is not enough on its own: a rehydrate keeps it
+				// open while the service clears its own thread ref for the read, and
+				// a resume admitted then throws before the hub exactly as one in a
+				// reconnect's gap does. The service is the one that knows whether it
+				// can address the thread right now.
 				if (scope === "send") {
 					return (
 						currentDestination.current.store === store &&
@@ -952,7 +958,8 @@ function ConversationScreenView({
 						current.ref === route.params.ref &&
 						current.status === "open" &&
 						current.conversationGeneration === bindingGeneration &&
-						current.conversation?.instanceId === bindingInstance
+						current.conversation?.instanceId === bindingInstance &&
+						service.canAddressThread()
 					);
 				}
 				// Starting an action is a reader's question, so it keeps the route
@@ -2446,7 +2453,14 @@ function ConversationScreenView({
 	// yet (ruling 20). A recovery-fenced session keeps the composer: Send is
 	// how it resumes, so it shows no Resume notice of its own.
 	const notice = conversation?.status.type === "restartRequired" ? "restartNeeded" : null;
-	const restart = useSessionRestart(controls, snapshot.status);
+	// What an owed resume waits to change before it tries again. The store's
+	// status alone misses a read settling under it: a rehydrate keeps the status
+	// open while the service clears the thread ref a resume needs, so the refused
+	// step would wait on a value that never moves. The read's own state and
+	// attempt identity do move when it starts and settles, so the restart retries
+	// then.
+	const restartSettled = `${snapshot.status}\u0000${snapshot.latestReadState}\u0000${snapshot.latestReadAttempt}`;
+	const restart = useSessionRestart(controls, restartSettled);
 	const notesPreview = conversation ? notesBarPreview(conversation) : null;
 	const [stopping, setStopping] = useState(false);
 	const stopBusy = useRef(false);

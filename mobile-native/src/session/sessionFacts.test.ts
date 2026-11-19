@@ -8,6 +8,7 @@ import {
 	modelChipLabel,
 	notesSummary,
 	pluginsLine,
+	qualifiedModelIdentity,
 	usageFacts,
 	visionModelLabel,
 	whereFacts,
@@ -224,6 +225,51 @@ describe("the model chip (spec 8.5)", () => {
 		["turbo", "Turbo"],
 	])("effort %s reads %s", (level, name) => {
 		expect(effortName(level)).toBe(name);
+	});
+});
+
+describe("the model's one qualified identity", () => {
+	// The daemon names a model two ways, and the model id may itself contain a
+	// slash. Every layout has to answer "provider/model" the same way, or the
+	// running row draws unselected and a tap meant as a no-op sends a setter.
+	it.each([
+		// The snapshot's own layout: the bare id in both model fields and the
+		// provider instance beside them. An OpenRouter session's id carries a
+		// slash of its own, which is part of the id and not proof of qualification.
+		["a snapshot whose model id contains a slash", "anthropic/claude-opus-5", "anthropic/claude-opus-5", "openrouter"],
+		// A live thread/model/changed: modelProvider is the provider instance and
+		// the profile is cleared.
+		["a live model change", "openrouter", "anthropic/claude-opus-5", undefined],
+		// Already qualified, with or without the snapshot's profile: joining a
+		// provider the id already begins with would double it.
+		[
+			"an already-qualified snapshot",
+			"openrouter/anthropic/claude-opus-5",
+			"openrouter/anthropic/claude-opus-5",
+			"openrouter",
+		],
+	])(
+		"reads %s as openrouter/anthropic/claude-opus-5 when that is what runs",
+		(_shape, modelProvider, model, modelProfile) => {
+			expect(qualifiedModelIdentity({ modelProvider, model, modelProfile })).toBe("openrouter/anthropic/claude-opus-5");
+		},
+	);
+
+	it("reads a direct Anthropic model as anthropic/claude-opus-5", () => {
+		expect(
+			qualifiedModelIdentity({
+				modelProvider: "claude-opus-5",
+				model: "claude-opus-5",
+				modelProfile: "anthropic",
+			}),
+		).toBe("anthropic/claude-opus-5");
+		expect(qualifiedModelIdentity({ modelProvider: "anthropic", model: "claude-opus-5" })).toBe(
+			"anthropic/claude-opus-5",
+		);
+	});
+
+	it("leaves a session that names no model unnamed", () => {
+		expect(qualifiedModelIdentity({ modelProvider: "", model: "", modelProfile: "" })).toBe("");
 	});
 });
 

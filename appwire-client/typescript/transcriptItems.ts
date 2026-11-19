@@ -539,9 +539,22 @@ export function threadFields(resp: ThreadReadResponse, ref: string, now: number)
   const imageSessionId = wireImageSessionId(thread);
   const servingFacts = historyServingFacts(resp);
   // The provider instance a snapshot names for its running model, or
-  // undefined when the model field already carries the whole identifier (so
-  // the profile adds nothing) or the daemon reports no profile.
-  const profile = thread.modelProvider === "" || thread.modelProvider.includes("/") ? undefined : thread.evener.profile;
+  // undefined when the daemon reports none or the model field already begins
+  // with exactly this instance (so the profile adds nothing, and joining it
+  // again would double it).
+  //
+  // A model id may carry a slash of its own: an OpenRouter session runs
+  // "anthropic/claude-opus-5" with the profile "openrouter". Reading any slash
+  // as "the model field names the whole identifier" dropped that profile and
+  // left the running model unaddressable, so the picker marked no row and a
+  // tap on the direct provider's row compared against the wrong identity.
+  // What decides it is the profile's own prefix, not a slash somewhere in the
+  // id.
+  const namedProfile = thread.evener.profile ?? "";
+  const profile =
+    namedProfile !== "" && thread.modelProvider !== "" && !thread.modelProvider.startsWith(`${namedProfile}/`)
+      ? namedProfile
+      : undefined;
   const fields: Omit<ThreadModel, "turns"> = {
     ref,
     ...(servingFacts ? { servingFacts } : {}),
@@ -574,9 +587,10 @@ export function threadFields(resp: ThreadReadResponse, ref: string, now: number)
     // a pick's acknowledgement and a readback compare one identity rather than
     // a bare id against a qualified one. Snapshot-only: thread/model/changed
     // names its own provider and clears it. Set only when the snapshot names a
-    // provider the model field lacks, like the fields below: a snapshot that
-    // names the model whole has no second half to carry, and adding an absent
-    // key would rewrite every stored thread's shape for nothing.
+    // provider the model field does not already begin with, like the fields
+    // below: a snapshot that names the model whole has no second half to
+    // carry, and adding an absent key would rewrite every stored thread's
+    // shape for nothing.
     ...(profile ? { modelProfile: profile } : {}),
     reasoningEffort: thread.evener.reasoningEffort,
     defaultReasoningEffort: thread.evener.defaultReasoningEffort,

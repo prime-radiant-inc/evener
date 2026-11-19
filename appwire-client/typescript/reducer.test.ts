@@ -318,6 +318,45 @@ test("hydrate carries no separate provider when the model field already names it
   expect(whole.modelProfile).toBeUndefined();
 });
 
+// A model id may itself contain a slash: a session running Claude Opus 5
+// through OpenRouter has the id "anthropic/claude-opus-5" and the profile
+// "openrouter". Reading the slash as "the model field already names the whole
+// identifier" dropped the profile, so the client could not build the catalog
+// identity "openrouter/anthropic/claude-opus-5" and the running row drew
+// unselected. Only the profile's own prefix says the field is already
+// qualified.
+test("hydrate carries the provider for a model id that contains a slash", () => {
+  const routed = testHydrate({
+    modelProvider: "anthropic/claude-opus-5",
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, profile: "openrouter" },
+  });
+  expect(routed.modelProvider).toBe("anthropic/claude-opus-5");
+  expect(routed.model).toBe("anthropic/claude-opus-5");
+  expect(routed.modelProfile).toBe("openrouter");
+});
+
+test("hydrate drops the provider when the model field already begins with it", () => {
+  // A snapshot that already names the whole identifier carries no second
+  // half. A model id's own slash is not that proof, but the profile's prefix
+  // is: joining it again would produce
+  // "openrouter/openrouter/anthropic/claude-opus-5".
+  const qualified = testHydrate({
+    modelProvider: "openrouter/anthropic/claude-opus-5",
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, profile: "openrouter" },
+  });
+  expect(qualified.modelProvider).toBe("openrouter/anthropic/claude-opus-5");
+  expect(qualified.modelProfile).toBeUndefined();
+});
+
+test("hydrate carries no provider when the daemon reports no profile", () => {
+  const bare = testHydrate({
+    modelProvider: "claude-opus-5",
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 } },
+  });
+  expect(bare.modelProvider).toBe("claude-opus-5");
+  expect(bare.modelProfile).toBeUndefined();
+});
+
 test("a zero or negative activeTurnStartedAt hydrates as absent, never an epoch anchor", () => {
   const zero = testHydrate({
     evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnStartedAt: 0 },
