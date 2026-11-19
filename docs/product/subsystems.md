@@ -169,7 +169,10 @@ Status/history freshness remains a caller comparison, not a derived server
 verdict.
 
 For [voice conversations](voice.md), **S03** owns native microphone processing,
-local playback and played-sample acknowledgements. **S06** owns the scoped
+local playback and played-sample acknowledgements. That voice module is part of
+the tree but not of the app build: `mobile-native/package.json` excludes
+`evener-voice` from iOS autolinking, and removing the exclusion adds the module
+back. **S06** owns the scoped
 device/manager binding and provider bridge. Arm requires authoritative
 same-instance provenance before granting capture or replacing a binding, without
 changing legacy typed sessions. Its voice journal pins presentation
