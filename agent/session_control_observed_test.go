@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"strings"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -93,8 +92,8 @@ func TestManagerSessionControlModelResultHidesProtocolIdentity(t *testing.T) {
 			}
 			assertNoProtocolIdentity(t, "", shown)
 			// And what the model may act on is still there.
-			var text strings.Builder
-			collectKeys(&text, shown)
+			present := map[string]bool{}
+			collectKeys(present, shown)
 			keys := []string{"active"}
 			if !tc.isErr {
 				// The disposition is the mutation's outcome; a diagnostic
@@ -102,7 +101,7 @@ func TestManagerSessionControlModelResultHidesProtocolIdentity(t *testing.T) {
 				keys = append(keys, "disposition")
 			}
 			for _, key := range keys {
-				if !strings.Contains(text.String(), key) {
+				if !present[key] {
 					t.Fatalf("model-facing result lost its actionable field %q: %s", key, result.Output)
 				}
 			}
@@ -156,12 +155,13 @@ func assertNoProtocolIdentity(t *testing.T, path string, value any) {
 	}
 }
 
-func collectKeys(into *strings.Builder, value any) {
+// collectKeys records every object key the decoded result carries, for the
+// actionable-field membership check.
+func collectKeys(into map[string]bool, value any) {
 	switch typed := value.(type) {
 	case map[string]any:
 		for key, inner := range typed {
-			into.WriteString(key)
-			into.WriteString(" ")
+			into[key] = true
 			collectKeys(into, inner)
 		}
 	case []any:

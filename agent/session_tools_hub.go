@@ -716,7 +716,10 @@ func (s *Session) composeHubInputTools() {
 			// hub already observed inside the failure has to ride there too.
 			// The typed error still decides the outcome.
 			if observed, ok := appwire.ModelControlObservedOf(err); ok {
-				return managerControlFailure{ObservedModelControl: projectObservedModelControl(&observed)}, err
+				// The observed snapshot projects the same way the success
+				// path's response does: the active model and any
+				// desired/lifecycle, never the authority fields.
+				return managerControlFailure{ObservedModelControl: projectModelControl("", &observed)}, err
 			}
 			return nil, err
 		}
@@ -755,16 +758,6 @@ type projectedModelControl struct {
 	Desired     *projectedModelDesired      `json:"desired,omitempty"`
 }
 
-// projectObservedModelControl projects the snapshot a diagnostic failure
-// observed the same way the success path projects its response: the active
-// model and any desired/lifecycle, never the authority fields.
-func projectObservedModelControl(observed *appwire.ModelControlSnapshot) *projectedModelControl {
-	if observed == nil {
-		return nil
-	}
-	return projectModelControl("", observed)
-}
-
 // projectModelControl builds the model-facing projection of one wire snapshot.
 func projectModelControl(disposition string, snapshot *appwire.ModelControlSnapshot) *projectedModelControl {
 	projected := &projectedModelControl{Disposition: disposition}
@@ -783,37 +776,19 @@ func projectModelControl(disposition string, snapshot *appwire.ModelControlSnaps
 	return projected
 }
 
-// projectedSessionControl mirrors appwire.SessionControlResponse with the
-// model arm replaced by its model-facing projection. Every other action's
-// result passes through unchanged; only the model arm loses the identity the
-// wire path owns (issue #6914).
+// projectedSessionControl is the wire's SessionControlResponse with the model
+// arm shadowed by its model-facing projection: the embedded wire type carries
+// every other arm unchanged, and the shallower Model wins the JSON encoding
+// (issue #6914).
 type projectedSessionControl struct {
-	Result        appwire.EmptyResponse                     `json:"result"`
-	Actor         appwire.SessionActor                      `json:"actor"`
-	Resume        *appwire.ThreadResumeResponse             `json:"resume,omitempty"`
-	Fork          *appwire.ThreadForkResponse               `json:"fork,omitempty"`
-	Clear         *appwire.ThreadClearResponse              `json:"clear,omitempty"`
-	Model         *projectedModelControl                    `json:"model,omitempty"`
-	DrainQueue    *appwire.TurnDrainAsSteerResponse         `json:"drain_queue,omitempty"`
-	PromoteQueued *appwire.TurnPromoteQueuedAsSteerResponse `json:"promote_queued,omitempty"`
-	CancelQueued  *appwire.TurnCancelQueuedResponse         `json:"cancel_queued,omitempty"`
-	Goal          *appwire.GoalSetResponse                  `json:"goal,omitempty"`
-	HumanNotes    *appwire.NotesHumanSetResponse            `json:"human_notes,omitempty"`
-	RemoveURL     *appwire.UrlsRemoveResponse               `json:"remove_url,omitempty"`
-	Archive       *appwire.ArchiveResponse                  `json:"archive,omitempty"`
-	Delete        *appwire.SessionDeleteResponse            `json:"delete,omitempty"`
-	Pin           *appwire.SessionPinAssignResponse         `json:"pin,omitempty"`
-	Unpin         *appwire.SessionPinUnpinResponse          `json:"unpin,omitempty"`
-	Seen          *appwire.SessionSeenSetResponse           `json:"seen,omitempty"`
+	*appwire.SessionControlResponse
+	Model *projectedModelControl `json:"model,omitempty"`
 }
 
-// projectedSessionOperation mirrors appwire.SessionOperationResponse for the
-// one operation kind session_control issues, with the control arm carrying the
-// projected model result. The session_control tool only ever sends a Control
-// request, so the arms a Control answer never sets are the arms this mirror
-// never carries.
+// projectedSessionOperation is the wire's SessionOperationResponse with the
+// control arm shadowed by its projection, the same embedding rule as above.
 type projectedSessionOperation struct {
-	Actor   appwire.SessionActor     `json:"actor"`
+	*appwire.SessionOperationResponse
 	Control *projectedSessionControl `json:"control,omitempty"`
 }
 
@@ -827,26 +802,15 @@ func projectManagerControlResponse(response appwire.SessionOperationResponse) an
 	}
 	wire := *response.Control
 	model := projectModelControl(string(wire.Model.Disposition), wire.Model.ModelControl)
+	// The embedded wire control keeps the model arm's identity fields alive in
+	// the embedded copy; nil it there so only the projection crosses - the
+	// shadowed Model is what encoding/json emits.
+	wire.Model = nil
 	return projectedSessionOperation{
-		Actor: response.Actor,
+		SessionOperationResponse: &response,
 		Control: &projectedSessionControl{
-			Result:        wire.Result,
-			Actor:         wire.Actor,
-			Resume:        wire.Resume,
-			Fork:          wire.Fork,
-			Clear:         wire.Clear,
-			Model:         model,
-			DrainQueue:    wire.DrainQueue,
-			PromoteQueued: wire.PromoteQueued,
-			CancelQueued:  wire.CancelQueued,
-			Goal:          wire.Goal,
-			HumanNotes:    wire.HumanNotes,
-			RemoveURL:     wire.RemoveURL,
-			Archive:       wire.Archive,
-			Delete:        wire.Delete,
-			Pin:           wire.Pin,
-			Unpin:         wire.Unpin,
-			Seen:          wire.Seen,
+			SessionControlResponse: &wire,
+			Model:                  model,
 		},
 	}
 }

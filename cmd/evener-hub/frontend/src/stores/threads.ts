@@ -5015,12 +5015,14 @@ export function modelPickCanSend(model: ThreadModel): boolean {
 // only through the ownership fence publishThreadHydration enforces, and a ref
 // with no pane parked on it - a watched session, or the new identity a resume
 // resolved that no pane has followed - has no owner, so that read would land
-// nowhere. The claim is the same shape a pane's mount takes (ensureThread), so
-// the read the resume (or this driver, below) issues is projected through the
-// same shared reducer and publishes the `ready` snapshot the dispatch fences
-// on. Held through the dispatch, because releasing it first would drop the
-// published model of a ref nobody else owns before the mutation could read its
-// authority; released on a refusal with nothing dispatched.
+// nowhere. The claim is the ownership shape a pane's mount takes (the canonical
+// claim, hold and subscription of ensureThread's opening, without its cache or
+// hydration lifetimes), so the read the resume (or this driver, below) issues
+// is projected through the same shared reducer and publishes the `ready`
+// snapshot the dispatch fences on. Held through the dispatch, because
+// releasing it first would drop the published model of a ref nobody else owns
+// before the mutation could read its authority; released on a refusal with
+// nothing dispatched.
 function claimColdPickRead(ref: string): () => void {
   beginCanonicalThreadClaim(ref);
   holdForeground(ref);
@@ -5053,6 +5055,11 @@ async function resumeColdSessionForModelSet(ref: string): Promise<{ targetRef: s
   // refresh would publish nothing and the pick would be refused after the
   // daemon already resumed.
   const releases = [claimColdPickRead(ref)];
+  // Drains the claims once, newest first, from whichever exit path runs
+  // first: the dispatch's finally on success, the catch on every refusal.
+  const releaseClaims = () => {
+    while (releases.length > 0) releases.pop()?.();
+  };
   try {
     await threadsStore.getState().resumeSession(ref);
     const targetRef = swappedTo ?? ref;
@@ -5070,14 +5077,12 @@ async function resumeColdSessionForModelSet(ref: string): Promise<{ targetRef: s
     }
     return {
       targetRef,
-      release: () => {
-        for (const release of releases.reverse()) release();
-      },
+      release: releaseClaims,
     };
   } catch (error) {
     // Every failure here predates the dispatch, so the claims this function
     // took are released with it: nothing was dispatched.
-    for (const release of releases.reverse()) release();
+    releaseClaims();
     throw error;
   } finally {
     stopObservingSwap();
