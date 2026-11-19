@@ -382,6 +382,7 @@ export function DockHost() {
 
     let saveTimer: ReturnType<typeof setTimeout> | undefined;
     const layoutSub = api.onDidLayoutChange(() => {
+      syncGroupHeaders(api);
       clearTimeout(saveTimer);
       saveTimer = setTimeout(() => {
         saveTimer = undefined;

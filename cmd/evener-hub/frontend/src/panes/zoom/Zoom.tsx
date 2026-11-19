@@ -54,6 +54,7 @@ function ScopeConversation({
   scope,
   readable,
   leaf,
+  selected,
   only,
   mobile,
   userTransition,
@@ -63,6 +64,7 @@ function ScopeConversation({
   scope: CascadeScope;
   readable: boolean;
   leaf: boolean;
+  selected: boolean;
   only: boolean;
   mobile: boolean;
   userTransition: boolean;
@@ -164,7 +166,7 @@ function ScopeConversation({
               <CascadeColumn
                 paneId={pane.id}
                 scope={activity}
-                leaf={leaf}
+                selected={selected}
                 content={
                   state === "deleted" ? (
                     <EmptyState title="This session was deleted" hint="Its transcript is gone." reason="deleted" />
@@ -190,7 +192,7 @@ function ScopeConversation({
           <CascadeColumn
             paneId={pane.id}
             scope={activity}
-            leaf={leaf}
+            selected={selected}
             content={<Skeleton />}
             conversationFooter={null}
           />
@@ -372,6 +374,7 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
               scope={scope}
               readable={readableRefs.has(scope.requestedRef)}
               leaf={index === scopes.length - 1}
+              selected={scope.requestedRef === params.ref}
               only={scopes.length === 1}
               mobile={mobile}
               userTransition={userTransition && reducedMotion !== true}

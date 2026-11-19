@@ -483,3 +483,46 @@ test("a cascade scope's Agents chip counts its subagents at every depth", async 
   mount();
   expect(await scope("root").findByRole("button", { name: "Agents, 3 of 4 active - peek at root" })).toBeTruthy();
 });
+
+test("desktop readable column keeps compact header peeks when the selected ref is a hidden origin", async () => {
+  const { client } = fixture();
+  const origin = { id: "origin", type: "session" as const, slot: "main" as const, params: { ref: "child" } };
+  const cascadeParams: SessionZoomParams = {
+    ref: "child",
+    source: { type: "session" as const, params: { ref: "child" } },
+    edges: [],
+    inspection: { origin: { paneId: "origin", type: "session" as const, ref: "child" } },
+  };
+  const cascade = {
+    id: "cascade",
+    type: "sessionZoom" as const,
+    slot: "secondary" as const,
+    params: cascadeParams,
+  };
+  workspaceStore.setState({ panes: [origin, cascade], focusedPaneId: "cascade" });
+  const { recordCascadeOrigin } = await import("./inspectionOrigin");
+  recordCascadeOrigin(cascade, origin);
+  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref, scope),
+    context: cascadeContext(ref, ref === "child" ? ["root"] : []),
+  }));
+  await act(async () => {
+    render(
+      <ClientProvider client={client}>
+        <MotionProvider>
+          <Zoom paneId="cascade" params={cascadeParams} focused />
+          <ActivitySidebar />
+        </MotionProvider>
+      </ClientProvider>,
+    );
+  });
+  await conversationMounted("root");
+  // "child" is hidden because it is the live origin beside the inspector, so
+  // "root" is the last rendered column while StatusBar still serves "child".
+  const survivingColumn = cascadeScope("root", "cascade-column");
+  expect(within(survivingColumn).getByTestId("cascade-activity-controls")).toBeTruthy();
+  expect(scope("root").getByRole("button", { name: /Tasks,.*- peek at root/ })).toBeTruthy();
+  expect(scope("root").getByRole("button", { name: /Agents,.*- peek at root/ })).toBeTruthy();
+  expect(scope("root").getByRole("button", { name: /Watches,.*- peek at root/ })).toBeTruthy();
+  expect(scope("root").getByRole("button", { name: /Jobs,.*- peek at root/ })).toBeTruthy();
+});

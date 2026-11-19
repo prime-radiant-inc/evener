@@ -22,13 +22,13 @@ const CLASS = {
 export function CascadeColumn({
   paneId,
   scope,
-  leaf,
+  selected,
   content,
   conversationFooter,
 }: {
   paneId: string;
   scope: ActivityScope;
-  leaf: boolean;
+  selected: boolean;
   content: ReactNode;
   conversationFooter: ReactNode;
 }) {
@@ -36,17 +36,17 @@ export function CascadeColumn({
   return (
     <>
       {/* The phone's top bar already publishes the selected conversation's
-       * name, so the column's own title stays desktop-only. A desktop non-leaf
-       * parent column keeps compact activity peeks in its header so it can be
-       * inspected independently without adding a second strip above StatusBar;
-       * the leaf column uses the pane-wide StatusBar directly below. */}
+       * name, so the column's own title stays desktop-only. Any desktop column
+       * whose ref is not the selected ref served by the pane-wide StatusBar
+       * below keeps compact activity peeks in its header so it can be
+       * inspected independently without adding a second strip above StatusBar. */}
       {!mobile && (
         <header className={CLASS.header}>
           <div className={CLASS.heading}>
             <h3 className={CLASS.title}>{scope.leaf.title}</h3>
             <ScopeRuntimeState scope={scope} />
           </div>
-          {!leaf && <ScopeActivityControls paneId={paneId} scope={scope} />}
+          {!selected && <ScopeActivityControls paneId={paneId} scope={scope} />}
         </header>
       )}
       <div className={CLASS.content} data-testid="cascade-column-content">

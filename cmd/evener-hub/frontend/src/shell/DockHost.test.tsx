@@ -1501,6 +1501,35 @@ test("cascade tabs keep the selected leaf title across pop, drill and native rea
   }
 });
 
+test("docking a secondary inspector into the main group unhides its header so tab close dismisses it and returns focus to its source", async () => {
+  const fixture = await mountedSecondaryInspector();
+  try {
+    const { api, mainId, inspectorId } = fixture;
+    const mainPanel = api.getPanel(mainId);
+    const inspector = api.getPanel(inspectorId);
+    if (!mainPanel || !inspector) throw new Error("Missing main or inspector panel");
+    expect(mainPanel.group.model.header.hidden).toBe(true);
+
+    await act(async () => {
+      inspector.api.moveTo({ group: mainPanel.group, position: "center" });
+    });
+
+    expect(inspector.group).toBe(mainPanel.group);
+    expect(mainPanel.group.model.header.hidden).toBe(false);
+
+    await act(async () => {
+      inspector.api.close();
+    });
+
+    expect(workspaceStore.getState().panes.some((pane) => pane.id === inspectorId)).toBe(false);
+    expect(workspaceStore.getState().focusedPaneId).toBe(mainId);
+    expect(api.activePanel?.id).toBe(mainId);
+    expect(mainPanel.group.model.header.hidden).toBe(true);
+  } finally {
+    fixture.dispose();
+  }
+});
+
 test.each([
   {
     type: "session",
