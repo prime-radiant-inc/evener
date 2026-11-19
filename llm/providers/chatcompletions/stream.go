@@ -2,6 +2,7 @@ package chatcompletions
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"maps"
@@ -38,14 +39,14 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 	var textStarted bool
 	var textBuf strings.Builder
 	var reasoningStarted bool
-	var reasoningBuf strings.Builder
-	// reasoningField remembers which wire field the first reasoning delta
-	// arrived on so replay can route thinking back to the same field.
-	var reasoningField string
+	// detailsBuf and scalarBuf accumulate separately so any chunk order matches the non-stream fields.
+	var detailsBuf, scalarBuf strings.Builder
+	var scalarField string
+	var lastDetailIdx *float64
 	// encryptedDetails accumulates opaque reasoning.encrypted items (OpenRouter
 	// Gemini/o-series) in arrival order; they ride the thinking part's
 	// EncryptedContent so the reasoning chain survives replay.
-	var encryptedDetails []map[string]any
+	var encryptedDetails []json.RawMessage
 	var responseID string
 	var model string
 	var finishReason string
@@ -114,12 +115,17 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 
 				// Build final response.
 				msg := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{}}
-				if reasoningBuf.Len() > 0 || len(encryptedDetails) > 0 {
-					td := &llm.ThinkingData{Text: reasoningBuf.String(), Signature: reasoningField}
-					if len(encryptedDetails) > 0 {
-						if b, err := json.Marshal(encryptedDetails); err == nil {
-							td.EncryptedContent = string(b)
-						}
+				display, displayField := detailsBuf.String(), ""
+				if display == "" {
+					display, displayField = scalarBuf.String(), scalarField
+				}
+				if display != "" || len(encryptedDetails) > 0 {
+					td := &llm.ThinkingData{Text: display, Signature: displayField}
+					if b, err := json.Marshal(encryptedDetails); err == nil && len(encryptedDetails) > 0 {
+						td.EncryptedContent = string(b)
+					}
+					if displayField == "" && scalarBuf.Len() > 0 {
+						td.ScalarReasoningField, td.ScalarReasoningText = scalarField, scalarBuf.String()
 					}
 					msg.Content = append(msg.Content, llm.ContentPart{
 						Kind:     llm.ContentThinking,
@@ -158,7 +164,7 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 					finalResp.Usage = *usage
 				}
 				if finalResp.Usage.ReasoningTokens == nil && finalResp.Usage.ReasoningTokensEstimated == nil {
-					if est := estimateThinkingFromBuf(reasoningBuf.Len()); est > 0 {
+					if est := estimateThinkingFromBuf(len(display)); est > 0 {
 						e := est
 						finalResp.Usage.ReasoningTokensEstimated = &e
 					}
@@ -233,13 +239,30 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 			// Reasoning delta — providers vary the field name; take the first
 			// non-empty variant per chunk (duplicated identical fields must
 			// not double the text) and remember the field for replay.
+			if scalar, field := extractScalarReasoning(choice.Delta.ReasoningContent, choice.Delta.Reasoning, choice.Delta.ReasoningText); scalar != "" {
+				if scalarField == "" {
+					scalarField = field
+				}
+				scalarBuf.WriteString(scalar)
+			}
 			if delta, field := reasoningFromDelta(choice.Delta); delta != "" {
 				if !reasoningStarted {
 					s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningStart})
 					reasoningStarted = true
-					reasoningField = field
 				}
-				reasoningBuf.WriteString(delta)
+				if field == "" {
+					before := detailsBuf.Len()
+					for _, d := range choice.Delta.ReasoningDetails {
+						if t := cmp.Or(d.Text, d.Thinking); t != "" {
+							if detailsBuf.Len() > 0 && (d.Index == nil || lastDetailIdx == nil || *d.Index != *lastDetailIdx) {
+								detailsBuf.WriteString("\n")
+							}
+							detailsBuf.WriteString(t)
+							lastDetailIdx = d.Index
+						}
+					}
+					delta = detailsBuf.String()[before:]
+				}
 				s.Send(llm.StreamEvent{
 					Type:           llm.StreamEventReasoningDelta,
 					ReasoningDelta: delta,

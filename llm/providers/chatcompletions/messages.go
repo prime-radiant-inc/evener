@@ -1,7 +1,9 @@
 package chatcompletions
 
 import (
+	"bytes"
 	"encoding/json"
+	"encoding/json/jsontext"
 	"fmt"
 	"strings"
 
@@ -88,7 +90,7 @@ func toChatMessages(messages []llm.Message, caps registry.Caps, useReasoningDeta
 			}
 			text := textFromParts(content)
 			calls := toolCallsFromParts(content)
-			var encrypted []map[string]any
+			var encrypted []json.RawMessage
 			if !reasoningOff {
 				encrypted = encryptedDetailsFromParts(content)
 			}
@@ -121,7 +123,6 @@ func toChatMessages(messages []llm.Message, caps registry.Caps, useReasoningDeta
 			// encrypted) to mirror OpenRouter's unified reasoning_details shape.
 			if reasoning != "" || len(encrypted) > 0 {
 				if useReasoningDetails || len(encrypted) > 0 {
-					var details []map[string]any
 					// A signature-bearing reasoning.text item (OpenRouter's
 					// Anthropic route) absorbs the accumulated text: the
 					// provider's canonical non-stream shape is ONE item with
@@ -129,27 +130,19 @@ func toChatMessages(messages []llm.Message, caps registry.Caps, useReasoningDeta
 					// a text-less signature item.
 					merged := false
 					if reasoning != "" {
-						for _, e := range encrypted {
-							if e["type"] == "reasoning.text" {
-								if t, _ := e["text"].(string); t == "" {
-									e["text"] = reasoning
-								}
-								merged = true
+						for i, e := range encrypted {
+							if spliced, isText := reasoningTextWith(e, reasoning); isText {
+								encrypted[i], merged = spliced, true
 								break
 							}
 						}
 					}
 					if reasoning != "" && !merged {
 						// MiniMax format: {type: "reasoning.text", text: "...", format: "unknown", index: 0}
-						details = append(details, map[string]any{
-							"type":   "reasoning.text",
-							"text":   reasoning,
-							"format": "unknown",
-							"index":  0,
-						})
+						synthetic, _ := json.Marshal(map[string]any{"type": "reasoning.text", "text": reasoning, "format": "unknown", "index": 0})
+						encrypted = append([]json.RawMessage{synthetic}, encrypted...)
 					}
-					details = append(details, encrypted...)
-					msg["reasoning_details"] = details
+					msg["reasoning_details"] = encrypted
 				} else {
 					msg[reasoningReplayField(content, caps)] = reasoning
 				}
@@ -256,18 +249,48 @@ func reasoningReplayField(parts []llm.ContentPart, caps registry.Caps) string {
 	return "reasoning_content"
 }
 
+// reasoningTextWith merges text into a reasoning.text item without moving a key.
+func reasoningTextWith(item []byte, text string) (json.RawMessage, bool) {
+	d := jsontext.NewDecoder(bytes.NewReader(item), jsontext.AllowInvalidUTF8(true), jsontext.AllowDuplicateNames(true))
+	_, _ = d.ReadToken() // the opening brace; item is JSON that already decoded
+	var isText, has, empty bool
+	var start, end int64
+	for d.PeekKind() == jsontext.KindString {
+		name, _ := d.ReadToken()
+		key := name.String() // ReadValue invalidates the token buffer
+		v, _ := d.ReadValue()
+		switch key {
+		case "type":
+			var s string
+			isText = json.Unmarshal(v, &s) == nil && s == "reasoning.text"
+		case "text":
+			has, empty, end = true, string(v) == "null" || string(v) == `""`, d.InputOffset()
+			start = end - int64(len(v))
+		}
+	}
+	if !isText || has && !empty {
+		return item, isText
+	}
+	quoted, _ := jsontext.AppendQuote(nil, text)
+	if has {
+		return append(append(item[:start:start], quoted...), item[end:]...), true
+	}
+	at := int64(len(item)) - 1
+	return append(append(append(item[:at:at], `,"text":`...), quoted...), item[at:]...), true
+}
+
 // encryptedDetailsFromParts decodes the opaque encrypted reasoning_details
 // items carried on assistant thinking parts (serialized in EncryptedContent),
 // concatenated in part order, ready to replay in the reasoning_details array.
-func encryptedDetailsFromParts(parts []llm.ContentPart) []map[string]any {
-	var out []map[string]any
+func encryptedDetailsFromParts(parts []llm.ContentPart) []json.RawMessage {
+	var out []json.RawMessage
 	for _, p := range parts {
 		if p.Kind == llm.ContentThinking && p.Thinking != nil &&
 			llm.IsOpenAICompatEncryptedReasoning(p.Thinking.EncryptedContent) {
 			// The guard also keeps a foreign provider's opaque blob (OpenAI
 			// Responses encrypted_content) off the wire on a cross-provider
 			// transcript — it would not parse as our item array anyway.
-			var items []map[string]any
+			var items []json.RawMessage
 			if err := json.Unmarshal([]byte(p.Thinking.EncryptedContent), &items); err == nil {
 				out = append(out, items...)
 			}

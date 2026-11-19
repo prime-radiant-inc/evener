@@ -108,8 +108,8 @@ func TestCollectEncryptedDetailsProgrammaticFallback(t *testing.T) {
 	if len(enc) != 1 {
 		t.Fatalf("collected = %+v, want the one continuation-bearing item", enc)
 	}
-	if enc[0]["type"] != "reasoning.encrypted" || enc[0]["id"] != "i1" || enc[0]["data"] != "d1" {
-		t.Fatalf("fallback item = %v, want the known fields", enc[0])
+	if !strings.Contains(string(enc[0]), `"type":"reasoning.encrypted"`) || !strings.Contains(string(enc[0]), `"id":"i1"`) || !strings.Contains(string(enc[0]), `"data":"d1"`) {
+		t.Fatalf("fallback item = %s, want the known fields", enc[0])
 	}
 }
 
@@ -232,12 +232,12 @@ func TestCompletePopulatedSignedReasoningReplayCount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	details := body["messages"].([]map[string]any)[0]["reasoning_details"].([]map[string]any)
+	details := reasoningDetailMaps(t, body["messages"].([]map[string]any)[0]["reasoning_details"])
 	if len(details) != 1 || details[0]["text"] != text || details[0]["signature"] != signature {
 		t.Fatalf("replay did not retain one populated signed detail: %+v", details)
 	}
 	populated := resp.Message.Content[0].Thinking.EncryptedContent
-	if encoded, err := json.Marshal(details); err != nil || string(encoded) != populated {
+	if encoded, err := json.Marshal(body["messages"].([]map[string]any)[0]["reasoning_details"]); err != nil || string(encoded) != populated {
 		t.Fatalf("replayed detail bytes = %s (%v), want %s", encoded, err, populated)
 	}
 	want := len(populated) / 4
@@ -282,8 +282,8 @@ func TestCompletePopulatedSignedReasoningReplayCount(t *testing.T) {
 				t.Fatal(err)
 			}
 			assistant := body["messages"].([]map[string]any)[0]
-			array, ok := assistant["reasoning_details"].([]map[string]any)
-			if !ok || len(array) != tc.itemCount || array[0]["text"] != tc.firstText || assistant["content"] != tc.ordinaryContent {
+			array := reasoningDetailMaps(t, assistant["reasoning_details"])
+			if len(array) != tc.itemCount || array[0]["text"] != tc.firstText || assistant["content"] != tc.ordinaryContent {
 				t.Fatalf("unexpected wire projection: %+v", assistant)
 			}
 			if got := llm.EstimateInputTokensForResolved(target, request).Tokens; got != wantBytes/4 {
