@@ -177,12 +177,14 @@ unset, the corresponding defaults are under `$HOME/.local/state` and
   `${XDG_CONFIG_HOME:-$HOME/.config}/evener/plugins` are user extension roots
   created by Evener startup.
 - `${XDG_CONFIG_HOME:-$HOME/.config}/evener/AGENTS.md` is your personal
-  standing instructions file. Every session loads it ahead of the repo's own
-  instruction docs — AGENTS.md plus whichever sibling the model's surface reads
-  (CLAUDE.md, GEMINI.md) — and Settings → AGENTS.md in the web UI edits it in
-  place. Hub-spawned sessions receive the hub's own path (`--agents-doc`) the
-  way they receive the plugin root, so a per-launch `XDG_CONFIG_HOME` override
-  cannot make Settings and sessions disagree about the file.
+  standing instructions file. Newly launched sessions load it at session start
+  into their launch system prompt ahead of the repo's own instruction docs —
+  AGENTS.md plus whichever sibling the model's surface reads (CLAUDE.md,
+  GEMINI.md) — while resumed sessions preserve their recorded launch prompt
+  verbatim, and Settings → AGENTS.md in the web UI edits it in place.
+  Hub-spawned sessions receive the hub's own path (`--agents-doc`) the way they
+  receive the plugin root, so a per-launch `XDG_CONFIG_HOME` override cannot
+  make Settings and sessions disagree about the file.
 
 Extension discovery and enablement have separate rules. Use [Extensions](extensions.md) to choose a source; `skills_dirs` and `plugin_dirs` add explicit launch sources, while installed plugins have their own enabled-by-default state.
 

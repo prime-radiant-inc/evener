@@ -187,6 +187,11 @@ func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model st
 	// row stops saying the session waits as soon as the retry goes out,
 	// not when its response ends.
 	s.emitQuotaRetry(callErr, model, 0, wait.stamp, 0, callElapsed, nil)
+	if s.envContextDue() {
+		if err := s.maybeAppendEnvironmentContextBeforeTrailingSteering(); err != nil {
+			return false, err
+		}
+	}
 	s.injectDrainedSteering()
 	return true, nil
 }

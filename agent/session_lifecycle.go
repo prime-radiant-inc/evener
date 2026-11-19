@@ -2419,7 +2419,7 @@ func (s *Session) acceptContinuationInput(_ context.Context, input, stableTurnID
 	// the continuation turn's events do not inherit a prior watch origin.
 	s.replaceActiveProvenance(nil)
 	s.repairOrphanedToolResults(context.Background(), "before accepting goal continuation")
-	if s.envRuntimeDrifted() { // the driving prompt below must stay the last message
+	if s.envContextDue() { // the driving prompt below must stay the last message
 		_ = s.maybeAppendEnvironmentContext()
 	}
 
@@ -2506,6 +2506,9 @@ func (s *Session) acceptSteeringCarrierInput(ctx context.Context, identity queue
 	// The carrier turn runs on resume semantics too: the drained human-note
 	// steer it carries is already in the store, and this projection puts the
 	// full current notes beside it.
+	if s.envContextDue() {
+		_ = s.maybeAppendEnvironmentContext()
+	}
 	s.maybeAppendNotesContext()
 	// Recorded for the duration of the drain so a skill-selection failure for
 	// THIS client mutation id (recordFailedSteeringSelection, session_queue.go)

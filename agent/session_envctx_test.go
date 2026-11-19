@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/gittest"
 	"primeradiant.com/evener/llm"
 )
 
@@ -965,5 +967,172 @@ func TestEnvironmentBlockStatesRuntimeFactsOnce(t *testing.T) {
 	}
 	if n := len(aside.history); n > before && strings.Contains(aside.history[n-1].Message.Text(), "added tools: ") {
 		t.Fatalf("the aside re-announced launch tools as added:\n%s", aside.history[n-1].Message.Text())
+	}
+}
+
+func TestOneShotResumeFromPersistentSessionEmitsRunLifetimeDiff(t *testing.T) {
+	t.Parallel()
+	s := launchFactSession(t, t.TempDir(), "")
+	sendOneUserInput(t, s, "hello")
+	if b := lastTurnOfKind(t, s, schema.TurnEnvironment).Message.Text(); strings.Contains(b, "run lifetime:") {
+		t.Fatalf("fresh persistent session restated run lifetime:\n%s", b)
+	}
+	launchPrompt := s.cachedSystemPrompt
+	s.Close()
+
+	// Resuming with TurnEndsProcess=true emits run lifetime diff once while
+	// keeping the launch prompt byte-identical.
+	oneShot := restoreQueuePersistTestSessionWith(t, s.stateDir, s.ID(), RestoreSessionConfig{
+		TurnEndsProcess: true,
+		testOnly:        s.cfg.testOnly,
+	})
+	oneShot.client.Register(newFakeAdapter("openai", repeatFinalResponse(4, "resumed")...))
+	t.Cleanup(oneShot.Close)
+	sendOneUserInput(t, oneShot, "one shot input")
+	if oneShot.cachedSystemPrompt != launchPrompt {
+		t.Fatal("one-shot resume mutated launch system prompt")
+	}
+	b := lastTurnOfKind(t, oneShot, schema.TurnEnvironment).Message.Text()
+	if !strings.Contains(b, "run lifetime: one-shot") {
+		t.Fatalf("one-shot resume did not emit run lifetime diff:\n%s", b)
+	}
+	countAfterFirst := countEnvironmentTurns(oneShot)
+	sendOneUserInput(t, oneShot, "second one shot input")
+	if countEnvironmentTurns(oneShot) != countAfterFirst {
+		t.Fatalf("second turn re-emitted run lifetime: got %d, want %d", countEnvironmentTurns(oneShot), countAfterFirst)
+	}
+	oneShot.Close()
+
+	// Legacy baselineless persistent session resumed via one-shot also receives
+	// the run lifetime correction once.
+	legacy := launchFactSession(t, t.TempDir(), "")
+	legacy.Close()
+	legacyMeta, err := schema.LoadSessionMeta(legacy.stateDir, legacy.ID())
+	if err != nil {
+		t.Fatalf("LoadSessionMeta(legacy): %v", err)
+	}
+	legacyMeta.LaunchEnvBaseline = envctx.Snapshot{}
+	legacyMeta.EnvContext = nil
+	if err := schema.SaveSessionMeta(legacy.stateDir, legacyMeta); err != nil {
+		t.Fatalf("SaveSessionMeta(legacy): %v", err)
+	}
+	legacyOneShot := restoreQueuePersistTestSessionWith(t, legacy.stateDir, legacy.ID(), RestoreSessionConfig{
+		TurnEndsProcess: true,
+		testOnly:        legacy.cfg.testOnly,
+	})
+	legacyOneShot.client.Register(newFakeAdapter("openai", repeatFinalResponse(4, "legacy")...))
+	t.Cleanup(legacyOneShot.Close)
+	sendOneUserInput(t, legacyOneShot, "legacy one shot")
+	lb := lastTurnOfKind(t, legacyOneShot, schema.TurnEnvironment).Message.Text()
+	if !strings.Contains(lb, "run lifetime: one-shot") {
+		t.Fatalf("legacy baselineless one-shot resume did not emit run lifetime:\n%s", lb)
+	}
+	beforeSecond := countEnvironmentTurns(legacyOneShot)
+	sendOneUserInput(t, legacyOneShot, "legacy second")
+	if countEnvironmentTurns(legacyOneShot) != beforeSecond {
+		t.Fatalf("legacy second turn re-emitted environment: got %d, want %d", countEnvironmentTurns(legacyOneShot), beforeSecond)
+	}
+}
+
+func TestCompactedGitSessionResumedOutsideGitReportsNoRepo(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		mutateMeta func(m *schema.SessionMeta)
+	}{
+		{name: "current-baseline"},
+		{
+			name: "6968-nonempty-baseline-empty-git-branch",
+			mutateMeta: func(m *schema.SessionMeta) {
+				m.LaunchEnvBaseline.GitBranch = ""
+				m.EnvInfo.GitBranch = "main"
+			},
+		},
+		{
+			name: "legacy-saved-once-outside-git",
+			mutateMeta: func(m *schema.SessionMeta) {
+				m.LaunchEnvBaseline.GitBranch = ""
+				m.EnvInfo.GitBranch = ""
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			gitDir := t.TempDir()
+			gittest.Run(t, gitDir, "init")
+			if err := os.WriteFile(filepath.Join(gitDir, "README.md"), []byte("hello\n"), 0o644); err != nil {
+				t.Fatalf("write README.md: %v", err)
+			}
+			gittest.Run(t, gitDir, "add", "README.md")
+			gittest.Run(t, gitDir, "commit", "-m", "initial")
+
+			stateDir := t.TempDir()
+			client := llm.NewClient()
+			client.Register(newFakeAdapter("openai", repeatFinalResponse(4, "ok")...))
+			s, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(gitDir), SessionConfig{
+				StateDir: stateDir,
+				testOnly: testConfig{noSyncJobStore: true},
+			})
+			if err != nil {
+				t.Fatalf("NewSession: %v", err)
+			}
+			sendOneUserInput(t, s, "in git")
+			muteNoteElicitation(s)
+			s.contextMgr.SummarizeThreshold = 2.0
+			s.contextMgr.PreserveRecentTurns = 0
+			if err := s.Compact(context.Background()); err != nil {
+				t.Fatalf("Compact: %v", err)
+			}
+			id := s.ID()
+			s.Close()
+
+			meta, err := schema.LoadSessionMeta(stateDir, id)
+			if err != nil {
+				t.Fatalf("LoadSessionMeta: %v", err)
+			}
+			if tc.mutateMeta != nil {
+				tc.mutateMeta(&meta)
+			}
+			nonGitDir := t.TempDir()
+			rClient := llm.NewClient()
+			rClient.Register(newFakeAdapter("openai", repeatFinalResponse(16, "resumed")...))
+			r, err := RestoreSessionFromMetaWithConfig(rClient, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(nonGitDir), meta, RestoreSessionConfig{
+				StateDir: stateDir,
+				testOnly: testConfig{noSyncJobStore: true},
+			})
+			if err != nil {
+				t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+			}
+			defer r.Close()
+			sendOneUserInput(t, r, "outside git")
+			if b := lastTurnOfKind(t, r, schema.TurnEnvironment).Message.Text(); !strings.Contains(b, "git branch: (not in a git repository)") {
+				t.Fatalf("compacted git session resumed outside git missing git branch placeholder:\n%s", b)
+			}
+			settled := countEnvironmentTurns(r)
+			sendOneUserInput(t, r, "still outside git")
+			if countEnvironmentTurns(r) != settled {
+				t.Fatalf("second turn outside git re-emitted environment block: got %d, want %d", countEnvironmentTurns(r), settled)
+			}
+
+			// Compact again after resuming outside git: resetEnvContextTrackerLocked
+			// must still preserve the launch GitBranch on s.launchEnvBaseline.
+			muteNoteElicitation(r)
+			r.contextMgr.SummarizeThreshold = 2.0
+			r.contextMgr.PreserveRecentTurns = 0
+			if err := r.Compact(context.Background()); err != nil {
+				t.Fatalf("Compact after resume: %v", err)
+			}
+			if err := r.maybeAppendEnvironmentContext(); err != nil {
+				t.Fatalf("maybeAppendEnvironmentContext after resume compact: %v", err)
+			}
+			if b := lastTurnOfKind(t, r, schema.TurnEnvironment).Message.Text(); !strings.Contains(b, "git branch: (not in a git repository)") {
+				t.Fatalf("post-compaction replacement outside git missing git branch placeholder:\n%s", b)
+			}
+			afterCompact := countEnvironmentTurns(r)
+			sendOneUserInput(t, r, "after post-resume compact")
+			if countEnvironmentTurns(r) != afterCompact {
+				t.Fatalf("unchanged turn after post-resume compact re-emitted environment block: got %d, want %d", countEnvironmentTurns(r), afterCompact)
+			}
+		})
 	}
 }
