@@ -106,6 +106,7 @@ func effectiveReasoningEffort(cfg, override string, escalated bool) string {
 // It also returns the full-history message list a planned continuation delta was
 // cut from. That list is the round's, not the request's: the retry after a
 // rejected anchor rebuilds from it, and nothing on the wire ever carries it.
+
 // admitCompactionAuxiliaryCall re-asks the controller for the lease this turn
 // holds, immediately before an auxiliary provider call (the compaction note
 // elicitor or the summarizer) dispatches (LIFE-01, #2340).
@@ -140,13 +141,13 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// A root session is not a delegate and has no generation to hold, so it
 	// keeps the ordinary path: the refusal applies only to a stable delegate
 	// child, and zero-model maintenance drains never reach this function at all.
-	if lease, ok := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); ok && s.delegateController != nil {
+	if _, leased := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); leased {
 		// A lease in context is not enough: it must still be the child's live
 		// generation, and no stop may be pending. The fold's provider calls are
 		// cancelled by the round's context, but a stop recorded between that
 		// cancellation check and compaction's own start would otherwise let a
 		// fenced turn spend a summarizer request.
-		if err := s.delegateController.admitModelRequestLease(lease); err != nil {
+		if err := s.admitCompactionAuxiliaryCall(ctx); err != nil {
 			return nil, "", nil, llm.Request{}, nil, "", err
 		}
 	} else if s.stableChildTurnNeedsLease(ctx) {
@@ -357,7 +358,6 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		snapshot := projection.turns
 		historyCoverage = projection.coverage
 		scope.InFlightFrom = projection.inFlightFrom
-		inFlightFrom = projection.inFlightFrom
 		presentedBoundary = len(snapshot)
 		if ctx.Value(delegateAttentionRunContextKey{}) != nil {
 			// An automatic attention drive projects the resident history,
@@ -371,11 +371,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			// same rule the resident drop applies to the baseline.
 			filtered, droppedAt := s.dropHeldDelegateAttentionTurns(snapshot)
 			heldDropped = len(droppedAt) > 0
-			for _, at := range droppedAt {
-				if at < inFlightFrom {
-					scope.InFlightFrom--
-				}
-			}
+			scope.InFlightFrom = shiftBoundaryForDrops(scope.InFlightFrom, droppedAt)
 			snapshot = filtered
 		}
 		presentedTurns = snapshot
@@ -403,11 +399,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			// scope.InFlightFrom is different: it indexes the projection this
 			// request expands, so a drop before it must shift it, the same rule
 			// the held-attention drop applies.
-			for _, at := range droppedAt {
-				if at < inFlightFrom {
-					scope.InFlightFrom--
-				}
-			}
+			scope.InFlightFrom = shiftBoundaryForDrops(scope.InFlightFrom, droppedAt)
 			historyTurns = filtered
 			// Continuation planning rebuilds the request from the turns it is
 			// given, so it must see the same filtered projection this request
@@ -478,14 +470,32 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		// not the round snapshot (historyTurns): a leased delegate round
 		// projects the controller's later snapshot, which can already hold the
 		// turns that landed in between and would otherwise be appended again.
+		boundary := presentedBoundary
 		if len(s.history) > presentedBoundary {
 			appended = append(appended, s.history[presentedBoundary:]...)
+			// The boundary stays on the UNFILTERED length: it indexes resident
+			// history, and moving it down with the drop below would make every
+			// withheld row look like a fresh append on the next rebuild.
 			presentedBoundary = len(s.history)
 		}
 		historyTurns = append([]schema.Turn{}, s.history...)
 		s.mu.Unlock()
 		if len(appended) == 0 {
 			return false, nil
+		}
+		// The rebuild projects the resident history anew, so it obeys the same
+		// withholding rule as the request it replaces: a still-pending watch row
+		// that landed after this request's snapshot must not ride in through the
+		// appended tail. The re-snapshot and the tail are filtered in ONE pass so
+		// the projection and the planning copy below can never disagree about
+		// which rows are withheld, and the tail's boundary is moved into the
+		// filtered coordinates the same way the in-flight boundary is.
+		filtered, droppedAt := s.dropUnleasedWatchAttentionTurns(ctx, historyTurns)
+		if len(droppedAt) > 0 {
+			heldDropped = true
+			boundary = shiftBoundaryForDrops(boundary, droppedAt)
+			historyTurns = filtered
+			appended = filtered[boundary:]
 		}
 		// The appended turns land after the in-flight boundary and project
 		// as-is; append them rather than re-running the delegate claim.
@@ -623,9 +633,13 @@ func (s *Session) foldHistoryBeforeRequest(ctx context.Context, round, sysLen in
 			// duplicated ordinary history, in exchange for withholding one notice.
 			// The filter applies to what the summarizer SEES; the boundary stays
 			// the length of the snapshot that was taken.
-			if filtered, _ := s.dropUnleasedWatchAttentionTurns(ctx, historyTurns); len(filtered) != len(historyTurns) {
-				historyTurns = filtered
-			}
+			//
+			// The drop positions are kept because the in-flight turn boundary
+			// indexes the FILTERED projection this fold and this request both
+			// use: a drop strictly before it moves it, the same rule the
+			// held-attention drop applies to its own positions.
+			historyTurns, filteredDroppedAt := s.dropUnleasedWatchAttentionTurns(ctx, historyTurns)
+			filteredPreLen := len(historyTurns)
 
 			// Auxiliary-call admission (LIFE-01, #2340). The lease was validated
 			// once at the top of preparation, but preparation is long: the
@@ -688,7 +702,13 @@ func (s *Session) foldHistoryBeforeRequest(ctx context.Context, round, sysLen in
 				if round == 0 {
 					s.turnHistoryBaseline = len(published)
 				} else {
-					s.shrinkTurnHistoryBaseline(preManageLen, managedLen, injectedTurns)
+					// The boundary was captured against the unfiltered resident
+					// history, but this fold folds the filtered projection, so the
+					// withheld rows before it are not in the folded result for it to
+					// slide past. Move it down for those first, then apply the fold's
+					// own shrink from the FILTERED pre-fold length.
+					s.turnHistoryBaseline = shiftBoundaryForDrops(s.turnHistoryBaseline, filteredDroppedAt)
+					s.shrinkTurnHistoryBaseline(filteredPreLen, managedLen, injectedTurns)
 					s.growTurnHistoryBaseline(restoredAt)
 				}
 				baselineSynced = true
@@ -755,6 +775,23 @@ func (s *Session) growTurnHistoryBaseline(restoredAt []int) {
 			s.turnHistoryBaseline++
 		}
 	}
+}
+
+// shiftBoundaryForDrops moves a boundary that indexes a projection down by the
+// number of dropped rows strictly before it, clamped at 0. Each drop shifts
+// every later turn one position left, so the boundary moves with each drop that
+// precedes it.
+func shiftBoundaryForDrops(boundary int, droppedAt []int) int {
+	shifted := boundary
+	for _, at := range droppedAt {
+		if at < boundary {
+			shifted--
+		}
+	}
+	if shifted < 0 {
+		shifted = 0
+	}
+	return shifted
 }
 
 // applyResponsesContinuationAnchorPlanning returns the request to dispatch and,

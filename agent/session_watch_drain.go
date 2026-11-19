@@ -162,7 +162,9 @@ func stableDelegateChild(sess *Session) bool {
 // and the paced re-drive after an ordinary turn -- so no site can bypass the
 // decision. The decision is the same structural predicate admission uses: a
 // stable child, a watch notice pending, and no ordinary notice for the drive to
-// carry.
+// carry. Before it decides, it RESOLVES the queue's caller-targeted watch-send
+// tokens (resolveQueuedWatchSendTokens), because a token is not a notice: once
+// resolved, the queue holds only the work a turn could actually carry.
 //
 // Two exemptions keep it from stranding legitimate work:
 //
@@ -170,16 +172,28 @@ func stableDelegateChild(sess *Session) bool {
 //     makes the drive worth launching: acceptance now defers the watch notice
 //     and carries the completion (see deferUnleasedWatchNotices), so the turn
 //     does real work.
-//   - A TRANSCRIBED watch-send token settles without a model turn at all. Its
-//     frame is already in the child's transcript and only its delivered record
-//     is outstanding, so the drive reaches the existing settlement path and must
-//     not be skipped: skipping it would strand a settlement the journal is
-//     ready to record.
+//   - A TRANSCRIBED watch-send token whose settle the resolution could not
+//     record still needs the drive: its frame is already in the child's
+//     transcript and only its delivered record is outstanding, so skipping
+//     would strand a settlement the journal is ready to record.
 func (s *Session) driveWouldStrandOnAdmission(child *Session) bool {
 	if !stableDelegateChild(child) {
 		return false
 	}
+	// Resolve the queue's caller-targeted watch-send tokens BEFORE deciding
+	// (LIFE-01, #2340). A stale token names no frame, a transcribed one owes
+	// only its delivered record, and an untranscribed one belongs in leased
+	// attention -- and any of the three read as an unleased watch notice either
+	// strands this drive or, worse, gets presented without a lease.
+	child.resolveQueuedWatchSendTokens()
 	if !child.hasPendingWatchNotification() {
+		if child.peekNotifications() == 0 && (child.jobManager == nil || !child.jobManager.hasPendingWatchSends()) {
+			// Resolution left nothing to drive, so the drive is skipped: an
+			// empty turn would take a slot only to stand straight back down,
+			// and a stale token would otherwise keep the drain counting work
+			// no turn can drain.
+			return true
+		}
 		return false
 	}
 	if child.hasPendingOrdinaryNotification() {
@@ -232,14 +246,15 @@ func (s *Session) hasSettleableWatchSendOnly() bool {
 // drain sees no work it can make progress on and finishes, while the notice
 // survives as an item a leased generation presents.
 //
-// Tokens (WatchSend set) are left alone. A token's deliverable is its at-least-
-// once settle, which the delivery pass owns; a transcribed one settles with no
-// model turn, and an untranscribed one needs the frame presented, which is
-// durable attention's job at ingress, not this queue's.
+// Tokens (WatchSend set) are resolved first, because a token is not a notice
+// this queue can carry: the frame it names is either stale, already in the
+// transcript, or unpublished, and only the last of those is work. See
+// resolveQueuedWatchSendTokens.
 func (s *Session) deferQueuedWatchNoticesToAttention() int {
 	if s == nil {
 		return 0
 	}
+	deferred := s.resolveQueuedWatchSendTokens()
 	s.pendingJobNotifsMu.Lock()
 	remaining := make([]jobNotification, 0, len(s.pendingJobNotifs))
 	var moved []jobNotification
@@ -254,7 +269,7 @@ func (s *Session) deferQueuedWatchNoticesToAttention() int {
 		s.pendingJobNotifs = remaining
 	}
 	s.pendingJobNotifsMu.Unlock()
-	deferred := 0
+	var retry []jobNotification
 	for _, n := range moved {
 		// A tick is not a fire on its own (LIFE-01, #2340). A repeating timer can
 		// be cleared -- by the operator, by its own teardown -- after this tick was
@@ -277,12 +292,13 @@ func (s *Session) deferQueuedWatchNoticesToAttention() int {
 				// honest. A notice whose append succeeded is durable already and
 				// is NOT put back: see persistDeferredWatchNotice on why
 				// re-offering it presents it twice.
-				s.requeueJobNotifications([]jobNotification{n})
+				retry = append(retry, n)
 				continue
 			}
 		}
 		deferred++
 	}
+	s.requeueJobNotifications(retry)
 	return deferred
 }
 
@@ -578,4 +594,137 @@ func (s *Session) retryRestoredPendingWatchSends(_ context.Context) error {
 		}
 	}
 	return nil
+}
+
+// resolveQueuedWatchSendTokens takes every caller-targeted watch-send token off
+// this session's notification queue and settles what the token actually owes
+// (LIFE-01, #2340).
+//
+// A token is not a notice. It names a frame by key and sequence, and that name
+// resolves to one of three things -- nothing (the frame was replaced, cleared,
+// dropped or already settled), a frame the model already has, or a frame nobody
+// has presented. Only the last is work, and it is work for a LEASED generation,
+// never for the unleased notification turn that would otherwise carry the token.
+// Leaving all three on the queue is what went wrong: a stale token kept the
+// queue reading as live work so the one-shot drain neither quiesced nor timed
+// out, and an untranscribed one let an unleased turn present a watch frame.
+//
+// Resolution runs before every decision that reads the queue, so the drive and
+// the deferral see the work that is really there.
+func (s *Session) resolveQueuedWatchSendTokens() int {
+	if s == nil {
+		return 0
+	}
+	s.pendingJobNotifsMu.Lock()
+	if len(s.pendingJobNotifs) == 0 {
+		s.pendingJobNotifsMu.Unlock()
+		return 0
+	}
+	remaining := make([]jobNotification, 0, len(s.pendingJobNotifs))
+	var tokens []jobNotification
+	for _, n := range s.pendingJobNotifs {
+		if n.WatchSend != nil {
+			tokens = append(tokens, n)
+			continue
+		}
+		remaining = append(remaining, n)
+	}
+	if len(tokens) == 0 {
+		s.pendingJobNotifsMu.Unlock()
+		return 0
+	}
+	s.pendingJobNotifs = remaining
+	s.pendingJobNotifsMu.Unlock()
+	var retry []jobNotification
+	deferred := 0
+	for _, n := range tokens {
+		retryToken, madeDurable := s.resolveQueuedWatchSendToken(n)
+		if madeDurable {
+			deferred++
+		}
+		if retryToken {
+			retry = append(retry, n)
+		}
+	}
+	s.requeueJobNotifications(retry)
+	return deferred
+}
+
+// resolveQueuedWatchSendToken settles one token. It reports whether the token
+// must go back on the queue (its work could not be finished), and whether it
+// became durable attention -- the one outcome a leased generation still owes
+// something to present.
+//
+// A stale token is discarded: it names nothing, so there is nothing to do and
+// nothing to retry. A transcribed one is settled in place -- the model already
+// has the frame, so only the delivered record is outstanding and no lease is
+// needed to write it. An untranscribed one goes to durable attention, where a
+// leased generation presents it.
+func (s *Session) resolveQueuedWatchSendToken(n jobNotification) (retry, deferred bool) {
+	jm, cfg, state, ok := s.resolveWatchSendToken(n.WatchSend)
+	if !ok {
+		return false, false
+	}
+	if jm.watchSendTranscribed(state.DeliveryID) {
+		if err := jm.settleTranscribedWatchSend(cfg, state); err != nil {
+			s.emit(events.WarningData{Message: "watch send settle failed: " + err.Error()})
+			return true, false
+		}
+		return false, false
+	}
+	deferred, err := s.deferWatchSendFrameToAttention(jm, cfg, state)
+	if err != nil {
+		s.emit(warningDataFromError("defer queued watch send", err))
+		return true, false
+	}
+	return false, deferred
+}
+
+// deferWatchSendFrameToAttention makes one caller-targeted watch frame durable
+// attention on this session and acknowledges the send (LIFE-01, #2340).
+//
+// It is the unleased-turn half of the frame rail: the row goes in under the
+// delivery's own identity (stableWatchAttentionID), so a retry of the same
+// delivery resolves the same row instead of presenting the frame twice, and
+// arming it hands the presentation to a leased generation. Once the row is
+// durable the frame IS delivered, so the send is settled: nothing else owes it,
+// and leaving it pending would only have another writer present it again.
+//
+// A failed append returns the error and leaves the send pending, so the caller
+// can keep the token owed. A failed arm does not: the row exists and the arm
+// retry owns it, so putting the token back would present the frame unleased as
+// well as to the leased run the row already waits for.
+//
+// It reports whether it made a row durable. A frame that is no longer current
+// is not presentable, so it reports false and no error: the token names nothing
+// and is discarded rather than retried forever.
+func (s *Session) deferWatchSendFrameToAttention(jm *jobManager, cfg *watchConfig, state jobstore.WatchSendState) (bool, error) {
+	if s == nil || jm == nil || cfg == nil || state.DeliveryID == "" {
+		return false, errors.New("watch send deferral identity is incomplete")
+	}
+	// The frame may have been cleared or superseded since the token was built.
+	// A superseded frame's successor carries the content, and a cleared watch's
+	// frame is no longer owed, so neither is presentable.
+	if !jm.isCurrentPendingWatchSend(cfg, state) {
+		return false, nil
+	}
+	attentionID := stableWatchAttentionID(state)
+	if s.delegateController != nil {
+		s.delegateController.attentionCauses.remember(attentionID, state.Provenance)
+	}
+	if _, err := s.appendDelegateNotificationDurably(attentionID, stableWatchNotificationContent(jm.renderWatchSendFrame(cfg, state))); err != nil {
+		if s.delegateController != nil {
+			s.delegateController.attentionCauses.forget(attentionID)
+		}
+		return false, err
+	}
+	if err := s.armDelegateAttention(attentionID); err != nil {
+		s.emit(warningDataFromError("arm deferred watch send", err))
+	}
+	if jm.isCurrentPendingWatchSend(cfg, state) {
+		if err := jm.settleWatchSendDelivered(cfg, state); err != nil {
+			s.emit(warningDataFromError("settle deferred watch send", err))
+		}
+	}
+	return true, nil
 }

@@ -1595,13 +1595,31 @@ func (s *Session) drainJobNotifications() []jobNotification {
 // controller check is what makes the refusal actionable -- without a controller
 // there is no generation to hold and no admission to consult.
 func (s *Session) stableChildTurnNeedsLease(ctx context.Context) bool {
-	if s == nil || s.owningDelegateID == "" || s.delegateController == nil {
+	if !stableDelegateChild(s) {
 		return false
 	}
 	if _, ok := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); ok {
 		return false
 	}
 	return true
+}
+
+// hasPendingNotificationMatching reports whether any notification the session
+// still owes on its ordinary rail satisfies match. Both the queued notices and
+// the ones awaiting the request are consulted, because either is work the
+// session will present.
+func (s *Session) hasPendingNotificationMatching(match func(jobNotification) bool) bool {
+	if s == nil {
+		return false
+	}
+	s.pendingJobNotifsMu.Lock()
+	defer s.pendingJobNotifsMu.Unlock()
+	if slices.ContainsFunc(s.pendingJobNotifs, match) {
+		return true
+	}
+	return slices.ContainsFunc(s.jobNotifsAwaitingRequest, func(a awaitedJobNotification) bool {
+		return match(a.deliverable.notification)
+	})
 }
 
 // hasPendingWatchNotification reports whether the model notifications this
@@ -1612,22 +1630,7 @@ func (s *Session) stableChildTurnNeedsLease(ctx context.Context) bool {
 // The kind is the whole test. Nothing here reads reason or body text, so a
 // caller cannot be refused for what a notice says -- only for what it is.
 func (s *Session) hasPendingWatchNotification() bool {
-	if s == nil {
-		return false
-	}
-	s.pendingJobNotifsMu.Lock()
-	defer s.pendingJobNotifsMu.Unlock()
-	for _, n := range s.pendingJobNotifs {
-		if n.isWatch() {
-			return true
-		}
-	}
-	for _, a := range s.jobNotifsAwaitingRequest {
-		if a.deliverable.notification.isWatch() {
-			return true
-		}
-	}
-	return false
+	return s.hasPendingNotificationMatching(jobNotification.isWatch)
 }
 
 // hasPendingOrdinaryNotification reports whether the session's ordinary
@@ -1640,22 +1643,7 @@ func (s *Session) hasPendingWatchNotification() bool {
 // drained only by an EntryNotification turn, and skipping that retry would
 // strand a recovered completion once a drive slot frees.
 func (s *Session) hasPendingOrdinaryNotification() bool {
-	if s == nil {
-		return false
-	}
-	s.pendingJobNotifsMu.Lock()
-	defer s.pendingJobNotifsMu.Unlock()
-	for _, n := range s.pendingJobNotifs {
-		if !n.isWatch() {
-			return true
-		}
-	}
-	for _, a := range s.jobNotifsAwaitingRequest {
-		if !a.deliverable.notification.isWatch() {
-			return true
-		}
-	}
-	return false
+	return s.hasPendingNotificationMatching(func(n jobNotification) bool { return !n.isWatch() })
 }
 
 // THE RULE (LIFE-01, #2340). A watch notice becomes model-visible only at a
@@ -1688,37 +1676,54 @@ func (s *Session) hasPendingOrdinaryNotification() bool {
 //
 // Order is persist-then-suppress. Suppressing first and persisting after leaves
 // a window in which the notice is neither queued nor durable, which loses it.
-// A notice whose persist fails is KEPT in the deliverable set rather than
-// dropped: the gate will refuse the turn, the notice stays owed, and it is
-// retried -- an error the child can see beats a silently swallowed failure
-// report.
+// A notice whose persist fails is NOT left in the deliverable set: the writer
+// would put it into this unleased reminder and settle it before admission could
+// see it, which is the leak this split exists to close. It goes back on the
+// queue instead, so admission finds it owed and refuses the turn while the next
+// attempt retries the persist. An error the child can see beats a silently
+// swallowed failure report, and the ordinary completions beside it still ride
+// this turn.
 func (s *Session) deferUnleasedWatchNotices(ctx context.Context, jobNotifs []deliverableJobNotification) ([]deliverableJobNotification, bool) {
 	if !s.stableChildTurnNeedsLease(ctx) {
 		return jobNotifs, false
 	}
 	deferred := false
+	var retry []jobNotification
 	kept := jobNotifs[:0:0]
 	for _, d := range jobNotifs {
-		if !d.notification.isWatch() || d.watchJM != nil {
-			// A watch-SEND token (watchJM set) is a frame the rail is delivering
-			// and settling, not a durable-attention candidate: its at-least-once
-			// settle lives in the token. A non-watch notice is ordinary work.
+		if !d.notification.isWatch() {
 			kept = append(kept, d)
+			continue
+		}
+		if d.watchJM != nil {
+			// A watch-SEND frame the model has not transcribed yet. Rendering it
+			// here would present it outside a lease, so it goes to durable
+			// attention under its delivery identity and the send settles there;
+			// a frame that cannot be made durable stays owed on the queue.
+			if _, err := s.deferWatchSendFrameToAttention(d.watchJM, d.watchCfg, d.watchState); err != nil {
+				s.emit(warningDataFromError("defer unleased watch send", err))
+				retry = append(retry, d.notification)
+				continue
+			}
+			deferred = true
 			continue
 		}
 		appended, err := s.persistDeferredWatchNotice(d.notification)
 		if err != nil {
 			s.emit(warningDataFromError("persist deferred watch notice", err))
 			if !appended {
-				// Not durable, so the turn keeps it owed. A notice that IS durable
-				// is not re-offered here: that would present it unleased as well as
-				// to the leased run that row already waits for.
-				kept = append(kept, d)
+				// Not durable, so it must not ride this reminder. Back on the
+				// queue: admission then refuses the turn with the notice still
+				// owed. A notice that IS durable is not re-offered here: that
+				// would present it unleased as well as to the leased run that
+				// row already waits for.
+				retry = append(retry, d.notification)
 				continue
 			}
 		}
 		deferred = true
 	}
+	s.requeueJobNotifications(retry)
 	return kept, deferred
 }
 
@@ -1791,8 +1796,7 @@ func (s *Session) persistDeferredWatchNotice(n jobNotification) (appended bool, 
 	} else {
 		s.jobStatusPolls.forget(n.JobID)
 	}
-	appended, err = s.appendDelegateNotificationDurably(attentionID, content)
-	if err != nil {
+	if _, err := s.appendDelegateNotificationDurably(attentionID, content); err != nil {
 		if s.delegateController != nil {
 			s.delegateController.attentionCauses.forget(attentionID)
 		}

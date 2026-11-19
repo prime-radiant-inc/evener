@@ -227,6 +227,12 @@ type jobManager struct {
 	// waiters on the job clock, or a test counting them with BlockUntil would
 	// see the 30-minute reminder instead.
 	reminderClock clock.Clock
+	// longRunningReminderOrdinal counts the reminders this manager has fired.
+	// Each fire is its own delivery, so the notice it builds carries the value
+	// as its DeliveryOrdinal: two fires are otherwise identical -- same watch,
+	// same job, same reason -- and would derive one durable attention identity
+	// between them. Guarded by mu.
+	longRunningReminderOrdinal uint64
 	// closeGrace bounds how long closeRuntimeState waits for each still-running
 	// job to finalize before abandoning it. Seeded from defaultCloseGrace at
 	// construction so tests can shrink the graceful-shutdown window.

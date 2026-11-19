@@ -2938,6 +2938,11 @@ func (s *Session) dropUnleasedWatchAttentionTurns(ctx context.Context, turns []s
 	if len(pending) == 0 {
 		return turns, nil
 	}
+	if !slices.ContainsFunc(turns, func(turn schema.Turn) bool {
+		return turn.AttentionID != "" && pending[turn.AttentionID]
+	}) {
+		return turns, nil
+	}
 	kept = make([]schema.Turn, 0, len(turns))
 	for i, turn := range turns {
 		if turn.AttentionID != "" && pending[turn.AttentionID] {
@@ -2949,11 +2954,39 @@ func (s *Session) dropUnleasedWatchAttentionTurns(ctx context.Context, turns []s
 	return kept, droppedAt
 }
 
-// pendingDeferredWatchAttention reports which deferred watch rows are still
-// unresolved, so an unleased projection holds exactly those back.
+// watchSendAttentionPrefix marks the durable attention rows the send rail
+// writes for the receiver of a watch frame.
+const watchSendAttentionPrefix = "watch:"
+
+// isWatchNoticeAttentionID reports whether id names a durable watch notice
+// row. Two producers write one: the send rail, which delivers a frame to its
+// receiver under watchSendAttentionPrefix, and an unleased turn that may not
+// carry a notice, which parks it under deferredWatchAttentionPrefix. Withholding
+// a live notice from a projection must answer for both producers, so the
+// prefixes are decided in one place.
+func isWatchNoticeAttentionID(id string) bool {
+	return strings.HasPrefix(id, watchSendAttentionPrefix) || strings.HasPrefix(id, deferredWatchAttentionPrefix)
+}
+
+// pendingDeferredWatchAttention reports which watch rows are still unresolved,
+// so an unleased projection holds exactly those back.
 func (s *Session) pendingDeferredWatchAttention() map[string]bool {
+	if s == nil {
+		return map[string]bool{}
+	}
+	// The fold cursor behind this read is guarded by attentionMu: every append
+	// and resolution that moves it holds that lock, so a read taken outside it
+	// races a concurrent watch delivery or parent wake read.
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	return s.pendingWatchAttentionLocked()
+}
+
+// pendingWatchAttentionLocked is pendingDeferredWatchAttention under the
+// caller's hold of attentionMu.
+func (s *Session) pendingWatchAttentionLocked() map[string]bool {
 	pending := make(map[string]bool)
-	if s == nil || s.delegateController == nil {
+	if s.delegateController == nil {
 		return pending
 	}
 	fold, err := s.delegateAttentionFoldLocked()
@@ -2961,7 +2994,7 @@ func (s *Session) pendingDeferredWatchAttention() map[string]bool {
 		return pending
 	}
 	for _, id := range fold.pendingIDs() {
-		if strings.HasPrefix(id, deferredWatchAttentionPrefix) {
+		if isWatchNoticeAttentionID(id) {
 			pending[id] = true
 		}
 	}

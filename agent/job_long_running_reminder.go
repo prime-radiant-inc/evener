@@ -71,15 +71,22 @@ func (jm *jobManager) fireLongRunningReminder() {
 	} else {
 		jm.longRunningTimer = jm.reminderClock.AfterFunc(longRunningJobReminderInterval, jm.fireLongRunningReminder)
 	}
+	jm.longRunningReminderOrdinal++
+	ordinal := jm.longRunningReminderOrdinal
 	jm.mu.Unlock()
 
 	if len(due) == 0 {
 		return
 	}
-	jm.enqueueNotifications([]jobNotification{longRunningJobsNotification(due, now)})
+	jm.enqueueNotifications([]jobNotification{longRunningJobsNotification(due, now, ordinal)})
 }
 
-func longRunningJobsNotification(jobs []*jobstore.JobRecord, now time.Time) jobNotification {
+// longRunningJobsNotification builds the reminder for one cadence fire. ordinal
+// is that fire's place in the cadence and becomes the notice's DeliveryOrdinal:
+// every fire says the same thing about the same jobs, so without it two fires
+// would derive one durable attention identity and the second would be dropped
+// as a replay of the first.
+func longRunningJobsNotification(jobs []*jobstore.JobRecord, now time.Time, ordinal uint64) jobNotification {
 	sort.Slice(jobs, func(i, j int) bool {
 		if !jobs[i].StartedAt.Equal(jobs[j].StartedAt) {
 			return jobs[i].StartedAt.Before(jobs[j].StartedAt)
@@ -98,6 +105,7 @@ func longRunningJobsNotification(jobs []*jobstore.JobRecord, now time.Time) jobN
 	}
 	n := watchNotification("", longRunningJobsReason)
 	n.Note = b.String()
+	n.DeliveryOrdinal = int(ordinal)
 	return n
 }
 

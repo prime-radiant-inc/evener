@@ -508,6 +508,11 @@ func (s *Session) notifyStrategyAfterAction(ctx context.Context) error {
 	s.mu.Lock()
 	hist := append([]schema.Turn(nil), s.history...)
 	s.mu.Unlock()
+	// The strategy reasons over the same projection the next request will
+	// expand, so it obeys the same withholding rule: a still-pending watch row
+	// must not reach the strategy any more than it may reach an unleased
+	// request. A leased turn drops nothing.
+	hist, _ = s.dropUnleasedWatchAttentionTurns(ctx, hist)
 	afterErr := s.strategy.AfterAction(ctx, hist, s.client)
 	// Warn once per failing streak: a repeated failure is suppressed while a
 	// successful call clears the state so a later failure warns again.
