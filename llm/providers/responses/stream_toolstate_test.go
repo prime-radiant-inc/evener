@@ -18,7 +18,12 @@ func responsesEvents(t *testing.T, events ...string) ([]llm.StreamEvent, *llm.Re
 	for _, ev := range events {
 		sse.WriteString("data: " + ev + "\n\n")
 	}
-	srv, _ := server(t, 200, sse.String())
+	return responsesEventsFromSSE(t, sse.String())
+}
+
+func responsesEventsFromSSE(t *testing.T, sse string) ([]llm.StreamEvent, *llm.Response) {
+	t.Helper()
+	srv, _ := server(t, 200, sse)
 	s, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), userReq("hi"), liveRes(srv, openaiCaps))
 	if err != nil {
 		t.Fatalf("Stream: %v", err)

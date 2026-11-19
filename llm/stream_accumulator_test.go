@@ -70,6 +70,7 @@ func TestStreamAccumulator_FinishWithMetadataOnlyResponse_PreservesAccumulatedCo
 		ID:       "resp_1",
 		Provider: "openai",
 		Model:    "gpt-5.4",
+		Finish:   FinishReason{Raw: "incomplete"},
 		Raw:      map[string]any{"id": "resp_1"},
 	}
 	acc.Process(StreamEvent{Type: StreamEventFinish, Response: &final})

@@ -113,7 +113,7 @@ func extractResponsesFromSSE(body []byte, requestedModel string) (llm.Response, 
 			acc.HandleFunctionCallArgumentsDone(payload, ev.Data)
 		case "response.output_item.done":
 			acc.HandleOutputItemDone(payload, ev.Data)
-		case "response.completed":
+		case "response.completed", "response.incomplete":
 			rawResp, _ := payload["response"].(map[string]any)
 			if rawResp == nil {
 				rawResp = payload
@@ -127,7 +127,7 @@ func extractResponsesFromSSE(body []byte, requestedModel string) (llm.Response, 
 		return llm.Response{}, fmt.Errorf("responses: parse recorded responses SSE body: %w", parseErr)
 	}
 	if terminal == nil {
-		return llm.Response{}, errors.New("responses: recorded responses SSE body has no response.completed event")
+		return llm.Response{}, errors.New("responses: recorded responses SSE body has no terminal response event")
 	}
 
 	r := fromResponses(terminal, requestedModel, terminalRaw)

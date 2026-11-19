@@ -120,6 +120,89 @@ func ToolsJSONBytes(defs []ToolDefinition) int {
 	return len(b)
 }
 
+// closedEmptyToolParameters is the closed empty object schema emitted by
+// strict-capable built-in OpenAI adapters for a parameterless tool that has not
+// opted out of strict mode.
+func closedEmptyToolParameters() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties":           map[string]any{},
+		"required":             []string{},
+	}
+}
+
+// protocolClosesStrictParameterlessTools reports whether the built-in adapter
+// for res emits closedEmptyToolParameters for non-opted-out parameterless tools.
+func protocolClosesStrictParameterlessTools(res registry.Resolved) bool {
+	if !registry.BoolValue(res.Caps.StrictTools) {
+		return false
+	}
+	switch res.Protocol {
+	case registry.ProtocolOpenAIResponses, registry.ProtocolOpenAIChat:
+		return true
+	default:
+		return false
+	}
+}
+
+// emittedParameterlessParameters returns the schema a built-in adapter emits
+// for a tool with no declared parameters, or nil when the adapter leaves
+// t.Parameters unchanged (including omitting a direct caller's nil).
+func emittedParameterlessParameters(t ToolDefinition, res registry.Resolved) map[string]any {
+	if !t.DeclaresNoParameters() && t.Parameters != nil {
+		return nil
+	}
+	if protocolClosesStrictParameterlessTools(res) && (t.Strict == nil || *t.Strict) {
+		return closedEmptyToolParameters()
+	}
+	if t.Parameters == nil {
+		switch res.Protocol {
+		case registry.ProtocolOpenAIResponses, registry.ProtocolAnthropic, registry.ProtocolGoogle:
+			return defaultToolParameters()
+		}
+	}
+	return nil
+}
+
+// parameterlessToolsJSONDelta returns the net serialized byte delta introduced
+// by the resolved built-in adapter substituting closed or open empty schemas for
+// parameterless tools in defs. Overrides return 0.
+func parameterlessToolsJSONDelta(defs []ToolDefinition, res registry.Resolved, override bool) int {
+	if len(defs) == 0 || override {
+		return 0
+	}
+	delta := 0
+	for i := range defs {
+		emitted := emittedParameterlessParameters(defs[i], res)
+		if emitted == nil {
+			continue
+		}
+		declaredBytes := ToolsJSONBytes(defs[i : i+1])
+		adjusted := defs[i]
+		adjusted.Parameters = emitted
+		emittedBytes := ToolsJSONBytes([]ToolDefinition{adjusted})
+		if declaredBytes > 0 && emittedBytes > 0 {
+			delta += emittedBytes - declaredBytes
+		}
+	}
+	return delta
+}
+
+// effectiveToolsJSONBytes returns the tool-catalog byte length priced against
+// the resolved adapter's wire emission. Both caller-stamped declared-catalog
+// lengths and unstamped requests receive the parameterless-schema delta once.
+func effectiveToolsJSONBytes(req Request, res registry.Resolved, override bool) int {
+	if len(req.Tools) == 0 {
+		return 0
+	}
+	base := req.ToolsJSONBytes
+	if base <= 0 {
+		base = ToolsJSONBytes(req.Tools)
+	}
+	return base + parameterlessToolsJSONDelta(req.Tools, res, override)
+}
+
 // EstimateMessagesInputTokens estimates only a message list. It is useful for
 // history-only accounting that does not yet have a full Request. Its
 // unsigned-thinking rule is the name fallback, since a bare message list
@@ -1047,6 +1130,9 @@ func localInputEstimate(req Request, callerProvider string, t dispatchTarget) In
 	}
 	estimateReq := req
 	estimateReq.Provider = callerProvider
+	if len(estimateReq.Tools) > 0 {
+		estimateReq.ToolsJSONBytes = effectiveToolsJSONBytes(estimateReq, t.res, t.override != nil)
+	}
 	return EstimateInputTokensForResolved(t.res, estimateReq)
 }
 
