@@ -716,11 +716,11 @@ func (s *Session) composeHubInputTools() {
 			// hub already observed inside the failure has to ride there too.
 			// The typed error still decides the outcome.
 			if observed, ok := appwire.ModelControlObservedOf(err); ok {
-				return managerControlFailure{ObservedModelControl: &observed}, err
+				return managerControlFailure{ObservedModelControl: projectObservedModelControl(&observed)}, err
 			}
 			return nil, err
 		}
-		return response, nil
+		return projectManagerControlResponse(response), nil
 	}
 	_ = s.reg.Register(registered)
 }
@@ -730,7 +730,125 @@ func (s *Session) composeHubInputTools() {
 // the model-control state the hub's own diagnostic read already observed
 // travels here instead of costing a second read.
 type managerControlFailure struct {
-	ObservedModelControl *appwire.ModelControlSnapshot `json:"observed_model_control"`
+	ObservedModelControl *projectedModelControl `json:"observed_model_control"`
+}
+
+// projectedModelDesired keeps what the model may act on from a desired record
+// and drops the client mutation id: that id is the client's proof of which
+// intent it is, and Manager never hands protocol identity to the model
+// (issue #6914).
+type projectedModelDesired struct {
+	ModelProvider string                        `json:"modelProvider"`
+	Model         string                        `json:"model"`
+	Lifecycle     appwire.ModelControlLifecycle `json:"lifecycle"`
+}
+
+// projectedModelControl is the model-facing projection of the wire's
+// ThreadModelSetResponse and observed ModelControlSnapshot: disposition, the
+// active model with its reasoning metadata, and the desired record with its
+// lifecycle. The authority instance id and boot generation, the snapshot
+// revision and the client mutation id stay on the wire path, which forwarding
+// and recovery still read.
+type projectedModelControl struct {
+	Disposition string                      `json:"disposition,omitempty"`
+	Active      *appwire.ModelControlActive `json:"active,omitempty"`
+	Desired     *projectedModelDesired      `json:"desired,omitempty"`
+}
+
+// projectObservedModelControl projects the snapshot a diagnostic failure
+// observed the same way the success path projects its response: the active
+// model and any desired/lifecycle, never the authority fields.
+func projectObservedModelControl(observed *appwire.ModelControlSnapshot) *projectedModelControl {
+	if observed == nil {
+		return nil
+	}
+	return projectModelControl("", observed)
+}
+
+// projectModelControl builds the model-facing projection of one wire snapshot.
+func projectModelControl(disposition string, snapshot *appwire.ModelControlSnapshot) *projectedModelControl {
+	projected := &projectedModelControl{Disposition: disposition}
+	if snapshot == nil {
+		return projected
+	}
+	active := snapshot.Active
+	projected.Active = &active
+	if snapshot.Desired != nil {
+		projected.Desired = &projectedModelDesired{
+			ModelProvider: snapshot.Desired.ModelProvider,
+			Model:         snapshot.Desired.Model,
+			Lifecycle:     snapshot.Desired.Lifecycle,
+		}
+	}
+	return projected
+}
+
+// projectedSessionControl mirrors appwire.SessionControlResponse with the
+// model arm replaced by its model-facing projection. Every other action's
+// result passes through unchanged; only the model arm loses the identity the
+// wire path owns (issue #6914).
+type projectedSessionControl struct {
+	Result        appwire.EmptyResponse                     `json:"result"`
+	Actor         appwire.SessionActor                      `json:"actor"`
+	Resume        *appwire.ThreadResumeResponse             `json:"resume,omitempty"`
+	Fork          *appwire.ThreadForkResponse               `json:"fork,omitempty"`
+	Clear         *appwire.ThreadClearResponse              `json:"clear,omitempty"`
+	Model         *projectedModelControl                    `json:"model,omitempty"`
+	DrainQueue    *appwire.TurnDrainAsSteerResponse         `json:"drain_queue,omitempty"`
+	PromoteQueued *appwire.TurnPromoteQueuedAsSteerResponse `json:"promote_queued,omitempty"`
+	CancelQueued  *appwire.TurnCancelQueuedResponse         `json:"cancel_queued,omitempty"`
+	Goal          *appwire.GoalSetResponse                  `json:"goal,omitempty"`
+	HumanNotes    *appwire.NotesHumanSetResponse            `json:"human_notes,omitempty"`
+	RemoveURL     *appwire.UrlsRemoveResponse               `json:"remove_url,omitempty"`
+	Archive       *appwire.ArchiveResponse                  `json:"archive,omitempty"`
+	Delete        *appwire.SessionDeleteResponse            `json:"delete,omitempty"`
+	Pin           *appwire.SessionPinAssignResponse         `json:"pin,omitempty"`
+	Unpin         *appwire.SessionPinUnpinResponse          `json:"unpin,omitempty"`
+	Seen          *appwire.SessionSeenSetResponse           `json:"seen,omitempty"`
+}
+
+// projectedSessionOperation mirrors appwire.SessionOperationResponse for the
+// one operation kind session_control issues, with the control arm carrying the
+// projected model result. The session_control tool only ever sends a Control
+// request, so the arms a Control answer never sets are the arms this mirror
+// never carries.
+type projectedSessionOperation struct {
+	Actor   appwire.SessionActor     `json:"actor"`
+	Control *projectedSessionControl `json:"control,omitempty"`
+}
+
+// projectManagerControlResponse projects the model arm of a session_control
+// answer to what the model may act on. The wire's own
+// SessionOperationResponse - which forwarding and recovery still read - is
+// untouched; only what crosses into the tool result the model reads changes.
+func projectManagerControlResponse(response appwire.SessionOperationResponse) any {
+	if response.Control == nil || response.Control.Model == nil {
+		return response
+	}
+	wire := *response.Control
+	model := projectModelControl(string(wire.Model.Disposition), wire.Model.ModelControl)
+	return projectedSessionOperation{
+		Actor: response.Actor,
+		Control: &projectedSessionControl{
+			Result:        wire.Result,
+			Actor:         wire.Actor,
+			Resume:        wire.Resume,
+			Fork:          wire.Fork,
+			Clear:         wire.Clear,
+			Model:         model,
+			DrainQueue:    wire.DrainQueue,
+			PromoteQueued: wire.PromoteQueued,
+			CancelQueued:  wire.CancelQueued,
+			Goal:          wire.Goal,
+			HumanNotes:    wire.HumanNotes,
+			RemoveURL:     wire.RemoveURL,
+			Archive:       wire.Archive,
+			Delete:        wire.Delete,
+			Pin:           wire.Pin,
+			Unpin:         wire.Unpin,
+			Seen:          wire.Seen,
+		},
+	}
 }
 
 func (s *Session) invokeHubInput(ctx context.Context, args map[string]any) (any, error) {
