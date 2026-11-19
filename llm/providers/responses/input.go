@@ -33,33 +33,95 @@ func toResponsesResponseFormat(rf llm.ResponseFormat, structured bool) any {
 	}
 }
 
-func toResponsesTools(tools []llm.ToolDefinition, strict bool) []map[string]any {
+// toolSchema is the schema one tool is sent with, and whether that tool rides
+// the request under strict enforcement. The rules are stated below in the order
+// the builder applies them.
+func toolSchema(t llm.ToolDefinition, strict, responsesLite bool) (params map[string]any, toolStrict bool) {
+	toolStrict = strict
+	if toolStrict && t.Strict != nil {
+		toolStrict = *t.Strict
+	}
+	params = t.Parameters
+	if t.DeclaresNoParameters() || params == nil {
+		// A tool that declares no parameters takes the empty object. On the
+		// strict path the root has to be explicitly closed, because strict
+		// mode accepts that and only that: an open root is not certifiable,
+		// and sending it non-strict would accept any keys the tool rejects.
+		// With strict mode off the advertised shape is unchanged, and for a
+		// prepared definition that shape is the open empty object it already
+		// carries.
+		params = map[string]any{"type": "object", "properties": map[string]any{}}
+		if toolStrict {
+			params["additionalProperties"] = false
+		}
+	}
+	if toolStrict {
+		// OpenAI strict mode requires a fully-specified JSON Schema:
+		// - object schemas must set additionalProperties=false
+		// - required must include every key in properties (even for "optional" fields)
+		// See API validation errors like:
+		// "Invalid schema for function 'read_file': ... 'required' ... Missing 'limit'."
+		//
+		// That force-requiring is lossless only when the schema already
+		// requires every property. A tool with a documented-optional argument
+		// has no legal strict form: projecting it would make that argument
+		// mandatory on every call. Such a tool keeps its advertised schema and
+		// is sent non-strict.
+		if openaichat.StrictExpressible(params) {
+			projected := openaichat.StrictifyJSONSchema(params)
+			// Codex Responses Lite requires an explicit type on every node in
+			// additional_tools. A strict-certified union of objects, arrays, or
+			// mixed types cannot carry an enclosing type in strict mode without
+			// changing its contract, so on Lite routes it falls back to
+			// non-strict emission with its enclosing union type stated.
+			if !responsesLite || openaichat.HasExplicitTypes(projected) {
+				return projected, true
+			}
+		}
+	}
+	if responsesLite {
+		return openaichat.SupplyExplicitTypes(params), false
+	}
+	// A refused tool keeps the schema it advertised, because the projection
+	// would change which arguments it accepts. The provider still requires an
+	// explicit type on every node, so a closed value set that implies one gets
+	// it stated here: the accepted values are identical either way, and an
+	// argument declared {"const": "fixed"} would otherwise be rejected along
+	// with the whole request. This runs on the non-strict path too because the
+	// requirement is the schema dialect's, not strict mode's — additional_tools
+	// on this route carries strict:false and is still rejected for a typeless
+	// node.
+	return openaichat.SupplyDerivedTypes(params), false
+}
+
+// toResponsesTools writes the tools array. capsStrict is the row's strict_tools
+// capability and stated reports whether the row states one at all.
+//
+// The per-tool flag is written whenever the row states the capability, not only
+// when the capability is on. A native endpoint normalizes an omitted flag into
+// strict enforcement, so a route configured strict_tools = false that omitted
+// it would run the tool strictly anyway — and an argument the gate refused to
+// force on would be forced on by the endpoint. A row that states nothing gets
+// no flag: that is what a compatible endpoint which does not implement the
+// field receives today, and the capability's absence is not a decision to
+// announce.
+func toResponsesTools(tools []llm.ToolDefinition, capsStrict, stated, responsesLite bool) []map[string]any {
 	out := make([]map[string]any, 0, len(tools))
 	for _, t := range tools {
-		params := t.Parameters
-		if params == nil {
-			params = map[string]any{"type": "object", "properties": map[string]any{}}
-		}
+		// The per-tool opt-out is read before the fallback is synthesized: a
+		// tool that opts out is advertised with the open empty object, which is
+		// what every non-strict route already sends and what the local
+		// validator allows. Only a tool that will actually be sent in strict
+		// mode gets the closed empty object, because strict mode accepts that
+		// and only that.
+		params, toolStrict := toolSchema(t, capsStrict, responsesLite)
 		entry := map[string]any{
 			"type":        "function",
 			"name":        t.Name,
 			"description": t.Description,
 			"parameters":  params,
 		}
-		if strict {
-			toolStrict := true
-			if t.Strict != nil {
-				toolStrict = *t.Strict
-			}
-			if toolStrict {
-				// OpenAI strict mode requires a fully-specified JSON Schema:
-				// - object schemas must set additionalProperties=false
-				// - required must include every key in properties (even for "optional" fields)
-				// See API validation errors like:
-				// "Invalid schema for function 'read_file': ... 'required' ... Missing 'limit'."
-				params = openaichat.StrictifyJSONSchema(params)
-				entry["parameters"] = params
-			}
+		if stated {
 			entry["strict"] = toolStrict
 		}
 		out = append(out, entry)
