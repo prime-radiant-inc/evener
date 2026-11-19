@@ -793,9 +793,12 @@ Cascade and sidebar breadcrumbs use the same reconciled requested path. When
 authoritative delegation proves a saved source alias occupies an ancestor
 position, both surfaces pop to that alias without replacing the source binding.
 Unknown ancestry stays explicit; cached edges do not establish new ancestors.
-The pane has no header row, title, Return button or separate path nav: its tab
-label and close button carry the selected conversation and dismissal, and the
-compact spines are the clickable breadcrumb.
+A separated inspector has no header row, title, Return button or separate path
+nav: its tab label and close button carry the selected conversation and
+dismissal (with horizontal tab titles truncating inside narrow groups so the
+close button stays reachable), and the compact spines are the clickable
+breadcrumb. A saved legacy in-place cascade restored on desktop retains its
+in-pane Return action because a single-tab main group hides its tab strip.
 
 The origin conversation never renders in the cascade: while a live origin
 association exists, its scope is removed from the pane entirely — no readable
@@ -858,7 +861,8 @@ Unknown ancestry and runtime metadata stay explicit. Late metadata and status
 changes do not move focus or animate column geometry.
 
 A proven missing or deleted readable scope shows its explanation inside that
-column. Healthy parents, Return and Open conversation remain usable. The thread
+column. Healthy parents, tab close (or mobile Back, and legacy in-place Return
+on desktop), and opening an independent conversation remain usable. The thread
 store's deletion fence outranks retained transcript content; other activity
 failures preserve useful history. Transient reads keep the existing hydration
 and activity recovery owners, so a recovered child becomes readable in place.
@@ -916,7 +920,7 @@ locator with the source pane ID and ref. The
 binds that locator to an exact surviving pane lifetime only during successful
 workspace restore, before publishing restored panels. Missing or invalid origins
 remain unbound; retiring a source removes its locator from subsequent saves.
-Runtime Return never resolves an association by pane ID alone.
+Closing an inspector never resolves an association by pane ID alone.
 
 Saved inspector focus survives boot and late ancestry or location recovery when
 the browser route's ordinary conversation is already satisfied. A fresh pathname

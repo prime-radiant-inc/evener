@@ -504,20 +504,26 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
         return;
       }
     }
-    // Attention Back belongs to the reader the current entry owns. A cascade
-    // opened over that reader is a local step, and its own Back returns to the
-    // reader rather than jumping past it to the entry's source.
-    if (
-      (focusedPane?.type === "session" || focusedPane?.type === "sessionZoom") &&
-      attentionEntryOwnsPane(focusedPane) &&
-      goBackInAttentionHistory()
-    )
-      return;
+    // Cascade dismissal takes precedence in the phone toolbar because Back is
+    // the inspector's sole dismissal control on mobile; browser Back still
+    // traverses attention history. Clear wentBackRef/popPendingRef when a
+    // legacy in-place return keeps the same pane id, because the focus-change
+    // effect will not run to clear them before the next forward navigation.
     if (focusedPane?.type === "sessionZoom") {
+      const previousId = focusedPane.id;
       wentBackRef.current = true;
-      returnFromAgentCascade(focusedPane.id);
-      if (workspaceStore.getState().focusedPaneId !== null) return;
+      returnFromAgentCascade(previousId);
+      const nextFocusedId = workspaceStore.getState().focusedPaneId;
+      if (nextFocusedId === previousId) {
+        wentBackRef.current = false;
+        popPendingRef.current = false;
+        return;
+      }
+      if (nextFocusedId !== null) return;
     }
+    // Attention Back belongs to the ordinary session reader the current entry
+    // owns.
+    if (focusedPane?.type === "session" && attentionEntryOwnsPane(focusedPane) && goBackInAttentionHistory()) return;
     let target = popValidBackTarget(backStackRef.current, panes, focusedPaneId);
     if (!target && focusedPane?.type === "transcript") {
       const params = focusedPane.params as { ref?: unknown; parentRef?: unknown };

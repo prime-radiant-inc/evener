@@ -13,7 +13,7 @@ import { navigationStore } from "../../stores/navigation/store";
 import { useSessionActivity, useSubagentCounts } from "../../stores/sessionActivity";
 import { useThreadsStore } from "../../stores/threads";
 import { useTranscriptDisplayStore } from "../../stores/transcriptDisplay";
-import { EmptyState, Loader, PaneScaffold, Skeleton } from "../../widgets";
+import { Button, EmptyState, Loader, PaneScaffold, Skeleton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { ConversationBody, type ConversationSeat } from "../session/ConversationBody";
 import { retainedConversationComposer } from "../session/composer/retainedComposer";
@@ -24,6 +24,7 @@ import {
   popAgentCascade,
   reconcileCascadeBinding,
   resumeCascadeScope,
+  returnFromAgentCascade,
 } from "./actions";
 import { CascadeColumn } from "./CascadeColumn";
 import { CascadeSpine } from "./CascadeSpine";
@@ -296,6 +297,16 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
   // parent, with the parent dropped when it is the removed origin.
   const firstReadable = firstReadableIndex(path.scopes, originRef);
   const readableRefs = new Set(path.scopes.slice(firstReadable).map((scope) => scope.requestedRef));
+  // Separated inspectors dismiss via their Dockview tab close button on desktop
+  // and top-bar Back on mobile; only a legacy saved in-place cascade (no
+  // params.inspection, which can sit in a tabless main group) keeps the
+  // in-pane Return action on desktop.
+  const legacyDesktopReturn =
+    !mobile && !params.inspection ? (
+      <Button variant="quiet" size="sm" onClick={() => returnFromAgentCascade(paneId)}>
+        Return to previous view
+      </Button>
+    ) : undefined;
   return (
     <PaneScaffold
       paneId={paneId}
@@ -304,6 +315,7 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
       publishTabTitle={false}
       scaffoldMarker="cascade"
       bodyScroll={false}
+      actions={legacyDesktopReturn}
       edgeFooter={
         mobile ? undefined : (
           <StatusBar

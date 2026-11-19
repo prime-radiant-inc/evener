@@ -696,11 +696,17 @@ async function returnToSource() {
   await read('window.__cascadeTraceSource?.("before-return")');
   const closePoint = await wait(`(() => {
     const group = document.querySelector(${q(inspectorRoot)})?.closest('.dv-groupview');
-    const close = group?.querySelector('.dv-tab.dv-active-tab .dv-default-tab-action');
-    if (!close) return null;
+    const tab = group?.querySelector('.dv-tab.dv-active-tab');
+    const close = tab?.querySelector('.dv-default-tab-action');
+    if (!group || !tab || !close) return null;
+    tab.scrollIntoView({ inline: "nearest", block: "nearest" });
+    const g = group.getBoundingClientRect();
     const r = close.getBoundingClientRect();
-    return r.width > 0 && r.height > 0 ? { x: r.x + r.width / 2, y: r.y + r.height / 2 } : null;
-  })()`, "inspector tab close button");
+    if (r.width <= 0 || r.height <= 0 || r.left < g.left || r.right > g.right + 0.5) return null;
+    const x = r.x + r.width / 2, y = r.y + r.height / 2;
+    const hit = document.elementFromPoint(x, y);
+    return hit && close.contains(hit) ? { x, y } : null;
+  })()`, "hit-tested inspector tab close button inside its group");
   await driver.clickAt(closePoint.x, closePoint.y);
   await read('window.__cascadeTraceSource?.("after-return-click")');
   await wait(`document.querySelector(${q(inspectorRoot)}) === null`, "Return removes only inspection");

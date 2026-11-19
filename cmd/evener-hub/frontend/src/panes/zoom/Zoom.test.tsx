@@ -374,14 +374,11 @@ test("root and child render through real conversation readers inside one scaffol
   await screen.findByText("root content old-root");
   await screen.findByText("child content child-id");
   expect(columnRefs()).toEqual(["root", "child"]);
-  const scaffoldBody = mounted.container.querySelector('[data-pane-scaffold="cascade"]');
   expect(mounted.container.querySelectorAll('[data-pane-scaffold="cascade"]')).toHaveLength(1);
-  // Desktop cascade omits both the pane header row and per-column activity
-  // controls: the tab close button closes the pane and the bottom StatusBar
-  // owns the single activity strip.
-  expect(scaffoldBody?.previousElementSibling).toBeNull();
-  expect(screen.queryByTestId("pane-actions")).toBeNull();
-  expect(screen.queryByRole("button", { name: "Return to previous view" })).toBeNull();
+  // Desktop columns omit per-column activity controls so the bottom StatusBar
+  // stays the single activity strip. A saved legacy in-place cascade (no
+  // params.inspection) still keeps its desktop Return action because the main
+  // group hides its tab strip.
   expect(screen.getAllByTestId("transcript-virtual-list")).toHaveLength(2);
   for (const column of screen.getAllByTestId("cascade-column")) {
     expect(within(column).queryByTestId("cascade-activity-controls")).toBeNull();
@@ -390,6 +387,9 @@ test("root and child render through real conversation readers inside one scaffol
   // Every readable column renders its conversation: one composer each, no
   // more than the columns on screen.
   expect(screen.getAllByRole("textbox")).toHaveLength(2);
+  const legacyReturn = screen.getByRole("button", { name: "Return to previous view" });
+  act(() => fireEvent.click(legacyReturn));
+  expect(currentPane()).toMatchObject({ id: "cascade", type: "session", params: { ref: "root" } });
   expect(fake.calls.filter((call) => /send|resume|steer|interrupt/.test(call.method))).toHaveLength(0);
 });
 
@@ -556,8 +556,17 @@ test("separated Zoom Return closes inspection and focuses its surviving source",
   const { source, inspector } = inspectedCascade();
   const sourceLifetime = conversationPaneLifetime(source);
   const inspectorLifetime = conversationPaneLifetime(inspector);
-  mount(fake);
+  const mounted = mount(fake);
   await screen.findByText("child content child-id");
+  // Separated desktop inspectors omit the scaffold header row and per-column
+  // activity controls: the tab close button dismisses inspection and StatusBar
+  // owns the single bottom activity strip.
+  const scaffoldBody = mounted.container.querySelector('[data-pane-scaffold="cascade"]');
+  expect(scaffoldBody?.previousElementSibling).toBeNull();
+  expect(screen.queryByTestId("pane-actions")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Return to previous view" })).toBeNull();
+  expect(within(screen.getByTestId("cascade-column")).queryByTestId("cascade-activity-controls")).toBeNull();
+  expect(screen.getByTestId("statusbar")).toBeTruthy();
   // The origin conversation is already live as its own pane, so the cascade
   // never renders it: the first drill shows only the subagent's conversation.
   expect(columnRefs()).toEqual(["child"]);
