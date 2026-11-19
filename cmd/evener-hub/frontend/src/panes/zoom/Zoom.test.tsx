@@ -586,6 +586,33 @@ test("separated Zoom Return closes inspection and focuses its surviving source",
   expect(fake.calls.filter((call) => /send|resume|steer|interrupt/.test(call.method))).toHaveLength(0);
 });
 
+test.each(["single-pane-route", "main-slot"] as const)(
+  "a separated desktop inspector exposes in-pane Return when its tab strip is hidden (%s)",
+  async (hiddenReason) => {
+    const previousPath = window.location.pathname;
+    const { fake } = fixture();
+    const { source, inspector } = inspectedCascade();
+    if (hiddenReason === "single-pane-route") {
+      window.history.replaceState({}, "", "/thread/root");
+    } else {
+      source.slot = "secondary";
+      inspector.slot = "main";
+      workspaceStore.setState({ panes: [source, inspector], focusedPaneId: inspector.id });
+    }
+    try {
+      mount(fake);
+      await screen.findByText("child content child-id");
+      const button = screen.getByRole("button", { name: "Return to previous view" });
+      act(() => fireEvent.click(button));
+      expect(workspaceStore.getState().panes.map((pane) => pane.id)).toEqual([source.id]);
+      expect(workspaceStore.getState().focusedPaneId).toBe(source.id);
+      expect(consumePaneFocus(source.id)).toBe(true);
+    } finally {
+      window.history.replaceState({}, "", previousPath);
+    }
+  },
+);
+
 test("a live origin conversation never renders in the pane, at any depth", async () => {
   const { fake } = fixture();
   const { source, inspector } = inspectedCascade();

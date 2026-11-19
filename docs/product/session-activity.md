@@ -794,11 +794,13 @@ authoritative delegation proves a saved source alias occupies an ancestor
 position, both surfaces pop to that alias without replacing the source binding.
 Unknown ancestry stays explicit; cached edges do not establish new ancestors.
 A separated inspector has no header row, title, Return button or separate path
-nav: its tab label and close button carry the selected conversation and
-dismissal (with horizontal tab titles truncating inside narrow groups so the
-close button stays reachable), and the compact spines are the clickable
-breadcrumb. A saved legacy in-place cascade restored on desktop retains its
-in-pane Return action because a single-tab main group hides its tab strip.
+nav in ordinary multi-pane desktop layouts: its tab label and close button carry
+the selected conversation and dismissal (with horizontal tab titles truncating
+inside narrow groups so the close button stays reachable), and the compact
+spines are the clickable breadcrumb. When the desktop host hides the tab strip
+(a `/thread/{ref}` single-pane route, an inspector seated in the tabless main
+slot, or a saved legacy in-place cascade), the pane retains an in-pane Return
+action so dismissal and source restoration stay reachable.
 
 The origin conversation never renders in the cascade: while a live origin
 association exists, its scope is removed from the pane entirely — no readable

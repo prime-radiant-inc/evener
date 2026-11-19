@@ -278,11 +278,12 @@ The origin conversation never renders in the cascade — no column and no spine 
 so a first drill shows only the subagent's conversation, and that lone column
 fills the pane. Keep the selected child and immediate parent readable above the
 removed origin; earlier ancestors become live 52px spines, and the spines are
-the breadcrumb: a separated inspector omits its scaffold header row (no title,
-no Return button) and has no separate path nav, while horizontal tabs truncate
-long titles so the active tab's close button stays reachable in narrow groups.
-A saved legacy in-place cascade restored on desktop retains its in-pane Return
-action because a single-tab main group hides its tab strip. The parent is
+the breadcrumb: an ordinary desktop secondary inspector omits its scaffold
+header row (no title, no Return button) and has no separate path nav, while
+horizontal tabs truncate long titles so the active tab's close button stays
+reachable in narrow groups. When the desktop host hides the tab strip (a
+`/thread/{ref}` single-pane route, a main-slot inspector, or a saved legacy
+in-place cascade), the pane retains its in-pane Return action. The parent is
 400px wide. The leaf flexes with a 440px minimum. Narrow desktop surfaces
 scroll horizontally and reveal the selected leaf instead of squeezing either
 reader. Parent and leaf transcript scrollers remain independent, desktop columns
