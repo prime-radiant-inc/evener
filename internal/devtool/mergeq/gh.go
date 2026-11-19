@@ -207,6 +207,19 @@ func (c GHClient) command(ctx context.Context, args ...string) (*exec.Cmd, *ghGa
 	if !c.wantsGroupChannel() {
 		return exec.CommandContext(ctx, gh, args...), &ghGate{}, nil
 	}
+	// The descriptor is validated before anything is opened, and that ordering is
+	// the point. The gate below needs a pipe, and os.Pipe() hands out the lowest
+	// free descriptor numbers: a closed channel number is therefore reused by the
+	// gate's own write end, and a publication later in the call would write the
+	// group record into that pipe -- releasing `gh` while the launcher was given
+	// no group to stop. A descriptor that is not an open writable one is named and
+	// refused here, before the gate exists to take its number.
+	//
+	// Nothing is started on this path: no pipe, no `sh`, no `gh`. The caller gets
+	// ErrGroupPublish, which is what tells the run the call was never issued.
+	if groupFD, _ := c.groupChannel(); groupFD > 2 && !groupFDPublishes(groupFD) {
+		return nil, nil, fmt.Errorf("%w: descriptor %d is not an open writable descriptor, so the call was not started", ErrGroupPublish, groupFD)
+	}
 	// The gated form hands the executable to `sh`, and `sh` resolves its operand
 	// with its own PATH search from the helper's working directory -- the
 	// checkout root. A relative PATH entry (".", an empty element, a relative

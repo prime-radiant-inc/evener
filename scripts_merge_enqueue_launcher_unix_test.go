@@ -4931,78 +4931,36 @@ func TestMergeEnqueueLauncherRefusalNamesExecutionWhenATrustedRootWasFound(t *te
 // launcher would exec through an ancestor another user can now swap an entry in.
 // The check has to be asked again on the far side of the build.
 //
-// The build is a stand-in `go` on PATH that holds itself open until the case
-// releases it, so the window is opened deliberately rather than raced. The
-// stand-in records the scratch directory the launcher minted (from its own `-o`
-// argument), reports that it is running, and waits. The case then makes the
-// fixture TMPDIR itself replaceable -- the ancestor of every path the launcher
-// uses -- and releases the build. A launcher that only compares the inode builds
-// its helper and runs it; one that re-asks the chain refuses.
+// The build is the installed toolchain's own `go`, and the window is opened by
+// the package itself: the fixture package holds a FIFO named *.go, which the go
+// command must open to load its sources. The case waits for the build to attach
+// to that FIFO, makes the fixture TMPDIR itself replaceable -- the ancestor of
+// every path the launcher uses -- and only then lets the build continue. A
+// launcher that only compares the inode builds its helper and runs it; one that
+// re-asks the chain refuses.
 //
-// The handshake is two files, not a duration: the build holds until a release
-// exists, so the chmod is certainly in place before the build returns, and no
-// assertion here depends on the build being slow. A chmod raced against a build
-// of unknown length passes or fails on load, and a case that cannot fail for its
-// reason is not evidence.
+// Releasing the build is what makes this a build rather than a stub. The FIFO's
+// name is replaced by a regular source file, and the single line the waiting
+// reader needs is written once to the descriptor that reader already holds:
+//
+//   - the go command's open pairs with the case's non-blocking writer open, so
+//     the case knows the build has attached and the reader waits for its bytes;
+//   - the name is unlinked and re-created as a regular file, so every later open
+//     -- a second load, a compile -- reads ordinary source;
+//   - one write, then close, so the first reader sees exactly `package main` and
+//     end-of-file, never a concatenation of repeated writes or an empty read.
+//
+// The handshake is the descriptor, not a duration: nothing here depends on the
+// build being slow, and the chmod is certainly in place before the build can
+// proceed. A chmod raced against a build of unknown length passes or fails on
+// load, and a case that cannot fail for its reason is not evidence.
 func TestMergeEnqueueLauncherRefusesScratchThatBecameReplaceableDuringTheBuild(t *testing.T) {
 	t.Parallel()
 	c := newFixtureCheckout(t, fixtureTmpDir(t, "tmp"))
 	c.requireIsolated(t)
-	// The blocking FIFO is removed so the fixture package is the stub alone: the
-	// stand-in `go` never compiles anything, and a package that still held a FIFO
-	// would only be a second way to stall a build this case no longer runs.
+	// The FIFO stays: it is the gate this case opens the window through. It is
+	// removed and replaced by a regular file once the build has attached to it.
 	hold := filepath.Join(c.root, "cmd", "evener-dev", "bin", "hold.go")
-	if err := os.Remove(hold); err != nil {
-		t.Fatalf("remove the blocking fifo: %v", err)
-	}
-	// The stand-in lives beside the fixture rather than under c.tmp: c.tmp is the
-	// directory this case makes world-writable, and a program this case executes
-	// must not sit under a path it has just made replaceable.
-	dir := resolvePath(t, fixtureScratchBase(t))
-	bin := filepath.Join(dir, "bin")
-	if err := os.MkdirAll(bin, 0o700); err != nil {
-		t.Fatalf("create the stand-in go directory: %v", err)
-	}
-	ready := filepath.Join(dir, "build-ready")
-	release := filepath.Join(dir, "build-release")
-	// Written after the helper is produced, so "the build ran to the end" is a
-	// fact on disk rather than an inference. The helper itself cannot be statted
-	// afterwards: a correct launcher removes its scratch at exit.
-	built := filepath.Join(dir, "build-finished")
-	// The scratch the launcher minted, read from the stand-in's own `-o` argument,
-	// and the group the build leads, for cleanup.
-	scratchFile := filepath.Join(dir, "build-scratch")
-	groupFile := filepath.Join(dir, "build-group")
-	// The stand-in parses `-o` out of the argv build_helper hands the go command,
-	// records where the helper would go, reports itself ready, and then blocks
-	// until the release appears. Producing a runnable helper after the release is
-	// what keeps this a build rather than a stub that only reports: a launcher
-	// that got past the recheck would find something it could exec.
-	writeTestFile(t, filepath.Join(bin, "go"), []byte(`#!/bin/sh
-set -u
-out=""
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    -o)
-      out="$2"
-      shift 2
-      ;;
-    *)
-      shift
-      ;;
-  esac
-done
-printf '%s\n' "$out" > `+shellquote.Literal(scratchFile)+`
-printf '%s\n' "$(ps -o pgid= -p "$$" | tr -d ' ')" > `+shellquote.Literal(groupFile)+`
-: > `+shellquote.Literal(ready)+`
-while [ ! -e `+shellquote.Literal(release)+` ]; do sleep 0.02; done
-if [ -n "$out" ]; then
-  printf '#!/bin/sh\nexit 0\n' > "$out"
-  chmod +x "$out"
-fi
-: > `+shellquote.Literal(built)+`
-exit 0
-`), 0o755)
 	f := newLauncherFixture(t, "#!/usr/bin/env bash\nprintf 'helper-ran\\n' >> \"$EVENER_FIXTURE_LOG\"\n")
 	for _, m := range []string{c.root, c.tmp} {
 		t.Cleanup(func() { assertNoSurvivors(t, m) })
@@ -5012,39 +4970,44 @@ exit 0
 		"TMPDIR="+c.tmp,
 		"GOWORK=off",
 		"GOENV=off",
-		"PATH="+bin+":"+os.Getenv("PATH"),
 	)
 	cmd.Env = slices.DeleteFunc(cmd.Env, func(kv string) bool {
 		return strings.HasPrefix(kv, "EVENER_DEV_BIN=")
 	})
-	// The build's group is recorded by the stand-in, and cleanup stops it by that
-	// handle: a failing assertion before the release must not leave a poller
-	// waiting for a file nobody will write.
+	// The build's group is recorded from the process itself, and cleanup stops it
+	// by that handle: a failing assertion before the release must not leave a
+	// reader blocked on a FIFO nobody will write.
 	var buildGroup int
 	t.Cleanup(func() { killGroups(buildGroup) })
 	runLauncher(t, cmd, f)
-	testwait.UntilSeen(t, "the stand-in go to report the scratch it was handed", func() (bool, string) {
-		if _, err := os.Stat(ready); err != nil {
-			return false, "the build has not started yet"
+	// The go command is found by its own argv, which names the scratch the
+	// launcher minted under this case's TMPDIR. Recording it is what lets cleanup
+	// reach a build this case stops waiting for.
+	var buildPID int
+	testwait.UntilSeen(t, "the go command to start building the helper", func() (bool, string) {
+		pid, group := buildIn(t, c.tmp)
+		if pid == 0 {
+			return false, "no go build names the fixture scratch yet"
 		}
-		group, err := readPIDFile(groupFile)
-		if err != nil {
-			return false, "the build has not recorded its group yet"
-		}
-		buildGroup = group
+		buildPID, buildGroup = pid, group
 		return true, ""
 	})
-	// The premise, read from the build's own argv: the helper is being written into
-	// a scratch directory under the TMPDIR this case is about to make replaceable.
-	body, err := os.ReadFile(scratchFile)
-	if err != nil {
-		t.Fatalf("read the scratch the build named: %v", err)
+	if buildGroup <= 1 {
+		t.Fatalf("the build's group is %d, so no build this case can stop is running", buildGroup)
 	}
-	out := strings.TrimSpace(string(body))
-	work := filepath.Dir(out)
-	if !strings.HasPrefix(work, c.tmp+string(filepath.Separator)) {
-		t.Fatalf("the build is writing to %s, which is not under the fixture TMPDIR %s: the chain this case makes replaceable is not the one the helper is built in", out, c.tmp)
+	// The premise is buildIn's own positive identification: the go command's argv
+	// names the scratch the launcher minted under this case's TMPDIR, so the chain
+	// this case makes replaceable is the one the helper is built in. The pid itself
+	// is the build's own, recorded so cleanup can stop it if an assertion below
+	// fails before the release.
+	if !strings.Contains(processArgs(t, buildPID), c.tmp) {
+		t.Fatalf("the build %d does not name %s in its argv, so this case cannot show which chain the build ran under", buildPID, c.tmp)
 	}
+	// Wait for the build to attach to the FIFO. A non-blocking writer open
+	// succeeds only once the go command holds the read end, so this is the moment
+	// the build is paused inside the package load rather than a guess about how
+	// long a build takes.
+	gate := openFIFOWriter(t, hold)
 	// Make the ancestor replaceable while the build is in flight. c.tmp is on
 	// every path the launcher uses, and it is the component the pre-build check
 	// passed.
@@ -5055,12 +5018,7 @@ exit 0
 	if launcherTrustsPath(t, c.tmp) {
 		t.Fatalf("%s is still trusted after chmod 0777, so this case cannot manufacture a replaceable ancestor", c.tmp)
 	}
-	// Release the build. It succeeds and produces a runnable helper, so the exit
-	// below cannot be a build failure read as a refusal: this case is about which
-	// scratch the launcher will run from, not about a build that broke.
-	if err := os.WriteFile(release, nil, 0o600); err != nil {
-		t.Fatalf("release the stand-in build: %v", err)
-	}
+	releaseFIFOWithRegularFile(t, hold, gate)
 	// Exit 2, not 0: the scratch became replaceable during the build, so the
 	// launcher refuses to run a helper from it. Exit 0 would be a helper executed
 	// through an ancestor another user can swap an entry in.
@@ -5070,22 +5028,19 @@ exit 0
 	//
 	// Exit 2 alone does not say that: every launcher failure exits 2, including
 	// `build_helper ... || launcher_failed "building the evener-dev helper failed"`.
-	// A gate that serves the wrong number of `package main` declarations makes the
-	// build fail, and the resulting exit 2 with no helper sentinel is exactly what
-	// this case used to accept as a pass. So the reason token is required: it is
-	// emitted only by the post-build chain recheck.
+	// The reason token is required because only the post-build chain recheck emits
+	// it: a build that broke is reported by the line above and carries no token.
 	if got := refusalReason(t, f); got != "scratch-became-replaceable" {
 		t.Fatalf("the refusal reason is %q, want %q: exit 2 with no helper is also what a failed build produces, so the reason is what shows the chain recheck refused", got, "scratch-became-replaceable")
 	}
 	// The build DID run -- that is the window this case is about -- and the
 	// refusal came after it. A case where the build never started would satisfy a
 	// bare "no helper ran" check without exercising the post-build check at all.
-	if buildGroup <= 1 {
-		t.Fatalf("the stand-in build recorded group %d, so no build ran: the refusal cannot have come from the post-build check if no build happened", buildGroup)
-	}
-	if _, err := os.Stat(built); err != nil {
-		t.Fatalf("the stand-in build never finished, so the refusal was not read from a completed build: stat returned %v", err)
-	}
+	//
+	// Completion is what the reason token already proves: build_helper returns the
+	// build's status, and a nonzero one takes `|| launcher_failed "building the
+	// evener-dev helper failed"` -- a message with no `[reason=...]` in it. A token
+	// only the post-build recheck emits therefore means the build returned success.
 	if _, err := os.Stat(c.sentinel); err == nil {
 		t.Fatalf("the launcher built and ran a helper from scratch under a TMPDIR that became replaceable during the build: %s exists", c.sentinel)
 	}
@@ -5094,6 +5049,85 @@ exit 0
 			t.Fatalf("the launcher ran a helper from scratch under a replaceable ancestor: %v", f.lines(t))
 		}
 	}
+}
+
+// openFIFOWriter opens the FIFO at path for writing without blocking, and
+// returns the descriptor. It fails until a reader holds the other end, so a
+// caller that returns from this function knows the reader is attached rather
+// than hoping it is.
+//
+// A non-blocking open returns ENXIO while no reader is there. That is the whole
+// handshake: the go command's blocked open is the reader, and the moment this
+// succeeds the build is paused inside the package load.
+func openFIFOWriter(t *testing.T, path string) *os.File {
+	t.Helper()
+	var file *os.File
+	testwait.UntilSeen(t, "the build to attach to the fifo "+path, func() (bool, string) {
+		fd, err := syscall.Open(path, syscall.O_WRONLY|syscall.O_NONBLOCK, 0)
+		if err != nil {
+			if err == syscall.ENXIO {
+				return false, "no reader holds the fifo yet"
+			}
+			t.Fatalf("open %s without blocking: %v", path, err)
+		}
+		file = os.NewFile(uintptr(fd), path)
+		return true, ""
+	})
+	t.Cleanup(func() { _ = file.Close() })
+	return file
+}
+
+// releaseFIFOWithRegularFile lets the waiting reader of the FIFO at path finish,
+// and leaves a regular source file where the FIFO was.
+//
+// The order is the point, and each step is what makes the next safe:
+//
+//  1. The name is unlinked while the FIFO's reader still holds its open
+//     descriptor. The reader is attached (see openFIFOWriter), so nothing
+//     depends on the timing of a later open.
+//  2. The name is re-created as a regular file with the package clause, so every
+//     later open -- a second load, a compile reading the same source -- reads
+//     ordinary Go rather than blocking again or reading nothing.
+//  3. One write to the already-open descriptor, then its close. The first reader
+//     sees exactly those bytes and then end-of-file.
+//
+// A reopen loop would be the flaky shape this replaces: repeated writes are
+// concatenated into one source file and repeated open/close cycles race the
+// reader, so the build sees `package main package main` or an empty read
+// depending on which open won.
+func releaseFIFOWithRegularFile(t *testing.T, path string, writer *os.File) {
+	t.Helper()
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("unlink the fifo %s: %v", path, err)
+	}
+	if err := os.WriteFile(path, []byte("package main\n"), 0o600); err != nil {
+		t.Fatalf("write the regular source at %s: %v", path, err)
+	}
+	// The fd is non-blocking from the open above, and a non-blocking write to a
+	// pipe with a reader attached succeeds: the go command's reader is waiting for
+	// exactly this. A short write here would leave the reader without its package
+	// clause, so it is checked.
+	if _, err := writer.WriteString("package main\n"); err != nil {
+		t.Fatalf("write the source through the fifo: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close the fifo writer: %v", err)
+	}
+}
+
+// processArgs returns pid's command line verbatim, or "" when the process is
+// gone.
+//
+// It is `ps -o args=`, the form buildIn also matches against: a case that
+// identified a process one way and described it another could report a build it
+// never found.
+func processArgs(t *testing.T, pid int) string {
+	t.Helper()
+	out, err := exec.Command("ps", "-o", "args=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // launcherStopFuncs loads the stop machinery the launcher uses on a build: the
@@ -5577,95 +5611,123 @@ while :; do sleep 0.05; done
 // TestMergeEnqueueLauncherBuildHelperStopsAGroupItsBuildLeftBehind pins the call
 // SITE in build_helper, which the stopper's own case cannot see.
 //
-// A go command that exits while one of its children is still running is the shape
-// a killed compile leaves: the leader is gone, `wait` returns, and the compiler is
-// in the group the job handle named with nothing in the launcher's tree pointing
-// at it. The stopper being correct proves nothing about whether it is called; only
-// build_helper's own body, run with a go that leaves a member, shows that.
+// A go command that exits while something it started is still running is the
+// shape a killed compile leaves: the leader is gone, `wait` returns, and the
+// member is in the group the job handle named with nothing in the launcher's
+// tree pointing at it. The stopper being correct proves nothing about whether it
+// is called; only build_helper's own body, run against a build that really
+// leaves a member, shows that.
 //
-// The go command is replaced rather than the build faked. build_helper is the
-// launcher's own text, sourced from the launcher, and the one seam is the program
-// it runs. The stand-in go forks a member into the group `set -m` gave it and
-// exits 1, so the group outlives the handle exactly as it does in the field.
+// The build is the installed toolchain's: the fixture package holds a FIFO named
+// *.go, so the go command blocks opening it and the build is in flight -- with a
+// real group `set -m` gave it -- while the case arranges the leftover. The
+// leftover is a process this case starts DIRECTLY, placed in that same group, so
+// it is nothing go forked and nothing go's death can end: only a signal to the
+// group reaches it. That is exactly the member the call site exists to stop.
 func TestMergeEnqueueLauncherBuildHelperStopsAGroupItsBuildLeftBehind(t *testing.T) {
 	t.Parallel()
+	c := newFixtureCheckout(t, fixtureTmpDir(t, "tmp"))
+	c.requireIsolated(t)
+	// The FIFO is the fixture's, kept here: the real go command blocks on it, so
+	// the build stays in flight and the group is still there to place a member in.
+	hold := filepath.Join(c.root, "cmd", "evener-dev", "bin", "hold.go")
 	dir := resolvePath(t, fixtureScratchBase(t))
-	root := filepath.Join(dir, "root")
 	work := filepath.Join(dir, "work")
-	for _, d := range []string{root, work} {
-		if err := os.MkdirAll(d, 0o700); err != nil {
-			t.Fatalf("create %s: %v", d, err)
-		}
+	if err := os.MkdirAll(work, 0o700); err != nil {
+		t.Fatalf("create %s: %v", work, err)
 	}
-	// The member is a script by path under the fixture, so the census can find it
-	// by its command line.
-	//
-	// A bare `sleep 300` would be exec'd over the script and the member's argv
-	// would stop naming that path, which would make the census blind to it and the
-	// case pass without anything being stopped. The loop keeps the interpreter,
-	// and the path in its argv, alive.
-	memberScript := filepath.Join(dir, "left-behind")
-	writeTestFile(t, memberScript, []byte("#!/bin/sh\nwhile :; do sleep 1; done\n"), 0o755)
-	bin := filepath.Join(dir, "bin")
-	if err := os.MkdirAll(bin, 0o700); err != nil {
-		t.Fatalf("create %s: %v", bin, err)
-	}
-	// The stand-in go starts the member by that same path, records the group it
-	// leads, and then exits the way a build does when it is killed mid-compile.
-	//
-	// The group is RECORDED rather than discovered later by matching the member's
-	// command line. A test that signalled everything naming that file would kill a
-	// developer's shell if anyone happened to be tailing it -- and several agents
-	// run on one box here. The recorded group is the case's own process; nothing
-	// else can be in it.
-	groupFile := filepath.Join(dir, "member-group")
-	writeTestFile(t, filepath.Join(bin, "go"), []byte(
-		"#!/bin/sh\n"+
-			"'"+memberScript+"' </dev/null >/dev/null 2>&1 &\n"+
-			"printf '%s\\n' \"$!\" > '"+groupFile+"'\n"+
-			"exit 1\n"), 0o755)
-	var memberPID int
-	t.Cleanup(func() { stopRecordedMember(memberPID, groupFile) })
 	out := filepath.Join(work, "evener-dev")
 	// build_helper calls the group census and the group stopper, so both are
 	// sourced from the launcher alongside it. A case that took build_helper alone
 	// would run with those two functions undefined: every call would fail, nothing
 	// would be stopped, and the case would prove nothing about the call site. The
-	// status is read back and asserted below for the same reason.
+	// status is read back and asserted for the same reason.
 	script := `. "${GATE_BOUNDED_LIB:?}"; ` +
 		`eval "$(sed -n '` + launcherStopFuncs + `' "$1")"; ` +
 		`eval "$(sed -n '/^build_helper()/,/^}/p' "$1")"; ` +
 		`command -v build_helper >/dev/null || { printf 'build_helper is not defined\n' >&2; exit 9; }; ` +
 		`root="$2"; work="$3"; launching=false; cancel_requested=false; child=""; child_group=""; ` +
 		`build_helper "$4"`
-	cmd := exec.Command("bash", "-c", script, "bash", mergeEnqueueLauncher, root, work, out)
+	cmd := exec.Command("bash", "-c", script, "bash", mergeEnqueueLauncher, c.root, work, out)
 	cmd.Env = envOverride(os.Environ(),
 		"GATE_BOUNDED_LIB="+filepath.Join("scripts", "lib", "gate-bounded.sh"),
-		"PATH="+bin+":"+os.Getenv("PATH"),
 		"EVENER_STOP_TREE_GRACE_SECONDS=1",
 		"HOME="+filepath.Join(dir, "home"),
 		"GOENV=off",
+		"GOWORK=off",
 	)
 	// The build's output goes nowhere: a pipe held by a survivor would keep this
 	// command from returning, which is the very hang the launcher is fixing.
 	cmd.Stdout, cmd.Stderr = nil, nil
-	err := cmd.Run()
-	// build_helper returns the build's status, and the stand-in go exited 1. A
-	// different status means the body did not run -- a sourcing mistake, or a
-	// definition this case did not load -- and the survivor check below would then
-	// be about a build that never happened.
-	if code := exitCodeOf(t, err); code != 1 {
-		t.Fatalf("build_helper exited %d, want the stand-in go's 1: the launcher's own build body did not run", code)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start build_helper: %v", err)
 	}
-	// The member's pid is known from the file the stand-in go wrote, and the check
-	// is about THAT process: a process naming the same path that the case did not
-	// start is not evidence either way.
-	memberPID, convErr := readPIDFile(groupFile)
-	if convErr != nil || memberPID <= 1 {
-		t.Fatalf("the stand-in go recorded no pid in %s: %v", groupFile, convErr)
+	// The go command is found by its own argv, which names the scratch build_helper
+	// minted, and the member is placed in the group it leads. Both are RECORDED
+	// rather than discovered later by matching command-line text: something naming
+	// the same path that this case did not start is not evidence, and cleanup must
+	// never signal a stranger.
+	var buildPID, buildGroup int
+	var member *exec.Cmd
+	t.Cleanup(func() {
+		if member != nil {
+			_ = syscall.Kill(member.Process.Pid, syscall.SIGKILL)
+			_ = member.Wait()
+		}
+		killGroups(buildGroup)
+	})
+	testwait.UntilSeen(t, "the go command to start building the fixture package", func() (bool, string) {
+		pid, group := buildIn(t, work)
+		if pid == 0 {
+			return false, "no go build names the fixture work directory yet"
+		}
+		buildPID, buildGroup = pid, group
+		return true, ""
+	})
+	// The premise: the build is parked on the FIFO, so it is in flight and has not
+	// finished while the rest of this case runs.
+	if !processStopped(t, buildPID) && pidGone(buildPID) {
+		t.Fatalf("the build %d is gone, so there is no group to place a leftover in", buildPID)
 	}
-	testwait.Until(t, fmt.Sprintf("the build's leftover member %d to be stopped once its leader exited", memberPID), func() bool {
-		return pidGone(memberPID)
+	if _, err := os.Stat(hold); err != nil {
+		t.Fatalf("the fixture's blocking source is gone: %v", err)
+	}
+	// The leftover, started here rather than by the build. A process this case owns
+	// and placed in the build's group survives the leader's death, so it is still
+	// there when the census asks -- and it is not a descendant of go, so the only
+	// thing that can end it is a signal to the group. The script keeps its own path
+	// in its argv, so the check below can tell this member from anything else.
+	memberScript := filepath.Join(dir, "left-behind")
+	writeTestFile(t, memberScript, []byte("#!/bin/sh\nwhile :; do sleep 1; done\n"), 0o755)
+	member = exec.Command(memberScript)
+	// Setpgid with an explicit Pgid is the pair: the flag is what makes the child
+	// call setpgid at all, and Pgid is the group it joins. Pgid alone is ignored.
+	member.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pgid: buildGroup}
+	if err := member.Start(); err != nil {
+		t.Fatalf("start the leftover member in the build's group %d: %v", buildGroup, err)
+	}
+	if got := processGroupOf(t, member.Process.Pid); got != buildGroup {
+		t.Fatalf("the leftover member is in group %d, want the build's group %d: this case needs a member reachable only by a group signal", got, buildGroup)
+	}
+	// The shape of a killed build: the leader dies and `wait` returns, leaving the
+	// member behind in the group the job handle named.
+	if err := syscall.Kill(buildPID, syscall.SIGKILL); err != nil {
+		t.Fatalf("kill the build leader %d: %v", buildPID, err)
+	}
+	code, exited := waitExit(t, cmd, launcherExitDeadline)
+	if !exited {
+		t.Fatalf("build_helper still running after %s: it did not return once its build leader was killed", launcherExitDeadline)
+	}
+	// A killed build is a failed build, so build_helper has to report the status the
+	// kill produced rather than success. That is also what shows the body ran.
+	if code == 0 {
+		t.Fatalf("build_helper exited 0 after its build was killed: the launcher's own build body did not report the status it saw")
+	}
+	// The member is ended by the group stop and nothing else. A pid walk from the
+	// dead leader reaches nothing, and no other path signals a group, so a member
+	// that is gone is the call site having run.
+	testwait.Until(t, fmt.Sprintf("the build's leftover member %d to be stopped once its leader exited", member.Process.Pid), func() bool {
+		return pidGone(member.Process.Pid)
 	})
 }
 
@@ -5748,18 +5810,4 @@ func stopRecordedMember(memberPID int, groupFile string) {
 	}
 	killGroups(pid)
 	_ = syscall.Kill(pid, syscall.SIGKILL)
-}
-
-// exitCodeOf reports the exit status of a finished command, and -1 when it did not
-// exit normally.
-func exitCodeOf(t *testing.T, err error) int {
-	t.Helper()
-	if err == nil {
-		return 0
-	}
-	var exitErr *exec.ExitError
-	if !errors.As(err, &exitErr) {
-		t.Fatalf("the command did not run: %v", err)
-	}
-	return exitErr.ExitCode()
 }
