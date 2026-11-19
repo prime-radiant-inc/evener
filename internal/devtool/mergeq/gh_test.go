@@ -1192,13 +1192,7 @@ printf '{"data":{}}'
 	}
 	// The published id has to be a group the call is actually in, or a launcher
 	// acting on it would signal something else.
-	out, err := exec.Command("ps", "-o", "pgid=", "-p", strconv.Itoa(published)).Output()
-	if err != nil {
-		t.Fatalf("ps for the published group %d: %v", published, err)
-	}
-	if got := strings.TrimSpace(string(out)); got != strconv.Itoa(published) {
-		t.Fatalf("published %d, which is in group %s: the handle must name the call's own group", published, got)
-	}
+	assertPidIsItsOwnGroup(t, published)
 	if err := os.WriteFile(release, nil, 0o600); err != nil {
 		t.Fatalf("release the fake gh: %v", err)
 	}
@@ -2446,5 +2440,635 @@ printf '%s' '{"data":{"repository":{"pullRequest":{"id":"PR_6499","state":"OPEN"
 	}
 	if out.Kind != Dropped {
 		t.Fatalf("outcome = %+v, want Dropped", out)
+	}
+}
+
+// channelFile returns a read-write descriptor on an unlinked FIFO: one
+// descriptor both sides can reach, which is what a case running the client and
+// its reader in one process needs. Opening both ways makes the open and every
+// later write non-blocking, and the unlink removes the last name so the
+// descriptor is the only handle.
+//
+// The launcher mints the channel as an unlinked regular file instead, with a
+// separate descriptor for each direction -- see channelRegularFile for that
+// shape. The cases here are about the gate and the publication protocol, not
+// about the file type, and the drain's end-of-file behaviour is pinned by the
+// script's own suite.
+func channelFile(t *testing.T, dir string) *os.File {
+	t.Helper()
+	fifo := filepath.Join(dir, "channel.fifo")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatalf("mkfifo %s: %v", fifo, err)
+	}
+	file, err := os.OpenFile(fifo, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatalf("open %s read-write: %v", fifo, err)
+	}
+	t.Cleanup(func() { _ = file.Close() })
+	if err := os.Remove(fifo); err != nil {
+		t.Fatalf("unlink %s: %v", fifo, err)
+	}
+	return file
+}
+
+// channelRegularFile returns the channel in the shape scripts/ops/merge-enqueue.sh
+// mints it: an empty mode-0600 regular file, opened append-only, with the name
+// unlinked at once so the descriptor is the only handle.
+//
+// A regular file is what the helper publishes into, so a case that hands this
+// descriptor to a child gives the child exactly the channel a real launch does.
+// The launcher's separate read descriptor is not needed here: no case in this
+// file drains the channel.
+func channelRegularFile(t *testing.T, dir string) *os.File {
+	t.Helper()
+	path := filepath.Join(dir, "gh-group")
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatalf("create the channel %s: %v", path, err)
+	}
+	t.Cleanup(func() { _ = file.Close() })
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("unlink the channel %s: %v", path, err)
+	}
+	return file
+}
+
+// readChannelLine waits for one whole line on the channel and returns it without
+// the newline.
+//
+// The descriptor is polled in non-blocking mode, which is how the launcher's own
+// drain asks the same question without waiting: a read that has a line returns it,
+// and one that has none reports EAGAIN. A publication is a sign, a decimal group
+// id and a newline, far under any pipe buffer, so a read that succeeds has a whole
+// line. It fails rather than blocking forever, so a publication that never arrives
+// names itself instead of hanging the binary.
+func readChannelLine(t *testing.T, file *os.File) string {
+	t.Helper()
+	fd := int(file.Fd())
+	if err := syscall.SetNonblock(fd, true); err != nil {
+		t.Fatalf("poll the channel without blocking: %v", err)
+	}
+	t.Cleanup(func() { _ = syscall.SetNonblock(fd, false) })
+	var line string
+	testwait.UntilSeen(t, "the channel to publish a whole line", func() (bool, string) {
+		body := make([]byte, 256)
+		n, err := syscall.Read(fd, body)
+		if err != nil {
+			if err == syscall.EAGAIN {
+				return false, "the channel has published nothing"
+			}
+			t.Fatalf("read the channel: %v", err)
+		}
+		if n == 0 {
+			return false, "the channel has published nothing"
+		}
+		line = strings.TrimSuffix(string(body[:n]), "\n")
+		return true, ""
+	})
+	return line
+}
+
+// assertPidIsItsOwnGroup fails unless pid leads the process group it runs in. A
+// published or recorded id is a decision to signal a group, so an id that names
+// a group some other process leads would signal something else.
+func assertPidIsItsOwnGroup(t *testing.T, pid int) {
+	t.Helper()
+	out, err := exec.Command("ps", "-o", "pgid=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		t.Fatalf("ps for the published group %d: %v", pid, err)
+	}
+	if got := strings.TrimSpace(string(out)); got != strconv.Itoa(pid) {
+		t.Fatalf("published %d, which is in group %s: the handle must name the call's own group", pid, got)
+	}
+}
+
+// TestGHPublishesTheProcessGroupOnTheChannel pins the descriptor form of the
+// launcher's handle: publication writes `+<pid>` while the call is in flight and
+// `-<pid>` once it is not.
+//
+// The lines are read from the descriptor itself, not from a path, because the
+// point of the form is that there is no path: the FIFO is unlinked before the
+// write, and a reader that still sees the lines is reading the inode the launcher
+// opened.
+func TestGHPublishesTheProcessGroupOnTheChannel(t *testing.T) {
+	t.Parallel()
+	dir := fixtureExecDir(t)
+	channel := channelFile(t, dir)
+	release := filepath.Join(dir, "release")
+	gh := filepath.Join(dir, "gh")
+	writeExecutable(t, gh, `#!/usr/bin/env bash
+while [ ! -e `+shellquote.Literal(release)+` ]; do sleep 0.01; done
+printf '{"data":{}}'
+`)
+	c := GHClient{GH: gh, GroupFD: int(channel.Fd())}
+	// The context is cancellable and its cleanup is registered before the
+	// publication is checked, so a failure in the assertions below stops the
+	// waiting fake gh and joins the goroutine instead of leaving both behind for a
+	// binary that has already reported the failure.
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct {
+		out []byte
+		err error
+	}, 1)
+	// returned is closed when the call has finished, whether or not its result has
+	// been read from done. The cleanup joins on this, so it works on the success
+	// path -- where the result is already consumed -- as well as on a failure that
+	// stopped before reading it.
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		out, err := c.run(ctx, "api", "graphql")
+		done <- struct {
+			out []byte
+			err error
+		}{out, err}
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-returned:
+		case <-time.After(testwait.Budget(t)):
+			t.Errorf("the cancelled call did not return, so its fake gh is still running")
+		}
+	})
+	// The fake holds the call, so the publication it made is still in flight when
+	// it is read: a `+` line observed here is the group this call runs in, not a
+	// leftover of one that ended.
+	published := readChannelLine(t, channel)
+	if !strings.HasPrefix(published, "+") {
+		t.Fatalf("the channel's first line is %q, want a publication framed with the plus sign", published)
+	}
+	pid, err := strconv.Atoi(strings.TrimPrefix(published, "+"))
+	if err != nil || pid <= 1 {
+		t.Fatalf("the channel published %q, want a positive group id: %v", published, err)
+	}
+	// The published id has to be a group the call is actually in, or a launcher
+	// acting on it would signal something else.
+	assertPidIsItsOwnGroup(t, pid)
+	if err := os.WriteFile(release, nil, 0o600); err != nil {
+		t.Fatalf("release the fake gh: %v", err)
+	}
+	select {
+	case result := <-done:
+		if result.err != nil {
+			t.Fatalf("run = %v, want the fake gh's answer", result.err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("run did not return after the fake gh answered")
+	}
+	// The call has answered, so its cleanup finds nothing left to stop and only
+	// proves the join does not block on a finished call.
+	if cleared := readChannelLine(t, channel); cleared != "-"+strconv.Itoa(pid) {
+		t.Fatalf("the channel's clearing line is %q, want -%d: a group left published is one a launcher may signal after it was reused", cleared, pid)
+	}
+}
+
+// TestGHGateKeepsTheCallFromRunningUntilItIsReleased pins the pre-exec gate: a
+// call with a channel does not issue a request until the launcher has published
+// the group it can stop.
+//
+// The staging is structural, not a stopwatch. The fake `gh` writes a file when it
+// runs; before the gate is released the file must not exist, and after it the
+// file must. A `gh` that ran early would leave the file behind and fail the first
+// check.
+//
+// The fixture goes through the client's own command builder, so the case covers
+// the wiring as well as the gate: a `run` that built an ungated command would
+// start the fake at once.
+func TestGHGateKeepsTheCallFromRunningUntilItIsReleased(t *testing.T) {
+	t.Parallel()
+	dir := fixtureExecDir(t)
+	channel := channelFile(t, dir)
+	ran := filepath.Join(dir, "gh-ran")
+	gh := filepath.Join(dir, "gh")
+	writeExecutable(t, gh, `#!/usr/bin/env bash
+: > `+shellquote.Literal(ran)+`
+printf '{"data":{}}'
+`)
+	c := GHClient{GH: gh, GroupFD: int(channel.Fd())}
+	cmd, gate, err := c.command(context.Background(), "api", "graphql")
+	if err != nil {
+		t.Fatalf("build the gated call: %v", err)
+	}
+	if len(cmd.ExtraFiles) != 1 {
+		t.Fatalf("a call with a channel built %d inherited descriptors, want one: a gate is what keeps gh from running before its group is published", len(cmd.ExtraFiles))
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start the gated call: %v", err)
+	}
+	// The parent's read end goes with the child's copy, exactly as run does it.
+	gate.closeRead()
+	// Registered before the assertions so a failure stops the waiting `sh`
+	// instead of leaving it behind a binary that already exited.
+	t.Cleanup(func() {
+		gate.close()
+		_ = cmd.Wait()
+	})
+	if _, err := os.Stat(ran); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("the gated gh ran before the gate was released: a request nothing has published a group for cannot be stopped")
+	}
+	gate.release()
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("the released call failed: %v", err)
+	}
+	if _, err := os.Stat(ran); err != nil {
+		t.Fatalf("the released gh did not run: %v", err)
+	}
+}
+
+// TestGHGateRefusesTheCallWhenTheHelperDiesBeforePublishing pins the other half
+// of the gate: a helper killed between the fork and the publication leaves the
+// call unexecuted.
+//
+// Its death closes the gate's write end, the waiting `sh` reads end-of-file, and
+// the fake never runs. That is the shape a SIGKILL of the helper produces, and it
+// is why the gate exists: a request issued before any group was published is a
+// request no launcher can stop.
+func TestGHGateRefusesTheCallWhenTheHelperDiesBeforePublishing(t *testing.T) {
+	t.Parallel()
+	dir := fixtureExecDir(t)
+	channel := channelFile(t, dir)
+	ran := filepath.Join(dir, "gh-ran")
+	gh := filepath.Join(dir, "gh")
+	writeExecutable(t, gh, `#!/usr/bin/env bash
+: > `+shellquote.Literal(ran)+`
+printf '{"data":{}}'
+`)
+	c := GHClient{GH: gh, GroupFD: int(channel.Fd())}
+	cmd, gate, err := c.command(context.Background(), "api", "graphql")
+	if err != nil {
+		t.Fatalf("build the gated call: %v", err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start the gated call: %v", err)
+	}
+	gate.closeRead()
+	t.Cleanup(func() { _ = cmd.Wait() })
+	// The helper's death, with no release.
+	gate.close()
+	if err := cmd.Wait(); err == nil {
+		t.Fatal("the call reported success with the gate unreleased: a call that never ran is not an answered call")
+	}
+	if _, err := os.Stat(ran); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("the gated gh ran although nothing was ever published for it: the call issued a request no launcher could stop")
+	}
+}
+
+// TestGHGateResolvesTheExecutableBeforeTheShell pins where the gated call's
+// executable is resolved.
+//
+// The gate hands the executable to `sh`, and `sh` searches PATH itself from the
+// helper's working directory, which is the checkout root. A PATH holding a
+// relative entry -- "." is the ordinary way to write it -- therefore let a `gh`
+// in the checkout run as this call. Resolving it here applies Go's rule instead:
+// a match reached through a relative PATH entry is refused with exec.ErrDot.
+//
+// The pair is the evidence. The relative entry is refused, and the same
+// executable named by an absolute path runs: a lookup that simply failed would
+// satisfy the first half while breaking every configured helper.
+func TestGHGateResolvesTheExecutableBeforeTheShell(t *testing.T) {
+	dir := fixtureExecDir(t)
+	ran := filepath.Join(dir, "gh-ran")
+	gh := filepath.Join(dir, "gh")
+	writeExecutable(t, gh, `#!/usr/bin/env bash
+: > `+shellquote.Literal(ran)+`
+printf '{"data":{}}'
+`)
+	// The relative entry, computed against this process's directory rather than
+	// reached by changing it: the test binary's directory is shared with every
+	// parallel case, and a chdir here would move them too.
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("read the process directory: %v", err)
+	}
+	relative, err := filepath.Rel(cwd, dir)
+	if err != nil {
+		t.Fatalf("name the fixture directory relative to the process directory: %v", err)
+	}
+	t.Setenv("PATH", relative+string(os.PathListSeparator)+os.Getenv("PATH"))
+	channel := channelFile(t, dir)
+	// Measured directly first, so a pass below is this rule and not a fixture
+	// that happened to have nothing to find.
+	if _, lookErr := exec.LookPath("gh"); !errors.Is(lookErr, exec.ErrDot) {
+		t.Fatalf("LookPath on a bare gh with a relative PATH entry = %v, want exec.ErrDot: this case cannot show the gate resolves the executable if the rule is not in force", lookErr)
+	}
+	t.Run("a relative path entry is refused", func(t *testing.T) {
+		c := GHClient{GH: "gh", GroupFD: int(channel.Fd())}
+		cmd, gate, err := c.command(context.Background(), "api", "graphql")
+		if err == nil {
+			// The gate was built, so the call would run: close it without a
+			// release so `sh` reads end-of-file and exits before this test fails.
+			gate.close()
+			_ = cmd.Wait()
+			t.Fatal("the gated call was built for a gh only reachable through a relative PATH entry: sh would resolve it in the checkout root")
+		}
+		if !errors.Is(err, exec.ErrDot) {
+			t.Fatalf("error = %v, want exec.ErrDot wrapped: the refusal has to be the relative-PATH rule, not an unrelated failure", err)
+		}
+		if _, statErr := os.Stat(ran); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("the checkout-local gh ran (%v): a call the launcher cannot stop was started", statErr)
+		}
+	})
+	t.Run("an explicit path still runs", func(t *testing.T) {
+		c := GHClient{GH: gh, GroupFD: int(channel.Fd())}
+		out, err := c.run(context.Background(), "api", "graphql")
+		if err != nil {
+			t.Fatalf("run with an explicit gh path = %v, want the fake's answer: a configured helper must still run", err)
+		}
+		if string(out) != `{"data":{}}` {
+			t.Fatalf("run = %q, want the fake's answer", out)
+		}
+		if _, err := os.Stat(ran); err != nil {
+			t.Fatalf("the explicitly named gh did not run: %v", err)
+		}
+	})
+}
+
+// TestGHGateFailsClosedWhenTheGroupCannotBePublished pins that a call whose
+// group cannot be published is never released.
+//
+// The launcher names a descriptor because it needs the group of the call it may
+// have to stop. A descriptor that refuses the write leaves it with no handle, so
+// releasing the gate anyway would issue a request nothing can stop -- the hole
+// the gate exists to close. The call must end here, with `gh` unexecuted.
+//
+// The unwritable descriptor is a file opened read-only rather than a number this
+// process never opened: a closed number can be reused by the gate's own pipe
+// between the two statements, which would make the case pass or fail on fd
+// bookkeeping instead of on the rule.
+func TestGHGateFailsClosedWhenTheGroupCannotBePublished(t *testing.T) {
+	t.Parallel()
+	dir := fixtureExecDir(t)
+	ran := filepath.Join(dir, "gh-ran")
+	gh := filepath.Join(dir, "gh")
+	writeExecutable(t, gh, `#!/usr/bin/env bash
+: > `+shellquote.Literal(ran)+`
+printf '{"data":{}}'
+`)
+	// The file has to exist to be opened read-only.
+	if err := os.WriteFile(filepath.Join(dir, "not-a-channel"), nil, 0o600); err != nil {
+		t.Fatalf("create the read-only handle: %v", err)
+	}
+	readOnly, err := os.Open(filepath.Join(dir, "not-a-channel"))
+	if err != nil {
+		t.Fatalf("open the read-only handle: %v", err)
+	}
+	t.Cleanup(func() { _ = readOnly.Close() })
+	c := GHClient{GH: gh, GroupFD: int(readOnly.Fd())}
+	out, err := c.run(context.Background(), "api", "graphql")
+	if err == nil {
+		t.Fatalf("run = %q, want an error: the call's group could not be published and it was released anyway", out)
+	}
+	if !errors.Is(err, ErrGroupPublish) {
+		t.Fatalf("error = %v, want ErrGroupPublish: the run has to know the call was never started, or it will read the queue back for work this invocation never asked for", err)
+	}
+	if errors.Is(err, ErrOutcomeUnknown) {
+		t.Fatalf("error = %v, also reads as an unknown outcome: nothing was sent, so there is nothing to reconcile", err)
+	}
+	if _, statErr := os.Stat(ran); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the fake gh ran (%v): the gate was released for a call whose group the launcher could not be given", statErr)
+	}
+}
+
+// closedChannelProbeEnv marks the subprocess
+// TestGHRefusesAClosedChannelBeforeTheGateOpens starts to arrange a descriptor
+// table with the launcher's closed channel below a free number.
+const closedChannelProbeEnv = "EVENER_MERGEQ_TEST_CLOSED_CHANNEL_PROBE"
+
+// TestGHRefusesAClosedChannelBeforeTheGateOpens pins the ordering that makes a
+// closed channel a refusal rather than a released call.
+//
+// The gate needs a pipe, and os.Pipe() allocates the lowest free descriptor
+// numbers. A channel the launcher named and then closed is such a number, so
+// opening the gate first let the gate's own write end take it. The publication
+// then wrote the group record into the gate pipe -- which is the byte that
+// releases `sh` into `gh` -- and the call ran with the launcher holding no group
+// to stop. Asking the descriptor whether it is open and writable before the pipe
+// exists is what closes that window.
+//
+// The arrangement is exact, not incidental: the channel's number must be the
+// WRITE end's, so the case frees a lower number as well and measures the layout
+// before the call. A channel number that the pipe's read end took would fail the
+// write with EBADF and take the refusal path for a reason this case is not
+// about.
+//
+// It runs in a subprocess so the descriptor table it arranges is its own: the
+// borrowed-descriptor wrappers are retained by number for the life of the
+// process, and a case that planted one at a number the parallel cases also use
+// would hand them a wrapper for a closed descriptor.
+func TestGHRefusesAClosedChannelBeforeTheGateOpens(t *testing.T) {
+	if os.Getenv(closedChannelProbeEnv) == "1" {
+		runClosedChannelProbe(t)
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestGHRefusesAClosedChannelBeforeTheGateOpens$")
+	cmd.Env = append(os.Environ(), closedChannelProbeEnv+"=1")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("the closed-channel probe subprocess failed: %v\n%s", err, out)
+	}
+}
+
+// runClosedChannelProbe is the subprocess half: it arranges the descriptor table,
+// measures it, and then asks the client for a call on the closed channel.
+func runClosedChannelProbe(t *testing.T) {
+	dir := fixtureExecDir(t)
+	ran := filepath.Join(dir, "gh-ran")
+	gh := filepath.Join(dir, "gh")
+	writeExecutable(t, gh, `#!/usr/bin/env bash
+: > `+shellquote.Literal(ran)+`
+printf '{"data":{}}'
+`)
+	// A lower number freed alongside the channel's is what makes the gate's pipe
+	// give the channel's number to its SECOND end. os.Pipe() hands out the lowest
+	// free number first, so with only the channel free the read end takes it.
+	lowR, lowW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("open the lower descriptor: %v", err)
+	}
+	defer func() { _ = lowW.Close() }()
+	channel := channelFile(t, dir)
+	closedFD := int(channel.Fd())
+	if int(lowR.Fd()) >= closedFD {
+		t.Fatalf("the lower descriptor is %d and the channel is %d, so this case cannot put a lower number in front of the channel's", lowR.Fd(), closedFD)
+	}
+	if err := lowR.Close(); err != nil {
+		t.Fatalf("free the lower descriptor: %v", err)
+	}
+	if err := channel.Close(); err != nil {
+		t.Fatalf("close the channel: %v", err)
+	}
+	// The premise, measured: a pipe opened now gives its write end the channel's
+	// number. The client's gate is the same call a few statements later, and
+	// nothing in between opens a descriptor.
+	probeR, probeW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("open the reuse probe: %v", err)
+	}
+	reused := int(probeW.Fd()) == closedFD
+	_ = probeR.Close()
+	_ = probeW.Close()
+	if !reused {
+		t.Fatalf("os.Pipe() did not give its write end the closed channel's number %d, so this host cannot show the reuse this case is about", closedFD)
+	}
+	c := GHClient{GH: gh, GroupFD: closedFD}
+	out, err := c.run(context.Background(), "api", "graphql")
+	if err == nil {
+		t.Fatalf("run = %q, want ErrGroupPublish: a closed channel is not a handle, and the call must not be issued without one", out)
+	}
+	if !errors.Is(err, ErrGroupPublish) {
+		t.Fatalf("error = %v, want ErrGroupPublish: the run has to know the call was never started", err)
+	}
+	if _, statErr := os.Stat(ran); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the fake gh ran (%v): the group record was written into the gate pipe, which released the call with no group published", statErr)
+	}
+}
+
+// TestGHGroupFDComesFromTheEnvironmentWithValidation pins how the launcher's
+// channel number is read.
+//
+// It is configuration, so it is validated rather than trusted: 0, 1 and 2 are the
+// standard streams, and publishing a group id to one of them would corrupt a
+// caller's output. A value that is not a number names no channel either, which
+// leaves the call ungated rather than gated on a descriptor nobody holds.
+func TestGHGroupFDComesFromTheEnvironmentWithValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  string
+		want int
+	}{
+		{name: "the launcher's own channel", env: "3", want: 3},
+		{name: "a higher descriptor", env: "12", want: 12},
+		{name: "unset", env: "", want: 0},
+		{name: "not a number", env: "three", want: 0},
+		{name: "standard input", env: "0", want: 0},
+		{name: "standard output", env: "1", want: 0},
+		{name: "standard error", env: "2", want: 0},
+		{name: "negative", env: "-3", want: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(ghGroupFDEnv, tc.env)
+			t.Setenv(ghGroupFileEnv, "")
+			if got := (GHClient{}).groupFD(); got != tc.want {
+				t.Fatalf("groupFD() = %d for %q, want %d", got, tc.env, tc.want)
+			}
+		})
+	}
+}
+
+// channelProbeEnv marks the subprocess TestGHCallDoesNotInheritTheLaunchersChannel
+// starts to hold the launcher's channel on descriptor 3.
+const channelProbeEnv = "EVENER_MERGEQ_TEST_CHANNEL_PROBE"
+
+// channelProbeDirEnv names the directory that subprocess runs its probe in.
+const channelProbeDirEnv = "EVENER_MERGEQ_TEST_CHANNEL_PROBE_DIR"
+
+// TestGHCallDoesNotInheritTheLaunchersChannel pins that `gh` cannot see the
+// descriptor the helper publishes on.
+//
+// os/exec gives a child the three standard descriptors plus the ones named in
+// ExtraFiles, so the gate's read end is FD 3 in the child and the launcher's own
+// FD 3 is not inherited at all. Without that rule the launcher's channel would
+// land in `gh` at 3, and a `gh` wrapper that wrote to it could publish a group id
+// of its own choosing -- the injection the descriptor form exists to prevent.
+//
+// The probe runs in a subprocess of this test binary, with the channel as that
+// subprocess's descriptor 3 exactly as ExtraFiles delivers it. It is not
+// run against this process's own FD 3: replacing a descriptor in the test
+// runner mutates a shared table, and /proc/self/fd does not exist on macOS, so
+// the observation belongs where the descriptor is planted.
+//
+// The probe is paired with a positive control: the same fake `gh` started with
+// the channel handed to it directly reports OPEN. Without that half a probe that
+// never opens anything would agree with a call that does not leak, and prove
+// nothing.
+func TestGHCallDoesNotInheritTheLaunchersChannel(t *testing.T) {
+	if os.Getenv(channelProbeEnv) == "1" {
+		runChannelInheritanceProbe(t)
+		return
+	}
+	dir := fixtureExecDir(t)
+	channel := channelRegularFile(t, dir)
+	// ExtraFiles is positionally FD 3 in the child, and it is the same open file
+	// description, so the child's publication lands in this file.
+	cmd := exec.Command(os.Args[0], "-test.run=^TestGHCallDoesNotInheritTheLaunchersChannel$", "-test.v")
+	cmd.Env = append(os.Environ(), channelProbeEnv+"=1", channelProbeDirEnv+"="+dir)
+	cmd.ExtraFiles = []*os.File{channel}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("the descriptor probe subprocess failed: %v\n%s", err, out)
+	}
+}
+
+// runChannelInheritanceProbe is the subprocess half: it holds the channel on
+// descriptor 3 and asks the same fake `gh` what it sees there, once through the
+// client's gated call and once as a direct child that does inherit it.
+func runChannelInheritanceProbe(t *testing.T) {
+	dir := os.Getenv(channelProbeDirEnv)
+	if dir == "" {
+		t.Fatal("the probe subprocess was started without a probe directory")
+	}
+	// The probe is a write attempt, not a stat: a descriptor that is open for
+	// writing is what would let a wrapper inject a group id. The shebang is
+	// absolute so the fake does not depend on the PATH this binary was handed.
+	seen := filepath.Join(dir, "fd3")
+	gh := filepath.Join(dir, "gh")
+	writeExecutable(t, gh, `#!/bin/bash
+if ( : >&3 ) 2>/dev/null; then printf 'open' > `+shellquote.Literal(seen)+`; else printf 'closed' > `+shellquote.Literal(seen)+`; fi
+printf '{"data":{}}'
+`)
+	// Each run starts from no answer, so the file read below is that run's.
+	clearProbe := func() {
+		t.Helper()
+		if err := os.Remove(seen); err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("clear the probe's answer: %v", err)
+		}
+	}
+	probeView := func() string {
+		t.Helper()
+		body, err := os.ReadFile(seen)
+		if err != nil {
+			t.Fatalf("read the fake's view of descriptor 3: %v", err)
+		}
+		return string(body)
+	}
+	// The control: the channel is this process's descriptor 3, handed to the fake
+	// as its own descriptor 3. The probe must report OPEN, or it cannot tell an
+	// inherited channel from a closed one.
+	control := exec.Command(gh)
+	// A private copy, so no finalizer on a wrapper for descriptor 3 can close the
+	// channel this process still has to publish on.
+	inheritedFD, err := syscall.Dup(3)
+	if err != nil {
+		t.Fatalf("copy the inherited channel descriptor: %v", err)
+	}
+	// Kept out of every child but the one it is meant for: os/exec clears this
+	// flag for a file it is handed through ExtraFiles and leaves it set
+	// everywhere else.
+	syscall.CloseOnExec(inheritedFD)
+	inherited := os.NewFile(uintptr(inheritedFD), "inherited-channel")
+	control.ExtraFiles = []*os.File{inherited}
+	clearProbe()
+	if out, err := control.CombinedOutput(); err != nil {
+		t.Fatalf("run the positive control: %v\n%s", err, out)
+	}
+	if got := probeView(); got != "open" {
+		t.Fatalf("the probe reported descriptor 3 %q for a child that inherited the channel, so it cannot show that a call does not inherit it", got)
+	}
+	if err := inherited.Close(); err != nil {
+		t.Fatalf("close the channel copy: %v", err)
+	}
+	// The case: the client's gated call. It publishes on this process's
+	// descriptor 3 and releases the gate, so the fake sees exactly what a real
+	// `gh` would.
+	c := GHClient{GH: gh, GroupFD: 3}
+	clearProbe()
+	out, err := c.run(context.Background(), "api", "graphql")
+	if err != nil {
+		t.Fatalf("run = %v", err)
+	}
+	if string(out) != `{"data":{}}` {
+		t.Fatalf("run = %q, want the fake's answer", out)
+	}
+	if got := probeView(); got != "closed" {
+		t.Fatalf("gh saw descriptor 3 %q: the launcher's channel must not be inherited by the call", got)
 	}
 }
