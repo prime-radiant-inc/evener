@@ -104,7 +104,7 @@ func (s *Session) registerTool(name, description string, params map[string]any, 
 	// Register itself can happen outside s.mu. But the cache rebuild below
 	// writes s.cachedToolDefs/s.cachedSystemPrompt and reads s.env/s.envInfo,
 	// all of which mu guards — those must happen under lock, mirroring
-	// SetModel's pattern, so they can't race a concurrent env swap or model
+	// SetModelControl's pattern, so they can't race a concurrent env swap or model
 	// switch.
 	_ = s.reg.Register(tool.RegisteredTool{
 		Definition: llm.ToolDefinition{
@@ -255,7 +255,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 
 	// Self-heal off-distribution tool calls before hooks/dispatch. Snapshot the
 	// provider name-map here (execTool runs outside s.mu) — never lock inside
-	// providerToolName, which has under-lock callers (SetModel).
+	// providerToolName, which has under-lock callers (SetModelControl).
 	nameMap := s.currentProfile().ToolNameMap()
 	visibleNames := providerVisibleToolNames(s.reg.Names(), nameMap)
 	requestedVisible := providerToolName(call.Name, nameMap)

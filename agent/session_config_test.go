@@ -56,8 +56,8 @@ func TestSession_SetReasoningEffort_FlushesMeta(t *testing.T) {
 	}
 }
 
-// kata wnfz: SetModel mutates s.profile, which Meta() surfaces as the top-level
-// Model field. Without the fix, a daemon crash between SetModel and the next
+// kata wnfz: SetModelControl mutates s.profile, which Meta() surfaces as the top-level
+// Model field. Without the fix, a daemon crash between SetModelControl and the next
 // happy-path autosave leaves meta.json reflecting the previous model.
 func TestSession_SetModel_FlushesMeta(t *testing.T) {
 	t.Parallel()
@@ -75,7 +75,7 @@ func TestSession_SetModel_FlushesMeta(t *testing.T) {
 	defer sess.Close()
 
 	sessID := sess.ID()
-	sess.SetModel("gpt-5.3")
+	setModel(sess, "gpt-5.3")
 
 	meta, err := schema.LoadSessionMeta(dir, sessID)
 	if err != nil {
@@ -107,7 +107,7 @@ func TestSession_SetModel_NoOpAfterClose(t *testing.T) {
 		t.Fatalf("LoadSessionMeta before setters: %v", err)
 	}
 
-	sess.SetModel("gpt-5.3")
+	setModel(sess, "gpt-5.3")
 
 	after, err := schema.LoadSessionMeta(dir, sessID)
 	if err != nil {
@@ -1625,7 +1625,7 @@ func TestSession_SetModel_TakesEffectOnNextCall(t *testing.T) {
 		t.Errorf("expected 'test-model', got %q", capturedModel)
 	}
 
-	sess.SetModel("new-model")
+	setModel(sess, "new-model")
 	if _, err := sess.ProcessInput(ctx, "second", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -1670,7 +1670,7 @@ func TestSession_SetModel_UpdatesContextManager(t *testing.T) {
 	}))
 
 	// Opus 4.5 is the 200K/1M pair: its [1m] alias still moves the window, so a
-	// stale profile after SetModel shows up as an unchanged pressure. Sonnet 4.5
+	// stale profile after SetModelControl shows up as an unchanged pressure. Sonnet 4.5
 	// is 1M on its base row now and would make both readings identical.
 	sess := newSession(t, withClient(c), withProfile(newAnthropicProfile("claude-opus-4-5")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
@@ -1688,7 +1688,7 @@ func TestSession_SetModel_UpdatesContextManager(t *testing.T) {
 	}
 
 	// Switch to 1M context model. Context manager should see the new window.
-	sess.SetModel("claude-opus-4-5[1m]")
+	setModel(sess, "claude-opus-4-5[1m]")
 
 	// Pressure with 1M window: 100K/1M = 0.10
 	p2 := sess.contextPressure()

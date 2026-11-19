@@ -157,20 +157,20 @@ func FuzzSessionGoTailCoverage(f *testing.F) {
 
 		t.Run("set model guards and switch", func(t *testing.T) {
 			// Every production session carries the id NewSession assigned it
-			// (session_init.go), and SetModel's authority check requires that
-			// identity, so a fixture that means "a real session switching
+			// (session_init.go), and SetModelControl's authority check requires
+			// that identity, so a fixture that means "a real session switching
 			// provider" must carry one too.
 			s := &Session{id: "standalone_" + ulid.Make().String(), profile: NewOpenAIProfile("gpt-5"), reg: tool.NewRegistry()}
 			s.resolveProfile = func(string) (*provider.Profile, error) {
 				return nil, errors.New("resolver failure")
 			}
-			s.SetModel("google/gemini")
+			setModel(s, "google/gemini")
 
 			s.resolveProfile = func(string) (*provider.Profile, error) {
 				return newGeminiProfile("gemini"), nil
 			}
 			s.cfg.testOnly.minimalSystemPrompt = true
-			s.SetModel("google/gemini")
+			setModel(s, "google/gemini")
 			if s.profile.Surface() != registry.SurfaceGoogle || s.reg.Get("web_search") == nil {
 				t.Fatalf("cross-provider switch = %q, web_search=%v", s.profile.Surface(), s.reg.Get("web_search") != nil)
 			}
@@ -181,7 +181,7 @@ func FuzzSessionGoTailCoverage(f *testing.F) {
 			tracing := &Session{id: "standalone_" + ulid.Make().String(), profile: NewOpenAIProfile("gpt-5"), client: client, reg: tool.NewRegistry()}
 			done := make(chan struct{})
 			go func() {
-				tracing.SetModel("gpt-5.1")
+				setModel(tracing, "gpt-5.1")
 				close(done)
 			}()
 			<-lister.entered

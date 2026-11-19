@@ -41,7 +41,7 @@ func TestS2Cov_MutatorsAfterClose(t *testing.T) {
 	sess.Close()
 
 	// Post-close mutators must take the closed-guard early return, not panic.
-	sess.SetModel("gpt-5.1")
+	setModel(sess, "gpt-5.1")
 	sess.SetReasoningEffort("high")
 
 	if sess.State() != SessionClosed {

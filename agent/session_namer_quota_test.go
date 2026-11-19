@@ -33,7 +33,7 @@ func (h *namerQuotaHarness) callCount() int {
 }
 
 // namerQuotaSwitchProvider is the provider these tests switch to when they
-// exercise SetModel. It is a second provider instance with its own allowance,
+// exercise SetModelControl. It is a second provider instance with its own allowance,
 // which is the whole point: a spent allowance belongs to the account behind one
 // provider, so a switch to another one is the user's remedy for it.
 const namerQuotaSwitchProvider = "anthropic"
@@ -239,7 +239,7 @@ func TestSessionNamerResumesAfterCrossProviderModelSwitch(t *testing.T) {
 		t.Fatalf("provider calls before switch = %d, want 1", got)
 	}
 
-	if err := h.sess.SetModel(namerQuotaSwitchProvider + "/claude-opus-4-6"); err != nil {
+	if err := setModel(h.sess, namerQuotaSwitchProvider+"/claude-opus-4-6"); err != nil {
 		t.Fatalf("SetModel: %v", err)
 	}
 	if got := h.sess.currentProfile().CheapProvider(); got != namerQuotaSwitchProvider {
@@ -269,7 +269,7 @@ func TestSessionNamerResumesAfterSameProviderModelSwitch(t *testing.T) {
 	h.sess.launchInitialPromptNamer(context.Background(), "first task")
 	h.awaitSettledFailures(t, 1)
 
-	if err := h.sess.SetModel("gpt-5.3"); err != nil {
+	if err := setModel(h.sess, "gpt-5.3"); err != nil {
 		t.Fatalf("SetModel: %v", err)
 	}
 

@@ -204,7 +204,7 @@ func TestCompactAt_UnknownWindowWithCompactionThresholdParity(t *testing.T) {
 			testOnly:       testConfig{skipGitSnapshot: true},
 		}),
 	)
-	if err := s.SetModel("gw/deepseek-4.1-flash"); err != nil {
+	if err := setModel(s, "gw/deepseek-4.1-flash"); err != nil {
 		t.Fatalf("SetModel: %v", err)
 	}
 
@@ -284,7 +284,7 @@ func TestCompactAt_SetModelEmitsThresholdContextAndMarkerWarning(t *testing.T) {
 		schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("x", (260_000-sysTokens)*4))),
 	}
 
-	if err := s.SetModel("work/model-1m-250k"); err != nil {
+	if err := setModel(s, "work/model-1m-250k"); err != nil {
 		t.Fatalf("SetModel to thresholded 1M: %v", err)
 	}
 
@@ -315,7 +315,7 @@ drain1:
 	s.history = []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("x", (260_000-sysTokens)*4))),
 	}
-	if err := s.SetModel("work/model-0w-250k"); err != nil {
+	if err := setModel(s, "work/model-0w-250k"); err != nil {
 		t.Fatalf("SetModel to unknown-window thresholded: %v", err)
 	}
 	markerUnknown := lastMarkerTurn(t, s).Message.Text()
@@ -326,7 +326,7 @@ drain1:
 		t.Fatalf("unknown-window threshold marker = %q, must not cite synthetic window 277778", markerUnknown)
 	}
 
-	if err := s.SetModel("work/model-1m-none"); err != nil {
+	if err := setModel(s, "work/model-1m-none"); err != nil {
 		t.Fatalf("SetModel back to unthresholded 1M: %v", err)
 	}
 	var switchedBack *events.ModelChangedData

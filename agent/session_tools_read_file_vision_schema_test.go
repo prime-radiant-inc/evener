@@ -251,7 +251,7 @@ func TestSessionReadFileSchema_Regime3_ExplicitVisionModel(t *testing.T) {
 	}
 }
 
-// SetModel dynamically switches regimes and updates ToolDefinitions properties.
+// SetModelControl dynamically switches regimes and updates ToolDefinitions properties.
 func TestSessionReadFileSchema_SetModelDynamicSwitching(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
@@ -272,7 +272,7 @@ func TestSessionReadFileSchema_SetModelDynamicSwitching(t *testing.T) {
 	}
 
 	// Switch to Claude -> Regime 1 (vision_prompt omitted)
-	if err := sess.SetModel("anthropic/claude-opus-4-5"); err != nil {
+	if err := setModel(sess, "anthropic/claude-opus-4-5"); err != nil {
 		t.Fatalf("SetModel claude: %v", err)
 	}
 	defs = sess.ToolDefinitions()
@@ -282,7 +282,7 @@ func TestSessionReadFileSchema_SetModelDynamicSwitching(t *testing.T) {
 	}
 
 	// Switch to text-only codex -> Regime 3 (vision_prompt present)
-	if err := sess.SetModel("openai/gpt-5.2-codex"); err != nil {
+	if err := setModel(sess, "openai/gpt-5.2-codex"); err != nil {
 		t.Fatalf("SetModel codex: %v", err)
 	}
 	defs = sess.ToolDefinitions()

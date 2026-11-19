@@ -95,7 +95,7 @@ func TestModelSwitchResumesAttentionAPermanentFailureDeferred(t *testing.T) {
 	}
 	baseline := notifies.Load()
 
-	if err := s.SetModel("gpt-5.4"); err != nil {
+	if err := setModel(s, "gpt-5.4"); err != nil {
 		t.Fatalf("SetModel: %v", err)
 	}
 	if wake, _, pending := attentionRailState(s); !wake || pending != 1 {
@@ -236,7 +236,7 @@ func TestModelSwitchLeavesATransientBackoffAlone(t *testing.T) {
 	if wake, retryActive, _ := attentionRailState(s); wake || !retryActive {
 		t.Fatalf("after a 503: wake=%t retry=%t, want the paced retry armed", wake, retryActive)
 	}
-	if err := s.SetModel("gpt-5.4"); err != nil {
+	if err := setModel(s, "gpt-5.4"); err != nil {
 		t.Fatalf("SetModel: %v", err)
 	}
 	if wake, retryActive, _ := attentionRailState(s); wake || !retryActive {
@@ -262,7 +262,7 @@ func TestModelSwitchDoesNotReopenAStopParkedRail(t *testing.T) {
 	if !s.rootAttentionRailParked() {
 		t.Fatal("this test is not in the state it means to be: the Stop did not park the rail")
 	}
-	if err := s.SetModel("gpt-5.4"); err != nil {
+	if err := setModel(s, "gpt-5.4"); err != nil {
 		t.Fatalf("SetModel: %v", err)
 	}
 	if wake, _, pending := attentionRailState(s); wake || pending != 1 {

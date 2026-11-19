@@ -285,7 +285,7 @@ func WithQueuedInputDrainOnInterrupt(ctx context.Context, rootCtx context.Contex
 }
 
 // DroppedModelFallbacksFromLastSwitch returns the cfg.ModelFallbacks entries
-// dropped by the most recent SetModel call's post-switch revalidation (nil if
+// dropped by the most recent SetModelControl call's post-switch revalidation (nil if
 // none were dropped, or no switch has occurred yet). A later marker (Task 5)
 // surfaces this as a warning line; this method only exposes the names.
 func (s *Session) DroppedModelFallbacksFromLastSwitch() []string {

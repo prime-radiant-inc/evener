@@ -91,7 +91,7 @@ func sameEstimatorTarget(a, b registry.Resolved) bool {
 }
 
 // currentProfile returns the active profile under cm.mu so reads do not race
-// SetProfile (called from Session.SetModel). The profile pointer is swapped
+// SetProfile (called from Session.SetModelControl). The profile pointer is swapped
 // atomically; a caller uses the returned value for the duration of one operation.
 func (cm *Manager) currentProfile() *provider.Profile {
 	cm.mu.Lock()

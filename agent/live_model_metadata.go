@@ -72,7 +72,7 @@ func fillLiveModelMetadata(ctx context.Context, client *llm.Client, profile *pro
 // resolveLiveModelProfileValidated is NewSession's live-model seam: it fills
 // live model metadata (fillLiveModelMetadata, 2s budget) and, only when
 // enumeration succeeded, runs validateModelSwitchMembership against the same
-// listing — the same membership policy SetModel and delegate dispatch
+// listing — the same membership policy SetModelControl and delegate dispatch
 // apply, so a session can no longer launch with a model the provider's live
 // list definitively doesn't carry. Fails open (nil error, profile unchanged
 // modulo any metadata fill) on any enumeration failure, matching NewSession's

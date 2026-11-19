@@ -682,7 +682,7 @@ func TestSelectSubagentModel_ExplicitModelRejectedWhenAbsentFromLiveList(t *test
 // TestSelectSubagentModel_ExplicitModelEnumerationFailure_FailsOpen verifies
 // that an explicit delegate model override still succeeds unvalidated when the
 // instance can't be listed (fail-open, matching resolveModelSwitchTarget's
-// SetModel behavior).
+// SetModelControl behavior).
 func TestSelectSubagentModel_ExplicitModelEnumerationFailure_FailsOpen(t *testing.T) {
 	t.Parallel()
 

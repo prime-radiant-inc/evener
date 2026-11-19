@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/oklog/ulid/v2"
+
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/jobstore"
@@ -292,6 +294,37 @@ func adapterInstance(name string) registry.Provider {
 		Base: "openai-compatible", APIKey: "test",
 		Transport: registry.Transport{BaseURL: "http://" + name + ".test.invalid/v1"},
 	}
+}
+
+// --- model control ---
+
+// setModel switches the session's model the way a client does: through the
+// authority-bound SetModelControl, fenced on the session's own instance and
+// boot generation. A fixture is not served by a daemon, so it carries no
+// generation until this installs one; without one there is no authority to
+// fence a switch on and the request is rejected as invalid. The install is
+// decided under the session lock, so concurrent callers agree on one
+// generation. A closing session installs nothing, for the same reason
+// SetModelControl refuses to apply one: it has no authority to fence on.
+func setModel(sess *Session, model string) error {
+	var publish func(string)
+	sess.mu.Lock()
+	if sess.bootGeneration == "" && !sess.closingOrClosedLocked() {
+		sess.setBootGenerationLocked("test")
+		publish = sess.transcriptFrontier.publish
+	}
+	generation := sess.bootGeneration
+	sess.mu.Unlock()
+	if publish != nil {
+		publish(generation)
+	}
+	_, err := sess.SetModelControl(ModelControlRequest{
+		Model:                  model,
+		ClientMutationID:       "set_model_" + ulid.Make().String(),
+		ExpectedInstanceID:     sess.ID(),
+		ExpectedBootGeneration: generation,
+	})
+	return err
 }
 
 // --- turn driving ---

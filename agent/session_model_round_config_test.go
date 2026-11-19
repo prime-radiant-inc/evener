@@ -55,7 +55,7 @@ func (a *barrierFallbackAdapter) Models() []string {
 
 // TestSession_FallbackUsesDispatchSnapshot pins CORE-02: a round that is
 // already in flight must keep using the fallback configuration it was
-// dispatched with, even when a concurrent SetModel revalidates and rewrites
+// dispatched with, even when a concurrent SetModelControl revalidates and rewrites
 // s.cfg.ModelFallbacks while the primary call is outstanding. Reading the live
 // slice inside the fallback chain let that write both race the read and empty
 // the in-flight round's chain: a cross-surface switch drops the same-surface
@@ -112,7 +112,7 @@ func TestSession_FallbackUsesDispatchSnapshot(t *testing.T) {
 
 	// Cross-surface switch: revalidates and drops the now-invalid fallback
 	// entry from s.cfg.ModelFallbacks. The in-flight round must not see that.
-	if err := sess.SetModel("anthropic/claude-opus-4-6"); err != nil {
+	if err := setModel(sess, "anthropic/claude-opus-4-6"); err != nil {
 		t.Fatalf("SetModel: %v", err)
 	}
 	if len(sess.cfg.ModelFallbacks) != 0 {

@@ -61,7 +61,7 @@ func TestSessionListingsForwardIdlePolicy(t *testing.T) {
 		t.Fatalf("startup calls=%d want 1", calls)
 	}
 	phase, wantBudget = "model-switch", modelSwitchEnumerationTimeout
-	if err := sess.SetModel("gpt-5.5"); err != nil {
+	if err := setModel(sess, "gpt-5.5"); err != nil {
 		t.Fatal(err)
 	}
 	if calls != 2 {
@@ -144,7 +144,7 @@ func TestSessionSetModelAppliesRegistryModelContextWindow(t *testing.T) {
 
 	sess := newSession(t, withClient(client), withProfile(NewOpenAIProfile("gpt-5.4")), withDir(t.TempDir()), withConfig(SessionConfig{}))
 
-	if err := sess.SetModel("gpt-5.5"); err != nil {
+	if err := setModel(sess, "gpt-5.5"); err != nil {
 		t.Fatalf("SetModel: %v", err)
 	}
 
@@ -159,7 +159,7 @@ func TestSessionSetModelAppliesRegistryModelContextWindow(t *testing.T) {
 	}
 }
 
-// TestSessionSetModelListsExactlyOnce locks in the TOCTOU fix: SetModel lists
+// TestSessionSetModelListsExactlyOnce locks in the TOCTOU fix: SetModelControl lists
 // the instance a single time and reuses the listing for both metadata fill and
 // the membership preflight, rather than listing twice (which could observe two
 // different catalogs mid-switch).
@@ -172,9 +172,9 @@ func TestSessionSetModelListsExactlyOnce(t *testing.T) {
 
 	sess := newSession(t, withClient(client), withProfile(NewOpenAIProfile("gpt-5.4")), withDir(t.TempDir()), withConfig(SessionConfig{}))
 
-	// Discard the init-time listing; count only the ones SetModel triggers.
+	// Discard the init-time listing; count only the ones SetModelControl triggers.
 	adapter.listCalls = 0
-	if err := sess.SetModel("gpt-5.5"); err != nil {
+	if err := setModel(sess, "gpt-5.5"); err != nil {
 		t.Fatalf("SetModel: %v", err)
 	}
 

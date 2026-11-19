@@ -115,7 +115,7 @@ func TestSetModel_AppendsMarkerTurnOnSuccess(t *testing.T) {
 		}),
 	)
 
-	if err := sess.SetModel("anthropic/claude-opus-4-6"); err != nil {
+	if err := setModel(sess, "anthropic/claude-opus-4-6"); err != nil {
 		t.Fatalf("SetModel: %v", err)
 	}
 
@@ -137,7 +137,7 @@ func TestSetModel_PersistsModelSwitchIdentity(t *testing.T) {
 		withConfig(SessionConfig{StateDir: t.TempDir(), ResolveProfile: testResolver, testOnly: testConfig{skipGitSnapshot: true}}),
 	)
 	for _, model := range []string{"openai/gpt-5.2", "anthropic/claude-opus-4-6"} {
-		if err := sess.SetModel(model); err != nil {
+		if err := setModel(sess, model); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -185,7 +185,7 @@ func TestSetModel_FailedSwitchAppendsNoMarker(t *testing.T) {
 		}),
 	)
 
-	if err := sess.SetModel("bogus/some-model"); err == nil {
+	if err := setModel(sess, "bogus/some-model"); err == nil {
 		t.Fatal("SetModel with unknown instance = nil error, want non-nil")
 	}
 
@@ -233,7 +233,7 @@ func TestSetModel_MarkerWarnsOnContextWindowShrink(t *testing.T) {
 		}),
 	)
 
-	if err := sess.SetModel("tiny/whatever"); err != nil {
+	if err := setModel(sess, "tiny/whatever"); err != nil {
 		t.Fatalf("SetModel: %v", err)
 	}
 
@@ -275,7 +275,7 @@ func TestSetModel_MarkerIdentifiesAssumedWindow(t *testing.T) {
 	// assumed 128K window's 0.80 checkpoint threshold, so the switch warns.
 	sess.history = []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("token ", 100_000)))}
 
-	if err := sess.SetModel("gw/deepseek-4.1-flash"); err != nil {
+	if err := setModel(sess, "gw/deepseek-4.1-flash"); err != nil {
 		t.Fatalf("SetModel: %v", err)
 	}
 
@@ -304,7 +304,7 @@ func TestSetModel_MarkerIdentifiesAssumedWindow(t *testing.T) {
 //     branch adds — the one clause that must stay absent for a known window.
 //
 // The last claim is an absence, so it is mutation-checked: forcing the assumed
-// branch in SetModel makes this test fail. The figure is the window the metrics
+// branch in SetModelControl makes this test fail. The figure is the window the metrics
 // report, not hardcoded copy, so a reworded warning still passes.
 func TestSetModel_KnownWindowMarkerStaysUnassumed(t *testing.T) {
 	t.Parallel()
@@ -323,7 +323,7 @@ func TestSetModel_KnownWindowMarkerStaysUnassumed(t *testing.T) {
 	prior := schema.NewTurn(schema.TurnUserInput, llm.User("before the switch"))
 	sess.history = []schema.Turn{prior}
 
-	if err := sess.SetModel("win/gpt-5.5"); err != nil {
+	if err := setModel(sess, "win/gpt-5.5"); err != nil {
 		t.Fatalf("SetModel: %v", err)
 	}
 
@@ -402,7 +402,7 @@ func TestSetModel_MarkerWarnsOnDroppedFallbacks(t *testing.T) {
 		}),
 	)
 
-	if err := sess.SetModel("anthropic/claude-opus-4-6"); err != nil {
+	if err := setModel(sess, "anthropic/claude-opus-4-6"); err != nil {
 		t.Fatalf("SetModel: %v", err)
 	}
 
@@ -446,7 +446,7 @@ func TestSetModel_RecomputesKnowledgeCutoffBeforePromptRefresh(t *testing.T) {
 		t.Fatalf("launch cachedSystemPrompt does not mention %s:\n%s", launchCutoff, sess.cachedSystemPrompt)
 	}
 
-	if err := sess.SetModel("anthropic/claude-opus-4-6"); err != nil {
+	if err := setModel(sess, "anthropic/claude-opus-4-6"); err != nil {
 		t.Fatalf("SetModel: %v", err)
 	}
 

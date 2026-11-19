@@ -22,10 +22,10 @@ package agent
 //  3. "any real openai" boundary — the generic surface gets no openai prompt
 //     guidance; also pinned in session_surface_behavior_test.go.
 //  4. Cross-instance switch — resolver maps "work2/<model>" to a renamed openai
-//     profile; SetModel("work2/gpt-5.2") swaps the profile, preserves a
+//     profile; SetModelControl("work2/gpt-5.2") swaps the profile, preserves a
 //     WithCommunicateOutputSchema override, and keeps identity "work2".
-//  5. Provider-conditional tool on switch — SetModel to a google-protocol
-//     instance wires real web_search; SetModel away removes it.
+//  5. Provider-conditional tool on switch — SetModelControl to a google-protocol
+//     instance wires real web_search; SetModelControl away removes it.
 
 import (
 	"context"
@@ -137,7 +137,7 @@ func TestProviderInstance_RenamedOpenAI_IdentityAndBehavior(t *testing.T) {
 // ── Subtest 4: Cross-instance switch ─────────────────────────────────────────
 
 // TestProviderInstance_CrossInstanceSwitch_PreservesOverrideAndIdentity verifies
-// that SetModel("work2/gpt-5.2") via instanceTestResolver:
+// that SetModelControl("work2/gpt-5.2") via instanceTestResolver:
 //   - swaps the active profile to a "work2" openai instance
 //   - preserves a WithCommunicateOutputSchema override applied before the switch
 //   - keeps the instance identity ID()=="work2" after the switch
@@ -176,7 +176,7 @@ func TestProviderInstance_CrossInstanceSwitch_PreservesOverrideAndIdentity(t *te
 	}
 
 	// Switch to "work2" via resolver.
-	sess.SetModel("work2/gpt-5.2")
+	setModel(sess, "work2/gpt-5.2")
 
 	// Identity must now be "work2".
 	if got := sess.profile.ID(); got != "work2" {
@@ -236,7 +236,7 @@ func TestProviderInstance_ProviderConditionalTool_GoogleSwitchWiresWebSearch(t *
 	}
 
 	// Switch to google via resolver.
-	sess.SetModel("google/gemini-2.5-pro")
+	setModel(sess, "google/gemini-2.5-pro")
 
 	if got := sess.profile.Surface(); got != registry.SurfaceGoogle {
 		t.Fatalf("after SetModel, Surface = %q, want google", got)
@@ -246,7 +246,7 @@ func TestProviderInstance_ProviderConditionalTool_GoogleSwitchWiresWebSearch(t *
 	}
 
 	// Switch back to a renamed openai instance — web_search must be removed.
-	sess.SetModel("work2/gpt-5.2")
+	setModel(sess, "work2/gpt-5.2")
 
 	if got := sess.profile.ID(); got != "work2" {
 		t.Fatalf("after second SetModel, profile ID = %q, want work2", got)

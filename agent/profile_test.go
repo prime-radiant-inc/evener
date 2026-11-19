@@ -313,7 +313,7 @@ func TestProviderProfile_WithModel_ResolvesProviderPrefix(t *testing.T) {
 // namespaced model id the instance itself serves ("minimax/minimax-m2.7" on
 // OpenRouter) is passed through verbatim: the slash is part of the id, not an
 // instance switch, so the profile keeps its instance and its routing. The
-// failure mode this guards is a SetModel or subagent override silently
+// failure mode this guards is a SetModelControl or subagent override silently
 // switching off the OpenRouter routing and mangling tool calls.
 func TestBaseProfile_WithModel_PreservesSlashOnMetaProviders(t *testing.T) {
 	t.Parallel()
@@ -352,7 +352,7 @@ func TestBaseProfile_WithModel_PreservesSlashOnMetaProviders(t *testing.T) {
 // verifies that WithModel still strips a redundant self-prefix on
 // meta-providers — e.g. "openrouter/anthropic/claude-3-haiku" on an
 // openrouter profile resolves to model "anthropic/claude-3-haiku".
-// Without this, SetModel calls coming from CLI/harbor with the
+// Without this, SetModelControl calls coming from CLI/harbor with the
 // "<provider>/<model>" convention would send the doubly-prefixed
 // string on the wire instead of the canonical bare form.
 func TestBaseProfile_WithModel_StripsRedundantSelfPrefixOnMetaProviders(t *testing.T) {
@@ -383,7 +383,7 @@ func TestBaseProfile_WithModel_StripsRedundantSelfPrefixOnMetaProviders(t *testi
 // TestBaseProfile_WithModel_RecomputesCatalogStateOnMetaProviders verifies
 // that a same-instance model switch re-resolves every fact, notably the
 // context window — stale state here is silent context truncation when
-// SetModel moves between OpenRouter-routed models of different sizes.
+// SetModelControl moves between OpenRouter-routed models of different sizes.
 func TestBaseProfile_WithModel_RecomputesCatalogStateOnMetaProviders(t *testing.T) {
 	t.Parallel()
 	// Start with a known small-context model under openrouter
@@ -448,7 +448,7 @@ func TestBaseProfile_WithModel_OpenRouterKeepsUpstreamNamespace(t *testing.T) {
 // TestBaseProfile_WithModel_PreservesToolDefOverridesAcrossProviderSwitch
 // verifies that a cross-provider WithModel ("openai/...", "ollama/...",
 // etc.) also preserves tool-schema overrides applied via
-// WithCommunicateOutputSchema. Without this, Session.SetModel that
+// WithCommunicateOutputSchema. Without this, Session.SetModelControl that
 // switches provider mid-session — or subagent/plugin overrides that
 // choose a different backend — silently revert the communicate
 // contract to the new provider's default.
@@ -508,7 +508,7 @@ func TestBaseProfile_WithModel_PreservesToolDefOverridesAcrossProviderSwitch(t *
 // toolDefs, silently losing the override.
 //
 // Specifically: if a session sets a custom communicate output schema
-// and later calls Session.SetModel(...) (or a subagent override
+// and later switches model (or a subagent override
 // arrives), the new profile must still carry the custom schema.
 func TestBaseProfile_WithModel_PreservesToolDefOverrides(t *testing.T) {
 	t.Parallel()

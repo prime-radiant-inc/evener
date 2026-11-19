@@ -64,7 +64,7 @@ func TestSetModel_NamespacedModelDoesNotMintAnotherInstance(t *testing.T) {
 			testOnly: testConfig{skipGitSnapshot: true},
 		}),
 	)
-	if err := sess.SetModel("anthropic/claude-opus-5"); err != nil {
+	if err := setModel(sess, "anthropic/claude-opus-5"); err != nil {
 		t.Fatalf("SetModel on a namespaced model: %v", err)
 	}
 	if runs != 0 {
