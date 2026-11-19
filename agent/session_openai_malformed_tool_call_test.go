@@ -27,6 +27,8 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 	const malformedArgs = `{"value": broken`
 	const correctedArgs = `{"value":"\u0066ixed"}`
 	const firstReasoning = "\tα\n\nβ\r\n"
+	reasoningText := func(text string) map[string]any { return map[string]any{"type": "reasoning_text", "text": text} }
+	summaryText := func(text string) map[string]any { return map[string]any{"type": "summary_text", "text": text} }
 
 	var mu sync.Mutex
 	var requestBodies [][]byte
@@ -59,36 +61,13 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 			writeResponsesTerminal(t, w, flusher, "resp_fixed", []any{
 				map[string]any{
 					"type": "reasoning", "id": "rs_mixed", "encrypted_content": "opaque",
-					"content": []any{
-						map[string]any{"type": "reasoning_text", "text": firstReasoning},
-						map[string]any{"type": "summary_text", "text": "s_1 "},
-						map[string]any{"type": "reasoning_text", "text": ""},
-						map[string]any{"type": "reasoning_text", "text": " \t"},
-					},
-					"summary": []any{
-						map[string]any{"type": "summary_text", "text": " s_2 "},
-						map[string]any{"type": "summary_text", "text": ""},
-					},
+					"content": []any{reasoningText(firstReasoning), summaryText("s_1 "), reasoningText(""), reasoningText(" \t")},
+					"summary": []any{summaryText(" s_2 "), summaryText("")},
 				},
-				map[string]any{
-					"type": "reasoning", "id": "rs_untyped",
-					"content": []any{map[string]any{"text": " r_0\n\n "}},
-				},
-				map[string]any{
-					"type": "reasoning", "id": "rs_plain",
-					"content": []any{map[string]any{"type": "reasoning_text", "text": firstReasoning}},
-				},
-				map[string]any{
-					"type": "reasoning", "id": "rs_blank",
-					"content": []any{
-						map[string]any{"type": "reasoning_text", "text": " \t"},
-						map[string]any{"type": "reasoning_text", "text": ""},
-					},
-				},
-				map[string]any{
-					"type": "reasoning", "id": "rs_summary",
-					"summary": []any{map[string]any{"type": "summary_text", "text": ""}},
-				},
+				map[string]any{"type": "reasoning", "id": "rs_untyped", "content": []any{map[string]any{"text": " r_0\n\n "}}},
+				map[string]any{"type": "reasoning", "id": "rs_plain", "content": []any{reasoningText(firstReasoning)}},
+				map[string]any{"type": "reasoning", "id": "rs_blank", "content": []any{reasoningText(" \t"), reasoningText("")}},
+				map[string]any{"type": "reasoning", "id": "rs_summary", "summary": []any{summaryText("")}},
 				map[string]any{"type": "function_call", "id": "fc_fixed", "call_id": "call_fixed"},
 				map[string]any{"type": "function_call", "id": "fc_repeat", "call_id": "call_fixed", "name": "my_strict_tool", "arguments": correctedArgs},
 			})
@@ -210,9 +189,8 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 	}
 	durableHistory := ResumeHistory(entries)
 	type thinkingRecord struct {
-		Text    string
-		Content []llm.ResponsesReasoningPart
-		Summary []llm.ResponsesReasoningPart
+		Text             string
+		Content, Summary []llm.ResponsesReasoningPart
 	}
 	wantThinking := map[string]thinkingRecord{
 		"rs_mixed": {
@@ -226,10 +204,7 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 			Summary: []llm.ResponsesReasoningPart{{Type: "summary_text", Text: " s_2 "}, {Type: "summary_text", Text: ""}},
 		},
 		"rs_untyped": {Text: " r_0\n\n "},
-		"rs_plain": {
-			Text:    firstReasoning,
-			Content: []llm.ResponsesReasoningPart{{Type: "reasoning_text", Text: firstReasoning}},
-		},
+		"rs_plain":   {Text: firstReasoning, Content: []llm.ResponsesReasoningPart{{Type: "reasoning_text", Text: firstReasoning}}},
 		"rs_blank":   {Content: []llm.ResponsesReasoningPart{{Type: "reasoning_text", Text: " \t"}, {Type: "reasoning_text", Text: ""}}},
 		"rs_summary": {Summary: []llm.ResponsesReasoningPart{{Type: "summary_text", Text: ""}}},
 	}
@@ -358,10 +333,7 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 	}
 
 	var firstReplay []json.RawMessage
-	wantReasoning := []map[string]any{{
-		"type": "reasoning", "id": "rs_mixed", "encrypted_content": "opaque",
-		"summary": []any{map[string]any{"type": "summary_text", "text": "s_2"}},
-	}}
+	const wantReasoning = `{"encrypted_content":"opaque","id":"rs_mixed","summary":[{"text":"s_2","type":"summary_text"}],"type":"reasoning"}`
 	for _, requestIndex := range []int{2, 3} {
 		var request struct {
 			Input []json.RawMessage `json:"input"`
@@ -381,8 +353,7 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 				}
 			}
 		}
-		var calls int
-		var reasoning []map[string]any
+		var calls, reasoning int
 		for _, rawItem := range request.Input {
 			var item struct {
 				Type      string `json:"type"`
@@ -394,11 +365,10 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 				t.Fatal(err)
 			}
 			if item.Type == "reasoning" {
-				var fields map[string]any
-				if err := json.Unmarshal(rawItem, &fields); err != nil {
-					t.Fatal(err)
+				reasoning++
+				if string(rawItem) != wantReasoning {
+					t.Fatalf("request %d reasoning = %s, want %s", requestIndex+1, rawItem, wantReasoning)
 				}
-				reasoning = append(reasoning, fields)
 			}
 			if item.Type != "function_call" || item.CallID != "call_fixed" {
 				continue
@@ -411,8 +381,8 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 		if calls != 1 {
 			t.Fatalf("request %d replayed the corrected call %d times, want once", requestIndex+1, calls)
 		}
-		if !reflect.DeepEqual(reasoning, wantReasoning) {
-			t.Errorf("request %d reasoning = %#v, want %#v", requestIndex+1, reasoning, wantReasoning)
+		if reasoning != 1 {
+			t.Errorf("request %d replayed %d reasoning items, want one", requestIndex+1, reasoning)
 		}
 	}
 }

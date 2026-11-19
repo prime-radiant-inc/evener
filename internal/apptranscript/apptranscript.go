@@ -991,7 +991,7 @@ func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, re
 			run.WriteString(part.Text)
 			continue
 		}
-		if metadataOnlyResponsesReasoning(part) {
+		if MetadataOnlyResponsesReasoning(part) {
 			continue
 		}
 		flushRun()
@@ -1048,7 +1048,9 @@ func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, re
 // redactedThinkingText stands in for a redacted-thinking part's content.
 const redactedThinkingText = "[redacted thinking]"
 
-func metadataOnlyResponsesReasoning(part llm.ContentPart) bool {
+// MetadataOnlyResponsesReasoning reports whether a reasoning part is invisible
+// to the transcript and leaves surrounding text in the same run.
+func MetadataOnlyResponsesReasoning(part llm.ContentPart) bool {
 	t := part.Thinking
 	return part.Kind == llm.ContentThinking && t != nil && t.Text == "" && len(t.Summary) == 0 && t.EncryptedContent == "" &&
 		(len(t.ResponsesContentParts) != 0 || len(t.ResponsesSummaryParts) != 0)
@@ -1062,7 +1064,7 @@ func identityReasoning(content []llm.ContentPart) (int, string) {
 	first := -1
 	var texts []string
 	for i, part := range content {
-		if (part.Kind != llm.ContentThinking && part.Kind != llm.ContentRedThinking) || metadataOnlyResponsesReasoning(part) {
+		if (part.Kind != llm.ContentThinking && part.Kind != llm.ContentRedThinking) || MetadataOnlyResponsesReasoning(part) {
 			continue
 		}
 		if first < 0 {

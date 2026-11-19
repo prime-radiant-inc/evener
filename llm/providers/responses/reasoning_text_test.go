@@ -60,15 +60,14 @@ func TestResponseContentFromOutputItems_KeepsReasoningTextContent(t *testing.T) 
 	var out []any
 	if err := json.Unmarshal([]byte(`[
 		{"id":"rs_1","type":"reasoning","content":[{"type":"reasoning_text","text":"Let me think."},{"type":"reasoning_text","text":"Then verify."}],"summary":[]},
-		{"id":"rs_blank","type":"reasoning","content":[{"type":"reasoning_text","text":" \t"},{"type":"reasoning_text","text":""}]},
 		{"type":"message","content":[{"type":"output_text","text":"Answer"}]}
 	]`), &out); err != nil {
 		t.Fatalf("unmarshal fixture: %v", err)
 	}
 
 	content := responseContentFromOutputItems(out, nil)
-	if len(content) != 3 {
-		t.Fatalf("content parts = %d, want 3 (two thinking items and one text item): %#v", len(content), content)
+	if len(content) != 2 {
+		t.Fatalf("content parts = %d, want 2 (thinking + text): %#v", len(content), content)
 	}
 	th := content[0]
 	if th.Kind != llm.ContentThinking || th.Thinking == nil {
@@ -83,27 +82,26 @@ func TestResponseContentFromOutputItems_KeepsReasoningTextContent(t *testing.T) 
 	if th.Thinking.EncryptedContent != "" {
 		t.Fatalf("encrypted content = %q, want empty", th.Thinking.EncryptedContent)
 	}
-	blank := content[1].Thinking
-	if content[1].Kind != llm.ContentThinking || blank == nil || blank.ID != "rs_blank" || blank.Text != "" {
-		t.Fatalf("blank thinking item = %+v", blank)
-	}
-	want := []llm.ResponsesReasoningPart{{Type: "reasoning_text", Text: " \t"}, {Type: "reasoning_text", Text: ""}}
-	if !slices.Equal(blank.ResponsesContentParts, want) {
-		t.Errorf("typed blank parts = %#v, want %#v", blank.ResponsesContentParts, want)
-	}
 }
 
 func TestStreamTerminalTypedReasoningPreservesAccumulatedAnswer(t *testing.T) {
 	t.Parallel()
 	_, final := responsesEvents(t,
+		`{"type":"response.reasoning_summary_part.added"}`,
+		`{"type":"response.reasoning_summary_text.delta","delta":"summary"}`,
+		`{"type":"response.reasoning_summary_part.added"}`,
+		`{"type":"response.reasoning_summary_text.delta","delta":"streamed only"}`,
 		`{"type":"response.output_text.delta","delta":"answer"}`,
-		`{"type":"response.completed","response":{"id":"resp_1","output":[{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"summary"}]}]}}`,
+		`{"type":"response.completed","response":{"id":"resp_1","output":[{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"summary"},{"type":"summary_text","text":"terminal only"}]}]}}`,
 	)
-	if final == nil || final.Text() != "answer" || len(final.Message.Content) != 2 {
+	if final == nil || final.Text() != "answer" || len(final.Message.Content) != 3 {
 		t.Fatalf("settled response = %+v, want accumulated answer", final)
 	}
-	want := []llm.ResponsesReasoningPart{{Type: "summary_text", Text: "summary"}}
+	want := []llm.ResponsesReasoningPart{{Type: "summary_text", Text: "summary"}, {Type: "summary_text", Text: "terminal only"}}
 	if th := final.Message.Content[0].Thinking; th == nil || !slices.Equal(th.ResponsesSummaryParts, want) {
 		t.Fatalf("settled reasoning = %+v, want %v", th, want)
+	}
+	if th := final.Message.Content[1].Thinking; th == nil || th.Text != "streamed only" {
+		t.Fatalf("accumulated reasoning = %+v, want the portion absent from the terminal", th)
 	}
 }
