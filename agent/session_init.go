@@ -610,15 +610,10 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	// environment at restore time.
 	s.origin = envvars.EVENERSessionOrigin.Getenv()
 
-	promptSources, err := s.initSessionState(cfg.SessionStartKind, true)
+	promptSources, err := s.initSessionState(cfg.SessionStartKind, true, inheritedContext == nil)
 	if err != nil {
 		return nil, err
 	}
-	// Fresh sessions keep the prompt that goes into their transcript header.
-	// A delegate fork with inherited history uses its existing refresh path.
-	s.mu.Lock()
-	s.systemPromptFrozen = inheritedContext == nil
-	s.mu.Unlock()
 	// initSessionState minted this root's process livelock as its last step,
 	// so every failure below this point — a fallible constructor step after
 	// init — must give it back: a construction that never came to life must
@@ -1440,7 +1435,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		endEnvironmentScratch(reenteredEnv)
 	}()
 
-	promptSources, err := s.initSessionState(cfg.SessionStartKind, !restoreCfg.deferRestoreSideEffects)
+	promptSources, err := s.initSessionState(cfg.SessionStartKind, !restoreCfg.deferRestoreSideEffects, false)
 	if err != nil {
 		return nil, err
 	}
@@ -1690,7 +1685,7 @@ func cacheReadPtr(n int64) *int {
 // resolution, skills discovery, tool registry setup, and MCP connection.
 // The Session struct fields (client, profile, env, cfg) must already be set.
 // Returns the prompt sources so the caller can emit events after SessionStart.
-func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, runSessionStartHooks bool) ([]promptSource, error) {
+func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, runSessionStartHooks, freezeLaunchPrompt bool) ([]promptSource, error) {
 	s.cheap = cheapmodel.New(s.client)
 	s.cheap.AdapterTimeout = s.providerAdapterTimeout()
 	env := s.currentEnv()
@@ -1930,6 +1925,11 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		// Role preloads join the skill inventory only after the permanent
 		// prompt carrying their complete instructions was admitted.
 		s.seedFrozenSkillPreloads()
+		if freezeLaunchPrompt {
+			s.mu.Lock()
+			s.systemPromptFrozen = true
+			s.mu.Unlock()
+		}
 	}
 	if warning := s.commitProvenanceWarning(); warning != "" {
 		s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings,

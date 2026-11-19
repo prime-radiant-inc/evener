@@ -1,13 +1,13 @@
 package agent
 
 import (
-	"crypto/sha256"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -30,7 +30,8 @@ func TestNewSessionKeepsDispatchedSystemPrompt(t *testing.T) {
 	}, repeatFinalResponse(2, "ok")...)...)
 	client := llm.NewClient()
 	client.Register(adapter)
-	sess := newSession(t, withClient(client), withDir(dir), withConfig(SessionConfig{
+	stateDir := t.TempDir()
+	sess := newSession(t, withClient(client), withDir(dir), withStateDir(stateDir), withConfig(SessionConfig{
 		AgentsDocPath:      filepath.Join(dir, "no-personal-AGENTS.md"),
 		SystemPromptAppend: []string{appendPath},
 	}))
@@ -64,7 +65,6 @@ func TestNewSessionKeepsDispatchedSystemPrompt(t *testing.T) {
 			t.Fatalf("request %d did not start with a single system text part", i+1)
 		}
 		prompt := req.Messages[0].Content[0].Text
-		t.Logf("request %d (%s): system prompt %d bytes, sha256 %x, updated fixture present: %t", i+1, req.Model, len(prompt), sha256.Sum256([]byte(prompt)), strings.Contains(prompt, updated))
 		if i == 0 {
 			first = prompt
 			if !strings.Contains(first, initial) {
@@ -73,6 +73,14 @@ func TestNewSessionKeepsDispatchedSystemPrompt(t *testing.T) {
 		} else if prompt != first {
 			t.Errorf("request %d changed the system prompt from request 1", i+1)
 		}
+	}
+	sess.Close()
+	header, _, _, err := readTranscript(t.Context(), schema.SessionTranscriptPath(stateDir, sess.ID()), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if header.SystemPrompt != first {
+		t.Fatal("transcript header differs from the dispatched launch prompt")
 	}
 }
 

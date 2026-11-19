@@ -116,6 +116,7 @@ func TestSetModelReportsRenderFailureWithoutSelfDeadlock(t *testing.T) {
 // buffer with a direct report still emits the warning, and only its position
 // relative to SESSION_START says which one happened.
 func TestConstructionRenderFailureArrivesAfterSessionStart(t *testing.T) {
+	render := executeSystemPromptTemplate
 	forceSystemPromptRenderFailure(t)
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
@@ -142,6 +143,14 @@ func TestConstructionRenderFailureArrivesAfterSessionStart(t *testing.T) {
 			if !sawStart {
 				t.Fatal("the render-failure warning was emitted BEFORE SESSION_START: " +
 					"a client has no thread to land it on yet, so it is lost, not reordered")
+			}
+			previous := sess.cachedSystemPrompt
+			executeSystemPromptTemplate = render
+			if err := sess.SetModel("gpt-5.4"); err != nil {
+				t.Fatal(err)
+			}
+			if sess.cachedSystemPrompt == previous {
+				t.Fatal("successful render could not replace the startup diagnostic")
 			}
 			return
 		default:
