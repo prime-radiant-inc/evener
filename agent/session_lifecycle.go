@@ -1631,7 +1631,12 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			for _, callID := range modelResp.CommunicatePreviewCallIDs {
 				communicatePreviewCalls[callID] = struct{}{}
 			}
-			retry, waitErr := s.waitOutUsageLimit(ctx, err, req.Model, quotaWakes)
+			// callElapsed is the time the call already spent when it met the
+			// limit: the wait's start announcement samples it, so a client's
+			// chip renders the call's real runtime, not a wait that starts at
+			// zero. Measured on the session clock, like the phase it spans.
+			callElapsed := s.sclock().Now().Sub(tPhaseStart)
+			retry, waitErr := s.waitOutUsageLimit(ctx, err, req.Model, quotaWakes, callElapsed)
 			if waitErr != nil {
 				err = waitErr
 			}
