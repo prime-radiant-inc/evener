@@ -188,19 +188,14 @@ func SupplyDerivedTypesByteStable(schema map[string]any) (map[string]any, bool) 
 	return supplyTypesByteStable(schema, false)
 }
 
-// SupplyExplicitTypes returns a deep copy of schema with derived explicit types
-// stated for closed scalar value sets and for unions (anyOf/oneOf) whose
-// branches all guarantee explicit JSON types, including container ("object",
-// "array") and multi-type unions. It is used on non-strict Codex Responses Lite
-// schemas where every node must carry an explicit "type".
-func SupplyExplicitTypes(schema map[string]any) map[string]any {
-	out, _ := SupplyExplicitTypesByteStable(schema)
-	return out
-}
-
-// SupplyExplicitTypesByteStable returns SupplyExplicitTypes' output and whether
-// that copy is guaranteed to serialize to the same number of bytes as schema.
-// See SupplyDerivedTypesByteStable for which copies are.
+// SupplyExplicitTypesByteStable returns a deep copy of schema with derived
+// explicit types stated for closed scalar value sets and for unions
+// (anyOf/oneOf) whose branches all guarantee explicit JSON types, including
+// container ("object", "array") and multi-type unions, and whether that copy is
+// guaranteed to serialize to the same number of bytes as schema. It is used on
+// non-strict Codex Responses Lite schemas where every node must carry an
+// explicit "type". See SupplyDerivedTypesByteStable for which copies are
+// byte-stable.
 func SupplyExplicitTypesByteStable(schema map[string]any) (map[string]any, bool) {
 	return supplyTypesByteStable(schema, true)
 }
@@ -1835,6 +1830,10 @@ func enterContainer(path map[containerKey]bool, key containerKey) (map[container
 }
 
 // sameLengthMap compares two schema objects key for key.
+//
+// A required list is compared by name set because projection only reorders it.
+// A property may itself be named "required", so a value the name-set reading
+// rejects falls through to recursive value comparison.
 func sameLengthMap(a, b map[string]any, path map[containerKey]bool) bool {
 	if len(a) != len(b) {
 		return false
@@ -1844,13 +1843,7 @@ func sameLengthMap(a, b map[string]any, path map[containerKey]bool) bool {
 		if !ok {
 			return false
 		}
-		if k == "required" {
-			// The projection rebuilds required from properties in sorted
-			// order, so the only difference it can make here is the order of
-			// the same names.
-			if !sameNameSet(av, bv) {
-				return false
-			}
+		if k == "required" && sameNameSet(av, bv) {
 			continue
 		}
 		if !sameLengthValueAt(av, bv, path) {

@@ -659,12 +659,13 @@ type Request struct {
 	// caller discarded. The catalog is immutable for the record's life (see
 	// ToolsJSONBytes), so its own identity is the tie that count cannot be.
 	//
-	// emittedToolReplacement marks a count measured over a ProviderOptions tools
-	// value rather than over the catalog's emission. That substitution is
-	// re-decided on every price, so the record is restored to the catalog's own
-	// count before it is applied again: keeping it because the target still
-	// matches would leave a replacement's price standing after the option that
-	// produced it was gone.
+	// emittedToolReplacement marks a count measured over a list a route writes
+	// over the catalog — a transport body tools constant, or a ProviderOptions
+	// tools value when the transport pins none — rather than over the catalog's
+	// own emission. That substitution is re-decided on every price, so the record
+	// is restored to the catalog's own count before it is applied again: keeping
+	// it because the target still matches would leave a replacement's price
+	// standing after the option that produced it was gone.
 	emittedToolTarget      emittedToolTargetKey
 	emittedToolBaseline    int
 	emittedToolCount       int

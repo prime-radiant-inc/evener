@@ -68,6 +68,15 @@ func emittedPriceServer(t *testing.T) (*httptest.Server, func() []map[string]any
 // test server. No override is registered because an override route marshals the
 // definitions it is handed; the case under test is the built-in builder.
 func emittedPriceRoute(t *testing.T, maxInput int, protocol string, strict bool) (*Client, registry.Resolved, func() []map[string]any) {
+	return emittedPriceRouteWithTransportBody(t, maxInput, protocol, strict, nil)
+}
+
+// emittedPriceRouteWithTransportBody is emittedPriceRoute with the row's
+// transport body constants set, so a test can put a value on the wire that the
+// builder does not write. The count-tokens endpoint is pinned unsupported: the
+// reading these cases compare is the local estimate, which is the fallback a
+// caller actually sizes a request with on a route that has no counter.
+func emittedPriceRouteWithTransportBody(t *testing.T, maxInput int, protocol string, strict bool, body map[string]any) (*Client, registry.Resolved, func() []map[string]any) {
 	t.Helper()
 	srv, bodies := emittedPriceServer(t)
 	r, err := registry.Load(
@@ -80,7 +89,7 @@ func emittedPriceRoute(t *testing.T, maxInput int, protocol string, strict bool)
 				Protocol:  protocol,
 				Surface:   registry.SurfaceGeneric,
 				APIKey:    "unused",
-				Transport: registry.Transport{BaseURL: srv.URL},
+				Transport: registry.Transport{BaseURL: srv.URL, Body: body, CountTokensEndpoint: registry.EndpointUnsupported},
 				Caps: registry.Caps{
 					ContextWindow:   new(1_000_000),
 					MaxInputTokens:  new(maxInput),

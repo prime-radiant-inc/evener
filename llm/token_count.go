@@ -104,10 +104,12 @@ func estimateInputTokens(t targetInfo, req Request) InputTokenCount {
 //
 // A request with no catalog can still send tools: the Chat Completions and
 // standard Responses builders write the request's own tools and then copy a
-// ProviderOptions tools value over the body, so on those routes that value is
-// the whole tool list. Nothing else on such a request names those bytes, so only
-// a recorded replacement price describes them. A request with neither a catalog
-// nor a replacement keeps the zero charge it has always had.
+// ProviderOptions tools value over the body, and a pinned "tools" transport
+// constant is applied after both and overrides the option, so the constant is
+// the whole tool list on such a route. Nothing else on such a request names
+// those bytes, so only a recorded replacement price describes them. A
+// request with neither a catalog nor a replacement keeps the zero charge it has
+// always had.
 func (req Request) billedToolJSONBytes() int {
 	if len(req.Tools) > 0 {
 		if req.ToolsJSONBytes > 0 {
@@ -171,8 +173,9 @@ func priceEmittedToolSchemas(req Request, res registry.Resolved) Request {
 	// different target — an inflated local reading, or a request that fits this
 	// route rejected by a cap that belonged to the other one.
 	req = restoreToolCountBaseline(req, res)
-	// A route that reads a ProviderOptions tools value sends that value instead
-	// of the catalog the builder projected, so the replacement is the list to
+	// The replacement providerToolsReplacement reports — a pinned "tools"
+	// transport constant, else the ProviderOptions value — is the list the route
+	// sends instead of the catalog the builder projected, so it is the list to
 	// price. It is read before the empty-catalog check below: that value is the
 	// whole tool list for a request whose catalog is empty, and returning there
 	// would price no tools at all on a request that dispatches them.
@@ -207,15 +210,28 @@ func priceEmittedToolSchemas(req Request, res registry.Resolved) Request {
 	return req.withToolEmission(res, ToolsJSONBytes(emitted), baseline, false)
 }
 
-// providerToolsReplacement returns the tool list a request hands the builder
-// through ProviderOptions, and whether that option is present for res's route.
+// providerToolsReplacement returns the tool list res's route writes over the
+// catalog, and whether there is one: the row's transport body constant when it
+// pins tools, else the request's ProviderOptions value.
 //
 // The Chat Completions and Responses builders write the request's own tools and
-// then copy ProviderOptions over the body, so an explicit tools value is the
-// list that dispatches. A Codex Responses Lite route is excluded: its tools ride
-// inside the input as an additional_tools item, and a top-level tools value is
-// not the catalog that endpoint reads. The other protocols do not pass request
-// options through to their body at all.
+// then copy ProviderOptions over the body, so an explicit option is a list that
+// dispatches. The transport's body constants are applied after both
+// (protocolhttp.Prepare), and they override whatever stands at the same path, so
+// a row that pins tools replaces the option: the constant is the wire list, and
+// pricing the option charges bytes the request never sends — under an input cap
+// between the two prices that refuses a request which fits, and the local
+// reading reports the inflated count. The option is therefore read only when the
+// transport leaves tools alone.
+//
+// The constant is read from the literal "tools" key, because that is the path
+// whose value is a tool list. A dotted path such as "tools.0" makes the body
+// constant layer create a parent object instead, which no route reads as a list.
+//
+// A Codex Responses Lite route is excluded: its tools ride inside the input as
+// an additional_tools item, and a top-level tools value is not the catalog that
+// endpoint reads. The other protocols do not pass request options through to
+// their body at all.
 func providerToolsReplacement(req Request, res registry.Resolved) (any, bool) {
 	if res.Protocol != registry.ProtocolOpenAIChat && res.Protocol != registry.ProtocolOpenAIResponses {
 		return nil, false
@@ -223,13 +239,17 @@ func providerToolsReplacement(req Request, res registry.Resolved) (any, bool) {
 	if res.Protocol == registry.ProtocolOpenAIResponses && registry.BoolValue(res.Caps.ResponsesLite) {
 		return nil, false
 	}
+	if pinned, ok := res.Transport.Body["tools"]; ok {
+		return pinned, true
+	}
 	options, _ := req.ProviderOptions[res.Protocol].(map[string]any)
 	replacement, ok := options["tools"]
 	return replacement, ok
 }
 
-// priceReplacementToolList prices the tools value a ProviderOptions replacement
-// hands the builder, recording the catalog's own count as the baseline.
+// priceReplacementToolList prices the tools value a route writes over the
+// catalog — a transport constant or a ProviderOptions option — recording the
+// catalog's own count as the baseline.
 //
 // The measurement is taken over the replacement as it will be encoded, which is
 // what the local estimate bills. The baseline stays the catalog's count so a
@@ -547,10 +567,11 @@ func parameterlessToolsJSONDelta(defs []ToolDefinition, res registry.Resolved, o
 // definitions as they were handed over, so neither records an emission and
 // both still take the delta.
 //
-// A request with no catalog but a recorded ProviderOptions replacement prices
-// that replacement, which is the whole tool list such a request sends. The
-// delta is not applied to it: the replacement is the wire list, not a catalog a
-// builder substitutes schemas into.
+// A request with no catalog but a recorded replacement — a transport tools
+// constant or a ProviderOptions tools value — prices that replacement, which is
+// the whole tool list such a request sends. The delta is not applied to it: the
+// replacement is the wire list, not a catalog a builder substitutes schemas
+// into.
 func effectiveToolsJSONBytes(req Request, res registry.Resolved, override bool) int {
 	if !req.pricesTools(res, override) {
 		return 0
@@ -576,8 +597,9 @@ func withEffectiveToolPrice(req Request, res registry.Resolved, override bool) R
 }
 
 // pricesTools reports whether this request has a tool price to apply for res: a
-// catalog, or a recorded ProviderOptions replacement that is the wire list on a
-// request whose catalog is empty.
+// catalog, or a recorded replacement — a transport tools constant or a
+// ProviderOptions tools value — that is the wire list on a request whose catalog
+// is empty.
 func (req Request) pricesTools(res registry.Resolved, override bool) bool {
 	if len(req.Tools) > 0 {
 		return true

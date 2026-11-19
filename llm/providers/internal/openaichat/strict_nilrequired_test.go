@@ -94,3 +94,47 @@ func TestARawSubschemaIsNotItsDecodedTwin(t *testing.T) {
 		t.Fatal("a copy that only reorders required names was reported as a different length")
 	}
 }
+
+// A property named "required" is a schema, not a list of names.
+//
+// The comparison reads a required list by its name set, which is what makes a
+// reorder byte-neutral. A property whose name happens to be "required" reaches
+// the same key in the properties map, and its value is a subschema. Reading that
+// subschema as a name list cannot succeed, so the two sides have to be compared
+// as values; refusing them reports a byte-neutral projection as a change and
+// makes the caller marshal the whole catalog to find that out.
+func TestAPropertyNamedRequiredIsComparedAsASchema(t *testing.T) {
+	t.Parallel()
+	schema := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"path": map[string]any{"type": "string"},
+			// The property name collides with the keyword the comparison
+			// special-cases, and its value is a schema.
+			"required": map[string]any{"type": "boolean"},
+		},
+		// Deliberately unsorted, so the projection changes the value without
+		// changing its serialized length.
+		"required": []string{"required", "path"},
+	}
+	if !SameSerializedLength(schema, StrictifyJSONSchema(schema)) {
+		t.Fatal("a projection that only reordered required names was reported as a different length because a " +
+			"property is named \"required\"")
+	}
+
+	// The control: the same collision where the projection really does change
+	// the bytes. A closed value set gains the type it implies, so the answer has
+	// to be "different" however the collision is read.
+	changing := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"required": map[string]any{"enum": []any{"yes", "no"}},
+		},
+		"required": []string{"required"},
+	}
+	if SameSerializedLength(changing, StrictifyJSONSchema(changing)) {
+		t.Fatal("a projection that stated a type for a closed value set was reported as the same length")
+	}
+}

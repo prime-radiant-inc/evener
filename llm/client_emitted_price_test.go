@@ -279,44 +279,69 @@ func TestPricingTheEmittedListIsIdempotent(t *testing.T) {
 func TestAByteNeutralProjectionDoesNotMarshalTheCatalog(t *testing.T) {
 	t.Parallel()
 	var calls int32
-	defs := []ToolDefinition{{
-		Name: "write_file",
-		Parameters: map[string]any{
-			"type":                 "object",
-			"additionalProperties": false,
-			"properties": map[string]any{
-				"path":    map[string]any{"type": "string"},
-				"content": map[string]any{"type": "string"},
-				"note":    map[string]any{"type": "string", "description": countedSchemaValue{calls: &calls}},
-			},
-			// Deliberately unsorted: the projection sorts it, so the emitted
-			// schema differs structurally from this one while serializing to the
-			// same length. A sorted list here would make DeepEqual short-circuit
-			// and the comparison under test would never run.
-			"required": []string{"path", "note", "content"},
-		},
-	}}
 	res := responsesRowOn(true)
+	for _, tc := range []struct {
+		name   string
+		params map[string]any
+	}{
+		{
+			name: "reordered required list",
+			params: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"path":    map[string]any{"type": "string"},
+					"content": map[string]any{"type": "string"},
+					"note":    map[string]any{"type": "string", "description": countedSchemaValue{calls: &calls}},
+				},
+				// Deliberately unsorted: the projection sorts it, so the emitted
+				// schema differs structurally from this one while serializing to the
+				// same length. A sorted list here would make DeepEqual short-circuit
+				// and the comparison under test would never run.
+				"required": []string{"path", "note", "content"},
+			},
+		},
+		{
+			// A property whose name collides with the keyword the comparator
+			// reads as a name list. Its value is a schema, so the name-set
+			// reading cannot account for it, and refusing it there reported a
+			// byte-neutral projection as a change.
+			name: "property named required",
+			params: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"path":     map[string]any{"type": "string"},
+					"required": map[string]any{"type": "boolean"},
+					"note":     map[string]any{"type": "string", "description": countedSchemaValue{calls: &calls}},
+				},
+				"required": []string{"path", "required", "note"},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			defs := []ToolDefinition{{Name: "write_file", Parameters: tc.params}}
+			req := Request{
+				Provider:       "emitted-price",
+				Model:          "model",
+				Messages:       []Message{User("x")},
+				Tools:          defs,
+				ToolsJSONBytes: ToolsJSONBytes(defs),
+			}
+			before := atomic.LoadInt32(&calls)
+			got := priceEmittedToolSchemas(req, res)
+			marshals := atomic.LoadInt32(&calls) - before
 
-	req := Request{
-		Provider:       "emitted-price",
-		Model:          "model",
-		Messages:       []Message{User("x")},
-		Tools:          defs,
-		ToolsJSONBytes: ToolsJSONBytes(defs),
-	}
-	before := atomic.LoadInt32(&calls)
-	got := priceEmittedToolSchemas(req, res)
-	marshals := atomic.LoadInt32(&calls) - before
-
-	if got.ToolsJSONBytes != req.ToolsJSONBytes {
-		t.Fatalf("priced count = %d, want the count it arrived with, %d: the projection only reorders a "+
-			"required list here, so the bytes are the same", got.ToolsJSONBytes, req.ToolsJSONBytes)
-	}
-	if marshals != 0 {
-		t.Fatalf("pricing the catalog marshaled it %d time(s), want 0: the projection answers the byte-length "+
-			"question itself, and a destination that re-encodes to confirm a reorder costs the whole catalog "+
-			"on every pricing call", marshals)
+			if got.ToolsJSONBytes != req.ToolsJSONBytes {
+				t.Fatalf("priced count = %d, want the count it arrived with, %d: the projection only reorders a "+
+					"required list here, so the bytes are the same", got.ToolsJSONBytes, req.ToolsJSONBytes)
+			}
+			if marshals != 0 {
+				t.Fatalf("pricing the catalog marshaled it %d time(s), want 0: the projection answers the "+
+					"byte-length question itself, and a destination that re-encodes to confirm a reorder costs "+
+					"the whole catalog on every pricing call", marshals)
+			}
+		})
 	}
 
 	// The control: a projection that really does change the bytes is still

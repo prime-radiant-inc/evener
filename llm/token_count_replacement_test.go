@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 
 	"primeradiant.com/evener/llm/registry"
@@ -240,6 +241,133 @@ func TestAProviderToolsOptionPricesARequestWithNoCatalog(t *testing.T) {
 			}
 			if got, want := EstimateInputTokensForResolved(res, stamped).Tokens, lower; got != want {
 				t.Fatalf("reading for an empty catalog with a stamp = %d, want the no-tools reading %d", got, want)
+			}
+		})
+	}
+}
+
+// A transport tools constant is the list the wire carries.
+//
+// The Chat and standard Responses builders write the request's tools and then
+// copy the protocol's options over the body; the transport's body constants run
+// after both (protocolhttp.Prepare), so a row that pins tools overrides the
+// option. Pricing the option charges bytes the request never sends: under an
+// input cap between the two prices, admission refuses a request that fits and
+// the local CountInputTokens fallback reports the inflated count.
+//
+// The route without the constant is the control: there the option is the wire
+// list, and its price stands.
+func TestATransportToolsConstantIsTheListThatIsPriced(t *testing.T) {
+	t.Parallel()
+	for _, protocol := range []string{registry.ProtocolOpenAIChat, registry.ProtocolOpenAIResponses} {
+		t.Run(protocol, func(t *testing.T) {
+			t.Parallel()
+			pinned := providerToolList(2)
+			large := providerToolList(24)
+			pinnedJSON, err := json.Marshal(pinned)
+			if err != nil {
+				t.Fatalf("measure the pinned list: %v", err)
+			}
+			largeJSON, err := json.Marshal(large)
+			if err != nil {
+				t.Fatalf("measure the option's list: %v", err)
+			}
+			if len(pinnedJSON) == 0 || len(largeJSON) <= len(pinnedJSON) {
+				t.Fatalf("fixture does not separate the two prices: pinned=%d option=%d bytes",
+					len(pinnedJSON), len(largeJSON))
+			}
+
+			res := chatRowOn(false)
+			if protocol == registry.ProtocolOpenAIResponses {
+				res = responsesRowOn(false)
+			}
+			res.Transport.Body = map[string]any{"tools": pinned}
+			req := Request{
+				Provider: "emitted-price",
+				Model:    "model",
+				Messages: []Message{User("x")},
+				ProviderOptions: map[string]any{
+					protocol: map[string]any{"tools": large},
+				},
+			}
+
+			priced := priceEmittedToolSchemas(req, res)
+			if priced.ToolsJSONBytes != len(pinnedJSON) {
+				t.Fatalf("priced count = %d, want the transport's %d: the constant runs after the option, so the "+
+					"option's %d bytes never reach the wire", priced.ToolsJSONBytes, len(pinnedJSON), len(largeJSON))
+			}
+
+			// The option's own price, taken on the route that does not pin a
+			// list. It is the inflated reading the constant must replace, and
+			// it pins that a route which leaves tools alone still prices the
+			// option.
+			unpinned := res
+			unpinned.Transport = registry.Transport{}
+			if got := priceEmittedToolSchemas(req, unpinned).ToolsJSONBytes; got != len(largeJSON) {
+				t.Fatalf("route without the constant priced the option at %d bytes, want %d", got, len(largeJSON))
+			}
+
+			without := Request{Provider: req.Provider, Model: req.Model, Messages: req.Messages}
+			lower := EstimateInputTokensForResolved(res, without).Tokens
+			upper := EstimateInputTokensForResolved(unpinned, priceEmittedToolSchemas(req, unpinned)).Tokens
+			limit := capBetweenPrices(t, lower, upper)
+
+			c, _, bodies := emittedPriceRouteWithTransportBody(t, limit, protocol, false, map[string]any{"tools": pinned})
+			if _, err := c.Complete(context.Background(), req); err != nil {
+				t.Fatalf("Complete under a cap of %d: %v: the wire list costs %d bytes and the option's costs %d, "+
+					"so this request fits", limit, err, len(pinnedJSON), len(largeJSON))
+			}
+			got := bodies()
+			if len(got) != 1 {
+				t.Fatalf("requests on the wire = %d, want 1", len(got))
+			}
+			var wantTools any
+			if err := json.Unmarshal(pinnedJSON, &wantTools); err != nil {
+				t.Fatalf("decode the pinned list: %v", err)
+			}
+			if !reflect.DeepEqual(got[0]["tools"], wantTools) {
+				t.Fatalf("wire tools = %#v, want the pinned list %#v", got[0]["tools"], wantTools)
+			}
+
+			// Stream admits the request through the same budget, so the
+			// inflated reading would refuse it there too. This asserts the
+			// admission decision only: a fitting request is not refused, and
+			// nothing reaches the wire before the decision.
+			st, err := c.Stream(context.Background(), req)
+			if err != nil {
+				t.Fatalf("Stream under a cap of %d: %v: the wire list costs %d bytes and the option's costs %d",
+					limit, err, len(pinnedJSON), len(largeJSON))
+			}
+			// The wiring is what this assertion is about, not the decoding: the
+			// shared server answers JSON rather than SSE, so the stream is
+			// closed once it exists rather than read.
+			_ = st.Close()
+			if got := len(bodies()); got != 2 {
+				t.Fatalf("requests on the wire after Stream = %d, want 2", got)
+			}
+
+			// The local reading is the count a caller sizes the request with,
+			// so it must not describe the option either.
+			counted, err := c.CountInputTokens(context.Background(), req)
+			if err != nil {
+				t.Fatalf("CountInputTokens: %v", err)
+			}
+			if counted.Tokens >= upper {
+				t.Fatalf("CountInputTokens = %d, want less than the option's reading %d: the request sends %d bytes "+
+					"of tools, not %d", counted.Tokens, upper, len(pinnedJSON), len(largeJSON))
+			}
+
+			// A request that also carries a catalog is priced the same way: the
+			// constant overrides the body's tools whatever the builder wrote
+			// there, so the catalog is not the wire list either.
+			catalog := strictGrowthCatalog(24)
+			withCatalog := priceEmittedToolSchemas(Request{
+				Provider: req.Provider, Model: req.Model, Messages: req.Messages,
+				Tools: catalog, ToolsJSONBytes: ToolsJSONBytes(catalog),
+			}, res)
+			if withCatalog.ToolsJSONBytes != len(pinnedJSON) {
+				t.Fatalf("priced count for a catalog under a transport constant = %d, want the constant's %d",
+					withCatalog.ToolsJSONBytes, len(pinnedJSON))
 			}
 		})
 	}
