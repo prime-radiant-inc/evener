@@ -663,6 +663,54 @@ func TestStrictToolsTrueRouteStillCertifiesFullyRequiredSchemas(t *testing.T) {
 	if params := tool["parameters"].(map[string]any); params["additionalProperties"] != false {
 		t.Fatalf("additionalProperties = %#v, want false (strictified)", params["additionalProperties"])
 	}
+
+	t.Run("nested closed object union stays strict and accepts both alternatives", func(t *testing.T) {
+		t.Parallel()
+		unionSchema := map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"kind": map[string]any{"type": "string"},
+			},
+			"required": []string{"kind"},
+			"anyOf": []any{
+				map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"kind": map[string]any{"type": "string", "enum": []any{"a"}},
+					},
+					"required": []string{"kind"},
+				},
+				map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"kind": map[string]any{"type": "string", "enum": []any{"b"}},
+					},
+					"required": []string{"kind"},
+				},
+			},
+		}
+		unionReq := userReq("hi")
+		unionReq.Tools = []llm.ToolDefinition{{Name: "choose_kind", Parameters: unionSchema}}
+		unionBody := build(t, unionReq, resolved(strictCaps))
+		unionTool := unionBody["tools"].([]map[string]any)[0]
+		if unionTool["strict"] != true {
+			t.Fatalf("strict = %#v, want true for closed object union", unionTool["strict"])
+		}
+		compiled := compileWireSchema(t, unionTool["parameters"].(map[string]any))
+		for _, valid := range []map[string]any{{"kind": "a"}, {"kind": "b"}} {
+			if err := compiled.Validate(valid); err != nil {
+				t.Fatalf("emitted schema rejected %#v: %v", valid, err)
+			}
+		}
+		for _, invalid := range []map[string]any{{"kind": "c"}, {"kind": "a", "extra": 1}} {
+			if err := compiled.Validate(invalid); err == nil {
+				t.Fatalf("emitted schema accepted invalid %#v", invalid)
+			}
+		}
+	})
 }
 
 // A request middleware may replace a tool's parameters after preparation. The

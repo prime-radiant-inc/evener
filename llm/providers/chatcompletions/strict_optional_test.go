@@ -1,13 +1,17 @@
 package chatcompletions
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"slices"
 	"sync/atomic"
 	"testing"
+
+	"github.com/santhosh-tekuri/jsonschema/v5"
 
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providers/internal/openaichat"
@@ -146,6 +150,67 @@ func TestChatStrictToolsStillStrictifyFullyRequiredSchemas(t *testing.T) {
 	if params := fn["parameters"].(map[string]any); params["additionalProperties"] != false {
 		t.Fatalf("additionalProperties = %#v, want false (strictified)", params["additionalProperties"])
 	}
+
+	t.Run("nested closed object union stays strict and accepts both alternatives", func(t *testing.T) {
+		t.Parallel()
+		unionSchema := map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"kind": map[string]any{"type": "string"},
+			},
+			"required": []string{"kind"},
+			"anyOf": []any{
+				map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"kind": map[string]any{"type": "string", "enum": []any{"a"}},
+					},
+					"required": []string{"kind"},
+				},
+				map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"kind": map[string]any{"type": "string", "enum": []any{"b"}},
+					},
+					"required": []string{"kind"},
+				},
+			},
+		}
+		unionReq := userReq("hi")
+		unionReq.Tools = []llm.ToolDefinition{{Name: "choose_kind", Parameters: unionSchema}}
+		unionBody := build(t, unionReq, resolved(func(c *registry.Caps) { c.StrictTools = new(true) }))
+		unionFn := unionBody["tools"].([]map[string]any)[0]["function"].(map[string]any)
+		if unionFn["strict"] != true {
+			t.Fatalf("strict = %#v, want true for closed object union", unionFn["strict"])
+		}
+		encoded, err := json.Marshal(unionFn["parameters"])
+		if err != nil {
+			t.Fatalf("marshal emitted schema: %v", err)
+		}
+		compiler := jsonschema.NewCompiler()
+		compiler.Draft = jsonschema.Draft2020
+		const uri = "urn:evener:chat-union-schema"
+		if err := compiler.AddResource(uri, bytes.NewReader(encoded)); err != nil {
+			t.Fatalf("add resource: %v", err)
+		}
+		compiled, err := compiler.Compile(uri)
+		if err != nil {
+			t.Fatalf("compile emitted schema: %v", err)
+		}
+		for _, valid := range []map[string]any{{"kind": "a"}, {"kind": "b"}} {
+			if err := compiled.Validate(valid); err != nil {
+				t.Fatalf("emitted schema rejected %#v: %v", valid, err)
+			}
+		}
+		for _, invalid := range []map[string]any{{"kind": "c"}, {"kind": "a", "extra": 1}} {
+			if err := compiled.Validate(invalid); err == nil {
+				t.Fatalf("emitted schema accepted invalid %#v", invalid)
+			}
+		}
+	})
 }
 
 // On a route without strict enforcement a parameterless tool still has to carry

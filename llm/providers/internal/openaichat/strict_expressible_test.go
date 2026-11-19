@@ -681,30 +681,33 @@ func TestStrictExpressible(t *testing.T) {
 			},
 			want: false,
 		},
-		// A combinator is outside the modeled keyword set, so a schema carrying
-		// one is refused whether or not each branch happens to be closed. The
-		// rewrite closes branches from any node it visits, and a branch it
-		// changes cannot be certified as a whole.
+		// An anyOf branch that is already closed and requires every declared
+		// property is preserved identically by the projection, so it is certified.
 		{
-			name: "combinator branch is already closed and fully required",
+			name: "anyOf branches already closed and fully required",
 			in: map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,
 				"properties": map[string]any{
-					"id":   map[string]any{"type": "string"},
-					"name": map[string]any{"type": "string"},
+					"kind": map[string]any{"type": "string"},
 				},
-				"required": []string{"id", "name"},
+				"required": []string{"kind"},
 				"anyOf": []any{
 					map[string]any{
 						"type":                 "object",
 						"additionalProperties": false,
-						"properties":           map[string]any{"id": map[string]any{"type": "string"}},
-						"required":             []string{"id"},
+						"properties":           map[string]any{"kind": map[string]any{"type": "string", "enum": []any{"a"}}},
+						"required":             []string{"kind"},
+					},
+					map[string]any{
+						"type":                 "object",
+						"additionalProperties": false,
+						"properties":           map[string]any{"kind": map[string]any{"type": "string", "enum": []any{"b"}}},
+						"required":             []string{"kind"},
 					},
 				},
 			},
-			want: false,
+			want: true,
 		},
 		// A type list naming both object and array has two shapes to satisfy,
 		// and the node is not transformed, so the array side is never
@@ -3436,17 +3439,122 @@ func TestNestedAnyOfOfTypedScalarBranchesIsCertified(t *testing.T) {
 			t.Fatal("projected schema accepted integer outside both branches")
 		}
 	})
+
+	t.Run("nested anyOf of closed object branches is certified", func(t *testing.T) {
+		t.Parallel()
+		cases := []struct {
+			name    string
+			schema  map[string]any
+			accepts []map[string]any
+			rejects []map[string]any
+		}{
+			{
+				name: "closed root with closed anyOf enum branches",
+				schema: map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"kind": map[string]any{"type": "string"},
+					},
+					"required": []string{"kind"},
+					"anyOf": []any{
+						map[string]any{
+							"type":                 "object",
+							"additionalProperties": false,
+							"properties": map[string]any{
+								"kind": map[string]any{"type": "string", "enum": []any{"alpha"}},
+							},
+							"required": []string{"kind"},
+						},
+						map[string]any{
+							"type":                 "object",
+							"additionalProperties": false,
+							"properties": map[string]any{
+								"kind": map[string]any{"type": "string", "enum": []any{"beta"}},
+							},
+							"required": []string{"kind"},
+						},
+					},
+				},
+				accepts: []map[string]any{
+					{"kind": "alpha"},
+					{"kind": "beta"},
+				},
+				rejects: []map[string]any{
+					{"kind": "gamma"},
+					{"kind": "alpha", "extra": true},
+				},
+			},
+			{
+				name: "property with closed discriminated-union object branches",
+				schema: map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"action": map[string]any{
+							"anyOf": []map[string]any{
+								{
+									"type":                 "object",
+									"additionalProperties": false,
+									"properties": map[string]any{
+										"kind":     map[string]any{"const": "click"},
+										"selector": map[string]any{"type": "string"},
+									},
+									"required": []string{"kind", "selector"},
+								},
+								{
+									"type":                 "object",
+									"additionalProperties": false,
+									"properties": map[string]any{
+										"kind": map[string]any{"const": "wait"},
+										"ms":   map[string]any{"type": "integer"},
+									},
+									"required": []string{"kind", "ms"},
+								},
+							},
+						},
+					},
+					"required": []string{"action"},
+				},
+				accepts: []map[string]any{
+					{"action": map[string]any{"kind": "click", "selector": "#go"}},
+					{"action": map[string]any{"kind": "wait", "ms": 100}},
+				},
+				rejects: []map[string]any{
+					{"action": map[string]any{"kind": "click"}},
+					{"action": map[string]any{"kind": "wait", "ms": 100, "extra": true}},
+				},
+			},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				if !StrictExpressible(tc.schema) {
+					t.Fatal("nested union of closed, fully-required object branches was refused")
+				}
+				projected := StrictifyJSONSchema(tc.schema)
+				for _, valid := range tc.accepts {
+					if !schemaAccepts(t, projected, valid) {
+						t.Fatalf("projected schema rejected %#v", valid)
+					}
+				}
+				for _, invalid := range tc.rejects {
+					if schemaAccepts(t, projected, invalid) {
+						t.Fatalf("projected schema accepted %#v", invalid)
+					}
+				}
+			})
+		}
+	})
 }
 
-// The other direction: a union whose branch the projection would narrow must
-// still be refused. An object branch is closed against its own properties, and
-// that closure can contradict a constraint at the same node — here the parent
-// requires name while the branch forbids it — so certifying each branch alone
-// would certify a union that admits nothing.
+// A union whose branch the projection would narrow (open object branch, optional
+// property, typeless object properties, or unmodeled combinator) must stay
+// refused.
 func TestNestedAnyOfWithAnObjectBranchIsStillRefused(t *testing.T) {
 	t.Parallel()
 	cases := map[string]map[string]any{
-		"object branch typed": {
+		"open object branch": {
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
@@ -3456,10 +3564,28 @@ func TestNestedAnyOfWithAnObjectBranchIsStillRefused(t *testing.T) {
 			"required": []string{"id", "name"},
 			"anyOf": []any{
 				map[string]any{
+					"type":       "object",
+					"properties": map[string]any{"id": map[string]any{"type": "string"}},
+					"required":   []string{"id"},
+				},
+			},
+		},
+		"closed object branch with optional property": {
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"kind": map[string]any{"type": "string"},
+			},
+			"required": []string{"kind"},
+			"anyOf": []any{
+				map[string]any{
 					"type":                 "object",
 					"additionalProperties": false,
-					"properties":           map[string]any{"id": map[string]any{"type": "string"}},
-					"required":             []string{"id"},
+					"properties": map[string]any{
+						"kind": map[string]any{"type": "string"},
+						"note": map[string]any{"type": "string"},
+					},
+					"required": []string{"kind"},
 				},
 			},
 		},
@@ -3497,6 +3623,13 @@ func TestNestedAnyOfWithAnObjectBranchIsStillRefused(t *testing.T) {
 			"properties": map[string]any{"a": map[string]any{"type": "string"}},
 			"required":   []string{"a"},
 			"anyOf":      []any{[]byte(`{"type":"object"}`)},
+		},
+		"nil branch map": {
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties":           map[string]any{"a": map[string]any{"type": "string"}},
+			"required":             []string{"a"},
+			"anyOf":                []map[string]any{nil},
 		},
 		"oneOf is not read this way": {
 			"type":       "object",

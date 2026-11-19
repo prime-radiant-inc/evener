@@ -1285,25 +1285,18 @@ func keywordsModeled(m map[string]any) bool {
 	return true
 }
 
-// anyOfExpressible reports whether a node carrying anyOf can be certified: anyOf
-// must be its only unmodeled keyword, every branch must be strict-expressible on
-// its own terms, and no branch may be an object node.
+// anyOfExpressible reports whether a node carrying anyOf can be certified:
+// anyOf must be its only unmodeled keyword, and every branch must already be
+// strict-expressible on its own terms.
 //
-// A union accepts a value when any branch accepts it, so a node whose branches
-// all keep their accepted sets under the projection keeps the union too. That is
-// the rule for a branch of any scalar or array type: the projection leaves it as
-// advertised, or rewrites only the array items its own subtree already covers,
-// and neither can interact with a constraint at the node above it.
-//
-// An object branch is different and is refused. Closing it against its own
-// properties is the one narrowing the projection performs on a branch, and that
-// closure can contradict a sibling constraint at the same node: a branch that
-// declares {id} while the parent requires name becomes unsatisfiable once closed,
-// so the union admits nothing the caller meant it to. Certifying each branch in
-// isolation cannot see that interaction, so the shape is left non-strict with the
-// schema it advertised. A oneOf or allOf stays refused for the same reason the
-// keyword table gives: their meaning depends on how many branches match, and the
-// projection neither reads nor rewrites that.
+// A union accepts a value when any branch accepts it, so when every branch
+// keeps its exact accepted set under the projection — including object branches
+// that already set additionalProperties: false and require exactly their
+// declared properties — the union keeps its exact accepted set too. An open
+// object branch, a branch with optional properties, or a typeless branch with
+// properties is refused by the recursive check because closing it would narrow
+// the union or contradict sibling constraints. oneOf and allOf stay refused
+// because their meaning depends on how many branches match.
 func anyOfExpressible(m map[string]any, dialect schemaDialect) bool {
 	for keyword := range m {
 		if modeledKeywords[keyword] != notCovered || keyword == "anyOf" {
@@ -1320,19 +1313,6 @@ func anyOfExpressible(m map[string]any, dialect schemaDialect) bool {
 		return false
 	}
 	for _, branch := range branches {
-		// An object branch is recognised by its type or by the keyword that only
-		// an object node can usefully carry: a branch written as
-		// {"properties": {...}, "required": [...]} with no type is closed by the
-		// rewrite exactly as a typed one is.
-		if isObject, _ := schemaTypeFlags(branch["type"]); isObject {
-			return false
-		}
-		if _, hasProps := branch["properties"]; hasProps {
-			return false
-		}
-		if _, hasAdditional := branch["additionalProperties"]; hasAdditional {
-			return false
-		}
 		if !strictlyExpressibleNode(branch, false, dialect) {
 			return false
 		}
@@ -1349,14 +1329,21 @@ func schemaBranches(raw any) ([]map[string]any, bool) {
 		out := make([]map[string]any, 0, len(list))
 		for _, item := range list {
 			branch, ok := item.(map[string]any)
-			if !ok {
+			if !ok || branch == nil {
 				return nil, false
 			}
 			out = append(out, branch)
 		}
 		return out, true
 	case []map[string]any:
-		return append([]map[string]any{}, list...), true
+		out := make([]map[string]any, 0, len(list))
+		for _, branch := range list {
+			if branch == nil {
+				return nil, false
+			}
+			out = append(out, branch)
+		}
+		return out, true
 	default:
 		return nil, false
 	}
