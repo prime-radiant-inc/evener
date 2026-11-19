@@ -2205,8 +2205,14 @@ function ConversationScreenView({
 			// component: the refusal also rides the ref-keyed channel, and the
 			// composer that opens on the surviving ref adopts it on mount.
 			const survivor = navigation.getState().routes.find((entry) => entry.key === survivingKey);
-			if (survivor !== undefined && survivor.key !== route.key && typeof survivor.params?.ref === "string")
-				publishCommandRefusal(survivor.params.hubId ?? route.params.hubId, survivor.params.ref, refusal);
+			const survivorParams = survivor?.params as { hubId?: unknown; ref?: unknown } | undefined;
+			if (
+				survivor !== undefined &&
+				survivor.key !== route.key &&
+				typeof survivorParams?.hubId === "string" &&
+				typeof survivorParams.ref === "string"
+			)
+				publishCommandRefusal(survivorParams.hubId, survivorParams.ref, refusal);
 		} finally {
 			commandBusy.current = false;
 			setCommandPending(false);

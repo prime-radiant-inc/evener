@@ -1253,7 +1253,7 @@ it("says why a typed /model was refused on the composer the replacement mounted"
 		key: `conversation-${resolvedRef}`,
 		name: "Conversation",
 		params: { hubId: "hub-1", ref: resolvedRef, title: "Session" },
-	} as unknown as typeof oldRoute;
+	} as unknown as ConversationScreenProps["route"];
 	let replacement: ReactTestRenderer | null = null;
 	vi.mocked(navigation.replace).mockImplementationOnce(() => {
 		navigationState.state = {
@@ -1285,8 +1285,8 @@ it("says why a typed /model was refused on the composer the replacement mounted"
 	// The replacement was mounted at replace time, before the daemon answered:
 	// it shows the refusal through the channel subscription, not a mount read.
 	expect(replacement).not.toBe(null);
-	expect(actionErrors(replacement)).toContain("refused");
-	expect(renderedText(replacement)).toContain("sentinel-refusal-reason-93f1");
+	expect(actionErrors(replacement!)).toContain("refused");
+	expect(renderedText(replacement!)).toContain("sentinel-refusal-reason-93f1");
 	// The draft stays on the ref the command was typed on: the original ref's
 	// document holds the unconfirmed text, and the replacement's holds nothing.
 	expect(nativeDrafts().read({ hubId: "hub-1", sessionRef: "ref-cold-model-remount" })).toMatchObject({
