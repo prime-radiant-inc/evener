@@ -13,6 +13,7 @@ import {
   nextComposerImageMarker,
   rejectionReason,
   stripMarker,
+  type TextSplice,
 } from "@evener/appwire-client";
 import { type SetStateAction, useMemo, useState } from "react";
 import { useStore } from "zustand";
@@ -78,7 +79,14 @@ export type TextEditSource = "edit" | "submission" | "cleanup";
 export interface TextEditor {
   /** Selection is the UTF-16 range replaced by an accepted attachment marker. */
   read(): { text: string; cursor: number; selection: { start: number; end: number } };
-  write(text: string, cursor: number, source?: TextEditSource): void;
+  /** `splice`, when supplied, is the exact span in the CURRENT text this write
+   * replaced and how much text went in its place. It is what makes the write
+   * unambiguous: a gesture that inserts a marker immediately before an
+   * existing one produces a before/after pair that shares "[image " with the
+   * untouched marker, and inferring the edit from that pair would put the
+   * insertion INSIDE it and retire its provenance. Callers that know their own
+   * coordinates should always say so. */
+  write(text: string, cursor: number, source?: TextEditSource, splice?: TextSplice): void;
 }
 
 export interface UseAttachmentsResult {
@@ -284,10 +292,18 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
         text,
         selection: { start, end },
       } = editor.read();
+      // One write reaches the editor for the whole batch, so its splice is the
+      // batch's own: the selection the gesture replaced, and the markers put
+      // there. Reported as exact coordinates rather than left to be inferred -
+      // an insertion directly before an adopted marker shares "[image " with
+      // it, and the inference would retire that marker.
+      const splice: TextSplice = { start, end, insertedLength: 0 };
       const newItems: PendingAttachment[] = accepted.map(({ file, marker, token }) => {
-        const edit = insertMarker(text, start, end, markerText(marker));
+        const literal = markerText(marker);
+        const edit = insertMarker(text, start, end, literal);
         text = edit.value;
         start = end = edit.cursor;
+        splice.insertedLength += literal.length;
         const item = { marker, name: file.name, mediaType: "image/png", pending: true };
         operationTokens.set(item, token);
         return item;
@@ -300,7 +316,7 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
       // provenance, and the store's own change notification would then depend
       // on a second write to repair it - which is the window a reload, or an
       // encode settling late, could read the wrong draft through.
-      editor.write(text, start);
+      editor.write(text, start, undefined, splice);
 
       for (const { file, token } of accepted) {
         reencodeToPng(file)
@@ -324,7 +340,7 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
             if (currentItem) {
               const current = editor.read();
               const stripped = stripMarker(current.text, current.cursor, currentItem.marker);
-              editor.write(stripped.value, stripped.cursor ?? current.cursor, "cleanup");
+              editor.write(stripped.value, stripped.cursor ?? current.cursor, "cleanup", stripped.splice);
               setItems((prev) => prev.filter((item) => operationToken(item) !== token));
             }
             onRejected(`${file.name || "unknown"} (image decode failed)`);
@@ -351,7 +367,7 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
     if (removed) removedWhilePendingRef.current.add(operationToken(removed));
     const current = editor.read();
     const stripped = stripMarker(current.text, current.cursor, marker);
-    editor.write(stripped.value, stripped.cursor ?? current.cursor);
+    editor.write(stripped.value, stripped.cursor ?? current.cursor, undefined, stripped.splice);
     setItems((prev) => prev.filter((item) => item.marker !== marker));
   };
 
@@ -365,7 +381,7 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
         const stripped = stripMarker(text, cursor, marker);
         text = stripped.value;
         cursor = stripped.cursor ?? cursor;
-        editor.write(text, cursor, "submission");
+        editor.write(text, cursor, "submission", stripped.splice);
       }
     }
     setItems((prev) => {

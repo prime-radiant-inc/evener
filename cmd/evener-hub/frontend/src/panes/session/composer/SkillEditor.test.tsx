@@ -402,4 +402,50 @@ describe("SkillEditor real ProseMirror view", () => {
     paste(editor, ">");
     expect(changed.mock.lastCall?.[0]).toEqual({ text: ">[image 1] tail", skillNames: [] });
   });
+
+  // At the editor boundary. Serialization already refuses to call "[image 1"
+  // an adopted occurrence, but the mark survives the edit that broke the
+  // literal. A repair that trusted the mark would delete the fragment the
+  // person is still editing, and the command chip after it, in the same
+  // transaction - then report that deletion as the value.
+  it("repairs only intact marked occurrences, preserving an edited fragment and the chip after it, in one undo", () => {
+    const text = "[image 1] /inspect [image 2]";
+    const result = mount({
+      text,
+      skillNames: [],
+      commandNames: ["inspect"],
+      mentions: [{ kind: "command", name: "inspect", offset: text.indexOf("/inspect") }],
+      adoptedImageMarkers: [1, 2],
+      adoptedImageRanges: [
+        { marker: 1, start: 0, end: 9 },
+        { marker: 2, start: 19, end: 28 },
+      ],
+    });
+    expect(result.editor.querySelectorAll("[data-command-name]")).toHaveLength(1);
+
+    // Delete the closing bracket of the FIRST reference.
+    act(() => result.ref.current?.setSelection(8, 9));
+    key(result.editor, "Backspace");
+    expect(result.value().text).toBe("[image 1 /inspect [image 2]");
+    // Serialization no longer calls the broken fragment adopted; the intact
+    // second reference still is.
+    expect(result.value().adoptedImageMarkers).toEqual([2]);
+
+    let removed = 0;
+    act(() => {
+      removed = result.ref.current?.removeStagedAnchors() ?? 0;
+    });
+    // ONE intact occurrence, not the marked fragment beside it.
+    expect(removed).toBe(1);
+    expect(result.value().text).toBe("[image 1 /inspect ");
+    expect(result.value().commandNames).toEqual(["inspect"]);
+    // Nothing adopted is serialized as no adoption at all.
+    expect(result.value().adoptedImageRanges ?? []).toEqual([]);
+    expect(result.editor.querySelectorAll("[data-command-name]")).toHaveLength(1);
+
+    // One undo restores the whole repair in a single step.
+    key(result.editor, "z", { ctrlKey: true });
+    expect(result.value().text).toBe("[image 1 /inspect [image 2]");
+    expect(result.value().adoptedImageMarkers).toEqual([2]);
+  });
 });

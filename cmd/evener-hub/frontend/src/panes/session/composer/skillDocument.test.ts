@@ -287,4 +287,24 @@ describe("skill document", () => {
       adoptedImageRanges: [{ marker: 1, start: 18, end: 27 }],
     });
   });
+
+  it("keeps an adopted occurrence across a splice the caller reports exactly", () => {
+    const value = {
+      text: "[image 1]",
+      skillNames: [],
+      adoptedImageMarkers: [1],
+      adoptedImageRanges: [{ marker: 1, start: 0, end: 9 }],
+    };
+    // An attachment gesture inserted "[image 2]" at the caret before the
+    // adopted literal. The inferred splice shares "[image " with it and reads
+    // as a replacement THROUGH the anchor; the gesture's own coordinates say
+    // it replaced nothing before the anchor, so the anchor survives.
+    expect(patchSelectionText(value, "[image 2][image 1]")).toEqual({ text: "[image 2][image 1]", skillNames: [] });
+    expect(patchSelectionText(value, "[image 2][image 1]", { start: 0, end: 0, insertedLength: 9 })).toEqual({
+      text: "[image 2][image 1]",
+      skillNames: [],
+      adoptedImageMarkers: [1],
+      adoptedImageRanges: [{ marker: 1, start: 9, end: 18 }],
+    });
+  });
 });

@@ -17,6 +17,7 @@ import {
   type SkillEditorValue,
   serializeSkillDocument,
   skillSchema,
+  stagedAnchorSpans,
   textOffsetToDocumentPosition,
 } from "./skillDocument";
 import styles from "./skilleditor.module.css";
@@ -272,22 +273,18 @@ function insertAtom(
   return true;
 }
 
-/** Every document position covered by a stagedAnchor mark naming one of
- * `markers` (all of them when the list is absent), as [from, to) document
- * ranges. A marked node IS one whole literal - parseSkillDocument and
- * serializeSkillDocument both refuse a range whose slice is not markerText -
- * so the node's own boundaries are the occurrence's. */
+/** Every document range covered by a marked run that still spells one whole
+ * marker literal, narrowed to the numbers `markers` names (all of them when
+ * the list is absent). The exact-literal test is stagedAnchorSpans', the same
+ * one serialization applies - a marked fragment the person edited ("[image 1"
+ * after deleting one bracket) is not an anchor there, so it is not one here
+ * either, and the repair leaves it and everything between it and the next
+ * anchor exactly where they are. */
 function stagedAnchorDocRanges(doc: ProseMirrorNode, markers?: readonly number[]): { from: number; to: number }[] {
   const wanted = markers === undefined ? undefined : new Set(markers);
-  const ranges: { from: number; to: number }[] = [];
-  doc.forEach((node, position) => {
-    if (!node.isText) return;
-    const marked = node.marks.some(
-      (mark) => mark.type.name === "stagedAnchor" && (wanted === undefined || wanted.has(Number(mark.attrs.marker))),
-    );
-    if (marked) ranges.push({ from: position, to: position + node.nodeSize });
-  });
-  return ranges;
+  return stagedAnchorSpans(doc)
+    .filter((span) => wanted === undefined || wanted.has(span.marker))
+    .map((span) => ({ from: span.from, to: span.to }));
 }
 
 /** A controlled value boundary around a persistent real ProseMirror editor. */

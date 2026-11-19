@@ -3,6 +3,7 @@ import {
   type ComposerMention,
   type ImageMarkerRange,
   markerNumbersOf,
+  type TextSplice,
   validMarkerRanges,
 } from "@evener/appwire-client";
 import { createStore } from "zustand/vanilla";
@@ -156,7 +157,10 @@ export interface ComposerSourceState {
    * that change the persisted record out of band never move only one of them. */
   claimDraftRevision(): void;
   persistDraft(text: string): void;
-  writeDraft(text: string, mayPersist: boolean, source?: TextEditSource): void;
+  /** `splice` is the exact span the caller's own edit replaced, when it knows
+   * it. Passing it keeps a marker the edit did not touch from being read as
+   * spliced through (see TextEditor.write). */
+  writeDraft(text: string, mayPersist: boolean, source?: TextEditSource, splice?: TextSplice): void;
   refreshRecovery(): void;
   readonly compositionOwnerId: string;
   runRecoveryOperation<T>(operation: () => Promise<T>): Promise<T>;
@@ -561,7 +565,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   function markRestore(): void {
     if (!disposed) state.setState((snapshot) => ({ restoreEpoch: snapshot.restoreEpoch + 1 }));
   }
-  function writeDraft(text: string, mayPersist: boolean, source?: TextEditSource): void {
+  function writeDraft(text: string, mayPersist: boolean, source?: TextEditSource, splice?: TextSplice): void {
     if (disposed) return;
     const next = patchSelectionText(
       // The adoption travels with the patch: patchSelectionText re-derives the
@@ -575,6 +579,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
         adoptedImageRanges: state.getState().adoptedImageRanges,
       },
       text,
+      splice,
     );
     updateSkillNames(next.skillNames);
     updateSelectionMeta(next);
@@ -591,10 +596,10 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     } else editText(text);
     if (mayPersist && currentRecoveryId() === null) persistDraft(text);
   }
-  function writeDetachedSourceDraft(text: string, _cursor: number, source?: TextEditSource): void {
+  function writeDetachedSourceDraft(text: string, _cursor: number, source?: TextEditSource, splice?: TextSplice): void {
     // A detached continuation cannot claim another pane's newer draft.
     if (disposed || !ownsDraftRevision()) return;
-    writeDraft(text, true, source);
+    writeDraft(text, true, source, splice);
   }
   const editor: TextEditor = {
     read: () => {
@@ -603,10 +608,10 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
       const text = currentDraftText();
       return { text, cursor: text.length, selection: { start: text.length, end: text.length } };
     },
-    write: (text, cursor, source) => {
+    write: (text, cursor, source, splice) => {
       if (disposed) return;
-      if (boundEditor) boundEditor.write(text, cursor, source);
-      else writeDetachedSourceDraft(text, cursor, source);
+      if (boundEditor) boundEditor.write(text, cursor, source, splice);
+      else writeDetachedSourceDraft(text, cursor, source, splice);
     },
   };
   const operations = createAttachmentOperations(editor, attachments);

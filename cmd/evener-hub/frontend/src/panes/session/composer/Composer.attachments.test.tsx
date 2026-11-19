@@ -1189,3 +1189,115 @@ test("attaching after deleting the only occurrence takes a fresh marker and the 
   await flushPendingTurnsProjectionForTests();
   expect(delivered).toEqual([]);
 });
+
+// Reopening a draft whose only reference is missing leaves an adopted
+// "[image 1]" the composer cannot back. Attaching a new image with the caret
+// immediately BEFORE that literal must not disturb it: the two markers share
+// "[image ", so a splice INFERRED from the before/after pair reads as a
+// replacement through the untouched one and drops its provenance. Losing the
+// provenance is silent and expensive - Send becomes available and ships
+// "[image 1]" as prose with no image behind it.
+test("attaching immediately before a missing reference keeps that reference adopted and Send blocked", async () => {
+  installCanvasStubs();
+  const user = userEvent.setup();
+  const ref = "ref_unbacked_before_insert";
+  writeComposerDraft(ref, {
+    text: "[image 1]",
+    skillNames: [],
+    stagedImageMarkers: [1],
+    stagedImageRanges: [{ marker: 1, start: 0, end: "[image 1]".length }],
+  });
+  const fake = await mountComposer(ref);
+  const delivered: unknown[] = [];
+  fake.on("turn/start", (params) => {
+    delivered.push(params.input);
+    return {
+      receipt: appliedReceipt(params.clientMutationId, "thread_a"),
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  expect(screen.getByTestId("composer-unbacked-image")).toBeTruthy();
+  await waitFor(() => expect(submitButton().disabled).toBe(true));
+
+  // Caret at offset 0, immediately before the adopted literal.
+  selectEditorText(textarea(), 0);
+  pastePngInto(textarea(), "fresh.png");
+  await screen.findByRole("button", { name: "View fresh.png" });
+
+  expect(textarea().textContent).toBe("[image 2][image 1]");
+  // The untouched literal still refuses, and the new tile stays attached.
+  expect(screen.getByTestId("composer-unbacked-image")).toBeTruthy();
+  await waitFor(() => expect(submitButton().disabled).toBe(true));
+  expect(screen.getByRole("button", { name: "View fresh.png" })).toBeTruthy();
+
+  fireEvent.submit(screen.getByTestId("composer-form"));
+  await flushPendingTurnsProjectionForTests();
+  expect(delivered).toEqual([]);
+
+  // Removing the reference leaves the fresh attachment's own marker alone, and
+  // the draft then sends with its bytes.
+  await user.click(screen.getByRole("button", { name: "Remove the reference" }));
+  expect(textarea().textContent).toBe("[image 2]");
+  expect(screen.queryByTestId("composer-unbacked-image")).toBeNull();
+  await waitFor(() => expect(submitButton().disabled).toBe(false));
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  const call = fake.calls.find((candidate) => candidate.method === "turn/start");
+  if (call === undefined) throw new Error("expected the repaired draft to send");
+  const input = (call.params as { input: Array<{ type: string; text?: string; name?: string }> }).input;
+  expect(input.filter((item) => item.type === "image").map((item) => item.name)).toEqual(["fresh.png"]);
+  expect(input.find((item) => item.type === "text")?.text?.includes("[image")).toBe(false);
+});
+
+// Two missing references, and the person edited the FIRST one: deleting its
+// closing bracket leaves "[image 1", which serialization already refuses to
+// call an adopted occurrence. The document mark survives that edit, though, so
+// a repair that trusted the mark alone would delete the edited fragment along
+// with the second reference - and persist that deletion. Only intact marked
+// occurrences are anchors; the fragment and the chip between the two
+// references are text the person must keep.
+test("removing a missing reference preserves an edited fragment and the chip after it, in one undo", async () => {
+  const user = userEvent.setup();
+  const ref = "ref_unbacked_edited_fragment";
+  const text = "[image 1] /inspect [image 2]";
+  writeComposerDraft(ref, {
+    text,
+    skillNames: [],
+    commandNames: ["inspect"],
+    mentions: [{ kind: "command", name: "inspect", offset: text.indexOf("/inspect") }],
+    stagedImageMarkers: [1, 2],
+  });
+  await mountComposer(ref, {
+    evener: {
+      ref,
+      capabilities: { ...FULL_CAPABILITIES, commandInput: true },
+      queue: { revision: 0 },
+    },
+  });
+  expect(within(textarea()).getAllByTestId("composer-command-chip")).toHaveLength(1);
+  expect(screen.getByTestId("composer-unbacked-image")).toBeTruthy();
+  await waitFor(() => expect(submitButton().disabled).toBe(true));
+
+  // Delete just the closing bracket of the first reference.
+  const editorText = textarea().textContent ?? "";
+  const closingBracket = editorText.indexOf("]");
+  selectEditorText(textarea(), closingBracket, closingBracket + 1);
+  await user.keyboard("{Backspace}");
+  await waitFor(() => expect(textarea().textContent).toBe("[image 1 /inspect [image 2]"));
+  // Still refusing: the SECOND reference is intact and unbacked.
+  expect(screen.getByTestId("composer-unbacked-image")).toBeTruthy();
+
+  await user.click(screen.getByRole("button", { name: "Remove the reference" }));
+
+  // Only the intact occurrence is gone. The edited fragment and the command
+  // chip between the two references survive, and the chip is still an atom.
+  await waitFor(() => expect(textarea().textContent).toBe("[image 1 /inspect "));
+  expect(within(textarea()).getAllByTestId("composer-command-chip")).toHaveLength(1);
+  expect(screen.queryByTestId("composer-unbacked-image")).toBeNull();
+  await waitFor(() => expect(submitButton().disabled).toBe(false));
+
+  // ONE undo restores the whole repair, not each deletion separately.
+  await user.keyboard("{Control>}z{/Control}");
+  await waitFor(() => expect(textarea().textContent).toBe("[image 1 /inspect [image 2]"));
+  expect(screen.getByTestId("composer-unbacked-image")).toBeTruthy();
+});

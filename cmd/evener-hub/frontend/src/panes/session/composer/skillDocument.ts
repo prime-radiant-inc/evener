@@ -5,11 +5,12 @@ import {
   completeSkillReferenceAt,
   type ImageMarkerRange,
   markerNumbersOf,
+  markerText,
   reconcileComposerMentions,
   reconcileMarkerRanges,
   sharedPrefixLength,
   sharedSuffixLength,
-  validMarkerRanges,
+  type TextSplice,
 } from "@evener/appwire-client";
 import { type Mark, type Node as ProseMirrorNode, Schema } from "prosemirror-model";
 
@@ -94,6 +95,63 @@ function stagedAnchorMark(marker: number): Mark {
   return skillSchema.marks.stagedAnchor.create({ marker });
 }
 
+/** One stagedAnchor-marked run of text that still IS the literal it names. */
+export interface StagedAnchorSpan extends ImageMarkerRange {
+  /** Document position of the run's first character. */
+  from: number;
+  /** Document position one past its last character. */
+  to: number;
+}
+
+/** Records the stagedAnchor run `node` carries, at document `position` and
+ * serialized offset `start`, when the whole node is text. */
+function noteStagedAnchors(node: ProseMirrorNode, position: number, start: number, spans: StagedAnchorSpan[]): void {
+  if (!node.isText) return;
+  const run = node.text ?? "";
+  for (const mark of node.marks) {
+    if (mark.type.name !== "stagedAnchor") continue;
+    spans.push({
+      marker: Number(mark.attrs.marker),
+      from: position,
+      to: position + node.nodeSize,
+      start,
+      end: start + run.length,
+    });
+  }
+}
+
+/** Keeps only the spans whose slice of `text` is still exactly the literal
+ * its marker names. */
+function intactStagedAnchors(text: string, spans: readonly StagedAnchorSpan[]): StagedAnchorSpan[] {
+  return spans.filter((span) => text.slice(span.start, span.end) === markerText(span.marker));
+}
+
+/**
+ * The document's own answer to "which marked occurrence is an anchor": every
+ * run carrying a stagedAnchor mark whose text still spells exactly
+ * `markerText(marker)`, with both its serialized offsets and its document
+ * range.
+ *
+ * The mark alone is not enough. A mark outlives an edit that splits or
+ * extends its run - delete one bracket of "[image 1]" and the fragment keeps
+ * the mark, because ProseMirror never saw a reason to take it away - so a
+ * consumer that trusted the mark would treat half a literal, or a literal
+ * with prose welded to it, as a whole occurrence. Serialization already
+ * refuses to call such a fragment adopted (a range whose slice is not
+ * `markerText` names nothing), and the repair that deletes missing references
+ * must refuse it too, or it deletes text the person edited. One finder, so
+ * the two can never disagree about which occurrences those are.
+ */
+export function stagedAnchorSpans(doc: ProseMirrorNode): StagedAnchorSpan[] {
+  const spans: StagedAnchorSpan[] = [];
+  let text = "";
+  doc.forEach((node, position) => {
+    noteStagedAnchors(node, position, text.length, spans);
+    text += node.isText ? (node.text ?? "") : `/${node.attrs.name}`;
+  });
+  return intactStagedAnchors(text, spans);
+}
+
 /** Text nodes for one run of prose, splitting out the exact occurrences the
  * caller adopted. `base` is the run's own UTF-16 offset in the whole
  * serialized text, so an adopted range names the occurrence in THIS run and
@@ -156,20 +214,14 @@ export function serializeSkillDocument(doc: ProseMirrorNode): SkillEditorValue {
   const names: string[] = [];
   const commands: string[] = [];
   const mentions: ComposerMention[] = [];
-  const adopted: ImageMarkerRange[] = [];
-  doc.forEach((node) => {
+  // The stagedAnchor spans are collected in the same pass that builds the
+  // text: a second doc.forEach would walk the document again to rebuild the
+  // very string this loop already has.
+  const anchorSpans: StagedAnchorSpan[] = [];
+  doc.forEach((node, position) => {
+    noteStagedAnchors(node, position, text.length, anchorSpans);
     if (node.isText) {
-      const run = node.text ?? "";
-      // A mark proves provenance only for the occurrence it actually covers:
-      // the exact literal, not an adjacent run of text that inherited it. The
-      // node's own offset in the serialized text is what makes this an exact
-      // range: two identical spellings are two nodes, and only the marked one
-      // is adopted.
-      for (const mark of node.marks) {
-        if (mark.type.name !== "stagedAnchor") continue;
-        adopted.push({ marker: Number(mark.attrs.marker), start: text.length, end: text.length + run.length });
-      }
-      text += run;
+      text += node.text ?? "";
     } else {
       const kind = node.type.name === "command" ? "command" : "skill";
       mentions.push({ kind, name: node.attrs.name, offset: text.length });
@@ -177,11 +229,17 @@ export function serializeSkillDocument(doc: ProseMirrorNode): SkillEditorValue {
       (kind === "command" ? commands : names).push(node.attrs.name);
     }
   });
-  // The marks are the truth, but only where the node really is one whole
-  // marker literal: an integrity edit can split or extend a run after a mark
-  // was set, and a range whose slice is not markerText(marker) names an
-  // occurrence that no longer exists.
-  const adoptedImageRanges = validMarkerRanges(text, adopted);
+  // The marks are the truth, but only where the run really is one whole marker
+  // literal: an integrity edit can split or extend a run after a mark was set,
+  // and a range whose slice is not markerText(marker) names an occurrence that
+  // no longer exists. stagedAnchorSpans is that same judgement, shared with
+  // the repair so a fragment the person edited is never called an anchor by
+  // one and deleted by the other.
+  const adoptedImageRanges = intactStagedAnchors(text, anchorSpans).map(({ marker, start, end }) => ({
+    marker,
+    start,
+    end,
+  }));
   const adoptedImageMarkers = markerNumbersOf(adoptedImageRanges);
   const value = {
     text,
@@ -202,12 +260,12 @@ export function serializeSkillDocument(doc: ProseMirrorNode): SkillEditorValue {
 }
 
 /** Shift existing atom identities across a plain-text splice without selecting new prose. */
-export function patchSelectionText(value: SkillEditorValue, text: string): SkillEditorValue {
+export function patchSelectionText(value: SkillEditorValue, text: string, splice?: TextSplice): SkillEditorValue {
   // The adoption is re-derived from the marks, so a splice that removes or
   // moves an adopted occurrence has to move its range too: without this the
   // patched document would mark whatever now sits at the old offset, or mark
   // all of a number's occurrences when the stale range came up empty.
-  const ranges = reconcileAdoptionAcrossSplice(value, text);
+  const ranges = reconcileAdoptionAcrossSplice(value, text, splice);
   const adopted: SkillEditorValue = {
     ...value,
     adoptedImageMarkers: markerNumbersOf(ranges),
@@ -218,15 +276,19 @@ export function patchSelectionText(value: SkillEditorValue, text: string): Skill
   return serializeSkillDocument(parseSkillDocument({ ...adopted, text, mentions }));
 }
 
-/** The adoption a plain-text splice leaves behind, from the value's own pair. */
-function reconcileAdoptionAcrossSplice(value: SkillEditorValue, text: string): ImageMarkerRange[] {
+/** The adoption a plain-text splice leaves behind, from the value's own pair -
+ * or from the caller's exact `splice` when the caller performed the edit and
+ * knows the span it replaced. */
+function reconcileAdoptionAcrossSplice(value: SkillEditorValue, text: string, splice?: TextSplice): ImageMarkerRange[] {
   // The ranges this value actually names in its own text: an explicit range
   // list when it has one, otherwise every occurrence of an adopted number.
   const current = adoptedMarkerRanges(value.text, value.adoptedImageMarkers, value.adoptedImageRanges);
   if (current.length === 0) return [];
-  const prefix = sharedPrefixLength(value.text, text);
-  const suffix = sharedSuffixLength(value.text, text, prefix);
-  return reconcileMarkerRanges(value.text, text, current, prefix, suffix);
+  // An exact splice is the edit itself; the prefix/suffix inference it replaces
+  // is only computed when there is no splice to describe the edit.
+  const prefix = splice === undefined ? sharedPrefixLength(value.text, text) : 0;
+  const suffix = splice === undefined ? sharedSuffixLength(value.text, text, prefix) : 0;
+  return reconcileMarkerRanges(value.text, text, current, prefix, suffix, splice);
 }
 
 /**

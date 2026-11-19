@@ -42,6 +42,24 @@ export interface TextEdit {
 export interface TextEditWithUnknownCursor {
   value: string;
   cursor: number | undefined;
+  /** The span this edit removed, in the ORIGINAL value's coordinates, when the
+   * edit was a marker removal. Callers that must describe their own edit to
+   * reconcileMarkerRanges read it here rather than searching the text again,
+   * so the coordinates cannot drift from the deletion they describe. */
+  splice?: TextSplice;
+}
+
+// TextSplice is one exact edit, in the coordinates of the text it replaced:
+// the UTF-16 span [start, end) became `insertedLength` units of new text (zero
+// for a deletion). A caller that performed the edit itself knows these; a
+// before/after pair only INFERS them, and the inference is wrong whenever the
+// two texts share a prefix or suffix that is not the edit's own boundary - an
+// insertion immediately before "[image 1]" shares "[image " with the marker it
+// did not touch.
+export interface TextSplice {
+  start: number;
+  end: number;
+  insertedLength: number;
 }
 
 // One exact occurrence of markerText(n) in a text: which number it names and
@@ -67,6 +85,16 @@ export function insertMarker(value: string, start: number, end: number, marker: 
   return { value: nextValue, cursor: start + marker.length };
 }
 
+// The span stripMarker removes: the FIRST literal occurrence of markerText(n),
+// or undefined when the value spells none. Callers that must describe their
+// edit to reconcileMarkerRanges use this rather than searching again, so the
+// coordinates can never drift from the deletion they describe.
+export function markerRemovalSplice(value: string, n: number): TextSplice | undefined {
+  const needle = markerText(n);
+  const start = value.indexOf(needle);
+  return start < 0 ? undefined : { start, end: start + needle.length, insertedLength: 0 };
+}
+
 // stripMarker removes the FIRST literal occurrence of markerText(n) from
 // `value` (plain string search, not regex - avoids escaping surprises).
 // If `cursor` sat past the deletion point, the returned cursor shifts back
@@ -75,13 +103,13 @@ export function insertMarker(value: string, start: number, end: number, marker: 
 // ORIGINAL value/cursor untouched (a safe no-op result, not a throw) when
 // the marker isn't present or `cursor` is unknown (undefined).
 export function stripMarker(value: string, cursor: number | undefined, n: number): TextEditWithUnknownCursor {
-  const needle = markerText(n);
-  const idx = value.indexOf(needle);
-  if (idx < 0) return { value, cursor };
-  const nextValue = value.slice(0, idx) + value.slice(idx + needle.length);
-  if (typeof cursor !== "number") return { value: nextValue, cursor };
-  const nextCursor = cursor > idx ? Math.max(idx, cursor - needle.length) : cursor;
-  return { value: nextValue, cursor: nextCursor };
+  const splice = markerRemovalSplice(value, n);
+  if (splice === undefined) return { value, cursor };
+  const nextValue = value.slice(0, splice.start) + value.slice(splice.end);
+  if (typeof cursor !== "number") return { value: nextValue, cursor, splice };
+  const removed = splice.end - splice.start;
+  const nextCursor = cursor > splice.start ? Math.max(splice.start, cursor - removed) : cursor;
+  return { value: nextValue, cursor: nextCursor, splice };
 }
 
 /** Every occurrence of a marker literal in `text`, in document order. */
@@ -126,6 +154,14 @@ export function validMarkerRanges(text: string, ranges: readonly ImageMarkerRang
  * surviving prefix or suffix is kept (shifted when it followed the span); a
  * range the splice cuts through is retired too, because half a literal is
  * not an occurrence and the editor's own mark is gone just the same.
+ *
+ * `splice`, when the caller knows the edit it performed, replaces the
+ * prefix/suffix inference outright. The inferred boundary can fall INSIDE an
+ * untouched literal: inserting "[image 2]" at the caret before "[image 1]"
+ * yields a shared prefix of "[image " (7), which cuts through the marker, so
+ * the inference retires a range the edit never touched. The real splice there
+ * is {start: 0, end: 0, insertedLength: 9}, which leaves the marker wholly in
+ * the surviving suffix and shifts it past the inserted text.
  */
 export function reconcileMarkerRanges(
   before: string,
@@ -133,15 +169,16 @@ export function reconcileMarkerRanges(
   ranges: readonly ImageMarkerRange[] | undefined,
   prefix: number,
   suffix: number,
+  splice?: TextSplice,
 ): ImageMarkerRange[] {
   const valid = validMarkerRanges(before, ranges);
   if (valid.length === 0) return [];
-  const oldEnd = before.length - suffix;
-  const delta = after.length - before.length;
+  const edit = splice ?? { start: prefix, end: before.length - suffix, insertedLength: after.length - prefix - suffix };
+  const shift = edit.insertedLength - (edit.end - edit.start);
   const kept: ImageMarkerRange[] = [];
   for (const range of valid) {
-    if (range.end <= prefix) kept.push(range);
-    else if (range.start >= oldEnd) kept.push({ ...range, start: range.start + delta, end: range.end + delta });
+    if (range.end <= edit.start) kept.push(range);
+    else if (range.start >= edit.end) kept.push({ ...range, start: range.start + shift, end: range.end + shift });
   }
   return validMarkerRanges(after, kept);
 }

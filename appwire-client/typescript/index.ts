@@ -736,13 +736,14 @@ export {
   EMPTY_TASKS_PANEL_ENTRY,
   panelLoadFailure,
 } from "./taskPanelState";
-export type { ImageMarkerRange, TextEdit, TextEditWithUnknownCursor } from "./textareaMarkers";
+export type { ImageMarkerRange, TextEdit, TextEditWithUnknownCursor, TextSplice } from "./textareaMarkers";
 export {
   adoptedMarkerRanges,
   insertMarker,
   markerNumbersOf,
   markerPattern,
   markerRanges,
+  markerRemovalSplice,
   markerText,
   reconcileMarkerRanges,
   stripMarker,
