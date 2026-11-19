@@ -9,17 +9,11 @@ import { type SessionZoomParams, zoomIntentOf } from "./intent";
 
 const bindings = new WeakMap<PaneLifetime, PaneLifetime | null>();
 let returnedOrigin: PaneLifetime | null = null;
-let returnedOriginURL: string | null = null;
-let returnedOriginEntryId: string | null = null;
+let returnedURLOwner: { lifetime: PaneLifetime; url: string; entryId: string | null } | null = null;
 let publishingReturnURL = false;
 
 export function recordCascadeReturnedOrigin(origin: OpenPaneRecord | null): void {
-  const next = origin ? conversationPaneLifetime(origin) : null;
-  if (next !== returnedOrigin) {
-    returnedOriginURL = null;
-    returnedOriginEntryId = null;
-  }
-  returnedOrigin = next;
+  returnedOrigin = origin ? conversationPaneLifetime(origin) : null;
 }
 
 export function isCascadeReturnedOrigin(pane: OpenPaneRecord | undefined): boolean {
@@ -32,24 +26,28 @@ export function publishCascadeReturnURL(pane: OpenPaneRecord, url: string, opts?
     navigate(url, opts);
     return;
   }
+  const lifetime = conversationPaneLifetime(pane);
   publishingReturnURL = true;
   try {
-    returnedOriginURL = url;
+    returnedURLOwner = { lifetime, url, entryId: null };
     navigate(url, opts);
-    returnedOriginEntryId = typeof window !== "undefined" ? routeHistoryEntryId(window.history.state) : null;
+    if (returnedURLOwner) {
+      returnedURLOwner.entryId = typeof window !== "undefined" ? routeHistoryEntryId(window.history.state) : null;
+    }
   } finally {
     publishingReturnURL = false;
   }
 }
 
 export function cascadeReturnedOriginForURL(pathname: string): OpenPaneRecord | null {
-  if (returnedOrigin === null || !returnedOrigin.alive || returnedOriginURL === null) return null;
-  if (pathname !== returnedOriginURL) return null;
+  if (returnedURLOwner === null || !returnedURLOwner.lifetime.alive) return null;
+  if (pathname !== returnedURLOwner.url) return null;
   const currentEntryId = typeof window !== "undefined" ? routeHistoryEntryId(window.history.state) : null;
-  if (currentEntryId !== returnedOriginEntryId) return null;
+  if (currentEntryId !== returnedURLOwner.entryId) return null;
+  const ownerLifetime = returnedURLOwner.lifetime;
   return (
     presentedPanes(workspaceStore.getState().panes).find(
-      (pane) => existingConversationPaneLifetime(pane) === returnedOrigin,
+      (pane) => existingConversationPaneLifetime(pane) === ownerLifetime,
     ) ?? null
   );
 }
@@ -120,8 +118,7 @@ export function associatedCascade(origin: OpenPaneRecord): OpenPaneRecord | null
 // inherit the old inspector's Return destination.
 onWorkspaceRestore((panes) => {
   returnedOrigin = null;
-  returnedOriginURL = null;
-  returnedOriginEntryId = null;
+  returnedURLOwner = null;
   for (const pane of panes) {
     const params = zoomIntentOf(pane);
     if (!params?.inspection) continue;
@@ -133,42 +130,40 @@ onWorkspaceRestore((panes) => {
 
 observeRouteHistory((_prevState, nextState, _prevURL, nextURL) => {
   if (publishingReturnURL) {
-    returnedOriginEntryId = routeHistoryEntryId(nextState);
+    if (returnedURLOwner !== null) returnedURLOwner.entryId = routeHistoryEntryId(nextState);
     return;
   }
+  returnedOrigin = null;
   if (
-    returnedOriginURL !== null &&
-    (nextURL !== returnedOriginURL || routeHistoryEntryId(nextState) !== returnedOriginEntryId)
+    returnedURLOwner !== null &&
+    (nextURL !== returnedURLOwner.url || routeHistoryEntryId(nextState) !== returnedURLOwner.entryId)
   ) {
-    returnedOrigin = null;
-    returnedOriginURL = null;
-    returnedOriginEntryId = null;
+    returnedURLOwner = null;
   }
 });
 
 workspaceStore.subscribe((state, previous) => {
-  if (returnedOrigin !== null) {
-    const originPresent =
-      returnedOrigin.alive && state.panes.some((pane) => existingConversationPaneLifetime(pane) === returnedOrigin);
-    if (!originPresent) {
+  if (returnedURLOwner !== null) {
+    const owner = returnedURLOwner;
+    const ownerPresent =
+      owner.lifetime.alive && state.panes.some((pane) => existingConversationPaneLifetime(pane) === owner.lifetime);
+    if (!ownerPresent) {
       const ownsCurrentReturnEntry =
-        returnedOriginURL !== null &&
         typeof window !== "undefined" &&
-        window.location.pathname === returnedOriginURL &&
-        routeHistoryEntryId(window.history.state) === returnedOriginEntryId;
-      returnedOrigin = null;
-      returnedOriginURL = null;
-      returnedOriginEntryId = null;
+        window.location.pathname === owner.url &&
+        routeHistoryEntryId(window.history.state) === owner.entryId;
+      returnedURLOwner = null;
       if (ownsCurrentReturnEntry) {
         const survivingMain = state.panes.find((pane) => pane.slot === "main");
         const fallbackURL = survivingMain ? paneToURL(survivingMain.type, survivingMain.params) : null;
         navigate(fallbackURL ?? "/", { replace: true });
       }
-    } else if (returnedOriginURL === null) {
-      const focused = state.panes.find((pane) => pane.id === state.focusedPaneId);
-      if (!focused || existingConversationPaneLifetime(focused) !== returnedOrigin) {
-        returnedOrigin = null;
-      }
+    }
+  }
+  if (returnedOrigin !== null) {
+    const focused = state.panes.find((pane) => pane.id === state.focusedPaneId);
+    if (!returnedOrigin.alive || !focused || existingConversationPaneLifetime(focused) !== returnedOrigin) {
+      returnedOrigin = null;
     }
   }
   if (state.panes === previous.panes) return;
