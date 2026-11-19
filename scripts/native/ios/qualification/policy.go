@@ -30,6 +30,10 @@ var (
 	// errIncompleteProducts reports a products tree missing something the
 	// installed-app journeys install, run or read.
 	errIncompleteProducts = errors.New("the build products are incomplete for the installed-app journeys")
+	// errDerivedDataTracked reports a DerivedData override inside the checkout
+	// that git does not ignore: the provenance check would read Xcode's own
+	// output there as source change after the build.
+	errDerivedDataTracked = errors.New("--derived-data inside the checkout must be gitignored; use a gitignored or external directory")
 )
 
 // generatedProjectFile is the one generated file whose identity is its complete

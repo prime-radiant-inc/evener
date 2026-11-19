@@ -266,7 +266,10 @@ func (r *runner) checkDerivedDataIgnored(ctx context.Context) error {
 		return nil
 	}
 	rel, err := filepath.Rel(r.root, r.derived)
-	if err != nil || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if err != nil {
+		return fmt.Errorf("resolve %s under %s: %w", r.derived, r.root, err)
+	}
+	if filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return nil
 	}
 	err = exec.CommandContext(ctx, "git", "-C", r.root, "check-ignore", "-q", "--", rel).Run()
@@ -275,7 +278,7 @@ func (r *runner) checkDerivedDataIgnored(ctx context.Context) error {
 	}
 	var exit *exec.ExitError
 	if errors.As(err, &exit) && exit.ExitCode() == 1 {
-		return fmt.Errorf("--derived-data %s is inside the checkout and not gitignored; use a gitignored or external directory", r.derived)
+		return fmt.Errorf("%w: %s", errDerivedDataTracked, r.derived)
 	}
 	return fmt.Errorf("git check-ignore %s: %w", rel, err)
 }

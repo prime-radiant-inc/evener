@@ -371,9 +371,8 @@ func TestDerivedDataInsideTheCheckoutMustBeIgnored(t *testing.T) {
 		}
 	}
 	r.derived = filepath.Join(root, "DerivedData")
-	err := r.checkDerivedDataIgnored(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "gitignored or external") {
-		t.Fatalf("unignored in-checkout DerivedData = %v, want a gitignored-or-external error", err)
+	if err := r.checkDerivedDataIgnored(context.Background()); !errors.Is(err, errDerivedDataTracked) {
+		t.Fatalf("unignored in-checkout DerivedData = %v, want errDerivedDataTracked", err)
 	}
 	r.derived = ""
 	if err := r.checkDerivedDataIgnored(context.Background()); err != nil {
