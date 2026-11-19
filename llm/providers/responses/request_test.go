@@ -62,7 +62,7 @@ func TestCompletePreservesAssistantItemOrder(t *testing.T) {
 		return llm.ContentPart{Kind: llm.ContentText, Phase: "commentary", Text: text}
 	}
 	const arguments = `{ "id" : "\u0061" }`
-	call := llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_fixture", Name: "lookup", Arguments: json.RawMessage(arguments)}}
+	call := llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_fixture", ItemID: "fc_fixture", Name: "lookup", Arguments: json.RawMessage(arguments)}}
 	result := llm.ContentPart{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call_fixture", Content: "result"}}
 	for _, tc := range []struct {
 		name    string
@@ -111,8 +111,8 @@ func TestCompletePreservesAssistantItemOrder(t *testing.T) {
 				m, _ := item.(map[string]any)
 				kind, _ := m["type"].(string)
 				fields := []string{kind}
-				if kind == "function_call" && m["arguments"] != arguments {
-					t.Fatalf("tool arguments = %q, want %q", m["arguments"], arguments)
+				if kind == "function_call" && (m["arguments"] != arguments || m["id"] != "fc_fixture") {
+					t.Fatalf("function_call = %q, want the arguments and the item id", jsonOf(t, m))
 				}
 				if m["role"] == "assistant" {
 					fields = append(fields, m["phase"].(string))
@@ -126,6 +126,30 @@ func TestCompletePreservesAssistantItemOrder(t *testing.T) {
 				t.Fatalf("input items = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestBuildBody_ReplaysResponsesPlaintextReasoning(t *testing.T) {
+	t.Parallel()
+	replay := func(th *llm.ThinkingData, reasoning bool) []any {
+		req := userReq("input")
+		req.Messages = append(req.Messages, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			{Kind: llm.ContentThinking, Thinking: th},
+		}})
+		return build(t, req, resolved(func(c *registry.Caps) { openaiCaps(c); c.Reasoning = new(reasoning) }))["input"].([]any)
+	}
+	typed := &llm.ThinkingData{ID: "rs_1", Text: "  think  ",
+		ResponsesContentParts: []llm.ResponsesReasoningPart{{Type: "reasoning_text", Text: "  think  "}},
+		ResponsesSummaryParts: []llm.ResponsesReasoningPart{{Type: "summary_text", Text: " sum \n"}}}
+	const want = `{"content":[{"text":"  think  ","type":"reasoning_text"}],"id":"rs_1","summary":[{"text":" sum \n","type":"summary_text"}],"type":"reasoning"}`
+	if got := replay(typed, true); len(got) != 2 || jsonOf(t, got[1]) != want {
+		t.Fatalf("input = %s, want the typed item verbatim: %s", jsonOf(t, got), want)
+	}
+	if got := replay(&llm.ThinkingData{ID: "rs_2", Text: "legacy"}, true); len(got) != 1 {
+		t.Fatalf("a bare Text projection must not replay: %s", jsonOf(t, got))
+	}
+	if got := replay(typed, false); len(got) != 1 {
+		t.Fatalf("reasoning = false input = %s, want the user message alone", jsonOf(t, got))
 	}
 }
 

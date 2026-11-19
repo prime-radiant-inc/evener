@@ -502,14 +502,15 @@ func FuzzResponsesBuildBody(f *testing.F) {
 					reasoning = m
 				}
 			}
-			if reasoning == nil {
+			if capSel&16 == 0 {
+				if reasoning != nil {
+					t.Fatalf("reasoning = false must suppress the reasoning item: %s", inputJSON)
+				}
+			} else if reasoning == nil {
 				t.Fatalf("a thinking part with non-OpenAI encrypted content must replay as a reasoning item: %s", inputJSON)
-			}
-			if reasoning["encrypted_content"] != "opaque-fuzz-blob" || reasoning["id"] != "rs_fuzz" {
+			} else if reasoning["encrypted_content"] != "opaque-fuzz-blob" || reasoning["id"] != "rs_fuzz" {
 				t.Fatalf("reasoning item must carry the blob and the trimmed id: %s", inputJSON)
-			}
-			summary, _ := reasoning["summary"].([]any)
-			if len(summary) != 1 || summary[0].(map[string]any)["text"] != "fuzz summary" {
+			} else if summary, _ := reasoning["summary"].([]any); len(summary) != 1 || summary[0].(map[string]any)["text"] != "fuzz summary" {
 				t.Fatalf("whitespace-only summary entries must be dropped: %s", inputJSON)
 			}
 		case 7:

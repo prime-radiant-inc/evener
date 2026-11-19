@@ -568,3 +568,18 @@ func thinkingHeavyHistory() []schema.Turn {
 	}
 	return history
 }
+
+// A Responses reasoning item replays only where it was issued.
+func TestEstimateTokens_ForeignResponsesReasoningIsNotBilled(t *testing.T) {
+	turn := schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant,
+		Content: []llm.ContentPart{{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{
+			ResponsesContentParts: []llm.ResponsesReasoningPart{{Type: "reasoning_text", Text: strings.Repeat("t", 400)}},
+		}}}})
+	mgr := NewManager(provider.FromResolved(registry.Resolved{Instance: "openai", Protocol: registry.ProtocolOpenAIResponses}, nil), nil, cheapmodel.New(nil))
+	for provider, want := range map[string]int{"openai-eu": 0, "": 100} {
+		turn.ResponseProvider = provider
+		if got := mgr.estimateTokens([]schema.Turn{turn}); got != want {
+			t.Fatalf("provider %q billed %d, want %d", provider, got, want)
+		}
+	}
+}

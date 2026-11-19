@@ -1066,6 +1066,11 @@ func TestEstimateMessagesInputTokensForResolved_BillsThinkingShapesByAdapter(t *
 
 		{"responses bills the blob, id and summaries", row(responses, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: blob, ID: id, Summary: []string{summary}}), (blobChars + idChars + summaryChars) / 4},
 		{"responses drops the display text beside the blob", row(responses, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: blob, Text: text}), blobChars / 4},
+		{"responses bills typed parts once", row(responses, registry.Caps{}), thinking(&ThinkingData{ResponsesContentParts: []ResponsesReasoningPart{{Type: "reasoning_text", Text: text}, {Type: "reasoning_text", Text: text}}}), 2 * textChars / 4},
+		{"responses bills the typed content parts, not the Summary projection", row(responses, registry.Caps{}), thinking(&ThinkingData{ResponsesContentParts: []ResponsesReasoningPart{{Type: "reasoning_text", Text: text}}, Summary: []string{summary}}), textChars / 4},
+		{"responses drops typed parts when reasoning is off", row(responses, declare(false, false)), thinking(&ThinkingData{ResponsesContentParts: []ResponsesReasoningPart{{Type: "reasoning_text", Text: text}}}), 0},
+		{"responses drops an incomplete typed item", row(responses, registry.Caps{}), thinking(&ThinkingData{ResponsesContentParts: []ResponsesReasoningPart{{Type: "reasoning_text", Text: text}}, ResponsesIncomplete: true}), 0},
+		{"responses drops an incomplete typed item carrying a blob", row(responses, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: blob, ResponsesContentParts: []ResponsesReasoningPart{{Type: "reasoning_text", Text: text}}, ResponsesIncomplete: true}), 0},
 		{"responses drops an id and summaries that do not ride", row(responses, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: blob, ID: "  ", Summary: []string{" "}}), blobChars / 4},
 		{"chat drops the opaque blob and replays its text", row(chat, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: blob, Text: text}), textChars / 4},
 		{"chat drops an opaque blob with no text", row(chat, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: blob}), 0},
@@ -1635,5 +1640,22 @@ func TestTokenPartEstimatorMatchesMessageList(t *testing.T) {
 				t.Fatal("no split leaves a prefix whose chars are not a multiple of four: this case cannot detect per-prefix rounding")
 			}
 		})
+	}
+}
+
+func TestEstimateMessagesInputTokensForResolved_BillsResponsesToolItemID(t *testing.T) {
+	t.Parallel()
+	chars := func(res registry.Resolved, m Message) int { return TokenPartEstimatorFor(res).Parts(m).Chars }
+	call := func(itemID string) Message {
+		return Message{Role: RoleAssistant, Content: []ContentPart{{Kind: ContentToolCall,
+			ToolCall: &ToolCallData{ID: "call_1", ItemID: itemID, Name: "f", Arguments: []byte(`{}`)}}}}
+	}
+	responses := registry.Resolved{Protocol: registry.ProtocolOpenAIResponses}
+	bare := chars(responses, call(""))
+	if got := chars(responses, call(" fc_item ")); got != bare+len("fc_item") {
+		t.Fatalf("responses chars = %d, want %d: the trimmed item id rides too", got, bare+len("fc_item"))
+	}
+	if chat := chars(registry.Resolved{Protocol: registry.ProtocolOpenAIChat}, call("fc_item")); chat != chars(registry.Resolved{Protocol: registry.ProtocolOpenAIChat}, call("")) {
+		t.Fatalf("chat billed the Responses-only item id")
 	}
 }

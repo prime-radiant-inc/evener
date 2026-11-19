@@ -158,7 +158,8 @@ func toResponsesToolChoice(tc llm.ToolChoice) (any, error) {
 	}
 }
 
-func toResponsesInput(msgs []llm.Message, imageCap string) (instructions string, items []any, _ error) {
+func toResponsesInput(msgs []llm.Message, imageCap string, reasoningDisabled ...bool) (instructions string, items []any, _ error) {
+	off := len(reasoningDisabled) > 0 && reasoningDisabled[0]
 	var instrParts []string
 	for _, m := range msgs {
 		switch m.Role {
@@ -205,7 +206,7 @@ func toResponsesInput(msgs []llm.Message, imageCap string) (instructions string,
 					case llm.ContentAudio, llm.ContentDocument:
 						return "", nil, &llm.ConfigurationError{Message: fmt.Sprintf("unsupported content kind for openai: %s", p.Kind)}
 					default:
-						if item, ok := replayedOutputItem(p); ok {
+						if item, ok := replayedOutputItem(p, off); ok {
 							flushText()
 							items = append(items, item)
 						}
@@ -305,7 +306,7 @@ func toResponsesInput(msgs []llm.Message, imageCap string) (instructions string,
 				if p.Kind == llm.ContentWebSearch {
 					continue
 				}
-				if item, ok := replayedOutputItem(p); ok {
+				if item, ok := replayedOutputItem(p, off); ok {
 					items = append(items, item)
 				}
 			}
@@ -374,30 +375,42 @@ func toResponsesInput(msgs []llm.Message, imageCap string) (instructions string,
 	return instructions, items, nil
 }
 
-func replayedOutputItem(p llm.ContentPart) (map[string]any, bool) {
+func replayedOutputItem(p llm.ContentPart, reasoningDisabled bool) (map[string]any, bool) {
 	switch {
-	// OpenRouter reasoning_details belong to the Chat protocol.
-	case p.Kind == llm.ContentThinking && p.Thinking != nil && p.Thinking.EncryptedContent != "" &&
-		!llm.IsOpenAICompatEncryptedReasoning(p.Thinking.EncryptedContent):
-		item := map[string]any{
-			"type":              "reasoning",
-			"encrypted_content": p.Thinking.EncryptedContent,
-			"summary":           reasoningSummaryInput(p.Thinking.Summary),
-		}
-		if id := strings.TrimSpace(p.Thinking.ID); id != "" {
-			item["id"] = id
-		}
-		return item, true
+	case p.Kind == llm.ContentThinking && p.Thinking != nil && !reasoningDisabled:
+		return reasoningItem(p.Thinking)
 	case p.Kind == llm.ContentToolCall && p.ToolCall != nil:
-		return map[string]any{
+		item := map[string]any{
 			"type":      "function_call",
 			"call_id":   p.ToolCall.ID,
 			"name":      p.ToolCall.Name,
 			"arguments": openaichat.ToolArgumentsString(p.ToolCall.Arguments),
-		}, true
+		}
+		if id := strings.TrimSpace(p.ToolCall.ItemID); id != "" {
+			item["id"] = id
+		}
+		return item, true
 	default:
 		return replayedWebSearchItem(p)
 	}
+}
+
+func reasoningItem(t *llm.ThinkingData) (map[string]any, bool) {
+	encrypted := !t.ResponsesIncomplete && t.EncryptedContent != "" && !llm.IsOpenAICompatEncryptedReasoning(t.EncryptedContent)
+	if !encrypted && !t.ReplayableResponsesPlaintext() {
+		return nil, false
+	}
+	item := map[string]any{"type": "reasoning", "summary": reasoningTypedInput(t.ResponsesSummaryParts)}
+	if encrypted {
+		item["summary"] = reasoningSummaryInput(t.Summary)
+		item["encrypted_content"] = t.EncryptedContent
+	} else if len(t.ResponsesContentParts) > 0 {
+		item["content"] = reasoningTypedInput(t.ResponsesContentParts)
+	}
+	if id := strings.TrimSpace(t.ID); id != "" {
+		item["id"] = id
+	}
+	return item, true
 }
 
 func replayedWebSearchItem(p llm.ContentPart) (map[string]any, bool) {
@@ -407,6 +420,14 @@ func replayedWebSearchItem(p llm.ContentPart) (map[string]any, bool) {
 	var item map[string]any
 	err := json.Unmarshal(p.WebSearch.Raw, &item)
 	return item, err == nil && item != nil
+}
+
+func reasoningTypedInput(parts []llm.ResponsesReasoningPart) []any {
+	out := make([]any, 0, len(parts))
+	for _, part := range parts {
+		out = append(out, map[string]any{"type": part.Type, "text": part.Text})
+	}
+	return out
 }
 
 func reasoningSummaryInput(summary []string) []any {

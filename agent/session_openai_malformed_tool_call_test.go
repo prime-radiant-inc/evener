@@ -366,7 +366,7 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 			}
 			if item.Type == "reasoning" {
 				reasoning++
-				if string(rawItem) != wantReasoning {
+				if bytes.Contains(rawItem, []byte(`"id":"rs_mixed"`)) && string(rawItem) != wantReasoning {
 					t.Fatalf("request %d reasoning = %s, want %s", requestIndex+1, rawItem, wantReasoning)
 				}
 			}
@@ -381,8 +381,8 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 		if calls != 1 {
 			t.Fatalf("request %d replayed the corrected call %d times, want once", requestIndex+1, calls)
 		}
-		if reasoning != 1 {
-			t.Errorf("request %d replayed %d reasoning items, want one", requestIndex+1, reasoning)
+		if reasoning != len(wantThinking)-1 {
+			t.Errorf("request %d replayed %d reasoning items, want every stored one that has typed parts", requestIndex+1, reasoning)
 		}
 	}
 }
