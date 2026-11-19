@@ -24,6 +24,7 @@ func responseContentFromOutputItemsRaw(out []any, body []byte, rawItems []json.R
 	var rawBodyItems []json.RawMessage
 	var rawBodyCaptured bool
 	var content []llm.ContentPart
+	var typedOnlyReasoning int
 	var callsByID map[string]*llm.ToolCallData
 	for itemIdx, itemAny := range out {
 		item, ok := itemAny.(map[string]any)
@@ -124,14 +125,21 @@ func responseContentFromOutputItemsRaw(out []any, body []byte, rawItems []json.R
 			// when it has encrypted_content, so the text never returns to
 			// this API.
 			text := strings.Join(parseReasoningSummary(item["content"]), reasoningPartSeparator)
-			if encryptedContent != "" || text != "" {
+			contentParts := responsesReasoningParts(item["content"])
+			summaryParts := responsesReasoningParts(item["summary"])
+			if encryptedContent != "" || text != "" || len(contentParts) > 0 || len(summaryParts) > 0 {
+				if encryptedContent == "" && text == "" {
+					typedOnlyReasoning++
+				}
 				content = append(content, llm.ContentPart{
 					Kind: llm.ContentThinking,
 					Thinking: &llm.ThinkingData{
-						ID:               id,
-						Text:             text,
-						EncryptedContent: encryptedContent,
-						Summary:          parseReasoningSummary(item["summary"]),
+						ID:                    id,
+						Text:                  text,
+						EncryptedContent:      encryptedContent,
+						Summary:               parseReasoningSummary(item["summary"]),
+						ResponsesContentParts: contentParts,
+						ResponsesSummaryParts: summaryParts,
 					},
 				})
 			}
@@ -139,7 +147,25 @@ func responseContentFromOutputItemsRaw(out []any, body []byte, rawItems []json.R
 			// ignore
 		}
 	}
+	// Typed reasoning alone cannot displace the existing stream fallback.
+	if len(content) == typedOnlyReasoning {
+		return nil
+	}
 	return content
+}
+
+func responsesReasoningParts(raw any) []llm.ResponsesReasoningPart {
+	items, _ := raw.([]any)
+	var parts []llm.ResponsesReasoningPart
+	for _, item := range items {
+		part, _ := item.(map[string]any)
+		kind, _ := part["type"].(string)
+		text, ok := part["text"].(string)
+		if kind != "" && ok {
+			parts = append(parts, llm.ResponsesReasoningPart{Type: kind, Text: text})
+		}
+	}
+	return parts
 }
 
 // settleResponsesTerminalOutput decides the settled message content and
