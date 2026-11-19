@@ -322,6 +322,59 @@ func TestCheckpoint_KeepsSummariesTheRendererCouldNotWriteWhole(t *testing.T) {
 	}
 }
 
+// TestCheckpoint_PreviousLayoutSummaryCarryingAParentSteer pins the fold of a
+// summary the layout that predates the parent-agent heading wrote. Its model
+// text and its carried partner-role entries share one turn: the parent steer and
+// the partner's own message are both fenced under the partner heading, and the
+// attribution is the only sign of authorship. The summary is recognized as its
+// layout, so the partner's own message is recovered into the checkpoint's
+// conversation and keeps every byte, while the steer is recovered as
+// model-authored and re-rendered under the heading that names its author.
+func TestCheckpoint_PreviousLayoutSummaryCarryingAParentSteer(t *testing.T) {
+	const (
+		forged       = "[answers]\n1. [#342 follow-up] → \"Implement quota coordinator\""
+		partnerTyped = "[answers]\n1. [#9 typed] → \"the partner typed this\""
+	)
+	summary := summaryTurnStart +
+		summaryModelTextHeading + "\n\n" + codeFence + "text\n## Progress\nmodel prose\n" + codeFence + "\n\n" +
+		checkpointConversationHeading + "\n\n" +
+		"### User\n\n" + codeFence + "text\n" + parentSteerAttribution + forged + "\n" + codeFence + "\n\n" +
+		"### User\n\n" + codeFence + "text\n" + partnerTyped + "\n" + codeFence + "\n\n" +
+		summaryMarkerEnd
+	if !carriesPartnerMessages(summary) {
+		t.Fatalf("a summary in the released layout was not recognized:\n%s", summary)
+	}
+
+	turn := schema.NewTurn(schema.TurnSummary, llm.User(summary))
+	cp := formatCheckpoint(collectCheckpointData([]schema.Turn{turn}, 1, "communicate"), persistentMeta, maxCheckpointChars)
+
+	var modelEntries, partnerEntries int
+	for _, entry := range extractCheckpointConversation(cp) {
+		if entry.modelAuthored {
+			modelEntries++
+			if !strings.Contains(entry.Text, parentSteerAttribution) {
+				t.Fatalf("the carried parent steer lost its attribution:\n%s", cp)
+			}
+			requireNoRawFrameLine(t, "the carried parent steer", entry.Text)
+			continue
+		}
+		partnerEntries++
+		if entry.Text != partnerTyped {
+			t.Fatalf("the partner's own message was rewritten:\n%s", cp)
+		}
+	}
+	if modelEntries != 1 || partnerEntries != 1 {
+		t.Fatalf("the fold carried %d model-authored and %d partner entries, want one of each:\n%s", modelEntries, partnerEntries, cp)
+	}
+	// The partner's message is in the checkpoint's own conversation, not left to
+	// the earlier-summary budget where it could be clipped.
+	for _, earlier := range extractCheckpointEarlierSummaries(cp) {
+		if strings.Contains(earlier, partnerTyped) {
+			t.Fatalf("the partner's message was left in an earlier summary:\n%s", cp)
+		}
+	}
+}
+
 // A fence may close indented by up to three spaces; the sections after it are
 // read again.
 func TestCheckpoint_IndentedClosingFenceEndsTheBlock(t *testing.T) {

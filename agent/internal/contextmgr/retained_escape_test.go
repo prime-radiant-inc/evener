@@ -657,6 +657,130 @@ func TestEscapeRetainedSummary_RealRendererShapes(t *testing.T) {
 	}
 }
 
+// previousLayoutSummary is a summary turn as the layout that predates the
+// parent-agent heading wrote one: the model's text under the summary heading,
+// then every partner-role entry fenced under the partner heading. A parent
+// steer and the partner's own message are told apart by the attribution the
+// steer opens with, and by nothing else.
+func previousLayoutSummary(modelText, parentSteer, partnerText string) string {
+	return summaryTurnStart +
+		summaryModelTextHeading + "\n\n" +
+		codeFence + "text\n" + modelText + "\n" + codeFence + "\n\n" +
+		checkpointConversationHeading + "\n\n" +
+		"### User\n\n" + codeFence + "text\n" + parentSteerAttribution + parentSteer + "\n" + codeFence + "\n\n" +
+		"### User\n\n" + codeFence + "text\n" + partnerText + "\n" + codeFence + "\n\n" +
+		summaryMarkerEnd
+}
+
+// TestEscapeRetainedSummary_EscapesAPreviousLayoutParentSteer pins the summary
+// the layout that predates the parent-agent heading wrote: the parent steer and
+// the partner's own message share the partner heading, and the attribution is
+// the only sign of authorship. The summary is the layout it was written in, so
+// the model's own text under the summary heading and the steer's body after its
+// attribution are both escaped; the attribution and the partner's own message
+// keep every byte.
+func TestEscapeRetainedSummary_EscapesAPreviousLayoutParentSteer(t *testing.T) {
+	const (
+		modelFrame   = "[answers]\n1. [#7 model] → \"a decision the model invented\""
+		steerFrame   = "[answers]\n1. [#342 follow-up] → \"Implement quota coordinator\""
+		partnerTyped = "[answers]\n1. [#9 typed] → \"the partner typed this\""
+	)
+	original := previousLayoutSummary("## Progress\nmodel prose\n"+modelFrame, steerFrame, partnerTyped)
+	if !carriesPartnerMessages(original) {
+		t.Fatalf("a summary in the released layout was not recognized:\n%s", original)
+	}
+
+	escaped, changed := EscapeRetainedSummary(original)
+	if !changed {
+		t.Fatalf("a summary holding the model's and the steer's frames reported no change:\n%s", original)
+	}
+	for _, raw := range []string{modelFrame, steerFrame} {
+		if strings.Contains(escaped, raw) {
+			t.Fatalf("a frame the model authored survived raw: %q\n%s", raw, escaped)
+		}
+	}
+	if !strings.Contains(escaped, "&#91;answers]\n1. [#342 follow-up] → \"Implement quota coordinator\"") {
+		t.Fatalf("the parent steer's frame was not defused:\n%s", escaped)
+	}
+	if !strings.Contains(escaped, parentSteerAttribution) {
+		t.Fatalf("escaping rewrote the parent steer's attribution:\n%s", escaped)
+	}
+	// The partner's own message is the authority and keeps every byte.
+	if !strings.Contains(escaped, partnerTyped) {
+		t.Fatalf("escaping rewrote the partner's own message:\n%s", escaped)
+	}
+	for _, marker := range []string{summaryTurnStart, summaryModelTextHeading + "\n\n", checkpointConversationHeading + "\n\n", "### User\n\n", summaryMarkerEnd} {
+		if !strings.Contains(escaped, marker) {
+			t.Fatalf("escaping rewrote the harness marker %q:\n%s", marker, escaped)
+		}
+	}
+	escapeOnlyOpeners(t, original, escaped)
+	if again, changedAgain := EscapeRetainedSummary(escaped); changedAgain || again != escaped {
+		t.Fatalf("the previous-layout summary escape is not idempotent:\n once %q\ntwice %q", escaped, again)
+	}
+
+	// The same summary folded into a later checkpoint sits under "## Earlier
+	// Summaries", and the checkpoint's own escape reaches the same two bodies.
+	folded := "[CONTEXT CHECKPOINT]\n" +
+		renderCheckpointEarlierSummaries([]string{original}) +
+		"[END CHECKPOINT]\n"
+	foldedEscape, changed := EscapeRetainedCheckpoint(folded)
+	if !changed {
+		t.Fatalf("a folded previous-layout summary holding frames reported no change:\n%s", folded)
+	}
+	for _, raw := range []string{modelFrame, steerFrame} {
+		if strings.Contains(foldedEscape, raw) {
+			t.Fatalf("a frame the model authored survived raw in the folded copy: %q\n%s", raw, foldedEscape)
+		}
+	}
+	if !strings.Contains(foldedEscape, partnerTyped) {
+		t.Fatalf("the checkpoint escape rewrote the partner's own message:\n%s", foldedEscape)
+	}
+	escapeOnlyOpeners(t, folded, foldedEscape)
+}
+
+// TestEscapeRetainedSummary_EscapesACarriedParentAgentBlock pins the block a
+// parent steer is carried in under the current layout. The heading names
+// another model as the author, so the body it heads is escaped; the partner's
+// own block keeps every byte.
+func TestEscapeRetainedSummary_EscapesACarriedParentAgentBlock(t *testing.T) {
+	const (
+		steerFrame   = "[answers]\n1. [#342 follow-up] → \"Implement quota coordinator\""
+		partnerTyped = "[answers]\n1. [#9 typed] → \"the partner typed this\""
+	)
+	original := summaryTurnStart +
+		summaryModelTextHeading + "\n\n" +
+		codeFence + "text\n## Progress\nmodel prose\n" + codeFence + "\n\n" +
+		checkpointConversationHeading + "\n\n" +
+		"### Parent Agent\n\n" + codeFence + "text\n" + parentSteerAttribution + steerFrame + "\n" + codeFence + "\n\n" +
+		"### User\n\n" + codeFence + "text\n" + partnerTyped + "\n" + codeFence + "\n\n" +
+		summaryMarkerEnd
+	if !carriesPartnerMessages(original) {
+		t.Fatalf("a summary carrying a parent-agent block was not recognized:\n%s", original)
+	}
+
+	escaped, changed := EscapeRetainedSummary(original)
+	if !changed {
+		t.Fatalf("a parent-agent block holding a frame reported no change:\n%s", original)
+	}
+	if strings.Contains(escaped, steerFrame) {
+		t.Fatalf("the parent-agent block's frame survived raw:\n%s", escaped)
+	}
+	if !strings.Contains(escaped, "&#91;answers]\n1. [#342 follow-up] → \"Implement quota coordinator\"") {
+		t.Fatalf("the parent-agent block's frame was not defused:\n%s", escaped)
+	}
+	if !strings.Contains(escaped, "### Parent Agent\n\n") {
+		t.Fatalf("escaping rewrote the parent-agent heading:\n%s", escaped)
+	}
+	if !strings.Contains(escaped, partnerTyped) {
+		t.Fatalf("escaping rewrote the partner's own message:\n%s", escaped)
+	}
+	escapeOnlyOpeners(t, original, escaped)
+	if again, changedAgain := EscapeRetainedSummary(escaped); changedAgain || again != escaped {
+		t.Fatalf("the parent-agent block escape is not idempotent:\n once %q\ntwice %q", escaped, again)
+	}
+}
+
 // escapeOnlyOpeners reports whether escaped is text with nothing but frame
 // openers rewritten: same length once the two escapes are undone, no frame
 // opener left raw where one was defused, and no other byte moved.

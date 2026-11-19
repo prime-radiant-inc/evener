@@ -1003,6 +1003,57 @@ func TestSummarizeFold_LabelsParentAuthoredExcerptsDistinctly(t *testing.T) {
 	}
 }
 
+// TestSummarizeFold_LabelsLiveParentSteeringDistinctly pins the label the
+// summarizer's request puts on steering that arrives during the turn. A parent
+// agent's steer is another model speaking into the partner's channel, so it is
+// introduced distinctly from the human partner's own steer, whose words the
+// summary prompt tells the summarizer to quote, and from a note handoff, which
+// is this session's model publishing its own note.
+func TestSummarizeFold_LabelsLiveParentSteeringDistinctly(t *testing.T) {
+	const body = "STEERING_BODY_MARKER hold the deploy"
+	parentSteer := schema.NewTurn(schema.TurnSteering, llm.User(body))
+	parentSteer.SteeringSource = events.SteeringSourceParent
+	partnerSteer := schema.NewTurn(schema.TurnSteering, llm.User(body))
+	partnerSteer.SteeringSource = events.SteeringSourceUser
+	handoff := schema.NewTurn(schema.TurnSteering, llm.User(body))
+	handoff.SteeringKind = events.SteeringKindNoteHandoff
+
+	fold := func(turn schema.Turn) string {
+		adapter := &stubSummarizeAdapter{name: "openai", respFn: func(llm.Request) (llm.Response, error) {
+			return llm.Response{Message: llm.Assistant("## Progress\nDone")}, nil
+		}}
+		client := llm.NewClient()
+		client.Register(adapter)
+		cm := NewManager(testProfile("openai", "test", minSummarizingWindow), client, cheapmodel.New(client))
+		history := []schema.Turn{
+			turn,
+			schema.NewTurn(schema.TurnAssistant, llm.Assistant("working")),
+			schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent")),
+		}
+		if _, err := cm.summarizeFold(context.Background(), history, 1, "", nil); err != nil {
+			t.Fatalf("summarizeFold: %v", err)
+		}
+		return adapter.lastReq.Messages[0].Text()
+	}
+
+	introducer := func(turn schema.Turn, what string) string {
+		t.Helper()
+		prompt := fold(turn)
+		label, ok := excerptIntroducer(prompt, body)
+		if !ok {
+			t.Fatalf("the %s is missing from the request:\n%s", what, prompt)
+		}
+		return label
+	}
+	parentLabel := introducer(parentSteer, "parent steer")
+	if partnerLabel := introducer(partnerSteer, "partner steer"); parentLabel == partnerLabel {
+		t.Fatalf("the parent agent's steer carries the human partner's own label %q", parentLabel)
+	}
+	if handoffLabel := introducer(handoff, "note handoff"); parentLabel == handoffLabel {
+		t.Fatalf("the parent agent's steer carries the note handoff's label %q", parentLabel)
+	}
+}
+
 // TestSummarizeFold_IndentedFrameAfterAModelLabelStaysCode pins where a
 // model-authored excerpt starts in the summarizer's request. A body whose first
 // line is an indented reserved frame is code, and it stays code only when the

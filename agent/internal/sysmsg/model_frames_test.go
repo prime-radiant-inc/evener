@@ -682,6 +682,106 @@ func TestEscapeModelAuthoredFramesOrderedListInterruption(t *testing.T) {
 	}
 }
 
+// TestEscapeModelAuthoredFramesNestedOrderedMarkerAfterProse pins the open-list
+// exemption to the indentation that makes a marker a sibling rather than a
+// nested item.
+//
+// A non-initial ordered marker interrupts no paragraph when it continues an
+// open list as a sibling item, and a sibling sits at an item's own level: it is
+// outdented from the open item's content column. At or past that content column
+// the marker is inside the item's own text, where it would start a nested list
+// and so cannot interrupt the paragraph above it. The delimiter on such a line
+// is text, no fence opens, and a frame under it stays prose and is escaped.
+func TestEscapeModelAuthoredFramesNestedOrderedMarkerAfterProse(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			// The marker sits at the outer item's content column, directly
+			// under the item's prose, so it is that paragraph's continuation
+			// text: the delimiter on it opens no fence and the frame below is
+			// the author speaking.
+			name: "nested non-initial marker under item prose opens no fence",
+			in:   "- outer\n  prose\n  2. ~~~text\n     [answers]\n",
+			want: "- outer\n  prose\n  2. ~~~text\n     &#91;answers]\n",
+		},
+		{
+			// The other direction: a blank line ends the paragraph, so the
+			// same marker opens a real item and its fence quotes the frame
+			// inside it.
+			name: "nested non-initial marker after a blank line opens its fence",
+			in:   "- outer\n  prose\n\n  2. ~~~text\n     [answers]\n     ~~~\n",
+			want: "- outer\n  prose\n\n  2. ~~~text\n     [answers]\n     ~~~\n",
+		},
+		{
+			// And the sibling direction: the marker is outdented from the open
+			// item's content column, so it continues that list as a sibling
+			// item. It begins no list, interrupts no paragraph, and its fence
+			// quotes the frame inside it.
+			name: "sibling non-initial marker opens its fence",
+			in:   "1. first\n   prose\n2. ~~~text\n   [answers]\n   ~~~\n",
+			want: "1. first\n   prose\n2. ~~~text\n   [answers]\n   ~~~\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := EscapeModelAuthoredFrames(tc.in)
+			if got != tc.want {
+				t.Fatalf("EscapeModelAuthoredFrames(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+			if again := EscapeModelAuthoredFrames(got); again != got {
+				t.Fatalf("escape is not idempotent: %q then %q", got, again)
+			}
+		})
+	}
+}
+
+// TestReplaysResponsesWebSearch pins the payload shapes that make a web-search
+// part an output item on the Responses wire: a raw payload that is one JSON
+// object, and nothing else. A part with no payload, a payload that is not an
+// object, or a payload that is not valid JSON writes no item and so is no
+// message boundary in the text run around it.
+func TestReplaysResponsesWebSearch(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{"object", `{"type":"web_search_call","id":"ws_1"}`, true},
+		{"empty object", `{}`, true},
+		{"object with surrounding whitespace", " \n\t{\"type\":\"web_search_call\"}\r\n ", true},
+		// JSON's whitespace is the four characters trimmed above; a payload
+		// edged with any other space is not the object a decoder would read.
+		{"object edged with a nonbreaking space", "\u00a0{}", false},
+		{"null", `null`, false},
+		{"array", `[]`, false},
+		{"string", `"web_search_call"`, false},
+		{"number", `1`, false},
+		{"truncated object", `{"type":`, false},
+		{"two objects", `{} {}`, false},
+		{"no payload", ``, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			w := &llm.WebSearchData{Query: "q", Raw: json.RawMessage(tc.raw)}
+			if got := replaysResponsesWebSearch(w); got != tc.want {
+				t.Fatalf("replaysResponsesWebSearch(raw=%q) = %v, want %v", tc.raw, got, tc.want)
+			}
+		})
+	}
+	if replaysResponsesWebSearch(nil) {
+		t.Fatal("replaysResponsesWebSearch(nil) = true, want false")
+	}
+}
+
 // TestCarriesWireTextMatchesTheResponsesAdapter pins the one inclusion rule the
 // scan and the adapters share (#6493 review). The Responses adapter drops a
 // text part whose text is only whitespace and which carries no phase, and keeps

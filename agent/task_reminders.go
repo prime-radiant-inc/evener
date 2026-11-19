@@ -87,6 +87,355 @@ func taskReminderDelimiterAt(s string) bool {
 	return false
 }
 
+// taskReminderSteeringKind reports whether kind names a reminder whose text
+// interpolates a task store's model-authored fields: the plan, the current
+// step, and the inactivity re-statement of that step.
+func taskReminderSteeringKind(kind string) bool {
+	switch kind {
+	case events.SteeringKindTaskList, events.SteeringKindCurrentTask, events.SteeringKindTaskInactive:
+		return true
+	}
+	return false
+}
+
+// escapeRetainedTaskReminder escapes the model-authored task fields of a
+// retained task reminder, reporting whether any byte changed.
+//
+// The render-time escape runs where a reminder is built from the task store, so
+// a reminder an older build recorded still carries the raw interpolated title,
+// prompt, and notes. Such a reminder replays as stored, and a reserved frame in
+// one of those fields then arrives in the partner's channel. The retained text
+// is the snapshot: its fields are escaped where they stand, never re-rendered,
+// so a task that has since changed still arrives as it was recorded.
+//
+// The reminder's own text keeps every byte: the envelope, the CURRENT-TASK
+// element with its TITLE and INSTRUCTIONS, a plan line's "  [status] #N: "
+// prefix, and a prompt or note line's continuation prefix. Every span between
+// them is the task's model-authored text and is escaped by the same rule the
+// renderer uses, so both readers defuse the same spellings.
+//
+// A text whose envelope or element shape this rule cannot read is left exactly
+// as stored: rewriting text whose provenance it cannot establish would be worse
+// than the hole it leaves.
+func escapeRetainedTaskReminder(text string) (string, bool) {
+	lines := strings.Split(text, "\n")
+	last := len(lines) - 1
+	if last < 2 ||
+		strings.TrimSuffix(lines[0], "\r") != "<SYSTEM-REMINDER>" ||
+		strings.TrimSuffix(lines[last], "\r") != "</SYSTEM-REMINDER>" {
+		return text, false
+	}
+	body := make([]string, last-1)
+	crlf := make([]bool, last-1)
+	for i := range body {
+		body[i] = lines[i+1]
+		if trimmed, ok := strings.CutSuffix(body[i], "\r"); ok {
+			body[i], crlf[i] = trimmed, true
+		}
+	}
+	if !escapeRetainedReminderFields(body) {
+		return text, false
+	}
+	out := make([]string, 0, len(lines))
+	out = append(out, lines[0])
+	for i, line := range body {
+		if crlf[i] {
+			line += "\r"
+		}
+		out = append(out, line)
+	}
+	out = append(out, lines[last])
+	return strings.Join(out, "\n"), true
+}
+
+// escapeRetainedReminderFields escapes one reminder body's model-authored
+// fields in place and reports whether any byte changed.
+func escapeRetainedReminderFields(body []string) bool {
+	open, closeIdx := retainedCurrentTaskElement(body)
+	planEnd := len(body)
+	if open >= 0 {
+		planEnd = open
+	}
+	changed := escapeRetainedPlanLines(body[:planEnd])
+	if open < 0 {
+		return changed
+	}
+	return escapeRetainedCurrentTaskLines(body, open, closeIdx) || changed
+}
+
+// retainedCurrentTaskElement returns the line indexes bounding the CURRENT-TASK
+// element a reminder carries, or -1 when it carries none.
+//
+// The renderer opens the element with a TITLE under it and closes it on a line
+// of its own, with only harness text after it at most. That placement is what
+// separates the harness's element from a field that spelled one: a field's text
+// is interpolated INSIDE the harness's markup, so it can never follow the close
+// the harness wrote.
+func retainedCurrentTaskElement(body []string) (int, int) {
+	for closeIdx := len(body) - 1; closeIdx >= 2; closeIdx-- {
+		if body[closeIdx] != "</CURRENT-TASK>" {
+			continue
+		}
+		for i := closeIdx - 2; i >= 0; i-- {
+			if strings.HasPrefix(body[i], "<CURRENT-TASK ") && strings.HasPrefix(body[i+1], "<TITLE>") {
+				return i, closeIdx
+			}
+		}
+		return -1, -1
+	}
+	return -1, -1
+}
+
+// escapeRetainedPlanLines escapes the plan half of a retained reminder: each
+// task's title, each step's prompt and notes, and any line a field spilled
+// onto.
+func escapeRetainedPlanLines(lines []string) bool {
+	changed := false
+	for i := 0; i < len(lines); {
+		switch line := lines[i]; {
+		case line == "Task list:":
+			i++
+		case line == "    note:":
+			// A multiline note the current renderer wrote is fenced after this
+			// line and already escaped when it was written; the fence and the
+			// text under it are quoted and keep their bytes. A body that no
+			// fence follows is a field's own spilled lines, escaped below.
+			next := skipRetainedNoteFence(lines, i+1)
+			if next > i+1 {
+				i = next
+				continue
+			}
+			i++
+		case strings.HasPrefix(line, "    prompt: "):
+			start := i
+			for i < len(lines) && strings.HasPrefix(lines[i], "    prompt: ") {
+				i++
+			}
+			changed = escapeRetainedPrefixedRun(lines[start:i], "    prompt: ") || changed
+		case strings.HasPrefix(line, "    note: "):
+			start := i
+			for i < len(lines) && strings.HasPrefix(lines[i], "    note: ") {
+				i++
+			}
+			changed = escapeRetainedPrefixedRun(lines[start:i], "    note: ") || changed
+		case taskReminderPlanPrefix(line) > 0:
+			prefix := taskReminderPlanPrefix(line)
+			changed = escapeRetainedReminderRegion(lines, i, prefix, i, len(line)) || changed
+			i++
+		default:
+			start := i
+			for i < len(lines) && !retainedPlanHarnessLine(lines[i]) {
+				i++
+			}
+			changed = escapeRetainedWholeLines(lines, start, i-1) || changed
+		}
+	}
+	return changed
+}
+
+// retainedPlanHarnessLine reports whether a plan line is one the renderer wrote
+// around a field rather than a field's own spilled line.
+func retainedPlanHarnessLine(line string) bool {
+	return line == "Task list:" || line == "    note:" ||
+		strings.HasPrefix(line, "    prompt: ") || strings.HasPrefix(line, "    note: ") ||
+		taskReminderPlanPrefix(line) > 0
+}
+
+// taskReminderPlanPrefix returns the length of the "  [status] #N: " prefix a
+// rendered plan line writes, or 0 when line is not one.
+func taskReminderPlanPrefix(line string) int {
+	if !strings.HasPrefix(line, "  [") {
+		return 0
+	}
+	status := strings.Index(line, "] #")
+	if status < 0 {
+		return 0
+	}
+	rest := line[status+3:]
+	digits := 0
+	for digits < len(rest) && rest[digits] >= '0' && rest[digits] <= '9' {
+		digits++
+	}
+	if digits == 0 || !strings.HasPrefix(rest[digits:], ": ") {
+		return 0
+	}
+	return status + 3 + digits + 2
+}
+
+// skipRetainedNoteFence returns the index just past the fenced block starting
+// at lines[i], or i when no block opens there.
+func skipRetainedNoteFence(lines []string, i int) int {
+	var fence mdfence.Tracker
+	for i < len(lines) {
+		if !fence.StepInBlock(strings.TrimPrefix(lines[i], "    ")) {
+			break
+		}
+		i++
+	}
+	return i
+}
+
+// escapeRetainedCurrentTaskLines escapes the model-authored fields of the
+// CURRENT-TASK element a retained reminder carries.
+//
+// The renderer writes one TITLE opening tag, one title closing tag, one
+// INSTRUCTIONS opening line and one closing line. A field's own spelling of one
+// always sits inside the harness's markup, so the outermost spelling on each
+// side is the harness's: the first opening tag and the last closing tag.
+func escapeRetainedCurrentTaskLines(body []string, open, closeIdx int) bool {
+	titleLine := open + 1
+	titleOpen := strings.Index(body[titleLine], "<TITLE>")
+	if titleOpen < 0 {
+		return false
+	}
+	changed := false
+	titleStartCol := titleOpen + len("<TITLE>")
+	titleEndLine, titleEndCol := -1, -1
+	for i := titleLine; i < closeIdx; i++ {
+		if at := strings.LastIndex(body[i], "</TITLE>"); at >= 0 {
+			titleEndLine, titleEndCol = i, at
+		}
+	}
+	// The harness writes the element's opening line right after the title's
+	// close, so the first one there is its own and the last close before the
+	// element's end is too. A field's spelling of either sits between them and
+	// is escaped with the text around it.
+	instrOpen := -1
+	after := titleLine
+	if titleEndLine >= 0 {
+		after = titleEndLine + 1
+	}
+	for i := after; i < closeIdx; i++ {
+		if body[i] == "<INSTRUCTIONS>" {
+			instrOpen = i
+			break
+		}
+	}
+	titleStop := closeIdx
+	if instrOpen >= 0 {
+		titleStop = instrOpen
+	}
+	switch {
+	case titleEndLine >= 0 && titleEndLine < titleStop:
+		changed = escapeRetainedReminderRegion(body, titleLine, titleStartCol, titleEndLine, titleEndCol) || changed
+		changed = escapeRetainedWholeLines(body, titleEndLine+1, titleStop-1) || changed
+	case titleEndLine < 0:
+		// The field never closed its own title, so everything under the opening
+		// tag to the instructions is field text.
+		changed = escapeRetainedReminderRegion(body, titleLine, titleStartCol, titleStop-1, len(body[titleStop-1])) || changed
+	}
+	if instrOpen < 0 {
+		return changed
+	}
+	instrClose := -1
+	for i := instrOpen + 1; i < closeIdx; i++ {
+		if body[i] == "</INSTRUCTIONS>" {
+			instrClose = i
+		}
+	}
+	promptEnd := closeIdx
+	if instrClose >= 0 {
+		promptEnd = instrClose
+	}
+	if promptEnd-1 >= instrOpen {
+		changed = escapeRetainedReminderRegion(body, instrOpen, len(body[instrOpen]), promptEnd-1, len(body[promptEnd-1])) || changed
+	}
+	if instrClose >= 0 {
+		changed = escapeRetainedWholeLines(body, instrClose+1, closeIdx-1) || changed
+	}
+	return changed
+}
+
+// escapeRetainedReminderRegion escapes the text between the columns of the line
+// range body[first..last], leaving the harness columns around it as written,
+// and reports whether any byte changed.
+//
+// The range is escaped as one block, so a fenced example a field quoted is read
+// as the block it is. The escape never adds or removes a line, so the escaped
+// block splits back onto the lines it came from; a block that no longer has that
+// shape is left as stored.
+func escapeRetainedReminderRegion(body []string, first, firstCol, last, lastCol int) bool {
+	if first < 0 || last < first || last >= len(body) ||
+		firstCol < 0 || firstCol > len(body[first]) || lastCol < 0 || lastCol > len(body[last]) {
+		return false
+	}
+	if first == last && firstCol > lastCol {
+		return false
+	}
+	region := make([]string, 0, last-first+1)
+	for i := first; i <= last; i++ {
+		start, end := 0, len(body[i])
+		if i == first {
+			start = firstCol
+		}
+		if i == last {
+			end = lastCol
+		}
+		if start > end {
+			return false
+		}
+		region = append(region, body[i][start:end])
+	}
+	joined := strings.Join(region, "\n")
+	escaped := taskFieldForModel(joined)
+	if escaped == joined {
+		return false
+	}
+	pieces := strings.Split(escaped, "\n")
+	if len(pieces) != len(region) {
+		return false
+	}
+	for k, piece := range pieces {
+		i := first + k
+		switch {
+		case first == last:
+			body[i] = body[i][:firstCol] + piece + body[i][lastCol:]
+		case i == first:
+			body[i] = body[i][:firstCol] + piece
+		case i == last:
+			body[i] = piece + body[i][lastCol:]
+		default:
+			body[i] = piece
+		}
+	}
+	return true
+}
+
+// escapeRetainedWholeLines escapes every line of body[first..last] as
+// model-authored text and reports whether any byte changed.
+func escapeRetainedWholeLines(body []string, first, last int) bool {
+	if first > last {
+		return false
+	}
+	return escapeRetainedReminderRegion(body, first, 0, last, len(body[last]))
+}
+
+// escapeRetainedPrefixedRun escapes a run of continuation lines, each written
+// with prefix in front of the field's own text, and reports whether any byte
+// changed.
+func escapeRetainedPrefixedRun(lines []string, prefix string) bool {
+	if len(lines) == 0 {
+		return false
+	}
+	region := make([]string, len(lines))
+	for i, line := range lines {
+		region[i] = strings.TrimPrefix(line, prefix)
+	}
+	joined := strings.Join(region, "\n")
+	escaped := taskFieldForModel(joined)
+	if escaped == joined {
+		return false
+	}
+	pieces := strings.Split(escaped, "\n")
+	if len(pieces) != len(lines) {
+		return false
+	}
+	for i, piece := range pieces {
+		lines[i] = prefix + piece
+	}
+	return true
+}
+
 // taskFieldInline renders one model-authored task field for a place that
 // interpolates it into a line the harness writes.
 //

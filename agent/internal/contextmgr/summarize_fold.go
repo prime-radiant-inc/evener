@@ -345,11 +345,14 @@ historyLoop:
 			// of its own, for the reasons the reply's does. A steer another
 			// model wrote into the partner's channel is not the partner
 			// speaking, so it does not carry the partner's label; the
-			// partner's own steer keeps it on one line.
+			// partner's own steer keeps it on one line. A steer from the parent
+			// agent or from an agent-authored turn names that author, while a
+			// note handoff is this session's own note and a daemon nudge has no
+			// author to name.
 			text := t.Message.Text()
 			if isModelAuthoredTurn(t) {
 				text = sysmsg.EscapeModelAuthoredFrames(text)
-				if isPartnerSteering(t) {
+				if isParentSteering(t) || isAgentAuthored(t) {
 					b.WriteString("Parent Agent:\n\n")
 				} else {
 					b.WriteString("System:\n\n")

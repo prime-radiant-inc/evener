@@ -1,6 +1,7 @@
 package sysmsg
 
 import (
+	"bytes"
 	"encoding/json"
 	"slices"
 	"strings"
@@ -168,15 +169,21 @@ func replaysResponsesReasoning(t *llm.ThinkingData) bool {
 }
 
 // replaysResponsesWebSearch reports whether the Responses adapter writes an
-// output item for a web-search part: the part carries a raw payload that
-// decodes as one item. A part with no payload, or one whose payload is not an
-// item, reaches no reader.
+// output item for a web-search part: the part carries a raw payload that is one
+// JSON object. A part with no payload, or one whose payload is not an object,
+// reaches no reader.
+//
+// The payload's shape is read from its own bytes rather than decoded into the
+// item the adapter builds, because only the presence of the item decides
+// whether the text run around it is flushed. The edges are trimmed of JSON's
+// own whitespace alone: a payload a decoder would reject at either end is not
+// an object here either.
 func replaysResponsesWebSearch(w *llm.WebSearchData) bool {
 	if w == nil || len(w.Raw) == 0 {
 		return false
 	}
-	var item map[string]any
-	return json.Unmarshal(w.Raw, &item) == nil && item != nil
+	trimmed := bytes.Trim(w.Raw, " \t\r\n")
+	return len(trimmed) > 0 && trimmed[0] == '{' && json.Valid(trimmed)
 }
 
 // WireTextPartsFlushed returns an assistant message's text parts as a reader
@@ -1021,13 +1028,18 @@ func (l *listContainer) step(content string, opensNoItem bool) (scope, enclosing
 // open paragraph, so the delimiter on it is text, no item opens, and a frame
 // below stays prose and is escaped.
 //
-// Only a marker that would START a list is read this way. Where a list is
-// already open the marker may continue it as a sibling item, which begins no
-// list and interrupts no paragraph, so the open-list case is left to the scope
-// walk that resolves it. And a marker cannot be a lazy continuation of a block
-// quote's body either: it ends the quote and starts a list of its own.
+// Only a marker that would START a list is read this way. A marker may instead
+// continue a list that is already open, as a sibling item: it begins no list
+// and interrupts no paragraph, so the open-list case is left to the scope walk
+// that resolves it. That exemption is the marker's own indentation's, not the
+// document's. A sibling item sits at an item's marker level, which is outdented
+// from that item's content column; a marker at or past the content column is
+// inside the item's own text, where it would start a nested list and so cannot
+// interrupt the paragraph above it. And a marker cannot be a lazy continuation
+// of a block quote's body either: it ends the quote and starts a list of its
+// own.
 func (l *listContainer) interruptsParagraph(content string, blocks blockState) bool {
-	if !blocks.inParagraph || blocks.quotedParagraph || len(l.items) > 0 {
+	if !blocks.inParagraph || blocks.quotedParagraph {
 		return true
 	}
 	at := mdfence.LeadingIndentEnd(content)
@@ -1040,6 +1052,12 @@ func (l *listContainer) interruptsParagraph(content string, blocks blockState) b
 	}
 	// ListMarker returns 1 only for bullets, which interrupt unconditionally.
 	if marker == 1 {
+		return true
+	}
+	// The marker continues an open list only where it is outdented from the
+	// innermost open item's content column, which is where a sibling item's
+	// marker sits. At or past that column it is nested in the item's own text.
+	if mdfence.LeadingColumns(content[:at]) < l.current() {
 		return true
 	}
 	return content[at:at+marker-1] == "1"

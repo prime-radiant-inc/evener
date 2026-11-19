@@ -67,7 +67,13 @@ func renderCheckpointConversation(entries []checkpointConversationEntry) string 
 // another model wrote is rendered under. The partner's own entries keep the
 // partner heading, so the two stay distinct across a fold.
 func modelAuthoredConversationHeading(entry checkpointConversationEntry) string {
-	if entry.modelAuthored {
+	return conversationHeading(entry.modelAuthored)
+}
+
+// conversationHeading is the block heading a partner-role entry is rendered
+// under: the one naming another model as its author, or the partner's own.
+func conversationHeading(modelAuthored bool) string {
+	if modelAuthored {
 		return "### Parent Agent"
 	}
 	return "### User"
@@ -199,11 +205,24 @@ const summaryPointerLead = "Earlier history was compacted into this summary "
 // summaryModelTextHeading heads the model's own text in a summary turn.
 const summaryModelTextHeading = "## Summary"
 
-// carriesPartnerMessages reports whether a summary turn has the layout
+// carriesPartnerMessages reports whether a summary turn has a layout
 // summarizeFold writes: the model's text fenced under summaryModelTextHeading,
-// with the partner's messages after it in their own conversation section. A
+// with the partner-role entries after it in their own conversation section. A
 // summary written before that layout is the model's text throughout, whatever
 // headings it used, and is carried whole.
+//
+// Both released layouts of that section are valid: the current one heads a
+// model-authored entry as the parent agent's, and the one before it headed
+// every partner-role entry as the partner's, a parent steer among them. The
+// comparison is against the turn's own headings and bytes, because authorship
+// normalization would move a legacy steer to the other heading and the escape
+// would rewrite a body the turn stores as written.
+//
+// A partner-role block is the renderer's only when its text is already what the
+// renderer's normalization would leave: the renderer trims a partner-role
+// entry, so a block whose edges trim differently is model text that happens to
+// use the layout's headings, and it is carried whole rather than promoted to
+// the partner's authority.
 func carriesPartnerMessages(text string) bool {
 	start, body, end, ok := markdownSectionSpan(text, summaryModelTextHeading)
 	if !ok {
@@ -213,9 +232,12 @@ func carriesPartnerMessages(text string) bool {
 	if !ok {
 		return false
 	}
-	entries := extractMarkdownConversation(text)
-	for _, entry := range entries {
-		if entry.Role != "user" {
+	blocks := parseMarkdownBlocks(markdownSection(text, checkpointConversationHeading))
+	for _, block := range blocks {
+		if role, ok := conversationRoleForHeading(block.Heading); !ok || role != "user" {
+			return false
+		}
+		if block.Text != strings.TrimSpace(block.Text) {
 			return false
 		}
 	}
@@ -229,7 +251,23 @@ func carriesPartnerMessages(text string) bool {
 	// with a trailing newline ensured, which soleFencedText strips once, so
 	// re-rendering it with that newline restored reproduces any model text,
 	// trailing blank lines included.
-	return text[start:] == renderCompactionModelText(summaryModelTextHeading, modelText+"\n")+renderCheckpointConversation(entries)+summaryMarkerEnd
+	return text[start:] == renderCompactionModelText(summaryModelTextHeading, modelText+"\n")+renderPartnerConversationAsRead(blocks)+summaryMarkerEnd
+}
+
+// renderPartnerConversationAsRead renders a carried conversation section as the
+// turn holds it: each block under the canonical heading its authorship names and
+// with its text unchanged.
+func renderPartnerConversationAsRead(blocks []checkpointMarkdownBlock) string {
+	if len(blocks) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(checkpointConversationHeading + "\n\n")
+	for _, block := range blocks {
+		b.WriteString(conversationHeading(conversationHeadingIsModelAuthored(block.Heading)) + "\n\n")
+		writeMarkdownFence(&b, block.Text)
+	}
+	return b.String()
 }
 
 // isSummaryTurnOpening reports whether prefix is what the renderer writes
@@ -664,15 +702,23 @@ func legacyParentSteerSpans(text string) []textSpan {
 		if role, ok := conversationRoleForHeading(span.Heading); !ok || role != "user" || modelAuthoredConversationBlock(span.Heading) {
 			continue
 		}
-		block := text[start:stop]
-		after, found := strings.CutPrefix(block, parentSteerAttribution)
-		if !found {
-			continue
+		if at, ok := attributedSteerBodyStart(text[start:stop]); ok {
+			spans = append(spans, textSpan{start: start + at, end: stop})
 		}
-		at := start + len(block) - len(after)
-		spans = append(spans, textSpan{start: at, end: stop})
 	}
 	return spans
+}
+
+// attributedSteerBodyStart returns where block's body begins when block opens
+// with the attribution a parent steer carries: just past it. The attribution is
+// harness framing and keeps every byte, and the body after it is the other
+// model's words.
+func attributedSteerBodyStart(block string) (int, bool) {
+	after, found := strings.CutPrefix(block, parentSteerAttribution)
+	if !found {
+		return 0, false
+	}
+	return len(block) - len(after), true
 }
 
 // earlierSummarySpans returns the ranges that defuse a checkpoint's folded
@@ -776,36 +822,42 @@ func sessionLogBodySpans(text string) []textSpan {
 // EscapeRetainedSummary returns a summary turn's text with the frames the model
 // authored defused, and reports whether any byte changed.
 //
-// A summary names one model-authored body, and which body that is depends on
-// the layout it was written in. The layout the renderer writes now fences the
+// A summary names the bodies the model wrote, and which they are depends on the
+// layout it was written in. The layout the renderer writes now fences the
 // model's text under the summary heading and follows it with the partner's
-// messages in their own conversation section. A summary in the older layout is
-// the model's reply from its opening marker to its end marker, with an optional
-// pointer line after the opening. In both, only that body is escaped, and a
-// turn that carries no summary body keeps every byte.
+// messages and any parent steer in their own conversation section. A summary in
+// the older layout is the model's reply from its opening marker to its end
+// marker, with an optional pointer line after the opening. In both, only those
+// bodies are escaped, and a turn that carries none keeps every byte.
 //
 // The stored turn keeps its bytes; this is the copy handed back to the model.
 // The turn's markers, the pointer line, the partner-carry reminder, the section
-// and block headings, the fence delimiters and the partner's own messages all
-// keep every byte, and the model's body is escaped as one block so an intact
-// fenced example inside it is spared.
+// and block headings, the fence delimiters, a parent steer's attribution and the
+// partner's own messages all keep every byte, and each model-authored body is
+// escaped as one block so an intact fenced example inside it is spared.
 func EscapeRetainedSummary(text string) (string, bool) {
 	return escapeModelSpans(text, summaryModelSpans(text))
 }
 
 // summaryModelSpans returns the ranges of a summary turn the model wrote: the
-// text fenced under the summary heading when the turn carries the layout
-// summarizeFold writes, and the reply between the markers when it carries the
-// older one. A turn with no summary body answers no spans.
+// text fenced under the summary heading and the bodies of the parent steers the
+// turn carries when it has a layout summarizeFold writes, and the reply between
+// the markers when it carries the older one. A turn with no model-authored body
+// answers no spans.
 func summaryModelSpans(text string) []textSpan {
+	if !strings.ContainsAny(text, "<[") {
+		return nil
+	}
 	if spans := fencedSummaryModelSpans(text); len(spans) > 0 {
 		return spans
 	}
 	return legacySummaryModelSpans(text)
 }
 
-// fencedSummaryModelSpans returns the fenced body under the summary heading,
-// when the turn is the layout summarizeFold writes.
+// fencedSummaryModelSpans returns the ranges of a summary turn the layout
+// summarizeFold writes names as the model's: the fenced body under the summary
+// heading, and the carried parent steer bodies after it. The turn's other
+// carried entries are the partner's own messages and keep every byte.
 func fencedSummaryModelSpans(text string) []textSpan {
 	_, body, end, ok := markdownSectionSpan(text, summaryModelTextHeading)
 	if !ok {
@@ -816,13 +868,53 @@ func fencedSummaryModelSpans(text string) []textSpan {
 		return nil
 	}
 	start, stop := body+spans[0].BodyStart, body+spans[0].BodyEnd
-	if !strings.ContainsAny(text[start:stop], "<[") {
-		return nil
-	}
 	if !carriesPartnerMessages(text) {
 		return nil
 	}
-	return []textSpan{{start: start, end: stop}}
+	var out []textSpan
+	if strings.ContainsAny(text[start:stop], "<[") {
+		out = append(out, textSpan{start: start, end: stop})
+	}
+	out = append(out, carriedParentSteerSpans(text)...)
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// carriedParentSteerSpans returns the ranges of a summary turn's carried
+// conversation section that hold a parent agent's steer: the whole body of a
+// block whose heading names a model as its author, and the body after the
+// attribution in a partner-headed block that carries one.
+//
+// A summary written before the parent heading existed rendered a parent steer
+// under the partner heading, so its heading does not prove authorship there;
+// the attribution does. In both layouts the attribution and a genuine partner
+// message keep every byte.
+func carriedParentSteerSpans(text string) []textSpan {
+	_, body, end, ok := markdownSectionSpan(text, checkpointConversationHeading)
+	if !ok {
+		return nil
+	}
+	end = ownedSectionEnd(text, body, end)
+	var spans []textSpan
+	for _, span := range fencedBlockSpans(text[body:end]) {
+		start, stop := body+span.BodyStart, body+span.BodyEnd
+		if role, ok := conversationRoleForHeading(span.Heading); !ok || role != "user" {
+			continue
+		}
+		// The heading naming a model is proof enough, whether or not the steer
+		// still carries its attribution; a partner-headed block is a steer only
+		// by that attribution.
+		if at, ok := attributedSteerBodyStart(text[start:stop]); ok {
+			spans = append(spans, textSpan{start: start + at, end: stop})
+			continue
+		}
+		if conversationHeadingIsModelAuthored(span.Heading) {
+			spans = append(spans, textSpan{start: start, end: stop})
+		}
+	}
+	return spans
 }
 
 // legacySummaryModelSpans returns the reply a summary in the older layout

@@ -161,6 +161,100 @@ func escapeParentSteeringBody(t schema.Turn, msg llm.Message) llm.Message {
 	return replaceMessageText(msg, parentMessageAttribution+escaped)
 }
 
+// escapeNotificationCopyBody escapes the model-authored prose a rendered
+// notification carries, in the model-facing copy.
+//
+// A delegate's report or progress update and a watch's note are the model's own
+// words. They reach the receiving session as a user-role message with a genuine
+// harness envelope around them: a delegate delivery is an attention turn with no
+// steering kind, and a watch fire is a notification turn. That role is never
+// escaped as model text, so a reserved answer marker in the prose arrived on the
+// next request in its original spelling and read as a decision the partner
+// made. The envelope, its attributes and the harness's own field lines keep
+// every byte; the stored turn keeps its bytes too.
+func escapeNotificationCopyBody(t schema.Turn, msg llm.Message) llm.Message {
+	if t.Kind != schema.TurnSteering {
+		return msg
+	}
+	// An attention entry is the harness's own delivery record, and a notification
+	// kind is a watch fire or a stable receiver's frame. Both carry model prose
+	// inside harness framing, and neither is the partner speaking.
+	if t.AttentionID == "" && t.SteeringKind != events.SteeringKindNotification {
+		return msg
+	}
+	return escapeMessageText(msg, escapeModelProseInNotificationCopy)
+}
+
+// escapeModelProseInNotificationCopy escapes the prose a rendered notification
+// leaves to the model, reporting whether any byte changed.
+//
+// A <delegate-notification> or <job-notification> envelope is genuine framing
+// and keeps every byte, including its attributes and the close tag that ends it.
+// The body between them is escaped, which is where a delegate's words and a
+// watch's note ride. A text carrying no envelope is wholly prose — the bare
+// frame a stable receiver is handed — and is escaped whole.
+func escapeModelProseInNotificationCopy(text string) (string, bool) {
+	if !strings.ContainsAny(text, "<[") {
+		return text, false
+	}
+	var b strings.Builder
+	b.Grow(len(text))
+	changed := false
+	at := 0
+	writeProse := func(span string) {
+		escaped := sysmsg.EscapeModelAuthoredFrames(span)
+		if escaped != span {
+			changed = true
+		}
+		b.WriteString(escaped)
+	}
+	for at < len(text) {
+		open, closeTag := nextNotificationEnvelope(text[at:])
+		if open < 0 {
+			writeProse(text[at:])
+			break
+		}
+		start := at + open
+		writeProse(text[at:start])
+		headerEnd := strings.IndexByte(text[start:], '>')
+		if headerEnd < 0 {
+			b.WriteString(text[start:])
+			break
+		}
+		headerEnd += start
+		bodyStart := headerEnd + 1
+		bodyEnd := strings.Index(text[bodyStart:], closeTag)
+		if bodyEnd < 0 {
+			// An unclosed block has no genuine framing past its header.
+			b.WriteString(text[start:])
+			break
+		}
+		bodyEnd += bodyStart
+		b.WriteString(text[start:bodyStart])
+		writeProse(text[bodyStart:bodyEnd])
+		b.WriteString(closeTag)
+		at = bodyEnd + len(closeTag)
+	}
+	if !changed {
+		return text, false
+	}
+	return b.String(), true
+}
+
+// nextNotificationEnvelope returns where text's next harness notification
+// envelope opens and the tag that closes it, or -1 when it carries none. The
+// earliest opener wins, so an envelope a model nested inside another is read as
+// the outer one's body and escaped with it.
+func nextNotificationEnvelope(text string) (int, string) {
+	open, closeTag := -1, ""
+	for _, tag := range []string{"<delegate-notification", "<job-notification"} {
+		if at := strings.Index(text, tag); at >= 0 && (open < 0 || at < open) {
+			open, closeTag = at, "</"+tag[1:]+">"
+		}
+	}
+	return open, closeTag
+}
+
 // escapeModelAuthoredTurnFramesReporting returns msg with line-start harness
 // input frames defused in the text of an assistant-role turn, so a request the
 // session serves cannot hand the model its own earlier fabrication back with
