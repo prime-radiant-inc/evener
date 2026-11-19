@@ -2521,3 +2521,70 @@ test("phone Back on a Needs-You-selected inspector whose source is parked focuse
   expect(workspaceStore.getState().mainPane()).toBe(otherPane);
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aother"));
 });
+
+test("confirmed deletion of desktop URL session A after Back restores healthy secondary session B preserves B and its staged image", async () => {
+  const client = navClient();
+  installLocationForRoute("local:session-a");
+  installLocationForRoute("local:session-b");
+  installLocationForRoute("local:session-c");
+  window.history.pushState({}, "", "/s/local%3Asession-a");
+  await act(async () => {
+    render(<AppShell client={client} />);
+  });
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:session-a" }));
+  const paneBId = await act(async () =>
+    workspaceStore.getState().openPane("session", { ref: "local:session-b" }, { slot: "secondary" }),
+  );
+  const paneB = workspaceStore.getState().panes.find((pane) => pane.id === paneBId);
+  if (!paneB) throw new Error("expected secondary session B");
+  const lifetimeB = conversationPaneLifetime(paneB);
+  const attachmentsB = lifetimeB.composer?.attachments;
+  if (!attachmentsB) throw new Error("expected composer attachments for B");
+  act(() => {
+    attachmentsB.setState({
+      items: [{ marker: 7, name: "keep-b.png", mediaType: "image/png", data: "iVBORw0KGgo=", pending: false }],
+    });
+  });
+
+  // Focus B under A's desktop URL, hop via Needs You to C (binding B to /s/session-a),
+  // then mark A gone and press browser Back.
+  await act(async () => {
+    workspaceStore.getState().focusPane(paneB.id);
+    openAttentionSession("local:session-c");
+  });
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Asession-c"));
+  expect(paneB.slot).toBe("parked");
+
+  const goneKey = { kind: "location", ref: "local:session-a" } as const;
+  await act(async () => {
+    const resources = new Map(navigationStore.getState().resources);
+    resources.set(keyID(goneKey), {
+      key: goneKey,
+      data: null,
+      normalized: {
+        key: goneKey,
+        graph: { metadata: {}, entities: new Map(), containers: new Map() },
+        version: { generationId: "generation_test", revision: 2, etag: '"gone"' },
+        presence: "gone",
+      },
+      loadedRevision: 2,
+      targetRevision: null,
+      forceToken: 0,
+      etag: '"gone"',
+      loading: false,
+      stale: false,
+      error: null,
+      generationID: "generation_test",
+    });
+    navigationStore.setState({ clientGenerationID: "generation_test", resources });
+    window.history.back();
+  });
+
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Asession-b"));
+  expect(workspaceStore.getState().panes).toContain(paneB);
+  expect(workspaceStore.getState().focusedPaneId).toBe(paneB.id);
+  expect(paneB.slot).toBe("secondary");
+  expect(lifetimeB.alive).toBe(true);
+  expect(attachmentsB.getState().items.map((item) => item.marker)).toEqual([7]);
+  expect(paneFor("local:session-a")).toBeUndefined();
+});

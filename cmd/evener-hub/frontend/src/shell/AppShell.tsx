@@ -32,9 +32,9 @@ import { syncSettingsHostToRoute } from "../stores/settingsHost";
 import { initTranscriptDisplay, transcriptDisplayStore, useTranscriptDisplayStore } from "../stores/transcriptDisplay";
 import { ActivitySidebar } from "./activitybar/ActivitySidebar";
 import {
-  closeCurrentAttentionEntry,
   currentAttentionEntryToken,
   restoreCurrentAttentionEntry,
+  retireDeletedAttentionSession,
 } from "./attentionHistory";
 import { ConnectionBanner } from "./ConnectionBanner";
 import { CheatsheetOverlay } from "./cheatsheet/CheatsheetOverlay";
@@ -828,7 +828,8 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
         setAttentionRestoreEpoch((epoch) => epoch + 1);
       }
     }
-    if (attentionToken !== null && locationGone && closeCurrentAttentionEntry()) {
+    const deletedRouteRef = locationGone && route?.type === "session" ? refParam(route.params) : null;
+    if (attentionToken !== null && deletedRouteRef !== null && retireDeletedAttentionSession(deletedRouteRef)) {
       restoredAttentionTokenRef.current = null;
       pendingSessionRef.current = null;
       placedPathnameRef.current = null;
