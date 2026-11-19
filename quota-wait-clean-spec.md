@@ -7,9 +7,11 @@ It is written to be implemented from scratch against `origin/main`.
 ## Problem
 
 When a provider quota cap pauses a session, the session pane showed nothing:
-no error state, no indicator, and nothing in the sidebar row. A user sees a
-silent, apparently-wedged session for up to hours while the daemon is
-knowingly waiting out a reset.
+no wait state, and nothing in the sidebar row. On reset the pre-existing
+countdown in the pane and sidebar disappeared instead of becoming a visible
+wait. A user sees a silent, apparently-wedged session for up to hours while
+the daemon is knowingly waiting out a reset, and a delegate pane opened or
+reloaded mid-wait showed no wait at all.
 
 ## Stage 0 — Wire prerequisite (implements before any client work)
 
@@ -68,9 +70,11 @@ without storing the wait — so a delegate pane opened or reloaded mid-wait
 would show no wait while its sidebar row shows one.
 
 - Materialize the delegate's quota wait on its own projected thread: the
-  projection records the wait's deadline, stamp, and elapsed sample the same
-  way the session's own failure facet does, so the existing read cut captures
-  it without consulting the live session under the cut.
+  projection stores the wait's deadline and stamp the same way the session's
+  own failure facet does, so the existing read cut captures it without
+  consulting the live session under the cut. Elapsed time is not stored on
+  the projection — the rendering contract takes it from the live start
+  announcement, whose sample is the call's real elapsed time.
 - **Acceptance (read layer):** a fresh delegate read restores the wait
   during a slot hold past the reset, and clears it when the retry begins.
   (The pane-vs-sidebar agreement this enables is Stage 3's gate.)
