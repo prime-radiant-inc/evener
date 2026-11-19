@@ -259,6 +259,17 @@ type ThinkingData struct {
 	Redacted         bool     `json:"redacted,omitempty"`
 	EncryptedContent string   `json:"encrypted_content,omitempty"`
 	Summary          []string `json:"summary,omitempty"`
+	// Chat Completions scalar replay when Text includes structured reasoning.
+	ScalarReasoningField string `json:"scalar_reasoning_field,omitempty"`
+	ScalarReasoningText  string `json:"scalar_reasoning_text,omitempty"`
+}
+
+// ChatReplayText selects the text for the Chat Completions replay shape.
+func (t *ThinkingData) ChatReplayText(scalar bool) string {
+	if scalar && t.ScalarReasoningText != "" && IsOpenAICompatReasoningField(t.ScalarReasoningField) {
+		return t.ScalarReasoningText
+	}
+	return t.Text
 }
 
 // openAICompatReasoningFields is the canonical ordered list of wire fields

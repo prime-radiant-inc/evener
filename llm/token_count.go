@@ -80,6 +80,10 @@ func EstimateInputTokensForResolved(res registry.Resolved, req Request) InputTok
 }
 
 func estimateInputTokens(t targetInfo, req Request) InputTokenCount {
+	options, _ := req.ProviderOptions[registry.ProtocolOpenAIChat].(map[string]any)
+	if _, ok := options["reasoning"]; ok && !t.reasoningOff {
+		t.chatUsesDetails = true
+	}
 	tokens := estimateMessagesInputTokens(t, req.Messages)
 	if len(req.Tools) > 0 {
 		toolBytes := req.ToolsJSONBytes
@@ -321,7 +325,7 @@ func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
 				}
 			}
 		case ContentThinking, ContentRedThinking:
-			if t.protocol == registry.ProtocolOpenAIChat {
+			if t.protocol == registry.ProtocolOpenAIChat || t.namedChat {
 				chatReasoning.add(t, p)
 			} else {
 				chars += thinkingReplayChars(t, p)
@@ -456,8 +460,8 @@ func responsesReasoningChars(t *ThinkingData) int {
 // The Chat writer chooses a destination for assembled text per message. Its
 // first text detail may already contain the signed text it sends.
 type chatReasoningEstimate struct {
-	displayChars, detailChars int
-	detailArrays              []string
+	displayChars, scalarChars, detailChars int
+	detailArrays                           []string
 }
 
 type reasoningTextPresence bool
@@ -473,6 +477,7 @@ func (r *chatReasoningEstimate) add(target targetInfo, p ContentPart) {
 		return
 	}
 	r.displayChars += len(p.Thinking.Text)
+	r.scalarChars += len(p.Thinking.ChatReplayText(true))
 	if target.reasoningOff || !IsOpenAICompatEncryptedReasoning(p.Thinking.EncryptedContent) {
 		return
 	}
@@ -506,6 +511,12 @@ func (r chatReasoningEstimate) countsDisplay(target targetInfo) bool {
 }
 
 func (r chatReasoningEstimate) chars(target targetInfo) int {
+	if !target.chatThinkingAsText && !target.chatUsesDetails && r.detailChars == 0 {
+		if target.unsignedThinking {
+			return r.scalarChars
+		}
+		return 0
+	}
 	if r.countsDisplay(target) {
 		return r.detailChars + r.displayChars
 	}
@@ -536,6 +547,8 @@ type targetInfo struct {
 	// (chatcompletions/messages.go).
 	reasoningOff       bool
 	chatThinkingAsText bool
+	chatUsesDetails    bool
+	namedChat          bool
 	// dropsToolResultImages marks a resolved row whose adapter leaves a
 	// tool-result image off the wire entirely (dropsToolResultImages).
 	dropsToolResultImages bool
@@ -652,7 +665,9 @@ func genericModelFamily(family string) bool {
 // targetFromNames builds the name-based view used by the exported entry points
 // that take a bare Request or message list.
 func targetFromNames(provider, model string) targetInfo {
-	return targetInfo{provider: provider, model: model, unsignedThinking: unsignedThinkingReplayedByName(provider, model)}
+	name := strings.ToLower(strings.TrimSpace(provider))
+	return targetInfo{provider: provider, model: model, unsignedThinking: unsignedThinkingReplayedByName(provider, model),
+		namedChat: name == registry.ProtocolOpenAIChat || name == "openai-compatible"}
 }
 
 // targetFromResolved builds the exact view from a resolved registry row. Names
@@ -679,6 +694,7 @@ func targetFromResolved(res registry.Resolved, provider, model string) targetInf
 		imageDetail:           registry.StringValue(res.Caps.ImageDetail),
 		reasoningOff:          res.Caps.ReasoningDisabled(),
 		chatThinkingAsText:    registry.BoolValue(res.Caps.ThinkingAsText),
+		chatUsesDetails:       registry.StringValue(res.Caps.ReasoningField) == "reasoning_details",
 		dropsToolResultImages: dropsToolResultImages(res),
 		seenToolResultDocuments: !res.Synthesized && res.Caps.AcceptsModality("pdf") &&
 			deliversToolResultDocuments(res.Protocol),
@@ -1047,6 +1063,10 @@ func EstimatorTargetsEquivalent(a, b registry.Resolved) bool {
 		return false
 	}
 	if registry.BoolValue(a.Caps.ThinkingAsText) != registry.BoolValue(b.Caps.ThinkingAsText) {
+		return false
+	}
+	if a.Protocol == registry.ProtocolOpenAIChat && !a.Caps.ReasoningDisabled() && !registry.BoolValue(a.Caps.ThinkingAsText) &&
+		(registry.StringValue(a.Caps.ReasoningField) == "reasoning_details") != (registry.StringValue(b.Caps.ReasoningField) == "reasoning_details") {
 		return false
 	}
 	if registry.StringValue(a.Caps.ImageDetail) != registry.StringValue(b.Caps.ImageDetail) {

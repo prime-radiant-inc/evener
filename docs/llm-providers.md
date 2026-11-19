@@ -521,6 +521,12 @@ field, or `reasoning_details` as OpenRouter's array form. The value comes from
 models.dev's `interleaved.field` when the catalog states one, else the field
 the text actually arrived on, else `reasoning_content`.
 
+When a non-streaming Chat response includes scalar and structured reasoning,
+the adapter keeps its scalar text and wire field for scalar replay. A catalog
+field override still selects the replay field. The assembled text is used for
+display, array replay and thinking-as-text. The local token estimate counts
+the text selected for replay.
+
 The local estimate charges populated signed text through its detail and adds
 assembled text when replay includes it as ordinary content or in the array.
 

@@ -88,17 +88,23 @@ func toChatMessages(messages []llm.Message, caps registry.Caps, useReasoningDeta
 			}
 			text := textFromParts(content)
 			calls := toolCallsFromParts(content)
-			reasoning := thinkingFromParts(content)
+			var encrypted []map[string]any
+			if !reasoningOff {
+				encrypted = encryptedDetailsFromParts(content)
+			}
+			thinkingAsText := registry.BoolValue(caps.ThinkingAsText)
+			scalarReplay := !useReasoningDetails && len(encrypted) == 0 && !thinkingAsText
+			reasoning := thinkingFromParts(content, scalarReplay)
 			if reasoningOff {
 				// A declared non-reasoning model accepts no reasoning fields —
 				// prior-turn thinking (a fallback or model switch can carry it)
 				// is dropped from replay entirely. ThinkingAsText below is the
 				// deliberate exception: it rides ordinary text content.
-				if !registry.BoolValue(caps.ThinkingAsText) {
+				if !thinkingAsText {
 					reasoning = ""
 				}
 			}
-			if reasoning != "" && registry.BoolValue(caps.ThinkingAsText) {
+			if reasoning != "" && thinkingAsText {
 				// Replay thinking as ordinary text (no tags — tagged thinking
 				// teaches the model to mimic the tags). The reasoning field
 				// stays unset.
@@ -108,10 +114,6 @@ func toChatMessages(messages []llm.Message, caps registry.Caps, useReasoningDeta
 					text = reasoning
 				}
 				reasoning = ""
-			}
-			var encrypted []map[string]any
-			if !reasoningOff {
-				encrypted = encryptedDetailsFromParts(content)
 			}
 			// Encrypted reasoning (OpenRouter Gemini/o-series) must round-trip
 			// through reasoning_details regardless of the useReasoningDetails
@@ -229,8 +231,8 @@ func textFromParts(parts []llm.ContentPart) string {
 // reasoningReplayField returns the wire field assistant thinking replays to:
 // caps.ReasoningField when the row names one (reasoning_details is excluded —
 // that shape is an array, assembled separately, not a scalar replay field);
-// else the field the thinking originally arrived on (recorded in the part's
-// Signature) when it names a known reasoning field; else reasoning_content.
+// else the original scalar field from the first thinking part with text;
+// else reasoning_content.
 // Signatures that aren't field names (e.g. Anthropic crypto blobs riding a
 // cross-provider transcript) fall back to the default.
 func reasoningReplayField(parts []llm.ContentPart, caps registry.Caps) string {
@@ -238,7 +240,13 @@ func reasoningReplayField(parts []llm.ContentPart, caps registry.Caps) string {
 		return f
 	}
 	for _, p := range parts {
-		if p.Kind == llm.ContentThinking && p.Thinking != nil && p.Thinking.Text != "" {
+		if p.Kind == llm.ContentThinking && p.Thinking != nil {
+			if p.Thinking.ScalarReasoningText != "" && llm.IsOpenAICompatReasoningField(p.Thinking.ScalarReasoningField) {
+				return p.Thinking.ScalarReasoningField
+			}
+			if p.Thinking.Text == "" {
+				continue
+			}
 			if llm.IsOpenAICompatReasoningField(p.Thinking.Signature) {
 				return p.Thinking.Signature
 			}
@@ -268,14 +276,17 @@ func encryptedDetailsFromParts(parts []llm.ContentPart) []map[string]any {
 	return out
 }
 
-func thinkingFromParts(parts []llm.ContentPart) string {
+func thinkingFromParts(parts []llm.ContentPart, scalarReplay bool) string {
 	var b strings.Builder
 	for _, p := range parts {
-		if p.Kind == llm.ContentThinking && p.Thinking != nil && p.Thinking.Text != "" {
+		if p.Kind != llm.ContentThinking || p.Thinking == nil {
+			continue
+		}
+		if text := p.Thinking.ChatReplayText(scalarReplay); text != "" {
 			if b.Len() > 0 {
 				b.WriteString("\n")
 			}
-			b.WriteString(p.Thinking.Text)
+			b.WriteString(text)
 		}
 	}
 	return b.String()
