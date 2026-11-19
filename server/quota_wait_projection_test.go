@@ -51,6 +51,12 @@ type quotaWaitProvider struct {
 	steps   []func(llm.Request) (llm.Response, error)
 	limited atomic.Bool
 
+	// resetIn is how far the usage limit's reset sits in the future for this
+	// scenario's child; zero means quotaWaitResetIn. The Stop scenario names
+	// an hour: no test outlives it, so the wait cannot end naturally and
+	// only the Stop can end the turn the wait belongs to.
+	resetIn time.Duration
+
 	recoveryGate    chan struct{}
 	recoveryEntered chan struct{}
 }
@@ -146,7 +152,11 @@ func (p *quotaWaitProvider) Complete(ctx context.Context, req llm.Request) (llm.
 	}
 	if slices.Contains(userTexts(req), quotaWaitChildTask) {
 		if p.limited.CompareAndSwap(true, false) {
-			return llm.Response{}, quotaUsageLimitError(nextWholeSecond(time.Now().Add(quotaWaitResetIn)))
+			resetIn := p.resetIn
+			if resetIn == 0 {
+				resetIn = quotaWaitResetIn
+			}
+			return llm.Response{}, quotaUsageLimitError(nextWholeSecond(time.Now().Add(resetIn)))
 		}
 		if p.recoveryHold(ctx) {
 			return parityCommunicate("quota-child-done", "the delegate finished its work", true), nil
@@ -269,6 +279,24 @@ func childWaitStartAnnouncement(t *testing.T, srv *Server, childID string) *appw
 	return nil
 }
 
+// childWakeAnnouncements returns the child's wake announcements: the
+// zero-delay retries that end a wait, identified by the wait's stamp and the
+// absence of a resume instant.
+func childWakeAnnouncements(t *testing.T, srv *Server, childID string) []appwire.ThreadModelRetryParams {
+	t.Helper()
+	var wakes []appwire.ThreadModelRetryParams
+	for _, sequenced := range srv.AppNotificationsAfter(0, childID) {
+		if sequenced.Notification.Method != appwire.NotifyEvenerThreadModelRetry {
+			continue
+		}
+		params := notificationParams[appwire.ThreadModelRetryParams](t, sequenced)
+		if params.ResumesAt == 0 && params.WaitStartedAt != 0 {
+			wakes = append(wakes, params)
+		}
+	}
+	return wakes
+}
+
 // awaitChildWaitStart blocks until the child's wait is fully published: the
 // wait's agent state, and — the ordering the read depends on — the wait-start
 // MODEL_RETRY committed to the child's projection. The state publishes first
@@ -351,14 +379,23 @@ func TestDelegateReadRestoresTheQuotaWait(t *testing.T) {
 		t.Errorf("announcement resumesAt = %d, want the read summary's %d", announcement.ResumesAt, failure.ResumesAt)
 	}
 
-	// The wait ends when the retry goes out: the reset passes and the child
-	// retries on the recovered quota. The retry parks inside the gate, so the
-	// read below lands mid-retry, while the child's turn is still active —
-	// the wake, not the turn's end, is what must have cleared the stored wait.
+	// The wait ends when the retry goes out. The daemon announces the retry
+	// ahead of the dispatch, so once the retry parks inside the gate the wake
+	// is already recorded: the reads below land post-reset and post-wake,
+	// mid-retry, with the child's turn still active — the wake, not a turn
+	// boundary, is what must have cleared the stored wait, and the wake's
+	// announcement says so before the read is checked. (A read between the
+	// reset and the wake — a drive queues for its slot past the reset before
+	// its wake goes out — is covered below by
+	// TestDelegateReadServesTheStoredWaitPastItsReset.)
 	select {
 	case <-entered:
 	case <-time.After(30 * time.Second): // Tripwire, same ceiling as testwait's.
 		t.Fatal("the delegate's retry never reached the recovery gate")
+	}
+	wakes := childWakeAnnouncements(t, srv, childID)
+	if len(wakes) != 1 || wakes[0].WaitStartedAt != failure.WaitStartedAt || wakes[0].ResumesAt != 0 || wakes[0].DelayMS != 0 {
+		t.Fatalf("the child's wake announcements = %+v, want exactly one for the wait's stamp %d with no resume instant and no delay", wakes, failure.WaitStartedAt)
 	}
 	testwait.Until(t, "a fresh read mid-retry carries no wait", func() bool {
 		return readChildThread(t, srv, childID).Thread.Evener.Failure == nil
@@ -375,13 +412,21 @@ func TestDelegateReadRestoresTheQuotaWait(t *testing.T) {
 // belonged to. The boundary status that ends the child's working span clears
 // it, exactly as the root's failure facet is re-sampled at every turn
 // boundary — otherwise a delegate stopped mid-wait reads as waiting forever.
+// The reset this scenario names sits an hour out, past anything the test
+// outlives: no natural retry can end the wait, so the Stop is the only thing
+// that can end the turn the wait belongs to — the Stop's outcome and the
+// absence of any wake announcement say the clear can only be the boundary
+// one.
 func TestDelegateReadClearsTheQuotaWaitWhenTheTurnEnds(t *testing.T) {
 	t.Parallel()
 	sess, srv, adapter := newQuotaWaitProjection(t)
-	// The root's first request creates the delegate; the child's first request
-	// meets the limit and the child waits. After the Stop returns from the
-	// delegate tool, the root's input answers once more and ends on an
-	// explicit success — its outcome says nothing about the child.
+	// The reset is an hour out: the timer cannot fire inside the test, so the
+	// wait stands until the Stop ends its turn. The root's first request
+	// creates the delegate; the child's first request meets the limit and the
+	// child waits. After the Stop returns from the delegate tool, the root's
+	// input answers once more and ends on an explicit success — its outcome
+	// says nothing about the child.
+	adapter.resetIn = time.Hour
 	adapter.script(func(llm.Request) (llm.Response, error) {
 		return parityResponse(parityCall("quota-delegate", "delegate", map[string]any{"prompt": quotaWaitChildTask})), nil
 	}, func(llm.Request) (llm.Response, error) {
@@ -402,8 +447,12 @@ func TestDelegateReadClearsTheQuotaWaitWhenTheTurnEnds(t *testing.T) {
 	if len(delegates.Delegates) != 1 || delegates.Delegates[0].DelegateID == "" {
 		t.Fatalf("the tree's delegates = %+v, want exactly the one waiting delegate", delegates.Delegates)
 	}
-	if _, err := sess.StopDelegateRun(delegates.Delegates[0].DelegateID); err != nil {
+	outcome, err := sess.StopDelegateRun(delegates.Delegates[0].DelegateID)
+	if err != nil {
 		t.Fatalf("stopping the waiting delegate: %v", err)
+	}
+	if outcome != appwire.DelegateStopStopping {
+		t.Fatalf("StopDelegateRun outcome = %q, want stopping: the delegate's waiting turn is what the Stop must end", outcome)
 	}
 
 	// The child's own thread settles the Stop: its projection stops waiting
@@ -415,5 +464,62 @@ func TestDelegateReadClearsTheQuotaWaitWhenTheTurnEnds(t *testing.T) {
 	testwait.Until(t, "the stopped delegate's status leaves active", func() bool {
 		return readChildThread(t, srv, childID).Thread.Status.Type != appwire.ThreadStatusActive
 	})
+	// No wake announced a retry — the Stop ended the turn inside the wait —
+	// so the boundary clear is the only clear that can have run.
+	if wakes := childWakeAnnouncements(t, srv, childID); len(wakes) != 0 {
+		t.Fatalf("the stopped delegate's wait was woken, not stopped: %+v", wakes)
+	}
 	awaitRootEnd(t, run)
+}
+
+// The stored wait outlives its own reset until its wake. The reset can pass
+// while the child still queues for the drive slot the retry retakes — the
+// daemon retakes the slot after the timer, before the wake — and a pane
+// reloaded in that window must still see the wait. The projection is storage,
+// not policy: the wait's lifetime is the daemon's to end, by a wake or by the
+// turn's boundary, never the deadline's, so a read must not discard the wait
+// because its deadline has passed. Installing the wait with an already-past
+// reset reproduces the exact stored state that window reads — the same summary
+// a mid-wait install leaves behind once its reset passes — without reaching
+// for the agent-internal drive scheduling from here.
+func TestDelegateReadServesTheStoredWaitPastItsReset(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	t.Cleanup(srv.Close)
+	srv.SetAppIdentity("local", "root")
+	const childID = "quota-wait-child"
+	srv.RecordDescendantAppEvent("root", threadEvent(childID, events.SessionStartData{WorkingDir: "/work"}))
+	resumesAt := time.Now().Add(-time.Second).UnixMilli()
+	srv.RecordDescendantAppEvent("root", threadEvent(childID, events.ModelRetryData{
+		Attempt:       1,
+		DelayMS:       time.Hour.Milliseconds(),
+		ErrorClass:    "quota_exceeded",
+		WaitStartedAt: 1,
+		ResumesAt:     resumesAt,
+		WaitFailure: &appwire.ThreadFailure{
+			Title:         "waiting out the usage limit",
+			ResumesAt:     resumesAt,
+			WaitStartedAt: 1,
+		},
+	}))
+
+	// The reset is already past when the read lands, and no wake is recorded:
+	// the read still serves the wait.
+	read := readChildThread(t, srv, childID)
+	failure := read.Thread.Evener.Failure
+	if failure == nil {
+		t.Fatal("a read past the reset dropped the stored wait before any wake: the deadline is not the wait's to end")
+	}
+	if failure.ResumesAt != resumesAt || failure.WaitStartedAt != 1 {
+		t.Fatalf("read failure summary = %+v, want the announced resume instant and stamp", failure)
+	}
+
+	// The wake clears it: the zero-delay retry for the same stamp.
+	srv.RecordDescendantAppEvent("root", threadEvent(childID, events.ModelRetryData{
+		Attempt:       1,
+		DelayMS:       0,
+		WaitStartedAt: 1,
+	}))
+	if failure := readChildThread(t, srv, childID).Thread.Evener.Failure; failure != nil {
+		t.Fatalf("a read after the wake = %+v, want no wait", failure)
+	}
 }

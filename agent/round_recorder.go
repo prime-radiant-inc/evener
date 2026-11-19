@@ -26,6 +26,11 @@ type groupRecord struct {
 	Attempts        []attemptRecord
 	BestPartial     *llm.Response
 	BestBytes       int
+	// Elapsed is the group's own wall time on the session clock, from its
+	// first attempt to its return: the unit a quota wait's elapsed sample
+	// reports, so a fallback that hits quota after the primary failed is not
+	// billed the primary's time.
+	Elapsed time.Duration
 }
 
 // observe folds one attempt into the group. Called per attempt from inside
@@ -158,4 +163,17 @@ func (s *Session) roundSalvageRecorder() *roundRecorder {
 		s.currentRoundRecorder = &roundRecorder{}
 	}
 	return s.currentRoundRecorder
+}
+
+// quotaGroupElapsed is the elapsed time of the last retry group the round
+// ran — the group whose error the round holds. Each callModel invocation
+// stamps its own group's Elapsed, and the round's error always comes from
+// the most recently appended group, so the last entry is the quota error's
+// group even when a fallback produced it. Zero when the round ran no group
+// (the error came from request preparation or admission).
+func quotaGroupElapsed(recorder *roundRecorder) time.Duration {
+	if recorder == nil || len(recorder.Groups) == 0 {
+		return 0
+	}
+	return recorder.Groups[len(recorder.Groups)-1].Elapsed
 }

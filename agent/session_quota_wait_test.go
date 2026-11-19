@@ -1462,6 +1462,105 @@ func TestQuotaWaitAnnouncementsCarryTheWaitIdentity(t *testing.T) {
 	run.awaitEnd(t, trip, "the call resumes at the reset")
 }
 
+// The elapsed sample is the RETRY GROUP's time, not the whole model-call
+// phase's: a primary model that fails over a fallback which then hits quota
+// must not bill the fallback's wait the primary's runtime. The primary here
+// spends 90 seconds of session time before failing permanently; the fallback
+// meets the limit the instant it runs, so its wait's sample is the
+// fallback's own short elapsed — not the 90 seconds the phase spans.
+func TestWaitElapsedSampleIsTheQuotaGroupsOwnNotThePhases(t *testing.T) {
+	limit := usageLimitError(t, "openai", quotaResetAt)
+	dir := t.TempDir()
+	// The primary model's stream parks until the test lets the clock run and
+	// releases it; it then fails permanently, which hands the round to the
+	// fallback chain. The fallback model meets the quota limit at once.
+	primaryHeld := make(chan struct{})
+	releasePrimary := make(chan struct{})
+	adapter := &quotaFallbackAdapter{lim: limit, primaryHeld: primaryHeld, releasePrimary: releasePrimary}
+	c := llm.NewClient()
+	c.Register(adapter)
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	clk := agenttest.NewFakeClock()
+	s := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{
+		StateDir:       dir,
+		LLMRetryPolicy: &policy,
+		ModelFallbacks: []string{"openai/gpt-fallback"},
+		clock:          clk,
+	}))
+	var announcements quotaWaitAnnouncements
+	s.ConsumeEventsLossless(announcements.consume, func() {})
+	trip := tripwireCtx(t).Done()
+	run := startInput(context.Background(), s, "start the work", EntryUserInput)
+	select {
+	case <-primaryHeld:
+	case <-trip:
+		t.Fatal("the primary model's call never started")
+	}
+	// The primary spends 90 seconds of session time before failing.
+	clk.Advance(90 * time.Second)
+	clk.Drain()
+	close(releasePrimary)
+	run.awaitQuotaWait(t, s)
+	announcements.awaitLen(t, 1)
+
+	started := announcements.snapshot()
+	if len(started) != 1 {
+		t.Fatalf("wait start announcements = %+v, want one", started)
+	}
+	if got := started[0].GroupElapsedMS; got >= 90_000 {
+		t.Fatalf("wait start elapsed sample = %d ms, want the fallback group's own short elapsed: the primary's 90s must not be billed to the fallback's wait", got)
+	}
+
+	adapter.recovered.Store(true)
+	reachReset(clk)
+	run.awaitEnd(t, trip, "the fallback's call resumes at the reset")
+}
+
+// quotaFallbackAdapter scripts the fallback-elapsed scenario at the adapter
+// level, where the request's model is visible: the primary model parks, then
+// fails permanently; every other model (the fallback) meets the usage limit.
+type quotaFallbackAdapter struct {
+	lim            error
+	primaryHeld    chan struct{}
+	releasePrimary chan struct{}
+	once           sync.Once
+	recovered      atomic.Bool
+}
+
+func (*quotaFallbackAdapter) Name() string { return "openai" }
+
+func (a *quotaFallbackAdapter) Complete(context.Context, llm.Request) (llm.Response, error) {
+	return llm.Response{}, llm.ErrStreamUnsupported
+}
+
+func (a *quotaFallbackAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	streamCtx, cancel := context.WithCancel(ctx)
+	st := llm.NewChanStream(cancel)
+	go func() {
+		defer st.CloseSend()
+		switch req.Model {
+		case "gpt-5.2":
+			a.once.Do(func() { close(a.primaryHeld) })
+			select {
+			case <-a.releasePrimary:
+				st.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.ErrorFromHTTPStatus("openai", 401, "unauthorized", nil, nil)})
+			case <-streamCtx.Done():
+			}
+		default:
+			if a.recovered.Load() {
+				call := communicateCall("fallback-done", "back at work")
+				sendCommunicatePreview(st, call)
+				st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &call})
+				finish := llm.FinishReason{Reason: llm.FinishReasonToolCalls}
+				st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &finish})
+				return
+			}
+			st.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: a.lim})
+		}
+	}()
+	return st, nil
+}
+
 // A wait starting less than a millisecond before its reset is still a start:
 // its announcement must not truncate the sub-millisecond delay to zero,
 // because zero is the WAKE's meaning and a client would clear a countdown
