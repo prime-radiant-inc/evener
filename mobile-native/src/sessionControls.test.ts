@@ -873,6 +873,62 @@ describe("conversation-owned session controls", () => {
 		expect(await controls.changeModel("one", "model")).toBe(true);
 		expect(applied).toEqual(["model"]);
 	});
+	// The one action that recycles the transport as part of going out. A pick
+	// can dispatch, have its reconnect dispose the controls that sent it, and
+	// only then receive the daemon's acknowledgment. That acknowledgment still
+	// counts: attemptControl's rule, applied to the pick.
+	it("confirms a pick whose own reconnect disposed the controls before the answer", async () => {
+		const answered = Promise.withResolvers<void>();
+		let disposed = false;
+		let controls!: SessionControls;
+		controls = new SessionControls(
+			await boundary({
+				models: async () => ({ data: [{ provider: "one", model: "model" }] }),
+				model: async () => {
+					// The recycle: the screen disposes these controls and builds
+					// replacements before the daemon's reply lands.
+					disposed = true;
+					controls.dispose();
+					await answered.promise;
+				},
+			}),
+			async () => {
+				throw new Error("a lost binding must not be refreshed through");
+			},
+			() => {},
+			() => !disposed,
+			() => null,
+			() => true,
+		);
+		await controls.loadModels();
+		const pick = controls.changeModel("one", "model");
+		answered.resolve();
+		expect(await pick).toBe(true);
+	});
+	it("never confirms a pick that was refused before it dispatched", async () => {
+		// The same disposal, but the pick failed before any frame existed (a
+		// resume whose read established no authority). Nothing reached the hub,
+		// so the sheet must not close on it.
+		let disposed = false;
+		let controls!: SessionControls;
+		controls = new SessionControls(
+			await boundary({
+				models: async () => ({ data: [{ provider: "one", model: "model" }] }),
+				model: async () => {
+					disposed = true;
+					controls.dispose();
+					throw new Error("ConversationService: no thread open");
+				},
+			}),
+			async () => {},
+			() => {},
+			() => !disposed,
+			() => null,
+			() => true,
+		);
+		await controls.loadModels();
+		expect(await controls.changeModel("one", "model")).toBe(false);
+	});
 });
 
 it("restores session-default reasoning and uses the current web fallback ladder", async () => {
