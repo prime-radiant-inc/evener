@@ -1,5 +1,5 @@
 import { applyNotification, applyReadResponse, hydrateThread, STUCK_AFTER_MS } from "@evener/appwire-client";
-import { waitingForQuotaText } from "@evener/appwire-client/state/navigation";
+import { quotaWaitState, waitingForQuotaText } from "@evener/appwire-client/state/navigation";
 import { testThread } from "@evener/appwire-client/testing/reducerTestKit";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
@@ -333,6 +333,33 @@ function reloadWithQuotaWait(resumesInMs: number, nowMs: number): void {
   threadsStore.setState({ threads: new Map([["s1", model]]) });
 }
 
+// A stamped quota-wait announcement as the pane's subscription delivers it:
+// the wait's identity (the daemon's sequence stamp), its absolute resume
+// instant, and the chip's metadata. Overrides carry only what a case varies;
+// the delay defaults to a six-hour reset's runway.
+function quotaRetryFrame(
+  waitStartedAt: number,
+  overrides: { resumesAt?: number; delayMs?: number; model?: string; groupElapsedMs?: number } = {},
+) {
+  return {
+    method: "evener/thread/modelRetry" as const,
+    params: {
+      threadId: "thr_1",
+      ref: "s1",
+      turnId: "turn_0",
+      attempt: 1,
+      maxAttempts: 0,
+      delayMs: overrides.delayMs ?? 21_600_000,
+      errorClass: "quota_exceeded" as const,
+      groupElapsedMs: overrides.groupElapsedMs ?? 5_000,
+      attemptCap: 0,
+      waitStartedAt,
+      ...(overrides.resumesAt !== undefined ? { resumesAt: overrides.resumesAt } : {}),
+      ...(overrides.model !== undefined ? { model: overrides.model } : {}),
+    },
+  };
+}
+
 test("a reloaded session says when its usage-limit wait resumes, without any live retry frame", () => {
   const now = 1_000_000;
   reloadWithQuotaWait(6 * 60 * 60_000, now);
@@ -393,6 +420,10 @@ test("a usage-limit retry with no read at all still says when the wait resumes",
 
   const el = screen.getByTestId("liveness-line");
   expect(el.getAttribute("data-level")).toBe("quota");
+  // The legacy wait counts down on its receipt clock, but its announcement
+  // carries no stamp, so its default-zero sample measures nothing and the
+  // line shows the promise alone - never time-since-announcement dressed
+  // up as the call's elapsed.
   expect(el.textContent).toBe(waitingForQuotaText(sixHours - 5_000));
 });
 
@@ -575,16 +606,322 @@ test("a usage-limit wait shows immediately, in hours rather than a seconds count
   expect(el.textContent).toBe(waitingForQuotaText(21_600_000));
 });
 
-// The wait ends at its instant whether or not a read has landed since: past
-// it the call resumes by itself, so the line stops promising a future that
-// has arrived and the ordinary silence decision holds again.
-test("a usage-limit wait stops explaining the silence once its instant passes", () => {
+// Contract point 3: the wait's lifetime is the daemon's, never the client's
+// clock. Crossing the reset instant changes the line from countdown to
+// pending; it does not end the wait - the daemon keeps serving the wait's
+// summary with its original instant while the wait stands (a delegate held
+// at its reset while every execution slot is occupied can stay waiting for
+// hours), so the pane keeps explaining the silence until the wake, a turn
+// boundary, or a read showing no wait ends it.
+test("a usage-limit wait past its reset instant reads pending, not silence", () => {
   const now = 1_000_000;
   reloadWithQuotaWait(60_000, now);
   render(<LivenessLine lastFrameAt={now} now={now + 60_000} active={true} sessionRef="s1" turnId="turn_0" />);
 
+  // The phase, asserted structurally: the level stays quota and the line
+  // carries the pending marker, never a rendered sentence as the oracle.
+  // The model-level half goes through the shared selector.
   const el = screen.getByTestId("liveness-line");
-  expect(el.getAttribute("data-level")).not.toBe("quota");
+  expect(el.getAttribute("data-level")).toBe("quota");
+  expect(el.getAttribute("data-passed-reset")).toBe("true");
+  const model = threadsStore.getState().threads.get("s1");
+  expect(quotaWaitState(model?.quotaResumesAt, now + 60_000)).toEqual({ phase: "pending" });
+});
+
+// Contract point 4 + scenario 13's rendering half: a wait established by a
+// live announcement carries the call's model tag and elapsed time, and both
+// survive the reset crossing unchanged - the crossing changes the promise,
+// never the facts beside it. The elapsed advances from the announcement's
+// receipt instant (sample + time since receipt).
+test("a stamped wait's model tag and advancing elapsed ride both halves of the line", () => {
+  const now = 1_000_000;
+  const sixHours = 6 * 60 * 60_000;
+  let model = hydrateThread({ thread: testThread({ status: { type: "active" } }) }, "s1", now - 30_000);
+  model = applyNotification(
+    model,
+    quotaRetryFrame(2, {
+      resumesAt: now + sixHours,
+      delayMs: sixHours,
+      model: "wait/model",
+      groupElapsedMs: 14 * 60_000,
+    }),
+    now - 30_000,
+  );
+  expect(model.quotaWaitStartedAt).toBe(2);
+  threadsStore.setState({ threads: new Map([["s1", model]]) });
+
+  // Countdown half: the tag and the advanced elapsed ride beside the promise.
+  const { rerender } = render(
+    <LivenessLine
+      lastFrameAt={now - 30_000}
+      now={now}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      retry={model.modelRetry}
+      primaryModel="primary/model"
+    />,
+  );
+  const counting = screen.getByTestId("liveness-line");
+  expect(counting.getAttribute("data-level")).toBe("quota");
+  expect(counting.textContent).toBe(`${waitingForQuotaText(sixHours)} (wait/model) — 14m 30s on this call`);
+
+  // The reset crosses: same facts, pending promise.
+  rerender(
+    <LivenessLine
+      lastFrameAt={now - 30_000}
+      now={now + sixHours + 5_000}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      retry={model.modelRetry}
+      primaryModel="primary/model"
+    />,
+  );
+  const pending = screen.getByTestId("liveness-line");
+  expect(pending.getAttribute("data-level")).toBe("quota");
+  // The crossing changed the promise, never the facts: the phase marker
+  // flipped while the tag and the advanced elapsed ride identically -
+  // asserted as segments the renderer computed, never as the whole claim.
+  expect(pending.getAttribute("data-passed-reset")).toBe("true");
+  // The elapsed keeps advancing from the same receipt instant: the sample
+  // (14m) plus everything since receipt (30s + the six hours and 5s the
+  // crossing itself took), in the exact-gap formatter's own units.
+  const advanced = formatExactGap(14 * 60_000 + 30_000 + sixHours + 5_000);
+  expect(pending.textContent).toContain("(wait/model)");
+  expect(pending.textContent).toContain(`${advanced} on this call`);
+  expect(quotaWaitState(model.quotaResumesAt, now + sixHours + 5_000)).toEqual({ phase: "pending" });
+});
+
+// Scenario 13's clamp half: the elapsed advance can land marginally negative
+// across the pane's tick boundary (the tick fires just before the receipt
+// stamp a later frame recorded); it clamps at zero, never reads negative.
+test("a stamped wait's elapsed advance clamps at zero across the tick boundary", () => {
+  const now = 1_000_000;
+  let model = hydrateThread({ thread: testThread({ status: { type: "active" } }) }, "s1", now);
+  // A re-announcement arriving at `now`: the tick below reads at now - 500,
+  // before the receipt stamp, so the advance would go negative without the
+  // clamp.
+  model = applyNotification(
+    model,
+    quotaRetryFrame(3, { resumesAt: now + 60_000, delayMs: 60_000, groupElapsedMs: 0 }),
+    now,
+  );
+  threadsStore.setState({ threads: new Map([["s1", model]]) });
+
+  render(
+    <LivenessLine
+      lastFrameAt={now}
+      now={now - 500}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      retry={model.modelRetry}
+    />,
+  );
+  const el = screen.getByTestId("liveness-line");
+  expect(el.getAttribute("data-level")).toBe("quota");
+  expect(el.textContent).toBe(`${waitingForQuotaText(60_500)} — 0s on this call`);
+  expect(el.textContent).not.toContain("-");
+});
+
+// Contract point 4 / scenario 14: a snapshot-only wait (deadline from a read,
+// no live announcement) carries no model tag and no elapsed - the snapshot
+// cannot attribute them. reloadWithQuotaWait is exactly that shape: the
+// rehydrated model holds the wait and no chip at all.
+test("a snapshot-only wait renders the promise alone, without tag or elapsed", () => {
+  const now = 1_000_000;
+  reloadWithQuotaWait(21_600_000, now);
+  render(<LivenessLine lastFrameAt={now - 3_000} now={now} active={true} sessionRef="s1" turnId="turn_0" />);
+  const el = screen.getByTestId("liveness-line");
+  expect(el.getAttribute("data-level")).toBe("quota");
+  expect(el.textContent).toBe(waitingForQuotaText(21_600_000));
+});
+
+// A daemon that predates the stamp sends groupElapsedMs as a default zero
+// without measuring anything, so time-since-announcement is NOT the call's
+// elapsed time and must not display as it. The discriminator is the stamp: a
+// stamped announcement's sample is measured - including a valid zero - so it
+// keeps displaying.
+test("an unstamped announcement's default-zero elapsed does not display as call elapsed", () => {
+  const now = 1_000_000;
+  const sixHours = 6 * 60 * 60_000;
+  let model = hydrateThread({ thread: testThread({ status: { type: "active" } }) }, "s1", now - 30_000);
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_1",
+        ref: "s1",
+        turnId: "turn_0",
+        attempt: 1,
+        maxAttempts: 0,
+        delayMs: sixHours,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 0,
+        attemptCap: 0,
+      },
+    },
+    now - 30_000,
+  );
+  expect(model.quotaWaitStartedAt).toBeUndefined();
+  threadsStore.setState({ threads: new Map([["s1", model]]) });
+
+  render(
+    <LivenessLine
+      lastFrameAt={now - 30_000}
+      now={now}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      retry={model.modelRetry}
+    />,
+  );
+  const el = screen.getByTestId("liveness-line");
+  expect(el.getAttribute("data-level")).toBe("quota");
+  // The legacy wait still counts down and still reads pending past its
+  // runway; only the elapsed attribution is refused.
+  expect(el.textContent).toBe(waitingForQuotaText(sixHours - 30_000));
+});
+
+// The other side of the discriminator: a stamped announcement's sample IS
+// measured - including a valid zero - so a stamped producer's zero keeps its
+// place on the line and advances like any sample.
+test("a stamped announcement's measured-zero elapsed still displays", () => {
+  const now = 1_000_000;
+  const sixHours = 6 * 60 * 60_000;
+  let stamped = hydrateThread({ thread: testThread({ status: { type: "active" } }) }, "s1", now - 30_000);
+  stamped = applyNotification(stamped, quotaRetryFrame(9, { delayMs: sixHours, groupElapsedMs: 0 }), now - 30_000);
+  expect(stamped.quotaWaitStartedAt).toBe(9);
+  threadsStore.setState({ threads: new Map([["s1", stamped]]) });
+  render(
+    <LivenessLine
+      lastFrameAt={now - 30_000}
+      now={now}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      retry={stamped.modelRetry}
+    />,
+  );
+  const el = screen.getByTestId("liveness-line");
+  expect(el.getAttribute("data-level")).toBe("quota");
+  // The measured zero is real, so it ADVANCES like any sample: 30s since
+  // receipt renders as 30s on this call.
+  expect(el.textContent).toBe(`${waitingForQuotaText(sixHours - 30_000)} — 30s on this call`);
+});
+
+// Scenario 11: a passed read deadline plus a late unstamped announcement
+// with receipt runway. One time basis per wait: the deadline the model holds
+// is the whole countdown, and past it the wait is pending - a late
+// announcement's own countdown can never leap the line back to a future
+// that has already arrived.
+test("a late unstamped announcement cannot leap a passed deadline back to a countdown", () => {
+  const now = 1_000_000;
+  // A legacy read: the failure summary names the resume instant with no
+  // stamp, so the model holds the deadline alone.
+  const deadline = now + 60_000;
+  const read = testThread({
+    status: { type: "active" },
+    evener: {
+      failure: { title: "Usage limit reached", resumesAt: deadline },
+    },
+  });
+  let model = hydrateThread({ thread: read }, "s1", now);
+  expect(model.quotaResumesAt).toBeDefined();
+  expect(model.quotaWaitStartedAt).toBeUndefined();
+  // The read's deadline passed 30s ago.
+  const past = now + 90_000;
+  // A legacy announcement (an older daemon) arrives now with six hours of
+  // its own receipt runway. Unstamped beside unstamped reconciles by turn
+  // ownership, so the fold KEEPS it: both time sources are live in the
+  // model the pane reads, and the pane must choose between them.
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_1",
+        ref: "s1",
+        turnId: "turn_0",
+        attempt: 1,
+        maxAttempts: 0,
+        delayMs: 6 * 60 * 60_000,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 0,
+      },
+    },
+    past,
+  );
+  expect(model.modelRetry?.delayMs).toBe(6 * 60 * 60_000);
+  expect(model.quotaResumesAt).toBeDefined();
+  // At the pane's clock the read's instant has passed - pending - while the
+  // announcement's own runway is still whole.
+  expect(quotaWaitState(model.quotaResumesAt, past)).toEqual({ phase: "pending" });
+  const runway = (model.modelRetry?.delayMs ?? 0) - (past - (model.modelRetry?.receivedAt ?? past));
+  expect(runway).toBeGreaterThan(0);
+  threadsStore.setState({ threads: new Map([["s1", model]]) });
+  render(
+    <LivenessLine
+      lastFrameAt={now}
+      now={past}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      retry={model.modelRetry}
+    />,
+  );
+  const el = screen.getByTestId("liveness-line");
+  // The pane held the read's basis: quota level, pending phase - asserted
+  // structurally, never as the rendered sentence - and the announcement's
+  // runway never reached the line as a countdown.
+  expect(el.getAttribute("data-level")).toBe("quota");
+  expect(el.getAttribute("data-passed-reset")).toBe("true");
+  expect(el.textContent).not.toBe(waitingForQuotaText(runway));
+});
+
+// Scenario 17's pane half: the wake's zero-delay announcement ends the wait,
+// and the pane clears immediately - the resumed call's own retry is not a
+// wait, so it drives ordinary retry-progress text (the "in progress" shape a
+// delta-less zero-delay retry reads as), never the quota level again.
+test("the wake's zero-delay announcement clears the pane's wait immediately", () => {
+  const now = 1_000_000;
+  const sixHours = 6 * 60 * 60_000;
+  let model = hydrateThread({ thread: testThread({ status: { type: "active" } }) }, "s1", now - 5_000);
+  model = applyNotification(
+    model,
+    quotaRetryFrame(7, {
+      resumesAt: now + sixHours,
+      delayMs: sixHours,
+      model: "wait/model",
+      groupElapsedMs: 14 * 60_000,
+    }),
+    now - 5_000,
+  );
+  expect(model.quotaResumesAt).toBeDefined();
+  // The wake: the same stamp, no delay, no resume instant.
+  model = applyNotification(model, quotaRetryFrame(7, { delayMs: 0, groupElapsedMs: 14 * 60_000 }), now);
+  expect(model.quotaResumesAt).toBeUndefined();
+  expect(model.quotaWaitStartedAt).toBeUndefined();
+  threadsStore.setState({ threads: new Map([["s1", model]]) });
+
+  render(
+    <LivenessLine
+      lastFrameAt={now - 5_000}
+      now={now}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      retry={model.modelRetry}
+    />,
+  );
+  // No residue at all: the wait is gone, and a first-attempt retry inside
+  // the quiet gate renders nothing - exactly the ordinary liveness decision
+  // the pane would have made had no wait ever happened.
+  const el = screen.queryByTestId("liveness-line");
+  expect(el?.getAttribute("data-level") ?? "none").not.toBe("quota");
 });
 
 // --- the hub's count (#3797) ------------------------------------------------
