@@ -899,6 +899,109 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     },
   );
 
+  test.each([
+    {
+      shape: "a watched session with no pane parked on it",
+      claim: async () => {
+        await threadsStore.getState().watchThread("ref_a");
+        return () => {
+          threadsStore.getState().releaseWatchedThread("ref_a");
+        };
+      },
+      resolve: "ref_a",
+    },
+    {
+      shape: "a resume that resolves an identity no pane has followed",
+      // The pane stays on the original ref: the identity the resume resolves is
+      // the one with no pane, no watcher and no pin - the post-resume refresh
+      // would skip it, so the pick would be refused after the resume ran.
+      claim: async () => {
+        await threadsStore.getState().ensureThread("ref_a");
+        return () => {
+          threadsStore.getState().releaseThread("ref_a");
+        };
+      },
+      resolve: "ref_b",
+    },
+    {
+      shape: "a watched session whose resume resolves an identity no pane has followed",
+      // Neither the original ref nor the resolved one has a pane: the driver
+      // itself must read the resolved identity, because no pane ever will.
+      claim: async () => {
+        await threadsStore.getState().watchThread("ref_a");
+        return () => {
+          threadsStore.getState().releaseWatchedThread("ref_a");
+        };
+      },
+      resolve: "ref_b",
+    },
+  ])("a cold pick on $shape dispatches once on the ref the resume resolved", async ({ claim, resolve }) => {
+    const fake = connectFakeClient();
+    const ref = "ref_a";
+    // The cold read: past-thread capabilities, no authority - what a watched
+    // lifecycle (or an unparked ref) holds for a session whose daemon exited.
+    const cold = () =>
+      readResponse(ref, {
+        status: { type: "notLoaded" },
+        evener: { ref, capabilities: PAST_THREAD_CAPABILITIES, queue: { revision: 0 } },
+      });
+    fake.on("thread/read", () => cold());
+    const release = await claim();
+    try {
+      expect(threadsStore.getState().threads.get(ref)?.modelControlState.kind ?? "uninitialized").not.toBe("ready");
+
+      // The resumed daemon's read is the one that establishes authority, and
+      // no pane will ever issue it: the driver itself must hold a read claim
+      // through the resume so this read lands.
+      const resolvedRef = resolve;
+      const resolvedSnapshot = modelControlSnapshot(1, {
+        bootGeneration: "2",
+        instanceId: `thr_${resolvedRef}`,
+      });
+      fake.on("thread/read", (params) =>
+        params.ref === resolvedRef
+          ? resumedModelRead(resolvedRef, resolvedSnapshot)
+          : readResponse(String(params.ref), {
+              status: { type: "notLoaded" },
+              evener: {
+                ref: String(params.ref),
+                capabilities: PAST_THREAD_CAPABILITIES,
+                queue: { revision: 0 },
+              },
+            }),
+      );
+      fake.on("thread/resume", () => ({ thread: capableModelRead(resolvedRef, resolvedSnapshot).thread }));
+      const accepted = modelControlSnapshot(2, {
+        bootGeneration: "2",
+        instanceId: `thr_${resolvedRef}`,
+        desiredProvider: "openai",
+        desiredModel: "gpt-5.5",
+        clientMutationId: "11111111-1111-4111-8111-111111111111",
+      });
+      vi.spyOn(crypto, "randomUUID").mockReturnValue("11111111-1111-4111-8111-111111111111");
+      fake.on("thread/model/set", () => acceptedModelResponse(accepted));
+
+      await threadsStore.getState().setModel(ref, "openai", "gpt-5.5");
+
+      expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+      expect(fake.calls.filter((call) => call.method === "thread/model/set")).toEqual([
+        {
+          method: "thread/model/set",
+          params: {
+            ref: resolvedRef,
+            modelProvider: "openai",
+            model: "gpt-5.5",
+            clientMutationId: "11111111-1111-4111-8111-111111111111",
+            expectedInstanceId: `thr_${resolvedRef}`,
+            expectedBootGeneration: "2",
+          },
+        },
+      ]);
+    } finally {
+      await release();
+    }
+  });
+
   test("a capable setModel sends captured authority and shows only the accepted response", async () => {
     const fake = connectFakeClient();
     const initial = modelControlSnapshot(1);
