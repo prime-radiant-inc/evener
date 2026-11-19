@@ -166,18 +166,26 @@ type CommunicatePreviewResetData struct {
 // always compares greater) and the absolute epoch-ms instant the call
 // resumes. The zero-delay retry that ends a wait carries the same
 // WaitStartedAt and no ResumesAt.
+//
+// WaitFailure is the wait's own failure summary — the same summary the
+// session's read path samples while the call waits (quotaWaitFailure): the
+// headline, the structured cause, the resume instant, and the wait's stamp.
+// A projection that serves reads from stored events (a descendant's thread)
+// materializes the wait from it without consulting the live session. It is
+// nil for every ordinary retry and for the zero-delay retry that ends a wait.
 type ModelRetryData struct {
-	Attempt        int    `json:"attempt"`
-	MaxAttempts    int    `json:"max_attempts"`
-	DelayMS        int64  `json:"delay_ms"`
-	ErrorClass     string `json:"error_class,omitempty"`
-	StatusCode     int    `json:"status_code,omitempty"`
-	Message        string `json:"message,omitempty"`
-	Model          string `json:"model,omitempty"`
-	GroupElapsedMS int64  `json:"group_elapsed_ms"`
-	AttemptCap     int    `json:"attempt_cap"`
-	WaitStartedAt  uint64 `json:"wait_started_at,omitempty"`
-	ResumesAt      int64  `json:"resumes_at,omitempty"`
+	Attempt        int                    `json:"attempt"`
+	MaxAttempts    int                    `json:"max_attempts"`
+	DelayMS        int64                  `json:"delay_ms"`
+	ErrorClass     string                 `json:"error_class,omitempty"`
+	StatusCode     int                    `json:"status_code,omitempty"`
+	Message        string                 `json:"message,omitempty"`
+	Model          string                 `json:"model,omitempty"`
+	GroupElapsedMS int64                  `json:"group_elapsed_ms"`
+	AttemptCap     int                    `json:"attempt_cap"`
+	WaitStartedAt  uint64                 `json:"wait_started_at,omitempty"`
+	ResumesAt      int64                  `json:"resumes_at,omitempty"`
+	WaitFailure    *appwire.ThreadFailure `json:"wait_failure,omitempty"`
 }
 
 // ReasoningSummaryDeltaData is the payload for an EventReasoningSummaryDelta

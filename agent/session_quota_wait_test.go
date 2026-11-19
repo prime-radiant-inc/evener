@@ -1086,7 +1086,7 @@ func TestQuotaWaitRetriesAtOnceForASteerNoDrainCovered(t *testing.T) {
 	s.mu.Unlock()
 	retried := make(chan bool, 1)
 	go func() {
-		retry, err := s.waitOutUsageLimit(trip, limit, "gpt-5.6", wakes)
+		retry, err := s.waitOutUsageLimit(trip, limit, "gpt-5.6", wakes, 0)
 		retried <- retry && err == nil
 	}()
 	select {
@@ -1481,7 +1481,7 @@ func TestSubMillisecondWaitStartStillAnnouncesAWait(t *testing.T) {
 	limit := usageLimitError(t, "openai", quotaResetAt)
 	retry := make(chan bool, 1)
 	go func() {
-		again, err := s.waitOutUsageLimit(context.Background(), limit, "gpt-5.6", wakes)
+		again, err := s.waitOutUsageLimit(context.Background(), limit, "gpt-5.6", wakes, 0)
 		retry <- again && err == nil
 	}()
 	announcements.awaitLen(t, 1)
@@ -1504,4 +1504,53 @@ func TestSubMillisecondWaitStartStillAnnouncesAWait(t *testing.T) {
 	if wake.DelayMS != 0 || wake.ResumesAt != 0 {
 		t.Fatalf("the wake = %+v, want zero delay and no resume instant", wake)
 	}
+}
+
+// The wait-start announcement's elapsed sample is the call's real elapsed
+// time at the limit — time the call already spent in the model before the
+// quota hit, which the chip renders beside the wait — not zero (scenario
+// 20). The call here streams content and then meets the limit mid-stream,
+// with the session clock advanced while it runs, so the sample is exactly the
+// time spent: 90 seconds.
+func TestWaitStartAnnouncesTheCallsRealElapsedSample(t *testing.T) {
+	limit := usageLimitError(t, "openai", quotaResetAt)
+	s, clk, _, adapter := newAttentionLivelockSession(t, nil)
+	var announcements quotaWaitAnnouncements
+	s.ConsumeEventsLossless(announcements.consume, func() {})
+	// The call streams content, then meets the limit mid-stream once the test
+	// has let the clock run: the elapsed sample must span the streamed work.
+	streamed := make(chan struct{})
+	release := make(chan struct{})
+	adapter.mu.Lock()
+	adapter.streamErr = nil
+	adapter.streamScript = func(st *llm.ChanStream) {
+		st.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, Delta: "working on it"})
+		close(streamed)
+		<-release
+		st.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: limit})
+	}
+	adapter.mu.Unlock()
+	trip := tripwireCtx(t).Done()
+	run := startInput(context.Background(), s, "start the work", EntryUserInput)
+	select {
+	case <-streamed:
+	case <-trip:
+		t.Fatal("the call never streamed before meeting the limit")
+	}
+	clk.Advance(90 * time.Second)
+	clk.Drain()
+	close(release)
+	run.awaitQuotaWait(t, s)
+
+	started := announcements.snapshot()
+	if len(started) != 1 {
+		t.Fatalf("wait start announcements = %+v, want one", started)
+	}
+	if got, want := started[0].GroupElapsedMS, int64(90_000); got != want {
+		t.Fatalf("wait start elapsed sample = %d ms, want %d: the call's real elapsed time at the limit", got, want)
+	}
+
+	recoverProvider(adapter)
+	reachReset(clk)
+	run.awaitEnd(t, trip, "the call resumes at the reset")
 }

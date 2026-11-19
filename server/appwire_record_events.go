@@ -472,6 +472,15 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 				pending = append(pending, pendingAppNotification{threadID: threadID, method: item.Method, params: params})
 			case appwire.ThreadStatusChangedParams:
 				projection.thread.Status = params.Status
+				// A wait ends with its turn even when no wake announced the
+				// retry (a Stop cancels the waiting call): the stored wait
+				// must not outlive the turn it belonged to, exactly as the
+				// root's facet is re-sampled at every turn boundary. The
+				// projection stores waits only, never resting failures, so
+				// clearing on a non-working status destroys nothing else.
+				if params.Status.Type != appwire.ThreadStatusActive {
+					projection.thread.Evener.Failure = nil
+				}
 				pending = append(pending, pendingAppNotification{threadID: threadID, method: item.Method, params: params})
 			case appwire.TaskUpdatedParams:
 				if !s.acceptTaskUpdatePublicationLocked(item.TaskStoreOwnerSessionID, item.TaskPublicationEpoch, item.TaskPublicationRevision) {
@@ -493,6 +502,21 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 				pending = append(pending, pendingAppNotification{threadID: threadID, method: item.Method, params: params})
 			case appwire.UrlsUpdatedParams:
 				projection.thread.Evener.SessionURLs = append([]appwire.SessionURL(nil), params.URLs...)
+				pending = append(pending, pendingAppNotification{threadID: threadID, method: item.Method, params: params})
+			case appwire.ThreadModelRetryParams:
+				// A quota wait's announcements are the wait's only durable
+				// trace on a descendant: the child's projection is built from
+				// events and samples no envelope, so the start must materialize
+				// the wait on the stored thread a read serves — deadline, stamp
+				// and summary, from the event's own stamped facts — and the
+				// wake must clear it, so a pane opened or reloaded mid-wait
+				// sees what the row already knows and stops seeing it the
+				// moment the retry goes out.
+				if failure, ok := event.Data.(events.ModelRetryData); ok && failure.WaitFailure != nil {
+					projection.thread.Evener.Failure = appwire.CloneThreadFailure(failure.WaitFailure)
+				} else if params.ResumesAt == 0 && params.WaitStartedAt != 0 {
+					projection.thread.Evener.Failure = nil
+				}
 				pending = append(pending, pendingAppNotification{threadID: threadID, method: item.Method, params: params})
 			default:
 				pending = append(pending, pendingAppNotification{threadID: threadID, method: item.Method, params: item.Params})
