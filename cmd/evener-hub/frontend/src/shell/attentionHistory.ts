@@ -13,6 +13,7 @@ import {
   navigate,
   observeRouteHistory,
   paneToURL,
+  refParam,
   routeHistoryEntryId,
   ATTENTION_ENTRY_STATE_KEY as STATE_KEY,
 } from "./routing";
@@ -157,8 +158,52 @@ function retireAttentionEntry(binding: HistoryBinding): void {
   // makes the observer treat this as a fresh branch, which drops every other
   // entry and releases their parked readers - including a source Back can
   // still reach, with its staged attachments.
-  navigate(url ?? "/", { replace: true });
+  if (survivor && survivor.slot === "secondary" && url) {
+    publishFocusedPaneURL(url, { replace: true });
+  } else {
+    navigate(url ?? "/", { replace: true });
+  }
   entries.delete(key(binding.token));
+}
+
+/** Publish a URL bound to the currently focused pane so AppShell keeps its
+ * exact slot and sibling panes and retires the entry if that pane closes. */
+export function publishFocusedPaneURL(url: string, opts?: { replace?: boolean }): void {
+  const placement = captureAttentionPlacement();
+  if (!placement) {
+    navigate(url, opts);
+    return;
+  }
+  const token = { generation, id: `entry-${++serial}` };
+  entries.set(key(token), { token, url, placement });
+  navigate(url, { ...opts, replace: opts?.replace || currentURL() === url, attentionEntry: token });
+}
+
+/** Retire the current attention entry for a confirmed-deleted session ref,
+ * closing only panes showing that session and rebinding a healthy reader away
+ * from the dead URL while preserving it and its sibling panes. */
+export function retireDeletedAttentionSession(deletedRef: string): boolean {
+  const binding = bindingFor(tokenAt(history.state));
+  if (!binding) return false;
+  if (binding.placement.requestedRef === deletedRef) {
+    workspaceStore.getState().closePane(binding.placement.pane.id);
+    return true;
+  }
+  restoreAttentionPlacement(binding.placement);
+  const healthyPane = binding.placement.pane;
+  for (const pane of [...workspaceStore.getState().panes]) {
+    if (pane !== healthyPane && pane.type === "session" && refParam(pane.params) === deletedRef) {
+      workspaceStore.getState().closePane(pane.id);
+    }
+  }
+  const url = paneToURL(healthyPane.type, healthyPane.params);
+  if (healthyPane.slot === "secondary" && url) {
+    publishFocusedPaneURL(url, { replace: true });
+  } else {
+    navigate(url ?? "/", { replace: true });
+  }
+  entries.delete(key(binding.token));
+  return true;
 }
 
 // A drill inside the cascade an attention entry owns keeps the same pane and

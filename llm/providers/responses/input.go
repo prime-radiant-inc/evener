@@ -33,33 +33,95 @@ func toResponsesResponseFormat(rf llm.ResponseFormat, structured bool) any {
 	}
 }
 
-func toResponsesTools(tools []llm.ToolDefinition, strict bool) []map[string]any {
+// toolSchema is the schema one tool is sent with, and whether that tool rides
+// the request under strict enforcement. The rules are stated below in the order
+// the builder applies them.
+func toolSchema(t llm.ToolDefinition, strict, responsesLite bool) (params map[string]any, toolStrict bool) {
+	toolStrict = strict
+	if toolStrict && t.Strict != nil {
+		toolStrict = *t.Strict
+	}
+	params = t.Parameters
+	if t.DeclaresNoParameters() || params == nil {
+		// A tool that declares no parameters takes the empty object. On the
+		// strict path the root has to be explicitly closed, because strict
+		// mode accepts that and only that: an open root is not certifiable,
+		// and sending it non-strict would accept any keys the tool rejects.
+		// With strict mode off the advertised shape is unchanged, and for a
+		// prepared definition that shape is the open empty object it already
+		// carries.
+		params = map[string]any{"type": "object", "properties": map[string]any{}}
+		if toolStrict {
+			params["additionalProperties"] = false
+		}
+	}
+	if toolStrict {
+		// OpenAI strict mode requires a fully-specified JSON Schema:
+		// - object schemas must set additionalProperties=false
+		// - required must include every key in properties (even for "optional" fields)
+		// See API validation errors like:
+		// "Invalid schema for function 'read_file': ... 'required' ... Missing 'limit'."
+		//
+		// That force-requiring is lossless only when the schema already
+		// requires every property. A tool with a documented-optional argument
+		// has no legal strict form: projecting it would make that argument
+		// mandatory on every call. Such a tool keeps its advertised schema and
+		// is sent non-strict.
+		if openaichat.StrictExpressible(params) {
+			projected := openaichat.StrictifyJSONSchema(params)
+			// Codex Responses Lite requires an explicit type on every node in
+			// additional_tools. A strict-certified union of objects, arrays, or
+			// mixed types cannot carry an enclosing type in strict mode without
+			// changing its contract, so on Lite routes it falls back to
+			// non-strict emission with its enclosing union type stated.
+			if !responsesLite || openaichat.HasExplicitTypes(projected) {
+				return projected, true
+			}
+		}
+	}
+	if responsesLite {
+		return openaichat.SupplyExplicitTypes(params), false
+	}
+	// A refused tool keeps the schema it advertised, because the projection
+	// would change which arguments it accepts. The provider still requires an
+	// explicit type on every node, so a closed value set that implies one gets
+	// it stated here: the accepted values are identical either way, and an
+	// argument declared {"const": "fixed"} would otherwise be rejected along
+	// with the whole request. This runs on the non-strict path too because the
+	// requirement is the schema dialect's, not strict mode's — additional_tools
+	// on this route carries strict:false and is still rejected for a typeless
+	// node.
+	return openaichat.SupplyDerivedTypes(params), false
+}
+
+// toResponsesTools writes the tools array. capsStrict is the row's strict_tools
+// capability and stated reports whether the row states one at all.
+//
+// The per-tool flag is written whenever the row states the capability, not only
+// when the capability is on. A native endpoint normalizes an omitted flag into
+// strict enforcement, so a route configured strict_tools = false that omitted
+// it would run the tool strictly anyway — and an argument the gate refused to
+// force on would be forced on by the endpoint. A row that states nothing gets
+// no flag: that is what a compatible endpoint which does not implement the
+// field receives today, and the capability's absence is not a decision to
+// announce.
+func toResponsesTools(tools []llm.ToolDefinition, capsStrict, stated, responsesLite bool) []map[string]any {
 	out := make([]map[string]any, 0, len(tools))
 	for _, t := range tools {
-		params := t.Parameters
-		if params == nil {
-			params = map[string]any{"type": "object", "properties": map[string]any{}}
-		}
+		// The per-tool opt-out is read before the fallback is synthesized: a
+		// tool that opts out is advertised with the open empty object, which is
+		// what every non-strict route already sends and what the local
+		// validator allows. Only a tool that will actually be sent in strict
+		// mode gets the closed empty object, because strict mode accepts that
+		// and only that.
+		params, toolStrict := toolSchema(t, capsStrict, responsesLite)
 		entry := map[string]any{
 			"type":        "function",
 			"name":        t.Name,
 			"description": t.Description,
 			"parameters":  params,
 		}
-		if strict {
-			toolStrict := true
-			if t.Strict != nil {
-				toolStrict = *t.Strict
-			}
-			if toolStrict {
-				// OpenAI strict mode requires a fully-specified JSON Schema:
-				// - object schemas must set additionalProperties=false
-				// - required must include every key in properties (even for "optional" fields)
-				// See API validation errors like:
-				// "Invalid schema for function 'read_file': ... 'required' ... Missing 'limit'."
-				params = openaichat.StrictifyJSONSchema(params)
-				entry["parameters"] = params
-			}
+		if stated {
 			entry["strict"] = toolStrict
 		}
 		out = append(out, entry)
@@ -101,7 +163,7 @@ func toResponsesInput(msgs []llm.Message, imageCap string) (instructions string,
 	for _, m := range msgs {
 		switch m.Role {
 		case llm.RoleSystem, llm.RoleDeveloper:
-			if t := strings.TrimSpace(m.Text()); t != "" {
+			if t := m.Text(); t != "" {
 				instrParts = append(instrParts, t)
 			}
 		}
@@ -113,49 +175,51 @@ func toResponsesInput(msgs []llm.Message, imageCap string) (instructions string,
 		case llm.RoleSystem, llm.RoleDeveloper:
 			continue
 		case llm.RoleUser, llm.RoleAssistant:
-			if m.Role == llm.RoleAssistant {
-				// Group text parts by phase, emitting one message item per group.
-				type textGroup struct {
-					phase   string
-					content []any
+			switch m.Role {
+			case llm.RoleAssistant:
+				// Group adjacent text by phase across parts omitted from replay.
+				var phase string
+				var content []any
+				flushText := func() {
+					if len(content) == 0 {
+						return
+					}
+					item := map[string]any{"type": "message", "role": "assistant", "content": content}
+					if phase != "" {
+						item["phase"] = phase
+					}
+					items = append(items, item)
+					content = nil
 				}
-				var groups []textGroup
 				for _, p := range m.Content {
 					switch p.Kind {
 					case llm.ContentText:
 						if strings.TrimSpace(p.Text) == "" && p.Phase == "" {
 							continue
 						}
-						entry := map[string]any{"type": "output_text", "text": p.Text}
-						if len(groups) > 0 && groups[len(groups)-1].phase == p.Phase {
-							groups[len(groups)-1].content = append(groups[len(groups)-1].content, entry)
-						} else {
-							groups = append(groups, textGroup{phase: p.Phase, content: []any{entry}})
+						if phase != p.Phase {
+							flushText()
+							phase = p.Phase
 						}
+						content = append(content, map[string]any{"type": "output_text", "text": p.Text})
 					case llm.ContentAudio, llm.ContentDocument:
 						return "", nil, &llm.ConfigurationError{Message: fmt.Sprintf("unsupported content kind for openai: %s", p.Kind)}
 					default:
-						// ignore (tool calls, images, web search handled separately)
+						if item, ok := replayedOutputItem(p); ok {
+							flushText()
+							items = append(items, item)
+						}
 					}
 				}
-				for _, g := range groups {
-					item := map[string]any{
-						"type":    "message",
-						"role":    "assistant",
-						"content": g.content,
-					}
-					if g.phase != "" {
-						item["phase"] = g.phase
-					}
-					items = append(items, item)
-				}
-			} else {
+				flushText()
+				continue
+			case llm.RoleUser:
 				// User messages: no phase grouping needed.
 				content := make([]any, 0, len(m.Content))
 				for _, p := range m.Content {
 					switch p.Kind {
 					case llm.ContentText:
-						if strings.TrimSpace(p.Text) == "" {
+						if p.Text == "" {
 							continue
 						}
 						content = append(content, map[string]any{
@@ -238,36 +302,16 @@ func toResponsesInput(msgs []llm.Message, imageCap string) (instructions string,
 				}
 			}
 			for _, p := range m.Content {
-				if p.Kind == llm.ContentThinking && p.Thinking != nil && p.Thinking.EncryptedContent != "" &&
-					!llm.IsOpenAICompatEncryptedReasoning(p.Thinking.EncryptedContent) {
-					// The guard skips OpenRouter-style encrypted reasoning_details
-					// riding a cross-provider transcript — those are not OpenAI
-					// Responses encrypted_content blobs and the API rejects them.
-					item := map[string]any{
-						"type":              "reasoning",
-						"encrypted_content": p.Thinking.EncryptedContent,
-						"summary":           reasoningSummaryInput(p.Thinking.Summary),
-					}
-					if strings.TrimSpace(p.Thinking.ID) != "" {
-						item["id"] = strings.TrimSpace(p.Thinking.ID)
-					}
-					items = append(items, item)
+				if p.Kind == llm.ContentWebSearch {
+					continue
 				}
-				if p.Kind == llm.ContentToolCall && p.ToolCall != nil {
-					items = append(items, map[string]any{
-						"type":      "function_call",
-						"call_id":   p.ToolCall.ID,
-						"name":      p.ToolCall.Name,
-						"arguments": openaichat.ToolArgumentsString(p.ToolCall.Arguments),
-					})
+				if item, ok := replayedOutputItem(p); ok {
+					items = append(items, item)
 				}
 			}
 			for _, p := range m.Content {
-				if p.Kind == llm.ContentWebSearch && p.WebSearch != nil && len(p.WebSearch.Raw) > 0 {
-					var rawItem map[string]any
-					if err := json.Unmarshal(p.WebSearch.Raw, &rawItem); err == nil {
-						items = append(items, rawItem)
-					}
+				if item, ok := replayedWebSearchItem(p); ok {
+					items = append(items, item)
 				}
 			}
 		case llm.RoleTool:
@@ -328,6 +372,41 @@ func toResponsesInput(msgs []llm.Message, imageCap string) (instructions string,
 		}
 	}
 	return instructions, items, nil
+}
+
+func replayedOutputItem(p llm.ContentPart) (map[string]any, bool) {
+	switch {
+	// OpenRouter reasoning_details belong to the Chat protocol.
+	case p.Kind == llm.ContentThinking && p.Thinking != nil && p.Thinking.EncryptedContent != "" &&
+		!llm.IsOpenAICompatEncryptedReasoning(p.Thinking.EncryptedContent):
+		item := map[string]any{
+			"type":              "reasoning",
+			"encrypted_content": p.Thinking.EncryptedContent,
+			"summary":           reasoningSummaryInput(p.Thinking.Summary),
+		}
+		if id := strings.TrimSpace(p.Thinking.ID); id != "" {
+			item["id"] = id
+		}
+		return item, true
+	case p.Kind == llm.ContentToolCall && p.ToolCall != nil:
+		return map[string]any{
+			"type":      "function_call",
+			"call_id":   p.ToolCall.ID,
+			"name":      p.ToolCall.Name,
+			"arguments": openaichat.ToolArgumentsString(p.ToolCall.Arguments),
+		}, true
+	default:
+		return replayedWebSearchItem(p)
+	}
+}
+
+func replayedWebSearchItem(p llm.ContentPart) (map[string]any, bool) {
+	if p.Kind != llm.ContentWebSearch || p.WebSearch == nil || len(p.WebSearch.Raw) == 0 {
+		return nil, false
+	}
+	var item map[string]any
+	err := json.Unmarshal(p.WebSearch.Raw, &item)
+	return item, err == nil && item != nil
 }
 
 func reasoningSummaryInput(summary []string) []any {

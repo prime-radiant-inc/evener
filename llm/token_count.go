@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"image"
 	"math"
@@ -78,6 +80,10 @@ func EstimateInputTokensForResolved(res registry.Resolved, req Request) InputTok
 }
 
 func estimateInputTokens(t targetInfo, req Request) InputTokenCount {
+	options, _ := req.ProviderOptions[registry.ProtocolOpenAIChat].(map[string]any)
+	if _, ok := options["reasoning"]; ok && !t.reasoningOff {
+		t.chatUsesDetails = true
+	}
 	tokens := estimateMessagesInputTokens(t, req.Messages)
 	if len(req.Tools) > 0 {
 		toolBytes := req.ToolsJSONBytes
@@ -112,6 +118,89 @@ func ToolsJSONBytes(defs []ToolDefinition) int {
 	}
 	b, _ := json.Marshal(defs)
 	return len(b)
+}
+
+// closedEmptyToolParameters is the closed empty object schema emitted by
+// strict-capable built-in OpenAI adapters for a parameterless tool that has not
+// opted out of strict mode.
+func closedEmptyToolParameters() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties":           map[string]any{},
+		"required":             []string{},
+	}
+}
+
+// protocolClosesStrictParameterlessTools reports whether the built-in adapter
+// for res emits closedEmptyToolParameters for non-opted-out parameterless tools.
+func protocolClosesStrictParameterlessTools(res registry.Resolved) bool {
+	if !registry.BoolValue(res.Caps.StrictTools) {
+		return false
+	}
+	switch res.Protocol {
+	case registry.ProtocolOpenAIResponses, registry.ProtocolOpenAIChat:
+		return true
+	default:
+		return false
+	}
+}
+
+// emittedParameterlessParameters returns the schema a built-in adapter emits
+// for a tool with no declared parameters, or nil when the adapter leaves
+// t.Parameters unchanged (including omitting a direct caller's nil).
+func emittedParameterlessParameters(t ToolDefinition, res registry.Resolved) map[string]any {
+	if !t.DeclaresNoParameters() && t.Parameters != nil {
+		return nil
+	}
+	if protocolClosesStrictParameterlessTools(res) && (t.Strict == nil || *t.Strict) {
+		return closedEmptyToolParameters()
+	}
+	if t.Parameters == nil {
+		switch res.Protocol {
+		case registry.ProtocolOpenAIResponses, registry.ProtocolAnthropic, registry.ProtocolGoogle:
+			return defaultToolParameters()
+		}
+	}
+	return nil
+}
+
+// parameterlessToolsJSONDelta returns the net serialized byte delta introduced
+// by the resolved built-in adapter substituting closed or open empty schemas for
+// parameterless tools in defs. Overrides return 0.
+func parameterlessToolsJSONDelta(defs []ToolDefinition, res registry.Resolved, override bool) int {
+	if len(defs) == 0 || override {
+		return 0
+	}
+	delta := 0
+	for i := range defs {
+		emitted := emittedParameterlessParameters(defs[i], res)
+		if emitted == nil {
+			continue
+		}
+		declaredBytes := ToolsJSONBytes(defs[i : i+1])
+		adjusted := defs[i]
+		adjusted.Parameters = emitted
+		emittedBytes := ToolsJSONBytes([]ToolDefinition{adjusted})
+		if declaredBytes > 0 && emittedBytes > 0 {
+			delta += emittedBytes - declaredBytes
+		}
+	}
+	return delta
+}
+
+// effectiveToolsJSONBytes returns the tool-catalog byte length priced against
+// the resolved adapter's wire emission. Both caller-stamped declared-catalog
+// lengths and unstamped requests receive the parameterless-schema delta once.
+func effectiveToolsJSONBytes(req Request, res registry.Resolved, override bool) int {
+	if len(req.Tools) == 0 {
+		return 0
+	}
+	base := req.ToolsJSONBytes
+	if base <= 0 {
+		base = ToolsJSONBytes(req.Tools)
+	}
+	return base + parameterlessToolsJSONDelta(req.Tools, res, override)
 }
 
 // EstimateMessagesInputTokens estimates only a message list. It is useful for
@@ -274,6 +363,7 @@ func estimateMessagesInputTokens(t targetInfo, messages []Message) int {
 func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
 	chars := len(m.Name) + len(m.ToolCallID)
 	tokens := 0
+	var chatReasoning chatReasoningEstimate
 	for _, p := range m.Content {
 		switch p.Kind {
 		case ContentText:
@@ -318,7 +408,11 @@ func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
 				}
 			}
 		case ContentThinking, ContentRedThinking:
-			chars += thinkingReplayChars(t, p)
+			if t.protocol == registry.ProtocolOpenAIChat || t.namedChat {
+				chatReasoning.add(t, p)
+			} else {
+				chars += thinkingReplayChars(t, p)
+			}
 		case ContentWebSearch:
 			if p.WebSearch != nil {
 				chars += len(p.WebSearch.Query)
@@ -329,7 +423,7 @@ func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
 			chars += len(b)
 		}
 	}
-	return chars, tokens
+	return chars + chatReasoning.chars(t), tokens
 }
 
 // thinkingReplayChars counts the characters a thinking part contributes to the
@@ -352,6 +446,8 @@ func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
 //     compat reasoning_details array (kept off the wire by any declared
 //     non-reasoning row), and drops a redacted part and an opaque Responses blob;
 //   - the Google adapter emits no thinking shape at all.
+//
+// Chat reasoning is priced across the message by estimateMessageInputParts.
 func thinkingReplayChars(target targetInfo, p ContentPart) int {
 	if p.Thinking == nil {
 		return 0
@@ -372,8 +468,6 @@ func thinkingReplayChars(target targetInfo, p ContentPart) int {
 				return 0
 			}
 			return responsesReasoningChars(t)
-		case registry.ProtocolOpenAIChat:
-			return chatReasoningChars(target, p)
 		default:
 			// The Google adapter and every other protocol along this path emit
 			// no thinking shape.
@@ -446,26 +540,70 @@ func responsesReasoningChars(t *ThinkingData) int {
 	return chars
 }
 
-// chatReasoningChars is what chatcompletions/messages.go emits: the compat
-// reasoning_details array (kept off the wire by a declared non-reasoning row),
-// the part's text (kept off the wire by a declared non-reasoning row that does
-// not replay thinking as text, which is what the target's unsignedThinking
-// records for a chat row), and the text a signature-bearing reasoning item
-// needs merged into it even when the target would otherwise drop the text.
-// A redacted part is never read.
-func chatReasoningChars(target targetInfo, p ContentPart) int {
-	if p.Kind != ContentThinking {
+// The Chat writer chooses a destination for assembled text per message. Its
+// first text detail may already contain the signed text it sends.
+type chatReasoningEstimate struct {
+	displayChars, scalarChars, detailChars int
+	detailArrays                           []string
+}
+
+type reasoningTextPresence bool
+
+func (p *reasoningTextPresence) UnmarshalJSON(raw []byte) error {
+	// The decoder passes a validated token. Only nonempty strings supply text.
+	*p = len(raw) > 2 && raw[0] == '"'
+	return nil
+}
+
+func (r *chatReasoningEstimate) add(target targetInfo, p ContentPart) {
+	if p.Kind != ContentThinking || p.Thinking == nil {
+		return
+	}
+	r.displayChars += len(p.Thinking.Text)
+	r.scalarChars += len(p.Thinking.ChatReplayText(true))
+	if target.reasoningOff || !IsOpenAICompatEncryptedReasoning(p.Thinking.EncryptedContent) {
+		return
+	}
+	r.detailChars += len(p.Thinking.EncryptedContent)
+	if !target.chatThinkingAsText {
+		r.detailArrays = append(r.detailArrays, p.Thinking.EncryptedContent)
+	}
+}
+
+func (r chatReasoningEstimate) countsDisplay(target targetInfo) bool {
+	if r.displayChars == 0 || target.chatThinkingAsText {
+		return target.chatThinkingAsText
+	}
+	// The writer reads exact object keys, even when legacy array validation
+	// accepts a case-folded type. Ignore unrelated fields such as opaque data.
+	for _, raw := range r.detailArrays {
+		var details []struct {
+			Type string                `json:"type"`
+			Text reasoningTextPresence `json:"text"`
+		}
+		if jsonv2.Unmarshal([]byte(raw), &details, jsontext.AllowDuplicateNames(true), jsontext.AllowInvalidUTF8(true)) != nil {
+			continue
+		}
+		for _, detail := range details {
+			if detail.Type == "reasoning.text" {
+				return !bool(detail.Text)
+			}
+		}
+	}
+	return target.unsignedThinking
+}
+
+func (r chatReasoningEstimate) chars(target targetInfo) int {
+	if !target.chatThinkingAsText && !target.chatUsesDetails && r.detailChars == 0 {
+		if target.unsignedThinking {
+			return r.scalarChars
+		}
 		return 0
 	}
-	t := p.Thinking
-	chars := 0
-	if !target.reasoningOff && IsOpenAICompatEncryptedReasoning(t.EncryptedContent) {
-		chars += len(t.EncryptedContent)
+	if r.countsDisplay(target) {
+		return r.detailChars + r.displayChars
 	}
-	if target.unsignedThinking || (!target.reasoningOff && OpenAICompatSignatureReasoningNeedsText(t.EncryptedContent)) {
-		chars += len(t.Text)
-	}
-	return chars
+	return r.detailChars
 }
 
 // targetInfo is what the local estimator knows about the request's target: the
@@ -490,7 +628,10 @@ type targetInfo struct {
 	// reasoningOff marks a row that declares reasoning = false: the chat adapter
 	// keeps the reasoning fields and the reasoning_details array off the wire
 	// (chatcompletions/messages.go).
-	reasoningOff bool
+	reasoningOff       bool
+	chatThinkingAsText bool
+	chatUsesDetails    bool
+	namedChat          bool
 	// dropsToolResultImages marks a resolved row whose adapter leaves a
 	// tool-result image off the wire entirely (dropsToolResultImages).
 	dropsToolResultImages bool
@@ -607,7 +748,9 @@ func genericModelFamily(family string) bool {
 // targetFromNames builds the name-based view used by the exported entry points
 // that take a bare Request or message list.
 func targetFromNames(provider, model string) targetInfo {
-	return targetInfo{provider: provider, model: model, unsignedThinking: unsignedThinkingReplayedByName(provider, model)}
+	name := strings.ToLower(strings.TrimSpace(provider))
+	return targetInfo{provider: provider, model: model, unsignedThinking: unsignedThinkingReplayedByName(provider, model),
+		namedChat: name == registry.ProtocolOpenAIChat || name == "openai-compatible"}
 }
 
 // targetFromResolved builds the exact view from a resolved registry row. Names
@@ -633,6 +776,8 @@ func targetFromResolved(res registry.Resolved, provider, model string) targetInf
 		resolved: true, providerFromCaller: providerFromCaller,
 		imageDetail:           registry.StringValue(res.Caps.ImageDetail),
 		reasoningOff:          res.Caps.ReasoningDisabled(),
+		chatThinkingAsText:    registry.BoolValue(res.Caps.ThinkingAsText),
+		chatUsesDetails:       registry.StringValue(res.Caps.ReasoningField) == "reasoning_details",
 		dropsToolResultImages: dropsToolResultImages(res),
 		seenToolResultDocuments: !res.Synthesized && res.Caps.AcceptsModality("pdf") &&
 			deliversToolResultDocuments(res.Protocol),
@@ -985,6 +1130,9 @@ func localInputEstimate(req Request, callerProvider string, t dispatchTarget) In
 	}
 	estimateReq := req
 	estimateReq.Provider = callerProvider
+	if len(estimateReq.Tools) > 0 {
+		estimateReq.ToolsJSONBytes = effectiveToolsJSONBytes(estimateReq, t.res, t.override != nil)
+	}
 	return EstimateInputTokensForResolved(t.res, estimateReq)
 }
 
@@ -1001,6 +1149,10 @@ func EstimatorTargetsEquivalent(a, b registry.Resolved) bool {
 		return false
 	}
 	if registry.BoolValue(a.Caps.ThinkingAsText) != registry.BoolValue(b.Caps.ThinkingAsText) {
+		return false
+	}
+	if a.Protocol == registry.ProtocolOpenAIChat && !a.Caps.ReasoningDisabled() && !registry.BoolValue(a.Caps.ThinkingAsText) &&
+		(registry.StringValue(a.Caps.ReasoningField) == "reasoning_details") != (registry.StringValue(b.Caps.ReasoningField) == "reasoning_details") {
 		return false
 	}
 	if registry.StringValue(a.Caps.ImageDetail) != registry.StringValue(b.Caps.ImageDetail) {

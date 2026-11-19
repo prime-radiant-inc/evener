@@ -25,6 +25,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 	"primeradiant.com/evener/execsupport/valueexpr"
+	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/credentials"
@@ -2273,5 +2274,151 @@ func TestHubRPCInitialWindowListServesSavedSessions(t *testing.T) {
 	}
 	if len(page.Data) != 1 {
 		t.Fatalf("saved initial window turns = %d, want the single requested turn", len(page.Data))
+	}
+}
+
+// TestPastEntryTurns_KeepsRecordedRoundOnSettledCall pins the round on a
+// settled command row of the hub's full saved-transcript read.
+//
+// It calls computePastEntryTurns itself because that is the read clients get:
+// appItemsFromReplayTurn supplies apptranscript.ProjectTurn, which does not
+// apply the identity read model, so the assistant tool row carries no RoundID
+// while the transcript records one on the announcing entry. A standalone
+// delivery between the call and its result makes executionItems settle the
+// result into the announced row, and an empty round names no round to a client
+// reconciling by round id.
+//
+// The fixture writes a real transcript through the real writer, so the round,
+// turn and entry ordinals below are what the producer recorded.
+func TestPastEntryTurns_KeepsRecordedRoundOnSettledCall(t *testing.T) {
+	const (
+		sessionID = "01ROUNDFALLBACK"
+		turnID    = "t_round_fallback"
+		callID    = "d1"
+		shellOut  = "listing"
+	)
+	stateDir := filepath.Join(t.TempDir(), "projects", "project-repo-0000000000")
+	transcriptPath := schema.SessionTranscriptPath(stateDir, sessionID)
+	w, err := transcript.NewWriter(transcriptPath, transcript.Header{
+		SessionID: sessionID,
+		CreatedAt: time.Unix(1700000000, 0).UTC(),
+		ProfileID: "anthropic",
+		Model:     "claude-opus-4-5",
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	record := func(turn schema.Turn, place transcript.Placement) transcript.Record {
+		t.Helper()
+		rec, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: place})
+		if err != nil {
+			t.Fatalf("record %s: %v", turn.Kind, err)
+		}
+		if !rec.Recorded {
+			t.Fatalf("record %s: the writer recorded nothing", turn.Kind)
+		}
+		return rec
+	}
+
+	roundID := identifier.MustNewRoundID()
+	w.BeginExecution(turnID, false)
+	record(schema.NewTurn(schema.TurnUserInput, llm.User("deliver")), transcript.PlaceSession)
+	opener := schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+		{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: callID, Name: "shell", Arguments: []byte(`{"cmd":"ls"}`)}},
+	}})
+	opener.RoundID = roundID
+	openerRecord := record(opener, transcript.PlaceSession)
+	// A standalone delivery inside the execution, then the call's answer.
+	record(schema.NewTurn(schema.TurnSteering, llm.User("a delivered note")), transcript.PlaceDelivery)
+	resultRecord := record(schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: callID, Name: "shell", Content: shellOut}},
+	}}}, transcript.PlaceSession)
+	record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("after the delivery")), transcript.PlaceSession)
+	record(schema.Turn{Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}}, transcript.PlaceCompletion)
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Independent fixture evidence: the file records the round on the announcing
+	// entry, and none on the answering one. Both are read back from the bytes,
+	// not from the writer's returns.
+	f, err := os.Open(transcriptPath)
+	if err != nil {
+		t.Fatalf("open transcript: %v", err)
+	}
+	defer f.Close() //nolint:errcheck // a read-only walk
+	var openerStored, resultStored schema.Turn
+	ordinal := 0
+	if _, err := transcript.Scan(t.Context(), f, transcript.DefaultMaxLineBytes, func(_ []byte, rec transcript.Entry) error {
+		ordinal++
+		switch ordinal {
+		case int(openerRecord.Ordinal) + 1:
+			openerStored = rec.Turn
+		case int(resultRecord.Ordinal) + 1:
+			resultStored = rec.Turn
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("scan transcript: %v", err)
+	}
+	if openerStored.Format != schema.TurnFormatIdentity || openerStored.TurnID != turnID {
+		t.Fatalf("announcing entry stamps = format %d turn %q, want the identity format under %q", openerStored.Format, openerStored.TurnID, turnID)
+	}
+	if openerStored.RoundID != roundID {
+		t.Fatalf("announcing entry round = %q, want the recorded %q: the row's round must come from this entry", openerStored.RoundID, roundID)
+	}
+	if resultStored.RoundID != "" {
+		t.Fatalf("answering entry round = %q, want none: only the announcing entry records one", resultStored.RoundID)
+	}
+
+	entry := hubcore.PastEntry{
+		ID:       sessionID,
+		Meta:     schema.SessionMeta{ID: sessionID, ProfileID: "anthropic", Model: "claude-opus-4-5"},
+		StateDir: stateDir,
+	}
+	// The hub's own full saved-transcript projector, selected by the production
+	// call itself: no projector and no pastEntryTurns replacement here.
+	turns, err := computePastEntryTurns(hubcore.WebConfig{}, entry)
+	if err != nil {
+		t.Fatalf("computePastEntryTurns: %v", err)
+	}
+
+	// The projector mints a call item from the entry's 1-based index and the
+	// content part, so one part at part 0 gives this id.
+	wantID := fmt.Sprintf("item_tool_%d_0", int(openerRecord.Ordinal)+1)
+	var shell appwire.ThreadItem
+	shellAt, deliveryAt, rows := -1, -1, 0
+	for i, item := range flattenTestItems(turns) {
+		switch {
+		case item.Type == "commandExecution" && item.CallID == callID:
+			rows++
+			shell, shellAt = item, i
+		case item.Type == "steering":
+			deliveryAt = i
+		}
+	}
+	if rows != 1 {
+		t.Fatalf("call %s kept %d command rows, want 1: the result settles the row its own entry announced", callID, rows)
+	}
+	if deliveryAt < 0 {
+		t.Fatalf("no steering row for the fixture's delivery")
+	}
+	if shellAt >= deliveryAt {
+		t.Errorf("settled row at item %d is not before the delivery at item %d, want the announcing entry's position", shellAt, deliveryAt)
+	}
+	if shell.ID != wantID {
+		t.Errorf("settled row id = %q, want %q, the id the announcing entry mints", shell.ID, wantID)
+	}
+	if shell.TurnID != turnID {
+		t.Errorf("settled row turn = %q, want %q", shell.TurnID, turnID)
+	}
+	if shell.RoundID != roundID {
+		t.Errorf("settled row round = %q, want the announcing entry's %q: the hub's full saved read dropped the round", shell.RoundID, roundID)
+	}
+	if shell.Status != appwire.TurnStatusCompleted {
+		t.Errorf("settled row status = %q, want completed", shell.Status)
+	}
+	if shell.Output != shellOut {
+		t.Errorf("settled row output = %q, want the result's payload %q", shell.Output, shellOut)
 	}
 }

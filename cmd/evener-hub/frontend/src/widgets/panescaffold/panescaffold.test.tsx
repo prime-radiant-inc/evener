@@ -149,6 +149,13 @@ test("renders no actions cluster when the actions prop is omitted", () => {
   expect(container.querySelector('[data-testid="pane-actions"]')).toBeNull();
 });
 
+test("renders no header row when title, cadence, and actions are all omitted", () => {
+  const { container } = render(<PaneScaffold scaffoldMarker="headless">content</PaneScaffold>);
+  const pane = container.firstElementChild;
+  const body = container.querySelector('[data-pane-scaffold="headless"]');
+  expect(pane?.firstElementChild).toBe(body);
+});
+
 test("renders the actions cluster when provided", () => {
   render(
     <PaneScaffold

@@ -82,15 +82,17 @@ func TestNewFormatReasoningUsesSummaryWhenTextIsEmpty(t *testing.T) {
 func TestNewFormatReasoningJoinsEveryThinkingPartIntoOneItem(t *testing.T) {
 	entry := schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "t_1", Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
 		{Kind: llm.ContentText, Text: "x"},
+		{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{ResponsesSummaryParts: []llm.ResponsesReasoningPart{{Type: "summary_text"}}}},
+		{Kind: llm.ContentText, Text: "y"},
 		{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "one"}},
 		{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Summary: []string{"two", "three"}}},
 		{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{}},
 	}}}
 	items, parts := ProjectEntryParts("t_1", 0, entry, nil, nil, nil)
-	if !reflect.DeepEqual(parts, []int{0, 1}) || len(items) != 2 {
-		t.Fatalf("items = %+v parts = %v, want agentMessage part 0 and reasoning part 1", items, parts)
+	if !reflect.DeepEqual(parts, []int{0, 3}) || len(items) != 2 || items[0].Text != "xy" {
+		t.Fatalf("items = %+v parts = %v, want one text run and reasoning at part 3", items, parts)
 	}
-	if items[1].Type != "reasoning" || items[1].ID != "item_reasoning_0_1" || items[1].Text != "one\n\ntwo\n\nthree" {
+	if items[1].Type != "reasoning" || items[1].ID != "item_reasoning_0_3" || items[1].Text != "one\n\ntwo\n\nthree" {
 		t.Fatalf("reasoning = %+v, want every thinking part joined", items[1])
 	}
 }

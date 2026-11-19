@@ -22,11 +22,13 @@ const CLASS = {
 export function CascadeColumn({
   paneId,
   scope,
+  selected,
   content,
   conversationFooter,
 }: {
   paneId: string;
   scope: ActivityScope;
+  selected: boolean;
   content: ReactNode;
   conversationFooter: ReactNode;
 }) {
@@ -34,13 +36,17 @@ export function CascadeColumn({
   return (
     <>
       {/* The phone's top bar already publishes the selected conversation's
-       * name, so the column's own title stays desktop-only. */}
+       * name, so the column's own title stays desktop-only. Any desktop column
+       * whose ref is not the selected ref served by the pane-wide StatusBar
+       * below keeps compact activity peeks in its header so it can be
+       * inspected independently without adding a second strip above StatusBar. */}
       {!mobile && (
         <header className={CLASS.header}>
           <div className={CLASS.heading}>
             <h3 className={CLASS.title}>{scope.leaf.title}</h3>
             <ScopeRuntimeState scope={scope} />
           </div>
+          {!selected && <ScopeActivityControls paneId={paneId} scope={scope} />}
         </header>
       )}
       <div className={CLASS.content} data-testid="cascade-column-content">
@@ -53,7 +59,9 @@ export function CascadeColumn({
         </div>
       )}
       {!mobile && conversationFooter && <div className={CLASS.columnComposerBar}>{conversationFooter}</div>}
-      <ScopeActivityControls paneId={paneId} scope={scope} />
+      {/* Mobile omits the pane-wide StatusBar, so the column's own activity
+       * controls stay as its single bottom activity strip. */}
+      {mobile && <ScopeActivityControls paneId={paneId} scope={scope} />}
     </>
   );
 }

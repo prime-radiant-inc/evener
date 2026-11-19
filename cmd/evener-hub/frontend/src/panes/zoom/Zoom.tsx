@@ -1,10 +1,11 @@
 import { sessionActionError } from "@evener/appwire-client";
-import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { useStore } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import { m, spatialTransition, useReducedMotion } from "../../motion";
 import { conversationPaneLifetime, type PaneLifetime } from "../../shell/paneLifetime";
 import type { PaneProps } from "../../shell/paneRegistry";
+import { isSinglePaneRoute } from "../../shell/singlePane";
 import { ScopeCrumbs, useScopeTitle } from "../../shell/statusbar/ScopeCrumbs";
 import { StatusBar } from "../../shell/statusbar/StatusBar";
 import { deriveScope } from "../../shell/statusbar/statusScope";
@@ -42,7 +43,6 @@ import styles from "./zoom.module.css";
 const CLASS = {
   body: requireClass(styles.body, "zoom.module.css", "body"),
   hint: requireClass(styles.hint, "zoom.module.css", "hint"),
-  returnRow: requireClass(styles.returnRow, "zoom.module.css", "returnRow"),
   track: requireClass(styles.track, "zoom.module.css", "track"),
   column: requireClass(styles.column, "zoom.module.css", "column"),
   spine: requireClass(styles.spine, "zoom.module.css", "spine"),
@@ -54,6 +54,7 @@ function ScopeConversation({
   scope,
   readable,
   leaf,
+  selected,
   only,
   mobile,
   userTransition,
@@ -63,6 +64,7 @@ function ScopeConversation({
   scope: CascadeScope;
   readable: boolean;
   leaf: boolean;
+  selected: boolean;
   only: boolean;
   mobile: boolean;
   userTransition: boolean;
@@ -164,6 +166,7 @@ function ScopeConversation({
               <CascadeColumn
                 paneId={pane.id}
                 scope={activity}
+                selected={selected}
                 content={
                   state === "deleted" ? (
                     <EmptyState title="This session was deleted" hint="Its transcript is gone." reason="deleted" />
@@ -186,7 +189,13 @@ function ScopeConversation({
             )}
           />
         ) : (
-          <CascadeColumn paneId={pane.id} scope={activity} content={<Skeleton />} conversationFooter={null} />
+          <CascadeColumn
+            paneId={pane.id}
+            scope={activity}
+            selected={selected}
+            content={<Skeleton />}
+            conversationFooter={null}
+          />
         )
       ) : (
         <CascadeSpine paneId={pane.id} scope={activity} />
@@ -228,10 +237,20 @@ function CascadeOriginBindingObserver({
   return null;
 }
 
+function subscribePathname(onStoreChange: () => void): () => void {
+  window.addEventListener("popstate", onStoreChange);
+  return () => window.removeEventListener("popstate", onStoreChange);
+}
+
+function isCurrentSinglePaneRoute(): boolean {
+  return typeof window !== "undefined" && isSinglePaneRoute(window.location.pathname);
+}
+
 export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) {
   const pane = useStore(workspaceStore, (state) =>
     state.panes.find((record) => record.id === paneId && record.type === "sessionZoom"),
   );
+  const singlePaneRoute = useSyncExternalStore(subscribePathname, isCurrentSinglePaneRoute, () => false);
   const params = pane?.params as SessionZoomParams | undefined;
   const { snapshot } = useSessionActivity(params?.ref ?? null);
   const mobile = useTranscriptDisplayStore((state) => state.viewport === "mobile");
@@ -298,11 +317,17 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
   // parent, with the parent dropped when it is the removed origin.
   const firstReadable = firstReadableIndex(path.scopes, originRef);
   const readableRefs = new Set(path.scopes.slice(firstReadable).map((scope) => scope.requestedRef));
-  const returnAction = (
+  // Ordinary desktop secondary inspectors dismiss via their Dockview tab close
+  // button, and mobile dismisses via top-bar Back. Keep the in-pane Return
+  // action on desktop whenever the host hides or cannot use tab close: legacy
+  // saved in-place cascades (!params.inspection), inspectors seated in the
+  // tabless main slot, and /thread/{ref} single-pane routes.
+  const needsDesktopReturn = !mobile && (!params.inspection || pane.slot === "main" || singlePaneRoute);
+  const desktopReturn = needsDesktopReturn ? (
     <Button variant="quiet" size="sm" onClick={() => returnFromAgentCascade(paneId)}>
       Return to previous view
     </Button>
-  );
+  ) : undefined;
   return (
     <PaneScaffold
       paneId={paneId}
@@ -311,7 +336,7 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
       publishTabTitle={false}
       scaffoldMarker="cascade"
       bodyScroll={false}
-      actions={mobile ? undefined : returnAction}
+      actions={desktopReturn}
       edgeFooter={
         mobile ? undefined : (
           <StatusBar
@@ -335,7 +360,6 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
         />
       )}
       <div className={CLASS.body}>
-        {mobile && <div className={CLASS.returnRow}>{returnAction}</div>}
         {!path.ancestryKnown && (
           <p className={CLASS.hint} data-testid="cascade-ancestry-incomplete">
             Earlier ancestry is incomplete
@@ -350,6 +374,7 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
               scope={scope}
               readable={readableRefs.has(scope.requestedRef)}
               leaf={index === scopes.length - 1}
+              selected={scope.requestedRef === params.ref}
               only={scopes.length === 1}
               mobile={mobile}
               userTransition={userTransition && reducedMotion !== true}

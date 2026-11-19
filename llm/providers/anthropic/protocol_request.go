@@ -45,7 +45,7 @@ func buildProtocolBodyForOperation(req llm.Request, res registry.Resolved, enfor
 	if protocolhttp.ModelInBody(res) {
 		body["model"] = res.WireID
 	}
-	if strings.TrimSpace(system) != "" {
+	if system != "" {
 		body["system"] = []map[string]any{{"type": "text", "text": system, "cache_control": cacheMarker(ttl)}}
 	}
 	if req.Temperature != nil {

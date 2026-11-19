@@ -2,9 +2,11 @@ package chatcompletions
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // chatResponseRaw builds the map fromChatCompletionResponse expects for one
@@ -207,6 +209,88 @@ func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 			}
 			if nonStreamThinking.Signature != "" || streamThinking.Signature != "" {
 				t.Errorf("details replay signatures = %q and %q, want both empty", nonStreamThinking.Signature, streamThinking.Signature)
+			}
+		})
+	}
+}
+
+func TestCompletePopulatedSignedReasoningReplayCount(t *testing.T) {
+	t.Parallel()
+	text := strings.Repeat("step ", 100)
+	const signature = "sig-1"
+	raw := chatResponseRaw(map[string]any{
+		"reasoning_text":    "short scalar",
+		"reasoning_details": []map[string]any{{"type": "reasoning.text", "text": text, "signature": signature}},
+	}, "stop")
+	resp, err := fromChatCompletionResponse(raw, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := llm.Request{Messages: []llm.Message{resp.Message}}
+	res := registry.Resolved{Protocol: registry.ProtocolOpenAIChat}
+	body, err := buildBody(req, res, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	details := body["messages"].([]map[string]any)[0]["reasoning_details"].([]map[string]any)
+	if len(details) != 1 || details[0]["text"] != text || details[0]["signature"] != signature {
+		t.Fatalf("replay did not retain one populated signed detail: %+v", details)
+	}
+	populated := resp.Message.Content[0].Thinking.EncryptedContent
+	if encoded, err := json.Marshal(details); err != nil || string(encoded) != populated {
+		t.Fatalf("replayed detail bytes = %s (%v), want %s", encoded, err, populated)
+	}
+	want := len(populated) / 4
+	if got := llm.EstimateInputTokensForResolved(res, req).Tokens; got != want {
+		t.Errorf("estimated %d tokens for one populated signed detail, want %d", got, want)
+	}
+
+	const empty = `[{"type":"reasoning.text","text":"","signature":"empty"}]`
+	const encrypted = `[{"type":"reasoning.encrypted","data":"opaque"}]`
+	const uppercaseText = `[{"type":"reasoning.text","Text":"opaque field","signature":"upper"}]`
+	const uppercaseType = `[{"Type":"reasoning.text","text":"opaque field","signature":"upper"}]`
+	display := strings.Repeat("assembled display ", 8)
+	part := func(text, details string) llm.ContentPart {
+		return llm.ContentPart{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: text, EncryptedContent: details}}
+	}
+	tests := []struct {
+		name                       string
+		details                    []string
+		firstText, ordinaryContent string
+		itemCount, textBytes       int
+	}{
+		{"populated in a separate part", []string{populated}, text, "", 1, 0},
+		{"empty before populated", []string{empty, populated}, display, "", 2, len(display)},
+		{"opaque item with separate text detail", []string{encrypted}, display, "", 2, len(display)},
+		{"uppercase Text requires insertion", []string{uppercaseText}, display, "", 1, len(display)},
+		{"uppercase Type requires separate item", []string{uppercaseType}, display, "", 2, len(display)},
+		{"ordinary text and populated detail", []string{populated}, text, display, 1, len(display)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			target := res
+			target.Caps.ThinkingAsText = new(tc.ordinaryContent != "")
+			message := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{part(display, "")}}
+			wantBytes := tc.textBytes
+			for _, raw := range tc.details {
+				message.Content = append(message.Content, part("", raw))
+				wantBytes += len(raw)
+			}
+			request := llm.Request{Messages: []llm.Message{message}}
+			body, err := buildBody(request, target, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assistant := body["messages"].([]map[string]any)[0]
+			array, ok := assistant["reasoning_details"].([]map[string]any)
+			if !ok || len(array) != tc.itemCount || array[0]["text"] != tc.firstText || assistant["content"] != tc.ordinaryContent {
+				t.Fatalf("unexpected wire projection: %+v", assistant)
+			}
+			if got := llm.EstimateInputTokensForResolved(target, request).Tokens; got != wantBytes/4 {
+				t.Errorf("estimated %d request tokens, want %d", got, wantBytes/4)
+			}
+			if got := llm.TokenPartEstimatorFor(target).Parts(message).Chars; got != wantBytes {
+				t.Errorf("estimated %d incremental bytes, want %d", got, wantBytes)
 			}
 		})
 	}

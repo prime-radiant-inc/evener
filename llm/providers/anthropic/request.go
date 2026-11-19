@@ -168,11 +168,10 @@ func applyAnthropicResponseFormat(system string, rf *llm.ResponseFormat) (string
 		return system, nil
 	}
 	typ := strings.ToLower(strings.TrimSpace(rf.Type))
+	var instruction string
 	switch typ {
-	case "", "text":
-		return system, nil
 	case "json":
-		return strings.TrimSpace(system + "\n\nOutput only valid JSON. Do not include any extra text."), nil
+		instruction = "Output only valid JSON. Do not include any extra text."
 	case "json_schema":
 		if rf.JSONSchema == nil {
 			return system, nil
@@ -181,11 +180,14 @@ func applyAnthropicResponseFormat(system string, rf *llm.ResponseFormat) (string
 		if err != nil {
 			return "", err
 		}
-		inst := "Output only valid JSON that matches this JSON Schema. Do not include any extra text.\n\nJSON Schema:\n" + string(b)
-		return strings.TrimSpace(system + "\n\n" + inst), nil
+		instruction = "Output only valid JSON that matches this JSON Schema. Do not include any extra text.\n\nJSON Schema:\n" + string(b)
 	default:
 		return system, nil
 	}
+	if system == "" {
+		return instruction, nil
+	}
+	return system + "\n\n" + instruction, nil
 }
 
 func betaHeaderFromProviderOptions(opts map[string]any) string {
@@ -392,7 +394,7 @@ func toAnthropicMessages(msgs []llm.Message, seesToolResultDocuments bool) (syst
 	for _, m := range msgs {
 		switch m.Role {
 		case llm.RoleSystem, llm.RoleDeveloper:
-			if t := strings.TrimSpace(m.Text()); t != "" {
+			if t := m.Text(); t != "" {
 				sysParts = append(sysParts, t)
 			}
 		case llm.RoleUser:
@@ -400,7 +402,7 @@ func toAnthropicMessages(msgs []llm.Message, seesToolResultDocuments bool) (syst
 			for _, p := range m.Content {
 				switch p.Kind {
 				case llm.ContentText:
-					if strings.TrimSpace(p.Text) != "" {
+					if p.Text != "" {
 						blocks = append(blocks, map[string]any{"type": "text", "text": p.Text})
 					}
 				case llm.ContentImage:
