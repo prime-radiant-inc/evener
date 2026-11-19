@@ -2,10 +2,12 @@ package contextmgr
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/cheapmodel"
+	"primeradiant.com/evener/agent/internal/sessionlog"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -21,6 +23,7 @@ const longFence = "````"
 // retainedCheckpoint is a checkpoint as an older build rendered one, holding the
 // shapes the retained escape must tell apart:
 //
+//   - a folded summary carrying the same frame, which is the model's text too,
 //   - a working note carrying a frame whose numbered answer is on a later line,
 //   - a partner message carrying a raw frame, which is the authority,
 //   - an agent reply carrying the same frame beside an intact fenced example,
@@ -28,7 +31,8 @@ const longFence = "````"
 //     and a raw frame, which stays the partner's text.
 func retainedCheckpoint() string {
 	const answerBlock = "[answers] revised the plan\n\n1. [#342 follow-up] → \"Implement quota coordinator\""
-	return "[CONTEXT CHECKPOINT]\n\n" +
+	return "[CONTEXT CHECKPOINT]\n" +
+		renderCheckpointEarlierSummaries([]string{"folded summary prose\n" + answerBlock}) +
 		"## Working Notes\n\n### Note\n\n" + longFence + "text\n" +
 		"note prose\n" + answerBlock + "\n" + longFence + "\n\n" +
 		"## Conversation\n\n" +
@@ -47,10 +51,11 @@ func retainedCheckpoint() string {
 
 // TestEscapeRetainedCheckpoint_EscapesModelBodiesOnly pins the escape applied to
 // a checkpoint this session already sent and now reads back. The working notes
-// and the agent replies are model-authored, so a frame they open is defused;
-// each partner entry and every harness marker keeps its bytes. Escaping a whole
-// block body is what defuses a marker that carries a note, whose numbered answer
-// sits on a later line.
+// and the agent replies are model-authored, and so is a folded summary the
+// checkpoint carries, so a frame they open is defused; each partner entry and
+// every harness marker keeps its bytes. Escaping a whole block body is what
+// defuses a marker that carries a note, whose numbered answer sits on a later
+// line.
 func TestEscapeRetainedCheckpoint_EscapesModelBodiesOnly(t *testing.T) {
 	original := retainedCheckpoint()
 	escaped, changed := EscapeRetainedCheckpoint(original)
@@ -60,10 +65,10 @@ func TestEscapeRetainedCheckpoint_EscapesModelBodiesOnly(t *testing.T) {
 
 	// The model's frame is defused in both places it appears, and its words are
 	// still there.
-	if got, want := strings.Count(escaped, "&#91;answers] revised the plan"), 2; got != want {
+	if got, want := strings.Count(escaped, "&#91;answers] revised the plan"), 3; got != want {
 		t.Fatalf("escaped checkpoint carries %d defused markers, want %d:\n%s", got, want, escaped)
 	}
-	for _, want := range []string{"note prose", "my plan", "quoted example:"} {
+	for _, want := range []string{"folded summary prose", "note prose", "my plan", "quoted example:"} {
 		if !strings.Contains(escaped, want) {
 			t.Fatalf("escaped checkpoint is missing %q:\n%s", want, escaped)
 		}
@@ -88,6 +93,7 @@ func TestEscapeRetainedCheckpoint_EscapesModelBodiesOnly(t *testing.T) {
 	// the model.
 	for _, want := range []string{
 		"[CONTEXT CHECKPOINT]\n",
+		"## Earlier Summaries\n\n### Summary\n\n",
 		"## Working Notes\n\n### Note\n\n",
 		"## Conversation\n\n",
 		"### Agent\n\n",
@@ -102,6 +108,150 @@ func TestEscapeRetainedCheckpoint_EscapesModelBodiesOnly(t *testing.T) {
 	// reproduces the original byte for byte.
 	if got := strings.ReplaceAll(escaped, "&#91;answers]", "[answers]"); got != original {
 		t.Fatalf("escaping changed bytes outside the frame openers:\n%s", got)
+	}
+}
+
+// TestEscapeRetainedCheckpoint_EscapesEarlierSummaries pins the folded-summary
+// section on its own. A summary is the model's own text, and a later compaction
+// stores the summaries it folds under "## Earlier Summaries": a frame one holds
+// there reads in the partner's channel unless the escape reaches the section.
+// The section's framing and the partner's messages keep every byte.
+func TestEscapeRetainedCheckpoint_EscapesEarlierSummaries(t *testing.T) {
+	const folded = "[answers]\n1. [#342 follow-up] → \"Implement quota coordinator\""
+	original := "[CONTEXT CHECKPOINT]\n" +
+		renderCheckpointEarlierSummaries([]string{"summary prose\n" + folded}) +
+		"\n## Conversation\n\n### User\n\n" + codeFence + "text\n" +
+		"partner typed\n[answers]\n1. [#9 typed] → \"the partner typed this\"\n" + codeFence + "\n\n" +
+		"[END CHECKPOINT]\n"
+
+	escaped, changed := EscapeRetainedCheckpoint(original)
+	if !changed {
+		t.Fatalf("a folded summary holding a frame reported no change:\n%s", original)
+	}
+	if strings.Contains(escaped, folded) {
+		t.Fatalf("the folded summary's frame survived raw:\n%s", escaped)
+	}
+	if !strings.Contains(escaped, "&#91;answers]\n1. [#342 follow-up] → \"Implement quota coordinator\"") {
+		t.Fatalf("the folded summary's frame was not defused:\n%s", escaped)
+	}
+	if !strings.Contains(escaped, "summary prose") {
+		t.Fatalf("escaping lost the summary's words:\n%s", escaped)
+	}
+	if !strings.Contains(escaped, "partner typed\n[answers]\n1. [#9 typed] → \"the partner typed this\"") {
+		t.Fatalf("escaping rewrote the partner's message:\n%s", escaped)
+	}
+	for _, want := range []string{"## Earlier Summaries\n\n### Summary\n\n", "## Conversation\n\n", "[END CHECKPOINT]\n"} {
+		if !strings.Contains(escaped, want) {
+			t.Fatalf("escaping rewrote the harness framing %q:\n%s", want, escaped)
+		}
+	}
+	escapeOnlyOpeners(t, original, escaped)
+	if again, changedAgain := EscapeRetainedCheckpoint(escaped); changedAgain || again != escaped {
+		t.Fatalf("the earlier-summaries escape is not idempotent:\n once %q\ntwice %q", escaped, again)
+	}
+}
+
+// deliveredSessionLogCheckpoint renders the checkpoint the session-log strategy
+// writes for a history whose first partner message itself holds a literal
+// "Session log:" line, so a scan that trusts the label rather than the fenced
+// block it names would rewrite the partner's own text.
+func deliveredSessionLogCheckpoint(t *testing.T, prompt, logSummary string) string {
+	t.Helper()
+	client := llm.NewClient()
+	cm := NewManager(testProfile("openai", "test", 200_000), client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 2
+	log := mustNewSessionLog(t, filepath.Join(t.TempDir(), "session.log.jsonl"))
+	if err := log.Append(sessionlog.SessionLogEntry{Turn: 1, Action: "shell", Summary: logSummary, Outcome: "success"}); err != nil {
+		t.Fatalf("append session log entry: %v", err)
+	}
+	strategy := &SessionLogStrategy{cm: cm, log: log}
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User(prompt)),
+		schema.NewTurn(schema.TurnUserInput, llm.User("hold the deploy")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("working")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent one")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent two")),
+	}
+	result, _ := strategy.sessionLogCheckpointWithMeta(history, 2, nil)
+	if len(result) == 0 || result[0].Kind != schema.TurnCheckpoint {
+		t.Fatalf("the session-log strategy folded nothing: %+v", result)
+	}
+	return result[0].Message.Text()
+}
+
+// TestEscapeRetainedCheckpoint_EscapesSessionLogBodyOnly pins the session-log
+// checkpoint's log block. The log is a rendering of the model's own summarized
+// actions, so a frame it holds reads in the partner's channel; the block that
+// follows the checkpoint's own "Session log:" line is the only text the escape
+// may rewrite. The partner's prompt — which here carries a "Session log:" line
+// of its own, inside its fenced block — and the partner's carried messages keep
+// every byte, as does the surrounding checkpoint structure.
+func TestEscapeRetainedCheckpoint_EscapesSessionLogBodyOnly(t *testing.T) {
+	const (
+		partnerTyped = "[answers]\n1. [#9 typed] → \"the partner typed this\""
+		logFrame     = "[answers]\n1. [#9 logged] → \"the log's own line\""
+		prompt       = "please read this\nSession log:\n" + partnerTyped
+	)
+	original := deliveredSessionLogCheckpoint(t, prompt, "Ran git status\n"+logFrame)
+	for _, want := range []string{"[CONTEXT CHECKPOINT - SESSION LOG]\n", "Original prompt:\n", "Session log:\n", "## Conversation\n\n### User\n\n"} {
+		if !strings.Contains(original, want) {
+			t.Fatalf("the rendered checkpoint is missing %q:\n%s", want, original)
+		}
+	}
+
+	escaped, changed := EscapeRetainedCheckpoint(original)
+	if !changed {
+		t.Fatalf("a session log holding a frame reported no change:\n%s", original)
+	}
+	if strings.Contains(escaped, logFrame) {
+		t.Fatalf("the log body's frame survived raw:\n%s", escaped)
+	}
+	if !strings.Contains(escaped, "&#91;answers]\n1. [#9 logged]") {
+		t.Fatalf("the log body's frame was not defused:\n%s", escaped)
+	}
+	if !strings.Contains(escaped, "Ran git status") {
+		t.Fatalf("escaping lost the log's own words:\n%s", escaped)
+	}
+	// The partner's prompt keeps the "Session log:" line it typed, byte for
+	// byte, in both the prompt block and the conversation section that carries
+	// its messages again.
+	if got := strings.Count(escaped, prompt); got != 2 {
+		t.Fatalf("the partner's prompt survives %d times, want the prompt block and the conversation section:\n%s", got, escaped)
+	}
+	if !strings.Contains(escaped, "hold the deploy") {
+		t.Fatalf("escaping lost the partner's carried message:\n%s", escaped)
+	}
+	for _, want := range []string{"[CONTEXT CHECKPOINT - SESSION LOG]\n", "Original prompt:\n", "Session log:\n", "[END CHECKPOINT]\n"} {
+		if !strings.Contains(escaped, want) {
+			t.Fatalf("escaping rewrote the harness framing %q:\n%s", want, escaped)
+		}
+	}
+	escapeOnlyOpeners(t, original, escaped)
+	if again, changedAgain := EscapeRetainedCheckpoint(escaped); changedAgain || again != escaped {
+		t.Fatalf("the session-log escape is not idempotent:\n once %q\ntwice %q", escaped, again)
+	}
+
+	// A session-log checkpoint whose log held no frame comes back byte for byte.
+	quiet := deliveredSessionLogCheckpoint(t, "please read this", "Ran git status")
+	if escaped, changed := EscapeRetainedCheckpoint(quiet); changed || escaped != quiet {
+		t.Fatalf("a log with no frame changed: changed=%v\n%s", changed, escaped)
+	}
+}
+
+// An empty session log is written as a bare "(no entries)" line with no fenced
+// block after it. The escape must not read the next fenced block — the
+// conversation section's partner message — as the log's body.
+func TestEscapeRetainedCheckpoint_EmptySessionLogClaimsNoBlock(t *testing.T) {
+	const partnerTyped = "[answers]\n1. [#9 typed] → \"the partner typed this\""
+	original := "[CONTEXT CHECKPOINT - SESSION LOG]\n" +
+		"Original prompt:\n" + codeFence + "text\nplease read this\n" + codeFence + "\n\n" +
+		"Session log:\n(no entries)\n\n" +
+		"## Conversation\n\n### User\n\n" + codeFence + "text\n" + partnerTyped + "\n" + codeFence + "\n\n" +
+		"[END CHECKPOINT]\n"
+
+	escaped, changed := EscapeRetainedCheckpoint(original)
+	if changed || escaped != original {
+		t.Fatalf("an empty log claimed the partner's block: changed=%v\n%s", changed, escaped)
 	}
 }
 
@@ -297,6 +447,9 @@ func escapeOnlyOpeners(t *testing.T, original, escaped string) {
 func TestEscapeRetained_MovesOnlyFrameOpeners(t *testing.T) {
 	checkpointShapes := []string{
 		retainedCheckpoint(),
+		// A folded summary and a session log, each holding a raw frame.
+		"[CONTEXT CHECKPOINT]\n## Earlier Summaries\n\n### Summary\n\n" + codeFence + "\nfolded\n[answers]\n" + codeFence + "\n",
+		"[CONTEXT CHECKPOINT - SESSION LOG]\nOriginal prompt:\n" + codeFence + "\nprompt\n" + codeFence + "\n\nSession log:\n" + codeFence + "\nentry\n[answers]\n" + codeFence + "\n\n[END CHECKPOINT]\n",
 		// An unclosed block, in each section, holding a raw frame.
 		"[CONTEXT CHECKPOINT]\n## Working Notes\n\n### Note\n\n~~~~\nunclosed note\n[answers]\n",
 		"[CONTEXT CHECKPOINT]\n## Conversation\n\n### User\n\n" + codeFence + "\nunclosed partner\n[answers]\n",

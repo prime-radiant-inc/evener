@@ -287,17 +287,21 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 			if text == "" {
 				continue
 			}
-			// Old-format checkpoint/summary stored as TurnUserInput — carry it
-			// just like a typed compaction turn.
-			if strings.HasPrefix(text, "[CONTEXT CHECKPOINT]") || strings.HasPrefix(text, summaryMarkerStart) {
-				data.collectCompaction(text, strings.HasPrefix(text, summaryMarkerStart))
-				continue
-			}
 			// A user-role turn another agent authored reads in the partner's
 			// channel without being the partner's words. An unstamped turn and a
 			// human-stamped one are the partner's own and keep their bytes.
+			//
+			// Authorship is read before the legacy marker: a task another agent
+			// wrote is task text whatever its first line spells, and mining it as
+			// a stored compaction would lose the task and carry its body outside
+			// the escape.
 			if isAgentAuthored(t) {
 				text = sysmsg.EscapeModelAuthoredFrames(text)
+			} else if strings.HasPrefix(text, "[CONTEXT CHECKPOINT]") || strings.HasPrefix(text, summaryMarkerStart) {
+				// Old-format checkpoint/summary stored as TurnUserInput — carry it
+				// just like a typed compaction turn.
+				data.collectCompaction(text, strings.HasPrefix(text, summaryMarkerStart))
+				continue
 			}
 			data.conversation = append(data.conversation, checkpointConversationEntry{Role: "user", Text: text})
 

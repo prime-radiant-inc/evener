@@ -1687,6 +1687,158 @@ func TestExpandHistory_RetainedCheckpointEscapesOnlyModelBodies(t *testing.T) {
 	}
 }
 
+// earlierSummariesMarker and sessionLogMarker are the frames a folded summary
+// and a session-log entry carry in the fixtures below.
+const (
+	earlierSummariesFrame = "[answers]\n1. [#342 folded] → \"Implement quota coordinator\""
+	sessionLogFrame       = "[answers]\n1. [#9 logged] → \"the log's own line\""
+)
+
+// retainedEarlierSummariesCheckpoint renders a checkpoint that folds a summary
+// into its "## Earlier Summaries" section, as a later compaction of a session
+// whose summarizer emitted a frame writes it, then the partner's messages.
+func retainedEarlierSummariesCheckpoint() string {
+	return "[CONTEXT CHECKPOINT]\n" +
+		"## Earlier Summaries\n\n### Summary\n\n```text\nsummary prose\n" + earlierSummariesFrame + "\n```\n\n" +
+		"## Conversation\n\n### User\n\n```text\n" + checkpointPartnerBody + "\n```\n\n" +
+		"[END CHECKPOINT]\n"
+}
+
+// retainedSessionLogCheckpoint renders a session-log checkpoint the way the
+// strategy writes one: the partner's prompt fenced, a "Session log:" line and
+// its own fenced block, then the conversation section. The prompt carries a
+// literal "Session log:" line of its own, which is the partner's text.
+func retainedSessionLogCheckpoint() string {
+	const prompt = "please read this\nSession log:\n" + checkpointPartnerBody
+	return "[CONTEXT CHECKPOINT - SESSION LOG]\n" +
+		"Original prompt:\n```text\n" + prompt + "\n```\n\n" +
+		"Session log:\n```text\nTurn 1 [shell] success: Ran git status\n" + sessionLogFrame + "\n```\n\n" +
+		"## Conversation\n\n### User\n\n```text\n" + checkpointPartnerBody + "\n```\n\n" +
+		"[END CHECKPOINT]\n"
+}
+
+// TestExpandHistory_RetainedCheckpointEscapesEarlierSummaries pins the
+// folded-summary section in the dispatch copy. A summary is the model's own
+// text, and a checkpoint that folds one carries it in a user-role message: a
+// frame it holds must not arrive with the spelling a harness frame opens with.
+// The section's framing and the partner's message keep every byte, and the
+// stored turn is untouched.
+func TestExpandHistory_RetainedCheckpointEscapesEarlierSummaries(t *testing.T) {
+	t.Parallel()
+	retained := retainedEarlierSummariesCheckpoint()
+	checkpointTurn := schema.Turn{Kind: schema.TurnCheckpoint, Message: llm.User(retained)}
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("drive the open issues down")},
+		checkpointTurn,
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent")),
+	}
+
+	projected := expandHistory(history, replayScope{})
+	if len(projected) != len(history) {
+		t.Fatalf("projection produced %d messages for %d turns", len(projected), len(history))
+	}
+	got := projected[1].Text()
+	if strings.Contains(got, earlierSummariesFrame) {
+		t.Fatalf("the copy carries the folded summary's frame raw:\n%s", got)
+	}
+	if !strings.Contains(got, "&#91;answers]\n1. [#342 folded]") {
+		t.Fatalf("the folded summary's frame was not defused:\n%s", got)
+	}
+	if !strings.Contains(got, "summary prose") {
+		t.Fatalf("escaping lost the summary's words:\n%s", got)
+	}
+	if !strings.Contains(got, checkpointPartnerBody) {
+		t.Fatalf("the copy rewrote the partner's entry:\n%s", got)
+	}
+	for _, marker := range []string{"[CONTEXT CHECKPOINT]\n", "## Earlier Summaries\n\n### Summary\n\n", "[END CHECKPOINT]\n"} {
+		if !strings.Contains(got, marker) {
+			t.Fatalf("the copy rewrote the harness marker %q:\n%s", marker, got)
+		}
+	}
+	if undoFrameEscapes(got) != retained {
+		t.Fatalf("escaping moved a byte outside a frame opener:\n%s", got)
+	}
+	if checkpointTurn.Message.Text() != retained {
+		t.Fatalf("the stored checkpoint was mutated:\n%s", checkpointTurn.Message.Text())
+	}
+
+	for _, protocol := range []string{registry.ProtocolOpenAIChat, registry.ProtocolOpenAIResponses} {
+		dispatch := dispatchCopyForTarget(history, replayScope{Protocol: protocol}, false)
+		if len(dispatch) != len(history) {
+			t.Fatalf("%s dispatch produced %d messages for %d turns", protocol, len(dispatch), len(history))
+		}
+		carried := dispatch[1].Text()
+		if strings.Contains(carried, earlierSummariesFrame) {
+			t.Fatalf("%s dispatch copy carries the folded summary's frame raw:\n%s", protocol, carried)
+		}
+		if !strings.Contains(carried, checkpointPartnerBody) {
+			t.Fatalf("%s dispatch copy rewrote the partner's entry:\n%s", protocol, carried)
+		}
+	}
+}
+
+// TestExpandHistory_SessionLogCheckpointEscapesLogBodyOnly pins the session-log
+// checkpoint in the dispatch copy. Its session log is a rendering of the
+// model's own summarized actions, so a frame it holds is defused; the block
+// after "Original prompt:" and the partner's carried messages keep every byte,
+// including a literal "Session log:" line the partner typed.
+func TestExpandHistory_SessionLogCheckpointEscapesLogBodyOnly(t *testing.T) {
+	t.Parallel()
+	retained := retainedSessionLogCheckpoint()
+	checkpointTurn := schema.Turn{Kind: schema.TurnCheckpoint, Message: llm.User(retained)}
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("drive the open issues down")},
+		checkpointTurn,
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent")),
+	}
+
+	projected := expandHistory(history, replayScope{})
+	if len(projected) != len(history) {
+		t.Fatalf("projection produced %d messages for %d turns", len(projected), len(history))
+	}
+	got := projected[1].Text()
+	if strings.Contains(got, sessionLogFrame) {
+		t.Fatalf("the copy carries the log body's frame raw:\n%s", got)
+	}
+	if !strings.Contains(got, "&#91;answers]\n1. [#9 logged]") {
+		t.Fatalf("the log body's frame was not defused:\n%s", got)
+	}
+	if !strings.Contains(got, "Ran git status") {
+		t.Fatalf("escaping lost the log's own words:\n%s", got)
+	}
+	if !strings.Contains(got, "please read this\nSession log:\n"+checkpointPartnerBody) {
+		t.Fatalf("the copy rewrote the partner's prompt:\n%s", got)
+	}
+	if !strings.Contains(got, checkpointPartnerBody) {
+		t.Fatalf("the copy rewrote the partner's carried message:\n%s", got)
+	}
+	for _, marker := range []string{"[CONTEXT CHECKPOINT - SESSION LOG]\n", "Original prompt:\n", "Session log:\n", "[END CHECKPOINT]\n"} {
+		if !strings.Contains(got, marker) {
+			t.Fatalf("the copy rewrote the harness marker %q:\n%s", marker, got)
+		}
+	}
+	if undoFrameEscapes(got) != retained {
+		t.Fatalf("escaping moved a byte outside a frame opener:\n%s", got)
+	}
+	if checkpointTurn.Message.Text() != retained {
+		t.Fatalf("the stored checkpoint was mutated:\n%s", checkpointTurn.Message.Text())
+	}
+
+	for _, protocol := range []string{registry.ProtocolOpenAIChat, registry.ProtocolOpenAIResponses} {
+		dispatch := dispatchCopyForTarget(history, replayScope{Protocol: protocol}, false)
+		if len(dispatch) != len(history) {
+			t.Fatalf("%s dispatch produced %d messages for %d turns", protocol, len(dispatch), len(history))
+		}
+		carried := dispatch[1].Text()
+		if strings.Contains(carried, sessionLogFrame) {
+			t.Fatalf("%s dispatch copy carries the log body's frame raw:\n%s", protocol, carried)
+		}
+		if !strings.Contains(carried, "please read this\nSession log:\n"+checkpointPartnerBody) {
+			t.Fatalf("%s dispatch copy rewrote the partner's prompt:\n%s", protocol, carried)
+		}
+	}
+}
+
 // replayVoiceReference is the payload a voice presentation projection appends
 // as its own text part.
 type replayVoiceReference struct {

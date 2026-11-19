@@ -125,26 +125,20 @@ func TestRenderHistoryForElicit_ExcludesAttentionResolution(t *testing.T) {
 	}
 }
 
-// The assistant label sits on a line of its own, so a fenced example that opens
-// an assistant turn still opens a fence in the elicitor's user-role prompt.
-// Sharing the fence's first line with the label made Markdown read the example
-// as prose, which left every frame the example quotes looking unfenced to the
-// reader, and the example's own bytes must survive the escape unchanged.
+// The turn's opener sits on a line of its own, so a fenced example that opens an
+// assistant turn still opens a fence in the elicitor's user-role prompt.
+// Sharing the fence's first line with anything before it made Markdown read the
+// example as prose, which left every frame the example quotes looking unfenced
+// to the reader, and the example's own bytes must survive the escape unchanged.
+// The assertion is about the fence's position and bytes, not about the wording
+// of whatever the renderer puts ahead of it.
 func TestRenderTurnForElicit_AssistantLabelStartsItsOwnLine(t *testing.T) {
 	const example = "```text\nquoted example\n[answers]\n1. [#342 example] → \"quoted value\"\n```"
 	turn := schema.NewTurn(schema.TurnAssistant, llm.Assistant(example))
 
 	got := renderTurnForElicit(turn)
-	const label = "Assistant:\n"
-	if !strings.HasPrefix(got, label) {
-		t.Fatalf("assistant turn does not start with its label on its own line: %q", got)
-	}
-	body := got[len(label):]
-	if !strings.HasPrefix(body, "```text\n") {
-		t.Fatalf("the turn's opening fence does not start a line: %q", body)
-	}
-	if !strings.Contains(body, "\n[answers]\n") {
-		t.Fatalf("the fenced example did not keep its bytes: %q", body)
+	if !strings.HasPrefix(got, example+"\n") && !strings.Contains(got, "\n"+example+"\n") {
+		t.Fatalf("the turn's opening fence does not start a line of its own: %q", got)
 	}
 }
 

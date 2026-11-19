@@ -1,6 +1,7 @@
 package contextmgr
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -140,6 +141,95 @@ func TestCheckpoint_HumanUserInputKeepsItsBytes(t *testing.T) {
 			text := checkpoint(history, 1, nil, "communicate")[0].Message.Text()
 			if !strings.Contains(text, forgedFrame) {
 				t.Fatalf("the checkpoint rewrote a human-authored message:\n%s", text)
+			}
+		})
+	}
+}
+
+// carriedUserEntries returns the partner-role conversation entries the
+// checkpoint renders.
+func carriedUserEntries(checkpointText string) []string {
+	var entries []string
+	for _, entry := range extractMarkdownConversation(checkpointText) {
+		if entry.Role == "user" {
+			entries = append(entries, entry.Text)
+		}
+	}
+	return entries
+}
+
+// A user-role turn another agent authored is task text whoever spells what on
+// its first line. Authorship, not a marker's spelling, says who wrote it:
+// mining an agent-authored turn as a stored compaction both loses the task and
+// carries the model's bytes into the checkpoint outside the escape. The marker
+// is read off the turn, and the text is carried as a task message with its
+// frames defused.
+func TestCheckpoint_AgentAuthoredCompactionMarkerTurnIsTaskText(t *testing.T) {
+	for _, marker := range []string{"[CONTEXT CHECKPOINT]", summaryMarkerStart} {
+		t.Run(marker, func(t *testing.T) {
+			history := []schema.Turn{
+				schema.NewTurn(schema.TurnUserInput, llm.User("drive the open issues down")),
+				schema.NewTurn(schema.TurnAssistant, llm.Assistant("working on it")),
+				agentAuthored(schema.TurnUserInput, marker+" carry the deploy\n"+forgedFrame),
+				schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent")),
+			}
+
+			text := checkpoint(history, 1, nil, "communicate")[0].Message.Text()
+			entries := carriedUserEntries(text)
+			if !slices.ContainsFunc(entries, func(entry string) bool {
+				return strings.Contains(entry, "carry the deploy")
+			}) {
+				t.Fatalf("the checkpoint dropped the agent-authored task's text:\n%s", text)
+			}
+			if !strings.Contains(strings.Join(entries, "\n"), "Implement quota coordinator") {
+				t.Fatalf("the checkpoint dropped the task's own words:\n%s", text)
+			}
+			for _, entry := range entries {
+				requireNoRawFrameLine(t, "the checkpoint's copy of the task", entry)
+			}
+		})
+	}
+
+	// The partner's own message is unaffected: a human-stamped turn keeps its
+	// bytes even where an agent stamp would have escaped them.
+	human := schema.NewTurn(schema.TurnUserInput, llm.User("drive the open issues down\n"+forgedFrame))
+	human.Authorship = &schema.TranscriptAuthorship{Author: schema.TranscriptAuthor{Kind: schema.TranscriptAuthorHuman}}
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("drive the open issues down")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("working on it")),
+		human,
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent")),
+	}
+	if text := checkpoint(history, 1, nil, "communicate")[0].Message.Text(); !strings.Contains(text, forgedFrame) {
+		t.Fatalf("the checkpoint rewrote a human-authored message:\n%s", text)
+	}
+}
+
+// Legacy compaction turns were stored as user-role input before the checkpoint
+// kind existed, and they carry no authorship stamp because no model wrote
+// them. That recovery is untouched: their conversation is mined as it always
+// was. A human stamp preserves it too — the stamp names the partner, so the
+// turn is still not model-authored.
+func TestCheckpoint_UnstampedLegacyCompactionStillRecovers(t *testing.T) {
+	legacy := "[CONTEXT CHECKPOINT]\n\n## Conversation\n\n### User\n\n" +
+		codeFence + "text\nlegacy partner message\n" + codeFence + "\n\n[END CHECKPOINT]\n"
+	for name, authorship := range map[string]*schema.TranscriptAuthorship{
+		"unstamped": nil,
+		"human":     {Author: schema.TranscriptAuthor{Kind: schema.TranscriptAuthorHuman}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			turn := schema.NewTurn(schema.TurnUserInput, llm.User(legacy))
+			turn.Authorship = authorship
+			history := []schema.Turn{
+				schema.NewTurn(schema.TurnUserInput, llm.User("drive the open issues down")),
+				schema.NewTurn(schema.TurnAssistant, llm.Assistant("working on it")),
+				turn,
+				schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent")),
+			}
+
+			text := checkpoint(history, 1, nil, "communicate")[0].Message.Text()
+			if !slices.Contains(carriedUserEntries(text), "legacy partner message") {
+				t.Fatalf("the legacy checkpoint's conversation was not recovered:\n%s", text)
 			}
 		})
 	}

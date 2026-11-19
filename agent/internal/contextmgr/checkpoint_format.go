@@ -465,6 +465,9 @@ func agentConversationHeading(heading string) bool {
 }
 
 func collectFencedEdits(text, heading string, include func(string) bool) []textEdit {
+	if !strings.Contains(text, heading+"\n") {
+		return nil
+	}
 	_, body, end, ok := markdownSectionSpan(text, heading)
 	if !ok {
 		return nil
@@ -517,11 +520,13 @@ func ownedSectionEnd(text string, body, end int) int {
 // the stored turn: the checkpoint this session wrote, or one it is about to
 // send again, keeps its own bytes.
 //
-// A working note is the model's own analytical text throughout, so every block
-// under that heading is escaped. Under the conversation heading the author is
-// per block: an agent or assistant block is the model's reply and is escaped,
-// while a user block is the partner's own message and keeps its bytes even when
-// it contains a heading-shaped line or a frame the partner typed.
+// A folded summary is the model's text throughout, and so is a working note, so
+// every block under those headings is escaped. Under the conversation heading
+// the author is per block: an agent or assistant block is the model's reply and
+// is escaped, while a user block is the partner's own message and keeps its
+// bytes even when it contains a heading-shaped line or a frame the partner
+// typed. A session-log checkpoint's log body is a rendering of the model's own
+// summarized actions and is escaped too.
 //
 // Each complete block body is escaped as one string rather than line by line, so
 // fence state is read on the text the block actually holds: a frame whose
@@ -529,9 +534,64 @@ func ownedSectionEnd(text string, body, end int) int {
 // the model quoted keeps every byte. The section headings, the block headings
 // and the fence delimiters are written by this package and are not touched.
 func EscapeRetainedCheckpoint(text string) (string, bool) {
-	edits := collectFencedEdits(text, "## Working Notes", nil)
+	edits := collectFencedEdits(text, "## Earlier Summaries", nil)
+	edits = append(edits, collectFencedEdits(text, "## Working Notes", nil)...)
 	edits = append(edits, collectFencedEdits(text, checkpointConversationHeading, agentConversationHeading)...)
+	edits = append(edits, sessionLogBodyEdits(text)...)
 	return applyTextEdits(text, edits)
+}
+
+// sessionLogCheckpointStart heads a checkpoint the session-log strategy writes.
+const sessionLogCheckpointStart = "[CONTEXT CHECKPOINT - SESSION LOG]\n"
+
+// sessionLogLabel heads the fenced block holding the session log.
+const sessionLogLabel = "Session log:"
+
+// sessionLogBodyEdits returns the edit that escapes a session-log checkpoint's
+// log body: the interior of the fenced block written directly after the
+// checkpoint's own "Session log:" line, or none when the text is not that shape
+// or its log holds no frame.
+//
+// The log is a rendering of the model's own summarized actions, so a frame its
+// entries hold reads in the partner's channel. The label is looked for only
+// outside every fenced block, and only a fence that opens on the very next line
+// is its block: the partner's prompt sits in its own fence above, so a prompt
+// carrying a "Session log:" line of its own cannot name the block the escape
+// rewrites, and an empty log — written as "(no entries)" with no fence at all —
+// cannot fall through to the conversation section below it. The rest of the
+// checkpoint — the markers, the fenced prompt, and the partner's messages —
+// keeps every byte.
+func sessionLogBodyEdits(text string) []textEdit {
+	if !strings.HasPrefix(text, sessionLogCheckpointStart) {
+		return nil
+	}
+	var fence mdfence.Tracker
+	offset := 0
+	for line := range strings.Lines(text) {
+		content := strings.TrimSuffix(line, "\n")
+		inBlock := fence.StepInBlock(content)
+		offset += len(line)
+		if inBlock || content != sessionLogLabel {
+			continue
+		}
+		region := text[offset:]
+		spans := fencedBlockSpans(region)
+		// The log's delimiter opens on the line right after the label. A region
+		// whose first block opens later has no log body here — an empty log
+		// writes "(no entries)" — and the block below it belongs to some other
+		// section.
+		first := strings.IndexByte(region, '\n')
+		if len(spans) == 0 || first < 0 || spans[0].BodyStart != first+1 {
+			return nil
+		}
+		start, stop := offset+spans[0].BodyStart, offset+spans[0].BodyEnd
+		escaped := sysmsg.EscapeModelAuthoredFrames(text[start:stop])
+		if escaped == text[start:stop] {
+			return nil
+		}
+		return []textEdit{{start: start, end: stop, body: escaped}}
+	}
+	return nil
 }
 
 // EscapeRetainedSummary returns a summary turn's text with the frames the model
