@@ -117,6 +117,9 @@ func qualify(ctx context.Context, output, derivedData string) (result error) {
 	}
 	r := newRunner(root, output)
 	r.derived = derivedData
+	if err := r.checkDerivedDataIgnored(ctx); err != nil {
+		return err
+	}
 	if _, err := os.Lstat(filepath.Join(r.native, "ios")); !errors.Is(err, os.ErrNotExist) {
 		return errors.New("mobile-native/ios already exists; use a fresh qualification checkout to preserve generated work")
 	}
@@ -253,6 +256,28 @@ func (r *runner) derivedDataDir() string {
 		return r.derived
 	}
 	return filepath.Join(r.output, "DerivedData")
+}
+
+// checkDerivedDataIgnored refuses a DerivedData root inside the checkout that
+// git does not ignore. The post-build provenance check reads Xcode's own output
+// there as an untracked source change and stops qualification after the build.
+func (r *runner) checkDerivedDataIgnored(ctx context.Context) error {
+	if r.derived == "" {
+		return nil
+	}
+	rel, err := filepath.Rel(r.root, r.derived)
+	if err != nil || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil
+	}
+	err = exec.CommandContext(ctx, "git", "-C", r.root, "check-ignore", "-q", "--", rel).Run()
+	if err == nil {
+		return nil
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return fmt.Errorf("--derived-data %s is inside the checkout and not gitignored; use a gitignored or external directory", r.derived)
+	}
+	return fmt.Errorf("git check-ignore %s: %w", rel, err)
 }
 
 func simulatorName(output string) string {

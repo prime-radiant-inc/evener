@@ -346,6 +346,41 @@ func TestDerivedDataOverrideComesFromTheWorkflowEnvironment(t *testing.T) {
 	}
 }
 
+// A DerivedData override inside the checkout must be gitignored: the provenance
+// check would otherwise read Xcode's own output as source change after the
+// build. External and gitignored locations stay accepted.
+func TestDerivedDataInsideTheCheckoutMustBeIgnored(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is unavailable")
+	}
+	root := t.TempDir()
+	if out, err := exec.Command("git", "-C", root, "init", "-q").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, out)
+	}
+	writeTestFile(t, filepath.Join(root, ".gitignore"), []byte("build-cache/\n"))
+
+	r := &runner{root: root}
+	for name, derived := range map[string]string{
+		"outside the checkout": filepath.Join(t.TempDir(), "ios-deriveddata"),
+		"gitignored inside":    filepath.Join(root, "build-cache", "DerivedData"),
+	} {
+		r.derived = derived
+		if err := r.checkDerivedDataIgnored(context.Background()); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	r.derived = filepath.Join(root, "DerivedData")
+	err := r.checkDerivedDataIgnored(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "gitignored or external") {
+		t.Fatalf("unignored in-checkout DerivedData = %v, want a gitignored-or-external error", err)
+	}
+	r.derived = ""
+	if err := r.checkDerivedDataIgnored(context.Background()); err != nil {
+		t.Fatalf("no override: %v", err)
+	}
+}
+
 // The UI child runs with the identity this run wrote, inside an output
 // directory the parent prepared, and its exit becomes the run's own result.
 // A stub journey proves the wiring without a simulator.
