@@ -726,22 +726,41 @@ cancel_requested=false
 # output pipes open after this script exited. stop_command's pid walk has the
 # same blind spot for the same reason.
 child_group=""
-# The file the helper publishes its live `gh` process group in. Empty until a
-# helper is about to be started, and read only by the forced stop: it is the one
-# handle that outlives a `gh` wrapper which starts the real CLI and exits.
-gh_group_file=""
-# The private directory the handle lives in on the prebuilt path, removed with the
-# handle: it exists only for the duration of one launch.
+# This script's own process group, read once. Every stopper compares the group it
+# is about to signal against it, because this script's group holds the launcher
+# and must never be signalled. It cannot change while this script runs, so one
+# read is the whole answer.
+# `|| true` because this runs on every path now, not only the stop paths it used
+# to run on: under set -e a failing ps here would end the script with status 1,
+# which means "the queue dropped your PR". An empty id excludes nothing, which is
+# the harmless direction.
+own_group_id=$(ps -o pgid= -p "$$" 2>/dev/null | tr -d ' ' || true)
+# The descriptor the helper publishes its live `gh` process group on, or empty.
+# It is 3 when a channel was minted, and read only by the forced stop: it is the
+# one handle that outlives a `gh` wrapper which starts the real CLI and exits.
+#
+# The channel is an unlinked FIFO, not a file. A name would have to be resolved
+# at the moment the launcher reads it, which is exactly when a scratch ancestor
+# may have become writable by another user; a descriptor cannot be replaced by
+# anyone, and it is closed when this script exits. Everything the helper writes
+# arrives here in order and nothing else can write to it.
+gh_group_fd=""
+# The last group the helper published through the channel, or empty. Updated by
+# drain_gh_group_fd and read by the two census functions.
+published_gh_pgid=""
+# The private directory the FIFO is minted in on the prebuilt path. It exists
+# only between the mint and the unlink, and is normally gone before the helper
+# starts.
 gh_private_dir=""
 # The scratch directory the helper was built in, or empty on the prebuilt path.
 #
 # Declared and assigned here, never read from the environment. scratch_dir writes
 # this variable in this process, so no export is needed -- and an inherited one
 # would be worse than useless: the prebuilt path would take a caller's directory
-# for scratch, truncate any gh-group file in it at launch and remove it at exit.
-# That is data loss in a directory this tool never created. The scratch the
-# handle lives in is passed to the mint explicitly instead, so no code path has
-# to trust a value it did not set.
+# for scratch and create a FIFO in it at launch. That is data written into a
+# directory this tool never created. The scratch the channel is minted in is
+# passed to the mint explicitly instead, so no code path has to trust a value it
+# did not set.
 work=""
 # The inode of the scratch directory, read at mint time and checked again just
 # before the exec. Only meaningful on a host with no root whose entries other
@@ -770,25 +789,76 @@ child_running() {
   esac
   return 0
 }
+# drain_gh_group_fd — read every line the helper has published on the channel,
+# and stop when it has written none. Sets published_gh_pgid.
+#
+# The read has to end at an empty channel or the forced stop would block with
+# nothing left to read: `read -t 0` is the poll ("is input buffered?"), and the
+# blocking read after it returns at once. A line here is a sign, a decimal group
+# id and a newline, which is far under any pipe buffer, so a poll that succeeds
+# always has a whole line behind it. `-t 0` is a poll rather than a timeout, so
+# an empty drain costs nothing.
+#
+# It has to be called from this script's own shell, never through a command
+# substitution: a subshell's drain would consume the channel and throw the
+# retained group away with the subshell, leaving the stop that follows with
+# nothing to signal.
+#
+# The protocol is the helper's: `+PGID` (or a bare `PGID`) is a call that is now
+# in flight, and `-PGID` is that call ending. A `-PGID` clears only the group it
+# names, so out-of-order publication cannot erase a newer call, and a clearing
+# sign with no group describes whichever call is in flight because the helper
+# clears only what it published.
+#
+# Every value is re-validated here. The channel is a descriptor, so no other
+# process can write to it, but it is still the launcher's last step before a
+# signal: a malformed or absent value names no group, and this script's own
+# group is never one of them.
+drain_gh_group_fd() {
+  local line sign
+  [ -n "${gh_group_fd:-}" ] || return 0
+  while IFS= read -r -t 0 -u "$gh_group_fd"; do
+    IFS= read -r -u "$gh_group_fd" line || break
+    case "$line" in
+      '') continue ;;
+    esac
+    sign=""
+    case "$line" in
+      [+-]*)
+        sign="${line:0:1}"
+        line="${line:1}"
+        ;;
+    esac
+    case "$line" in
+      '' | *[!0-9]*) continue ;;
+    esac
+    [ "$line" -gt 1 ] || continue
+    [ "$line" != "$own_group_id" ] || continue
+    if [ "$sign" = "-" ]; then
+      if [ "${published_gh_pgid:-}" = "$line" ]; then
+        published_gh_pgid=""
+      fi
+      continue
+    fi
+    published_gh_pgid="$line"
+  done
+  return 0
+}
+
 # published_gh_group — print the GitHub-call group the helper published, or fail.
 #
-# One definition, because two callers now ask the question -- the survivor census
-# and the check that runs after the helper exits -- and a handle read two ways is
-# a handle that can be validated in one place and used in another. The value is an
-# id the helper wrote, so it is re-validated on every read: a file holding
-# anything other than one positive integer names no group and must not be
-# signalled, and this script's own group is never one of them.
+# It does NOT drain. The value is the one drain_gh_group_fd last retained, and
+# that is deliberate: both callers reach this through a command substitution,
+# which is a subshell, and a drain there would consume the line and throw the
+# retained value away with the subshell. The caller drains in this script's own
+# shell first, so the value survives for the stop that follows.
+#
+# One definition, because two callers ask the question -- the survivor census
+# and the check that runs after the helper exits -- and a value read two ways is
+# one that can be validated in one place and used in another.
 published_gh_group() {
-  local published own_group
-  [ -n "${gh_group_file:-}" ] && [ -r "$gh_group_file" ] || return 1
-  published=$(tr -d ' \n' < "$gh_group_file" 2>/dev/null) || return 1
-  case "$published" in
-    '' | *[!0-9]*) return 1 ;;
-  esac
-  [ "$published" -gt 1 ] || return 1
-  own_group=$(ps -o pgid= -p "$$" 2>/dev/null | tr -d ' ')
-  [ "$published" != "$own_group" ] || return 1
-  printf '%s\n' "$published"
+  [ -n "${published_gh_pgid:-}" ] || return 1
+  printf '%s\n' "$published_gh_pgid"
 }
 
 # helper_call_groups <pid> <helper-group> — print each process group the
@@ -798,7 +868,7 @@ published_gh_group() {
 #
 # Three sources, because none of them covers the others. The helper publishes
 # the group of the call it is waiting on (internal/devtool/mergeq's
-# ghGroupFileEnv), which is the only handle that survives a `gh` wrapper starting
+# ghGroupFDEnv), which is the only handle that survives a `gh` wrapper starting
 # the real CLI without `exec` and then exiting: that CLI is reparented out of the
 # helper's tree, so a descendant walk cannot see it, and it is exactly the
 # process still submitting. The walk adds whatever a helper too old to publish
@@ -808,8 +878,9 @@ published_gh_group() {
 # recorded helper group, and the second start is what covers a wrapper that
 # exited on TERM without forwarding it: the tracked pid is gone, the Go helper it
 # started is alive in the recorded group, and it may be between starting `gh` and
-# publishing the group of that call -- so the handle is empty and a walk from the
-# dead wrapper finds nothing, while the helper's own `gh` is still submitting.
+# publishing the group of that call -- so the channel holds nothing yet and a
+# walk from the dead wrapper finds nothing, while the helper's own `gh` is still
+# submitting.
 # The group freeze in stop_helper_tree has already stopped those members, so the
 # tree read here cannot grow.
 #
@@ -818,23 +889,19 @@ published_gh_group() {
 # are excluded: stop_command signals the first, and the second must never be
 # signalled.
 helper_call_groups() {
-  local pid="$1" own_group call_group descendant group published member walked
-  own_group=$(ps -o pgid= -p "$$" 2>/dev/null | tr -d ' ')
+  local pid="$1" call_group descendant group published member walked
   call_group="$2"
+  # The retained value, not a fresh drain: the caller drains in this script's own
+  # shell first. See drain_gh_group_fd for why the drain cannot live here.
+  published="${published_gh_pgid:-}"
   {
-    if [ -n "${gh_group_file:-}" ] && [ -r "$gh_group_file" ]; then
-      published=$(tr -d ' \n' < "$gh_group_file" 2>/dev/null) || published=""
-      case "$published" in
-        '' | *[!0-9]*) ;;
-        *)
-          if [ "$published" -gt 1 ] && [ "$published" != "$call_group" ] && [ "$published" != "$own_group" ]; then
-            printf '%s\n' "$published"
-          fi
-          ;;
-      esac
+    if [ -n "$published" ]; then
+      if [ "$published" -gt 1 ] && [ "$published" != "$call_group" ] && [ "$published" != "$own_group_id" ]; then
+        printf '%s\n' "$published"
+      fi
     fi
     walked=$(process_descendants "$pid")
-    if [ -n "$call_group" ] && [ "$call_group" != "$own_group" ]; then
+    if [ -n "$call_group" ] && [ "$call_group" != "$own_group_id" ]; then
       for member in $(ps -axo pid=,pgid= 2>/dev/null | awk -v group="$call_group" '$2 == group { print $1 }'); do
         [ "$member" = "$$" ] && continue
         walked="$walked
@@ -848,7 +915,7 @@ $(process_descendants "$member")"
       esac
       [ "$group" -gt 1 ] || continue
       [ "$group" = "$call_group" ] && continue
-      [ "$group" = "$own_group" ] && continue
+      [ "$group" = "$own_group_id" ] && continue
       printf '%s\n' "$group"
     done
   } | sort -u
@@ -871,7 +938,7 @@ $(process_descendants "$member")"
 # A zombie counts as gone for the same reason child_running treats one that way:
 # the helper's own exit this script has not reaped yet is not a running helper.
 helper_group_leaves_survivors() {
-  local group="$1" pid state own_group
+  local group="$1" pid state
   case "$group" in
     '' | *[!0-9]*) return 1 ;;
   esac
@@ -879,8 +946,7 @@ helper_group_leaves_survivors() {
   # This script's own group always has members -- itself -- so counting it would
   # report a survivor on every run. It is excluded for the same reason
   # helper_call_groups excludes it: it must never be treated as a helper group.
-  own_group=$(ps -o pgid= -p "$$" 2>/dev/null | tr -d ' ')
-  [ "$group" != "$own_group" ] || return 1
+  [ "$group" != "$own_group_id" ] || return 1
   for pid in $(ps -axo pid=,pgid= 2>/dev/null | awk -v group="$group" '$2 == group { print $1 }'); do
     [ "$pid" = "$$" ] && continue
     state=$(ps -o stat= -p "$pid" 2>/dev/null) || continue
@@ -905,13 +971,12 @@ helper_group_leaves_survivors() {
 # a pid walk from it finds nothing, while the group id still selects the compiler
 # the leader forked. TERM then KILL, bounded, and never the launcher's own group.
 stop_tree_group() {
-  local group="$1" grace pid alive deadline own_group
+  local group="$1" grace pid alive deadline
   case "$group" in
     '' | *[!0-9]*) return 1 ;;
   esac
   [ "$group" -gt 1 ] || return 1
-  own_group=$(ps -o pgid= -p "$$" 2>/dev/null | tr -d ' ')
-  [ "$group" != "$own_group" ] || return 1
+  [ "$group" != "$own_group_id" ] || return 1
   grace=${EVENER_STOP_TREE_GRACE_SECONDS:-5}
   kill -TERM -"$group" 2>/dev/null || :
   deadline=$((SECONDS + grace))
@@ -937,8 +1002,7 @@ stop_tree_group() {
 # so the sweep below runs on the recorded group whether or not the child was
 # still there when this was called.
 stop_helper_tree() {
-  local pid="$1" call_group="$2" groups="" group deadline alive own_group
-  own_group=$(ps -o pgid= -p "$$" 2>/dev/null | tr -d ' ')
+  local pid="$1" call_group="$2" groups="" group deadline alive
   # Freeze before taking the census. A helper that did not act on TERM is still
   # free to fork, and free to start its GitHub call at any moment: an inventory
   # taken while it runs is a census of a moving population, so a call forked
@@ -960,17 +1024,17 @@ stop_helper_tree() {
   # either -- stopping `gh` first would leave the helper waiting on a client that
   # cannot finish, and the census is complete without it once the process that
   # forks is stopped.
-  if [ -n "$call_group" ] && [ "$call_group" -gt 1 ] 2>/dev/null && [ "$call_group" != "$own_group" ]; then
+  if [ -n "$call_group" ] && [ "$call_group" -gt 1 ] 2>/dev/null && [ "$call_group" != "$own_group_id" ]; then
     kill -STOP -"$call_group" 2>/dev/null || :
   fi
   if [ "$pid" -gt 1 ] 2>/dev/null && [ "$pid" != "$$" ] && child_running "$pid"; then
     kill -STOP "$pid" 2>/dev/null || :
   fi
-  # The census, on a tree that cannot fork. helper_call_groups reads the published
-  # handle as well as walking descendants, so a call started between the stop and
-  # this read is still named.
+  # The census, on a tree that cannot fork. The drain is here, in this script's
+  # own shell, for the reason drain_gh_group_fd gives.
+  drain_gh_group_fd
   groups=$(helper_call_groups "$pid" "$call_group") || :
-  if [ -n "$call_group" ] && [ "$call_group" -gt 1 ] 2>/dev/null && [ "$call_group" != "$own_group" ]; then
+  if [ -n "$call_group" ] && [ "$call_group" -gt 1 ] 2>/dev/null && [ "$call_group" != "$own_group_id" ]; then
     groups=$(printf '%s\n%s\n' "$groups" "$call_group" | sed '/^$/d' | sort -u)
   fi
   # TERM first, so a `gh` that can finish its request does. Nothing new can start
@@ -993,7 +1057,7 @@ stop_helper_tree() {
   for group in $groups; do
     kill -KILL -"$group" 2>/dev/null || :
   done
-  if [ -n "$call_group" ] && [ "$call_group" -gt 1 ] 2>/dev/null && [ "$call_group" != "$own_group" ]; then
+  if [ -n "$call_group" ] && [ "$call_group" -gt 1 ] 2>/dev/null && [ "$call_group" != "$own_group_id" ]; then
     kill -KILL -"$call_group" 2>/dev/null || :
   fi
   # The tracked pid last, through stop_command rather than `kill -KILL -pid`:
@@ -1083,14 +1147,20 @@ interrupted() {
 # which is exit 2.
 finish() {
   local status=$?
-  # The handle names a process group, and a group id is reused: leaving one
-  # behind for a later launcher to read would point at some unrelated job. It is
-  # removed before the scratch, which is the directory it may live in.
-  if [ -n "$gh_group_file" ]; then
-    rm -f "$gh_group_file" 2>/dev/null || true
+  # The channel names a process group while it is open, and a group id is
+  # reused. Closing the descriptor is what retires it: nothing outside this
+  # process holds the FIFO's inode, so nothing outlives the close. Both
+  # directions are closed, because this script opened it both ways.
+  #
+  # Only when this script minted it. A run that never minted a channel has no
+  # claim on descriptor 3, and closing a caller's inherited one would take a
+  # descriptor this script does not own.
+  if [ -n "${gh_group_fd:-}" ]; then
+    { exec 3>&- 3<&-; } 2>/dev/null || true
   fi
-  # The prebuilt path's private directory holds only that file, so it goes with
-  # it. The build path's handle lives in scratch, which scratch_rm reclaims.
+  # The prebuilt path's private directory is normally unlinked and removed by
+  # the mint itself. It survives only when the mint could not unlink the FIFO
+  # there, and it holds nothing else this script needs.
   if [ -n "$gh_private_dir" ]; then
     rmdir "$gh_private_dir" 2>/dev/null || true
   fi
@@ -1105,17 +1175,29 @@ finish() {
   exit "$status"
 }
 
-# mint_gh_group_file — create the file the helper publishes its live `gh` process
-# group in, and name it in gh_group_file. Both launch paths need it: a prebuilt
-# helper calls `gh` exactly as a built one does, and the forced stop is the same
-# code.
+# mint_gh_group_channel — give the helper a descriptor to publish its live `gh`
+# process group on, and record its number in gh_group_fd. Both launch paths need
+# it: a prebuilt helper calls `gh` exactly as a built one does, and the forced
+# stop is the same code.
 #
-# It is created inside a private directory, never at a name an attacker can
-# predict. The first form opened "$TMPDIR/merge-enqueue-gh-group-$$" on the
-# prebuilt path: on a shared TMPDIR that permits symlink traversal, another local
-# user can pre-create that name as a link to a file the operator can write, and
-# the launcher would truncate it. $$ is predictable, and the file is opened
-# before anything can check what it is.
+# The channel is an UNLINKED FIFO opened read-write on FD 3. Opening both ways
+# means the open never blocks on a missing peer and never sees end-of-file
+# while this script holds it, and the unlink removes the last name for it, so
+# from that moment the descriptor is the only way to reach it. Nothing outside
+# this process can then write a group id into it, or replace it with something
+# else -- which is the whole point: the launcher has to decide whether to signal
+# a group id at a moment when a scratch ancestor may already have become
+# world-writable, and a descriptor cannot be redirected by a rename while a path
+# can.
+#
+# Opening FD 3 rather than an arbitrary descriptor is deliberate: it is the
+# number the helper is told, and a number this script opens itself cannot be a
+# caller's inherited descriptor holding something else.
+#
+# The FIFO is created inside a private directory, never at a name an attacker
+# can predict: a shared TMPDIR that permits symlink traversal would otherwise
+# let another local user pre-create the name. mkfifo refuses an existing entry,
+# so a planted link or file makes the mint fail instead of being opened.
 #
 # The build path already has private scratch (scratch_dir's `mktemp -d`), so it
 # uses that, passed in as this function's argument. The prebuilt path has none,
@@ -1125,43 +1207,67 @@ finish() {
 # above, and named in gh_private_dir for the EXIT trap to remove.
 #
 # The scratch is an ARGUMENT, never read from the environment. An inherited
-# `work` used to make the prebuilt path treat a caller's directory as scratch: a
-# gh-group file already there was truncated at launch and removed at exit. That
-# is data loss in a directory this tool never created, and the fix is that no
-# code path trusts a variable it did not set.
+# `work` would make the prebuilt path treat a caller's directory as scratch, and
+# this function creates and removes an entry in it. That is data loss in a
+# directory this tool never created, and the fix is that no code path trusts a
+# variable it did not set.
 #
-# A private directory that cannot be created leaves the handle empty rather than
-# failing the run. The prebuilt path is the one an operator uses to point at a
-# helper they built themselves, and the handle only widens what a forced stop can
+# A channel that cannot be minted leaves gh_group_fd empty and the run
+# continues. The prebuilt path is the one an operator uses to point at a helper
+# they built themselves, and the channel only widens what a forced stop can
 # reach: the descendant walk still covers a helper with a call in its tree. A
 # hardening change must not become the reason that path cannot start.
-mint_gh_group_file() {
-  local scratch="${1:-}" dir
+mint_gh_group_channel() {
+  local scratch="${1:-}" dir fifo
+  gh_group_fd=""
   if [ -n "$scratch" ]; then
-    gh_group_file="$scratch/gh-group"
-    : > "$gh_group_file" 2>/dev/null || gh_group_file=""
+    dir="$scratch"
+  else
+    # Only a trusted root. Without one the channel stays unminted and the run
+    # continues: the prebuilt path must work on a host where isolation cannot be
+    # established.
+    [ -n "${scratch_root:-}" ] || return 0
+    dir=$(mktemp -d "$scratch_root/merge-enqueue.XXXXXX" 2>/dev/null) || dir=""
+    # Resolved through the same function the root was, so the directory this
+    # function goes on to create in is the one it just checked. A raw `mktemp -d`
+    # result can still carry a symlinked component above it.
+    [ -n "$dir" ] && dir=$(scratch_resolve "$dir" 2>/dev/null) || dir=""
+    if [ -n "$dir" ] && ! scratch_path_is_trusted "$dir"; then
+      rmdir "$dir" 2>/dev/null || true
+      dir=""
+    fi
+    if [ -z "$dir" ]; then
+      return 0
+    fi
+  fi
+  fifo="$dir/gh-group.fifo"
+  if ! mkfifo -m 0600 "$fifo" 2>/dev/null; then
+    [ -n "$scratch" ] || rmdir "$dir" 2>/dev/null || true
     return 0
   fi
-  # Only a trusted root. Without one the handle stays empty and the run
-  # continues: the prebuilt path must work on a host where isolation cannot be
-  # established, and the handle only widens what a forced stop can reach.
-  [ -n "${scratch_root:-}" ] || { gh_group_file=""; return 0; }
-  dir=$(mktemp -d "$scratch_root/merge-enqueue.XXXXXX" 2>/dev/null) || dir=""
-  # Resolved through the same function the root was, so the directory this
-  # function goes on to write in is the one it just checked. A raw `mktemp -d`
-  # result can still carry a symlinked component above it.
-  [ -n "$dir" ] && dir=$(scratch_resolve "$dir" 2>/dev/null) || dir=""
-  if [ -n "$dir" ] && ! scratch_path_is_trusted "$dir"; then
+  # The open is contained: a FIFO that cannot be opened leaves the run without
+  # a channel rather than ending it. Under set -e a bare redirection failure here
+  # would end the script through the EXIT trap with a launcher status.
+  #
+  # The redirect belongs to the BRACE GROUP, not to the exec. `exec 3<>"$fifo"
+  # 2>/dev/null` applies both redirections to this shell permanently, so it would
+  # send every later message -- the survivor diagnostics included -- to /dev/null.
+  # A group redirect is restored when the group ends, and FD 3, which exec applies
+  # to the shell, survives it.
+  if ! { exec 3<>"$fifo"; } 2>/dev/null; then
+    rm -f "$fifo" 2>/dev/null || true
+    [ -n "$scratch" ] || rmdir "$dir" 2>/dev/null || true
+    return 0
+  fi
+  # The unlink is the point, not tidiness: after it, no path names the FIFO and
+  # FD 3 is the only handle. A directory that cannot be removed here is left to
+  # the EXIT trap.
+  rm -f "$fifo" 2>/dev/null || true
+  if [ -z "$scratch" ]; then
+    gh_private_dir="$dir"
     rmdir "$dir" 2>/dev/null || true
-    dir=""
   fi
-  if [ -z "$dir" ]; then
-    gh_group_file=""
-    return 0
-  fi
-  gh_private_dir="$dir"
-  gh_group_file="$dir/gh-group"
-  : > "$gh_group_file" 2>/dev/null || gh_group_file=""
+  gh_group_fd=3
   return 0
 }
 
@@ -1188,10 +1294,20 @@ start_helper() {
   # trap can run between them. A signal there is recorded instead of acted on,
   # because acting would exit 130 with the helper unsignalled.
   #
-  mint_gh_group_file "$helper_scratch"
+  # The channel is minted before the launch and closed by finish. FD 3 is
+  # deliberately left open across the launch: it is the descriptor the helper
+  # publishes on, and it is not one of the three the shell gives a child, so
+  # this is the only fd 3 the helper can see.
+  #
+  # It is NOT passed in the environment by number alone. The helper is told the
+  # number so it can write to it, and the number is 3 because this script opened
+  # 3. A wrapper started through EVENER_DEV_BIN inherits the descriptor too: it
+  # is a child of this script in the same launch, so a helper it starts still
+  # finds the channel at 3.
+  mint_gh_group_channel "$helper_scratch"
   launching=true
   set -m
-  env GOFLAGS= EVENER_MERGEQ_GH_GROUP_FILE="${gh_group_file:-}" "$1" dev merge-enqueue \
+  env GOFLAGS= EVENER_MERGEQ_GH_GROUP_FD="${gh_group_fd:-}" "$1" dev merge-enqueue \
     --repo "$repo" --pr "$pr" --wait "$wait" ${jump[@]+"${jump[@]}"} &
   set +m
   child=$!
@@ -1257,19 +1373,23 @@ start_helper() {
   #
   # This script records exactly two process groups it may have to stop, and the
   # check above looks at only the first: the group the helper leads. A `gh` call
-  # runs in a group of its own, and the helper publishes that group id in the
-  # handle precisely so a forced stop can reach a call that left the helper's
+  # runs in a group of its own, and the helper publishes that group id on the
+  # channel precisely so a forced stop can reach a call that left the helper's
   # tree. When the helper is killed after publishing -- not cancelled, killed --
   # its own group empties, the check above answers "no survivors", and the run
   # returned the helper's death as if it were a queue outcome while the enqueue
-  # request was still in flight. The EXIT trap then removed the handle the
+  # request was still in flight. The EXIT trap then closed the channel the
   # survivor cleanup would have needed.
   #
   # So the census is over both recorded groups, not the one that was easiest to
   # name. A live call is stopped before this returns, and the status of a run
   # that was killed mid-request is not a queue answer: 2, not whatever signal
-  # ended the helper. A handle that names nothing alive changes nothing, which is
+  # ended the helper. A channel that names nothing alive changes nothing, which is
   # what keeps an ordinary helper's own 0, 1 or 2 untouched.
+  #
+  # The drain runs here, in this script's own shell, for the reason
+  # drain_gh_group_fd gives.
+  drain_gh_group_fd
   published_call=$(published_gh_group) || published_call=""
   if [ -n "$published_call" ] && helper_group_leaves_survivors "$published_call"; then
     echo "merge-enqueue: the helper exited $status and left the GitHub call it published still running, so that status is not a queue outcome" >&2

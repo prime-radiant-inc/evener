@@ -852,11 +852,12 @@ func firstTrustedScratchBase(t *testing.T, candidates []string) string {
 		// no symlinked component left by construction. A second EvalSymlinks here
 		// would be dead code, and dead code that looks load-bearing is how the
 		// resolve below went untested the first time.
-		if reason := unusableScratchBase(t, dir); reason == refusalNone {
+		reason = unusableScratchBase(t, dir)
+		if reason == refusalNone {
 			t.Cleanup(func() { _ = os.RemoveAll(dir) })
 			return dir
 		}
-		rejected = append(rejected, candidate+" ("+fixtureRefusalDetail(unusableScratchBase(t, dir))+")")
+		rejected = append(rejected, candidate+" ("+fixtureRefusalDetail(reason)+")")
 		_ = os.RemoveAll(dir)
 	}
 	t.Fatalf("no scratch base this machine offers is usable: %s; point TMPDIR at an exec-capable directory whose whole ancestry only you (or root) can write, and rerun",
@@ -1255,7 +1256,7 @@ func TestMergeEnqueueLauncherCleanupStopsAFixtureBuildInItsOwnGroup(t *testing.T
 	// found: a case can hand the launcher a scratch root of its own
 	// (`c.tmp`), and a build there names nothing under the fixture. Cleanup that
 	// matched argv text was blind to exactly this build. Ancestry is not.
-	outside := t.TempDir()
+	outside := resolvePath(t, fixtureScratchBase(t))
 	build := filepath.Join(outside, "pending-build")
 	writeTestFile(t, build, []byte("#!/bin/sh\nsleep 300\n"), 0o755)
 	script := "set -m\n" +
@@ -1956,13 +1957,18 @@ func TestMergeEnqueueLauncherForwardsSigtermToAPrebuiltHelper(t *testing.T) {
 	f := newLauncherFixture(t, `#!/usr/bin/env bash
 set -uo pipefail
 trap 'printf "helper-termed\n" >> "$EVENER_FIXTURE_LOG"; exit 130' TERM
-printf 'helper-pid=%s\n' "$$" >> "$EVENER_FIXTURE_LOG"
+printf 'helper-pid=%s;pgid=%s\n' "$$" "$(ps -o pgid= -p "$$" | tr -d ' ')" >> "$EVENER_FIXTURE_LOG"
 while :; do sleep 0.05; done
 `)
 	var helperPID int
 	cmd := f.launcherCmd(t, "--pr", "6499", "--wait", "570", "--repo", "example.invalid/none")
 	runLauncher(t, cmd, f, &helperPID)
-	helperPID = logPID(t, f, "helper-pid=")
+	helperPID, helperGroup := logPIDAndGroup(t, f, "helper-pid=")
+	// The group is read while the helper is alive: after it exits, `ps` names no
+	// group for its pid, and the assertion below would be about nothing.
+	if helperGroup != helperPID {
+		t.Fatalf("the helper %d is in group %d, want a group of its own led by %d", helperPID, helperGroup, helperPID)
+	}
 	signalLauncher(t, cmd, syscall.SIGTERM)
 	mustExit(t, cmd, f, 130)
 	// The helper ran its own TERM handler: the launcher forwarded the signal
@@ -1972,6 +1978,100 @@ while :; do sleep 0.05; done
 	// left the poller running would still hold the caller's output open.
 	testwait.Until(t, fmt.Sprintf("helper pid %d to terminate", helperPID), func() bool {
 		return pidGone(helperPID)
+	})
+	// A dead pid is not an empty group. The helper was launched with `set -m`, so
+	// it leads one, and anything it forked before the TERM outlives it there.
+	waitForEmptyGroup(t, helperGroup)
+}
+
+// TestMergeEnqueueLauncherHandsThePrebuiltHelperTheGroupChannel pins the handle
+// the prebuilt path gives the helper for the live `gh` group it publishes: a
+// descriptor, not a name in scratch.
+//
+// A name would have to be resolved at the moment the launcher reads it, which is
+// exactly when a scratch ancestor may have become writable by another user. The
+// launcher's read of that name is a decision to signal a process group, so
+// whoever can write the directory can plant an id that names a stranger. The
+// channel is an unlinked FIFO opened read-write on descriptor 3: the helper is
+// told a number, and the descriptor is the only handle to it.
+//
+// Both halves are required. With scratch private the helper can publish on the
+// descriptor, and the private directory the launcher minted for it is gone by
+// the time the run ends. With no scratch root at all the run still happens, with
+// no descriptor at all: hardening that turned a host without usable scratch into
+// a launcher failure would be worse than the hole it closed.
+func TestMergeEnqueueLauncherHandsThePrebuiltHelperTheGroupChannel(t *testing.T) {
+	t.Parallel()
+	const script = `#!/usr/bin/env bash
+set -uo pipefail
+printf 'fd=%s\n' "${EVENER_MERGEQ_GH_GROUP_FD:-}" >> "$EVENER_FIXTURE_LOG"
+printf 'helper-pid=%s\n' "$$" >> "$EVENER_FIXTURE_LOG"
+printf '+%s\n' "$$" >&"${EVENER_MERGEQ_GH_GROUP_FD:?the launcher named no group channel}"
+printf 'published\n' >> "$EVENER_FIXTURE_LOG"
+while [ ! -e "${EVENER_FIXTURE_LOG}.release" ]; do sleep 0.02; done
+`
+	t.Run("private scratch", func(t *testing.T) {
+		f := newLauncherFixture(t, script)
+		// Declared before the launcher starts and handed to runLauncher, so the
+		// cleanup kills this helper's group as soon as its pid is known. The
+		// helper blocks until released, and an assertion that fails first would
+		// otherwise leave it polling: a test that leaks the thing it is testing
+		// for is worse than the defect, because it hides the next one.
+		var helperPID int
+		cmd := f.launcherCmd(t, "--pr", "6499", "--wait", "570", "--repo", "example.invalid/none")
+		runLauncher(t, cmd, f, &helperPID)
+		helperPID = logPID(t, f, "helper-pid=")
+		waitForLine(t, f, "published")
+		if fd := logValue(t, f, "fd="); fd != "3" {
+			t.Fatalf("the launcher named descriptor %q for the prebuilt helper, want 3; %s", fd, f.output(t))
+		}
+		if err := os.WriteFile(f.log+".release", nil, 0o600); err != nil {
+			t.Fatalf("release the fixture helper: %v", err)
+		}
+		mustExit(t, cmd, f, 0)
+		// The channel's directory is minted, unlinked and removed before the helper
+		// starts. What is left to check is the absence: nothing under the scratch
+		// root may still carry the launcher's mint prefix.
+		assertNoMintedDirs(t, f.tmpDir())
+	})
+	t.Run("no private scratch", func(t *testing.T) {
+		f := newLauncherFixture(t, `#!/usr/bin/env bash
+set -uo pipefail
+printf 'fd=%s\n' "${EVENER_MERGEQ_GH_GROUP_FD:-}" >> "$EVENER_FIXTURE_LOG"
+printf 'helper-ran\n' >> "$EVENER_FIXTURE_LOG"
+`)
+		// TMPDIR is a regular FILE, so `mktemp -d` fails there whatever the
+		// caller's privileges are. Refusing by mode does not work: Linux running as
+		// root has DAC override and creates the directory inside a 0500 one
+		// anyway, so the subtest passed or failed on who ran it. All three roots
+		// are denied, because the launcher tries them in turn: leaving
+		// $XDG_RUNTIME_DIR usable would let it mint the handle there and the case
+		// would be about a different fallback. The prebuilt path must still start
+		// the helper -- it publishes nothing to a handle it could not mint, and it
+		// does not fail the run. Hardening that turned into a new failure mode would
+		// be worse than the hole it closed.
+		tmp := f.tmpDir()
+		if err := os.MkdirAll(filepath.Dir(tmp), 0o755); err != nil {
+			t.Fatalf("create the fixture TMPDIR's parent: %v", err)
+		}
+		if err := os.WriteFile(tmp, []byte("not a directory\n"), 0o600); err != nil {
+			t.Fatalf("write the fixture TMPDIR as a file: %v", err)
+		}
+		cmd := f.launcherCmd(t, "--pr", "6499", "--wait", "570", "--repo", "example.invalid/none")
+		denied := filepath.Join(f.dir, "not-a-directory")
+		if err := os.WriteFile(denied, []byte("not a directory\n"), 0o600); err != nil {
+			t.Fatalf("write the denied root: %v", err)
+		}
+		cmd.Env = envOverride(cmd.Env,
+			"XDG_RUNTIME_DIR="+denied,
+			"HOME="+filepath.Join(denied, "home"),
+		)
+		runLauncher(t, cmd, f)
+		mustExit(t, cmd, f, 0)
+		waitForLine(t, f, "helper-ran")
+		if fd := logValue(t, f, "fd="); fd != "" {
+			t.Fatalf("the launcher named descriptor %s for the prebuilt helper, but no private scratch could be created for a channel", fd)
+		}
 	})
 }
 
@@ -1994,116 +2094,6 @@ while :; do sleep 0.05; done
 //
 // It also pins that the helper still ends: the launcher forwards TERM after
 // taking the SIGINT, so an operator's Ctrl-C stops the wait.
-// TestMergeEnqueueLauncherPublishesItsGroupFileInPrivateScratch pins where the
-// file the helper publishes its live `gh` group in is allowed to live.
-//
-// The handle's name cannot be secret -- the helper has to be told it -- so the
-// only thing that keeps another local user from pre-creating that name as a link
-// to a file the operator can write is the directory: a `mktemp -d` directory
-// only this user can enter, created atomically, not a name directly under a
-// shared TMPDIR. A launcher that opens the predictable path itself truncates the
-// operator's file once per GitHub call, and the operator never learns why.
-//
-// The oracle is the handle's own directory: its permission bits, and that it is
-// not TMPDIR itself. The second subtest is the other half of the same
-// requirement -- if private scratch cannot be created at all, the prebuilt path
-// must still run. Hardening that turned into a new failure mode would be worse
-// than the hole it closed.
-func TestMergeEnqueueLauncherPublishesItsGroupFileInPrivateScratch(t *testing.T) {
-	t.Parallel()
-	const script = `#!/usr/bin/env bash
-set -uo pipefail
-printf 'handle=%s\n' "${EVENER_MERGEQ_GH_GROUP_FILE:-}" >> "$EVENER_FIXTURE_LOG"
-printf 'helper-pid=%s\n' "$$" >> "$EVENER_FIXTURE_LOG"
-printf 'helper-started\n' >> "$EVENER_FIXTURE_LOG"
-while [ ! -e "${EVENER_FIXTURE_LOG}.release" ]; do sleep 0.02; done
-`
-	t.Run("private scratch", func(t *testing.T) {
-		f := newLauncherFixture(t, script)
-		// Declared before the launcher starts and handed to runLauncher, so the
-		// cleanup kills this helper's group as soon as its pid is known. The
-		// helper blocks until released, and an assertion that fails first would
-		// otherwise leave it polling: a test that leaks the thing it is testing
-		// for is worse than the defect, because it hides the next one.
-		var helperPID int
-		cmd := f.launcherCmd(t, "--pr", "6499", "--wait", "570", "--repo", "example.invalid/none")
-		runLauncher(t, cmd, f, &helperPID)
-		helperPID = logPID(t, f, "helper-pid=")
-		waitForLine(t, f, "helper-started")
-		handle := logValue(t, f, "handle=")
-		if handle == "" {
-			t.Fatalf("the launcher named no group file for the prebuilt helper; %s", f.output(t))
-		}
-		dir := filepath.Dir(handle)
-		if dir == f.tmpDir() {
-			t.Fatalf("the group file is %s directly under TMPDIR: its name is predictable, so on a shared TMPDIR that permits symlink traversal another user can plant a link the launcher truncates through", handle)
-		}
-		// Inside the case's own directory, not merely "somewhere else". The
-		// launcher rejects a TMPDIR another user can enter and falls back to
-		// $XDG_RUNTIME_DIR or $HOME/.cache; a fixture that leaves those alone is
-		// reading the machine's, so the same case passes on a host with a usable
-		// runtime directory and fails on one without, and writes a cache outside
-		// the fixture on the way.
-		if !strings.HasPrefix(handle, f.dir+string(filepath.Separator)) {
-			t.Fatalf("the group file is %s, outside the fixture %s: the launcher used a scratch root this case does not own", handle, f.dir)
-		}
-		// Read while the helper is still running: the launcher removes the
-		// directory with the handle, so after exit there is nothing to stat.
-		info, err := os.Stat(dir)
-		if err != nil {
-			t.Fatalf("stat the group file's directory %s: %v", dir, err)
-		}
-		if perm := info.Mode().Perm(); perm != 0o700 {
-			t.Fatalf("the group file's directory %s has mode %04o, want 0700: another user can create names in it", dir, perm)
-		}
-		if err := os.WriteFile(f.log+".release", nil, 0o600); err != nil {
-			t.Fatalf("release the fixture helper: %v", err)
-		}
-		mustExit(t, cmd, f, 0)
-		if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("the private directory %s survived the launcher: stat returned %v", dir, err)
-		}
-	})
-	t.Run("no private scratch", func(t *testing.T) {
-		f := newLauncherFixture(t, `#!/usr/bin/env bash
-set -uo pipefail
-printf 'handle=%s\n' "${EVENER_MERGEQ_GH_GROUP_FILE:-}" >> "$EVENER_FIXTURE_LOG"
-printf 'helper-ran\n' >> "$EVENER_FIXTURE_LOG"
-`)
-		// TMPDIR is a regular FILE, so `mktemp -d` fails there whatever the
-		// caller's privileges are. Refusing by mode does not work: Linux running as
-		// root has DAC override and creates the directory inside a 0500 one
-		// anyway, so the subtest passed or failed on who ran it. All three roots
-		// are denied, because the launcher tries them in turn: leaving
-		// $XDG_RUNTIME_DIR usable would let it mint the handle there and the case
-		// would be about a different fallback. The prebuilt path must still start
-		// the helper -- it publishes nothing to a handle it could not mint, and it
-		// does not fail the run. This is the fallback the high finding requires.
-		tmp := f.tmpDir()
-		if err := os.MkdirAll(filepath.Dir(tmp), 0o755); err != nil {
-			t.Fatalf("create the fixture TMPDIR's parent: %v", err)
-		}
-		if err := os.WriteFile(tmp, []byte("not a directory\n"), 0o600); err != nil {
-			t.Fatalf("write the fixture TMPDIR as a file: %v", err)
-		}
-		cmd := f.launcherCmd(t, "--pr", "6499", "--wait", "570", "--repo", "example.invalid/none")
-		denied := filepath.Join(f.dir, "not-a-directory")
-		if err := os.WriteFile(denied, []byte("not a directory\n"), 0o600); err != nil {
-			t.Fatalf("write the denied root: %v", err)
-		}
-		cmd.Env = envOverride(cmd.Env,
-			"XDG_RUNTIME_DIR="+denied,
-			"HOME="+filepath.Join(denied, "home"),
-		)
-		runLauncher(t, cmd, f)
-		mustExit(t, cmd, f, 0)
-		waitForLine(t, f, "helper-ran")
-		if handle := logValue(t, f, "handle="); handle != "" {
-			t.Fatalf("the launcher named %s as the group file, but no private scratch could be created there", handle)
-		}
-	})
-}
-
 func TestMergeEnqueueLauncherRunsTheHelperInItsOwnProcessGroup(t *testing.T) {
 	t.Parallel()
 	// Inside the fixture, not `t.TempDir()`. `t.TempDir()` is under the ambient
@@ -2150,6 +2140,13 @@ while :; do sleep 0.05; done
 	testwait.Until(t, fmt.Sprintf("helper pid %d to terminate", helperPID), func() bool {
 		return pidGone(helperPID)
 	})
+	// Both pids being gone is not the same as both groups being empty: `gh` here
+	// shares the helper's group, and a signal that reached the pids one at a time
+	// would leave any further child behind, reparented to init. The group ids are
+	// the handles that survive that, so they are what is asked.
+	for _, group := range []int{helperGroup, ghGroup} {
+		waitForEmptyGroup(t, group)
+	}
 }
 
 // TestMergeEnqueueLauncherForcedStopTakesTheHelpersGHCallsWithIt pins the second
@@ -3016,7 +3013,8 @@ printf 'helper-ran\n' >> "$EVENER_FIXTURE_LOG"
 		// nothing else needs a scratch root at all.
 		f := newLauncherFixture(t, `#!/usr/bin/env bash
 set -uo pipefail
-printf 'handle=%s\n' "${EVENER_MERGEQ_GH_GROUP_FILE:-}" >> "$EVENER_FIXTURE_LOG"
+printf 'fd=%s\n' "${EVENER_MERGEQ_GH_GROUP_FD:-}" >> "$EVENER_FIXTURE_LOG"
+printf '+%s\n' "$$" >&"${EVENER_MERGEQ_GH_GROUP_FD:?the launcher named no group channel}"
 printf 'helper-ran\n' >> "$EVENER_FIXTURE_LOG"
 `)
 		stale := filepath.Join(f.dir, "reaped-sandbox", "tmp")
@@ -3028,15 +3026,14 @@ printf 'helper-ran\n' >> "$EVENER_FIXTURE_LOG"
 		if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("the launcher recreated the TMPDIR it was handed (%s): stat returned %v", stale, err)
 		}
-		// It fell through to the fixture's own runtime directory, so the handle is
-		// still somewhere this case owns.
-		handle := logValue(t, f, "handle=")
-		if handle == "" {
-			t.Fatalf("the launcher published no group file: a missing TMPDIR left it with no scratch root at all, but the fixture's $XDG_RUNTIME_DIR is usable; %s", f.output(t))
+		// It fell through to the fixture's own runtime directory, so the channel
+		// was minted from a root this case owns. There is no name to resolve any
+		// more, so the question is whether a descriptor was handed down at all --
+		// and that the directory it was minted in did not outlive the run.
+		if fd := logValue(t, f, "fd="); fd != "3" {
+			t.Fatalf("the launcher named descriptor %q, want 3: a missing TMPDIR left it with no scratch root at all, but the fixture's $XDG_RUNTIME_DIR is usable; %s", fd, f.output(t))
 		}
-		if !strings.HasPrefix(handle, f.runtimeDir()+string(filepath.Separator)) {
-			t.Fatalf("the group file is %s, want a file under the fixture's runtime directory %s", handle, f.runtimeDir())
-		}
+		assertNoMintedDirs(t, f.runtimeDir())
 	})
 	t.Run("a root that cannot execute is passed over for the build", func(t *testing.T) {
 		// The medium: selection accepted a writable, trusted TMPDIR on a noexec
@@ -3200,7 +3197,8 @@ func TestMergeEnqueueLauncherDoesNotTouchACallerOwnedGroupFile(t *testing.T) {
 	f := newLauncherFixture(t, `#!/usr/bin/env bash
 set -uo pipefail
 printf 'helper-pid=%s\n' "$$" >> "$EVENER_FIXTURE_LOG"
-printf 'handle=%s\n' "${EVENER_MERGEQ_GH_GROUP_FILE:-}" >> "$EVENER_FIXTURE_LOG"
+printf 'fd=%s\n' "${EVENER_MERGEQ_GH_GROUP_FD:-}" >> "$EVENER_FIXTURE_LOG"
+printf '+%s\n' "$$" >&"${EVENER_MERGEQ_GH_GROUP_FD:?the launcher named no group channel}"
 `)
 	// A caller's own directory with a file at the name the launcher would use,
 	// holding bytes that are not the launcher's to touch.
@@ -3223,8 +3221,20 @@ printf 'handle=%s\n' "${EVENER_MERGEQ_GH_GROUP_FILE:-}" >> "$EVENER_FIXTURE_LOG"
 	} else if string(body) != original {
 		t.Fatalf("the caller's file now holds %q: the launcher truncated it", body)
 	}
-	if got := logValue(t, f, "handle="); got == handle {
-		t.Fatalf("the launcher named the caller's %s as the group file", handle)
+	// The channel is a descriptor, so nothing the launcher minted may appear in a
+	// directory it was merely told about. A path handle would have to name one,
+	// and this is the directory it would land in.
+	entries, err := os.ReadDir(owned)
+	if err != nil {
+		t.Fatalf("read the caller's directory: %v", err)
+	}
+	for _, entry := range entries {
+		if entry.Name() != filepath.Base(handle) {
+			t.Fatalf("the caller's directory holds %s, which the launcher created: it used a directory it did not create", entry.Name())
+		}
+	}
+	if fd := logValue(t, f, "fd="); fd != "3" {
+		t.Fatalf("the launcher named descriptor %q rather than its own channel; %s", fd, f.output(t))
 	}
 }
 
@@ -3322,7 +3332,7 @@ while :; do sleep 0.05; done
 `), 0o755)
 	// The stand-in helper: it starts the call in a group of its own, exactly as
 	// GHClient does (SysProcAttr leads a group, and the group id is the child's
-	// pid), records it, and never writes EVENER_MERGEQ_GH_GROUP_FILE -- the
+	// pid), records it, and publishes nothing on the launcher's channel -- the
 	// window between starting the call and publishing it.
 	inner := filepath.Join(f.dir, "helper.sh")
 	writeTestFile(t, inner, []byte(`#!/usr/bin/env bash
@@ -3479,16 +3489,16 @@ set -uo pipefail
 set -m
 `+shellquote.Literal(call)+` &
 set +m
-# Publish the group where a real helper publishes it, wait until the call has
-# recorded itself so the group is certainly the call's, and then die hard. The
-# handle is written BEFORE the death, which is the order that matters: a helper
-# killed without publishing leaves nothing to find, and that shape is already
-# covered by the recorded-group check.
+# Publish the group where a real helper publishes it, on the launcher's channel,
+# wait until the call has recorded itself so the group is certainly the call's,
+# and then die hard. The handle is written BEFORE the death, which is the order
+# that matters: a helper killed without publishing leaves nothing to find, and
+# that shape is already covered by the recorded-group check.
 for _ in $(seq 1 250); do
   [ -s "$EVENER_FIXTURE_LOG" ] && break
   sleep 0.02
 done
-printf '%s\n' "$!" > "$EVENER_MERGEQ_GH_GROUP_FILE"
+printf '+%s\n' "$!" >&"${EVENER_MERGEQ_GH_GROUP_FD:?the launcher named no group channel}"
 printf 'published\n' >> "$EVENER_FIXTURE_LOG"
 kill -9 "$$"
 `), 0o755)
@@ -3561,7 +3571,7 @@ func TestMergeEnqueueLauncherReportsAMissingLibraryAsALauncherFailure(t *testing
 // Once the wrapper exits, the CLI is reparented out of the helper's tree, so
 // nothing walking descendants from the helper can find it, while it is still
 // submitting the enqueue. The launcher has to hold the group id itself, which is
-// what the helper publishes through EVENER_MERGEQ_GH_GROUP_FILE. The helper here
+// what the helper publishes on the launcher's channel descriptor. The helper here
 // ignores TERM, so the grace expires and only the forced stop can end the call.
 //
 // The CLI ignores TERM as well, so a signal at the wrong group -- or one that
@@ -3583,7 +3593,7 @@ set -m
 "$EVENER_FIXTURE_WRAPPER" &
 wrapper=$!
 set +m
-printf '%s\n' "$wrapper" > "$EVENER_MERGEQ_GH_GROUP_FILE"
+printf '+%s\n' "$wrapper" >&"${EVENER_MERGEQ_GH_GROUP_FD:?the launcher named no group channel}"
 printf 'helper-pid=%s;pgid=%s\n' "$$" "$(ps -o pgid= -p "$$" | tr -d ' ')" >> "$EVENER_FIXTURE_LOG"
 while :; do sleep 0.05; done
 `)
@@ -4416,7 +4426,7 @@ set -m
 "$EVENER_FIXTURE_GH" &
 call=$!
 set +m
-printf '%s\n' "$call" > "$EVENER_MERGEQ_GH_GROUP_FILE"
+printf '+%s\n' "$call" >&"${EVENER_MERGEQ_GH_GROUP_FD:?the launcher named no group channel}"
 printf 'call-pid=%s;pgid=%s\n' "$call" "$(ps -o pgid= -p "$call" | tr -d ' ')" >> "$EVENER_FIXTURE_LOG"
 printf 'helper-started\n' >> "$EVENER_FIXTURE_LOG"
 # Published and logged, so the wrapper may exit -- and only now, because the
@@ -4921,54 +4931,120 @@ func TestMergeEnqueueLauncherRefusalNamesExecutionWhenATrustedRootWasFound(t *te
 // launcher would exec through an ancestor another user can now swap an entry in.
 // The check has to be asked again on the far side of the build.
 //
-// The build is held open by the fixture's FIFO so the window can be opened
-// deliberately: the case finds the scratch directory from the blocked build's
-// argv, makes the fixture TMPDIR itself replaceable (the ancestor of every path
-// the launcher uses), then releases the build. A launcher that only compares the
-// inode builds its helper and runs it; one that re-asks the chain refuses.
+// The build is a stand-in `go` on PATH that holds itself open until the case
+// releases it, so the window is opened deliberately rather than raced. The
+// stand-in records the scratch directory the launcher minted (from its own `-o`
+// argument), reports that it is running, and waits. The case then makes the
+// fixture TMPDIR itself replaceable -- the ancestor of every path the launcher
+// uses -- and releases the build. A launcher that only compares the inode builds
+// its helper and runs it; one that re-asks the chain refuses.
 //
-// The release is what makes this deterministic. The alternative -- racing a
-// chmod against a build of unknown length -- passes or fails on load, and a case
-// that cannot fail for its reason is not evidence.
+// The handshake is two files, not a duration: the build holds until a release
+// exists, so the chmod is certainly in place before the build returns, and no
+// assertion here depends on the build being slow. A chmod raced against a build
+// of unknown length passes or fails on load, and a case that cannot fail for its
+// reason is not evidence.
 func TestMergeEnqueueLauncherRefusesScratchThatBecameReplaceableDuringTheBuild(t *testing.T) {
 	t.Parallel()
 	c := newFixtureCheckout(t, fixtureTmpDir(t, "tmp"))
 	c.requireIsolated(t)
-	// A plain source in place of the blocking FIFO, so the build can be RELEASED:
-	// the case blocks it by putting a writer on hold, not by never having one.
+	// The blocking FIFO is removed so the fixture package is the stub alone: the
+	// stand-in `go` never compiles anything, and a package that still held a FIFO
+	// would only be a second way to stall a build this case no longer runs.
 	hold := filepath.Join(c.root, "cmd", "evener-dev", "bin", "hold.go")
 	if err := os.Remove(hold); err != nil {
 		t.Fatalf("remove the blocking fifo: %v", err)
 	}
-	gate := filepath.Join(c.root, "cmd", "evener-dev", "bin", "gate.go")
-	if err := syscall.Mkfifo(gate, 0o600); err != nil {
-		t.Skipf("cannot create a FIFO here (%v): this machine cannot manufacture a stalled build", err)
+	// The stand-in lives beside the fixture rather than under c.tmp: c.tmp is the
+	// directory this case makes world-writable, and a program this case executes
+	// must not sit under a path it has just made replaceable.
+	dir := resolvePath(t, fixtureScratchBase(t))
+	bin := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatalf("create the stand-in go directory: %v", err)
 	}
+	ready := filepath.Join(dir, "build-ready")
+	release := filepath.Join(dir, "build-release")
+	// Written after the helper is produced, so "the build ran to the end" is a
+	// fact on disk rather than an inference. The helper itself cannot be statted
+	// afterwards: a correct launcher removes its scratch at exit.
+	built := filepath.Join(dir, "build-finished")
+	// The scratch the launcher minted, read from the stand-in's own `-o` argument,
+	// and the group the build leads, for cleanup.
+	scratchFile := filepath.Join(dir, "build-scratch")
+	groupFile := filepath.Join(dir, "build-group")
+	// The stand-in parses `-o` out of the argv build_helper hands the go command,
+	// records where the helper would go, reports itself ready, and then blocks
+	// until the release appears. Producing a runnable helper after the release is
+	// what keeps this a build rather than a stub that only reports: a launcher
+	// that got past the recheck would find something it could exec.
+	writeTestFile(t, filepath.Join(bin, "go"), []byte(`#!/bin/sh
+set -u
+out=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o)
+      out="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+printf '%s\n' "$out" > `+shellquote.Literal(scratchFile)+`
+printf '%s\n' "$(ps -o pgid= -p "$$" | tr -d ' ')" > `+shellquote.Literal(groupFile)+`
+: > `+shellquote.Literal(ready)+`
+while [ ! -e `+shellquote.Literal(release)+` ]; do sleep 0.02; done
+if [ -n "$out" ]; then
+  printf '#!/bin/sh\nexit 0\n' > "$out"
+  chmod +x "$out"
+fi
+: > `+shellquote.Literal(built)+`
+exit 0
+`), 0o755)
 	f := newLauncherFixture(t, "#!/usr/bin/env bash\nprintf 'helper-ran\\n' >> \"$EVENER_FIXTURE_LOG\"\n")
 	for _, m := range []string{c.root, c.tmp} {
 		t.Cleanup(func() { assertNoSurvivors(t, m) })
 	}
 	cmd := f.launcherCmdAt(t, c.script, "--pr", "6499", "--repo", "example.invalid/none")
-	cmd.Env = envOverride(cmd.Env, "TMPDIR="+c.tmp, "GOWORK=off", "GOENV=off")
+	cmd.Env = envOverride(cmd.Env,
+		"TMPDIR="+c.tmp,
+		"GOWORK=off",
+		"GOENV=off",
+		"PATH="+bin+":"+os.Getenv("PATH"),
+	)
 	cmd.Env = slices.DeleteFunc(cmd.Env, func(kv string) bool {
 		return strings.HasPrefix(kv, "EVENER_DEV_BIN=")
 	})
-	var buildPID, buildGroupRoot int
-	t.Cleanup(func() { killGroups(buildPID) })
+	// The build's group is recorded by the stand-in, and cleanup stops it by that
+	// handle: a failing assertion before the release must not leave a poller
+	// waiting for a file nobody will write.
+	var buildGroup int
+	t.Cleanup(func() { killGroups(buildGroup) })
 	runLauncher(t, cmd, f)
-	// The build names the scratch directory it will write to, which is how the case
-	// learns the path the launcher minted without guessing at mktemp's name.
-	testwait.UntilSeen(t, "the fixture build to block on the gate", func() (bool, string) {
-		var group int
-		buildPID, group = buildIn(t, c.tmp)
-		if buildPID != 0 {
-			// Recorded, so the later assertion is about what was SEEN and not about
-			// a pid the case happened to be told.
-			buildGroupRoot = group
-			return true, ""
+	testwait.UntilSeen(t, "the stand-in go to report the scratch it was handed", func() (bool, string) {
+		if _, err := os.Stat(ready); err != nil {
+			return false, "the build has not started yet"
 		}
-		return false, "no build names the fixture scratch yet"
+		group, err := readPIDFile(groupFile)
+		if err != nil {
+			return false, "the build has not recorded its group yet"
+		}
+		buildGroup = group
+		return true, ""
 	})
+	// The premise, read from the build's own argv: the helper is being written into
+	// a scratch directory under the TMPDIR this case is about to make replaceable.
+	body, err := os.ReadFile(scratchFile)
+	if err != nil {
+		t.Fatalf("read the scratch the build named: %v", err)
+	}
+	out := strings.TrimSpace(string(body))
+	work := filepath.Dir(out)
+	if !strings.HasPrefix(work, c.tmp+string(filepath.Separator)) {
+		t.Fatalf("the build is writing to %s, which is not under the fixture TMPDIR %s: the chain this case makes replaceable is not the one the helper is built in", out, c.tmp)
+	}
 	// Make the ancestor replaceable while the build is in flight. c.tmp is on
 	// every path the launcher uses, and it is the component the pre-build check
 	// passed.
@@ -4979,14 +5055,12 @@ func TestMergeEnqueueLauncherRefusesScratchThatBecameReplaceableDuringTheBuild(t
 	if launcherTrustsPath(t, c.tmp) {
 		t.Fatalf("%s is still trusted after chmod 0777, so this case cannot manufacture a replaceable ancestor", c.tmp)
 	}
-	// Release the build. A single writer open is not enough: the go command opens a
-	// source file more than once -- it reads it to build the package and reads it
-	// again while hashing -- and every open after the first blocks again with no
-	// writer left. So the gate is served until the build is gone, and the content
-	// is a valid empty package so the build SUCCEEDS: this case is about which
-	// scratch the launcher will run from, not about a build that failed for its own
-	// reason.
-	serveFIFO(t, gate, "package main\n", buildPID)
+	// Release the build. It succeeds and produces a runnable helper, so the exit
+	// below cannot be a build failure read as a refusal: this case is about which
+	// scratch the launcher will run from, not about a build that broke.
+	if err := os.WriteFile(release, nil, 0o600); err != nil {
+		t.Fatalf("release the stand-in build: %v", err)
+	}
 	// Exit 2, not 0: the scratch became replaceable during the build, so the
 	// launcher refuses to run a helper from it. Exit 0 would be a helper executed
 	// through an ancestor another user can swap an entry in.
@@ -5006,8 +5080,11 @@ func TestMergeEnqueueLauncherRefusesScratchThatBecameReplaceableDuringTheBuild(t
 	// The build DID run -- that is the window this case is about -- and the
 	// refusal came after it. A case where the build never started would satisfy a
 	// bare "no helper ran" check without exercising the post-build check at all.
-	if buildGroupRoot == 0 {
-		t.Fatalf("the fixture build %d was never observed under %s: the refusal cannot have come from the post-build check if no build happened", buildPID, c.tmp)
+	if buildGroup <= 1 {
+		t.Fatalf("the stand-in build recorded group %d, so no build ran: the refusal cannot have come from the post-build check if no build happened", buildGroup)
+	}
+	if _, err := os.Stat(built); err != nil {
+		t.Fatalf("the stand-in build never finished, so the refusal was not read from a completed build: stat returned %v", err)
 	}
 	if _, err := os.Stat(c.sentinel); err == nil {
 		t.Fatalf("the launcher built and ran a helper from scratch under a TMPDIR that became replaceable during the build: %s exists", c.sentinel)
@@ -5019,47 +5096,6 @@ func TestMergeEnqueueLauncherRefusesScratchThatBecameReplaceableDuringTheBuild(t
 	}
 }
 
-// serveFIFO feeds content to every reader of the FIFO at path until the process
-// pid is gone, then returns. It exists for a build that has to be released after
-// a window has been opened: one writer is not enough because the go command opens
-// the same source more than once, and a reader with no writer blocks forever.
-func serveFIFO(t *testing.T, path, content string, pid int) {
-	t.Helper()
-	done := make(chan struct{})
-	stopped := make(chan struct{})
-	go func() {
-		defer close(stopped)
-		for {
-			select {
-			case <-done:
-				return
-			default:
-			}
-			if pidGone(pid) {
-				return
-			}
-			writer, err := os.OpenFile(path, os.O_WRONLY, 0o600)
-			if err != nil {
-				return
-			}
-			_, _ = writer.WriteString(content)
-			_ = writer.Close()
-		}
-	}()
-	t.Cleanup(func() {
-		close(done)
-		// Unblock a writer still waiting for a reader, so the goroutine can see the
-		// closed channel rather than outliving the test.
-		if reader, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0o600); err == nil {
-			_ = reader.Close()
-		}
-		select {
-		case <-stopped:
-		case <-time.After(time.Second):
-		}
-	})
-}
-
 // launcherStopFuncs loads the stop machinery the launcher uses on a build: the
 // group census, the group stopper, the tree walker and stop_command.
 //
@@ -5067,7 +5103,12 @@ func serveFIFO(t *testing.T, path, content string, pid int) {
 // copied them would agree with itself and not with the script. gate-bounded.sh
 // supplies process_descendants and stop_command, which is why its path is
 // sourced alongside the launcher's own text.
-const launcherStopFuncs = "/^process_descendants()/,/^}/p;" +
+//
+// The launcher's own_group_id assignment comes along because the stoppers read
+// it: without it the exclusion of this script's group would compare against an
+// empty value and every case would be about a launcher that excludes nothing.
+const launcherStopFuncs = "/^own_group_id=/p;" +
+	"/^process_descendants()/,/^}/p;" +
 	"/^stop_process_tree()/,/^}/p;" +
 	"/^stop_command()/,/^}/p;" +
 	"/^helper_group_leaves_survivors()/,/^}/p;" +
@@ -5077,7 +5118,8 @@ const launcherStopFuncs = "/^process_descendants()/,/^}/p;" +
 	"/^published_gh_group()/,/^}/p;" +
 	"/^helper_call_groups()/,/^}/p;" +
 	"/^stop_helper_tree()/,/^}/p;" +
-	"/^interrupted()/,/^}/p"
+	"/^interrupted()/,/^}/p;" +
+	"/^drain_gh_group_fd()/,/^}/p"
 
 // runLauncherStopFunc loads launcherStopFuncs plus gate-bounded.sh and runs expr.
 //
@@ -5175,6 +5217,66 @@ func processGroupOf(t *testing.T, pid int) int {
 	return 0
 }
 
+// readPIDFile reads a pid or group id a fixture recorded in path.
+func readPIDFile(path string) (int, error) {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	return strconv.Atoi(strings.TrimSpace(string(body)))
+}
+
+// groupHasNoLiveMembers reports whether group has no running member, ignoring
+// this test process and zombies.
+//
+// It is the assertion a leak needs after cleanup: a kill of the direct child
+// says nothing about a helper that leads a group of its own, so the group is
+// asked directly rather than inferred from an exit. A zombie counts as gone for
+// the reason child_running in the launcher treats one that way -- the process is
+// dead and its parent has not reaped it yet.
+func groupHasNoLiveMembers(t *testing.T, group int) bool {
+	t.Helper()
+	if group <= 1 {
+		return true
+	}
+	self := os.Getpid()
+	for _, proc := range scanProcs(t) {
+		if proc.pgid != group || proc.pid == self || proc.zombie() {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// waitForEmptyGroup waits until group holds no live member.
+//
+// A dead pid is not an empty group: anything it forked before it died outlives
+// it there, reparented to init, where no pid walk reaches it. The group is the
+// handle that still names it, so the group is what is asked.
+func waitForEmptyGroup(t *testing.T, group int) {
+	t.Helper()
+	testwait.Until(t, fmt.Sprintf("process group %d to hold no live member", group), func() bool {
+		return groupHasNoLiveMembers(t, group)
+	})
+}
+
+// assertNoMintedDirs fails when dir still holds a directory the launcher minted
+// to hold the group channel: the channel's private directory exists only between
+// the mint and the unlink, and must not outlive the run.
+func assertNoMintedDirs(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read %s: %v", dir, err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "merge-enqueue.") {
+			t.Fatalf("%s survived the launcher: the channel's private directory outlived the run", filepath.Join(dir, entry.Name()))
+		}
+	}
+}
+
 // TestMergeEnqueueLauncherStopsARecordedBuildGroupAfterItsLeaderDied pins the
 // handle that has to survive the leader.
 //
@@ -5223,13 +5325,238 @@ func TestMergeEnqueueLauncherStopsARecordedBuildGroupAfterItsLeaderDied(t *testi
 func TestMergeEnqueueLauncherReapStopsARecordedBuildGroupWhoseLeaderDied(t *testing.T) {
 	t.Parallel()
 	group, member := startGroupLeaderThatLeavesAMember(t)
-	expr := `child="$2"; child_is_helper=false; child_group="$2"; helper_started=false; gh_group_file=""; reap_child`
+	expr := `child="$2"; child_is_helper=false; child_group="$2"; helper_started=false; gh_group_fd=""; published_gh_pgid=""; reap_child`
 	if err := runLauncherStopFunc(t, expr, strconv.Itoa(group)); err != nil {
 		t.Fatalf("reap_child on the dead build leader %d failed: %v", group, err)
 	}
 	testwait.Until(t, fmt.Sprintf("member %d of the cancelled build's group to be stopped", member), func() bool {
 		return pidGone(member)
 	})
+}
+
+// TestMergeEnqueueLauncherRunsNoCallWhenTheHelperDiesBeforePublishing pins the
+// window between the helper forking its `gh` and publishing that call's group.
+//
+// The launcher's only handle on a live `gh` is the group id the helper writes to
+// the channel, so a call that starts before the write is a call the launcher
+// would have to stop by luck. The client closes that window with a pre-exec gate:
+// `gh` runs behind `sh -c 'IFS= read -r _ <&3 || exit 1; exec 3<&-; exec "$@"'`,
+// the write end is held by the helper, and the read end is the gate. A helper
+// killed before it publishes and before it releases the gate has its write end
+// closed by the kernel, `sh` reads EOF, exits 1, and `gh` never runs.
+// The fixture is that shape with a FIFO in place of the pipe, because the
+// property is about the order of the fork and the publication and not about Go's
+// os.Pipe. The helper holds the FIFO read-write on a descriptor of its own, so
+// the gated child's open does not block; the child then blocks in the read,
+// which is the gate. Killing the helper closes the only write end, the read
+// returns EOF, and the call never runs.
+//
+// The released control is what makes this evidence: the same fixture, with the
+// helper writing one byte instead of dying, runs the call. Without it a gate
+// that was simply broken -- a redirection that never resolved, a `sh` that could
+// not find the call -- would satisfy the first half while proving nothing about
+// the order the gate exists for.
+func TestMergeEnqueueLauncherRunsNoCallWhenTheHelperDiesBeforePublishing(t *testing.T) {
+	t.Parallel()
+	// The call records that it ran and exits, so "did it run" is a fact on disk
+	// rather than an inference from a signal that could have raced the exec, and a
+	// released call leaves nothing behind.
+	const callBody = `#!/usr/bin/env bash
+: > "$EVENER_FIXTURE_CALL_RAN"
+`
+	// The helper: holds the gate read-write so the child's open resolves, starts
+	// the call behind the launcher's own pre-exec gate, and then either dies
+	// before publishing -- the window -- or publishes and releases.
+	const helperBody = `#!/usr/bin/env bash
+set -uo pipefail
+exec 9<>"$EVENER_FIXTURE_GATE"
+set -m
+sh -c 'IFS= read -r _ <&3 || exit 1; exec 3<&-; exec "$@"' _ "$EVENER_FIXTURE_CALL" 3<"$EVENER_FIXTURE_GATE" 9<&- &
+printf 'gate-pid=%s\n' "$!" >> "$EVENER_FIXTURE_LOG"
+if [ "${EVENER_FIXTURE_RELEASE:-}" = true ]; then
+  printf '%s\n' "$$" >&"${EVENER_MERGEQ_GH_GROUP_FD:?the launcher named no group channel}"
+  printf 'releasing\n' >> "$EVENER_FIXTURE_LOG"
+  printf 'go\n' >&9
+  exit 0
+fi
+printf 'helper-dying\n' >> "$EVENER_FIXTURE_LOG"
+kill -9 "$$"
+`
+	for _, tc := range []struct {
+		name    string
+		release bool
+		want    int
+	}{
+		{name: "killed before publishing", want: 2},
+		{name: "released", release: true, want: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newLauncherFixture(t, helperBody)
+			dir := resolvePath(t, fixtureScratchBase(t))
+			ran := filepath.Join(dir, "call-ran")
+			call := filepath.Join(dir, "gh-call.sh")
+			writeTestFile(t, call, []byte(callBody), 0o755)
+			gate := filepath.Join(dir, "gate.fifo")
+			if err := syscall.Mkfifo(gate, 0o600); err != nil {
+				t.Skipf("cannot create a FIFO here (%v): this machine cannot manufacture a gated call", err)
+			}
+			cmd := f.launcherCmd(t, "--pr", "6499", "--wait", "570", "--repo", "example.invalid/none")
+			cmd.Env = append(cmd.Env,
+				"EVENER_FIXTURE_CALL="+call,
+				"EVENER_FIXTURE_CALL_RAN="+ran,
+				"EVENER_FIXTURE_GATE="+gate,
+				fmt.Sprintf("EVENER_FIXTURE_RELEASE=%t", tc.release),
+				"EVENER_HELPER_TERM_GRACE_SECONDS=0",
+				"EVENER_STOP_TREE_GRACE_SECONDS=1",
+			)
+			runLauncher(t, cmd, f)
+			if tc.release {
+				waitForLine(t, f, "releasing")
+			} else {
+				waitForLine(t, f, "helper-dying")
+			}
+			mustExit(t, cmd, f, tc.want)
+			_, statErr := os.Stat(ran)
+			if tc.release {
+				if statErr != nil {
+					t.Fatalf("the call did not run after the gate was released (%v): the fixture cannot show what the gate is holding", statErr)
+				}
+			} else if statErr == nil {
+				t.Fatalf("the gated call ran although the helper died before publishing it: %s exists, so a request nothing could stop was started", ran)
+			}
+			// The gate's own process reads EOF, exits, and leaves nothing behind. A
+			// survivor would be a call that had been released by the death.
+			for _, proc := range processesNaming(t, dir) {
+				if proc.zombie() {
+					continue
+				}
+				t.Fatalf("process %d (%s) survived the helper: the gate did not hold", proc.pid, proc.cmd)
+			}
+		})
+	}
+}
+
+// TestMergeEnqueueLauncherIgnoresAGroupPlantedInReplaceableScratch pins that the
+// forced stop reaches the real `gh` call and nothing else when scratch is
+// writable by another user.
+//
+// A process group id is a number, and signalling one is the launcher's last act
+// on an interrupted run. If that number came from a path in scratch, then a user
+// who can write a component above the scratch could plant an id -- their target's,
+// not the helper's -- and the launcher would kill a process group it was never
+// asked to touch. The channel is a descriptor instead: the helper writes to a
+// number the launcher opened, no path is resolved at read time, and nothing
+// another user can write reaches the decision.
+//
+// The bystander is the sharpest form of the plant: its own group, its own
+// session, and a group id written into scratch in the shape the old file handle
+// would have read. It must be alive after the launcher exits, and the real call
+// the helper published on the descriptor must be gone -- both halves, because a
+// launcher that stopped neither would also leave the bystander alone.
+func TestMergeEnqueueLauncherIgnoresAGroupPlantedInReplaceableScratch(t *testing.T) {
+	t.Parallel()
+	f := newLauncherFixture(t, "#!/usr/bin/env bash\nexit 0\n")
+	dir := resolvePath(t, fixtureScratchBase(t))
+	// The call the helper publishes: a poller in a group of its own, started by
+	// the fixture and reachable only through the group id it publishes. It traps
+	// TERM, so only the forced KILL ends it, and a stop that never named it is
+	// visible as survival.
+	call := filepath.Join(dir, "gh-call.sh")
+	writeTestFile(t, call, []byte(`#!/usr/bin/env bash
+trap '' TERM
+printf 'call-pid=%s;pgid=%s\n' "$$" "$(ps -o pgid= -p "$$" | tr -d ' ')" >> "$EVENER_FIXTURE_LOG"
+while :; do sleep 0.05; done
+`), 0o755)
+	// The bystander: a group of its own, started here, and named by nothing the
+	// launcher can legitimately reach. Its pgid is what the plant carries.
+	bystander := exec.Command("sh", "-c", "while :; do sleep 1; done")
+	bystander.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := bystander.Start(); err != nil {
+		t.Fatalf("start the bystander: %v", err)
+	}
+	bystanderPID := bystander.Process.Pid
+	t.Cleanup(func() {
+		killGroups(bystanderPID)
+		_ = syscall.Kill(bystanderPID, syscall.SIGKILL)
+		_ = bystander.Wait()
+	})
+	// The helper is rewritten in place: it is the binary the launcher would have
+	// built, so the fixture path is the one the launcher executes.
+	writeTestFile(t, f.path, []byte(`#!/usr/bin/env bash
+set -uo pipefail
+# The real call, in a group of its own, published on the launcher's channel.
+set -m
+`+shellquote.Literal(call)+` &
+call=$!
+set +m
+printf '+%s\n' "$call" >&"${EVENER_MERGEQ_GH_GROUP_FD:?the launcher named no group channel}"
+printf 'call-pid=%s;pgid=%s\n' "$call" "$(ps -o pgid= -p "$call" | tr -d ' ')" >> "$EVENER_FIXTURE_LOG"
+# The plant, in the scratch the launcher would mint a name in, in the shape a
+# path handle would have read. Written after the publication, so a launcher that
+# consulted a name as well would have to choose between two ids -- and this one
+# is a stranger's.
+plant="${TMPDIR:?}/gh-group"
+printf '%s\n' `+strconv.Itoa(bystanderPID)+` > "$plant"
+printf 'planted=%s\n' "$plant" >> "$EVENER_FIXTURE_LOG"
+printf 'planted\n' >> "$EVENER_FIXTURE_LOG"
+trap '' TERM
+while :; do sleep 0.05; done
+`), 0o755)
+	cmd := f.launcherCmd(t, "--pr", "6499", "--wait", "570", "--repo", "example.invalid/none")
+	cmd.Env = append(cmd.Env,
+		"EVENER_HELPER_TERM_GRACE_SECONDS=0",
+		"EVENER_STOP_TREE_GRACE_SECONDS=1",
+	)
+	// The helper is handed to cleanup before it starts: it ignores TERM, so an
+	// assertion that fails first would otherwise leave it polling.
+	var helperPID int
+	runLauncher(t, cmd, f, &helperPID)
+	callPID, callGroup := logPIDAndGroup(t, f, "call-pid=")
+	waitForLine(t, f, "planted")
+	if callGroup != callPID {
+		t.Fatalf("the call is in group %d, want its own group %d: this case needs it reachable only through the published id", callGroup, callPID)
+	}
+	if callGroup == bystanderPID {
+		t.Fatalf("the call and the bystander are the same group %d, so the case could not tell a stop that reached the right group from one that reached the plant", callGroup)
+	}
+	t.Cleanup(func() { killGroups(callPID) })
+	// The scratch root is world-writable while the forced stop decides, and the
+	// plant is in it. That is the state a path handle would be read in: whatever
+	// name it resolved, the directory holding it is one another user can write.
+	planted := logValue(t, f, "planted=")
+	if planted == "" {
+		t.Fatalf("the helper recorded no plant path; %s", f.output(t))
+	}
+	if err := os.Chmod(filepath.Dir(planted), 0o777); err != nil {
+		t.Fatalf("make the fixture scratch root replaceable: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Dir(planted), 0o700) })
+	if _, err := os.Stat(planted); err != nil {
+		t.Fatalf("the plant is not in the scratch root %s: stat returned %v", planted, err)
+	}
+	if pidGone(callPID) {
+		t.Fatalf("the published call %d exited before the launcher was signalled", callPID)
+	}
+	if pidGone(bystanderPID) {
+		t.Fatalf("the bystander %d exited before the launcher was signalled", bystanderPID)
+	}
+	// The helper ignores TERM, so the grace expires and the forced stop is what
+	// runs. It has to name the published group, and only that group.
+	signalLauncher(t, cmd, syscall.SIGTERM)
+	mustExit(t, cmd, f, 130)
+	testwait.Until(t, fmt.Sprintf("the published call %d to be stopped before the launcher exits 130", callPID), func() bool {
+		return pidGone(callPID)
+	})
+	waitForEmptyGroup(t, callGroup)
+	// And the bystander is untouched. It is asked last, after the stop has
+	// certainly run, so a signal that reached it would be visible by now.
+	testwait.Until(t, fmt.Sprintf("bystander %d to still be alive after the forced stop", bystanderPID), func() bool {
+		return !pidGone(bystanderPID)
+	})
+	if pidGone(bystanderPID) {
+		t.Fatalf("the forced stop killed the bystander %d, whose group id was planted in replaceable scratch: the launcher signalled a group it read from a path", bystanderPID)
+	}
 }
 
 // TestMergeEnqueueLauncherBuildHelperStopsAGroupItsBuildLeftBehind pins the call
@@ -5318,13 +5645,9 @@ func TestMergeEnqueueLauncherBuildHelperStopsAGroupItsBuildLeftBehind(t *testing
 	// The member's pid is known from the file the stand-in go wrote, and the check
 	// is about THAT process: a process naming the same path that the case did not
 	// start is not evidence either way.
-	body, readErr := os.ReadFile(groupFile)
-	if readErr != nil {
-		t.Fatalf("read the member's pid: %v", readErr)
-	}
-	memberPID, convErr := strconv.Atoi(strings.TrimSpace(string(body)))
+	memberPID, convErr := readPIDFile(groupFile)
 	if convErr != nil || memberPID <= 1 {
-		t.Fatalf("the stand-in go recorded %q, which is not a pid: %v", string(body), convErr)
+		t.Fatalf("the stand-in go recorded no pid in %s: %v", groupFile, convErr)
 	}
 	testwait.Until(t, fmt.Sprintf("the build's leftover member %d to be stopped once its leader exited", memberPID), func() bool {
 		return pidGone(memberPID)
@@ -5404,11 +5727,7 @@ func TestMergeEnqueueLauncherCleanupLeavesABystanderThatNamesTheFixture(t *testi
 // its own, and a stop that reached only the pid would leave its descendants.
 func stopRecordedMember(memberPID int, groupFile string) {
 	killGroups(memberPID)
-	body, err := os.ReadFile(groupFile)
-	if err != nil {
-		return
-	}
-	pid, convErr := strconv.Atoi(strings.TrimSpace(string(body)))
+	pid, convErr := readPIDFile(groupFile)
 	if convErr != nil || pid <= 1 {
 		return
 	}

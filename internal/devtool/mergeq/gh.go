@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"primeradiant.com/evener/execsupport/orphanpipe"
@@ -26,19 +27,67 @@ type GHClient struct {
 	// GH is the gh executable. Empty runs the `gh` on PATH: the merge queue
 	// is GitHub's, so there is no second client to substitute for it.
 	GH string
-	// GroupFile is where the live gh process group is published for the
-	// launcher's forced stop. Empty reads ghGroupFileEnv, which is how
-	// scripts/ops/merge-enqueue.sh hands it down; a test sets it directly so the
-	// handle needs no process-global environment.
+	// GroupFile is a path the live gh process group is published in for the
+	// launcher's forced stop. Empty reads ghGroupFileEnv; a test sets it
+	// directly so the handle needs no process-global environment.
+	//
+	// A path is weaker than the descriptor -- the launcher has to resolve it at
+	// a moment when a scratch ancestor may have become writable by another user
+	// -- so it is the compatibility form. GroupFD is what
+	// scripts/ops/merge-enqueue.sh hands down.
 	GroupFile string
+	// GroupFD is an open descriptor the live gh process group is published on.
+	// Zero reads ghGroupFDEnv. The launcher opens it on an unlinked FIFO before
+	// the helper starts, which is why no path exists to be replaced while the
+	// helper runs.
+	GroupFD int
 }
 
-// groupFile is the handle path this client publishes in.
-func (c GHClient) groupFile() string {
-	if c.GroupFile != "" {
-		return c.GroupFile
+// groupFD is the descriptor to publish on, or 0 for none.
+func (c GHClient) groupFD() int {
+	fd, _ := c.groupChannel()
+	return fd
+}
+
+// groupChannel resolves the channel this client publishes on, once: the
+// descriptor and the path, each in the form it is used in, where 0 and "" mean
+// none.
+//
+// An explicit descriptor, or one named by the environment, means the launcher
+// wants the descriptor form. Publishing to a path as well would be a second,
+// weaker handle nobody reads -- and on a caller that set both, an empty path
+// would still be published to because ghGroupFileEnv is unset.
+func (c GHClient) groupChannel() (fd int, path string) {
+	fd = c.GroupFD
+	if fd == 0 {
+		fd = parseGroupFD(os.Getenv(ghGroupFDEnv))
 	}
-	return os.Getenv(ghGroupFileEnv)
+	if !usableGroupFD(fd) {
+		fd = 0
+	}
+	path = c.GroupFile
+	if path == "" && fd == 0 {
+		path = os.Getenv(ghGroupFileEnv)
+	}
+	return fd, path
+}
+
+// usableGroupFD reports whether fd names a descriptor this client may publish
+// on. The number comes from configuration and is validated, not trusted: 0, 1
+// and 2 are the standard streams, and writing a group id to one of those would
+// corrupt a caller's output.
+func usableGroupFD(fd int) bool {
+	return fd > 2
+}
+
+// parseGroupFD reads the descriptor number scripts/ops/merge-enqueue.sh hands
+// down, or 0 when the value is not a number.
+func parseGroupFD(value string) int {
+	fd, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil {
+		return 0
+	}
+	return fd
 }
 
 // ghName is the executable to run.
@@ -70,6 +119,17 @@ const ghDrainGrace = time.Second
 // id does not move when the wrapper dies, so publishing it is what lets the
 // launcher reach the call after the tree that started it is gone.
 const ghGroupFileEnv = "EVENER_MERGEQ_GH_GROUP_FILE"
+
+// ghGroupFDEnv names the descriptor this client publishes its live gh process
+// group on. It is the form scripts/ops/merge-enqueue.sh uses: the launcher opens
+// an unlinked FIFO on that descriptor before the helper starts, so the channel
+// has no name for another process to replace while the helper runs.
+//
+// A descriptor is the stronger handle for the same reason the file is a handle
+// at all: the launcher's read of it is a decision to signal a process group, and
+// a path can be replaced between the helper's write and that read in a way a
+// descriptor cannot.
+const ghGroupFDEnv = "EVENER_MERGEQ_GH_GROUP_FD"
 
 // publishGHGroup records pid as the live gh group, and clearGHGroup forgets it.
 // A group is published only while a call is in flight, so a launcher that reads
@@ -132,6 +192,183 @@ func clearGHGroup(path string) {
 		return
 	}
 	_ = os.Remove(filepath.Clean(path))
+}
+
+// command builds the gh invocation, behind the pre-exec gate when the launcher
+// supplied a channel to publish on.
+//
+// The returned gate lets `gh` run; when no channel was supplied and no error is
+// returned, it is a no-op. A failure to build the gate is returned as an error:
+// the launcher asked for a handle it can stop, and this call cannot be given
+// one. Running it anyway would issue a request nothing can stop, which is the
+// hole the gate exists to close.
+func (c GHClient) command(ctx context.Context, args ...string) (*exec.Cmd, *ghGate, error) {
+	gh := c.ghName()
+	if !c.wantsGroupChannel() {
+		return exec.CommandContext(ctx, gh, args...), &ghGate{}, nil
+	}
+	gated, opened, err := gateGH(ctx, gh, args...)
+	if err != nil {
+		return nil, nil, err
+	}
+	return gated, opened, nil
+}
+
+// ghGate is the pre-exec gate for one call: the write end that releases the
+// waiting `sh`, and the read end this process still holds.
+//
+// The read end has to be closed here or every call leaks a descriptor: exec.Cmd
+// gives the child a copy and keeps nothing, and the parent's copy is the
+// caller's to close.
+type ghGate struct {
+	read  *os.File
+	write *os.File
+	once  sync.Once
+}
+
+// closeRead drops this process's copy of the read end, once the child has its
+// own. Safe on a gate that has none.
+func (g *ghGate) closeRead() {
+	if g.read == nil {
+		return
+	}
+	_ = g.read.Close()
+	g.read = nil
+}
+
+// release lets `gh` exec. Safe to call more than once, safe before the gate is
+// closed, and safe after a failed Start: the write to an already-closed pipe
+// fails, the close is idempotent, and a `sh` that has already read its byte or
+// already exited sees nothing new.
+//
+// A byte, then the close. EOF alone means "do not run": the gate distinguishes a
+// release from a helper that died, so closing without writing would turn every
+// gated call into a call that never happened.
+func (g *ghGate) release() {
+	g.once.Do(func() {
+		if g.write != nil {
+			_, _ = g.write.WriteString("go\n")
+			_ = g.write.Close()
+		}
+		g.closeRead()
+	})
+}
+
+// close releases nothing and drops both ends: the call it gated is over either
+// way, and a `sh` still waiting reads EOF and exits without exec'ing `gh`.
+func (g *ghGate) close() {
+	g.once.Do(func() {
+		if g.write != nil {
+			_ = g.write.Close()
+		}
+		g.closeRead()
+	})
+}
+
+// gateGH builds the gh invocation behind a pre-exec gate and returns the write
+// end that releases it.
+//
+// A channel exists so the launcher can stop a call the helper cannot: it signals
+// a process group, and a group that has not been forked yet cannot be signalled.
+// So the call must not be able to issue a request before its group has been
+// published on that channel, and the only place that can be enforced is between
+// the fork and the exec.
+//
+// The gate is a pipe and a `sh` that reads it before exec'ing:
+//
+//	sh -c 'IFS= read -r _ <&3 || exit 1; exec 3<&-; exec "$@"' _ gh args...
+//
+// The read end is FD 3 in the child because it is the first entry in
+// ExtraFiles, and that is also why FD 3 is free here even though the launcher's
+// channel is also on 3: os/exec gives a child only the three standard
+// descriptors plus the ones listed in ExtraFiles, so the launcher's descriptor
+// is not inherited at all. `gh` never sees the gate: `sh` closes FD 3 before
+// exec'ing, and `exec` keeps the pid -- which is why the published pid is the
+// pid `gh` runs as.
+//
+// The write end is returned rather than closed here because the caller has to
+// publish the group between Start and the exec. A helper killed in that window
+// has its end closed by the kernel, `sh` reads EOF, exits 1, and `gh` never
+// runs: a call nobody published a group for is a call nobody can stop, so it
+// must not start.
+func gateGH(ctx context.Context, gh string, args ...string) (*exec.Cmd, *ghGate, error) {
+	gateR, gateW, err := os.Pipe()
+	if err != nil {
+		return nil, nil, fmt.Errorf("gate the gh call: %w", err)
+	}
+	script := `IFS= read -r _ <&3 || exit 1; exec 3<&-; exec "$@"`
+	cmd := exec.CommandContext(ctx, "sh", append([]string{"-c", script, "-", gh}, args...)...)
+	cmd.ExtraFiles = []*os.File{gateR}
+	return cmd, &ghGate{read: gateR, write: gateW}, nil
+}
+
+// wantsGroupChannel reports whether the launcher supplied a channel to publish
+// on, by descriptor or by path.
+//
+// Either form gates the call: the point of the gate is that no request can be
+// issued before the launcher holds the group, and that is true of a path handle
+// too. A path that cannot be written leaves the launcher with a stale handle and
+// a live call, which is the same hole.
+func (c GHClient) wantsGroupChannel() bool {
+	fd, path := c.groupChannel()
+	return fd != 0 || path != ""
+}
+
+// publishGHGroupFD writes sign and pid to fd as one framed line, and reports
+// whether the write landed.
+//
+// One write, not two: the launcher drains whole lines, so a publication split
+// across two writes could be read between them. The line is the message.
+//
+// The descriptor is borrowed, not owned, and the wrapper is neither closed nor
+// dropped: this helper did not open the channel and must leave it open for the
+// launcher. os.NewFile installs a finalizer that closes the descriptor, so a
+// wrapper left to the garbage collector would close the launcher's channel
+// mid-run -- taking the deferred clear below with it, and leaving the launcher
+// holding a group id that has been reused. The wrapper is therefore retained for
+// the life of the process: the descriptor belongs to the launcher, and this
+// process's copy closes when the process exits.
+//
+// The write cannot block the call: the launcher opens the FIFO read-write, so it
+// always holds a reader and there is always buffer space for a line this short.
+// Writes to a FIFO are appended in the order they were written, which is the
+// order the launcher's drain relies on.
+func publishGHGroupFD(fd int, sign byte, pid int) bool {
+	if !usableGroupFD(fd) || pid <= 1 {
+		return false
+	}
+	file := borrowedGroupFD(fd)
+	if file == nil {
+		return false
+	}
+	_, err := file.WriteString(string(sign) + strconv.Itoa(pid) + "\n")
+	return err == nil
+}
+
+// borrowedGroupFD returns the retained wrapper for a descriptor the launcher
+// opened, creating it on first use.
+//
+// The map is never emptied on purpose: an entry is what keeps the wrapper
+// reachable, and an unreachable wrapper's finalizer closes a descriptor this
+// process does not own. The set is bounded by the number of channel descriptors
+// a launcher hands one helper, which is one.
+var (
+	borrowedGroupFDMu sync.Mutex
+	borrowedGroupFDs  = map[int]*os.File{}
+)
+
+func borrowedGroupFD(fd int) *os.File {
+	borrowedGroupFDMu.Lock()
+	defer borrowedGroupFDMu.Unlock()
+	if file := borrowedGroupFDs[fd]; file != nil {
+		return file
+	}
+	file := os.NewFile(uintptr(fd), "gh-group-channel")
+	if file == nil {
+		return nil
+	}
+	borrowedGroupFDs[fd] = file
+	return file
 }
 
 // run executes gh and returns its stdout. The error carries gh's own stderr
@@ -389,7 +626,14 @@ func parseGraphQLAnswer[T any](parse func([]byte) (T, error)) func([]byte) (T, e
 }
 
 func (c GHClient) run(ctx context.Context, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, c.ghName(), args...)
+	cmd, gate, err := c.command(ctx, args...)
+	if err != nil {
+		return nil, err
+	}
+	// Every return path closes the gate, including a Start that failed before the
+	// child had a copy of it. Closing releases nothing: a `sh` still waiting
+	// reads EOF and exits without exec'ing `gh`.
+	defer gate.close()
 	cmd.SysProcAttr = procgroup.SysProcAttr()
 	// Kill, not Terminate: this is a cancellation, and the same choice the
 	// config value evaluator makes for the same reason. A wrapper's CLI that
@@ -411,7 +655,22 @@ func (c GHClient) run(ctx context.Context, args ...string) ([]byte, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	groupFile := c.groupFile()
+	// The child has its own copy of the gate's read end; this one would only keep
+	// a descriptor open for the life of the call.
+	gate.closeRead()
+	groupFD, groupFile := c.groupChannel()
+	// The call's pid is published BEFORE the gate is released below, and that
+	// ordering is what makes the handle trustworthy: from the moment `gh` can
+	// issue a request, the launcher already has the group to stop.
+	//
+	// The pid is the group id too: the child is in a group of its own
+	// (procgroup.SysProcAttr), and the gate keeps it from exec'ing `gh` until
+	// this write has happened. A `sh` that exec's in place keeps the pid, so the
+	// value published here is the pid `gh` runs as.
+	publishedFD := publishGHGroupFD(groupFD, '+', cmd.Process.Pid)
+	if publishedFD {
+		defer publishGHGroupFD(groupFD, '-', cmd.Process.Pid)
+	}
 	// Only a handle this call published is removed when the call ends. The path is
 	// configuration, and a publication that failed has left whatever was there
 	// untouched: removing the name then deletes something this call did not create.
@@ -420,8 +679,13 @@ func (c GHClient) run(ctx context.Context, args ...string) ([]byte, error) {
 	if publishGHGroup(groupFile, cmd.Process.Pid) {
 		defer clearGHGroup(groupFile)
 	}
+	// Release the gate only now, with the group already published. A helper
+	// killed before this point closes the gate's write end with its own death,
+	// which `sh` reads as EOF and exits on without ever exec'ing `gh`: a call
+	// that cannot be stopped is not started.
+	gate.release()
 	rawErr := cmd.Wait()
-	err := orphanpipe.ChildErr(cmd, rawErr)
+	err = orphanpipe.ChildErr(cmd, rawErr)
 	// A clean child whose whole reply arrived is not a failed read, even when the
 	// deadline fired as Wait returned. The race is real and it costs the answer:
 	// this client sets Cancel, so a context that expires while the child is

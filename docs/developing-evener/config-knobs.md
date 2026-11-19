@@ -150,6 +150,7 @@ Dev tooling and test rigs declare these themselves.
 | `EVENER_HUB_LIVE_STACK_WARM` | none | `internal/devtool/shardrun` |
 | `EVENER_HUB_TEST_ENV_ROOT` | none | `cmd/evener-hub/internal/hubtestenv` |
 | `EVENER_LIVE_TESTS` | none | `agent/internal/liveeval` |
+| `EVENER_MERGEQ_GH_GROUP_FD` | none | `internal/devtool/mergeq` |
 | `EVENER_MERGEQ_GH_GROUP_FILE` | none | `internal/devtool/mergeq` |
 | `EVENER_SANDBOXTEST_KEPT_TMPDIR` | none | `agent/sandbox/sandboxtest` |
 | `EVENER_SANDBOXTEST_ROOT` | none | `agent/sandbox/sandboxtest` |
