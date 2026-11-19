@@ -95,7 +95,7 @@ Jesse selected this approach after review showed that independently merging late
 
 ### Selected client authority: one explicit control state
 
-Browser and native share a discriminated state with four exhaustive cases: `uninitialized`, `ready(snapshot)`, `recovering(lastSafeDisplay)`, and `unsupported(lastCanonicalDisplay, observedVersion)`. The shared reducer returns both the next state and whether one replacement read must start. Only `ready` may compose a model mutation.
+Browser and native share a discriminated state with four exhaustive cases: `uninitialized`, `ready(snapshot)`, `recovering(lastSafeDisplay)`, and `unsupported(lastCanonicalDisplay)`. The shared reducer returns both the next state and whether one replacement read must start. Only `ready` may compose a model mutation.
 
 Jesse selected this after PAR reproduced three consequences of representing protocol version and snapshot as independent optional fields: a conflict could lose its reread, a capable client could mistake recovery for a no-snapshot mutation path and send without identity, and native could abort the whole conversation on an unknown version. The explicit state makes those invalid combinations unrepresentable.
 
@@ -148,12 +148,16 @@ ModelControlSnapshot
     reasoningEffortLevels
     supportsReasoning
   desired, optional
-    requestSequence
     clientMutationId
     modelProvider
     model
     lifecycle: pending | applied | rejected
 ```
+
+The daemon still orders accepted requests by an internal issue counter; that
+counter is not part of the wire shape (a later protocol cut removed it from
+the published record — clients settle a desired record by its
+`clientMutationId`).
 
 `revision` is unsigned and strictly increases for every shared model-control transition in one authority. A snapshot is immutable once published. Equal identity and equal revision must mean equal content; different content at the same revision is a protocol inconsistency.
 
@@ -291,7 +295,6 @@ ModelControlClientState
     lastSafeDisplay
   unsupported
     canonicalDisplay
-    observedVersion, optional
 ```
 
 `uninitialized` means no accepted read has classified the connection. `ready` is the only state with mutation authority. `recovering` means a supported authority was invalidated and only a fresh accepted read may establish the next state. `unsupported` means an accepted read omitted version 1 or advertised a version this client does not implement. Sessions remain readable in every state.
