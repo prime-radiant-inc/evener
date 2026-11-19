@@ -2465,3 +2465,59 @@ test.each(["main", "secondary"] as const)(
     }
   },
 );
+
+test("phone Back on a Needs-You-selected inspector whose source is parked focuses the surviving main conversation instead of Welcome", async () => {
+  const setMobile = installSwitchableViewport();
+  setMobile(false);
+  const client = cascadeClient((ref) => cascadeContext(ref, ref === "local:child" ? ["local:source"] : []));
+  installLocationForRoute("local:source");
+  installLocationForRoute("local:other");
+  installLocationForRoute("local:child");
+  window.history.pushState({}, "", "/s/local%3Asource");
+  await act(async () => {
+    render(<AppShell client={client} />);
+  });
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:source" }));
+  const sourcePane = workspaceStore.getState().mainPane();
+  if (!sourcePane) throw new Error("expected source pane");
+
+  const inspectorId = await act(async () =>
+    enterAgentCascade(
+      activityDelegate({
+        ownerRef: "local:source",
+        childRef: "local:child",
+        delegateId: "d-parked-source",
+      }),
+      sourcePane.id,
+    ),
+  );
+  await screen.findByTestId("cascade-column");
+
+  // Focus source, hop via Needs You to an unshown conversation (parking source),
+  // then hop via Needs You to the still-open inspector.
+  await act(async () => {
+    workspaceStore.getState().focusPane(sourcePane.id);
+    openAttentionSession("local:other");
+  });
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:other" }));
+  const otherPane = workspaceStore.getState().mainPane();
+  if (!otherPane) throw new Error("expected surviving main conversation");
+  expect(sourcePane.slot).toBe("parked");
+
+  await act(async () => {
+    openAttentionSession("local:child");
+  });
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(inspectorId));
+
+  await act(async () => {
+    setMobile(true);
+  });
+  await screen.findByRole("button", { name: "Back" });
+
+  await userEvent.setup().click(screen.getByRole("button", { name: "Back" }));
+  expect(workspaceStore.getState().panes.some((pane) => pane.id === inspectorId)).toBe(false);
+  expect(workspaceStore.getState().panes.some((pane) => pane.type === "welcome")).toBe(false);
+  expect(workspaceStore.getState().focusedPaneId).toBe(otherPane.id);
+  expect(workspaceStore.getState().mainPane()).toBe(otherPane);
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aother"));
+});

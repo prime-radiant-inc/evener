@@ -1579,7 +1579,7 @@ async function reloadAndMobileJourney() {
     assert.equal(await read("document.querySelectorAll('.dv-tab').length"), fixture.sourceTabCount + 1);
     await pinSourceDom();
     await assertInspectorFocus(await read(layoutExpr));
-    await observeGeometryAndFocus(fixture.refs[4]);
+    await observeGeometryAndFocus(fixture.refs[5]);
     await read("(() => { const hold = window.__cascadeLate; hold.active = false; for (const reply of hold.replies) reply.release(); hold.replies = []; })()");
     await wait("!document.querySelector('[data-pane-scaffold=\"cascade\"]').textContent.includes('Earlier ancestry is incomplete')", "actual ancestry and route recovery settle");
     assert.equal(await read("document.activeElement === window.__cascadeFocused"), true, "late ancestry and location preserve exact focus");

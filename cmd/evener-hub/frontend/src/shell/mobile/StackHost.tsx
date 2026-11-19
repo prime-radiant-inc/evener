@@ -517,13 +517,21 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
       const previousId = focusedPane.id;
       wentBackRef.current = true;
       returnFromAgentCascade(previousId);
-      const nextFocusedId = workspaceStore.getState().focusedPaneId;
-      if (nextFocusedId === previousId) {
+      const after = workspaceStore.getState();
+      if (after.focusedPaneId === previousId) {
         wentBackRef.current = false;
         popPendingRef.current = false;
         return;
       }
-      if (nextFocusedId !== null) return;
+      if (after.focusedPaneId !== null) return;
+      const fallback =
+        popValidBackTarget(backStackRef.current, presentedPanes(after.panes), previousId) ?? after.mainPane()?.id;
+      if (fallback) {
+        workspaceStore.getState().focusPane(fallback);
+      } else {
+        workspaceStore.getState().openPane("welcome");
+      }
+      return;
     }
     // Attention Back belongs to the ordinary session reader the current entry
     // owns.
