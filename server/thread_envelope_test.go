@@ -669,7 +669,7 @@ func TestThreadEnvelopeContextFacetSamplesOnce(t *testing.T) {
 // event bridge, every projection commit and every other connection's capture --
 // and four of the sixteen callbacks this replaced could block behind a
 // transcript fsync, a jobs.jsonl read, a task-store save, or the session mutex
-// SetModel holds across rendering the system prompt.
+// SetModelControl holds across rendering the system prompt.
 //
 // The counting source is the production seam, so this measures the real thing
 // rather than a stand-in for it.

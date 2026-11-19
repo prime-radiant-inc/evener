@@ -17,7 +17,7 @@ import (
 // design; this drives the session's GENUINELY concurrent surface in parallel —
 // a serial turn loop (the supported one-turn-at-a-time path) raced against a
 // concurrent interrupter (ctx cancel, the real interrupt path) and the broad set
-// of s.mu-guarded control/read ops (SetModel / SetReasoningEffort / DetailedStatus
+// of s.mu-guarded control/read ops (SetModelControl / SetReasoningEffort / DetailedStatus
 // / SetGoal / ClearGoal / State / Meta). It extends the focused
 // TestSession_*_NoRaceWithSetters race tests to the full op mix at stress scale.
 //
@@ -106,7 +106,7 @@ func TestSession_ConcurrencyStress(t *testing.T) {
 
 	// Bounded concurrent control/read ops — all s.mu-guarded, safe against a turn.
 	ops := []func(){
-		func() { sess.SetModel("gpt-5.2") },
+		func() { setModel(sess, "gpt-5.2") },
 		func() { sess.SetReasoningEffort("high") },
 		func() { _ = sess.DetailedStatus() },
 		func() { _, _ = sess.SetGoal(context.Background(), "do the thing") },

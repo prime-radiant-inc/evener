@@ -579,7 +579,7 @@ type SessionNameChangedData struct {
 	Source string `json:"source,omitempty"`
 }
 
-// ModelChangedData is the payload for an EventModelChanged event: SetModel
+// ModelChangedData is the payload for an EventModelChanged event: SetModelControl
 // committed a provider/model switch. OldProvider/OldModel and
 // NewProvider/NewModel let subscribers diff the change; ReasoningEffortLevels,
 // SupportsReasoning and DefaultReasoningEffort describe the NEW profile so
@@ -597,7 +597,7 @@ type ModelChangedData struct {
 	// would not carry the tier the switch resolves.
 	DefaultReasoningEffort string `json:"default_reasoning_effort,omitempty"`
 	// MarkerText is the persisted switch-marker text ("Switched model: <old>
-	// → <new>", plus any warning lines) — the exact text SetModel wrote to
+	// → <new>", plus any warning lines) — the exact text SetModelControl wrote to
 	// the transcript's TurnModelSwitch turn. The live projector renders it
 	// verbatim as a systemMessage item so live and replay stay byte-identical.
 	MarkerText          string  `json:"marker_text,omitempty"`

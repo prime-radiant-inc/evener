@@ -51,7 +51,7 @@ func prependSystemPromptToUserMessage(systemPrompt string, user llm.Message) llm
 
 // rebuildPromptCache caches system prompt components that don't change between
 // renders. env is the execution environment to render against: callers that
-// already hold s.mu (e.g. SetModel) must pass s.env directly; callers that
+// already hold s.mu (e.g. SetModelControl) must pass s.env directly; callers that
 // don't must resolve it via currentEnv() first — renderSystemPrompt cannot
 // call currentEnv() itself since it is invoked from both locked and unlocked
 // contexts and s.mu is not reentrant.

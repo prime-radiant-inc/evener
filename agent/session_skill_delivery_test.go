@@ -1284,7 +1284,7 @@ func TestSkillDelivery_ProjectionModelSwitch(t *testing.T) {
 	switched := &agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response {
 		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
-	// A cross-provider SetModel resolves through the session resolver; without
+	// A cross-provider SetModelControl resolves through the session resolver; without
 	// it the switch silently degrades to a same-instance WithModel and the
 	// committing dispatch never leaves the primary adapter.
 	s := newSession(t, withAdapter(primary), withAdapter(switched), withDir(root),
@@ -1299,8 +1299,8 @@ func TestSkillDelivery_ProjectionModelSwitch(t *testing.T) {
 		}))
 	// Switch the model between the tool result and the committing dispatch, so
 	// the request is projected for a different provider/protocol target.
-	// applyModelSwitchControl, not SetModel: this checkpoint runs mid-turn, so the
-	// folded SetModel would queue the switch for the boundary; this test
+	// applyModelSwitchControl, not SetModelControl: this checkpoint runs mid-turn, so the
+	// folded SetModelControl would queue the switch for the boundary; this test
 	// pins the mid-turn projection machinery, which needs the immediate swap.
 	var switchedMidTurn atomic.Bool
 	updateSessionTestConfig(s, func(cfg *testConfig) {

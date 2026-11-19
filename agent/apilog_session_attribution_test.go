@@ -506,7 +506,7 @@ func newModelSwitchAttributionSession(t *testing.T, client *llm.Client, stateDir
 }
 
 // TestModelSwitchLiveListingAttribution pins issue #754: resolveModelSwitchTarget
-// (agent/session_set_model.go), used by SetModel and by both
+// (agent/session_set_model.go), used by SetModelControl and by both
 // resolveModelSwitchTarget call sites inside selectSubagentModel — the plain
 // explicit-override path and the
 // plugin-agent-resolution-failed fallback path
@@ -532,7 +532,7 @@ func TestModelSwitchLiveListingAttribution(t *testing.T) {
 		client.Use(logger)
 
 		sess := newModelSwitchAttributionSession(t, client, stateDir)
-		if err := sess.SetModel("gpt-5.2"); err != nil {
+		if err := setModel(sess, "gpt-5.2"); err != nil {
 			t.Fatalf("SetModel: %v", err)
 		}
 

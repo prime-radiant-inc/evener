@@ -310,7 +310,7 @@ type SessionConfig struct {
 
 	// ResolveProfile, when non-nil, maps a "provider/model" ref to the
 	// corresponding *provider.Profile. Injected by cmd/evener so that
-	// Session.SetModel can perform cross-provider switches without
+	// Session.SetModelControl can perform cross-provider switches without
 	// importing the provider constructors directly (which would create a
 	// cycle). When nil the session falls back to profile.WithModel which
 	// only handles same-provider (or strip/keep) refs.

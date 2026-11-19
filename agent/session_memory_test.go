@@ -3400,7 +3400,7 @@ const memoryGuidanceHeading = "\n\n## Memory\n\n"
 
 // refreshModelFacingCaches rebuilds the tool definitions and the system
 // prompt after a test changes the registry or memory binding mid-session, as
-// production paths that change the registry (registerTool, SetModel) do.
+// production paths that change the registry (registerTool, SetModelControl) do.
 func refreshModelFacingCaches(s *Session) {
 	s.mu.Lock()
 	s.rebuildToolDefsCache()

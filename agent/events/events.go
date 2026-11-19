@@ -82,7 +82,7 @@ const (
 	EventTaskUpdated EventKind = "TASK_UPDATED"
 	// EventSessionNameChanged reports that the session's display title changed.
 	EventSessionNameChanged EventKind = "SESSION_NAME_CHANGED"
-	// EventModelChanged reports that SetModel committed a provider/model switch.
+	// EventModelChanged reports that SetModelControl committed a provider/model switch.
 	EventModelChanged EventKind = "MODEL_CHANGED"
 	// EventModelControlChanged carries the complete canonical model-control
 	// snapshot after one accepted shared transition.

@@ -914,7 +914,7 @@ injected at construction (cycle-free: `cmd/evener` builds the closure;
   (preserving communicate/allowed-decisions overrides, and re-running
   provider-specific tool registration via `reapplyProviderSpecificTools`).
   Otherwise, `profile.WithModel(ref)` handles it within the current instance.
-- `SetModel`, explicit delegate model arguments, and `model_fallbacks` route
+- `SetModelControl`, explicit delegate model arguments, and `model_fallbacks` route
   through this. Plugin-agent `model` metadata is different: it's advisory,
   checked only against models the current instance already serves, and never
   switches instances — an unavailable plugin model falls through to the

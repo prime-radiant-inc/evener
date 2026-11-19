@@ -12,7 +12,7 @@ import (
 // backing daemon has exited, resumes the session once and retries. This is the
 // shared "exited == never-exited" contract (kata qp94): every user-reachable
 // session mutation the hub advertises for a past thread must succeed by
-// resuming the daemon, exactly as StartTurn/Compact/SetModel already do.
+// resuming the daemon, exactly as StartTurn/Compact/SetModelControl already do.
 //
 // The retry only fires when the ref is one the hub knows (a managed-launch
 // source, a thread in the local past index, or any ref a registered remote

@@ -59,7 +59,7 @@ The daemon session that admits and applies switches is the only component that k
 - Do not speculate in the client before daemon acceptance.
 - Do not infer request identity from FIFO order, target value, timing, warning text, or transport request ID.
 - Do not make model-control recovery invalidate otherwise valid transcript history.
-- Do not support mixed-version model-control deployments. Evener is pre-release; hubs, daemons, and clients upgrade together.
+- Do not support mixed-version model-control deployments: no fallback method, old-response decoding, or identity-free mutation path for a peer that does not speak version 1. Evener is pre-release, so the method changes in place. A client on a below-v8 connection still reads and updates its hub; only model switching is disabled there.
 
 ## Anti-goals
 
@@ -355,9 +355,13 @@ After a version-1 read, each client:
 - merges response, notification, and read through the shared reducer;
 - renders the shared display projection.
 
-The model selector is enabled only in `ready`. If a call races with entry into `uninitialized` or `recovering`, it waits for the already in-flight establishing or replacement read and composes the request only if that read reaches `ready` for the same thread binding. If the binding retires, the read reaches `unsupported`, or the read settles unsuccessfully, the call fails locally without sending. No state sends an identity-free request.
+A model pick is offered in `ready`, and in the `unsupported` that a cold session reads as. A cold session has no daemon to hold authority, and the hub resumes it behind the mutation, so the picker offers the change before any authority exists. The dispatch then waits for the post-resume read, which is the first read that can name the resumed daemon: it must reach `ready` for the binding the resume resolved, or the pick fails before its frame exists and nothing is sent.
 
-Without version 1, each client continues to display canonical model events but disables model changes. It does not speculate locally.
+`recovering` and `uninitialized` hold the picker instead. `recovering` has a replacement read the store owns, and a pick must not race it; `uninitialized` is what a connection retire leaves until a read lands. A live `unsupported` holds it too: a daemon whose read carries no complete snapshot has nothing to resume and no authority to accept a pick.
+
+In `ready`, a call that races with entry into `uninitialized` or `recovering` waits for the already in-flight establishing or replacement read and composes the request only if that read reaches `ready` for the same thread binding. If the binding retires, the read reaches `unsupported`, or the read settles unsuccessfully, the call fails locally without sending. No state sends an identity-free request.
+
+Without version 1, each client continues to display canonical model events but disables model changes. It does not speculate locally. That is per connection, not per client build: a client that negotiates a protocol below v8 reads and updates the hub normally, and only its model switching is disabled, because v8 is what carries the client mutation id and the exact authority a daemon fences a pick on.
 
 The browser thread store owns the shared snapshot so two views of one thread converge even when one view issued the request. Per-call transport bookkeeping remains local but cannot override shared authority.
 
@@ -385,7 +389,7 @@ This is one in-place, coordinated pre-release protocol change:
 - one new notification;
 - no required change to the existing canonical model-change notification.
 
-Every hub, daemon, generated client, browser, native client, and Manager adapter in a deployment must upgrade together. The existing method name changes in place; there is no second RPC, old-response decoding, identity-free mutation path, or mixed-version routing guarantee. A read with an absent or unknown version still enters `unsupported` so the conversation remains readable and canonically displayed, but that is conservative failure handling, not compatibility support.
+Every hub, daemon, generated client, browser, native client, and Manager adapter in a deployment upgrades together for this protocol. The existing method name changes in place; there is no second RPC, old-response decoding, identity-free mutation path, or mixed-version routing guarantee. Skew still has to work at the boundaries the deployment already tolerates: a client that negotiated a protocol below v8 keeps reading, browsing, and updating its hub, and only model switching is disabled on that connection, exactly as a read without version 1 is displayed.
 
 The typed response is structurally complete: its disposition and full snapshot are required. `{}` or any response missing either field is a post-dispatch protocol failure, not an unsupported success. The call fails, automatic retry remains blocked, and the client performs the same one-read recovery used for response loss without replaying the mutation.
 

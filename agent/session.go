@@ -144,7 +144,7 @@ type Session struct {
 	delegateModelDescription string
 	modelSnapshot            *modelavailability.Snapshot
 	// lastDroppedModelFallbacks records the cfg.ModelFallbacks entries dropped
-	// by the most recent SetModel's post-switch revalidation (entries that no
+	// by the most recent SetModelControl's post-switch revalidation (entries that no
 	// longer validate against the new profile). Nil until a switch drops any.
 	// The model-switch marker surfaces it as a warning line.
 	lastDroppedModelFallbacks []string
@@ -316,7 +316,7 @@ type Session struct {
 	// --- Synchronization / lock discipline ---
 	//
 	// The turn loop (ProcessInput → processOneInput) is the primary owner of
-	// most mutable state. External callers — SetModel/SetReasoningEffort,
+	// most mutable state. External callers — SetModelControl/SetReasoningEffort,
 	// Steer, the client-mutation queue handlers, Snapshot/State/DetailedStatus, and Close —
 	// run on other goroutines and race it, so the primitives below guard the
 	// shared fields. Several collaborators carry their OWN locks and are NOT
@@ -1176,7 +1176,7 @@ type Session struct {
 	// sets it at entry and clears it as its last act before going idle, so
 	// "set goal + read flag" and "clear flag + go idle" are mutually exclusive.
 	// It also widens turnInFlightLocked to the whole input call, which is how
-	// SetModel decides a pick arrived mid-input and must queue for the boundary.
+	// SetModelControl decides a pick arrived mid-input and must queue for the boundary.
 	goalInTurn bool
 	// pendingModels holds the model switches requested while an input was in
 	// flight (SetModelControl's queue path), together with the live listing
@@ -1771,7 +1771,7 @@ type sessionName struct {
 	set            bool      // a name has been assigned
 	promptPending  bool      // a naming LLM call is in flight
 	pending        int       // registered naming attempts, including compaction refreshes
-	quotaExhausted bool      // current model's allowance is spent; stop naming until SetModel
+	quotaExhausted bool      // current model's allowance is spent; stop naming until SetModelControl
 }
 
 // forkInfo records a session's fork lineage — where it diverged from a parent
@@ -1821,7 +1821,7 @@ func (s *Session) ReasoningEffort() string {
 }
 
 // currentProfile returns the active profile under s.mu so reads never race
-// SetModel's swap (s.profile is reassigned under s.mu). Callers that already
+// SetModelControl's swap (s.profile is reassigned under s.mu). Callers that already
 // hold s.mu must read s.profile directly instead of calling this.
 func (s *Session) currentProfile() *provider.Profile {
 	s.mu.Lock()
@@ -1939,7 +1939,7 @@ func (s *Session) reapplyProviderSpecificTools(oldProfile, newProfile *provider.
 // boundary. The primed instance and listing are the ones the pick-time
 // preflight fetched; the boundary's applyModelSwitchControl reuses them so a
 // queued switch costs one live enumeration, not two. The seq is the pick
-// generation SetModel stamped, which fences the boundary application against
+// generation SetModelControl stamped, which fences the boundary application against
 // superseding picks. A zero value (empty model) means nothing is queued.
 type pendingModelSwitch struct {
 	model            string
@@ -1973,7 +1973,7 @@ type modelSwitchFence struct {
 	queueWhenBusy bool
 }
 
-// SetModel changes the model used for future LLM calls.
+// SetModelControl validates and sequences one authority-bound model-control request.
 // Takes effect on the next request. Returns an error (without changing any
 // session state) when the model ref cannot be resolved to a profile, when the
 // current history contains content the target can't represent (see
@@ -1990,31 +1990,6 @@ type modelSwitchFence struct {
 // representability is re-checked at that boundary against the settled history;
 // a switch that fails there surfaces as a transcript warning and is dropped
 // rather than retried.
-func (s *Session) SetModel(model string) error {
-	var publish func(string)
-	s.mu.Lock()
-	if s.bootGeneration == "" && !s.closingOrClosedLocked() {
-		s.setBootGenerationLocked("standalone_" + ulid.Make().String())
-		publish = s.transcriptFrontier.publish
-	}
-	authority := appwire.ModelControlAuthority{
-		InstanceID:     s.id,
-		BootGeneration: s.bootGeneration,
-	}
-	s.mu.Unlock()
-	if publish != nil {
-		publish(authority.BootGeneration)
-	}
-	_, err := s.SetModelControl(ModelControlRequest{
-		Model:                  model,
-		ClientMutationID:       "set_model_" + ulid.Make().String(),
-		ExpectedInstanceID:     authority.InstanceID,
-		ExpectedBootGeneration: authority.BootGeneration,
-	})
-	return err
-}
-
-// SetModelControl validates and sequences one authority-bound model-control request.
 func (s *Session) SetModelControl(request ModelControlRequest) (appwire.ThreadModelSetResponse, error) {
 	release, admissionErr := s.beginRetirementMutation("admission")
 	if admissionErr != nil {
@@ -2231,10 +2206,10 @@ func (s *Session) applyQueuedModelSwitches(inWaitingCall bool) {
 	}
 }
 
-// applyModelSwitchControl is SetModel's committed switch: resolve, validate
+// applyModelSwitchControl is SetModelControl's committed switch: resolve, validate
 // against settled history, swap the profile, record the marker turn, publish
 // EventModelChanged, and persist. The caller owns the retirement admission -
-// SetModel and the pending applier each hold one. A primed listing the caller
+// SetModelControl and the pending applier each hold one. A primed listing the caller
 // already fetched (the queue's pick-time preflight) is reused instead of a
 // fresh enumeration; nil primes here. The fence binds an immediate application
 // to the newest issued request and a deferred application to the exact pending

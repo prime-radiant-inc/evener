@@ -72,7 +72,7 @@ func formatContentKinds(kinds []llm.ContentKind) string {
 
 // modelSwitchEnumerationTimeout mirrors launchcheck's live model enumeration
 // budget (cmd/evener/internal/launchcheck/launchcheck.go's validateLaunchCheckModel)
-// for the analogous membership check SetModel performs.
+// for the analogous membership check SetModelControl performs.
 const modelSwitchEnumerationTimeout = 8 * time.Second
 
 // resolveModelSwitchTarget lists the target instance ONCE and reuses the
@@ -83,16 +83,16 @@ const modelSwitchEnumerationTimeout = 8 * time.Second
 // the provider's model list could change between the metadata-fill call and
 // the membership-check call, letting the two disagree about availability.
 // The instance and listing the enumeration produced are returned alongside the
-// resolved profile so a queueing caller (Session.SetModel's queue path) can
+// resolved profile so a queueing caller (Session.SetModelControl's queue path) can
 // carry them to the switch's later application instead of enumerating again.
 // sessionID attributes the canonical API-log attempt this listing produces
 // (llm.WithAPILogContext), matching resolveLiveModelProfileWithEnumerationTimeout's
-// pre-session counterpart — every caller here (SetModel, subagent model
+// pre-session counterpart — every caller here (SetModelControl, subagent model
 // selection) runs on an already-existing session, so sessionID is always that
 // session's own id.
 func resolveModelSwitchTarget(client *llm.Client, profile *provider.Profile, sessionID string, timeout llm.AdapterTimeout, primedInstance string, primed *llm.ModelListing) (resolved *provider.Profile, listedInstance string, listing *llm.ModelListing, err error) {
 	if primed != nil && primedInstance == profile.ID() {
-		// SetModel already listed this instance before it took the session
+		// SetModelControl already listed this instance before it took the session
 		// lock. Reuse that listing: a second fetch could return empty and clear
 		// the rows the resolve just applied, and it would cost another full
 		// enumeration budget.

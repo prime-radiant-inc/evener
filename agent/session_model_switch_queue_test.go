@@ -70,7 +70,7 @@ func TestModelPickBetweenTurnsAppliesToTheNextTurn(t *testing.T) {
 		cfg.afterCommunicateBoundary = func(sess *Session) {
 			select {
 			case pickOnce <- struct{}{}:
-				if err := sess.SetModel("gpt-5.4"); err != nil {
+				if err := setModel(sess, "gpt-5.4"); err != nil {
 					t.Errorf("SetModel between turns: %v", err)
 				}
 			default:
@@ -133,7 +133,7 @@ func TestQueuedModelSwitchAppliesAfterTheFailedTurnSettlesAttention(t *testing.T
 		LLMRetryPolicy: &policy,
 	}))
 	adapter.pick = func() {
-		if err := s.SetModel("gpt-5.4"); err != nil {
+		if err := setModel(s, "gpt-5.4"); err != nil {
 			t.Errorf("mid-turn SetModel: %v", err)
 		}
 	}
@@ -172,7 +172,7 @@ func TestQueuedMidTurnSwitchEnumeratesTheLiveListingOnce(t *testing.T) {
 	}))
 	adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
-			if err := s.SetModel("gpt-5.4"); err != nil {
+			if err := setModel(s, "gpt-5.4"); err != nil {
 				t.Errorf("mid-turn SetModel: %v", err)
 			}
 			return agenttest.CommunicateResponse(true, "first turn done")
@@ -226,7 +226,7 @@ func TestAtRestPickDoesNotSwapUnderATurnThatStartedWhileItValidated(t *testing.T
 	pickDone := make(chan error, 1)
 	adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
-			go func() { pickDone <- s.SetModel("gpt-5.4") }()
+			go func() { pickDone <- setModel(s, "gpt-5.4") }()
 			// Do not end the first turn until the pick has reached its
 			// preflight listing: the pick is then guaranteed to have taken
 			// the queue path while this turn was still running, not the
@@ -318,7 +318,7 @@ func TestSupersededPendingApplicationDoesNotOverwriteANewerPick(t *testing.T) {
 		func(llm.Request) llm.Response {
 			// The queued pick: its preflight fails open, so the pending switch
 			// carries no listing and the tail must re-fetch.
-			if err := s.SetModel("gpt-5.4"); err != nil {
+			if err := setModel(s, "gpt-5.4"); err != nil {
 				t.Errorf("mid-turn SetModel: %v", err)
 			}
 			return agenttest.CommunicateResponse(true, "first turn done")
@@ -331,7 +331,7 @@ func TestSupersededPendingApplicationDoesNotOverwriteANewerPick(t *testing.T) {
 	// application then resumes against the newer choice.
 	go func() {
 		<-tailFetchCalled
-		if err := s.SetModel("gpt-4.1-mini"); err != nil {
+		if err := setModel(s, "gpt-4.1-mini"); err != nil {
 			t.Errorf("newer SetModel: %v", err)
 		}
 		newerPicked <- struct{}{}
@@ -375,13 +375,13 @@ func TestConcurrentMidTurnPicksLastAcceptedChoiceWins(t *testing.T) {
 	aDone, bDone := make(chan error, 1), make(chan error, 1)
 	adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
-			go func() { aDone <- s.SetModel("gpt-5.4") }()
+			go func() { aDone <- setModel(s, "gpt-5.4") }()
 			// The second pick only enters its preflight once the first one
 			// has claimed the parked listing, so the two listings route
 			// deterministically.
 			go func() {
 				<-aListingCalled
-				bDone <- s.SetModel("gpt-4.1-mini")
+				bDone <- setModel(s, "gpt-4.1-mini")
 			}()
 			return agenttest.CommunicateResponse(true, "first turn done")
 		},
@@ -476,12 +476,12 @@ func TestLateOlderPickAppliesWhenTheNewerPickFailsAtTheBoundary(t *testing.T) {
 	aDone, bDone := make(chan error, 1), make(chan error, 1)
 	openaiAdapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
-			go func() { aDone <- s.SetModel("gpt-5.4") }()
+			go func() { aDone <- setModel(s, "gpt-5.4") }()
 			// B enters its own preflight only once A has claimed its parked
 			// listing, so the two route deterministically.
 			go func() {
 				<-aListingCalled
-				bDone <- s.SetModel("glm/glm-test")
+				bDone <- setModel(s, "glm/glm-test")
 			}()
 			return agenttest.CommunicateResponse(true, "first turn done")
 		},
@@ -586,9 +586,9 @@ func TestBusyRequeueDoesNotCancelAnOlderPickItMightStillFail(t *testing.T) {
 	// admitted first, so it owns the older issue; B is admitted second and
 	// finishes first, which is the interleaving the re-queue rule is about.
 	bDone, aDone := make(chan error, 1), make(chan error, 1)
-	go func() { aDone <- s.SetModel("gpt-5.4") }()
+	go func() { aDone <- setModel(s, "gpt-5.4") }()
 	<-aListingCalled
-	go func() { bDone <- s.SetModel("glm/glm-test") }()
+	go func() { bDone <- setModel(s, "glm/glm-test") }()
 	<-bListingCalled
 
 	openaiAdapter.setSteps([]func(llm.Request) llm.Response{
@@ -646,10 +646,10 @@ func TestRejectedPickDoesNotCancelAnEarlierQueuedPick(t *testing.T) {
 	}))
 	adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
-			if err := s.SetModel("gpt-5.4"); err != nil {
+			if err := setModel(s, "gpt-5.4"); err != nil {
 				t.Errorf("accepted pick: %v", err)
 			}
-			if err := s.SetModel("bogus/no-such-model"); err == nil {
+			if err := setModel(s, "bogus/no-such-model"); err == nil {
 				t.Error("the bogus pick was accepted; its validation must fail")
 			}
 			return agenttest.CommunicateResponse(true, "first turn done")
@@ -705,7 +705,7 @@ func TestSupersededLoopTopApplicationAppliesTheNewerQueuedPick(t *testing.T) {
 	}
 	adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
-			if err := s.SetModel("gpt-5.4"); err != nil {
+			if err := setModel(s, "gpt-5.4"); err != nil {
 				t.Errorf("queued pick: %v", err)
 			}
 			return agenttest.CommunicateResponse(true, "first turn done")
@@ -718,7 +718,7 @@ func TestSupersededLoopTopApplicationAppliesTheNewerQueuedPick(t *testing.T) {
 	// from its own goroutine and releases the refetch once it has stored.
 	go func() {
 		<-loopFetchCalled
-		if err := s.SetModel("gpt-4.1-mini"); err != nil {
+		if err := setModel(s, "gpt-4.1-mini"); err != nil {
 			t.Errorf("newer pick: %v", err)
 		}
 		close(releaseLoopFetch)
@@ -760,7 +760,7 @@ func TestCommittedSwitchPublicationsLandInCommitOrder(t *testing.T) {
 		func(llm.Request) llm.Response {
 			// The queued pick: mid-turn, so it stores and the idle tail
 			// applies it.
-			if err := s.SetModel("gpt-5.4"); err != nil {
+			if err := setModel(s, "gpt-5.4"); err != nil {
 				t.Errorf("queued pick: %v", err)
 			}
 			return agenttest.CommunicateResponse(true, "first turn done")
@@ -791,7 +791,7 @@ func TestCommittedSwitchPublicationsLandInCommitOrder(t *testing.T) {
 		// Release the older application first: its publication owns the lock,
 		// and the newer pick's application waits behind it.
 		close(releaseAPublish)
-		newerDone <- s.SetModel("gpt-4.1-mini")
+		newerDone <- setModel(s, "gpt-4.1-mini")
 	}()
 
 	if _, err := s.ProcessInput(context.Background(), "the only turn", nil); err != nil {
@@ -874,14 +874,14 @@ func TestNewerPickReconcilesToolsAgainstTheProfileItActuallyReplaces(t *testing.
 	// The older pick (openai) is admitted first and parks in its enumeration
 	// after classifying its cross-provider switch against the google profile.
 	olderDone := make(chan error, 1)
-	go func() { olderDone <- s.SetModel("openai/gpt-5.2") }()
+	go func() { olderDone <- setModel(s, "openai/gpt-5.2") }()
 	<-olderCalled
 	// The newer pick (google) is admitted second: it classifies itself
 	// same-provider against the still-google profile, then parks in its own
 	// enumeration. Its commit lands after the older pick's, which the
 	// acceptance watermark permits: neither application superseded the other.
 	newerDone := make(chan error, 1)
-	go func() { newerDone <- s.SetModel("gemini-2.5-pro") }()
+	go func() { newerDone <- setModel(s, "gemini-2.5-pro") }()
 	<-newerCalled
 
 	// The older pick's enumeration returns and its commit lands while the
@@ -969,7 +969,7 @@ func TestACommittedSwitchPublishesEvenWhenANewerQueuedPickLaterFails(t *testing.
 	openaiAdapter.setSteps([]func(llm.Request) llm.Response{
 		// Turn 1: pick A mid-turn; the pick queues for this turn's boundary.
 		func(llm.Request) llm.Response {
-			if err := s.SetModel("gpt-5.4"); err != nil {
+			if err := setModel(s, "gpt-5.4"); err != nil {
 				t.Errorf("mid-turn pick of A: %v", err)
 			}
 			return agenttest.CommunicateResponse(true, "first turn done")
@@ -996,7 +996,7 @@ func TestACommittedSwitchPublishesEvenWhenANewerQueuedPickLaterFails(t *testing.
 	// boundary. One-shot hook: A's own publication is the one parked.
 	go func() {
 		<-aPublishEntered
-		if err := s.SetModel("glm/glm-test"); err != nil {
+		if err := setModel(s, "glm/glm-test"); err != nil {
 			t.Errorf("queued pick of B: %v", err)
 		}
 		close(releaseAPublish)
@@ -1045,7 +1045,7 @@ func TestACommittedSwitchPublishesEvenWhenANewerQueuedPickLaterFails(t *testing.
 //
 // The assertions are behavioral: the model each turn actually ran on and the
 // session's selected model. B's pick is shown to pass pick-time validation
-// (SetModel returns nil for it) while its target cannot carry the settled
+// (SetModelControl returns nil for it) while its target cannot carry the settled
 // history, so the only place it can fail is the boundary - which is the path
 // that used to cancel A.
 func TestRejectedDeferredPickDoesNotCancelAnEarlierValidPick(t *testing.T) {
@@ -1087,7 +1087,7 @@ func TestRejectedDeferredPickDoesNotCancelAnEarlierValidPick(t *testing.T) {
 		openaiAdapter.setSteps([]func(llm.Request) llm.Response{
 			func(llm.Request) llm.Response {
 				// A is valid: it resolves, passes membership, and queues.
-				if err := s.SetModel("gpt-5.4"); err != nil {
+				if err := setModel(s, "gpt-5.4"); err != nil {
 					t.Errorf("valid pick: %v", err)
 				}
 				// The content B cannot carry arrives after A queued, so only
@@ -1095,7 +1095,7 @@ func TestRejectedDeferredPickDoesNotCancelAnEarlierValidPick(t *testing.T) {
 				s.appendTurn(schema.TurnAssistant, doc.Message)
 				// B passes pick-time resolution and membership; only the
 				// boundary rejects it.
-				if err := s.SetModel("glm/glm-test"); err != nil {
+				if err := setModel(s, "glm/glm-test"); err != nil {
 					t.Errorf("B must pass pick-time validation and fail only at the boundary, got: %v", err)
 				}
 				return agenttest.CommunicateResponse(true, "first turn done")
@@ -1138,14 +1138,14 @@ func TestRejectedDeferredPickDoesNotCancelAnEarlierValidPick(t *testing.T) {
 			}))
 		openaiAdapter.setSteps([]func(llm.Request) llm.Response{
 			func(llm.Request) llm.Response {
-				if err := s.SetModel("bogus/no-such-model"); err == nil {
+				if err := setModel(s, "bogus/no-such-model"); err == nil {
 					t.Error("the invalid pick was accepted; it must be rejected")
 				}
 				// The rejection must not change the selection on its own.
 				if got := s.Profile().Model(); got != "gpt-5.2" {
 					t.Fatalf("the rejected pick changed the selected model to %q; a rejection selects nothing (%q)", got, "gpt-5.2")
 				}
-				if err := s.SetModel("gpt-5.4"); err != nil {
+				if err := setModel(s, "gpt-5.4"); err != nil {
 					t.Errorf("the valid pick after a rejection: %v", err)
 				}
 				return agenttest.CommunicateResponse(true, "first turn done")

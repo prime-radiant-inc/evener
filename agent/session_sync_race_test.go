@@ -9,7 +9,7 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// hammerSetters runs SetModel/SetReasoningEffort/DetailedStatus concurrently from
+// hammerSetters runs SetModelControl/SetReasoningEffort/DetailedStatus concurrently from
 // several goroutines while driving ProcessInput in a loop, then stops the loop.
 // Used by the PRI-1958 races to exercise the per-round reads against the setters.
 func hammerSetters(t *testing.T, sess *Session) {
@@ -29,7 +29,7 @@ func hammerSetters(t *testing.T, sess *Session) {
 	}()
 	var setters sync.WaitGroup
 	for _, fn := range []func(){
-		func() { sess.SetModel("gpt-5.2") },
+		func() { setModel(sess, "gpt-5.2") },
 		func() { sess.SetReasoningEffort("high") },
 		func() { _ = sess.DetailedStatus() },
 	} {
@@ -46,7 +46,7 @@ func hammerSetters(t *testing.T, sess *Session) {
 }
 
 // TestSession_ProcessInput_NoRaceWithSetters drives the non-streaming round path
-// concurrently with SetModel/SetReasoningEffort/DetailedStatus. SetModel mutates
+// concurrently with SetModelControl/SetReasoningEffort/DetailedStatus. SetModelControl mutates
 // the profile, the prompt/tool-def caches, and s.cfg under s.mu while the round
 // reads them (PRI-1958 A2/A4). Run under -race: RED before the per-round snapshot
 // fix, GREEN after.

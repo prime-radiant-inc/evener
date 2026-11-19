@@ -13,7 +13,10 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { DraftDocument } from "../draftDocument";
+import { DraftRepository } from "../draftRepository";
 import { createConversationService } from "../conversation/services/conversation";
+import { openSqliteSyncDouble } from "../sqliteSync.testkit";
 import { PAST_CAPABILITIES as SHARED_PAST_CAPABILITIES } from "../modelControlTestUtils";
 import { paletteFor } from "../design/tokens";
 import type { MobileConversation } from "../projectedRows";
@@ -150,6 +153,16 @@ function fakeControls(calls: string[], over: Partial<ControlsState> = {}) {
 
 let owner: object | undefined;
 const mounted: ReactTestRenderer[] = [];
+
+/** The two fences the screen owning a pick installs (screens.tsx:868-890).
+ * `store` is what the store reports, `route` is the ref the route names, and
+ * `madeOn` is the identity the controls were built for. A sheet above the
+ * screen holds a resume's move in pendingIdentity, so `route` keeps its ref
+ * across one while `store` follows it. */
+function screenFence(refs: { route: () => string; store: () => string; madeOn: string }) {
+	return (scope?: "destination", ref?: string) =>
+		scope === "destination" ? refs.store() === (ref ?? refs.route()) : refs.store() === refs.madeOn;
+}
 
 function provide(session: MobileConversation, state: Partial<ControlsState> = {}, over: Partial<ModelHost> = {}) {
 	const calls: string[] = [];
@@ -501,7 +514,7 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 				refreshed = await service.open(REF);
 			},
 			() => {},
-			() => true,
+			screenFence({ route: () => REF, store: () => refreshed?.ref ?? cold.ref, madeOn: cold.ref }),
 			() => cold,
 			() => true,
 			CATALOG,
@@ -586,7 +599,7 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 			service,
 			async () => {},
 			() => {},
-			() => true,
+			screenFence({ route: () => REF, store: () => stale.ref, madeOn: stale.ref }),
 			() => stale,
 			() => true,
 			CATALOG,
@@ -647,11 +660,16 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 		const hostOwner = {};
 		owner = hostOwner;
 		let controls: SessionControls | null = null;
-		// The screen's two fences (screens.tsx:873-888). The binding fence
+		// The screen's two fences (screens.tsx:868-890). The binding fence
 		// (bindingGeneration/bindingInstance) is captured by the memo and dies
 		// with the reconnect; the destination fence is the same store, client and
-		// ref, still in front behind the sheet, and survives it.
+		// route, still in front behind the sheet, and survives it.
 		let binding = 1;
+		// The route this screen was opened on. A sheet above holds a resume's move
+		// in pendingIdentity, so this stays put while the store follows the
+		// identity the resume resolved.
+		const routeRef = REF;
+		let storeRef = cold.ref;
 		const screen = (connected: boolean) => {
 			if (connected) {
 				const mine = binding;
@@ -659,7 +677,11 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 					service,
 					async () => {},
 					() => {},
-					(scope) => client.state === "ready" && (scope === "destination" || binding === mine),
+					(scope, ref) => {
+						if (client.state !== "ready") return false;
+						if (scope === "destination") return storeRef === (ref ?? routeRef);
+						return binding === mine;
+					},
 					() => cold,
 					() => true,
 					CATALOG,
@@ -727,6 +749,137 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 		expect(pressable(after, "Claude Sonnet 5")?.props.accessibilityState).toMatchObject({ selected: false });
 	});
 
+	it("confirms a pick whose resume resolved a different ref than the screen's route", async () => {
+		// A cold pick's resume can hand back a different identity, and the store
+		// follows it. The screen holding the sheet keeps the route it was opened
+		// on until the sheet closes (screens.tsx's pendingIdentity), so the
+		// store's ref and the route's ref disagree when the daemon answers.
+		//
+		// This fence is the screen's own (screens.tsx:868-890), including that
+		// disagreement: storeRef is what the store reports, routeRef is the route
+		// the sheet opened over, and only the first follows the resume.
+		const RESUMED_REF = "local:resumed";
+		let accepted: ModelControlSnapshot | null = null;
+		const client = new FakeClient("ready");
+		client.on("thread/unsubscribe", () => ({}));
+		client.on("thread/resume", () => {
+			const thread = liveThread(RESUMED_AUTHORITY);
+			return { thread: { ...thread, evener: { ...thread.evener, ref: RESUMED_REF } } };
+		});
+		client.on("thread/read", (params) => {
+			const ref = String((params as { ref: string }).ref);
+			// Only the resumed ref carries a daemon; the ref the pick was made on
+			// is the cold saved session the hub resumes behind the mutation.
+			if (ref !== RESUMED_REF) return { thread: COLD_THREAD };
+			const thread = liveThread(RESUMED_AUTHORITY);
+			return {
+				thread: {
+					...thread,
+					evener: {
+						...thread.evener,
+						ref,
+						modelControl: accepted ?? snapshotFor(1, RESUMED_AUTHORITY),
+					},
+				},
+				bootGeneration: RESUMED_AUTHORITY.bootGeneration,
+			};
+		});
+		client.on("thread/model/set", (params) => {
+			const modelControl = snapshotFor(2, RESUMED_AUTHORITY, params.model);
+			return { modelControlVersion: 1, disposition: "accepted" as const, modelControl };
+		});
+		const service = createConversationService(client);
+		const cold = await service.open(REF);
+		expect(cold.modelControlState.kind).toBe("unsupported");
+		// The composer a person typed in before opening the picker.
+		const draftStorage = openSqliteSyncDouble();
+		const repository = new DraftRepository(draftStorage.port);
+		onTestFinished(() => draftStorage.database.close());
+		const document = new DraftDocument(() => repository, { hubId: HUB, sessionRef: REF });
+		document.edit("half a thought");
+
+		const routeRef = REF;
+		let storeRef = cold.ref;
+		const toast = vi.fn();
+		const hostOwner = {};
+		owner = hostOwner;
+		let controls: SessionControls | null = null;
+		let binding = 1;
+		const screen = (connected: boolean) => {
+			if (connected) {
+				const mine = binding;
+				controls = new SessionControls(
+					service,
+					async () => {
+						const resumedSession = await service.open(storeRef);
+						storeRef = resumedSession.ref;
+					},
+					() => {},
+					(scope, ref) => {
+						if (client.state !== "ready") return false;
+						if (scope === "destination") return storeRef === (ref ?? routeRef);
+						return binding === mine;
+					},
+					() => cold,
+					() => true,
+					CATALOG,
+				);
+			} else {
+				binding += 1;
+				// The memo's cleanup: the pair that started the pick is disposed.
+				controls?.dispose();
+				controls = null;
+			}
+			modelHosts.provide(sheetKey(HUB, REF), hostOwner, { session: cold, controls, ready: connected, toast });
+		};
+		const resume = client.resumeThread.bind(client);
+		client.resumeThread = async (ref, options) => {
+			// The recycle resumeThread performs: the transport goes down and the
+			// screen's `connected` follows it, replacing the controls before the
+			// resume RPC goes out. The store follows the identity the resume
+			// resolved; the route above it does not move.
+			client.emitStateChange("reconnecting");
+			screen(false);
+			client.emitStateChange("ready");
+			storeRef = RESUMED_REF;
+			screen(true);
+			return resume(ref, options);
+		};
+		onTestFinished(() => {
+			controls?.dispose();
+			service.close();
+		});
+		screen(true);
+		const tree = sheet();
+		act(() => pressable(tree, "Claude Haiku 5")?.props.onPress?.());
+		await settle();
+
+		// Exactly one resume and one accepted mutation, addressed to the identity
+		// the resume resolved.
+		expect(client.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+		const setCalls = client.calls.filter((call) => call.method === "thread/model/set");
+		expect(setCalls).toHaveLength(1);
+		expect(setCalls[0]?.params).toMatchObject({
+			ref: RESUMED_REF,
+			modelProvider: "anthropic",
+			model: "claude-haiku-5",
+			expectedInstanceId: RESUMED_AUTHORITY.instanceId,
+			expectedBootGeneration: RESUMED_AUTHORITY.bootGeneration,
+		});
+		// The sheet that started the pick closed on the acceptance, and announced
+		// it once, even though its route still named the original ref: the resume
+		// moved the store to a different identity while the route stayed on REF,
+		// so the destination fence's two operands disagreed for the whole pick.
+		expect(navigation.goBack).toHaveBeenCalledTimes(1);
+		expect(toast).toHaveBeenCalledTimes(1);
+
+		// The draft belongs to the session it was composed on, so the pick that
+		// followed the resolved identity left it untouched on the original ref.
+		const original = repository.read({ hubId: HUB, sessionRef: REF });
+		expect(original.draft).toBe("half a thought");
+		expect(repository.read({ hubId: HUB, sessionRef: RESUMED_REF }).draft).toBe("");
+	});
+
 	it("reports a refused pick that never dispatched as refused, even after its controls were replaced", async () => {
 		// The other half of attemptControl's distinction: a step that was refused
 		// before it sent anything is not done. The resume answers, but its read
@@ -758,6 +911,8 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 		owner = hostOwner;
 		let controls: SessionControls | null = null;
 		let binding = 1;
+		const routeRef = REF;
+		let storeRef = cold.ref;
 		const screen = (connected: boolean) => {
 			if (connected) {
 				const mine = binding;
@@ -765,7 +920,11 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 					service,
 					async () => {},
 					() => {},
-					(scope) => client.state === "ready" && (scope === "destination" || binding === mine),
+					(scope, ref) => {
+						if (client.state !== "ready") return false;
+						if (scope === "destination") return storeRef === (ref ?? routeRef);
+						return binding === mine;
+					},
 					() => cold,
 					() => true,
 					CATALOG,
@@ -824,7 +983,7 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 			service,
 			async () => {},
 			() => {},
-			() => true,
+			screenFence({ route: () => REF, store: () => live.ref, madeOn: live.ref }),
 			() => live,
 			() => true,
 			CATALOG,
@@ -880,7 +1039,7 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 			service,
 			async () => {},
 			() => {},
-			() => true,
+			screenFence({ route: () => REF, store: () => cold.ref, madeOn: cold.ref }),
 			() => cold,
 			() => true,
 			CATALOG,
@@ -957,7 +1116,7 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 			service,
 			async () => {},
 			() => {},
-			() => true,
+			screenFence({ route: () => REF, store: () => stale.ref, madeOn: stale.ref }),
 			() => stale,
 			() => true,
 			CATALOG,
@@ -1054,7 +1213,7 @@ describe.each([
 				service,
 				async () => {},
 				() => {},
-				() => true,
+				screenFence({ route: () => REF, store: () => session.ref, madeOn: session.ref }),
 				() => session,
 				() => true,
 				CATALOG,
@@ -1233,7 +1392,7 @@ describe("the vision model (ruling 17)", () => {
 			service,
 			async () => {},
 			() => {},
-			() => true,
+			screenFence({ route: () => REF, store: () => cold.ref, madeOn: cold.ref }),
 			() => cold,
 			() => true,
 			CATALOG,

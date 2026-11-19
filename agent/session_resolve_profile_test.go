@@ -39,7 +39,7 @@ func testResolver(ref string) (*provider.Profile, error) {
 }
 
 // TestSetModel_CrossProvider_SwapsProfileAndPreservesOverride verifies that
-// SetModel("anthropic/claude-opus-4-6") from an openai-profile session
+// SetModelControl("anthropic/claude-opus-4-6") from an openai-profile session
 // (with a ResolveProfile resolver) swaps the profile and preserves any
 // communicate-output-schema override applied before the switch.
 func TestSetModel_CrossProvider_SwapsProfileAndPreservesOverride(t *testing.T) {
@@ -73,7 +73,7 @@ func TestSetModel_CrossProvider_SwapsProfileAndPreservesOverride(t *testing.T) {
 	}
 
 	// Switch to anthropic via a cross-provider model ref.
-	sess.SetModel("anthropic/claude-opus-4-6")
+	setModel(sess, "anthropic/claude-opus-4-6")
 
 	// Profile must now be anthropic.
 	if got := sess.profile.ID(); got != "anthropic" {
@@ -134,7 +134,7 @@ func TestSetModel_CrossProvider_PreservesConfiguredCheapRoute(t *testing.T) {
 			}
 			defer sess.Close()
 
-			if err := sess.SetModel("anthropic/claude-opus-4-6"); err != nil {
+			if err := setModel(sess, "anthropic/claude-opus-4-6"); err != nil {
 				t.Fatalf("SetModel: %v", err)
 			}
 			if got := sess.profile.CheapModelRefString(); got != tc.cheapRef {
@@ -217,7 +217,7 @@ func TestSelectSubagentModel_CrossProviderPreservesConfiguredCheapRoute(t *testi
 }
 
 // TestSetModel_CrossProvider_WithoutResolver_NoSwap verifies that
-// SetModel("anthropic/claude-opus-4-6") from an openai-profile session
+// SetModelControl("anthropic/claude-opus-4-6") from an openai-profile session
 // WITHOUT a resolver does not switch provider (falls through to WithModel).
 // After removing the prefixActionSwitch arm, WithModel will keep the
 // openai profile for unknown cross-provider prefixes.
@@ -238,7 +238,7 @@ func TestSetModel_CrossProvider_WithoutResolver_NoSwap(t *testing.T) {
 
 	// After WithModel without resolver the provider stays openai
 	// (the cross-provider switch arm is removed from WithModel).
-	sess.SetModel("openai/gpt-4.1-mini") // self-prefix strip — fine
+	setModel(sess, "openai/gpt-4.1-mini") // self-prefix strip — fine
 	if got := sess.profile.ID(); got != "openai" {
 		t.Fatalf("after same-provider SetModel, profile ID = %q, want openai", got)
 	}
@@ -275,7 +275,7 @@ func TestRestoreSessionFromMetaWithConfig_InstallsResolveProfile(t *testing.T) {
 	}
 	defer sess.Close()
 
-	sess.SetModel("anthropic/claude-opus-4-6")
+	setModel(sess, "anthropic/claude-opus-4-6")
 
 	if !resolverCalled {
 		t.Fatal("expected restored session SetModel to call injected resolver")
@@ -359,7 +359,7 @@ func TestRestoreSessionFromMetaWithConfig_LayersOpenAIResponsesContinuation(t *t
 }
 
 // TestSetModel_SameProvider_WithResolver_UsesWithModel verifies that a
-// same-provider SetModel ("openai/gpt-4.1") uses the WithModel path
+// same-provider SetModelControl ("openai/gpt-4.1") uses the WithModel path
 // (not the resolver) even when a resolver is present.
 func TestSetModel_SameProvider_WithResolver_UsesWithModel(t *testing.T) {
 	t.Parallel()
@@ -382,7 +382,7 @@ func TestSetModel_SameProvider_WithResolver_UsesWithModel(t *testing.T) {
 	}
 	defer sess.Close()
 
-	sess.SetModel("openai/gpt-4.1-mini")
+	setModel(sess, "openai/gpt-4.1-mini")
 
 	if resolverCalled {
 		t.Fatal("resolver must not be called for a same-provider SetModel")
@@ -396,7 +396,7 @@ func TestSetModel_SameProvider_WithResolver_UsesWithModel(t *testing.T) {
 }
 
 // TestSetModel_CrossProvider_SwitchToGoogle_RegistersWebSearch verifies that
-// switching from an openai profile to a google/gemini profile via SetModel
+// switching from an openai profile to a google/gemini profile via SetModelControl
 // (with resolver) re-registers the real web_search function tool.
 func TestSetModel_CrossProvider_SwitchToGoogle_RegistersWebSearch(t *testing.T) {
 	t.Parallel()
@@ -419,7 +419,7 @@ func TestSetModel_CrossProvider_SwitchToGoogle_RegistersWebSearch(t *testing.T) 
 		t.Fatal("pre-condition: openai session must not have real web_search function tool")
 	}
 
-	sess.SetModel("google/gemini-2.5-pro")
+	setModel(sess, "google/gemini-2.5-pro")
 
 	if !webSearchExecIsReal(t, sess.reg) {
 		t.Fatal("after switching to google profile, web_search function tool must be real (not placeholder)")
@@ -427,7 +427,7 @@ func TestSetModel_CrossProvider_SwitchToGoogle_RegistersWebSearch(t *testing.T) 
 }
 
 // TestSetModel_CrossProvider_SwitchAwayFromGoogle_RemovesWebSearch verifies that
-// switching from a google profile to openai via SetModel removes the web_search
+// switching from a google profile to openai via SetModelControl removes the web_search
 // function tool (or at least it is no longer the real executor).
 func TestSetModel_CrossProvider_SwitchAwayFromGoogle_RemovesWebSearch(t *testing.T) {
 	t.Parallel()
@@ -450,7 +450,7 @@ func TestSetModel_CrossProvider_SwitchAwayFromGoogle_RemovesWebSearch(t *testing
 		t.Fatal("pre-condition: gemini session must have real web_search executor")
 	}
 
-	sess.SetModel("openai/gpt-5.4")
+	setModel(sess, "openai/gpt-5.4")
 
 	// After switching to openai, web_search function tool must be absent or placeholder.
 	if webSearchExecIsReal(t, sess.reg) {
@@ -550,7 +550,7 @@ func TestSetModel_CrossInstanceFallback_KeptWhileSurfacesMatch(t *testing.T) {
 		}),
 	)
 
-	if err := sess.SetModel("gpt-4.1"); err != nil {
+	if err := setModel(sess, "gpt-4.1"); err != nil {
 		t.Fatalf("SetModel same-surface: %v", err)
 	}
 	if dropped := sess.DroppedModelFallbacksFromLastSwitch(); len(dropped) != 0 {
@@ -560,7 +560,7 @@ func TestSetModel_CrossInstanceFallback_KeptWhileSurfacesMatch(t *testing.T) {
 		t.Fatalf("cfg.ModelFallbacks = %v, want [work/gpt-4.1-mini]", sess.cfg.ModelFallbacks)
 	}
 
-	if err := sess.SetModel("anthropic/claude-opus-4-6"); err != nil {
+	if err := setModel(sess, "anthropic/claude-opus-4-6"); err != nil {
 		t.Fatalf("SetModel cross-surface: %v", err)
 	}
 	dropped := sess.DroppedModelFallbacksFromLastSwitch()
@@ -597,7 +597,7 @@ func testResolverFull(ref string) (*provider.Profile, error) {
 	return nil, nil
 }
 
-// TestSetModel_CrossProvider sweeps the basic cross-provider SetModel switches
+// TestSetModel_CrossProvider sweeps the basic cross-provider SetModelControl switches
 // that differ only by (registered target adapter, base profile, model ref, and
 // the expected resulting profile ID + model). Each row asserts only that the
 // profile swaps to the expected provider and model. Switches that assert extra
@@ -691,7 +691,7 @@ func TestSetModel_CrossProvider(t *testing.T) {
 				}),
 			)
 
-			sess.SetModel(tc.ref)
+			setModel(sess, tc.ref)
 			if got := sess.profile.ID(); got != tc.wantID {
 				t.Fatalf("ID() = %q, want %s", got, tc.wantID)
 			}
@@ -702,7 +702,7 @@ func TestSetModel_CrossProvider(t *testing.T) {
 	}
 }
 
-// TestSetModel_CrossProvider_ToOllama_WithCatalog verifies that SetModel via
+// TestSetModel_CrossProvider_ToOllama_WithCatalog verifies that SetModelControl via
 // resolver to an ollama profile takes the context window from the registry's
 // record, which is unknown when nothing supplies one.
 func TestSetModel_CrossProvider_ToOllama_WithCatalog(t *testing.T) {
@@ -721,7 +721,7 @@ func TestSetModel_CrossProvider_ToOllama_WithCatalog(t *testing.T) {
 	}
 	defer sess.Close()
 
-	sess.SetModel("ollama/llama3.1")
+	setModel(sess, "ollama/llama3.1")
 	if got := sess.profile.ID(); got != "ollama" {
 		t.Fatalf("ID() = %q, want ollama", got)
 	}
@@ -733,7 +733,7 @@ func TestSetModel_CrossProvider_ToOllama_WithCatalog(t *testing.T) {
 }
 
 // TestSetModel_CrossProvider_ToOpenRouter_PreservesSlashModel verifies that
-// SetModel("openrouter/anthropic/claude-3-haiku-20240307") via resolver
+// SetModelControl("openrouter/anthropic/claude-3-haiku-20240307") via resolver
 // produces an openrouter profile with the slash-containing model preserved.
 func TestSetModel_CrossProvider_ToOpenRouter_PreservesSlashModel(t *testing.T) {
 	t.Parallel()
@@ -751,7 +751,7 @@ func TestSetModel_CrossProvider_ToOpenRouter_PreservesSlashModel(t *testing.T) {
 	}
 	defer sess.Close()
 
-	sess.SetModel("openrouter/anthropic/claude-3-haiku-20240307")
+	setModel(sess, "openrouter/anthropic/claude-3-haiku-20240307")
 	if got := sess.profile.ID(); got != "openrouter" {
 		t.Fatalf("ID() = %q, want openrouter", got)
 	}

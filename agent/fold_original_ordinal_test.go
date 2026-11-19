@@ -38,7 +38,7 @@ func TestFoldCopiesRecordTheOrdinalOfTheirOriginal(t *testing.T) {
 	s.recordTurn(failure, failure)
 	// The model changes before the copies are written: each copy keeps the
 	// model its original was recorded with.
-	if err := s.SetModel("gpt-5.4"); err != nil {
+	if err := setModel(s, "gpt-5.4"); err != nil {
 		t.Fatal(err)
 	}
 	s.beginExecution("")

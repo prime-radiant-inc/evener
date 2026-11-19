@@ -761,11 +761,15 @@ describe("client binding lifetime", () => {
 			sessions.setConnection("hub-1", client);
 			return resume(ref, options);
 		};
+		// The screen's destination fence (screens.tsx:868-890). The sheet above
+		// holds the move, so the route keeps the ref the pick was made on while
+		// the store follows the identity the resume resolved.
+		const routeRef = "ref-1";
 		const controls = new SessionControls(
 			a.entry.service!,
 			async () => {},
 			() => {},
-			() => true,
+			(scope, ref) => (scope === "destination" ? a.entry.store.getState().ref === (ref ?? routeRef) : true),
 			() => cold,
 			() => true,
 			{

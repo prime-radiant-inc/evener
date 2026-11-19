@@ -1,6 +1,6 @@
 package agent
 
-// Tests for Task 4: SetModel and SetReasoningEffort emit session change
+// Tests for Task 4: SetModelControl and SetReasoningEffort emit session change
 // events after the state change commits (agent/events/events.go
 // EventModelChanged, EventReasoningEffortChanged).
 
@@ -11,7 +11,7 @@ import (
 	"primeradiant.com/evener/llm/registry"
 )
 
-// TestSetModel_EmitsModelChangedEvent verifies that a successful SetModel
+// TestSetModel_EmitsModelChangedEvent verifies that a successful SetModelControl
 // switch emits EventModelChanged carrying old + new provider/model and the
 // NEW profile's ReasoningEffortLevels()/SupportsReasoning().
 func TestSetModel_EmitsModelChangedEvent(t *testing.T) {
@@ -24,7 +24,7 @@ func TestSetModel_EmitsModelChangedEvent(t *testing.T) {
 		}),
 	)
 
-	if err := sess.SetModel("gpt-4.1-mini"); err != nil {
+	if err := setModel(sess, "gpt-4.1-mini"); err != nil {
 		t.Fatalf("SetModel: %v", err)
 	}
 
@@ -88,7 +88,7 @@ func TestSetModel_ModelChangedEventCarriesNewDefaultEffort(t *testing.T) {
 					testOnly: testConfig{skipGitSnapshot: true},
 				}),
 			)
-			if err := sess.SetModel(tc.model); err != nil {
+			if err := setModel(sess, tc.model); err != nil {
 				t.Fatalf("SetModel: %v", err)
 			}
 
@@ -118,7 +118,7 @@ func TestSetModel_ModelChangedEventCarriesNewDefaultEffort(t *testing.T) {
 }
 
 // TestSetModel_FailedSwitch_DoesNotEmitModelChangedEvent verifies that a
-// rejected SetModel call (unknown instance) emits no EventModelChanged.
+// rejected SetModelControl call (unknown instance) emits no EventModelChanged.
 //
 // TestSetModel_ReselectAfterDefaultTierRefreshStillEmitsModelChangedEvent pins
 // the reselect path against a roster refresh that moves only the default
@@ -162,7 +162,7 @@ func TestSetModel_ReselectAfterDefaultTierRefreshStillEmitsModelChangedEvent(t *
 		ContextWindow: new(200000),
 		DefaultEffort: new("high"),
 	}}})
-	if err := sess.SetModel("work/roster-model"); err != nil {
+	if err := setModel(sess, "work/roster-model"); err != nil {
 		t.Fatalf("SetModel: %v", err)
 	}
 
@@ -197,7 +197,7 @@ func TestSetModel_FailedSwitch_DoesNotEmitModelChangedEvent(t *testing.T) {
 		}),
 	)
 
-	if err := sess.SetModel("bogus/some-model"); err == nil {
+	if err := setModel(sess, "bogus/some-model"); err == nil {
 		t.Fatal("expected error from unknown instance ref")
 	}
 

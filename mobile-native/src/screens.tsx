@@ -870,7 +870,7 @@ function ConversationScreenView({
 			() => {
 				void refreshSession().catch(() => undefined);
 			},
-			(scope) => {
+			(scope, ref) => {
 				const current = store.getState();
 				if (
 					currentDestination.current.store !== store ||
@@ -879,7 +879,12 @@ function ConversationScreenView({
 					!screenInFront(navigation, route.key)
 				)
 					return false;
-				if (scope === "destination") return current.ref === route.params.ref;
+				// Without a ref, the fence answers for the route this screen was
+				// opened on. A model pick names the identity it landed on: a resume
+				// behind a cold pick can resolve a different ref, and this screen
+				// holds that move in pendingIdentity only because a sheet is above,
+				// so the answered pick still belongs to this destination.
+				if (scope === "destination") return current.ref === (ref ?? route.params.ref);
 				return (
 					current.status === "open" &&
 					current.conversationGeneration === bindingGeneration &&

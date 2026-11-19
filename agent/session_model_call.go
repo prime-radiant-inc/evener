@@ -1280,7 +1280,7 @@ func (s *Session) recordResponseUsage(resp llm.Response, req llm.Request, answer
 		s.mu.Lock()
 		hLen := len(s.history)
 		s.mu.Unlock()
-		// Only the profile that answered may own this measurement: a SetModel
+		// Only the profile that answered may own this measurement: a SetModelControl
 		// during the request cleared the measurement it belonged to (roborev's
 		// fifteenth round).
 		s.contextMgr.RecordInputTokensFor(answeringProfile, tokens, hLen)
@@ -1583,13 +1583,13 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	// below: a round with no fallback target pays nothing for it (#6442).
 	fallbackSource, hasFallbackSource := s.takeRoundFallbackSource()
 	// The round's fallback chain is fixed here, at the round's model-call
-	// boundary, from a copy taken under s.mu. SetModel revalidates and may
+	// boundary, from a copy taken under s.mu. SetModelControl revalidates and may
 	// rewrite s.cfg.ModelFallbacks while this round's primary call is
 	// outstanding (a cross-surface switch drops same-surface entries), so
 	// reading the live slice in the fallback chain below both raced that write
 	// and let the in-flight round run the configuration a later switch left
 	// behind — including silently losing a fallback it was dispatched with
-	// (CORE-02). Future rounds re-snapshot, so SetModel still affects only
+	// (CORE-02). Future rounds re-snapshot, so SetModelControl still affects only
 	// subsequent calls.
 	s.mu.Lock()
 	fallbacks := append([]string(nil), s.cfg.ModelFallbacks...)

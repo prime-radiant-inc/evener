@@ -24,8 +24,8 @@ package agent
 //  4. Per-instance OAuth  — SaveAuth("work", rec) writes auth/work.json; loading
 //                           the work instance's OAuth reads it back independently
 //                           of auth/openai.json.
-//  5. SetModel override   — a registry resolver injected into SessionConfig;
-//                           SetModel("work2/<model>") swaps to ID=="work2" and
+//  5. SetModelControl override   — a registry resolver injected into SessionConfig;
+//                           SetModelControl("work2/<model>") swaps to ID=="work2" and
 //                           preserves a WithCommunicateOutputSchema override.
 //  6. Resume              — s.Meta().ProfileID == "work" for a session on the
 //                           "work" instance; SaveSessionMeta / LoadSessionMeta
@@ -268,10 +268,10 @@ func isAuthNotFound(err error) bool {
 	return errors.Is(err, openai.ErrAuthNotFound)
 }
 
-// ── Assertion 5: SetModel override preservation ───────────────────────────────
+// ── Assertion 5: SetModelControl override preservation ───────────────────────────────
 
 // TestPhase1b_SetModel_Work2_PreservesOutputSchema verifies that with the config
-// resolver injected, SetModel("work2/<model>") from a "work" session swaps to
+// resolver injected, SetModelControl("work2/<model>") from a "work" session swaps to
 // ID()=="work2" while preserving a WithCommunicateOutputSchema override.
 func TestPhase1b_SetModel_Work2_PreservesOutputSchema(t *testing.T) {
 	t.Parallel()
@@ -314,7 +314,7 @@ func TestPhase1b_SetModel_Work2_PreservesOutputSchema(t *testing.T) {
 	}
 
 	// Switch to work2 via resolver.
-	sess.SetModel("work2/gpt-5.4")
+	setModel(sess, "work2/gpt-5.4")
 
 	if got := sess.profile.ID(); got != "work2" {
 		t.Fatalf("after SetModel, profile ID = %q, want work2", got)

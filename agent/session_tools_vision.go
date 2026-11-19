@@ -189,7 +189,7 @@ func isVisionDisabledSetting(setting string) bool {
 // side-channel executes on. "" resolves to the session's active route, "off"
 // (case-insensitive) disables the call, "provider/model" pins a provider, and
 // a bare model resolves on the active provider at call time — so it follows
-// SetModel switches. A malformed "x/" or "/x" value degrades to a bare-model
+// SetModelControl switches. A malformed "x/" or "/x" value degrades to a bare-model
 // lookup on the active provider rather than an unroutable request.
 func resolveVisionRoute(profile *provider.Profile, setting string) (providerName, modelID string, off bool) {
 	setting = strings.TrimSpace(setting)
@@ -299,7 +299,7 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 	}
 
 	// Snapshot the profile under s.mu: the vision side-channel runs during the
-	// round, so a concurrent SetModel (which mutates it under s.mu) must not race
+	// round, so a concurrent SetModelControl (which mutates it under s.mu) must not race
 	// this read (PRI-1958 A2/A4). The fixed low vision cap below is deliberately
 	// independent of the session/task reasoning effort.
 	s.mu.Lock()

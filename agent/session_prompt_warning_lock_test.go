@@ -38,7 +38,7 @@ func awaitOrFail(t *testing.T, what string, fn func()) {
 	}()
 	select {
 	case <-done:
-	// TRIPWIRE: fn is a single in-process session call (SetModel,
+	// TRIPWIRE: fn is a single in-process session call (SetModelControl,
 	// registerTool, swapEnvAndRefresh) with no real I/O; it normally returns
 	// in well under a second. 30s only fires on a genuine self-deadlock, not
 	// scheduler contention under a loaded suite.
@@ -49,7 +49,7 @@ func awaitOrFail(t *testing.T, what string, fn func()) {
 
 // TestSetModelReportsRenderFailureWithoutSelfDeadlock is the third site that
 // refreshes the prompt cache under s.mu, and the one an earlier lexical scan of
-// mine missed: SetModel's guard clauses unlock and return, which fooled a
+// mine missed: SetModelControl's guard clauses unlock and return, which fooled a
 // held-lock counter into thinking the region had closed by the time it reached
 // the refresh.
 //
@@ -59,7 +59,7 @@ func awaitOrFail(t *testing.T, what string, fn func()) {
 // three unlocked call sites needs its own pin. Moving this one above
 // s.mu.Unlock() leaves the whole package green without this test.
 //
-// Unlike its two siblings this drives a real session, because SetModel resolves
+// Unlike its two siblings this drives a real session, because SetModelControl resolves
 // a profile and rewrites session state before it ever reaches the refresh.
 func TestSetModelReportsRenderFailureWithoutSelfDeadlock(t *testing.T) {
 	// Built directly rather than through newSession: that helper registers
@@ -82,7 +82,7 @@ func TestSetModelReportsRenderFailureWithoutSelfDeadlock(t *testing.T) {
 	forceSystemPromptRenderFailure(t)
 
 	awaitOrFail(t, "SetModel with a failing prompt render", func() {
-		if err := sess.SetModel("gpt-5.2"); err != nil {
+		if err := setModel(sess, "gpt-5.2"); err != nil {
 			t.Errorf("SetModel: %v", err)
 		}
 	})
@@ -96,7 +96,7 @@ func TestSetModelReportsRenderFailureWithoutSelfDeadlock(t *testing.T) {
 	// Closed here rather than in a t.Cleanup, and deliberately: the failure this
 	// test exists to catch leaves s.mu held by a parked goroutine, and Close
 	// needs that mutex. A cleanup would hang on it and turn a named 10s failure
-	// into a package timeout that reads as a flake. Reached only when SetModel
+	// into a package timeout that reads as a flake. Reached only when SetModelControl
 	// returned, so the lock is free.
 	sess.Close()
 }
@@ -149,7 +149,7 @@ func TestConstructionRenderFailureArrivesAfterSessionStart(t *testing.T) {
 }
 
 // sawRenderFailureWarning drains what the session has emitted and reports
-// whether the prompt render failure is among it. SetModel emits a model-changed
+// whether the prompt render failure is among it. SetModelControl emits a model-changed
 // event too, so this cannot just read the first event off the channel.
 func sawRenderFailureWarning(s *Session) bool {
 	for {
