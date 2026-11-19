@@ -15,19 +15,21 @@ A client sees an action on a remote session only when both sides answer for it:
 [remote_hub_refs.go](../../cmd/evener-hub/internal/appsource/remote_hub_refs.go)
 is the policy that combines those answers. It reads the remote hub's
 `FeatureSet`; attachment already enforces the controller's exact AppWire
-protocol version, so a compatible peer routes every v7 mutation the controller
+protocol version, so a compatible peer routes every mutation the controller
 forwards. Every read uses the client's own initialize response,
 which carries the handshake facts; Connect reads no other hub surface to warm
 them.
 
 The feature set gates the five actions it names: Send (`turn/start`), Steer
 (`turn/steer`), Clear (`thread/clear`), ForkFromTurn (`thread/fork`), and
-Shutdown (`thread/shutdown`). Interrupt, Compact, Queue, ChangeModel,
-ChangeVisionModel, Rename, Goal, SharedNotes, SkillInput, CommandInput, and
-StopSubagent follow the remote daemon's own capability claim because the
-controller has an implemented forwarder and the compatible peer serves the
-route. PageBefore stays masked: the controller cannot yet join a remote page to
-its paging window.
+Shutdown (`thread/shutdown`). Interrupt, Compact, Queue, ChangeVisionModel,
+Rename, Goal, SharedNotes, SkillInput, CommandInput, and StopSubagent follow the
+remote daemon's own capability claim because the controller has an implemented
+forwarder and the compatible peer serves the route. ChangeModel is the
+exception: it requires the remote hub to advertise model-control version 1 and
+the controller to forward it, so a peer that only claims the capability is not
+offered a pick the controlled daemon would apply unchecked. PageBefore stays
+masked: the controller cannot yet join a remote page to its paging window.
 
 The mask applies to `thread/list`, `thread/read`, `thread/start`,
 `thread/resume`, `thread/fork`, `thread/clear`, and the
