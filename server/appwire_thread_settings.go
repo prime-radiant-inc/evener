@@ -49,9 +49,11 @@ func (s *Server) handleAppThreadModelSet(_ context.Context, params appwire.Threa
 	if model == "" {
 		return appwire.EmptyResponse{}, appwire.InvalidParams("model is required")
 	}
-	if provider := strings.TrimSpace(params.ModelProvider); provider != "" {
-		model = provider + "/" + model
-	}
+	// The two halves travel apart: a model id may itself contain slashes (an
+	// OpenRouter row is "anthropic/claude-opus-5" on instance "openrouter"), so
+	// joining them here would let the resolver read the model's own first
+	// segment as the instance and undo the reader's explicit choice.
+	provider := strings.TrimSpace(params.ModelProvider)
 	s.mu.RLock()
 	fn := s.modelFunc
 	s.mu.RUnlock()
@@ -62,7 +64,7 @@ func (s *Server) handleAppThreadModelSet(_ context.Context, params appwire.Threa
 	if fn == nil {
 		return appwire.EmptyResponse{}, appwire.Unavailable("model change not available")
 	}
-	if err := fn(model); err != nil {
+	if err := fn(provider, model); err != nil {
 		// Every SetModel failure is mapped to InvalidParams deliberately: the
 		// hook's error modes today are all validation-shaped (unknown model,
 		// not a member of the instance's catalog, unresolvable ref). Revisit

@@ -91,26 +91,39 @@ separate from TestFlight and has no release secrets
 or publishing step. Existing Linux native/API gates remain required. Its policy
 step also proves the bundle verification is real: a copied build whose share
 extension was removed fails verification while the untouched build still passes.
-The lane's green path always includes the installed-app journeys: with
-`--with-ui`, the build runner spawns `scripts/native/ios/run-ui-tests.sh`
-inside the run's own simulator lifetime. That child builds the runtime pair,
-starts the scripted loopback provider and an isolated hub under private XDG
-directories with `HOME` inherited, registers the generated-only
-`EvenerQualificationUITests` target, and injects the fixture-only connection
-data into the generated test-run configuration in place. Before the target is
-registered it first proves the red side: naming the intended tests against the
-as-generated project must fail. The result bundle must show all three intended
-journeys executed with zero failures and none skipped; a partial, unreadable or
-absent result fails, and the child's exit is the run's own result. The parent
-remains the sole simulator cleanup owner. The runner answers INT and TERM while
-a long `xcodebuild` invocation is still running, and its cleanup TERMs the hub,
-the provider and that invocation together, then KILLs survivors inside the
-parent's five-second stop grace.
+The lane's green path always includes the installed-app journeys, in a second
+job. `simulator-build` builds Release and verifies the host and share
+extension, proves the red side before the generated
+`EvenerQualificationUITests` target exists, registers that target, and compiles
+the test products against the same DerivedData; it uploads those products as a
+tarball and deletes its own simulator. `ui-journeys` needs that job, restores
+the products layout into a fresh directory, and creates and later deletes its
+own simulator. `scripts/native/ios/run-ui-tests.sh` then builds the runtime
+pair, starts the scripted loopback provider and an isolated hub under private
+XDG directories with `HOME` inherited, and injects the fixture-only connection
+data into the restored test-run configuration in place. The result bundle must
+show all three intended journeys executed with zero failures and none skipped;
+a partial, unreadable or absent result fails, and the child's exit is the job's
+own result. Each job is the sole owner of its own simulator, and cleanup runs
+even on failure. The runner answers INT and TERM while a long `xcodebuild`
+invocation is still running, and its cleanup TERMs the hub, the provider and
+that invocation together, then KILLs survivors inside the parent's five-second
+stop grace.
 
 After installing the npm trees and locked gems in a fresh Mac checkout, run:
 
 ```sh
 bash scripts/native/ios/build-simulator.sh --output /absolute/new/qualification-output
+```
+
+That build now also prepares the UI test products. To run the same journeys
+locally against a fresh output directory, without a second prebuild or pod
+install:
+
+```sh
+bash scripts/native/ios/run-ui-journeys.sh \
+  --products /absolute/new/qualification-output/DerivedData \
+  --output /absolute/new/journey-output
 ```
 
 The runner verifies actual tool versions, uses the non-secret fixture team
@@ -146,7 +159,9 @@ the app group is missing; the runner reads both locations. Output includes
 `DerivedData`, structured build identity
 and command logs. The simulator is deleted before exit; its recorded ID and app
 path are not permission to reuse an older artifact for a later installed-app
-test. Public CI artifacts enumerate diagnostics rather than uploading all state.
+test, even though the workflow hands the products to the journeys job inside
+the same run. Public CI artifacts enumerate diagnostics rather than uploading
+all state.
 
 Build success alone does not prove SecureStore persistence, native Markdown
 rendering, draft recovery or scheme activation. Those require installed-app

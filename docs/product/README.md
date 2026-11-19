@@ -26,8 +26,9 @@ changes; keep implementation history in Git and pull requests.
   The daemon owns status;
   web and native show a read-only indication. Ownership stays in the existing session, hub, input,
   history and watch subsystems.
-- [Voice conversations](voice.md): native capture and playback, scoped hub
-  bindings, durable spoken input and provenance-fenced manager speech.
+- [Voice conversations](voice.md): native capture and playback from the voice
+  module, which the iOS app build excludes, plus scoped hub bindings, durable
+  spoken input and provenance-fenced manager speech.
 - [Session pulse meter](pulse-meter.md): the hub's live per-session activity
   read behind the Board meter, quiet time and newest root tool intent.
 - [Remote session actions](remote-sessions.md): the effective capability a

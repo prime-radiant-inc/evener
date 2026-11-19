@@ -43,7 +43,8 @@ import {
 import {
   type Band,
   type BoardState,
-  quotaWaitRemainingMs,
+  passedQuotaResetText,
+  quotaWaitState,
   waitingForQuotaText,
   whyLine,
 } from "@evener/appwire-client/state/navigation";
@@ -465,16 +466,33 @@ function RailAge({ updatedAt }: { updatedAt?: string }): ReactNode {
 }
 
 // RailQuotaWait is the row's second line while the session waits out a
-// provider usage limit: working, but paused until a known resume time. Without
-// it the row reads as a stuck spinner. It is its own leaf so the countdown
-// ticks without re-rendering the memoized row, and it sits inside the treeitem
-// so the wait is part of the row's accessible name.
+// provider usage limit: working, but paused until a known resume time. It is
+// a read-sampled surface - the navigation failure summary the daemon
+// refreshes into reads - so it may trail the pane by one refresh; it renders
+// the wait's state from the same shared tri-state rule the pane's line reads,
+// so both surfaces agree whenever each observes it. Without it the row reads
+// as a stuck spinner. It is its own leaf so the countdown ticks without
+// re-rendering the memoized row, and it sits inside the treeitem so the wait
+// is part of the row's accessible name.
 function RailQuotaWait({ session }: { session: RailSession }): ReactNode {
-  const remaining = quotaWaitRemainingMs(session, useRailNow());
-  if (remaining === null) return null;
+  const now = useRailNow();
+  const quota = quotaWaitState(session.failure?.resumes_at, now);
+  if (quota === null) return null;
+  // Past its instant the line says the retry is pending (the daemon keeps
+  // serving the wait's summary while it holds it) rather than going silent,
+  // until a refreshed summary shows no wait at all.
+  const text = quota.phase === "pending" ? passedQuotaResetText() : waitingForQuotaText(quota.remainingMs);
   return (
-    <span data-testid="rail-row-quota-wait" className={CLASS.quotaWait}>
-      {waitingForQuotaText(remaining)}
+    <span
+      data-testid="rail-row-quota-wait"
+      // The wait's phase as a fact, matching the pane's line's marker.
+      data-passed-reset={quota.phase === "pending" ? "true" : undefined}
+      // The computed runway as a fact beside the sentence: tests assert
+      // this, never the copy.
+      data-remaining-ms={quota.phase === "counting" ? String(quota.remainingMs) : undefined}
+      className={CLASS.quotaWait}
+    >
+      {text}
     </span>
   );
 }
@@ -543,8 +561,15 @@ function sessionStatusLabel(
   now: number,
 ): RailStatus {
   if (notStarted) return { kind: "not-started", text: "Not started" };
-  const quotaWait = quotaWaitRemainingMs(session, now);
-  if (quotaWait !== null) return { kind: "quota", text: waitingForQuotaText(quotaWait) };
+  const quota = quotaWaitState(session.failure?.resumes_at, now);
+  // The wait's phase from the same shared tri-state rule the row's own line
+  // and the pane's line read, until a refreshed summary shows no wait.
+  if (quota !== null) {
+    return {
+      kind: "quota",
+      text: quota.phase === "pending" ? passedQuotaResetText() : waitingForQuotaText(quota.remainingMs),
+    };
+  }
   if (state === "failed") return { kind: "failed", text: STATUS_LABEL.failed };
   if (state === "working") return workingStatus(session, read);
   const label = humanizeState(session.state, session.ask_pending === true, session.approval_pending === true);
