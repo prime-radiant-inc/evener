@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"image"
 	"math"
@@ -452,24 +454,39 @@ type chatReasoningEstimate struct {
 	hasTextDetail, populated  bool
 }
 
+type reasoningTextPresence bool
+
+func (p *reasoningTextPresence) UnmarshalJSON(raw []byte) error {
+	// The decoder passes a validated token. Only nonempty strings supply text.
+	*p = len(raw) > 2 && raw[0] == '"'
+	return nil
+}
+
 func (r *chatReasoningEstimate) add(target targetInfo, p ContentPart) {
 	if p.Kind != ContentThinking || p.Thinking == nil {
 		return
 	}
 	r.displayChars += len(p.Thinking.Text)
-	if target.reasoningOff {
+	if target.reasoningOff || !IsOpenAICompatEncryptedReasoning(p.Thinking.EncryptedContent) {
 		return
 	}
-	details := openAICompatReasoningDetails(p.Thinking.EncryptedContent)
-	if len(details) > 0 {
-		r.detailChars += len(p.Thinking.EncryptedContent)
+	r.detailChars += len(p.Thinking.EncryptedContent)
+	if r.hasTextDetail {
+		return
 	}
-	if !r.hasTextDetail {
-		for _, detail := range details {
-			if detail.Type == "reasoning.text" {
-				r.hasTextDetail, r.populated = true, bool(detail.Text)
-				break
-			}
+	// The writer reads exact object keys, even when legacy array validation
+	// accepts a case-folded type. Ignore unrelated fields such as opaque data.
+	var details []struct {
+		Type string                `json:"type"`
+		Text reasoningTextPresence `json:"text"`
+	}
+	if jsonv2.Unmarshal([]byte(p.Thinking.EncryptedContent), &details, jsontext.AllowDuplicateNames(true), jsontext.AllowInvalidUTF8(true)) != nil {
+		return
+	}
+	for _, detail := range details {
+		if detail.Type == "reasoning.text" {
+			r.hasTextDetail, r.populated = true, bool(detail.Text)
+			break
 		}
 	}
 }

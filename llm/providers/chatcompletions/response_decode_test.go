@@ -247,6 +247,8 @@ func TestCompletePopulatedSignedReasoningReplayCount(t *testing.T) {
 
 	const empty = `[{"type":"reasoning.text","text":"","signature":"empty"}]`
 	const encrypted = `[{"type":"reasoning.encrypted","data":"opaque"}]`
+	const uppercaseText = `[{"type":"reasoning.text","Text":"opaque field","signature":"upper"}]`
+	const uppercaseType = `[{"Type":"reasoning.text","text":"opaque field","signature":"upper"}]`
 	display := strings.Repeat("assembled display ", 8)
 	part := func(text, details string) llm.ContentPart {
 		return llm.ContentPart{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: text, EncryptedContent: details}}
@@ -260,6 +262,8 @@ func TestCompletePopulatedSignedReasoningReplayCount(t *testing.T) {
 		{"populated in a separate part", []string{populated}, text, "", 1, 0},
 		{"empty before populated", []string{empty, populated}, display, "", 2, len(display)},
 		{"opaque item with separate text detail", []string{encrypted}, display, "", 2, len(display)},
+		{"uppercase Text requires insertion", []string{uppercaseText}, display, "", 1, len(display)},
+		{"uppercase Type requires separate item", []string{uppercaseType}, display, "", 2, len(display)},
 		{"ordinary text and populated detail", []string{populated}, text, display, 1, len(display)},
 	}
 	for _, tc := range tests {
