@@ -14,15 +14,25 @@ import (
 
 func TestIncompleteResponseKeepsUnsettledToolArgumentsOutOfFinalResponse(t *testing.T) {
 	t.Parallel()
-	events, final := responsesEvents(t,
-		`{"type":"response.function_call_arguments.delta","call_id":"call_unfinished","name":"probe","delta":"{}"}`,
-		`{"type":"response.completed","response":{"status":"incomplete","output":[]}}`,
-	)
-	if delta := toolEvent(t, events, llm.StreamEventToolCallDelta); delta == nil || delta.ID != "call_unfinished" || string(delta.Arguments) != "{}" {
-		t.Fatalf("transient tool delta = %+v", delta)
-	}
-	if final == nil || len(final.ToolCalls()) != 0 || final.Finish.Raw != "incomplete" {
-		t.Fatalf("incomplete final response = %+v, want no settled tool call", final)
+	const delta = `{"type":"response.function_call_arguments.delta","call_id":"call_unfinished","name":"probe","delta":"{}"}`
+	for _, terminalType := range []string{"response.completed", "response.incomplete"} {
+		t.Run(terminalType, func(t *testing.T) {
+			terminal := `{"type":"` + terminalType + `","response":{"status":"incomplete","output":[]}}`
+			body := "data: " + delta + "\n\ndata: " + terminal + "\n\n"
+			recorded, err := ExtractRecordedResponse([]byte(body), "gpt-5.5")
+			if err != nil {
+				t.Error(err)
+			}
+			events, final := responsesEventsFromSSE(t, body)
+			if event := toolEvent(t, events, llm.StreamEventToolCallDelta); event == nil || event.ID != "call_unfinished" || string(event.Arguments) != "{}" {
+				t.Fatalf("transient tool delta = %+v", event)
+			}
+			for _, response := range []*llm.Response{final, &recorded} {
+				if response == nil || len(response.ToolCalls()) != 0 || response.Finish.Reason != llm.FinishReasonLength || response.Finish.Raw != "incomplete" {
+					t.Errorf("incomplete response = %+v, want no settled tool call", response)
+				}
+			}
+		})
 	}
 }
 

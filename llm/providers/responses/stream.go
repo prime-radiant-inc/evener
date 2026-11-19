@@ -361,6 +361,7 @@ var responsesAPIEventTypes = map[string]struct{}{
 	"response.function_call_arguments.delta": {},
 	"response.function_call_arguments.done":  {},
 	"response.completed":                     {},
+	"response.incomplete":                    {},
 	"response.failed":                        {},
 }
 
@@ -433,9 +434,9 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 				return llm.NewUnsupportedEndpointError(res.Instance, "responses stream closed with no events", nil)
 			default:
 				// The endpoint served real Responses events and then closed
-				// cleanly without response.completed — a truncated response,
+				// cleanly without a terminal response — a truncated response,
 				// with no read error to report as its cause.
-				return llm.NewStreamError(res.Instance, "responses stream closed before response.completed", nil)
+				return llm.NewStreamError(res.Instance, "responses stream closed before a terminal response", nil)
 			}
 		},
 		OnEvent: func(ev llm.SSEEvent) error {
@@ -539,7 +540,7 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 						textStarted = false
 					}
 				}
-			case "response.completed":
+			case "response.completed", "response.incomplete":
 				// Response object may be nested under "response" or be the payload itself.
 				rawResp, _ := payload["response"].(map[string]any)
 				if rawResp == nil {
