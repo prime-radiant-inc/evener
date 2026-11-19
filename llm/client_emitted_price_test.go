@@ -96,24 +96,23 @@ func TestThePriceIncludesTheSchemaTheBuilderSubstitutes(t *testing.T) {
 	}
 }
 
-// A strict projection changes the schema bytes, so the price has to follow it.
+// A strict route sends different schema bytes, so the price has to follow it.
 //
-// Strict mode closes every object and states a required list, which the
-// advertised schema does not carry. The same catalog on the same route without
-// the capability is the control: there the builder leaves the definitions alone
-// and the price must not move.
+// A certified schema is projected without growing it, so the difference comes
+// from a parameterless declaration: a strict route substitutes the closed empty
+// object where every other route sends the open one. The same catalog on the
+// same route without the capability is the control: there the builder leaves the
+// definitions alone and the price must not move.
 func TestAStrictProjectionChangesThePriceAndTheCapabilityDecidesIt(t *testing.T) {
 	t.Parallel()
-	defs := []ToolDefinition{{
-		Name: "write_file",
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"path":    map[string]any{"type": "string"},
-				"content": map[string]any{"type": "string"},
-			},
-		},
-	}}
+	// A tool prepared from a no-argument declaration. The capability is what
+	// decides whether its schema is sent as the open empty object every route
+	// emits or the closed one strict mode requires, so this is the difference the
+	// price has to follow. A certified schema is deliberately not the fixture: the
+	// gate projects it without adding bytes, which is what makes strict mode cost
+	// nothing on a fully written schema.
+	parameterless := ToolDefinition{Name: "current_time"}
+	defs := []ToolDefinition{parameterless.WithNoParametersDeclared()}
 	advertised := ToolsJSONBytes(defs)
 	req := Request{
 		Provider:       "emitted-price",
@@ -319,15 +318,21 @@ func TestAByteNeutralProjectionDoesNotMarshalTheCatalog(t *testing.T) {
 
 	// The control: a projection that really does change the bytes is still
 	// measured, so a comparator that answered "same" for everything cannot pass
-	// above. This catalog gains the closed object and stated required list that
-	// strict projection adds, and keeps the counter.
+	// above. This catalog is certified for strict mode and gains the type its
+	// closed value set implies, which is a byte the projection adds, and it keeps
+	// the counter.
 	changing := []ToolDefinition{{
 		Name: "write_file",
 		Parameters: map[string]any{
-			"type": "object",
+			"type":                 "object",
+			"additionalProperties": false,
 			"properties": map[string]any{
-				"note": map[string]any{"type": "string", "description": countedSchemaValue{calls: &calls}},
+				"note": map[string]any{
+					"description": countedSchemaValue{calls: &calls},
+					"enum":        []any{"read", "write"},
+				},
 			},
+			"required": []string{"note"},
 		},
 	}}
 	advertisedChanging := ToolsJSONBytes(changing)

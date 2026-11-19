@@ -19,25 +19,6 @@ func responsesRouteOn(instance string, strict bool) registry.Resolved {
 	return row
 }
 
-// strictGrowthTools is a catalog whose schemas gain bytes under a strict
-// projection: each object is closed and a required list is stated.
-func strictGrowthTools(n int) []llm.ToolDefinition {
-	defs := make([]llm.ToolDefinition, n)
-	for i := range defs {
-		defs[i] = llm.ToolDefinition{
-			Name: "write_file_" + string(rune('a'+i%26)) + string(rune('0'+i/26)),
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"path":    map[string]any{"type": "string"},
-					"content": map[string]any{"type": "string"},
-				},
-			},
-		}
-	}
-	return defs
-}
-
 // parameterlessTools is a catalog whose tools declare no parameters, so the
 // builder substitutes a schema for each and the emitted list is larger than the
 // advertised one.
@@ -45,6 +26,20 @@ func parameterlessTools(n int) []llm.ToolDefinition {
 	defs := make([]llm.ToolDefinition, n)
 	for i := range defs {
 		defs[i] = llm.ToolDefinition{Name: "probe_" + string(rune('a'+i%26)) + string(rune('0'+i/26))}
+	}
+	return defs
+}
+
+// preparedParameterlessTools is the same catalog in the form preparation leaves
+// it: each declaration carries the open empty object the adapters put on the
+// wire, so only the strict decision can replace it. A direct declaration has no
+// schema at all, and every route synthesizes one for it, which would make a
+// non-strict route grow here and stop this catalog from isolating the
+// capability.
+func preparedParameterlessTools(n int) []llm.ToolDefinition {
+	defs := parameterlessTools(n)
+	for i := range defs {
+		defs[i] = defs[i].WithNoParametersDeclared()
 	}
 	return defs
 }
@@ -88,14 +83,18 @@ func TestTheSessionBudgetPricesTheEmittedToolSchema(t *testing.T) {
 	}
 }
 
-// A strict projection has to change the price the session budgets with, and the
-// route without the capability must be the unchanged control.
+// A strict route's schema has to change the price the session budgets with, and
+// the route without the capability must be the unchanged control.
 //
 // This is the pair that shows the price follows the emitted bytes rather than
 // growing every request: the same request, two routes, one capability apart.
 func TestTheSessionBudgetPricesTheStrictProjectionOnlyOnACapableRoute(t *testing.T) {
 	t.Parallel()
-	defs := strictGrowthTools(24)
+	// Prepared parameterless declarations, which is where the capability changes
+	// these bytes: a certified schema projects without growing, so only the closed
+	// empty object a strict route substitutes costs more than the open one every
+	// route sends.
+	defs := preparedParameterlessTools(24)
 	req := llm.Request{Messages: []llm.Message{llm.User("hello")}, Tools: defs}
 	advertised := llm.ToolsJSONBytes(defs)
 	req.ToolsJSONBytes = advertised
@@ -111,7 +110,7 @@ func TestTheSessionBudgetPricesTheStrictProjectionOnlyOnACapableRoute(t *testing
 	}
 	if budgeted.ToolsJSONBytes <= advertised {
 		t.Fatalf("strict-capable budget priced the catalog at %d, want more than the advertised %d: the "+
-			"projection closes every object and states a required list",
+			"strict route substitutes the closed empty object",
 			budgeted.ToolsJSONBytes, advertised)
 	}
 	want := llm.PriceToolSchemas(req, strictRow).ToolsJSONBytes

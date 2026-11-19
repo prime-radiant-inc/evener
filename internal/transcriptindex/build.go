@@ -888,20 +888,21 @@ func (b *builder) echoesAwaiting(summary turnRecord, entry *schema.Turn) (bool, 
 	return apptranscript.EchoesAssistantText(lastTextRun(awaiting.Message.Content), entry.Communicate.Message), nil
 }
 
-// lastTextRun is the text of the last maximal run of consecutive text parts,
-// the run the entry's last agentMessage shows.
+// lastTextRun is the text of the run the entry's last agentMessage shows.
 func lastTextRun(content []llm.ContentPart) string {
 	end := len(content)
 	for end > 0 && content[end-1].Kind != llm.ContentText {
 		end--
 	}
 	start := end
-	for start > 0 && content[start-1].Kind == llm.ContentText {
+	for start > 0 && (content[start-1].Kind == llm.ContentText || apptranscript.MetadataOnlyResponsesReasoning(content[start-1])) {
 		start--
 	}
 	var run strings.Builder
 	for _, part := range content[start:end] {
-		run.WriteString(part.Text)
+		if part.Kind == llm.ContentText {
+			run.WriteString(part.Text)
+		}
 	}
 	return run.String()
 }

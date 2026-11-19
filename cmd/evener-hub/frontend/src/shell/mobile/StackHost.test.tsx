@@ -13,6 +13,7 @@ import { installMobileViewport } from "../../panes/session/testing/mobileViewpor
 import { MOBILE_QUERY } from "../useIsMobile";
 import "../../panes/transcript";
 import { cascadeClient, cascadeContext } from "../../panes/zoom/cascadeTestUtils";
+import { recordCascadeOrigin } from "../../panes/zoom/inspectionOrigin";
 import type { SessionZoomParams } from "../../panes/zoom/intent";
 import "../../panes/zoom";
 import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
@@ -105,6 +106,72 @@ test("toolbar Back from a cascade over the attention target returns to the targe
   const traverse = vi.spyOn(window.history, "back");
   await userEvent.click(screen.getByRole("button", { name: "Back" }));
   expect(traverse).not.toHaveBeenCalled();
+  traverse.mockRestore();
+  host.unmount();
+});
+
+test("mobile Back from a saved in-place cascade clears wentBackRef so the next child still returns to the restored source", async () => {
+  const childA = workspaceStore.getState().openPane("session", { ref: "local:child-a" }, { slot: "secondary" });
+  const cascadeParams: SessionZoomParams = {
+    ref: "local:leaf",
+    source: { type: "session", params: { ref: "local:root" } },
+    edges: [{ ownerRef: "local:root", childRef: "local:leaf", delegateId: "d1" }],
+  };
+  const cascadeId = workspaceStore.getState().openPane("sessionZoom", cascadeParams, { slot: "main" });
+  workspaceStore.getState().focusPane(childA);
+  const host = await act(async () => render(<StackHost />));
+  // Switch from childA to the saved in-place cascade so childA sits on backStack.
+  await act(async () => workspaceStore.getState().focusPane(cascadeId));
+  // Back retypes cascadeId in place to local:root without changing focusedPaneId.
+  await userEvent.click(screen.getByRole("button", { name: "Back" }));
+  expect(workspaceStore.getState().panes.find((pane) => pane.id === cascadeId)).toMatchObject({
+    type: "session",
+    params: { ref: "local:root" },
+  });
+  expect(workspaceStore.getState().focusedPaneId).toBe(cascadeId);
+  // Opening another child from the restored source must record cascadeId on
+  // backStack, so the following Back returns to the restored source instead of
+  // skipping past it to childA.
+  const childB = await act(async () =>
+    workspaceStore.getState().openPane("session", { ref: "local:child-b" }, { slot: "secondary" }),
+  );
+  expect(workspaceStore.getState().focusedPaneId).toBe(childB);
+  await userEvent.click(screen.getByRole("button", { name: "Back" }));
+  expect(workspaceStore.getState().focusedPaneId).toBe(cascadeId);
+  host.unmount();
+});
+
+test("mobile toolbar Back dismisses an inspector even when Needs You bound it to attention history", async () => {
+  window.history.replaceState({}, "", "/s/local%3Aother");
+  const sourceId = workspaceStore.getState().openPane("session", { ref: "local:source" }, { slot: "main" });
+  const otherId = workspaceStore.getState().openPane("session", { ref: "local:other" }, { slot: "secondary" });
+  const inspectorId = workspaceStore.getState().openPane(
+    "sessionZoom",
+    {
+      ref: "local:leaf",
+      source: { type: "session", params: { ref: "local:source" } },
+      edges: [{ ownerRef: "local:source", childRef: "local:leaf", delegateId: "d1" }],
+      inspection: { origin: { paneId: sourceId, type: "session", ref: "local:source" } },
+    },
+    { slot: "secondary" },
+  );
+  const sourcePane = workspaceStore.getState().panes.find((pane) => pane.id === sourceId);
+  const inspectorPane = workspaceStore.getState().panes.find((pane) => pane.id === inspectorId);
+  if (!sourcePane || !inspectorPane) throw new Error("missing inspector fixture panes");
+  recordCascadeOrigin(inspectorPane, sourcePane);
+  workspaceStore.getState().focusPane(otherId);
+  const host = await act(async () => render(<StackHost />));
+  // Hop via Needs You from otherId to the already-presented inspector leaf so
+  // the current attention history entry binds the inspector itself.
+  await act(async () => {
+    openAttentionSession("local:leaf");
+  });
+  expect(workspaceStore.getState().focusedPaneId).toBe(inspectorId);
+  const traverse = vi.spyOn(window.history, "back");
+  await userEvent.click(screen.getByRole("button", { name: "Back" }));
+  expect(traverse).not.toHaveBeenCalled();
+  expect(workspaceStore.getState().panes.some((pane) => pane.id === inspectorId)).toBe(false);
+  expect(workspaceStore.getState().focusedPaneId).toBe(sourceId);
   traverse.mockRestore();
   host.unmount();
 });
@@ -530,24 +597,24 @@ test("a restored cascade renders only its selected reader on mobile and restores
         </ClientProvider>,
       ),
     );
-    const phoneReturn = await screen.findByRole("button", { name: "Return to previous view" });
-    expect(phoneReturn.closest('[data-pane-scaffold="cascade"]')).not.toBeNull();
+    expect(await screen.findByTestId("cascade-column")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Return to previous view" })).toBeNull();
     expect(screen.getAllByTestId("cascade-column").map((column) => column.getAttribute("data-scope-ref"))).toEqual([
       "grandchild",
     ]);
     expect(screen.queryByTestId("cascade-spine")).toBeNull();
     // The selected column embeds the live conversation, composer included -
     // the read-only reader surface with no composer is gone.
-    expect(screen.queryByRole("textbox")).not.toBeNull();
+    const editor = screen.getByRole("textbox");
     expect(workspaceStore.getState().panes[0]?.params).toBe(params);
-    phoneReturn.focus();
+    act(() => editor.focus());
     act(() => activitySidebarStore.getState().openWith("about"));
     const sidebar = await screen.findByTestId("activity-sidebar");
     await within(sidebar).findByText("wire-grandchild");
     expect(within(sidebar).queryByText("wire-child")).toBeNull();
     await userEvent.setup().keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByTestId("activity-sidebar")).toBeNull());
-    expect(document.activeElement).toBe(phoneReturn);
+    expect(document.activeElement).toBe(editor);
     expect(workspaceStore.getState().panes[0]?.params).toBe(params);
     expect(workspaceStore.getState().focusedPaneId).toBe("restored-cascade");
     await act(async () => {
@@ -568,7 +635,8 @@ test("a restored cascade renders only its selected reader on mobile and restores
       media.matches = true;
       media.dispatchEvent(Object.assign(new Event("change"), { matches: true }));
     });
-    await userEvent.setup().click(screen.getByRole("button", { name: "Return to previous view" }));
+    expect(screen.queryByRole("button", { name: "Return to previous view" })).toBeNull();
+    await userEvent.setup().click(screen.getByRole("button", { name: "Back" }));
     expect(workspaceStore.getState().panes[0]).toMatchObject({
       id: "restored-cascade",
       type: "session",

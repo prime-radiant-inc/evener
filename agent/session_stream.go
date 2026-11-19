@@ -138,6 +138,8 @@ func (s *Session) emitModelRetry(policy llm.RetryPolicy, req llm.Request, group 
 // callModel runs one retry group against req's model and records what every
 // attempt did into group, which the caller owns (one group per invocation).
 func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile *provider.Profile, req llm.Request, group *groupRecord) (sessionModelResponse, error) {
+	groupStart := s.sclock().Now()
+	defer func() { group.Elapsed = s.sclock().Now().Sub(groupStart) }()
 	previewCalls := map[string]struct{}{}
 	rememberPreviewCalls := func(ids []string) {
 		for _, id := range ids {

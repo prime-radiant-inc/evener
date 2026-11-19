@@ -266,7 +266,8 @@ func decodeMessagesStream(sctx context.Context, cancel context.CancelFunc, resp 
 							tc := llm.ToolCallData{ID: st.toolID, Name: st.toolName, Type: "function"}
 							s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &tc})
 						}
-						tc := llm.ToolCallData{ID: st.toolID, Name: st.toolName, Arguments: append([]byte(nil), st.toolArgs.Bytes()...), Type: "function"}
+						tc := llm.ToolCallData{ID: st.toolID, Name: st.toolName, Type: "function"}
+						tc.Arguments, tc.ArgumentsSpelling = llm.NormalizeToolArguments(st.toolArgs.Bytes())
 						s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &tc})
 						st.toolStarted = false
 					}
@@ -324,13 +325,12 @@ func decodeMessagesStream(sctx context.Context, cancel context.CancelFunc, resp 
 							// Empty tool arguments are normalized to "{}" just above, so an
 							// assembled tool call always carries a non-empty arguments string.
 							invariant.Hold(args != "", "anthropic assembled tool call %q has empty arguments", st.toolID)
+							argsRaw, spelling := llm.NormalizeToolArguments([]byte(args))
 							parts = append(parts, llm.ContentPart{
 								Kind: llm.ContentToolCall,
 								ToolCall: &llm.ToolCallData{
-									ID:        st.toolID,
-									Name:      st.toolName,
-									Arguments: json.RawMessage(args),
-									Type:      "function",
+									ID: st.toolID, Name: st.toolName, Arguments: argsRaw, Type: "function",
+									ArgumentsSpelling: spelling,
 								},
 							})
 						}

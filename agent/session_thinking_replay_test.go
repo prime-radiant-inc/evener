@@ -1,10 +1,6 @@
 package agent
 
-// Regression tests for #4563: an OpenAI-chat target does not carry replayed
-// reasoning as continuation state, so request assembly drops assistant
-// thinking before it can be billed every round. The transcript keeps it; only
-// the outgoing messages lose it, and a row that declares thinking_as_text (the
-// adapter merges it into assistant text) is the deliberate exception.
+// Regression tests for reasoning replay, default-on except reasoning = false.
 
 import (
 	"context"
@@ -47,11 +43,7 @@ func TestExpandHistory_OpenAIChat_DropThinkingStripsPriorAndInFlight(t *testing.
 	}
 }
 
-// TestDropsReplayedThinking pins which targets take replayed thinking. Only an
-// OpenAI-chat target drops it by default; the three protocols whose
-// continuation state lives in the thinking (signature, thought signature,
-// encrypted content) keep their provenance rules, and an explicit
-// thinking_as_text row keeps it too.
+// TestDropsReplayedThinking pins which targets take replayed thinking.
 func TestDropsReplayedThinking(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -59,7 +51,8 @@ func TestDropsReplayedThinking(t *testing.T) {
 		profile *provider.Profile
 		want    bool
 	}{
-		{"openai-chat", newOpenAICompatProfile("kimi", "kimi-k3", 0), true},
+		{"openai-chat", newOpenAICompatProfile("kimi", "kimi-k3", 0), false},
+		{"openai-chat reasoning false", nonReasoningProfile(t, "tiny-chat"), true},
 		{"openai-chat thinking_as_text", reasoningProfile("glm-5.3", registry.Caps{ThinkingAsText: new(true)}), false},
 		{"anthropic", newAnthropicProfile("claude-opus-4-6"), false},
 		{"openai-responses", NewOpenAIProfile("gpt-5.2"), false},
@@ -74,13 +67,11 @@ func TestDropsReplayedThinking(t *testing.T) {
 }
 
 // TestSession_ChatTargetRequestCarriesNoReplayedThinking drives one real turn
-// and asserts the recorded provider request, not the expansion alone: a chat
-// target's outgoing messages carry no ContentThinking, while the answer text
-// stays.
+// and asserts the recorded request drops thinking but keeps the answer text.
 func TestSession_ChatTargetRequestCarriesNoReplayedThinking(t *testing.T) {
 	t.Parallel()
 	adapter := newFakeAdapter("lunaroute", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(communicateCall("c1", "ok")) })
-	sess := newSession(t, withProfile(reasoningProfile("glm-5.3", registry.Caps{Reasoning: new(true)})), withAdapter(adapter))
+	sess := newSession(t, withProfile(nonReasoningProfile(t, "tiny-chat")), withAdapter(adapter))
 	sess.appendTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
 		{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "old chain of thought"}},
 		{Kind: llm.ContentText, Text: "old answer"},
@@ -167,16 +158,14 @@ func TestExpandHistory_OpenAIChat_SignatureItemKeepsItsText(t *testing.T) {
 	t.Fatal("the signature-bearing part was dropped")
 }
 
-// TestFallbackContinuationKeepsThinkingForTheFallbackPolicy pins the per-target
-// projection: a chat primary strips its own thinking, but the untrimmed source
-// must still feed an Anthropic fallback, whose signed thinking has to survive
-// into the fallback's next request after a tool round (#4563 review).
+// TestFallbackContinuationKeepsThinkingForTheFallbackPolicy pins the projection:
+// a reasoning = false chat primary still feeds the Anthropic fallback.
 func TestFallbackContinuationKeepsThinkingForTheFallbackPolicy(t *testing.T) {
 	t.Parallel()
 	primary := provider.FromResolved(registry.Resolved{
 		Instance: "gw", ModelID: "chat-primary", WireID: "chat-primary",
 		Protocol: registry.ProtocolOpenAIChat, Surface: registry.SurfaceOpenAI,
-		Caps: registry.Caps{Reasoning: new(true)},
+		Caps: registry.Caps{Reasoning: new(false)},
 	}, nil)
 	fallback := provider.FromResolved(registry.Resolved{
 		Instance: "gwb", ModelID: "claude-fallback", WireID: "claude-fallback",
@@ -232,7 +221,7 @@ func TestFallbackContinuationKeepsThinkingForTheFallbackPolicy(t *testing.T) {
 		t.Fatalf("fallback requests = %d, want a tool round and its continuation", len(fallbackReqs))
 	}
 	if !hasSignedThinking(fallbackReqs[len(fallbackReqs)-1].Messages, text, signature) {
-		t.Fatal("the fallback continuation lost the signed thinking the chat primary does not carry")
+		t.Fatal("the fallback continuation lost the signed thinking the reasoning = false chat primary does not carry")
 	}
 	primaryReqs := primaryAdapter.Requests()
 	if len(primaryReqs) >= 2 && hasSignedThinking(primaryReqs[len(primaryReqs)-1].Messages, text, signature) {
@@ -352,11 +341,12 @@ func TestFallbackThinkingProjectionRepricesTheBudget(t *testing.T) {
 	primary := provider.FromResolved(registry.Resolved{
 		Instance: "gw", ModelID: "chat-primary", WireID: "chat-primary",
 		Protocol: registry.ProtocolOpenAIChat, Surface: registry.SurfaceOpenAI,
-		Caps: registry.Caps{Reasoning: new(true)},
+		Caps: registry.Caps{Reasoning: new(false)},
 	}, nil)
 	fallback := provider.FromResolved(registry.Resolved{
 		Instance: "gwb", ModelID: "chat-fallback", WireID: "chat-fallback",
 		Protocol: registry.ProtocolOpenAIChat, Surface: registry.SurfaceOpenAI,
+		Caps: registry.Caps{Reasoning: new(false)},
 	}, nil)
 	fallback = withContextWindow(fallback, 50000)
 	permErr := llm.ErrorFromHTTPStatus("gw", 404, "model not found", nil, nil)
@@ -402,4 +392,42 @@ func TestFallbackThinkingProjectionRepricesTheBudget(t *testing.T) {
 	if requestCarriesText(fallbackReqs[len(fallbackReqs)-1], "THINK_b7d1") {
 		t.Fatal("the chat fallback carried thinking its policy drops")
 	}
+}
+
+// TestFallbackKeepsItsOwnEarlierReasoning pins a fallback sending its own reasoning.
+func TestFallbackKeepsItsOwnEarlierReasoning(t *testing.T) {
+	t.Parallel()
+	const text, sig = "fallback own thought", "sig-fb"
+	check := func(t *testing.T, on bool) {
+		primary := provider.FromResolved(registry.Resolved{Instance: "gw", ModelID: "r-primary", WireID: "r-primary", Protocol: registry.ProtocolOpenAIResponses, Surface: registry.SurfaceOpenAI}, nil)
+		fallback := provider.FromResolved(registry.Resolved{Instance: "gwb", ModelID: "chat-fb", WireID: "chat-fb", Protocol: registry.ProtocolOpenAIChat, Surface: registry.SurfaceOpenAI, Caps: registry.Caps{Reasoning: new(on)}}, nil)
+		primaryAdapter := &agenttest.ScriptedAdapter{Provider: "gw", FaultResponder: func(llm.Request) error { return llm.ErrorFromHTTPStatus("gw", 404, "model not found", nil, nil) }}
+		round := agenttest.ToolCallResponse(llm.ToolCallData{ID: "call_1", Name: "no_such_tool", Arguments: []byte(`{}`)})
+		round.Message.Content = append([]llm.ContentPart{{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: text, Signature: sig}}}, round.Message.Content...)
+		var calls int
+		fallbackAdapter := &agenttest.ScriptedAdapter{Provider: "gwb", Responder: func(llm.Request) llm.Response {
+			if calls++; calls > 1 {
+				return agenttest.FinalResponse("done")
+			}
+			return round
+		}}
+		sess := newSession(t, withProfile(primary), withAdapter(primaryAdapter), withAdapter(fallbackAdapter), withConfig(SessionConfig{
+			ModelFallbacks: []string{"gwb/chat-fb"},
+			ResolveProfile: func(string) (*provider.Profile, error) { return fallback, nil },
+			testOnly:       testConfig{skipGitSnapshot: true},
+		}))
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: only a genuine hang.
+		defer cancel()
+		var driveErr error
+		for range 2 {
+			_, driveErr = sess.ProcessInput(ctx, "go", nil)
+		}
+		if reqs := fallbackAdapter.Requests(); driveErr != nil || len(reqs) < 3 {
+			t.Fatalf("fallback requests = %d, want two rounds and a continuation", len(reqs))
+		} else if got := hasSignedThinking(reqs[len(reqs)-1].Messages, text, sig); got != on {
+			t.Fatalf("fallback replayed its own reasoning = %v, want %v", got, on)
+		}
+	}
+	t.Run("on", func(t *testing.T) { t.Parallel(); check(t, true) })
+	t.Run("off", func(t *testing.T) { t.Parallel(); check(t, false) })
 }

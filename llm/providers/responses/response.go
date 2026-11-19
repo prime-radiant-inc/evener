@@ -1,8 +1,10 @@
 package responses
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/invariant"
@@ -10,19 +12,26 @@ import (
 	"primeradiant.com/evener/llm/providers/internal/protocolhttp"
 )
 
+func responsesFunctionCallUnfinished(item map[string]any) bool {
+	kind, _ := item["type"].(string)
+	status, _ := item["status"].(string)
+	return kind == "function_call" && (status == "incomplete" || status == "in_progress")
+}
+
 // responseContentFromOutputItems converts a Responses API output-item array
 // into message content parts. It walks the same wire shape whether the items
 // come from a terminal response.completed payload's "output" field or from
 // decodeStream's accumulated response.output_item.done events, so both
 // callers share this one walk.
-func responseContentFromOutputItems(out []any, body []byte) []llm.ContentPart {
-	return responseContentFromOutputItemsRaw(out, body, nil)
+func responseContentFromOutputItems(out []any, body []byte, responseIncomplete bool) []llm.ContentPart {
+	return responseContentFromOutputItemsRaw(out, body, nil, true, responseIncomplete)
 }
 
-func responseContentFromOutputItemsRaw(out []any, body []byte, rawItems []json.RawMessage) []llm.ContentPart {
+func responseContentFromOutputItemsRaw(out []any, body []byte, rawItems []json.RawMessage, coalesceCalls, responseIncomplete bool) []llm.ContentPart {
 	var rawBodyItems []json.RawMessage
 	var rawBodyCaptured bool
 	var content []llm.ContentPart
+	var callsByID map[string]*llm.ToolCallData
 	for itemIdx, itemAny := range out {
 		item, ok := itemAny.(map[string]any)
 		if !ok {
@@ -49,15 +58,36 @@ func responseContentFromOutputItemsRaw(out []any, body []byte, rawItems []json.R
 				}
 			}
 		case "function_call":
+			if responsesFunctionCallUnfinished(item) {
+				continue
+			}
 			name, _ := item["name"].(string)
-			args, _ := item["arguments"].(string)
 			callID, _ := item["call_id"].(string)
 			itemID, _ := item["id"].(string)
 			if itemID == "" {
 				itemID, _ = item["item_id"].(string)
 			}
+			call := callsByID[callID]
+			if call != nil {
+				// Later references complete missing fields at the first position.
+				call.ItemID = cmp.Or(call.ItemID, itemID)
+				call.Name = cmp.Or(call.Name, name)
+				if len(call.Arguments) != 0 {
+					continue
+				}
+			} else {
+				call = &llm.ToolCallData{ID: callID, ItemID: itemID, Name: name, Type: "function"}
+				if coalesceCalls && callID != "" {
+					if callsByID == nil {
+						callsByID = make(map[string]*llm.ToolCallData)
+					}
+					callsByID[callID] = call
+				}
+				content = append(content, llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: call})
+			}
 			// Decode the raw body once; index this item's token (rawItems
 			// entries win when present).
+			args, _ := item["arguments"].(string)
 			var token json.RawMessage
 			if itemIdx < len(rawItems) {
 				token = rawItems[itemIdx]
@@ -80,16 +110,7 @@ func responseContentFromOutputItemsRaw(out []any, body []byte, rawItems []json.R
 					args = string(content)
 				}
 			}
-			content = append(content, llm.ContentPart{
-				Kind: llm.ContentToolCall,
-				ToolCall: &llm.ToolCallData{
-					ID:        callID,
-					ItemID:    itemID,
-					Name:      name,
-					Arguments: json.RawMessage(args),
-					Type:      "function",
-				},
-			})
+			call.Arguments, call.ArgumentsSpelling = llm.NormalizeToolArguments([]byte(args))
 		case "web_search_call":
 			query := ""
 			if action, _ := item["action"].(map[string]any); action != nil {
@@ -106,21 +127,25 @@ func responseContentFromOutputItemsRaw(out []any, body []byte, rawItems []json.R
 		case "reasoning":
 			id, _ := item["id"].(string)
 			encryptedContent, _ := item["encrypted_content"].(string)
+			status, _ := item["status"].(string)
+			incomplete := status == "incomplete" || status == "in_progress" || (responseIncomplete && status != "completed")
 			// OpenAI returns reasoning as encrypted_content plus summaries;
 			// gateways that expose the raw thinking put reasoning_text parts
-			// in content instead. On this path the raw text feeds display and
-			// the transcript; toResponsesInput replays a reasoning item only
-			// when it has encrypted_content, so the text never returns to
-			// this API.
+			// in content instead. Both ride back once the item finished (#6709).
 			text := strings.Join(parseReasoningSummary(item["content"]), reasoningPartSeparator)
-			if encryptedContent != "" || text != "" {
+			contentParts := responsesReasoningParts(item["content"])
+			summaryParts := responsesReasoningParts(item["summary"])
+			if encryptedContent != "" || text != "" || len(contentParts) > 0 || len(summaryParts) > 0 {
 				content = append(content, llm.ContentPart{
 					Kind: llm.ContentThinking,
 					Thinking: &llm.ThinkingData{
-						ID:               id,
-						Text:             text,
-						EncryptedContent: encryptedContent,
-						Summary:          parseReasoningSummary(item["summary"]),
+						ID:                    id,
+						Text:                  text,
+						EncryptedContent:      encryptedContent,
+						Summary:               parseReasoningSummary(item["summary"]),
+						ResponsesContentParts: contentParts,
+						ResponsesSummaryParts: summaryParts,
+						ResponsesIncomplete:   incomplete,
 					},
 				})
 			}
@@ -129,6 +154,28 @@ func responseContentFromOutputItemsRaw(out []any, body []byte, rawItems []json.R
 		}
 	}
 	return content
+}
+
+func retainFallbackReasoning(r *llm.Response) {
+	if !slices.ContainsFunc(r.Message.Content, func(p llm.ContentPart) bool {
+		return p.Kind != llm.ContentThinking || p.Thinking.Text != "" || p.Thinking.EncryptedContent != ""
+	}) {
+		r.FallbackContent, r.Message.Content = r.Message.Content, nil
+	}
+}
+
+func responsesReasoningParts(raw any) []llm.ResponsesReasoningPart {
+	items, _ := raw.([]any)
+	var parts []llm.ResponsesReasoningPart
+	for _, item := range items {
+		part, _ := item.(map[string]any)
+		kind, _ := part["type"].(string)
+		text, ok := part["text"].(string)
+		if kind != "" && ok {
+			parts = append(parts, llm.ResponsesReasoningPart{Type: kind, Text: text})
+		}
+	}
+	return parts
 }
 
 // settleResponsesTerminalOutput decides the settled message content and
@@ -149,7 +196,10 @@ func settleResponsesTerminalOutput(r *llm.Response, rawResp map[string]any, accu
 		// output_item.done events carried real content (observed on
 		// affected sessions). Synthesize the settled message from what the
 		// stream actually sent, reusing fromResponses' item-walk.
-		r.Message.Content = responseContentFromOutputItemsRaw(accumulatedOutput, nil, accumulatedRawOutput)
+		// Accumulated call IDs can be derived from item IDs, so repeated
+		// values do not establish that the provider issued one call.
+		r.Message.Content = responseContentFromOutputItemsRaw(accumulatedOutput, nil, accumulatedRawOutput, false, rawResp["status"] == "incomplete")
+		retainFallbackReasoning(r)
 		if status, _ := rawResp["status"].(string); status != "incomplete" {
 			if len(r.ToolCalls()) > 0 {
 				r.Finish = llm.FinishReason{Reason: "tool_calls"}
@@ -157,12 +207,21 @@ func settleResponsesTerminalOutput(r *llm.Response, rawResp map[string]any, accu
 				r.Finish = llm.FinishReason{Reason: "stop"}
 			}
 		}
-	case len(terminalOutput) > 0 && len(accumulatedOutput) > 0 && len(terminalOutput) != len(accumulatedOutput):
-		// Terminal output is authoritative when non-empty, but a count
-		// mismatch against what the stream accumulated is worth surfacing.
+	case len(terminalOutput) > 0 && len(accumulatedOutput) > 0:
+		// The stream accumulator holds only settled items.
+		count := len(terminalOutput)
+		for _, rawItem := range terminalOutput {
+			item, _ := rawItem.(map[string]any)
+			if responsesFunctionCallUnfinished(item) {
+				count--
+			}
+		}
+		if count == len(accumulatedOutput) {
+			return
+		}
 		r.Warnings = append(r.Warnings, llm.Warning{
 			Code:    "responses_output_item_count_mismatch",
-			Message: fmt.Sprintf("terminal output items=%d differ from accumulated stream items=%d", len(terminalOutput), len(accumulatedOutput)),
+			Message: fmt.Sprintf("terminal output items=%d differ from accumulated stream items=%d", count, len(accumulatedOutput)),
 		})
 	}
 }
@@ -193,15 +252,17 @@ func fromResponses(raw map[string]any, requestedModel string, body []byte) llm.R
 
 	// Parse output items.
 	if out, ok := raw["output"].([]any); ok {
-		msg.Content = responseContentFromOutputItems(out, body)
+		msg.Content = responseContentFromOutputItems(out, body, raw["status"] == "incomplete")
 	}
 
 	r.Message = msg
+	retainFallbackReasoning(&r)
 
 	// Check Responses API status/incomplete_details for finish reason.
 	status, _ := raw["status"].(string)
 	switch {
 	case status == "incomplete":
+		r.OutputSettled = true
 		reason := "length" // default for incomplete
 		if details, ok := raw["incomplete_details"].(map[string]any); ok {
 			if dr, _ := details["reason"].(string); dr != "" {

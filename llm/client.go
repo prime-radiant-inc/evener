@@ -343,7 +343,7 @@ func (c *Client) Complete(ctx context.Context, req Request) (Response, error) {
 	base := func(ctx context.Context, req Request) (Response, error) {
 		if t.resolved {
 			var err error
-			req, err = shapeAndApplyTokenBudget(req, t.res, t.override == nil)
+			req, err = shapeAndApplyTokenBudget(req, t.res, t.override != nil)
 			if err != nil {
 				return Response{}, err
 			}
@@ -385,7 +385,7 @@ func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 	base := func(ctx context.Context, req Request) (Stream, error) {
 		if t.resolved {
 			var err error
-			req, err = shapeAndApplyTokenBudget(req, t.res, t.override == nil)
+			req, err = shapeAndApplyTokenBudget(req, t.res, t.override != nil)
 			if err != nil {
 				return nil, err
 			}
@@ -420,21 +420,47 @@ func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 
 // shapeAndApplyTokenBudget shapes req and admits it against res's budget.
 //
-// priceEmitted says whether the route's own builder will replace a tool schema
-// before sending it. It does on a protocol route, and it does not on an
-// override, where the adapter marshals the definition it was handed — the
-// override boundary's list is its wire list.
-func shapeAndApplyTokenBudget(req Request, res registry.Resolved, priceEmitted bool) (Request, error) {
+// override says whether an adapter override serves the request. Two pricing
+// steps run here, and the order is the point.
+//
+// A protocol route's builder replaces a tool schema before sending it, so the
+// count is taken over the list that builder emits rather than over the one the
+// request arrived with; an override marshals the definition it was handed, so
+// the list it received is its wire list and the delta below is what describes
+// it.
+//
+// The emitted price and the parameterless delta describe the same substitution
+// when the deriver already applied it, so the delta is skipped for a request
+// that is already priced for this target (see effectiveToolsJSONBytes). A
+// second charge for the same bytes is an input cap refusing a request that
+// fits.
+func shapeAndApplyTokenBudget(req Request, res registry.Resolved, override bool) (Request, error) {
 	req = ShapeRequest(req, res)
 	// The price is taken over the list the route's builder emits, not the one
 	// the request arrived with. This runs here rather than at either call site
 	// because admission is where the count is consumed, and every route that
 	// reaches the budget passes through this function.
-	if priceEmitted {
+	if !override {
 		req = priceEmittedToolSchemas(req, res)
 	}
-	budgeted, _, err := ApplyTokenBudget(req, res)
+	budgeted, _, err := applyTokenBudgetForTarget(req, res, override)
 	return budgeted, err
+}
+
+// applyTokenBudgetForTarget runs ApplyTokenBudget with the resolved adapter's
+// parameterless-schema byte adjustment applied once to a shallow copy, keeping
+// req.ToolsJSONBytes equal to the caller's declared-catalog stamp.
+func applyTokenBudgetForTarget(req Request, res registry.Resolved, override bool) (Request, TokenBudget, error) {
+	budgetReq := req
+	if len(budgetReq.Tools) > 0 {
+		budgetReq.ToolsJSONBytes = effectiveToolsJSONBytes(budgetReq, res, override)
+	}
+	budgeted, budget, err := ApplyTokenBudget(budgetReq, res)
+	if err != nil {
+		return req, budget, err
+	}
+	budgeted.ToolsJSONBytes = req.ToolsJSONBytes
+	return budgeted, budget, nil
 }
 
 // ModelListing is what Models returns: the instance's visible live-authoritative

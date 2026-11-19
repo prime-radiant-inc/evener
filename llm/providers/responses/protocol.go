@@ -57,9 +57,11 @@ func (*Protocol) BuildBody(req llm.Request, res registry.Resolved) (map[string]a
 //
 // The builder reaches its per-tool decision through toolSchema; this maps the
 // same list through the same function, so the local estimate prices the request
-// the builder emits rather than the one it received. Two differences make that
-// matter near the input cap: a parameterless tool gains a synthesized schema,
-// and a strict tool is projected to close every object.
+// the builder emits rather than the one it received. Every difference makes that
+// matter near the input cap: a parameterless tool gains a synthesized schema, a
+// strict tool is projected to close every object, a tool that cannot be
+// certified keeps its advertised schema with the type a closed value set
+// implies, and a Codex Lite route states an explicit type on every node.
 //
 // The returned list is measured by the caller, so an unchanged list returns nil
 // and false and the count it already holds is reused rather than re-marshaling
@@ -69,11 +71,12 @@ func (*Protocol) EmitToolSchemas(baseline []llm.ToolDefinition, res registry.Res
 		return nil, false
 	}
 	strict := registry.BoolValue(res.Caps.StrictTools)
+	lite := registry.BoolValue(res.Caps.ResponsesLite)
 	sent := make([]llm.ToolDefinition, len(baseline))
 	copy(sent, baseline)
 	changed := false
 	for i, t := range baseline {
-		params, _ := toolSchema(t, strict)
+		params, _ := toolSchema(t, strict, lite)
 		// A byte count needs a byte oracle. The projection sorts each object's
 		// required list, which reorders a schema without changing what it
 		// serializes to: a catalog whose tools are already strictly shaped

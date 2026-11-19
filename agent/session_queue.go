@@ -389,6 +389,16 @@ func (s *Session) deliverHookUserMessage(text string) {
 	s.emitDiagnosticWarning(events.WarningData{Source: string(diagnostic.SourceHook), Message: text})
 }
 
+// deliverHookUserMessageContext is deliverHookUserMessage on a caller's bound:
+// a close drain's hook output must not outlive the drain. The warning is still
+// never a Notification-hook trigger, on either path.
+func (s *Session) deliverHookUserMessageContext(ctx context.Context, text string) {
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	s.emitDiagnosticWarningContext(ctx, events.WarningData{Source: string(diagnostic.SourceHook), Message: text})
+}
+
 // hookStopText trims a hook's stop reason and supplies the event's fallback when
 // it is empty, so every site that ends an action on continue:false reports it
 // the same way. It does not deliver: the call sites need the text as well as the

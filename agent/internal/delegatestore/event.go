@@ -7,17 +7,18 @@ const CurrentVersion = 1
 type EventKind string
 
 const (
-	EventDelegateCreated              EventKind = "delegate_created"
-	EventDelegateRunStarted           EventKind = "delegate_run_started"
-	EventDelegateTerminalPrepared     EventKind = "delegate_terminal_prepared"
-	EventDelegateRunFinished          EventKind = "delegate_run_finished"
-	EventDelegateResumabilityClosed   EventKind = "delegate_resumability_closed"
-	EventDelegateSubtreeStopRequested EventKind = "delegate_subtree_stop_requested"
-	EventDelegateSubtreeStopCompleted EventKind = "delegate_subtree_stop_completed"
-	EventDelegateDeliveryAcknowledged EventKind = "delegate_delivery_acknowledged"
-	EventDelegateAttentionChanged     EventKind = "delegate_attention_changed"
-	EventDelegateUpdatePosted         EventKind = "delegate_update_posted"
-	EventDelegateIntentStated         EventKind = "delegate_intent_stated"
+	EventDelegateCreated               EventKind = "delegate_created"
+	EventDelegateRunStarted            EventKind = "delegate_run_started"
+	EventDelegateTerminalPrepared      EventKind = "delegate_terminal_prepared"
+	EventDelegateRunFinished           EventKind = "delegate_run_finished"
+	EventDelegateResumabilityClosed    EventKind = "delegate_resumability_closed"
+	EventDelegateSubtreeStopRequested  EventKind = "delegate_subtree_stop_requested"
+	EventDelegateSubtreeStopCompleted  EventKind = "delegate_subtree_stop_completed"
+	EventDelegateDeliveryAcknowledged  EventKind = "delegate_delivery_acknowledged"
+	EventDelegateAttentionChanged      EventKind = "delegate_attention_changed"
+	EventDelegateUpdatePosted          EventKind = "delegate_update_posted"
+	EventDelegateIntentStated          EventKind = "delegate_intent_stated"
+	EventDelegateAttentionHoldReleased EventKind = "delegate_attention_hold_released"
 )
 
 type Event struct {
@@ -26,17 +27,18 @@ type Event struct {
 	TS         time.Time `json:"ts,omitzero"`
 	DelegateID string    `json:"delegate_id"`
 
-	Created              *DelegateCreated          `json:"created,omitempty"`
-	RunStarted           *RunStarted               `json:"run_started,omitempty"`
-	TerminalPrepared     *TerminalPrepared         `json:"terminal_prepared,omitempty"`
-	RunFinished          *RunFinished              `json:"run_finished,omitempty"`
-	ResumabilityClosed   *ResumabilityClosed       `json:"resumability_closed,omitempty"`
-	SubtreeStopRequested *SubtreeStopRequested     `json:"subtree_stop_requested,omitempty"`
-	SubtreeStopCompleted *SubtreeStopCompleted     `json:"subtree_stop_completed,omitempty"`
-	DeliveryAcknowledged *DeliveryAcknowledged     `json:"delivery_acknowledged,omitempty"`
-	AttentionChanged     *DelegateAttentionChanged `json:"attention_changed,omitempty"`
-	UpdatePosted         *UpdatePosted             `json:"update_posted,omitempty"`
-	IntentStated         *IntentStated             `json:"intent_stated,omitempty"`
+	Created               *DelegateCreated          `json:"created,omitempty"`
+	RunStarted            *RunStarted               `json:"run_started,omitempty"`
+	TerminalPrepared      *TerminalPrepared         `json:"terminal_prepared,omitempty"`
+	RunFinished           *RunFinished              `json:"run_finished,omitempty"`
+	ResumabilityClosed    *ResumabilityClosed       `json:"resumability_closed,omitempty"`
+	SubtreeStopRequested  *SubtreeStopRequested     `json:"subtree_stop_requested,omitempty"`
+	SubtreeStopCompleted  *SubtreeStopCompleted     `json:"subtree_stop_completed,omitempty"`
+	DeliveryAcknowledged  *DeliveryAcknowledged     `json:"delivery_acknowledged,omitempty"`
+	AttentionChanged      *DelegateAttentionChanged `json:"attention_changed,omitempty"`
+	UpdatePosted          *UpdatePosted             `json:"update_posted,omitempty"`
+	IntentStated          *IntentStated             `json:"intent_stated,omitempty"`
+	AttentionHoldReleased *AttentionHoldReleased    `json:"attention_hold_released,omitempty"`
 }
 
 type DelegateCreated struct {
@@ -112,6 +114,18 @@ type UpdatePosted struct {
 type IntentStated struct {
 	Generation uint64 `json:"generation"`
 	Intent     string `json:"intent"`
+}
+
+// AttentionHoldReleased records that an event newer than the named generation's
+// settled stop ended the user-stop quiet on this delegate's pending rows. The
+// quiet itself is in-memory, so without this record a cold restore cannot tell
+// a stop whose quiet is still current from one a newer event already released.
+// Generation names the settled generation whose stop the release superseded: a
+// release is only ever appended while the aggregate rests at that generation,
+// so generations only move the record forward and a release can never name a
+// stop that settles later.
+type AttentionHoldReleased struct {
+	Generation uint64 `json:"generation"`
 }
 
 type versionRecord struct {

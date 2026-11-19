@@ -193,7 +193,8 @@ func TestAdmissionRefusesARequestBilledBeforeTheSubstitution(t *testing.T) {
 	}
 }
 
-// A strict projection has to reach admission the same way the substitution does.
+// A strict route's schema has to reach admission the same way the substitution
+// does.
 //
 // The catalog is identical on both routes; only the capability differs. Under a
 // cap between the projected price and the advertised one, the strict-capable
@@ -201,8 +202,13 @@ func TestAdmissionRefusesARequestBilledBeforeTheSubstitution(t *testing.T) {
 // what proves the price follows the emitted bytes rather than simply growing
 // every request: the second half is the same request, the same cap, and the same
 // catalog, priced by a builder that sends it unchanged.
+//
+// The catalog is parameterless declarations, which is where the capability
+// changes the bytes on this protocol: a certified schema is projected without
+// growing it, so only the closed empty object a strict route substitutes costs
+// more than the open one every route sends.
 func TestAdmissionPricesTheStrictProjectionAndOnlyOnACapableRoute(t *testing.T) {
-	defs := strictGrowthCatalog(24)
+	defs := preparedParameterlessCatalog(24)
 	req := Request{
 		Provider: "emitted-price",
 		Model:    "model",
@@ -251,6 +257,18 @@ func TestAdmissionPricesTheStrictProjectionAndOnlyOnACapableRoute(t *testing.T) 
 				"compare a projected route against an unprojected one", i)
 		}
 	}
+}
+
+// preparedParameterlessCatalog is tools prepared the way Generate prepares them:
+// a no-argument declaration carrying the open empty object, so the strict
+// decision is the only thing that can replace it.
+func preparedParameterlessCatalog(n int) []ToolDefinition {
+	defs := make([]ToolDefinition, n)
+	for i := range defs {
+		base := ToolDefinition{Name: "probe_" + string(rune('a'+i%26)) + string(rune('0'+i/26))}
+		defs[i] = base.WithNoParametersDeclared()
+	}
+	return defs
 }
 
 // The dispatcher hands the wire the list the price describes.
@@ -485,20 +503,84 @@ func unstructuredCatalog() []ToolDefinition {
 }
 
 // strictGrowthCatalog is tools whose parameters gain bytes under a strict
-// projection: the object is closed and a required list is stated.
+// projection: a closed scalar value set gains the explicit type it implies, and
+// the object is closed with its required list stated.
+//
+// The schema is certified for strict mode on purpose. A projection only runs on
+// a schema the gate can verify it preserves — an object whose properties are
+// already all required and whose root is already closed — and a fixture outside
+// that set would price as unchanged and pin nothing. The enum is what makes the
+// projection cost bytes here.
 func strictGrowthCatalog(n int) []ToolDefinition {
 	defs := make([]ToolDefinition, n)
 	for i := range defs {
 		defs[i] = ToolDefinition{
 			Name: "write_file_" + string(rune('a'+i%26)) + string(rune('0'+i/26)),
 			Parameters: map[string]any{
-				"type": "object",
+				"type":                 "object",
+				"additionalProperties": false,
 				"properties": map[string]any{
-					"path":    map[string]any{"type": "string"},
-					"content": map[string]any{"type": "string"},
+					"path": map[string]any{"type": "string"},
+					// A closed value set with no stated type: the projection
+					// states the type it implies, which is the byte growth this
+					// catalog exists to price.
+					"mode": map[string]any{"enum": []any{"read", "write"}},
 				},
+				"required": []string{"path", "mode"},
 			},
 		}
 	}
 	return defs
+}
+
+// The emitted price and the parameterless delta describe the same bytes, and
+// they must be charged once.
+//
+// Admission prices the list the builder emits, which already carries the
+// substituted schemas for a parameterless tool, and then applies the adapter's
+// parameterless byte adjustment. Applied to the same request, the second step
+// would charge those bytes again: an input cap between the two counts refuses a
+// request that fits, and the count a caller sizes with is larger than the request
+// that dispatches. The recorded target is what tells the two apart, so this
+// pins each of the four paths that reach the budget.
+func TestTheParameterlessDeltaIsChargedOnceOverAnEmittedPrice(t *testing.T) {
+	t.Parallel()
+	defs := preparedParameterlessCatalog(4)
+	strict, relaxed := responsesRowOn(true), responsesRowOn(false)
+	advertised := ToolsJSONBytes(defs)
+
+	p, ok := ProtocolFor(strict.Protocol)
+	if !ok {
+		t.Fatalf("no protocol for %q", strict.Protocol)
+	}
+	sent, changed := p.(ToolSchemaDeriver).EmitToolSchemas(defs, strict)
+	if !changed {
+		t.Fatal("fixture does not make the builder change anything")
+	}
+	emitted := ToolsJSONBytes(sent)
+	if emitted == advertised {
+		t.Fatalf("fixture does not distinguish the two counts: both %d", advertised)
+	}
+
+	// Priced for this target: the emitted count is the whole charge.
+	priced := priceEmittedToolSchemas(Request{Tools: defs, ToolsJSONBytes: advertised}, strict)
+	if got := effectiveToolsJSONBytes(priced, strict, false); got != emitted {
+		t.Fatalf("admitted input prices the catalog at %d, want the emitted %d: the parameterless delta was "+
+			"charged a second time over a count that already includes it", got, emitted)
+	}
+	// Unpriced: the delta is how this path reaches the same number.
+	if got := effectiveToolsJSONBytes(Request{Tools: defs, ToolsJSONBytes: advertised}, strict, false); got != emitted {
+		t.Fatalf("unpriced admission prices the catalog at %d, want the emitted %d", got, emitted)
+	}
+	// Retargeted: the other route's own answer, not the strict charge.
+	retargeted := priceEmittedToolSchemas(priced, relaxed)
+	if got := effectiveToolsJSONBytes(retargeted, relaxed, false); got != advertised {
+		t.Fatalf("retargeted admission prices the catalog at %d, want the advertised %d: this route sends the "+
+			"definitions it was handed", got, advertised)
+	}
+	// An override marshals the definitions it is handed, so the delta is the only
+	// charge and the advertised stamp is the baseline.
+	if got := effectiveToolsJSONBytes(Request{Tools: defs, ToolsJSONBytes: advertised}, strict, true); got != advertised {
+		t.Fatalf("override admission prices the catalog at %d, want the advertised %d", got, advertised)
+	}
 }

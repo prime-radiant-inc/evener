@@ -106,15 +106,13 @@ func fromGeminiResponse(raw map[string]any, requestedModel string, body []byte) 
 							if partIdx < len(rawArgs) && rawArgs[partIdx] != nil {
 								argsRaw = rawArgs[partIdx]
 							}
+							argsRaw, spelling := llm.NormalizeToolArguments(argsRaw)
 							thoughtSig := geminiThoughtSignature(p, fc)
 							msg.Content = append(msg.Content, llm.ContentPart{
 								Kind: llm.ContentToolCall,
 								ToolCall: &llm.ToolCallData{
-									ID:               identifier.MustNewSyntheticCallID(),
-									Name:             name,
-									Arguments:        argsRaw,
-									Type:             "function",
-									ThoughtSignature: thoughtSig,
+									ID: identifier.MustNewSyntheticCallID(), Name: name, Arguments: argsRaw, Type: "function",
+									ThoughtSignature: thoughtSig, ArgumentsSpelling: spelling,
 								},
 							})
 						}

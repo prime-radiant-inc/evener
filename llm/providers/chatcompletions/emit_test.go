@@ -27,12 +27,14 @@ func characteristicCatalog() []llm.ToolDefinition {
 		{Name: "parameterless"},
 		{Name: "opted_out", Strict: new(false)},
 		{
+			// Certified for strict mode, and the projection states the type the
+			// enum implies: the one shape here the gate both accepts and grows.
 			Name: "grows",
 			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"path": map[string]any{"type": "string"},
-				},
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties":           map[string]any{"mode": map[string]any{"enum": []any{"read", "write"}}},
+				"required":             []string{"mode"},
 			},
 		},
 		{
@@ -163,11 +165,17 @@ func TestAReorderOnlyProjectionIsReportedUnchanged(t *testing.T) {
 	}
 	// The control: a catalog the projection really does grow is reported, so a
 	// comparator that answered "same" for everything cannot pass above.
+	// The schema is certified for strict mode — already closed, with every
+	// property required — and the enum is a closed value set with no stated type,
+	// so the projection states the type it implies. That is the byte growth this
+	// control needs; a schema the gate refuses keeps its advertised bytes.
 	growing := []llm.ToolDefinition{{
 		Name: "write_file",
 		Parameters: map[string]any{
-			"type":       "object",
-			"properties": map[string]any{"path": map[string]any{"type": "string"}},
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties":           map[string]any{"mode": map[string]any{"enum": []any{"read", "write"}}},
+			"required":             []string{"mode"},
 		},
 		Strict: new(true),
 	}}

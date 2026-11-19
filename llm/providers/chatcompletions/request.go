@@ -1,6 +1,7 @@
 package chatcompletions
 
 import (
+	"fmt"
 	"strings"
 
 	"primeradiant.com/evener/llm"
@@ -51,7 +52,39 @@ func buildBody(req llm.Request, res registry.Resolved, stream bool) (out map[str
 	}
 	body["messages"] = msgs
 	if len(req.Tools) > 0 {
-		tools := toChatTools(req.Tools, registry.BoolValue(caps.StrictTools))
+		// Eligibility is decided over the caller's own schema, before any copy
+		// exists, so a schema that contains itself would exhaust the stack
+		// inside the walk rather than in the copy that knows how to cut the
+		// edge. Refusing the request is the finite answer: the schema has no
+		// wire form to send.
+		for _, t := range req.Tools {
+			if openaichat.CyclicSchema(t.Parameters) {
+				return nil, &llm.ConfigurationError{
+					Message: fmt.Sprintf("tool %q: %v", t.Name, openaichat.ErrCyclicSchema),
+					Cause:   openaichat.ErrCyclicSchema,
+				}
+			}
+		}
+		tools := openaichat.ToChatTools(req.Tools)
+		strictTools := registry.BoolValue(caps.StrictTools)
+		for i, t := range tools {
+			fn, ok := t["function"].(map[string]any)
+			if !ok {
+				continue
+			}
+			// One decision per tool: the schema it is sent with, whether it
+			// rides strict enforcement, and whether the key is omitted.
+			params, toolStrict, omit := toolSchema(req, i, strictTools)
+			if !omit {
+				fn["parameters"] = params
+			}
+			if strictTools {
+				// The route offers strict enforcement, so every tool says
+				// whether it is inside it: an absent key would leave the
+				// endpoint's own default in charge.
+				fn["strict"] = toolStrict
+			}
+		}
 		body["tools"] = tools
 		if registry.BoolValue(caps.ToolStream) {
 			body["tool_stream"] = true

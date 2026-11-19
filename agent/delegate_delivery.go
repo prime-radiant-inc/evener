@@ -356,6 +356,12 @@ type delegateDeliveryAck struct {
 	ownerID      string
 	delegateID   string
 	ownerChanged bool
+	// wakeGeneration is the settled generation the acknowledged delivery's wake
+	// supersedes, sampled under the controller lock where the wake was
+	// journaled. A callback that sampled the generation itself would read it
+	// after the acknowledgment landed, so a stop that settled in between would
+	// be cleared by a delivery older than it.
+	wakeGeneration uint64
 }
 
 // completeDeliveryLocked is CompleteDelivery's body under the caller's c.mu.
@@ -369,7 +375,9 @@ func (c *delegateTreeController) completeDeliveryLocked(token delegateDeliveryTo
 		updateIDs = append(updateIDs, ack.ownerID)
 	}
 	updateIDs = append(updateIDs, ack.delegateID)
-	return c.deliveryAckPlansLocked(updateIDs, []string{ack.ownerID}), nil
+	plans := c.deliveryAckPlansLocked(updateIDs, []string{ack.ownerID})
+	plans.ackWakeGeneration = ack.wakeGeneration
+	return plans, nil
 }
 
 // deliveryAckPlansLocked assembles the snapshots and owner replays for
@@ -432,7 +440,20 @@ func (c *delegateTreeController) completeDeliveryAckLocked(token delegateDeliver
 			DeliveryID: token.deliveryID,
 		},
 	})
-	if _, err := c.appendLocked(events...); err != nil {
+	// The wake this acknowledgment publishes is newer evidence than a settled
+	// user-stop quiet, and the shared funnel journals that release in the same
+	// batch. A cold receiver takes this same path, so no delivery branch can
+	// publish a wake that omits the release a later arm would otherwise skip:
+	// the arm sees this wake already noted, so it appends nothing, and without
+	// the journaled release an idle reclaim rebuilds the quiet this delivery
+	// ended. Only a receipt that notes a wake releases one, so the funnel is
+	// gated on the same condition the note below is.
+	wakeOwner := ""
+	if !receipt.inline {
+		wakeOwner = receipt.ownerID
+	}
+	wakeGeneration, err := c.appendAttentionWakeLocked(wakeOwner, events...)
+	if err != nil {
 		receipt.retryable = true
 		c.evidenceVersion++
 		// A stop drain parked on this admission must wake to retry the
@@ -451,10 +472,11 @@ func (c *delegateTreeController) completeDeliveryAckLocked(token delegateDeliver
 	untrackStopLocked(c, func(s *delegateStopState) map[delegateDeliveryToken]struct{} { return s.deliveries }, token)
 	c.evidenceVersion++
 	return delegateDeliveryAck{
-		planned:      true,
-		ownerID:      receipt.ownerID,
-		delegateID:   receipt.delegateID,
-		ownerChanged: ownerChanged,
+		planned:        true,
+		ownerID:        receipt.ownerID,
+		delegateID:     receipt.delegateID,
+		ownerChanged:   ownerChanged,
+		wakeGeneration: wakeGeneration,
 	}, nil
 }
 
@@ -722,7 +744,12 @@ func deliverDelegatePacket(plan delegateDeliveryPlan, receiver delegateDeliveryR
 	if err != nil {
 		return plans, err
 	}
-	return plans, plan.controller.wakeDeliveryReceiver(receiver, []string{attentionID})
+	// plans carries the generation the acknowledgment's release superseded,
+	// sampled under the controller lock where that release was journaled. The
+	// callback releases against that sample rather than reading the generation
+	// again, so a stop that settles between the acknowledgment and this wake
+	// keeps its quiet.
+	return plans, plan.controller.wakeDeliveryReceiverAt(receiver, []string{attentionID}, plans.ackWakeGeneration)
 }
 
 // replanStaleDelivery re-plans a delivery whose claim is gone but whose durable
