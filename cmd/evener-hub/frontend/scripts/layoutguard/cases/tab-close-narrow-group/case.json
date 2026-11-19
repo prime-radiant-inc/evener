@@ -1,0 +1,25 @@
+{
+  "name": "tab-close-narrow-group",
+  "description": "A narrow 200px Dockview group truncates a long tab title so the active tab's close action stays inside the group and hit-testable.",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "shell/dockview-theme.css",
+    "shell/PaneTab.module.css"
+  ],
+  "allowlist": {
+    ".dv": "shell/PaneTab.module.css styles dockview's global .dv-default-tab container via :global(...) alongside shell/dockview-theme.css"
+  },
+  "viewport": {
+    "width": 960,
+    "height": 400,
+    "deviceScaleFactor": 1,
+    "mobile": false
+  },
+  "mutation": {
+    "declaration": "shell/dockview-theme.css: remove the narrow-tab max-width / ellipsis / flex-shrink: 0 rules for .dv-tab, .dv-default-tab-content, and .dv-default-tab-action",
+    "verified": "2026-11-19",
+    "expect": "fail",
+    "note": "Verified 2026-11-19 at 200px group width. Without the dockview-theme.css rules, fails with: close action [495.5, 515.5] escapes 200px group [0.0, 200.0]; tab right 523.5px escapes group right 200.0px; tab title did not truncate (scrollWidth=479, clientWidth=479); close center hit neighbor-content instead of inspector-close. With the rules applied, passes with close [172.0, 192.0] inside [0.0, 200.0] and title truncated 156/479px."
+  }
+}

@@ -104,6 +104,16 @@ func TestToChatMessages_ReasoningReplay(t *testing.T) {
 	}
 }
 
+// TestToChatMessages_ReplaysReasoningAcrossFullHistory pins that every prior assistant turn keeps its own reasoning.
+func TestToChatMessages_ReplaysReasoningAcrossFullHistory(t *testing.T) {
+	t.Parallel()
+	msgs := []llm.Message{assistantTurn("one", "reasoning", "a1"), llm.User("q"), assistantTurn("two", "reasoning", "a2")}
+	out, err := toChatMessages(msgs, registry.Caps{Fields: registry.Baseline(registry.ProtocolOpenAIChat)}, false)
+	if err != nil || out[0]["reasoning"] != "one" || out[2]["reasoning"] != "two" {
+		t.Fatalf("full-history reasoning replay = %v, err %v, want both prior turns", out, err)
+	}
+}
+
 // chatImageMessage is a user message with a text prompt and one image part
 // carrying the given detail.
 func chatImageMessage(detail string) llm.Message {

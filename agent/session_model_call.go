@@ -334,7 +334,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	history = projectToolResultMediaFor(profile, history)
 
 	req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort, toolDefsJSONBytes)
-	s.setRoundFallbackSource(sys, untrimmedHistory)
+	s.setRoundFallbackSource(sys, untrimmedHistory, presentedTurns, scope)
 	req = s.attachFullHistoryInputEstimate(req, historyTurns, len(sys))
 	var budget llm.TokenBudget
 	if req, budget, err = budgetModelDispatchRequestWithBudget(profile, req); err != nil {
@@ -404,7 +404,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		}
 		presentedTurns = append(slices.Clip(presentedTurns), appended...)
 		req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort, toolDefsJSONBytes)
-		s.setRoundFallbackSource(sys, untrimmedHistory)
+		s.setRoundFallbackSource(sys, untrimmedHistory, presentedTurns, scope)
 		req = s.attachFullHistoryInputEstimate(req, historyTurns, len(sys))
 		budgetedReq, budgeted, budgetErr := budgetModelDispatchRequestWithBudget(profile, req)
 		if budgetErr != nil {
@@ -1087,23 +1087,23 @@ func isProviderTerminalError(err error) bool {
 }
 
 // roundFallbackSource is the round's unprojected request input: the system
-// prompt and the expanded history before the primary target's thinking and
-// media projection. It is kept instead of a built message slice so a round
-// that never falls back does not pay for one (#6442). Only Messages depends on
-// the history a request is built from, so laying it out at the fallback site
-// produces the slice this source would have produced there.
+// prompt and expanded history before the primary's projection, kept unbuilt so
+// a round that never falls back pays for no slice (#6442). Its turns and scope
+// re-expand under the fallback's own policy.
 type roundFallbackSource struct {
 	system  string
 	history []llm.Message
+	turns   []schema.Turn
+	scope   replayScope
 }
 
 // setRoundFallbackSource records the source the fallback chain lays its own
 // messages out from. The history is this round's own unprojected expansion;
 // the primary's projections replace the slice they return rather than the
 // messages it holds, so this remains the unprojected input either way.
-func (s *Session) setRoundFallbackSource(system string, history []llm.Message) {
+func (s *Session) setRoundFallbackSource(system string, history []llm.Message, turns []schema.Turn, scope replayScope) {
 	s.mu.Lock()
-	s.roundFallbackSource = roundFallbackSource{system: system, history: history}
+	s.roundFallbackSource = roundFallbackSource{system: system, history: history, turns: turns, scope: scope}
 	s.roundFallbackSourceSet = true
 	s.mu.Unlock()
 }
@@ -1711,6 +1711,14 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 					fmt.Sprintf("model_fallbacks entry %q could not be resolved; skipping it", fbModel), resolveErr))
 				continue
 			}
+			// Re-lay it out: the primary's expansion dropped this row's reasoning. A
+			// test that seeds no turns keeps the round's history.
+			if len(fallbackSource.turns) > 0 {
+				scope := fallbackSource.scope
+				scope.Instance, scope.Model, scope.Protocol = fbProfile.ID(), fbProfile.Model(), fbProfile.Protocol()
+				scope.canonicalModel = func(model string) string { return s.canonicalModelID(fbProfile.ID(), model) }
+				fallbackHistory = s.requestMessages(fallbackSource.system, expandHistory(fallbackSource.turns, scope))
+			}
 			fbReq, ok := responsesContinuationModelFallbackRequest(fbProfile.Resolved(), req, fallbackHistory)
 			if !ok {
 				break
@@ -2127,9 +2135,7 @@ func (rs replayScope) producerProtocol(t schema.Turn) string {
 
 // dropsReplayedThinking reports whether the outgoing target takes no replayed
 // assistant thinking, per llm.ReplaysAssistantThinking — the one policy the
-// token estimate also uses, so pressure and compaction size what the request
-// actually carries. An OpenAI-chat target carries no reasoning as protocol
-// state (#4563); the thinking_as_text row is its deliberate exception.
+// token estimate also uses. Only a chat row declared reasoning = false drops it.
 func dropsReplayedThinking(p *provider.Profile) bool {
 	return p != nil && !llm.ReplaysAssistantThinking(p.Resolved())
 }
@@ -2149,19 +2155,15 @@ func promotesReasoningToText(p *provider.Profile) bool {
 
 // projectThinkingForTarget returns messages with the target's thinking-replay
 // policy applied: a target that does not replay assistant thinking drops it,
-// while Anthropic, Google, OpenAI Responses and a thinking_as_text row keep
-// every message as is. The round keeps the untrimmed source so each fallback
-// applies its own policy instead of inheriting the primary's (#4563).
+// while every reasoning-capable row keeps its messages. The untrimmed source
+// lets each fallback apply its own policy (#4563).
 func projectThinkingForTarget(profile *provider.Profile, messages []llm.Message) []llm.Message {
 	if !dropsReplayedThinking(profile) {
 		return messages
 	}
-	// Allocate the projected list only when a message actually carries thinking
-	// to trim: a chat target reaches here on every request, and most replayed
-	// messages carry no thinking part at all, so a copy made up front is a whole
-	// message list paid for a walk that changes nothing (#6448). An unchanged
-	// list is handed straight back; nothing downstream writes its elements in
-	// place.
+	// Allocate only when a message carries thinking to trim: a reasoning = false
+	// chat row reaches here on every request, so a copy up front is a list paid
+	// for a walk that changes nothing (#6448).
 	trims := false
 	for _, message := range messages {
 		if llm.TrimsThinkingForReplay(message, true) {
@@ -2189,11 +2191,8 @@ func projectThinkingForTarget(profile *provider.Profile, messages []llm.Message)
 // tool-call thought signatures regardless of model, and openai Responses
 // carries an opaque encrypted_content blob that only its issuing deployment
 // can decrypt (a cross-deployment replay yields "Encrypted content is not
-// supported"). An openai-chat target never reaches this comparison: its
-// reasoning is display output rather than continuation state, so
-// dropsReplayedThinking strips it for the whole replay (except a
-// thinking_as_text row). Unknown protocols keep their builder guard, so
-// expansion does not strip thinking for them.
+// supported"). An openai-chat target takes the default branch and replays
+// verbatim; unknown protocols keep their builder guard.
 func (rs replayScope) thinkingReplayEligible(t schema.Turn) bool {
 	if strings.TrimSpace(t.ResponseProvider) == "" {
 		return true

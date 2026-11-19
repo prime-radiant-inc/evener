@@ -5,12 +5,80 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
 
 	"primeradiant.com/evener/llm"
 )
+
+func TestIncompleteResponseKeepsUnsettledToolArgumentsOutOfFinalResponse(t *testing.T) {
+	t.Parallel()
+	const delta = `{"type":"response.function_call_arguments.delta","call_id":"call_unfinished","name":"probe","delta":"{}"}`
+	const unfinished = `{"type":"function_call","call_id":"call_unfinished","name":"probe","arguments":"{}","status":"incomplete"}`
+	const running = `{"type":"function_call","call_id":"call_running","name":"probe","arguments":"{}","status":"in_progress"}`
+	const completed = `{"type":"function_call","call_id":"call_completed","name":"probe","arguments":"{}","status":"completed"}`
+	const unstamped = `{"type":"function_call","call_id":"call_unstamped","name":"probe","arguments":"{}"}`
+	frame := func(payload string) string { return "data: " + payload + "\n\n" }
+	for _, terminalType := range []string{"response.completed", "response.incomplete"} {
+		for _, mode := range []string{"empty", "terminal", "streamed", "both", "mismatch"} {
+			t.Run(terminalType+"/"+mode, func(t *testing.T) {
+				var wire strings.Builder
+				wire.WriteString(frame(delta))
+				output := "[]"
+				var wantCalls []string
+				if mode == "terminal" || mode == "both" || mode == "mismatch" {
+					output = "[" + unfinished + "," + running + "," + completed + "," + unstamped + "]"
+				}
+				if mode == "streamed" || mode == "both" || mode == "mismatch" {
+					items := []string{unfinished, running, completed, unstamped}
+					if mode == "mismatch" {
+						items = items[:3]
+					}
+					for _, item := range items {
+						wire.WriteString(frame(`{"type":"response.output_item.done","item":` + item + `}`))
+					}
+				}
+				if mode != "empty" {
+					wantCalls = []string{"call_completed", "call_unstamped"}
+				}
+				wire.WriteString(frame(`{"type":"` + terminalType + `","response":{"status":"incomplete","output":` + output + `}}`))
+				body := wire.String()
+				recorded, err := ExtractRecordedResponse([]byte(body), "gpt-5.5")
+				if err != nil {
+					t.Error(err)
+				}
+				events, final := responsesEventsFromSSE(t, body)
+				if event := toolEvent(t, events, llm.StreamEventToolCallDelta); event == nil || event.ID != "call_unfinished" || string(event.Arguments) != "{}" {
+					t.Fatalf("transient tool delta = %+v", event)
+				}
+				for _, response := range []*llm.Response{final, &recorded} {
+					if response == nil || response.Finish.Reason != llm.FinishReasonLength || response.Finish.Raw != "incomplete" {
+						t.Fatalf("incomplete response = %+v", response)
+					}
+					var ids []string
+					for _, call := range response.ToolCalls() {
+						ids = append(ids, call.ID)
+					}
+					if !slices.Equal(ids, wantCalls) {
+						t.Errorf("settled tool calls = %v, want %v", ids, wantCalls)
+					}
+					mismatch := slices.ContainsFunc(response.Warnings, func(w llm.Warning) bool {
+						return w.Code == "responses_output_item_count_mismatch"
+					})
+					if mismatch != (mode == "mismatch") {
+						t.Errorf("settled count mismatch warning = %v, want %v", mismatch, mode == "mismatch")
+					}
+				}
+				if mode == "streamed" && !hasEventType(events, llm.StreamEventProviderEvent) {
+					t.Error("stream omitted the raw unfinished completion")
+				}
+			})
+		}
+	}
+}
 
 // abortingSSEServer writes prefix and then hijacks and closes the connection
 // without a terminating chunk, so the client's read fails mid-stream. That is

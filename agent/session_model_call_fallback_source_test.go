@@ -9,7 +9,6 @@ package agent
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -24,7 +23,7 @@ import (
 // separate-message form either way.
 func TestRequestMessagesLaysOutTheSystemPromptAndHistory(t *testing.T) {
 	t.Parallel()
-	const system = "the system prompt"
+	const system = " \t\r\n "
 	histories := map[string][]llm.Message{
 		"empty":            nil,
 		"leading-user":     {llm.User("first"), llm.Assistant("answer"), llm.User("second")},
@@ -49,7 +48,7 @@ func TestRequestMessagesLaysOutTheSystemPromptAndHistory(t *testing.T) {
 					t.Errorf("%s/%s: laid out %d messages, want %d: the folded prompt rides the first user message", tc.name, name, got, len(history))
 					continue
 				}
-				if got := laid[0].Text(); !strings.HasPrefix(got, system) {
+				if got := laid[0].Text(); got != system+"\n\n"+history[0].Text() {
 					t.Errorf("%s/%s: first message does not lead with the system prompt", tc.name, name)
 				}
 				if laid[0].Role != llm.RoleUser {
@@ -112,7 +111,7 @@ func TestCompletedRoundLeavesNoFallbackSource(t *testing.T) {
 func TestRoundWithoutFallbackRecordsNoSource(t *testing.T) {
 	t.Parallel()
 	s, _ := newRequestBuildBenchSession(t)
-	s.setRoundFallbackSource("system prompt", []llm.Message{llm.User("first")})
+	s.setRoundFallbackSource("system prompt", []llm.Message{llm.User("first")}, nil, replayScope{})
 	if source, ok := s.takeRoundFallbackSource(); !ok || source.system != "system prompt" || len(source.history) != 1 {
 		t.Fatalf("round source did not hold the recorded input: %#v", source)
 	}

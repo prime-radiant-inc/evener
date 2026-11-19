@@ -259,6 +259,36 @@ type ThinkingData struct {
 	Redacted         bool     `json:"redacted,omitempty"`
 	EncryptedContent string   `json:"encrypted_content,omitempty"`
 	Summary          []string `json:"summary,omitempty"`
+	// Chat Completions scalar replay when Text includes structured reasoning.
+	ScalarReasoningField string `json:"scalar_reasoning_field,omitempty"`
+	ScalarReasoningText  string `json:"scalar_reasoning_text,omitempty"`
+
+	// Responses native parts retain their order, type and exact text beside the projections.
+	ResponsesContentParts []ResponsesReasoningPart `json:"responses_content_parts,omitempty"`
+	ResponsesSummaryParts []ResponsesReasoningPart `json:"responses_summary_parts,omitempty"`
+	// ResponsesIncomplete marks a reasoning item the provider cut off.
+	ResponsesIncomplete bool `json:"responses_incomplete,omitempty"`
+}
+
+// ResponsesReasoningPart is one typed text part of a Responses reasoning item.
+type ResponsesReasoningPart struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+// ReplayableResponsesPlaintext reports a finished Responses item with native
+// typed parts. A bare Text projection is display-only and never replays.
+func (t *ThinkingData) ReplayableResponsesPlaintext() bool {
+	return t != nil && !t.ResponsesIncomplete && !t.Redacted && t.EncryptedContent == "" &&
+		(len(t.ResponsesContentParts) > 0 || len(t.ResponsesSummaryParts) > 0)
+}
+
+// ChatReplayText selects the text for the Chat Completions replay shape.
+func (t *ThinkingData) ChatReplayText(scalar bool) string {
+	if scalar && t.ScalarReasoningText != "" && IsOpenAICompatReasoningField(t.ScalarReasoningField) {
+		return t.ScalarReasoningText
+	}
+	return t.Text
 }
 
 // openAICompatReasoningFields is the canonical ordered list of wire fields
@@ -419,6 +449,70 @@ type ToolDefinition struct {
 	// opts the tool out of strict mode instead of allowing the API to
 	// normalize the schema into strict mode automatically.
 	Strict *bool `json:"strict,omitempty"`
+
+	// declaredNoParameters records that the caller declared this tool with no
+	// parameters at all, as distinct from declaring the open empty object.
+	// prepareTools fills Parameters with the open schema either way, because
+	// that is the schema the adapters put on the wire and the budget has to
+	// price it. The distinction still decides strict projection: only a tool
+	// that declares no arguments can be sent in strict mode, which admits
+	// exactly the empty argument set. An open object accepts arbitrary keys and
+	// cannot be closed without changing what the caller declared.
+	//
+	// The field is not authoritative on its own: DeclaresNoParameters also
+	// requires Parameters to still be the schema preparation synthesized.
+	// Middleware can replace a tool's parameters after preparation, and a flag
+	// that outlived its value would have the builder discard the replacement and
+	// send an empty object schema in its place.
+	declaredNoParameters bool
+}
+
+// DeclaresNoParameters reports whether the caller declared this tool without a
+// parameter schema, as opposed to declaring an open one, and whether that is
+// still what Parameters holds.
+//
+// An adapter reads this instead of testing Parameters for nil, because a
+// prepared definition carries the open schema there: the wire and the token
+// budget both need it present, and the declaration still has to be recoverable
+// for the strict decision.
+//
+// The declaration only describes the value preparation put there. A replacement
+// schema arrives through request middleware, and it has an advertised meaning of
+// its own: discarding it for a synthesized empty object would send the provider a
+// schema the caller never wrote. Such a definition is therefore not a
+// no-parameters declaration any more, and goes through ordinary emission and
+// eligibility.
+func (t ToolDefinition) DeclaresNoParameters() bool {
+	return t.declaredNoParameters && isEmptyObjectSchema(t.Parameters)
+}
+
+// isEmptyObjectSchema reports whether schema is exactly the open empty object the
+// parameterless fallback synthesizes. It is spelled out rather than compared by
+// length so a schema that happens to be empty is not mistaken for it: a
+// replacement carrying no keys is still the caller's own value.
+func isEmptyObjectSchema(schema map[string]any) bool {
+	if len(schema) != 2 {
+		return false
+	}
+	if typ, _ := schema["type"].(string); typ != "object" {
+		return false
+	}
+	props, ok := schema["properties"].(map[string]any)
+	return ok && len(props) == 0
+}
+
+// WithNoParametersDeclared returns t marked as declaring no parameter schema,
+// filling nil Parameters with defaultToolParameters so local validation and
+// open-schema wire pricing see the empty object schema while strict-capable
+// adapters can still distinguish a parameterless declaration from an explicit
+// open schema. prepareTools applies this to every tool declared with nil
+// Parameters.
+func (t ToolDefinition) WithNoParametersDeclared() ToolDefinition {
+	if t.Parameters == nil {
+		t.Parameters = defaultToolParameters()
+	}
+	t.declaredNoParameters = true
+	return t
 }
 
 // ToolChoice controls whether and which tool the model is allowed or required to call.
@@ -669,6 +763,9 @@ func DefaultAdapterTimeout() AdapterTimeout {
 
 // Response is a provider-agnostic chat-completion response.
 type Response struct {
+	// FallbackContent holds provider reasoning that accompanies usable output reconstructed from stream events.
+	FallbackContent []ContentPart `json:"-"`
+
 	ID        string         `json:"id"`
 	Model     string         `json:"model"`
 	Provider  string         `json:"provider"`
@@ -678,6 +775,8 @@ type Response struct {
 	Raw       map[string]any `json:"raw,omitempty"`
 	Warnings  []Warning      `json:"warnings,omitempty"`
 	RateLimit *RateLimitInfo `json:"rate_limit,omitempty"`
+	// OutputSettled tells stream consumers to keep the supplied output even when empty.
+	OutputSettled bool `json:"-"`
 }
 
 // Text returns the concatenated text content of the response message.
