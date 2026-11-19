@@ -508,6 +508,28 @@ export interface ThreadModel {
   // nothing pushes it live; the next read refreshes it (and clears it with an
   // explicit undefined when that read's failure names no resume time).
   quotaResumesAt?: string;
+  // The identity of the wait quotaResumesAt names: the daemon-issued
+  // waitStartedAt sequence the wait's start announcement and the read's
+  // failure summary both carry (EvenerThread.Failure.WaitStartedAt,
+  // ThreadModelRetryParams.WaitStartedAt). A strictly increasing
+  // per-session sequence — never a wall-clock instant, never the client's
+  // receipt time — so a later wait of the same turn compares greater even
+  // when the two waits' reset deadlines match exactly. Every ordering
+  // decision between waits compares these stamps: never turn ids, which name
+  // only the call site, and never clocks, which can repeat or step back.
+  // Undefined for a legacy unstamped wait (an older daemon), which
+  // reconciles by turn ownership alone and may never clear or overwrite a
+  // stamped wait. Produced by the same sources as quotaResumesAt: the read's
+  // failure summary and a stamped start announcement.
+  quotaWaitStartedAt?: number;
+  // The stamp of the newest wait whose end the client has observed, kept
+  // after the wait's deadline, stamp and chip are gone. A frame whose own
+  // stamp names a wait that already ended — a late start for the ended wait,
+  // or a buffered read that captured the wait while it still stood — is not
+  // news, whatever turn the frame names, so a late announcement cannot
+  // restamp a wait the daemon already ended. Monotonic: a later wait's wake
+  // moves it forward, never back.
+  quotaWaitEndedStamp?: number;
   // Wave 5 T1: the following are all sourced from thread.evener
   // (appwire/types_thread.go's EvenerThread) and are SNAPSHOT-ONLY -
   // hydrateThread populates them, and applyNotification updates them ONLY

@@ -3222,6 +3222,212 @@ test("a quota wait's announcement leaves the read's resume instant as it was", (
   expect(announced.quotaResumesAt).toBe(new Date(resumesAt).toISOString());
 });
 
+// Quota-wait identity (quota-wait Stage 2): the daemon stamps every wait with
+// a strictly increasing sequence (waitStartedAt), the same value on the
+// wait's start announcement and the zero-delay wake that ends it. Ordering
+// decisions between waits compare stamps, never turn ids and never clocks.
+// The fixtures below use small integer stamps (1, 2, ...) exactly as the wire
+// carries them; resumesAt stays an epoch-ms instant.
+
+type QuotaRetryOverrides = {
+  attempt?: number;
+  waitStartedAt?: number;
+  resumesAt?: number;
+  turnId?: string;
+  model?: string;
+  delayMs?: number;
+  errorClass?: string;
+  groupElapsedMs?: number;
+};
+
+function quotaRetry(overrides: QuotaRetryOverrides): AnyNotification {
+  return {
+    method: "evener/thread/modelRetry",
+    params: {
+      threadId: "thr_t",
+      ref: "ref_t",
+      attempt: overrides.attempt ?? 1,
+      maxAttempts: 0,
+      delayMs: overrides.delayMs ?? 21_600_000,
+      errorClass: overrides.errorClass ?? "quota_exceeded",
+      groupElapsedMs: overrides.groupElapsedMs ?? 5_000,
+      attemptCap: 0,
+      ...(overrides.turnId !== undefined ? { turnId: overrides.turnId } : {}),
+      ...(overrides.model !== undefined ? { model: overrides.model } : {}),
+      ...(overrides.waitStartedAt !== undefined ? { waitStartedAt: overrides.waitStartedAt } : {}),
+      ...(overrides.resumesAt !== undefined ? { resumesAt: overrides.resumesAt } : {}),
+    },
+  };
+}
+
+// A pane-open wait's lifecycle in one shape: the start announcement carries
+// the stamp and the absolute instant, the wake carries the stamp alone, and
+// the wait's whole record must clear together at the wake.
+test("a stamped wait start installs stamp and deadline, and its wake clears the whole record", () => {
+  const resumesAt = Date.parse("2026-11-07T14:30:00Z");
+  let model = testHydrate({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } });
+
+  model = applyNotification(model, quotaRetry({ waitStartedAt: 1, resumesAt, turnId: "turn_1" }), 2000);
+  expect(model.quotaResumesAt).toBe(new Date(resumesAt).toISOString());
+  expect(model.quotaWaitStartedAt).toBe(1);
+  expect(model.modelRetry?.receivedAt).toBe(2000);
+
+  model = applyNotification(model, quotaRetry({ waitStartedAt: 1, delayMs: 0, turnId: "turn_1" }), 3000);
+  expect(model.quotaResumesAt).toBeUndefined();
+  expect(model.quotaWaitStartedAt).toBeUndefined();
+  expect(model.quotaWaitEndedStamp).toBe(1);
+  // The wake itself remains the pending retry the retry line renders.
+  expect(model.modelRetry?.delayMs).toBe(0);
+});
+
+// Scenario 4: two waits of one turn — including the case where both waits'
+// reset deadlines match exactly. The first wait's frames (its wake, its start
+// re-announced late) neither clear nor overwrite the second's deadline,
+// stamp, or chip. Stamp ordering decides; the equal deadline and the shared
+// turn id are the whole ambiguity the stamps exist to break.
+test("an older stamped wake does not clear a newer wait of the same turn with the same deadline", () => {
+  const deadline = Date.parse("2026-11-07T14:30:00Z");
+  let model = testHydrate({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } });
+
+  // First wait starts (stamp 1), is steered awake, and the retry hits the
+  // limit again (stamp 2) with the SAME reset instant.
+  model = applyNotification(model, quotaRetry({ waitStartedAt: 1, resumesAt: deadline, turnId: "turn_1" }), 2000);
+  model = applyNotification(model, quotaRetry({ waitStartedAt: 1, delayMs: 0, turnId: "turn_1" }), 3000);
+  model = applyNotification(model, quotaRetry({ waitStartedAt: 2, resumesAt: deadline, turnId: "turn_1" }), 4000);
+  expect(model.quotaWaitStartedAt).toBe(2);
+  expect(model.quotaResumesAt).toBe(new Date(deadline).toISOString());
+
+  // The first wait's wake arriving late (a buffered or replayed frame) must
+  // not clear the second wait.
+  const stale = applyNotification(model, quotaRetry({ waitStartedAt: 1, delayMs: 0, turnId: "turn_1" }), 5000);
+  expect(stale.quotaWaitStartedAt).toBe(2);
+  expect(stale.quotaResumesAt).toBe(new Date(deadline).toISOString());
+
+  // The second wait's own wake clears it and records its ended stamp.
+  const ended = applyNotification(model, quotaRetry({ waitStartedAt: 2, delayMs: 0, turnId: "turn_1" }), 6000);
+  expect(ended.quotaWaitStartedAt).toBeUndefined();
+  expect(ended.quotaResumesAt).toBeUndefined();
+  expect(ended.quotaWaitEndedStamp).toBe(2);
+});
+
+// Scenario 4's start half: an older wait's start re-announced late (the same
+// reset deadline, the same turn) must not overwrite the newer wait's
+// deadline or chip metadata.
+test("an older stamped start does not overwrite a newer wait of the same turn", () => {
+  const deadline = Date.parse("2026-11-07T14:30:00Z");
+  const other = Date.parse("2026-11-07T20:30:00Z");
+  let model = testHydrate({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } });
+
+  model = applyNotification(model, quotaRetry({ waitStartedAt: 1, resumesAt: deadline, turnId: "turn_1" }), 2000);
+  model = applyNotification(model, quotaRetry({ waitStartedAt: 1, delayMs: 0, turnId: "turn_1" }), 3000);
+  model = applyNotification(
+    model,
+    quotaRetry({ waitStartedAt: 2, resumesAt: other, turnId: "turn_1", model: "other/model" }),
+    4000,
+  );
+
+  const regressed = applyNotification(
+    model,
+    quotaRetry({ waitStartedAt: 1, resumesAt: deadline, turnId: "turn_1", model: "first/model" }),
+    5000,
+  );
+  expect(regressed.quotaWaitStartedAt).toBe(2);
+  expect(regressed.quotaResumesAt).toBe(new Date(other).toISOString());
+  expect(regressed.modelRetry?.model).toBe("other/model");
+});
+
+// Scenario 3's restamp half: the wake records the ended stamp, and a late
+// retry naming the ended turn cannot restamp a new wait. The wait's
+// retirement marker refuses a start whose stamp did not outlive the ended
+// stamp, whatever turn the frame names.
+test("a late start whose stamp the wake already ended cannot restamp a wait", () => {
+  const resumesAt = Date.parse("2026-11-07T14:30:00Z");
+  let model = testHydrate({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } });
+  model = applyNotification(model, quotaRetry({ waitStartedAt: 3, resumesAt, turnId: "turn_1" }), 2000);
+  model = applyNotification(model, quotaRetry({ waitStartedAt: 3, delayMs: 0, turnId: "turn_1" }), 3000);
+  expect(model.quotaWaitEndedStamp).toBe(3);
+
+  const restamped = applyNotification(
+    model,
+    quotaRetry({ waitStartedAt: 2, resumesAt: resumesAt + 3_600_000, turnId: "turn_1" }),
+    4000,
+  );
+  expect(restamped.quotaWaitStartedAt).toBeUndefined();
+  expect(restamped.quotaResumesAt).toBeUndefined();
+});
+
+// Scenario 8: the legacy unstamped wake (an older daemon) reconciles by turn
+// ownership alone — it may clear an UNstamped wait's chip and deadline, but
+// must never touch a stamped wait.
+test("an unstamped wake clears a held unstamped wait by turn ownership", () => {
+  const resumesAt = Date.parse("2026-11-07T14:30:00Z");
+  let model = testHydrate({
+    status: { type: "active" },
+    evener: { activeTurnId: "turn_1", failure: { title: "Usage limit reached", resumesAt } },
+  });
+  // The legacy wait: a read-set deadline with no stamp, and the chip held
+  // from an unstamped live announcement.
+  model = applyNotification(model, quotaRetry({ turnId: "turn_1" }), 2000);
+  expect(model.quotaResumesAt).toBeDefined();
+
+  const unstampedWake = applyNotification(model, quotaRetry({ delayMs: 0, turnId: "turn_1" }), 3000);
+  expect(unstampedWake.quotaResumesAt).toBeUndefined();
+  expect(unstampedWake.quotaWaitStartedAt).toBeUndefined();
+});
+
+test("an unstamped wake never clears a stamped wait", () => {
+  const resumesAt = Date.parse("2026-11-07T14:30:00Z");
+  let model = testHydrate({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } });
+  model = applyNotification(model, quotaRetry({ waitStartedAt: 1, resumesAt, turnId: "turn_1" }), 2000);
+
+  const unstampedWake = applyNotification(model, quotaRetry({ delayMs: 0, turnId: "turn_1" }), 3000);
+  expect(unstampedWake.quotaWaitStartedAt).toBe(1);
+  expect(unstampedWake.quotaResumesAt).toBe(new Date(resumesAt).toISOString());
+});
+
+// Scenario 8's chip-only half: the legacy wait can arrive as the chip alone
+// (an unstamped live announcement over a read that named no resume instant).
+// The unstamped wake owns the turn and clears the chip.
+test("an unstamped wake clears the chip-only legacy wait of its turn", () => {
+  let model = testHydrate({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } });
+  model = applyNotification(model, quotaRetry({ turnId: "turn_1" }), 2000);
+  expect(model.modelRetry).toBeDefined();
+  expect(model.quotaResumesAt).toBeUndefined();
+
+  const cleared = applyNotification(model, quotaRetry({ delayMs: 0, turnId: "turn_1" }), 3000);
+  expect(cleared.quotaResumesAt).toBeUndefined();
+});
+
+// Scenario 11: one time basis per wait. A read gave the wait an absolute
+// deadline; that deadline is the whole countdown, and past it the wait is
+// pending. A late unstamped announcement with receipt runway must not leap
+// the countdown forward onto the receipt clock: the absolute instant stays.
+test("a late unstamped announcement does not move a deadline the read already set", () => {
+  const resumesAt = Date.parse("2026-11-07T14:30:00Z");
+  let model = testHydrate({
+    status: { type: "active" },
+    evener: { activeTurnId: "turn_1", failure: { title: "Usage limit reached", resumesAt } },
+  });
+  // The wait's announcement is unstamped (an older daemon): it has no
+  // deadline of its own to offer, and the read's instant is authoritative.
+  model = applyNotification(model, quotaRetry({ turnId: "turn_1", delayMs: 21_600_000 }), 2000);
+  expect(model.quotaResumesAt).toBe(new Date(resumesAt).toISOString());
+  expect(model.quotaWaitStartedAt).toBeUndefined();
+});
+
+// Scenario 14's reducer half: a snapshot-only wait (a rehydrated deadline
+// with no live announcement) carries no chip metadata — the snapshot cannot
+// attribute a model or elapsed sample.
+test("a snapshot-only wait carries no chip metadata", () => {
+  const resumesAt = Date.parse("2026-11-07T14:30:00Z");
+  const model = testHydrate({
+    status: { type: "active" },
+    evener: { activeTurnId: "turn_1", failure: { title: "Usage limit reached", resumesAt } },
+  });
+  expect(model.quotaResumesAt).toBe(new Date(resumesAt).toISOString());
+  expect(model.modelRetry).toBeUndefined();
+});
+
 // Deleted: "modelRetry clears when its turn completes" and "modelRetry
 // clears when a new turn starts". Both asserted the turnBoundary half of
 // modelRetry clearing (turn/completed or turn/started ending the wait

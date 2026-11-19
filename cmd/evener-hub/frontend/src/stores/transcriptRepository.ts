@@ -1129,24 +1129,145 @@ export class TranscriptRepository {
    * cannot replace or append to a response-owned slot. Capture that authority
    * once for the whole cut, so a missing upsert and its deltas stay together.
    * The shared reducer prunes any overlay the versioned recorded history covers.
+   *
+   * The buffer's quota-wait and turn-status frames fold into transitions
+   * first, then reconcile against the adopted snapshot — which is
+   * authoritative for turn ownership AND wait presence. Pre-cut frames may
+   * only enrich: an establishment (an active status, a wait start against a
+   * wait-free snapshot) is never admissible, a replacement publishes nothing
+   * pre-cut, and a terminal status applies only when its own endedTurnId
+   * names the turn the snapshot still shows running and no buffered frame
+   * replaced that turn. A refused read (adoptedRead false) drops exactly
+   * these quota transitions; every other rule above is the read's own
+   * authority chain and unaffected.
    */
-  acceptBeforeReadCut(notifications: readonly AnyNotification[], context: { lifetime: number }): void {
+  acceptBeforeReadCut(
+    notifications: readonly AnyNotification[],
+    context: { lifetime: number; adoptedRead?: boolean },
+  ): void {
     const responseOverlayKeys = new Set(Object.keys(this.#model?.overlay ?? {}));
+    if (context.adoptedRead === false) {
+      // The refused read's snapshot never became this repository's model, so
+      // the quota transitions ordered against it are dropped whole; the
+      // versioned/queue/overlay rules below deliver by their own authority.
+      for (const notification of notifications) {
+        this.#acceptPrecutEnrichment(notification, context, responseOverlayKeys);
+      }
+      return;
+    }
+    this.#reconcilePrecutQuotaTransitions(notifications, context);
     for (const notification of notifications) {
-      if (notification.method === "history/updated") {
+      this.#acceptPrecutEnrichment(notification, context, responseOverlayKeys);
+    }
+  }
+
+  // The read cut's non-quota enrichment: versioned recorded merges, queue
+  // revisions, and overlay slots the adopted read does not own. Unchanged by
+  // the quota reconciliation; both paths (adopted and refused) run it.
+  #acceptPrecutEnrichment(
+    notification: AnyNotification,
+    context: { lifetime: number },
+    responseOverlayKeys: Set<string>,
+  ): void {
+    if (notification.method === "history/updated") {
+      this.accept(notification, context);
+    } else if (
+      notification.method === "thread/queueChanged" &&
+      notification.params.queue.revision > (this.#model?.queue?.revision ?? -1)
+    ) {
+      this.accept(notification, context);
+    } else if (notification.method === "overlay/upserted" && !responseOverlayKeys.has(notification.params.item.key)) {
+      this.accept(notification, context);
+    } else if (
+      notification.method === "overlay/delta" &&
+      !responseOverlayKeys.has(notification.params.key) &&
+      this.#model?.overlay?.[notification.params.key]
+    ) {
+      this.accept(notification, context);
+    }
+  }
+
+  // Folds the buffer's quota-wait and turn-status frames into transitions,
+  // then reconciles each against the adopted snapshot. The fold answers one
+  // question per transition — who supplies turn ownership — and the
+  // reconciliation never infers it: a terminal status carries its own
+  // endedTurnId, and a frame with none preserves the snapshot's running turn.
+  // No frame is admitted or rejected by pairing it with another: the buffer
+  // is folded FIRST (a same-buffer start+wake pair is one cancellation), and
+  // each resulting transition stands on its own facts against the snapshot.
+  #reconcilePrecutQuotaTransitions(notifications: readonly AnyNotification[], context: { lifetime: number }): void {
+    const snapshot = this.#model;
+    if (!snapshot) return;
+    // The fold's own running-turn history: each buffered active frame that
+    // named a different turn than the one before it records a replacement,
+    // so a terminal status whose endedTurnId names a replaced turn is
+    // refused even when the buffer holds no later frame at all.
+    let bufferedRunningTurn: string | undefined = snapshot.runningTurnId;
+    const replacedTurns = new Set<string>();
+    for (const notification of notifications) {
+      if (notification.method !== "thread/status/changed") continue;
+      const params = notification.params as { activeTurnId?: string };
+      if (params.activeTurnId === undefined || params.activeTurnId === bufferedRunningTurn) continue;
+      if (bufferedRunningTurn !== undefined) replacedTurns.add(bufferedRunningTurn);
+      bufferedRunningTurn = params.activeTurnId;
+    }
+    for (const notification of notifications) {
+      // Re-read the model each iteration: an applied transition mutates the
+      // snapshot, and the next frame reconciles against what the buffer has
+      // actually done so far, never against a stale capture.
+      const model = this.#model;
+      if (!model) return;
+      if (notification.method === "thread/status/changed") {
+        const params = notification.params as { activeTurnId?: string; endedTurnId?: string };
+        // Establishment and replacement are post-cut transitions: an idle
+        // snapshot already reflects every pre-cut Stop, and a snapshot naming
+        // its own running turn is not overwritten by a buffered frame. Only
+        // a terminal status that supplies its own ownership — its
+        // endedTurnId names the turn the snapshot still shows running — may
+        // end that turn pre-cut.
+        if (params.activeTurnId !== undefined) continue;
+        if (params.endedTurnId === undefined) continue;
+        if (params.endedTurnId !== model.runningTurnId) continue;
+        if (replacedTurns.has(params.endedTurnId)) continue;
         this.accept(notification, context);
-      } else if (
-        notification.method === "thread/queueChanged" &&
-        notification.params.queue.revision > (this.#model?.queue?.revision ?? -1)
-      ) {
-        this.accept(notification, context);
-      } else if (notification.method === "overlay/upserted" && !responseOverlayKeys.has(notification.params.item.key)) {
-        this.accept(notification, context);
-      } else if (
-        notification.method === "overlay/delta" &&
-        !responseOverlayKeys.has(notification.params.key) &&
-        this.#model?.overlay?.[notification.params.key]
-      ) {
+        continue;
+      }
+      if (notification.method === "evener/thread/modelRetry") {
+        const params = notification.params as {
+          delayMs: number;
+          errorClass?: string;
+          waitStartedAt?: number;
+        };
+        if (params.errorClass !== "quota_exceeded") {
+          this.accept(notification, context);
+          continue;
+        }
+        const stamp = params.waitStartedAt ?? 0;
+        const heldStamp = model.quotaWaitStartedAt ?? 0;
+        const snapshotHoldsWait = model.quotaResumesAt !== undefined || heldStamp > 0;
+        if (params.delayMs > 0) {
+          // A start. The snapshot is authoritative for wait PRESENCE too: a
+          // wait-free snapshot already reflects the wait's end, so a start
+          // installs nothing (the wake that follows in the same buffer
+          // records the ended stamp below). Against a snapshot holding the
+          // SAME wait, the start fills chip metadata; an older stamp is not
+          // news.
+          if (!snapshotHoldsWait) continue;
+          if (stamp !== heldStamp) continue;
+          this.accept(notification, context);
+          continue;
+        }
+        // A wake: matching the snapshot's held wait clears it whole; a wake
+        // for an unheld or older wait records only its ended stamp. An
+        // unstamped wake (a legacy daemon) owns the turn it names: it may
+        // clear a legacy unstamped wait, never a stamped one.
+        if (stamp > 0 && stamp !== heldStamp) {
+          // Not the held wait. Record the ended stamp only — the reducer's
+          // own fold already knows a wake for an unheld wait contributes
+          // exactly that.
+          this.accept(notification, context);
+          continue;
+        }
         this.accept(notification, context);
       }
     }

@@ -619,6 +619,12 @@ export function threadFields(resp: ThreadReadResponse, ref: string, now: number)
     // resumes (EvenerThread.Failure.ResumesAt). Every other failure field is
     // read-only context the transcript's error row already holds.
     quotaResumesAt: epochMsToISO(thread.evener.failure?.resumesAt),
+    // The same summary's wait identity (EvenerThread.Failure.WaitStartedAt):
+    // the daemon-issued stamp the wait's live announcements carry, stored as
+    // the daemon's own value so a read that captured a NEWER wait can retire
+    // an older wait's frames by ordering, never by turn id or clock. Zero is
+    // the wire's absent value (omitempty) and never a stamp.
+    quotaWaitStartedAt: thread.evener.failure?.waitStartedAt || undefined,
     ...(thread.evener.access ? { access: { ...thread.evener.access } } : {}),
     workMillis: thread.evener.workMillis ?? 0,
     activeTurnStartedAt: epochMsToISO(thread.evener.activeTurnStartedAt),

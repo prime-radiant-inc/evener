@@ -1078,7 +1078,7 @@ async function acceptEntryTranscriptHydration(
   });
   repository.acceptBeforeReadCut(
     hydration.fixtureNotifications.map((update) => update.notification),
-    { lifetime: fixture.lifetime },
+    { lifetime: fixture.lifetime, adoptedRead },
   );
   return adoptedRead;
 }
