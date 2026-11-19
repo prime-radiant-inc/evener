@@ -413,6 +413,13 @@ export interface ThreadModel {
   resumeOnlyFoldable?: boolean;
   /** The session's immutable start-time Manager property, projected by its daemon. */
   manager?: boolean;
+  // The provider instance the snapshot named for the running model
+  // (Thread.evener.profile), kept apart from model/modelProvider because it is
+  // what makes a snapshot's raw model id addressable as "provider/model".
+  // thread/model/changed carries the same split directly and clears this,
+  // since that payload names its own provider. Absent from a daemon that
+  // reports no profile.
+  modelProfile?: string;
   modelProvider: string;
   model: string;
   reasoningEffort?: string;

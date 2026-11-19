@@ -473,6 +473,11 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
         ...model,
         modelProvider: n.params.modelProvider,
         model: n.params.model,
+        // The frame names the provider itself, so the snapshot's separate
+        // provider instance would only be a second, staler name for it. Only
+        // cleared when a read set one, so a thread that never carried the key
+        // keeps its shape.
+        ...(model.modelProfile === undefined ? {} : { modelProfile: undefined }),
         reasoningEffortLevels: n.params.reasoningEffortLevels ?? [],
         supportsReasoning: n.params.supportsReasoning ?? false,
         defaultReasoningEffort: n.params.defaultReasoningEffort,

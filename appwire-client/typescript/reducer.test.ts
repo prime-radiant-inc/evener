@@ -296,6 +296,72 @@ test("hydrate carries the thread's location facts (cwd, git branch, project path
   expect(model.projectPath).toBe("/home/u/proj");
 });
 
+// The snapshot names a running model in two fields: the bare id rides in
+// modelProvider, and the provider instance beside it in evener.profile. A
+// client comparing a catalog row or a pick against the snapshot has only the
+// bare id there, so the provider has to ride along for it to build the one
+// qualified identity those comparisons use.
+test("hydrate carries the provider the snapshot names apart from the bare model id", () => {
+  const named = testHydrate({
+    modelProvider: "claude-haiku-5",
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, profile: "anthropic" },
+  });
+  expect(named.modelProvider).toBe("claude-haiku-5");
+  expect(named.model).toBe("claude-haiku-5");
+  expect(named.modelProfile).toBe("anthropic");
+});
+
+test("hydrate carries the provider even when the model field begins with it", () => {
+  // The producer names the instance apart from the raw model id, and the id
+  // may itself begin with the instance: the bundled catalog lists OpenRouter's
+  // Auto Router as "openrouter/auto" on the "openrouter" instance. The
+  // catalog identity is therefore "openrouter/openrouter/auto", so the
+  // profile has to ride along for the client to build it.
+  const auto = testHydrate({
+    modelProvider: "openrouter/auto",
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, profile: "openrouter" },
+  });
+  expect(auto.modelProvider).toBe("openrouter/auto");
+  expect(auto.model).toBe("openrouter/auto");
+  expect(auto.modelProfile).toBe("openrouter");
+});
+
+test("hydrate carries no separate provider when the model field already names it whole", () => {
+  // A genuinely prequalified snapshot names the whole identity in its one
+  // model field and reports no profile beside it.
+  const whole = testHydrate({
+    modelProvider: "anthropic/claude-sonnet-4-5",
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 } },
+  });
+  expect(whole.modelProvider).toBe("anthropic/claude-sonnet-4-5");
+  expect(whole.modelProfile).toBeUndefined();
+});
+
+// A model id may itself contain a slash: a session running Claude Opus 5
+// through OpenRouter has the id "anthropic/claude-opus-5" and the profile
+// "openrouter". Reading the slash as "the model field already names the whole
+// identifier" dropped the profile, so the client could not build the catalog
+// identity "openrouter/anthropic/claude-opus-5" and the running row drew
+// unselected.
+test("hydrate carries the provider for a model id that contains a slash", () => {
+  const routed = testHydrate({
+    modelProvider: "anthropic/claude-opus-5",
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, profile: "openrouter" },
+  });
+  expect(routed.modelProvider).toBe("anthropic/claude-opus-5");
+  expect(routed.model).toBe("anthropic/claude-opus-5");
+  expect(routed.modelProfile).toBe("openrouter");
+});
+
+test("hydrate carries no provider when the daemon reports no profile", () => {
+  const bare = testHydrate({
+    modelProvider: "claude-opus-5",
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 } },
+  });
+  expect(bare.modelProvider).toBe("claude-opus-5");
+  expect(bare.modelProfile).toBeUndefined();
+});
+
 test("a zero or negative activeTurnStartedAt hydrates as absent, never an epoch anchor", () => {
   const zero = testHydrate({
     evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnStartedAt: 0 },
