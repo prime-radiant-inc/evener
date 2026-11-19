@@ -166,12 +166,10 @@ func priceEmittedToolSchemas(req Request, res registry.Resolved) Request {
 	// restoring it is exact rather than approximate.
 	//
 	// This runs before every branch that can return early, because each of them
-	// leaves the request priced by whatever answered last. A protocol with no
-	// deriver and an override adapter both marshal the definitions they are
-	// given: neither rewrites the list, so the list's own measurement is their
-	// price. Returning before the restore would keep a count produced for a
-	// different target — an inflated local reading, or a request that fits this
-	// route rejected by a cap that belonged to the other one.
+	// leaves the request priced by whatever answered last. Returning before the
+	// restore would keep a count produced for a different target — an inflated
+	// local reading, or a request that fits this route rejected by a cap that
+	// belonged to the other one.
 	req = restoreToolCountBaseline(req, res)
 	// The replacement providerToolsReplacement reports — a pinned "tools"
 	// transport constant, else the ProviderOptions value — is the list the route
@@ -197,10 +195,27 @@ func priceEmittedToolSchemas(req Request, res registry.Resolved) Request {
 	}
 	deriver, ok := p.(ToolSchemaDeriver)
 	if !ok {
-		return req
+		// A protocol with no deriver has no builder that rewrites a schema, but
+		// its builder still substitutes an open empty object for a parameterless
+		// tool. Admission reaches those bytes through the parameterless
+		// adjustment, so this price has to include them too — otherwise an input
+		// cap between the two readings passes a request that dispatch refuses.
+		// Recording the result against the target is what makes admission charge
+		// those bytes once: effectiveToolsJSONBytes adds the same delta to an
+		// unrecorded count, and a second charge refuses a request that fits.
+		baseline := req.toolCountBaseline()
+		return req.withToolEmission(res, effectiveToolsJSONBytes(req, res, false), baseline, false)
 	}
 	emitted, changed := deriver.EmitToolSchemas(req.Tools, res)
 	if !changed {
+		// The builder emits the list it was handed, so the count that describes
+		// that list is the price. Recording it is what lets a second price of
+		// the same request answer from the record rather than deriving the
+		// emission and walking the catalog again. An unstamped request carries no
+		// count to record, and the next reader measures it.
+		if req.ToolsJSONBytes > 0 {
+			return req.withToolEmission(res, req.ToolsJSONBytes, req.ToolsJSONBytes, false)
+		}
 		return req
 	}
 	// Read before withToolEmission overwrites the count: the baseline is the
@@ -286,9 +301,10 @@ func (req Request) withToolEmission(res registry.Resolved, count, baseline int, 
 // by another target's emission, and drops the record of that emission.
 //
 // It is the same restore for every caller that can be handed a pre-priced
-// request: the deriver path, the local reading, and admission. A route served by
-// a protocol that has no deriver, and one served by an override adapter, both
-// send the definitions they were handed, so for them the baseline is the price.
+// request: the deriver path, the local reading, and admission. An override
+// adapter sends the definitions it was handed, so for it the baseline is the
+// price. A route whose protocol has no deriver starts from the same baseline
+// and then adds the schema its builder substitutes for a parameterless tool.
 //
 // A record only describes a request whose tool count is still the count that
 // record produced. A caller that replaces Tools and stamps the replacement makes
@@ -464,8 +480,24 @@ func (i toolCatalogIdentity) names(defs []ToolDefinition) bool {
 // Every estimate taken over a request whose tools a builder rewrites needs this:
 // a full-history estimate computed over the advertised catalog and then carried
 // past a delta's admission is smaller than the list that dispatches, and the
-// larger of the two is the one the budget takes. A route whose builder rewrites
-// nothing, an override, or a request with no tools returns unchanged.
+// larger of the two is the one the budget takes.
+//
+// A route whose builder rewrites nothing is priced by its own list: a protocol
+// that synthesizes schemas without a ToolSchemaDeriver gets the
+// parameterless-schema delta, and one that changes nothing is recorded at the
+// count it was handed.
+//
+// This function cannot tell an override-served route from a built-in one, and an
+// override marshals the definitions it is handed. A caller that knows an
+// override serves the request must call RestoreToolBaseline instead, which
+// prices the list the override receives.
+//
+// A request with no tools of its own can still send some: a ProviderOptions
+// tools value, or a pinned "tools" transport body constant, supplies the entire
+// tool list on the Chat and standard Responses routes, and that list is priced
+// here against the catalog's own count as the baseline (see
+// providerToolsReplacement). A request with neither a catalog nor a replacement
+// returns unchanged.
 func PriceToolSchemas(req Request, res registry.Resolved) Request {
 	return priceEmittedToolSchemas(req, res)
 }
@@ -563,9 +595,10 @@ func parameterlessToolsJSONDelta(defs []ToolDefinition, res registry.Resolved, o
 // substituted schemas the delta here describes, so adding the delta to it
 // charges the same bytes twice — and an input cap between the two counts
 // refuses a request that fits. The recorded target is what distinguishes the
-// two: an override, and a route whose protocol has no deriver, leave the
-// definitions as they were handed over, so neither records an emission and
-// both still take the delta.
+// two. An override leaves the definitions as they were handed over and records
+// nothing, so it takes the delta. A route whose protocol has no deriver records
+// a price that already includes the schema its builder substitutes for a
+// parameterless tool, so adding the delta to it would charge those bytes twice.
 //
 // A request with no catalog but a recorded replacement — a transport tools
 // constant or a ProviderOptions tools value — prices that replacement, which is

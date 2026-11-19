@@ -38,8 +38,9 @@ func TestPricingARelaxedRouteDoesNotWalkACyclicCatalog(t *testing.T) {
 			req := Request{Tools: []ToolDefinition{tool}}
 
 			got := priceEmittedToolSchemas(req, tc.res)
-			// Every route here sends the caller's own schema, so nothing was
-			// rewritten and there is no emission to record.
+			// The request is unstamped, so the unchanged emission has no count
+			// to record and measuring the catalog here would be the walk the
+			// route's answer exists to avoid.
 			if got.emittedToolTarget != (emittedToolTargetKey{}) {
 				t.Fatalf("priced a catalog the route sends unchanged: recorded target %+v", got.emittedToolTarget)
 			}
