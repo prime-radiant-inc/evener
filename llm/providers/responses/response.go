@@ -11,6 +11,11 @@ import (
 	"primeradiant.com/evener/llm/providers/internal/protocolhttp"
 )
 
+func responsesFunctionCallUnfinished(item map[string]any) bool {
+	status, _ := item["status"].(string)
+	return status == "incomplete" || status == "in_progress"
+}
+
 // responseContentFromOutputItems converts a Responses API output-item array
 // into message content parts. It walks the same wire shape whether the items
 // come from a terminal response.completed payload's "output" field or from
@@ -51,6 +56,9 @@ func responseContentFromOutputItemsRaw(out []any, body []byte, rawItems []json.R
 				}
 			}
 		case "function_call":
+			if responsesFunctionCallUnfinished(item) {
+				continue
+			}
 			name, _ := item["name"].(string)
 			callID, _ := item["call_id"].(string)
 			itemID, _ := item["id"].(string)

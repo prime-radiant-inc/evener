@@ -206,7 +206,7 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDone(payload m
 // event was malformed), and, only for a function_call item whose call_id
 // resolved, the tool state and its full arguments string with ok=true.
 // ok=false covers both "not a function_call" (rawItem is non-nil; already
-// appended to Output()) and "function_call with no resolvable call_id"
+// appended to Output()) and "unfinished function_call or no resolvable call_id"
 // (rawItem is non-nil, not appended) -- callers distinguish the two by
 // checking rawItem's own "type" field, matching the two different
 // live-stream fallbacks (best-effort end-of-text vs. raw passthrough).
@@ -223,6 +223,9 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 	it, _ := item["type"].(string)
 	if it != "function_call" {
 		acc.appendOutput(item, rawItemToken)
+		return item, nil, "", false
+	}
+	if responsesFunctionCallUnfinished(item) {
 		return item, nil, "", false
 	}
 	callID, _ := item["call_id"].(string)
@@ -532,7 +535,7 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 					}
 				default:
 					if it, _ := rawItem["type"].(string); it == "function_call" {
-						// function_call with no resolvable call_id.
+						// Unfinished function_call or no resolvable call_id.
 						s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload, ContentBearing: true})
 					} else if textStarted {
 						// Best-effort: treat as end-of-text.

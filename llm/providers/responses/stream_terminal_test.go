@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -15,24 +16,53 @@ import (
 func TestIncompleteResponseKeepsUnsettledToolArgumentsOutOfFinalResponse(t *testing.T) {
 	t.Parallel()
 	const delta = `{"type":"response.function_call_arguments.delta","call_id":"call_unfinished","name":"probe","delta":"{}"}`
+	const unfinished = `{"type":"function_call","call_id":"call_unfinished","name":"probe","arguments":"{}","status":"incomplete"}`
+	const running = `{"type":"function_call","call_id":"call_running","name":"probe","arguments":"{}","status":"in_progress"}`
+	const completed = `{"type":"function_call","call_id":"call_completed","name":"probe","arguments":"{}","status":"completed"}`
+	const unstamped = `{"type":"function_call","call_id":"call_unstamped","name":"probe","arguments":"{}"}`
+	frame := func(payload string) string { return "data: " + payload + "\n\n" }
 	for _, terminalType := range []string{"response.completed", "response.incomplete"} {
-		t.Run(terminalType, func(t *testing.T) {
-			terminal := `{"type":"` + terminalType + `","response":{"status":"incomplete","output":[]}}`
-			body := "data: " + delta + "\n\ndata: " + terminal + "\n\n"
-			recorded, err := ExtractRecordedResponse([]byte(body), "gpt-5.5")
-			if err != nil {
-				t.Error(err)
-			}
-			events, final := responsesEventsFromSSE(t, body)
-			if event := toolEvent(t, events, llm.StreamEventToolCallDelta); event == nil || event.ID != "call_unfinished" || string(event.Arguments) != "{}" {
-				t.Fatalf("transient tool delta = %+v", event)
-			}
-			for _, response := range []*llm.Response{final, &recorded} {
-				if response == nil || len(response.ToolCalls()) != 0 || response.Finish.Reason != llm.FinishReasonLength || response.Finish.Raw != "incomplete" {
-					t.Errorf("incomplete response = %+v, want no settled tool call", response)
+		for _, mode := range []string{"empty", "terminal", "streamed"} {
+			t.Run(terminalType+"/"+mode, func(t *testing.T) {
+				body, output := frame(delta), "[]"
+				var wantCalls []string
+				switch mode {
+				case "terminal":
+					output = "[" + unfinished + "," + running + "," + completed + "," + unstamped + "]"
+				case "streamed":
+					for _, item := range []string{unfinished, running, completed, unstamped} {
+						body += frame(`{"type":"response.output_item.done","item":` + item + `}`)
+					}
 				}
-			}
-		})
+				if mode != "empty" {
+					wantCalls = []string{"call_completed", "call_unstamped"}
+				}
+				body += frame(`{"type":"` + terminalType + `","response":{"status":"incomplete","output":` + output + `}}`)
+				recorded, err := ExtractRecordedResponse([]byte(body), "gpt-5.5")
+				if err != nil {
+					t.Error(err)
+				}
+				events, final := responsesEventsFromSSE(t, body)
+				if event := toolEvent(t, events, llm.StreamEventToolCallDelta); event == nil || event.ID != "call_unfinished" || string(event.Arguments) != "{}" {
+					t.Fatalf("transient tool delta = %+v", event)
+				}
+				for _, response := range []*llm.Response{final, &recorded} {
+					if response == nil || response.Finish.Reason != llm.FinishReasonLength || response.Finish.Raw != "incomplete" {
+						t.Fatalf("incomplete response = %+v", response)
+					}
+					var ids []string
+					for _, call := range response.ToolCalls() {
+						ids = append(ids, call.ID)
+					}
+					if !slices.Equal(ids, wantCalls) {
+						t.Errorf("settled tool calls = %v, want %v", ids, wantCalls)
+					}
+				}
+				if mode == "streamed" && !hasEventType(events, llm.StreamEventProviderEvent) {
+					t.Error("stream omitted the raw unfinished completion")
+				}
+			})
+		}
 	}
 }
 

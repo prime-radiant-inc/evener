@@ -94,6 +94,7 @@ apply the same rule.
 
 An explicit incomplete response settles the output, including an empty result.
 If the adapter supplies no settled tool calls, streamed argument deltas remain partial.
+Explicitly unfinished function items remain available as raw provider events.
 
 Responses replay preserves assistant item order and groups same-phase text across omitted parts.
 
