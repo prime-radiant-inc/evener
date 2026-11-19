@@ -1,6 +1,6 @@
 import { type ReactNode, useEffect, useLayoutEffect, useRef } from "react";
 import { chromeStore } from "../../shell/chromeStore";
-import { cancelPaneFocus, consumePaneFocus } from "../../shell/workspace";
+import { cancelPaneFocus, consumePaneFocus, subscribePaneFocusRequest } from "../../shell/workspace";
 import { requireClass } from "../internal/requireClass";
 import styles from "./panescaffold.module.css";
 
@@ -112,42 +112,52 @@ export function PaneScaffold({
       cancelPaneFocus(paneId);
       return;
     }
-    if (!consumePaneFocus(paneId)) return;
-    const target = focusSelector ? paneRef.current?.querySelector<HTMLElement>(focusSelector) : null;
-    if (target) target.focus({ preventScroll: true });
-    else bodyRef.current?.focus();
+    const applyFocus = () => {
+      if (!consumePaneFocus(paneId)) return;
+      const target = focusSelector ? paneRef.current?.querySelector<HTMLElement>(focusSelector) : null;
+      if (target) target.focus({ preventScroll: true });
+      else bodyRef.current?.focus();
+    };
+    applyFocus();
+    return subscribePaneFocusRequest((requestedId) => {
+      if (requestedId === paneId) applyFocus();
+    });
   }, [focused, paneId, focusSelector]);
+
+  const hasHeader = title !== undefined || cadence !== undefined || actions !== undefined;
 
   return (
     <div ref={paneRef} className={CLASS.pane}>
-      <div className={CLASS.header}>
-        {title !== undefined && (
-          <h2 className={CLASS.title}>
-            {mobileTitle === undefined ? (
-              title
-            ) : (
-              <>
-                <span className={CLASS.desktopTitle} data-testid="pane-title-desktop">
-                  {title}
-                </span>
-                <span className={CLASS.mobileTitle} data-testid="pane-title-mobile">
-                  {mobileTitle}
-                </span>
-              </>
-            )}
-          </h2>
-        )}
-        {cadence !== undefined && (
-          <div className={CLASS.cadenceSlot} data-testid="pane-cadence-slot">
-            {cadence}
-          </div>
-        )}
-        {actions !== undefined && (
-          <div className={CLASS.actions} data-testid="pane-actions">
-            {actions}
-          </div>
-        )}
-      </div>
+      {hasHeader && (
+        <div className={CLASS.header}>
+          {title !== undefined && (
+            <h2 className={CLASS.title}>
+              {mobileTitle === undefined ? (
+                title
+              ) : (
+                <>
+                  <span className={CLASS.desktopTitle} data-testid="pane-title-desktop">
+                    {title}
+                  </span>
+                  <span className={CLASS.mobileTitle} data-testid="pane-title-mobile">
+                    {mobileTitle}
+                  </span>
+                </>
+              )}
+            </h2>
+          )}
+          {cadence !== undefined && (
+            <div className={CLASS.cadenceSlot} data-testid="pane-cadence-slot">
+              {cadence}
+            </div>
+          )}
+          {actions !== undefined && (
+            <div className={CLASS.actions} data-testid="pane-actions">
+              {actions}
+            </div>
+          )}
+        </div>
+      )}
       <div
         ref={bodyRef}
         className={bodyScroll ? BODY_CLASS_NAME.scrollable : BODY_CLASS_NAME.flush}

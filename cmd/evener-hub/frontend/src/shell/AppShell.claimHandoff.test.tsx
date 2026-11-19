@@ -635,7 +635,7 @@ test("saved legacy cascade returned on phone preserves the conversation during d
       child,
     ]);
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Return to previous view" }));
+      fireEvent.click(screen.getByRole("button", { name: "Back" }));
     });
     // Phone selection legitimately retired the root while the child was shown.
     // Begin this handoff check with a loaded returned root, not its recovery.

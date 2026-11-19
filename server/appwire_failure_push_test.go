@@ -11,8 +11,15 @@ import (
 // statusNotifications pulls every thread/status/changed the server broadcast.
 func statusNotifications(t *testing.T, srv *Server, threadID string) []appwire.ThreadStatusChangedParams {
 	t.Helper()
+	return statusNotificationsAfter(t, srv, 0, threadID)
+}
+
+// statusNotificationsAfter pulls the thread/status/changed frames recorded
+// after cursor, decoded params only.
+func statusNotificationsAfter(t *testing.T, srv *Server, cursor uint64, threadID string) []appwire.ThreadStatusChangedParams {
+	t.Helper()
 	var out []appwire.ThreadStatusChangedParams
-	for _, n := range srv.AppNotificationsAfter(0, threadID) {
+	for _, n := range srv.AppNotificationsAfter(cursor, threadID) {
 		if n.Notification.Method != appwire.NotifyThreadStatusChanged {
 			continue
 		}

@@ -19,7 +19,7 @@ func TestResponsesRequestFingerprintIgnoresStreamAndContinuationFields(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a != b || !strings.HasPrefix(a, "cont-req-v2:") {
+	if a != b || !strings.HasPrefix(a, "cont-req-v3:") {
 		t.Fatalf("fingerprints must agree across Complete/Stream and continuation fields: %s vs %s", a, b)
 	}
 	c, _ := ResponsesRequestFingerprint(ResponsesEndpointFamilyOpenAICodex, streamed)
@@ -56,5 +56,20 @@ func TestResponsesEndpointFamilyFor(t *testing.T) {
 	}
 	if got := ResponsesEndpointFamilyFor(registry.Resolved{Transport: registry.Transport{Auth: registry.AuthBearer}}); got != ResponsesEndpointFamilyOpenAIPublic {
 		t.Fatalf("bearer: %s", got)
+	}
+}
+
+// TestResponsesRequestFingerprintUpgradesV2Anchor pins the cont-req-v3 cut-over: a
+// stored v2 anchor cannot match a v3 plan, so the session resends full history and
+// re-anchors under v3.
+func TestResponsesRequestFingerprintUpgradesV2Anchor(t *testing.T) {
+	t.Parallel()
+	body := map[string]any{"model": "gpt-5.5", "input": []any{"a"}, "temperature": 0.2}
+	plan, err := ResponsesRequestFingerprint(ResponsesEndpointFamilyOpenAIPublic, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v2 := "cont-req-v2:" + strings.TrimPrefix(plan, responsesRequestFingerprintPrefix); v2 == plan {
+		t.Fatalf("a v2 anchor must not satisfy a v3 plan, both are %q", plan)
 	}
 }

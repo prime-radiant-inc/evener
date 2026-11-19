@@ -105,7 +105,7 @@ func TestPlanContinuationHonorsOverridePlanner(t *testing.T) {
 	t.Parallel()
 	srv, _ := responsesServer(t)
 	c := continuationClient(t, fixtureRegistry(t, srv.URL, nil))
-	want := llm.ResponsesContinuationPlan{EndpointFamily: llm.ResponsesEndpointFamilyOpenAIPublic, RequestFingerprint: "cont-req-v2:override"}
+	want := llm.ResponsesContinuationPlan{EndpointFamily: llm.ResponsesEndpointFamilyOpenAIPublic, RequestFingerprint: "cont-req-v3:override"}
 	override := &planningOverride{plan: want}
 	override.name = "openai"
 	c.Register(override)
