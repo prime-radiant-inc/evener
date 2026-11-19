@@ -41,7 +41,7 @@ func TestChildUnreachableToolsFollowTheDelegateWorkspace(t *testing.T) {
 	writeInfraFile(t, filepath.Join(root, ".evener", "mcp.json"),
 		`{"mcpServers":{"svc":{"command":"/bin/a"}}}`, 0o644)
 	env := execenv.NewLocalExecutionEnvironment(root)
-	_, _, evidence, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidence(env, nil, nil)
+	_, _, evidence, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, nil, nil, nil, false, false)
 	if err != nil {
 		t.Fatalf("discover: %v", err)
 	}

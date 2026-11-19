@@ -90,7 +90,7 @@ func TestProjectEvidenceComesFromTheParsedBytes(t *testing.T) {
 	}
 	env := execenv.NewLocalExecutionEnvironment(root)
 
-	configs, _, evidence, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidence(env, nil, nil)
+	configs, _, evidence, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, nil, nil, nil, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +136,7 @@ func TestCLIClassificationEvidenceRequiresTheCurrentProjectPath(t *testing.T) {
 	env := execenv.NewLocalExecutionEnvironment(root)
 	s := &Session{env: env}
 
-	configs, _, evidence, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidence(env, nil, nil)
+	configs, _, evidence, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, nil, nil, nil, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func TestVisionModelRebuildLeavesTheRosterStale(t *testing.T) {
 
 	const cliTool = "svc__echo"
 	s := newSession(t, withEnv(env))
-	_, _, evidence, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidence(env, nil, nil)
+	_, _, evidence, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, nil, nil, nil, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +284,7 @@ func TestAbsentProjectLayerStillVerifiesItsEvidence(t *testing.T) {
 	runInfraGit(t, root, "init", "-q")
 	env := execenv.NewLocalExecutionEnvironment(root)
 
-	configs, cliOnly, evidence, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidence(env, nil, nil)
+	configs, cliOnly, evidence, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, nil, nil, nil, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,7 +324,7 @@ func TestGlobalLayerParticipatesInTheEvidence(t *testing.T) {
 	runInfraGit(t, root, "init", "-q")
 	env := execenv.NewLocalExecutionEnvironment(root)
 
-	_, _, evidence, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidence(env, nil, nil)
+	_, _, evidence, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, nil, nil, nil, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -365,7 +365,7 @@ func TestFreshEvidenceSeesARepositoryInitializedAroundTheSession(t *testing.T) {
 	if got := execenv.GitRootOrEmpty(env, root); got != "" {
 		t.Fatalf("outside git the memoized root should be empty, got %q", got)
 	}
-	_, _, startupEvidence, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidence(env, nil, nil)
+	_, _, startupEvidence, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, nil, nil, nil, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -420,7 +420,7 @@ func TestConfigEditAloneInvalidatesTheCachedAnswer(t *testing.T) {
 
 	const cliTool = "svc__echo"
 	s := newSession(t, withEnv(env))
-	_, _, evidence, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidence(env, nil, nil)
+	_, _, evidence, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, nil, nil, nil, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -483,7 +483,7 @@ func TestWorktreeSpawnDoesNotInvalidateTheSharedRosterCaches(t *testing.T) {
 
 	const cliTool = "svc__echo"
 	s := newSession(t, withEnv(env))
-	_, _, evidence, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidence(env, nil, nil)
+	_, _, evidence, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, nil, nil, nil, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}

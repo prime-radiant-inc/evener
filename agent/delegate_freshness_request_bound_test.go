@@ -67,7 +67,7 @@ func TestRequestFreshnessRefreshIsBoundedByTheTurnContext(t *testing.T) {
 	// one, so the check returns at the GLOBAL comparison and never reaches the git
 	// call this test exists to bound. That is the false green the assertion below
 	// on env.started rules out.
-	_, _, layers, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidence(local, nil, nil)
+	_, _, layers, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidenceForProjectEnv(local, nil, nil, nil, false, false)
 	if err != nil {
 		t.Fatalf("discover: %v", err)
 	}

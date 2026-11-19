@@ -2713,17 +2713,39 @@ func (s *Session) initMCP() error {
 	// the process environment only while it still says what the parent read at
 	// its own startup (see DiscoverWithCLIOnlyAndEvidenceForProjectEnv).
 	env := s.currentEnv()
+	sandboxed := s.mcpProjectLayerIsSandboxedWithoutLaunchTrust(env)
 	configs, cliOnly, configEvidence, cfgWarnings, err := mcpconfig.DiscoverWithCLIOnlyAndEvidenceForProjectEnv(
 		env, s.cfg.MCPConfigFiles, s.cfg.MCPInline,
-		s.cfg.StartupMCPProjectEvidence, s.mcpProjectLayerIsSandboxedWithoutLaunchTrust(env))
+		s.cfg.StartupMCPProjectEvidence, sandboxed,
+		s.mcpHostNetworkDisabled(env))
 	if err != nil {
 		return err
 	}
-	// This session's own read is what authorizes the project layer for the
-	// delegates IT constructs. Recorded unconditionally, absence included: an
-	// absent layer recorded as a path with no digest is a fact a later check can
+	// Which project layer authorizes the delegates THIS session constructs is a
+	// different question from what this session just discovered, and the two
+	// must not be conflated.
+	//
+	// A ROOT session's own startup read IS the launch: the user launched into
+	// this workspace, so the layer it read is the layer a sandboxed delegate may
+	// expand. It records that unconditionally, absence included — an absent
+	// layer recorded as a path with no digest is a fact a later check can
 	// verify, while an unrecorded one authorizes nothing.
+	//
+	// A SANDBOXED DELEGATE is not a launch. Its discovery may have registered
+	// servers this process could only reach through a `${VAR:-default}`
+	// fallback, and recording THAT layer as the authorization would promote it:
+	// a nested delegate (depth 2) would then be told the depth-1 process
+	// launched against a config the depth-1 process never actually saw
+	// authorized, and would expand real host credentials out of it. So a
+	// sandboxed delegate carries forward EXACTLY what its own parent authorized
+	// for it, and nothing it discovered itself.
 	evidence := configEvidence.Project
+	if sandboxed {
+		evidence = mcpconfig.LayerEvidence{}
+		if prior := s.cfg.StartupMCPProjectEvidence; prior != nil {
+			evidence = *prior
+		}
+	}
 	s.mu.Lock()
 	s.startupMCPProjectEvidence = evidence
 	s.mu.Unlock()
@@ -2803,6 +2825,27 @@ func (s *Session) mcpProjectLayerIsSandboxedWithoutLaunchTrust(env execenv.Execu
 		return true
 	}
 	return sandboxSnapshotFromEnv(env) != nil
+}
+
+// mcpHostNetworkDisabled reports whether this session's sandbox has network
+// disabled, which is the condition under which an MCP server can reach the host
+// network that the sandbox denies the session itself.
+//
+// Both places the resolved policy can live are consulted, because they answer
+// for different construction paths: a session restored from a snapshot carries
+// its mode on the config and has it re-resolved onto the env, while a delegate
+// built by a running parent carries an already-provisioned policy on the env.
+// A configured `+nonet` that produced no resolved policy at all still counts —
+// the intent to deny egress is what the MCP layer must honor, and reading only
+// the resolved policy would let the gap authorize a server.
+func (s *Session) mcpHostNetworkDisabled(env execenv.ExecutionEnvironment) bool {
+	if le, ok := env.(*execenv.LocalExecutionEnvironment); ok && le.Sandbox != nil && le.Sandbox.Enforced() {
+		return !le.Sandbox.Network
+	}
+	if s.cfg.SandboxNet != nil {
+		return !*s.cfg.SandboxNet
+	}
+	return false
 }
 
 // otherLayerMCPNamespaces is the set of registered-name PREFIXES the non-CLI

@@ -30,7 +30,7 @@ func TestCeilingDerivationWaitsOnTheCallersContext(t *testing.T) {
 	root := realTempDirForTest(t)
 	runInfraGit(t, root, "init", "-q")
 	local := execenv.NewLocalExecutionEnvironment(root)
-	_, _, layers, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidence(local, nil, nil)
+	_, _, layers, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidenceForProjectEnv(local, nil, nil, nil, false, false)
 	if err != nil {
 		t.Fatalf("discover: %v", err)
 	}

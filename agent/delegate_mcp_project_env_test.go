@@ -16,6 +16,7 @@ import (
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/mcpconfig"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/llm"
@@ -520,4 +521,215 @@ func TestColdRestoredWorktreeDelegateKeepsCommittedProjectMCPConfig(t *testing.T
 	}
 	f.requireChildAuthed("cold restore")
 	f.requireEchoTool(restored.sess, "cold restore")
+}
+
+// TestNestedSandboxedDelegateDoesNotEscalateFallbackProjectLayer is High #2's
+// end-to-end proof: launch authorization must not be promoted from DISCOVERY.
+//
+// The shape a depth-2 escalation needs:
+//
+//  1. A session starts outside Git under a sandbox, so its startup read recorded
+//     NO project layer, and spawns a depth-1 shared-workspace delegate.
+//  2. A repository appears around the tree with a .evener/mcp.json whose server
+//     authenticates as ${SECRET:-fallback}. The depth-1 delegate's fresh root
+//     lookup discovers it — registering tools is the feature — but it may only
+//     expand the FALLBACK, because the host environment is withheld from it.
+//  3. The depth-1 delegate spawns a depth-2 delegate.
+//
+// If step 2's discovery were recorded as the depth-1 session's launch
+// authorization, step 3 would hand the depth-2 delegate a record that names that
+// exact file and entry, and the depth-2 process would match the digest and
+// expand ${SECRET} out of the HOST environment. The fallback would have bought a
+// real credential one level down. Step 3 must therefore see the same restricted
+// expansion the depth-1 delegate did.
+func TestNestedSandboxedDelegateDoesNotEscalateFallbackProjectLayer(t *testing.T) {
+	// Not parallel: hermeticInfraEnv calls t.Setenv.
+	hermeticInfraEnv(t)
+
+	const secretName = "MCP_NESTED_ESCALATION_SECRET"
+	const secretValue = "host-credential-that-must-not-escape"
+	const fallbackValue = "repo-chosen-fallback"
+	t.Setenv(secretName, secretValue)
+
+	// The workspace starts as no repository at all.
+	workspace := realTempDirForTest(t)
+	root := newSession(t, withEnv(execenv.NewLocalExecutionEnvironment(workspace)), withDir(workspace), withConfig(SessionConfig{
+		StateDir:         packageFixtureTempDir(t, "sbx-mcp-nested-*"),
+		MaxSubagentDepth: 2,
+		testOnly: testConfig{
+			skipGitSnapshot:            true,
+			minimalSystemPrompt:        true,
+			noSyncJobStore:             true,
+			sandboxProber:              bwrapCapableProber(workspace),
+			disableDelegateIdleRelease: true,
+		},
+	}), withSteps(
+		// The root never runs a turn: its only job is to start depth 1. Every
+		// step below therefore belongs to the first delegate that asks.
+		func(llm.Request) llm.Response {
+			return agenttest.ToolCallResponse(llm.ToolCallData{
+				ID:        "spawn-nested",
+				Name:      "delegate",
+				Arguments: json.RawMessage(`{"prompt":"nested leaf task"}`),
+				Type:      "function",
+			})
+		},
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("depth 1 done") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("nested leaf done") },
+	))
+	sbxSetParentMode(t, root, infraSandboxHost(t), workspace, sandbox.ModeReadOnly)
+
+	// The root's own launch read found no project layer: there was no repository.
+	rootStartup := root.startupMCPProjectLayer()
+	if rootStartup == nil || rootStartup.Path != "" {
+		t.Fatalf("fixture is wrong: a launch outside Git recorded project evidence %+v", rootStartup)
+	}
+
+	// The repository and its fallback-authenticated config appear around the
+	// running tree.
+	runInfraGit(t, workspace, "init", "-q")
+	recorder := &mcpHeaderRecorder{}
+	srv := recorder.server(t)
+	writeInfraFile(t, filepath.Join(workspace, ".evener", "mcp.json"),
+		`{"mcpServers":{"repo_project":{"type":"http","url":"`+srv.URL+
+			`","headers":{"Authorization":"Bearer ${`+secretName+`:-`+fallbackValue+`}"}}}}`, 0o644)
+	if got := mcpconfig.ProjectConfigPath(root.currentEnv()); got == "" {
+		t.Fatal("the project layer does not resolve after the repository appeared, so no level below could ever discover it")
+	}
+
+	// Depth 1: the delegate discovers the layer and expands only the fallback.
+	depth1 := root.createDelegate(context.Background(), delegateArgs{
+		Task:                "spawn a nested delegate",
+		DelegationAllowance: new(1),
+	})
+	if depth1.Err != nil {
+		t.Fatalf("createDelegate (depth 1): %v", depth1.Err)
+	}
+	children := root.subagents.sessions()
+	if len(children) != 1 {
+		t.Fatalf("tracked depth-1 children = %d, want 1", len(children))
+	}
+	depth1Sess := children[0]
+
+	// The premise that makes this test about High #2 and not about the first
+	// round: depth 1 DID discover the layer and DID register its server. Only
+	// the credential stayed withheld.
+	depth1Sess.mu.Lock()
+	manager := depth1Sess.mcpMgr
+	depth1Sess.mu.Unlock()
+	if manager == nil {
+		t.Fatal("fixture is wrong: the depth-1 delegate registered no MCP manager, so the layer was skipped rather than partially expanded")
+	}
+	discovered := false
+	for _, info := range manager.Servers() {
+		if info.Name == "repo_project" {
+			discovered = true
+		}
+	}
+	if !discovered {
+		t.Fatalf("fixture is wrong: the depth-1 delegate did not discover the new project layer (servers = %v), so a nested escalation has nothing to promote", manager.Servers())
+	}
+	for _, auth := range recorder.authorizations() {
+		if strings.Contains(auth, secretValue) {
+			t.Fatalf("the depth-1 delegate already expanded the HOST credential; Authorization %q", auth)
+		}
+	}
+
+	// Depth 1 spawns depth 2 inside its own first turn (the scripted delegate
+	// tool call), because a delegate may only create a child while it holds its
+	// lease. Wait for that turn to settle before inspecting the tree.
+	settled := root.getSub(depth1.ChildSessionID)
+	if settled == nil {
+		t.Fatal("the depth-1 delegate runtime is not tracked")
+	}
+	settled.mu.Lock()
+	depth1Done := settled.done
+	settled.mu.Unlock()
+	select {
+	case <-depth1Done:
+		// TRIPWIRE: the fixture's provider answers in-process in milliseconds.
+	case <-time.After(30 * time.Second):
+		t.Fatal("the depth-1 delegate never finished its first turn")
+	}
+
+	// Depth 2: spawned by depth 1 from inside that turn. It must reach the same
+	// layer through the same restricted expansion.
+	nested := depth1Sess.subagents.sessions()
+	if len(nested) != 1 {
+		t.Fatalf("tracked depth-2 children = %d, want 1; the depth-1 delegate's delegate tool call did not spawn a nested delegate, so no escalation could be attempted", len(nested))
+	}
+	depth2Sess := nested[0]
+
+	// Wait, bounded, until both delegates have dialled the endpoint. Both levels
+	// connect during construction, so this is normally already true.
+	waitForDials(t, recorder, 2)
+
+	// The outcome assertion, first because it is the one that matters: no level
+	// may present the HOST credential for a layer the tree only reached through
+	// a ${SECRET:-fallback} expansion.
+	fallbackDials := 0
+	for _, auth := range recorder.authorizations() {
+		if strings.Contains(auth, secretValue) {
+			t.Fatalf("a nested level expanded the HOST credential from a layer its parent only reached through a ${%s:-%s} fallback; Authorization %q", secretName, fallbackValue, auth)
+		}
+		if strings.Contains(auth, fallbackValue) {
+			fallbackDials++
+		}
+	}
+	if fallbackDials < 2 {
+		t.Fatalf("only %d level(s) dialled the layer with the %q fallback, so this test did not exercise the fallback expansion at both depths it claims to test", fallbackDials, fallbackValue)
+	}
+
+	// The cause, second: what each level recorded as launch authorization for
+	// its own children must NOT be its own discovery. Anything else promotes a
+	// fallback-expanded layer into a launch-authorized one, and a nested
+	// delegate would then expand the real credential out of it.
+	depth1Recorded := depth1Sess.startupMCPProjectLayer()
+	if depth1Recorded == nil {
+		t.Fatal("depth 1 recorded no evidence value at all")
+	}
+	if depth1Recorded.Path != "" || len(depth1Recorded.ServerDigests) != 0 {
+		t.Fatalf("the sandboxed delegate recorded its OWN discovery as launch authorization for its children: %+v; a nested delegate would then expand the host credential out of a config this level could only reach by fallback", depth1Recorded)
+	}
+
+	// The premise again: depth 2 DID discover the layer from its own fresh
+	// lookup. Only the credential stayed withheld.
+	depth2Sess.mu.Lock()
+	nestedManager := depth2Sess.mcpMgr
+	depth2Sess.mu.Unlock()
+	if nestedManager == nil {
+		t.Fatal("fixture is wrong: the depth-2 delegate registered no MCP manager, so the layer was skipped rather than restricted")
+	}
+	nestedDiscovered := false
+	for _, info := range nestedManager.Servers() {
+		if info.Name == "repo_project" {
+			nestedDiscovered = true
+		}
+	}
+	if !nestedDiscovered {
+		t.Fatalf("fixture is wrong: the depth-2 delegate did not discover the project layer (servers = %v), so nothing was withheld from it", nestedManager.Servers())
+	}
+
+	nestedRecorded := depth2Sess.startupMCPProjectLayer()
+	if nestedRecorded == nil {
+		t.Fatal("depth 2 recorded no evidence value at all")
+	}
+	if nestedRecorded.Path != "" || len(nestedRecorded.ServerDigests) != 0 {
+		t.Fatalf("the depth-2 delegate treated a layer it only reached through a ${%s:-%s} fallback as launch authorization for its own children: %+v", secretName, fallbackValue, nestedRecorded)
+	}
+}
+
+// waitForDials blocks until the recorder has seen at least n Authorization
+// headers, or fails the test when a bound elapses. MCP servers connect in the
+// background, so a level's first dial can trail the create call that started it.
+func waitForDials(t *testing.T, r *mcpHeaderRecorder, n int) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(r.authorizations()) >= n {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("only %d Authorization header(s) were presented within the bound, want at least %d: %q", len(r.authorizations()), n, r.authorizations())
 }

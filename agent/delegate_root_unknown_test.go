@@ -42,7 +42,7 @@ func TestUnresolvableGitRootKeepsCLINamesEligible(t *testing.T) {
 
 	// Discovery in a confirmed non-repository: the project layer is absent and
 	// the resolver said so, which is the state the classification may rest on.
-	_, _, evidence, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidence(local, nil, nil)
+	_, _, evidence, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidenceForProjectEnv(local, nil, nil, nil, false, false)
 	if err != nil {
 		t.Fatalf("discover: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestDiscoveryFindsAProjectConfigAddedAfterStartup(t *testing.T) {
 		t.Fatalf("fixture is wrong: %q already resolves to a root %q", workspace, root)
 	}
 	// Discovery at startup sees nothing, which is correct at this moment.
-	_, _, before, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidence(local, nil, nil)
+	_, _, before, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidenceForProjectEnv(local, nil, nil, nil, false, false)
 	if err != nil {
 		t.Fatalf("discover: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestDiscoveryFindsAProjectConfigAddedAfterStartup(t *testing.T) {
 	// Discovery against the SAME environment must now find it. A discovery that
 	// reads the memo reports no project layer, and the child cannot register the
 	// server the roster advertises.
-	configs, _, after, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidence(local, nil, nil)
+	configs, _, after, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidenceForProjectEnv(local, nil, nil, nil, false, false)
 	if err != nil {
 		t.Fatalf("discover: %v", err)
 	}

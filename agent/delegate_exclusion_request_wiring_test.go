@@ -44,7 +44,7 @@ func TestModelRequestRefreshesTheExclusionCachesWithoutASpawn(t *testing.T) {
 		t.Fatalf("register %s: %v", cliTool, err)
 	}
 
-	_, _, evidence, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidence(env, nil, nil)
+	_, _, evidence, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, nil, nil, nil, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}

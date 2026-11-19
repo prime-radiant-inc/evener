@@ -67,6 +67,78 @@ func loadFileWithEnv(path string, env valueexpr.Env) ([]ServerConfig, error) {
 	})
 }
 
+// readConfigFile is execenv.ReadFileCapped behind a package variable, so a test
+// can count how many times discovery reads a layer and can serve different bytes
+// to a second read. The single-read property is the security claim these tests
+// exist to hold; it cannot be observed through the exported API otherwise.
+var readConfigFile = execenv.ReadFileCapped
+
+// layerRead is one config layer read and parsed exactly ONCE: the servers that
+// came out of it, the evidence for the same bytes, the per-server warnings, and
+// which servers the launch authorized.
+//
+// The single read is the security property, not an optimization. A caller that
+// hashed one read and then re-read the file to authorize it holds two facts that
+// can disagree: a file edited in between pairs a stale authorization with fresh
+// bytes, and the server the authorization was meant to withhold is the one that
+// gets expanded through the process environment. Every field here derives from
+// one []byte slice.
+type layerRead struct {
+	Configs  []ServerConfig
+	Evidence LayerEvidence
+	// Warnings are per-server refusals: an entry that would not parse, or one
+	// the launch did not authorize and the restricted environment could not
+	// expand. They are warnings and not a layer error so the entries beside
+	// them still register.
+	Warnings []string
+	// Authorized names the servers the launch authorized, by configured name.
+	// Nil when the layer was parsed without per-server authorization.
+	Authorized map[string]bool
+}
+
+// layerReadOptions is one layer read's inputs.
+type layerReadOptions struct {
+	// expand answers every entry, and is used only when authorize is nil.
+	expand func(string) (string, error)
+	// authorize decides per entry: which expander parses it, and whether the
+	// launch authorized it. Nil parses the layer as one trust class, which is
+	// every layer but an eligible-or-not project layer under a sandboxed
+	// delegate.
+	authorize layerServerAuthorization
+	// recordServerDigests records a digest per raw entry on the returned
+	// evidence. The PROJECT layer always sets it, because those digests are
+	// what a later sandboxed delegate matches its own read against; the global
+	// and CLI layers, which no one matches per entry, leave it off.
+	recordServerDigests bool
+}
+
+// layerServerAuthorization is the per-server decision for one raw entry in a
+// project config layer: the expander to parse that server with, and whether the
+// resulting server is launch-authorized.
+//
+// It exists because a project layer is not one trust class per file. A server
+// the launch already read is authorized; a server added to the same file since
+// is not, and the difference is per ENTRY. Collapsing the two would either
+// discard the authorized server or expand the new one through the process
+// environment, and the second is the disclosure the whole model exists to stop.
+type layerServerAuthorization func(name string, raw json.RawMessage) (expand func(string) (string, error), authorized bool)
+
+// projectServerDigests fingerprints every raw server entry in one config layer,
+// keyed by server name. The digest is over the entry's own bytes as they appear
+// in the file, so it identifies one server entry and not the file that holds it:
+// adding, removing, or editing a DIFFERENT server leaves this one's digest
+// alone, which is what makes per-server authorization possible at all.
+func projectServerDigests(servers map[string]json.RawMessage) map[string]string {
+	if len(servers) == 0 {
+		return nil
+	}
+	digests := make(map[string]string, len(servers))
+	for name, raw := range servers {
+		digests[name] = ConfigDigest(raw)
+	}
+	return digests
+}
+
 // loadLayerEvidence reads one discovery layer and returns the evidence for the
 // bytes it parsed, so no caller has to read the file again to fingerprint it.
 //
@@ -84,21 +156,86 @@ func loadFileWithEnv(path string, env valueexpr.Env) ([]ServerConfig, error) {
 //     exactly what invalidates it — and collapsing it into "no evidence" would
 //     disable the exclusion for every workspace that has no layer yet.
 //   - unverifiable: an empty Path. That covers a FIFO, a device, an oversized
-//     file, an unreadable entry, or bytes that do not parse, and every caller
-//     must treat it as unknown reachability: eligible, never excluded.
+//     file, or an unreadable entry, and every caller must treat it as unknown
+//     reachability: eligible, never excluded.
+//
+// A layer whose bytes read but do not parse keeps its Path and Digest: the
+// bytes were read, and a later freshness check comparing them is answering a
+// question about the same read.
 func loadLayerEvidence(path string, expand func(string) (string, error)) ([]ServerConfig, LayerEvidence, error) {
-	data, err := execenv.ReadFileCapped(path)
+	read, err := readLayer(path, layerReadOptions{expand: expand})
+	return read.Configs, read.Evidence, err
+}
+
+// readLayer is the one read of a config layer. It parses the layer as a single
+// trust class when opts.authorize is nil, and entry by entry when it is not.
+//
+// An entry that fails to parse or expand under a per-server authorization is
+// recorded in Warnings naming that server, and the rest of the layer still
+// loads. That is the difference between a layer and a server: one
+// `$(command)` or one unresolvable ${OTHER_SECRET} must not take the unchanged
+// authorized entries beside it down with it, and before this split it did.
+func readLayer(path string, opts layerReadOptions) (layerRead, error) {
+	data, err := readConfigFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, LayerEvidence{Path: path}, err
+			return layerRead{Evidence: LayerEvidence{Path: path}}, err
 		}
-		return nil, LayerEvidence{}, err
+		return layerRead{}, err
 	}
-	configs, err := parseConfigBytes(data, path, expand)
-	if err != nil {
-		return nil, LayerEvidence{}, err
+	evidence := LayerEvidence{Path: path, Digest: ConfigDigest(data), Size: int64(len(data))}
+
+	var cf mcpConfigFile
+	if err := json.Unmarshal(data, &cf); err != nil {
+		return layerRead{Evidence: evidence}, fmt.Errorf("parsing MCP config %s: %w", path, err)
 	}
-	return configs, LayerEvidence{Path: path, Digest: ConfigDigest(data), Size: int64(len(data))}, nil
+	if opts.recordServerDigests {
+		evidence.ServerDigests = projectServerDigests(cf.MCPServers)
+	}
+	if opts.authorize == nil {
+		configs, err := parseServerMap(cf.MCPServers, path, opts.expand)
+		return layerRead{Configs: configs, Evidence: evidence}, err
+	}
+	configs, authorized, warnings := parseServerMapAuthorized(cf.MCPServers, path, opts.authorize)
+	return layerRead{Configs: configs, Evidence: evidence, Warnings: warnings, Authorized: authorized}, nil
+}
+
+// parseServerMapAuthorized converts a server map entry by entry, keeping every
+// entry that parses and warning about each one that does not. Ordering matches
+// parseServerMap, and an empty name is a warning rather than a layer refusal for
+// the same reason: it disables the one entry, not the file.
+func parseServerMapAuthorized(servers map[string]json.RawMessage, source string, authorize layerServerAuthorization) ([]ServerConfig, map[string]bool, []string) {
+	configs := make([]ServerConfig, 0, len(servers))
+	authorized := make(map[string]bool, len(servers))
+	var warnings []string
+	names := make([]string, 0, len(servers))
+	for name := range servers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		raw := servers[name]
+		if strings.TrimSpace(name) == "" {
+			warnings = append(warnings, fmt.Sprintf("MCP config %s: MCP server name must not be empty", source))
+			continue
+		}
+		expand, isAuthorized := authorize(name, raw)
+		var sj mcpServerJSON
+		if err := json.Unmarshal(raw, &sj); err != nil {
+			warnings = append(warnings, fmt.Sprintf("MCP config %s: parsing MCP server %q: %v", source, name, err))
+			continue
+		}
+		cfg, err := serverJSONToConfig(name, sj, expand)
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("MCP config %s: MCP server %q: %v", source, name, err))
+			continue
+		}
+		if isAuthorized {
+			authorized[name] = true
+		}
+		configs = append(configs, cfg)
+	}
+	return configs, authorized, warnings
 }
 
 func loadFile(path string, expand func(string) (string, error)) ([]ServerConfig, error) {
@@ -401,7 +538,13 @@ func Discover(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []string
 	// process environment is the full environment for every layer, trusted
 	// or not — the trust decision happened when the user launched there.
 	env0 := processExpansionEnv()
-	configs, _, _, warnings, err := discoverLayers(env, extraFiles, inlineSpecs, env0, env0)
+	configs, _, _, warnings, err := discoverLayers(discoverOptions{
+		env:          env,
+		extraFiles:   extraFiles,
+		inlineSpecs:  inlineSpecs,
+		trustedEnv:   env0,
+		untrustedEnv: env0,
+	})
 	return configs, warnings, err
 }
 
@@ -495,10 +638,23 @@ type LayerEvidence struct {
 	// repository's own working tree and each of its linked worktrees resolve
 	// to. It is what lets a sandboxed delegate launched into a worktree of the
 	// SAME repository recognize the committed copy of the bytes the startup
-	// read parsed (see projectLayerAuthorizedByStartup). Empty when the
+	// read parsed (see projectLayerEligible). Empty when the
 	// workspace was not a resolvable repository, and no match may treat two
 	// empty identities as the same repository.
 	RepoRoot string
+	// ServerDigests fingerprints each raw mcpServers entry in the layer, keyed
+	// by server name, over the entry's own JSON bytes from the read that
+	// produced Digest.
+	//
+	// It is what makes launch authorization PER SERVER. Digest answers "is this
+	// still the same file"; ServerDigests answers "is this still the same
+	// server", so a project layer that gained one entry since the launch still
+	// authorizes the entries it already had. Without it the only choices were
+	// authorizing a whole modified file or discarding every server in it.
+	//
+	// Nil for a layer that recorded no server entries, and for every layer
+	// whose servers are not launch-authorizable per entry (global, CLI).
+	ServerDigests map[string]string
 }
 
 // ConfigEvidence is the evidence for every layer that can make a CLI-only
@@ -617,44 +773,6 @@ func layerBytesCurrent(recorded LayerEvidence, path string) bool {
 	return int64(len(data)) == recorded.Size && ConfigDigest(data) == recorded.Digest
 }
 
-// DiscoverWithCLIOnlyAndEvidence is Discover plus two things read in the same
-// pass: the servers the CLI layers (--mcp-config files and --mcp inline specs)
-// contribute to the EFFECTIVE configuration, and every layer's own evidence.
-//
-// A caller that clears the two CLI layers — every delegate spawn does — uses the
-// CLI entries to decide which tool names a child might not reach, and reading
-// that answer from this one parse keeps it from drifting with a second one. The
-// returned configs are Discover's, unchanged.
-//
-// Which CLI entries it returns, and what the caller may conclude from each:
-//
-//   - An entry whose name no other layer declares: Fallback is nil. The child
-//     clears the CLI layers and discovers nothing by that name, so the server,
-//     and only it, supplies those tools.
-//   - An entry whose name another layer declares: Fallback is that layer's
-//     config, the one the child discovers instead. This entry REPLACES the
-//     other layer's entry for this session, so its names are exactly the names
-//     THIS configuration serves; the two configurations may expose different
-//     tool sets under the same server name.
-//
-// Both are returned, and neither is a reachability verdict. A shadowed entry's
-// tools may or may not be reachable from a child, and the answer is not a
-// prediction here: the child's own MCP initialization registers what that
-// configuration exposes when it spawns. Callers must therefore treat an
-// unknown reachability as "let the child try" — excluding a name on that
-// ignorance hides a tool the child can call.
-//
-// Plugin MCP configs are NOT a layer here: plugin discovery is the session's,
-// not this package's, and initMCP merges them under these configs. A caller
-// that knows its plugin server names must treat a CLI entry whose name
-// collides with one as shadowed, for the same reason and with no subtraction
-// of tools: the child still loads the plugin, so it rediscovers that server
-// (see recordCLIMCPServers).
-func DiscoverWithCLIOnlyAndEvidence(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []string) ([]ServerConfig, []CLIOnlyServer, ConfigEvidence, []string, error) {
-	env0 := processExpansionEnv()
-	return discoverLayers(env, extraFiles, inlineSpecs, env0, env0)
-}
-
 // DiscoverWithLaunchEnv is Discover with the launch layer's environment
 // overlay applied: the values a session spawned under that launch layer
 // receives on top of the process environment (launchconfig's env field,
@@ -678,96 +796,263 @@ func DiscoverWithCLIOnlyAndEvidence(env execenv.ExecutionEnvironment, extraFiles
 // keeps the full inherited environment for the project layer. Inline specs
 // are not expanded today, matching Discover.
 func DiscoverWithLaunchEnv(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []string, launchEnv map[string]string) ([]ServerConfig, []string, error) {
-	configs, _, _, warnings, err := discoverLayers(env, extraFiles, inlineSpecs, launchExpansionEnv(launchEnv), launchOverlayOnlyEnv(launchEnv))
+	configs, _, _, warnings, err := discoverLayers(discoverOptions{
+		env:          env,
+		extraFiles:   extraFiles,
+		inlineSpecs:  inlineSpecs,
+		trustedEnv:   launchExpansionEnv(launchEnv),
+		untrustedEnv: launchOverlayOnlyEnv(launchEnv),
+	})
 	return configs, warnings, err
 }
 
-// DiscoverWithCLIOnlyAndEvidenceForProjectEnv is
-// DiscoverWithCLIOnlyAndEvidence for a caller whose project layer is not
-// necessarily covered by the launch trust decision: a sandboxed delegate.
+// DiscoverWithCLIOnlyAndEvidenceForProjectEnv discovers MCP configs along with
+// CLI-only server metadata and layer evidence, applying per-server launch
+// authorization for a sandboxed delegate's project layer.
 //
-// A normal launch answers its project layer with the full process
-// environment, because the user launched into that workspace and that launch
-// is the trust decision (see Discover). A SANDBOXED DELEGATE has no such
-// decision behind it. It is constructed by a running session, in a shared
-// workspace, possibly after a Git root and its .evener/mcp.json appeared
-// around that session. The sandbox withholds host credentials from the child,
-// yet discovery would expand the repository's ${VAR} references out of
-// os.Environ() and send the results to the endpoint the repository names,
-// before the child's tool ceiling has anything to say about it.
+// A normal launch answers its project layer with the full process environment,
+// because the user launched into that workspace and that launch is the trust
+// decision (see Discover). A SANDBOXED DELEGATE has no such decision behind it.
+// It is constructed by a running session, in a shared workspace, possibly after
+// a Git root and its .evener/mcp.json appeared around that session. The sandbox
+// withholds host credentials from the child, yet discovery would expand the
+// repository's ${VAR} references out of os.Environ() and send the results to
+// the endpoint the repository names, before the child's tool ceiling has
+// anything to say about it.
 //
-// So a sandboxed caller keeps the process environment for the project layer
-// only while that layer still says what THIS session read at its own startup
-// (authorizedProject). An absent, unresolved, or since-changed startup layer
-// authorizes nothing: the layer is expanded through launchOverlayOnlyEnv(nil),
-// where every reference is unanswered, so the standard expansion error skips
-// the layer with a warning instead of disclosing a credential. Literal values
-// expand to themselves and still load.
+// Authorization is PER SERVER, and it is decided from the SAME bytes that are
+// then parsed (one read; see readLayer). A project server
+// entry is launch-authorized when both hold:
+//
+//   - The layer is eligible: the workspace's project layer is the one the
+//     launch read (same path), or the same committed bytes at the path of a
+//     linked worktree of the SAME repository (see projectLayerEligible).
+//   - The entry is unchanged: its raw bytes digest matches the startup
+//     record's digest for that server name.
+//
+// An authorized entry expands through the process environment, exactly as a
+// session's own Discover would. Every other entry — added since the launch, or
+// in a layer the launch never read — expands through launchOverlayOnlyEnv(nil),
+// where every reference is unanswered, so a reference fails and that ONE server
+// is skipped with a warning naming it. Literal values expand to themselves and
+// still load. The unchanged authorized servers in the same file keep working,
+// which is the difference between withholding a credential and disabling the
+// repository's whole MCP config.
+//
+// noNet refuses the network exception for unauthorized remote servers. A
+// sandboxed session's stdio MCP servers run under ConfineTrustedInfra, which
+// deliberately keeps the network reachable even at net=off (see
+// agent/internal/mcp), and sse/http servers are dialled by the host process
+// itself, so an unauthorized `{"type":"http","url":...}` entry would reach the
+// host network no matter what the sandbox says. With noNet, such an entry is
+// skipped with a warning instead of connected. Launch-authorized servers keep
+// the exception: the launch is what authorized them.
 //
 // The layers the user authors — the global config and the CLI files — always
 // keep the process environment, and so do the inline specs, which are not
 // expanded at all. sandboxed=false is the ordinary session contract,
-// byte-for-byte Discover's.
-func DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []string, authorizedProject *LayerEvidence, sandboxed bool) ([]ServerConfig, []CLIOnlyServer, ConfigEvidence, []string, error) {
-	env0 := processExpansionEnv()
-	untrustedEnv := env0
-	if sandboxed && !projectLayerAuthorizedByStartup(authorizedProject, env) {
-		untrustedEnv = launchOverlayOnlyEnv(nil)
-	}
-	return discoverLayers(env, extraFiles, inlineSpecs, env0, untrustedEnv)
+// byte-for-byte Discover's; noNet is then ignored.
+func DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []string, authorizedProject *LayerEvidence, sandboxed, noNet bool) ([]ServerConfig, []CLIOnlyServer, ConfigEvidence, []string, error) {
+	return discoverLayers(discoverOptions{
+		env:               env,
+		extraFiles:        extraFiles,
+		inlineSpecs:       inlineSpecs,
+		trustedEnv:        processExpansionEnv(),
+		authorizedProject: authorizedProject,
+		sandboxed:         sandboxed,
+		noNet:             noNet,
+	})
 }
 
-// projectLayerAuthorizedByStartup reports whether the project layer the
-// workspace resolves to NOW is still the layer this session read at startup, so
-// expanding it through the process environment discloses nothing the startup
-// read did not already disclose.
+// projectLayerEligible reports whether the project layer a workspace resolves to
+// NOW is a layer the launch's startup read speaks for, so an entry whose bytes
+// still match the startup record may be expanded through the process
+// environment.
 //
-// The two empty answers are deliberately NOT authorizations. A nil or
-// pathless startup record means no layer was resolved — the session launched
-// outside a repository, or the resolution could not answer — and neither says
-// anything about a .evener/mcp.json that exists now. That file appeared around
-// the session, which is exactly the change this check exists to catch.
+// Eligibility is about PLACE, never about the bytes at that place: the bytes are
+// checked per entry, against the same single read that is then parsed. Asking
+// this function whether a file "changed" would be a second, racier answer to a
+// question the caller already has the bytes for.
 //
-// A path that differs is the worktree case, and it is authorized only when
-// everything the launch read is still exactly what the workspace now presents:
-// the same repository (the recorded RepoRoot and the workspace's own main
-// repository root are the same non-empty canonical path) and the exact same
-// bytes at the new path (layerBytesCurrent's size-then-digest comparison). That
-// is a user cutting a worktree delegate from a checkout whose committed
-// .evener/mcp.json they launched against: the file the child reads is the file
-// the launch already disclosed, only checked out at a second path. Anything
-// else — a repository that is not this one, a modified file, or an
-// unresolvable identity — stays unauthorized and keeps the restricted
-// expansion environment.
-func projectLayerAuthorizedByStartup(authorized *LayerEvidence, env execenv.ExecutionEnvironment) bool {
+// Two places are eligible:
+//
+//   - the recorded path itself. The launch read that exact file, whatever it
+//     says now; which of its entries are authorized is the digest comparison's
+//     question.
+//   - the same committed file at a linked worktree's path, but only when both
+//     sides are the SAME non-empty repository identity. That is a user cutting a
+//     worktree delegate from a checkout whose committed .evener/mcp.json they
+//     launched against: the file the child reads is the file the launch already
+//     disclosed, at a second path. An empty identity on either side is not a
+//     match — two checkouts discovery could not place are two unknowns, and one
+//     unknown matching another would let any repository's bytes pass for the
+//     launch's.
+//
+// Everything else — no startup record, a launch outside any repository, an
+// unresolvable current path, an unrelated repository — is ineligible, and every
+// entry of the layer then expands through the restricted environment.
+func projectLayerEligible(authorized *LayerEvidence, env execenv.ExecutionEnvironment) bool {
 	if authorized == nil || authorized.Path == "" {
 		return false
 	}
 	currentPath := ProjectConfigPath(env)
+	if currentPath == "" {
+		return false
+	}
 	if currentPath == authorized.Path {
-		return layerBytesCurrent(*authorized, currentPath)
+		return true
 	}
-	if currentPath == "" || authorized.RepoRoot == "" {
+	if authorized.RepoRoot == "" {
 		return false
 	}
-	// Both sides must be the SAME non-empty repository. An empty identity on
-	// either side is not a match: two checkouts discovery could not place are
-	// two unknowns, and one unknown matching another would let any repository's
-	// bytes pass for the launch's.
-	if projectRepoRoot(env) != authorized.RepoRoot {
-		return false
-	}
-	return layerBytesCurrent(*authorized, currentPath)
+	return projectRepoRoot(env) == authorized.RepoRoot
 }
 
-// discoverLayers is Discover's body with the expansion environment chosen
-// per layer trust class: trustedEnv answers the layers the user authors —
-// the global config and the launch/CLI files — and untrustedEnv answers
-// the project's .evener/mcp.json, which evener does not author. The two
-// agree inside a session (Discover passes the full process environment for
-// both); they differ for the settings probe (DiscoverWithLaunchEnv), which
-// restricts the project layer to the launch overlay.
-func discoverLayers(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []string, trustedEnv, untrustedEnv valueexpr.Env) ([]ServerConfig, []CLIOnlyServer, ConfigEvidence, []string, error) {
+// authorizedServerDigest returns the startup digest recorded for one server
+// entry, and whether a record exists for it at all.
+func (e *LayerEvidence) authorizedServerDigest(name string) (string, bool) {
+	if e == nil || e.ServerDigests == nil {
+		return "", false
+	}
+	digest, ok := e.ServerDigests[name]
+	return digest, ok
+}
+
+// discoverOptions is discoverLayers' input. It is a struct rather than a
+// parameter list because the project layer's trust decision is not one
+// environment: it is an eligibility check, a per-server digest match, and a
+// network-disabled refusal, and each of those has to be visible at the call
+// site that chose it.
+type discoverOptions struct {
+	env         execenv.ExecutionEnvironment
+	extraFiles  []string
+	inlineSpecs []string
+	// trustedEnv answers the layers the user authors: the global config and the
+	// launch/CLI files.
+	trustedEnv valueexpr.Env
+	// untrustedEnv answers the project layer for callers that have no per-server
+	// authorization to apply — the settings probe (DiscoverWithLaunchEnv), which
+	// restricts the whole layer to the launch overlay.
+	untrustedEnv valueexpr.Env
+	// authorizedProject is the launch's startup record of this workspace's
+	// project layer. Nil authorizes nothing.
+	authorizedProject *LayerEvidence
+	// sandboxed selects per-server authorization for the project layer: an entry
+	// is expanded through the process environment only when the layer is eligible
+	// and the entry's bytes match authorizedProject.
+	sandboxed bool
+	// noNet refuses network-transport project servers that per-server
+	// authorization did not cover, because nothing else withholds the host
+	// network from them.
+	noNet bool
+}
+
+// projectLayerReadOptions is the project layer's read configuration.
+//
+// With no per-server authorization — a root session, a settings probe — the
+// whole layer is one trust class and o.untrustedEnv answers all of it. Under a
+// sandboxed delegate the layer becomes one decision per entry: an eligible layer
+// whose entry digest matches the launch's record expands through trustedEnv and
+// is marked authorized; anything else expands through launchOverlayOnlyEnv(nil)
+// and is not.
+//
+// The per-server digests are always recorded, whatever the caller: that map is
+// what a DELEGATE this session constructs will match against, so a root session
+// has to produce it even though it uses none of it itself.
+func (o discoverOptions) projectLayerReadOptions(env execenv.ExecutionEnvironment) layerReadOptions {
+	if !o.sandboxed {
+		return layerReadOptions{
+			expand: func(s string) (string, error) {
+				return expandEnvVarsUntrustedInEnv(s, o.untrustedEnv)
+			},
+			recordServerDigests: true,
+		}
+	}
+	eligible := projectLayerEligible(o.authorizedProject, env)
+	restrictedEnv := launchOverlayOnlyEnv(nil)
+	restricted := func(s string) (string, error) {
+		return expandEnvVarsUntrustedInEnv(s, restrictedEnv)
+	}
+	return layerReadOptions{
+		recordServerDigests: true,
+		authorize: func(name string, raw json.RawMessage) (func(string) (string, error), bool) {
+			if !eligible {
+				return restricted, false
+			}
+			digest, ok := o.authorizedProject.authorizedServerDigest(name)
+			if !ok || digest != ConfigDigest(raw) {
+				return restricted, false
+			}
+			return func(s string) (string, error) {
+				return expandEnvVarsUntrustedInEnv(s, o.trustedEnv)
+			}, true
+		},
+	}
+}
+
+// admitProjectServers applies the network rule to a project layer's parsed
+// servers and returns those this session may connect, plus a warning for each
+// one it refuses.
+//
+// A repository's `{"type":"http","url":...}` entry is dialled by evener's own
+// process, and a stdio entry is spawned through ConfineTrustedInfra, which keeps
+// egress even at net=off on the grounds that MCP config the model cannot write
+// is trusted infrastructure. That premise holds only for entries the launch
+// authorized. With noNet, an unauthorized network-transport entry is refused
+// here instead of connected: the sandbox has already withheld the credentials it
+// would carry, and this is the other half — it does not get the host's network
+// either.
+//
+// Authorized servers and stdio servers pass through untouched, as does every
+// server when noNet is not set.
+func (o discoverOptions) admitProjectServers(read layerRead) ([]ServerConfig, []string) {
+	if !o.noNet || !o.sandboxed {
+		return read.Configs, nil
+	}
+	admitted := make([]ServerConfig, 0, len(read.Configs))
+	var warnings []string
+	for _, cfg := range read.Configs {
+		if read.Authorized[cfg.Name] || !usesNetworkTransport(cfg) {
+			admitted = append(admitted, cfg)
+			continue
+		}
+		warnings = append(warnings, fmt.Sprintf(
+			"MCP server %q in %s was not launch-authorized, so it is not connected over the host network while this session's sandbox has network disabled",
+			cfg.Name, read.Evidence.Path))
+	}
+	return admitted, warnings
+}
+
+// usesNetworkTransport reports whether cfg reaches the network from evener's
+// process or from a spawn that keeps egress: the sse and http transports, which
+// the SDK dials directly, and any non-stdio entry that names a URL, so an
+// unrecognized type cannot slip past the check by spelling itself differently.
+func usesNetworkTransport(cfg ServerConfig) bool {
+	switch cfg.Type {
+	case "sse", "http":
+		return true
+	case "stdio", "":
+		return false
+	default:
+		return cfg.URL != ""
+	}
+}
+
+// discoverLayers is Discover's body. It reads every layer once and derives each
+// layer's servers and evidence from the same bytes.
+//
+// The project layer is the one with more than one trust class. When o.sandboxed
+// is set, each entry of it is expanded through the process environment only if
+// the layer is eligible AND that entry's digest matches the startup record;
+// every other entry gets launchOverlayOnlyEnv(nil), so an unanswered reference
+// fails that entry alone. Otherwise the whole layer is answered by
+// o.untrustedEnv, which is what the settings probe and the ordinary session
+// need.
+func discoverLayers(o discoverOptions) ([]ServerConfig, []CLIOnlyServer, ConfigEvidence, []string, error) {
+	env := o.env
+	extraFiles := o.extraFiles
+	inlineSpecs := o.inlineSpecs
+	trustedEnv := o.trustedEnv
 	var layers [][]ServerConfig
 	var warnings []string
 	var evidence ConfigEvidence
@@ -803,21 +1088,23 @@ func discoverLayers(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []
 	// skip-with-warning as any other project-layer parse failure.
 	if env != nil {
 		if projPath := ProjectConfigPath(env); projPath != "" {
-			configs, layerEvidence, err := loadLayerEvidence(projPath, func(s string) (string, error) {
-				return expandEnvVarsUntrustedInEnv(s, untrustedEnv)
-			})
+			opts := o.projectLayerReadOptions(env)
+			read, err := readLayer(projPath, opts)
 			// The repository the layer belongs to is recorded on every arm,
 			// absence included: it is what a sandboxed delegate's worktree
 			// compares against when the same committed bytes resolve at a
-			// different path (see projectLayerAuthorizedByStartup).
-			layerEvidence.RepoRoot = projectRepoRoot(env)
-			evidence.Project = layerEvidence
+			// different path (see projectLayerEligible).
+			read.Evidence.RepoRoot = projectRepoRoot(env)
+			evidence.Project = read.Evidence
 			if err != nil {
 				if !errors.Is(err, os.ErrNotExist) {
 					warnings = append(warnings, fmt.Sprintf("MCP config %s: %v", projPath, err))
 				}
 			} else {
-				layers = append(layers, configs)
+				warnings = append(warnings, read.Warnings...)
+				admitted, netWarnings := o.admitProjectServers(read)
+				warnings = append(warnings, netWarnings...)
+				layers = append(layers, admitted)
 			}
 		}
 	}

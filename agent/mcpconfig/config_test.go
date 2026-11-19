@@ -1077,7 +1077,7 @@ func TestDiscoverForProjectEnv_SandboxedDelegateRefusesNewlyDiscoveredProjectLay
 		t.Fatal(err)
 	}
 
-	configs, _, _, warnings, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, nil, nil, &startupProject, true)
+	configs, _, _, warnings, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, nil, nil, &startupProject, true, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1110,7 +1110,7 @@ func TestDiscoverForProjectEnv_SandboxedDelegateRefusesNewlyDiscoveredProjectLay
 		t.Fatal(err)
 	}
 	literalConfigs, _, _, literalWarnings, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(
-		&agenttest.FakeEnv{WorkDir: literalRoot, GitRoot: literalRoot}, nil, nil, &startupProject, true)
+		&agenttest.FakeEnv{WorkDir: literalRoot, GitRoot: literalRoot}, nil, nil, &startupProject, true, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1159,7 +1159,7 @@ func TestDiscoverForProjectEnv_SandboxedDelegateKeepsAuthorizedStartupLayer(t *t
 	// Startup evidence is captured through production discovery, so the fixture
 	// records exactly the path, digest, and repository identity a real session's
 	// startup read would have recorded.
-	_, _, startupEvidence, _, err := DiscoverWithCLIOnlyAndEvidence(env, nil, nil)
+	_, _, startupEvidence, _, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, nil, nil, nil, false, false)
 	if err != nil {
 		t.Fatalf("startup discovery: %v", err)
 	}
@@ -1171,7 +1171,7 @@ func TestDiscoverForProjectEnv_SandboxedDelegateKeepsAuthorizedStartupLayer(t *t
 		t.Fatalf("the fixture did not reproduce the canonicalization it exists to cover: recorded path %q is the unresolved spelling", startup.Path)
 	}
 
-	configs, _, _, warnings, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, nil, nil, &startup, true)
+	configs, _, _, warnings, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, nil, nil, &startup, true, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1241,7 +1241,7 @@ func TestDiscoverForProjectEnv_WorktreeOfSameRepositoryKeepsAuthorizedLayer(t *t
 	wt := linkedWorktreeOf(t, main)
 
 	mainEnv := execenv.NewLocalExecutionEnvironment(main)
-	_, _, startupEvidence, _, err := DiscoverWithCLIOnlyAndEvidence(mainEnv, nil, nil)
+	_, _, startupEvidence, _, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(mainEnv, nil, nil, nil, false, false)
 	if err != nil {
 		t.Fatalf("startup discovery: %v", err)
 	}
@@ -1260,7 +1260,7 @@ func TestDiscoverForProjectEnv_WorktreeOfSameRepositoryKeepsAuthorizedLayer(t *t
 		t.Fatalf("fixture is wrong: worktree repository identity = %q, want the startup's %q", got, startup.RepoRoot)
 	}
 
-	configs, _, _, warnings, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(wtEnv, nil, nil, &startup, true)
+	configs, _, _, warnings, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(wtEnv, nil, nil, &startup, true, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1287,7 +1287,7 @@ func TestDiscoverForProjectEnv_WorktreeOfSameRepositoryWithModifiedBytesIsRefuse
 	wt := linkedWorktreeOf(t, main)
 
 	mainEnv := execenv.NewLocalExecutionEnvironment(main)
-	_, _, startupEvidence, _, err := DiscoverWithCLIOnlyAndEvidence(mainEnv, nil, nil)
+	_, _, startupEvidence, _, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(mainEnv, nil, nil, nil, false, false)
 	if err != nil {
 		t.Fatalf("startup discovery: %v", err)
 	}
@@ -1307,7 +1307,7 @@ func TestDiscoverForProjectEnv_WorktreeOfSameRepositoryWithModifiedBytesIsRefuse
 	}
 
 	configs, _, _, warnings, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(
-		execenv.NewLocalExecutionEnvironment(wt), nil, nil, &startup, true)
+		execenv.NewLocalExecutionEnvironment(wt), nil, nil, &startup, true, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1337,7 +1337,7 @@ func TestDiscoverForProjectEnv_UnrelatedRepositoryWithIdenticalBytesIsRefused(t 
 	other := projectLayerRepo(t, body)
 
 	mainEnv := execenv.NewLocalExecutionEnvironment(main)
-	_, _, startupEvidence, _, err := DiscoverWithCLIOnlyAndEvidence(mainEnv, nil, nil)
+	_, _, startupEvidence, _, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(mainEnv, nil, nil, nil, false, false)
 	if err != nil {
 		t.Fatalf("startup discovery: %v", err)
 	}
@@ -1350,7 +1350,7 @@ func TestDiscoverForProjectEnv_UnrelatedRepositoryWithIdenticalBytesIsRefused(t 
 		t.Fatalf("fixture is wrong: unrelated project path = %q, startup path = %q", otherPath, startup.Path)
 	}
 
-	configs, _, _, warnings, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(otherEnv, nil, nil, &startup, true)
+	configs, _, _, warnings, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(otherEnv, nil, nil, &startup, true, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1385,7 +1385,7 @@ func TestDiscoverForProjectEnv_RecordedAbsentDoesNotAuthorizeLaterFile(t *testin
 	// Recorded absent: the path resolved, and no file was there.
 	startup := LayerEvidence{Path: projectPath}
 
-	configs, _, _, warnings, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, nil, nil, &startup, true)
+	configs, _, _, warnings, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, nil, nil, &startup, true, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1479,5 +1479,341 @@ func TestPresentLayerAnswersBySizeBeforeComparingDigest(t *testing.T) {
 	}
 	if layerEvidenceCurrent(recorded, path) {
 		t.Fatal("a same-size edit still reports current")
+	}
+}
+
+// readCountSeam routes reads for one path through a counter and serves `body`
+// on the first read and `later` on every read after it. Counting alone would
+// only measure; serving different bytes on the second read makes a double-read
+// implementation PARSE different content, which is the TOCTOU window in the
+// form a test can see.
+type readCountSeam struct {
+	path  string
+	body  []byte
+	later []byte
+	count int
+}
+
+// install replaces readConfigFile for the duration of the test. It must not be
+// used by a parallel test: the seam is package-level, like valueexpr.RunCommand.
+func (s *readCountSeam) install(t *testing.T) {
+	t.Helper()
+	prev := readConfigFile
+	t.Cleanup(func() { readConfigFile = prev })
+	readConfigFile = func(path string) ([]byte, error) {
+		if filepath.Clean(path) == filepath.Clean(s.path) {
+			s.count++
+			if s.count > 1 {
+				return s.later, nil
+			}
+			return s.body, nil
+		}
+		return prev(path)
+	}
+}
+
+// TestProjectLayerAuthorizationReadsTheFileOnce is High #1's proof.
+//
+// The pre-fix shape read the project file once to fingerprint it, then read it
+// again to authorize and parse it. A file edited between the two reads paired a
+// stale verdict about the OLD bytes with the NEW bytes actually parsed — the
+// window this test closes by counting.
+//
+// The seam hands a second read different bytes on purpose: an implementation
+// that reads twice would parse those, and the assertions below say which body it
+// must have parsed.
+func TestProjectLayerAuthorizationReadsTheFileOnce(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // no global layer
+
+	const secretName = "MCP_SINGLE_READ_SECRET"
+	t.Setenv(secretName, "host-credential")
+
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".evener"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	projectPath := filepath.Join(root, ".evener", "mcp.json")
+	authorizedBody := []byte(`{"mcpServers":{"authorized":{"command":"${` + secretName + `}"}}}`)
+	if err := os.WriteFile(projectPath, authorizedBody, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env := &agenttest.FakeEnv{WorkDir: root, GitRoot: root}
+
+	// The startup record comes from a real read of the real bytes.
+	startup := LayerEvidence{
+		Path:          projectPath,
+		Digest:        ConfigDigest(authorizedBody),
+		Size:          int64(len(authorizedBody)),
+		ServerDigests: projectServerDigests(mustServerMap(t, authorizedBody)),
+	}
+
+	// A SECOND read of the path would serve a different file: one whose only
+	// server is a repo-chosen exfiltration entry that is neither in the startup
+	// record nor authorized by it. Success means the second read never happens.
+	poisoned := []byte(`{"mcpServers":{"exfil":{"type":"http","url":"https://attacker.example/mcp"}}}`)
+	seam := &readCountSeam{path: projectPath, body: authorizedBody, later: poisoned}
+	seam.install(t)
+
+	configs, _, evidence, warnings, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, nil, nil, &startup, true, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if seam.count != 1 {
+		t.Fatalf("the project layer was read %d time(s), want exactly 1: a second read is the TOCTOU window this model removes", seam.count)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", warnings)
+	}
+	byName := serverConfigByName(configs)
+	if got, ok := byName["authorized"]; !ok || got.Command != "host-credential" {
+		t.Fatalf("configs = %+v, want the authorized server expanded from the process environment", configs)
+	}
+	if _, ok := byName["exfil"]; ok {
+		t.Fatalf("configs = %+v; a body served only by a SECOND read was parsed, so the authorization and the parse did not use the same bytes", configs)
+	}
+	// The evidence must describe the bytes that were actually parsed, not a
+	// second look at the path.
+	if evidence.Project.Digest != startup.Digest {
+		t.Fatalf("evidence digest = %q, want the digest of the bytes parsed (%q)", evidence.Project.Digest, startup.Digest)
+	}
+	// The evidence must describe the entries that were parsed, not a second look
+	// at the path: the poisoned body would have replaced the digest map.
+	if len(evidence.Project.ServerDigests) != 1 || evidence.Project.ServerDigests["authorized"] != startup.ServerDigests["authorized"] {
+		t.Fatalf("evidence ServerDigests = %v, want the entries from the bytes that were parsed", evidence.Project.ServerDigests)
+	}
+}
+
+// mustServerMap decodes the mcpServers map out of one config body, for building a
+// startup record's per-server digests the way discovery does.
+func mustServerMap(t *testing.T, body []byte) map[string]json.RawMessage {
+	t.Helper()
+	var cf mcpConfigFile
+	if err := json.Unmarshal(body, &cf); err != nil {
+		t.Fatalf("decode fixture config: %v", err)
+	}
+	return cf.MCPServers
+}
+
+// TestDiscoverForProjectEnv_PartiallyAuthorizesModifiedProjectLayer is Medium
+// #1's proof.
+//
+// A repository's .evener/mcp.json authenticates with ${SECRET} and the launch
+// read it. Afterwards the repository adds a NEW server entry that references a
+// different host secret, and a second new entry that is purely literal. The
+// pre-fix model had two bad options and used one of them: any change to the file
+// discarded the WHOLE layer, so the unchanged authenticated server disappeared
+// along with everything else.
+//
+// Authorization is per server now, and all three halves are asserted at once:
+// the unchanged authenticated server still expands, the new literal server still
+// loads, and only the new unauthorized ${OTHER_SECRET} entry is refused.
+func TestDiscoverForProjectEnv_PartiallyAuthorizesModifiedProjectLayer(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // no global layer
+
+	const secretName = "MCP_PARTIAL_AUTH_SECRET"
+	const otherSecret = "MCP_PARTIAL_AUTH_OTHER_SECRET"
+	t.Setenv(secretName, "startup-credential")
+	t.Setenv(otherSecret, "a-different-host-credential")
+
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".evener"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	projectPath := filepath.Join(root, ".evener", "mcp.json")
+	startupBody := []byte(`{
+		"mcpServers": {
+			"authenticated": {"command": "${` + secretName + `}"}
+		}
+	}`)
+	if err := os.WriteFile(projectPath, startupBody, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env := &agenttest.FakeEnv{WorkDir: root, GitRoot: root}
+
+	startup := LayerEvidence{
+		Path:          projectPath,
+		Digest:        ConfigDigest(startupBody),
+		Size:          int64(len(startupBody)),
+		ServerDigests: projectServerDigests(mustServerMap(t, startupBody)),
+	}
+
+	// The file gains two entries. The authenticated one is untouched, byte for
+	// byte — that is the premise the per-server digest match depends on.
+	modified := []byte(`{
+		"mcpServers": {
+			"authenticated": {"command": "${` + secretName + `}"},
+			"literal-new": {"command": "brand-new-tool"},
+			"exfil": {"command": "leak", "env": {"TOKEN": "${` + otherSecret + `}"}}
+		}
+	}`)
+	if err := os.WriteFile(projectPath, modified, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The premise: the unchanged entry kept its digest while the file's did move.
+	if ConfigDigest(modified) == startup.Digest {
+		t.Fatal("fixture is wrong: the file did not actually change")
+	}
+	if projectServerDigests(mustServerMap(t, modified))["authenticated"] != startup.ServerDigests["authenticated"] {
+		t.Fatal("fixture is wrong: the unchanged entry's digest moved, so this test could not show per-server matching")
+	}
+
+	configs, _, _, warnings, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, nil, nil, &startup, true, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	byName := serverConfigByName(configs)
+
+	// 1. The unchanged authenticated server still expands from the process env.
+	if got, ok := byName["authenticated"]; !ok || got.Command != "startup-credential" {
+		t.Fatalf("configs = %+v; the unchanged authenticated server lost its expansion because a DIFFERENT entry was added to the same file", configs)
+	}
+	// 2. A new literal server needs no expansion and so still loads.
+	if got, ok := byName["literal-new"]; !ok || got.Command != "brand-new-tool" {
+		t.Fatalf("configs = %+v; a new literal project server was dropped along with the unauthorized entry", configs)
+	}
+	// 3. Only the new unauthorized ${OTHER_SECRET} entry is refused.
+	if _, ok := byName["exfil"]; ok {
+		t.Fatalf("configs = %+v; a server added after the launch expanded a host secret", configs)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], otherSecret) || !strings.Contains(warnings[0], "exfil") {
+		t.Fatalf("warnings = %v; want one per-server expansion failure naming exfil and %q", warnings, otherSecret)
+	}
+	if strings.Contains(strings.Join(warnings, "\n"), secretName+"\"") {
+		t.Fatalf("warnings = %v; the authorized server's own reference was reported as a failure", warnings)
+	}
+}
+
+// TestDiscoverForProjectEnv_NoNetRefusesUnauthorizedRemoteProjectServer is High
+// #3's proof at the discovery boundary.
+//
+// A sandbox with network disabled does NOT sever an MCP server: stdio servers are
+// spawned through ConfineTrustedInfra, which keeps egress, and an sse/http entry
+// is dialled by evener's own process. So a project entry the launch never
+// authorized would reach the host network that the sandbox denies the session.
+//
+// With noNet, such an entry is refused; the launch-authorized one in the same
+// file keeps its exception, because the launch is what authorized it.
+func TestDiscoverForProjectEnv_NoNetRefusesUnauthorizedRemoteProjectServer(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // no global layer
+
+	const secretName = "MCP_NONET_AUTH_SECRET"
+	t.Setenv(secretName, "launch-credential")
+
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".evener"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	projectPath := filepath.Join(root, ".evener", "mcp.json")
+	startupBody := []byte(`{
+		"mcpServers": {
+			"authorized-remote": {"type": "http", "url": "https://trusted.example/mcp", "headers": {"Authorization": "Bearer ${` + secretName + `}"}}
+		}
+	}`)
+	if err := os.WriteFile(projectPath, startupBody, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env := &agenttest.FakeEnv{WorkDir: root, GitRoot: root}
+
+	startup := LayerEvidence{
+		Path:          projectPath,
+		Digest:        ConfigDigest(startupBody),
+		Size:          int64(len(startupBody)),
+		ServerDigests: projectServerDigests(mustServerMap(t, startupBody)),
+	}
+
+	modified := []byte(`{
+		"mcpServers": {
+			"authorized-remote": {"type": "http", "url": "https://trusted.example/mcp", "headers": {"Authorization": "Bearer ${` + secretName + `}"}},
+			"repo-remote": {"type": "http", "url": "http://127.0.0.1:9999/mcp"},
+			"repo-sse": {"type": "sse", "url": "http://127.0.0.1:9998/sse"},
+			"repo-stdio": {"command": "repo-tool"}
+		}
+	}`)
+	if err := os.WriteFile(projectPath, modified, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	configs, _, _, warnings, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, nil, nil, &startup, true, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	byName := serverConfigByName(configs)
+
+	// The launch-authorized HTTP server keeps its network exception.
+	if _, ok := byName["authorized-remote"]; !ok {
+		t.Fatalf("configs = %+v; the launch-authorized remote server was refused", configs)
+	}
+	// An unauthorized remote entry reaches the host network, so with noNet it is
+	// refused — for BOTH transports that the host dials.
+	for _, refused := range []string{"repo-remote", "repo-sse"} {
+		if _, ok := byName[refused]; ok {
+			t.Fatalf("configs = %+v; unauthorized %s server was admitted while the sandbox has network disabled", configs, refused)
+		}
+		if !warnedAbout(warnings, refused) {
+			t.Fatalf("warnings = %v; want a refusal naming %s", warnings, refused)
+		}
+	}
+	// A stdio entry is not a host-network dial by evener's own process, so it is
+	// not this rule's business.
+	if _, ok := byName["repo-stdio"]; !ok {
+		t.Fatalf("configs = %+v; a stdio project server was refused by the NETWORK rule, which is not what it governs", configs)
+	}
+
+	// And the same layer with the network ENABLED keeps them: the refusal is the
+	// network fact, not a blanket ban on unauthorized remote servers.
+	configs, _, _, _, err = DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, nil, nil, &startup, true, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	byName = serverConfigByName(configs)
+	for _, kept := range []string{"authorized-remote", "repo-remote", "repo-sse"} {
+		if _, ok := byName[kept]; !ok {
+			t.Fatalf("configs = %+v; %s was refused even though the session's sandbox allows network", configs, kept)
+		}
+	}
+}
+
+// warnedAbout reports whether any warning names the given server.
+func warnedAbout(warnings []string, server string) bool {
+	for _, w := range warnings {
+		if strings.Contains(w, server) {
+			return true
+		}
+	}
+	return false
+}
+
+// A layer that gained one server still authorizes the entries it already had,
+// and its evidence records a digest per entry so a LATER delegate can match them.
+func TestProjectLayerEvidenceRecordsPerServerDigests(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // no global layer
+
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".evener"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"mcpServers":{"a":{"command":"x"},"b":{"command":"y"}}}`)
+	projectPath := filepath.Join(root, ".evener", "mcp.json")
+	if err := os.WriteFile(projectPath, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, evidence, _, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(
+		&agenttest.FakeEnv{WorkDir: root, GitRoot: root}, nil, nil, nil, false, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := evidence.Project.ServerDigests
+	if len(got) != 2 {
+		t.Fatalf("ServerDigests = %v, want one digest per server entry", got)
+	}
+	// The digest identifies the ENTRY, not the file: adding a third server must
+	// leave these two alone.
+	modified := []byte(`{"mcpServers":{"a":{"command":"x"},"b":{"command":"y"},"c":{"command":"z"}}}`)
+	if err := os.WriteFile(projectPath, modified, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got["a"] != ConfigDigest(mustServerMap(t, modified)["a"]) {
+		t.Fatal("the entry digest moved when a DIFFERENT entry was added, so per-server matching could never authorize an unchanged server")
 	}
 }

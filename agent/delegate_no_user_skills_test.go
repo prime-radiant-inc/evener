@@ -33,7 +33,7 @@ func TestNoUserSkillsSuppressionKeepsCLIExclusionWorking(t *testing.T) {
 		`{"mcpServers":{"svc":{"command":"/bin/a"}}}`, 0o644)
 	env := execenv.NewLocalExecutionEnvironment(root)
 
-	_, _, evidence, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidence(env, nil, nil)
+	_, _, evidence, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, nil, nil, nil, false, false)
 	if err != nil {
 		t.Fatalf("discover: %v", err)
 	}

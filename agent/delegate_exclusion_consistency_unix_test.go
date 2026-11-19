@@ -50,7 +50,7 @@ func TestCLIClassificationEvidenceTreatsAnUnreadableLayerAsUnknown(t *testing.T)
 		t.Fatal(err)
 	}
 	env := execenv.NewLocalExecutionEnvironment(root)
-	_, _, evidence, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidence(env, nil, nil)
+	_, _, evidence, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, nil, nil, nil, false, false)
 	if err != nil {
 		t.Fatalf("discover: %v", err)
 	}
