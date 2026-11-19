@@ -92,6 +92,8 @@ final output is empty, recovery keeps streamed completions in order, including
 calls whose ID came from an item ID. Live decoding and API-log recomputation
 apply the same rule.
 
+Responses replay preserves assistant item order and groups same-phase text across omitted parts.
+
 ## Image recovery
 
 The [Chat Completions adapter](../llm/providers/chatcompletions/image_recovery.go)
