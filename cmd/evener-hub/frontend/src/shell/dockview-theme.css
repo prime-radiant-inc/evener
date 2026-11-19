@@ -150,3 +150,20 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* Keep horizontal tabs bounded to the strip width with a truncating title and
+ * non-shrinking close button so a narrow inspector group never clips its close
+ * control past the group edge. */
+.dockview-theme-evener .dv-tabs-container.dv-horizontal .dv-tab {
+  max-width: calc(100% - var(--space-1));
+}
+
+.dockview-theme-evener .dv-tab .dv-default-tab .dv-default-tab-content {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dockview-theme-evener .dv-tab .dv-default-tab .dv-default-tab-action {
+  flex-shrink: 0;
+}

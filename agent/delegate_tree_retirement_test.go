@@ -1675,7 +1675,7 @@ func TestRetirementDelegateAttentionSourceRefusal(t *testing.T) {
 	}
 	finish := retirementPauseColdClaim(t, c, schema.SessionMetaPath(root.stateDir, cold.ChildSessionID))
 	defer finish()
-	added, blocker, _, emit, err := tree.tryOpenDelegateAttention(d.DelegateID, attentionID)
+	added, blocker, _, emit, _, err := tree.tryOpenDelegateAttention(d.DelegateID, attentionID)
 	if !errors.Is(err, ErrRetirementUnavailable) || added || blocker != nil || emit {
 		t.Fatalf("populated attention entry not refused: added=%v emit=%v %v", added, emit, err)
 	}

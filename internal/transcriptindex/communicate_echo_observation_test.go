@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/llm"
 )
 
 func TestEchoingCommunicateRetainsTerminalEvidence(t *testing.T) {
@@ -18,6 +20,9 @@ func TestEchoingCommunicateRetainsTerminalEvidence(t *testing.T) {
 			t.Run(outcome+map[bool]string{false: "/fresh", true: "/reopened"}[reopen], func(t *testing.T) {
 				fx := newFormatFixture(t, "communicate echoes")
 				fx.lines = fx.lines[:4]
+				assistant := &fx.lines[1].turn.Message
+				assistant.Content = slices.Insert(assistant.Content, 1, llm.ContentPart{Kind: llm.ContentThinking,
+					Thinking: &llm.ThinkingData{ResponsesSummaryParts: []llm.ResponsesReasoningPart{{Type: "summary_text"}}}})
 				comm := &fx.lines[2].turn
 				comm.CausalKnown = true
 				comm.Causal = provenance.WithWatch(nil, "watch-A", "generation-A", "delivery-A", "source-A", "job-A")

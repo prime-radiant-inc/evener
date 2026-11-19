@@ -85,12 +85,24 @@
   position: fixed;
   z-index: var(--z-menu);
   min-width: 180px;
+  /* An out-of-flow box with `width: auto` shrink-to-fits into whatever space
+   * its own offsets leave in the viewport, so the box measured at placement
+   * depends on the position placement is deciding. `max-content` asks for the
+   * label's own single-line width instead, which makes the measured width mean
+   * "capped or not" - the widget wraps labels when the cap is what decided the
+   * width, and must not wrap them when the popup's own content did. */
+  width: max-content;
   max-block-size: calc(100dvh - (2 * var(--space-2)));
   overflow-y: auto;
+  /* A glyph wider than the popup's own cap - a zoomed-in viewport leaves a few
+   * pixels of text room even after the insets yield - cannot wrap, so the
+   * popup scrolls horizontally to it rather than painting it outside its box,
+   * where the vertical reveal cannot reach it. */
+  overflow-x: auto;
   margin: 0;
   /* Items sit inset from the popup's edge and round their own wash, so no
    * square hover corner meets the popup's rounded one. */
-  padding: var(--space-1);
+  padding: var(--space-1) var(--menu-inline-pad, var(--space-1));
   list-style: none;
   background: var(--surface-2);
   border-radius: var(--radius-pane);
@@ -98,7 +110,14 @@
 }
 
 .item {
-  padding: var(--space-2) var(--space-3);
+  /* A zoomed-in viewport can leave a cap narrower than the two insets put
+   * together - 52px of viewport caps the popup at 36, and the popup's own 4px
+   * and the row's 12px leave 4px for a glyph, which cannot wrap. The widget
+   * writes these two properties from the VISIBLE WIDTH alone, so the insets
+   * yield there without the popup's own measurement ever deciding what it
+   * measures - a class that changed the padding would make the width it is
+   * keyed on flip every pass. */
+  padding: var(--space-2) var(--menu-row-inline-pad, var(--space-3));
   border-radius: var(--radius-control);
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
@@ -106,6 +125,17 @@
   cursor: pointer;
   white-space: nowrap;
   transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
+}
+
+/* A label wraps only when the popup was capped to the visible viewport,
+ * the one case where keeping it on one line would push it out of the scrollport
+ * instead of shortening the popup. The widget writes that class itself, so
+ * every other menu keeps the single-line rows that make a menu scannable. A
+ * wrapped label makes the row taller, which the phone tap floor below already
+ * permits: it is a MIN-height, not a height. */
+.popupNarrow .item {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .item:hover {
@@ -151,9 +181,14 @@
 /* Group rule between item clusters (SessionMenu's panes/organize/
  * destructive groups). --edge matches .popup's own ring so the rule reads as
  * the popup's own hairline, not a new color; the negative inline margin
- * carries it across the popup's inset to both edges. */
+ * carries it across the popup's inset to both edges.
+ *
+ * The margin follows the popup's CURRENT inset rather than the roomy one, so a
+ * capped popup whose insets have yielded keeps the rule flush with its edges
+ * instead of hanging 4px past them - which is a horizontal scrollbar on a menu
+ * whose labels all fit. */
 .separator {
-  margin: var(--space-1) calc(-1 * var(--space-1));
+  margin: var(--space-1) calc(-1 * var(--menu-inline-pad, var(--space-1)));
   border-top: 1px solid var(--edge);
   list-style: none;
 }

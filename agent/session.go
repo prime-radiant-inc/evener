@@ -549,6 +549,19 @@ type Session struct {
 
 	reg *tool.Registry
 
+	// closeDrainWarnings holds the lost-result warnings a close drain settled
+	// whose bounded publication expired before they reached the stream
+	// (session_events.go). The receipts behind them are already abandoned, so
+	// these cannot be re-settled: the close gets one retry on the budget left
+	// after the worktree removals, and this is the only place they survive.
+	closeDrainWarnings atomic.Pointer[[]events.WarningData]
+	// closeDrainHooksWG tracks the Notification hooks a close drain dispatched
+	// asynchronously on the live cascade (session_events.go). The hook's command
+	// may run for as long as its own timeout, so it must not hold the worktree
+	// removals that follow the publication; Close joins it here after those
+	// removals and before the retries and teardown it can still publish through.
+	closeDrainHooksWG sync.WaitGroup
+
 	steeringQueue []steeringMessage
 	// steeringInFlight holds the client steers popSteeringHead has taken out of
 	// steeringQueue whose incorporation the store has not yet recorded
@@ -1346,15 +1359,16 @@ type Session struct {
 	// attentionMu.
 	attentionAcceptedCause *provenance.Causal
 	// attentionAutomaticDriveHolds names pending rows a user's stop quieted
-	// from automatic drives: the stopped generation's commit left the
-	// delegate armed for every other pending row, and that stale armed wake
-	// drives without a re-arm, so the drive's own reads keep a held row out
-	// of its claim and its riders while the rows the stop never touched
-	// still present. Any successful arm releases the holds — a wake from a
-	// new event may present the row — and the map is in-memory on purpose:
-	// a restart reconciles wakes from the durable fold, which cannot hold
-	// a quiet. Guarded by attentionMu.
-	attentionAutomaticDriveHolds map[string]struct{}
+	// from automatic drives, each stamped with the settled generation whose
+	// quiet it carries: the stopped generation's commit left the delegate
+	// armed for every other pending row, and that stale armed wake drives
+	// without a re-arm, so the drive's own reads keep a held row out of its
+	// claim and its riders while the rows the stop never touched still
+	// present. A wake releases only the holds at or below the generation it
+	// supersedes, so a stop that settles after an arm keeps its quiet. The
+	// map is in-memory on purpose: a restart reconciles wakes from the
+	// durable fold, which cannot hold a quiet. Guarded by attentionMu.
+	attentionAutomaticDriveHolds map[string]uint64
 
 	// turnNameRetryMu guards turnNameRetry alone. The paced wake it schedules
 	// runs while the session goroutine is mid-stand-down, so it must not queue
@@ -3002,6 +3016,21 @@ func (s *Session) appendPairedTurnVia(kind schema.TurnKind, live, persisted llm.
 // only when a tool exposes explicitly private evidence; every other caller
 // passes the same turn twice. It reports the entry's record.
 func (s *Session) recordTurn(live, persisted schema.Turn) transcript.Record {
+	return s.recordTurnOn(noBound, func(w events.WarningData) { s.emit(w) }, live, persisted)
+}
+
+// recordTurnOn is recordTurn with the sink a recording failure is reported on.
+// A hook completion recorded on a close publication bound passes a sink that
+// publishes on that bound AND cannot redispatch the hook: the failure is an
+// EventWarning, and the ordinary warning path fires the Notification hook, so a
+// writer that keeps refusing would dispatch that hook again on every completion
+// it could not record. Diagnosis, not a fresh dispatch.
+//
+// bound is the publication bound the caller's record runs under, nil on the
+// ordinary path. It reaches the fail-closed announcement too: a poisoned writer
+// latches a refusal, and announcing it on the ordinary path would hold a full
+// authoritative buffer until the whole close cascade expired.
+func (s *Session) recordTurnOn(bound context.Context, warn func(events.WarningData), live, persisted schema.Turn) transcript.Record {
 	live.SkillState = live.SkillState.Clone()
 	persisted.SkillState = persisted.SkillState.Clone()
 	s.attentionMu.Lock()
@@ -3028,9 +3057,9 @@ func (s *Session) recordTurn(live, persisted schema.Turn) transcript.Record {
 	}
 	s.attentionMu.Unlock()
 	if err != nil {
-		s.emit(events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		warn(events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
-	s.surfaceTranscriptWarnings()
+	s.surfaceTranscriptWarningsOn(bound, warn)
 	return rec
 }
 
@@ -3205,6 +3234,19 @@ func (s *Session) drainTranscriptWarnings(sink func(events.WarningData)) {
 func (s *Session) surfaceTranscriptWarnings() {
 	s.drainTranscriptWarnings(func(w events.WarningData) { s.emit(w) })
 	s.announceFailClosed()
+}
+
+// surfaceTranscriptWarningsOn is surfaceTranscriptWarnings for a caller that owns
+// the sink its diagnostics must reach.
+//
+// A poisoned transcript retains a diagnostic for every append it refused, so a
+// hook completion recorded on a close publication bound would publish a burst of
+// warnings -- and the ordinary warning path fires the Notification hook for each
+// of them, re-entering the dispatcher whose own write just failed. The sink the
+// caller supplied is the diagnostic path, which cannot do that.
+func (s *Session) surfaceTranscriptWarningsOn(bound context.Context, warn func(events.WarningData)) {
+	s.drainTranscriptWarnings(warn)
+	s.announceFailClosedOn(bound)
 }
 
 func (s *Session) closeAttachedTranscript() error {

@@ -264,7 +264,9 @@ func (s *Session) reopenFailedDelegateAttention(sub *subagent, attentionID strin
 	if closed {
 		return
 	}
-	if _, err := sub.sess.reopenConsumedDelegateAttention(attentionID); err != nil {
+	// A drive retry reopens a row whose presentation failed with no user stop
+	// behind it, so nothing quiets the reopened row: it presents at once.
+	if _, err := sub.sess.reopenConsumedDelegateAttention(attentionID, 0); err != nil {
 		s.emit(warningDataFromError("reopen unpresented delegate attention", err))
 	}
 }

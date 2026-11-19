@@ -11,7 +11,10 @@ import (
 	"primeradiant.com/evener/llm/registry"
 )
 
-const responsesRequestFingerprintPrefix = "cont-req-v2:"
+// responsesRequestFingerprintPrefix versions the request fingerprint. v3 marks the
+// plaintext reasoning replay cut-over, so a v2 anchor mismatches once and the
+// session resends full history. The prefix alone carries the version — no salt.
+const responsesRequestFingerprintPrefix = "cont-req-v3:"
 
 // ResponsesEndpointFamilyFor is spec §7.6: openai_codex on the Codex
 // transport, openai_public everywhere else.
@@ -25,8 +28,7 @@ func ResponsesEndpointFamilyFor(res registry.Resolved) ResponsesEndpointFamily {
 // ResponsesRequestFingerprint hashes a built Responses body minus the
 // fields that differ between a continuation request and its full-history
 // twin (spec §7.6): input, previous_response_id, conversation, stream, and
-// on the public family store. The v2 prefix marks the cut-over: v1 was
-// computed from the pre-registry builder.
+// on the public family store.
 func ResponsesRequestFingerprint(family ResponsesEndpointFamily, body map[string]any) (string, error) {
 	excluded := excludedFingerprintFields(family)
 	filtered := make(map[string]any, len(body))

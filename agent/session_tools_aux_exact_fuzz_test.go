@@ -263,7 +263,7 @@ func auxFindExact(t *testing.T) {
 	if err := os.WriteFile(bad, []byte("not-dir"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_ = collectCandidates([]string{bad}, good)
+	_, _ = collectCandidates([]string{bad}, good)
 	if buckets, scope, _ := findBuckets(good, scopeAllProjects); len(buckets) != 1 || scope != scopeCurrentProject {
 		t.Fatalf("flat buckets = %#v %q", buckets, scope)
 	}
