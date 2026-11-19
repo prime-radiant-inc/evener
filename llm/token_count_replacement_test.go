@@ -139,21 +139,18 @@ func TestAGoneToolsOptionRestoresTheCatalogPrice(t *testing.T) {
 	}
 }
 
-// providerToolList is a tool array in the wire shape a caller supplies through
-// ProviderOptions: function entries with no Request.Tools catalog behind them.
-func providerToolList(n int) []map[string]any {
-	out := make([]map[string]any, n)
-	for i := range out {
-		out[i] = map[string]any{
-			"type": "function",
-			"function": map[string]any{
-				"name":        "probe_" + string(rune('a'+i%26)) + string(rune('0'+i/26)),
-				"description": "a tool the caller hands over through the protocol's options",
-				"parameters":  map[string]any{"type": "object", "properties": map[string]any{}},
-			},
+// providerToolDefinitions is the tool set the replacement fixtures are rendered
+// from, so a wire entry and a catalog definition describe the same tool.
+func providerToolDefinitions(n int) []ToolDefinition {
+	defs := make([]ToolDefinition, n)
+	for i := range defs {
+		defs[i] = ToolDefinition{
+			Name:        "probe_" + string(rune('a'+i%26)) + string(rune('0'+i/26)),
+			Description: "a tool the caller hands over through the protocol's options",
+			Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
 		}
 	}
-	return out
+	return defs
 }
 
 // A tools value in ProviderOptions is the whole tool list when the request
@@ -165,8 +162,11 @@ func providerToolList(n int) []map[string]any {
 // alone. Pricing the empty catalog charges nothing for tools the wire carries,
 // and a cap below their cost admits a request over budget.
 //
-// The control is the zero charge a request that sends no tools keeps: a count
-// stamped on an empty catalog with no such record bills nothing.
+// The price is the catalog measurement of the same tools, which is what makes
+// the two paths that supply one wire array agree (see
+// replacementToolListJSONBytes). The control is the zero charge a request that
+// sends no tools keeps: a count stamped on an empty catalog with no such record
+// bills nothing.
 func TestAProviderToolsOptionPricesARequestWithNoCatalog(t *testing.T) {
 	t.Parallel()
 	for _, protocol := range []string{registry.ProtocolOpenAIChat, registry.ProtocolOpenAIResponses} {
@@ -176,13 +176,11 @@ func TestAProviderToolsOptionPricesARequestWithNoCatalog(t *testing.T) {
 			if protocol == registry.ProtocolOpenAIResponses {
 				res = responsesRowOn(false)
 			}
-			replacement := providerToolList(24)
-			measured, err := json.Marshal(replacement)
-			if err != nil {
-				t.Fatalf("measure the replacement: %v", err)
-			}
-			if len(measured) < 4 {
-				t.Fatalf("fixture does not bill anything: %d bytes", len(measured))
+			defs := providerToolDefinitions(24)
+			replacement := replacementList(defs, protocol)
+			measured := ToolsJSONBytes(defs)
+			if measured < 4 {
+				t.Fatalf("fixture does not bill anything: %d bytes", measured)
 			}
 			req := Request{
 				Provider: "emitted-price",
@@ -193,9 +191,9 @@ func TestAProviderToolsOptionPricesARequestWithNoCatalog(t *testing.T) {
 				},
 			}
 			priced := priceEmittedToolSchemas(req, res)
-			if priced.ToolsJSONBytes != len(measured) {
+			if priced.ToolsJSONBytes != measured {
 				t.Fatalf("priced count = %d, want the replacement's %d: the option is the only tool list this "+
-					"request sends", priced.ToolsJSONBytes, len(measured))
+					"request sends", priced.ToolsJSONBytes, measured)
 			}
 
 			// The local reading bills that price. A cap between the reading of a
@@ -210,10 +208,10 @@ func TestAProviderToolsOptionPricesARequestWithNoCatalog(t *testing.T) {
 			}
 			limit := capBetweenPrices(t, lower, upper)
 			c, _, bodies := emittedPriceRoute(t, limit, protocol, false)
-			_, err = c.Complete(context.Background(), req)
+			_, err := c.Complete(context.Background(), req)
 			if _, ok := errors.AsType[*ContextBudgetError](err); !ok {
 				t.Fatalf("error = %v, want *ContextBudgetError: the request dispatches %d bytes of tools under a cap "+
-					"of %d, and %d request(s) reached the wire", err, len(measured), limit, len(bodies()))
+					"of %d, and %d request(s) reached the wire", err, measured, limit, len(bodies()))
 			}
 			if got := len(bodies()); got != 0 {
 				t.Fatalf("requests on the wire = %d, want 0: a blocked request must not dispatch", got)
@@ -237,7 +235,7 @@ func TestAProviderToolsOptionPricesARequestWithNoCatalog(t *testing.T) {
 			// the zero charge a request that sends no tools keeps.
 			stamped := Request{
 				Provider: req.Provider, Model: req.Model, Messages: req.Messages,
-				ToolsJSONBytes: len(measured),
+				ToolsJSONBytes: measured,
 			}
 			if got, want := EstimateInputTokensForResolved(res, stamped).Tokens, lower; got != want {
 				t.Fatalf("reading for an empty catalog with a stamp = %d, want the no-tools reading %d", got, want)
@@ -256,25 +254,26 @@ func TestAProviderToolsOptionPricesARequestWithNoCatalog(t *testing.T) {
 // the local CountInputTokens fallback reports the inflated count.
 //
 // The route without the constant is the control: there the option is the wire
-// list, and its price stands.
+// list, and its price stands. Both lists are measured the way a catalog of the
+// same tools is, so the comparison is between the two routes' wire lists rather
+// than between two spellings of one.
 func TestATransportToolsConstantIsTheListThatIsPriced(t *testing.T) {
 	t.Parallel()
 	for _, protocol := range []string{registry.ProtocolOpenAIChat, registry.ProtocolOpenAIResponses} {
 		t.Run(protocol, func(t *testing.T) {
 			t.Parallel()
-			pinned := providerToolList(2)
-			large := providerToolList(24)
+			pinnedDefs := providerToolDefinitions(2)
+			largeDefs := providerToolDefinitions(24)
+			pinned := replacementList(pinnedDefs, protocol)
+			large := replacementList(largeDefs, protocol)
 			pinnedJSON, err := json.Marshal(pinned)
 			if err != nil {
 				t.Fatalf("measure the pinned list: %v", err)
 			}
-			largeJSON, err := json.Marshal(large)
-			if err != nil {
-				t.Fatalf("measure the option's list: %v", err)
-			}
-			if len(pinnedJSON) == 0 || len(largeJSON) <= len(pinnedJSON) {
+			pinnedBytes, largeBytes := ToolsJSONBytes(pinnedDefs), ToolsJSONBytes(largeDefs)
+			if pinnedBytes == 0 || largeBytes <= pinnedBytes {
 				t.Fatalf("fixture does not separate the two prices: pinned=%d option=%d bytes",
-					len(pinnedJSON), len(largeJSON))
+					pinnedBytes, largeBytes)
 			}
 
 			res := chatRowOn(false)
@@ -292,9 +291,9 @@ func TestATransportToolsConstantIsTheListThatIsPriced(t *testing.T) {
 			}
 
 			priced := priceEmittedToolSchemas(req, res)
-			if priced.ToolsJSONBytes != len(pinnedJSON) {
+			if priced.ToolsJSONBytes != pinnedBytes {
 				t.Fatalf("priced count = %d, want the transport's %d: the constant runs after the option, so the "+
-					"option's %d bytes never reach the wire", priced.ToolsJSONBytes, len(pinnedJSON), len(largeJSON))
+					"option's %d bytes never reach the wire", priced.ToolsJSONBytes, pinnedBytes, largeBytes)
 			}
 
 			// The option's own price, taken on the route that does not pin a
@@ -303,8 +302,8 @@ func TestATransportToolsConstantIsTheListThatIsPriced(t *testing.T) {
 			// option.
 			unpinned := res
 			unpinned.Transport = registry.Transport{}
-			if got := priceEmittedToolSchemas(req, unpinned).ToolsJSONBytes; got != len(largeJSON) {
-				t.Fatalf("route without the constant priced the option at %d bytes, want %d", got, len(largeJSON))
+			if got := priceEmittedToolSchemas(req, unpinned).ToolsJSONBytes; got != largeBytes {
+				t.Fatalf("route without the constant priced the option at %d bytes, want %d", got, largeBytes)
 			}
 
 			without := Request{Provider: req.Provider, Model: req.Model, Messages: req.Messages}
@@ -315,7 +314,7 @@ func TestATransportToolsConstantIsTheListThatIsPriced(t *testing.T) {
 			c, _, bodies := emittedPriceRouteWithTransportBody(t, limit, protocol, false, map[string]any{"tools": pinned})
 			if _, err := c.Complete(context.Background(), req); err != nil {
 				t.Fatalf("Complete under a cap of %d: %v: the wire list costs %d bytes and the option's costs %d, "+
-					"so this request fits", limit, err, len(pinnedJSON), len(largeJSON))
+					"so this request fits", limit, err, pinnedBytes, largeBytes)
 			}
 			got := bodies()
 			if len(got) != 1 {
@@ -336,7 +335,7 @@ func TestATransportToolsConstantIsTheListThatIsPriced(t *testing.T) {
 			st, err := c.Stream(context.Background(), req)
 			if err != nil {
 				t.Fatalf("Stream under a cap of %d: %v: the wire list costs %d bytes and the option's costs %d",
-					limit, err, len(pinnedJSON), len(largeJSON))
+					limit, err, pinnedBytes, largeBytes)
 			}
 			// The wiring is what this assertion is about, not the decoding: the
 			// shared server answers JSON rather than SSE, so the stream is
@@ -354,7 +353,7 @@ func TestATransportToolsConstantIsTheListThatIsPriced(t *testing.T) {
 			}
 			if counted.Tokens >= upper {
 				t.Fatalf("CountInputTokens = %d, want less than the option's reading %d: the request sends %d bytes "+
-					"of tools, not %d", counted.Tokens, upper, len(pinnedJSON), len(largeJSON))
+					"of tools, not %d", counted.Tokens, upper, pinnedBytes, largeBytes)
 			}
 
 			// A request that also carries a catalog is priced the same way: the
@@ -365,9 +364,9 @@ func TestATransportToolsConstantIsTheListThatIsPriced(t *testing.T) {
 				Provider: req.Provider, Model: req.Model, Messages: req.Messages,
 				Tools: catalog, ToolsJSONBytes: ToolsJSONBytes(catalog),
 			}, res)
-			if withCatalog.ToolsJSONBytes != len(pinnedJSON) {
+			if withCatalog.ToolsJSONBytes != pinnedBytes {
 				t.Fatalf("priced count for a catalog under a transport constant = %d, want the constant's %d",
-					withCatalog.ToolsJSONBytes, len(pinnedJSON))
+					withCatalog.ToolsJSONBytes, pinnedBytes)
 			}
 		})
 	}

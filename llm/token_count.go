@@ -229,15 +229,18 @@ func priceEmittedToolSchemas(req Request, res registry.Resolved) Request {
 // catalog, and whether there is one: the row's transport body constant when it
 // pins tools, else the request's ProviderOptions value.
 //
-// The Chat Completions and Responses builders write the request's own tools and
-// then copy ProviderOptions over the body, so an explicit option is a list that
-// dispatches. The transport's body constants are applied after both
-// (protocolhttp.Prepare), and they override whatever stands at the same path, so
-// a row that pins tools replaces the option: the constant is the wire list, and
-// pricing the option charges bytes the request never sends — under an input cap
-// between the two prices that refuses a request which fits, and the local
-// reading reports the inflated count. The option is therefore read only when the
-// transport leaves tools alone.
+// Every builder whose protocol's options carry tools writes the request's own
+// tools and then copies ProviderOptions over the body: Chat Completions, the
+// standard Responses route, Anthropic (name, description, input_schema), and
+// Google (functionDeclarations). An explicit option is therefore a list that
+// dispatches on all four. The transport's body constants are applied after the
+// builder and after the option (protocolhttp.Prepare), and they override
+// whatever stands at the same path, so a row that pins tools replaces the
+// option: the constant is the wire list, and pricing the option charges bytes
+// the request never sends — under an input cap between the two prices that
+// refuses a request which fits, and the local reading reports the inflated
+// count. The option is therefore read only when the transport leaves tools
+// alone.
 //
 // The constant is read from the literal "tools" key, because that is the path
 // whose value is a tool list. A dotted path such as "tools.0" makes the body
@@ -245,10 +248,12 @@ func priceEmittedToolSchemas(req Request, res registry.Resolved) Request {
 //
 // A Codex Responses Lite route is excluded: its tools ride inside the input as
 // an additional_tools item, and a top-level tools value is not the catalog that
-// endpoint reads. The other protocols do not pass request options through to
-// their body at all.
+// endpoint reads.
 func providerToolsReplacement(req Request, res registry.Resolved) (any, bool) {
-	if res.Protocol != registry.ProtocolOpenAIChat && res.Protocol != registry.ProtocolOpenAIResponses {
+	switch res.Protocol {
+	case registry.ProtocolOpenAIChat, registry.ProtocolOpenAIResponses,
+		registry.ProtocolAnthropic, registry.ProtocolGoogle:
+	default:
 		return nil, false
 	}
 	if res.Protocol == registry.ProtocolOpenAIResponses && registry.BoolValue(res.Caps.ResponsesLite) {
@@ -266,21 +271,184 @@ func providerToolsReplacement(req Request, res registry.Resolved) (any, bool) {
 // catalog — a transport constant or a ProviderOptions option — recording the
 // catalog's own count as the baseline.
 //
-// The measurement is taken over the replacement as it will be encoded, which is
-// what the local estimate bills. The baseline stays the catalog's count so a
-// retarget to a route that does not read this protocol's options restores the
-// list that route actually sends, and the recorded emission keeps the
-// parameterless-schema delta off a list that is not a catalog of definitions.
+// The measurement normalizes the replacement to the representation ToolsJSONBytes
+// measures, so one outgoing tools array prices the same however the caller
+// supplied it (see replacementToolListJSONBytes). The baseline stays the
+// catalog's count so a retarget to a route that does not read this protocol's
+// options restores the list that route actually sends, and the recorded emission
+// keeps the parameterless-schema delta off a list that is not a catalog of
+// definitions.
 func priceReplacementToolList(req Request, res registry.Resolved, replacement any) Request {
 	baseline := req.toolCountBaseline()
-	measured, err := json.Marshal(replacement)
-	if err != nil {
+	measured := replacementToolListJSONBytes(replacement, res.Protocol)
+	if measured < 0 {
 		// The encoder rejects the replacement, so it has no wire form to price;
 		// the count the request arrived with stands, exactly as ToolsJSONBytes
 		// bills nothing for a list the encoder rejects.
 		return req
 	}
-	return req.withToolEmission(res, len(measured), baseline, true)
+	return req.withToolEmission(res, measured, baseline, true)
+}
+
+// replacementToolListJSONBytes returns the byte length a replacement tool list
+// is billed by: the count ToolsJSONBytes would report for the same tools
+// expressed as a catalog, or a negative value when the encoder rejects the
+// replacement.
+//
+// One outgoing tools array must have one price. The catalog path measures a
+// ToolDefinition list — name, description, parameters — while the wire entry
+// carries more: Chat nests those fields under a function key beside a type,
+// Responses states the type at the top level, Anthropic spells the schema
+// input_schema, and Google nests every declaration under functionDeclarations.
+// Charging a replacement for its wire spelling therefore prices the same array
+// higher than the catalog path prices it, and a cap between the two counts
+// rejects only the request that supplied its tools through the option. So a
+// function entry this repository's builders produce is normalized back to its
+// definition, and the list of them is measured once.
+//
+// A provider-native tool has no definition to normalize to: web_search,
+// computer_use, and google_search are objects the endpoint recognizes rather
+// than functions it calls. Those entries are kept as they are and counted by
+// their own encoded bytes, because the request dispatches exactly those bytes.
+//
+// Anything else — a value that is not a list of objects, an entry whose fields
+// this package does not model — is measured as it stands. The count is then
+// whatever the encoder says it is, which is the same tolerance ToolsJSONBytes
+// has for a list it cannot split.
+func replacementToolListJSONBytes(replacement any, protocol string) int {
+	items, ok := replacementToolItems(replacement, protocol)
+	if !ok {
+		return encodeJSONLength(replacement)
+	}
+	return encodeJSONLength(items)
+}
+
+// replacementToolItems returns what a replacement tool list is measured by: one
+// item per tool, each either a ToolDefinition normalized from a wire entry or
+// the entry itself when it names no function this package models.
+//
+// Google's entries group their declarations, so a group is flattened here: the
+// catalog the builder would have written from those declarations is a flat list,
+// and that is the list ToolsJSONBytes measures. A group that declares no
+// functions — google_search is one — stands in for the whole entry.
+func replacementToolItems(replacement any, protocol string) ([]any, bool) {
+	switch list := replacement.(type) {
+	case []any:
+		return replacementItemsOf(list, protocol)
+	case []map[string]any:
+		entries := make([]any, len(list))
+		for i := range list {
+			entries[i] = list[i]
+		}
+		return replacementItemsOf(entries, protocol)
+	default:
+		return nil, false
+	}
+}
+
+// replacementItemsOf normalizes each entry of a wire tools array.
+func replacementItemsOf(entries []any, protocol string) ([]any, bool) {
+	out := make([]any, 0, len(entries))
+	for _, entry := range entries {
+		declarations, grouped := googleFunctionDeclarations(entry, protocol)
+		if grouped {
+			out = append(out, declarations...)
+			continue
+		}
+		if def, ok := replacementToolDefinition(entry, protocol); ok {
+			out = append(out, def)
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out, true
+}
+
+// googleFunctionDeclarations returns the declarations a Gemini tools entry
+// groups, and whether the entry is one. Only the Google protocol has this shape:
+// every other protocol's entries are tools themselves.
+func googleFunctionDeclarations(entry any, protocol string) ([]any, bool) {
+	if protocol != registry.ProtocolGoogle {
+		return nil, false
+	}
+	obj, ok := entry.(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	decls, ok := replacementToolItems(obj["functionDeclarations"], registry.ProtocolGoogle)
+	if !ok {
+		return nil, false
+	}
+	return decls, true
+}
+
+// replacementToolDefinition reads one wire tools entry as the definition the
+// catalog path measures, reporting false for a tool with no such form.
+//
+// The shapes are the ones this repository's builders write, per protocol: Chat
+// nests the fields under a function key beside type=function, Responses states
+// them at the top level of the entry, Anthropic spells the schema input_schema,
+// and Google's declarations (flattened by replacementToolItems) spell it
+// parameters. A name is required as well as a schema, so a provider-native
+// object that happens to carry a "parameters" field is not mistaken for a
+// function.
+func replacementToolDefinition(entry any, protocol string) (ToolDefinition, bool) {
+	obj, ok := entry.(map[string]any)
+	if !ok {
+		return ToolDefinition{}, false
+	}
+	fields := obj
+	schemaKey := "parameters"
+	switch protocol {
+	case registry.ProtocolOpenAIChat:
+		// Chat is the one protocol whose entries are opaque to their own
+		// fields: type=function guards the nested object, so a native tool
+		// such as web_search cannot be mistaken for a function.
+		if typ, _ := obj["type"].(string); typ != "function" {
+			return ToolDefinition{}, false
+		}
+		nested, ok := obj["function"].(map[string]any)
+		if !ok {
+			return ToolDefinition{}, false
+		}
+		fields = nested
+	case registry.ProtocolOpenAIResponses:
+		if typ, has := obj["type"].(string); has && typ != "function" {
+			return ToolDefinition{}, false
+		}
+	case registry.ProtocolAnthropic:
+		schemaKey = "input_schema"
+	}
+	parameters, ok := fields[schemaKey].(map[string]any)
+	if !ok {
+		return ToolDefinition{}, false
+	}
+	name := stringField(fields, "name")
+	if name == "" {
+		return ToolDefinition{}, false
+	}
+	return ToolDefinition{
+		Name:        name,
+		Description: stringField(fields, "description"),
+		Parameters:  parameters,
+	}, true
+}
+
+// stringField reads a string field of a wire entry, empty when it is absent or
+// spelled otherwise.
+func stringField(obj map[string]any, key string) string {
+	s, _ := obj[key].(string)
+	return s
+}
+
+// encodeJSONLength returns the encoded length of v, or a negative value when the
+// encoder rejects it.
+func encodeJSONLength(v any) int {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return -1
+	}
+	return len(b)
 }
 
 // withToolEmission records count as the price res's builder produced, over

@@ -31,6 +31,10 @@ func declaredEmissionServer(t *testing.T) (*httptest.Server, func() []map[string
 			_, _ = w.Write([]byte(`{"id":"msg_1","model":"model","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
 		case "/models/model:generateContent":
 			_, _ = w.Write([]byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2},"modelVersion":"model"}`))
+		case "/responses":
+			_, _ = w.Write([]byte(`{"id":"resp_1","model":"m","status":"completed","output":[{"type":"message","id":"msg_1","role":"assistant","content":[{"type":"output_text","text":"hi"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`))
+		case "/chat/completions":
+			_, _ = w.Write([]byte(`{"id":"chatcmpl-1","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -47,19 +51,34 @@ func declaredEmissionServer(t *testing.T) (*httptest.Server, func() []map[string
 // under maxInput, with no registered override, so the built-in builder serves
 // the request.
 func declaredEmissionRoute(t *testing.T, maxInput int, protocol string) (*Client, registry.Resolved, func() []map[string]any) {
+	return declaredEmissionRouteWithBody(t, maxInput, protocol, nil)
+}
+
+// declaredEmissionRouteWithBody is declaredEmissionRoute with the row's
+// transport body constants set, so a test can put a tools value on the wire
+// that the builder does not write. Every protocol answers here, and the
+// count-tokens endpoint is pinned unsupported: the reading these cases
+// compare is the local estimate, which is the fallback a caller sizes a
+// request with on a route that has no counter.
+func declaredEmissionRouteWithBody(t *testing.T, maxInput int, protocol string, body map[string]any) (*Client, registry.Resolved, func() []map[string]any) {
 	t.Helper()
 	srv, bodies := declaredEmissionServer(t)
+	base := "openai"
+	switch protocol {
+	case registry.ProtocolAnthropic, registry.ProtocolGoogle:
+		base = protocol
+	}
 	r, err := registry.Load(
 		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
 		registry.WithStateRoot(t.TempDir()),
 		registry.WithEnv(func(string) (string, bool) { return "", false }),
 		registry.WithInstances(map[string]registry.Provider{
 			"emitted-price": {
-				Base:      protocol,
+				Base:      base,
 				Protocol:  protocol,
 				Surface:   registry.SurfaceGeneric,
 				APIKey:    "unused",
-				Transport: registry.Transport{BaseURL: srv.URL},
+				Transport: registry.Transport{BaseURL: srv.URL, Body: body, CountTokensEndpoint: registry.EndpointUnsupported},
 				Caps: registry.Caps{
 					ContextWindow:   new(1_000_000),
 					MaxInputTokens:  new(maxInput),
@@ -125,16 +144,16 @@ func wireToolDefs(t *testing.T, body map[string]any, schemaKey string) []ToolDef
 	return out
 }
 
-// A route whose protocol has no schema deriver still substitutes a schema for a
-// parameterless tool, so a price taken before dispatch has to include it.
+// A route that substitutes a schema for a parameterless tool has to price that
+// substitution before dispatch.
 //
 // The Anthropic and Google builders write an open empty object where the caller
-// declared none. Admission reaches those bytes through the parameterless
-// adjustment, while the declared count omits them: an input cap between the two
+// declared none, and their derivers report those bytes so the price describes
+// the emitted list. The declared count omits them: an input cap between the two
 // readings admits the request in preflight and then refuses the dispatch, which
 // is the disagreement this pins. Both entry points are covered because both
 // admit through the same budget.
-func TestAParameterlessPreflightPricesARouteWithoutADeriver(t *testing.T) {
+func TestAParameterlessToolIsPricedByTheEmittedSchema(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		protocol  string
