@@ -19,13 +19,6 @@ type ModelControlRequest struct {
 	ExpectedBootGeneration string
 }
 
-func (r ModelControlRequest) ref() string {
-	if r.ModelProvider == "" {
-		return r.Model
-	}
-	return r.ModelProvider + "/" + r.Model
-}
-
 func (s *Session) validateModelControlAuthorityLocked(request ModelControlRequest) error {
 	if request.ClientMutationID == "" || request.ExpectedInstanceID == "" || request.ExpectedBootGeneration == "" {
 		return appwire.InvalidParams("model control identity requires client mutation, instance, and boot generation")
