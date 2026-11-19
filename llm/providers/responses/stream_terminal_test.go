@@ -12,6 +12,17 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
+func TestIncompleteResponseKeepsUnsettledToolArgumentsOutOfFinalResponse(t *testing.T) {
+	t.Parallel()
+	_, final := responsesEvents(t,
+		`{"type":"response.function_call_arguments.delta","call_id":"call_unfinished","name":"probe","delta":"{}"}`,
+		`{"type":"response.completed","response":{"status":"incomplete","output":[]}}`,
+	)
+	if final == nil || len(final.ToolCalls()) != 0 || final.Finish.Raw != "incomplete" {
+		t.Fatalf("incomplete final response = %+v, want no settled tool call", final)
+	}
+}
+
 // abortingSSEServer writes prefix and then hijacks and closes the connection
 // without a terminating chunk, so the client's read fails mid-stream. That is
 // evidence about the transport, never about which endpoints the model
