@@ -493,45 +493,53 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   }
   function persistDraft(text: string): void {
     if (disposed) return;
-    // Which of this text's markers were STAGED by a writer that held bytes:
-    // the tiles this composer holds, plus any adoption it carries forward (a
-    // reader that adopted a writer's anchors keeps that provenance when it
-    // edits the prose around them, so an undo or a reload still knows they
-    // were staged). Filtered to what this text spells, so a marker the person
-    // has removed or retyped never travels as provenance. Typed markers are in
-    // neither source, which is why literal prose stays sendable.
+    // Which of this text's markers were STAGED by a writer that held bytes.
+    // Two sources, both by EXACT occurrence rather than by number:
+    // - the occurrences this source staged itself whose tiles still back them
+    //   (an occurrence a removal took away is gone from this list, and one
+    //   whose tile is gone is not provenance any more even if the literal
+    //   survives in the text);
+    // - the occurrences an adoption carries forward (a reader that adopted a
+    //   writer's anchors keeps that provenance when it edits the prose around
+    //   them, so an undo or a reload still knows they were staged).
+    // Filtered to what this text spells, so a marker the person has removed or
+    // retyped never travels as provenance. Typed markers are in neither
+    // source, which is why literal prose stays sendable.
     const adopted = state.getState().adoptedImageMarkers;
     const adoptedRanges = state.getState().adoptedImageRanges;
     const ownStagedRanges = state.getState().stagedImageRanges;
+    // This composer's own tiles back the occurrences of their numbers, so a
+    // range is only a fact about an ADOPTED occurrence when no tile holds
+    // those bytes.
+    const held = new Set(operations.items.map((item) => item.marker));
     // Nothing staged lies behind this text, so no provenance can exist: skip
     // spelling the text to filter an empty set.
     let staged: number[] = [];
-    // The exact occurrences to persist beside those numbers. The record has to
-    // name WHICH spelling was staged: with a literal "[image 1]" and an
-    // adopted one, the number alone makes a reloading reader mark both.
-    const stagedRanges: ImageMarkerRange[] = [];
-    if (operations.items.length > 0 || adopted.length > 0) {
+    let stagedRanges: ImageMarkerRange[] = [];
+    if (held.size > 0 || adopted.length > 0) {
+      // The exact occurrences to persist. The record has to name WHICH spelling
+      // was staged: with a literal "[image 1]" and a staged one, a number alone
+      // makes a reloading reader mark both, and one repair press then deletes
+      // the person's prose. Both sides are reconciled positions now, so each
+      // names the occurrence its own gesture wrote or adopted.
+      stagedRanges = validMarkerRanges(text, [
+        ...ownStagedRanges.filter((range) => held.has(range.marker)),
+        ...adoptedRanges.filter((range) => !held.has(range.marker)),
+      ]);
+      // A marker the text does not spell is not in the draft: the person
+      // removed it, or a removal's own write took it away, so it has no
+      // provenance to travel with.
       const spelled = new Set(spelledImageMarkers(text));
-      staged = [...new Set([...operations.items.map((item) => item.marker), ...adopted])]
-        .filter((marker) => spelled.has(marker))
-        .sort((left, right) => left - right);
-      // This composer's own tiles back the occurrences of their numbers, so a
-      // range is only a fact about an ADOPTED occurrence when no tile holds
-      // those bytes.
-      const held = new Set(operations.items.map((item) => item.marker));
-      stagedRanges.push(
-        ...validMarkerRanges(
-          text,
-          adoptedRanges.filter((range) => !held.has(range.marker)),
-        ),
-      );
-      // ...and an occurrence this composer staged ITSELF needs its range too.
-      // Its bytes are the tile, so a reader that still holds them is satisfied
-      // either way - but the record outlives the bytes. A reload holds none, and
-      // a number alone would then mark every spelling of it, including a
-      // literal the person typed beside the anchor: one repair press would
-      // delete their prose. Naming the occurrence keeps the two apart.
-      stagedRanges.push(...validMarkerRanges(text, ownStagedRanges));
+      const located = new Set(stagedRanges.map((range) => range.marker));
+      // A number whose occurrence this source cannot name - a recovery merge
+      // that moved a tile's number, a composition carried in from an older
+      // build, an adoption whose ranges this source never received - still
+      // names text whose bytes that writer held, so its number travels alone.
+      // That is the legacy reading a record without ranges has always had, and
+      // it is deliberately the LAST resort: a range that names the wrong
+      // occurrence is worse than no range at all.
+      const unlocated = [...new Set([...held, ...adopted])].filter((marker) => spelled.has(marker));
+      staged = [...new Set([...located, ...unlocated])].sort((left, right) => left - right);
     }
     currentDraftRevisionId = writeComposerDraft(ref, {
       text,
@@ -589,6 +597,19 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     const exact = ranges.map((range) => ({ ...range })).sort((left, right) => left.start - right.start);
     if (sameRanges(exact, state.getState().stagedImageRanges)) return;
     state.setState({ stagedImageRanges: exact });
+  }
+  /** The composition this source held has been submitted or replaced, so every
+   * part of it empties together: text, skill selections, command and mention
+   * metadata, and the staged occurrences. The occurrences go because the text
+   * they described is gone, so none of them is a position any more. Left
+   * behind, they would be validated away on the next save - but only after a
+   * pass that could hand a stale offset to an editor that has since grown its
+   * text back. */
+  function clearComposition(): void {
+    updateText("");
+    updateSkillNames([]);
+    updateSelectionMeta({ text: "", skillNames: [] });
+    setStagedImageRanges([]);
   }
   function markRestore(): void {
     if (!disposed) state.setState((snapshot) => ({ restoreEpoch: snapshot.restoreEpoch + 1 }));
@@ -1059,9 +1080,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
       sameSkillSelections(skillNamesRef.current, submittedSkillNames) &&
       sameSkillSelections(selectionMetaRef.current.commandNames, submittedCommandNames)
     ) {
-      updateText("");
-      updateSkillNames([]);
-      updateSelectionMeta({ text: "", skillNames: [] });
+      clearComposition();
     }
     const markers = new Set(
       operations.items
@@ -1100,9 +1119,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
         sameSkillSelections(selectionMetaRef.current.commandNames, submittedCommandNames ?? [])
       ) {
         claimDraftRevision();
-        updateText("");
-        updateSkillNames([]);
-        updateSelectionMeta({ text: "", skillNames: [] });
+        clearComposition();
       }
     },
   );
@@ -1216,9 +1233,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
         sameSkillSelections(skillNamesRef.current, names) &&
         sameSkillSelections(selectionMetaRef.current.commandNames, commands)
       ) {
-        updateText("");
-        updateSkillNames([]);
-        updateSelectionMeta({ text: "", skillNames: [] });
+        clearComposition();
         // Only a draft this source still owns may be cleared: another tab's
         // write since the submit owns the record now, and clearing it would
         // delete that tab's text. Both checks are required - the tab-local

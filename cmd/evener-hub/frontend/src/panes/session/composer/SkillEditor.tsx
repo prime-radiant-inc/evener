@@ -13,6 +13,7 @@ import {
   sharedSuffixLength as documentSharedSuffixLength,
   type ImageMarkerRange,
   isSkillTokenCharacter,
+  mapStagedImageRanges,
   parseSkillDocument,
   type SkillEditorValue,
   serializeSkillDocument,
@@ -230,6 +231,13 @@ function sameAdoption(
   );
 }
 
+/** A serialized document with the staged occurrences, when it has any, so the
+ * caller that persists a draft names WHERE its own anchors are. An occurrence
+ * this value does not name is prose, however it is spelled. */
+function withStaged(value: SkillEditorValue, staged: readonly ImageMarkerRange[]): SkillEditorValue {
+  return staged.length === 0 ? value : { ...value, stagedImageRanges: [...staged] };
+}
+
 function sameEditorValue(a: SkillEditorValue, b: SkillEditorValue): boolean {
   return (
     a.text === b.text &&
@@ -241,6 +249,11 @@ function sameEditorValue(a: SkillEditorValue, b: SkillEditorValue): boolean {
     // carries those marks, so a value that names them is not the same value as
     // one that does not. Without this, every keystroke would re-apply the
     // caller's value as a non-echo replace and rebuild the document.
+    //
+    // The staged occurrences are NOT compared: they say where an occurrence
+    // is, not what the document shows. Comparing them would make every
+    // keystroke's new position read as a change and re-apply the caller's
+    // value over the document, which ends the session's undo history.
     sameAdoption(a, b)
   );
 }
@@ -292,6 +305,12 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
   const host = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const latest = useRef(props);
+  // Where this editor last knew its own staged occurrences to be. The editor
+  // is the authority for them while it is mounted, because it is the thing
+  // that moves them: every transaction it applies maps them (see
+  // dispatchTransaction), and a value the caller applies over it replaces them
+  // with the positions that value names.
+  const stagedRangesRef = useRef<ImageMarkerRange[]>(props.value.stagedImageRanges ?? []);
   const appliedRestoreRef = useRef(props.restoreEpoch ?? 0);
   useLayoutEffect(() => {
     latest.current = props;
@@ -355,14 +374,30 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
       {
         state: createState(latest.current.value),
         dispatchTransaction: (transaction) => {
-          view.updateState(view.state.apply(transaction));
+          // applyTransaction, not apply: the transactions it returns include
+          // the ones the integrity plugin appended, and those are part of the
+          // document this dispatch produces - so the staged occurrences must
+          // be mapped through them too, or a separator inserted beside one
+          // would leave it naming the wrong offsets.
+          const applied = view.state.applyTransaction(transaction);
+          view.updateState(applied.state);
           view.dom.dataset.empty = String(view.state.doc.content.size === 0);
           // An externally applied value is the controlled value arriving, not
           // the user editing: echoing it back would re-enter the composer's own
-          // edit path during its submission and recovery transitions.
-          if (transaction.docChanged && !transaction.getMeta(externalSync)) {
+          // edit path during its submission and recovery transitions. That
+          // value already names where its own staged occurrences are (the sync
+          // effect below adopts them), so only what the document did ON TOP of
+          // it can move them - the appended transactions, never the root one.
+          const external = Boolean(transaction.getMeta(externalSync));
+          // A selection-only or focus transaction moves no text, so no staged
+          // occurrence moves with it. Mapping through it would only re-derive
+          // the same offsets.
+          const mappedTransactions = external ? applied.transactions.slice(1) : applied.transactions;
+          if (mappedTransactions.some((mapped) => mapped.docChanged))
+            stagedRangesRef.current = mapStagedImageRanges(mappedTransactions, stagedRangesRef.current);
+          if (transaction.docChanged && !external) {
             latest.current.onChange(
-              serializeSkillDocument(view.state.doc),
+              withStaged(serializeSkillDocument(view.state.doc), stagedRangesRef.current),
               documentPositionToTextOffset(view.state.doc, view.state.selection.head),
             );
           }
@@ -403,6 +438,11 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
     const authoritative = (props.restoreEpoch ?? 0) !== appliedRestoreRef.current;
     appliedRestoreRef.current = props.restoreEpoch ?? 0;
     if (!echo) {
+      // This value is the authority for where ITS staged occurrences are: it
+      // arrives from the source that just wrote them - a staging gesture's
+      // splice, a removal's strip, a restore - so the editor continues from
+      // those positions rather than from whatever it last reported.
+      stagedRangesRef.current = [...(props.value.stagedImageRanges ?? [])];
       // Applied through a transaction, never by rebuilding the state: a fresh
       // EditorState re-initializes every plugin, so one attachment marker would
       // end the session's undo history. addToHistory: false, because the change
@@ -442,7 +482,10 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
       // same thing.
       const settled = serializeSkillDocument(view.state.doc);
       if (!sameEditorValue(settled, props.value)) {
-        latest.current.onChange(settled, documentPositionToTextOffset(view.state.doc, view.state.selection.head));
+        latest.current.onChange(
+          withStaged(settled, stagedRangesRef.current),
+          documentPositionToTextOffset(view.state.doc, view.state.selection.head),
+        );
       }
     }
     view.setProps({

@@ -1302,17 +1302,32 @@ test("removing a missing reference preserves an edited fragment and the chip aft
   expect(screen.getByTestId("composer-unbacked-image")).toBeTruthy();
 });
 
-// A REAL staging gesture wrote the anchor at offset 0, and the person typed a
-// separate literal "[image 1]" later in the same draft.
+// A REAL staging gesture wrote the anchor at offset 0, and a separate literal
+// "[image 1]" sits beside it in the same draft - typed after the anchor, or
+// pasted BEFORE it. In the second case the paste moves the anchor to a new
+// offset, so a record still naming offset 0 names the literal instead.
 // After a reload the composer holds no tiles, so only the record's own
 // occurrence can say which spelling is the anchor whose image is gone. A
 // number-only record marks both, and the one repair press deletes prose the
-// person wrote - so the record must name the staged occurrence, the repair must
-// remove only it, the literal must survive, and Send must come back.
-test("a reloaded staged anchor and a typed literal of the same number repair only the anchor", async () => {
+// person wrote - so the record must name the staged occurrence at the position
+// the editor moved it to, the repair must remove only it, the literal must
+// survive, and Send must come back.
+test.each([
+  {
+    slot: "a literal typed after the anchor",
+    ref: "ref_unbacked_staged_plus_typed",
+    at: "end" as const,
+    pasted: " typed [image 1]",
+  },
+  {
+    slot: "a literal pasted before the anchor",
+    ref: "ref_unbacked_staged_after_pasted_literal",
+    at: "start" as const,
+    pasted: "[image 1] is literal. ",
+  },
+])("a reloaded staged anchor with $slot repairs only the anchor", async ({ ref, at, pasted }) => {
   installCanvasStubs();
   const user = userEvent.setup();
-  const ref = "ref_unbacked_staged_plus_typed";
 
   // Step 1: the real staging gesture, at the head of an empty draft. This is
   // the write under test: it must say WHICH "[image 1]" it wrote.
@@ -1321,26 +1336,26 @@ test("a reloaded staged anchor and a typed literal of the same number repair onl
   pastePngInto(textarea(), "staged.png");
   await screen.findByRole("button", { name: "View staged.png" });
   expect(textarea().textContent).toBe("[image 1]");
-  // Step 2: a separate literal of the same number, typed AFTER the anchor.
-  // Typed at the caret rather than pasted over the whole document: replacing
-  // it would rewrite the anchor and retire the very mark under test.
-  selectEditorText(textarea(), textarea().textContent?.length ?? 0);
-  await user.paste(" typed [image 1]");
-  await waitFor(() => expect(textarea().textContent).toBe("[image 1] typed [image 1]"));
+  // Step 2: a separate literal of the same number, inserted at the caret
+  // rather than pasted over the whole document: replacing it would rewrite the
+  // anchor and retire the very occurrence under test.
+  const text = at === "start" ? `${pasted}[image 1]` : `[image 1]${pasted}`;
+  const stagedStart = at === "start" ? pasted.length : 0;
+  selectEditorText(textarea(), at === "start" ? 0 : (textarea().textContent?.length ?? 0));
+  await user.paste(pasted);
+  await waitFor(() => expect(textarea().textContent).toBe(text));
   // The draft says which occurrence the gesture wrote, not merely which number
-  // it used: the first literal is the staged anchor, the typed one follows it.
-  const text = "[image 1] typed [image 1]";
-  const stagedStart = text.indexOf("[image 1]");
-  const stagedEnd = stagedStart + "[image 1]".length;
+  // it used - and the position is the one the editor moved the anchor to. A
+  // record left at the gesture's original offset names the pasted literal.
   expect(readComposerDraftSnapshot(ref)).toMatchObject({
     text,
     stagedImageMarkers: [1],
-    stagedImageRanges: [{ marker: 1, start: stagedStart, end: stagedEnd }],
+    stagedImageRanges: [{ marker: 1, start: stagedStart, end: stagedStart + "[image 1]".length }],
   });
   first.unmount();
 
   // Step 3: the reload. No tiles come back, so the staged anchor is the
-  // missing reference and the typed literal is prose.
+  // missing reference and the surviving literal is prose.
   const second = await mountComposerWithHandle(ref);
   second.fake.on("turn/start", (params) => ({
     receipt: appliedReceipt(params.clientMutationId, "thread_a"),
@@ -1351,8 +1366,9 @@ test("a reloaded staged anchor and a typed literal of the same number repair onl
   await waitFor(() => expect(submitButton().disabled).toBe(true));
 
   // Step 4: the repair the notice offers. Only the anchor goes.
+  const remaining = pasted;
   await user.click(screen.getByRole("button", { name: "Remove the reference" }));
-  await waitFor(() => expect(textarea().textContent).toBe(" typed [image 1]"));
+  await waitFor(() => expect(textarea().textContent).toBe(remaining));
   expect(screen.queryByTestId("composer-unbacked-image")).toBeNull();
 
   // Step 5: Send is enabled, and the surviving literal travels as the prose it
@@ -1362,5 +1378,49 @@ test("a reloaded staged anchor and a typed literal of the same number repair onl
   await flushPendingTurnsProjectionForTests();
   const call = second.fake.calls.find((candidate) => candidate.method === "turn/start");
   if (call === undefined) throw new Error("expected the repaired draft to send");
+  expect(call.params).toMatchObject({ input: [{ type: "text", text: remaining }] });
+});
+
+// Removing the tile is not a repair: the anchor's own literal leaves the text
+// with it, and a literal the person typed of the same number survives. The
+// removal writes the draft, so a save that still saw the tile in the store
+// would name that surviving literal's number as staged - and a reload, holding
+// no tiles, would then call the person's prose a missing reference and disable
+// Send for a draft that needs no repair at all.
+test("removing a staged tile leaves a surviving literal of the same number sendable after a reload", async () => {
+  installCanvasStubs();
+  const user = userEvent.setup();
+  const ref = "ref_unbacked_removed_tile_literal";
+
+  const first = await mountComposerWithHandle(ref);
+  selectEditorText(textarea(), 0);
+  pastePngInto(textarea(), "staged.png");
+  await screen.findByRole("button", { name: "View staged.png" });
+  selectEditorText(textarea(), textarea().textContent?.length ?? 0);
+  await user.paste(" typed [image 1]");
+  await waitFor(() => expect(textarea().textContent).toBe("[image 1] typed [image 1]"));
+
+  await user.click(screen.getByRole("button", { name: "Remove staged.png" }));
+  await waitFor(() => expect(textarea().textContent).toBe(" typed [image 1]"));
+  // Nothing in this draft has bytes behind it any more, so the record must not
+  // carry a staged number or its range: either one would mark the surviving
+  // literal as a missing reference after a reload.
+  expect(readComposerDraftSnapshot(ref).stagedImageMarkers).toBeUndefined();
+  expect(readComposerDraftSnapshot(ref).stagedImageRanges).toBeUndefined();
+  first.unmount();
+
+  const second = await mountComposerWithHandle(ref);
+  second.fake.on("turn/start", (params) => ({
+    receipt: appliedReceipt(params.clientMutationId, "thread_a"),
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
+  expect(textarea().textContent).toBe(" typed [image 1]");
+  expect(screen.queryByTestId("composer-unbacked-image")).toBeNull();
+  await waitFor(() => expect(submitButton().disabled).toBe(false));
+
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  const call = second.fake.calls.find((candidate) => candidate.method === "turn/start");
+  if (call === undefined) throw new Error("expected the literal to send");
   expect(call.params).toMatchObject({ input: [{ type: "text", text: " typed [image 1]" }] });
 });

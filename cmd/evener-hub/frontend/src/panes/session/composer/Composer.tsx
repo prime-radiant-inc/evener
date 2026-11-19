@@ -278,6 +278,7 @@ function ComposerWithSubmission({
     activeRecoveryId,
     adoptedImageMarkers,
     adoptedImageRanges,
+    stagedImageRanges,
   } = useSyncExternalStore(source.subscribe, source.getSnapshot, source.getSnapshot);
   // The anchors this composer read out of a draft it did not write and cannot
   // back with bytes: the source's adoption record intersected with the text as
@@ -312,6 +313,7 @@ function ComposerWithSubmission({
     updateSelectionMeta,
     setActiveRecoveryId,
     setAdoptedImageRanges,
+    setStagedImageRanges,
     clearAdoptedImageMarkers,
     markRestore,
     persistDraft,
@@ -1056,11 +1058,13 @@ function ComposerWithSubmission({
     // that restores the text restores the mark. Read before persistDraft so the
     // record this keystroke writes already agrees with what Send will see.
     setAdoptedImageRanges(value.adoptedImageRanges ?? [], value.adoptedImageMarkers ?? []);
-    // The staged occurrences are NOT read back from the value: they are the
-    // source's own record, reconciled from the splice each write performed
-    // (writeDraft -> patchSelectionText). An editor value cannot carry them,
-    // because a mark that changes on every paste would make each one rebuild
-    // the document and end the session's undo history.
+    // The staged occurrences come back from the editor, which mapped them
+    // through the very transactions that produced this value: typing before an
+    // anchor moves it, a paste of an identical literal beside it leaves it
+    // where the editor put it, and a delete or an undo moves them back. They
+    // are not a document mark, so an ordinary edit never rebuilds the document
+    // to apply them - see SkillEditorValue.stagedImageRanges.
+    setStagedImageRanges(value.stagedImageRanges ?? []);
     if (recoveryOwnerLeaseRef.current === null) persistDraft(value.text);
     // Every keystroke re-evaluates the trailing-token match fresh - a token
     // Escape just closed (useSlashCompletion's token) reopens on the
@@ -1508,7 +1512,14 @@ function ComposerWithSubmission({
                 field={
                   <SkillEditor
                     ref={editorRef}
-                    value={{ text, skillNames, ...selectionMeta, adoptedImageMarkers, adoptedImageRanges }}
+                    value={{
+                      text,
+                      skillNames,
+                      ...selectionMeta,
+                      adoptedImageMarkers,
+                      adoptedImageRanges,
+                      stagedImageRanges,
+                    }}
                     restoreEpoch={restoreEpoch}
                     skillDetails={skillChipDetails}
                     commandDetails={(name) =>

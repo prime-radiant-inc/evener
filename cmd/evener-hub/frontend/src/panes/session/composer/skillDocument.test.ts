@@ -1,6 +1,8 @@
+import { EditorState, type Transaction } from "prosemirror-state";
 import { describe, expect, it } from "vitest";
 import {
   documentPositionToTextOffset,
+  mapStagedImageRanges,
   materializeSkillReferences,
   parseSkillDocument,
   patchSelectionText,
@@ -305,6 +307,74 @@ describe("skill document", () => {
       skillNames: [],
       adoptedImageMarkers: [1],
       adoptedImageRanges: [{ marker: 1, start: 9, end: 18 }],
+    });
+  });
+
+  // The staged occurrences are positions in a document, so the only honest
+  // oracle for moving them is the editor's own transaction mapping: these
+  // cases apply a real ProseMirror transaction and ask the mapper what it says
+  // about them. A before/after pair would have to GUESS.
+  describe("mapStagedImageRanges", () => {
+    /** Apply `edit` to a fresh state parsed from `text` and return the one
+     * transaction it produced - a real one, with its own mapping. */
+    function applied(text: string, edit: (state: EditorState) => Transaction) {
+      const state = EditorState.create({ doc: parseSkillDocument({ text, skillNames: [] }) });
+      const transaction = edit(state);
+      return { transaction, text: serializeSkillDocument(transaction.doc).text };
+    }
+
+    const staged = { marker: 1, start: 0, end: 9 };
+
+    it("leaves an occurrence alone when the edit does not touch it", () => {
+      expect(mapStagedImageRanges([], [staged])).toEqual([]);
+      expect(mapStagedImageRanges([], undefined)).toEqual([]);
+      const { transaction, text } = applied("[image 1] tail", (state) => state.tr.insertText("!", 14));
+      expect(text).toBe("[image 1] tail!");
+      expect(mapStagedImageRanges([transaction], [staged])).toEqual([staged]);
+    });
+
+    it("moves the occurrence by what the transaction inserted before it", () => {
+      // Paste "[image 1] is literal. " in front of the staged literal. Both
+      // spellings are identical, so a range left at its old offsets names the
+      // pasted prose instead of the anchor.
+      const { transaction, text } = applied("[image 1]", (state) => state.tr.insertText("[image 1] is literal. ", 0));
+      expect(text).toBe("[image 1] is literal. [image 1]");
+      expect(mapStagedImageRanges([transaction], [staged])).toEqual([{ marker: 1, start: 22, end: 31 }]);
+    });
+
+    it("keeps an occurrence whose own edges were typed against", () => {
+      // Typing at the first character pushes the literal right; typing at the
+      // character after its last one must not grow it into the person's prose.
+      const left = applied("[image 1]", (state) => state.tr.insertText("-", 0));
+      expect(mapStagedImageRanges([left.transaction], [staged])).toEqual([{ marker: 1, start: 1, end: 10 }]);
+      const right = applied("[image 1]", (state) => state.tr.insertText("-", 9));
+      expect(mapStagedImageRanges([right.transaction], [staged])).toEqual([staged]);
+    });
+
+    it("drops an occurrence the transaction deleted or cut through", () => {
+      const deleted = applied("[image 1] tail", (state) => state.tr.delete(0, 9));
+      expect(deleted.text).toBe(" tail");
+      expect(mapStagedImageRanges([deleted.transaction], [staged])).toEqual([]);
+      // One bracket gone: a fragment is not the literal its number names, and
+      // the refusal must not outlive the occurrence.
+      const cut = applied("[image 1] tail", (state) => state.tr.delete(8, 9));
+      expect(cut.text).toBe("[image 1 tail");
+      expect(mapStagedImageRanges([cut.transaction], [staged])).toEqual([]);
+    });
+
+    it("moves the occurrence back when an undo reverses what a keystroke moved", () => {
+      // Undo arrives as the inverse transaction the history plugin builds, so
+      // the occurrence follows the same mapping it followed forward. Typing a
+      // character and undoing it must leave the range exactly as it started.
+      const state = EditorState.create({ doc: parseSkillDocument({ text: "[image 1] tail", skillNames: [] }) });
+      const typed = state.tr.insertText("-", 0);
+      expect(serializeSkillDocument(typed.doc).text).toBe("-[image 1] tail");
+      const afterTyping = state.apply(typed);
+      const undone = afterTyping.tr.delete(0, 1);
+      expect(serializeSkillDocument(undone.doc).text).toBe("[image 1] tail");
+      const shifted = mapStagedImageRanges([typed], [staged]);
+      expect(shifted).toEqual([{ marker: 1, start: 1, end: 10 }]);
+      expect(mapStagedImageRanges([undone], shifted)).toEqual([staged]);
     });
   });
 });

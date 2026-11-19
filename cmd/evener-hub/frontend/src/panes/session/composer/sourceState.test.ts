@@ -1020,6 +1020,36 @@ test("a reloaded draft keeps the literal beside an adopted duplicate sendable", 
   }
 });
 
+// Removing the tile is not a repair of the draft: the anchor's own literal
+// leaves with it, and a literal the person typed of the same number stays. The
+// removal's own write saves the draft, so a save that still saw the tile would
+// name that surviving literal's number as staged - and a reload holds no tiles,
+// so it would mark the person's prose as a missing reference and refuse a draft
+// that needs no repair.
+test("removing the only tile leaves a surviving literal of its number unmarked", () => {
+  const source = createTestComposerSource("root");
+  try {
+    source.editText("[image 1] typed [image 1]");
+    // Where the staging gesture put its own literal: the first one. The second
+    // is prose of the same number, and the distinction is the whole point.
+    source.setStagedImageRanges([{ marker: 1, start: 0, end: 9 }]);
+    source.attachments.setState({
+      items: [{ marker: 1, name: "staged.png", mediaType: "image/png", pending: false, data: "AQID" }],
+    });
+    const operations = createAttachmentOperations(source.editor, source.attachments);
+    operations.removeItem(1);
+
+    // The staged anchor is gone with its tile; the surviving literal is prose,
+    // so the record carries no provenance for it and a reload marks nothing.
+    expect(source.editor.read().text).toBe(" typed [image 1]");
+    expect(source.getSnapshot().stagedImageRanges).toEqual([]);
+    expect(readComposerDraftSnapshot("root").stagedImageMarkers).toBeUndefined();
+    expect(readComposerDraftSnapshot("root").stagedImageRanges).toBeUndefined();
+  } finally {
+    source.dispose();
+  }
+});
+
 // The durable plane says the same thing: an autosave that carries a duplicate
 // keeps its offsets on the recovery row, and activating that row gives back a
 // source whose repair names the adopted occurrence only.

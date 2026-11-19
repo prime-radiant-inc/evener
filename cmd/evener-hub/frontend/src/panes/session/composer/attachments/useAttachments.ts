@@ -338,10 +338,13 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
             if (removedWhilePendingRef.current.delete(token)) return;
             const currentItem = store.getState().items.find((item) => operationToken(item) === token);
             if (currentItem) {
+              // The tile leaves the store before the strip's own write, so the
+              // save that write performs never names this marker as staged
+              // (see removeItem).
+              setItems((prev) => prev.filter((item) => operationToken(item) !== token));
               const current = editor.read();
               const stripped = stripMarker(current.text, current.cursor, currentItem.marker);
               editor.write(stripped.value, stripped.cursor ?? current.cursor, "cleanup", stripped.splice);
-              setItems((prev) => prev.filter((item) => operationToken(item) !== token));
             }
             onRejected(`${file.name || "unknown"} (image decode failed)`);
           });
@@ -365,25 +368,23 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
     // removal adds an entry no in-flight decode will ever consult again.
     const removed = store.getState().items.find((item) => item.marker === marker);
     if (removed) removedWhilePendingRef.current.add(operationToken(removed));
+    // The tile leaves the store BEFORE the text write, so whichever save that
+    // write performs already sees a composition without it. A save taken while
+    // the tile was still there would name the marker's number as staged, and
+    // the literal this strip leaves behind - a separate spelling the person
+    // typed - would come back after a reload as a missing reference: a draft
+    // needing no repair at all, refused.
+    setItems((prev) => prev.filter((item) => item.marker !== marker));
     const current = editor.read();
     const stripped = stripMarker(current.text, current.cursor, marker);
     editor.write(stripped.value, stripped.cursor ?? current.cursor, undefined, stripped.splice);
-    setItems((prev) => prev.filter((item) => item.marker !== marker));
   };
 
   const clearSubmitted = (submittedMarkers: Set<number>) => {
-    if (submittedMarkers.size > 0) {
-      // Each write describes one exact splice, so atoms between removed
-      // markers retain their identities. Live editor refs update synchronously.
-      // A marker already removed by a concurrent edit remains a safe no-op.
-      let { text, cursor } = editor.read();
-      for (const marker of submittedMarkers) {
-        const stripped = stripMarker(text, cursor, marker);
-        text = stripped.value;
-        cursor = stripped.cursor ?? cursor;
-        editor.write(text, cursor, "submission", stripped.splice);
-      }
-    }
+    // Same ordering rule as removeItem: the items leave the store first, so the
+    // writes below persist a composition that no longer carries them. A save
+    // that still saw them would name their numbers as staged even though the
+    // text it records no longer holds those occurrences.
     setItems((prev) => {
       const next = prev.filter((item) => !submittedMarkers.has(item.marker));
       if (next.length === 0) {
@@ -402,6 +403,18 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
       }
       return next;
     });
+    if (submittedMarkers.size > 0) {
+      // Each write describes one exact splice, so atoms between removed
+      // markers retain their identities. Live editor refs update synchronously.
+      // A marker already removed by a concurrent edit remains a safe no-op.
+      let { text, cursor } = editor.read();
+      for (const marker of submittedMarkers) {
+        const stripped = stripMarker(text, cursor, marker);
+        text = stripped.value;
+        cursor = stripped.cursor ?? cursor;
+        editor.write(text, cursor, "submission", stripped.splice);
+      }
+    }
   };
 
   const toInputAttachments = (): InputAttachment[] => {

@@ -59,8 +59,69 @@ export interface SkillEditorValue {
    * reconciles the position across that write from the splice it performed. A
    * mark would make every paste a non-echo value change, and applying one
    * rebuilds the document - which ends the session's undo history and
-   * re-derives its atoms' separators. */
+   * re-derives its atoms' separators.
+   *
+   * It rides on this value only so the editor can map it through the
+   * transactions it applies (mapStagedImageRanges). `sameEditorValue`
+   * deliberately ignores it: it records where an occurrence IS, not what the
+   * document shows, so a new position must never read as a value the editor has
+   * to re-apply - that would rebuild the document and end the undo history. */
   stagedImageRanges?: ImageMarkerRange[];
+}
+
+/** One editor transaction, reduced to what mapping an occurrence needs: the
+ * document it applied to, the document it produced, and the position mapping
+ * between them. ProseMirror's own Transaction satisfies this. */
+export interface EditorTransaction {
+  readonly before: ProseMirrorNode;
+  readonly doc: ProseMirrorNode;
+  readonly mapping: { map(position: number, assoc?: number): number };
+}
+
+/**
+ * The staged occurrences `ranges` names, moved by exactly the editor
+ * transactions that just ran - and dropped when those transactions removed or
+ * cut through them.
+ *
+ * A staged occurrence is a literal in the text, so every edit that moves the
+ * text moves it: typing before it, pasting a duplicate of its number in front
+ * of it, deleting the prose around it, and an undo that puts any of that back.
+ * Re-deriving it from a before/after pair is a guess, and a wrong one whenever
+ * an insertion shares "[image " with the literal it did not touch - the
+ * staging gesture's own write, or a person pasting "[image 1] is literal. "
+ * before an anchor. The transactions' own mappings are not a guess.
+ *
+ * Each range's start is biased right and its end left, so an insertion exactly
+ * at either edge lands OUTSIDE the literal: typing at a marker's first
+ * character pushes the marker right, and typing at the character after its last
+ * one leaves it where it is. A deletion cutting through the literal leaves a
+ * fragment, and `validMarkerRanges`' exact-slice test drops it - the same
+ * judgement serialization applies to the adopted marks.
+ */
+export function mapStagedImageRanges(
+  transactions: readonly EditorTransaction[],
+  ranges: readonly ImageMarkerRange[] | undefined,
+): ImageMarkerRange[] {
+  const first = transactions[0];
+  const last = transactions[transactions.length - 1];
+  if (first === undefined || last === undefined || ranges === undefined || ranges.length === 0) return [];
+  const before = first.before;
+  const after = last.doc;
+  const mapped: ImageMarkerRange[] = [];
+  for (const range of validMarkerRanges(serializeSkillDocument(before).text, ranges)) {
+    let from = textOffsetToDocumentPosition(before, range.start, 1);
+    let to = textOffsetToDocumentPosition(before, range.end, -1);
+    for (const transaction of transactions) {
+      from = transaction.mapping.map(from, 1);
+      to = transaction.mapping.map(to, -1);
+    }
+    mapped.push({
+      marker: range.marker,
+      start: documentPositionToTextOffset(after, from),
+      end: documentPositionToTextOffset(after, to),
+    });
+  }
+  return validMarkerRanges(serializeSkillDocument(after).text, mapped);
 }
 
 /** Flat inline content: newlines are text, and skills occupy one document position. */
