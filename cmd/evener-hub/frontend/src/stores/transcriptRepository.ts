@@ -4,13 +4,13 @@ import {
   applyNotification,
   applyOverlayEndForTranscriptHandoff,
   applyReadResponse,
+  authoritativeSourceOf,
   type CachedSessionItem,
   comparePositions,
   decodeTranscriptItem,
   encodeTranscriptItem,
   type HistoryState,
   handOffReplacedSource,
-  historyAnsweredLive,
   historyFallback,
   historyReplacesWindow,
   holdOwnerOf,
@@ -25,6 +25,7 @@ import {
   mergeTranscriptReaderWindow,
   mergeTranscriptTurnVersioned,
   olderHistoryExhausted,
+  orderBootGeneration,
   pruneBackgroundHistoryBodies,
   readDisposition,
   resolvePendingEscalation,
@@ -960,13 +961,11 @@ export class TranscriptRepository {
     // fallback suppresses the token for history VALIDITY - its rows came from
     // the saved index - so neither the retained boot nor the response token is
     // that evidence there: only an enriched answer (`live-read-empty`) spoke to
-    // a live daemon, and a `live-read-failed` fallback names no source at all
-    // and supersedes nothing.
-    this.#acceptedReadSource = historyFallback(response)
-      ? historyAnsweredLive(response)
-        ? (response.bootGeneration ?? "")
-        : ""
-      : (response.bootGeneration ?? "");
+    // a live daemon. A `live-read-failed` fallback names no source at all, and
+    // neither does a legacy `daemonless` answer with no serving facts: the hub
+    // stamps that whenever it answered from the transcript, including when it
+    // never resolved ownership.
+    this.#acceptedReadSource = authoritativeSourceOf(response, response.bootGeneration);
     // A read supersedes that owner only when it actually installed a DIFFERENT
     // source. Same token, or a read that established no source, replaced
     // nothing - and an empty record must never be read as "everything is the
@@ -1254,9 +1253,15 @@ export class TranscriptRepository {
         this.accept(notification, context);
         return;
       }
-      if ((superseded !== "" && boot === superseded) || (firstHydration !== "" && boot !== firstHydration)) {
-        return;
-      }
+      if (superseded !== "" && boot === superseded) return;
+      // A first hydration has no predecessor, so the only frame it can prove
+      // predates its read is one from an EARLIER boot of the same owner. A
+      // later boot is a newer source whose frame must reach recovery, and two
+      // unorderable tokens (different owners, a legacy `daemonless`, a boot the
+      // read never named) say nothing about which came first: keeping them
+      // costs at most a frame the read's identity then rejects, while dropping
+      // one loses the invalidation that tells the pane to recover.
+      if (firstHydration !== "" && orderBootGeneration(boot, firstHydration) === "older") return;
       this.accept(notification, context);
     } else if (
       notification.method === "thread/queueChanged" &&

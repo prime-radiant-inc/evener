@@ -1,4 +1,6 @@
 import { expect, test } from "vitest";
+import { orderBootGeneration } from "./bootGeneration";
+import { authoritativeSourceOf, historyServingFacts } from "./historyServing";
 import type { ItemModel, ThreadModel, TurnModel } from "./model";
 import { applyNotification } from "./reducer";
 import { itemAt, turnAt } from "./testing/modelAccessors";
@@ -2484,4 +2486,208 @@ test("a merged page that records the incoming owner does not keep the retired so
   // sequence the replacement numbering from its own start will reach.
   expect(merged.delegates?.[0]?.holdSequence).toBeUndefined();
   expect(merged.delegates?.[0]?.delegateId).toBe("dlg_held");
+});
+
+// The source a response is EVIDENCE about, which is the only thing a hold
+// hand-off or a replay-suppression decision may act on.
+//
+// A legacy `daemonless` token is the hub's own stamp meaning "no daemon
+// answered this read". On `thread/read` and `thread/turns/list` the hub stamps
+// it whenever it answered from the transcript - including the cases where it
+// never resolved ownership at all (a relay outage, a protocol refusal, a
+// deadline after a live read failed). Without serving facts there is nothing
+// to separate that from a confirmed absence, so it names no source: it may
+// neither retire a hold nor be recorded as one.
+test("a legacy daemonless answer without serving facts names no source", () => {
+  // No serving facts at all: the legacy shape the hub still answers.
+  const legacyRead: ThreadHistoryTurnsListResponse = {
+    data: [],
+    bootGeneration: "daemonless",
+    epoch: 1,
+    snapshot: { incarnation: "inc-1", length: 120 },
+  };
+  const savedIndexPage: ThreadHistoryTurnsListResponse = {
+    data: [],
+    bootGeneration: "daemonless",
+    epoch: 1,
+    snapshot: { incarnation: "inc-1", length: 120 },
+    servedFrom: "saved-index",
+  };
+  const liveRead = {
+    ...historyRead(),
+    bootGeneration: "5",
+    servedFrom: "live-daemon",
+    asOf: "2026-11-08T00:00:00Z",
+  } as ThreadReadResponse;
+  const enrichedRead = {
+    ...historyRead(),
+    bootGeneration: "5",
+    servedFrom: "saved-index",
+    fallbackReason: "live-read-empty",
+    asOf: "2026-11-08T00:00:00Z",
+  } as ThreadReadResponse;
+
+  expect(authoritativeSourceOf(legacyRead, legacyRead.bootGeneration)).toBe("");
+  expect(authoritativeSourceOf(historyServingFacts(savedIndexPage), "daemonless")).toBe("daemonless");
+  expect(authoritativeSourceOf(liveRead, liveRead.bootGeneration)).toBe("5");
+  expect(authoritativeSourceOf(enrichedRead, enrichedRead.bootGeneration)).toBe("5");
+  expect(authoritativeSourceOf(undefined, "5")).toBe("5");
+});
+
+test("a legacy daemonless read keeps the hold owner a replacement recorded", () => {
+  const base = hydrateThread(
+    { thread: testThread(), bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 100 } },
+    "ref_t",
+    1000,
+  );
+  // Boot 2 replaced boot 1 and owns the samples; history still names boot 1
+  // because no read has applied since. This is the record a resync made.
+  let model: ThreadModel = { ...base, history: base.history && { ...base.history, holdOwner: "2" } };
+
+  // A legacy daemonless read: the hub answered from the transcript, and that
+  // answer establishes no owner. It may not retire boot 2's live hold.
+  const legacy: ThreadReadResponse = {
+    ...historyRead(),
+    thread: testThread({ turns: [versionedFragmentTurn([1])] }),
+    bootGeneration: "daemonless",
+    snapshot: { incarnation: "inc-1", length: 100 },
+  } as ThreadReadResponse;
+  model = applyReadResponse(model, legacy, 2000);
+
+  // Boot 2 publishes its live hold - after the read, because a read rebuilds
+  // the delegate rows it carries.
+  model = applyNotification(
+    model,
+    { method: "evener/delegate/updated", params: { ref: "ref_t", delegate: heldDelegate(900, 3) } } as AnyNotification,
+    2500,
+  );
+  expect(model.delegates?.[0]?.holdSequence).toBe(900);
+
+  // Boot 2's OWN next resync is not a replacement of itself, so the live hold
+  // must survive it. Without the retained record this compares against
+  // `daemonless`, confirms a replacement, and the wait disappears.
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/resync",
+      params: { threadId: base.threadId, ref: "ref_t", bootGeneration: "2", epoch: 3 },
+    } as AnyNotification,
+    3000,
+  );
+  expect(model.delegates?.[0]?.holdSequence).toBe(900);
+  expect(holdOwnerOf(model.history!)).toBe("2");
+});
+
+test("applyReadModel keeps the hold owner on a legacy daemonless read", () => {
+  const base = hydrateThread(
+    { thread: testThread(), bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 100 } },
+    "ref_t",
+    1000,
+  );
+  let model: ThreadModel = { ...base, history: base.history && { ...base.history, holdOwner: "2" } };
+
+  const legacy: ThreadReadResponse = {
+    ...historyRead(),
+    thread: testThread({ turns: [versionedFragmentTurn([1])] }),
+    bootGeneration: "daemonless",
+    snapshot: { incarnation: "inc-1", length: 100 },
+  } as ThreadReadResponse;
+  model = applyReadModel(model, hydrateThread(legacy, "ref_t", 2000));
+
+  model = applyNotification(
+    model,
+    { method: "evener/delegate/updated", params: { ref: "ref_t", delegate: heldDelegate(900, 3) } } as AnyNotification,
+    2500,
+  );
+  expect(model.delegates?.[0]?.holdSequence).toBe(900);
+
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/resync",
+      params: { threadId: base.threadId, ref: "ref_t", bootGeneration: "2", epoch: 3 },
+    } as AnyNotification,
+    3000,
+  );
+  expect(model.delegates?.[0]?.holdSequence).toBe(900);
+  expect(holdOwnerOf(model.history!)).toBe("2");
+});
+
+test("a legacy daemonless page merges its content and records no owner", () => {
+  // The content rules are unchanged: only the ownership question loses the
+  // unqualified token. The page shares the held identity, so its content
+  // MERGES - which is the branch where the hand-off's record lands.
+  const held = mergeOlderItemPage(pageOrderingModel(), normalHistoryPage(120, []));
+  const withHold = {
+    ...held,
+    history: { ...held.history!, bootGeneration: "daemonless", holdOwner: "7" },
+    delegates: [heldDelegate(900, 3)],
+  };
+  const legacyPage: ThreadHistoryTurnsListResponse = {
+    data: [positionedFragmentTurn("older", [["older-item", 10]])],
+    bootGeneration: "daemonless",
+    epoch: 1,
+    snapshot: { incarnation: "inc-1", length: 130 },
+  };
+
+  const merged = mergeOlderItemPage(withHold, legacyPage);
+
+  // The page's content still merges...
+  expect(merged.turns.flatMap((turn) => turn.items).map((item) => item.id)).toContain("older-item");
+  // ...and the live daemon still owns its hold: a token that names no source
+  // neither retires the samples nor becomes their recorded owner.
+  expect(holdOwnerOf(merged.history!)).toBe("7");
+  expect(merged.delegates?.[0]?.holdSequence).toBe(900);
+});
+
+test("a legacy daemonless page that invalidates history records no owner", () => {
+  // The same page against another incarnation takes the INVALIDATE branch,
+  // which writes ownership itself: it records the incoming token as the owner
+  // and retires the previous one's samples. A token that names no source must
+  // do neither, or a live hold is dropped with no update to restore it.
+  const base = hydrateThread(
+    { thread: testThread(), bootGeneration: "5", epoch: 1, snapshot: { incarnation: "inc-1", length: 100 } },
+    "ref_t",
+    1000,
+  );
+  const withHold = {
+    ...base,
+    history: { ...base.history!, holdOwner: "5" },
+    delegates: [heldDelegate(900, 3)],
+  };
+  const legacyPage: ThreadHistoryTurnsListResponse = {
+    data: [],
+    bootGeneration: "daemonless",
+    epoch: 2,
+    snapshot: { incarnation: "inc-2", length: 130 },
+  };
+
+  const merged = mergeOlderItemPage(withHold, legacyPage);
+
+  // History still invalidates - another incarnation is a real replacement of
+  // the index - but the daemon that owns the samples is untouched.
+  expect(merged.history?.invalidatedAtGeneration).toBeDefined();
+  expect(holdOwnerOf(merged.history!)).toBe("5");
+  expect(merged.delegates?.[0]?.holdSequence).toBe(900);
+});
+
+// The order two boot tokens stand in, which is the question first hydration
+// asks before discarding a buffered frame. Only proof that the frame's source
+// is OLDER may discard one: an unorderable pair (different owners, a legacy
+// token, or no parseable reference) is not evidence of anything.
+test.each([
+  ["5", "5", "same"],
+  ["4", "5", "older"],
+  ["6", "5", "newer"],
+  ["10", "9", "newer"],
+  ["3@root", "3@root", "same"],
+  ["2@root", "3@root", "older"],
+  ["4@root", "3@root", "newer"],
+  ["1@other", "5@root", "unorderable"],
+  ["5", "5@root", "unorderable"],
+  ["daemonless", "5", "unorderable"],
+  ["5", "daemonless", "unorderable"],
+  ["3", "", "unorderable"],
+])("orderBootGeneration(%s, %s) is %s", (candidate, reference, want) => {
+  expect(orderBootGeneration(candidate, reference)).toBe(want);
 });

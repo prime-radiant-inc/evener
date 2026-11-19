@@ -104,13 +104,14 @@ export {
 } from "./attachmentLimits";
 export type { MarkerAttachment } from "./attachmentMarkers";
 export { translateAttachmentMarkers } from "./attachmentMarkers";
-export type { BootGenerationAction } from "./bootGeneration";
+export type { BootGenerationAction, BootGenerationOrder } from "./bootGeneration";
 export {
   type BootTokenEvidence,
   compareBootGeneration,
   confirmedBootReplacement,
   DAEMONLESS_BOOT_GENERATION,
   isConfirmedAbsence,
+  orderBootGeneration,
 } from "./bootGeneration";
 export type { BuiltinMatch } from "./builtinInvocation";
 export { findBuiltinArgument, matchBuiltinInvocation } from "./builtinInvocation";
@@ -309,8 +310,9 @@ export {
 export type { FrameworkFreeStore, StoreListener } from "./frameworkFreeStore";
 export { createFrameworkFreeStore } from "./frameworkFreeStore";
 export { HistoryPaging, type HistoryPagingState } from "./historyPaging";
-export type { HistoryServingFacts } from "./historyServing";
+export type { HistoryServingFacts, HistoryServingFactsInput } from "./historyServing";
 export {
+  authoritativeSourceOf,
   historyAnsweredLive,
   historyFallback,
   historyReplacesWindow,

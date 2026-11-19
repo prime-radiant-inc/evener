@@ -4593,10 +4593,28 @@ async function readThreadHydration(
               beforeFailure !== undefined &&
               !isConfirmedAbsence(failureOwner) &&
               retireReplacedSourceHoldOnModel(beforeFailure, failureOwner, "authoritative") !== undefined;
-            if (restoredByHandOff) {
-              for (const update of pending.notifications) {
-                if (update.notification.method !== "evener/delegate/updated") continue;
-                entry.repository.accept(update.notification, { lifetime: entry.lifetime });
+            if (restoredByHandOff && failureOwner !== undefined) {
+              // The hand-off cleared the hold facet, so the replacement's own
+              // sample must fold back or the wait it published disappears. The
+              // sample may only be re-offered when the buffer ATTRIBUTES it to
+              // the replacement: a frame buffered before the source named
+              // itself may belong to either line (a bootless recovery has the
+              // replacement publish its first hold before any frame names it),
+              // and the samples this buffer proves belong to the outgoing line
+              // are exactly what the hand-off just retired. Re-offering one of
+              // those put the departed sequence straight back, and the
+              // replacement's own first unheld sample then lost to it.
+              const namedAt = sourceNamingIndex(pending.notifications, failureOwner);
+              // No naming frame, no attribution: every buffered sample predates
+              // the replacement's own account of itself, so none can take the
+              // retired source's place in the sequence.
+              if (namedAt !== -1) {
+                for (let index = namedAt + 1; index < pending.notifications.length; index += 1) {
+                  const update = pending.notifications[index];
+                  if (update === undefined) continue;
+                  if (update.notification.method !== "evener/delegate/updated") continue;
+                  entry.repository.accept(update.notification, { lifetime: entry.lifetime });
+                }
               }
             }
           }
@@ -6212,6 +6230,22 @@ function beginWatchedHydration(
 // and "is that claim newer or older than the one I hold" is answered before
 // any sample is touched. See provenRetiredSamples.
 //
+// sourceNamingIndex is where `boot` names itself in a buffer of frames, or -1
+// when it never does. A `history/updated` carrying the token is that source's
+// own account of itself, which is the only point in a buffer after which a
+// sample is provably IT publishing rather than the line it replaced.
+function sourceNamingIndex(notifications: readonly ReceivedTranscriptUpdate[], boot: string): number {
+  for (let index = 0; index < notifications.length; index += 1) {
+    const buffered = notifications[index];
+    if (buffered === undefined) continue;
+    const { method, params } = buffered.notification as AnyNotification;
+    if (method !== "history/updated") continue;
+    const named = (params as { bootGeneration?: string }).bootGeneration;
+    if (named !== undefined && named !== "" && named === boot) return index;
+  }
+  return -1;
+}
+
 // provenRetiredSamples answers "which buffered delegate samples can this
 // buffer PROVE came from the outgoing source", and it answers only what it can
 // prove. A delegate frame names no source (`EvenerDelegateParams` is threadId,
@@ -6237,28 +6271,11 @@ function provenRetiredSamples(
 ): ReadonlySet<ReceivedTranscriptUpdate> {
   const proven = new Set<ReceivedTranscriptUpdate>();
   if (retiredBy === undefined) return proven;
-  // Where the incoming source named itself, if it did.
-  let namedAt = -1;
-  for (let index = 0; index < notifications.length; index += 1) {
-    const buffered = notifications[index];
-    if (buffered === undefined) continue;
-    const { method, params } = buffered.notification as AnyNotification;
-    if (method !== "history/updated") continue;
-    const boot = (params as { bootGeneration?: string }).bootGeneration;
-    if (boot !== undefined && boot !== "" && boot === retiredBy) {
-      namedAt = index;
-      break;
-    }
-  }
+  const namedAt = sourceNamingIndex(notifications, retiredBy);
   if (namedAt === -1) return proven;
-  // Proof one: delegates the incoming source published AFTER naming itself.
-  // Every earlier sample of one of those is the outgoing line's.
+  // Delegates the incoming source published AFTER naming itself: every earlier
+  // sample of one of those is the outgoing line's.
   const publishedAfterNaming = new Set<string>();
-  // Proof two: the highest sequence each delegate reached after the naming
-  // frame. The source bumps its sequence under the controller lock, so a later
-  // sample that is LOWER means the numbering restarted - and every pre-naming
-  // sample above that value belongs to the line that ended.
-  const postNamingSequences = new Map<string, number>();
   for (let index = namedAt + 1; index < notifications.length; index += 1) {
     const buffered = notifications[index];
     if (buffered === undefined) continue;
@@ -6268,10 +6285,6 @@ function provenRetiredSamples(
     const id = delegate?.delegateId;
     if (!id) continue;
     publishedAfterNaming.add(id);
-    const sequence = delegate?.holdSequence;
-    if (sequence === undefined) continue;
-    const seen = postNamingSequences.get(id);
-    if (seen === undefined || sequence > seen) postNamingSequences.set(id, sequence);
   }
   for (let index = 0; index < namedAt; index += 1) {
     const update = notifications[index];
@@ -6284,33 +6297,15 @@ function provenRetiredSamples(
     // update with no hold strips to itself and needs no proof.
     const sequence = delegate?.holdSequence;
     if (id === undefined || sequence === undefined) continue;
-    if (publishedAfterNaming.has(id)) {
-      proven.add(update);
-      continue;
-    }
-    const later = postNamingSequences.get(id);
-    if (later !== undefined && sequence > later) {
-      proven.add(update);
-      continue;
-    }
-    // A LATER sample of the same delegate anywhere in the buffer with a lower
-    // sequence is proof too: the source bumps its sequence under the controller
-    // lock, so a decrease can only be a different line starting over. This is
-    // the shape where the replacement publishes its first hold BEFORE it names
-    // itself - its `1` follows the outgoing daemon's `900`, and only the `900`
-    // belongs to the line that ended.
-    for (let after = index + 1; after < notifications.length; after += 1) {
-      const successor = notifications[after];
-      if (successor === undefined) continue;
-      const { method: m, params: p } = successor.notification as AnyNotification;
-      if (m !== "evener/delegate/updated") continue;
-      const laterDelegate = (p as { delegate?: { delegateId?: string; holdSequence?: number } }).delegate;
-      if (laterDelegate?.delegateId !== id || laterDelegate.holdSequence === undefined) continue;
-      if (laterDelegate.holdSequence < sequence) {
-        proven.add(update);
-        break;
-      }
-    }
+    // Position and sequence together are NOT proof of a publisher change. The
+    // producer samples the hold and publishes outside its controller lock
+    // (agent/delegate_tree_controller.go's publishDelegateHold,
+    // holdSequenceForLocked), so an older sample can leave after a newer one
+    // from the SAME source. A later-arriving lower sequence is exactly that
+    // shape, and treating it as a restarted numbering stripped the source's
+    // own live hold. Within one attributed source the highest sample wins, as
+    // mergeStableDelegate orders it.
+    if (publishedAfterNaming.has(id)) proven.add(update);
   }
   return proven;
 }
@@ -6392,7 +6387,12 @@ function carriedHydrationUpdates(
 // indexed by the replaced source's sequence, and a terminal update buffered
 // before the replacement is the only copy that the delegate finished. Only its
 // HOLD belongs to the departed daemon's numbering, so only the hold is
-// stripped.
+// stripped - and only from the samples this buffer PROVES that source
+// published. A carry is not evidence of a publisher change: a superseding resync
+// from the same source leaves the buffer's own samples still that source's, and
+// stripping them showed a live wait as unheld for the whole of the successor
+// read. The proof is `provenRetiredSamples`'s, the same one the failure replay
+// uses, so the two paths cannot disagree about one frame.
 //
 // An overlay frame is SOURCE-LOCAL by contrast: it describes a stream the
 // outgoing daemon was producing (an unfinished assistant message, a running
@@ -6404,16 +6404,29 @@ function carriedHydrationUpdates(
 // Everything else (history/updated, status, metadata) is a statement about the
 // thread that the incoming source's own frames supersede, and replaying it
 // boots the fold on the new source's terms.
+//
+// A CONFIRMED ABSENCE is the one caller that retires every hold sample: no
+// daemon runs the thread, so no source is left sampling any sequence and there
+// is nothing a kept sample could belong to.
 function carriedAcrossReplacement(
   carried: PendingThreadHydration["notifications"],
   retiredBoot?: string,
+  // A CONFIRMED ABSENCE retires every hold sample, not only the ones this
+  // buffer proves: no daemon runs the thread, so no source is left sampling any
+  // sequence. A named replacement is different - see the proven set below.
+  retireAllHolds = false,
 ): PendingThreadHydration["notifications"] {
+  // Which of the buffered samples this buffer PROVES belong to the retired
+  // source. The same rule the failure replay uses, applied to the same
+  // question: a hold is retired only for the source the evidence names, never
+  // because a frame merely arrived before some other frame.
+  const provenRetired = provenRetiredSamples(carried, retiredBoot);
   const kept: PendingThreadHydration["notifications"] = [];
   for (const buffered of carried) {
     const { method } = buffered.notification;
     if (method.startsWith("overlay/")) continue;
     if (method === "evener/delegate/updated") {
-      kept.push(stripDelegateHold(buffered));
+      kept.push(retireAllHolds || provenRetired.has(buffered) ? stripDelegateHold(buffered) : buffered);
       continue;
     }
     // A recorded frame from the RETIRED boot may not carry its identity across
@@ -6615,12 +6628,10 @@ function replayHydrationNotifications(
         // sequence is corrected by the next sample.
         //
         // `retiredLineSamples` holds exactly the samples the buffer proves
-        // belong to the outgoing line. A delegate sample is one when the
-        // replacement later names itself in a `history/updated` (everything
-        // before that frame predates the transition), or when a later sample of
-        // the same delegate carries a LOWER sequence - the source bumps its
-        // sequence under the controller lock, so a decrease can only be a
-        // different line starting over. A sample neither fact covers is kept.
+        // belong to the outgoing line: pre-naming samples of a delegate the
+        // replacement later publishes after naming itself in a
+        // `history/updated`. A sample without that publisher evidence is kept
+        // and ordered by `holdSequence` within the attributed source.
         //
         // Folding such a sequence whole reinstates it AFTER the hand-off
         // already retired the base model's copy, and the incoming source's own
@@ -6659,12 +6670,9 @@ function replayHydrationNotifications(
       // answer here: a delegate update keeps its durable fields and loses only
       // the hold, and an overlay frame goes with the producer that was
       // streaming it. A dropped frame folds nothing at all.
-      const [surviving] = carriedAcrossReplacement([{ ...update, notification }]);
+      const [surviving] = carriedAcrossReplacement([{ ...update, notification }], undefined, true);
       if (surviving === undefined) continue;
-      const folded = foldCanonicalNotification(hydrated, surviving.notification, update.now);
-      hydrated = folded.model;
-      appliedAt.push(update.now);
-      continue;
+      notification = surviving.notification;
     }
     const folded = foldCanonicalNotification(hydrated, notification, update.now);
     const updated = folded.model;
@@ -10441,19 +10449,6 @@ export function backgroundTranscriptSnapshotForTests(): TranscriptResidencySnaps
 
 export function pendingThreadHydrationUpdatesForTests(): readonly ReceivedTranscriptUpdate[] {
   return [...pendingThreadHydrations.values()].flatMap((pending) => pending.notifications);
-}
-
-/** The watched lifecycle's buffered frames, which `pendingThreadHydrationUpdatesForTests`
- * does not cover: a superseded watched read's carry lives only here. */
-export function pendingWatchedHydrationUpdatesForTests(): readonly ReceivedTranscriptUpdate[] {
-  return [...pendingWatchedHydrations.values()].flatMap((pending) => pending.notifications);
-}
-
-/** The watched lifecycle's own byte reservation. A total-only view cannot tell
- * a charged carry from one whose bytes another pending record happens to be
- * holding, which is exactly the accounting this rule is about. */
-export function pendingWatchedHydrationBytesForTests(): number {
-  return [...pendingWatchedHydrations.values()].reduce((total, pending) => total + pending.backgroundBytes, 0);
 }
 
 export function pendingThreadHydrationBaseModelsForTests(): readonly ThreadModel[] {

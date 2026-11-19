@@ -90,6 +90,34 @@ export function compareBootGeneration(held: string, incoming: string): BootGener
   return "replace";
 }
 
+/**
+ * Where two boot tokens stand relative to each other: `candidate` was minted
+ * before (`older`), after (`newer`) or in the same boot as (`same`) the
+ * `reference`, or the two cannot be ordered at all (`unorderable`).
+ *
+ * Only tokens that both parse and name the same owner have an order. A bare
+ * counter names no owner, `daemonless` names no counter, and two different
+ * owners have no shared numbering, so none of those pairs says which line
+ * ended first. Callers use this where "older" is the only reading that
+ * licenses discarding something: everything else is absence of evidence.
+ */
+export type BootGenerationOrder = "older" | "same" | "newer" | "unorderable";
+
+/**
+ * Orders `candidate` against `reference`. See `BootGenerationOrder`: only a
+ * same-owner counter pair has an order, and every other pair is `unorderable`
+ * rather than guessed.
+ */
+export function orderBootGeneration(candidate: string, reference: string): BootGenerationOrder {
+  if (candidate === reference) return "same";
+  const candidateCounter = parseBootGeneration(candidate);
+  const referenceCounter = parseBootGeneration(reference);
+  if (!candidateCounter || !referenceCounter || candidateCounter.owner !== referenceCounter.owner) return "unorderable";
+  if (candidateCounter.counter < referenceCounter.counter) return "older";
+  if (candidateCounter.counter > referenceCounter.counter) return "newer";
+  return "same";
+}
+
 const MAX_UINT64 = (1n << 64n) - 1n;
 
 /**
@@ -157,7 +185,7 @@ export function confirmedBootReplacement(
     // under another name and confirms nothing.
     return evidence === "authoritative";
   }
-  return compareBootGeneration(held, incoming) === "replace";
+  return incomingCounter.counter > heldCounter.counter;
 }
 
 // Reads a counter token the way Go's strconv.ParseUint does (decimal digits

@@ -4,7 +4,7 @@
 // these live in `reducer.ts`.
 
 import { type BootTokenEvidence, compareBootGeneration, confirmedBootReplacement } from "./bootGeneration";
-import { historyAnsweredLive, historyFallback, historyReplacesWindow, historyServingFacts } from "./historyServing";
+import { authoritativeSourceOf, historyFallback, historyReplacesWindow, historyServingFacts } from "./historyServing";
 import type { HistoryState, ItemModel, OlderFrontier, ThreadModel, TurnModel } from "./model";
 import { comparePositions, SYSTEM_PRELUDE_TURN_ID } from "./model";
 import { frontierFromCursor, olderFrontierOf, withOlderFrontier } from "./olderFrontier";
@@ -22,7 +22,6 @@ import {
   markItemIdentityOnly,
   markItemTextOmitted,
   outputImagesToItemImages,
-  retireReplacedSourceHoldOnModel,
   threadFields,
   wireImageSessionId,
   wireItemToModel,
@@ -1166,11 +1165,27 @@ export function applyReadResponse<M extends ThreadModel>(
   // history update from clearing the live hold its read just supplied. Every
   // other fallback - `live-read-failed` included - passes nothing and preserves
   // the recorded owner.
-  const fallbackReadsLive = historyFallback(resp) && historyAnsweredLive(resp);
+  //
+  // The same suppression covers a non-fallback legacy `daemonless`: without
+  // serving facts it names no source at all (authoritativeSourceOf), so it is
+  // no more evidence of a replacement than a fallback is.
+  const readBoot = authoritativeSourceOf(resp, resp.bootGeneration) || undefined;
+  // A read adopts its own identity, and with it the implicit ownership that
+  // identity carries. One that names NO source carries no ownership at all, so
+  // the recorded owner must survive the adoption: otherwise the next frame
+  // from the source that actually holds compares against a sourceless token,
+  // confirms a replacement, and clears the live hold that source published. An
+  // unchanged hold emits no update of its own to restore it.
+  const adopted = readIdentity(resp);
+  const recordedOwner = holdOwnerOf(held);
+  let identity: ReturnType<typeof retainedHistoryIdentity> = adopted;
+  if (fallback) {
+    identity = retainedHistoryIdentity(undefined, held, readBoot);
+  } else if (readBoot === undefined && recordedOwner !== "" && recordedOwner !== adopted.bootGeneration) {
+    identity = { ...adopted, holdOwner: recordedOwner };
+  }
   const history: HistoryState = {
-    ...(historyFallback(resp)
-      ? retainedHistoryIdentity(undefined, held, fallbackReadsLive ? resp.bootGeneration : undefined)
-      : readIdentity(resp)),
+    ...identity,
     appliedGeneration: generation,
     issuedGeneration: Math.max(held.issuedGeneration, generation),
     deferredPages: [],
@@ -1517,11 +1532,12 @@ export function applyReadModel<M extends ThreadModel>(
     // account of itself, and it is the only evidence a client has about who
     // owns the hold - so the suppression is for the validity question only,
     // and ownership keeps it. `live-read-failed` names no owner and stays
-    // suppressed in both.
+    // suppressed in both, as does a legacy `daemonless` answer that carries no
+    // serving facts.
     ...retainedHistoryIdentity(
       identity,
       held,
-      fallback && !historyAnsweredLive(fresh.servingFacts) ? undefined : freshHistory?.bootGeneration,
+      authoritativeSourceOf(fresh.servingFacts, freshHistory?.bootGeneration) || undefined,
     ),
     appliedGeneration: held.appliedGeneration,
     issuedGeneration: held.issuedGeneration,
@@ -1620,7 +1636,13 @@ function mergeVersionedPage<M extends ThreadModel>(
   // recording it would make the live daemon's next versioned update read as a
   // takeover and clear a hold it is still sampling. A saved-index page WITHOUT
   // fallback provenance is authoritative and may retire as usual.
-  const handed = historyFallback(resp) ? undefined : handOffReplacedSource(model, resp.bootGeneration, "authoritative");
+  //
+  // The same holds for a page with no serving facts whose token is an
+  // unqualified `daemonless`: the hub stamps that whenever it answered from
+  // the transcript, including when it never resolved ownership, so it names
+  // no source (authoritativeSourceOf).
+  const source = authoritativeSourceOf(resp, resp.bootGeneration);
+  const handed = source === "" ? undefined : handOffReplacedSource(model, resp.bootGeneration, "authoritative");
   // The hand-off may have recorded a new hold owner. Every branch that keeps
   // the held history must spread THAT history, or the branch's own history
   // literal silently drops the owner the hand-off just recorded - the same
@@ -1642,17 +1664,22 @@ function mergeVersionedPage<M extends ThreadModel>(
     case "invalidate": {
       // A page of the incarnation it just announced waits for that
       // incarnation's latest window.
+      // Ownership follows the EVIDENCE, and this page's token may name no
+      // source at all. `invalidated` records an owner from the token it is
+      // given, so a sourceless token must not be given one: recording
+      // `daemonless` there retires a live hold that its own daemon's next
+      // frame cannot restore.
       const history = invalidated(held, {
         ...readIdentity(resp),
-        bootEvidence: "authoritative",
+        ...(source === "" ? { bootGeneration: undefined } : { bootEvidence: "authoritative" as const }),
       });
       const deferred = history.pendingIncarnation === resp.snapshot?.incarnation;
       // `invalidated` recorded the incoming source as the hold owner; this is
       // the retire, decided against the model that still names the old owner.
-      const retired = retireReplacedSourceHoldOnModel(model, resp.bootGeneration, "authoritative");
+      // Neither runs on a token that names no source.
       return {
         model: {
-          ...(retired ?? model),
+          ...(handed ?? model),
           history: deferred ? { ...history, deferredPages: [...history.deferredPages, resp] } : history,
         },
         applied: false,

@@ -1,3 +1,4 @@
+import { isConfirmedAbsence } from "./bootGeneration";
 import { isPlainObject } from "./plainObject";
 import type { ThreadHistoryReadResponse } from "./types.gen";
 import { WIRE_FIELD_KEYS } from "./types.gen";
@@ -6,6 +7,14 @@ export type HistoryServingFacts = Pick<
   ThreadHistoryReadResponse,
   "servedFrom" | "fallbackReason" | "asOf" | "instanceId" | "servingFactsUnavailableReason" | "latestExecutionTurnId"
 >;
+
+/**
+ * Anything that may carry serving facts: a read response, a page response, or
+ * a model's stored facts. Read structurally, like every other helper here, so
+ * a legacy wire shape that carries none of the six fields is accepted too -
+ * that absence is exactly what `authoritativeSourceOf` has to see.
+ */
+export type HistoryServingFactsInput = object;
 
 export const HISTORY_SERVING_FACT_KEYS = [
   "servedFrom",
@@ -48,6 +57,33 @@ export function historyFallback(value: object | undefined): boolean {
 export function historyAnsweredLive(value: object | undefined): boolean {
   const facts = value as HistoryServingFacts | undefined;
   return facts?.servedFrom === "saved-index" && facts.fallbackReason === "live-read-empty";
+}
+
+/**
+ * The source a response is EVIDENCE about — the only thing a hold hand-off or
+ * a replay-suppression decision may act on. Empty means the response
+ * establishes no source.
+ *
+ * A saved-index fallback speaks only to history validity (its rows came from
+ * the saved index), so it names a source only when a daemon answered it
+ * (`live-read-empty`, see `historyAnsweredLive`).
+ *
+ * An unqualified `daemonless` is the hub's own stamp for "I answered from the
+ * transcript". On `thread/read` and `thread/turns/list` it covers a relay
+ * outage, a protocol refusal and a deadline after a live read failed as well
+ * as a real absence, so without serving facts there is nothing that makes it
+ * a claim about who serves the thread: it may neither retire a hold nor
+ * become one's recorded owner. With serving facts the hub has said how it was
+ * served, and the token stands as any other authoritative answer.
+ */
+export function authoritativeSourceOf(
+  facts: HistoryServingFactsInput | undefined,
+  bootGeneration: string | undefined,
+): string {
+  if (historyFallback(facts)) return historyAnsweredLive(facts) ? (bootGeneration ?? "") : "";
+  const servedFrom = (facts as HistoryServingFacts | undefined)?.servedFrom;
+  if (isConfirmedAbsence(bootGeneration) && servedFrom === undefined) return "";
+  return bootGeneration ?? "";
 }
 
 // Legacy responses retain their old authoritative semantics. Only the new

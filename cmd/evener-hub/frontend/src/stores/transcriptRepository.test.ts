@@ -378,17 +378,27 @@ async function repositoryWithPage() {
   return { fixture, owner, reader, rows };
 }
 
-// RoboRev 53685/53688 (Medium 4). `acceptRead` installs the source the
-// accepted read established, and `acceptBeforeReadCut` then folds the frames
-// buffered before that response. A pre-response frame still carrying the
-// RETIRED source's token used to fold verbatim: the reducer accepted it as a
-// takeover, cleared the live hold the accepted read's source supplied, and
-// invalidated the snapshot the read had just installed. Its content is still
-// recorded evidence, so it folds bootless instead.
+// `acceptRead` installs the source the accepted read established, and
+// `acceptBeforeReadCut` then folds the frames buffered before that response. A
+// pre-response frame still carrying the RETIRED source's token used to fold
+// verbatim: the reducer accepted it as a takeover, cleared the live hold the
+// accepted read's source supplied, and invalidated the snapshot the read had
+// just installed.
+//
+// Only a read that demonstrably REPLACED a source can say which frame is the
+// retired one, so this is that read: the repository held `5@root` and the
+// answer installed `1@other`.
 it("folds a pre-response frame from the retired source without letting it reclaim ownership", async () => {
   const fixture = createEntryCacheFixture();
   fixtures.push(fixture);
   const owner = repository(fixture.cache);
+  const retired = readMany(2);
+  retired.bootGeneration = "5@root";
+  retired.snapshot = { incarnation: identity.incarnation, length: 2 };
+  expect(owner.acceptRead(retired, { lifetime: 1, readId: "cut-retired", boundary: "cut-retired" })).toBe(true);
+  await owner.settled();
+  expect(owner.getSnapshot()?.history?.bootGeneration).toBe("5@root");
+
   const baseline = readMany(3);
   baseline.bootGeneration = "1@other";
   baseline.snapshot = { incarnation: identity.incarnation, length: 3 };
@@ -548,6 +558,157 @@ it("keeps the newer daemon's frame when the accepted read superseded no source",
   expect(after?.history?.holdOwner).toBe("1");
   // And its invalidation survives, which is the signal recovery runs on.
   expect(after?.history?.invalidatedAtGeneration).toBeDefined();
+});
+
+// A legacy read that stamps `daemonless` with no serving facts is the hub
+// saying "I answered from the transcript", not "no daemon serves this thread":
+// the stamp covers a relay outage, a protocol refusal and a deadline after a
+// live read failed alike. It therefore names no source, and a frame from any
+// other boot is a takeover the read knows nothing about - not the source it
+// superseded.
+it("lets a legacy daemonless read suppress no buffered frame's source", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const baseline = readMany(3);
+  baseline.bootGeneration = "1@other";
+  baseline.snapshot = { incarnation: identity.incarnation, length: 3 };
+  expect(owner.acceptRead(baseline, { lifetime: 1, readId: "legacy-seed", boundary: "legacy-seed" })).toBe(true);
+  await owner.settled();
+  expect(owner.getSnapshot()?.history?.bootGeneration).toBe("1@other");
+
+  const legacy: ThreadHistoryReadResponse = read("legacy", 3);
+  legacy.bootGeneration = "daemonless";
+  legacy.epoch = 1;
+  legacy.snapshot = { incarnation: identity.incarnation, length: 3 };
+  expect(owner.acceptRead(legacy, { lifetime: 1, readId: "legacy", boundary: "legacy" })).toBe(true);
+
+  // Buffered before that answer: the source the legacy token cannot speak for.
+  owner.acceptBeforeReadCut(
+    [
+      {
+        method: "history/updated",
+        params: {
+          ref,
+          threadId,
+          bootGeneration: "1@other",
+          epoch: 4,
+          snapshot: { incarnation: identity.incarnation, length: 4 },
+        },
+      } as AnyNotification,
+    ],
+    { lifetime: 1 },
+  );
+
+  const after = owner.getSnapshot();
+  // The frame folded, so its invalidation survives to reach recovery.
+  expect(after?.history?.awaited?.bootGeneration).toBe("1@other");
+  expect(after?.history?.invalidatedAtGeneration).toBeDefined();
+});
+
+// The first hydration's read is the only source evidence the repository has,
+// and it can order a buffered frame only when the two tokens name the same
+// owner. A higher counter is a NEWER source whose frame invalidates the read's
+// snapshot, so discarding it leaves the pane believing a superseded snapshot
+// is current.
+it("keeps a pre-cut frame from a newer boot than the first hydration's", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const baseline = readMany(3);
+  baseline.bootGeneration = "5";
+  baseline.snapshot = { incarnation: identity.incarnation, length: 3 };
+  expect(owner.acceptRead(baseline, { lifetime: 1, readId: "first", boundary: "first" })).toBe(true);
+  expect(owner.getSnapshot()?.history?.bootGeneration).toBe("5");
+
+  owner.acceptBeforeReadCut(
+    [
+      {
+        method: "history/updated",
+        params: {
+          ref,
+          threadId,
+          bootGeneration: "6",
+          epoch: 1,
+          snapshot: { incarnation: identity.incarnation, length: 4 },
+        },
+      } as AnyNotification,
+    ],
+    { lifetime: 1 },
+  );
+
+  const after = owner.getSnapshot();
+  expect(after?.history?.awaited?.bootGeneration).toBe("6");
+  expect(after?.history?.invalidatedAtGeneration).toBeDefined();
+});
+
+// Two owners cannot be ordered by their counters, and `daemonless` is not a
+// counter at all. Neither is evidence that the frame predates the read, so the
+// frame is kept and its own identity decides what happens to the snapshot.
+it.each([
+  ["a different owner", "5@root", "1@other"],
+  ["a daemonless bootstrap", "5", "daemonless"],
+])("keeps a pre-cut frame whose boot is unorderable (%s)", async (_label, readBoot, frameBoot) => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const baseline = readMany(3);
+  baseline.bootGeneration = readBoot;
+  baseline.snapshot = { incarnation: identity.incarnation, length: 3 };
+  expect(owner.acceptRead(baseline, { lifetime: 1, readId: "first", boundary: "first" })).toBe(true);
+  expect(owner.getSnapshot()?.history?.bootGeneration).toBe(readBoot);
+
+  owner.acceptBeforeReadCut(
+    [
+      {
+        method: "history/updated",
+        params: {
+          ref,
+          threadId,
+          bootGeneration: frameBoot,
+          epoch: 2,
+          snapshot: { incarnation: identity.incarnation, length: 4 },
+        },
+      } as AnyNotification,
+    ],
+    { lifetime: 1 },
+  );
+
+  const after = owner.getSnapshot();
+  expect(after?.history?.awaited?.bootGeneration).toBe(frameBoot);
+  expect(after?.history?.invalidatedAtGeneration).toBeDefined();
+});
+
+// The control: an older counter of the SAME owner is the one case first
+// hydration can prove predates its read, so it is still discarded.
+it("discards a pre-cut frame from an older boot than the first hydration's", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const baseline = readMany(3);
+  baseline.bootGeneration = "5";
+  baseline.snapshot = { incarnation: identity.incarnation, length: 3 };
+  expect(owner.acceptRead(baseline, { lifetime: 1, readId: "first", boundary: "first" })).toBe(true);
+
+  owner.acceptBeforeReadCut(
+    [
+      {
+        method: "history/updated",
+        params: {
+          ref,
+          threadId,
+          bootGeneration: "4",
+          epoch: 2,
+          snapshot: { incarnation: identity.incarnation, length: 4 },
+        },
+      } as AnyNotification,
+    ],
+    { lifetime: 1 },
+  );
+
+  const after = owner.getSnapshot();
+  expect(after?.history?.awaited?.bootGeneration).toBeUndefined();
+  expect(after?.history?.invalidatedAtGeneration).toBeUndefined();
 });
 
 it("persists the page observation snapshot rather than the latest completeness watermark", async () => {

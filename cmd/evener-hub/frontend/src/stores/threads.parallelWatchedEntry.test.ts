@@ -17,7 +17,7 @@ import {
 import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { connectReadyFakeClient } from "../testing/connectionTestUtils";
 import { connectionStore, resetConnectionStoreForTests } from "./connection";
-import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
+import { productionEntryTranscriptForTests, setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { SessionEntryCache } from "./sessionEntryCache";
 import {
@@ -34,6 +34,7 @@ import {
   installHydrationRetrySchedulerForTests,
   resetThreadsStoreForTests,
   setMutationStorageForTests,
+  settleEntryTranscriptForTests,
   threadsStore,
 } from "./threads";
 
@@ -64,6 +65,35 @@ function versionedReadResponse(
     epoch: 1,
     snapshot: { incarnation: "inc-1", length: snapshotLength },
   };
+}
+
+/** One `evener/delegate/updated` sample of `delegateId`. A sample with a
+ * `sequence` carries the drain hold; a sample without one is the durable
+ * update an unheld sample carries. */
+function delegateFrame(
+  ref: string,
+  delegateId: string,
+  sequence: number | undefined,
+  overrides: { status?: string; runningJobCount?: number; projectionRevision?: number } = {},
+): AnyNotification {
+  return {
+    method: "evener/delegate/updated",
+    params: {
+      threadId: `thr_${ref}`,
+      ref,
+      delegate: {
+        delegateId,
+        ownerSessionId: "s1",
+        rootSessionId: "s1",
+        transcriptRef: ref,
+        status: overrides.status ?? "running",
+        ...(overrides.projectionRevision === undefined ? {} : { projectionRevision: overrides.projectionRevision }),
+        ...(sequence === undefined
+          ? {}
+          : { holdSequence: sequence, drainHeldByJobs: true, runningJobCount: overrides.runningJobCount ?? 1 }),
+      },
+    },
+  } as unknown as AnyNotification;
 }
 
 function sameEpochReconnectFixture() {
@@ -294,18 +324,101 @@ describe("useThreadsStore.watchThread", () => {
     threadsStore.getState().releaseWatchedThread("ref_a");
   });
 
+  // A watched read can buffer a source's first hold, then that same source's
+  // first `history/updated`, and then be superseded by a resync from the SAME
+  // source. The carry belongs to one connection. The buffer names the source
+  // those frames belong to and holds no sample that source published after
+  // naming itself, so nothing in it proves the hold came from a line that
+  // ended. Carrying it stripped showed the delegate unheld for the whole of
+  // the successor read, and a successor that then failed replayed only the
+  // stripped row.
+  test("a same-source resync carries the source's own buffered hold", async () => {
+    const fake = connectReadyFakeClient();
+    await establishMembership(fake);
+    const reads: Array<{
+      resolve: (response: ThreadReadResponse) => void;
+      reject: (error: Error) => void;
+    }> = [];
+    fake.on(
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((resolve, reject) => {
+          reads.push({ resolve, reject });
+        }),
+    );
+
+    const watching = threadsStore.getState().watchThread("ref_a", { includeTurns: true });
+    await flushUntil(() => reads.length === 1);
+    reads[0]!.resolve(versionedReadResponse("ref_a", { name: "Held" }));
+    await flushUntil(() => threadsStore.getState().watchedThreads.get("ref_a")?.name === "Held");
+
+    // A bootless resync starts the read the replacement publishes into.
+    fake.emitNotification({
+      method: "evener/thread/resync",
+      params: { threadId: "thr_ref_a", ref: "ref_a" },
+    });
+    await flushUntil(() => reads.length === 2);
+
+    // Boot 2's first hold, then boot 2's first `history/updated`.
+    fake.emitNotification(delegateFrame("ref_a", "dlg_a", 5));
+    fake.emitNotification({
+      method: "history/updated",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        bootGeneration: "2",
+        epoch: 4,
+        snapshot: { incarnation: "inc-1", length: 2 },
+        turns: [],
+      },
+    } as unknown as AnyNotification);
+
+    // A second resync from the SAME source supersedes that read.
+    fake.emitNotification({
+      method: "evener/thread/resync",
+      params: { threadId: "thr_ref_a", ref: "ref_a", bootGeneration: "2" },
+    });
+    await flushUntil(() => reads.length === 3);
+
+    // The successor read fails under boot 2, so the carried buffer is its only
+    // record of the live wait.
+    reads[2]!.reject(
+      new WireError("thread history failed at entry 3", -32000, {
+        evenerErrorInfo: "transcriptHistoryFailed",
+        bootGeneration: "2",
+        epoch: 4,
+      }),
+    );
+    await flushUntil(() => threadsStore.getState().watchedThreads.get("ref_a")?.history?.failed !== undefined);
+
+    const model = threadsStore.getState().watchedThreads.get("ref_a");
+    const delegate = model?.delegates?.find((row) => row.delegateId === "dlg_a");
+    // The source the successor read serves still owns the sample it published.
+    expect(delegate?.holdSequence).toBe(5);
+    expect(delegate?.drainHeldByJobs).toBe(true);
+    expect(model?.history?.failed).toBeDefined();
+
+    reads[1]!.resolve(versionedReadResponse("ref_a", { name: "Held" }));
+    await watching.catch(() => {});
+    threadsStore.getState().releaseWatchedThread("ref_a");
+  });
+
   // The mirror of the case above, and the one position alone cannot tell apart.
   // On a bootless recovery the replacement publishes its FIRST hold before its
   // first `history/updated`, so the buffer holds: the outgoing daemon's held
-  // sample at 900, then the replacement's own held sample at 1, then the frame
-  // naming the replacement. Stripping positionally (before the naming frame)
-  // took the replacement's live hold with the retired one, and an unchanged
-  // hold emits no update of its own to restore it.
+  // sample at 900, then another held sample at 1, then the frame naming the
+  // replacement. Position alone cannot say which of the two holds is the
+  // replacement's, and a lower sequence arriving after a higher one is exactly
+  // what a producer that releases its lock before publishing sends: the
+  // controller in agent/delegate_tree_controller.go hands out one sequence per
+  // sample and lets an older sample leave after a newer one.
   //
-  // What separates them is publisher identity, and the only proof of a second
-  // numbering line in this buffer is a sample the incoming source published
-  // AFTER naming itself. Here there is none, so the replacement's hold is kept.
-  test("a replacement's first hold survives when no sample proves a second numbering line", async () => {
+  // With no independent evidence of a publisher change between the two frames,
+  // the buffer orders them within one attributed source: the highest sequence
+  // wins, and the sample at 900 stays. A stale sequence is corrected by the
+  // incoming source's next sample, while a dropped live hold emits no update of
+  // its own to restore it.
+  test("a lower hold sequence arriving later does not prove a second numbering line", async () => {
     const a = connectReadyFakeClient();
     a.on("thread/read", () => versionedReadResponse("ref_a", { name: "Held" }));
     await threadsStore.getState().watchThread("ref_a", { includeTurns: true });
@@ -347,8 +460,8 @@ describe("useThreadsStore.watchThread", () => {
         },
       },
     } as unknown as AnyNotification);
-    // The replacement's OWN hold, published before it names itself - the bootless
-    // recovery shape.
+    // A second held sample of the same delegate, numbered LOW and arriving
+    // later - the reordered-publisher shape, not a restarted numbering.
     b.emitNotification({
       method: "evener/delegate/updated",
       params: {
@@ -384,8 +497,102 @@ describe("useThreadsStore.watchThread", () => {
 
     const model = threadsStore.getState().watchedThreads.get("ref_a");
     const replacement = model?.delegates?.find((delegate) => delegate.delegateId === "dlg_a");
-    // The replacement's live wait is still on screen, numbered from its own line.
-    expect(replacement?.holdSequence).toBe(1);
+    // Within one attributed source the highest sample wins, so the hold stands
+    // at the sequence the buffer actually reached highest.
+    expect(replacement?.holdSequence).toBe(900);
+    expect(replacement?.drainHeldByJobs).toBe(true);
+    expect(model?.history?.failed).toBeDefined();
+    threadsStore.getState().releaseWatchedThread("ref_a");
+  });
+
+  // The same rule with the numbering the producer actually uses: the
+  // replacement's held sample at 2 arrives before its delayed, unheld sample at
+  // 1, both before its first `history/updated`. Neither sample proves a
+  // publisher change - both are the replacement's, and the later-arriving
+  // lower one is a reordered publish, not a restarted line - so the buffer
+  // must order them by sequence and keep the higher, held sample. Treating the
+  // late `1` as proof of a second line stripped the live `2` and showed the
+  // delegate as unheld while its wait was still active.
+  test("a delayed unheld sample of one source cannot strip its higher held sample", async () => {
+    const a = connectReadyFakeClient();
+    a.on("thread/read", () => versionedReadResponse("ref_a", { name: "Held" }));
+    await threadsStore.getState().watchThread("ref_a", { includeTurns: true });
+
+    const b = new FakeClient("ready");
+    let failRead: (() => void) | null = null;
+    b.on(
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((_resolve, reject) => {
+          failRead = () =>
+            reject(
+              new WireError("thread history failed at entry 3", -32000, {
+                evenerErrorInfo: "transcriptHistoryFailed",
+                bootGeneration: "2",
+                epoch: 4,
+              }),
+            );
+        }),
+    );
+    connectionStore.getState().connect(b);
+    await flushUntil(() => failRead !== null);
+
+    // The replacement's held sample, numbered from its own line.
+    b.emitNotification({
+      method: "evener/delegate/updated",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        delegate: {
+          delegateId: "dlg_a",
+          ownerSessionId: "s1",
+          rootSessionId: "s1",
+          transcriptRef: "ref_a",
+          status: "running",
+          holdSequence: 2,
+          drainHeldByJobs: true,
+          runningJobCount: 3,
+        },
+      },
+    } as unknown as AnyNotification);
+    // Its own EARLIER sample, published late: unheld, sequence 1.
+    b.emitNotification({
+      method: "evener/delegate/updated",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        delegate: {
+          delegateId: "dlg_a",
+          ownerSessionId: "s1",
+          rootSessionId: "s1",
+          transcriptRef: "ref_a",
+          status: "running",
+          holdSequence: 1,
+        },
+      },
+    } as unknown as AnyNotification);
+    // Only now does the replacement name itself.
+    b.emitNotification({
+      method: "history/updated",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        bootGeneration: "2",
+        epoch: 4,
+        snapshot: { incarnation: "inc-1", length: 2 },
+        turns: [],
+      },
+    } as unknown as AnyNotification);
+
+    (failRead as unknown as () => void)();
+    await flushUntil(() => threadsStore.getState().watchedThreads.get("ref_a")?.history?.failed !== undefined);
+
+    const model = threadsStore.getState().watchedThreads.get("ref_a");
+    const replacement = model?.delegates?.find((delegate) => delegate.delegateId === "dlg_a");
+    // The held sample at 2 outranks the late unheld sample at 1.
+    expect(replacement?.holdSequence).toBe(2);
+    expect(replacement?.drainHeldByJobs).toBe(true);
+    expect(replacement?.runningJobCount).toBe(3);
     expect(model?.history?.failed).toBeDefined();
     threadsStore.getState().releaseWatchedThread("ref_a");
   });
@@ -1361,5 +1568,96 @@ describe("useThreadsStore.watchThread", () => {
 
     await threadsStore.getState().watchThread("ref_a"); // fresh lean watch
     expect(threadsStore.getState().watchedThreads.get("ref_a")?.turns).toHaveLength(0);
+  });
+});
+
+describe("tracked entry hydration hold attribution", () => {
+  const ref = "local:tracked";
+
+  function trackedResponse(): ThreadReadResponse {
+    return {
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 1 },
+      requestGeneration: 1,
+      thread: {
+        ...readResponse(ref).thread,
+        turns: [{ id: "turn_1", status: "completed", itemsView: "full", items: [] }],
+      },
+    };
+  }
+
+  // A tracked refresh after a bootless resync accepts the outgoing source's
+  // delegate hold into the entry repository while the read is pending, then
+  // fails under the replacement's boot. The failure's hand-off retires the
+  // outgoing hold - and the REPOSITORY replay must not put it back. A verbatim
+  // re-offer of every buffered delegate frame restored the departed sequence,
+  // and the replacement's own first unheld sample at a lower sequence then lost
+  // to it, leaving a wait that had already ended visible.
+  test("a failed tracked refresh does not replay the outgoing source's hold", async () => {
+    const fake = connectReadyFakeClient();
+    fake.on("thread/read", () => trackedResponse());
+    await threadsStore.getState().ensureThread(ref);
+    await settleEntryTranscriptForTests(ref);
+
+    let failRead: (() => void) | null = null;
+    fake.on(
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((_resolve, reject) => {
+          failRead = () =>
+            reject(
+              new WireError("thread history failed at entry 3", -32000, {
+                evenerErrorInfo: "transcriptHistoryFailed",
+                bootGeneration: "2",
+                epoch: 4,
+              }),
+            );
+        }),
+    );
+    const refreshing = threadsStore
+      .getState()
+      .refreshThread(ref)
+      .catch(() => {});
+    await flushUntil(() => failRead !== null);
+    expect(failRead).not.toBeNull();
+
+    // The outgoing source's hold, accepted into the repository live while the
+    // read is pending.
+    fake.emitNotification(delegateFrame(ref, "dlg_a", 900));
+
+    // The read fails naming the replacement. Nothing has named boot 2 in this
+    // buffer yet, so the sample above has no attribution and must not be
+    // re-offered: it sits in exactly the window a bootless recovery produces,
+    // where either line could have published it.
+    (failRead as unknown as () => void)();
+    await refreshing;
+    await flushUntil(() => productionEntryTranscriptForTests(ref)?.model?.history?.failed !== undefined);
+
+    // Only now does the replacement name itself, then publish its own sample:
+    // unheld, and numbered from its own line. An unheld sample cannot outrank a
+    // restored 900 - mergeStableDelegate keeps the higher hold - so a stray
+    // restoration here leaves a wait that has already ended on screen.
+    fake.emitNotification({
+      method: "history/updated",
+      params: {
+        threadId: `thr_${ref}`,
+        ref,
+        bootGeneration: "2",
+        epoch: 4,
+        snapshot: { incarnation: "inc-1", length: 2 },
+        turns: [],
+      },
+    } as unknown as AnyNotification);
+    fake.emitNotification(delegateFrame(ref, "dlg_a", undefined, { status: "completed", projectionRevision: 7 }));
+
+    const model = productionEntryTranscriptForTests(ref)?.model;
+    const delegate = model?.delegates?.find((row) => row.delegateId === "dlg_a");
+    // The replacement's unheld sample stands and the retired sequence is gone.
+    expect(delegate?.holdSequence).toBeUndefined();
+    expect(delegate?.drainHeldByJobs).toBeUndefined();
+    expect(delegate?.status).toBe("completed");
+    expect(model?.history?.holdOwner).toBe("2");
+    expect(model?.history?.failed).toBeDefined();
   });
 });
