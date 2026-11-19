@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { STUCK_AFTER_MS } from "@evener/appwire-client";
-import { waitingForQuotaText } from "@evener/appwire-client/state/navigation";
+import { passedQuotaResetText, waitingForQuotaText } from "@evener/appwire-client/state/navigation";
 import { expect, test } from "vitest";
 import {
   describeLiveness,
@@ -394,7 +394,7 @@ test("describeLiveness: attemptCap 0 renders the attempt number without a denomi
 // would say them.
 
 test("describeLiveness: a known usage-limit wait explains the silence with the shared wait words", () => {
-  const { level, text } = describeLiveness(30_000, true, 0, undefined, { remainingMs: 21_600_000 });
+  const { level, text } = describeLiveness(30_000, true, 0, undefined, { remainingMs: 21_600_000, passedReset: false });
   expect(level).toBe("quota");
   expect(text).toBe(waitingForQuotaText(21_600_000));
 });
@@ -403,15 +403,18 @@ test("describeLiveness: a known usage-limit wait explains the silence with the s
 // reset is explained, so it must not wait 20 seconds to be visible - and it
 // must be visible in the first place, where a first-attempt retry is not.
 test("describeLiveness: a known usage-limit wait shows below the quiet threshold", () => {
-  expect(describeLiveness(0, true, 0, undefined, { remainingMs: 60_000 }).level).toBe("quota");
-  expect(describeLiveness(19_999, true, 0, undefined, { remainingMs: 60_000 }).level).toBe("quota");
+  expect(describeLiveness(0, true, 0, undefined, { remainingMs: 60_000, passedReset: false }).level).toBe("quota");
+  expect(describeLiveness(19_999, true, 0, undefined, { remainingMs: 60_000, passedReset: false }).level).toBe("quota");
 });
 
 // A wait of hours is not a concern to escalate: past the stuck threshold the
 // quota words stand alone, with no "no updates for 3h" bolted on - that is the
 // reading this issue is about.
 test("describeLiveness: a known usage-limit wait never appends the silence that would read as a stall", () => {
-  const { level, text } = describeLiveness(STUCK_AFTER_MS * 2, true, 0, undefined, { remainingMs: 21_600_000 });
+  const { level, text } = describeLiveness(STUCK_AFTER_MS * 2, true, 0, undefined, {
+    remainingMs: 21_600_000,
+    passedReset: false,
+  });
   expect(level).toBe("quota");
   expect(text).not.toContain(formatExactGap(STUCK_AFTER_MS * 2));
 });
@@ -419,23 +422,67 @@ test("describeLiveness: a known usage-limit wait never appends the silence that 
 // The wait outranks a subagent count for the same reason a retry does: it is
 // the more specific explanation of why this session's own call is not moving.
 test("describeLiveness: a known usage-limit wait pre-empts the subagent wait", () => {
-  expect(describeLiveness(30_000, true, 3, undefined, { remainingMs: 60_000 }).level).toBe("quota");
+  expect(describeLiveness(30_000, true, 3, undefined, { remainingMs: 60_000, passedReset: false }).level).toBe("quota");
 });
 
 // An inactive thread shows nothing whatever it holds, the same gate every
 // other level honours.
 test("describeLiveness: a known usage-limit wait on an inactive thread still shows nothing", () => {
-  expect(describeLiveness(30_000, false, 0, undefined, { remainingMs: 60_000 })).toEqual({
+  expect(describeLiveness(30_000, false, 0, undefined, { remainingMs: 60_000, passedReset: false })).toEqual({
     level: "none",
     text: null,
   });
 });
 
-// The caller only passes a quota wait while its instant is still ahead
-// (quotaResumeRemainingMs returns null past it), so an absent one is the
-// ordinary decision, unchanged.
+// The caller passes no quota wait when the model holds none at all, so an
+// absent one is the ordinary decision, unchanged.
 test("describeLiveness: no quota wait leaves the ordinary quiet decision untouched", () => {
   expect(describeLiveness(30_000, true, 0).level).toBe("quiet");
+});
+
+// The reset crossing changes the promise, never the wait: past the instant
+// the line says the retry is pending rather than counting a future that has
+// arrived, and only the daemon's wake, a turn boundary, or a read showing no
+// wait ends it. The words come from the same shared source the row reads,
+// asserted through the function, never a literal.
+test("describeLiveness: past the reset instant the wait reads pending, not absent", () => {
+  const { level, text } = describeLiveness(30_000, true, 0, undefined, { passedReset: true });
+  expect(level).toBe("quota");
+  expect(text).toBe(passedQuotaResetText());
+});
+
+// Scenario 13's rendering half: the model tag and the elapsed time survive
+// the reset crossing — both halves carry identical metadata, so the line
+// never drops the facts it already told the reader beside the promise.
+test("describeLiveness: the wait's model tag and elapsed ride both halves identically", () => {
+  const counting = describeLiveness(30_000, true, 0, undefined, {
+    remainingMs: 21_600_000,
+    passedReset: false,
+    model: "gpt-5",
+    elapsedMs: 14 * 60_000,
+  });
+  expect(counting.level).toBe("quota");
+  expect(counting.text).toBe(`${waitingForQuotaText(21_600_000)} (gpt-5) — 14m on this call`);
+
+  const pending = describeLiveness(30_000, true, 0, undefined, {
+    passedReset: true,
+    model: "gpt-5",
+    elapsedMs: 14 * 60_000,
+  });
+  expect(pending.level).toBe("quota");
+  expect(pending.text).toBe(`${passedQuotaResetText()} (gpt-5) — 14m on this call`);
+});
+
+// Contract point 4: a snapshot-only wait (deadline from a read, no live
+// announcement) carries no model tag and no elapsed — the snapshot cannot
+// attribute them. The line says the wait alone.
+test("describeLiveness: a snapshot-only wait carries no model tag and no elapsed", () => {
+  const { level, text } = describeLiveness(30_000, true, 0, undefined, {
+    remainingMs: 21_600_000,
+    passedReset: false,
+  });
+  expect(level).toBe("quota");
+  expect(text).toBe(waitingForQuotaText(21_600_000));
 });
 
 // A quota_exceeded retry reaching the retry line (a daemon whose generic retry
