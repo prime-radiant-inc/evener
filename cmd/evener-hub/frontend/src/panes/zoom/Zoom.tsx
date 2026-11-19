@@ -13,7 +13,7 @@ import { navigationStore } from "../../stores/navigation/store";
 import { useSessionActivity, useSubagentCounts } from "../../stores/sessionActivity";
 import { useThreadsStore } from "../../stores/threads";
 import { useTranscriptDisplayStore } from "../../stores/transcriptDisplay";
-import { Button, EmptyState, Loader, PaneScaffold, Skeleton } from "../../widgets";
+import { EmptyState, Loader, PaneScaffold, Skeleton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { ConversationBody, type ConversationSeat } from "../session/ConversationBody";
 import { retainedConversationComposer } from "../session/composer/retainedComposer";
@@ -24,7 +24,6 @@ import {
   popAgentCascade,
   reconcileCascadeBinding,
   resumeCascadeScope,
-  returnFromAgentCascade,
 } from "./actions";
 import { CascadeColumn } from "./CascadeColumn";
 import { CascadeSpine } from "./CascadeSpine";
@@ -42,7 +41,6 @@ import styles from "./zoom.module.css";
 const CLASS = {
   body: requireClass(styles.body, "zoom.module.css", "body"),
   hint: requireClass(styles.hint, "zoom.module.css", "hint"),
-  returnRow: requireClass(styles.returnRow, "zoom.module.css", "returnRow"),
   track: requireClass(styles.track, "zoom.module.css", "track"),
   column: requireClass(styles.column, "zoom.module.css", "column"),
   spine: requireClass(styles.spine, "zoom.module.css", "spine"),
@@ -298,11 +296,6 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
   // parent, with the parent dropped when it is the removed origin.
   const firstReadable = firstReadableIndex(path.scopes, originRef);
   const readableRefs = new Set(path.scopes.slice(firstReadable).map((scope) => scope.requestedRef));
-  const returnAction = (
-    <Button variant="quiet" size="sm" onClick={() => returnFromAgentCascade(paneId)}>
-      Return to previous view
-    </Button>
-  );
   return (
     <PaneScaffold
       paneId={paneId}
@@ -311,7 +304,6 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
       publishTabTitle={false}
       scaffoldMarker="cascade"
       bodyScroll={false}
-      actions={mobile ? undefined : returnAction}
       edgeFooter={
         mobile ? undefined : (
           <StatusBar
@@ -335,7 +327,6 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
         />
       )}
       <div className={CLASS.body}>
-        {mobile && <div className={CLASS.returnRow}>{returnAction}</div>}
         {!path.ancestryKnown && (
           <p className={CLASS.hint} data-testid="cascade-ancestry-incomplete">
             Earlier ancestry is incomplete

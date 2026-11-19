@@ -530,24 +530,24 @@ test("a restored cascade renders only its selected reader on mobile and restores
         </ClientProvider>,
       ),
     );
-    const phoneReturn = await screen.findByRole("button", { name: "Return to previous view" });
-    expect(phoneReturn.closest('[data-pane-scaffold="cascade"]')).not.toBeNull();
+    expect(await screen.findByTestId("cascade-column")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Return to previous view" })).toBeNull();
     expect(screen.getAllByTestId("cascade-column").map((column) => column.getAttribute("data-scope-ref"))).toEqual([
       "grandchild",
     ]);
     expect(screen.queryByTestId("cascade-spine")).toBeNull();
     // The selected column embeds the live conversation, composer included -
     // the read-only reader surface with no composer is gone.
-    expect(screen.queryByRole("textbox")).not.toBeNull();
+    const editor = screen.getByRole("textbox");
     expect(workspaceStore.getState().panes[0]?.params).toBe(params);
-    phoneReturn.focus();
+    act(() => editor.focus());
     act(() => activitySidebarStore.getState().openWith("about"));
     const sidebar = await screen.findByTestId("activity-sidebar");
     await within(sidebar).findByText("wire-grandchild");
     expect(within(sidebar).queryByText("wire-child")).toBeNull();
     await userEvent.setup().keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByTestId("activity-sidebar")).toBeNull());
-    expect(document.activeElement).toBe(phoneReturn);
+    expect(document.activeElement).toBe(editor);
     expect(workspaceStore.getState().panes[0]?.params).toBe(params);
     expect(workspaceStore.getState().focusedPaneId).toBe("restored-cascade");
     await act(async () => {
@@ -561,14 +561,13 @@ test("a restored cascade renders only its selected reader on mobile and restores
     expect(screen.getByTestId("cascade-spine").getAttribute("data-scope-ref")).toBe("root");
     expect(workspaceStore.getState().panes[0]?.params).toBe(params);
     expect(window.location.pathname).toBe("/s/root");
-    expect(
-      screen.getByTestId("pane-actions").contains(screen.getByRole("button", { name: "Return to previous view" })),
-    ).toBe(true);
+    expect(screen.queryByTestId("pane-actions")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Return to previous view" })).toBeNull();
     await act(async () => {
       media.matches = true;
       media.dispatchEvent(Object.assign(new Event("change"), { matches: true }));
     });
-    await userEvent.setup().click(screen.getByRole("button", { name: "Return to previous view" }));
+    await userEvent.setup().click(screen.getByRole("button", { name: "Back" }));
     expect(workspaceStore.getState().panes[0]).toMatchObject({
       id: "restored-cascade",
       type: "session",

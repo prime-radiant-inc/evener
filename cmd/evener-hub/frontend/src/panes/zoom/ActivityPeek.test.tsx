@@ -20,6 +20,7 @@ import { getToasts, pushToast, resetToastStoreForTests } from "../../widgets/toa
 import { useAttachments } from "../session/composer/attachments/useAttachments";
 import { readComposerDraft } from "../session/composer/draft";
 import { installControlledImageEncoding } from "../session/testing/imageEncoding";
+import { installMobileViewport } from "../session/testing/mobileViewport";
 import { enterAgentCascade } from "./actions";
 import { cascadeClient, cascadeContext, cascadeScope } from "./cascadeTestUtils";
 import type { SessionZoomParams } from "./intent";
@@ -114,20 +115,30 @@ function leaf() {
   return (pane.params as SessionZoomParams).ref;
 }
 
-test.each(["root", "child", "grandchild"])(
-  "cascade scope %s keeps About out of its four activity peeks",
-  async (ref) => {
-    fixture().mount();
-    await conversationMounted("child");
-    const controls = scope(ref);
-    for (const category of ["Agents", "Jobs", "Watches", "Tasks"]) {
-      expect(controls.getByRole("button", { name: new RegExp(`^${category},.* - peek at ${ref}$`) })).toBeTruthy();
-    }
-    expect(controls.getByRole("button", { name: `Tasks, 0 of 0 settled - peek at ${ref}` })).toBeTruthy();
-    expect(controls.queryByRole("button", { name: `About - peek at ${ref}` })).toBeNull();
-    expect(controls.getAllByRole("button", { name: new RegExp(` - peek at ${ref}$`) })).toHaveLength(4);
-  },
-);
+function expectFourPeeks(controls: ReturnType<typeof scope>, ref: string) {
+  for (const category of ["Agents", "Jobs", "Watches", "Tasks"]) {
+    expect(controls.getByRole("button", { name: new RegExp(`^${category},.* - peek at ${ref}$`) })).toBeTruthy();
+  }
+  expect(controls.getByRole("button", { name: `Tasks, 0 of 0 settled - peek at ${ref}` })).toBeTruthy();
+  expect(controls.queryByRole("button", { name: `About - peek at ${ref}` })).toBeNull();
+  expect(controls.getAllByRole("button", { name: new RegExp(` - peek at ${ref}$`) })).toHaveLength(4);
+}
+
+test("desktop cascade spine keeps About out of its four activity peeks while readable columns omit duplicate controls", async () => {
+  fixture().mount();
+  await conversationMounted("child");
+  expectFourPeeks(scope("root"), "root");
+  for (const ref of ["child", "grandchild"]) {
+    expect(scope(ref).queryByTestId("cascade-activity-controls")).toBeNull();
+  }
+});
+
+test("mobile cascade column keeps About out of its four activity peeks", async ({ onTestFinished }) => {
+  onTestFinished(installMobileViewport());
+  fixture().mount();
+  await conversationMounted("grandchild");
+  expectFourPeeks(scope("grandchild"), "grandchild");
+});
 
 test.each(["success", "failure"] as const)(
   "a pending source encode %s cannot change a same-ID restored cascade source",
@@ -230,7 +241,7 @@ test("only a user drill animates a new scope while late ancestry commits immedia
   );
   mount();
   await conversationMounted("child");
-  const focused = screen.getByRole("button", { name: "Return to previous view" });
+  const focused = scope("root").getByRole("button", { name: "Show root" });
   focused.focus();
   act(() =>
     enterAgentCascade(
@@ -282,11 +293,16 @@ test("an ancestor peek drills its explicit owner and truncates the branch while 
   expect(workspaceStore.getState().panes.find((pane) => pane.id === other.id)).toBe(other);
 });
 
-test("closing a leaf peek releases only its collection while the same-ref sidebar still receives direct delegates", async () => {
+test("closing a leaf peek releases only its collection while the same-ref sidebar still receives direct delegates", async ({
+  onTestFinished,
+}) => {
+  onTestFinished(installMobileViewport());
   const { client, context, contents, mount } = fixture();
   activitySidebarStore.getState().openWith("agents");
   const { rerender } = mount();
-  await within(await screen.findByTestId("activity-sidebar")).findByRole("button", { name: /grandchild direct child/ });
+  await within(await screen.findByTestId("activity-sidebar")).findByRole("button", {
+    name: /grandchild direct child/,
+  });
   const reads = () =>
     client.calls.filter(
       (call) => call.method === "evener/thread/delegates/list" && (call.params as { ref: string }).ref === "grandchild",
@@ -385,7 +401,7 @@ test("a parent Tasks peek mounts the existing scoped task list and opens no task
   mount();
   await conversationMounted("child");
   expect(client.calls.filter((call) => call.method === "evener/tasks/list")).toHaveLength(0);
-  const peek = await openPeek("child", "Tasks");
+  const peek = await openPeek("root", "Tasks");
   expect(await within(peek).findByText("Parent scoped task")).toBeTruthy();
   expect(workspaceStore.getState().panes).toHaveLength(1);
   expect(leaf()).toBe("grandchild");

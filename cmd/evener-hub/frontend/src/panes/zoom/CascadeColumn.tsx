@@ -53,7 +53,11 @@ export function CascadeColumn({
         </div>
       )}
       {!mobile && conversationFooter && <div className={CLASS.columnComposerBar}>{conversationFooter}</div>}
-      <ScopeActivityControls paneId={paneId} scope={scope} />
+      {/* Desktop renders the pane-wide StatusBar directly beneath the column;
+       * keeping per-column activity chips there would stack two count rows.
+       * Mobile omits StatusBar, so the column's controls stay as its single
+       * bottom activity strip. */}
+      {mobile && <ScopeActivityControls paneId={paneId} scope={scope} />}
     </>
   );
 }

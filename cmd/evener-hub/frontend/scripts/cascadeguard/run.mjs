@@ -18,13 +18,13 @@ const inspectorFooter = `${inspectorRoot} ~ [data-testid="pane-edge-footer"] [da
 const inspectorIdExpr = `document.querySelector(${q(`${inspectorFooter} [data-pane-id]`)})?.dataset.paneId`;
 const sourceFooter = `[data-pane-scaffold=${q(`session:${fixture.rootRef}`)}] ~ [data-testid="pane-edge-footer"] [data-testid="statusbar"]`;
 const sourceAgents = `${sourceFooter} button[aria-label^="Agents,"]`;
-// One probe for the redesign's chrome ruling, shared by the desktop and phone
-// legs: the pane renders no title (a pane title's only DOM is an h2 in the
-// pane header) and no Agent path nav. Null retries until the pane body mounts.
+// One probe for the cascade's headerless chrome ruling, shared by the desktop
+// and phone legs: the pane omits the scaffold header row (no title, no Return
+// button) and renders no Agent path nav. Null retries until the pane body mounts.
 const cascadeUntitledExpr = `(() => {
   const body = document.querySelector(${q(inspectorRoot)});
   if (!body) return null;
-  return body.previousElementSibling?.querySelector("h2") === null
+  return body.previousElementSibling === null
     && document.querySelector('nav[aria-label="Agent path"]') === null;
 })()`;
 // The pane body's scroll ownership and flush padding, asserted at both
@@ -367,12 +367,13 @@ async function sharedWidthJourney() {
   await drill(fixture.edges[0], 1);
   // The origin conversation never renders in the pane, so the first drill's
   // lone column is itself the cascade column reader under proof.
-  await driver.send("Emulation.setDeviceMetricsOverride", { width:1640, height:900, deviceScaleFactor:1, mobile:false });
   const portExpr = `document.querySelector(${q(scroll(fixture.refs[1]))})`;
+  const beforeCascadeWidth = await read(`(${portExpr})?.clientWidth ?? 0`);
+  await driver.send("Emulation.setDeviceMetricsOverride", { width:1640, height:900, deviceScaleFactor:1, mobile:false });
   await wait(`(() => {
     const port = ${portExpr}, bounds = port?.getBoundingClientRect();
-    return port?.clientWidth > 0 && port.clientHeight > 0 && bounds.width > 0 && bounds.height > 0;
-  })()`, "cascade column has a visible native wheel target");
+    return window.innerWidth === 1640 && port?.clientWidth > ${beforeCascadeWidth} && port.clientHeight > 0 && bounds.width > 0 && bounds.height > 0;
+  })()`, "cascade column resizes to its visible native wheel target");
   await readInsideTallEntry(portExpr, "cascade column");
   await widthOnlyReflow(portExpr, 2000, 900, "cascade-reader-width-reflow");
   await widthOnlyReflow(portExpr, 1640, 900, "cascade-reader-width-return");
@@ -669,9 +670,11 @@ async function assertColumnConversations() {
         editor: node.querySelector('[data-composer] [role="textbox"]') !== null,
       })),
       composerRefs: [...root.querySelectorAll("[data-composer]")].map(node => node.dataset.composer),
+      columnActivityControls: [...root.querySelectorAll('[data-testid="cascade-column"] [data-testid="cascade-activity-controls"]')].length,
     };
   })()`);
   assert.ok(snapshot && snapshot.columns.length >= 1, "the inspector hosts readable columns");
+  assert.equal(snapshot.columnActivityControls, 0, "desktop cascade columns omit duplicate per-column activity controls above StatusBar");
   assert.deepEqual(snapshot.composerRefs, snapshot.columns.map(column => column.ref),
     "every readable column embeds exactly its own conversation composer and nothing else does");
   for (const column of snapshot.columns) {
@@ -691,7 +694,14 @@ async function returnToSource() {
   // mounted, recording a row the settled reading point never held (#6057).
   const beforeReturnAnchor = beforeReturnPoint.row;
   await read('window.__cascadeTraceSource?.("before-return")');
-  await driver.clickByText("Return to previous view");
+  const closePoint = await wait(`(() => {
+    const group = document.querySelector(${q(inspectorRoot)})?.closest('.dv-groupview');
+    const close = group?.querySelector('.dv-tab.dv-active-tab .dv-default-tab-action');
+    if (!close) return null;
+    const r = close.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 ? { x: r.x + r.width / 2, y: r.y + r.height / 2 } : null;
+  })()`, "inspector tab close button");
+  await driver.clickAt(closePoint.x, closePoint.y);
   await read('window.__cascadeTraceSource?.("after-return-click")');
   await wait(`document.querySelector(${q(inspectorRoot)}) === null`, "Return removes only inspection");
   await wait(`document.querySelector(${q(driver.composerSelector(fixture.rootRef))})?.querySelector('[role="textbox"]')?.contains(document.activeElement) === true`, "Return requests keyboard focus in the exact source editor");
@@ -1557,7 +1567,7 @@ async function reloadAndMobileJourney() {
     assert.equal(await read("document.querySelectorAll('.dv-tab').length"), fixture.sourceTabCount + 1);
     await pinSourceDom();
     await assertInspectorFocus(await read(layoutExpr));
-    await observeGeometryAndFocus(fixture.refs[5]);
+    await observeGeometryAndFocus(fixture.refs[4]);
     await read("(() => { const hold = window.__cascadeLate; hold.active = false; for (const reply of hold.replies) reply.release(); hold.replies = []; })()");
     await wait("!document.querySelector('[data-pane-scaffold=\"cascade\"]').textContent.includes('Earlier ancestry is incomplete')", "actual ancestry and route recovery settle");
     assert.equal(await read("document.activeElement === window.__cascadeFocused"), true, "late ancestry and location preserve exact focus");
@@ -1660,7 +1670,7 @@ async function reloadAndMobileJourney() {
   );
   driver.milestone("mobile-saved-cascade");
   await capture("mobile-saved-cascade");
-  await driver.clickByText("Return to previous view");
+  await driver.click('button[aria-label="Back"]');
   await wait(`document.querySelector(${q(inspectorRoot)}) === null && document.querySelector(${q(driver.composerSelector(fixture.rootRef))}) !== null`, "phone Return removes inspection and leaves its original source useful");
   assert.equal(await read(`${driver.paneScopeExpr(fixture.rootRef)}.querySelector(${q(`[data-session-actions-ref=${q(fixture.rootRef)}]`)})?.dataset.paneId`), fixture.sourcePaneId);
   fixture.inspectorPaneId = null;

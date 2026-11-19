@@ -38,6 +38,7 @@
 // sync effect below), the same as any other fresh navigation - there is no
 // separate "last mobile screen" memory to restore independently of that.
 import { type ReactNode, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { returnFromAgentCascade } from "../../panes/zoom/actions";
 import { parseZoomParams } from "../../panes/zoom/intent";
 import {
   conversationHandoffGeneration,
@@ -512,6 +513,11 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
       goBackInAttentionHistory()
     )
       return;
+    if (focusedPane?.type === "sessionZoom") {
+      wentBackRef.current = true;
+      returnFromAgentCascade(focusedPane.id);
+      if (workspaceStore.getState().focusedPaneId !== null) return;
+    }
     let target = popValidBackTarget(backStackRef.current, panes, focusedPaneId);
     if (!target && focusedPane?.type === "transcript") {
       const params = focusedPane.params as { ref?: unknown; parentRef?: unknown };

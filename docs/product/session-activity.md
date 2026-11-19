@@ -793,8 +793,9 @@ Cascade and sidebar breadcrumbs use the same reconciled requested path. When
 authoritative delegation proves a saved source alias occupies an ancestor
 position, both surfaces pop to that alias without replacing the source binding.
 Unknown ancestry stays explicit; cached edges do not establish new ancestors.
-The pane has no title and no separate path nav: its tab label carries the
-selected conversation, and the compact spines are the clickable breadcrumb.
+The pane has no header row, title, Return button or separate path nav: its tab
+label and close button carry the selected conversation and dismissal, and the
+compact spines are the clickable breadcrumb.
 
 The origin conversation never renders in the cascade: while a live origin
 association exists, its scope is removed from the pane entirely — no readable
@@ -802,10 +803,10 @@ column and no spine — and no surface in the pane can pop to it. The origin's
 identity is still observed: when the origin's ref resolves to a replacement
 session, the cascade retires its stale descendant edges and readers rather
 than showing children the replacement did not produce. The pop that follows
-lands the selection on the origin itself, which never renders: the pane keeps
-the Return path above whatever earlier ancestors remain, and the phone — which
-renders the selected leaf alone — keeps only the Return path rather than an
-ancestor column under the selected conversation's name. The first
+lands the selection on the origin itself, which never renders: closing the
+inspector tab on desktop or tapping Back on the phone returns to the source
+conversation, and the phone — which renders the selected leaf alone — never
+substitutes an ancestor column under the selected conversation's name. The first
 drill shows only the subagent's conversation, and that lone column fills the
 pane like an ordinary session pane. Deeper drills keep the selected session
 and its immediate parent as readable columns above the removed origin, with
@@ -829,11 +830,14 @@ scope and leaves the sidebar, its preference saves and its checkmarks with the
 focused conversation. Each ordinary pane's status surface remains bound to its own
 conversation.
 
-Columns and spines expose Agents, Jobs, Watches and Tasks peeks, including empty
-Tasks. A column's activity controls render below its transcript content, with
-the column's header and controls fixed while the transcript viewport scrolls
-internally; the pane body hosting the spines and columns never scrolls as a
-unit. About is available in Overview and has no cascade chip.
+Collapsed spines and phone columns expose Agents, Jobs, Watches and Tasks
+peeks, including empty Tasks. On desktop, readable columns omit per-column
+activity controls so the pane's bottom status bar remains the single activity
+strip, with each column's header and composer fixed while its transcript
+viewport scrolls internally; the pane body hosting the spines and columns never
+scrolls as a unit. On the phone, where the pane status bar is absent, the
+column's own activity controls render below its footer. About is available in
+Overview and has no cascade chip.
 
 Ancestor spines reuse the session list's compact indicators: a gray spinner for
 active work, an amber dot for attention and a red diamond for failure. Idle and
@@ -859,12 +863,13 @@ store's deletion fence outranks retained transcript content; other activity
 failures preserve useful history. Transient reads keep the existing hydration
 and activity recovery owners, so a recovered child becomes readable in place.
 
-Return closes only the new secondary inspector and focuses its exact surviving
-original pane. For a session source it also requests keyboard focus in the
-original editor. Closing or replacing the source retires that association; Return
-then closes inspection without recreating a source or adopting a reused pane ID.
-Existing saved cascades without separated-inspection intent retain their recorded
-Return behavior.
+Closing the secondary inspector tab on desktop — or tapping Back in the phone
+top bar — closes only the inspector and focuses its exact surviving original
+pane. For a session source it also requests keyboard focus in the original
+editor. Closing or replacing the source retires that association; closing the
+inspector then leaves no recreated source and does not adopt a reused pane ID.
+Existing saved cascades without separated-inspection intent retain their
+recorded source return through mobile Back or `returnFromAgentCascade`.
 
 Inspection preserves source draft, selected skills and commands, text-owned
 UTF-16 mention locations, staged attachments, pending encodes, queued inputs and
@@ -929,8 +934,9 @@ they are excluded from layout JSON and localStorage and are not restored by a
 page reload. Phones keep the ordinary Agents row action, which opens the
 conversation. A saved cascade
 restored on desktop and shown at phone width exposes the selected
-conversation and Return without desktop columns or spines. Return closes a new
-inspector and leaves its original source useful. The phone's cascade chrome
+conversation without desktop columns, spines or an in-pane Return button; the
+phone top bar's Back control closes a new inspector and leaves its original
+source useful (or restores a legacy saved source). The phone's cascade chrome
 stays single-layer: the mobile top bar carries the selected conversation's
 name, the column's own title stays desktop-only, and the column's runtime
 state and Open-conversation action sit in the column's bottom bar with its

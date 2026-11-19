@@ -118,36 +118,40 @@ export function PaneScaffold({
     else bodyRef.current?.focus();
   }, [focused, paneId, focusSelector]);
 
+  const hasHeader = title !== undefined || cadence !== undefined || actions !== undefined;
+
   return (
     <div ref={paneRef} className={CLASS.pane}>
-      <div className={CLASS.header}>
-        {title !== undefined && (
-          <h2 className={CLASS.title}>
-            {mobileTitle === undefined ? (
-              title
-            ) : (
-              <>
-                <span className={CLASS.desktopTitle} data-testid="pane-title-desktop">
-                  {title}
-                </span>
-                <span className={CLASS.mobileTitle} data-testid="pane-title-mobile">
-                  {mobileTitle}
-                </span>
-              </>
-            )}
-          </h2>
-        )}
-        {cadence !== undefined && (
-          <div className={CLASS.cadenceSlot} data-testid="pane-cadence-slot">
-            {cadence}
-          </div>
-        )}
-        {actions !== undefined && (
-          <div className={CLASS.actions} data-testid="pane-actions">
-            {actions}
-          </div>
-        )}
-      </div>
+      {hasHeader && (
+        <div className={CLASS.header}>
+          {title !== undefined && (
+            <h2 className={CLASS.title}>
+              {mobileTitle === undefined ? (
+                title
+              ) : (
+                <>
+                  <span className={CLASS.desktopTitle} data-testid="pane-title-desktop">
+                    {title}
+                  </span>
+                  <span className={CLASS.mobileTitle} data-testid="pane-title-mobile">
+                    {mobileTitle}
+                  </span>
+                </>
+              )}
+            </h2>
+          )}
+          {cadence !== undefined && (
+            <div className={CLASS.cadenceSlot} data-testid="pane-cadence-slot">
+              {cadence}
+            </div>
+          )}
+          {actions !== undefined && (
+            <div className={CLASS.actions} data-testid="pane-actions">
+              {actions}
+            </div>
+          )}
+        </div>
+      )}
       <div
         ref={bodyRef}
         className={bodyScroll ? BODY_CLASS_NAME.scrollable : BODY_CLASS_NAME.flush}

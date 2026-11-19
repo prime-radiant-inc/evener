@@ -8,6 +8,7 @@ import { SessionChrome } from "../../panes/session/chrome/SessionChrome";
 import type { SessionPaneParams } from "../../panes/session/Session";
 import { replaceEditorText, selectEditorText } from "../../panes/session/testing/editor";
 import { installTranscriptGeometry } from "../../panes/session/transcript/transcriptReadingGeometryTestUtils";
+import { returnFromAgentCascade } from "../../panes/zoom/actions";
 import { cascadeClient, cascadeContext, cascadeThread } from "../../panes/zoom/cascadeTestUtils";
 import { recordCascadeOrigin } from "../../panes/zoom/inspectionOrigin";
 import type { SessionZoomParams } from "../../panes/zoom/intent";
@@ -562,9 +563,11 @@ test("desktop delegate rows build six nested edges beside the mounted center and
     expect(activitySidebarStore.getState().tab).toBe("agents");
     fireEvent.click(sidebar.getByRole("radio", { name: "About" }));
     await sidebar.findByText("wire-remote:grandchild");
-    const returnButton = screen.getByRole("button", { name: "Return to previous view" });
-    returnButton.focus();
-    await act(async () => fireEvent.click(returnButton));
+    const inspectorChip = within(screen.getByTestId(`inspection-${inspectorId}`)).getByRole("button", {
+      name: /^Agents,/,
+    });
+    inspectorChip.focus();
+    await act(async () => returnFromAgentCascade(inspectorId));
     expect(workspaceStore.getState().panes).toEqual([source]);
     expect(workspaceStore.getState().focusedPaneId).toBe(source.id);
     expect(conversation.getByRole("textbox", { name: "Message" })).toBe(editor);

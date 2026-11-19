@@ -222,7 +222,7 @@ async function saveOrderingCascade(): Promise<string> {
     if (!source) throw new Error("Missing legacy cascade source pane");
     expect(workspaceStore.getState().retypePane(source, "sessionZoom", ORDERING_CASCADE)).toBe(true);
   });
-  await screen.findByRole("button", { name: "Return to previous view" });
+  await screen.findAllByTestId("cascade-column");
   expect(panesWithoutSeats(workspaceStore.getState().panes)).toEqual(ORDERING_SAVED_PANES);
   expect(workspaceStore.getState().focusedPaneId).toBe("pane_session_1");
   view.unmount();
@@ -355,7 +355,7 @@ test.each([
       ]);
       expect(workspaceStore.getState().focusedPaneId).toBe("pane_session_3");
       expect(getDockviewApi()?.activePanel?.id).toBe("pane_session_3");
-      expect(screen.queryByRole("button", { name: "Return to previous view" })).toBeNull();
+      expect(screen.queryByTestId("cascade-column")).toBeNull();
       expect(await screen.findByRole("heading", { name: "local:different-root" })).toBeTruthy();
       expect(window.location.pathname).toBe("/s/local%3Adifferent-root");
     } else {
@@ -365,7 +365,7 @@ test.each([
       ).toEqual(ORDERING_SAVED_PANES);
       expect(workspaceStore.getState().focusedPaneId).toBe("pane_session_1");
       expect(getDockviewApi()?.activePanel?.id).toBe("pane_session_1");
-      expect(await screen.findByRole("button", { name: "Return to previous view" })).toBeTruthy();
+      await screen.findAllByTestId("cascade-column");
       expect(screen.getAllByTestId("cascade-column").map((column) => column.getAttribute("data-scope-ref"))).toEqual([
         "local:step-5",
         "local:step-6",

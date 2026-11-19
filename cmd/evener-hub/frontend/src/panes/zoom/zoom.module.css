@@ -22,11 +22,6 @@
   font-size: var(--font-size-caption);
 }
 
-.returnRow {
-  flex: 0 0 auto;
-  padding: var(--space-2) var(--space-3);
-}
-
 .track {
   display: flex;
   flex: 1 1 auto;
