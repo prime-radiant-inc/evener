@@ -418,9 +418,9 @@ Strategies can register custom tools (e.g., memory management) and respond to
 ## Profile Synchronization
 
 The `Manager` holds a `*provider.Profile` reference for `ContextWindowSize()`. When
-`Session.SetModel` changes the model (e.g., from 200K to 1M context), it must also
-call `cm.SetProfile()` to update the context manager's profile. Without this, pressure
-estimation uses the stale window size.
+`Session.SetModelControl` changes the model (e.g., from 200K to 1M context), it must
+also call `cm.SetProfile()` to update the context manager's profile. Without this,
+pressure estimation uses the stale window size.
 
 ## Token Measurement Lifecycle
 
