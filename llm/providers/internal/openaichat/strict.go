@@ -167,21 +167,25 @@ func StrictifyJSONSchema(in map[string]any) map[string]any {
 // strict mode and nothing else. A node whose value set implies no single type
 // is left exactly as advertised.
 func SupplyDerivedTypes(schema map[string]any) map[string]any {
-	out, _ := SupplyDerivedTypesChanged(schema)
+	out, _ := SupplyDerivedTypesByteStable(schema)
 	return out
 }
 
-// SupplyDerivedTypesChanged returns SupplyDerivedTypes' output and whether it
-// stated anything on it.
+// SupplyDerivedTypesByteStable returns SupplyDerivedTypes' output and whether
+// that copy is guaranteed to serialize to the same number of bytes as schema.
 //
-// A caller pricing a catalog needs the second answer: a schema whose value sets
-// imply no type is emitted exactly as advertised, so the count it already holds
-// describes the wire and there is nothing to measure. The copy is returned
-// either way, because the copy is what cuts a looping edge — handing the
-// caller's own map back for a schema that contains itself would return the
+// A caller pricing a catalog needs the second answer. A copy that stated no type
+// and decoded no raw subschema has changed nothing a byte count can see — the
+// containers it rebuilt serialize like their originals — so the count the
+// request already holds describes the wire and there is nothing to measure. The
+// exceptions are the two facts the copy alone knows: a stated type adds bytes,
+// and a json.RawMessage subschema is decoded so the walk can reach the nodes
+// inside it, which re-encodes the text those escapes stood for. The copy is
+// returned either way, because the copy is what cuts a looping edge — handing
+// the caller's own map back for a schema that contains itself would return the
 // cycle to a caller that has no way to read it.
-func SupplyDerivedTypesChanged(schema map[string]any) (map[string]any, bool) {
-	return supplyTypesReporting(schema, false)
+func SupplyDerivedTypesByteStable(schema map[string]any) (map[string]any, bool) {
+	return supplyTypesByteStable(schema, false)
 }
 
 // SupplyExplicitTypes returns a deep copy of schema with derived explicit types
@@ -190,25 +194,30 @@ func SupplyDerivedTypesChanged(schema map[string]any) (map[string]any, bool) {
 // "array") and multi-type unions. It is used on non-strict Codex Responses Lite
 // schemas where every node must carry an explicit "type".
 func SupplyExplicitTypes(schema map[string]any) map[string]any {
-	out, _ := SupplyExplicitTypesChanged(schema)
+	out, _ := SupplyExplicitTypesByteStable(schema)
 	return out
 }
 
-// SupplyExplicitTypesChanged returns SupplyExplicitTypes' output and whether it
-// stated anything on it.
-func SupplyExplicitTypesChanged(schema map[string]any) (map[string]any, bool) {
-	return supplyTypesReporting(schema, true)
+// SupplyExplicitTypesByteStable returns SupplyExplicitTypes' output and whether
+// that copy is guaranteed to serialize to the same number of bytes as schema.
+// See SupplyDerivedTypesByteStable for which copies are.
+func SupplyExplicitTypesByteStable(schema map[string]any) (map[string]any, bool) {
+	return supplyTypesByteStable(schema, true)
 }
 
-// supplyTypesReporting copies schema, states every derived type
-// allowContainerAndMulti lets it state, and reports the copy alongside whether
-// it stated anything.
-func supplyTypesReporting(schema map[string]any, allowContainerAndMulti bool) (map[string]any, bool) {
-	cp, _ := copySchema(schema).(map[string]any)
+// supplyTypesByteStable copies schema, states every derived type
+// allowContainerAndMulti lets it state, and reports the copy alongside whether it
+// is byte-stable.
+func supplyTypesByteStable(schema map[string]any, allowContainerAndMulti bool) (map[string]any, bool) {
+	var reencodedRaw bool
+	cp, _ := copySchemaValue(schema, nil, &reencodedRaw).(map[string]any)
 	if cp == nil {
+		// A nil root copies to the empty schema, which encodes as {} where the
+		// original encoded as null: the same absence, two bytes apart.
 		return map[string]any{}, false
 	}
-	return cp, supplyDerivedTypes(cp, dialectOf(cp), allowContainerAndMulti)
+	stated := supplyDerivedTypes(cp, dialectOf(cp), allowContainerAndMulti)
+	return cp, !stated && !reencodedRaw
 }
 
 // HasExplicitTypes reports whether every reachable schema node carries a
@@ -1522,12 +1531,13 @@ func strictifyJSONSchemaInPlace(m map[string]any) {
 // sighting would silently drop a schema the caller wrote. Only a node that
 // contains itself is a cycle.
 func copySchema(v any) any {
-	return copySchemaValue(v, nil)
+	return copySchemaValue(v, nil, nil)
 }
 
 // copySchemaValue copies v, with path holding the container identity of every
-// ancestor currently being copied.
-func copySchemaValue(v any, path map[containerKey]bool) any {
+// ancestor currently being copied, and reencodedRaw, when non-nil, reporting
+// whether any json.RawMessage subschema was decoded along the way.
+func copySchemaValue(v any, path map[containerKey]bool, reencodedRaw *bool) any {
 	if key, ok := containerIdentity(v); ok {
 		if path[key] {
 			// The node contains itself. The empty schema is the one value that
@@ -1541,7 +1551,7 @@ func copySchemaValue(v any, path map[containerKey]bool) any {
 		path[key] = true
 		defer delete(path, key)
 	}
-	return deepCopyWith(v, path)
+	return deepCopyWith(v, path, reencodedRaw)
 }
 
 // containerKey identifies one container occurrence for cycle detection: the
@@ -1604,7 +1614,12 @@ func containerIdentity(v any) (containerKey, bool) {
 //
 // path carries the ancestor chain, so a looping edge is cut rather than
 // recursed into.
-func deepCopyWith(v any, path map[containerKey]bool) any {
+//
+// reencodedRaw, when non-nil, records that a json.RawMessage subschema was
+// decoded: the copy of it is a map, and a map re-encodes with the text the raw
+// form's escapes stood for, so the copy is not guaranteed to serialize to the
+// same number of bytes as the value it copied.
+func deepCopyWith(v any, path map[containerKey]bool, reencodedRaw *bool) any {
 	switch x := v.(type) {
 	case map[string]any:
 		// A typed nil map marshals as JSON null. Rebuilding it as an empty map
@@ -1617,7 +1632,7 @@ func deepCopyWith(v any, path map[containerKey]bool) any {
 		}
 		out := make(map[string]any, len(x))
 		for k, vv := range x {
-			out[k] = copySchemaValue(vv, path)
+			out[k] = copySchemaValue(vv, path, reencodedRaw)
 		}
 		return out
 	case map[string]map[string]any:
@@ -1631,7 +1646,7 @@ func deepCopyWith(v any, path map[containerKey]bool) any {
 		}
 		out := make(map[string]any, len(x))
 		for k, vv := range x {
-			out[k] = copySchemaValue(vv, path)
+			out[k] = copySchemaValue(vv, path, reencodedRaw)
 		}
 		return out
 	case []map[string]any:
@@ -1645,7 +1660,7 @@ func deepCopyWith(v any, path map[containerKey]bool) any {
 		}
 		out := make([]any, len(x))
 		for i := range x {
-			out[i] = copySchemaValue(x[i], path)
+			out[i] = copySchemaValue(x[i], path, reencodedRaw)
 		}
 		return out
 	case []any:
@@ -1655,7 +1670,7 @@ func deepCopyWith(v any, path map[containerKey]bool) any {
 		}
 		out := make([]any, len(x))
 		for i := range x {
-			out[i] = copySchemaValue(x[i], path)
+			out[i] = copySchemaValue(x[i], path, reencodedRaw)
 		}
 		return out
 	case json.RawMessage:
@@ -1700,7 +1715,10 @@ func deepCopyWith(v any, path map[containerKey]bool) any {
 		default:
 			return v
 		}
-		return copySchemaValue(decoded, path)
+		if reencodedRaw != nil {
+			*reencodedRaw = true
+		}
+		return copySchemaValue(decoded, path, reencodedRaw)
 	default:
 		return v
 	}
@@ -1725,6 +1743,12 @@ func deepCopyWith(v any, path map[containerKey]bool) any {
 // dropped keyword — is reported as different so the caller measures it.
 // Reporting a difference costs one marshal, while reporting a sameness that
 // does not hold would price a catalog the wire never carries.
+//
+// A json.RawMessage subschema is one of those differences. A copy decodes it so
+// the walk can reach the nodes inside, and the map that replaces it re-encodes
+// with the text its escapes stood for — the same schema, a different length. The
+// two spellings therefore never count as the same, and a caller pricing a copy
+// measures it.
 //
 // Two inputs this walk cannot reason about are answered without walking into
 // them. The same container compared with itself is trivially the same length,

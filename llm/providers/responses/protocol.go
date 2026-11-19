@@ -77,11 +77,17 @@ func (*Protocol) EmitToolSchemas(baseline []llm.ToolDefinition, res registry.Res
 	for i, t := range baseline {
 		params, _, untouched := toolSchema(t, strict, lite)
 		if untouched {
-			// The builder sends the caller's own schema, so the count the
-			// request arrived with already describes it. Comparing the value
-			// with itself would be a walk over the caller's parameters with no
-			// decision at the end, and a map that contains itself makes that
-			// walk unbounded.
+			// The decision left this definition byte-identical, so the count the
+			// request arrived with already describes it and there is nothing to
+			// compare. That answer is never inferred from "nothing to state": a
+			// copy that decoded a json.RawMessage subschema is a different
+			// length from the raw form it replaced, and toolSchema reports that
+			// copy as a change for exactly this reason.
+			//
+			// It is also what keeps a cyclic map from being walked. A cyclic
+			// catalog always takes the copy path, and a walk over it is
+			// unbounded; pricing the list the builder hands back unchanged is
+			// the finite answer.
 			continue
 		}
 		// A byte count needs a byte oracle. The projection sorts each object's

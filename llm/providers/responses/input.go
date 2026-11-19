@@ -34,10 +34,10 @@ func toResponsesResponseFormat(rf llm.ResponseFormat, structured bool) any {
 }
 
 // toolSchema is the schema one tool is sent with, whether that tool rides the
-// request under strict enforcement, and whether the schema is the tool's own:
-// the decision left it in place, so the definition as it arrived is what the
-// wire carries. The rules are stated below in the order the builder applies
-// them.
+// request under strict enforcement, and whether the schema serializes to the
+// same number of bytes as the one the tool arrived with: the decision left it
+// byte-identical, so the count the request already holds describes the wire. The
+// rules are stated below in the order the builder applies them.
 func toolSchema(t llm.ToolDefinition, strict, responsesLite bool) (params map[string]any, toolStrict, untouched bool) {
 	toolStrict = strict
 	if toolStrict && t.Strict != nil {
@@ -45,11 +45,11 @@ func toolSchema(t llm.ToolDefinition, strict, responsesLite bool) (params map[st
 	}
 	params = t.Parameters
 	// own is true while params is still the caller's own map. A synthesized
-	// empty schema is not, and neither is a replacement the step below made, so
-	// only a definition that survives every step is reported untouched. Both
-	// exclusions are stated here rather than repeated where the fallback is
-	// synthesized, because they are the only two ways params stops being the
-	// caller's own.
+	// empty schema is not, so only a definition that survives the fallback below
+	// is reported untouched on the strength of identity alone. A later step's
+	// copy is answered by its own byte-stability report, never by identity: a
+	// copy that decoded a raw subschema or stated a type has a different length
+	// even though the decision left nothing else to change.
 	own := params != nil && !t.DeclaresNoParameters()
 	if t.DeclaresNoParameters() || params == nil {
 		// A tool that declares no parameters takes the empty object. On the
@@ -89,8 +89,8 @@ func toolSchema(t llm.ToolDefinition, strict, responsesLite bool) (params map[st
 		}
 	}
 	if responsesLite {
-		supplied, changed := openaichat.SupplyExplicitTypesChanged(params)
-		return supplied, false, own && !changed
+		supplied, byteStable := openaichat.SupplyExplicitTypesByteStable(params)
+		return supplied, false, own && byteStable
 	}
 	// A refused tool keeps the schema it advertised, because the projection
 	// would change which arguments it accepts. The provider still requires an
@@ -101,8 +101,8 @@ func toolSchema(t llm.ToolDefinition, strict, responsesLite bool) (params map[st
 	// requirement is the schema dialect's, not strict mode's — additional_tools
 	// on this route carries strict:false and is still rejected for a typeless
 	// node.
-	supplied, changed := openaichat.SupplyDerivedTypesChanged(params)
-	return supplied, false, own && !changed
+	supplied, byteStable := openaichat.SupplyDerivedTypesByteStable(params)
+	return supplied, false, own && byteStable
 }
 
 // toResponsesTools writes the tools array. capsStrict is the row's strict_tools

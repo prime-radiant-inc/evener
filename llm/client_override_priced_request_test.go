@@ -80,3 +80,57 @@ func TestAnOverrideAdmitsARequestPricedForAProtocolRoute(t *testing.T) {
 			got, ToolsJSONBytes(defs))
 	}
 }
+
+// An override with no registry row still sends the catalog it was handed.
+//
+// CountInputTokens restores the catalog's own count for every override because
+// an override marshals the definitions it receives. Admission and dispatch have
+// to make the same decision on a route the registry cannot resolve at all: the
+// protocol's emitted count describes a list the override never sends, so it must
+// not be the count the adapter reads. Preflight already reports the catalog's
+// count there, and the dispatched request must carry it too.
+func TestAnOverrideWithoutARegistryRowDispatchesTheCatalogCount(t *testing.T) {
+	t.Parallel()
+	defs := parameterlessCatalog(16)
+	advertised := ToolsJSONBytes(defs)
+	adapter := &recordingPriceAdapter{name: "unlisted-override"}
+
+	// No registry row: the client cannot resolve the instance, so nothing shapes
+	// or prices the request for the instance before the override is reached.
+	c := NewClient()
+	c.Register(adapter)
+	req := Request{
+		Provider:       adapter.name,
+		Model:          "model",
+		Messages:       []Message{User("x")},
+		Tools:          defs,
+		ToolsJSONBytes: advertised,
+	}
+	// A caller that priced the request for a protocol route before dispatch, which
+	// is what a middleware that preprices and forwards leaves behind.
+	req = priceEmittedToolSchemas(req, responsesRowOn(true))
+	if req.ToolsJSONBytes <= advertised {
+		t.Fatalf("fixture does not distinguish the prices: the caller's prepricing left the count at %d", advertised)
+	}
+
+	preflight, err := c.CountInputTokens(context.Background(), req)
+	if err != nil {
+		t.Fatalf("CountInputTokens: %v", err)
+	}
+	if _, err := c.Complete(context.Background(), req); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	dispatched := adapter.last()
+	if got := dispatched.ToolsJSONBytes; got != advertised {
+		t.Fatalf("override observed ToolsJSONBytes = %d, want the catalog's own %d: the override marshals the "+
+			"definitions it is handed, so a protocol's emitted count describes a list it never sends",
+			got, advertised)
+	}
+
+	// Both halves of this target price one list, so the reading a caller sizes the
+	// request with is the one the adapter's wire form measures.
+	if got, want := EstimateInputTokens(dispatched).Tokens, preflight.Tokens; got != want {
+		t.Fatalf("dispatched reading = %d, preflight = %d: an override marshals the definitions it is handed, "+
+			"so the two describe the same request", got, want)
+	}
+}

@@ -1,6 +1,9 @@
 package llm
 
 import (
+	"context"
+	"encoding/json"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -349,4 +352,170 @@ func TestAByteNeutralProjectionDoesNotMarshalTheCatalog(t *testing.T) {
 	if atomic.LoadInt32(&calls) == changingBefore {
 		t.Fatal("a catalog whose projection changes its bytes was never measured")
 	}
+}
+
+// rawEscapedCatalog is a catalog whose single tool hands one subschema over as
+// raw JSON that spells its text with \u escapes. Decoded, each escape is the
+// two-byte UTF-8 character, so a builder that decodes the raw value puts fewer
+// bytes on the wire than the caller's own list serializes to.
+func rawEscapedCatalog() []ToolDefinition {
+	return []ToolDefinition{{
+		Name: "write_file",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"target": json.RawMessage(`{"description":"` + strings.Repeat(`\u00e9`, 200) + `","type":"string"}`),
+			},
+			"required": []string{"target"},
+		},
+	}}
+}
+
+// responsesWireToolSchemas is the parameter schema of every tool the Responses
+// builder put on the wire, read from a built body of either shape: a top-level
+// tools array, or the additional_tools item a Lite route carries in input.
+func responsesWireToolSchemas(t *testing.T, body map[string]any) []map[string]any {
+	t.Helper()
+	entries := func(list []any) []map[string]any {
+		out := make([]map[string]any, 0, len(list))
+		for i, entry := range list {
+			m, ok := entry.(map[string]any)
+			if !ok {
+				t.Fatalf("wire tool %d = %#v, want an object", i, entry)
+			}
+			out = append(out, m)
+		}
+		return out
+	}
+	if list, ok := body["tools"].([]any); ok {
+		return entries(list)
+	}
+	if list, ok := body["tools"].([]map[string]any); ok {
+		return list
+	}
+	input, _ := body["input"].([]any)
+	if len(input) == 0 {
+		t.Fatalf("wire body carries no tools and no input: %#v", body)
+	}
+	first, _ := input[0].(map[string]any)
+	list, ok := first["tools"].([]any)
+	if first["type"] != "additional_tools" || !ok {
+		t.Fatalf("first input item = %#v, want the additional_tools entry the Lite route sends", first)
+	}
+	return entries(list)
+}
+
+// A raw subschema is priced as the builder decodes it.
+//
+// The Responses builder copies each parameter schema before it decides what to
+// state on it, and the copy decodes a json.RawMessage subschema so the walk can
+// read the nodes inside. The decoded form re-encodes with the text those escapes
+// stood for, so the wire is shorter than the caller's list: pricing the caller's
+// count charges bytes the request never carries, and a cap between the two
+// prices refuses a request that fits.
+//
+// The oracle is the builder's own body: the price must equal the serialized
+// length of the parameter schema the wire carries, measured with the same
+// function the estimate bills by.
+func TestARawSubschemaIsPricedAsTheBuilderDecodesIt(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		lite bool
+	}{
+		{"standard", false},
+		{"lite", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			res := responsesRowOn(false)
+			if tc.lite {
+				res.Caps.ResponsesLite = new(true)
+			}
+			defs := rawEscapedCatalog()
+			advertised := ToolsJSONBytes(defs)
+			req := Request{
+				Provider:       "emitted-price",
+				Model:          "model",
+				Messages:       []Message{User("x")},
+				Tools:          defs,
+				ToolsJSONBytes: advertised,
+			}
+
+			p, ok := ProtocolFor(res.Protocol)
+			if !ok {
+				t.Fatalf("no protocol registered for %q", res.Protocol)
+			}
+			body, err := p.BuildBody(ShapeRequest(req, res), res)
+			if err != nil {
+				t.Fatalf("BuildBody: %v", err)
+			}
+			wire := responsesWireToolSchemas(t, body)
+			if len(wire) != 1 {
+				t.Fatalf("wire carries %d tools, want 1", len(wire))
+			}
+			wireParams, ok := wire[0]["parameters"].(map[string]any)
+			if !ok {
+				t.Fatalf("wire tool carries parameters %#v, want the schema the builder emitted", wire[0]["parameters"])
+			}
+			want := ToolsJSONBytes([]ToolDefinition{{Name: defs[0].Name, Parameters: wireParams}})
+			if want >= advertised {
+				t.Fatalf("fixture does not distinguish the prices: wire %d bytes, caller's %d: the description "+
+					"has to lose the escape sequences for this case to prove anything", want, advertised)
+			}
+
+			priced := priceEmittedToolSchemas(req, res)
+			if priced.ToolsJSONBytes != want {
+				t.Fatalf("priced count = %d, want the wire schema's %d (the caller's count is %d): the builder "+
+					"decodes the raw subschema, so the escaped form is not what dispatches",
+					priced.ToolsJSONBytes, want, advertised)
+			}
+		})
+	}
+}
+
+// The corrected price is what admission reads, so a cap between it and the
+// escaped count admits a request whose bytes fit.
+func TestARawSubschemaPriceLetsAFittingRequestThrough(t *testing.T) {
+	t.Parallel()
+	res := responsesRowOn(false)
+	defs := rawEscapedCatalog()
+	advertised := ToolsJSONBytes(defs)
+	req := Request{
+		Provider: "emitted-price",
+		Model:    "model",
+		Messages: []Message{User("x")},
+		Tools:    defs,
+	}
+	wireReading := EstimateInputTokensForResolved(res, priceEmittedToolSchemas(req, res)).Tokens
+	escapedReading := EstimateInputTokensForResolved(res, req).Tokens
+	if escapedReading <= wireReading {
+		t.Fatalf("priced reading = %d, the caller's escaped count = %d: the builder decodes the raw subschema, so "+
+			"the priced reading has to be the smaller one", wireReading, escapedReading)
+	}
+	limit := capBetweenPrices(t, wireReading, escapedReading)
+
+	c, _, bodies := emittedPriceRoute(t, limit, registry.ProtocolOpenAIResponses, false)
+	if _, err := c.Complete(context.Background(), req); err != nil {
+		t.Fatalf("Complete under a cap of %d refused a request that dispatches %d input tokens: %v",
+			limit, wireReading, err)
+	}
+	if got := len(bodies()); got != 1 {
+		t.Fatalf("requests on the wire = %d, want 1", got)
+	}
+	if wireBytes := ToolsJSONBytes([]ToolDefinition{{Name: defs[0].Name, Parameters: responsesWireParams(t, bodies()[0])}}); wireBytes >= advertised {
+		t.Fatalf("dispatched schema measures %d bytes against the caller's %d: the fixture's premise did not hold",
+			wireBytes, advertised)
+	}
+}
+
+// responsesWireParams is the first tool's parameter schema in a Responses body.
+func responsesWireParams(t *testing.T, body map[string]any) map[string]any {
+	t.Helper()
+	wire := responsesWireToolSchemas(t, body)
+	if len(wire) == 0 {
+		t.Fatal("wire carries no tools")
+	}
+	params, _ := wire[0]["parameters"].(map[string]any)
+	return params
 }

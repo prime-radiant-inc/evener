@@ -652,6 +652,13 @@ type Request struct {
 	// bytes this request does not carry and is dropped rather than restored over
 	// the new stamp.
 	//
+	// emittedToolCatalog names the catalog the record measured. A byte count is
+	// not an identity: a caller can rebuild a catalog from the schemas a builder
+	// synthesized and measure exactly the count that builder emitted, and a record
+	// keyed by its count alone would then restore the baseline of the catalog the
+	// caller discarded. The catalog is immutable for the record's life (see
+	// ToolsJSONBytes), so its own identity is the tie that count cannot be.
+	//
 	// emittedToolReplacement marks a count measured over a ProviderOptions tools
 	// value rather than over the catalog's emission. That substitution is
 	// re-decided on every price, so the record is restored to the catalog's own
@@ -662,6 +669,7 @@ type Request struct {
 	emittedToolBaseline    int
 	emittedToolCount       int
 	emittedToolReplacement bool
+	emittedToolCatalog     toolCatalogIdentity
 
 	AdapterTimeout *AdapterTimeout `json:"adapter_timeout,omitempty"`
 }

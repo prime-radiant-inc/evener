@@ -85,13 +85,7 @@ func estimateInputTokens(t targetInfo, req Request) InputTokenCount {
 		t.chatUsesDetails = true
 	}
 	tokens := estimateMessagesInputTokens(t, req.Messages)
-	if len(req.Tools) > 0 {
-		toolBytes := req.ToolsJSONBytes
-		if toolBytes <= 0 {
-			toolBytes = ToolsJSONBytes(req.Tools)
-		}
-		tokens += toolBytes / 4
-	}
+	tokens += req.billedToolJSONBytes() / 4
 	if req.ResponseFormat != nil {
 		b, _ := json.Marshal(req.ResponseFormat)
 		tokens += len(b) / 4
@@ -103,6 +97,28 @@ func estimateInputTokens(t targetInfo, req Request) InputTokenCount {
 		Provider: req.Provider,
 		Model:    req.Model,
 	}
+}
+
+// billedToolJSONBytes is the tool-catalog length the local estimate bills req
+// for, or 0 when the request sends no tools.
+//
+// A request with no catalog can still send tools: the Chat Completions and
+// standard Responses builders write the request's own tools and then copy a
+// ProviderOptions tools value over the body, so on those routes that value is
+// the whole tool list. Nothing else on such a request names those bytes, so only
+// a recorded replacement price describes them. A request with neither a catalog
+// nor a replacement keeps the zero charge it has always had.
+func (req Request) billedToolJSONBytes() int {
+	if len(req.Tools) > 0 {
+		if req.ToolsJSONBytes > 0 {
+			return req.ToolsJSONBytes
+		}
+		return ToolsJSONBytes(req.Tools)
+	}
+	if req.emittedToolReplacement && req.recordsEmission() {
+		return req.emittedToolCount
+	}
+	return 0
 }
 
 // priceEmittedToolSchemas replaces req's tool count with the price of the list
@@ -143,9 +159,6 @@ func estimateInputTokens(t targetInfo, req Request) InputTokenCount {
 // and a price for a different target starts from the baseline rather than from
 // another target's answer.
 func priceEmittedToolSchemas(req Request, res registry.Resolved) Request {
-	if len(req.Tools) == 0 {
-		return req
-	}
 	// Retargeting starts from the list, not from the previous route's emission.
 	// The baseline is the count the serialized list measures on its own, so
 	// restoring it is exact rather than approximate.
@@ -160,9 +173,14 @@ func priceEmittedToolSchemas(req Request, res registry.Resolved) Request {
 	req = restoreToolCountBaseline(req, res)
 	// A route that reads a ProviderOptions tools value sends that value instead
 	// of the catalog the builder projected, so the replacement is the list to
-	// price.
+	// price. It is read before the empty-catalog check below: that value is the
+	// whole tool list for a request whose catalog is empty, and returning there
+	// would price no tools at all on a request that dispatches them.
 	if replacement, ok := providerToolsReplacement(req, res); ok {
 		return priceReplacementToolList(req, res, replacement)
+	}
+	if len(req.Tools) == 0 {
+		return req
 	}
 	// A count this target's builder already produced is the answer. Re-deriving
 	// the emission and re-marshaling the catalog would repeat exactly the work
@@ -240,6 +258,7 @@ func (req Request) withToolEmission(res registry.Resolved, count, baseline int, 
 	req.emittedToolBaseline = baseline
 	req.emittedToolCount = count
 	req.emittedToolReplacement = replacement
+	req.emittedToolCatalog = toolCatalogIdentity{defs: req.Tools}
 	return req
 }
 
@@ -277,15 +296,17 @@ func restoreToolCountBaseline(req Request, res registry.Resolved) Request {
 }
 
 // recordsEmission reports whether req carries a record that still describes its
-// tool count: a target is recorded and ToolsJSONBytes is still the count that
-// record produced. A caller that replaced Tools and stamped the replacement
-// leaves both bits intact but a count the record never measured, and that case
-// is excluded here.
+// tool count: a target is recorded, ToolsJSONBytes is still the count that
+// record produced, and Tools is still the catalog it measured. A caller that
+// replaced Tools and stamped the replacement leaves a count the record never
+// measured, and that case is excluded here — as is a rebuilt catalog that
+// happens to serialize to the same number of bytes, which only the catalog
+// identity can tell apart from the one the record measured.
 func (req Request) recordsEmission() bool {
 	if req.emittedToolTarget == (emittedToolTargetKey{}) {
 		return false
 	}
-	return req.ToolsJSONBytes == req.emittedToolCount
+	return req.ToolsJSONBytes == req.emittedToolCount && req.emittedToolCatalog.names(req.Tools)
 }
 
 // toolCountBaseline is the count req's tool list measures without the current
@@ -332,6 +353,7 @@ func clearToolEmissionRecord(req Request) Request {
 	req.emittedToolBaseline = 0
 	req.emittedToolCount = 0
 	req.emittedToolReplacement = false
+	req.emittedToolCatalog = toolCatalogIdentity{}
 	return req
 }
 
@@ -389,6 +411,30 @@ func emittedToolTargetFor(res registry.Resolved) emittedToolTargetKey {
 		// row by this field.
 		responsesLite: registry.BoolValue(res.Caps.ResponsesLite),
 	}
+}
+
+// toolCatalogIdentity names the catalog an emission count was measured over.
+//
+// A byte count is not an identity. A caller can rebuild a catalog from the
+// schemas a builder synthesized and happen to measure exactly the count that
+// builder emitted, and a record keyed by its count alone would then accept the
+// rebuilt catalog as the one it measured and restore the smaller baseline over
+// it. The catalog occurrence is what tells the two apart: a rebuilt list is a
+// different slice with its own definitions.
+//
+// Holding the slice is also what keeps the identity sound: the record keeps the
+// catalog it measured alive, so its address cannot be reused by a later list
+// while the record still names it. The comparison reads the first definition's
+// address and the length, because a slice header is not an identity — a shorter
+// prefix of one list is a different catalog, and a copy of a header that covers
+// the same definitions is the same one.
+type toolCatalogIdentity struct {
+	defs []ToolDefinition
+}
+
+// names reports whether defs is the catalog this identity was taken from.
+func (i toolCatalogIdentity) names(defs []ToolDefinition) bool {
+	return len(i.defs) == len(defs) && (len(defs) == 0 || &i.defs[0] == &defs[0])
 }
 
 // PriceToolSchemas returns req with its tool count describing the list res's
@@ -500,8 +546,13 @@ func parameterlessToolsJSONDelta(defs []ToolDefinition, res registry.Resolved, o
 // two: an override, and a route whose protocol has no deriver, leave the
 // definitions as they were handed over, so neither records an emission and
 // both still take the delta.
+//
+// A request with no catalog but a recorded ProviderOptions replacement prices
+// that replacement, which is the whole tool list such a request sends. The
+// delta is not applied to it: the replacement is the wire list, not a catalog a
+// builder substitutes schemas into.
 func effectiveToolsJSONBytes(req Request, res registry.Resolved, override bool) int {
-	if len(req.Tools) == 0 {
+	if !req.pricesTools(res, override) {
 		return 0
 	}
 	if !override && req.emittedToolPriceApplies(res) {
@@ -512,6 +563,26 @@ func effectiveToolsJSONBytes(req Request, res registry.Resolved, override bool) 
 		base = ToolsJSONBytes(req.Tools)
 	}
 	return base + parameterlessToolsJSONDelta(req.Tools, res, override)
+}
+
+// withEffectiveToolPrice returns req with ToolsJSONBytes describing the tool
+// list res's route emits, for a request that has a tool price to apply.
+// Requests with nothing to price are returned unchanged.
+func withEffectiveToolPrice(req Request, res registry.Resolved, override bool) Request {
+	if req.pricesTools(res, override) {
+		req.ToolsJSONBytes = effectiveToolsJSONBytes(req, res, override)
+	}
+	return req
+}
+
+// pricesTools reports whether this request has a tool price to apply for res: a
+// catalog, or a recorded ProviderOptions replacement that is the wire list on a
+// request whose catalog is empty.
+func (req Request) pricesTools(res registry.Resolved, override bool) bool {
+	if len(req.Tools) > 0 {
+		return true
+	}
+	return !override && req.emittedToolReplacement && req.emittedToolPriceApplies(res)
 }
 
 // emittedToolPriceApplies reports whether the recorded emission describes the
@@ -1502,9 +1573,7 @@ func localInputEstimate(req Request, callerProvider string, t dispatchTarget) In
 	}
 	estimateReq := req
 	estimateReq.Provider = callerProvider
-	if len(estimateReq.Tools) > 0 {
-		estimateReq.ToolsJSONBytes = effectiveToolsJSONBytes(estimateReq, t.res, t.override != nil)
-	}
+	estimateReq = withEffectiveToolPrice(estimateReq, t.res, t.override != nil)
 	return EstimateInputTokensForResolved(t.res, estimateReq)
 }
 

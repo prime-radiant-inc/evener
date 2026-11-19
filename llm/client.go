@@ -341,6 +341,15 @@ func (c *Client) Complete(ctx context.Context, req Request) (Response, error) {
 		req = ShapeRequest(req, t.res)
 	}
 	base := func(ctx context.Context, req Request) (Response, error) {
+		// An override marshals the definition it is handed, so no protocol's
+		// emission describes its wire list. The restore is what
+		// CountInputTokens does for the same request, and it must not depend on
+		// the registry resolving the instance: an override with no row behind it
+		// still sends its catalog, and forwarding another route's count would
+		// make preflight and dispatch describe different lists.
+		if t.override != nil {
+			req = dropRecordedToolEmission(req)
+		}
 		if t.resolved {
 			var err error
 			req, err = shapeAndApplyTokenBudget(req, t.res, t.override != nil)
@@ -383,6 +392,12 @@ func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 		req = ShapeRequest(req, t.res)
 	}
 	base := func(ctx context.Context, req Request) (Stream, error) {
+		// The same restore Complete makes, for the same reason: an override
+		// sends the catalog it is handed whether or not the registry resolves
+		// the instance.
+		if t.override != nil {
+			req = dropRecordedToolEmission(req)
+		}
 		if t.resolved {
 			var err error
 			req, err = shapeAndApplyTokenBudget(req, t.res, t.override != nil)
@@ -420,14 +435,12 @@ func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 
 // shapeAndApplyTokenBudget shapes req and admits it against res's budget.
 //
-// override says whether an adapter override serves the request. Two pricing
-// steps run here, and the order is the point.
-//
-// A protocol route's builder replaces a tool schema before sending it, so the
-// count is taken over the list that builder emits rather than over the one the
-// request arrived with; an override marshals the definition it was handed, so
-// the list it received is its wire list and the delta below is what describes
-// it.
+// override says whether an adapter override serves the request. A protocol
+// route's builder replaces a tool schema before sending it, so the count is
+// taken over the list that builder emits rather than over the one the request
+// arrived with. An override marshals the definition it was handed, so the list
+// it received is its wire list; the call site drops the recorded emission for
+// that route before this runs, and there is no builder emission to price here.
 //
 // The emitted price and the parameterless delta describe the same substitution
 // when the deriver already applied it, so the delta is skipped for a request
@@ -440,14 +453,7 @@ func shapeAndApplyTokenBudget(req Request, res registry.Resolved, override bool)
 	// the request arrived with. This runs here rather than at either call site
 	// because admission is where the count is consumed, and every route that
 	// reaches the budget passes through this function.
-	if override {
-		// An override marshals the definition it is handed, so no protocol's
-		// emission describes its wire list. CountInputTokens restores the
-		// baseline for the same request, and if admission kept the recorded
-		// charge instead, a cap between the two counts would let preflight
-		// report that the request fits while dispatch rejects it.
-		req = dropRecordedToolEmission(req)
-	} else {
+	if !override {
 		req = priceEmittedToolSchemas(req, res)
 	}
 	budgeted, _, err := applyTokenBudgetForTarget(req, res, override)
@@ -458,10 +464,7 @@ func shapeAndApplyTokenBudget(req Request, res registry.Resolved, override bool)
 // parameterless-schema byte adjustment applied once to a shallow copy, keeping
 // req.ToolsJSONBytes equal to the caller's declared-catalog stamp.
 func applyTokenBudgetForTarget(req Request, res registry.Resolved, override bool) (Request, TokenBudget, error) {
-	budgetReq := req
-	if len(budgetReq.Tools) > 0 {
-		budgetReq.ToolsJSONBytes = effectiveToolsJSONBytes(budgetReq, res, override)
-	}
+	budgetReq := withEffectiveToolPrice(req, res, override)
 	budgeted, budget, err := ApplyTokenBudget(budgetReq, res)
 	if err != nil {
 		return req, budget, err
