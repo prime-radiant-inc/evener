@@ -484,7 +484,9 @@ summary survive an unvouched effort: no level is sent, but replay stays intact.
 of reasoning `content` and `summary` parts, including blanks with usable output.
 A finished item replays as plaintext by default when it carries those native
 typed parts, and is dropped when the row declares `reasoning: false`. An item
-the provider cut off is marked `ResponsesIncomplete` and never rides back.
+the provider cut off is marked `ResponsesIncomplete` and never rides back. Across
+a fallback to another instance, a completed foreign turn keeps that plaintext
+while its opaque `encrypted_content` blob stays with the instance that issued it.
 
 **The no-effort verdict.** A gateway can state per model that it accepts no
 effort parameter at all (`supportsReasoningEffort: false` in its

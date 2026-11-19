@@ -464,6 +464,29 @@ func TrimThinkingForReplayMessage(msg Message, dropPlain bool) Message {
 	return msg
 }
 
+// StripOpaqueThinkingForCrossProvider returns the thinking part an
+// openai-responses target may take from a foreign turn: the blob and a
+// cryptographic signature come off. It answers ReplayableResponsesPlaintext,
+// the rule reasoningItem applies, and dropped reports the part must go.
+func StripOpaqueThinkingForCrossProvider(p ContentPart) (ContentPart, bool) {
+	if p.Kind != ContentThinking || p.Thinking == nil || p.Thinking.Redacted {
+		return p, true
+	}
+	kept := *p.Thinking
+	kept.EncryptedContent = ""
+	if !IsOpenAICompatReasoningField(kept.Signature) {
+		kept.Signature = ""
+	}
+	if !kept.ReplayableResponsesPlaintext() {
+		return p, true
+	}
+	if kept.EncryptedContent == p.Thinking.EncryptedContent && kept.Signature == p.Thinking.Signature {
+		return p, false
+	}
+	p.Thinking = &kept
+	return p, false
+}
+
 // WebSearchData holds a web-search content part, including the query and the raw provider payload.
 type WebSearchData struct {
 	Query string          `json:"query,omitempty"`
