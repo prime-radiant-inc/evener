@@ -338,7 +338,6 @@ func modelControlResponseForHubTest() appwire.ThreadModelSetResponse {
 			SupportsReasoning:     true,
 		},
 		Desired: &appwire.ModelControlDesired{
-			RequestSequence:  29,
 			ClientMutationID: "model-mutation-31",
 			ModelProvider:    "anthropic",
 			Model:            "claude-opus-4-6",
