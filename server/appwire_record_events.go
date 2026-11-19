@@ -285,12 +285,14 @@ func (s *Server) finishProcessing() {
 		s.endProcessingLocked()
 		threadID, ref := s.appRootIdentityLocked()
 		var pending []pendingAppNotification
+		deferredRest := false
 		for _, item := range s.appDeferredTerminalNotifications {
 			if item.threadID != threadID || item.ref != ref {
 				continue
 			}
 			if params, ok := item.params.(appwire.ThreadStatusChangedParams); ok && item.method == appwire.NotifyThreadStatusChanged {
 				s.status.State = params.Status.Type
+				deferredRest = true
 			}
 			pending = append(pending, item)
 		}
@@ -302,7 +304,15 @@ func (s *Server) finishProcessing() {
 		if held != nil {
 			held(s)
 		}
-		if len(pending) == 0 && wasProcessing && threadID != "" {
+		// A deferred end is an OLDER turn's terminal word, not this one's:
+		// the turn finishProcessing is clearing can end with no frame of its
+		// own (a notification wake that found no work emits no SESSION_END,
+		// and the root discards execution-end statuses), so the settlement
+		// below is its only publisher. It is emitted BESIDE the deferred
+		// replay — which keeps naming the turn it ended — and recovers the
+		// resting state from what the deferred status stated, rather than
+		// the rest from before either turn.
+		if wasProcessing && threadID != "" {
 			// The stored state is what the session's own events stated: a
 			// pass that ran no turn left it as it was, and a held rest or an
 			// interrupted turn's end restated it. Nothing runs once processing
@@ -310,7 +320,10 @@ func (s *Server) finishProcessing() {
 			// reads idle, stored and published alike; work that does follow
 			// publishes its own turn.
 			status := appStatus(s.status.State, false)
-			if awaitingTurnEnd || status == appwire.ThreadStatusActive {
+			// The deferred status stated the rest that still stands (the
+			// turn that cleared changed nothing), so the idle placeholder
+			// that stands in for an unstated rest must not overwrite it.
+			if !deferredRest && (awaitingTurnEnd || status == appwire.ThreadStatusActive) {
 				s.status.State = appwire.ThreadStatusIdle
 				status = appwire.ThreadStatusIdle
 			}

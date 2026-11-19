@@ -227,8 +227,16 @@ func quotaWaitFailure(callErr error, model string, resetAt time.Time) appwire.Th
 // budget, so every announcement says attempt 1 and clients read only its
 // delay. waitStartedAt is the wait's identity on both announcements;
 // resumesAt is the absolute instant the call resumes, named by the start
-// alone so the wake installs no deadline.
+// alone so the wake installs no deadline. A start whose reset is less than a
+// millisecond away still encodes at least 1ms: zero is the wake's meaning
+// alone, and a client reading a zero-delay start would clear a countdown
+// for a call still waiting out its sub-millisecond remainder (a delegate
+// retaking a drive slot can wait real time past the reset). The start's
+// exact instant rides resumesAt regardless.
 func (s *Session) emitQuotaRetry(callErr error, model string, delay time.Duration, waitStartedAt uint64, resumesAt int64) {
+	if delay > 0 && delay < time.Millisecond {
+		delay = time.Millisecond
+	}
 	data := events.ModelRetryData{
 		Attempt:       1,
 		DelayMS:       delay.Milliseconds(),

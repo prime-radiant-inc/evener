@@ -1461,3 +1461,47 @@ func TestQuotaWaitAnnouncementsCarryTheWaitIdentity(t *testing.T) {
 	reachReset(clk)
 	run.awaitEnd(t, trip, "the call resumes at the reset")
 }
+
+// A wait starting less than a millisecond before its reset is still a start:
+// its announcement must not truncate the sub-millisecond delay to zero,
+// because zero is the WAKE's meaning and a client would clear a countdown
+// for a call still waiting (a delegate held at retaking its drive slot can
+// wait real time after the reset). The encoded delay rounds up to at least
+// 1ms; the exact resume instant rides resumesAt untouched.
+func TestSubMillisecondWaitStartStillAnnouncesAWait(t *testing.T) {
+	s, clk, _, _ := newAttentionLivelockSession(t, usageLimitError(t, "openai", quotaResetAt))
+	var announcements quotaWaitAnnouncements
+	s.ConsumeEventsLossless(announcements.consume, func() {})
+	trip := tripwireCtx(t).Done()
+	// Half a millisecond before the reset: a positive wait whose delay
+	// truncates to zero on the wire.
+	clk.Advance(quotaResetAt.Sub(clk.Now()) - 500*time.Microsecond)
+	clk.Drain()
+	wakes := s.quotaWakeCount()
+	limit := usageLimitError(t, "openai", quotaResetAt)
+	retry := make(chan bool, 1)
+	go func() {
+		again, err := s.waitOutUsageLimit(context.Background(), limit, "gpt-5.6", wakes)
+		retry <- again && err == nil
+	}()
+	announcements.awaitLen(t, 1)
+	got := announcements.snapshot()
+	if got[0].DelayMS < 1 {
+		t.Fatalf("a wait starting 0.5ms before its reset announced a %dms delay, want at least 1ms: zero is the wake's meaning", got[0].DelayMS)
+	}
+	if got[0].ResumesAt != quotaResetAt.UnixMilli() {
+		t.Fatalf("the start announced resumesAt %d, want the exact reset instant %d", got[0].ResumesAt, quotaResetAt.UnixMilli())
+	}
+	// The half-millisecond timer fires and the wait ends as a wake.
+	reachReset(clk)
+	select {
+	case <-retry:
+	case <-trip:
+		t.Fatal("the sub-millisecond wait never ended at its reset")
+	}
+	announcements.awaitLen(t, 2)
+	wake := announcements.snapshot()[1]
+	if wake.DelayMS != 0 || wake.ResumesAt != 0 {
+		t.Fatalf("the wake = %+v, want zero delay and no resume instant", wake)
+	}
+}

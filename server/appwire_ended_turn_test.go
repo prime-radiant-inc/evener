@@ -67,15 +67,17 @@ func TestSettlementFrameNamesTheEndedTurnWhenBothEndEventsDrainFirst(t *testing.
 	}
 }
 
-// A delayed SESSION_END queued behind a newer published turn defers and
-// replays when the carrier is abandoned, naming only what it truthfully
-// ended. The guard's own promise — never the newer turn — is what the
-// deferral exists for; the ownership the frame supplies beside it is the
-// old input's own turn when its execution drained (the client whose
-// snapshot still runs that turn applies it; one that adopted the newer
-// turn does not, exactly as the spec's pre-cut termination rule reads a
-// name that is not the snapshot's running turn), and nothing when no
-// execution of the old input ever ended.
+// A delayed SESSION_END queued behind a newer published turn defers and,
+// when the carrier is abandoned, replays beside the settlement of the turn
+// processing cleared. The guard's own promise — the DEFERRED frame never
+// names the newer turn — is what the deferral exists for; the ownership the
+// frame supplies is the old input's own turn when its execution drained
+// (the client whose snapshot still runs that turn applies it; one that
+// adopted the newer turn does not, exactly as the spec's pre-cut
+// termination rule reads a name that is not the snapshot's running turn),
+// and nothing when no execution of the old input ever ended. The
+// settlement beside it names the cleared turn truthfully: the published
+// turn was running, and processing ended it.
 func TestDelayedSessionEndDoesNotNameTheNewerTurn(t *testing.T) {
 	for name, wantEnded := range map[string]string{
 		"with the old execution drained": "turn_old",
@@ -98,16 +100,61 @@ func TestDelayedSessionEndDoesNotNameTheNewerTurn(t *testing.T) {
 
 			srv.SetProcessing(false)
 			frames := statusFrames(t, srv, cursor, "th_guard")
-			if len(frames) != 1 || frames[0].Status.Type != appwire.ThreadStatusIdle {
-				t.Fatalf("the abandoned carrier's deferred frame = %+v, want one idle", frames)
-			}
-			if frames[0].EndedTurnID == "turn_new" {
-				t.Fatalf("a delayed end named the newer turn %q; the deferral guard exists to prevent exactly that", frames[0].EndedTurnID)
+			if len(frames) != 2 || frames[0].Status.Type != appwire.ThreadStatusIdle || frames[1].Status.Type != appwire.ThreadStatusIdle {
+				t.Fatalf("the abandoned carrier's frames = %+v, want the deferred replay and the settlement, both idle", frames)
 			}
 			if frames[0].EndedTurnID != wantEnded {
 				t.Fatalf("a delayed end named turn %q, want its own input's %q", frames[0].EndedTurnID, wantEnded)
 			}
+			if frames[1].EndedTurnID != "turn_new" {
+				t.Fatalf("the settlement named turn %q, want the cleared turn_new", frames[1].EndedTurnID)
+			}
 		})
+	}
+}
+
+// A deferred end must not swallow the published turn's own end. Turn A's
+// SESSION_END queues behind turn B's publication (the bridge defers it), B
+// then ends without a SESSION_END of its own — a notification wake that
+// found no work emits none, and the root discards execution-end statuses —
+// so finishProcessing is B's only publisher. It settles naming the turn it
+// cleared, beside the deferred frame that still names A: a client holding
+// a snapshot that still runs B reads the deferred A frame as an older
+// turn's end (and retires nothing, per the pre-cut rule) and the settlement
+// as B's.
+func TestDeferredSettlementNamesTheTurnItCleared(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_deferred_settlement")
+	// Turn A runs: published, started, ended. The root discards the
+	// execution end's own status the way it discards every boundary.
+	srv.SetProcessingTurn("turn_a")
+	srv.RecordAppEvent(threadEvent("th_deferred_settlement", events.ExecutionStartedData{TurnID: "turn_a"}))
+	cursor := srv.appNotifier.CurrentSequence()
+	srv.RecordAppEvent(threadEvent("th_deferred_settlement", events.ExecutionEndedData{TurnID: "turn_a", Status: "completed"}))
+
+	// Turn B publishes while A's end is still behind it in the drain; A's
+	// SESSION_END defers behind B's pending start.
+	srv.SetProcessingTurn("turn_b")
+	BridgeEvent(srv, threadEvent("th_deferred_settlement", events.SessionEndData{Reason: "turn_failed", State: appwire.ThreadStatusIdle}), nil)
+	cursor = srv.appNotifier.CurrentSequence()
+
+	// B's wake found no work: no SESSION_END of its own arrives, and
+	// processing ends with the deferral still held.
+	srv.SetProcessing(false)
+
+	frames := statusFrames(t, srv, cursor, "th_deferred_settlement")
+	if len(frames) != 2 {
+		t.Fatalf("settlement published %+v frames, want A's deferred replay and B's settlement", frames)
+	}
+	if frames[0].Status.Type != appwire.ThreadStatusIdle || frames[0].EndedTurnID != "turn_a" {
+		t.Fatalf("the deferred frame = %+v, want A's replay naming turn_a", frames[0])
+	}
+	if frames[1].Status.Type != appwire.ThreadStatusIdle || frames[1].EndedTurnID != "turn_b" {
+		t.Fatalf("the settlement = %+v, want idle naming turn_b, the turn processing cleared", frames[1])
+	}
+	read := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:th_deferred_settlement"})
+	if read.Thread.Status.Type != appwire.ThreadStatusIdle || read.Thread.Evener.ActiveTurnID != "" {
+		t.Fatalf("read after settlement = %q/%q, want idle with no running turn", read.Thread.Status.Type, read.Thread.Evener.ActiveTurnID)
 	}
 }
 
