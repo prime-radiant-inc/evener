@@ -1209,13 +1209,16 @@ What is cached, and where it is saved:
 The rules that keep the budget:
 
 - **One generation on main.** CI's `cache-prune` job runs after every lane of a
-  main push and deletes each `go-*`, `gomod-*`, `golangci-lint-*` and
+  ci.yml main push and deletes each `go-*`, `gomod-*`, `golangci-lint-*` and
   `ios-deriveddata-*` entry on main that a newer entry with the same prefix
   supersedes. It never deletes a prefix's newest entry, so a lane that saved
-  nothing keeps its last one. Entries left by a renamed kind, an older Go
-  version or a changed pod or package lock are their prefix's newest, so the
-  job keeps them; nothing restores them, so eviction takes them first, and they
-  expire after 7 days.
+  nothing keeps its last one. The iOS lane saves from its own workflow, possibly
+  after that push's ci.yml prune already ran, so a superseded iOS entry can sit
+  on main until the next main-push prune. Entries left by a renamed kind, an
+  older Go version or a changed pod or package lock are their prefix's newest,
+  so the job keeps them; only a run whose lock pair matches that prefix
+  restores them, so eviction otherwise takes them first, and they expire after
+  7 days.
 - **A saved entry is one job's build.** go-cache-restore dates every restored
   build cache entry two hours back on main, Go refreshes the mtime of an entry
   over an hour old whenever it uses it, and go-cache-save deletes every entry
