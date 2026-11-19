@@ -7,14 +7,6 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
-// statusFrames decodes the thread/status/changed frames recorded after
-// cursor: statusNotifications with a starting cursor, so a test reads only
-// what its own setup published.
-func statusFrames(t *testing.T, srv *Server, cursor uint64, threadID string) []appwire.ThreadStatusChangedParams {
-	t.Helper()
-	return statusNotificationsAfter(t, srv, cursor, threadID)
-}
-
 // A Stop that flows through the root's settlement path must name the turn
 // it ended: finishProcessing clears the active turn id before building its
 // fallback frame, so the id must be captured before the clear. Without it a
@@ -28,7 +20,7 @@ func TestSettlementFrameNamesTheEndedTurn(t *testing.T) {
 
 	srv.SetProcessing(false)
 
-	frames := statusFrames(t, srv, cursor, "th_settlement")
+	frames := statusNotificationsAfter(t, srv, cursor, "th_settlement")
 	if len(frames) != 1 {
 		t.Fatalf("settlement published %+v status frames, want the one idle fallback", frames)
 	}
@@ -55,7 +47,7 @@ func TestSettlementFrameNamesTheEndedTurnWhenBothEndEventsDrainFirst(t *testing.
 	BridgeEvent(srv, threadEvent("th_drained_ends", events.SessionEndData{Reason: "input_complete", State: appwire.ThreadStatusIdle}), nil)
 	srv.SetProcessing(false)
 
-	frames := statusFrames(t, srv, cursor, "th_drained_ends")
+	frames := statusNotificationsAfter(t, srv, cursor, "th_drained_ends")
 	if len(frames) != 1 {
 		t.Fatalf("settlement published %+v status frames, want the session end's one idle", frames)
 	}
@@ -94,12 +86,12 @@ func TestDelayedSessionEndDoesNotNameTheNewerTurn(t *testing.T) {
 				BridgeEvent(srv, threadEvent("th_guard", events.ExecutionEndedData{TurnID: "turn_old", Status: "completed"}), nil)
 			}
 			BridgeEvent(srv, threadEvent("th_guard", events.SessionEndData{Reason: "turn_failed", State: appwire.ThreadStatusIdle}), nil)
-			if frames := statusFrames(t, srv, cursor, "th_guard"); len(frames) != 0 {
+			if frames := statusNotificationsAfter(t, srv, cursor, "th_guard"); len(frames) != 0 {
 				t.Fatalf("a superseded end published %+v, want it deferred", frames)
 			}
 
 			srv.SetProcessing(false)
-			frames := statusFrames(t, srv, cursor, "th_guard")
+			frames := statusNotificationsAfter(t, srv, cursor, "th_guard")
 			if len(frames) != 2 || frames[0].Status.Type != appwire.ThreadStatusIdle || frames[1].Status.Type != appwire.ThreadStatusIdle {
 				t.Fatalf("the abandoned carrier's frames = %+v, want the deferred replay and the settlement, both idle", frames)
 			}
@@ -142,7 +134,7 @@ func TestDeferredSettlementNamesTheTurnItCleared(t *testing.T) {
 	// processing ends with the deferral still held.
 	srv.SetProcessing(false)
 
-	frames := statusFrames(t, srv, cursor, "th_deferred_settlement")
+	frames := statusNotificationsAfter(t, srv, cursor, "th_deferred_settlement")
 	if len(frames) != 2 {
 		t.Fatalf("settlement published %+v frames, want A's deferred replay and B's settlement", frames)
 	}
@@ -191,7 +183,7 @@ func TestDeferredActiveForecastNormalizesWhenProcessingEnds(t *testing.T) {
 			cursor := srv.appNotifier.CurrentSequence()
 			srv.SetProcessing(false)
 
-			frames := statusFrames(t, srv, cursor, "th_forecast")
+			frames := statusNotificationsAfter(t, srv, cursor, "th_forecast")
 			if len(frames) != 2 {
 				t.Fatalf("settlement published %+v frames, want A's deferred replay and B's settlement", frames)
 			}
@@ -227,7 +219,7 @@ func TestDescendantStopFramesNameTheEndedTurn(t *testing.T) {
 	srv.RecordDescendantAppEvent("root", threadEvent("child-1", events.ExecutionStartedData{TurnID: "child-turn-1"}))
 	cursor := srv.appNotifier.CurrentSequence()
 	srv.RecordDescendantAppEvent("root", threadEvent("child-1", events.ExecutionEndedData{TurnID: "child-turn-1", Status: "completed"}))
-	frames := statusFrames(t, srv, cursor, "child-1")
+	frames := statusNotificationsAfter(t, srv, cursor, "child-1")
 	if len(frames) != 1 || frames[0].EndedTurnID != "child-turn-1" {
 		t.Fatalf("delegate execution end = %+v, want one frame naming child-turn-1", frames)
 	}
@@ -237,7 +229,7 @@ func TestDescendantStopFramesNameTheEndedTurn(t *testing.T) {
 	srv.RecordDescendantAppEvent("root", threadEvent("child-2", events.ExecutionStartedData{TurnID: "child-turn-2"}))
 	cursor = srv.appNotifier.CurrentSequence()
 	srv.RecordDescendantAppEvent("root", threadEvent("child-2", events.SessionEndData{State: appwire.ThreadStatusClosed}))
-	frames = statusFrames(t, srv, cursor, "child-2")
+	frames = statusNotificationsAfter(t, srv, cursor, "child-2")
 	if len(frames) != 1 || frames[0].EndedTurnID != "child-turn-2" {
 		t.Fatalf("delegate session end = %+v, want one frame naming child-turn-2", frames)
 	}
