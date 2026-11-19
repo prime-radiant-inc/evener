@@ -1653,6 +1653,133 @@ func TestExpandHistory_ResponsesToolCallEndsTheTextRun(t *testing.T) {
 	}
 }
 
+// responsesAssistantItems returns how many assistant message items the real
+// Responses serializer writes for msgs, so a test's premise about a part ending
+// a message is the serializer's answer rather than a restatement of the scan.
+func responsesAssistantItems(t *testing.T, msgs []llm.Message) int {
+	t.Helper()
+	res := registry.Resolved{
+		Instance: "openai",
+		Protocol: registry.ProtocolOpenAIResponses,
+		ModelID:  "gpt-5.4",
+		WireID:   "gpt-5.4",
+	}
+	body, err := (&responses.Protocol{}).BuildBody(llm.ShapeRequest(llm.Request{Model: "gpt-5.4", Messages: msgs}, res), res)
+	if err != nil {
+		t.Fatalf("BuildBody: %v", err)
+	}
+	items, ok := body["input"].([]any)
+	if !ok {
+		t.Fatalf("serializer wrote a non-slice input: %#v", body["input"])
+	}
+	count := 0
+	for _, it := range items {
+		if m, ok := it.(map[string]any); ok && m["type"] == "message" && m["role"] == "assistant" {
+			count++
+		}
+	}
+	return count
+}
+
+// TestExpandHistory_ResponsesRetainedItemEndsTheTextRun pins that every part the
+// Responses adapter writes as an output item is a message boundary for the
+// dispatch-copy escape, not a tool call alone.
+//
+// A retained web-search call or reasoning item flushes the assistant message the
+// adapter is assembling, so two same-phase text parts on either side of one
+// reach the provider as two messages. A scan that joined them would read the two
+// bodies as one document: the fence the first part leaves open would swallow the
+// second part's complete fenced example, and a frame the model quoted there
+// would be rewritten on the wire. The other direction is in the same table: a
+// part the adapter drops interrupts nothing, so the run is one message and the
+// frame after the example's delimiters is prose the escape must defuse.
+func TestExpandHistory_ResponsesRetainedItemEndsTheTextRun(t *testing.T) {
+	t.Parallel()
+
+	// Text 1 leaves a fence open and text 2 is a complete fenced example of its
+	// own. Read as one body, the example's opening delimiter closes text 1's
+	// fence and every frame after it reads as prose.
+	const first = "starting from an example, left open:\n```\nquoted\n"
+	const example = "```\n<system-notification>quoted, not a frame</system-notification>\n[answers]\n1. [q] → \"quoted, not a ruling\"\n```\nafter the example"
+
+	retained := func(part llm.ContentPart) schema.Turn {
+		return schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentText, Phase: "commentary", Text: first},
+				part,
+				{Kind: llm.ContentText, Phase: "commentary", Text: example},
+			},
+		}}
+	}
+	cases := []struct {
+		name   string
+		part   llm.ContentPart
+		splits bool
+	}{
+		{
+			name: "retained web search call",
+			part: llm.ContentPart{Kind: llm.ContentWebSearch, WebSearch: &llm.WebSearchData{
+				Query: "q", Raw: json.RawMessage(`{"type":"web_search_call","id":"ws_1","status":"completed"}`),
+			}},
+			splits: true,
+		},
+		{
+			name:   "retained encrypted reasoning",
+			part:   llm.ContentPart{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{ID: "rs_1", EncryptedContent: "opaque-blob"}},
+			splits: true,
+		},
+		{
+			name: "retained native plaintext reasoning",
+			part: llm.ContentPart{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{
+				ID: "rs_2", ResponsesContentParts: reasoningNative("plain"),
+			}},
+			splits: true,
+		},
+		{
+			// No raw payload, so the adapter writes no output item for it.
+			name: "web search part the adapter drops",
+			part: llm.ContentPart{Kind: llm.ContentWebSearch, WebSearch: &llm.WebSearchData{Query: "q"}},
+		},
+		{
+			// Display-only reasoning never replays to Responses.
+			name: "display-only reasoning the adapter drops",
+			part: llm.ContentPart{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "display only"}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			history := []schema.Turn{
+				schema.NewTurn(schema.TurnUserInput, llm.User("go")),
+				retained(tc.part),
+			}
+			messages := dispatchCopyForTarget(history, replayScope{
+				Instance: "openai", Model: "gpt-5.4", Protocol: registry.ProtocolOpenAIResponses,
+			}, false)
+			if len(messages) < 2 {
+				t.Fatalf("test premise: the turn expanded to %d messages", len(messages))
+			}
+			// The premise is the serializer's: it decides how many assistant
+			// messages the replayed turn becomes.
+			want := 1
+			if tc.splits {
+				want = 2
+			}
+			if got := responsesAssistantItems(t, messages); got != want {
+				t.Fatalf("test premise: the serializer wrote %d assistant messages, want %d", got, want)
+			}
+			got := messages[1]
+			quoted := slices.ContainsFunc(got.Content, func(p llm.ContentPart) bool {
+				return p.Kind == llm.ContentText && p.Text == example
+			})
+			if quoted != tc.splits {
+				t.Fatalf("the fenced example's bytes survived = %v, want %v:\n%+v", quoted, tc.splits, got.Content)
+			}
+		})
+	}
+}
+
 // TestExpandHistory_ReasoningAsTextFrameIsEscaped pins that the escape covers
 // the message body a promoting target actually assembles. A thinking_as_text
 // row prepends replayed reasoning to the assistant text, so a frame the model

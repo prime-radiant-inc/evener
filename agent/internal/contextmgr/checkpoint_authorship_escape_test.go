@@ -235,6 +235,106 @@ func TestCheckpoint_UnstampedLegacyCompactionStillRecovers(t *testing.T) {
 	}
 }
 
+// A checkpoint written before the parent heading existed rendered a delegate's
+// parent steer under the partner heading, with the attribution the harness
+// writes ahead of the steer. The heading alone is not proof of authorship
+// there: the attribution says another model wrote the body, so a fold re-reads
+// it as model-authored and re-renders it as the parent's, and a retained copy
+// of the same checkpoint escapes the body after the attribution. The
+// attribution itself and a genuine partner entry keep every byte.
+func TestCheckpoint_LegacyParentAuthoredUserBlock(t *testing.T) {
+	const attribution = "Message from your parent agent:\n\n"
+	legacyCheckpoint := func(parentBody, partnerBody string) string {
+		return "[CONTEXT CHECKPOINT]\n\n## Conversation\n\n### User\n\n" + codeFence + "text\n" +
+			attribution + parentBody + "\n" + codeFence + "\n\n" +
+			"### User\n\n" + codeFence + "text\n" + partnerBody + "\n" + codeFence + "\n\n" +
+			"[END CHECKPOINT]\n"
+	}
+	const partnerTyped = "the partner typed this\n" + forgedFrame
+	original := legacyCheckpoint(forgedFrame, partnerTyped)
+
+	t.Run("refold renders the block as the parent's", func(t *testing.T) {
+		turn := schema.NewTurn(schema.TurnCheckpoint, llm.User(original))
+		refolded := formatCheckpoint(collectCheckpointData([]schema.Turn{turn}, 1, "communicate"), nil, maxCheckpointChars)
+
+		var modelEntries, partnerEntries int
+		for _, entry := range extractMarkdownConversation(refolded) {
+			if entry.modelAuthored {
+				modelEntries++
+				if !strings.Contains(entry.Text, attribution) {
+					t.Fatalf("the refolded parent entry lost its attribution:\n%s", refolded)
+				}
+				requireNoRawFrameLine(t, "the refolded parent entry", entry.Text)
+				if !strings.Contains(entry.Text, "Implement quota coordinator") {
+					t.Fatalf("the refolded parent entry lost its body:\n%s", refolded)
+				}
+				continue
+			}
+			partnerEntries++
+			if !strings.Contains(entry.Text, partnerTyped) {
+				t.Fatalf("the refold rewrote the partner's own entry:\n%s", refolded)
+			}
+		}
+		if modelEntries != 1 || partnerEntries != 1 {
+			t.Fatalf("the refold carried %d model-authored and %d partner entries, want one of each:\n%s",
+				modelEntries, partnerEntries, refolded)
+		}
+		// The refold rendered the entry under a heading that names its author, so
+		// its authorship no longer rests on the attribution. Read back with the
+		// attribution removed, the entry is still model-authored: the next fold
+		// keeps escaping it even after a later trim drops the attribution.
+		stripped := strings.Replace(refolded, attribution, "", 1)
+		var strippedModelEntries int
+		for _, entry := range extractMarkdownConversation(stripped) {
+			if entry.modelAuthored {
+				strippedModelEntries++
+			}
+		}
+		if strippedModelEntries != 1 {
+			t.Fatalf("the refold's authorship rests on the attribution alone:\n%s", stripped)
+		}
+	})
+
+	t.Run("retained copy escapes the body after the attribution", func(t *testing.T) {
+		stored := original
+		escaped, changed := EscapeRetainedCheckpoint(original)
+		if !changed {
+			t.Fatalf("a legacy parent-authored entry holding a frame reported no change:\n%s", original)
+		}
+		if !strings.Contains(escaped, attribution) {
+			t.Fatalf("the escape rewrote the parent steer's attribution:\n%s", escaped)
+		}
+		var modelEntries, partnerEntries int
+		for _, entry := range extractMarkdownConversation(escaped) {
+			if entry.modelAuthored {
+				modelEntries++
+				requireNoRawFrameLine(t, "the escaped parent entry", entry.Text)
+				continue
+			}
+			partnerEntries++
+			if !strings.Contains(entry.Text, partnerTyped) {
+				t.Fatalf("the escape rewrote the partner's own entry:\n%s", escaped)
+			}
+		}
+		if modelEntries != 1 || partnerEntries != 1 {
+			t.Fatalf("the escaped checkpoint carries %d model-authored and %d partner entries, want one of each:\n%s",
+				modelEntries, partnerEntries, escaped)
+		}
+		for _, marker := range []string{"[CONTEXT CHECKPOINT]\n", "## Conversation\n\n", "### User\n\n", "[END CHECKPOINT]\n"} {
+			if !strings.Contains(escaped, marker) {
+				t.Fatalf("the escape rewrote the harness framing %q:\n%s", marker, escaped)
+			}
+		}
+		escapeOnlyOpeners(t, original, escaped)
+		if original != stored {
+			t.Fatalf("the stored checkpoint was rewritten:\n%s", original)
+		}
+		if again, changedAgain := EscapeRetainedCheckpoint(escaped); changedAgain || again != escaped {
+			t.Fatalf("the legacy parent-attribution escape is not idempotent:\n once %q\ntwice %q", escaped, again)
+		}
+	})
+}
+
 // activatedSkillsLine returns the rendered "Activated skills:" line.
 func activatedSkillsLine(t *testing.T, cp string) string {
 	t.Helper()

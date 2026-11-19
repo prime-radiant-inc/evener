@@ -74,12 +74,14 @@ func buildSummarizePrompt(turns []schema.Turn) string {
 	// prompt, so the escape can read the whole prompt and rewrite only those.
 	var modelSpans [][2]int
 	// writeLabel writes an excerpt's label. A model-authored excerpt's label
-	// takes its own line: sharing the line with the excerpt's first line hides
-	// an opening fence delimiter from the scan, so the example's real closing
-	// delimiter opens a new fence and the frame below it survives raw.
+	// takes a block of its own: sharing the line with the excerpt's first line
+	// hides an opening fence delimiter from the scan, so the example's real
+	// closing delimiter opens a new fence and the frame below it survives raw,
+	// and an indented line there becomes the label's paragraph continuation
+	// rather than the code block it is.
 	writeLabel := func(label string, modelAuthored bool) {
 		if modelAuthored {
-			label += "\n"
+			label += "\n\n"
 		} else {
 			label += " "
 		}

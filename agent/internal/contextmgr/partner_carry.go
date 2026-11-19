@@ -295,10 +295,12 @@ func (cm *Manager) condensePartnerMessages(ctx context.Context, prof *provider.P
 				// runs after the split so a cut that dropped the opening delimiter
 				// of a fenced example exposes no frame in the part it kept.
 				//
-				// The label takes a line of its own for the reason the other
+				// The label takes a block of its own for the reasons the other
 				// model-authored excerpts' do: sharing it with the first line
-				// hides an opening fence delimiter from the scan.
-				summaries = append(summaries, label+"\n"+sysmsg.EscapeModelAuthoredFrames(part)+"\n")
+				// hides an opening fence delimiter from the scan, and makes an
+				// indented block there the label's paragraph continuation
+				// instead of the code it is.
+				summaries = append(summaries, label+"\n\n"+sysmsg.EscapeModelAuthoredFrames(part)+"\n")
 			}
 			start = end
 		}

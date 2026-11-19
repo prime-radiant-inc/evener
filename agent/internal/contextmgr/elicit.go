@@ -204,15 +204,17 @@ func renderElicitTurn(t schema.Turn) (label, body string, spans []textSpan) {
 	} else {
 		body = raw
 	}
-	// A model-authored turn's label takes its own line for the same reason an
-	// assistant turn's does: sharing it hides the opening delimiter of a fenced
-	// example from the scan, and the example's real closing delimiter then opens
-	// a fence that spares the frame below it. A compaction turn's label takes
-	// its own line for the same reason and one more: its layout is read from its
-	// opening marker, which has to start a line for the escape to recognize the
-	// model's ranges at all.
+	// A model-authored turn's label takes a block of its own for the same reason
+	// an assistant turn's does, and for one more: a body whose first line is an
+	// indented code block is code only where no paragraph runs into it, and the
+	// blank line after the label is what leaves the paragraph closed. Sharing the
+	// line hides the opening delimiter of a fenced example from the scan, and the
+	// example's real closing delimiter then opens a fence that spares the frame
+	// below it. A compaction turn's label takes its own block for the same
+	// reasons and one more: its layout is read from its opening marker, which has
+	// to start a line for the escape to recognize the model's ranges at all.
 	if label != "" && (compaction || modelAuthored) {
-		label = strings.TrimSuffix(label, " ") + "\n"
+		label = strings.TrimSuffix(label, " ") + "\n\n"
 	}
 	return label, body, spans
 }

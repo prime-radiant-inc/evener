@@ -182,9 +182,15 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 		for _, entry := range summarized {
 			parts := splitMessage(entry.Text, maxHistoryChars/6, 400)
 			for i, part := range parts {
+				// A message another model wrote is not the human partner's, and the
+				// summary prompt draws its permissions and holds from the partner's
+				// own messages: the label says whose words these are.
 				label := "User:"
+				if entry.modelAuthored {
+					label = "Parent Agent:"
+				}
 				if len(parts) > 1 {
-					label = fmt.Sprintf("User (part %d of %d of one message):", i+1, len(parts))
+					label = fmt.Sprintf("%s (part %d of %d of one message):", strings.TrimSuffix(label, ":"), i+1, len(parts))
 				}
 				// An entry another agent wrote or the parent steering wrote is
 				// model text in a user-role request, and the split above can drop
@@ -192,7 +198,7 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 				// after it. A genuine partner message keeps every byte.
 				if entry.modelAuthored {
 					part = sysmsg.EscapeModelAuthoredFrames(part)
-					label += "\n"
+					label += "\n\n"
 				} else {
 					label += " "
 				}
@@ -226,12 +232,11 @@ historyLoop:
 			text := truncate(t.Message.Text(), 5000)
 			if isAgentAuthored(t) {
 				text = sysmsg.EscapeModelAuthoredFrames(text)
-				// The turn is another model's text in the partner's channel, and
-				// its label takes a line of its own: sharing it with the text's
-				// first line hides an opening fence delimiter from the scan, and
-				// the example's real closing delimiter then opens a fence that
-				// spares the frame below it.
-				b.WriteString("User:\n")
+				// The turn is another model's text in the partner's channel: its
+				// label names that model, and the blank line after it keeps an
+				// indented block at the text's first line a block of its own
+				// rather than the label's paragraph continuation.
+				b.WriteString("Parent Agent:\n\n")
 			} else {
 				b.WriteString("User: ")
 			}
@@ -267,11 +272,11 @@ historyLoop:
 				// cap so a cut that exposes one is covered. An intact fenced
 				// example the reply quotes keeps every byte.
 				//
-				// The label takes a line of its own: sharing it with the reply's
-				// first line hides an opening fence delimiter from the scan, and
-				// the example's real closing delimiter then opens a fence that
-				// spares the frame below it.
-				b.WriteString("Assistant:\n")
+				// The label takes a block of its own: sharing it with the reply's
+				// first line both hides an opening fence delimiter from the scan
+				// and makes an indented line there that label's paragraph
+				// continuation instead of the code block it is.
+				b.WriteString("Assistant:\n\n")
 				b.WriteString(sysmsg.EscapeModelAuthoredFrames(truncate(text, 500)))
 				b.WriteString("\n")
 			}
@@ -285,14 +290,14 @@ historyLoop:
 						}
 						// The message the model sent the partner is its own text
 						// too, and reaches the request the same way. Its label
-						// takes its own line for the same reason.
+						// takes a block of its own for the same reason.
 						msg = sysmsg.EscapeModelAuthoredFrames(msg)
 						var entry string
 						switch {
 						case endTurn:
-							entry = fmt.Sprintf("Agent Message:\n%s\n", msg)
+							entry = fmt.Sprintf("Agent Message:\n\n%s\n", msg)
 						default:
-							entry = fmt.Sprintf("Agent Status:\n%s\n", msg)
+							entry = fmt.Sprintf("Agent Status:\n\n%s\n", msg)
 						}
 						if b.Len()+len(entry) > maxHistoryChars {
 							b.WriteString("\n[... truncated ...]\n")
@@ -335,16 +340,19 @@ historyLoop:
 			// are model text in a user-role request; the human partner's own
 			// steer is the authority and keeps every byte.
 			//
-			// The label is the summary prompt's quoting rule. A model-authored
-			// steer's label takes a line of its own, for the reason the reply's
-			// does; the partner's own steer keeps the label on its line.
+			// The label is the summary prompt's quoting rule as well as a name
+			// for the author, and a model-authored steer's label takes a block
+			// of its own, for the reasons the reply's does. A steer another
+			// model wrote into the partner's channel is not the partner
+			// speaking, so it does not carry the partner's label; the
+			// partner's own steer keeps it on one line.
 			text := t.Message.Text()
 			if isModelAuthoredTurn(t) {
 				text = sysmsg.EscapeModelAuthoredFrames(text)
 				if isPartnerSteering(t) {
-					b.WriteString("User:\n")
+					b.WriteString("Parent Agent:\n\n")
 				} else {
-					b.WriteString("System:\n")
+					b.WriteString("System:\n\n")
 				}
 			} else if isPartnerSteering(t) {
 				b.WriteString("User: ")

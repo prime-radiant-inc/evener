@@ -20,6 +20,73 @@ const (
 // taskFieldLineBreaks flattens a model-authored task field rendered inline.
 var taskFieldLineBreaks = strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ")
 
+// taskReminderDelimiterTags are the elements a task reminder wraps a task's
+// model-authored fields in.
+var taskReminderDelimiterTags = []string{"SYSTEM-REMINDER", "CURRENT-TASK", "TITLE", "INSTRUCTIONS"}
+
+// taskFieldForModel returns the reminder's copy of one model-authored task
+// field: every frame opener the shared escape knows, and every spelling of the
+// reminder's own tags.
+//
+// The shared escape reads a frame only where a line starts, which is where the
+// harness writes its frames. A task field is interpolated inside an element
+// instead, so a closing tag in it ends that element early wherever it sits —
+// inline as much as at a line start — and an opening tag nests one the harness
+// never wrote.
+func taskFieldForModel(text string) string {
+	return sysmsg.EscapeModelAuthoredFrames(escapeTaskReminderDelimiters(text))
+}
+
+// escapeTaskReminderDelimiters rewrites the opening character of each spelling
+// of one of the reminder's own tags in text, opening and closing alike and in
+// any case, to "&lt;". The tag must end where a tag name ends, so a longer word
+// that merely starts with one is left alone. The rewrite adds and removes no
+// line, so the escaped text keeps the stored text's structure.
+func escapeTaskReminderDelimiters(text string) string {
+	if !strings.Contains(text, "<") {
+		return text
+	}
+	var b strings.Builder
+	changed := false
+	for i := 0; i < len(text); i++ {
+		if text[i] == '<' && taskReminderDelimiterAt(text[i:]) {
+			if !changed {
+				b.Grow(len(text))
+				b.WriteString(text[:i])
+				changed = true
+			}
+			b.WriteString("&lt;")
+			continue
+		}
+		if changed {
+			b.WriteByte(text[i])
+		}
+	}
+	if !changed {
+		return text
+	}
+	return b.String()
+}
+
+// taskReminderDelimiterAt reports whether s, which starts with "<", begins one
+// of the reminder's tags, opening or closing.
+func taskReminderDelimiterAt(s string) bool {
+	rest := strings.TrimPrefix(s[1:], "/")
+	for _, tag := range taskReminderDelimiterTags {
+		if len(rest) < len(tag) || !strings.EqualFold(rest[:len(tag)], tag) {
+			continue
+		}
+		if len(rest) == len(tag) {
+			return true
+		}
+		switch rest[len(tag)] {
+		case '>', '/', '=', ' ', '\t', '\r', '\n', '\v', '\f':
+			return true
+		}
+	}
+	return false
+}
+
 // taskFieldInline renders one model-authored task field for a place that
 // interpolates it into a line the harness writes.
 //
@@ -38,7 +105,7 @@ func taskFieldInline(text string) string {
 	// The shape normalized above is the shape the model reads, so the escape
 	// runs on it: trimming after the escape could lift an opener the escape
 	// had read as indented code onto the line's start.
-	return sysmsg.EscapeModelAuthoredFrames(strings.TrimSpace(text))
+	return taskFieldForModel(strings.TrimSpace(text))
 }
 
 // writeTaskNote renders one model-authored progress note under the task's own
@@ -60,7 +127,7 @@ func writeTaskNote(b *strings.Builder, note string) {
 		fmt.Fprintf(b, "    note: %s\n", taskFieldInline(note))
 		return
 	}
-	body := sysmsg.EscapeModelAuthoredFrames(strings.TrimSpace(note))
+	body := taskFieldForModel(strings.TrimSpace(note))
 	fence := mdfence.Pick(body)
 	b.WriteString("    note:\n")
 	fmt.Fprintf(b, "    %stext\n", fence)
@@ -95,7 +162,7 @@ func writeCurrentTaskBlock(b *strings.Builder, task taskpkg.Task) {
 		b.WriteString("<INSTRUCTIONS>\n")
 		// Trimmed before escaping so the escape reads the first line where
 		// the harness writes it, at the start of a line.
-		b.WriteString(sysmsg.EscapeModelAuthoredFrames(strings.TrimSpace(task.Prompt)))
+		b.WriteString(taskFieldForModel(strings.TrimSpace(task.Prompt)))
 		b.WriteString("\n</INSTRUCTIONS>\n")
 	}
 	b.WriteString("</CURRENT-TASK>\n")
@@ -154,7 +221,7 @@ func renderTaskListReminderSkippingPrompt(tasks []taskpkg.Task, withPrompts bool
 				// Escaped as one block so a fenced example inside the prompt
 				// keeps its bytes, then split so each line stays on the
 				// continuation line the harness indents.
-				for line := range strings.SplitSeq(sysmsg.EscapeModelAuthoredFrames(prompt), "\n") {
+				for line := range strings.SplitSeq(taskFieldForModel(prompt), "\n") {
 					fmt.Fprintf(b, "    prompt: %s\n", line)
 				}
 			}

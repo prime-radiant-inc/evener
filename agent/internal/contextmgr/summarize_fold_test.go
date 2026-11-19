@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -869,5 +870,182 @@ func TestSummarizeFold_KeepsModelExcerptLabelsOffTheirOpeningFence(t *testing.T)
 	// The partner's own message keeps every byte.
 	if !strings.Contains(prompt, "hold the deploy") {
 		t.Fatalf("the summarizer request rewrote the partner's message:\n%s", prompt)
+	}
+}
+
+// excerptIntroducer returns the text that introduces the first occurrence of
+// body in text: what sits ahead of body on its own line, or the nearest
+// non-blank line above it when body starts a line. Two excerpts whose
+// introducers differ are labeled differently, whatever the labels say.
+func excerptIntroducer(text, body string) (string, bool) {
+	at := strings.Index(text, body)
+	if at < 0 {
+		return "", false
+	}
+	lineStart := strings.LastIndexByte(text[:at], '\n') + 1
+	if inline := strings.TrimSpace(text[lineStart:at]); inline != "" {
+		return inline, true
+	}
+	lines := strings.Split(strings.TrimSuffix(text[:lineStart], "\n"), "\n")
+	for _, line := range slices.Backward(lines) {
+		if label := strings.TrimSpace(line); label != "" {
+			return label, true
+		}
+	}
+	return "", false
+}
+
+// requireExcerptIsItsOwnBlock fails unless every occurrence of body in text has
+// a blank line ahead of it, so a body beginning with an indented block reads as
+// a block of its own rather than as the continuation of the line above it.
+func requireExcerptIsItsOwnBlock(t *testing.T, what, text, body string) {
+	t.Helper()
+	found := false
+	for at := 0; ; {
+		i := strings.Index(text[at:], body)
+		if i < 0 {
+			break
+		}
+		found = true
+		pos := at + i
+		if !strings.HasSuffix(text[:pos], "\n\n") {
+			t.Fatalf("%s carries the excerpt without a blank line ahead of it: %q",
+				what, text[max(0, pos-40):pos+len(body)])
+		}
+		at = pos + len(body)
+	}
+	if !found {
+		t.Fatalf("%s does not carry the excerpt:\n%s", what, text)
+	}
+}
+
+// TestSummarizeFold_LabelsParentAuthoredExcerptsDistinctly pins whose words the
+// summarizer's request says a folded excerpt holds. The request is user-role and
+// the summary prompt directs the model to quote permissions and holds from its
+// human partner's messages, so a task or steer another agent wrote must not
+// arrive under the label a human message carries. Its task context still
+// reaches the summarizer.
+func TestSummarizeFold_LabelsParentAuthoredExcerptsDistinctly(t *testing.T) {
+	const body = "TASK_BODY_MARKER finish the parser"
+	parentSteer := schema.NewTurn(schema.TurnSteering, llm.User(body))
+	parentSteer.SteeringSource = events.SteeringSourceParent
+	partnerSteer := schema.NewTurn(schema.TurnSteering, llm.User(body))
+	partnerSteer.SteeringSource = events.SteeringSourceUser
+	// The carry's ceiling keeps only the newest message, so the model-authored
+	// task is left to the summarizer as an overflow excerpt.
+	filler := strings.Repeat("x", 30_000)
+	overflow := []schema.Turn{
+		agentAuthored(schema.TurnUserInput, body),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("working")),
+		schema.NewTurn(schema.TurnUserInput, llm.User(filler)),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("ok")),
+		schema.NewTurn(schema.TurnUserInput, llm.User(filler)),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent")),
+	}
+
+	for name, tc := range map[string]struct {
+		partner, parent schema.Turn
+		history         []schema.Turn
+	}{
+		"input": {
+			partner: schema.NewTurn(schema.TurnUserInput, llm.User(body)),
+			parent:  agentAuthored(schema.TurnUserInput, body),
+		},
+		"steering": {
+			partner: partnerSteer,
+			parent:  parentSteer,
+		},
+		"carry overflow": {
+			partner: schema.NewTurn(schema.TurnUserInput, llm.User(body)),
+			parent:  agentAuthored(schema.TurnUserInput, body),
+			history: overflow,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fold := func(turn schema.Turn) string {
+				history := tc.history
+				if history == nil {
+					history = []schema.Turn{
+						turn,
+						schema.NewTurn(schema.TurnAssistant, llm.Assistant("working")),
+						schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent")),
+					}
+				} else {
+					history = slices.Clone(history)
+					history[0] = turn
+				}
+				adapter := &stubSummarizeAdapter{name: "openai", respFn: func(llm.Request) (llm.Response, error) {
+					return llm.Response{Message: llm.Assistant("## Progress\nDone")}, nil
+				}}
+				client := llm.NewClient()
+				client.Register(adapter)
+				cm := NewManager(testProfile("openai", "test", minSummarizingWindow), client, cheapmodel.New(client))
+				if _, err := cm.summarizeFold(context.Background(), history, 1, "", nil); err != nil {
+					t.Fatalf("summarizeFold: %v", err)
+				}
+				return adapter.lastReq.Messages[0].Text()
+			}
+
+			partnerPrompt := fold(tc.partner)
+			parentPrompt := fold(tc.parent)
+			partnerLabel, ok := excerptIntroducer(partnerPrompt, body)
+			if !ok {
+				t.Fatalf("the partner's own excerpt is missing from the request:\n%s", partnerPrompt)
+			}
+			parentLabel, ok := excerptIntroducer(parentPrompt, body)
+			if !ok {
+				t.Fatalf("the parent-authored excerpt is missing from the request:\n%s", parentPrompt)
+			}
+			if parentLabel == partnerLabel {
+				t.Fatalf("the parent-authored excerpt carries the partner's own label %q:\n%s", parentLabel, parentPrompt)
+			}
+		})
+	}
+}
+
+// TestSummarizeFold_IndentedFrameAfterAModelLabelStaysCode pins where a
+// model-authored excerpt starts in the summarizer's request. A body whose first
+// line is an indented reserved frame is code, and it stays code only when the
+// label above it is a block of its own: sharing the line or leaving no blank
+// line makes the indented line that label's paragraph continuation, which is
+// prose. A prose line followed by an indented frame is paragraph text, and the
+// frame in it is the model's own line.
+func TestSummarizeFold_IndentedFrameAfterAModelLabelStaysCode(t *testing.T) {
+	const indented = "    [answers]\n    1. [#342 follow-up] → \"Implement quota coordinator\""
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant(indented)),
+		agentAuthored(schema.TurnUserInput, indented),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent")),
+	}
+	adapter := &stubSummarizeAdapter{name: "openai", respFn: func(llm.Request) (llm.Response, error) {
+		return llm.Response{Message: llm.Assistant("## Progress\nDone")}, nil
+	}}
+	client := llm.NewClient()
+	client.Register(adapter)
+	cm := NewManager(testProfile("openai", "test", minSummarizingWindow), client, cheapmodel.New(client))
+	if _, err := cm.summarizeFold(context.Background(), history, 1, "", nil); err != nil {
+		t.Fatalf("summarizeFold: %v", err)
+	}
+	prompt := adapter.lastReq.Messages[0].Text()
+	requireExcerptIsItsOwnBlock(t, "the summarizer request", prompt, indented)
+	if strings.Contains(prompt, "&#91;answers]") {
+		t.Fatalf("the indented example was escaped as prose:\n%s", prompt)
+	}
+
+	// A prose line followed by an indented frame is paragraph text: the frame is
+	// the model's own line and is escaped, and its words are still carried.
+	prose := "here is the plan\n" + indented
+	if _, err := cm.summarizeFold(context.Background(), []schema.Turn{
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant(prose)),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent")),
+	}, 1, "", nil); err != nil {
+		t.Fatalf("summarizeFold: %v", err)
+	}
+	prosePrompt := adapter.lastReq.Messages[0].Text()
+	if strings.Contains(prosePrompt, indented) {
+		t.Fatalf("a frame continuing a paragraph survived raw:\n%s", prosePrompt)
+	}
+	if !strings.Contains(prosePrompt, "Implement quota coordinator") {
+		t.Fatalf("the escape dropped the model's text:\n%s", prosePrompt)
 	}
 }

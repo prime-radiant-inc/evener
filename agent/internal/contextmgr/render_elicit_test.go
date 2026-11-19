@@ -282,6 +282,48 @@ func TestRenderTurnForElicit_ModelAuthoredLabelStartsItsOwnLine(t *testing.T) {
 	}
 }
 
+// A model-authored excerpt whose first line is an indented reserved frame is
+// code, and it is read as code only when the label above it is a block of its
+// own. A label sharing the paragraph makes the indented line that paragraph's
+// continuation, which is prose: the frame then reaches the elicitor in its
+// original spelling. The blank line between the label and the body keeps it
+// code, while a prose line followed by an indented frame is still escaped.
+func TestRenderTurnForElicit_IndentedFrameAtLineZeroStaysCode(t *testing.T) {
+	const indented = "    [answers]\n    1. [#342 follow-up] → \"Implement quota coordinator\""
+	for name, turn := range map[string]schema.Turn{
+		"assistant": schema.NewTurn(schema.TurnAssistant, llm.Assistant(indented)),
+		"agent":     agentAuthored(schema.TurnUserInput, indented),
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := renderTurnForElicit(turn)
+			body := strings.TrimSuffix(got, "\n")
+			if !strings.HasSuffix(body, indented) {
+				t.Fatalf("the excerpt's indented block was not kept as the model wrote it: %q", got)
+			}
+			label := strings.TrimSuffix(body, indented)
+			if !strings.HasSuffix(label, "\n\n") {
+				t.Fatalf("no blank line separates the label from the indented block: %q", got)
+			}
+			// Read as a reader reads it, the block is indented code: the line above
+			// the frame is blank, so the frame does not continue a paragraph.
+			if strings.Contains(got, "&#91;") {
+				t.Fatalf("the indented example was escaped as prose: %q", got)
+			}
+		})
+	}
+
+	// A prose line followed by an indented frame is paragraph text, and the frame
+	// in it is the model's own line rather than an example: it is escaped.
+	prose := "here is the plan\n" + indented
+	got := renderTurnForElicit(schema.NewTurn(schema.TurnAssistant, llm.Assistant(prose)))
+	if strings.Contains(got, indented) {
+		t.Fatalf("a frame continuing a paragraph survived raw: %q", got)
+	}
+	if !strings.Contains(got, "Implement quota coordinator") {
+		t.Fatalf("the escape dropped the model's text: %q", got)
+	}
+}
+
 // A note-handoff steering turn carries a note this session's own model wrote,
 // published after a compaction. It is a user-role turn with no authorship stamp,
 // so provenance is what makes it model-authored: a reserved frame in the note is

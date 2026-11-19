@@ -1,6 +1,7 @@
 package sysmsg
 
 import (
+	"encoding/json"
 	"slices"
 	"strings"
 	"unicode"
@@ -123,19 +124,59 @@ func CarriesWireTextFor(protocol string, p llm.ContentPart, stripsEmptyContent b
 	return CarriesWireText(p, stripsEmptyContent)
 }
 
-// FlushesTextRun reports whether p ends the assistant message the Responses
+// flushesTextRun reports whether p ends the assistant message the Responses
 // adapter is assembling, so a text part after it starts a new message.
 //
 // The adapter appends text to the open message and flushes it whenever a part
-// that replays as an output item interrupts the run. A tool call is the output
-// item whose replay does not depend on a policy the scan would have to hold:
-// the adapter emits the item for every part carrying a tool call. A thinking
-// or web-search part also interrupts the run, but whether it replays at all is
-// the request's reasoning and provenance policy, which this package is not
-// given; treating one as a boundary where the adapter drops it would split a
-// run the wire joins, so only the unconditional case is a boundary.
+// that replays as an output item interrupts the run. Every part whose own state
+// says it replays is a boundary: a tool call carrying its call, a web-search
+// part carrying a payload that decodes as one item, and a reasoning part
+// carrying the state a reasoning item replays (responses/input.go's
+// replayedOutputItem). A part those tests reject — a tool call with no call, a
+// web-search part with no payload, display-only reasoning, redacted thinking —
+// reaches no reader as an item, interrupts nothing, and the text on either side
+// of it is one message whose fence state runs through.
+//
+// The request's own reasoning policy is not a part's state and this package is
+// not given it: a target that declares reasoning off emits no reasoning item
+// where this reports one. The scan has no dispatch target, so the boundary is
+// read from the part, and a caller that knows the target's caps is the one that
+// can only be stricter than this reading, not looser.
 func flushesTextRun(p llm.ContentPart) bool {
-	return p.Kind == llm.ContentToolCall && p.ToolCall != nil
+	switch p.Kind {
+	case llm.ContentToolCall:
+		return p.ToolCall != nil
+	case llm.ContentWebSearch:
+		return replaysResponsesWebSearch(p.WebSearch)
+	case llm.ContentThinking:
+		return replaysResponsesReasoning(p.Thinking)
+	}
+	return false
+}
+
+// replaysResponsesReasoning reports whether the Responses adapter writes an
+// output item for a reasoning part, read from the part alone: a finished item
+// carries either an opaque encrypted blob or its native typed parts, and one
+// the provider cut off, redacted, or left with only a display projection
+// carries neither and is dropped.
+func replaysResponsesReasoning(t *llm.ThinkingData) bool {
+	if t == nil {
+		return false
+	}
+	encrypted := !t.ResponsesIncomplete && t.EncryptedContent != "" && !llm.IsOpenAICompatEncryptedReasoning(t.EncryptedContent)
+	return encrypted || t.ReplayableResponsesPlaintext()
+}
+
+// replaysResponsesWebSearch reports whether the Responses adapter writes an
+// output item for a web-search part: the part carries a raw payload that
+// decodes as one item. A part with no payload, or one whose payload is not an
+// item, reaches no reader.
+func replaysResponsesWebSearch(w *llm.WebSearchData) bool {
+	if w == nil || len(w.Raw) == 0 {
+		return false
+	}
+	var item map[string]any
+	return json.Unmarshal(w.Raw, &item) == nil && item != nil
 }
 
 // WireTextPartsFlushed returns an assistant message's text parts as a reader
@@ -428,11 +469,25 @@ func EscapeModelAuthoredFrames(text string) string {
 		// four-column prose would hand this line scope zero, the prose would read
 		// as page-indented code, and a model-authored frame in it would survive
 		// in both replay and checkpoint capture.
+		//
+		// A marker that may not interrupt the open paragraph is that paragraph's
+		// continuation text: it opens no item and any fence delimiter on it is
+		// text, so a frame below stays prose and is escaped. The paragraph state
+		// read here is the state BEFORE this line, which is what "may this line
+		// interrupt it" asks.
+		interrupts := lists.interruptsParagraph(content, blocks)
 		container, enclosing, openedItem := 0, 0, false
 		if !fence.Inside() || fence.LeavesItem(content) {
-			container, enclosing, openedItem = lists.step(content)
+			container, enclosing, openedItem = lists.step(content, !interrupts)
 		}
-		inBlock := fence.StepInBlockIn(content, container, enclosing)
+		// A paragraph-continuation line is not fence structure either: the
+		// delimiter on it is text, so the tracker is left where it is. The
+		// tracker is never holding a block here, because a line inside one
+		// leaves no paragraph open behind it.
+		inBlock := false
+		if interrupts {
+			inBlock = fence.StepInBlockIn(content, container, enclosing)
+		}
 		inCode := blocks.step(content, container, openedItem, inBlock)
 		if !inBlock && !inCode && !isQuotedLine(content) {
 			if escaped, ok := escapeFrameOpener(content, pos+len(line) <= lastAnswer); ok {
@@ -693,6 +748,11 @@ type blockState struct {
 	// inCode reports that the lines so far leave an indented code block open,
 	// so a blank line or a line still indented four columns stays code.
 	inCode bool
+	// quotedParagraph reports that the open paragraph is a block quote's body.
+	// A lazy continuation line continues a paragraph, but a list marker cannot
+	// be one: outside the quote, a marker ends the quote and starts a list of
+	// its own, so the interruption rule does not apply to it.
+	quotedParagraph bool
 }
 
 // step advances over one line and reports whether the line is indented code.
@@ -704,19 +764,19 @@ func (b *blockState) step(content string, container int, openedItem, inFenced bo
 	// indented code block: the opener interrupts any paragraph, and the block
 	// leaves none open behind it.
 	if inFenced {
-		b.inParagraph, b.inCode = false, false
+		b.inParagraph, b.inCode, b.quotedParagraph = false, false, false
 		return false
 	}
 	// A blank line ends a paragraph and stays inside an indented code block.
 	if strings.TrimSpace(content) == "" {
-		b.inParagraph = false
+		b.inParagraph, b.quotedParagraph = false, false
 		return b.inCode
 	}
 	indented := indentedCode(content, container)
 	// An indented line begins or continues a code block only where no
 	// paragraph is open.
 	if indented && (b.inCode || !b.inParagraph) {
-		b.inCode, b.inParagraph = true, false
+		b.inCode, b.inParagraph, b.quotedParagraph = true, false, false
 		return true
 	}
 	b.inCode = false
@@ -729,10 +789,11 @@ func (b *blockState) step(content string, container int, openedItem, inFenced bo
 	// continuing a paragraph. Only a paragraph can be underlined, which is why
 	// this is read here and not as a block opener of its own.
 	if b.inParagraph && setextUnderline(content, container) {
-		b.inParagraph = false
+		b.inParagraph, b.quotedParagraph = false, false
 		return false
 	}
 	b.inParagraph = opensParagraph(content, container, openedItem)
+	b.quotedParagraph = b.inParagraph && isBlockQuoteBody(content, container, openedItem)
 	return false
 }
 
@@ -757,6 +818,20 @@ func opensParagraph(content string, container int, openedItem bool) bool {
 		return strings.TrimSpace(rest) != ""
 	}
 	return true
+}
+
+// isBlockQuoteBody reports whether the paragraph opensParagraph just read is a
+// block quote's own body, so its later continuation lines are inside the quote.
+func isBlockQuoteBody(content string, container int, openedItem bool) bool {
+	if openedItem {
+		rest, ok := itemText(content)
+		if !ok {
+			return false
+		}
+		return isBlockQuoteBody(rest, 0, false)
+	}
+	_, ok := blockQuoteMarker(content, container)
+	return ok
 }
 
 // setextUnderline reports whether content is a setext heading underline at or
@@ -887,12 +962,17 @@ func (l *listContainer) enclosing() int {
 // ENCLOSES it, resolved after the dedent and before the line's own item opens,
 // and whether the line opens an item.
 //
+// opensNoItem reports that a marker on the line is paragraph continuation text
+// to the reader rather than structure, so the line opens no item: the caller
+// has already applied the interruption rule that decides this, and the scope
+// walk must not invent an item the reader does not see.
+//
 // The enclosing scope is what a fence opened on the line belongs to, and it is
 // not the scope the scan has just moved to: a sibling item's marker line has
 // already left the previous sibling, so its enclosing item is the one above both
 // of them. Only this walk knows that, which is why it is returned rather than
 // left for the tracker to infer from the column it recorded last.
-func (l *listContainer) step(content string) (scope, enclosing int, openedItem bool) {
+func (l *listContainer) step(content string, opensNoItem bool) (scope, enclosing int, openedItem bool) {
 	if strings.TrimSpace(content) == "" {
 		return l.current(), l.enclosing(), false
 	}
@@ -923,9 +1003,44 @@ func (l *listContainer) step(content string) (scope, enclosing int, openedItem b
 	// continuation prose — four columns past the parent's content, one column
 	// past the item's own — measured as indented code and kept its frame
 	// (#6493 review).
-	if itemContent, ok := mdfence.ListItemContent(content, mdfence.LeadingIndentEnd(content)); ok && indent-enclosing <= 3 {
+	if itemContent, ok := mdfence.ListItemContent(content, mdfence.LeadingIndentEnd(content)); ok && !opensNoItem && indent-enclosing <= 3 {
 		l.items = append(l.items, itemContent)
 		return l.current(), enclosing, true
 	}
 	return l.current(), enclosing, false
+}
+
+// interruptsParagraph reports whether line may interrupt the paragraph that is
+// open above it, which is the question that decides whether the marker on the
+// line opens a list item and whether a fence delimiter on it opens a block.
+//
+// CommonMark lets a list item interrupt a paragraph only when the list can start
+// there: a bullet always can, and an ordered list can only when its start number
+// is 1. A marker with any other start number written directly under prose is
+// lazy continuation text of that paragraph — the reader puts the line inside the
+// open paragraph, so the delimiter on it is text, no item opens, and a frame
+// below stays prose and is escaped.
+//
+// Only a marker that would START a list is read this way. Where a list is
+// already open the marker may continue it as a sibling item, which begins no
+// list and interrupts no paragraph, so the open-list case is left to the scope
+// walk that resolves it. And a marker cannot be a lazy continuation of a block
+// quote's body either: it ends the quote and starts a list of its own.
+func (l *listContainer) interruptsParagraph(content string, blocks blockState) bool {
+	if !blocks.inParagraph || blocks.quotedParagraph || len(l.items) > 0 {
+		return true
+	}
+	at := mdfence.LeadingIndentEnd(content)
+	if at >= len(content) {
+		return true
+	}
+	marker, ok := mdfence.ListMarker(content[at:])
+	if !ok {
+		return true
+	}
+	// ListMarker returns 1 only for bullets, which interrupt unconditionally.
+	if marker == 1 {
+		return true
+	}
+	return content[at:at+marker-1] == "1"
 }

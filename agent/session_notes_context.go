@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"primeradiant.com/evener/agent/internal/sysmsg"
 	"primeradiant.com/evener/agent/schema"
 )
 
@@ -185,14 +186,81 @@ func isNotesReferenceDigit(c byte, base int) bool {
 // neutralizeNotesFraming), so the block can be neither terminated nor re-opened
 // from inside. Text that is not a rendered block is neutralized whole rather than
 // passed through raw.
+//
+// The agent's whiteboard is model-authored, so its frame openers are escaped as
+// well: neutralizing angle brackets says nothing about the bracketed block
+// markers ([answers] among them), and this turn is user-role, which the
+// per-target dispatch escape leaves as the partner's channel. The human's
+// whiteboard is the partner's own words and is not touched by that escape.
 func escapeNotesContextBlock(block string) string {
 	inner, ok := strings.CutPrefix(block, notesBlockOpen)
 	if ok {
 		if body, closed := strings.CutSuffix(inner, notesBlockClose); closed {
-			return notesBlockOpen + neutralizeNotesFraming(body) + notesBlockClose
+			return notesBlockOpen + escapeAgentNoteField(neutralizeNotesFraming(body)) + notesBlockClose
 		}
 	}
 	return neutralizeNotesFraming(block)
+}
+
+// notesAgentFieldLabel opens the agent-authored whiteboard's field in a
+// rendered notes block (see formatNotesField).
+const notesAgentFieldLabel = "Agent: "
+
+// escapeAgentNoteField escapes the frame openers in the agent-authored
+// whiteboard of a rendered block's body, leaving every other field's bytes
+// alone.
+//
+// The field is read exactly as parseNotesField reads it — the label on the
+// first line and a two-space indent on each continuation line — and written
+// back with those prefixes, so the block keeps the shape the renderer wrote. It
+// is escaped as one text rather than line by line, so a fence the note holds
+// keeps its scope across the field's lines.
+func escapeAgentNoteField(body string) string {
+	if !strings.Contains(body, "[") {
+		return body
+	}
+	lines := strings.Split(body, "\n")
+	start := -1
+	for i, line := range lines {
+		if strings.HasPrefix(line, notesAgentFieldLabel) {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		return body
+	}
+	end := start + 1
+	for end < len(lines) && (lines[end] == "" || strings.HasPrefix(lines[end], "  ")) {
+		end++
+	}
+	field := make([]string, 0, end-start)
+	field = append(field, strings.TrimPrefix(lines[start], notesAgentFieldLabel))
+	for _, line := range lines[start+1 : end] {
+		field = append(field, strings.TrimPrefix(line, "  "))
+	}
+	joined := strings.Join(field, "\n")
+	escaped := sysmsg.EscapeModelAuthoredFrames(joined)
+	if escaped == joined {
+		return body
+	}
+	// The escape rewrites a line's opening character and never adds or removes
+	// a line, so the pieces are the field's lines and the indent goes back on
+	// exactly the lines that carried it.
+	pieces, ok := sysmsg.SplitJoinedEscape(escaped, field)
+	if !ok {
+		return body
+	}
+	rewritten := make([]string, len(lines))
+	copy(rewritten, lines)
+	rewritten[start] = notesAgentFieldLabel + pieces[0]
+	for i := 1; i < len(field); i++ {
+		if lines[start+i] == "" {
+			continue
+		}
+		rewritten[start+i] = "  " + pieces[i]
+	}
+	return strings.Join(rewritten, "\n")
 }
 
 func (s *Session) renderNotesContextBlock() string {
