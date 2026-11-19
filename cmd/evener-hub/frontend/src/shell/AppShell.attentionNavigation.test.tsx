@@ -2370,3 +2370,98 @@ test("phone host swap keeps attention navigation over the focused session", asyn
   expect(workspaceStore.getState().focusedPaneId).toBe(owner?.id);
   await screen.findByTestId("next-needs-you-next");
 });
+
+test.each(["main", "secondary"] as const)(
+  "Needs You hop from a phone-Back returned %s session parks it and Back restores it with staged attachments",
+  async (originSlot) => {
+    const setMobile = installSwitchableViewport();
+    setMobile(false);
+    const originRef = originSlot === "main" ? "local:main-session" : "local:secondary-session";
+    const childRef = originSlot === "main" ? "local:main-child" : "local:secondary-child";
+    const client = cascadeClient((ref) => cascadeContext(ref, ref === childRef ? [originRef] : []));
+    installLocationForRoute("local:main-session");
+    installLocationForRoute("local:secondary-session");
+    installLocationForRoute("local:needs-you-target");
+    window.history.pushState({}, "", "/s/local%3Amain-session");
+    await act(async () => {
+      render(<AppShell client={client} />);
+    });
+    await waitFor(() =>
+      expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:main-session" }),
+    );
+    const mainPane = workspaceStore.getState().mainPane();
+    if (!mainPane) throw new Error("expected main session pane");
+
+    let originPane = mainPane;
+    if (originSlot === "secondary") {
+      const secondaryId = await act(async () =>
+        workspaceStore.getState().openPane("session", { ref: originRef }, { slot: "secondary" }),
+      );
+      const found = workspaceStore.getState().panes.find((pane) => pane.id === secondaryId);
+      if (!found) throw new Error("expected secondary session pane");
+      originPane = found;
+    }
+
+    const originLifetime = conversationPaneLifetime(originPane);
+    const originAttachments = originLifetime.composer?.attachments;
+    if (!originAttachments) throw new Error("expected origin composer attachments store");
+    act(() => {
+      originAttachments.setState({
+        items: [
+          {
+            marker: 1,
+            name: "staged.png",
+            mediaType: "image/png",
+            data: "iVBORw0KGgo=",
+            pending: false,
+          },
+        ],
+      });
+    });
+
+    const inspectorId = await act(async () =>
+      enterAgentCascade(
+        activityDelegate({
+          ownerRef: originRef,
+          childRef,
+          delegateId: `d-hop-${originSlot}`,
+        }),
+        originPane.id,
+      ),
+    );
+    await screen.findByTestId("cascade-column");
+
+    await act(async () => {
+      setMobile(true);
+    });
+    await screen.findByRole("button", { name: "Back" });
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "Back" }));
+    const originPath = `/s/${encodeURIComponent(originRef)}`;
+    await waitFor(() => expect(window.location.pathname).toBe(originPath));
+    expect(workspaceStore.getState().panes.some((pane) => pane.id === inspectorId)).toBe(false);
+    expect(workspaceStore.getState().focusedPaneId).toBe(originPane.id);
+
+    await act(async () => {
+      openAttentionSession("local:needs-you-target");
+    });
+    await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aneeds-you-target"));
+    expect(workspaceStore.getState().panes).toContain(originPane);
+    expect(originPane.slot).toBe("parked");
+    expect(originLifetime.alive).toBe(true);
+    expect(originAttachments.getState().items.map((item) => item.marker)).toEqual([1]);
+
+    act(() => {
+      window.history.back();
+    });
+    await waitFor(() => expect(window.location.pathname).toBe(originPath));
+    await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(originPane.id));
+    expect(paneFor(originRef)).toBe(originPane);
+    expect(originPane.slot).toBe(originSlot);
+    expect(originLifetime.alive).toBe(true);
+    expect(originAttachments.getState().items.map((item) => item.marker)).toEqual([1]);
+    if (originSlot === "secondary") {
+      expect(workspaceStore.getState().mainPane()).toBe(mainPane);
+    }
+  },
+);

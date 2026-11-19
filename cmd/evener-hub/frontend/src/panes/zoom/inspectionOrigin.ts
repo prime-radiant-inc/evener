@@ -140,6 +140,7 @@ observeRouteHistory((_prevState, nextState, _prevURL, nextURL) => {
     returnedOriginURL !== null &&
     (nextURL !== returnedOriginURL || routeHistoryEntryId(nextState) !== returnedOriginEntryId)
   ) {
+    returnedOrigin = null;
     returnedOriginURL = null;
     returnedOriginEntryId = null;
   }
@@ -148,8 +149,7 @@ observeRouteHistory((_prevState, nextState, _prevURL, nextURL) => {
 workspaceStore.subscribe((state, previous) => {
   if (returnedOrigin !== null) {
     const originPresent =
-      returnedOrigin.alive &&
-      presentedPanes(state.panes).some((pane) => existingConversationPaneLifetime(pane) === returnedOrigin);
+      returnedOrigin.alive && state.panes.some((pane) => existingConversationPaneLifetime(pane) === returnedOrigin);
     if (!originPresent) {
       const ownsCurrentReturnEntry =
         returnedOriginURL !== null &&
