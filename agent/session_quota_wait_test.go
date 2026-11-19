@@ -1365,6 +1365,23 @@ func (a *quotaWaitAnnouncements) snapshot() []events.ModelRetryData {
 	return append([]events.ModelRetryData(nil), a.retries...)
 }
 
+// awaitLen waits until the authoritative consumer has recorded n wait
+// announcements. awaitQuotaWait observes the wait state, which the session
+// publishes under its lock before emitting the start event, and the lossless
+// consumer drains on its own goroutine — so returning from awaitQuotaWait
+// is no evidence the announcement was recorded yet, and an assertion on
+// the recorded count could fail with correct production behavior. Waiting
+// on the consumer's own record, not the state it follows, is the only
+// ordering that cannot race.
+func (a *quotaWaitAnnouncements) awaitLen(t *testing.T, n int) {
+	t.Helper()
+	testwait.Until(t, "the wait announcements to reach the consumer", func() bool {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		return len(a.retries) >= n
+	})
+}
+
 // A quota wait carries a daemon-issued identity on every producer: the
 // start announcement and the zero-delay retry that ends it carry the same
 // stamp, the thread read's failure summary carries it too, and a second
@@ -1388,6 +1405,7 @@ func TestQuotaWaitAnnouncementsCarryTheWaitIdentity(t *testing.T) {
 	if failure == nil {
 		t.Fatal("no failure summary while the call waits")
 	}
+	announcements.awaitLen(t, 1)
 	started := announcements.snapshot()
 	if len(started) != 1 {
 		t.Fatalf("wait start announcements = %+v, want one", started)
@@ -1414,6 +1432,7 @@ func TestQuotaWaitAnnouncementsCarryTheWaitIdentity(t *testing.T) {
 	if second == nil || second.ResumesAt != failure.ResumesAt {
 		t.Fatalf("second wait's summary = %+v, want it to resume at the same reset %d", second, failure.ResumesAt)
 	}
+	announcements.awaitLen(t, 3)
 	got := announcements.snapshot()
 	if len(got) != 3 {
 		t.Fatalf("wait announcements = %+v, want the first's start and wake and the second's start", got)

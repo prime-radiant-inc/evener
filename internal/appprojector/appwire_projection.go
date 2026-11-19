@@ -42,7 +42,13 @@ type AppEventProjector struct {
 	// runningTurnID is the running execution's TurnID, from its
 	// EXECUTION_STARTED to its EXECUTION_ENDED (or the session's end).
 	runningTurnID string
-	delegates     map[string]appwire.EvenerDelegateInfo
+	// endedTurnID is the execution the running one ended, kept so a
+	// SESSION_END arriving after it (the root discards the execution end's
+	// own status; a closing session may emit nothing else) still names the
+	// turn that ran. Only the session end that follows reads it; a new
+	// execution start clears it.
+	endedTurnID string
+	delegates   map[string]appwire.EvenerDelegateInfo
 }
 
 func NewAppEventProjector(threadID, ref string) *AppEventProjector {
@@ -129,6 +135,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		}
 		return out
 	case events.EventExecutionStarted:
+		p.endedTurnID = ""
 		p.runningTurnID = eventData[events.ExecutionStartedData](event.Data).TurnID
 		return []AppNotification{p.threadStatus(appwire.ThreadStatusActive)}
 	case events.EventExecutionEnded:
@@ -141,6 +148,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		// running from one for an older turn.
 		ended := p.runningTurnID
 		p.runningTurnID = ""
+		p.endedTurnID = ended
 		return []AppNotification{p.threadStatusEnded(appwire.ThreadStatusIdle, ended)}
 	case events.EventStatusSettled:
 		// A resting session's state moved outside any turn (a needs_response
@@ -433,9 +441,16 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		}
 		// A session end outlives no execution: the ended one's own event may
 		// never arrive (a closing session stops emitting), so the frame
-		// names the execution the projector held, read before the clear.
+		// names the execution the projector held, read before the clear —
+		// or the one the discarded execution end already ended, when the
+		// root suppressed that end's status and only the session end
+		// publishes the terminal word.
 		ended := p.runningTurnID
+		if ended == "" {
+			ended = p.endedTurnID
+		}
 		p.runningTurnID = ""
+		p.endedTurnID = ""
 		out := []AppNotification{p.threadStatusEnded(state, ended)}
 		if state == appwire.ThreadStatusClosed {
 			// Still map[string]any, not appwire.ThreadClosedParams (kcb5):

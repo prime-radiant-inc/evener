@@ -79,12 +79,17 @@ func TestProjectorTerminalStatusNamesTheEndedTurn(t *testing.T) {
 		t.Fatalf("session end = %+v, want it to name the ended turn t_2", got)
 	}
 
-	// An end with no running execution names no turn: an older-daemon
-	// client treats absence as "no answer", never infers ownership.
+	// A session end after the execution's own end still names that
+	// execution: the root discards the execution end's own status frame
+	// (isExecutionBoundary), so when both events drain before settlement
+	// the session end's frame is the only terminal word and must carry the
+	// id. On a delegate, whose execution-end frame does publish, the second
+	// name is inert — a client rule that requires the id to match the turn
+	// its snapshot still shows running retires nothing twice.
 	projectEvent(p, events.ExecutionStartedData{TurnID: "t_3"})
 	projectEvent(p, events.ExecutionEndedData{TurnID: "t_3", Status: "completed"})
-	if got := status(projectEvent(p, events.SessionEndData{State: appwire.ThreadStatusIdle})); got.EndedTurnID != "" {
-		t.Fatalf("session end after the execution ended = %+v, want no ended turn named", got)
+	if got := status(projectEvent(p, events.SessionEndData{State: appwire.ThreadStatusIdle})); got.EndedTurnID != "t_3" {
+		t.Fatalf("session end after the execution ended = %+v, want it to name the ended turn t_3", got)
 	}
 
 	// An end for an execution another one replaced says nothing at all.

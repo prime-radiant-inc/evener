@@ -429,8 +429,11 @@ type ThreadStatusChangedParams struct {
 	// older turn the snapshot already replaced. Set on the frames that end a
 	// running turn: the execution's end, the session's end while one runs,
 	// and the root's settlement of a published turn. ABSENT MEANS "NO
-	// ANSWER" (an older daemon omits it): a client must then preserve the
-	// snapshot's running turn rather than infer what the frame ended.
+	// ANSWER" (an older daemon omits it), and its reading is the
+	// reconciliation pass's: a PRE-CUT frame with no id preserves the
+	// snapshot's running turn rather than inferring what the frame ended.
+	// A LIVE (post-cut) Stop keeps ordinary delivery order whatever its
+	// vintage — the absent id never outlives the turn it would have named.
 	EndedTurnID string `json:"endedTurnId,omitempty"`
 }
 
