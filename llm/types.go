@@ -689,6 +689,8 @@ type Response struct {
 	Raw       map[string]any `json:"raw,omitempty"`
 	Warnings  []Warning      `json:"warnings,omitempty"`
 	RateLimit *RateLimitInfo `json:"rate_limit,omitempty"`
+	// OutputSettled tells stream consumers to keep the supplied output even when empty.
+	OutputSettled bool `json:"-"`
 }
 
 // Text returns the concatenated text content of the response message.

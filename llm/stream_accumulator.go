@@ -160,7 +160,7 @@ func (a *StreamAccumulator) Process(ev StreamEvent) {
 		a.usage = ev.Usage
 		if ev.Response != nil {
 			cp := *ev.Response
-			if !responseHasContent(cp) {
+			if !cp.OutputSettled && !responseHasContent(cp) {
 				cp = *a.buildResponseLocked()
 				copyResponseMetadata(&cp, ev.Response)
 			}
