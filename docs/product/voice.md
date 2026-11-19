@@ -300,7 +300,8 @@ artifact location. The [native module's model-swap procedure](../../mobile-nativ
 copies a selected local classifier into the resource bundle without moving or
 rewriting the training lane's artifact. From `mobile-native`, run
 `node modules/evener-voice/ensure-model.mjs --wake-manifest /absolute/custom-wake.json`,
-then rebuild through the normal pod/prebuild flow. With no option, postinstall
+then remove the `evener-voice` exclusion from `mobile-native/package.json` and
+rebuild through the normal pod/prebuild flow. With no option, postinstall
 selects `wake-models.custom.json` and its paired feature models. CocoaPods bundles
 only the selected models and notices, not unused pretrained ONNX copies.
 `wake-models.pretrained.json` remains an optional CC BY-NC-SA 4.0 Alexa preview.
