@@ -895,12 +895,18 @@ export class TranscriptRepository {
   /** Accept a complete wire read under its captured reader lifetime. */
   acceptRead(
     response: ThreadReadResponse,
-    request: { lifetime: number; readId: string; boundary: string; preserveEnded?: boolean },
+    request: {
+      lifetime: number;
+      readId: string;
+      boundary: string;
+      preserveEnded?: boolean;
+      postCutWaitStamps?: ReadonlySet<number>;
+    },
   ): boolean {
     if (this.#sealed || !this.#acceptsLifetime(request.lifetime) || !this.#matchesRead(response)) return false;
     const before = this.#model;
     let candidate = before
-      ? applyReadResponse(before, response, this.#now())
+      ? applyReadResponse(before, response, this.#now(), undefined, request.postCutWaitStamps)
       : (() => {
           const hydrated = hydrateThread(response, this.#binding.ref, this.#now());
           return response.changes
@@ -1190,82 +1196,172 @@ export class TranscriptRepository {
    * cannot replace or append to a response-owned slot. Capture that authority
    * once for the whole cut, so a missing upsert and its deltas stay together.
    * The shared reducer prunes any overlay the versioned recorded history covers.
+   *
+   * The buffer's quota-wait and turn-status frames fold into transitions
+   * first, then reconcile against the adopted snapshot — which is
+   * authoritative for turn ownership AND wait presence. Pre-cut frames may
+   * only enrich: an establishment (an active status, a wait start against a
+   * wait-free snapshot) is never admissible, a replacement publishes nothing
+   * pre-cut, and a terminal status applies only when its own endedTurnId
+   * names the turn the snapshot still shows running and no buffered frame
+   * replaced that turn. A refused read (adoptedRead false) drops exactly
+   * these quota transitions; every other rule above is the read's own
+   * authority chain and unaffected.
    */
-  acceptBeforeReadCut(notifications: readonly AnyNotification[], context: { lifetime: number }): void {
+  acceptBeforeReadCut(
+    notifications: readonly AnyNotification[],
+    context: { lifetime: number; adoptedRead?: boolean },
+  ): void {
     const responseOverlayKeys = new Set(Object.keys(this.#model?.overlay ?? {}));
-    // The source that ACCEPTED the read is the authority here, and it is not
-    // always the token the accepted model carries. A saved fallback merges:
-    // it retains the held boot for history validity, because its rows came
-    // from the saved index, while a buffered frame may already name the
-    // source that replaced it. Reading the retained boot as "the source the
-    // read established" then discards the replacement's own frame - and if
-    // that frame invalidated the repository while the read was pending,
-    // accepting the fallback clears the invalidation and replay loses the
-    // signal the live transcript recovers from.
-    //
-    // So the authority is the read's OWN evidence:
-    // - a live answer names the source it serves under, and only frames from a
-    //   source that answer superseded are excluded;
-    // - an enriched fallback (`live-read-empty`) answered live for identity
-    //   purposes, so its token is that same evidence;
-    // - a fallback that answered nothing live (`live-read-failed`) establishes
-    //   no source at all. It supersedes nothing, so every buffered frame is
-    //   kept and a replacement's invalidation survives to reach recovery.
-    //
-    // A superseded frame is EXCLUDED, not blanked. Blanking its token is itself
-    // a boot change - the reducer reads `""` as a different generation,
-    // invalidates the fresh snapshot and records an empty awaited boot - so the
-    // "fix" reintroduced the harm it was meant to prevent, one field over. The
-    // accepted read is the newest recorded form of everything that frame
-    // reports, so dropping it loses nothing that is still true. Other methods
-    // from the same interval (a queue change, an overlay the response did not
-    // cover) are not history authority and still replay below.
-    // Which buffered frames this read may discard is an ORDER question, and
-    // `confirmedBootReplacement` cannot answer it: two qualified tokens from
-    // different owners confirm a replacement in BOTH directions, so "I am the
-    // older source" and "I am the newer one" read alike. Ordering by counter
-    // alone fails the same way, because two owners number from their own
-    // starts.
-    //
-    // The one sound discriminator is the source the read itself REPLACED. A
-    // frame from that source is demonstrably older than the installed one, so
-    // its identity cannot reassert itself. A frame from any OTHER source is
-    // evidence of a hand-off this read knows nothing about - the case where a
-    // read captured `5@root` and the thread's own daemon at `1` answered
-    // before the response arrived - and discarding it drops the invalidation
-    // that triggers recovery. It is kept so the reducer can record the
-    // takeover.
-    const superseded = this.#acceptedReadSuperseded;
-    // A first hydration has no predecessor source to name, yet it still
-    // outranks every frame buffered before it answered. There the accepted
-    // read's own token is the discriminator, and only there.
-    const firstHydration = this.#acceptedReadFreshHydration ? this.#acceptedReadSource : "";
+    if (context.adoptedRead === false) {
+      // The refused read's snapshot never became this repository's model, so
+      // the quota transitions ordered against it are dropped whole; the
+      // versioned/queue/overlay rules below deliver by their own authority.
+      for (const notification of notifications) {
+        this.#acceptPrecutEnrichment(notification, context, responseOverlayKeys);
+      }
+      return;
+    }
+    // Admissibility first, against the adopted snapshot only; then one replay
+    // pass in delivery order, quota transitions and enrichment alike. An
+    // output update accepted between a wait's start and its wake must not
+    // land between them: applying quota frames in an earlier pass than the
+    // history around them lets the update's chip-clearing rule strip a chip
+    // the wait's own start had just installed, in the wrong order.
+    const admitted = this.#admitPrecutQuotaTransitions(notifications);
     for (const notification of notifications) {
-      if (notification.method === "history/updated") {
-        const boot = notification.params.bootGeneration;
-        if (boot === undefined || boot === "") {
-          this.accept(notification, context);
+      if (admitted.has(notification)) {
+        this.accept(notification, context);
+        continue;
+      }
+      this.#acceptPrecutEnrichment(notification, context, responseOverlayKeys);
+    }
+  }
+
+  // The read cut's non-quota enrichment: versioned recorded merges, queue
+  // revisions, and overlay slots the adopted read does not own. Unchanged by
+  // the quota reconciliation; both paths (adopted and refused) run it.
+  #acceptPrecutEnrichment(
+    notification: AnyNotification,
+    context: { lifetime: number },
+    responseOverlayKeys: Set<string>,
+  ): void {
+    if (notification.method === "history/updated") {
+      const superseded = this.#acceptedReadSuperseded;
+      const firstHydration = this.#acceptedReadFreshHydration ? this.#acceptedReadSource : "";
+      const boot = notification.params.bootGeneration;
+      if (boot === undefined || boot === "") {
+        this.accept(notification, context);
+        return;
+      }
+      if ((superseded !== "" && boot === superseded) || (firstHydration !== "" && boot !== firstHydration)) {
+        return;
+      }
+      this.accept(notification, context);
+    } else if (
+      notification.method === "thread/queueChanged" &&
+      notification.params.queue.revision > (this.#model?.queue?.revision ?? -1)
+    ) {
+      this.accept(notification, context);
+    } else if (notification.method === "overlay/upserted" && !responseOverlayKeys.has(notification.params.item.key)) {
+      this.accept(notification, context);
+    } else if (
+      notification.method === "overlay/delta" &&
+      !responseOverlayKeys.has(notification.params.key) &&
+      this.#model?.overlay?.[notification.params.key]
+    ) {
+      this.accept(notification, context);
+    }
+  }
+
+  // Decides which of the buffer's quota-wait and turn-status frames the
+  // adopted snapshot admits, and returns exactly those frames. The fold
+  // answers one question per transition — who supplies turn ownership — and
+  // the reconciliation never infers it: a terminal status carries its own
+  // endedTurnId, and a frame with none preserves the snapshot's running
+  // turn. No frame is admitted or rejected by pairing it with another: the
+  // buffer is folded FIRST (a same-buffer start+wake pair is one
+  // cancellation), and each resulting transition stands on its own facts
+  // against the snapshot. Pure over the snapshot: the caller replays the
+  // admitted frames in delivery order.
+  #admitPrecutQuotaTransitions(notifications: readonly AnyNotification[]): Set<AnyNotification> {
+    const snapshot = this.#model;
+    if (!snapshot) return new Set();
+    // The fold's own running-turn history: each buffered active frame that
+    // named a different turn than the one before it records a replacement,
+    // so a terminal status whose endedTurnId names a replaced turn is
+    // refused even when the buffer holds no later frame at all.
+    let bufferedRunningTurn: string | undefined = snapshot.runningTurnId;
+    const replacedTurns = new Set<string>();
+    for (const notification of notifications) {
+      if (notification.method !== "thread/status/changed") continue;
+      const params = notification.params as { activeTurnId?: string };
+      if (params.activeTurnId === undefined || params.activeTurnId === bufferedRunningTurn) continue;
+      if (bufferedRunningTurn !== undefined) replacedTurns.add(bufferedRunningTurn);
+      bufferedRunningTurn = params.activeTurnId;
+    }
+    const admitted = new Set<AnyNotification>();
+    for (const notification of notifications) {
+      // Admissibility reads the ADOPTED SNAPSHOT, never the state a prior
+      // admitted frame would have produced: the replay pass applies frames in
+      // delivery order, and the reducer's own stamp ordering decides the
+      // same-buffer facts there (a start followed by its wake, a stale start
+      // after its wake — each stands or falls on the snapshot's word).
+      if (notification.method === "thread/status/changed") {
+        const params = notification.params as { activeTurnId?: string; endedTurnId?: string };
+        // Establishment and replacement are post-cut transitions: an idle
+        // snapshot already reflects every pre-cut Stop, and a snapshot naming
+        // its own running turn is not overwritten by a buffered frame. Only
+        // a terminal status that supplies its own ownership — its
+        // endedTurnId names the turn the snapshot still shows running — may
+        // end that turn pre-cut.
+        if (params.activeTurnId !== undefined) continue;
+        if (params.endedTurnId === undefined) continue;
+        if (params.endedTurnId !== snapshot.runningTurnId) continue;
+        if (replacedTurns.has(params.endedTurnId)) continue;
+        admitted.add(notification);
+        continue;
+      }
+      if (notification.method === "evener/thread/modelRetry") {
+        const params = notification.params as {
+          delayMs: number;
+          errorClass?: string;
+          waitStartedAt?: number;
+        };
+        if (params.errorClass !== "quota_exceeded") {
+          admitted.add(notification);
           continue;
         }
-        if ((superseded !== "" && boot === superseded) || (firstHydration !== "" && boot !== firstHydration)) {
+        const stamp = params.waitStartedAt ?? 0;
+        const heldStamp = snapshot.quotaWaitStartedAt ?? 0;
+        const snapshotHoldsWait = snapshot.quotaResumesAt !== undefined || heldStamp > 0;
+        if (params.delayMs > 0) {
+          // A start. The snapshot is authoritative for wait PRESENCE too: a
+          // wait-free snapshot already reflects the wait's end, so a start
+          // installs nothing (the wake that follows in the same buffer
+          // records the ended stamp below). Against a snapshot holding the
+          // SAME wait, the start fills chip metadata; an older stamp is not
+          // news.
+          if (!snapshotHoldsWait) continue;
+          if (stamp !== heldStamp) continue;
+          admitted.add(notification);
           continue;
         }
-        this.accept(notification, context);
-      } else if (
-        notification.method === "thread/queueChanged" &&
-        notification.params.queue.revision > (this.#model?.queue?.revision ?? -1)
-      ) {
-        this.accept(notification, context);
-      } else if (notification.method === "overlay/upserted" && !responseOverlayKeys.has(notification.params.item.key)) {
-        this.accept(notification, context);
-      } else if (
-        notification.method === "overlay/delta" &&
-        !responseOverlayKeys.has(notification.params.key) &&
-        this.#model?.overlay?.[notification.params.key]
-      ) {
-        this.accept(notification, context);
+        // A wake: matching the snapshot's held wait clears it whole; a wake
+        // for an unheld or older wait records only its ended stamp. An
+        // unstamped wake (a legacy daemon) owns the turn it names: it may
+        // clear a legacy unstamped wait, never a stamped one.
+        if (stamp > 0 && stamp !== heldStamp) {
+          // Not the held wait. Record the ended stamp only — the reducer's
+          // own fold already knows a wake for an unheld wait contributes
+          // exactly that.
+          admitted.add(notification);
+          continue;
+        }
+        admitted.add(notification);
       }
     }
+    return admitted;
   }
 
   #withoutResolvedEscalations(model: ThreadModel): ThreadModel {

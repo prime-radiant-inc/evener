@@ -12,7 +12,7 @@ import { ChoiceRow, ModelPicker } from "../ModelPicker";
 import type { ModelPickerEntry, ModelSection } from "../modelPickerEntries";
 import type { MobileConversation } from "../projectedRows";
 import type { Routes } from "../screens";
-import { type SessionControls, useControlsState } from "../sessionControls";
+import { type SessionControls, type Unread, useControlsState, verifiedSetting } from "../sessionControls";
 import { SearchField } from "../sheet/SearchField";
 import { Segmented } from "../sheet/Grouped";
 import { Sheet } from "../sheet/Sheet";
@@ -20,7 +20,9 @@ import { useSheet } from "../sheet/useSheet";
 import { sheetHosts, sheetKey, useSheetHost } from "../sheet/sheetHosts";
 import type { ToastMessage } from "../Toast";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { effortName } from "./sessionFacts";
+import { effortName, qualifiedModelIdentity } from "./sessionFacts";
+
+const NOTHING_UNREAD: Unread = { model: null, vision: null };
 
 export interface ModelHost {
 	session: MobileConversation;
@@ -37,15 +39,22 @@ export const modelHosts = sheetHosts<ModelHost>();
 // The actions whose errors this sheet shows; the Session sheet shows every other one.
 export const MODEL_ACTIONS = new Set(["changeModel", "setReasoningEffort", "setVisionModel"]);
 
-export function ModelSheet({ route }: NativeStackScreenProps<Routes, "ModelSheet">) {
+export function ModelSheet({ route, navigation }: NativeStackScreenProps<Routes, "ModelSheet">) {
 	const { hubId, ref, setting } = route.params;
 	const sheet = useSheet();
 	const host = useSheetHost(modelHosts, sheetKey(hubId, ref), sheet);
 	const [query, setQuery] = useState("");
 	if (!host) return null;
-	return (
-		<ModelSheetBody host={host} vision={setting === "vision"} query={query} setQuery={setQuery} finish={sheet.finish} />
-	);
+	// A pick can settle after the reader dismissed the picker, and a newer sheet
+	// can hold the top of the stack by then: a bare goBack would pop that sheet,
+	// or the conversation underneath it. Only this exact route, still on top,
+	// is the sheet the answer may close. The session keeps the acknowledgement
+	// and the readback either way; only the dismissal depends on the route.
+	const close = () => {
+		const stack = navigation.getState();
+		if (stack.routes[stack.index]?.key === route.key) sheet.finish();
+	};
+	return <ModelSheetBody host={host} vision={setting === "vision"} query={query} setQuery={setQuery} close={close} />;
 }
 
 function ModelSheetBody({
@@ -53,13 +62,13 @@ function ModelSheetBody({
 	vision,
 	query,
 	setQuery,
-	finish,
+	close,
 }: {
 	host: ModelHost;
 	vision: boolean;
 	query: string;
 	setQuery(query: string): void;
-	finish(): void;
+	close(): void;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
@@ -75,34 +84,88 @@ function ModelSheetBody({
 	}, [controls]);
 	const busy = !controls || !ready || state?.pending != null;
 	const levels = vision ? [] : sessionEffortLevels(session.reasoningEffortLevels, session.supportsReasoning);
-	const current = vision ? session.visionModel : session.modelProvider;
+	// One qualified identity for the row this sheet marks as current, the pick
+	// it sends and the record it checks: the daemon's snapshot and its live
+	// model update name a model in different fields (sessionFacts), and a row
+	// selected from either layout has to match the catalog's own id.
+	const current = vision ? session.visionModel : qualifiedModelIdentity(session);
 	const canChange = vision ? session.capabilities.changeVisionModel : session.capabilities.changeModel;
-	const error = state?.modelError ?? (state?.lastAction && MODEL_ACTIONS.has(state.lastAction) ? state.error : null);
-	const revealError = () => {
-		// Each refusal reveals the first header row, even when it repeats the
-		// previous message after the user has scrolled away to try again.
-		if (controls?.getSnapshot().error) list.current?.getScrollResponder()?.scrollTo({ y: 0, animated: true });
+	// The rows below decide "already set" by comparing against the session's
+	// projection, and that is only the answer once a read has landed after the
+	// last set. A set the hub acknowledged whose readback could not run leaves
+	// the projection showing the value from before it, so a match there means
+	// "not written yet". The record of the value the hub did take is what says
+	// which of the two a match is.
+	const verified = (setting: "model" | "vision", value: string) =>
+		verifiedSetting(state?.unread ?? NOTHING_UNREAD, setting, value);
+	// A refusal belongs to the set that dispatched the write: a recycle can
+	// replace this sheet's controls while the answer is out, and the set that
+	// sent it is the one that recorded what the hub said. The replacement's
+	// snapshot has no such error, so reading that one would show the refusal
+	// nowhere after a rebind - the picker stays open and silent, which reads as
+	// a pick that did nothing. The refusal is held here until the reader tries
+	// again.
+	const [refused, setRefused] = useState<string | null>(null);
+	const error =
+		refused ?? state?.modelError ?? (state?.lastAction && MODEL_ACTIONS.has(state.lastAction) ? state.error : null);
+	// Each refusal reveals the first header row, even when it repeats the
+	// previous message after the user has scrolled away to try again.
+	const revealError = (from: SessionControls | null) => {
+		if (from?.getSnapshot().error) list.current?.getScrollResponder()?.scrollTo({ y: 0, animated: true });
 	};
-	const closeOn = (change: Promise<boolean>, then?: () => void) =>
+	/** Sends one change through the controls that can take it now, and settles
+	 * the sheet on what the hub answered them. `sentWith` is the binding that
+	 * dispatched, which may be replaced while the answer is out. Every action
+	 * goes through here, so a new attempt always retires the previous refusal
+	 * and a failure always reports the binding that recorded it. `closes`
+	 * separates a pick, which ends the sheet, from an effort change, which
+	 * stays open behind its result. A change that reports no outcome at all -
+	 * the effort the session already runs, or one it cannot take - is no
+	 * attempt: it neither closes nor speaks. */
+	const dispatch = (
+		sentWith: SessionControls | null,
+		change: Promise<boolean | void>,
+		closes: boolean,
+		then?: () => void,
+	) => {
+		// A new attempt is the reader's, so the previous refusal stops being the
+		// answer to what the picker now shows.
+		setRefused(null);
 		void change.then((changed) => {
-			if (!changed) {
-				revealError();
+			if (changed === undefined) return;
+			if (changed) {
+				if (!closes) return;
+				close();
+				then?.();
 				return;
 			}
-			finish();
-			then?.();
+			// That binding is the authority on what the hub said, whether or not it
+			// is still the set this sheet reads.
+			setRefused(sentWith?.getSnapshot().error ?? null);
+			revealError(sentWith);
 		});
+	};
 	const choose = (model: ModelDescriptor) => {
-		if (`${model.provider}/${model.model}` === current) {
-			finish();
+		if (verified(vision ? "vision" : "model", current) && `${model.provider}/${model.model}` === current) {
+			close();
 			return;
 		}
 		if (!controls) return;
-		if (vision) closeOn(controls.changeVisionModel(model.provider, model.model));
+		if (vision) dispatch(controls, controls.changeVisionModel(model.provider, model.model), true);
 		else
-			closeOn(controls.changeModel(model.provider, model.model), () =>
+			dispatch(controls, controls.changeModel(model.provider, model.model), true, () =>
 				host.toast({ text: "Model changed. Applies from the next turn." }),
 			);
+	};
+	// Already the setting: the daemon would acknowledge an unchanged value,
+	// and announcing that as a change tells the reader something happened when
+	// nothing did.
+	const chooseVision = (value: string) => {
+		if (verified("vision", session.visionModel) && session.visionModel === value) {
+			close();
+			return;
+		}
+		if (controls) dispatch(controls, controls.setVisionModel(value), true);
 	};
 	const settings = (
 		<View style={{ paddingHorizontal: 16, paddingBottom: 8, gap: 8 }}>
@@ -120,7 +183,9 @@ function ModelSheetBody({
 					levels={levels}
 					current={session.reasoningEffort ?? ""}
 					disabled={busy}
-					choose={(level) => void controls?.setReasoningEffort(level).then(revealError)}
+					choose={(level) => {
+						if (controls) dispatch(controls, controls.setReasoningEffort(level), false);
+					}}
 				/>
 			) : null}
 		</View>
@@ -128,7 +193,7 @@ function ModelSheetBody({
 	return (
 		<Sheet
 			title={vision ? "Vision model" : "Model"}
-			done={{ onPress: () => finish() }}
+			done={{ onPress: () => close() }}
 			accessory={
 				<View style={{ paddingHorizontal: 16, paddingBottom: 8 }}>
 					<SearchField label="Search models" value={query} onChangeText={setQuery} />
@@ -153,13 +218,13 @@ function ModelSheetBody({
 									title="Session model"
 									selected={session.visionModel === ""}
 									disabled={busy || !canChange}
-									onPress={() => controls && closeOn(controls.setVisionModel(""))}
+									onPress={() => chooseVision("")}
 								/>
 								<ChoiceRow
 									title="Off"
 									selected={session.visionModel === "off"}
 									disabled={busy || !canChange}
-									onPress={() => controls && closeOn(controls.setVisionModel("off"))}
+									onPress={() => chooseVision("off")}
 								/>
 							</>
 						) : null}

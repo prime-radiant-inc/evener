@@ -1,10 +1,12 @@
 package responses
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/internal/openaichat"
 	"primeradiant.com/evener/llm/providers/internal/protocolhttp"
 	"primeradiant.com/evener/llm/providers/internal/requestutil"
 	"primeradiant.com/evener/llm/registry"
@@ -24,7 +26,7 @@ func buildBody(req llm.Request, res registry.Resolved, stream bool) (out map[str
 	defer func() { err = llm.RewriteErrorProvider(err, res.Instance) }()
 	caps := res.Caps
 	lite := registry.BoolValue(caps.ResponsesLite)
-	instructions, inputItems, err := toResponsesInput(req.Messages, registry.StringValue(caps.ImageDetail))
+	instructions, inputItems, err := toResponsesInput(req.Messages, registry.StringValue(caps.ImageDetail), caps.ReasoningDisabled())
 	if err != nil {
 		return nil, err
 	}
@@ -42,7 +44,20 @@ func buildBody(req llm.Request, res registry.Resolved, stream bool) (out map[str
 	}
 	var tools []map[string]any
 	if len(req.Tools) > 0 {
-		tools = toResponsesTools(req.Tools, registry.BoolValue(caps.StrictTools))
+		// Eligibility is decided over the caller's own schema, before any copy
+		// exists, so a schema that contains itself would exhaust the stack
+		// inside the walk rather than in the copy that knows how to cut the
+		// edge. Refusing the request is the finite answer: the schema has no
+		// wire form to send.
+		for _, t := range req.Tools {
+			if openaichat.CyclicSchema(t.Parameters) {
+				return nil, &llm.ConfigurationError{
+					Message: fmt.Sprintf("tool %q: %v", t.Name, openaichat.ErrCyclicSchema),
+					Cause:   openaichat.ErrCyclicSchema,
+				}
+			}
+		}
+		tools = toResponsesTools(req.Tools, registry.BoolValue(caps.StrictTools), caps.StrictTools != nil, lite)
 	}
 	if req.WebSearch && (caps.WebSearch == nil || *caps.WebSearch) {
 		tools = append(tools, map[string]any{"type": "web_search"})

@@ -8,6 +8,7 @@ import {
 	modelChipLabel,
 	notesSummary,
 	pluginsLine,
+	qualifiedModelIdentity,
 	usageFacts,
 	visionModelLabel,
 	whereFacts,
@@ -224,6 +225,63 @@ describe("the model chip (spec 8.5)", () => {
 		["turbo", "Turbo"],
 	])("effort %s reads %s", (level, name) => {
 		expect(effortName(level)).toBe(name);
+	});
+});
+
+describe("the model's one qualified identity", () => {
+	// The daemon names a model two ways, and the model id may itself contain a
+	// slash. Every layout has to answer "provider/model" the same way, or the
+	// running row draws unselected and a tap meant as a no-op sends a setter.
+	it.each([
+		// The snapshot's own layout: the bare id in both model fields and the
+		// provider instance beside them. An OpenRouter session's id carries a
+		// slash of its own, which is part of the id and not proof of qualification.
+		["a snapshot whose model id contains a slash", "anthropic/claude-opus-5", "anthropic/claude-opus-5", "openrouter"],
+		// A live thread/model/changed: modelProvider is the provider instance and
+		// the profile is cleared.
+		["a live model change", "openrouter", "anthropic/claude-opus-5", undefined],
+		// No provider instance beside the id: a genuinely prequalified snapshot
+		// names the whole identity in its one field, so nothing is joined.
+		[
+			"a snapshot with no separate provider",
+			"openrouter/anthropic/claude-opus-5",
+			"openrouter/anthropic/claude-opus-5",
+			undefined,
+		],
+	])(
+		"reads %s as openrouter/anthropic/claude-opus-5 when that is what runs",
+		(_shape, modelProvider, model, modelProfile) => {
+			expect(qualifiedModelIdentity({ modelProvider, model, modelProfile })).toBe("openrouter/anthropic/claude-opus-5");
+		},
+	);
+
+	// The producer names the instance apart from the raw model id, and the id
+	// may itself begin with the instance: the bundled catalog lists OpenRouter's
+	// Auto Router as "openrouter/auto" on the "openrouter" instance. Its
+	// catalog identity is therefore "openrouter/openrouter/auto", and an
+	// identity that kept the id as-is would leave the running row unselected.
+	it.each([
+		["a snapshot", "openrouter/auto", "openrouter/auto", "openrouter"],
+		["a live model change", "openrouter", "openrouter/auto", undefined],
+	])("reads %s of openrouter/auto as openrouter/openrouter/auto", (_shape, modelProvider, model, modelProfile) => {
+		expect(qualifiedModelIdentity({ modelProvider, model, modelProfile })).toBe("openrouter/openrouter/auto");
+	});
+
+	it("reads a direct Anthropic model as anthropic/claude-opus-5", () => {
+		expect(
+			qualifiedModelIdentity({
+				modelProvider: "claude-opus-5",
+				model: "claude-opus-5",
+				modelProfile: "anthropic",
+			}),
+		).toBe("anthropic/claude-opus-5");
+		expect(qualifiedModelIdentity({ modelProvider: "anthropic", model: "claude-opus-5" })).toBe(
+			"anthropic/claude-opus-5",
+		);
+	});
+
+	it("leaves a session that names no model unnamed", () => {
+		expect(qualifiedModelIdentity({ modelProvider: "", model: "", modelProfile: "" })).toBe("");
 	});
 });
 

@@ -105,6 +105,38 @@ export function effortName(level: string): string {
 	return EFFORT_NAMES[level] ?? `${level.charAt(0).toUpperCase()}${level.slice(1)}`;
 }
 
+/** The one identity this app compares a model by: the qualified
+ * "provider/model" a catalog entry, a pick and a readback all use.
+ *
+ * The daemon names a model two ways. Its snapshot puts the bare model id in
+ * both model fields and the provider instance beside them in
+ * Thread.evener.profile (hydrated as modelProfile); thread/model/changed puts
+ * the provider instance in modelProvider and the bare id in model, clearing
+ * the profile. A comparison that read either layout's raw fields would call
+ * one model two identities: the running row would draw unselected, and a tap
+ * meant as a no-op would send a second setter.
+ *
+ * The model id may carry a slash of its own: an OpenRouter session runs
+ * "anthropic/claude-opus-5". The id may even begin with the provider's own
+ * name: the catalog lists that instance's Auto Router as "openrouter/auto" on
+ * the "openrouter" instance, so its identity is "openrouter/openrouter/auto".
+ * A slash in the id is therefore no proof that the identity is already whole.
+ * What decides it is the explicit provider named apart from the id - the
+ * snapshot's profile, or the live update's modelProvider - and when one is
+ * present the identity is always "provider/model". The id stands alone only
+ * when no provider is named beside it.
+ */
+export function qualifiedModelIdentity(session: Pick<ThreadModel, "modelProvider" | "model" | "modelProfile">): string {
+	const model = session.model || session.modelProvider;
+	if (model === "") return "";
+	// The provider named apart from the model id it applies to. The snapshot
+	// hydrates both model fields from one wire field, so an equal pair names no
+	// provider to add.
+	const provider = session.modelProfile || (session.modelProvider !== model ? session.modelProvider : "");
+	if (provider === "") return model;
+	return `${provider}/${model}`;
+}
+
 /** A model as the catalog names it (a model is called one way everywhere
  * people read it). While the catalog is away (before the first load, and
  * after a failed load clears it; a reload keeps it) the hub's session row names it (S17's model_name, the

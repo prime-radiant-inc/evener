@@ -991,6 +991,9 @@ func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, re
 			run.WriteString(part.Text)
 			continue
 		}
+		if MetadataOnlyResponsesReasoning(part) {
+			continue
+		}
 		flushRun()
 		switch part.Kind {
 		case llm.ContentThinking, llm.ContentRedThinking:
@@ -1045,6 +1048,14 @@ func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, re
 // redactedThinkingText stands in for a redacted-thinking part's content.
 const redactedThinkingText = "[redacted thinking]"
 
+// MetadataOnlyResponsesReasoning reports whether a reasoning part is invisible
+// to the transcript and leaves surrounding text in the same run.
+func MetadataOnlyResponsesReasoning(part llm.ContentPart) bool {
+	t := part.Thinking
+	return part.Kind == llm.ContentThinking && t != nil && t.Text == "" && len(t.Summary) == 0 && t.EncryptedContent == "" &&
+		(len(t.ResponsesContentParts) != 0 || len(t.ResponsesSummaryParts) != 0)
+}
+
 // identityReasoning returns the index of the entry's first thinking or
 // redacted-thinking part (-1 when there is none) and the entry's reasoning
 // text: each thinking part's Text, or its Summary when Text is empty, and
@@ -1053,7 +1064,7 @@ func identityReasoning(content []llm.ContentPart) (int, string) {
 	first := -1
 	var texts []string
 	for i, part := range content {
-		if part.Kind != llm.ContentThinking && part.Kind != llm.ContentRedThinking {
+		if (part.Kind != llm.ContentThinking && part.Kind != llm.ContentRedThinking) || MetadataOnlyResponsesReasoning(part) {
 			continue
 		}
 		if first < 0 {
@@ -1111,7 +1122,7 @@ func toolCallItem(turnID string, turnIndex, part int, turn schema.Turn) appwire.
 	// there). The durable record only sets RawArguments for !json.Valid, so
 	// oversized valid JSON has RawArguments="" and would otherwise show
 	// intent on reload.
-	if call.RawArguments == "" && argrepair.ValidateRawArguments(call.Arguments) == nil {
+	if call.RawArguments == "" && argrepair.ValidateRawArguments([]byte(call.WireArguments())) == nil {
 		description = schema.ToolIntent(call.Arguments)
 	}
 	item := appwire.ThreadItem{

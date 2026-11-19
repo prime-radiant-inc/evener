@@ -20,6 +20,8 @@ without descriptions produce no intent row. Including calls and intents keeps
 one item, with the description on the call. Excluding intents while including
 calls omits the description field; arguments remain intact. Selection is a
 bandwidth and presentation control, not a security redaction boundary.
+Responses reasoning stored solely as provider metadata leaves adjacent assistant
+text in one visible row.
 
 For conversation-only reads, send `includeConversation: true` and set the other
 five flags to `false`. Send the same options on older-page requests and on

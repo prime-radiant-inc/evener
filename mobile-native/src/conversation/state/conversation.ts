@@ -354,6 +354,15 @@ export interface ConversationState {
 	readonly error: string | null;
 	// Canonical read validity owned by this store (see LatestReadState).
 	readonly latestReadState: LatestReadState;
+	/** The identity of the newest read attempt. A write recorded while a read
+	 * was already out is fenced from that read: the attempt that can answer it
+	 * is one that started after the record. The store issues an identity at
+	 * every read start and keeps it through that read's publication, so while
+	 * `latestReadState` is `ready` this names the read that published it. An
+	 * entry count would not: a rehydrate that supersedes a read already in
+	 * flight starts after a write without the state leaving `reading`, so both
+	 * reads would share one identity and the later one could not answer. */
+	readonly latestReadAttempt: number;
 
 	readonly draft: string;
 	/** The in-flight mutation's click-to-commit marker: non-null from the
@@ -1054,6 +1063,16 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 	// a stale rehydrate (from an older operation) cannot overwrite a newer
 	// rehydrate's state within the same generation.
 	let rehydrateToken = 0;
+	// The identity of the newest authoritative read attempt. Every path that
+	// starts one takes the next value, so two reads can be told apart even
+	// when no `reading` transition separates them - a rehydrate that
+	// supersedes a read already in flight starts after a write without the
+	// state ever leaving `reading`, and it is the read that can answer it.
+	let readAttempt = 0;
+	const nextReadAttempt = () => {
+		readAttempt += 1;
+		return readAttempt;
+	};
 
 	// Frames that arrive while the current rehydrate's read is awaited, in
 	// arrival order. They fold into the held model as they land; a
@@ -1275,6 +1294,15 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 		const markLatest = (next: LatestReadState) => {
 			if (get().latestReadState !== next) set({ latestReadState: next });
 		};
+		// A read start is a new attempt whether or not the state leaves
+		// `reading`: a rehydrate that supersedes a read already in flight
+		// starts after a write without the state ever leaving `reading`, and
+		// it is the read that can answer that write. Counting entries into
+		// `reading` would give both reads one identity and leave the record
+		// outstanding after the one that started later published.
+		const beginRead = () => {
+			set({ latestReadState: "reading", latestReadAttempt: nextReadAttempt() });
+		};
 		markLatestReadState = markLatest;
 		// Re-projects the durable rows against the current model and publishes
 		// them only when they changed, so subscribers keep a stable reference.
@@ -1422,6 +1450,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 			status: "idle",
 			error: null,
 			latestReadState: "unknown",
+			latestReadAttempt: 0,
 
 			draft: "",
 			pendingSubmission: null,
@@ -1536,6 +1565,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					ref,
 					error: null,
 					latestReadState: "reading",
+					latestReadAttempt: nextReadAttempt(),
 					conversation: null,
 					olderCursor: null,
 					trimmedAbove: false,
@@ -1608,6 +1638,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					ref,
 					error: null,
 					latestReadState: "reading",
+					latestReadAttempt: nextReadAttempt(),
 					conversation: null,
 					olderCursor: null,
 					trimmedAbove: false,
@@ -1715,6 +1746,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					status: "opening",
 					error: null,
 					latestReadState: "reading",
+					latestReadAttempt: nextReadAttempt(),
 					pendingSubmission: null,
 					failedSubmission: null,
 					loadingOlder: false,
@@ -1785,7 +1817,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				acceptedRehydrate = null;
 				// A read is now required: the model on screen stops being canonical
 				// authority until this read publishes an accepted latest window.
-				markLatest("reading");
+				beginRead();
 				const ref = state.ref;
 				const gen = state.conversationGeneration;
 				// I1: If the service object differs from the current binding (or the

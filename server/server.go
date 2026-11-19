@@ -341,7 +341,7 @@ type Server struct {
 	compactFunc              func(context.Context) error
 	clearFunc                func(context.Context, appwire.ThreadClearParams) error
 	clearJournal             threadClearJournalFile
-	modelFunc                func(string) error
+	modelFunc                func(provider, model string) error
 	visionModelFunc          func(string) error
 	nameFunc                 func(string) error
 	reasoningEffortFunc      func(string) error
@@ -675,8 +675,11 @@ func (s *Server) SetClearFunc(fn func(context.Context, appwire.ThreadClearParams
 	s.mu.Unlock()
 }
 
-// SetModelFunc sets the function called by thread/model/set.
-func (s *Server) SetModelFunc(fn func(string) error) {
+// SetModelFunc sets the function called by thread/model/set. The provider is
+// empty when the request named only a ref; a picker that knows which instance
+// it picked sends it, and the daemon then resolves on that instance rather
+// than reading the model id's first segment as one.
+func (s *Server) SetModelFunc(fn func(provider, model string) error) {
 	s.mu.Lock()
 	s.modelFunc = fn
 	s.mu.Unlock()

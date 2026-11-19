@@ -226,6 +226,9 @@ func TestNoteDelegateAttentionLockedNew(t *testing.T) {
 	if len(attentionWakeIDsOf(c, "dlg_1")) != 1 {
 		t.Fatalf("expected 1 attention ID")
 	}
+	if _, committed := c.attention["dlg_1"].committedWakeIDs["att_1"]; !committed {
+		t.Fatal("noting new attention did not mark its wake committed")
+	}
 }
 
 func TestNoteDelegateAttentionLockedDuplicate(t *testing.T) {
@@ -233,11 +236,34 @@ func TestNoteDelegateAttentionLockedDuplicate(t *testing.T) {
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{"dlg_1": {}},
 		attention: map[string]*delegateAttentionState{
-			"dlg_1": {wakeIDs: map[string]struct{}{"att_1": {}}},
+			"dlg_1": {
+				wakeIDs:          map[string]struct{}{"att_1": {}},
+				committedWakeIDs: map[string]struct{}{"att_1": {}},
+			},
 		},
 	}
 	if c.noteDelegateAttentionLocked("dlg_1", "att_1") {
 		t.Fatalf("expected false for duplicate attention")
+	}
+}
+
+// A start commit copies the rows its generation carries into the owed set
+// alone. Committing one of them for the first time is new attention to the
+// drive: it reports true, so the caller knows the wake published, and it takes
+// the committed mark every other owed row it joins has.
+func TestNoteDelegateAttentionLockedCommitsACopiedRider(t *testing.T) {
+	t.Parallel()
+	c := &delegateTreeController{
+		durable: map[string]*delegatestore.Aggregate{"dlg_1": {}},
+		attention: map[string]*delegateAttentionState{
+			"dlg_1": {wakeIDs: map[string]struct{}{"att_1": {}}},
+		},
+	}
+	if !c.noteDelegateAttentionLocked("dlg_1", "att_1") {
+		t.Fatalf("expected true for a copied rider's first commit")
+	}
+	if _, committed := c.attention["dlg_1"].committedWakeIDs["att_1"]; !committed {
+		t.Fatal("the copied rider was not marked committed")
 	}
 }
 
@@ -249,12 +275,18 @@ func TestForgetDelegateAttentionLocked(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{
 		attention: map[string]*delegateAttentionState{
-			"dlg_1": {wakeIDs: map[string]struct{}{"att_1": {}, "att_2": {}}},
+			"dlg_1": {
+				wakeIDs:          map[string]struct{}{"att_1": {}, "att_2": {}},
+				committedWakeIDs: map[string]struct{}{"att_1": {}, "att_2": {}},
+			},
 		},
 	}
 	c.forgetDelegateAttentionLocked("dlg_1", "att_1")
 	if _, exists := attentionWakeIDsOf(c, "dlg_1")["att_1"]; exists {
 		t.Fatalf("expected att_1 to be deleted")
+	}
+	if _, exists := c.attention["dlg_1"].committedWakeIDs["att_1"]; exists {
+		t.Fatalf("forgetting att_1 left its committed mark behind")
 	}
 	if state := c.attention["dlg_1"]; state == nil || len(state.wakeIDs) != 1 {
 		t.Fatalf("expected dlg_1 to still owe att_2")
@@ -309,6 +341,36 @@ func TestReplaceDelegateAttentionLockedWithIDs(t *testing.T) {
 	c.replaceDelegateAttentionLocked("dlg_1", []string{"att_1", "att_2"})
 	if len(attentionWakeIDsOf(c, "dlg_1")) != 2 {
 		t.Fatalf("expected 2 IDs")
+	}
+	if got := len(c.attention["dlg_1"].committedWakeIDs); got != 0 {
+		t.Fatalf("the replacement marked %d newly copied riders committed, want none", got)
+	}
+}
+
+// A replacement prunes the committed marks its new set no longer carries and
+// keeps the ones it still does: the fold's pending set says what is owed, and a
+// row it stops owing cannot keep a mark that would make its next arm look like a
+// duplicate.
+func TestReplaceDelegateAttentionLockedPrunesOnlyTheMarksItDrops(t *testing.T) {
+	t.Parallel()
+	c := &delegateTreeController{
+		attention: map[string]*delegateAttentionState{
+			"dlg_1": {
+				wakeIDs:          map[string]struct{}{"att_kept": {}, "att_dropped": {}},
+				committedWakeIDs: map[string]struct{}{"att_kept": {}, "att_dropped": {}},
+			},
+		},
+	}
+	c.replaceDelegateAttentionLocked("dlg_1", []string{"att_kept", "att_new"})
+	committed := c.attention["dlg_1"].committedWakeIDs
+	if _, kept := committed["att_kept"]; !kept {
+		t.Fatal("the replacement dropped a committed wake it still owed")
+	}
+	if _, dropped := committed["att_dropped"]; dropped {
+		t.Fatal("the replacement kept a committed mark for a row it no longer owes")
+	}
+	if _, copied := committed["att_new"]; copied {
+		t.Fatal("the replacement marked a newly copied rider committed: its first arm would be skipped")
 	}
 }
 
@@ -568,7 +630,7 @@ func TestReconcileDelegateAttentionFromTranscriptsNil(t *testing.T) {
 func TestTryOpenDelegateAttentionNilController(t *testing.T) {
 	t.Parallel()
 	var c *delegateTreeController
-	_, _, _, _, err := c.tryOpenDelegateAttention("dlg_1", "att_1")
+	_, _, _, _, _, err := c.tryOpenDelegateAttention("dlg_1", "att_1")
 	if err == nil || !errors.Is(err, errDelegateNotControllable) {
 		t.Fatalf("expected errDelegateNotControllable, got %v", err)
 	}
@@ -577,7 +639,7 @@ func TestTryOpenDelegateAttentionNilController(t *testing.T) {
 func TestTryOpenDelegateAttentionEmptyDelegateID(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{}
-	_, _, _, _, err := c.tryOpenDelegateAttention("", "att_1")
+	_, _, _, _, _, err := c.tryOpenDelegateAttention("", "att_1")
 	if err == nil || !errors.Is(err, errDelegateNotControllable) {
 		t.Fatalf("expected errDelegateNotControllable, got %v", err)
 	}
@@ -586,7 +648,7 @@ func TestTryOpenDelegateAttentionEmptyDelegateID(t *testing.T) {
 func TestTryOpenDelegateAttentionEmptyAttentionID(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{}
-	_, _, _, _, err := c.tryOpenDelegateAttention("dlg_1", "")
+	_, _, _, _, _, err := c.tryOpenDelegateAttention("dlg_1", "")
 	if err == nil || !errors.Is(err, errDelegateNotControllable) {
 		t.Fatalf("expected errDelegateNotControllable, got %v", err)
 	}
@@ -598,7 +660,7 @@ func TestTryOpenDelegateAttentionNilAggregate(t *testing.T) {
 		durable:   map[string]*delegatestore.Aggregate{},
 		attention: map[string]*delegateAttentionState{},
 	}
-	_, _, _, _, err := c.tryOpenDelegateAttention("dlg_missing", "att_1")
+	_, _, _, _, _, err := c.tryOpenDelegateAttention("dlg_missing", "att_1")
 	if err == nil || !errors.Is(err, errDelegateNotControllable) {
 		t.Fatalf("expected errDelegateNotControllable for nil aggregate, got %v", err)
 	}
@@ -611,10 +673,13 @@ func TestTryOpenDelegateAttentionAlreadyExists(t *testing.T) {
 			"dlg_1": {NeedsAttention: true},
 		},
 		attention: map[string]*delegateAttentionState{
-			"dlg_1": {wakeIDs: map[string]struct{}{"att_1": {}}},
+			"dlg_1": {
+				wakeIDs:          map[string]struct{}{"att_1": {}},
+				committedWakeIDs: map[string]struct{}{"att_1": {}},
+			},
 		},
 	}
-	added, blocker, _, emit, err := c.tryOpenDelegateAttention("dlg_1", "att_1")
+	added, blocker, _, emit, _, err := c.tryOpenDelegateAttention("dlg_1", "att_1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -626,6 +691,72 @@ func TestTryOpenDelegateAttentionAlreadyExists(t *testing.T) {
 	}
 	if emit {
 		t.Fatalf("expected emit=false")
+	}
+}
+
+// A start commit copies the rows the generation carries into the delegate's
+// wake set without any of them having been admitted. That copy is the transcript
+// fold's word on what the generation owes, not evidence that a wake passed the
+// gate: the first arm of such a row must still publish its wake and journal the
+// release a settled user-stop quiet owes, exactly as an arm of any other owed
+// row does. Only once it has committed is a repeat arm the duplicate it looks
+// like.
+func TestTryOpenDelegateAttentionCommitsACopiedPendingRider(t *testing.T) {
+	t.Parallel()
+	c, _ := newDelegateControllerTestHarness(t, 2, 1)
+	seedDelegateControllerIdle(t, c, "dlg_rider", "")
+	journalStopAtGeneration(t, c, "dlg_rider", 1)
+
+	const attentionID = "delegate:copied-rider"
+	c.mu.Lock()
+	c.replaceDelegateAttentionLocked("dlg_rider", []string{attentionID})
+	_, copied := attentionWakeIDsOf(c, "dlg_rider")[attentionID]
+	_, committed := c.attention["dlg_rider"].committedWakeIDs[attentionID]
+	c.mu.Unlock()
+	if !copied || committed {
+		t.Fatalf("premise broken: rider copied=%t committed=%t, want the copy alone", copied, committed)
+	}
+
+	added, blocker, _, _, generation, err := c.tryOpenDelegateAttention("dlg_rider", attentionID)
+	if err != nil {
+		t.Fatalf("arm the copied rider: %v", err)
+	}
+	if blocker != nil {
+		t.Fatal("the copied rider's first arm was blocked")
+	}
+	if !added {
+		t.Fatal("the copied rider's first arm did not commit it")
+	}
+	if generation != 1 {
+		t.Fatalf("the copied rider's first arm superseded generation %d, want the settled generation 1", generation)
+	}
+	c.mu.Lock()
+	floor := c.durable["dlg_rider"].AttentionHoldReleasedGeneration
+	recorded := c.attention["dlg_rider"].releasedGeneration
+	_, committed = c.attention["dlg_rider"].committedWakeIDs[attentionID]
+	c.mu.Unlock()
+	if floor != 1 {
+		t.Fatalf("the copied rider's arm journaled no release (floor %d, want 1): a cold restore rebuilds the quiet over the row the wake freed", floor)
+	}
+	if recorded != 1 {
+		t.Fatalf("the copied rider's arm recorded released generation %d, want 1", recorded)
+	}
+	if !committed {
+		t.Fatal("the copied rider's arm did not mark the wake committed")
+	}
+
+	added, blocker, _, _, generation, err = c.tryOpenDelegateAttention("dlg_rider", attentionID)
+	if err != nil {
+		t.Fatalf("repeat the copied rider's arm: %v", err)
+	}
+	if added || blocker != nil || generation != 0 {
+		t.Fatalf("repeat arm = added:%t blocked:%t generation:%d, want an idempotent no-op", added, blocker != nil, generation)
+	}
+	c.mu.Lock()
+	repeat := c.durable["dlg_rider"].AttentionHoldReleasedGeneration
+	c.mu.Unlock()
+	if repeat != 1 {
+		t.Fatalf("repeat arm moved the release floor to %d: a committed wake must not publish again", repeat)
 	}
 }
 
