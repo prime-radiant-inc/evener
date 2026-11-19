@@ -23,11 +23,11 @@ func responsesFunctionCallUnfinished(item map[string]any) bool {
 // come from a terminal response.completed payload's "output" field or from
 // decodeStream's accumulated response.output_item.done events, so both
 // callers share this one walk.
-func responseContentFromOutputItems(out []any, body []byte) []llm.ContentPart {
-	return responseContentFromOutputItemsRaw(out, body, nil, true)
+func responseContentFromOutputItems(out []any, body []byte, responseIncomplete bool) []llm.ContentPart {
+	return responseContentFromOutputItemsRaw(out, body, nil, true, responseIncomplete)
 }
 
-func responseContentFromOutputItemsRaw(out []any, body []byte, rawItems []json.RawMessage, coalesceCalls bool) []llm.ContentPart {
+func responseContentFromOutputItemsRaw(out []any, body []byte, rawItems []json.RawMessage, coalesceCalls, responseIncomplete bool) []llm.ContentPart {
 	var rawBodyItems []json.RawMessage
 	var rawBodyCaptured bool
 	var content []llm.ContentPart
@@ -127,12 +127,11 @@ func responseContentFromOutputItemsRaw(out []any, body []byte, rawItems []json.R
 		case "reasoning":
 			id, _ := item["id"].(string)
 			encryptedContent, _ := item["encrypted_content"].(string)
+			status, _ := item["status"].(string)
+			incomplete := status == "incomplete" || status == "in_progress" || (responseIncomplete && status != "completed")
 			// OpenAI returns reasoning as encrypted_content plus summaries;
 			// gateways that expose the raw thinking put reasoning_text parts
-			// in content instead. On this path the raw text feeds display and
-			// the transcript; toResponsesInput replays a reasoning item only
-			// when it has encrypted_content, so the text never returns to
-			// this API.
+			// in content instead. Both ride back once the item finished (#6709).
 			text := strings.Join(parseReasoningSummary(item["content"]), reasoningPartSeparator)
 			contentParts := responsesReasoningParts(item["content"])
 			summaryParts := responsesReasoningParts(item["summary"])
@@ -146,6 +145,7 @@ func responseContentFromOutputItemsRaw(out []any, body []byte, rawItems []json.R
 						Summary:               parseReasoningSummary(item["summary"]),
 						ResponsesContentParts: contentParts,
 						ResponsesSummaryParts: summaryParts,
+						ResponsesIncomplete:   incomplete,
 					},
 				})
 			}
@@ -198,7 +198,7 @@ func settleResponsesTerminalOutput(r *llm.Response, rawResp map[string]any, accu
 		// stream actually sent, reusing fromResponses' item-walk.
 		// Accumulated call IDs can be derived from item IDs, so repeated
 		// values do not establish that the provider issued one call.
-		r.Message.Content = responseContentFromOutputItemsRaw(accumulatedOutput, nil, accumulatedRawOutput, false)
+		r.Message.Content = responseContentFromOutputItemsRaw(accumulatedOutput, nil, accumulatedRawOutput, false, rawResp["status"] == "incomplete")
 		retainFallbackReasoning(r)
 		if status, _ := rawResp["status"].(string); status != "incomplete" {
 			if len(r.ToolCalls()) > 0 {
@@ -252,7 +252,7 @@ func fromResponses(raw map[string]any, requestedModel string, body []byte) llm.R
 
 	// Parse output items.
 	if out, ok := raw["output"].([]any); ok {
-		msg.Content = responseContentFromOutputItems(out, body)
+		msg.Content = responseContentFromOutputItems(out, body, raw["status"] == "incomplete")
 	}
 
 	r.Message = msg

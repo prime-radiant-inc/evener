@@ -266,12 +266,21 @@ type ThinkingData struct {
 	// Responses native parts retain their order, type and exact text beside the projections.
 	ResponsesContentParts []ResponsesReasoningPart `json:"responses_content_parts,omitempty"`
 	ResponsesSummaryParts []ResponsesReasoningPart `json:"responses_summary_parts,omitempty"`
+	// ResponsesIncomplete marks a reasoning item the provider cut off.
+	ResponsesIncomplete bool `json:"responses_incomplete,omitempty"`
 }
 
 // ResponsesReasoningPart is one typed text part of a Responses reasoning item.
 type ResponsesReasoningPart struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
+}
+
+// ReplayableResponsesPlaintext reports a finished Responses item with native
+// typed parts. A bare Text projection is display-only and never replays.
+func (t *ThinkingData) ReplayableResponsesPlaintext() bool {
+	return t != nil && !t.ResponsesIncomplete && !t.Redacted && t.EncryptedContent == "" &&
+		(len(t.ResponsesContentParts) > 0 || len(t.ResponsesSummaryParts) > 0)
 }
 
 // ChatReplayText selects the text for the Chat Completions replay shape.

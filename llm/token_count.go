@@ -383,6 +383,9 @@ func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
 				chars += len(p.ToolCall.ID)
 				chars += len(p.ToolCall.Name)
 				chars += len(p.ToolCall.Arguments)
+				if t.protocol == registry.ProtocolOpenAIResponses {
+					chars += len(strings.TrimSpace(p.ToolCall.ItemID))
+				}
 			}
 		case ContentToolResult:
 			if p.ToolResult != nil {
@@ -438,9 +441,9 @@ func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
 //     OpenAI-compatible wire field name) and a redacted_thinking block for
 //     ContentRedThinking; an encrypted blob never rides, and a part with no text
 //     is skipped;
-//   - responses/input.go replays one reasoning item carrying a non-compat
-//     encrypted blob with its trimmed id and non-blank summaries, and drops every
-//     other shape, the part's display text included;
+//   - responses/input.go replays a non-compat encrypted blob, and a finished
+//     plaintext item only when it carries native typed parts; a bare Text
+//     projection stays display-only;
 //   - chatcompletions/messages.go replays the part's text (kept off the wire by a
 //     declared non-reasoning row that does not replay thinking as text) and the
 //     compat reasoning_details array (kept off the wire by any declared
@@ -461,7 +464,7 @@ func thinkingReplayChars(target targetInfo, p ContentPart) int {
 			}
 			return anthropicThinkingChars(t)
 		case registry.ProtocolOpenAIResponses:
-			if p.Kind != ContentThinking {
+			if p.Kind != ContentThinking || target.reasoningOff {
 				// responses/input.go emits the reasoning item for a ContentThinking
 				// part alone, so a redacted part rides as nothing -- blob, id and
 				// summaries included.
@@ -520,22 +523,28 @@ func anthropicThinkingChars(t *ThinkingData) int {
 	return len(t.Text) + len(t.Signature)
 }
 
-// responsesReasoningChars is what responses/input.go emits: one reasoning item
-// for a thinking part carrying a non-compat encrypted blob, holding the blob, the
-// trimmed id when it is not blank, and the non-blank summaries. Every other
-// thinking shape is dropped.
 func responsesReasoningChars(t *ThinkingData) int {
-	if t.EncryptedContent == "" || IsOpenAICompatEncryptedReasoning(t.EncryptedContent) {
+	encrypted := !t.ResponsesIncomplete && t.EncryptedContent != "" && !IsOpenAICompatEncryptedReasoning(t.EncryptedContent)
+	if !encrypted && !t.ReplayableResponsesPlaintext() {
 		return 0
 	}
 	chars := len(t.EncryptedContent)
+	if encrypted {
+		for _, s := range t.Summary {
+			if s = strings.TrimSpace(s); s != "" {
+				chars += len(s)
+			}
+		}
+	} else {
+		for _, part := range t.ResponsesSummaryParts {
+			chars += len(part.Text)
+		}
+		for _, part := range t.ResponsesContentParts {
+			chars += len(part.Text)
+		}
+	}
 	if id := strings.TrimSpace(t.ID); id != "" {
 		chars += len(id)
-	}
-	for _, s := range t.Summary {
-		if s = strings.TrimSpace(s); s != "" {
-			chars += len(s)
-		}
 	}
 	return chars
 }
@@ -962,10 +971,8 @@ func RowSeesToolResultMedia(res registry.Resolved, mediaType string) bool {
 //     {"type":"thinking","thinking":text} (anthropic/request.go);
 //   - the OpenAI-compatible chat adapter replays it on the reasoning field, or
 //     merges it into content for thinking_as_text (chatcompletions/messages.go);
-//   - the OpenAI Responses adapter re-sends a reasoning item only when it
-//     carries encrypted_content and keeps raw reasoning_text for display only
-//     (gateway-fronted GLM), and Google drops the part; neither replays this
-//     text.
+//   - the OpenAI Responses adapter re-sends plaintext reasoning (#6709) too,
+//     but only when the item carries native typed parts; Google drops the part.
 //
 // A row with no resolved protocol falls back to names, because such a row still
 // knows what it was named. Those are the effective provider and model — the row's
@@ -1022,8 +1029,7 @@ func unsignedThinkingReplayedByName(provider, model string) bool {
 	case strings.Contains(p, "compat") || strings.Contains(p, "openai-chat"):
 		return true
 	case strings.Contains(p, "openai"):
-		// The curated openai rows speak the Responses protocol, which keeps raw
-		// reasoning text for display only.
+		// A bare Text projection never replays on Responses; only native typed parts do.
 		return false
 	case strings.Contains(m, "claude"):
 		return true
