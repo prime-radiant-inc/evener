@@ -1,7 +1,11 @@
 package llm
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"primeradiant.com/evener/llm/registry"
@@ -251,6 +255,80 @@ func TestParameterlessToolIsPricedByTheSchemaTheAdapterSends(t *testing.T) {
 					t.Fatalf("toolsJSONBytesForResolved = %d, want %d", got, tc.want)
 				}
 			})
+		}
+	})
+
+	t.Run("catalog sizing skips command-backed credential", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		marker := filepath.Join(dir, "cred-ran")
+		cfgPath := filepath.Join(dir, "providers.toml")
+		cfg := fmt.Sprintf(
+			"[providers.cmdcred]\nbase = \"openai\"\napi_key = '''$(sh -c 'printf x >> %q; printf secret-token')'''\n",
+			marker,
+		)
+		if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+			t.Fatalf("write providers.toml: %v", err)
+		}
+		r, err := registry.Load(
+			registry.WithOffline(true),
+			registry.WithoutCache(),
+			registry.WithConfigPath(cfgPath),
+			registry.WithStateRoot(t.TempDir()),
+			registry.WithEnv(func(string) (string, bool) { return "", false }),
+		)
+		if err != nil {
+			t.Fatalf("registry.Load: %v", err)
+		}
+		c := NewClient(WithRegistry(r))
+		prompt := "hello"
+		opts := GenerateOptions{
+			Client:   c,
+			Provider: "cmdcred",
+			Model:    "gpt-5.6",
+			Prompt:   &prompt,
+			Tools:    []Tool{{Definition: ToolDefinition{Name: "current_time"}}},
+		}
+
+		gs, err := prepareGeneration(opts)
+		if err != nil {
+			t.Fatalf("prepareGeneration: %v", err)
+		}
+		wantClosed := ToolsJSONBytes([]ToolDefinition{{Name: "current_time", Parameters: closedEmptyToolParameters()}})
+		if gs.toolDefsJSONBytes != wantClosed {
+			t.Fatalf("toolDefsJSONBytes = %d, want closed schema size %d", gs.toolDefsJSONBytes, wantClosed)
+		}
+		if data, err := os.ReadFile(marker); err == nil {
+			t.Fatalf("prepareGeneration executed credential command %d time(s), want 0", len(data))
+		}
+
+		// StreamGenerate runs prepareGeneration synchronously before returning the
+		// stream handle or checking context cancellation; an already-cancelled
+		// context proves StreamGenerate never invokes the credential command during
+		// preparation.
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		streamRes, err := StreamGenerate(ctx, opts)
+		if err != nil {
+			t.Fatalf("StreamGenerate: %v", err)
+		}
+		for range streamRes.Events() {
+		}
+		if data, err := os.ReadFile(marker); err == nil {
+			t.Fatalf("StreamGenerate preparation executed credential command %d time(s), want 0", len(data))
+		}
+
+		// Control: full dispatch resolution still materializes the credential.
+		res, err := c.Resolve("cmdcred/gpt-5.6")
+		if err != nil {
+			t.Fatalf("Resolve control: %v", err)
+		}
+		if res.Credential.Value != "secret-token" {
+			t.Fatalf("resolved credential = %q, want secret-token", res.Credential.Value)
+		}
+		data, err := os.ReadFile(marker)
+		if err != nil || len(data) != 1 {
+			t.Fatalf("control Resolve ran credential command %d time(s) (err=%v), want 1", len(data), err)
 		}
 	})
 }

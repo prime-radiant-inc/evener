@@ -187,7 +187,9 @@ func toolsJSONBytesForResolved(defs []ToolDefinition, res registry.Resolved, ove
 
 // toolCatalogJSONBytes measures defs as the target resolved by client will emit
 // them, falling back to ToolsJSONBytes when an override owns the provider or
-// resolution does not succeed yet.
+// resolution does not succeed yet. It reads model facts without materializing
+// credentials so preparation never runs command-backed credentials before
+// dispatch and timeouts are in place.
 func toolCatalogJSONBytes(client *Client, provider, model string, defs []ToolDefinition) int {
 	if len(defs) == 0 {
 		return 0
@@ -199,7 +201,7 @@ func toolCatalogJSONBytes(client *Client, provider, model string, defs []ToolDef
 	if name == "" || client.isOverride(name) {
 		return ToolsJSONBytes(defs)
 	}
-	res, err := client.Resolve(name + "/" + model)
+	res, err := client.Registry().ResolveInstanceModelFacts(name, model)
 	if err != nil {
 		return ToolsJSONBytes(defs)
 	}

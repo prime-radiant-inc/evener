@@ -59,7 +59,10 @@ func buildBody(req llm.Request, res registry.Resolved, stream bool) (out map[str
 		// wire form to send.
 		for _, t := range req.Tools {
 			if openaichat.CyclicSchema(t.Parameters) {
-				return nil, fmt.Errorf("%w: tool %q", openaichat.ErrCyclicSchema, t.Name)
+				return nil, &llm.ConfigurationError{
+					Message: fmt.Sprintf("tool %q: %v", t.Name, openaichat.ErrCyclicSchema),
+					Cause:   openaichat.ErrCyclicSchema,
+				}
 			}
 		}
 		tools := openaichat.ToChatTools(req.Tools)

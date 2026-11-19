@@ -14,6 +14,7 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v5"
 
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/internal/openaichat"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -1066,5 +1067,34 @@ func TestGenerateParameterlessBudgetMatchesEmittedSchema(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A cyclic tool schema cannot succeed on retry, so the Responses builder must
+// wrap ErrCyclicSchema in a permanent ConfigurationError rather than returning
+// an untyped error the retry classifier treats as transient.
+func TestResponsesCyclicToolSchemaIsPermanentConfigurationError(t *testing.T) {
+	t.Parallel()
+	root := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties":           map[string]any{"child": nil},
+		"required":             []string{"child"},
+	}
+	root["properties"].(map[string]any)["child"] = root
+
+	req := userReq("hi")
+	req.Tools = []llm.ToolDefinition{{Name: "looping", Parameters: root}}
+	res := resolved(strictCaps)
+	_, err := (&Protocol{}).BuildBody(llm.ShapeRequest(req, res), res)
+	if !errors.Is(err, openaichat.ErrCyclicSchema) {
+		t.Fatalf("error = %v, want %v", err, openaichat.ErrCyclicSchema)
+	}
+	var cfgErr *llm.ConfigurationError
+	if !errors.As(err, &cfgErr) {
+		t.Fatalf("error type = %T, want *llm.ConfigurationError", err)
+	}
+	if cfgErr.Retryable() || llm.Classify(err) != llm.ErrorClassPermanent {
+		t.Fatalf("cyclic schema classified as retryable=%v class=%v, want permanent non-retryable", cfgErr.Retryable(), llm.Classify(err))
 	}
 }

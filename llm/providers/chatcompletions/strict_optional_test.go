@@ -288,6 +288,13 @@ func TestCyclicToolSchemaIsRefusedAtTheBuilder(t *testing.T) {
 				t.Fatalf("error = %v, want %v: a schema that contains itself has no wire form",
 					err, openaichat.ErrCyclicSchema)
 			}
+			var cfgErr *llm.ConfigurationError
+			if !errors.As(err, &cfgErr) {
+				t.Fatalf("error type = %T, want *llm.ConfigurationError so retries do not treat a cyclic schema as transient", err)
+			}
+			if cfgErr.Retryable() || llm.Classify(err) != llm.ErrorClassPermanent {
+				t.Fatalf("cyclic schema classified as retryable=%v class=%v, want permanent non-retryable", cfgErr.Retryable(), llm.Classify(err))
+			}
 		})
 	}
 
