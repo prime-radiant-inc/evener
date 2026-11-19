@@ -55,6 +55,7 @@ import {
 	reduceModelControl,
 	sameModelControlAuthority,
 	SHUT_DOWN_STATUSES,
+	modelSetOlderHubError,
 	modelSetReplyRejected,
 	validateThreadModelSetResponse,
 	WireError,
@@ -588,6 +589,15 @@ export function createConversationService<ReadLease = unknown>(
 		return handshake.protocolVersion === APPWIRE_PROTOCOL_VERSION;
 	};
 
+	// A model pick is refused before it can resume anything when the connection
+	// cannot carry the mutation: a hub below v8 refuses thread/model/set
+	// pre-send, so the cold session's resume would wake a daemon this
+	// connection can never send the pick to. Resume-first picking is unchanged
+	// on a connection that can carry it.
+	const requireModelSetConnection = (): void => {
+		if (connectionModelSupport() === false) throw modelSetOlderHubError();
+	};
+
 	// Current thread identity and capabilities, set by open() / readProjection().
 	// Mutations check these before reaching the wire; a re-read on
 	// actionUnavailable refreshes them. ref+capabilities form one fail-closed
@@ -872,6 +882,7 @@ export function createConversationService<ReadLease = unknown>(
 		// converting a dispatched failure would invite a retry of a pick the
 		// daemon may already have applied.
 		try {
+			requireModelSetConnection();
 			if (coldSession()) await resumeThenAuthorize();
 			const { threadRef, expectedThreadId, authority, epoch } = await waitForModelControl();
 			const fence: ModelControlRequestFence = {

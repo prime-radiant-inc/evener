@@ -5,6 +5,7 @@ import { ALL_CAPABILITIES as CAPABILITIES, PAST_THREAD_CAPABILITIES, testThread 
 import "fake-indexeddb/auto";
 import {
   type AnyNotification,
+  APPWIRE_PROTOCOL_VERSION,
   ErrorTranscriptHistoryFailed,
   hydrateThread,
   type ModelControlSnapshot,
@@ -865,23 +866,40 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     },
   );
 
-  test("a cold pick whose resume read establishes no authority rejects without a model request", async () => {
-    const fake = connectFakeClient();
-    const ref = "ref_a";
-    const cold = (target: string) =>
-      readResponse(target, {
-        status: { type: "notLoaded" },
-        evener: { ref: target, capabilities: PAST_THREAD_CAPABILITIES, queue: { revision: 0 } },
-      });
-    fake.on("thread/read", (params) => cold(params.ref ?? ref));
-    await threadsStore.getState().ensureThread(ref);
-    fake.on("thread/resume", () => ({ thread: cold(ref).thread }));
+  test.each([
+    // A connection below v8 refuses thread/model/set before a frame is built,
+    // so resuming the daemon for that pick would be a real side effect the
+    // mutation can never justify. The refusal is the wire's own pre-send one.
+    { protocolVersion: "evener-appwire-v7", resumed: 0 },
+    { protocolVersion: APPWIRE_PROTOCOL_VERSION, resumed: 1 },
+  ])(
+    "a cold pick on a $protocolVersion connection whose resume read establishes no authority rejects without a model request",
+    async ({ protocolVersion, resumed }) => {
+      const fake = connectFakeClient();
+      const handshake = fake.initializeResult;
+      if (handshake === null) throw new Error("fixture: no handshake to re-version");
+      fake.scriptHandshake({ ...handshake, protocolVersion });
+      const ref = "ref_a";
+      const cold = (target: string) =>
+        readResponse(target, {
+          status: { type: "notLoaded" },
+          evener: { ref: target, capabilities: PAST_THREAD_CAPABILITIES, queue: { revision: 0 } },
+        });
+      fake.on("thread/read", (params) => cold(params.ref ?? ref));
+      await threadsStore.getState().ensureThread(ref);
+      fake.on("thread/resume", () => ({ thread: cold(ref).thread }));
 
-    await expect(threadsStore.getState().setModel(ref, "openai", "gpt-5.5")).rejects.toBeInstanceOf(Error);
+      const pick = threadsStore.getState().setModel(ref, "openai", "gpt-5.5");
+      if (protocolVersion === APPWIRE_PROTOCOL_VERSION) {
+        await expect(pick).rejects.toBeInstanceOf(Error);
+      } else {
+        await expect(pick).rejects.toMatchObject({ evenerErrorInfo: "olderHubProtocol" });
+      }
 
-    expect(fake.calls.filter((call) => call.method === "thread/model/set")).toHaveLength(0);
-    expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
-  });
+      expect(fake.calls.filter((call) => call.method === "thread/model/set")).toHaveLength(0);
+      expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(resumed);
+    },
+  );
 
   test("a capable setModel sends captured authority and shows only the accepted response", async () => {
     const fake = connectFakeClient();

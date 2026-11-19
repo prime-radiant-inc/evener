@@ -64,6 +64,7 @@ import {
   modelControlAuthority,
   modelControlDisplay,
   modelControlRecoveryInput,
+  modelSetOlderHubError,
   modelSetReplyRejected,
   mutationErrorData,
   notificationRoutingKey,
@@ -4945,22 +4946,31 @@ function needsResumeForModelSet(model: ThreadModel): boolean {
   return model.capabilities?.changeModel === true && SHUT_DOWN_STATUSES.has(model.status.type);
 }
 
+// Whether the connection can carry thread/model/set at all, from the handshake
+// it negotiated: a hub below v8 refuses the mutation pre-send (client.ts's
+// request), because v8 is what added the client mutation id and the exact
+// authority a daemon fences a pick on. Undefined means no connection has
+// answered yet, which is not the same fact as a connection that said no.
+// The one place this store compares the negotiated version: the picker's
+// predicate and the mutation itself must not disagree about it.
+function connectionModelControlSupported(client: AppwireClientLike | null | undefined): boolean | undefined {
+  const negotiated = client?.initializeResult?.protocolVersion;
+  return negotiated === undefined ? undefined : negotiated === APPWIRE_PROTOCOL_VERSION;
+}
+
 // Whether a pick can still become a model mutation, so a control can decide to
 // offer it. The rule is the shared client's, so the picker and the phone sheet
 // cannot drift (modelPickCanSend in @evener/appwire-client). A pick rides the
 // connection's own protocol, so this answers for the client currently wired: a
-// hub that negotiated below v8 refuses thread/model/set pre-send (client.ts's
-// request), and a session read over it must not offer a change the connection
-// cannot carry.
+// session read over a connection that cannot carry the mutation must not offer
+// the change.
 export function modelPickCanSend(model: ThreadModel): boolean {
-  const client = connectionStore.getState().client;
-  const negotiated = client?.initializeResult?.protocolVersion;
   return sharedModelPickCanSend({
     ...model,
     // A client that has not handshaken yet answers nothing: the predicate keeps
     // its pre-connection answer rather than disabling the picker on a fact no
     // connection has given.
-    modelControlSupported: negotiated === undefined ? undefined : negotiated === APPWIRE_PROTOCOL_VERSION,
+    modelControlSupported: connectionModelControlSupported(connectionStore.getState().client),
   });
 }
 
@@ -9666,6 +9676,13 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   async setModel(ref, modelProvider, model) {
+    // The connection decides this before any side effect: a hub that negotiated
+    // below v8 refuses thread/model/set pre-send, so a cold pick that resumed
+    // the daemon first would wake a session for a mutation this connection can
+    // never carry. The refusal is the wire's own, and nothing has been
+    // written or resumed when it is thrown. An unconnected store answers
+    // nothing here and keeps its existing failure path below.
+    if (connectionModelControlSupported(connectionStore.getState().client) === false) throw modelSetOlderHubError();
     // A cold session advertises changeModel (pastThreadCapabilities) but holds
     // no model-control authority - either never established, or the `ready`
     // snapshot of the daemon that has since exited. The resume is what creates

@@ -39,7 +39,7 @@ import { PAST_CAPABILITIES as SHARED_PAST_CAPABILITIES } from "../../modelContro
 import * as projectModule from "../../projectedRows";
 import { SessionControls } from "../../sessionControls";
 import { createConversationStore } from "../state/conversation";
-import { createConversationService, type LiveConversationService } from "./conversation";
+import { createConversationService, type LiveConversationService, ModelPickNotSentError } from "./conversation";
 
 // Script the same lifecycle-capable client surface used by native consumers.
 class FakeAppwireClient extends FakeClient {
@@ -1490,6 +1490,20 @@ describe("ConversationService", () => {
 				expectedInstanceId: MODEL_AUTHORITY_B.instanceId,
 				expectedBootGeneration: MODEL_AUTHORITY_B.bootGeneration,
 			});
+		});
+
+		it("a cold pick on a connection below v8 refuses before the resume, which cannot carry the mutation", async () => {
+			const { client, service } = setup({ thread: coldThread() });
+			client.negotiate("evener-appwire-v7");
+			await service.open("ref-1");
+
+			await expect(service.changeModel("openai", "gpt-5.5")).rejects.toBeInstanceOf(ModelPickNotSentError);
+
+			// Nothing was written and no daemon was woken: the connection can
+			// never carry this mutation, so the resume it would have needed is
+			// a side effect with nothing behind it.
+			expect(client.resumeThreadCalls).toEqual([]);
+			expect(client.calls.filter((call) => call.method === "thread/model/set")).toHaveLength(0);
 		});
 
 		it("a pick after the session goes cold resumes and re-reads instead of sending the retired authority", async () => {

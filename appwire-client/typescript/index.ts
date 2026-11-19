@@ -557,6 +557,7 @@ export {
   modelControlDisplay,
   modelControlRecoveryInput,
   modelPickCanSend,
+  modelSetOlderHubError,
   modelSetReplyRejected,
   reduceModelControl,
   restoreHeldModelControl,
