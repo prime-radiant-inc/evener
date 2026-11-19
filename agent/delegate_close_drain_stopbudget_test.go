@@ -47,9 +47,17 @@ func TestFailedDelegateStopKeepsTheCascadeBudgetForTheWarningRetry(t *testing.T)
 	s.ownsDelegateController = true
 
 	// The warning the drain already discovered and could not publish in its own
-	// window. This is what the retry exists to deliver.
+	// window. This is what the retry exists to deliver. It carries the typed
+	// identity a lost-result warning carries in production, which is what the
+	// assertion below reads: the message text is prose and says nothing about
+	// which warning was republished.
 	const retained = "a lost delegate result the close must not discard"
-	s.retainUndeliveredCloseWarning(events.WarningData{Message: retained})
+	s.retainUndeliveredCloseWarning(events.WarningData{
+		Message:    retained,
+		Source:     "delegate",
+		Code:       events.WarningCodeDelegateDeliveryResultLost,
+		DelegateID: "dlg_target",
+	})
 
 	var retryBudgets []bool
 	ObserveCloseDrainRetryBudget = func(live bool) { retryBudgets = append(retryBudgets, live) }
@@ -84,7 +92,7 @@ func TestFailedDelegateStopKeepsTheCascadeBudgetForTheWarningRetry(t *testing.T)
 	for len(s.events) > 0 {
 		ev := <-s.events
 		warning, ok := warningData(ev.Data)
-		if ok && warning.Message == retained {
+		if ok && warning.Code == events.WarningCodeDelegateDeliveryResultLost && warning.DelegateID == "dlg_target" {
 			found = true
 		}
 	}

@@ -944,9 +944,7 @@ func (s *Session) emitCloseDrainWarningsReleasing(ctx context.Context, hookCtx c
 	// context is released exactly once and only after the last of them stops
 	// publishing on it. It is tracked by closeDrainHooksWG, so a close that joins
 	// that group also waits out the release.
-	s.closeDrainHooksWG.Add(1)
-	go func() {
-		defer s.closeDrainHooksWG.Done()
+	s.closeDrainHooksWG.Go(func() {
 		defer func() {
 			if releasePublish != nil {
 				releasePublish()
@@ -957,7 +955,7 @@ func (s *Session) emitCloseDrainWarningsReleasing(ctx context.Context, hookCtx c
 		for _, fire := range hooks {
 			fire()
 		}
-	}()
+	})
 }
 
 // closeWarningHook decides when a close publication dispatches the warning's

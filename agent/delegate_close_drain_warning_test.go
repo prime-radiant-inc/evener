@@ -38,8 +38,18 @@ const closeDrainCascadeBudget = 10 * time.Second
 // The test drives drainStopForClose itself rather than closeRuntimeTree so it
 // observes exactly the root this drain publishes to; the surrounding close path
 // is what calls it (closeRuntimeTree, and joinOrDrainStopForClose's fallback).
+//
+// The fixture also carries a retryable delivery OUTSIDE the stop subtree, owned
+// by the root. The drain's completed pass plans that delivery along with the
+// stop's own, and warningsOnly withholds every plan it settled and gives the
+// delivery claims back rather than executing them: a closing root cannot run a
+// replay against a session refusing turns, and an error from one would abort a
+// close the journal was otherwise able to complete. Withheld means AVAILABLE, so
+// the sibling delivery stays pending for its own reconciliation -- which is what
+// the last assertion pins, because a drain that replayed it would leave a durable
+// acknowledgment behind instead.
 func TestDelegateCloseDrainReportsLostInlineResult(t *testing.T) {
-	f := newStrandedStopFixture(t, strandedStopOptions{updates: 1, inline: true, realRoot: true})
+	f := newStrandedStopFixture(t, strandedStopOptions{updates: 1, inline: true, realRoot: true, outsidePending: true})
 	f.root.events = make(chan events.SessionEvent, 4)
 	if err := f.controller.drainStopForClose(tripwireCtx(t), f.controller.stopForResult(f.stop)); err != nil {
 		t.Fatalf("close-driven drain with a lost inline commit = %v, want the abandoned receipt to settle the stop", err)
@@ -70,6 +80,25 @@ func TestDelegateCloseDrainReportsLostInlineResult(t *testing.T) {
 	}
 	if reported != 1 {
 		t.Fatalf("lost-result warnings recorded on the closing root = %d, want exactly 1", reported)
+	}
+	// The delivery outside the subtree was planned and then withheld. Its
+	// acknowledgment is the durable trace of a replay, so it must be absent: the
+	// delivery belongs to a delegate this stop never covered, and its own
+	// reconciliation still has to deliver it.
+	sibling := delegateDeliveryID("dlg_outside", 1)
+	if f.acknowledged(t)[sibling] {
+		t.Fatalf("the close-driven drain acknowledged delivery %q outside its subtree: a close drain must "+
+			"withhold a settled delivery plan and give its claim back, not replay it against a session "+
+			"that is refusing turns", sibling)
+	}
+	f.controller.mu.Lock()
+	pending := pendingDelivery(f.controller.durable["dlg_outside"], sibling)
+	claimed := f.controller.deliveryClaims[sibling] != nil
+	f.controller.mu.Unlock()
+	if !pending || claimed {
+		t.Fatalf("the sibling delivery %q is pending=%t claimed=%t after the drain, want pending and "+
+			"unclaimed: a withheld plan's claim must be given back so a later reconciliation can deliver it",
+			sibling, pending, claimed)
 	}
 }
 
