@@ -18,7 +18,7 @@ import { ALL_CAPABILITIES as FULL_CAPABILITIES } from "../../../threadTestUtils"
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { toastKinds } from "../../../widgets/toast/toastTestUtils";
 import { createTestComposerSource } from "../testing/composerSource";
-import { editorCursor, pastePngInto, replaceEditorText, selectEditorText } from "../testing/editor";
+import { editorCursor, insertEditorTextAt, pastePngInto, replaceEditorText, selectEditorText } from "../testing/editor";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { resetComposerFocusStoreForTests } from "./composerFocus";
 import {
@@ -225,8 +225,8 @@ test.each([
         pastePngInto(textarea(), "replacement.png");
         await waitFor(() => expect(screen.getByRole("button", { name: "Remove replacement.png" })).toBeTruthy());
       } else if (edited) {
-        replaceEditorText(textarea(), `${submittedText} edited`);
-        replaceEditorText(textarea(), submittedText);
+        insertEditorTextAt(textarea(), submittedText.length, " edited");
+        insertEditorTextAt(textarea(), submittedText.length, "", submittedText.length + " edited".length);
       }
       expect(textarea().textContent).toBe(expectedAfterReplacement);
     } finally {
@@ -571,14 +571,17 @@ function installFailingDecodeStub(): void {
 // paste an image whose decode later fails, then type SYNCHRONOUSLY (no
 // yield to the microtask queue) before that rejection settles.
 test("a failed decode strips its marker while a selection is held, caret at that selection's start", async () => {
+  const user = userEvent.setup();
   installFailingDecodeStub();
   await mountComposer("ref_a");
   const editor = textarea();
+  await user.click(editor);
 
   act(() => {
     pastePngInto(editor);
+    insertEditorTextAt(editor, 0, "keep ");
+    insertEditorTextAt(editor, "keep [image 1]".length, " tail");
   });
-  replaceEditorText(editor, "keep [image 1] tail");
   expect(editor.textContent).toBe("keep [image 1] tail");
 
   // Hold a real forward selection while the decode fails. The field this
@@ -611,7 +614,7 @@ test("typing synchronously after a paste whose decode later fails survives - the
   // that could yield to the microtask queue): types "hello" at the
   // (cursor-restored) end of the marker, landing entirely before the
   // decode's rejection settles.
-  replaceEditorText(textarea(), "[image 1]hello");
+  insertEditorTextAt(textarea(), "[image 1]".length, "hello");
   expect(textarea().textContent).toBe("[image 1]hello");
   expect(readComposerDraft("ref_a")).toEqual({ text: "[image 1]hello", skillNames: [] });
 
@@ -1423,6 +1426,52 @@ test("removing a staged tile leaves a surviving literal of the same number senda
   const call = second.fake.calls.find((candidate) => candidate.method === "turn/start");
   if (call === undefined) throw new Error("expected the literal to send");
   expect(call.params).toMatchObject({ input: [{ type: "text", text: " typed [image 1]" }] });
+});
+
+test("removing a staged tile when an identical literal sits before its marker preserves the literal", async () => {
+  const user = userEvent.setup();
+  await mountComposerWithHandle("ref_a");
+  await user.click(textarea());
+  act(() => {
+    pastePngInto(textarea(), "shot.png");
+  });
+  await waitFor(() => expect(screen.getByRole("button", { name: "Remove shot.png" })).toBeTruthy());
+
+  selectEditorText(textarea(), 0);
+  await user.paste("[image 1] is literal. ");
+  expect(textarea().textContent).toBe("[image 1] is literal. [image 1]");
+
+  fireEvent.click(screen.getByRole("button", { name: "Remove shot.png" }));
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Remove shot.png" })).toBeNull());
+
+  expect(textarea().textContent).toBe("[image 1] is literal. ");
+  expect(readComposerDraftSnapshot("ref_a").stagedImageMarkers).toBeUndefined();
+  expect(readComposerDraftSnapshot("ref_a").stagedImageRanges).toBeUndefined();
+});
+
+test("deleting a staged marker and undoing restores its staged provenance across reload", async () => {
+  await mountComposer("ref_a");
+  act(() => {
+    pastePngInto(textarea(), "shot.png");
+  });
+  await waitFor(() => expect(screen.getByRole("button", { name: "Remove shot.png" })).toBeTruthy());
+  expect(textarea().textContent).toBe("[image 1]");
+
+  // Delete the staged marker, then undo the deletion.
+  insertEditorTextAt(textarea(), 0, "", "[image 1]".length);
+  expect(textarea().textContent).toBe("");
+  fireEvent.keyDown(textarea(), { key: "z", ctrlKey: true });
+  expect(textarea().textContent).toBe("[image 1]");
+  expect(readComposerDraftSnapshot("ref_a").stagedImageRanges).toEqual([{ marker: 1, start: 0, end: 9 }]);
+
+  // Reopen in a fresh composer: the restored occurrence is refused until repaired.
+  cleanup();
+  await mountComposer("ref_a");
+  expect(screen.getByTestId("composer-unbacked-image")).toBeTruthy();
+  expect(submitButton().disabled).toBe(true);
+  fireEvent.click(within(screen.getByTestId("composer-unbacked-image")).getByRole("button"));
+  expect(textarea().textContent).toBe("");
+  expect(screen.queryByTestId("composer-unbacked-image")).toBeNull();
 });
 
 // The other order: the person deletes the staged ANCHOR and leaves the tile

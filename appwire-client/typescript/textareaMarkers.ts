@@ -112,6 +112,23 @@ export function stripMarker(value: string, cursor: number | undefined, n: number
   return { value: nextValue, cursor: nextCursor, splice };
 }
 
+// stripMarkerAt removes the exact occurrence `range` names when `value` still
+// spells markerText(range.marker) at those offsets, leaving identical literals
+// elsewhere in `value` untouched.
+export function stripMarkerAt(
+  value: string,
+  cursor: number | undefined,
+  range: ImageMarkerRange,
+): TextEditWithUnknownCursor {
+  if (value.slice(range.start, range.end) !== markerText(range.marker)) return { value, cursor };
+  const splice: TextSplice = { start: range.start, end: range.end, insertedLength: 0 };
+  const nextValue = value.slice(0, splice.start) + value.slice(splice.end);
+  if (typeof cursor !== "number") return { value: nextValue, cursor, splice };
+  const removed = splice.end - splice.start;
+  const nextCursor = cursor > splice.start ? Math.max(splice.start, cursor - removed) : cursor;
+  return { value: nextValue, cursor: nextCursor, splice };
+}
+
 /** Every occurrence of a marker literal in `text`, in document order. */
 export function markerRanges(text: string): ImageMarkerRange[] {
   return Array.from(text.matchAll(markerPattern()), (match) => {

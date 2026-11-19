@@ -655,6 +655,10 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
       if (boundEditor) boundEditor.write(text, cursor, source, splice);
       else writeDetachedSourceDraft(text, cursor, source, splice);
     },
+    stagedRangeFor: (marker) => ({
+      range: state.getState().stagedImageRanges.find((item) => item.marker === marker),
+      positioned: positionedStagedMarkers.has(marker),
+    }),
   };
   const operations = createAttachmentOperations(editor, attachments);
 

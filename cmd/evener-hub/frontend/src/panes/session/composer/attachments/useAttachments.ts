@@ -8,11 +8,13 @@
 // encode continuations across remounts. Image bytes never go through
 // localStorage.
 import {
+  type ImageMarkerRange,
   insertMarker,
   markerText,
   nextComposerImageMarker,
   rejectionReason,
   stripMarker,
+  stripMarkerAt,
   type TextSplice,
 } from "@evener/appwire-client";
 import { type SetStateAction, useMemo, useState } from "react";
@@ -87,6 +89,10 @@ export interface TextEditor {
    * insertion INSIDE it and retire its provenance. Callers that know their own
    * coordinates should always say so. */
   write(text: string, cursor: number, source?: TextEditSource, splice?: TextSplice): void;
+  /** Returns the tracked staged occurrence range for `marker` (if still in
+   * text) and whether `marker` ever had positional provenance. Used so tile
+   * removal and cleanup delete only the staged occurrence, preserving literals. */
+  stagedRangeFor?(marker: number): { range?: ImageMarkerRange; positioned: boolean };
 }
 
 export interface UseAttachmentsResult {
@@ -168,6 +174,14 @@ export type AttachmentStore = ReturnType<typeof createAttachmentStore>;
 export function createAttachmentOperations(editor: TextEditor, store: AttachmentStore): UseAttachmentsResult {
   const setItems = (next: SetStateAction<PendingAttachment[]>) => {
     store.setState((state) => ({ items: typeof next === "function" ? next(state.items) : next }));
+  };
+  const stripTrackedMarker = (text: string, cursor: number | undefined, marker: number) => {
+    if (editor.stagedRangeFor) {
+      const tracked = editor.stagedRangeFor(marker);
+      if (tracked.range) return stripMarkerAt(text, cursor, tracked.range);
+      if (tracked.positioned) return { value: text, cursor };
+    }
+    return stripMarker(text, cursor, marker);
   };
   // The marker high-water mark is deliberately NOT derived from items.length
   // (which shrinks on removal) - a plain ref persists across renders without
@@ -343,7 +357,7 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
               // (see removeItem).
               setItems((prev) => prev.filter((item) => operationToken(item) !== token));
               const current = editor.read();
-              const stripped = stripMarker(current.text, current.cursor, currentItem.marker);
+              const stripped = stripTrackedMarker(current.text, current.cursor, currentItem.marker);
               editor.write(stripped.value, stripped.cursor ?? current.cursor, "cleanup", stripped.splice);
             }
             onRejected(`${file.name || "unknown"} (image decode failed)`);
@@ -376,7 +390,7 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
     // needing no repair at all, refused.
     setItems((prev) => prev.filter((item) => item.marker !== marker));
     const current = editor.read();
-    const stripped = stripMarker(current.text, current.cursor, marker);
+    const stripped = stripTrackedMarker(current.text, current.cursor, marker);
     editor.write(stripped.value, stripped.cursor ?? current.cursor, undefined, stripped.splice);
   };
 
@@ -409,7 +423,7 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
       // A marker already removed by a concurrent edit remains a safe no-op.
       let { text, cursor } = editor.read();
       for (const marker of submittedMarkers) {
-        const stripped = stripMarker(text, cursor, marker);
+        const stripped = stripTrackedMarker(text, cursor, marker);
         text = stripped.value;
         cursor = stripped.cursor ?? cursor;
         editor.write(text, cursor, "submission", stripped.splice);

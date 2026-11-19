@@ -747,6 +747,7 @@ export {
   markerText,
   reconcileMarkerRanges,
   stripMarker,
+  stripMarkerAt,
   validMarkerRanges,
 } from "./textareaMarkers";
 export type {

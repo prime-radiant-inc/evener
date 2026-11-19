@@ -168,11 +168,24 @@ export const skillSchema = new Schema({
       inclusive: false,
       toDOM: () => ["span", 0],
     },
+    // An occurrence of a staged image marker this composer holds bytes for.
+    // Like stagedAnchor, it rides ProseMirror's history so deleting a staged
+    // marker and pressing Undo restores its provenance with the text, while
+    // separately typed literals remain unmarked prose.
+    stagedImage: {
+      attrs: { marker: {} },
+      inclusive: false,
+      toDOM: () => ["span", 0],
+    },
   },
 });
 
 function stagedAnchorMark(marker: number): Mark {
   return skillSchema.marks.stagedAnchor.create({ marker });
+}
+
+export function stagedImageMark(marker: number): Mark {
+  return skillSchema.marks.stagedImage.create({ marker });
 }
 
 /** One stagedAnchor-marked run of text that still IS the literal it names. */
@@ -185,11 +198,17 @@ export interface StagedAnchorSpan extends ImageMarkerRange {
 
 /** Records the stagedAnchor run `node` carries, at document `position` and
  * serialized offset `start`, when the whole node is text. */
-function noteStagedAnchors(node: ProseMirrorNode, position: number, start: number, spans: StagedAnchorSpan[]): void {
+function noteMarkSpans(
+  node: ProseMirrorNode,
+  position: number,
+  start: number,
+  markName: "stagedAnchor" | "stagedImage",
+  spans: StagedAnchorSpan[],
+): void {
   if (!node.isText) return;
   const run = node.text ?? "";
   for (const mark of node.marks) {
-    if (mark.type.name !== "stagedAnchor") continue;
+    if (mark.type.name !== markName) continue;
     spans.push({
       marker: Number(mark.attrs.marker),
       from: position,
@@ -226,7 +245,7 @@ export function stagedAnchorSpans(doc: ProseMirrorNode): StagedAnchorSpan[] {
   const spans: StagedAnchorSpan[] = [];
   let text = "";
   doc.forEach((node, position) => {
-    noteStagedAnchors(node, position, text.length, spans);
+    noteMarkSpans(node, position, text.length, "stagedAnchor", spans);
     text += node.isText ? (node.text ?? "") : `/${node.attrs.name}`;
   });
   return intactStagedAnchors(text, spans);
@@ -236,11 +255,23 @@ export function stagedAnchorSpans(doc: ProseMirrorNode): StagedAnchorSpan[] {
  * caller adopted. `base` is the run's own UTF-16 offset in the whole
  * serialized text, so an adopted range names the occurrence in THIS run and
  * an identical literal beside it stays plain text. */
-function textNodes(text: string, base: number, adopted: readonly ImageMarkerRange[]): ProseMirrorNode[] {
+function textNodes(
+  text: string,
+  base: number,
+  adopted: readonly ImageMarkerRange[],
+  staged: readonly ImageMarkerRange[],
+): ProseMirrorNode[] {
   if (text === "") return [];
-  if (adopted.length === 0) return [skillSchema.text(text)];
+  if (adopted.length === 0 && staged.length === 0) return [skillSchema.text(text)];
   const end = base + text.length;
-  const here = adopted.filter((range) => range.start >= base && range.end <= end);
+  const here = [
+    ...adopted
+      .filter((range) => range.start >= base && range.end <= end)
+      .map((range) => ({ ...range, mark: stagedAnchorMark(range.marker) })),
+    ...staged
+      .filter((range) => range.start >= base && range.end <= end)
+      .map((range) => ({ ...range, mark: stagedImageMark(range.marker) })),
+  ].sort((left, right) => left.start - right.start);
   if (here.length === 0) return [skillSchema.text(text)];
   const nodes: ProseMirrorNode[] = [];
   let start = 0;
@@ -249,7 +280,7 @@ function textNodes(text: string, base: number, adopted: readonly ImageMarkerRang
     const localEnd = range.end - base;
     if (localStart < start) continue;
     if (start < localStart) nodes.push(skillSchema.text(text.slice(start, localStart)));
-    nodes.push(skillSchema.text(text.slice(localStart, localEnd), [stagedAnchorMark(range.marker)]));
+    nodes.push(skillSchema.text(text.slice(localStart, localEnd), [range.mark]));
     start = localEnd;
   }
   if (start < text.length) nodes.push(skillSchema.text(text.slice(start)));
@@ -264,6 +295,7 @@ export function parseSkillDocument(value: SkillEditorValue): ProseMirrorNode {
   // older build carries only numbers, and then every occurrence of a number is
   // adopted - the reading those builds implemented.
   const adopted = adoptedMarkerRanges(value.text, value.adoptedImageMarkers, value.adoptedImageRanges);
+  const staged = validMarkerRanges(value.text, value.stagedImageRanges);
   const names = [...new Set([...skills, ...commands])].sort((a, b) => b.length - a.length);
   const usedSkills = new Set<string>();
   const nodes: ProseMirrorNode[] = [];
@@ -277,14 +309,14 @@ export function parseSkillDocument(value: SkillEditorValue): ProseMirrorNode {
       mention?.kind ??
       (skills.includes(name) && (!commands.includes(name) || !usedSkills.has(name)) ? "skill" : "command");
     if (!(kind === "skill" ? skills : commands).includes(name)) continue;
-    nodes.push(...textNodes(value.text.slice(textStart, offset), textStart, adopted));
+    nodes.push(...textNodes(value.text.slice(textStart, offset), textStart, adopted, staged));
     const type = kind === "skill" ? skillSchema.nodes.skill : skillSchema.nodes.command;
     nodes.push(type.create({ name }));
     if (kind === "skill") usedSkills.add(name);
     offset += name.length;
     textStart = offset + 1;
   }
-  nodes.push(...textNodes(value.text.slice(textStart), textStart, adopted));
+  nodes.push(...textNodes(value.text.slice(textStart), textStart, adopted, staged));
   return skillSchema.nodes.doc.create(null, nodes);
 }
 
@@ -298,8 +330,10 @@ export function serializeSkillDocument(doc: ProseMirrorNode): SkillEditorValue {
   // text: a second doc.forEach would walk the document again to rebuild the
   // very string this loop already has.
   const anchorSpans: StagedAnchorSpan[] = [];
+  const stagedSpans: StagedAnchorSpan[] = [];
   doc.forEach((node, position) => {
-    noteStagedAnchors(node, position, text.length, anchorSpans);
+    noteMarkSpans(node, position, text.length, "stagedAnchor", anchorSpans);
+    noteMarkSpans(node, position, text.length, "stagedImage", stagedSpans);
     if (node.isText) {
       text += node.text ?? "";
     } else {
@@ -321,10 +355,16 @@ export function serializeSkillDocument(doc: ProseMirrorNode): SkillEditorValue {
     end,
   }));
   const adoptedImageMarkers = markerNumbersOf(adoptedImageRanges);
+  const stagedImageRanges = intactStagedAnchors(text, stagedSpans).map(({ marker, start, end }) => ({
+    marker,
+    start,
+    end,
+  }));
   const value = {
     text,
     skillNames: canonicalSkillNames(names),
     ...(adoptedImageRanges.length ? { adoptedImageMarkers, adoptedImageRanges } : {}),
+    ...(stagedImageRanges.length ? { stagedImageRanges } : {}),
   };
   // Names alone suffice only when every matching reference is an actual skill
   // atom. Keep locations when commands or same-spelling prose need distinct
