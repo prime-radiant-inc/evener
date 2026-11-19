@@ -169,15 +169,9 @@ reasoning_effort = "high"
 
 The next hub launch uses `high`, keeps `workspace-write` and network off, and keeps `LANG`. A per-launch effort of `low` wins over both files. Leaving that field at its default inherits `high`; it does not erase the project setting. Network off limits tools, not the model connection; see [Sandboxing](sandboxing.md).
 
-### System prompt on resume
-
-Reopening an existing transcript uses the exact system prompt saved in its
-header for every conversation request, including tool rounds, later turns,
-and subsequent restores. Whitespace and empty prompts are preserved. Forks
-and asides copy the parent transcript's saved prompt into their own headers.
-Current runtime settings such as compaction still apply. Changes to prompt
-files, personal instructions, and commit provenance apply when Evener renders
-a prompt for a new session or a session without a saved transcript.
+Resume uses the transcript header's exact system prompt, including whitespace and empty prompts. Forks and asides inherit those bytes and their permanent skill preload records.
+Prompt files and personal instructions are read when rendering for a session without a saved transcript. Tool availability and compaction follow the live session.
+When the saved prompt's commit trailer is stale or disabled, separate runtime guidance supplies the active session's trailer or directs the model to omit it.
 
 ### Commit provenance
 

@@ -39,7 +39,7 @@ func TestRequestMessagesLaysOutTheSystemPromptAndHistory(t *testing.T) {
 	} {
 		s := newSession(t, withConfig(SessionConfig{SystemPromptAsUser: tc.promptAsUser, testOnly: testConfig{skipGitSnapshot: true}}))
 		for name, history := range histories {
-			laid := s.requestMessages(system, history)
+			laid := s.requestMessages(s.profile, system, history)
 			// A prompt-as-user session folds the prompt into a leading user
 			// message; any other shape keeps it as its own message.
 			folds := tc.promptAsUser && len(history) > 0 && history[0].Role == llm.RoleUser

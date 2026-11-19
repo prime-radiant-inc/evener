@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/skill"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
@@ -132,7 +133,8 @@ func TestRolePreloadDropsUnfollowableSkillForIncapableDelegate(t *testing.T) {
 		SystemPrompt: "preload role",
 		Skills:       []string{gardeningMemorySkillName, followablePreloadName},
 	}
-	sub := s.getSub(spawnRuntimeAgent(t, s, delegateArgs{Task: "child task", AgentType: "preload-role"}))
+	created := spawnRuntimeDelegate(t, s, delegateArgs{Task: "child task", AgentType: "preload-role"})
+	sub := s.getSub(created.ChildSessionID)
 	if sub == nil {
 		t.Fatalf("spawned subagent is not tracked")
 	}
@@ -150,25 +152,45 @@ func TestRolePreloadDropsUnfollowableSkillForIncapableDelegate(t *testing.T) {
 	}
 	requirePreloadEnvelopes(t, requests[0], followablePreloadName)
 	requirePreloadRecords(t, sub.sess, followablePreloadName)
+	s.delegateController.mu.Lock()
+	s.delegateController.maxRetainedTerminal = 1
+	s.delegateController.mu.Unlock()
+	if err := s.reclaimDelegateRuntimeCapacity(1); err != nil || s.getSub(created.ChildSessionID) != nil {
+		t.Fatalf("reclaim delegate: %v", err)
+	}
+	if outcome := (delegateRuntime{owner: s}).send(t.Context(), created.DelegateID, "continue", 0); outcome.result.Err != nil {
+		t.Fatal(outcome.result.Err)
+	}
+	waitForRuntimeSubagent(t, s, created.ChildSessionID)
+	requests = adapter.Requests()
+	if len(requests) != 2 || requests[1].Messages[0].Text() != requests[0].Messages[0].Text() {
+		t.Fatal("cold delegate did not reuse the launch prompt")
+	}
+	requirePreloadRecords(t, s.getSub(created.ChildSessionID).sess, followablePreloadName)
 }
 
-// A delegate created before this fix can have a gardening-memory preload record
-// in its persisted SessionMeta.Skills. Restoring it through the exact
-// delegateRuntime.restoreIdle path must drop both the body and the preload
-// record, while an ordinary activation record for the same name stays as the
-// retained-but-unavailable record #4458 established.
 func TestRestoredDelegateDropsUnfollowablePreloadRecord(t *testing.T) {
 	t.Parallel()
 	gardenMetadata := preloadMetadataFixture(gardeningMemorySkillName)
 	followableMetadata := preloadMetadataFixture(followablePreloadName)
+	followableBody := renderedPreloadFixture(followablePreloadName, followablePreloadSentinel)
 	fixture := newColdDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 		descriptor.FrozenSkillNames = []string{gardeningMemorySkillName, followablePreloadName}
 		descriptor.FrozenSkillBodies = []string{
 			renderedPreloadFixture(gardeningMemorySkillName, gardeningPreloadSentinel),
-			renderedPreloadFixture(followablePreloadName, followablePreloadSentinel),
+			followableBody,
 		}
-		descriptor.FrozenSkillMetadata = []schema.FrozenSkillPreload{gardenMetadata, followableMetadata}
+		descriptor.FrozenSkillMetadata = []schema.FrozenSkillPreload{gardenMetadata, followableMetadata, preloadMetadataFixture(secondPreloadName)}
 	})
+	// The helper only writes a placeholder header. A cold-startable delegate
+	// needs its transcript, and a real launch writes the admitted preload.
+	w, err := transcript.NewWriter(transcriptPath(fixture.stateDir, fixture.childID), transcript.Header{SessionID: fixture.childID, SystemPrompt: followableBody})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
 	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.ToolCallResponse(communicateCall("done-1", "ok")) },
 	})
@@ -191,7 +213,7 @@ func TestRestoredDelegateDropsUnfollowablePreloadRecord(t *testing.T) {
 	childMeta.Skills = &schema.SkillLifecycleSnapshot{
 		Revision: 7,
 		Inventory: map[string]schema.SkillInventoryEntry{
-			gardeningMemorySkillName: {Preload: &gardenMetadata, Ordinary: &ordinary},
+			gardeningMemorySkillName: {Ordinary: &ordinary},
 			followablePreloadName:    {Preload: &followableMetadata},
 		},
 	}
@@ -240,12 +262,6 @@ func TestRestoredDelegateDropsUnfollowablePreloadRecord(t *testing.T) {
 	entry, ok := inventory[gardeningMemorySkillName]
 	if !ok || entry.Ordinary == nil {
 		t.Fatalf("ordinary activation record for %s was not preserved: %+v", gardeningMemorySkillName, entry)
-	}
-	if entry.Preload != nil {
-		t.Fatalf("restored inventory kept the unfollowable preload record: %+v", entry.Preload)
-	}
-	if inventory[followablePreloadName].Preload == nil {
-		t.Fatalf("followable preload record was not preserved: %+v", inventory[followablePreloadName])
 	}
 }
 

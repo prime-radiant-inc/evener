@@ -1891,7 +1891,9 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	// A role preload is prepared on the creating parent and a frozen descriptor
 	// replays the body frozen at creation; drop what this session cannot follow
 	// before the permanent prompt and inventory carry it.
-	s.dropUnavailableSkillPreloads()
+	if !s.systemPromptFrozen {
+		s.dropUnavailableSkillPreloads()
+	}
 
 	// Manager is a start-time property carried by the session itself: the
 	// hub tools are installed here, before the first tool cache build, and no
@@ -1901,7 +1903,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	s.hubEnabled = s.cfg.Manager
 	s.mu.Unlock()
 
-	// Cache instruction docs once for system prompt rebuilds.
+	// Cache instruction docs once; reused every round for system prompt rebuilds.
 	if !s.systemPromptFrozen {
 		s.projectDocs, s.projectDocsTruncated = LoadInstructionDocs(s.currentEnv(), personalDocPath(s.cfg.AgentsDocPath), s.profile.ProjectDocFiles()...)
 	}
@@ -1928,7 +1930,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	// A disclosed unreadable append degrades the prompt but does not fail the
 	// render: the permanent prompt carrying the role preloads was admitted, so
 	// they still join the skill inventory. Only a failed render skips them.
-	if !renderFailed {
+	if !renderFailed && !s.systemPromptFrozen {
 		// Role preloads join the skill inventory only after the permanent
 		// prompt carrying their complete instructions was admitted.
 		s.seedFrozenSkillPreloads()

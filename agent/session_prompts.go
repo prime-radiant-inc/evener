@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/envvars"
@@ -107,7 +108,7 @@ func (s *Session) reportPromptRenderFailure(warning string) {
 
 // commitTrailerPrompt returns the exact Co-authored-by line, or "" when
 // provenance is off or cannot be built. It never invents a missing value.
-func (s *Session) commitTrailerPrompt() string {
+func (s *Session) commitTrailerPrompt(profile *provider.Profile) string {
 	mode, err := commitprovenance.Normalize(s.cfg.CommitProvenance)
 	if err != nil || mode == commitprovenance.ModeOff {
 		return ""
@@ -116,20 +117,37 @@ func (s *Session) commitTrailerPrompt() string {
 	if err != nil || strings.TrimSpace(host) == "" {
 		return ""
 	}
-	line, err := commitprovenance.Trailer(BuildVersion, s.profile.ID()+"/"+s.profile.Model(), host, s.ID())
+	line, err := commitprovenance.Trailer(BuildVersion, profile.ID()+"/"+profile.Model(), host, s.ID())
 	if err != nil {
 		return ""
 	}
 	return line
 }
 
+// liveCommitProvenance supersedes a saved trailer with the identity and
+// provenance setting of the session actually making the commit.
+func (s *Session) liveCommitProvenance(profile *provider.Profile, saved string) string {
+	if !s.systemPromptFrozen || saved == "" {
+		return ""
+	}
+	line := s.commitTrailerPrompt(profile)
+	hasSavedTrailer := strings.Contains(saved, "\nCo-authored-by: Evener ")
+	if line == "" {
+		if hasSavedTrailer {
+			return "Ignore the saved commit provenance instruction. Omit the Evener Co-authored-by trailer."
+		}
+		return ""
+	}
+	if strings.Contains(saved, "\n"+line+"\n") || !hasSavedTrailer && s.cfg.CommitProvenance != commitprovenance.ModeCoauthor {
+		return ""
+	}
+	return "Use the following Evener Co-authored-by trailer for new commits. It supersedes any saved Evener trailer.\n" + line
+}
+
 // commitProvenanceWarning reports a provenance configuration value the session
 // cannot honor. It is a pending session diagnostic, not a prompt-render
 // failure: the prompt omits the section and the rest of the session proceeds.
 func (s *Session) commitProvenanceWarning() string {
-	if s.systemPromptFrozen {
-		return ""
-	}
 	mode, err := commitprovenance.Normalize(s.cfg.CommitProvenance)
 	if err != nil {
 		return err.Error()
@@ -192,7 +210,7 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 		GitStatusUnknown:         s.envInfo.GitStatusUnknown,
 		GitSnapshotFailed:        s.envInfo.GitSnapshotFailed,
 		GitRecentCommitTitles:    s.envInfo.GitRecentCommitTitles,
-		CommitTrailer:            s.commitTrailerPrompt(),
+		CommitTrailer:            s.commitTrailerPrompt(s.profile),
 		WorkspaceTree:            s.envInfo.Workspace.Tree,
 		BuildInfo:                s.envInfo.Workspace.BuildInfo,
 		ResultToolName:           s.resultToolName(),

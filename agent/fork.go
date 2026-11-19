@@ -323,6 +323,14 @@ func writeForkChildWithConfig(fs afero.Fs, stateDir, parentID string, parentHead
 		ForkLabel:             "", // child carries no fork label; parent gets it
 		MemorySaveUnavailable: memorySaveUnavailable,
 	}
+	if parentMeta.Skills != nil {
+		childMeta.Skills = &schema.SkillLifecycleSnapshot{Inventory: make(map[string]schema.SkillInventoryEntry)}
+		for name, entry := range parentMeta.Skills.Inventory {
+			if entry.Preload != nil {
+				childMeta.Skills.Inventory[name] = schema.SkillInventoryEntry{Preload: entry.Preload}
+			}
+		}
+	}
 
 	if err := deps.saveMeta(fs, stateDir, childMeta); err != nil {
 		return "", fmt.Errorf("save child session meta: %w", err)

@@ -1404,7 +1404,7 @@ func (s *Session) buildModelRequest(profile *provider.Profile, sys string, histo
 	req := llm.Request{
 		Model:          profile.Model(),
 		Provider:       profile.ID(),
-		Messages:       s.requestMessages(sys, history),
+		Messages:       s.requestMessages(profile, sys, history),
 		Tools:          toolDefs,
 		ToolsJSONBytes: toolDefsJSONBytes,
 		// Ask for a tool call; never force one. A forcing tool_choice leaves a
@@ -1443,8 +1443,15 @@ const defaultReasoningEffort = "medium"
 // request that depends on the history it is built from, so the fallback chain
 // lays out its own messages through it instead of paying for a whole second
 // build on rounds that never fall back.
-func (s *Session) requestMessages(sys string, history []llm.Message) []llm.Message {
+func (s *Session) requestMessages(profile *provider.Profile, sys string, history []llm.Message) []llm.Message {
+	live := s.liveCommitProvenance(profile, sys)
+	if live != "" && !s.cfg.SystemPromptAsUser {
+		return append([]llm.Message{llm.System(sys), llm.System(live)}, history...)
+	}
 	if s.cfg.SystemPromptAsUser {
+		if live != "" {
+			sys += "\n\n" + live
+		}
 		// Combine system prompt with the first user-role message into one
 		// message, since GPT-5.4 ignores the instructions parameter and
 		// follows user messages. That first message is usually the task, but
@@ -1677,9 +1684,6 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	// Nothing burned a budget there, so "handled by the retry loop" is false for
 	// that error alone. See modelFallbackEligible.
 	if err != nil && len(fallbacks) > 0 && modelFallbackEligible(err, policy) {
-		if hasFallbackSource {
-			fallbackHistory = s.requestMessages(fallbackSource.system, fallbackSource.history)
-		}
 		// requestedEffort is the snapshot taken under lock in prepareModelRequestWithError,
 		// before it was clamped to the primary model. Using the snapshot (rather
 		// than re-reading live session config) keeps a concurrent runtime effort
@@ -1698,6 +1702,9 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 				s.emit(warningDataFromError(
 					fmt.Sprintf("model_fallbacks entry %q could not be resolved; skipping it", fbModel), resolveErr))
 				continue
+			}
+			if hasFallbackSource {
+				fallbackHistory = s.requestMessages(fbProfile, fallbackSource.system, fallbackSource.history)
 			}
 			fbReq, ok := responsesContinuationModelFallbackRequest(fbProfile.Resolved(), req, fallbackHistory)
 			if !ok {

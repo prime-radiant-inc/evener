@@ -1410,8 +1410,7 @@ type Session struct {
 	systemPromptOverride string
 	cachedSystemPrompt   string
 	promptSourceLog      []promptSource
-	// An existing transcript supplies the prompt for the session's lifetime,
-	// including when the header's prompt is empty.
+	// A saved prompt stays fixed for the session's lifetime, even when empty.
 	systemPromptFrozen bool
 }
 

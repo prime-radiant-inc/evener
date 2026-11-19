@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
@@ -24,6 +26,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/commitprovenance"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/apilog"
 )
@@ -1604,39 +1607,18 @@ func TestSession_TranscriptHeaderContainsSystemPrompt(t *testing.T) {
 	stateDir := t.TempDir()
 
 	c := llm.NewClient()
-	var readOnNextRequest bool
-	adapter := &agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response {
-		if readOnNextRequest {
-			readOnNextRequest = false
-			return agenttest.ToolCallResponse(llm.ToolCallData{
-				ID: "frozen-prompt-read", Name: "read_file", Arguments: json.RawMessage(`{"file_path":"append.md"}`),
-			})
-		}
-		return agenttest.FinalResponse("done")
-	}}
-	c.Register(adapter)
-	baseFile := filepath.Join(dir, "base.md")
-	writeTestFile(t, baseFile, "BASE_AT_LAUNCH")
-	appendFile := filepath.Join(dir, "append.md")
-	writeTestFile(t, appendFile, "APPEND_AT_LAUNCH")
+	c.Register(&fakeAdapter{name: "openai"})
 
-	profile := withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2"))
-	sess, err := NewSession(c, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		StateDir:           stateDir,
-		SystemPromptFile:   baseFile,
-		SystemPromptAppend: []string{appendFile},
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir: stateDir,
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
 
-	if _, err := sess.ProcessInput(t.Context(), "parent input", nil); err != nil {
-		t.Fatal(err)
-	}
-	sess.Close()
 	tpath := schema.SessionTranscriptPath(stateDir, sess.ID())
-	header, entries, _, err := readTranscript(t.Context(), tpath, "")
+	header, _, _, err := readTranscript(context.Background(), tpath, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -1649,110 +1631,64 @@ func TestSession_TranscriptHeaderContainsSystemPrompt(t *testing.T) {
 		t.Errorf("transcript header system_prompt differs from the rendered prompt (%d vs %d bytes)",
 			len(header.SystemPrompt), len(sess.cachedSystemPrompt))
 	}
-	divergence := 0
-	for i, entry := range entries {
-		if entry.Turn.Kind == schema.TurnUserInput {
-			divergence = i + 1
-			break
-		}
-	}
-	meta, err := schema.LoadSessionMeta(stateDir, header.SessionID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	writeTestFile(t, appendFile, "APPEND_AT_RESTORE")
-	writeTestFile(t, baseFile, "BASE_AT_RESTORE")
-	personalDoc := filepath.Join(dir, "personal.md")
-	writeTestFile(t, personalDoc, "PERSONAL_AT_RESTORE")
+}
 
+func TestRestoredForkUsesSavedPromptWithLiveSettings(t *testing.T) {
+	t.Parallel()
+	const saved = "\nCo-authored-by: Evener old (openai/gpt-5.2) <parent@old-host>\n"
 	for _, tc := range []struct {
-		name       string
-		prompt     string
-		removeBase bool
-		branch     func(string, string) (string, error)
+		name, prompt, mode string
+		edit               *string
 	}{
-		{name: "saved launch prompt", prompt: header.SystemPrompt},
-		{name: "whitespace", prompt: " \t\r\nSAVED_PROMPT\u2003 "},
+		{name: "fork", prompt: saved, edit: new("edited")},
+		{name: "aside", prompt: saved},
+		{name: "off", prompt: saved, mode: commitprovenance.ModeOff},
 		{name: "empty"},
-		{name: "fork", prompt: header.SystemPrompt, branch: func(stateDir, parentID string) (string, error) {
-			return ForkSession(stateDir, parentID, divergence, "fork input", "")
-		}},
-		{name: "aside", prompt: header.SystemPrompt, branch: AsideSession},
-		{name: "missing base file", prompt: header.SystemPrompt, removeBase: true},
+		{name: "whitespace", prompt: " \t\r\n\u2003 "},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.removeBase {
-				if err := os.Remove(baseFile); err != nil {
-					t.Fatal(err)
-				}
+			stateDir := t.TempDir()
+			meta := schema.SessionMeta{ID: identifier.MustNewSessionID(), Model: "gpt-5.2"}
+			prompt := tc.prompt
+			if tc.prompt == saved {
+				preload := preloadMetadataFixture(gardeningMemorySkillName)
+				meta.Skills = &schema.SkillLifecycleSnapshot{Inventory: map[string]schema.SkillInventoryEntry{preload.Name: {Preload: &preload}}}
+				prompt += renderedPreloadFixture(gardeningMemorySkillName, gardeningPreloadSentinel)
 			}
-			resumeMeta := meta
-			if tc.branch != nil {
-				childID, err := tc.branch(stateDir, meta.ID)
-				if err != nil {
-					t.Fatal(err)
-				}
-				resumeMeta, err = schema.LoadSessionMeta(stateDir, childID)
-				if err != nil {
-					t.Fatal(err)
-				}
-			} else if tc.prompt != header.SystemPrompt {
-				saved := header
-				saved.SessionID = identifier.MustNewSessionID()
-				saved.SystemPrompt = tc.prompt
-				resumeMeta.ID = saved.SessionID
-				w, err := transcript.NewWriter(schema.SessionTranscriptPath(stateDir, saved.SessionID), saved)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := w.Close(); err != nil {
-					t.Fatal(err)
-				}
+			id, err := writeForkChild(afero.NewOsFs(), stateDir, meta.ID, transcript.Header{SystemPrompt: prompt}, meta, nil, 1, tc.edit, defaultForkDeps())
+			if err != nil {
+				t.Fatal(err)
 			}
-			for cycle := range 2 {
-				restored, err := RestoreSessionFromMetaWithConfig(c, profile.WithModel(resumeMeta.Model), execenv.NewLocalExecutionEnvironment(dir), resumeMeta, RestoreSessionConfig{
-					StateDir: stateDir, AgentsDocPath: personalDoc, CompactAtPercent: 80,
-				})
-				if err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(restored.Close)
-				if got := restored.Meta().Config.CompactAtPercent; got != 80 {
-					t.Errorf("restored compaction setting = %d, want 80", got)
-				}
-
-				checkRequests := func(input, model string, rounds int) {
-					t.Helper()
-					prior := len(adapter.Requests())
-					if _, err := restored.ProcessInput(t.Context(), input, nil); err != nil {
-						t.Fatal(err)
-					}
-					requests := adapter.Requests()[prior:]
-					if len(requests) != rounds {
-						t.Fatalf("input %q sent %d model requests, want %d", input, len(requests), rounds)
-					}
-					for i, req := range requests {
-						if req.Model != model {
-							t.Errorf("input %q round %d used model %q, want %q", input, i+1, req.Model, model)
-						}
-						if len(req.Messages) == 0 || req.Messages[0].Role != llm.RoleSystem {
-							t.Fatalf("input %q round %d did not start with a system message", input, i+1)
-						}
-						if got := req.Messages[0].Text(); got != tc.prompt {
-							t.Errorf("restore %d input %q round %d differed from the saved prompt (%d vs %d bytes)", cycle+1, input, i+1, len(got), len(tc.prompt))
-						}
-					}
-				}
-				readOnNextRequest = true
-				checkRequests("first input", resumeMeta.Model, 2)
-				if err := restored.SetModel("gpt-5.4"); err != nil {
-					t.Fatal(err)
-				}
-				checkRequests("later input", "gpt-5.4", 1)
-				restored.Close()
-				resumeMeta, err = schema.LoadSessionMeta(stateDir, resumeMeta.ID)
-				if err != nil {
-					t.Fatal(err)
+			child, err := schema.LoadSessionMeta(stateDir, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c := llm.NewClient()
+			adapter := newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse("done") })
+			c.Register(adapter)
+			profile := withTestSessionNamer(c, NewOpenAIProfile(meta.Model))
+			s, err := RestoreSessionFromMetaWithConfig(c, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), child,
+				RestoreSessionConfig{StateDir: stateDir, DisableMemory: true, CompactAtPercent: 80, CommitProvenance: tc.mode})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			if err := s.SetModel("gpt-5.4"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.ProcessInput(t.Context(), "continued input", nil); err != nil {
+				t.Fatal(err)
+			}
+			req := adapter.Requests()[0]
+			if req.Model != "gpt-5.4" || req.Messages[0].Role != llm.RoleSystem || req.Messages[0].Text() != prompt || s.Meta().Config.CompactAtPercent != 80 {
+				t.Fatal("restored request lost the saved prompt or live settings")
+			}
+			if meta.Skills != nil {
+				requirePreloadRecords(t, s, gardeningMemorySkillName)
+				live := req.Messages[1]
+				current := strings.Contains(live.Text(), "(openai/gpt-5.4) <"+id+"@")
+				if live.Role != llm.RoleSystem || current != (tc.mode == "") {
+					t.Error("request did not carry live commit provenance")
 				}
 			}
 		})
