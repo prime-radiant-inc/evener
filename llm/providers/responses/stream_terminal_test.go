@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -24,20 +25,23 @@ func TestIncompleteResponseKeepsUnsettledToolArgumentsOutOfFinalResponse(t *test
 	for _, terminalType := range []string{"response.completed", "response.incomplete"} {
 		for _, mode := range []string{"empty", "terminal", "streamed"} {
 			t.Run(terminalType+"/"+mode, func(t *testing.T) {
-				body, output := frame(delta), "[]"
+				var wire strings.Builder
+				wire.WriteString(frame(delta))
+				output := "[]"
 				var wantCalls []string
 				switch mode {
 				case "terminal":
 					output = "[" + unfinished + "," + running + "," + completed + "," + unstamped + "]"
 				case "streamed":
 					for _, item := range []string{unfinished, running, completed, unstamped} {
-						body += frame(`{"type":"response.output_item.done","item":` + item + `}`)
+						wire.WriteString(frame(`{"type":"response.output_item.done","item":` + item + `}`))
 					}
 				}
 				if mode != "empty" {
 					wantCalls = []string{"call_completed", "call_unstamped"}
 				}
-				body += frame(`{"type":"` + terminalType + `","response":{"status":"incomplete","output":` + output + `}}`)
+				wire.WriteString(frame(`{"type":"` + terminalType + `","response":{"status":"incomplete","output":` + output + `}}`))
+				body := wire.String()
 				recorded, err := ExtractRecordedResponse([]byte(body), "gpt-5.5")
 				if err != nil {
 					t.Error(err)
