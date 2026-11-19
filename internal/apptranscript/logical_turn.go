@@ -93,13 +93,10 @@ type logicalTurnAccumulator struct {
 // TurnGrouper applies the logical-turn grouping rule to entries in file order.
 // Its zero value is the state before the first entry.
 //
-// A stamp extends a run only when that run is stamped with the same turn ID;
-// a turn's separate runs are associated later, by turn ID, during projection.
-// A grouper restored with Stamped unset therefore opens a run where an intact
-// one would extend the current run, and both projections agree on the turn.
-// The transcript index persists just Open and TurnID (index.go's
-// Open/OpenTurnID), which is sound there: its new-format entries never reach
-// Place, so its legacy-only grouping never asks Stamped.
+// A matching stamp extends only the current stamped run, and projection
+// associates a turn's separate runs by its id. The transcript index restores
+// just Open and TurnID (index.go's Open/OpenTurnID) because it calls Place for
+// legacy entries only.
 type TurnGrouper struct {
 	// Open reports whether continuations join the latest group.
 	Open bool
@@ -414,15 +411,10 @@ func executionItems(runs []int, groups []groupedTurn) map[int][]appwire.ThreadIt
 	// and TOOL entries, never for an announcement), not from the item's status,
 	// so this asks the same question.
 	entryKind := map[int]schema.TurnKind{}
-	// entryRound is, per entry index, the round the entry recorded. A projector
-	// that does not apply the identity read model leaves it off the item, so the
-	// settlement below reads it from the entry that announced the call.
-	entryRound := map[int]string{}
 	for _, run := range runs {
 		for k, entryIndex := range groups[run].entryIndexes {
 			if k < len(groups[run].entries) {
 				entryKind[entryIndex] = groups[run].entries[k].Kind
-				entryRound[entryIndex] = groups[run].entries[k].RoundID
 			}
 		}
 	}
@@ -430,11 +422,14 @@ func executionItems(runs []int, groups []groupedTurn) map[int][]appwire.ThreadIt
 		kind := entryKind[entryIndex]
 		return kind == schema.TurnToolResults || kind == schema.TurnTool
 	}
-	// announcedIn is, per entry index, whether that entry announced any tool
-	// call at all. A call can be announced and still project no row — a
-	// communicate call renders only when its result arrives — so the ROW a
-	// result may settle is decided by the entry, not by which rows exist.
-	announcedIn := map[int]bool{}
+	// announcingRounds is, per entry index, whether that entry announced any
+	// tool call at all and the round it recorded. A call can be announced and
+	// still project no row — a communicate call renders only when its result
+	// arrives — so the ROW a result may settle is decided by the entry, not by
+	// which rows exist. The round rides along because a projector that does not
+	// apply the identity read model leaves it off the item, while the entry that
+	// announced the call still recorded it.
+	announcingRounds := map[int]string{}
 	for _, run := range runs {
 		for k, entryIndex := range groups[run].entryIndexes {
 			if k >= len(groups[run].entries) || isResult(entryIndex) {
@@ -442,7 +437,7 @@ func executionItems(runs []int, groups []groupedTurn) map[int][]appwire.ThreadIt
 			}
 			for _, part := range groups[run].entries[k].Message.Content {
 				if part.Kind == llm.ContentToolCall && part.ToolCall != nil {
-					announcedIn[entryIndex] = true
+					announcingRounds[entryIndex] = groups[run].entries[k].RoundID
 					break
 				}
 			}
@@ -477,8 +472,8 @@ func executionItems(runs []int, groups []groupedTurn) map[int][]appwire.ThreadIt
 	// result — there is nothing to settle into, and folding the result into an
 	// earlier row of the same call id would delete that row and move the
 	// rejection ahead of the delivery. The result then keeps its own position.
-	announcing := make([]int, 0, len(announcedIn))
-	for entryIndex := range announcedIn {
+	announcing := make([]int, 0, len(announcingRounds))
+	for entryIndex := range announcingRounds {
 		announcing = append(announcing, entryIndex)
 	}
 	sort.Ints(announcing)
@@ -507,7 +502,7 @@ func executionItems(runs []int, groups []groupedTurn) map[int][]appwire.ThreadIt
 			opener := out[target.run][target.at]
 			round := opener.RoundID
 			if round == "" {
-				round = entryRound[target.entry]
+				round = announcingRounds[target.entry]
 			}
 			item.ID, item.RoundID = opener.ID, round
 			merged := MergeThreadItems(opener, item)
