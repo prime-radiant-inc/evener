@@ -111,13 +111,17 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 		clock:                   s.clock,
 		testOnly:                s.cfg.testOnly,
 		// The personal doc belongs to whoever runs the tree now, not to the run that froze this delegate.
-		AgentsDocPath:           s.cfg.AgentsDocPath,
-		TurnEndsProcess:         s.cfg.TurnEndsProcess,
-		ForceRealIO:             s.cfg.ForceRealIO,
-		artifactStore:           s.artifactStore,
-		artifactStoreInherited:  true,
-		deferRestoreSideEffects: true,
-		sandboxProvisioned:      true,
+		AgentsDocPath: s.cfg.AgentsDocPath,
+		// Likewise the project MCP layer this process read at startup: a restored
+		// sandboxed delegate may expand that layer through the process environment
+		// only if the layer still says what this process saw.
+		StartupMCPProjectEvidence: s.startupMCPProjectLayer(),
+		TurnEndsProcess:           s.cfg.TurnEndsProcess,
+		ForceRealIO:               s.cfg.ForceRealIO,
+		artifactStore:             s.artifactStore,
+		artifactStoreInherited:    true,
+		deferRestoreSideEffects:   true,
+		sandboxProvisioned:        true,
 		spawn: spawnConfig{
 			delegateController:            s.delegateController,
 			retirementController:          s.retirementController.Load(),

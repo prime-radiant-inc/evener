@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -62,22 +63,33 @@ func TestExclusionRefreshDoesNotRereadStalledAppendFiles(t *testing.T) {
 	// drives the rebuild down the reuse path.
 	staleExclusionDecision(s)
 
-	returned := make(chan string, 1)
+	// The error travels SEPARATELY from the prompt, because the pass condition
+	// is that request preparation SUCCEEDED from the snapshot. Folding the two
+	// into one string made any error read as a non-empty answer: the assertion
+	// below then passed on a failed preparation and the test stopped proving
+	// anything about the reuse path.
+	type prepareOutcome struct {
+		sys string
+		err error
+	}
+	returned := make(chan prepareOutcome, 1)
 	go func() {
 		var timings events.RoundTimings
 		_, sys, _, _, _, _, err := s.prepareModelRequestWithError(context.Background(), 0, &timings)
-		if err != nil {
-			returned <- "error: " + err.Error()
-			return
-		}
-		returned <- sys
+		returned <- prepareOutcome{sys: sys, err: err}
 	}()
 
 	select {
-	case sys := <-returned:
+	case got := <-returned:
 		release()
-		if sys == "" {
-			t.Error("the rebuilt request carried no system prompt")
+		if got.err != nil {
+			t.Fatalf("the rebuilt request failed: %v", got.err)
+		}
+		// A prompt that came back at all is not the property under test: the
+		// rebuild must have RENDERED THE APPEND from the snapshot it already had,
+		// which is the difference between reusing the load and skipping it.
+		if !strings.Contains(got.sys, body) {
+			t.Errorf("the rebuilt system prompt does not carry the append fixture %q, so the rebuild did not render the snapshot's contents", body)
 		}
 	case <-time.After(appendStallTripwire): // TRIPWIRE: the rebuild read the stalled file under s.mu
 		release()

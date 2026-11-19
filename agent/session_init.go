@@ -886,6 +886,16 @@ type RestoreSessionConfig struct {
 	// snapshot inherits the parent's answer; it does not outlive the run.
 	AgentsDocPath string
 
+	// StartupMCPProjectEvidence is the project MCP layer the RESTORING
+	// process read at its startup, replacing whatever the persisted snapshot
+	// could never have carried. It is what a sandboxed delegate restored out of
+	// this process may expand through the process environment, and it belongs to
+	// the process hosting the tree now for the same reason AgentsDocPath does:
+	// the layer is a fact about this workspace as THIS process read it. Nil is
+	// the fail-safe answer (nothing is authorized) and is what a caller that
+	// never called discovery leaves.
+	StartupMCPProjectEvidence *mcpconfig.LayerEvidence
+
 	// OnRestoredTranscript, when set, receives the transcript this resume
 	// validated: the header (its SessionID already checked against the
 	// session's id), the final decoded entry list after every restore-time
@@ -1042,6 +1052,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		return nil, err
 	}
 	cfg.AgentsDocPath = strings.TrimSpace(restoreCfg.AgentsDocPath)
+	cfg.StartupMCPProjectEvidence = restoreCfg.StartupMCPProjectEvidence
 	if strings.TrimSpace(restoreCfg.OpenAIResponsesContinuation) != "" {
 		cfg.OpenAIResponsesContinuation = strings.TrimSpace(restoreCfg.OpenAIResponsesContinuation)
 	}
@@ -2695,10 +2706,27 @@ func (s *Session) initMCP() error {
 	// One call supplies BOTH the servers this session connects and the evidence
 	// the delegate classification is derived from, so a file edited mid-startup
 	// cannot pair a fresh digest with a stale classification.
-	configs, cliOnly, configEvidence, cfgWarnings, err := mcpconfig.DiscoverWithCLIOnlyAndEvidence(s.currentEnv(), s.cfg.MCPConfigFiles, s.cfg.MCPInline)
+	//
+	// A SANDBOXED DELEGATE passes its parent's startup project evidence and its
+	// own sandboxedness: it was constructed by a running session rather than
+	// launched by a user who trusted this workspace, so the project layer keeps
+	// the process environment only while it still says what the parent read at
+	// its own startup (see DiscoverWithCLIOnlyAndEvidenceForProjectEnv).
+	env := s.currentEnv()
+	configs, cliOnly, configEvidence, cfgWarnings, err := mcpconfig.DiscoverWithCLIOnlyAndEvidenceForProjectEnv(
+		env, s.cfg.MCPConfigFiles, s.cfg.MCPInline,
+		s.cfg.StartupMCPProjectEvidence, s.mcpProjectLayerIsSandboxedWithoutLaunchTrust(env))
 	if err != nil {
 		return err
 	}
+	// This session's own read is what authorizes the project layer for the
+	// delegates IT constructs. Recorded unconditionally, absence included: an
+	// absent layer recorded as a path with no digest is a fact a later check can
+	// verify, while an unrecorded one authorizes nothing.
+	evidence := configEvidence.Project
+	s.mu.Lock()
+	s.startupMCPProjectEvidence = evidence
+	s.mu.Unlock()
 	for _, w := range cfgWarnings {
 		s.pendingMCPWarnings = append(s.pendingMCPWarnings, events.WarningData{
 			Source: string(diagnostic.SourceMCP), Title: "MCP config error", Message: w,
@@ -2748,6 +2776,33 @@ func (s *Session) initMCP() error {
 	s.setShadowedLayerNamespaces(otherLayerMCPNamespaces(configs, cliOnly, s.pluginMCPConfigs))
 	s.recordCLIMCPTools(mgr)
 	return nil
+}
+
+// mcpProjectLayerIsSandboxedWithoutLaunchTrust reports whether this session is a
+// delegate running under a sandbox that withholds host credentials from it, so
+// the project MCP layer must not be expanded through the host environment it
+// cannot itself read.
+//
+// Two conditions decide it, and both must hold:
+//
+//   - The session is a delegate. A root session's project layer belongs to the
+//     launch the user made into this workspace, which is the trust decision
+//     Discover documents; only a session CONSTRUCTED by another session can
+//     discover a layer that appeared around the tree afterwards.
+//   - A sandbox is in force. Nothing is withheld from an unsandboxed delegate in
+//     a shared workspace, so restricting its project layer would turn off a
+//     feature without protecting anything. The sandbox is read from the
+//     environment's resolved policy as well as the configured mode name, because
+//     a read-only delegate scope derives its box from the tool policy and the
+//     name alone would miss it.
+func (s *Session) mcpProjectLayerIsSandboxedWithoutLaunchTrust(env execenv.ExecutionEnvironment) bool {
+	if !s.isSubagentSession() {
+		return false
+	}
+	if !sandbox.ModeIsOff(s.cfg.Sandbox) {
+		return true
+	}
+	return sandboxSnapshotFromEnv(env) != nil
 }
 
 // otherLayerMCPNamespaces is the set of registered-name PREFIXES the non-CLI

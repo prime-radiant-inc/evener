@@ -643,6 +643,58 @@ func DiscoverWithLaunchEnv(env execenv.ExecutionEnvironment, extraFiles, inlineS
 	return configs, warnings, err
 }
 
+// DiscoverWithCLIOnlyAndEvidenceForProjectEnv is
+// DiscoverWithCLIOnlyAndEvidence for a caller whose project layer is not
+// necessarily covered by the launch trust decision: a sandboxed delegate.
+//
+// A normal launch answers its project layer with the full process
+// environment, because the user launched into that workspace and that launch
+// is the trust decision (see Discover). A SANDBOXED DELEGATE has no such
+// decision behind it. It is constructed by a running session, in a shared
+// workspace, possibly after a Git root and its .evener/mcp.json appeared
+// around that session. The sandbox withholds host credentials from the child,
+// yet discovery would expand the repository's ${VAR} references out of
+// os.Environ() and send the results to the endpoint the repository names,
+// before the child's tool ceiling has anything to say about it.
+//
+// So a sandboxed caller keeps the process environment for the project layer
+// only while that layer still says what THIS session read at its own startup
+// (authorizedProject). An absent, unresolved, or since-changed startup layer
+// authorizes nothing: the layer is expanded through launchOverlayOnlyEnv(nil),
+// where every reference is unanswered, so the standard expansion error skips
+// the layer with a warning instead of disclosing a credential. Literal values
+// expand to themselves and still load.
+//
+// The layers the user authors — the global config and the CLI files — always
+// keep the process environment, and so do the inline specs, which are not
+// expanded at all. sandboxed=false is the ordinary session contract,
+// byte-for-byte Discover's.
+func DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []string, authorizedProject *LayerEvidence, sandboxed bool) ([]ServerConfig, []CLIOnlyServer, ConfigEvidence, []string, error) {
+	env0 := processExpansionEnv()
+	untrustedEnv := env0
+	if sandboxed && !projectLayerAuthorizedByStartup(authorizedProject, env) {
+		untrustedEnv = launchOverlayOnlyEnv(nil)
+	}
+	return discoverLayers(env, extraFiles, inlineSpecs, env0, untrustedEnv)
+}
+
+// projectLayerAuthorizedByStartup reports whether the project layer the
+// workspace resolves to NOW is still the layer this session read at startup, so
+// expanding it through the process environment discloses nothing the startup
+// read did not already disclose.
+//
+// The two empty answers are deliberately NOT authorizations. A nil or
+// pathless startup record means no layer was resolved — the session launched
+// outside a repository, or the resolution could not answer — and neither says
+// anything about a .evener/mcp.json that exists now. That file appeared around
+// the session, which is exactly the change this check exists to catch.
+func projectLayerAuthorizedByStartup(authorized *LayerEvidence, env execenv.ExecutionEnvironment) bool {
+	if authorized == nil || authorized.Path == "" {
+		return false
+	}
+	return layerEvidenceCurrent(*authorized, ProjectConfigPath(env))
+}
+
 // discoverLayers is Discover's body with the expansion environment chosen
 // per layer trust class: trustedEnv answers the layers the user authors —
 // the global config and the launch/CLI files — and untrustedEnv answers

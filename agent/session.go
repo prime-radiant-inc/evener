@@ -1158,6 +1158,14 @@ type Session struct {
 	// MCP server connections
 	mcpMgr   *mcp.Manager
 	mcpTools []llm.ToolDefinition
+	// startupMCPProjectEvidence is the project layer THIS session read at its
+	// own startup, populated by initMCP from the same discovery pass that
+	// supplied its servers. It is what a sandboxed delegate this session
+	// constructs may expand through the process environment: the layer the
+	// launch already read, and not one a repository wrote into the workspace
+	// afterwards. Written once, under mu, during construction; read when a child
+	// is built.
+	startupMCPProjectEvidence mcpconfig.LayerEvidence
 
 	// Plugin-provided components
 	plugins             []plugin.Instance

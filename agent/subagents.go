@@ -1070,6 +1070,21 @@ func (s *Session) setCLIMCPServers(names map[string]bool, shadowed map[string]bo
 // path (s.mu not held), and the clear runs from the environment-swap path
 // (s.mu held), so either lock taken here would deadlock one of them.
 
+// startupMCPProjectLayer is the project MCP layer this session read at its own
+// startup, as a value a child config can carry. A zero record (no path) means
+// this process recorded no project layer — the launch was outside a repository,
+// or the resolution could not answer — and it authorizes nothing; see
+// mcpconfig.DiscoverWithCLIOnlyAndEvidenceForProjectEnv.
+func (s *Session) startupMCPProjectLayer() *mcpconfig.LayerEvidence {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	recorded := s.startupMCPProjectEvidence
+	return &recorded
+}
+
 // noteExclusionDecision records whether the CLI-MCP half of the exclusion is
 // currently applied, and bumps the version when that answer CHANGES.
 //
@@ -1579,6 +1594,13 @@ func (s *Session) prepareSubagentRunFromSelection(
 	if frozen != nil {
 		subCfg = subagentConfigFromFrozenDescriptor(frozen.Config, parentCfg)
 	}
+	// The project MCP layer a SANDBOXED child may expand through the process
+	// environment is the one this process read at ITS own startup. That read
+	// belongs to the live parent hosting the tree now, for the same reason
+	// AgentsDocPath above does: it is a fact about this workspace as THIS
+	// process discovered it, and it replaces whatever a frozen snapshot could
+	// not have carried.
+	subCfg.StartupMCPProjectEvidence = s.startupMCPProjectLayer()
 	// Ordinary children never inherit the parent's session-start role.
 	subCfg.Manager = false
 	subCfg.artifactStore = s.artifactStore
