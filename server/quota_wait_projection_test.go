@@ -481,13 +481,19 @@ func TestDelegateReadClearsTheQuotaWaitWhenTheTurnEnds(t *testing.T) {
 // because its deadline has passed. Installing the wait with an already-past
 // reset reproduces the exact stored state that window reads — the same summary
 // a mid-wait install leaves behind once its reset passes — without reaching
-// for the agent-internal drive scheduling from here.
+// for the agent-internal drive scheduling from here. The wait rides a running
+// turn, as every real wait does: the delegate's execution is started before
+// the wait is injected, so the read proves an active turn can carry a stored
+// wait past its deadline — a fixture that served the wait on an idle thread
+// could not defend against a projection that serves waits only while its
+// turn runs.
 func TestDelegateReadServesTheStoredWaitPastItsReset(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	t.Cleanup(srv.Close)
 	srv.SetAppIdentity("local", "root")
 	const childID = "quota-wait-child"
 	srv.RecordDescendantAppEvent("root", threadEvent(childID, events.SessionStartData{WorkingDir: "/work"}))
+	srv.RecordDescendantAppEvent("root", threadEvent(childID, events.ExecutionStartedData{TurnID: "quota-wait-turn"}))
 	resumesAt := time.Now().Add(-time.Second).UnixMilli()
 	srv.RecordDescendantAppEvent("root", threadEvent(childID, events.ModelRetryData{
 		Attempt:       1,
@@ -503,8 +509,11 @@ func TestDelegateReadServesTheStoredWaitPastItsReset(t *testing.T) {
 	}))
 
 	// The reset is already past when the read lands, and no wake is recorded:
-	// the read still serves the wait.
+	// the read still serves the wait on the running turn it belongs to.
 	read := readChildThread(t, srv, childID)
+	if status := read.Thread.Status.Type; status != appwire.ThreadStatusActive {
+		t.Fatalf("the waiting delegate's status = %q, want active: the wait rides a running turn", status)
+	}
 	failure := read.Thread.Evener.Failure
 	if failure == nil {
 		t.Fatal("a read past the reset dropped the stored wait before any wake: the deadline is not the wait's to end")
@@ -519,6 +528,11 @@ func TestDelegateReadServesTheStoredWaitPastItsReset(t *testing.T) {
 		DelayMS:       0,
 		WaitStartedAt: 1,
 	}))
+	// The wake ends the wait inside the still-running turn: no boundary was
+	// reached, so the clear is the wake's alone.
+	if status := readChildThread(t, srv, childID).Thread.Status.Type; status != appwire.ThreadStatusActive {
+		t.Fatalf("the woken delegate's status = %q, want still active: the wake clears the wait without ending the turn", status)
+	}
 	if failure := readChildThread(t, srv, childID).Thread.Evener.Failure; failure != nil {
 		t.Fatalf("a read after the wake = %+v, want no wait", failure)
 	}
