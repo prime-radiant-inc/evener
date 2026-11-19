@@ -1881,15 +1881,63 @@ func (s *Session) SetReasoningEffort(effort string) error {
 	return s.saveMeta()
 }
 
+// modelSwitchTarget is a switch's requested model together with the instance
+// the caller named, if any. The two halves are kept apart because a model id
+// may itself contain slashes: OpenRouter serves "anthropic/claude-opus-5" as
+// one of its own model ids, so the first segment of a joined ref does not say
+// which half was the instance. An empty provider means the caller named only a
+// ref and the current instance decides (SetModel's historic reading).
+type modelSwitchTarget struct {
+	provider string
+	model    string
+}
+
+// ref renders the target as the instance/model reference the resolver and the
+// live-listing calls take.
+func (t modelSwitchTarget) ref() string {
+	if t.provider == "" {
+		return t.model
+	}
+	return t.provider + "/" + t.model
+}
+
+// explicit reports whether the caller named the instance, in which case it
+// decides the target outright rather than the current profile.
+func (t modelSwitchTarget) explicit() bool { return t.provider != "" }
+
+// crossProviderFrom reports whether the target moves the session off base's
+// instance. An explicitly named instance decides it: the current instance may
+// serve the same model id under a namespaced name, and that must not keep it.
+func (t modelSwitchTarget) crossProviderFrom(base *provider.Profile) bool {
+	if t.explicit() {
+		return !strings.EqualFold(t.provider, base.ID())
+	}
+	return base.CrossProviderRef(t.model)
+}
+
 // resolveProfileForRef resolves a model ref to a *provider.Profile. When the
-// ref is classified as a cross-provider switch (prefixActionSwitch) AND the
-// session has a resolver, the resolver is called. Otherwise the current
-// profile's WithModel is used (handles same-provider, strip, and keep cases).
+// ref is classified as a cross-provider switch AND the session has a resolver,
+// the resolver is called. Otherwise the current profile's WithModel is used
+// (handles same-provider, strip, and keep cases).
 func (s *Session) resolveProfileForRef(base *provider.Profile, ref string) (*provider.Profile, bool, error) {
-	if base.CrossProviderRef(ref) && s.resolveProfile != nil {
-		resolved, err := s.resolveProfile(ref)
-		if err != nil {
-			return nil, false, err
+	return s.resolveModelSwitchProfile(base, modelSwitchTarget{model: ref})
+}
+
+// resolveModelSwitchProfile resolves a switch target to the profile it lands
+// on. A target whose instance the caller named resolves on that instance, so a
+// model the current instance also serves under a namespaced id keeps neither
+// the model nor the instance: the reader picked the direct row. A target that
+// names only a ref keeps the historic classification (CrossProviderRef, then
+// WithModel).
+func (s *Session) resolveModelSwitchProfile(base *provider.Profile, target modelSwitchTarget) (*provider.Profile, bool, error) {
+	if target.crossProviderFrom(base) {
+		var resolved *provider.Profile
+		if s.resolveProfile != nil {
+			var err error
+			resolved, err = s.resolveProfile(target.ref())
+			if err != nil {
+				return nil, false, err
+			}
 		}
 		if resolved != nil {
 			if cheapModelRef := base.CheapModelRefString(); cheapModelRef != "" {
@@ -1897,8 +1945,11 @@ func (s *Session) resolveProfileForRef(base *provider.Profile, ref string) (*pro
 			}
 			return resolved, true, nil
 		}
+		if target.explicit() {
+			return nil, false, fmt.Errorf("provider %q is not configured", target.provider)
+		}
 	}
-	return base.WithModel(ref), false, nil
+	return base.WithModel(target.ref()), false, nil
 }
 
 // reapplyProviderSpecificTools updates the live tool registry when the session
@@ -1942,9 +1993,9 @@ func (s *Session) reapplyProviderSpecificTools(oldProfile, newProfile *provider.
 // preflight fetched; the boundary's applyModelSwitch reuses them so a queued
 // switch costs one live enumeration, not two. The seq is the pick generation
 // SetModel stamped, which fences the boundary application against superseding
-// picks. A zero value (empty model) means nothing is queued.
+// picks. popNewestPendingModelLocked's bool reports whether anything was queued.
 type pendingModelSwitch struct {
-	model          string
+	target         modelSwitchTarget
 	primedInstance string
 	primedListing  *llm.ModelListing
 	seq            uint64
@@ -1966,7 +2017,10 @@ type modelSwitchFence struct {
 	queueWhenBusy bool
 }
 
-// SetModel changes the model used for future LLM calls.
+// SetModel changes the model used for future LLM calls, reading a bare ref or
+// an "instance/model" ref. When the caller knows which instance it picked,
+// SetModelOn is the door that keeps the two halves distinct.
+//
 // Takes effect on the next request. Returns an error (without changing any
 // session state) when the model ref cannot be resolved to a profile, when the
 // current history contains content the target can't represent (see
@@ -1984,11 +2038,25 @@ type modelSwitchFence struct {
 // a switch that fails there surfaces as a transcript warning and is dropped
 // rather than retried.
 func (s *Session) SetModel(model string) error {
+	return s.SetModelOn("", model)
+}
+
+// SetModelOn is SetModel for a picker that knows both halves of the choice.
+// An explicit provider names the instance the switch lands on: it decides the
+// target even when the current instance also serves the same model id, which
+// is what OpenRouter's upstream-namespaced ids ("anthropic/claude-opus-5")
+// make ambiguous. An empty provider is SetModel's historic current-instance
+// reading, and model is then the whole ref.
+func (s *Session) SetModelOn(provider, model string) error {
 	release, admissionErr := s.beginRetirementMutation("admission")
 	if admissionErr != nil {
 		return admissionErr
 	}
 	defer release()
+	target := modelSwitchTarget{provider: strings.TrimSpace(provider), model: strings.TrimSpace(model)}
+	if target.model == "" {
+		return errors.New("model is required")
+	}
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
@@ -1998,10 +2066,10 @@ func (s *Session) SetModel(model string) error {
 	pickSeq := s.modelPickSeq
 	if !s.turnInFlightLocked() {
 		s.mu.Unlock()
-		return s.applyModelSwitch(model, "", nil, modelSwitchFence{pickSeq: pickSeq, queueWhenBusy: true})
+		return s.applyModelSwitch(target, "", nil, modelSwitchFence{pickSeq: pickSeq, queueWhenBusy: true})
 	}
 	s.mu.Unlock()
-	return s.queueModelSwitch(model, pickSeq)
+	return s.queueModelSwitch(target, pickSeq)
 }
 
 // turnInFlightLocked reports whether an input is being processed, from its
@@ -2020,8 +2088,8 @@ func (s *Session) turnInFlightLocked() bool {
 // being appended to by the running turn - and re-run by the boundary's
 // applyModelSwitch against settled history, reusing the listing this preflight
 // fetched so the boundary pays no second enumeration.
-func (s *Session) queueModelSwitch(model string, pickSeq uint64) error {
-	primedInstance, primedListing := s.primeCodexRoster(model)
+func (s *Session) queueModelSwitch(target modelSwitchTarget, pickSeq uint64) error {
+	primedInstance, primedListing := s.primeCodexRoster(target.ref())
 	fence := modelSwitchFence{pickSeq: pickSeq, queueWhenBusy: true}
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
@@ -2033,9 +2101,9 @@ func (s *Session) queueModelSwitch(model string, pickSeq uint64) error {
 		// the switch can apply directly instead of waiting for a boundary
 		// that already fired.
 		s.mu.Unlock()
-		return s.applyModelSwitch(model, primedInstance, primedListing, fence)
+		return s.applyModelSwitch(target, primedInstance, primedListing, fence)
 	}
-	nextProfile, _, err := s.resolveProfileForRef(s.profile, model)
+	nextProfile, _, err := s.resolveModelSwitchProfile(s.profile, target)
 	if err != nil {
 		s.mu.Unlock()
 		return err
@@ -2055,7 +2123,7 @@ func (s *Session) queueModelSwitch(model string, pickSeq uint64) error {
 	}
 	if !s.turnInFlightLocked() {
 		s.mu.Unlock()
-		return s.applyModelSwitch(model, primedInstance, primedListing, fence)
+		return s.applyModelSwitch(target, primedInstance, primedListing, fence)
 	}
 	// Last pick wins, but only among picks that pass their own validation.
 	// Storing neither accepts the pick nor displaces an older queued one: the
@@ -2067,7 +2135,7 @@ func (s *Session) queueModelSwitch(model string, pickSeq uint64) error {
 	// popNewestPendingModelLocked), so a slow older pick still queues and can
 	// apply if the newer one fails its deferred check.
 	if pickSeq > s.modelPickAccepted {
-		s.enqueuePendingModelLocked(pendingModelSwitch{model: model, primedInstance: primedInstance, primedListing: primedListing, seq: pickSeq})
+		s.enqueuePendingModelLocked(pendingModelSwitch{target: target, primedInstance: primedInstance, primedListing: primedListing, seq: pickSeq})
 		// A call waiting out the old model's usage limit retries on this
 		// one now rather than at the turn boundary it is waiting to reach.
 		s.wakeQuotaWaitLocked()
@@ -2151,11 +2219,11 @@ func (s *Session) applyQueuedModelSwitches(inWaitingCall bool) {
 		if admissionErr != nil {
 			return
 		}
-		err := s.applyModelSwitch(pending.model, pending.primedInstance, pending.primedListing, modelSwitchFence{pickSeq: pending.seq})
+		err := s.applyModelSwitch(pending.target, pending.primedInstance, pending.primedListing, modelSwitchFence{pickSeq: pending.seq})
 		release()
 		if err != nil {
 			s.emit(events.WarningData{
-				Message: "queued model switch to " + pending.model + " did not apply: " + err.Error(),
+				Message: "queued model switch to " + pending.target.ref() + " did not apply: " + err.Error(),
 				Source:  "model_switch",
 			})
 		}
@@ -2180,21 +2248,21 @@ func (s *Session) applyQueuedModelSwitches(inWaitingCall bool) {
 // communicate-override carry, the provider-tool reconciliation, and the
 // marker's from-claim follow the transition that actually happened, never the
 // pick-time classification.
-func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *llm.ModelListing, fence modelSwitchFence) error {
+func (s *Session) applyModelSwitch(target modelSwitchTarget, primedInstance string, primedListing *llm.ModelListing, fence modelSwitchFence) error {
 	if primedListing == nil {
 		// A named Codex model may exist only in the target instance's live
 		// roster. List it before s.mu: the strict cross-provider resolve below
 		// runs under the lock and must stay a pure registry lookup, while the
 		// live rows this applies are what let it accept a model the bundled
 		// roster lags.
-		primedInstance, primedListing = s.primeCodexRoster(model)
+		primedInstance, primedListing = s.primeCodexRoster(target.ref())
 	}
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		return nil
 	}
-	nextProfile, _, err := s.resolveProfileForRef(s.profile, model)
+	nextProfile, _, err := s.resolveModelSwitchProfile(s.profile, target)
 	if err != nil {
 		s.mu.Unlock()
 		return err
@@ -2249,7 +2317,7 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 		// rejected there and must not cancel an older one in the meantime.
 		// The pop orders entries by issue, so it still applies before any
 		// older queued pick that survives.
-		s.enqueuePendingModelLocked(pendingModelSwitch{model: model, primedInstance: listedInstance, primedListing: listing, seq: fence.pickSeq})
+		s.enqueuePendingModelLocked(pendingModelSwitch{target: target, primedInstance: listedInstance, primedListing: listing, seq: fence.pickSeq})
 		s.wakeQuotaWaitLocked()
 		s.mu.Unlock()
 		return nil
@@ -2265,7 +2333,7 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 	// provider-tool reconciliation, and the marker's from-claim - is read
 	// here, under the commit lock, never from the pick-time snapshot.
 	commitPrev := s.profile
-	if commitPrev.CrossProviderRef(model) {
+	if target.crossProviderFrom(commitPrev) {
 		nextProfile = nextProfile.WithCommunicateOverridesFrom(commitPrev)
 	}
 	s.profile = nextProfile

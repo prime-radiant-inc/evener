@@ -40,7 +40,7 @@ type residualServeServer struct {
 	urlsRemove     func(outerID, id string) (bool, error)
 	envelopeSource server.ThreadEnvelopeSource
 	meta           func() schema.SessionMeta
-	model          func(string) error
+	model          func(provider, model string) error
 	visionModel    func(string) error
 	name           func(string) error
 	effort         func(string) error
@@ -75,8 +75,10 @@ func (s *residualServeServer) SetUrlsRemoveFunc(f func(outerID, id string) (bool
 func (s *residualServeServer) SetThreadEnvelopeSource(src server.ThreadEnvelopeSource) {
 	s.envelopeSource = src
 }
-func (s *residualServeServer) RefreshThreadEnvelope()                      {}
-func (s *residualServeServer) SetModelFunc(f func(string) error)           { s.model = f }
+func (s *residualServeServer) RefreshThreadEnvelope() {}
+func (s *residualServeServer) SetModelFunc(f func(provider, model string) error) {
+	s.model = f
+}
 func (s *residualServeServer) SetVisionModelFunc(f func(string) error)     { s.visionModel = f }
 func (s *residualServeServer) SetNameFunc(f func(string) error)            { s.name = f }
 func (s *residualServeServer) SetReasoningEffortFunc(f func(string) error) { s.effort = f }

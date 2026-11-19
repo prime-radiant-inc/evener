@@ -663,3 +663,283 @@ func TestServeModelSwitch_ProviderFailureRestoresCapability(t *testing.T) {
 		t.Fatal("runServe did not exit after thread/shutdown")
 	}
 }
+
+// serveSwitchSession boots the real `serve` daemon over the scripted registry
+// with the given launch model, connects an appwire client the way a phone or
+// the TUI does, and returns the client, the session's ref, and a Shutdown the
+// caller defers. The daemon's ctx is per-harness so a failed assertion cannot
+// strand the process.
+func serveSwitchSession(t *testing.T, launchModel string) (*appwire.Client, string, func()) {
+	t.Helper()
+	workDir := t.TempDir()
+	stateDir := t.TempDir()
+	runDir := t.TempDir()
+	done := make(chan error, 1)
+	go func() {
+		done <- runServe([]string{
+			"--model", launchModel,
+			"--addr", "127.0.0.1:0",
+			"--dir", workDir,
+			"--state-dir", stateDir,
+			"--run-dir", runDir,
+		})
+	}()
+	entry := waitForServeTestRendezvous(t, runDir)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	t.Cleanup(cancel)
+	transport, err := appwire.DialWebSocket(ctx, "ws://"+entry.Address+"/rpc", http.DefaultClient)
+	if err != nil {
+		t.Fatalf("DialWebSocket: %v", err)
+	}
+	client := appwire.NewClient(transport)
+	client.Start(context.WithoutCancel(ctx))
+	t.Cleanup(func() { _ = client.Close() })
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{
+		ClientInfo: appwire.ClientInfo{Name: "serve-explicit-provider-test", Version: "test"},
+	}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	var shutdownOnce sync.Once
+	shutdown := func() {
+		shutdownOnce.Do(func() {
+			if err := shutdownServeTestDaemon(context.Background(), entry.Address, entry.SessionID); err != nil {
+				t.Errorf("thread/shutdown: %v", err)
+			}
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Errorf("runServe: %v", err)
+				}
+			case <-time.After(30 * time.Second):
+				t.Error("runServe did not exit after thread/shutdown")
+			}
+		})
+	}
+	t.Cleanup(shutdown)
+	return client, appwire.Ref{SourceID: "local", ThreadID: entry.SessionID}.String(), shutdown
+}
+
+// TestServeModelSwitch_ExplicitProviderLeavesOpenRouterForAnthropic pins the
+// pick where the requested model is served by BOTH instances: the session runs
+// OpenRouter's "anthropic/claude-opus-5", and the reader picks the direct
+// Anthropic row, whose model is "claude-opus-5" on instance "anthropic". The
+// id alone is ambiguous - the current instance serves the namespaced
+// "anthropic/claude-opus-5" as its own model - so the explicit provider is what
+// decides the target. A daemon that folds the pair back into one string and
+// resolves it from the current instance keeps OpenRouter, and the reader is told
+// a change happened that did not.
+func TestServeModelSwitch_ExplicitProviderLeavesOpenRouterForAnthropic(t *testing.T) {
+	openrouter := &scriptedProvider{name: "openrouter", steps: nil}
+	anthropic := &scriptedProvider{name: "anthropic", steps: nil}
+	installServeScriptedProviders(t, openrouter, anthropic)
+	client, ref, shutdown := serveSwitchSession(t, "openrouter/anthropic/claude-opus-5")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	before, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref})
+	if err != nil {
+		t.Fatalf("ThreadRead (before): %v", err)
+	}
+	if before.Thread.Evener.Profile != "openrouter" {
+		t.Fatalf("initial thread/read profile = %q, want %q", before.Thread.Evener.Profile, "openrouter")
+	}
+
+	if err := client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{
+		Ref:           ref,
+		ModelProvider: "anthropic",
+		Model:         "claude-opus-5",
+	}); err != nil {
+		t.Fatalf("ThreadModelSet: %v", err)
+	}
+
+	after, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref})
+	if err != nil {
+		t.Fatalf("ThreadRead (after): %v", err)
+	}
+	if after.Thread.Evener.Profile != "anthropic" {
+		t.Fatalf("thread/read profile after picking the direct Anthropic row = %q, want %q; the explicit provider must decide the target, not the current instance",
+			after.Thread.Evener.Profile, "anthropic")
+	}
+	if after.Thread.ModelProvider != "claude-opus-5" {
+		t.Fatalf("thread/read modelProvider = %q, want %q", after.Thread.ModelProvider, "claude-opus-5")
+	}
+	// The next turn has to run on the instance the reader picked, not on the
+	// one whose namespaced id happened to match the model.
+	if _, err := client.TurnStart(ctx, appwire.TurnStartParams{
+		ClientMutationID:   "explicit-provider-turn",
+		ExpectedInstanceID: after.Thread.Evener.InstanceID,
+		Ref:                ref,
+		Input:              []appwire.InputItem{{Type: "text", Text: "run on the picked instance"}},
+	}); err != nil {
+		t.Fatalf("TurnStart: %v", err)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for len(anthropic.Requests()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	requests := anthropic.Requests()
+	if len(requests) == 0 {
+		t.Fatalf("the turn after the switch never reached the anthropic instance (openrouter saw %d requests)", len(openrouter.Requests()))
+	}
+	if requests[0].Provider != "anthropic" || requests[0].Model != "claude-opus-5" {
+		t.Fatalf("turn request = provider %q model %q, want provider %q model %q",
+			requests[0].Provider, requests[0].Model, "anthropic", "claude-opus-5")
+	}
+	shutdown()
+}
+
+// TestServeModelSwitch_QueuedExplicitProviderLeavesOpenRouterForAnthropic is
+// the same pick made while a turn is still running. The switch is queued for
+// the turn boundary, so the explicit provider has to survive the queue and the
+// boundary's own resolution: a boundary that re-reads the model's first segment
+// as the instance would land back on OpenRouter, after the reply already told
+// the reader the pick was accepted.
+func TestServeModelSwitch_QueuedExplicitProviderLeavesOpenRouterForAnthropic(t *testing.T) {
+	firstArrived := make(chan struct{}, 1)
+	releaseFirst := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseFirstNow := func() { releaseOnce.Do(func() { close(releaseFirst) }) }
+	openrouter := &scriptedProvider{
+		name: "openrouter",
+		steps: []func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response {
+				select {
+				case firstArrived <- struct{}{}:
+				default:
+				}
+				<-releaseFirst
+				return scriptedCommunicate("first turn done")
+			},
+		},
+	}
+	anthropic := &scriptedProvider{name: "anthropic", steps: nil}
+	installServeScriptedProviders(t, openrouter, anthropic)
+
+	workDir, stateDir, runDir := t.TempDir(), t.TempDir(), t.TempDir()
+	done := make(chan error, 1)
+	go func() {
+		done <- runServe([]string{
+			"--model", "openrouter/anthropic/claude-opus-5",
+			"--addr", "127.0.0.1:0",
+			"--dir", workDir,
+			"--state-dir", stateDir,
+			"--run-dir", runDir,
+		})
+	}()
+	entry := waitForServeTestRendezvous(t, runDir)
+	t.Cleanup(func() {
+		releaseFirstNow()
+		select {
+		case <-done:
+		default:
+			_ = shutdownServeTestDaemon(context.Background(), entry.Address, entry.SessionID)
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	transport, err := appwire.DialWebSocket(ctx, "ws://"+entry.Address+"/rpc", http.DefaultClient)
+	if err != nil {
+		t.Fatalf("DialWebSocket: %v", err)
+	}
+	client := appwire.NewClient(transport)
+	client.Start(context.WithoutCancel(ctx))
+	defer client.Close()
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{
+		ClientInfo: appwire.ClientInfo{Name: "serve-queued-explicit-provider-test", Version: "test"},
+	}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	ref := appwire.Ref{SourceID: "local", ThreadID: entry.SessionID}.String()
+	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref, Subscribe: true}); err != nil {
+		t.Fatalf("ThreadRead subscribe: %v", err)
+	}
+	frames := collectServeModelSwitchFrames(client, ref)
+
+	first, err := client.TurnStart(ctx, appwire.TurnStartParams{
+		ClientMutationID:   "queued-explicit-provider-first",
+		ExpectedInstanceID: entry.SessionID,
+		Ref:                ref,
+		Input:              []appwire.InputItem{{Type: "text", Text: "start the first turn"}},
+	})
+	if err != nil {
+		t.Fatalf("TurnStart (first): %v", err)
+	}
+	select {
+	case <-firstArrived:
+	case <-ctx.Done():
+		t.Fatalf("first turn never reached the provider: %v", ctx.Err())
+	}
+
+	if err := client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{
+		Ref:           ref,
+		ModelProvider: "anthropic",
+		Model:         "claude-opus-5",
+	}); err != nil {
+		t.Fatalf("ThreadModelSet during an active turn: %v", err)
+	}
+	releaseFirstNow()
+
+	if err := waitServeTurn(ctx, frames.turnDone, first.Turn.ID); err != nil {
+		t.Fatalf("first turn completion: %v", err)
+	}
+	// Read the boundary's own frame and assert both halves on it, rather than
+	// filtering for the model we expect: a boundary that resolves the ref from
+	// the current instance still publishes a frame, and naming the provider is
+	// what says which instance it landed on.
+	var params appwire.ThreadModelChangedParams
+	select {
+	case params = <-frames.modelChanged:
+	case <-ctx.Done():
+		t.Fatalf("no thread/model/changed after the turn boundary: %v", ctx.Err())
+	}
+	if params.ModelProvider != "anthropic" || params.Model != "claude-opus-5" {
+		t.Fatalf("thread/model/changed = provider %q model %q, want provider %q model %q; the queued pick's explicit provider must survive the turn boundary",
+			params.ModelProvider, params.Model, "anthropic", "claude-opus-5")
+	}
+
+	second, err := client.TurnStart(ctx, appwire.TurnStartParams{
+		ClientMutationID:   "queued-explicit-provider-second",
+		ExpectedInstanceID: entry.SessionID,
+		Ref:                ref,
+		Input:              []appwire.InputItem{{Type: "text", Text: "run on the queued pick"}},
+	})
+	if err != nil {
+		t.Fatalf("TurnStart (second): %v", err)
+	}
+	if err := waitServeTurn(ctx, frames.turnDone, second.Turn.ID); err != nil {
+		t.Fatalf("second turn completion: %v", err)
+	}
+
+	requests := anthropic.Requests()
+	if len(requests) == 0 {
+		t.Fatalf("the turn after the queued switch never reached the anthropic instance (openrouter saw %d requests)", len(openrouter.Requests()))
+	}
+	if requests[0].Provider != "anthropic" || requests[0].Model != "claude-opus-5" {
+		t.Fatalf("turn request = provider %q model %q, want provider %q model %q",
+			requests[0].Provider, requests[0].Model, "anthropic", "claude-opus-5")
+	}
+
+	read, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref})
+	if err != nil {
+		t.Fatalf("ThreadRead after the queued switch applied: %v", err)
+	}
+	if read.Thread.Evener.Profile != "anthropic" {
+		t.Fatalf("thread/read profile = %q, want %q", read.Thread.Evener.Profile, "anthropic")
+	}
+
+	if err := shutdownServeTestDaemon(context.Background(), entry.Address, entry.SessionID); err != nil {
+		t.Fatalf("thread/shutdown: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runServe: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("runServe did not exit after thread/shutdown")
+	}
+}

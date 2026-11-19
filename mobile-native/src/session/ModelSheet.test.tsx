@@ -156,7 +156,7 @@ function provide(session: MobileConversation, state: Partial<ControlsState> = {}
 		session,
 		controls: controls as unknown as SessionControls,
 		ready: true,
-		toast: vi.fn((message) => void calls.push(`toast:${message.text}`)),
+		toast: vi.fn(),
 		...over,
 	};
 	if (owner) modelHosts.release(sheetKey(HUB, REF), owner);
@@ -319,30 +319,30 @@ describe("choosing a model (spec 8.5)", () => {
 		// modelProvider, the id in model, no profile.
 		["live update", { modelProvider: "openrouter", model: "anthropic/claude-opus-5", modelProfile: undefined }],
 	] as const)("sends the switch to the other provider from the %s wire shape", async (_shape, running) => {
-		const { calls } = provide(conversation(running), { catalog: ROUTED_CATALOG });
+		const { calls, controls, host } = provide(conversation(running), { catalog: ROUTED_CATALOG });
 		const tree = sheet();
 		// The running model's own row is the selected one.
 		expect(pressable(tree, "Claude Opus 5 (OpenRouter)")?.props.accessibilityState).toMatchObject({ selected: true });
 		expect(pressable(tree, "Claude Opus 5")?.props.accessibilityState).toMatchObject({ selected: false });
 		act(() => pressable(tree, "Claude Opus 5")?.props.onPress());
 		await settle();
-		expect(calls).toEqual([
-			"changeModel:anthropic/claude-opus-5",
-			"goBack",
-			"toast:Model changed. Applies from the next turn.",
-		]);
+		// The switch went to the direct Anthropic instance, not to OpenRouter's
+		// namespaced row of the same model.
+		expect(controls.changeModel).toHaveBeenCalledExactlyOnceWith("anthropic", "claude-opus-5");
+		expect(calls).toEqual(["changeModel:anthropic/claude-opus-5", "goBack"]);
+		expect(host.toast).toHaveBeenCalledOnce();
 	});
 
-	it("changes the model, closes, and the session says it applies from the next turn", async () => {
-		const { calls } = provide(conversation());
+	it("changes the model, closes, and confirms once", async () => {
+		const { calls, controls, host } = provide(conversation());
 		const tree = sheet();
 		act(() => pressable(tree, "Claude Haiku 5")?.props.onPress());
 		await settle();
-		expect(calls).toEqual([
-			"changeModel:anthropic/claude-haiku-5",
-			"goBack",
-			"toast:Model changed. Applies from the next turn.",
-		]);
+		expect(controls.changeModel).toHaveBeenCalledExactlyOnceWith("anthropic", "claude-haiku-5");
+		// The request and the dismissal, in order. The confirmation's wording is
+		// not what this asserts.
+		expect(calls).toEqual(["changeModel:anthropic/claude-haiku-5", "goBack"]);
+		expect(host.toast).toHaveBeenCalledOnce();
 	});
 
 	it("stays open, and says nothing, when the change didn't go through", async () => {
@@ -403,10 +403,7 @@ describe("choosing a model (spec 8.5)", () => {
 		// Tapping the shown row is the correction: it writes sonnet back.
 		act(() => pressable(tree, "Claude Sonnet 5")?.props.onPress());
 		await settle();
-		// The request and the dismissal, in order. The confirmation is recorded
-		// after them, and its wording is not what this asserts.
-		expect(calls.slice(0, 2)).toEqual(["changeModel:anthropic/claude-sonnet-5", "goBack"]);
-		// The confirmation is a toast, and its wording is not the assertion.
+		expect(calls).toEqual(["changeModel:anthropic/claude-sonnet-5", "goBack"]);
 		expect(host.toast).toHaveBeenCalledOnce();
 	});
 
