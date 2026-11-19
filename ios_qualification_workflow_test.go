@@ -114,9 +114,12 @@ func TestIOSQualificationSavesOnMainWithThePullRequestPaths(t *testing.T) {
 		t.Errorf("push paths differ from pull_request paths:\npush:  %v\nPR:    %v", workflow.On.Push.Paths, workflow.On.PullRequest.Paths)
 	}
 	// The main-push run is the one that saves and the post-merge verification;
-	// a newer push must queue behind it, not cancel it.
+	// a newer push must run instead of replacing a pending shared-group run.
 	if !strings.Contains(workflow.Concurrency.CancelInProgress, "github.event_name == 'pull_request'") {
 		t.Errorf("cancel-in-progress = %q, want pull requests only", workflow.Concurrency.CancelInProgress)
+	}
+	if !strings.Contains(workflow.Concurrency.Group, "github.run_id") {
+		t.Errorf("concurrency group = %q, want a per-run group outside pull requests", workflow.Concurrency.Group)
 	}
 }
 
@@ -224,8 +227,11 @@ func TestIOSQualificationRestoresAndSavesTheDerivedDataBuild(t *testing.T) {
 	if strings.Contains(job.Steps[build].Run, "--derived-data") {
 		t.Errorf("build step passes --derived-data, which an older PR head's script rejects:\n%s", job.Steps[build].Run)
 	}
-	if !strings.Contains(job.Steps[products].Run, `derived="$IOS_DERIVED_DATA"`) ||
-		!strings.Contains(job.Steps[products].Run, `-C "$derived" Build/Products`) {
-		t.Errorf("products step does not pack the restored build tree with the pre-cache fallback:\n%s", job.Steps[products].Run)
+	packaging := job.Steps[products].Run
+	runOwned := strings.Index(packaging, `derived="$QUALIFICATION_OUTPUT/DerivedData"`)
+	external := strings.Index(packaging, `derived="$IOS_DERIVED_DATA"`)
+	if runOwned == -1 || external == -1 || runOwned > external ||
+		!strings.Contains(packaging, `-C "$derived" Build/Products`) {
+		t.Errorf("products step does not prefer the run-owned tree and fall back to the external root:\n%s", packaging)
 	}
 }

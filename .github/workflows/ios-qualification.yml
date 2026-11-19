@@ -63,11 +63,12 @@ env:
   XCODE_VERSION: "26.6"
 
 concurrency:
-  group: ios-qualification-${{ github.event.pull_request.number || github.ref }}
-  # A pull request's newer run supersedes its older one. A main push must
-  # finish: it saves the DerivedData cache every later run restores and serves
-  # as the post-merge combined-state verification, so it queues behind the run
-  # before it instead of being cancelled.
+  # A pull request's newer run supersedes its older one. Every other run gets
+  # its own group: a main push saves the cache every later run restores and
+  # serves as the post-merge combined-state verification, so two pushes must
+  # both run instead of the newer one replacing a pending run in a shared
+  # branch group.
+  group: ios-qualification-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -172,11 +173,13 @@ jobs:
       - name: Package the products the journeys install and run
         run: |
           set -euo pipefail
-          derived="$IOS_DERIVED_DATA"
+          # An old pull-request head builds inside its run-owned output; a
+          # current one builds in the restored external root. Prefer the
+          # run-owned tree when it exists, or a restore on an old head would
+          # ship products from the wrong revision.
+          derived="$QUALIFICATION_OUTPUT/DerivedData"
           if [ ! -d "$derived/Build/Products" ]; then
-            # A PR head from before build mode read IOS_DERIVED_DATA still
-            # writes DerivedData inside its run-owned output.
-            derived="$QUALIFICATION_OUTPUT/DerivedData"
+            derived="$IOS_DERIVED_DATA"
           fi
           tar -czf "$QUALIFICATION_OUTPUT/ios-build-products.tar.gz" -C "$derived" Build/Products
           du -sh "$QUALIFICATION_OUTPUT/ios-build-products.tar.gz"
