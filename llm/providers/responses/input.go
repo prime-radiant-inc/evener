@@ -109,7 +109,7 @@ func toResponsesInput(msgs []llm.Message, imageCap string) (instructions string,
 	}
 	instructions = strings.Join(instrParts, "\n\n")
 
-	for _, m := range orderedReplayMessages(msgs, replaysEncryptedReasoning) {
+	for _, m := range orderedReplayMessages(msgs) {
 		switch m.Role {
 		case llm.RoleSystem, llm.RoleDeveloper:
 			continue
@@ -263,11 +263,8 @@ func toResponsesInput(msgs []llm.Message, imageCap string) (instructions string,
 				}
 			}
 			for _, p := range m.Content {
-				if p.Kind == llm.ContentWebSearch && p.WebSearch != nil && len(p.WebSearch.Raw) > 0 {
-					var rawItem map[string]any
-					if err := json.Unmarshal(p.WebSearch.Raw, &rawItem); err == nil {
-						items = append(items, rawItem)
-					}
+				if item, ok := replayedWebSearchItem(p); ok {
+					items = append(items, item)
 				}
 			}
 		case llm.RoleTool:
@@ -335,12 +332,35 @@ func replaysEncryptedReasoning(p llm.ContentPart) bool {
 		!llm.IsOpenAICompatEncryptedReasoning(p.Thinking.EncryptedContent)
 }
 
+func replayedWebSearchItem(p llm.ContentPart) (map[string]any, bool) {
+	if p.Kind != llm.ContentWebSearch || p.WebSearch == nil || len(p.WebSearch.Raw) == 0 {
+		return nil, false
+	}
+	var item map[string]any
+	err := json.Unmarshal(p.WebSearch.Raw, &item)
+	return item, err == nil
+}
+
+func replaysNonTextItem(p llm.ContentPart) bool {
+	switch p.Kind {
+	case llm.ContentThinking:
+		return replaysEncryptedReasoning(p)
+	case llm.ContentToolCall:
+		return p.ToolCall != nil
+	case llm.ContentWebSearch:
+		_, ok := replayedWebSearchItem(p)
+		return ok
+	default:
+		return false
+	}
+}
+
 // The assembler groups a message's text before other output items. Feed it
-// runs of text and individual non-text items when replay must preserve order.
-func orderedReplayMessages(messages []llm.Message, replaysReasoning func(llm.ContentPart) bool) []llm.Message {
+// spans separated by emitted items so omitted parts do not interrupt grouping.
+func orderedReplayMessages(messages []llm.Message) []llm.Message {
 	var ordered []llm.Message
 	for i, m := range messages {
-		if m.Role != llm.RoleAssistant || !slices.ContainsFunc(m.Content, replaysReasoning) {
+		if m.Role != llm.RoleAssistant || !slices.ContainsFunc(m.Content, replaysEncryptedReasoning) {
 			if ordered != nil {
 				ordered = append(ordered, m)
 			}
@@ -350,15 +370,24 @@ func orderedReplayMessages(messages []llm.Message, replaysReasoning func(llm.Con
 			ordered = make([]llm.Message, i, len(messages))
 			copy(ordered, messages[:i])
 		}
-		for start := 0; start < len(m.Content); {
-			end := start + 1
-			for end < len(m.Content) && m.Content[start].Kind == llm.ContentText && m.Content[end].Kind == llm.ContentText {
-				end++
+		start := 0
+		for i, p := range m.Content {
+			if !replaysNonTextItem(p) {
+				continue
 			}
 			item := m
-			item.Content = m.Content[start:end]
+			if start < i {
+				item.Content = m.Content[start:i]
+				ordered = append(ordered, item)
+			}
+			item.Content = m.Content[i : i+1]
 			ordered = append(ordered, item)
-			start = end
+			start = i + 1
+		}
+		if start < len(m.Content) {
+			item := m
+			item.Content = m.Content[start:]
+			ordered = append(ordered, item)
 		}
 	}
 	if ordered == nil {
