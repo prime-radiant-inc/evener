@@ -1541,6 +1541,9 @@ func TestWaitStartAnnouncesTheCallsRealElapsedSample(t *testing.T) {
 	clk.Drain()
 	close(release)
 	run.awaitQuotaWait(t, s)
+	// The wait's state publishes before its start event reaches this
+	// consumer, so the announcement is awaited, not assumed.
+	announcements.awaitLen(t, 1)
 
 	started := announcements.snapshot()
 	if len(started) != 1 {
