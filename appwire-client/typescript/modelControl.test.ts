@@ -5,6 +5,7 @@ import {
   type ModelControlClientState,
   type ModelControlInput,
   type ModelControlRequestFence,
+  type ModelPickTarget,
   modelControlAuthority,
   modelControlDisplay,
   modelControlRecoveryInput,
@@ -697,11 +698,15 @@ describe("modelPickCanSend", () => {
     kind: "unsupported",
     canonicalDisplay: CANONICAL,
   };
-  const withPick = (state: ModelControlClientState, statusType: string, changeModel: boolean): ThreadModel =>
-    model(state, {
+  const withPick = (state: ModelControlClientState, statusType: string, changeModel: boolean): ModelPickTarget => ({
+    ...model(state, {
       status: { type: statusType } as ThreadModel["status"],
       capabilities: { ...NO_CAPABILITIES, changeModel },
-    });
+    }),
+    // These cases describe sessions read over a v8 connection, the only kind
+    // that can carry a pick; the connection gate has its own cases below.
+    modelControlSupported: true,
+  });
 
   test.each([
     ["an idle session holding authority", READY, "idle", true, true],
@@ -710,6 +715,26 @@ describe("modelPickCanSend", () => {
     ["a session not yet loaded", UNSUPPORTED, "notLoaded", true, true],
   ] as const)("offers the pick on %s", (_case, state, statusType, changeModel, expected) => {
     expect(modelPickCanSend(withPick(state, statusType, changeModel))).toBe(expected);
+  });
+
+  // A cold session's read cannot name its own connection's model-control
+  // support: the hub answers it from pastThreadCapabilities, which stamps no
+  // model-control version whether it sits behind a v8 hub or an older one. So
+  // the resume-first pick is only a path to authority where the negotiated
+  // connection can carry the mutation at all. On a hub below v8 it cannot
+  // (client.ts's request() refuses thread/model/set pre-send), and offering it
+  // would resume the daemon only to fail after the user chose.
+  test.each([
+    ["a cold session", UNSUPPORTED, "closed"],
+    ["an exited session", UNSUPPORTED, "ended"],
+    ["a session not yet loaded", UNSUPPORTED, "notLoaded"],
+    ["a session holding authority", READY, "idle"],
+  ] as const)("holds the pick on %s over a connection below v8", (_case, state, statusType) => {
+    expect(modelPickCanSend({ ...withPick(state, statusType, true), modelControlSupported: false })).toBe(false);
+  });
+
+  test("offers the resume-first pick on a cold session over a v8 connection", () => {
+    expect(modelPickCanSend({ ...withPick(UNSUPPORTED, "closed", true), modelControlSupported: true })).toBe(true);
   });
 
   // restartRequired is a LIVE daemon on an incompatible protocol: its read

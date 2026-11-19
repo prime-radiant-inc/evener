@@ -38,6 +38,7 @@ import type {
   UrlsRemoveResponse,
 } from "@evener/appwire-client";
 import {
+  APPWIRE_PROTOCOL_VERSION,
   acquireThreadSubscription,
   applyHistoryReadFailure,
   applyModelControlNotification,
@@ -4946,9 +4947,21 @@ function needsResumeForModelSet(model: ThreadModel): boolean {
 
 // Whether a pick can still become a model mutation, so a control can decide to
 // offer it. The rule is the shared client's, so the picker and the phone sheet
-// cannot drift (modelPickCanSend in @evener/appwire-client).
+// cannot drift (modelPickCanSend in @evener/appwire-client). A pick rides the
+// connection's own protocol, so this answers for the client currently wired: a
+// hub that negotiated below v8 refuses thread/model/set pre-send (client.ts's
+// request), and a session read over it must not offer a change the connection
+// cannot carry.
 export function modelPickCanSend(model: ThreadModel): boolean {
-  return sharedModelPickCanSend(model);
+  const client = connectionStore.getState().client;
+  const negotiated = client?.initializeResult?.protocolVersion;
+  return sharedModelPickCanSend({
+    ...model,
+    // A client that has not handshaken yet answers nothing: the predicate keeps
+    // its pre-connection answer rather than disabling the picker on a fact no
+    // connection has given.
+    modelControlSupported: negotiated === undefined ? undefined : negotiated === APPWIRE_PROTOCOL_VERSION,
+  });
 }
 
 // Resumes a cold session so the model pick can be authorised, and returns the

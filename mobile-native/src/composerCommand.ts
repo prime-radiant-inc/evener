@@ -61,7 +61,8 @@ const commands = [
  * `/model` is not a capability test: whether a pick can reach the wire is the
  * shared predicate's answer (modelPickCanSend), so the registry needs the
  * model-control state the sheet and the browser picker read as well. */
-export type ComposerCommandSession = ControlsSource & Pick<ModelPickTarget, "modelControlState">;
+export type ComposerCommandSession = ControlsSource &
+	Pick<ModelPickTarget, "modelControlState" | "modelControlSupported">;
 
 export type ComposerCommandSpec = (typeof commands)[number];
 

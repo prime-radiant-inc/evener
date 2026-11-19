@@ -100,6 +100,18 @@ export interface ModelPickTarget {
   capabilities?: Partial<ThreadCapabilities> | undefined;
   modelControlState: ModelControlClientState;
   status: { type: string };
+  // Whether the connection this session was read over can carry
+  // thread/model/set at all. A hub that negotiated below this client's v8
+  // refuses the mutation pre-send (client.ts's request), because v8 is what
+  // added the client mutation id and the exact authority a daemon fences a
+  // pick on.
+  //
+  // Every surface that publishes a session supplies this from the connection
+  // that read it (the browser's store and the phone's conversation service).
+  // Absent means the caller speaks for no connection - a hand-built fixture, a
+  // unit test of another rule - and keeps the pre-connection answer rather than
+  // disabling the picker on a fact nobody supplied.
+  modelControlSupported?: boolean | undefined;
 }
 
 // Whether a model pick can reach the wire on `model`. One predicate for every
@@ -116,6 +128,10 @@ export interface ModelPickTarget {
 // refuses outright, so a pick on it has no resume path and must not be offered
 // as one.
 export function modelPickCanSend(model: ModelPickTarget): boolean {
+  // Nothing can reach the wire on a connection below v8, whatever the session
+  // offers: a cold pick would resume the daemon and then fail after the user
+  // chose, so the pick must not be offered at all.
+  if (model.modelControlSupported === false) return false;
   if (model.capabilities?.changeModel !== true) return false;
   const kind = model.modelControlState.kind;
   if (kind === "ready") return true;

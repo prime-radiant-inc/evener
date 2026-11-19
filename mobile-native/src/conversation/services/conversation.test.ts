@@ -15,7 +15,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
-import { modelControlDisplay, WireError } from "@evener/appwire-client";
+import { APPWIRE_PROTOCOL_VERSION, modelControlDisplay, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type {
 	AnyNotification,
@@ -48,6 +48,12 @@ class FakeAppwireClient extends FakeClient {
 	constructor() {
 		super("ready");
 		this.on("thread/unsubscribe", () => ({}));
+	}
+	/** Offer the connection the service published a read over. */
+	negotiate(protocolVersion: string): void {
+		const handshake = this.initializeResult;
+		if (handshake === null) throw new Error("FakeAppwireClient: no handshake to re-version");
+		this.scriptHandshake({ ...handshake, protocolVersion });
 	}
 	override forceStop(ref: string): Promise<void> {
 		this.forceStopCalls.push(ref);
@@ -302,6 +308,14 @@ describe("ConversationService", () => {
 			expect(conv.threadId).toBe("thread-1");
 			expect(conv.status).toEqual({ type: "ready" });
 			expect(conv.capabilities.send).toBe(true);
+		});
+
+		it("stamps the negotiated protocol onto the read it publishes", async () => {
+			const { client, service } = setup();
+			client.negotiate("evener-appwire-v7");
+			expect((await service.open("ref-1")).modelControlSupported).toBe(false);
+			client.negotiate(APPWIRE_PROTOCOL_VERSION);
+			expect((await service.readProjection("ref-1")).conversation.modelControlSupported).toBe(true);
 		});
 
 		it("passes ref to thread/read with subscribe and includeTurns", async () => {

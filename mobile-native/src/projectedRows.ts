@@ -96,6 +96,14 @@ import { hubTime } from "@evener/appwire-client/state/navigation";
 // display rows this module projects from its turns.
 export type MobileConversation = ThreadModel & {
 	items: MobileTimelineItem[];
+	/** Whether the connection this conversation was read over can carry
+	 * thread/model/set at all: the shared predicate's gate, stamped where the
+	 * service publishes a read (conversation/services/conversation.ts). A hub
+	 * that negotiated below the client's v8 refuses the mutation pre-send, so a
+	 * session read over it must not offer a pick. Absent only on a conversation
+	 * no connection minted (a hand-built fixture), which keeps the picker's
+	 * pre-connection answer. */
+	modelControlSupported?: boolean;
 };
 
 // --- display rows -------------------------------------------------------------

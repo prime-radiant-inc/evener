@@ -45,6 +45,7 @@ import {
 	acquireThreadSubscription,
 	applyModelControlNotification,
 	applyNotification,
+	APPWIRE_PROTOCOL_VERSION,
 	compareBootGeneration,
 	hydrateThread,
 	isStaleCursorError,
@@ -116,6 +117,10 @@ function forkEntrySourceItemKey(transcriptEntryIndex: number): string {
 // with AppwireClient and FakeClient, so tests inject a FakeClient without
 // pulling the real class's reconnect/heartbeat machinery.
 export interface ConversationClientLike extends Pick<AppwireClientLike, "state" | "onReady" | "onStateChange"> {
+	/** The cached handshake, so a read can stamp what the connection it came
+	 * over can carry. Absent on a lighter test double, which speaks for no
+	 * connection and leaves the question unanswered. */
+	readonly initializeResult?: AppwireClientLike["initializeResult"];
 	request<M extends MethodName>(
 		method: M,
 		params: MethodTypes[M]["params"],
@@ -566,6 +571,22 @@ export function createConversationService<ReadLease = unknown>(
 	// time (see the option's own comment). A null/undefined answer keeps the
 	// show-everything default.
 	const displayConfig = (): TranscriptDisplayConfigV1 | undefined => options.resolveDisplayConfig?.() ?? undefined;
+	// Whether the connection this service reads over can carry thread/model/set
+	// at all: the shared predicate's gate (modelPickCanSend). A hub that
+	// negotiated below this client's v8 refuses the mutation pre-send, so a
+	// session read over it must not offer a pick the connection cannot send.
+	// Stamped onto every read the service publishes, because the sheet and the
+	// command registry see only the conversation, never this service's client.
+	// A client that keeps no handshake (a lighter test double) answers nothing
+	// and the stamp stays absent, leaving the predicate's pre-connection answer.
+	const connectionModelSupport = (): boolean | undefined => {
+		const handshake = client.initializeResult;
+		// A client that has not handshaken yet answers nothing either: the
+		// question is what this connection negotiated, and it has negotiated
+		// nothing.
+		if (handshake === undefined || handshake === null) return undefined;
+		return handshake.protocolVersion === APPWIRE_PROTOCOL_VERSION;
+	};
 
 	// Current thread identity and capabilities, set by open() / readProjection().
 	// Mutations check these before reaching the wire; a re-read on
@@ -1011,7 +1032,10 @@ export function createConversationService<ReadLease = unknown>(
 					epoch,
 				);
 				const hydrated = replayedModelControl.model;
-				const conversation = projectConversation(hydrated, undefined, displayConfig());
+				const conversation: MobileConversation = {
+					...projectConversation(hydrated, undefined, displayConfig()),
+					modelControlSupported: connectionModelSupport(),
+				};
 				const caps = extractCapabilities(thread.evener.capabilities);
 				const installed = holdRetiredReadModelControl(conversation);
 				const readModelScope = { harness: thread.source, cwd: thread.cwd };
@@ -1092,7 +1116,10 @@ export function createConversationService<ReadLease = unknown>(
 					epoch,
 				);
 				const hydrated = replayedModelControl.model;
-				const conversation = projectConversation(hydrated, undefined, displayConfig());
+				const conversation: MobileConversation = {
+					...projectConversation(hydrated, undefined, displayConfig()),
+					modelControlSupported: connectionModelSupport(),
+				};
 				const olderCursor = response.olderCursor ?? null;
 				const caps = extractCapabilities(thread.evener.capabilities);
 				const installed = holdRetiredReadModelControl(conversation);
@@ -1329,7 +1356,10 @@ export function createConversationService<ReadLease = unknown>(
 				instanceId: replacementInstance,
 			};
 			const retired = reduceModelControl(hydrated, { kind: "connectionRetired" }).model;
-			const conversation = projectConversation(retired, undefined, displayConfig());
+			const conversation: MobileConversation = {
+				...projectConversation(retired, undefined, displayConfig()),
+				modelControlSupported: connectionModelSupport(),
+			};
 			const caps = extractCapabilities(thread.evener.capabilities);
 			modelScope = { harness: thread.source, cwd: thread.cwd };
 			instanceId = replacementInstance;

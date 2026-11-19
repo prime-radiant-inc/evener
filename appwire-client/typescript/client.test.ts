@@ -10,6 +10,7 @@ import {
   HEARTBEAT_INTERVAL_MS,
   HEARTBEAT_TIMEOUT_MS,
   RECONNECT_BASE_MS,
+  RECONNECT_MAX_MS,
   RESUME_REQUEST_TIMEOUT_MS,
   type SubscriberErrorInfo,
   type SubscriberErrorPhase,
@@ -365,6 +366,86 @@ describe("AppwireClient", () => {
   // protocol on a socket of its own is the only way to find out, and reaching
   // ready that way is what keeps a phone that upgraded ahead of its hub able
   // to browse sessions and to run evener/update/apply.
+  //
+  // A hub that refuses the newer announcement and then drops the fallback
+  // socket never answered the fallback at all. That drop must not borrow the
+  // original refusal's terminal "protocol" verdict: the hub would take a v7
+  // announcement once it recovers, so the connection has to keep retrying.
+  test("a fallback socket that drops mid-handshake is retried, not closed as a protocol failure", async () => {
+    const sockets: FakeSocket[] = [];
+    const client = new AppwireClient({
+      url: "ws://x/rpc",
+      socketFactory: () => {
+        const socket = new FakeSocket({ autoInitialize: sockets.length === 0 });
+        sockets.push(socket);
+        return socket;
+      },
+      random: () => 1,
+    });
+    const connecting = client.connect();
+    sockets[0]?.open();
+    await connecting;
+    sockets[0]?.closeFromServer(1006);
+    expect(client.state).toBe("reconnecting");
+
+    // The reconnect's own announcement is refused, so it dials the fallback.
+    await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+    const reconnect = sockets[1];
+    if (!reconnect) throw new Error("expected the reconnect socket");
+    reconnect.open();
+    await flushUntil(() => Boolean(reconnect.sent.length));
+    reconnect.receive({ id: lastSentFrame(reconnect).id, error: { code: -32600 } });
+    await flushUntil(() => sockets.length === 3);
+    const fallback = sockets[2];
+    if (!fallback) throw new Error("expected the fallback socket");
+    fallback.open();
+    await flushUntil(() => Boolean(fallback.sent.length));
+    expect(lastSentFrame(fallback).params).toMatchObject({ protocolVersion: "evener-appwire-v7" });
+
+    // The hub drops the fallback before answering that announcement.
+    fallback.closeFromServer(1006);
+    await flushUntil(() => vi.getTimerCount() > 0);
+
+    expect(client.terminalReason).toBeNull();
+    expect(client.state).toBe("reconnecting");
+
+    // The next backoff still dials: a dropped transport is not a verdict.
+    await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS * 2);
+    expect(sockets.length).toBeGreaterThan(3);
+  });
+
+  // The other half of the same question: a hub that ANSWERS the fallback with a
+  // version this client does not speak has refused it, whatever it answered the
+  // newer announcement with. Continuing to dial cannot change that answer.
+  test("a fallback socket that answers with another version stays a terminal protocol failure", async () => {
+    const sockets: FakeSocket[] = [];
+    const client = new AppwireClient({
+      url: "ws://x/rpc",
+      socketFactory: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      random: () => 1,
+    });
+    const connecting = client.connect();
+    sockets[0]?.open();
+    await flushUntil(() => Boolean(sockets[0]?.sent.length));
+    sockets[0]?.receive({ id: lastSentFrame(sockets[0]!).id, error: { code: -32600 } });
+    await flushUntil(() => sockets.length === 2);
+    const fallback = sockets[1];
+    if (!fallback) throw new Error("expected the fallback socket");
+    fallback.open();
+    await flushUntil(() => Boolean(fallback.sent.length));
+    fallback.receive({ id: lastSentFrame(fallback).id, result: { ...FAKE_INITIALIZE_RESULT, protocolVersion: "v6" } });
+
+    await expect(connecting).rejects.toThrow();
+    expect(client.state).toBe("closed");
+    expect(client.terminalReason).toBe("protocol");
+    await vi.advanceTimersByTimeAsync(RECONNECT_MAX_MS * 2);
+    expect(sockets).toHaveLength(2);
+  });
+
   test("connect falls back to the previous protocol when an older hub refuses the handshake", async () => {
     const sockets: FakeSocket[] = [];
     const client = new AppwireClient({

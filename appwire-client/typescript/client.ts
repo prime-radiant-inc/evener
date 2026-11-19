@@ -117,6 +117,19 @@ function canRetryAtOlderProtocol(error: unknown): boolean {
   return error instanceof HandshakeRejectedError && !error.upgradeRequired;
 }
 
+// isProtocolAnswer reports whether a failed handshake is the peer's own answer
+// rather than a failure of the transport carrying it: the peer refused the
+// announcement, answered with a version this client does not speak, or
+// answered with a malformed response. Only these say anything about which
+// protocol the two sides can meet on, so only these can be terminal.
+function isProtocolAnswer(error: unknown): boolean {
+  return (
+    error instanceof ProtocolVersionMismatchError ||
+    error instanceof HandshakeRejectedError ||
+    error instanceof InitializeValidationError
+  );
+}
+
 // TerminalReason names a close a human has to resolve, as opposed to an
 // ordinary drop the client retries on its own.
 export type TerminalReason = "protocol" | null;
@@ -701,15 +714,9 @@ export class AppwireClient {
   // connect (performHandshake) and every reconnect attempt, so both paths
   // leave the same evidence for ConnectionBanner's "reload this page" copy.
   private noteProtocolFailure(error: unknown): boolean {
-    if (
-      error instanceof ProtocolVersionMismatchError ||
-      error instanceof HandshakeRejectedError ||
-      error instanceof InitializeValidationError
-    ) {
-      this.terminalReasonValue = "protocol";
-      return true;
-    }
-    return false;
+    if (!isProtocolAnswer(error)) return false;
+    this.terminalReasonValue = "protocol";
+    return true;
   }
 
   // dialAndHandshake negotiates a fresh socket through
@@ -757,11 +764,17 @@ export class AppwireClient {
       // close() during the retry is the caller's own action, and the terminal
       // reason it must not produce is "protocol": a reload would not fix it.
       if (this.isClosed()) throw error;
-      // The older announcement was refused too, so this client and this hub
-      // cannot meet at any version: report the refusal the caller must act
-      // on. The retry's own failure would name the second attempt, and the
-      // terminal "protocol" classification belongs to the original.
-      throw refusal;
+      // A hub that ANSWERED the older announcement refused it too, so this
+      // client and this hub cannot meet at any version: report the refusal the
+      // caller must act on. The retry's own failure would name the second
+      // attempt, and the terminal "protocol" classification belongs to the
+      // original.
+      if (isProtocolAnswer(error)) throw refusal;
+      // A drop, a timeout or any other transport failure of the retry is not
+      // an answer: the hub may accept the older announcement once it recovers,
+      // so the failure propagates as itself and the reconnect backoff dials
+      // again instead of closing the connection on a verdict nobody gave.
+      throw error;
     }
   }
 
