@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/json"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
@@ -9,21 +8,11 @@ import (
 )
 
 // statusFrames decodes the thread/status/changed frames recorded after
-// cursor, paired with the notification cursor each one leaves.
+// cursor: statusNotifications with a starting cursor, so a test reads only
+// what its own setup published.
 func statusFrames(t *testing.T, srv *Server, cursor uint64, threadID string) []appwire.ThreadStatusChangedParams {
 	t.Helper()
-	var out []appwire.ThreadStatusChangedParams
-	for _, sequenced := range srv.AppNotificationsAfter(cursor, threadID) {
-		if sequenced.Notification.Method != appwire.NotifyThreadStatusChanged {
-			continue
-		}
-		var params appwire.ThreadStatusChangedParams
-		if err := json.Unmarshal(sequenced.Notification.Params, &params); err != nil {
-			t.Fatalf("decode status: %v", err)
-		}
-		out = append(out, params)
-	}
-	return out
+	return statusNotificationsAfter(t, srv, cursor, threadID)
 }
 
 // A Stop that flows through the root's settlement path must name the turn
