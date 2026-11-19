@@ -4,28 +4,23 @@
 // resume is owed rather than chained: it runs on whichever controls are
 // current once they can take it.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { type SessionControls, useControlsState } from "../sessionControls";
+import { type ActionOutcome, type SessionControls, useControlsState } from "../sessionControls";
 
 /** How one step went: done, failed at the hub, or refused by the controls
- * before any request went out (another action pending, or the session not
- * current). A step that went out and lost its controls before the answer
- * counts as done: the request reached the hub. */
+ * before any request went out. A step that went out and lost its controls
+ * before the answer counts as done: the request reached the hub. */
 export type Attempt = "done" | "failed" | "refused";
 
-export async function attemptControl(controls: SessionControls, kind: "forceStop" | "resume"): Promise<Attempt> {
-	// The controls publish the step as pending the moment they send it.
-	let sent = false;
-	const unsubscribe = controls.subscribe(() => {
-		if (controls.getSnapshot().pending === kind) sent = true;
+/** One restart step, read off the control's own outcome: an accepted step is
+ * done, a step the phone refused to send is refused, and a refusal that
+ * reached the hub is a failure. The outcome the promise carries is the
+ * step's answer; nothing here reads the controls' state. */
+export function attemptControl(controls: SessionControls, kind: "forceStop" | "resume"): Promise<Attempt> {
+	return controls[kind]().then((outcome: ActionOutcome): Attempt => {
+		if (outcome.disposition === "accepted") return "done";
+		if (outcome.disposition === "notSent") return "refused";
+		return "failed";
 	});
-	try {
-		if (await (kind === "forceStop" ? controls.forceStop() : controls.resume())) return "done";
-	} finally {
-		unsubscribe();
-	}
-	if (!sent) return "refused";
-	const after = controls.getSnapshot();
-	return after.lastAction === kind && after.error ? "failed" : "done";
 }
 
 type Phase = "idle" | "stopping" | "resumeOwed" | "resuming";

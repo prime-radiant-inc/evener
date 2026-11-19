@@ -113,7 +113,12 @@ function fakeControls(over: Partial<ControlsState> = {}) {
 	return {
 		subscribe: () => () => {},
 		getSnapshot: () => state,
-		rename: vi.fn(async () => true),
+		rename: vi.fn(
+			async (): Promise<ReturnType<SessionControls["rename"]>> => ({
+				disposition: "accepted",
+				notice: "Session renamed.",
+			}),
+		),
 	};
 }
 
@@ -554,10 +559,12 @@ describe("renaming", () => {
 		const { host } = provide(conversation({ capabilities: { ...NONE, rename: true } }));
 		const refused = fakeControls();
 		// The replaced controls answer the promise, not their state.
-		refused.rename = vi.fn(async () => ({
-			disposition: "refused",
-			message: "The hub refused the new name.",
-		}));
+		refused.rename = vi.fn(
+			async (): Promise<ReturnType<SessionControls["rename"]>> => ({
+				disposition: "refused",
+				message: "The hub refused the new name.",
+			}),
+		);
 		replaceHost({ ...host, controls: refused as unknown as SessionControls });
 		const tree = sheet();
 		press(tree, "Fix the settle race, rename");

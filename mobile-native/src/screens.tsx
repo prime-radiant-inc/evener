@@ -1,5 +1,6 @@
 import { canWriteSharedNotes, sessionHosts } from "@evener/appwire-client";
 import { isValidTranscriptRef } from "@evener/appwire-client";
+import { WireError } from "@evener/appwire-client";
 import { reconcilePendingEntries } from "@evener/appwire-client/state/mutation";
 import { bindFilePath, type FileReference } from "@evener/appwire-client/docContent";
 import { ownPendingTurnInput } from "@evener/appwire-client/state/mutation";
@@ -870,7 +871,7 @@ function ConversationScreenView({
 			() => {
 				void refreshSession().catch(() => undefined);
 			},
-			(scope, ref) => {
+			() => {
 				const current = store.getState();
 				if (
 					currentDestination.current.store !== store ||
@@ -879,12 +880,11 @@ function ConversationScreenView({
 					!screenInFront(navigation, route.key)
 				)
 					return false;
-				// Without a ref, the fence answers for the route this screen was
-				// opened on. A model pick names the identity it landed on: a resume
-				// behind a cold pick can resolve a different ref, and this screen
-				// holds that move in pendingIdentity only because a sheet is above,
-				// so the answered pick still belongs to this destination.
-				if (scope === "destination") return current.ref === (ref ?? route.params.ref);
+				// The fence answers for the route this screen was opened on: a
+				// resume behind a cold pick can resolve a different identity, and
+				// this screen holds that move in pendingIdentity only because a
+				// sheet is above, so the action's answer still belongs to this
+				// destination.
 				return (
 					current.status === "open" &&
 					current.conversationGeneration === bindingGeneration &&
@@ -1202,8 +1202,9 @@ function ConversationScreenView({
 				// do nothing.
 				if (!controls)
 					return { text: "Couldn't compact the context: the hub isn't connected.", kind: "compact:offline" };
+				const compacted = await controls.compact();
 				// A refusal shows as the controls' error line in the sheet.
-				return (await controls.compact()) ? { text: "Compacting context", kind: "compact:started" } : null;
+				return compacted.disposition === "accepted" ? { text: "Compacting context", kind: "compact:started" } : null;
 			case "pin":
 			case "delete":
 				openSessionDestination(action);
@@ -1233,8 +1234,8 @@ function ConversationScreenView({
 					};
 				const stopped = await controls.shutdown();
 				return {
-					text: stopped ? "Session shut down" : "Couldn't shut down this session.",
-					kind: stopped ? "shut-down:stopped" : "shut-down:failed",
+					text: stopped.disposition === "accepted" ? "Session shut down" : "Couldn't shut down this session.",
+					kind: stopped.disposition === "accepted" ? "shut-down:stopped" : "shut-down:failed",
 				};
 			}
 		}
@@ -2033,20 +2034,29 @@ function ConversationScreenView({
 							}
 						},
 					});
-			if (!completed || !currentBinding()) return;
+			if (!completed) return;
 			if (isLocalComposerCommand(completed) || completed === "aside") return;
 			// A shut-down session stays open on its history, like the ⋯ menu's
 			// own Shut down (ruling 19): the store's error surfaces a failed read.
-			await store.getState().rehydrate(service);
+			// A resume behind the command can move the store onto the identity
+			// it resolved, so the rehydrate stays binding-gated - but the
+			// command's own outcome never does: a refusal is owed to the
+			// composer that sent it even though the binding moved on.
+			if (currentBinding()) await store.getState().rehydrate(service);
 		} catch (error) {
-			if (!currentBinding()) return;
+			// The error renders while this screen is mounted, whatever became
+			// of the binding meanwhile: a resume that resolved a new identity
+			// must not swallow the command's answer.
+			if (!screenInFront(navigation, route.key)) return;
 			setActionError(
 				error instanceof CommandArgumentError
 					? { reason: error instanceof CommandNotSentError ? "not-sent" : "refused", message: error.message }
-					: {
-							reason: "unconfirmed",
-							message: "Could not confirm the command. Check the session before trying again.",
-						},
+					: error instanceof WireError
+						? { reason: "refused", message: error.message }
+						: {
+								reason: "unconfirmed",
+								message: "Could not confirm the command. Check the session before trying again.",
+							},
 			);
 		} finally {
 			commandBusy.current = false;

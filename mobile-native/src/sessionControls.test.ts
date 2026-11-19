@@ -100,7 +100,7 @@ describe("conversation-owned session controls", () => {
 			() => null,
 			() => false,
 		);
-		expect(await controls.forceStop()).toBe(true);
+		await expect(controls.forceStop()).resolves.toMatchObject({ disposition: "accepted" });
 		expect(stopped).toBe(1);
 	});
 
@@ -116,7 +116,7 @@ describe("conversation-owned session controls", () => {
 			() => null,
 			() => true,
 		);
-		expect(await controls.shutdown()).toBe(true);
+		await expect(controls.shutdown()).resolves.toMatchObject({ disposition: "accepted" });
 		expect(stopped).toBe(1);
 		expect(controls.getSnapshot()).toMatchObject({ pending: null, error: null, notice: null });
 	});
@@ -137,7 +137,7 @@ describe("conversation-owned session controls", () => {
 			() => null,
 			() => false,
 		);
-		expect(await controls.forceStop()).toBe(false);
+		await expect(controls.forceStop()).resolves.toMatchObject({ disposition: "refused" });
 		expect(stopped).toBe(0);
 		expect(controls.getSnapshot().error).not.toBeNull();
 	});
@@ -158,7 +158,7 @@ describe("conversation-owned session controls", () => {
 			() => null,
 			() => false,
 		);
-		expect(await controls.resume()).toBe(false);
+		await expect(controls.resume()).resolves.toMatchObject({ disposition: "refused" });
 		expect(refreshes).toBe(0);
 		expect(controls.getSnapshot().notice).toBeNull();
 	});
@@ -174,7 +174,7 @@ describe("conversation-owned session controls", () => {
 			() => null,
 			() => false,
 		);
-		expect(await controls.resume()).toBe(false);
+		await expect(controls.resume()).resolves.toMatchObject({ disposition: "refused" });
 		expect(controls.getSnapshot().notice).toBeNull();
 		expect(controls.getSnapshot().error).not.toBeNull();
 	});
@@ -194,7 +194,7 @@ describe("conversation-owned session controls", () => {
 			() => null,
 			() => false,
 		);
-		expect(await controls.forceStop()).toBe(false);
+		await expect(controls.forceStop()).resolves.toMatchObject({ disposition: "notSent" });
 		expect(attempts).toBe(0);
 	});
 
@@ -214,7 +214,7 @@ describe("conversation-owned session controls", () => {
 			() => false,
 		);
 		controls.dispose();
-		expect(await controls.forceStop()).toBe(false);
+		await expect(controls.forceStop()).resolves.toMatchObject({ disposition: "notSent" });
 		expect(attempts).toBe(0);
 	});
 	it.each([undefined, true])("sets a catalog vision model with support metadata %j", async (supportsVision) => {
@@ -235,7 +235,7 @@ describe("conversation-owned session controls", () => {
 			() => true,
 		);
 		await controls.loadModels();
-		expect(await controls.changeVisionModel("one", "vision")).toBe(true);
+		await expect(controls.changeVisionModel("one", "vision")).resolves.toMatchObject({ disposition: "accepted" });
 		expect(applied).toEqual(["one/vision"]);
 	});
 	// A load the binding moved on from must not strand the controls: the next
@@ -481,7 +481,7 @@ describe("conversation-owned session controls", () => {
 			() => true,
 		);
 		await controls.loadModels();
-		expect(await controls.changeVisionModel("one", "text")).toBe(false);
+		await expect(controls.changeVisionModel("one", "text")).resolves.toMatchObject({ disposition: "notSent" });
 		expect(attempts).toBe(0);
 	});
 	it("refreshes once after actionUnavailable without replaying the vision mutation", async () => {
@@ -507,7 +507,7 @@ describe("conversation-owned session controls", () => {
 			() => true,
 		);
 		await controls.loadModels();
-		expect(await controls.changeVisionModel("one", "vision")).toBe(false);
+		await expect(controls.changeVisionModel("one", "vision")).resolves.toMatchObject({ disposition: "refused" });
 		expect(attempts).toBe(1);
 		expect(refreshed).toBe(1);
 		expect(controls.getSnapshot().error).not.toBeNull();
@@ -544,12 +544,12 @@ describe("conversation-owned session controls", () => {
 			const request = controls.setVisionModel("off");
 			await enteredRefresh.promise;
 			expect(publications).toBe(1);
-			expect(await controls.setVisionModel("")).toBe(false);
+			await expect(controls.setVisionModel("")).resolves.toMatchObject({ disposition: "notSent" });
 			if (outcome === "switch") current = false;
 			if (outcome === "dispose") controls.dispose();
 			if (outcome === "reject") refreshed.reject(new Error("Disconnected"));
 			else refreshed.resolve();
-			expect(await request).toBe(false);
+			await expect(request).resolves.toMatchObject({ disposition: "refused" });
 			expect(attempts).toBe(1);
 			if (outcome === "reject") {
 				expect(publications).toBe(2);
@@ -788,17 +788,17 @@ describe("conversation-owned session controls", () => {
 			() => null,
 			() => true,
 		);
-		expect(await controls.changeModel("one", "shared")).toBe(false);
+		await expect(controls.changeModel("one", "shared")).resolves.toMatchObject({ disposition: "notSent" });
 		await controls.loadModels();
-		expect(await controls.changeModel("two", "shared")).toBe(false);
+		await expect(controls.changeModel("two", "shared")).resolves.toMatchObject({ disposition: "notSent" });
 		const request = controls.changeModel("one", "shared");
-		expect(await controls.changeModel("two", "other")).toBe(false);
+		await expect(controls.changeModel("two", "other")).resolves.toMatchObject({ disposition: "notSent" });
 		// The runner serializes on `pending`, which it sets before the first pick
 		// has an authority to dispatch under, so its frame reaches the wire a
 		// few ticks later. Wait for that frame rather than counting ticks.
 		await vi.waitFor(() => expect(applied).toEqual([["one", "shared"]]));
 		resolve();
-		expect(await request).toBe(true);
+		await expect(request).resolves.toMatchObject({ disposition: "accepted" });
 		expect(reads).toBe(1);
 	});
 	it("ignores a catalog that resolves after the controller is disposed", async () => {
@@ -867,10 +867,10 @@ describe("conversation-owned session controls", () => {
 			() => !composing,
 		);
 		await controls.loadModels();
-		expect(await controls.changeModel("one", "model")).toBe(false);
+		await expect(controls.changeModel("one", "model")).resolves.toMatchObject({ disposition: "notSent" });
 		expect(applied).toEqual([]);
 		composing = false;
-		expect(await controls.changeModel("one", "model")).toBe(true);
+		await expect(controls.changeModel("one", "model")).resolves.toMatchObject({ disposition: "accepted" });
 		expect(applied).toEqual(["model"]);
 	});
 	// The one action that recycles the transport as part of going out. A pick
@@ -896,17 +896,16 @@ describe("conversation-owned session controls", () => {
 				throw new Error("a lost binding must not be refreshed through");
 			},
 			() => {},
-			// screens.tsx's two fences: the reconnect retires the binding the memo
-			// captured, while the destination (same store, client and ref, still
-			// in front behind the sheet) survives it.
-			(scope) => scope === "destination" || !disposed,
+			// screens.tsx's fence: the reconnect retires the binding the memo
+			// captured. The answer the pick's promise carries still arrives.
+			() => !disposed,
 			() => null,
 			() => true,
 		);
 		await controls.loadModels();
 		const pick = controls.changeModel("one", "model");
 		answered.resolve();
-		expect(await pick).toBe(true);
+		await expect(pick).resolves.toMatchObject({ disposition: "accepted" });
 	});
 	it("never confirms a pick that was refused before it dispatched", async () => {
 		// The same disposal, but the pick failed before any frame existed (a
@@ -930,12 +929,13 @@ describe("conversation-owned session controls", () => {
 			() => true,
 		);
 		await controls.loadModels();
-		expect(await controls.changeModel("one", "model")).toBe(false);
+		await expect(controls.changeModel("one", "model")).resolves.toMatchObject({ disposition: "refused" });
 	});
-	it("does not confirm an acknowledged pick whose screen has left", async () => {
-		// The destination fence is the other half: an acknowledgement is owed to
-		// the screen that sent the pick, and one that has left with its sheet has
-		// nothing left to close.
+	it("still answers an acknowledged pick whose screen has left", async () => {
+		// The destination fence is gone, and with it the guess that a departed
+		// screen's answer should read as a failure: the promise tells whoever
+		// still holds it what the daemon said. A screen that left with its
+		// sheet has nobody left to close on the answer.
 		let disposed = false;
 		let controls!: SessionControls;
 		controls = new SessionControls(
@@ -953,7 +953,7 @@ describe("conversation-owned session controls", () => {
 			() => true,
 		);
 		await controls.loadModels();
-		expect(await controls.changeModel("one", "model")).toBe(false);
+		await expect(controls.changeModel("one", "model")).resolves.toMatchObject({ disposition: "accepted" });
 	});
 });
 

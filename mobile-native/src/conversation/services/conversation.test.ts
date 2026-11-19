@@ -1308,7 +1308,9 @@ describe("ConversationService", () => {
 				service.close();
 			});
 
-			expect(await controls.changeModel("openai", "gpt-5.5")).toBe(false);
+			await expect(controls.changeModel("openai", "gpt-5.5")).resolves.toMatchObject({
+				disposition: "refused",
+			});
 			expect(controls.getSnapshot().notice).toBeNull();
 		});
 
@@ -1400,7 +1402,9 @@ describe("ConversationService", () => {
 				service.close();
 			});
 
-			expect(await controls.changeModel("openai", "gpt-5.5")).toBe(true);
+			await expect(controls.changeModel("openai", "gpt-5.5")).resolves.toMatchObject({
+				disposition: "accepted",
+			});
 		});
 
 		it("does not confirm a superseded pick to the sheet, and shows the model the daemon kept", async () => {
@@ -1414,7 +1418,7 @@ describe("ConversationService", () => {
 				modelControl: canonical,
 			}));
 			// The controls are the sheet's own gate: it closes and says the model
-			// changed only when this resolves true.
+			// changed only on the accepted outcome.
 			const controls = new SessionControls(
 				service,
 				async () => {},
@@ -1429,7 +1433,9 @@ describe("ConversationService", () => {
 				service.close();
 			});
 
-			expect(await controls.changeModel("openai", "gpt-5.5")).toBe(false);
+			await expect(controls.changeModel("openai", "gpt-5.5")).resolves.toMatchObject({
+				disposition: "refused",
+			});
 			expect(controls.getSnapshot().notice).toBeNull();
 			const conversation = store.getState().conversation;
 			if (!conversation) throw new Error("expected the opened conversation");

@@ -8,7 +8,7 @@ import { activityFixture } from "./subagents/sessionActivityTestUtils";
 import type { ComponentProps } from "react";
 import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { type AnyNotification, type SessionDelegatesResponse, type Thread } from "@evener/appwire-client";
+import { type AnyNotification, type SessionDelegatesResponse, type Thread, WireError } from "@evener/appwire-client";
 import { hasTestID, markers } from "./markerTestUtils";
 import { nativeDrafts } from "./nativeDrafts";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
@@ -367,7 +367,7 @@ function hubClient(
 					data: [{ provider: "anthropic", model: "claude-sonnet-5", displayName: "Claude Sonnet 5" }],
 				};
 			if (method === "thread/model/set") {
-				if (modelSetRefusal.message !== null) throw new Error(modelSetRefusal.message);
+				if (modelSetRefusal.message !== null) throw new WireError(modelSetRefusal.message, -32000);
 				return {
 					modelControlVersion: 1,
 					disposition: "accepted" as const,
@@ -1091,7 +1091,7 @@ it("says why a typed /model was refused across a resume that resolved a new iden
 	const resumeThread = hub.client.resumeThread.bind(hub.client);
 	hub.client.resumeThread = async (ref: string) => {
 		const response = await resumeThread(ref);
-		return { thread: resolved } as typeof response;
+		return { thread: resolved } as unknown as typeof response;
 	};
 
 	await type(tree, "/model anthropic/claude-sonnet-5");
@@ -1106,7 +1106,9 @@ it("says why a typed /model was refused across a resume that resolved a new iden
 	// The refusal is what the composer says, not a send to confirm.
 	expect(actionErrors(tree)).toContain("refused");
 	expect(renderedText(tree)).toContain("The provider is not available to this session.");
-	expect(ghostStates(tree)).toEqual([]);
+	// A refused pick is not the phone's to take back: its text stands as the
+	// unconfirmed send it became (R5's boundary), alongside the reason.
+	expect(ghostStates(tree)).toEqual(["unconfirmed"]);
 });
 
 // A typed /interrupt the phone couldn't keep says so, and stays to try again.

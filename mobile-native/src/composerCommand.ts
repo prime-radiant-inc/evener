@@ -253,7 +253,10 @@ export async function submitComposerCommand(
 			})),
 			match.argsText,
 		);
-		if (!model) throw invalid();
+		// A catalog that no longer carries the named model is the phone's own
+		// refusal: nothing left it, so the composer keeps its text and the
+		// user may retry on the fresh list.
+		if (!model) throw new CommandNotSentError(`/model: no model named "${match.argsText.trim()}"`);
 		// Availability was answered when the command was offered; the session
 		// can lose its authority between that answer and this dispatch (a
 		// reconnect retires it, a recovery read owns it). Refuse here, as
