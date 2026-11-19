@@ -181,7 +181,7 @@ func responsesReasoningParts(raw any) []llm.ResponsesReasoningPart {
 // settleResponsesTerminalOutput decides the settled message content and
 // finish reason for a Responses-API terminal (response.completed) payload,
 // given the output items accumulated from the stream en route. When the
-// terminal payload's own "output" array supplies content it is authoritative
+// terminal payload's own "output" array is non-empty it is authoritative
 // (the provider's settled truth); when it's empty but the stream accumulated
 // real items, those are synthesized in its place (observed on affected
 // sessions: the terminal payload carries no output even though earlier
@@ -190,30 +190,15 @@ func responsesReasoningParts(raw any) []llm.ResponsesReasoningPart {
 // recomputation so both apply the identical terminal-wins rule.
 func settleResponsesTerminalOutput(r *llm.Response, rawResp map[string]any, acc *responsesOutputAccumulator) {
 	terminalOutput, _ := rawResp["output"].([]any)
-	emptyMessages := !slices.ContainsFunc(terminalOutput, func(rawItem any) bool {
-		item, _ := rawItem.(map[string]any)
-		parts, ok := item["content"].([]any)
-		return item["type"] != "message" || !ok || slices.ContainsFunc(parts, func(rawPart any) bool {
-			part, _ := rawPart.(map[string]any)
-			return part["type"] != "output_text" || part["text"] != ""
-		})
-	})
 	switch {
-	case emptyMessages:
-		for index, rawItem := range terminalOutput {
-			item, _ := rawItem.(map[string]any)
-			if phase, _ := item["phase"].(string); phase != "" {
-				id, _ := item["id"].(string)
-				msg := acc.messageItem(id, int64(index), true)
-				msg.phase = cmp.Or(msg.phase, phase)
-			}
-		}
-		recovered := acc.recoverOutput()
-		if len(recovered) == 0 {
-			return
-		}
-		r.Message.Content = recovered
+	case len(terminalOutput) == 0:
+		settled, recovered := acc.recoverOutput()
+		r.Message.Content = settled
 		retainFallbackReasoning(r)
+		recoverText := r.Finish.Reason == llm.FinishReasonLength || !r.OutputSettled && len(r.Message.Content) > 0
+		if recoverText && slices.ContainsFunc(recovered, func(p llm.ContentPart) bool { return p.Kind == llm.ContentText && p.Text != "" }) {
+			r.Message.Content, r.FallbackContent = recovered, nil
+		}
 		if status, _ := rawResp["status"].(string); status != "incomplete" {
 			if len(r.ToolCalls()) > 0 {
 				r.Finish = llm.FinishReason{Reason: "tool_calls"}

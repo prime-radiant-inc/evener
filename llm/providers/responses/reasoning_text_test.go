@@ -122,9 +122,8 @@ func TestStreamRecoversTextWhenTerminalOutputIsEmpty(t *testing.T) {
 	}{
 		{"empty-complete", "answer", "", 1, []string{delta, call, empty}},
 		{"empty-incomplete", "answer", "", 1, []string{delta, call, incomplete}},
-		{"phase-only-terminal", "answer", "commentary", 1, []string{delta, call, `{"type":"response.completed","response":{"output":[{"type":"message","phase":"commentary","content":[{"type":"output_text","text":""}]}]}}`}},
 		{"added-commentary", "answer", "commentary", 0, []string{added, keyedDelta, incomplete}},
-		{"completed-commentary", "answer", "commentary", 0, []string{added, keyedDelta,
+		{"completed-commentary", "answer", "commentary", 0, []string{added, delta,
 			`{"type":"response.output_item.done","item":{"type":"message","id":"msg_4","content":[{"type":"output_text","text":"answer"}]}}`, empty,
 		}},
 		{"completion-phase-wins", "answer", "final_answer", 0, []string{added, keyedDelta,
@@ -133,10 +132,23 @@ func TestStreamRecoversTextWhenTerminalOutputIsEmpty(t *testing.T) {
 		{"late-item-identity", "answer", "", 0, []string{delta,
 			`{"type":"response.output_item.done","item":{"type":"message","id":"msg_1","content":[{"type":"output_text","text":"answer"}]}}`, empty,
 		}},
+		{"repeated-done", "answer", "", 0, []string{
+			`{"type":"response.output_item.done","item":{"type":"message","id":"msg_1","content":[{"type":"output_text","text":"answer"}]}}`,
+			`{"type":"response.output_item.done","item":{"type":"message","id":"msg_1","content":[]}}`, empty,
+		}},
+		{"content-filtered", "", "", 0, []string{delta, `{"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"content_filter"},"output":[]}}`}},
+		{"reasoning-only-completion", "", "", 0, []string{
+			`{"type":"response.reasoning_summary_text.delta","delta":"thought"}`, delta,
+			`{"type":"response.output_item.done","item":{"type":"reasoning","summary":[{"type":"summary_text","text":"thought"}]}}`, empty,
+		}},
 		{"interleaved-indexes", "earlier later", "", 0, []string{
 			`{"type":"response.output_text.delta","output_index":0,"item_id":"msg_0","delta":"earlier "}`,
 			`{"type":"response.output_text.delta","output_index":1,"item_id":"msg_1","delta":"later"}`,
 			`{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_0","content":[{"type":"output_text","text":"earlier "}]}}`, empty,
+		}},
+		{"mixed-index-order", "laterearlier", "", 1, []string{
+			`{"type":"response.output_item.done","output_index":2,"item":{"type":"message","content":[{"type":"output_text","text":"later"}]}}`, call,
+			`{"type":"response.output_item.done","output_index":0,"item":{"type":"message","content":[{"type":"output_text","text":"earlier"}]}}`, empty,
 		}},
 		{"usable-terminal-wins", "other", "", 0, []string{delta, call,
 			`{"type":"response.completed","response":{"output":[{"type":"message","content":[{"type":"output_text","text":"other"}]}]}}`,
@@ -145,24 +157,27 @@ func TestStreamRecoversTextWhenTerminalOutputIsEmpty(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := "data: " + strings.Join(tc.frames, "\n\ndata: ") + "\n\n"
-			streamed, _ := responsesEventsFromSSE(t, body)
+			streamed, final := responsesEventsFromSSE(t, body)
+			if tc.name == "reasoning-only-completion" && (final == nil || final.ReasoningText() != "thought" || final.Text() != "answer") {
+				t.Errorf("final result lost the streamed reasoning or answer: %+v", final)
+			}
 			recorded, err := ExtractRecordedResponse([]byte(body), "gpt-5.5")
 			if err != nil {
 				t.Fatal(err)
 			}
 			for _, r := range []*llm.Response{streamed[len(streamed)-1].Response, &recorded} {
 				var phase string
-				for _, p := range r.Message.Content {
-					if p.Kind == llm.ContentText && p.Text != "" {
-						phase = p.Phase
-						break
-					}
+				if i := slices.IndexFunc(r.Message.Content, func(p llm.ContentPart) bool { return p.Kind == llm.ContentText && p.Text != "" }); i >= 0 {
+					phase = r.Message.Content[i].Phase
 				}
 				calls := r.ToolCalls()
 				if r.Text() != tc.text || phase != tc.phase || len(calls) != tc.calls {
 					t.Errorf("settled text %q phase %q calls %d", r.Text(), phase, len(calls))
 				} else if len(calls) == 1 && string(calls[0].Arguments) != `{ "n" : 1 }` {
 					t.Errorf("settled arguments = %q", calls[0].Arguments)
+				}
+				if tc.name == "mixed-index-order" && (len(r.Message.Content) != 3 || r.Message.Content[1].Kind != llm.ContentToolCall) {
+					t.Errorf("unindexed call moved from its observed position: %+v", r.Message.Content)
 				}
 			}
 		})

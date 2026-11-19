@@ -65,31 +65,35 @@ func responsesOutputIndex(payload map[string]any) int64 {
 }
 
 func (acc *responsesOutputAccumulator) messageItem(id string, index int64, adopting bool) *responsesStreamItem {
-	var pending *responsesStreamItem
+	var matched, pending *responsesStreamItem
+	ambiguous := false
 	for _, item := range acc.items {
-		if !item.message || item.completed != nil && (!adopting || item.id == "" && item.index < 0) {
+		if !item.message || item.completed != nil {
 			continue
 		}
 		sameItem := id == item.id && (id != "" || index == item.index)
 		samePosition := index >= 0 && index == item.index && (id == "" || item.id == "")
 		if sameItem || samePosition {
-			item.id = cmp.Or(item.id, id)
-			if item.index < 0 {
-				item.index = index
-			}
-			return item
+			matched = item
+			break
 		}
-		if item.id == "" && item.index < 0 {
+		if item.id == "" && item.index < 0 || id == "" && index < 0 {
+			ambiguous = pending != nil
 			pending = item
 		}
 	}
-	if adopting && pending != nil {
-		pending.id, pending.index = id, index
-		return pending
+	if matched == nil && adopting && !ambiguous {
+		matched = pending
 	}
-	item := &responsesStreamItem{id: id, index: index, message: true}
-	acc.items = append(acc.items, item)
-	return item
+	if matched == nil {
+		matched = &responsesStreamItem{index: index, message: true}
+		acc.items = append(acc.items, matched)
+	}
+	matched.id = cmp.Or(matched.id, id)
+	if matched.index < 0 {
+		matched.index = index
+	}
+	return matched
 }
 
 func (acc *responsesOutputAccumulator) recordTextDelta(payload map[string]any) string {
@@ -99,7 +103,7 @@ func (acc *responsesOutputAccumulator) recordTextDelta(payload map[string]any) s
 	}
 	if delta != "" {
 		id, _ := payload["item_id"].(string)
-		acc.messageItem(id, responsesOutputIndex(payload), false).text.WriteString(delta)
+		acc.messageItem(id, responsesOutputIndex(payload), true).text.WriteString(delta)
 	}
 	return delta
 }
@@ -119,30 +123,30 @@ func (acc *responsesOutputAccumulator) appendOutput(payload, item map[string]any
 	acc.completed++
 }
 
-func (acc *responsesOutputAccumulator) recoverOutput() []llm.ContentPart {
-	var indexed []*responsesStreamItem
-	for _, item := range acc.items {
-		if item.index >= 0 {
-			indexed = append(indexed, item)
+func (acc *responsesOutputAccumulator) recoverOutput() (settled, recovered []llm.ContentPart) {
+	items := slices.Clone(acc.items)
+	for start := 0; start < len(items); {
+		end := start
+		for end < len(items) && items[end].index >= 0 {
+			end++
 		}
+		slices.SortStableFunc(items[start:end], func(a, b *responsesStreamItem) int { return cmp.Compare(a.index, b.index) })
+		start = end + 1
 	}
-	slices.SortStableFunc(indexed, func(a, b *responsesStreamItem) int { return cmp.Compare(a.index, b.index) })
-	var output []llm.ContentPart
-	for _, item := range acc.items {
-		if item.index >= 0 {
-			item, indexed = indexed[0], indexed[1:]
-		}
+	for _, item := range items {
 		parts := responseContentFromOutputItemsRaw([]any{item.completed}, nil, []json.RawMessage{item.raw}, false)
-		if item.message && item.text.Len() != 0 && (llm.Message{Content: parts}).Text() == "" {
-			parts = []llm.ContentPart{{Kind: llm.ContentText, Text: item.text.String(), Phase: item.phase}}
-		} else if item.message {
+		if item.message {
 			for i := range parts {
 				parts[i].Phase = item.phase
 			}
 		}
-		output = append(output, parts...)
+		settled = append(settled, parts...)
+		if item.message && item.text.Len() != 0 && !slices.ContainsFunc(parts, func(p llm.ContentPart) bool { return p.Text != "" }) {
+			parts = []llm.ContentPart{{Kind: llm.ContentText, Text: item.text.String(), Phase: item.phase}}
+		}
+		recovered = append(recovered, parts...)
 	}
-	return output
+	return settled, recovered
 }
 
 // toolStateFor is the accumulated state for one function call: the entry
