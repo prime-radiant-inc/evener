@@ -158,15 +158,79 @@ function nextUnusedMarker(used: Set<number>): number {
 }
 
 function remapMarkers(text: string, mapping: ReadonlyMap<number, number>): { text: string; shifts: MarkerShift[] } {
+  return remapOccurrences(text, (marker) => mapping.get(marker));
+}
+
+/** Rewrite marker occurrences one at a time, letting `choose` decide each one
+ * from its number and its exact position. A shift is recorded only where a
+ * replacement actually happened, at the offset it replaced, so mention and
+ * adopted-range offsets move by the edits the text really took. */
+function remapOccurrences(
+  text: string,
+  choose: (marker: number, start: number, end: number) => number | undefined,
+): { text: string; shifts: MarkerShift[] } {
   const shifts: MarkerShift[] = [];
-  const remapped = text.replace(markerPattern(), (match, digits: string, offset: number) => {
-    const marker = mapping.get(Number(digits));
-    if (marker === undefined) return match;
-    const replacement = markerText(marker);
-    if (replacement.length !== match.length) shifts.push({ offset, delta: replacement.length - match.length });
-    return replacement;
+  let out = "";
+  let last = 0;
+  let changed = false;
+  for (const match of text.matchAll(markerPattern())) {
+    const marker = Number(match[1]);
+    const start = match.index ?? 0;
+    const end = start + match[0].length;
+    const target = choose(marker, start, end);
+    if (target === undefined) continue;
+    const replacement = markerText(target);
+    if (replacement === match[0]) continue;
+    out += text.slice(last, start) + replacement;
+    last = end;
+    changed = true;
+    if (replacement.length !== match[0].length)
+      shifts.push({ offset: start, delta: replacement.length - match[0].length });
+  }
+  if (!changed) return { text, shifts: [] };
+  return { text: out + text.slice(last), shifts };
+}
+
+/** The occurrences `ranges` locate, keyed by number and position, and the
+ * numbers they locate at all. A number with a located occurrence has prose
+ * beside it that a rename must leave alone; a number with no located
+ * occurrence at all came from a caller that named no positions, and only then
+ * does that number fall back to a number-wide rewrite. */
+function locatedOccurrences(
+  text: string,
+  ranges: readonly ImageMarkerRange[],
+): { keys: Set<string>; markers: Set<number> } {
+  const exact = validMarkerRanges(text, ranges);
+  return {
+    keys: new Set(exact.map((range) => `${range.marker}:${range.start}:${range.end}`)),
+    markers: new Set(markerNumbersOf(exact)),
+  };
+}
+
+/** Rename the adopted occurrences only where `ranges` locates them.
+ *
+ * An adopted number can be spelled twice in one text: once by the anchor whose
+ * bytes are gone, once by prose the person typed beside it. The provenance
+ * record says WHICH spelling is the anchor, so a rename that keeps the number
+ * meaningful moves that occurrence and leaves the person's text exactly as
+ * they wrote it. A number-wide rewrite would silently change their prose and
+ * shift every mention past it by the wrong amount.
+ *
+ * `located.markers` distinguishes the two caller generations: a number no
+ * range locates has no position to respect (a record from before ranges
+ * existed), and every occurrence of it is the anchor, as those builds read it. */
+function remapAdoptedOccurrences(
+  text: string,
+  located: { keys: Set<string>; markers: Set<number> },
+  mapping: ReadonlyMap<number, number>,
+): { text: string; shifts: MarkerShift[] } {
+  if (mapping.size === 0) return { text, shifts: [] };
+  return remapOccurrences(text, (marker, start, end) => {
+    const target = mapping.get(marker);
+    if (target === undefined) return undefined;
+    if (located.markers.has(marker) && !located.keys.has(`${marker}:${start}:${end}`)) return undefined;
+    return target;
   });
-  return { text: remapped, shifts };
 }
 
 function shiftedMentions(
@@ -217,6 +281,10 @@ export function mergeComposerCompositions<A extends { marker: number }>(
   // it; an occurrence the rewrite does not spell in its new text is dropped
   // by validMarkerRanges.
   let currentAdoptedRanges = adoptedMarkerRanges(current.text, current.adoptedImageMarkers, current.adoptedImageRanges);
+  // Which of those occurrences a stored range actually located. A number this
+  // names has prose beside it that a rename must leave alone; a number it does
+  // not names came from a caller with no positions at all.
+  const currentLocated = locatedOccurrences(current.text, current.adoptedImageRanges ?? []);
   const recoveredAttachmentMarkers = new Set(recovered.attachments.map((attachment) => attachment.marker));
   const literalMarkers = new Set(
     markerNumbers(recovered.text).filter(
@@ -282,7 +350,11 @@ export function mergeComposerCompositions<A extends { marker: number }>(
     ]);
     const adoptedMapping = new Map<number, number>();
     for (const marker of adoptedCollisions) adoptedMapping.set(marker, nextUnusedMarker(used));
-    const remapped = remapMarkers(currentText, adoptedMapping);
+    // The rename may move only the occurrence the provenance located. A
+    // literal the person typed at the same number is their prose: rewriting it
+    // would change their text, and a shift the text did not take would move
+    // every mention past it by a length nobody typed.
+    const remapped = remapAdoptedOccurrences(currentText, currentLocated, adoptedMapping);
     const before = currentText;
     currentText = remapped.text;
     currentMentions = shiftedMentions(currentMentions, remapped.shifts);
@@ -333,9 +405,21 @@ export function mergeComposerCompositions<A extends { marker: number }>(
       recoveredAdopted.push(target);
     }
   }
+  // The recovered side renumbers through the same rule as the current side:
+  // its own adoption may only move the occurrences its record located. A tile
+  // marker in the same map is rewritten everywhere, because each of its
+  // spellings is that tile's anchor; an adopted number with no located
+  // occurrence at all (a record from before ranges existed) keeps the
+  // number-wide reading, which is what those builds did.
+  const recoveredRanges = adoptedMarkerRanges(
+    recovered.text,
+    recovered.adoptedImageMarkers,
+    recovered.adoptedImageRanges,
+  );
+  const recoveredLocated = locatedOccurrences(recovered.text, recoveredRanges);
   const remappedRecovered =
     recovered.imageReferences === "recorded"
-      ? remapMarkers(recovered.text, recoveredMapping)
+      ? remapAdoptedOccurrences(recovered.text, recoveredLocated, recoveredMapping)
       : { text: recovered.text, shifts: [] };
   const appendOffset = currentText.length > 0 && remappedRecovered.text.length > 0 ? currentText.length + 2 : 0;
   const text =
@@ -368,8 +452,8 @@ export function mergeComposerCompositions<A extends { marker: number }>(
       ? shiftedAdoptedRanges(
           recovered.text,
           remappedRecovered.text,
-          adoptedMarkerRanges(recovered.text, recovered.adoptedImageMarkers, recovered.adoptedImageRanges).filter(
-            (range) => recoveredSpelledMarkers.has(recoveredMapping.get(range.marker) ?? range.marker),
+          recoveredRanges.filter((range) =>
+            recoveredSpelledMarkers.has(recoveredMapping.get(range.marker) ?? range.marker),
           ),
           recoveredMapping,
           remappedRecovered.shifts,

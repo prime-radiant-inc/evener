@@ -43,6 +43,7 @@ import {
   patchSelectionText,
   type SkillEditorValue,
   serializeSkillDocument,
+  stagedImageRangesAddedBy,
 } from "./skillDocument";
 import { pushRecoveryRefusal, spelledImageMarkers } from "./submitProtocol";
 
@@ -84,6 +85,12 @@ export interface ComposerSourceSnapshot {
    * editor document's own stagedAnchor marks, so it follows an edit or an undo
    * exactly; the number list above stays the render-time view. */
   adoptedImageRanges: ImageMarkerRange[];
+  /** The occurrences THIS source's staging gestures wrote and its tiles still
+   * back, by exact UTF-16 position. A tile's number alone cannot tell the
+   * anchor it staged from an identical literal the person typed beside it, so
+   * the record names the occurrence: a reloading reader then marks only that
+   * one, and the repair removes only the reference whose image is gone. */
+  stagedImageRanges: ImageMarkerRange[];
   activeRecoveryId: string | null;
   recoveryActivating: boolean;
   recoveryOperationBusy: boolean;
@@ -147,6 +154,10 @@ export interface ComposerSourceState {
    * this source carried is being replaced: nothing left in the editor can put
    * one of its occurrences back with an undo. */
   clearAdoptedImageMarkers(): void;
+  /** Replaces the exact staged occurrences a save carries. Always taken from
+   * the editor document's own stagedImage marks, so it agrees with the text it
+   * describes. */
+  setStagedImageRanges(ranges: readonly ImageMarkerRange[]): void;
   /** Whether this source still owns the draft currently persisted under `ref`.
    * Ownership is the PERSISTED revision identity, so another tab's write - or
    * a background rewrite of ours - ends it. Never a tab-local counter: two
@@ -192,6 +203,17 @@ export interface ComposerSourceState {
 
 export function sameSkillSelections(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((name, index) => name === right[index]);
+}
+
+/** Same occurrences in the same order: a range's identity IS its position. */
+function sameRanges(left: readonly ImageMarkerRange[], right: readonly ImageMarkerRange[]): boolean {
+  return (
+    left.length === right.length &&
+    left.every(
+      (range, index) =>
+        range.marker === right[index]?.marker && range.start === right[index]?.start && range.end === right[index]?.end,
+    )
+  );
 }
 
 export function restoredSkillNames(value: SkillEditorValue): string[] {
@@ -278,6 +300,10 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     // literal prose and stays sendable.
     adoptedImageMarkers: initialAdoption.markers,
     adoptedImageRanges: initialAdoption.ranges,
+    // A fresh source holds no tiles, so nothing it writes is backed here. The
+    // ranges a record carries describe ITS writer's staging, which is exactly
+    // what the adoption record above already says: those bytes are gone.
+    stagedImageRanges: [],
     activeRecoveryId: null,
     recoveryActivating: false,
     recoveryOperationBusy: false,
@@ -476,6 +502,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     // neither source, which is why literal prose stays sendable.
     const adopted = state.getState().adoptedImageMarkers;
     const adoptedRanges = state.getState().adoptedImageRanges;
+    const ownStagedRanges = state.getState().stagedImageRanges;
     // Nothing staged lies behind this text, so no provenance can exist: skip
     // spelling the text to filter an empty set.
     let staged: number[] = [];
@@ -488,9 +515,9 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
       staged = [...new Set([...operations.items.map((item) => item.marker), ...adopted])]
         .filter((marker) => spelled.has(marker))
         .sort((left, right) => left - right);
-      // This composer's own tiles back the occurrences of their numbers
-      // everywhere in the text, so a range is only a fact about an ADOPTED
-      // occurrence when no tile holds those bytes.
+      // This composer's own tiles back the occurrences of their numbers, so a
+      // range is only a fact about an ADOPTED occurrence when no tile holds
+      // those bytes.
       const held = new Set(operations.items.map((item) => item.marker));
       stagedRanges.push(
         ...validMarkerRanges(
@@ -498,10 +525,13 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
           adoptedRanges.filter((range) => !held.has(range.marker)),
         ),
       );
-      // An occurrence this composer staged itself needs no range here - its
-      // bytes are the tile, and a reader holding no bytes marks the whole
-      // number from `staged`. A range list that says nothing extra is dropped
-      // so records keep the shape they had.
+      // ...and an occurrence this composer staged ITSELF needs its range too.
+      // Its bytes are the tile, so a reader that still holds them is satisfied
+      // either way - but the record outlives the bytes. A reload holds none, and
+      // a number alone would then mark every spelling of it, including a
+      // literal the person typed beside the anchor: one repair press would
+      // delete their prose. Naming the occurrence keeps the two apart.
+      stagedRanges.push(...validMarkerRanges(text, ownStagedRanges));
     }
     currentDraftRevisionId = writeComposerDraft(ref, {
       text,
@@ -545,15 +575,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     const currentRanges = state.getState().adoptedImageRanges;
     const sameMarkers =
       next.length === currentMarkers.length && next.every((marker, index) => marker === currentMarkers[index]);
-    const sameRanges =
-      exact.length === currentRanges.length &&
-      exact.every(
-        (range, index) =>
-          range.marker === currentRanges[index]?.marker &&
-          range.start === currentRanges[index]?.start &&
-          range.end === currentRanges[index]?.end,
-      );
-    if (sameMarkers && sameRanges) return;
+    if (sameMarkers && sameRanges(exact, currentRanges)) return;
     state.setState({ adoptedImageMarkers: next, adoptedImageRanges: exact });
     publishReservedMarkers([...new Set([...attachments.getState().reservedMarkersRef.current, ...next])]);
   }
@@ -561,6 +583,12 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     if (disposed) return;
     state.setState({ adoptedImageMarkers: [], adoptedImageRanges: [] });
     publishReservedMarkers([]);
+  }
+  function setStagedImageRanges(ranges: readonly ImageMarkerRange[]): void {
+    if (disposed) return;
+    const exact = ranges.map((range) => ({ ...range })).sort((left, right) => left.start - right.start);
+    if (sameRanges(exact, state.getState().stagedImageRanges)) return;
+    state.setState({ stagedImageRanges: exact });
   }
   function markRestore(): void {
     if (!disposed) state.setState((snapshot) => ({ restoreEpoch: snapshot.restoreEpoch + 1 }));
@@ -577,9 +605,11 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
         ...selectionMetaRef.current,
         adoptedImageMarkers: state.getState().adoptedImageMarkers,
         adoptedImageRanges: state.getState().adoptedImageRanges,
+        stagedImageRanges: state.getState().stagedImageRanges,
       },
       text,
       splice,
+      stagedImageRangesAddedBy(text, splice),
     );
     updateSkillNames(next.skillNames);
     updateSelectionMeta(next);
@@ -589,6 +619,9 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     // apply - and what stops a stale list from making every later value look
     // like a non-echo rebuild.
     setAdoptedImageRanges(next.adoptedImageRanges ?? [], next.adoptedImageMarkers ?? []);
+    // The staged occurrences move by the same rule, and any the splice itself
+    // inserted arrive already naming their span.
+    setStagedImageRanges(next.stagedImageRanges ?? []);
     if (source === "submission") {
       updateText(text);
       // React can batch exact marker removals, so restore their already mapped atoms.
@@ -1125,6 +1158,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     setActiveRecoveryId,
     setAdoptedImageMarkers,
     setAdoptedImageRanges,
+    setStagedImageRanges,
     clearAdoptedImageMarkers,
     ownsDraftRevision,
     claimDraftRevision,

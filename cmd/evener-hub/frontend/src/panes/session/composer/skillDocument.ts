@@ -5,12 +5,14 @@ import {
   completeSkillReferenceAt,
   type ImageMarkerRange,
   markerNumbersOf,
+  markerRanges,
   markerText,
   reconcileComposerMentions,
   reconcileMarkerRanges,
   sharedPrefixLength,
   sharedSuffixLength,
   type TextSplice,
+  validMarkerRanges,
 } from "@evener/appwire-client";
 import { type Mark, type Node as ProseMirrorNode, Schema } from "prosemirror-model";
 
@@ -42,6 +44,23 @@ export interface SkillEditorValue {
    * the marker-number view of the same set for readers that only ask whether
    * any occurrence of a number is unbacked. */
   adoptedImageRanges?: ImageMarkerRange[];
+  /** The "[image N]" occurrences this composer STAGED itself, by exact UTF-16
+   * position - the mirror fact to `adoptedImageRanges`, for anchors whose bytes
+   * this source still holds.
+   *
+   * A number alone cannot say WHICH spelling a staging gesture wrote. The
+   * record outlives the bytes: a reload holds no tiles, so a record naming only
+   * a number makes a reader mark every occurrence of it, including a literal
+   * the person typed beside the anchor - and one repair press then deletes
+   * their prose. Naming the occurrence keeps the two apart.
+   *
+   * Unlike the adopted side, this is NOT a document mark. A staging write both
+   * inserts its literal and names the occurrence, and the source already
+   * reconciles the position across that write from the splice it performed. A
+   * mark would make every paste a non-echo value change, and applying one
+   * rebuilds the document - which ends the session's undo history and
+   * re-derives its atoms' separators. */
+  stagedImageRanges?: ImageMarkerRange[];
 }
 
 /** Flat inline content: newlines are text, and skills occupy one document position. */
@@ -260,20 +279,71 @@ export function serializeSkillDocument(doc: ProseMirrorNode): SkillEditorValue {
 }
 
 /** Shift existing atom identities across a plain-text splice without selecting new prose. */
-export function patchSelectionText(value: SkillEditorValue, text: string, splice?: TextSplice): SkillEditorValue {
+export function patchSelectionText(
+  value: SkillEditorValue,
+  text: string,
+  splice?: TextSplice,
+  stagedAdded?: readonly ImageMarkerRange[],
+): SkillEditorValue {
   // The adoption is re-derived from the marks, so a splice that removes or
   // moves an adopted occurrence has to move its range too: without this the
   // patched document would mark whatever now sits at the old offset, or mark
   // all of a number's occurrences when the stale range came up empty.
   const ranges = reconcileAdoptionAcrossSplice(value, text, splice);
+  // The staged occurrences move by the same rule, and the ones this write
+  // inserted arrive at the coordinates the caller reported.
+  const stagedImageRanges = validMarkerRanges(text, [
+    ...reconcileMarkerRanges(
+      value.text,
+      text,
+      value.stagedImageRanges ?? [],
+      ...inferredBoundaries(value.text, text, splice),
+      splice,
+    ),
+    ...(stagedAdded ?? []),
+  ]);
   const adopted: SkillEditorValue = {
     ...value,
     adoptedImageMarkers: markerNumbersOf(ranges),
     adoptedImageRanges: ranges,
   };
-  if (!value.mentions) return serializeSkillDocument(parseSkillDocument({ ...adopted, text }));
+  // The staged side is carried through the round-trip by hand: serialization
+  // rebuilds the value from the document, and the document has no mark for
+  // "this occurrence was staged" (see stagedImageRanges). What the patch
+  // computed is therefore re-attached to whatever serialization returned.
+  const keep = (patched: SkillEditorValue): SkillEditorValue =>
+    stagedImageRanges.length === 0 ? patched : { ...patched, stagedImageRanges };
+  if (!value.mentions) return keep(serializeSkillDocument(parseSkillDocument({ ...adopted, text })));
   const mentions = reconcileComposerMentions(value.text, text, value.mentions);
-  return serializeSkillDocument(parseSkillDocument({ ...adopted, text, mentions }));
+  return keep(serializeSkillDocument(parseSkillDocument({ ...adopted, text, mentions })));
+}
+
+/** The shared prefix/suffix a reconcile falls back on when the caller has no
+ * exact splice to describe its edit. */
+function inferredBoundaries(before: string, after: string, splice?: TextSplice): [number, number] {
+  if (splice !== undefined) return [0, 0];
+  const prefix = sharedPrefixLength(before, after);
+  return [prefix, sharedSuffixLength(before, after, prefix)];
+}
+
+/** The marker occurrences a splice INSERTED, by the position they now occupy.
+ *
+ * A staging gesture is the one write that both puts "[image N]" into the text
+ * and holds the bytes it names, so it is the one write that can say a new
+ * occurrence is staged rather than typed. The inserted span is
+ * `splice.start .. splice.start + insertedLength` in the NEW text; every
+ * literal wholly inside it was written by this call. Without a splice there is
+ * nothing the caller performed and nothing to claim.
+ */
+export function stagedImageRangesAddedBy(after: string, splice?: TextSplice): ImageMarkerRange[] {
+  if (splice === undefined || splice.insertedLength <= 0) return [];
+  // Scan only the span this call wrote: a literal the person typed outside it
+  // is not this call's, so there is nothing to filter.
+  return markerRanges(after.slice(splice.start, splice.start + splice.insertedLength)).map((range) => ({
+    marker: range.marker,
+    start: range.start + splice.start,
+    end: range.end + splice.start,
+  }));
 }
 
 /** The adoption a plain-text splice leaves behind, from the value's own pair -
@@ -284,10 +354,7 @@ function reconcileAdoptionAcrossSplice(value: SkillEditorValue, text: string, sp
   // list when it has one, otherwise every occurrence of an adopted number.
   const current = adoptedMarkerRanges(value.text, value.adoptedImageMarkers, value.adoptedImageRanges);
   if (current.length === 0) return [];
-  // An exact splice is the edit itself; the prefix/suffix inference it replaces
-  // is only computed when there is no splice to describe the edit.
-  const prefix = splice === undefined ? sharedPrefixLength(value.text, text) : 0;
-  const suffix = splice === undefined ? sharedSuffixLength(value.text, text, prefix) : 0;
+  const [prefix, suffix] = inferredBoundaries(value.text, text, splice);
   return reconcileMarkerRanges(value.text, text, current, prefix, suffix, splice);
 }
 

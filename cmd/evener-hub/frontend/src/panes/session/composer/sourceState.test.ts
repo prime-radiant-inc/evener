@@ -941,10 +941,11 @@ test("an activated recovery restores the adoption its row carries", async () => 
   }
 });
 
-// The record only grows a range list for an ADOPTED occurrence. An anchor this
-// composer staged itself needs none: its bytes are the tile, so the number list
-// is the whole provenance.
-test("a draft whose only anchor this composer staged writes no range list", async () => {
+// A staged anchor names its own occurrence too, even when it is the only one.
+// The tile backs it HERE, but the record outlives those bytes: a reload holds
+// no tiles, and a number alone marks every spelling of it - so the record has
+// to say WHICH spelling its writer staged.
+test("a draft whose only anchor this composer staged names that occurrence", async () => {
   const source = createTestComposerSource("root");
   installControlledImageEncoding();
   const view = renderHook(() => useAttachments(source.editor, source.attachments));
@@ -955,12 +956,48 @@ test("a draft whose only anchor this composer staged writes no range list", asyn
     expect(source.persistDraft(text));
     const snapshot = readComposerDraftSnapshot("root");
     expect(snapshot.stagedImageMarkers).toEqual([1]);
-    // Absent, not empty: the writer says nothing extra about where the anchor
-    // sits, because its own tile holds those bytes.
-    expect(snapshot).not.toHaveProperty("stagedImageRanges");
+    const start = text.indexOf("[image 1]");
+    expect(snapshot.stagedImageRanges).toEqual([{ marker: 1, start, end: start + "[image 1]".length }]);
   } finally {
     view.unmount();
     source.dispose();
+  }
+});
+
+// End to end through the real staging pipeline: a gesture stages an image, then
+// the person types a separate literal "[image 1]" elsewhere in the same draft.
+// The record has to say WHICH spelling the gesture wrote, or a reload holds no
+// tiles and marks both - and the one repair press the notice offers deletes the
+// person's typed prose along with the anchor.
+test("a reloaded draft keeps a typed literal beside the anchor its writer staged", () => {
+  const source = createTestComposerSource("root");
+  installControlledImageEncoding();
+  const view = renderHook(() => useAttachments(source.editor, source.attachments));
+  let text = "";
+  try {
+    act(() => view.result.current.ingestFiles([image()], (message) => pushToast("error", message)));
+    // The real staging write put "[image 1]" at offset 0; the person then types
+    // a literal of the same number after it.
+    source.editor.write("[image 1] typed beside [image 1]", 33);
+    text = source.getSnapshot().text;
+    expect(text).toBe("[image 1] typed beside [image 1]");
+    expect(readComposerDraftSnapshot("root").stagedImageRanges).toEqual([{ marker: 1, start: 0, end: 9 }]);
+  } finally {
+    view.unmount();
+    source.dispose();
+  }
+
+  // The reload: a fresh source holds no tiles, so only the record can say which
+  // of the two spellings is the anchor whose image is gone.
+  const reloaded = createTestComposerSource("root");
+  try {
+    expect(reloaded.getSnapshot().text).toBe(text);
+    // Exactly one occurrence is refused, and it is the staged one.
+    expect(reloaded.getSnapshot().adoptedImageRanges).toEqual([{ marker: 1, start: 0, end: 9 }]);
+    expect(reloaded.getSnapshot().adoptedImageMarkers).toEqual([1]);
+    expect(unbackedImageMarkersIn(text, reloaded.getSnapshot().adoptedImageMarkers)).toEqual([1]);
+  } finally {
+    reloaded.dispose();
   }
 });
 

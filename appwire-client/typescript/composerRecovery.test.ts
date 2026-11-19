@@ -454,3 +454,92 @@ test("nextComposerImageMarker skips a number a dormant adoption reserves", () =>
   expect(nextComposerImageMarker("kept ", [], 0)).toBe(1);
   expect(nextComposerImageMarker("kept ", [], 0, [1])).toBe(2);
 });
+
+// The current side of a merge, with a number spelled twice: one occurrence is
+// the missing anchor its record located by range, the other is prose the
+// person typed beside it. A queued message that also says "[image 1]" forces
+// this side's adopted anchor off that number, and the rename may move ONLY the
+// located occurrence. Rewriting by number silently changes the person's prose.
+test("a current-side adopted rename moves only the occurrence the record located", () => {
+  const currentText =
+    "missing [image 1] typed [image 1] [image 2] [image 3] [image 4] [image 5] [image 6] [image 7] [image 8] [image 9] /inspect";
+  const adoptedStart = currentText.indexOf("[image 1]");
+  const adopted = { marker: 1, start: adoptedStart, end: adoptedStart + "[image 1]".length };
+  expect(adopted).toEqual({ marker: 1, start: 8, end: 17 });
+  const current: ComposerComposition<InputAttachment> = {
+    text: currentText,
+    attachments: [],
+    skillNames: [],
+    commandNames: [],
+    mentions: [{ kind: "command", name: "inspect", offset: currentText.indexOf("/inspect") }],
+    adoptedImageMarkers: [1],
+    adoptedImageRanges: [adopted],
+  };
+  const recovered = recoverMutationComposition(mutationRecord([{ type: "text", text: "queued prose says [image 1]" }]));
+
+  const merged = mergeComposerCompositions(current, recovered);
+  const expected =
+    "missing [image 10] typed [image 1] [image 2] [image 3] [image 4] [image 5] [image 6] [image 7] [image 8] [image 9] /inspect\n\nqueued prose says [image 1]";
+  expect(merged.text).toBe(expected);
+  // The adopted anchor follows the number it was renamed to, at the position
+  // the one width-growing replacement left it.
+  expect(merged.adoptedImageMarkers).toEqual([10]);
+  expect(merged.adoptedImageRanges).toEqual([{ marker: 10, start: 8, end: 18 }]);
+  expect(merged.text.slice(8, 18)).toBe("[image 10]");
+  // ...and the literal the person typed still spells its own number, exactly
+  // where it was.
+  const literal = merged.text.indexOf("[image 1]", adopted.end);
+  expect(literal).toBe(25);
+  expect(merged.text.slice(literal, literal + "[image 1]".length)).toBe("[image 1]");
+  // Exactly one +1 shift was made, so the mention past both occurrences moves
+  // by one and lands on the literal "/inspect" in the merged text.
+  const expectedInspect = expected.indexOf("/inspect");
+  expect(expectedInspect).toBe(115);
+  expect(merged.mentions).toEqual([{ kind: "command", name: "inspect", offset: expectedInspect }]);
+});
+
+// The mirror case, on the recovered side: the record it came from located its
+// missing anchor by range, and the same number is spelled again as the queued
+// message's own prose. The merge has to move the adopted occurrence to a free
+// number, and only that occurrence - the queued literal keeps the number it
+// names, and the mention past it keeps its exact position.
+test("a recovered-side adopted rename moves only the occurrence the record located", () => {
+  const currentText = "mine [image 1] [image 2] [image 3] [image 4] [image 5] [image 6] [image 7] [image 8] [image 9]";
+  const current: ComposerComposition<InputAttachment> = {
+    text: currentText,
+    attachments: [],
+    skillNames: [],
+    commandNames: [],
+  };
+  const queuedText = "theirs [image 1] literal [image 1] /inspect";
+  const adoptedStart = queuedText.indexOf("[image 1]");
+  expect(adoptedStart).toBe(7);
+  const recovered = recoverMutationComposition(
+    mutationRecord([{ type: "text", text: queuedText }], {
+      composerText: queuedText,
+      composerMentions: [{ kind: "command", name: "inspect", offset: queuedText.indexOf("/inspect") }],
+      adoptedImageMarkers: [1],
+      adoptedImageRanges: [{ marker: 1, start: adoptedStart, end: adoptedStart + "[image 1]".length }],
+    }),
+  );
+
+  const merged = mergeComposerCompositions(current, recovered);
+  const expected = `${currentText}\n\ntheirs [image 10] literal [image 1] /inspect`;
+  expect(merged.text).toBe(expected);
+  // The queued message's own literal keeps its spelling and its place.
+  const literal = merged.text.indexOf("[image 1]", currentText.length);
+  // Its own spelling is untouched; the only change to its offset is the one
+  // the renamed occurrence before it made by growing a character.
+  expect(literal).toBe(currentText.length + 2 + 26);
+  expect(merged.text.slice(literal, literal + "[image 1]".length)).toBe("[image 1]");
+  // One width-growing replacement, so the queued mention moved exactly one.
+  const expectedInspect = expected.indexOf("/inspect");
+  expect(expectedInspect).toBe(132);
+  expect(merged.mentions).toEqual([{ kind: "command", name: "inspect", offset: expectedInspect }]);
+  // The adopted occurrence's range moved with it and past the join.
+  expect(merged.adoptedImageMarkers).toEqual([10]);
+  const range = merged.adoptedImageRanges?.[0];
+  if (range === undefined) throw new Error("expected the adopted occurrence to keep its provenance");
+  expect(range).toEqual({ marker: 10, start: 103, end: 113 });
+  expect(merged.text.slice(range.start, range.end)).toBe("[image 10]");
+});

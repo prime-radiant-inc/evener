@@ -1243,9 +1243,21 @@ async function assertOverlap(ref, text, label) {
   // one. It is provenance rather than a copy of the text: the marker enters it
   // only because a gesture staged it, which is the fact a reloading reader uses
   // to tell an orphaned anchor from literal prose.
-  const stagedImageMarkers = [...new Set(text.match(/\[image \d+\]/g) ?? [])]
-    .map((marker) => Number(marker.slice('[image '.length, -1)))
-    .sort((left, right) => left - right);
+  // By EXACT OCCURRENCE. A number alone cannot say which spelling a staging
+  // gesture wrote once the draft also holds a typed literal of that number, and
+  // a reloading reader that must repair an orphaned anchor would otherwise
+  // delete the prose beside it. Every anchor here was staged, so every
+  // occurrence in the text is one the record must name.
+  const stagedImageRanges = [...text.matchAll(/\[image \d+\]/g)]
+    .map((match) => ({
+      marker: Number(match[0].slice('[image '.length, -1)),
+      start: match.index ?? 0,
+      end: (match.index ?? 0) + match[0].length,
+    }))
+    .sort((left, right) => left.start - right.start || left.marker - right.marker);
+  // The number view of the same provenance, derived from the occurrences so the
+  // text is scanned once.
+  const stagedImageMarkers = [...new Set(stagedImageRanges.map((range) => range.marker))].sort((left, right) => left - right);
   assert.deepEqual(record, {
     text,
     skillNames:['cascade-overlap'],
@@ -1253,6 +1265,7 @@ async function assertOverlap(ref, text, label) {
     mentions:overlapMentions(text),
     revisionId: record.revisionId,
     ...(stagedImageMarkers.length > 0 ? { stagedImageMarkers } : {}),
+    ...(stagedImageRanges.length > 0 ? { stagedImageRanges } : {}),
   }, `${label}, complete real persisted draft`);
   assert.equal(typeof record.revisionId, 'string', `${label}, draft record carries its revision identity`);
   assert.ok(record.revisionId.length > 0, `${label}, revision identity is non-empty`);

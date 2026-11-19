@@ -1056,6 +1056,11 @@ function ComposerWithSubmission({
     // that restores the text restores the mark. Read before persistDraft so the
     // record this keystroke writes already agrees with what Send will see.
     setAdoptedImageRanges(value.adoptedImageRanges ?? [], value.adoptedImageMarkers ?? []);
+    // The staged occurrences are NOT read back from the value: they are the
+    // source's own record, reconciled from the splice each write performed
+    // (writeDraft -> patchSelectionText). An editor value cannot carry them,
+    // because a mark that changes on every paste would make each one rebuild
+    // the document and end the session's undo history.
     if (recoveryOwnerLeaseRef.current === null) persistDraft(value.text);
     // Every keystroke re-evaluates the trailing-token match fresh - a token
     // Escape just closed (useSlashCompletion's token) reopens on the
