@@ -632,6 +632,109 @@ Do not claim a duration win for E1. Land the mechanism only if the product PR ca
 carry it on its merits (fewer compiles, smaller build graph), and spend the next
 runs on the four RN pods still building from source (RNReanimated, RNScreens,
 RNWorklets, safe-area-context) and on ExpoModulesJSI's script phase, which is
-where the critical path actually is. Journeys jobs also spend ~6m20s of their
-13m14s phase outside the tests (runtime pair build, hub/provider start, simulator
-boot) — a separate lever from anything in this report.
+where the critical path actually is. Journeys jobs also spend 447 s (7m27s) of
+their 13m14s phase outside the tests (runtime pair build, hub/provider start,
+simulator boot) against 347 s of actual tests — a separate lever from anything
+in this report.
+
+## 12. E3 scoping: the plumbing for external prebuilts already ships
+
+Analysis only; no runs. Sources: `expo-modules-autolinking` 58.0.17 and
+`expo-modules-core` 58.0.30, unpacked from npm.
+
+### 12.1 What exists
+
+`expo-modules-autolinking` ships `external-configs/ios/<package>/spm.config.json`
+for third-party packages, including **all four RN pods still building from
+source**: `react-native-reanimated`, `react-native-screens`,
+`react-native-worklets`, `react-native-safe-area-context`. Also covered:
+`react-native-svg`, `@react-native-async-storage/async-storage`,
+`@shopify/react-native-skia`. `external-configs/ios/README.md` documents how to
+add support for another package.
+
+`scripts/ios/precompiled_modules.rb` (2,653 lines) already consumes them:
+
+```ruby
+# Registers external (3rd-party) prebuilt pods with :podspec BEFORE RN CLI's ...
+def register_external_pods(podfile, target_definition, project_directory)
+  external_prebuilt_pods(project_directory).each do |ext_pod|
+```
+
+and it resolves a tarball for each external pod by path or by HTTP:
+
+```ruby
+output_prefix = File.join(pod_info[:npm_package], 'output')
+relative_path = [..., flavor, 'xcframeworks', "#{product_name}.tar.gz"].join('/')
+remote_url = "#{base_url.chomp('/')}/#{relative_path}"
+```
+
+with `EXTERNAL_MODULES_BASE_URL_ENV_VAR = 'EXPO_PRECOMPILED_MODULES_BASE_URL'`.
+The expected layout, from `process_spm_config`:
+
+```
+<base>/<npm_package>/output/<pkgVersion>/<rnVersion>/<hermesVersion>/<flavor>/xcframeworks/<Product>.tar.gz
+```
+
+or bundled in the package as
+`<package_root>/prebuilds/output[/<version_prefix>]/<flavor>/xcframeworks/<Product>.tar.gz`.
+Local overrides: `EXPO_PRECOMPILED_MODULES_PATH` (the whole base dir) and
+`EXPO_PRECOMPILED_DUMP` (derivations dump). Enable switch:
+`EXPO_USE_PRECOMPILED_MODULES=1`, already set for the Expo family.
+
+So a flip needs no new CocoaPods plumbing: supply tarballs and point the base URL
+at them.
+
+### 12.2 What does not exist
+
+The npm package ships the **consumer**, not the producer. `scripts/ios/` contains
+`precompiled_modules.rb`, `dump_precompiled_derivations.rb` and pod helpers; the
+SPM build pipeline itself lives in Expo's monorepo (`packages/precompile`,
+`PRECOMPILE_BUILD_DIR = '.build'`). Nothing in 58.0.17 builds an
+`<Product>.tar.gz` for a third-party package. E3 therefore means **producing and
+hosting four xcframeworks ourselves**, versioned by package version, RN version
+and Hermes version — a producer job, not a config flag.
+
+### 12.3 The critical-path premise is unproven
+
+E1 removed 264 compiles that were off the critical path and moved the clock not
+at all. The same risk applies here, and the existing logs cannot settle it: the
+raw `xcodebuild-release.log` carries no timestamps, so per-target durations are
+not derivable from it. The only ordinal signal available — the position of each
+target's last compile in the log — puts the app's own target last (97.2 %), then
+the Expo pods that stayed source (`EXConstants`, `Expo`, `ExpoCamera*`), while
+the heavy Pods targets finish their compiles earlier. That is evidence against
+assuming RN pods are on the critical path, and it argues for measuring
+per-target time before spending slots: an `-resultBundlePath` build result
+carries per-target build-operation durations that this log does not.
+
+### 12.4 Ranked by expected value
+
+Compile counts are mine, from run B's log.
+
+1. **Per-target timing measurement (no run yet).** Cheapest possible step and it
+   gates everything below. Without it, E3 risks repeating E1's null.
+2. **ReactNativeEnrichedMarkdown 167 + ZXingObjC 163 = 330 compiles**, the
+   largest remaining block. No external config exists for either, so each needs
+   an authored `spm.config.json` per Expo's README — higher cost, larger prize,
+   and ZXingObjC is pure ObjC with no codegen, likely the easier of the two.
+3. **The four RN pods: RNReanimated 125 + RNScreens 91 + RNWorklets 58 +
+   safe-area-context 18 = 292 compiles**, configs already shipped. Ranked below
+   (2) on compile count and above it on cost: Reanimated and Worklets carry
+   C++/codegen and a runtime that is load-bearing for the app, so a bad
+   xcframework fails at launch, not at build.
+4. **safe-area-context alone (18 compiles)** — the cheapest mechanism probe. If
+   one tarball can be produced and consumed end to end, the other three follow
+   with the same machinery.
+5. **ExpoModulesJSI (~128 s nested script phase)** — not a pod flip but the
+   largest single non-compile cost inside xcodebuild.
+
+### 12.5 Storage
+
+Tarballs are per (package version, RN version, Hermes version, flavor). Four pods
+× two flavors is eight artifacts per lock-hash generation; the three heavyweight
+ones (Reanimated, Worklets, Screens) are the size of small frameworks, so a
+generation plausibly lands in the low hundreds of MB. Against the documented 6 GB
+steady state and 10 GB eviction line, one generation per lock-hash is affordable
+and per-flavor per-lock-hash fan-out is not — the same conclusion as section 7.
+Hosting them as a workflow artifact or a cache entry restored to
+`EXPO_PRECOMPILED_MODULES_PATH` avoids a new external host.
