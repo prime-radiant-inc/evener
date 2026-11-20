@@ -190,7 +190,7 @@ func (acc *responsesOutputAccumulator) recoveredOutput(terminalOutput []any) (ou
 	return out, raw
 }
 
-func (acc *responsesOutputAccumulator) pending(payload map[string]any, kind string) *responsesAccumEntry {
+func (acc *responsesOutputAccumulator) pending(payload map[string]any, kind string) (*responsesAccumEntry, bool) {
 	item, _ := cmp.Or(payload["item"], payload["output_item"]).(map[string]any)
 	id1, _ := payload["item_id"].(string)
 	id2, _ := item["id"].(string)
@@ -202,11 +202,11 @@ func (acc *responsesOutputAccumulator) pending(payload map[string]any, kind stri
 		e := &acc.entries[i]
 		if !e.settled && e.item["type"] == kind && (index >= 0 && e.index == index || id != "" && e.id == id || e.index < 0 && e.id == "" || index < 0 && id == "") {
 			e.index, e.id = max(e.index, index), cmp.Or(e.id, id)
-			return e
+			return e, false
 		}
 	}
 	acc.entries = append(acc.entries, responsesAccumEntry{index: index, id: id, item: map[string]any{"type": kind}, parts: []responsesAccumPart{{}}})
-	return &acc.entries[len(acc.entries)-1]
+	return &acc.entries[len(acc.entries)-1], true
 }
 
 func responsesDeltaText(payload map[string]any) string {
@@ -233,7 +233,7 @@ func (acc *responsesOutputAccumulator) HandleDelta(payload map[string]any, kind 
 	if delta == "" {
 		return
 	}
-	entry := acc.pending(payload, kind)
+	entry, _ := acc.pending(payload, kind)
 	slot := len(entry.parts) - 1
 	if kind == "reasoning" {
 		acc.reasoningTextSeen = true
@@ -246,17 +246,19 @@ func (acc *responsesOutputAccumulator) HandleDelta(payload map[string]any, kind 
 }
 
 func (acc *responsesOutputAccumulator) HandleReasoningPart(payload map[string]any, summary bool) bool {
-	entry := acc.pending(payload, "reasoning")
+	entry, fresh := acc.pending(payload, "reasoning")
 	hasContent := entry.hasPartContent()
+	created := false
 	if idx, ok := responsesReasoningPartIndex(payload, summary); ok {
-		_, _ = entry.ensurePartSlot(idx)
+		_, created = entry.ensurePartSlot(idx)
 	} else if hasContent {
 		entry.parts = append(entry.parts, responsesAccumPart{})
+		created = true
 	}
 	// A part boundary inside an item that already has text separates it. A newly begun
 	// reasoning item has no text of its own, but the live preview is one running
 	// thought, so text an earlier item emitted still needs separating -- once per item.
-	if hasContent || (acc.reasoningTextSeen && !entry.separated) {
+	if (created && hasContent) || (fresh && acc.reasoningTextSeen && !entry.separated) {
 		entry.separated = true
 		return true
 	}
@@ -282,11 +284,14 @@ func (acc *responsesOutputAccumulator) toolStateFor(callID, itemID, name string)
 	return st
 }
 
-// noteIssuedCallID records a call_id the provider itself sent for this call. A call the
-// stream named only by item ID keeps an empty issued id, and a foreign call_id addressed
-// to a different state is not this call's to record.
-func (st *responsesToolState) noteIssuedCallID(callID string) {
-	if callID != "" && callID == st.id {
+// noteIssuedCallID records a call_id the provider itself sent for this call, including a
+// done item that supplies it for a call the stream opened by item ID alone. A foreign
+// call_id addressed to a different state is not this call's to record.
+func (st *responsesToolState) noteIssuedCallID(callID, itemID string) {
+	if callID == "" {
+		return
+	}
+	if callID == st.id || (st.issuedCallID == "" && st.id == itemID) {
 		st.issuedCallID = callID
 	}
 }
@@ -299,7 +304,8 @@ func (acc *responsesOutputAccumulator) HandleOutputItemAdded(payload, item map[s
 	itemType, _ := item["type"].(string)
 	if itemType != "function_call" {
 		if phase, _ := item["phase"].(string); itemType == "message" && phase != "" {
-			acc.pending(payload, "message").item["phase"] = phase
+			entry, _ := acc.pending(payload, "message")
+			entry.item["phase"] = phase
 		}
 		return
 	}
@@ -319,7 +325,7 @@ func (acc *responsesOutputAccumulator) HandleOutputItemAdded(payload, item map[s
 	}
 	if callID != "" {
 		st.id = callID
-		st.noteIssuedCallID(callID)
+		st.noteIssuedCallID(callID, itemID)
 		acc.toolStates[callID] = st
 	}
 	if itemID != "" {
@@ -363,7 +369,7 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDelta(payload 
 		return nil, "", false
 	}
 	st := acc.toolStateFor(callID, itemID, name)
-	st.noteIssuedCallID(issuedCallID)
+	st.noteIssuedCallID(issuedCallID, itemID)
 	if st.name == "" && name != "" {
 		st.name = name
 	}
@@ -402,7 +408,7 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDone(payload m
 		return nil, false
 	}
 	st := acc.toolStateFor(callID, itemID, "")
-	st.noteIssuedCallID(issuedCallID)
+	st.noteIssuedCallID(issuedCallID, itemID)
 	if itemID != "" {
 		st.itemID = itemID
 		acc.itemToCallID[itemID] = st.id
@@ -450,7 +456,7 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 		index = llm.IntFromAny(v)
 	}
 	if it != "function_call" {
-		entry := acc.pending(payload, it)
+		entry, _ := acc.pending(payload, it)
 		if it == "message" && !slices.ContainsFunc(responsesReasoningParts(item["content"]), func(p llm.ResponsesReasoningPart) bool { return p.Text != "" || p.Type != "output_text" }) {
 			item["content"] = []any{map[string]any{"type": "output_text", "text": string(entry.joinedParts())}}
 		}
@@ -486,7 +492,7 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 		return item, nil, "", false
 	}
 	st := acc.toolStateFor(callID, itemID, name)
-	st.noteIssuedCallID(issuedCallID)
+	st.noteIssuedCallID(issuedCallID, itemID)
 	if itemID != "" {
 		st.itemID = itemID
 		acc.itemToCallID[itemID] = st.id

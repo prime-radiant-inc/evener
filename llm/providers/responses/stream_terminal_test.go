@@ -245,6 +245,25 @@ func TestIncompleteTerminalDisownsCallNamedOnlyByItemID(t *testing.T) {
 	}
 }
 
+// A call that opens by item ID and settles its real call_id at done keeps that issued id for
+// settlement, so an incomplete terminal for a different call on the same item ID cannot suppress it.
+func TestCompletedCallKeepsRealCallIDAgainstIncompleteSibling(t *testing.T) {
+	t.Parallel()
+	const nl = "\n\n"
+	frames := `{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_a","name":"probe"}}` + nl +
+		`{"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_a","call_id":"call_real","arguments":"{}"}}` + nl +
+		`{"type":"response.output_text.delta","output_index":1,"delta":"answer"}` + nl +
+		`{"type":"response.incomplete","response":{"id":"r","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[{"type":"function_call","id":"fc_a","call_id":"call_other","name":"other","arguments":"{}","status":"incomplete"}]}}`
+	for _, r := range settledBoth(t, frames) {
+		if calls := r.ToolCalls(); len(calls) != 1 || calls[0].ID != "fc_a" || string(calls[0].Arguments) != "{}" {
+			t.Errorf("settled calls = %v, want the completed item-ID call kept once", calls)
+		}
+		if got := r.Text(); got != "answer" {
+			t.Errorf("settled text = %q, want the recovered answer", got)
+		}
+	}
+}
+
 // A response-wide incomplete status cuts off no thought the stream already completed, and the native
 // parts still replay on the next request.
 func TestIncompleteResponseKeepsCompletedStreamedReasoning(t *testing.T) {
