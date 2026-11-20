@@ -833,7 +833,8 @@ func TestReleaseBuildUsesOnlyActiveArchitecture(t *testing.T) {
 	r := &runner{native: dir, output: dir}
 	udid := "00000000-0000-0000-0000-000000000000"
 	derived := filepath.Join(dir, "DerivedData")
-	if _, err := r.commandOutput(context.Background(), "xcodebuild-release", false, releaseBuildCommand(udid, derived)...); err != nil {
+	resultBundle := filepath.Join(dir, "build-timing.xcresult")
+	if _, err := r.commandOutput(context.Background(), "xcodebuild-release", false, releaseBuildCommand(udid, derived, resultBundle)...); err != nil {
 		t.Fatalf("release build invocation: %v", err)
 	}
 	data, err := os.ReadFile(record)
@@ -845,7 +846,8 @@ func TestReleaseBuildUsesOnlyActiveArchitecture(t *testing.T) {
 		"-workspace", "ios/Evener.xcworkspace", "-scheme", "Evener",
 		"-configuration", "Release", "-sdk", "iphonesimulator",
 		"-destination", "platform=iOS Simulator,id=" + udid,
-		"-derivedDataPath", derived, "build", "ONLY_ACTIVE_ARCH=YES",
+		"-derivedDataPath", derived, "-showBuildTimingSummary",
+		"-resultBundlePath", resultBundle, "build", "ONLY_ACTIVE_ARCH=YES",
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("release build argv = %v, want %v", got, want)

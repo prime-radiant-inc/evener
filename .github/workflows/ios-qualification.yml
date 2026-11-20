@@ -53,6 +53,11 @@ on:
       - "go.work.sum"
       - ".github/workflows/ios-qualification.yml"
   workflow_dispatch:
+    inputs:
+      run-journeys:
+        description: "Run the UI journey jobs (lab build-only dispatches leave this off)"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -237,6 +242,10 @@ jobs:
   # land instead of after both. The pair travels with the revision that built
   # it; run-ui-tests.sh refuses a pair whose revision is not the tested tree's.
   journey-setup:
+    # A lab build-only dispatch stops after simulator-build. Pull requests and
+    # pushes never reach this expression's dispatch branch, so they are
+    # unaffected.
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs['run-journeys'] }}
     runs-on: macos-26
     timeout-minutes: 45
     steps:
@@ -318,7 +327,7 @@ jobs:
     # !cancelled() keeps this job's red signal: when the build or the setup
     # fails, the first step below fails so the check that chains the lane is
     # red instead of silently skipped.
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || inputs['run-journeys']) }}
     runs-on: macos-26
     timeout-minutes: 60
     steps:

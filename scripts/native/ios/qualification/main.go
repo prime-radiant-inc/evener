@@ -162,8 +162,16 @@ func qualify(ctx context.Context, output, derivedData string) (result error) {
 	}
 	return r.withOwnedSimulator(ctx, simulatorName(output), func(udid string) error {
 		derived := r.derivedDataDir()
-		if _, err := r.commandOutput(ctx, "xcodebuild-release", false, releaseBuildCommand(udid, derived)...); err != nil {
+		resultBundle := filepath.Join(r.output, "build-timing.xcresult")
+		if err := os.RemoveAll(resultBundle); err != nil {
 			return err
+		}
+		buildErr := r.commandOutputTimed(ctx, "xcodebuild-release", releaseBuildCommand(udid, derived, resultBundle)...)
+		// The report runs after a failed build too: a red build still has a
+		// timeline, and that timeline is what decides the next experiment.
+		r.buildTimingReport(ctx, filepath.Join(r.output, "xcodebuild-release.log"), resultBundle)
+		if buildErr != nil {
+			return buildErr
 		}
 		r.identity.AppPath = filepath.Join(derived, "Build", "Products", "Release-iphonesimulator", "Evener.app")
 		if err := r.verifyApp(ctx, r.identity.AppPath, "built"); err != nil {
@@ -260,8 +268,8 @@ func simulatorName(output string) string {
 // The runner is Apple silicon and the app is installed into an arm64
 // simulator, so ONLY_ACTIVE_ARCH builds the one slice the journeys exercise
 // instead of compiling the whole native dependency graph for both.
-func releaseBuildCommand(udid, derivedData string) []string {
-	return []string{"xcodebuild", "-workspace", "ios/Evener.xcworkspace", "-scheme", "Evener", "-configuration", "Release", "-sdk", "iphonesimulator", "-destination", "platform=iOS Simulator,id=" + udid, "-derivedDataPath", derivedData, "build", "ONLY_ACTIVE_ARCH=YES"}
+func releaseBuildCommand(udid, derivedData, resultBundle string) []string {
+	return []string{"xcodebuild", "-workspace", "ios/Evener.xcworkspace", "-scheme", "Evener", "-configuration", "Release", "-sdk", "iphonesimulator", "-destination", "platform=iOS Simulator,id=" + udid, "-derivedDataPath", derivedData, "-showBuildTimingSummary", "-resultBundlePath", resultBundle, "build", "ONLY_ACTIVE_ARCH=YES"}
 }
 
 // uiJourney runs the installed-app qualification journeys as a child inside
