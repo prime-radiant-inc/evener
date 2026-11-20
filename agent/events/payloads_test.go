@@ -316,7 +316,12 @@ func TestSteeringKindConstants(t *testing.T) {
 	for _, k := range AllSteeringKinds {
 		if _, ok := want[k]; !ok {
 			t.Errorf("AllSteeringKinds contains unknown kind %q", k)
+			continue
 		}
+		delete(want, k)
+	}
+	if len(want) != 0 {
+		t.Errorf("AllSteeringKinds is missing %d kind(s)", len(want))
 	}
 }
 
