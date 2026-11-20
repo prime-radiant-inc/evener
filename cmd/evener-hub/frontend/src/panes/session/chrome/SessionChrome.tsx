@@ -16,8 +16,8 @@
 // narrow-layout turn verbs (Stop/Steer - SessionMenuProps.turnVerbs): the
 // engaged inline chrome and the phone's collapsed-row menu. The
 // Overview count adds the subagents running at every depth
-// (useSubagentCounts) to the session summary's running jobs. The hidden
-// ActivityPanel retains discovery and refresh wiring. Overview opens the
+// (useSubagentCounts) to the session summary's running jobs. The chrome's own
+// useSessionActivity retains discovery and refresh wiring. Overview opens the
 // shared sidebar at every viewport.
 // Slash-command actions (goal/aside/compact/clear) are deliberately NOT in
 // the menu - the session's own composer owns those now (2026-08-14, "the
@@ -62,7 +62,6 @@ import { requestFindInSession } from "../find/findRequest";
 import { NOW_TICK_MS, useNowTick, WORK_TICK_MS } from "../liveness";
 import { navigationSummaryFor } from "../threadTitle";
 import { TranscriptDetailControl } from "../transcript/TranscriptDetailControl";
-import { ActivityPanel } from "./ActivityPanel";
 import { activityActionLabel } from "./activityFormat";
 import { StatusRow } from "./StatusRow";
 import styles from "./sessionchrome.module.css";
@@ -74,16 +73,6 @@ export interface SessionChromeProps {
   ref: string;
   paneId?: string;
   placement?: SessionChromePlacement;
-  /** Live session mounts opt into the hidden panel's initial activity discovery. */
-  discoverActivity?: boolean;
-  /**
-   * Mount ONLY the hidden discovery owner, with no chrome of its own. The
-   * composer uses this while its follow-up card rests, when the card's own
-   * control row - the mount that otherwise carries `discoverActivity` - is
-   * absent, so initial activity discovery still follows the pane on screen
-   * (issue #1335).
-   */
-  discoveryOnly?: boolean;
   /**
    * Turn verbs for the session menu, offered by the composer's narrow
    * layout (Jesse's 2026-09-28 ruling on the #1339 phone-width wrap). The
@@ -127,8 +116,6 @@ export function SessionChrome({
   ref: sessionRef,
   paneId: owningPaneId,
   placement = "footer",
-  discoverActivity = false,
-  discoveryOnly = false,
   turnVerbs,
   compactRung = false,
 }: SessionChromeProps) {
@@ -200,24 +187,6 @@ export function SessionChrome({
   const workNow = useNowTick(WORK_TICK_MS);
   if (!model) return null;
 
-  // The ONE hidden ActivityPanel every shape below shares. `discoverWhenHidden`
-  // is the opt-in wiring that must not drift, so it is spelled exactly once
-  // here; `discoveryOnly` is itself an opt-in (it exists for nothing else).
-  const hiddenActivityPanel = (
-    <ActivityPanel
-      sessionRef={sessionRef}
-      model={model}
-      hideTrigger
-      refreshWhenHidden
-      discoverWhenHidden={discoverActivity || discoveryOnly}
-    />
-  );
-
-  // A chrome-less mount returns the hidden discovery owner and nothing else:
-  // no status row, no menu, no second "⋯". This early return sits after every
-  // hook call above (everything below is plain values and handlers).
-  if (discoveryOnly) return hiddenActivityPanel;
-
   // Force-stop eligibility mirrors the reach of the retired inline footer
   // button (Session.tsx): any local session that isn't closed, including
   // saved notLoaded panes (a pending or failed resume can still own a daemon)
@@ -239,7 +208,7 @@ export function SessionChrome({
       activitySidebarStore.getState().openFor(sessionRef, undefined, undefined, paneId);
     }
   };
-  const overviewLabel = activityActionLabel(activitySummary, subagents, "Overview");
+  const overviewLabel = activityActionLabel(activitySummary, subagents);
 
   // The menu's action adapters, shared by the composer and menu-only
   // placements so the failure convention (SessionMenu.tsx's header comment:
@@ -371,7 +340,6 @@ export function SessionChrome({
           </div>
         )}
         <div className={CLASS.right}>
-          {hiddenActivityPanel}
           <SessionMenu
             sessionRef={sessionRef}
             paneId={paneId}

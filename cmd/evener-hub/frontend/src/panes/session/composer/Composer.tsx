@@ -1326,18 +1326,9 @@ function ComposerWithSubmission({
   // below keeps an automatic basis, because the composer's column is vertical
   // there and a width-oriented rung would inflate the chrome's height.
   const leadingChrome = (
-    <MemoizedSessionChrome
-      ref={ref}
-      paneId={paneId}
-      placement="composer"
-      discoverActivity
-      turnVerbs={turnVerbs}
-      compactRung
-    />
+    <MemoizedSessionChrome ref={ref} paneId={paneId} placement="composer" turnVerbs={turnVerbs} compactRung />
   );
-  const askChrome = (
-    <MemoizedSessionChrome ref={ref} paneId={paneId} placement="composer" discoverActivity turnVerbs={turnVerbs} />
-  );
+  const askChrome = <MemoizedSessionChrome ref={ref} paneId={paneId} placement="composer" turnVerbs={turnVerbs} />;
 
   // data-testid on every control in this row: two different buttons here
   // start with "Steer" (this one and the pending rows' "Steer now"), so
@@ -1347,8 +1338,8 @@ function ComposerWithSubmission({
   //
   // While the phone card rests (controlsCollapsed), the leading slot
   // shrinks to the menu-only chrome: the session menu stays reachable, and
-  // that placement's hidden panel keeps initial activity discovery
-  // following the pane on screen (issue #1335) with no status chips.
+  // that placement's chrome keeps initial activity discovery following the
+  // pane on screen (issue #1335) with no status chips.
   // The attach control is a resting-card affordance, so the folded row drops
   // it: focusing the editor brings it back with the rest of the full row.
   const leadingControls = (
@@ -1358,7 +1349,7 @@ function ComposerWithSubmission({
       data-compact={controlsCollapsed ? "true" : undefined}
     >
       {controlsCollapsed ? (
-        <MemoizedSessionChrome ref={ref} paneId={paneId} placement="menu" discoverActivity turnVerbs={turnVerbs} />
+        <MemoizedSessionChrome ref={ref} paneId={paneId} placement="menu" turnVerbs={turnVerbs} />
       ) : (
         <>
           {!folded && <AttachImageControl inputRef={fileInputRef} testId="composer-attach" tooltip="Attach an image" />}

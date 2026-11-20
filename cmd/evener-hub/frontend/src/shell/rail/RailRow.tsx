@@ -451,9 +451,8 @@ function useHostLaunchable(hostId: string | undefined): boolean {
 
 // RailAge is the row's live "last update" stamp.
 // railNow.tsx owns why the label comes from `updated_at` rather than a field
-// the model precomputed. Sitting BELOW the memoized SessionRow - the boundary
-// ActivityTree.tsx draws with LiveMetaSegments - is what keeps a tick from
-// re-rendering every row that carries a stamp.
+// the model precomputed. Sitting BELOW the memoized SessionRow is what keeps a
+// tick from re-rendering every row that carries a stamp.
 function RailAge({ updatedAt }: { updatedAt?: string }): ReactNode {
   const now = useRailNow();
   const label = relativeAge(updatedAt, now);

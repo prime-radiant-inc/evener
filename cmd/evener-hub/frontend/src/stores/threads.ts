@@ -94,7 +94,6 @@ import { useEffect, useMemo, useSyncExternalStore } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { releaseSubagentRows } from "../panes/session/transcript/tools/subagentModuleStore";
-import { resetActivityPanelStoreForTests } from "./activityPanel";
 import { backgroundTranscriptOptions } from "./backgroundTranscriptOptions";
 import { browserBroadcastChannelFactory } from "./browserBroadcastChannel";
 import {
@@ -346,11 +345,11 @@ export interface ThreadsStoreState {
   frameTimes: Map<string, number[]>;
   // Per-ref count of full-snapshot publishes (initial hydration and every
   // rehydration - reconnect handleReady, targeted resync). A consumer that
-  // retains derived state (ActivityPanel's freshness effect) watches this to
-  // notice a WHOLESALE model replacement whose visible fields happen not to
-  // change - e.g. jobsUpdatedAt is null on both sides of a resync, yet
-  // activity retained across the gap may be stale. Like frameTimes, this is
-  // store bookkeeping, not wire-derived thread state.
+  // retains derived state across a hydration watches this to notice a
+  // WHOLESALE model replacement whose visible fields happen not to change -
+  // e.g. jobsUpdatedAt is null on both sides of a resync, yet activity
+  // retained across the gap may be stale. Like frameTimes, this is store
+  // bookkeeping, not wire-derived thread state.
   hydrations: Map<string, number>;
   // Per-ref token of the in-flight entry-fixture local opening (the reader
   // restoring recorded bodies from disk). Present means "the pane is showing
@@ -10060,7 +10059,6 @@ export function resetThreadsStoreForTests(): void {
   resumeSwapTargets.clear();
   resetHumanNoteDrafts();
   notesLatestIntentSequences.clear();
-  resetActivityPanelStoreForTests();
   resetTasksPanelStoreForTests();
   if (mutationRuntime) {
     mutationRuntime.active = false;

@@ -674,7 +674,7 @@ test("an embedded column's Overview describes that column, then the sidebar foll
       <MotionProvider>
         {/* The parent column's real chrome: an embedded conversation names
             its own ref while the focused zoom pane resolves to the leaf. */}
-        <SessionChrome ref="child" paneId="zoom" discoverActivity />
+        <SessionChrome ref="child" paneId="zoom" />
         <ActivitySidebar />
       </MotionProvider>
     </ClientProvider>,
@@ -937,7 +937,7 @@ test("an embedded parent column's Overview rebases its ancestor crumb onto the c
   const mounted = render(
     <ClientProvider client={client}>
       <MotionProvider>
-        <SessionChrome ref="child" paneId="zoom" discoverActivity />
+        <SessionChrome ref="child" paneId="zoom" />
         <ActivitySidebar />
       </MotionProvider>
     </ClientProvider>,
@@ -1010,7 +1010,7 @@ test("a held parent in a cascade opened from a nested session keeps its ancestor
   const mounted = render(
     <ClientProvider client={client}>
       <MotionProvider>
-        <SessionChrome ref="parent" paneId="zoom" discoverActivity />
+        <SessionChrome ref="parent" paneId="zoom" />
         <ActivitySidebar />
       </MotionProvider>
     </ClientProvider>,
