@@ -1,18 +1,20 @@
-// The destination claim lease the recovery Send hydrates an unread
-// destination with (issue #5182's Medium finding): acquired only after
-// ensureThread succeeds, so a failed acquisition - whose rollback ensureThread
-// already performed - can never release a claim another foreground reader
-// holds. Both tests drive the real claim machinery (the same
-// ensureThread/releaseThread pair useThreadClaim holds a pane's subscription
-// with), never a mock of it.
+// The destination claim lease the recovery Send holds for its duration (issues
+// #5182 and #5516): acquired only after ensureThread succeeds, so a failed
+// acquisition - whose rollback ensureThread already performed - can never
+// release a claim another foreground reader holds, and always refcounted even
+// when a tracked pane already holds the destination. Both tests drive the real
+// claim machinery (the same ensureThread/releaseThread pair useThreadClaim
+// holds a pane's subscription with), never a mock of it.
 
 import "fake-indexeddb/auto";
 import type { ThreadReadResponse } from "@evener/appwire-client";
+import { callsTo } from "@evener/appwire-client/testing/fakeClient";
 import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { beforeEach, expect, test, vi } from "vitest";
 import { connectReadyFakeClient } from "../testing/connectionTestUtils";
 import { testThread } from "../threadTestUtils";
 import { resetConnectionStoreForTests } from "./connection";
+import { foregroundHolds } from "./threadOwners";
 import { resetThreadsStoreForTests, threadsStore } from "./threads";
 import { acquireUnreadThreadClaim } from "./useThreadModel";
 
@@ -60,15 +62,31 @@ test("a failed destination claim acquisition releases no claim another reader ho
   await vi.waitFor(() => expect(threadsStore.getState().threads.has("ref_dest")).toBe(false));
 });
 
-test("a destination this tab already tracks needs no claim and releases nothing", async () => {
+test("a destination a tracked pane holds still takes a refcounted claim, pinning it past the pane's unmount", async () => {
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () => ({ thread: testThread("ref_dest") }));
   await threadsStore.getState().ensureThread("ref_dest");
   expect(threadsStore.getState().threads.has("ref_dest")).toBe(true);
-  await expect(acquireUnreadThreadClaim("ref_dest")).resolves.toBeNull();
-  // No lease means no release: the reader that already tracks the destination
-  // keeps its model exactly as it was.
-  expect(threadsStore.getState().threads.has("ref_dest")).toBe(true);
+  // The tracked pane's own claim: one foreground hold, the model published.
+  expect(foregroundHolds("ref_dest")).toBe(1);
+  const readsBefore = callsTo(fake, "thread/read");
+
+  // The resend acquires its own claim even though a pane already holds the
+  // destination, so the model is pinned for the resend's duration.
+  const lease = await acquireUnreadThreadClaim("ref_dest");
+  expect(foregroundHolds("ref_dest")).toBe(2);
+  // The destination is already hydrated: the claim issues no extra read.
+  expect(callsTo(fake, "thread/read")).toBe(readsBefore);
+
+  // The pane unmounts mid-resend. Its hold goes, but the lease still pins the
+  // model, so the resend can never observe its destination retired.
   threadsStore.getState().releaseThread("ref_dest");
+  expect(foregroundHolds("ref_dest")).toBe(1);
+  expect(threadsStore.getState().threads.has("ref_dest")).toBe(true);
+
+  // The lease's release is the final one. Releasing twice is idempotent.
+  lease.release();
+  lease.release();
+  expect(foregroundHolds("ref_dest")).toBe(0);
   await vi.waitFor(() => expect(threadsStore.getState().threads.has("ref_dest")).toBe(false));
 });

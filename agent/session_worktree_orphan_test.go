@@ -1202,27 +1202,22 @@ func TestSharedDescendantLaneRefusesUnheldScriptedPresentation(t *testing.T) {
 // until the foreign lock is the one that holds.
 func adoptForeignLane(t *testing.T, r *wtRepo, lanePath, foreignSID string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	// The adoption is a state, not a command's success: a background wake
+	// re-takes any gap, so retry until the lock that reads back is the foreign
+	// one.
+	testwait.UntilSeen(t, "the lane's foreign lock to hold", func() (bool, string) {
 		if _, locked, _ := r.laneLocked(t, lanePath); locked {
 			_, _ = runWorktreeGit(r.mainRoot, "worktree", "unlock", lanePath)
 		}
-		if _, lockErr := runWorktreeGit(r.mainRoot, "worktree", "lock", "--reason", worktree.FormatSessionMarker(foreignSID), lanePath); lockErr == nil {
-			// git took the lock, but require the lock that reads back to be
-			// the foreign one: a background wake re-takes any gap, and only
-			// the state, not the command's success, is the adoption.
-			if _, locked, reason := r.laneLocked(t, lanePath); locked {
-				if m, ok := worktree.ParseMarker(reason); ok && m.SessionID == foreignSID {
-					return
-				}
+		_, lockErr := runWorktreeGit(r.mainRoot, "worktree", "lock", "--reason", worktree.FormatSessionMarker(foreignSID), lanePath)
+		_, locked, reason := r.laneLocked(t, lanePath)
+		if lockErr == nil && locked {
+			if m, ok := worktree.ParseMarker(reason); ok && m.SessionID == foreignSID {
+				return true, ""
 			}
 		}
-		if time.Now().After(deadline) {
-			_, _, reason := r.laneLocked(t, lanePath)
-			t.Fatalf("adopting the lane for a foreign session kept losing to the tree's own wake: lane lock = %q", reason)
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+		return false, reason
+	})
 }
 
 // A shared descendant's wake must not launch into an ancestor lane another
@@ -4372,9 +4367,17 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileCoordinatorDrainsForDescendant(t 
 		}
 		return coordinatorRequests >= 2
 	})
-	// Let the coordinator's turn ticker's last moment pass, so only the
-	// drain can keep the evidence fresh from here.
-	time.Sleep(delegateActivityPublishInterval + 500*time.Millisecond)
+	// The coordinator's own turn has ended, and with it its evidence ticker:
+	// only the finalization drain can keep the evidence fresh from here.
+	coordinatorSub := root.subagents.get(fixture.childID)
+	if coordinatorSub == nil {
+		t.Fatalf("the coordinator %s is not retained", fixture.childID)
+	}
+	testwait.Until(t, "the coordinator's finalization drain to take over", func() bool {
+		coordinatorSub.mu.Lock()
+		defer coordinatorSub.mu.Unlock()
+		return coordinatorSub.finalizing
+	})
 
 	// The lane's marker parent — the root — has now been idle past the
 	// operator's threshold: nothing of its own runs while the tree waits on
