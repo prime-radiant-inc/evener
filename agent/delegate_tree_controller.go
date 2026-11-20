@@ -1708,6 +1708,13 @@ func (c *delegateTreeController) capturedPlanLocked(id string) delegateUpdatePla
 // client drops a same-revision frame whose mutating fields it cannot order, so
 // a plain notification would not land. The plan is captured under the
 // controller lock and emitted outside it, exactly as the other publications do.
+//
+// A clear sample is skipped when no hold can still be showing to a consumer:
+// the last sample a read handed out and the last sample published in a frame
+// are both clear. No row can carry a wait then, so the emit would only make an
+// open activity view reread an unchanged row. A clear that ends an outstanding
+// hold still publishes, whether the hold was seen by a read or by a published
+// frame, because that consumer's row carries the wait.
 func (c *delegateTreeController) publishDelegateHold(sessionID, delegateID string) {
 	if c == nil || delegateID == "" {
 		return
@@ -1719,9 +1726,21 @@ func (c *delegateTreeController) publishDelegateHold(sessionID, delegateID strin
 		c.mu.Unlock()
 		return
 	}
+	if !c.holdOutstandingLocked(delegateID) && c.sampleDrainHoldLocked(delegateID) == (delegateHoldSample{}) {
+		c.mu.Unlock()
+		return
+	}
 	plan := c.capturedPlanLocked(delegateID)
 	c.mu.Unlock()
 	c.emitDelegateUpdate(plan)
+}
+
+// holdOutstandingLocked reports whether a drain hold for delegateID may still
+// be showing to a consumer: the last sample a read handed out or a frame
+// published was nonzero and has not been cleared since. The caller holds c.mu.
+func (c *delegateTreeController) holdOutstandingLocked(delegateID string) bool {
+	return c.holdSamples[delegateID].sample != (delegateHoldSample{}) ||
+		c.publishedHoldSamples[delegateID] != (delegateHoldSample{})
 }
 
 func (c *delegateTreeController) appendResumabilityClosureLocked(delegateID string, events ...delegatestore.Event) (delegateUpdatePlan, error) {
