@@ -15,16 +15,11 @@
 // guess spent a neighbour's hold once two lifecycles overlapped: a pane closing
 // while a second pane's lookup was pending removed the second pane's id, and the
 // first pane's rollback then removed its own, retiring a mounted pane's model.
-// A routing claim's hold is its own array for the same reason: the one caller
-// that must ask "is a routing hold standing" cannot answer that from a total
-// that also counts a pane's own hold.
 export interface ForegroundHold {
   readonly ref: string;
-  readonly routing: boolean;
   released: boolean;
 }
 const paneForegroundHolds = new Map<string, ForegroundHold[]>();
-const routingForegroundHolds = new Map<string, ForegroundHold[]>();
 // Background claims keep canonical thread hydration/routing alive without
 // borrowing a pane's cache or ensure-generation lifetime.
 const backgroundCounts = new Map<string, number>();
@@ -52,26 +47,15 @@ function hold(counts: Map<string, number>, ref: string): void {
 }
 
 export function foregroundHolds(ref: string): number {
-  return (paneForegroundHolds.get(ref)?.length ?? 0) + (routingForegroundHolds.get(ref)?.length ?? 0);
+  return paneForegroundHolds.get(ref)?.length ?? 0;
 }
 
 /** Refs a mounted holder keeps open, whether or not a model ever arrived. A
  * pane whose first read was refused by the hub's history diagnostic holds its
  * ref with no model to show for it, and a later read is what repairs it - so
- * the reconnect fan-out has to see these, not only the refs that published.
- * A ref held by both kinds is yielded twice, so a caller that needs each ref
- * once collapses it (the fan-out collects into a Set). */
+ * the reconnect fan-out has to see these, not only the refs that published. */
 export function* foregroundHeldRefs(): IterableIterator<string> {
   yield* paneForegroundHolds.keys();
-  yield* routingForegroundHolds.keys();
-}
-
-/** Foreground holds taken by a caller that routes and opens no pane. A routing
- * claim waits for its destination's routing state on one of these, and a
- * reconnect read that would answer it has to be joinable: the total count
- * cannot say whether the holder waiting is a pane, which opens its own lookup. */
-export function routingOnlyForegroundHolds(ref: string): number {
-  return routingForegroundHolds.get(ref)?.length ?? 0;
 }
 
 /** Drops the hold this handle names and returns how many foreground holds
@@ -81,12 +65,11 @@ export function routingOnlyForegroundHolds(ref: string): number {
 export function releaseForegroundHold(h: ForegroundHold): number {
   if (h.released) return foregroundHolds(h.ref);
   h.released = true;
-  const holds = h.routing ? routingForegroundHolds : paneForegroundHolds;
-  const standing = holds.get(h.ref);
+  const standing = paneForegroundHolds.get(h.ref);
   if (standing) {
     const at = standing.indexOf(h);
     if (at >= 0) standing.splice(at, 1);
-    if (standing.length === 0) holds.delete(h.ref);
+    if (standing.length === 0) paneForegroundHolds.delete(h.ref);
   }
   return foregroundHolds(h.ref);
 }
@@ -99,21 +82,19 @@ export function foregroundHoldStanding(h: ForegroundHold): boolean {
 /** Takes a foreground hold and returns the handle that names it: the count and
  * the handle are created together, so no caller can hold a count it cannot
  * later release by handle. */
-export function holdForeground(ref: string, routing = false): ForegroundHold {
-  const handle: ForegroundHold = { ref, routing, released: false };
-  const holds = routing ? routingForegroundHolds : paneForegroundHolds;
-  const standing = holds.get(ref) ?? [];
+export function holdForeground(ref: string): ForegroundHold {
+  const handle: ForegroundHold = { ref, released: false };
+  const standing = paneForegroundHolds.get(ref) ?? [];
   standing.push(handle);
-  holds.set(ref, standing);
+  paneForegroundHolds.set(ref, standing);
   return handle;
 }
 
-/** Drops the newest PANE hold and returns how many foreground holds remain.
+/** Drops the newest foreground hold and returns how many foreground holds
+ * remain.
  * This is a shorthand for paired same-frame pane holders, not a way to name
  * whose hold is released: a holder that outlives its frame must carry its own
- * handle and call releaseForegroundHold, or it drops a neighbour's hold. A
- * routing hold is never this shape's to drop: spending one here would retire
- * the model out from under the resend whose claim took it. */
+ * handle and call releaseForegroundHold, or it drops a neighbour's hold. */
 export function releaseForeground(ref: string): number {
   const newest = paneForegroundHolds.get(ref)?.at(-1);
   if (!newest) return foregroundHolds(ref);
@@ -231,7 +212,6 @@ export function nextBackgroundLeaseSequence(ref: string): number {
 
 export function resetThreadOwnersForTests(): void {
   paneForegroundHolds.clear();
-  routingForegroundHolds.clear();
   backgroundCounts.clear();
   historyHoldCounts.clear();
   mutationPins.clear();

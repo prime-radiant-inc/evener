@@ -8,8 +8,9 @@ import { useEffect } from "react";
 import type { TranscriptReadView } from "../panes/session/transcript/transcriptReadView";
 import { connectionStore } from "./connection";
 import { hasConversationHandoff, registerConversationClaim } from "./conversationClaimHandoff";
+import { existingEntryRoute } from "./entryTranscriptRoutes";
 import type { ForegroundHold } from "./threadOwners";
-import { threadsStore, useThreadsStore } from "./threads";
+import { acquireBackgroundThread, threadsStore, useThreadsStore } from "./threads";
 
 // useThreadClaim holds one ensureThread(ref) claim while the caller is
 // mounted, starting it once the connection is ready, and releases it on
@@ -70,48 +71,72 @@ export interface ThreadClaimLease {
   release(): void;
 }
 
-/** A one-shot foreground claim on the recovery Send's destination, held for
- * the resend's duration. Every destination is claimed, including one another
- * pane already tracks: a destination that exists only as a watched stream
- * model needs the foreground model for the resend (routing and dispatch read
- * the tracked map, and the watch's own lean lifecycle is refcounted
- * separately and is untouched), and a tracked one needs the hold because the
- * pane that tracks it may unmount mid-resend - which retires the model the
- * enqueued row's dispatch reads, parking that row until someone reopens the
- * destination. ensureThread/releaseThread count foreground holds, so the
- * pane's own release still retires the model only when the resend has
- * released its count too. Checking the tracked map before acquiring was the
- * defect: the check and the acquisition were separable by an unmount. The
- * lease exists only once ensureThread RESOLVES: a rejected acquisition has
- * already rolled its own claim back inside ensureThread, so a caller that
- * released anyway would consume another foreground reader's claim and retire
- * its subscription or hydration lifecycle. There is no "no claim needed"
- * answer: a resolved acquisition always holds exactly one count.
+/** Why a resend's destination claim was refused. Both mean "do not write at
+ * this ref": the hub has confirmed it gone, or its routing state never
+ * verified. */
+const ThreadClaimRefusal = {
+  deleted: "The destination was deleted before its routing state was verified",
+  unverified: "The destination was not verified for routing",
+} as const;
+
+// Routable state is what a resend can address a row with: the destination's
+// identity, status and capabilities, read from a model whose source read has
+// landed. The route's `cachedUnverified` marker is the one real record of
+// whether that read has answered - a shell a cached open published advertises
+// neither Send nor Queue - and a ref with no production route has no shell to
+// wait out. existingEntryRoute, not entryTranscriptRoute: asking must not be
+// what creates a route.
+function residentRoutable(ref: string): boolean {
+  return threadsStore.getState().threads.has(ref) && existingEntryRoute(ref)?.cachedUnverified !== true;
+}
+
+/** The recovery Send's destination, held for the resend's duration. The claim
+ * is the store's own background ownership - the same counted lease a
+ * background download keeps a model and its subscription under - reused here
+ * because it is exactly this lifecycle's shape: it keeps the destination
+ * reachable for dispatch without opening a pane's transcript bodies, and it
+ * counts, so the pane that also holds the destination can unmount mid-resend
+ * without retiring the model the enqueued row's dispatch reads.
  *
- * The hold is routing-only. A resend routes on the destination's identity,
- * status and capabilities, not its transcript bodies, so its hold keeps the
- * model alive without becoming the body owner a pane open defers to and
- * without waiting on a restoration read. A pane that opens later still finds
- * no body owner and restores the bodies itself; a cached shell is unverified
- * and falls through to the ordinary hydration, so the resend never routes on
- * unverified state. */
+ * A resident destination whose source read has landed is handed out as it
+ * stands: the lease is what keeps it alive, and no read is issued for an
+ * answer already known. Anything else - an unopened destination, a cached
+ * shell, a read in flight - is verified through the store's bounded tracked
+ * refresh, which is the same read a pane would receive. A destination the hub
+ * has confirmed deleted, or one that stays unverified, is not handed out at
+ * all: the lease is released before rejecting, so a refused resend leaves no
+ * hold behind. */
 export async function acquireUnreadThreadClaim(ref: string): Promise<ThreadClaimLease> {
-  let hold: ForegroundHold | undefined;
-  await threadsStore.getState().ensureThread(ref, {
-    routingOnly: true,
-    onHold: (taken) => {
-      hold = taken;
-    },
-  });
-  const lease = hold;
-  if (!lease) throw new Error("a resolved routing acquisition must hold a lease");
-  let released = false;
+  const lease = acquireBackgroundThread(ref);
+  const release = (): void => {
+    void lease.release();
+  };
+  const missing = (): boolean => threadsStore.getState().deletedRefs.has(ref);
+  try {
+    // The lease's own acquisition joins a read already in flight for the ref
+    // and otherwise issues one bounded attempt, so an unopened destination is
+    // verified there and never read twice.
+    await lease.ready;
+    if (missing()) throw new Error(ThreadClaimRefusal.deleted);
+    // The acquisition's own bounded attempt verified everything it could: an
+    // unopened destination published from that read, and a destination the hub
+    // refused left nothing to hand out. The one case it could not verify is a
+    // resident cached shell - the acquisition returned on it without reading,
+    // and its capabilities are the shell's, not the source's - so that shell is
+    // verified by one bounded tracked read. A ref with no model at all is not
+    // re-read here: its one attempt already ran, and a second read would turn a
+    // terminal answer into a retry loop the claim has no recovery surface for.
+    if (!residentRoutable(ref) && threadsStore.getState().threads.has(ref)) {
+      await threadsStore.getState().refreshThread(ref);
+      if (missing()) throw new Error(ThreadClaimRefusal.deleted);
+    }
+    if (!residentRoutable(ref)) throw new Error(ThreadClaimRefusal.unverified);
+  } catch (error) {
+    release();
+    throw error;
+  }
   return {
-    release() {
-      if (released) return;
-      released = true;
-      threadsStore.getState().releaseThreadHold(lease);
-    },
+    release,
   };
 }
 

@@ -172,11 +172,11 @@ export function captureRecoverySendIntent(displayedRef: string, recoveryId: stri
   return { displayedBarrier, durableSnapshot };
 }
 
-/** Performs the resend holding the destination claim lease: every
- * destination is held under a foreground claim - the same
- * ensureThread/releaseThread pair useThreadClaim holds a pane's subscription
- * with - acquired only after ensureThread succeeds, so a failed acquisition
- * (whose rollback ensureThread already performed) releases nothing, and the
+/** Performs the resend holding the destination claim lease: the destination is
+ * held under the store's counted background ownership - the same lease a
+ * background download keeps a model and its subscription under - acquired only
+ * after that acquisition verified the destination, so a refused claim releases
+ * its own hold before rejecting and the caller here releases nothing. The
  * lease is released exactly once, after the resend. The claim is taken even
  * when another reader already tracks the destination, because that reader can
  * unmount mid-resend and retire the model the enqueued row's dispatch reads;

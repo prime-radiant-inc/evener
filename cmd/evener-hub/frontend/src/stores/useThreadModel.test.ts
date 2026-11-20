@@ -8,7 +8,6 @@
 import "fake-indexeddb/auto";
 import { type ThreadReadResponse, WireError } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { beforeEach, expect, test, vi } from "vitest";
@@ -17,7 +16,7 @@ import {
   resetPendingTurnsStoreForTests,
 } from "../panes/session/composer/queue/pendingTurnsStore";
 import { withRecoveryDestinationClaim } from "../panes/session/composer/submitProtocol";
-import { connectionStore, resetConnectionStoreForTests } from "./connection";
+import { resetConnectionStoreForTests } from "./connection";
 import {
   entryTranscriptRoute,
   productionEntryTranscriptForTests,
@@ -27,14 +26,8 @@ import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { deleteMutationDatabase } from "./mutationOutboxTestUtils";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { pumpIndexedDBUntil } from "./testing/indexedDBPump";
-import { foregroundHolds } from "./threadOwners";
-import {
-  installHydrationRetrySchedulerForTests,
-  resendRecoveryMutation,
-  resetThreadsStoreForTests,
-  setMutationStorageForTests,
-  threadsStore,
-} from "./threads";
+import { backgroundHolds, foregroundHolds } from "./threadOwners";
+import { resendRecoveryMutation, resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "./threads";
 import {
   connectMutationClient,
   mutationReceipt,
@@ -120,27 +113,27 @@ test("a tracked destination is held by count until the lease releases", async ()
 // after the resend and the pane that opened it are gone. These assert the
 // counts themselves, because the model's survival is decided asynchronously by
 // retirement and an assertion on it can pass while a count is still stranded.
-test("the lease owns exactly one count, and a ref-keyed release cannot spend it", async () => {
+test("the lease owns exactly one background count, and a pane release cannot spend it", async () => {
   const fake = connectMutationClient();
   fake.on("thread/read", () => resumeOnlySnapshot("ref_dest"));
   await threadsStore.getState().ensureThread("ref_dest");
   const paneHolds = foregroundHolds("ref_dest");
   const lease = await acquireUnreadThreadClaim("ref_dest");
-  expect(foregroundHolds("ref_dest"), "the lease takes exactly one count").toBe(paneHolds + 1);
-  // A ref-keyed release names the newest PANE hold. With the pane's hold still
-  // standing, this drops the pane's count and leaves the lease's - the
-  // direction that keeps a resend's destination alive.
+  expect(foregroundHolds("ref_dest"), "the lease is not a pane hold").toBe(paneHolds);
+  expect(backgroundHolds("ref_dest"), "the lease takes exactly one background count").toBe(1);
+  // A ref-keyed release names the newest pane hold. The lease's own count lives
+  // in the background table, so both releases here drop pane counts and leave
+  // the resend's destination held.
   threadsStore.getState().releaseThread("ref_dest");
-  expect(foregroundHolds("ref_dest"), "a ref-keyed release drops one pane count").toBe(paneHolds);
-  // A second ref-keyed release has no pane hold of its own left to drop, so it
-  // must not fall through to the lease's count.
+  expect(foregroundHolds("ref_dest"), "a ref-keyed release drops one pane count").toBe(paneHolds - 1);
   threadsStore.getState().releaseThread("ref_dest");
-  expect(foregroundHolds("ref_dest"), "a ref-keyed release must never spend a routing lease's count").toBe(paneHolds);
+  expect(backgroundHolds("ref_dest"), "a pane release must never spend the lease's count").toBe(1);
+  expect(threadsStore.getState().threads.has("ref_dest"), "the lease keeps the destination").toBe(true);
   lease.release();
-  expect(foregroundHolds("ref_dest"), "the lease's own release drops its count").toBe(paneHolds - 1);
+  expect(backgroundHolds("ref_dest"), "the lease's own release drops its count").toBe(0);
   // Releasing twice is a no-op: exactly one count, never two.
   lease.release();
-  expect(foregroundHolds("ref_dest"), "a lease releases once").toBe(paneHolds - 1);
+  expect(backgroundHolds("ref_dest"), "a lease releases once").toBe(0);
   await vi.waitFor(() => expect(threadsStore.getState().threads.has("ref_dest")).toBe(false));
 });
 
@@ -170,38 +163,22 @@ test("a claim on a destination the hub reports deleted rejects and drops its hol
   expect(foregroundHolds("local:claim-deleted"), "a rejected acquisition leaves no count behind").toBe(holdsBefore);
 }, 20_000);
 
-// Deletion can arrive on the RETRY, not on the claim's first read: the read
-// fails in transport, its owner schedules the retry, and the retry is the
-// attempt the hub answers with the fence. Deletion is terminal, so the owned
-// lifecycle has to settle before the fence's own cache work revokes it - the
-// retirement that revocation performs removes the pending entry, and a retry
-// handler that finds no entry of its own never settles the hydration a waiting
-// claim is parked on. The claim must then reject rather than hang on a
-// lifecycle nothing will wake, and its rollback must drop exactly its count.
-test("a retry that answers deletion rejects the claim instead of hanging", async () => {
+// The hub's typed history failure is terminal for the attempt, and the claim
+// has no diagnostic surface to wait out a recovery for. It must reject rather
+// than park the resend on a destination whose history the hub has refused, and
+// the lease it took must be gone before the rejection reaches its caller.
+test("a hub history failure rejects the claim and releases the hold", async () => {
   const ref = "local:retry-deleted";
   const fake = connectMutationClient();
   let reads = 0;
   fake.on("thread/read", () => {
     reads += 1;
-    if (reads === 1) throw new Error("transport died");
-    throw new WireError(`target has been deleted: ${ref}`, -32001, {
-      evenerErrorInfo: "actionUnavailable",
-      mutationOutcome: "targetDeleted",
-      retryDisposition: "none",
+    throw new WireError(`thread history failed at entry 3: ${ref}`, -32000, {
+      evenerErrorInfo: "transcriptHistoryFailed",
     });
   });
-  // The retry the failed first read arms, captured rather than awaited: its
-  // backoff is wall-clock, and what this test needs is the attempt itself.
-  let fireRetry: (() => void) | undefined;
-  const restoreScheduler = installHydrationRetrySchedulerForTests((_attempt, run) => {
-    fireRetry = run;
-    return () => {};
-  });
-  const holdsBefore = foregroundHolds(ref);
+  const holdsBefore = backgroundHolds(ref);
   const claim = acquireUnreadThreadClaim(ref);
-  await flushUntil(() => fireRetry !== undefined);
-  fireRetry?.();
   // Bounded, not `await claim`: a claim parked on an unsettled lifecycle is
   // exactly the defect, and a test timeout would report it as a slow test
   // rather than as a hang.
@@ -215,16 +192,11 @@ test("a retry that answers deletion rejects the claim instead of hanging", async
     },
   );
   for (let turn = 0; turn < 60 && outcome === "pending"; turn += 1) await nextMacrotask();
-  expect(outcome, "a deleted destination rejects the claim rather than parking it").toBe("rejected");
-  expect(reads, "the retry ran once and was not re-armed at a deleted destination").toBe(2);
-  expect(foregroundHolds(ref), "a rejected acquisition leaves no count behind").toBe(holdsBefore);
-  // The fence is terminal: the rejected claim's rollback retired the ref and
-  // nothing re-armed a third read at a destination the hub has confirmed gone.
-  // (The `deletedRefs` marker itself is the pane's display state and retires
-  // with the model, so the read count is the standing evidence here.)
+  expect(outcome, "the hub's terminal answer rejects the claim rather than parking it").toBe("rejected");
+  expect(reads, "the refusal is the claim's only read").toBe(1);
+  expect(backgroundHolds(ref), "a rejected acquisition leaves no count behind").toBe(holdsBefore);
   for (let turn = 0; turn < 20; turn += 1) await nextMacrotask();
-  expect(reads, "no read follows the fence").toBe(2);
-  restoreScheduler();
+  expect(reads, "no read follows the terminal answer").toBe(1);
 }, 20_000);
 
 // The pane face of the same read, unchanged: a pane acquisition returns and
@@ -259,72 +231,61 @@ test("a claim on an unopened destination verifies without opening a transcript",
   lease.release();
 }, 20_000);
 
-// A cached shell advertises neither Send nor Queue. A resend that joined a read
-// which failed after a connection replacement must not accept that shell as
-// verification: it waits for the re-arm to verify on the replacement.
-test("a failed read after a replacement does not verify a routing claim from the shell", async () => {
-  const first = connectMutationClient();
-  const ref = "local:shell-dest";
-  first.on("thread/read", () => readResponse(ref));
+// A verified resident model is the whole answer: the destination's identity,
+// status and capabilities are already in the store, and the lease is what keeps
+// them there. Spending a read on that would put a redundant wire round trip in
+// front of the resend's durable write.
+test("a resident verified destination is handed out with no extra read", async () => {
+  const ref = "local:resident-verified";
+  const fake = connectMutationClient();
+  fake.on("thread/read", () => readResponse(ref));
   await threadsStore.getState().ensureThread(ref);
-  // The resident model is a cached shell: its source read has not confirmed it.
-  // A shell publishes neither Send nor Queue, so it is not routing state.
+  const readsBefore = fake.calls.filter((call) => call.method === "thread/read").length;
+  const lease = await acquireUnreadThreadClaim(ref);
+  expect(
+    fake.calls.filter((call) => call.method === "thread/read").length,
+    "the resident destination was not read again",
+  ).toBe(readsBefore);
+  expect(threadsStore.getState().threads.has(ref), "the lease keeps the verified model").toBe(true);
+  lease.release();
+  threadsStore.getState().releaseThread(ref);
+  await vi.waitFor(() => expect(threadsStore.getState().threads.has(ref)).toBe(false));
+}, 20_000);
+
+// A cached shell advertises neither Send nor Queue. A claim that finds one in
+// the store must verify it through the store's bounded tracked refresh rather
+// than accepting it: the shell's capabilities would refuse a resend the hub's
+// fresh snapshot allows.
+test("a cached shell is verified through a tracked refresh before the lease is handed out", async () => {
+  const ref = "local:shell-dest";
+  const fake = connectMutationClient();
+  fake.on("thread/read", () => readResponse(ref));
+  await threadsStore.getState().ensureThread(ref);
+  // The resident model becomes the shell a cached open published: its source
+  // read has not confirmed it.
   const route = entryTranscriptRoute(ref);
   if (!route) throw new Error("expected an entry route");
   route.cachedUnverified = true;
-  // The read is still in flight when the connection is replaced, so the
-  // failure is judged against a client that is no longer the wired one: that
-  // is the branch a shell could be accepted on.
-  const stalled = deferred<ThreadReadResponse>();
-  let firstReads = 0;
-  first.on("thread/read", () => {
-    firstReads += 1;
-    return stalled.promise;
-  });
-  const claim = acquireUnreadThreadClaim(ref);
-  await flushUntil(() => firstReads > 0);
-  // The connection is replaced while the claim's read is still in flight, then
-  // that read rejects: the shell standing in the store is all the old path
-  // would have.
-  let replacementReads = 0;
-  // The replacement's answer is held, so the lease must stay pending while it
-  // is outstanding: resolving before it arrives is exactly what accepting the
-  // shell looked like. The handler is installed BEFORE the client is connected,
-  // because the ready transition starts the refresh read: a client whose default
-  // handler answered first would verify the ref on a read this test never held.
-  const replacement = deferred<ThreadReadResponse>();
-  const second = new FakeClient("ready");
-  second.on("thread/read", () => {
-    replacementReads += 1;
-    return replacement.promise;
-  });
-  connectionStore.getState().connect(second);
-  stalled.reject(new Error("transport died"));
-  let settledEarly = false;
-  void claim.then(
-    () => {
-      settledEarly = true;
-    },
-    () => {
-      settledEarly = true;
-    },
-  );
-  // Drain generously while the replacement is unanswered: the lease must not
-  // resolve on the shell, whatever else settles.
-  for (let turn = 0; turn < 60; turn += 1) await nextMacrotask();
-  expect(settledEarly, "the shell was not accepted as verification").toBe(false);
-  replacement.resolve(readResponse(ref));
-  const lease = await claim;
-  // Exactly one replacement read: the claim joined the re-armed verification
-  // instead of starting a duplicate that would supersede it.
-  expect(replacementReads, "the claim joined the replacement read").toBe(1);
+  const readsBefore = fake.calls.filter((call) => call.method === "thread/read").length;
+  const lease = await acquireUnreadThreadClaim(ref);
+  expect(
+    fake.calls.filter((call) => call.method === "thread/read").length,
+    "the shell was verified by one tracked read",
+  ).toBe(readsBefore + 1);
+  expect(route.cachedUnverified, "the tracked read verified the route").toBe(false);
   lease.release();
+  threadsStore.getState().releaseThread(ref);
+  await vi.waitFor(() => expect(threadsStore.getState().threads.has(ref)).toBe(false));
 }, 20_000);
 
-// A retry that no pane opened behind must not stand in for a pane's cached
-// lookup. If the first pane to open skipped that lookup it would paint loading
-// over a usable cached transcript.
-test("a pane opening over a retry still restores its cached transcript", async () => {
+// A claim's background lease keeps the destination alive without standing in
+// for a pane's cached lookup: the pane that opens over the claim's pending read
+// still spends the route's bounded lookup, so it paints the restored
+// transcript rather than loading over a usable cache. The claim's own attempt
+// was overtaken by that open and published nothing, and a destination with no
+// verified model is not written to: the claim refuses and releases its lease
+// instead of handing out an unverified destination.
+test("a pane opening beside a claim still restores its cached transcript", async () => {
   const ref = "local:cached-pane";
   const cache = new SessionEntryCache({
     indexedDB: new IDBFactory(),
@@ -332,40 +293,31 @@ test("a pane opening over a retry still restores its cached transcript", async (
     databaseName: `cached-pane-${crypto.randomUUID()}`,
   });
   setProductionEntryCacheForTests(cache);
-  // The one question M4 asks: did the pane spend its own bounded local lookup?
-  // A read that stood in for the pane's would make the pane skip it.
   const lookup = vi.spyOn(cache, "getSessionForRequestedRef");
   const fake = connectMutationClient();
-  let failReads = true;
-  fake.on("thread/read", () => {
-    if (failReads) throw new Error("transport died");
-    return readResponse(ref);
-  });
-  // The retry the claim arms is machinery's, and M4 is about the registration
-  // that retry leaves behind. Capture the retry callback instead of waiting out
-  // its backoff, then fire it while the pane is opening.
-  let fireRetry: (() => void) | undefined;
-  const restoreScheduler = installHydrationRetrySchedulerForTests((_attempt, run) => {
-    fireRetry = run;
-    return () => {};
-  });
-  void acquireUnreadThreadClaim(ref).catch(() => {});
+  // The claim's read stays on the wire, so the destination has no model while
+  // the pane opens beside it.
+  const claimRead = deferred<ThreadReadResponse>();
+  fake.on("thread/read", () => claimRead.promise);
+  const holdsBefore = backgroundHolds(ref);
+  const claim = acquireUnreadThreadClaim(ref);
+  // Observed from the start: the refusal is the claim's own answer, and a
+  // handler attached after the pane settles would read as an unhandled
+  // rejection in the meantime.
+  const refused = claim.then(
+    () => undefined,
+    (error: unknown) => error,
+  );
   await flushUntil(() => fake.calls.some((call) => call.method === "thread/read"));
-  await flushUntil(() => fireRetry !== undefined);
-  // The retry's own read stays in flight and publishes nothing, so the pane
-  // meets that pending registration - the window M4 names.
-  const retryRead = deferred<ThreadReadResponse>();
-  failReads = false;
-  fake.on("thread/read", () => retryRead.promise);
-  fireRetry?.();
-  await flushUntil(() => fake.calls.filter((call) => call.method === "thread/read").length > 1);
-  // The first pane opens over the pending retry, with no model published.
   const pane = threadsStore.getState().ensureThread(ref);
-  for (let turn = 0; turn < 20; turn += 1) await nextMacrotask();
   expect(lookup, "the pane still owes its own cached lookup").toHaveBeenCalled();
-  retryRead.resolve(readResponse(ref));
+  claimRead.resolve(readResponse(ref));
   await pane;
-  restoreScheduler();
+  expect(threadsStore.getState().threads.has(ref), "the pane restores the cached transcript").toBe(true);
+  expect(await refused, "the overtaken claim refuses rather than writing unverified").toBeInstanceOf(Error);
+  expect(backgroundHolds(ref), "a refused claim leaves no lease behind").toBe(holdsBefore);
+  threadsStore.getState().releaseThread(ref);
+  await vi.waitFor(() => expect(threadsStore.getState().threads.has(ref)).toBe(false));
   cache.close();
 }, 20_000);
 

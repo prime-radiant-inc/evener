@@ -648,9 +648,9 @@ export async function openEntryTranscript(
     // before disposing the fenced one — a sole-reader disposal synchronously
     // reclaims the recorded bodies behind a display that may still hold a
     // usable live tail — mirroring the backstop's held-pane swap ordering.
-    // A reader is owed to a body owner and nobody else: a routing lease keeps
-    // the ref alive without reading bodies, so it must neither attach one nor
-    // have the local read run behind the closed pane. The open below is the
+    // A reader is owed to a body owner and nobody else: a background lease
+    // keeps the ref alive without reading bodies, so it must neither attach one
+    // nor have the local read run behind the closed pane. The open below is the
     // pane's work, and with no pane left there is nothing here to restore - the
     // "nothing to do" answer, as when the route has no repository at all.
     const bodyOwned = threadBodyOwned(ref);
@@ -961,7 +961,7 @@ export async function openCachedEntryTranscript(ref: string, generation: number)
       active &&
       productionEntryRoutes.get(ref) === route &&
       // The bodies, not the keep-alive count: a lookup belongs to the pane it
-      // was opened for. A routing lease that outlives that pane keeps the
+      // was opened for. A background lease that outlives that pane keeps the
       // model and the subscription alive, and it must not be what installs a
       // repository and attaches a reader behind the closed pane.
       threadBodyOwned(ref) &&
@@ -1315,10 +1315,11 @@ export function scheduleEntryRecordedReconciliation(ref: string): void {
 
 export function releaseEntryTranscriptReader(ref: string, releaseDisplay = false): void {
   // Body ownership, not the keep-alive count, decides whether a reader is still
-  // owed. A routing lease holds the model, the subscription and the route for a
-  // resend to dispatch on, and never reads bodies: the last pane closing during
-  // that resend must still detach its reader and prune its display. A history
-  // hold or a mutation pin does own the bodies, and still keeps both.
+  // owed. A background lease holds the model, the subscription and the route
+  // for a resend or a download to read them from, and never reads bodies: the
+  // last pane closing under that lease must still detach its reader and prune
+  // its display. A history hold or a mutation pin does own the bodies, and
+  // still keeps both.
   if (threadBodyOwned(ref)) return;
   const fixture = entryTranscriptRoute(ref);
   if (!fixture || fixture.ref !== ref) return;
@@ -1328,9 +1329,9 @@ export function releaseEntryTranscriptReader(ref: string, releaseDisplay = false
   const model = store().getState().threads.get(ref);
   // No body owner is left - the guard above returned if one were - so a model
   // still kept alive is kept for a lease that never reads bodies: a background
-  // download or a resend's routing lease. Its pane's text must not outlive the
-  // pane that rendered it, while identity, status and capabilities stay for the
-  // dispatch that lease is waiting to make.
+  // download or a resend's destination claim. Its pane's text must not outlive
+  // the pane that rendered it, while identity, status and capabilities stay for
+  // the dispatch that lease is waiting to make.
   if (releaseDisplay && model && canonicalThreadOwnerActive(ref)) {
     routeHost().putThreadModel(ref, pruneBackgroundHistoryBodies(model));
   }
