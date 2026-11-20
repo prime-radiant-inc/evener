@@ -531,6 +531,9 @@ export async function verifyComposerOutsidePressClick(endpoint, url, width) {
     const pressed = `document.querySelectorAll('[data-testid="turn-block"] details')[${aim.index}]`;
     const toggledExpr = `${pressed}.open !== ${aim.open}`;
     await until(send, toggledExpr);
+    // The fold runs in a zero-delay timer after the click, so data-folded
+    // lands in a later React commit than the disclosure's open.
+    await until(send, `document.querySelector('[data-testid="composer-input-card"]').getAttribute('data-folded') === 'true'`);
     const settled = await evaluate(
       send,
       `({
