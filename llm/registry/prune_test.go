@@ -370,3 +370,39 @@ func TestTemperatureSupported(t *testing.T) {
 		}
 	}
 }
+
+// TestApplyBodyConstants_DeepClonesNestedMapsAcrossCalls pins that a constant
+// object is installed as a copy: two requests built from one shared
+// Transport.Body must not share nested maps, so a builder edit on the first
+// body cannot leak into the second or back into the registry's constants.
+func TestApplyBodyConstants_DeepClonesNestedMapsAcrossCalls(t *testing.T) {
+	t.Parallel()
+	constants := map[string]any{
+		"generation_config":      map[string]any{"max_output_tokens": 1000},
+		"generation_config.seed": 7,
+	}
+	body1 := map[string]any{}
+	ApplyBodyConstants(body1, constants)
+	body2 := map[string]any{}
+	ApplyBodyConstants(body2, constants)
+
+	gen1, ok := body1["generation_config"].(map[string]any)
+	if !ok {
+		t.Fatalf("generation_config = %T, want a map", body1["generation_config"])
+	}
+	gen1["max_output_tokens"] = 200
+
+	if got := constants["generation_config"].(map[string]any)["max_output_tokens"]; got != 1000 {
+		t.Fatalf("shared constant mutated: max_output_tokens = %v, want 1000", got)
+	}
+	if got := constants["generation_config.seed"]; got != 7 {
+		t.Fatalf("shared constant mutated: seed = %v, want 7", got)
+	}
+	gen2 := body2["generation_config"].(map[string]any)
+	if gen2["max_output_tokens"] != 1000 {
+		t.Fatalf("second body shares the first body's map: max_output_tokens = %v, want 1000", gen2["max_output_tokens"])
+	}
+	if gen2["seed"] != 7 {
+		t.Fatalf("second body seed = %v, want 7", gen2["seed"])
+	}
+}

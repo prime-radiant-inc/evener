@@ -205,7 +205,10 @@ func Prune(body map[string]any, caps Caps, protocol string) []string {
 // parent objects as needed (spec §8.2 step 3). Constants run after the
 // prune so they survive it, and they override any value the builder or a
 // caller's ProviderOptions put at the same path. Keys are applied in sorted
-// order so the result never depends on map iteration.
+// order so the result never depends on map iteration. Object and array
+// constants are installed as deep copies: Transport.Body is shared by every
+// request the instance serves, so a builder that edits the installed object
+// must not reach a later request or the registry's own data.
 func ApplyBodyConstants(body map[string]any, constants map[string]any) {
 	keys := make([]string, 0, len(constants))
 	for k := range constants {
@@ -213,7 +216,7 @@ func ApplyBodyConstants(body map[string]any, constants map[string]any) {
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		setPath(body, k, constants[k])
+		setPath(body, k, cloneAnyValue(constants[k]))
 	}
 }
 

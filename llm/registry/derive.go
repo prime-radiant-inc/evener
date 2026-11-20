@@ -13,6 +13,10 @@ type deriveInput struct {
 	Synthesized     bool
 	ProviderSurface string
 	ProviderFamily  string
+	// TransportPreset is the resolved transport's preset (spec §4.3). The
+	// capability clamps read it to tell an endpoint's own model family (a
+	// Vertex-hosted Gemini Omni row) from a same-named row elsewhere.
+	TransportPreset string
 	// Aliased marks a row seeded from an alias target. AliasTargetProtocol is
 	// the protocol that target resolved under. A same-protocol alias inherits
 	// the target's settled ThinkingShape verdict (even when the verdict was
@@ -28,6 +32,15 @@ type deriveInput struct {
 }
 
 const provDerived = "derived"
+
+// IsVertexGeminiOmni reports whether preset and wireID name a Vertex-hosted
+// Gemini Omni row. Vertex's Omni rows take neither function tools nor grounded
+// search, so the endpoint preset and the id prefix must agree before a
+// capability is clamped: the same id family behind another gateway is that
+// gateway's to serve.
+func IsVertexGeminiOmni(preset, wireID string) bool {
+	return preset == PresetVertexGemini && strings.HasPrefix(strings.ToLower(strings.TrimSpace(wireID)), "gemini-omni")
+}
 
 // rankEffortLadder returns a served effort ladder ordered least to most by
 // the shared vocabulary, so ladder order is a registry guarantee instead of
@@ -59,6 +72,21 @@ func derive(c *Caps, m *Model, in deriveInput, prov map[string]string) []string 
 			c.ReasoningControls, c.EffortValues = nil, nil
 			prov["ReasoningControls"], prov["EffortValues"] = provDerived, provDerived
 		}
+	}
+	// A row that takes no tools cannot pair grounded search with function
+	// tools, whatever a broader layer said: the model facts win over the
+	// family rule the same way reasoning = false wins over the controls.
+	if c.Tools != nil && !*c.Tools && BoolValue(c.CombinedSearchAndFunctions) {
+		c.CombinedSearchAndFunctions = new(false)
+		prov["CombinedSearchAndFunctions"] = provDerived
+	}
+	// Vertex's Gemini Omni rows take no grounded search at all, so the clamp
+	// holds even when a provider-wide web_search = true replays after the
+	// curated row that states the refusal. A gateway serving the same id
+	// family elsewhere is not this endpoint and keeps its own setting.
+	if IsVertexGeminiOmni(in.TransportPreset, m.WireID) {
+		c.WebSearch = new(false)
+		prov["WebSearch"] = provDerived
 	}
 	// A row that states the no-effort verdict takes no effort parameter,
 	// whichever layer stated it, so it publishes no ladder. The controls are

@@ -952,7 +952,7 @@ func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string
 		warnings = append(warnings, cw...)
 	}
 
-	warnings = append(warnings, derive(&caps, &row, deriveInput{Protocol: rowProto, Synthesized: hit.synthesized, ProviderSurface: rec.head.Surface, ProviderFamily: rec.head.Family, Aliased: row.AliasOf != "", AliasTargetProtocol: aliasTargetProtocol, AliasControlsRecorded: aliasControlsRecorded}, prov)...)
+	warnings = append(warnings, derive(&caps, &row, deriveInput{Protocol: rowProto, Synthesized: hit.synthesized, ProviderSurface: rec.head.Surface, ProviderFamily: rec.head.Family, TransportPreset: transport.Preset, Aliased: row.AliasOf != "", AliasTargetProtocol: aliasTargetProtocol, AliasControlsRecorded: aliasControlsRecorded}, prov)...)
 	// In the caller because derive early-returns for non-anthropic
 	// protocols; the ladder's membership is already settled here.
 	// rankEffortLadder states the ordering contract.
