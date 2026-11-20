@@ -1183,7 +1183,12 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 	// basename. A checkout that is gone contradicts nothing, and neither does a
 	// row and a bucket that record no project ID at all: with nothing to contradict
 	// the spelling, the marker answers as it always has.
-	if name, repoDir, isWorktree := inRepoWorktreeProjectPath(identifier.ResolveClean(wd)); isWorktree {
+	//
+	// The spelling read is the one with the SURVIVING PREFIX resolved. A recorded
+	// path that reaches a worktree through a symlinked ancestor and names a
+	// subdirectory of it cannot be resolved as a whole once the subdirectory is
+	// gone, and the alias itself spells no marker.
+	if name, repoDir, isWorktree := inRepoWorktreeProjectPath(resolveExistingPrefix(wd)); isWorktree {
 		if !directoryExists(repoDir) || (ownProject == "" && !bucketKnown) || r.checkoutIsRows(repoDir, ownProject, bucketProject, bucketKnown) {
 			return name
 		}

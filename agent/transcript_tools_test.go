@@ -1437,6 +1437,74 @@ func TestFind_ProjectName_LegacyBucketSkipsTheOrdinaryWalk(t *testing.T) {
 	}
 }
 
+// TestFind_ProjectName_AliasedBucketLaneKeepsItsProjectID covers a recorded path
+// that reaches a managed lane's project segment through a symlink to the bucket's
+// worktrees directory, after the lane and its project directory are gone. The
+// project ID the path spells survives the pruning, so the lane is foreign to a
+// bucket that records another project and an unrelated sibling cannot label it.
+func TestFind_ProjectName_AliasedBucketLaneKeepsItsProjectID(t *testing.T) {
+	stateHome := pinStateHome(t)
+
+	laneProject := identifier.ProjectFromCanonicalPath(filepath.Join(t.TempDir(), "lane-repo"))
+	if err := identifier.ValidateProjectID(laneProject.ID); err != nil {
+		t.Fatalf("fixture lane project ID %q: %v", laneProject.ID, err)
+	}
+	holder := newNamedCheckout(t, "holder-repo")
+	holderProject := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(holder))
+	bucket, err := RuntimeDirForProjectWithStateHome(holderProject, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "worktrees"), 0o755); err != nil {
+		t.Fatalf("mkdir worktrees: %v", err)
+	}
+	sibling := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	sibling.EnvInfo.GitOriginURL = "https://example.com/unrelated-sibling.git"
+	if err := schema.SaveSessionMeta(bucket, sibling); err != nil {
+		t.Fatal(err)
+	}
+
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(filepath.Join(bucket, "worktrees"), alias); err != nil {
+		t.Fatalf("symlink alias: %v", err)
+	}
+	row := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	row.EnvInfo.WorkingDir = filepath.Join(alias, laneProject.ID, "dlg_aliased")
+
+	if got := newProjectNameResolver().projectName(row, bucket); got != "" {
+		t.Fatalf("projectName(lane of project %q reached through an alias into %q's bucket) = %q, want empty: the lane is foreign to the bucket", laneProject.ID, holderProject.ID, got)
+	}
+}
+
+// TestFind_ProjectName_AliasedWorktreeMarkerKeepsTheRepo covers a recorded path
+// that reaches an in-repository worktree through a symlink and names a removed
+// subdirectory of it, with the repository's Git metadata gone. The marker in the
+// resolved spelling names the row's own project, so it must answer.
+func TestFind_ProjectName_AliasedWorktreeMarkerKeepsTheRepo(t *testing.T) {
+	repo := newNamedCheckout(t, "aliased-marker-repo")
+	feature := filepath.Join(repo, ".worktrees", "feature")
+	gittest.Run(t, repo, "worktree", "add", "-q", feature, "-b", "feature")
+	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repo))
+	if err := os.RemoveAll(filepath.Join(repo, ".git")); err != nil {
+		t.Fatalf("remove checkout git dir: %v", err)
+	}
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(feature, alias); err != nil {
+		t.Fatalf("symlink alias: %v", err)
+	}
+
+	row := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	row.Config.MemoryProjectID = project.ID
+	row.EnvInfo.WorkingDir = filepath.Join(alias, "pkg")
+
+	if got, want := newProjectNameResolver().projectName(row, filepath.Join(t.TempDir(), "unrelated-bucket")), filepath.Base(repo); got != want {
+		t.Fatalf("projectName(deleted subdirectory of the aliased worktree %q) = %q, want the marker's checkout %q", feature, got, want)
+	}
+}
+
 // TestFind_ProjectName_StateLaneStopsGitWalkAtLaneRoot covers a shared --state-dir
 // that lives inside checkout A while holding a managed delegate lane for
 // checkout B. Deleting the originless lane leaves nothing at the lane path, so a
