@@ -262,6 +262,12 @@ type SessionMeta struct {
 	// duration, interrupted and failed included), persisted so the total
 	// survives restart/resume.
 	WorkMillis int64 `json:"work_millis,omitzero"`
+	// QuotaWaitStamps is the last usage-limit wait identity the session
+	// issued (agent/session_quota_wait.go). The wire treats it as a strictly
+	// increasing per-session sequence, so a cold restore must keep minting
+	// stamps greater than any an open pane already saw: persisted here so
+	// allocation survives a delegate's runtime being released and restored.
+	QuotaWaitStamps uint64 `json:"quota_wait_stamps,omitempty"`
 	// LastTurnEndedAt is when the session's last turn ended, stamped at the
 	// processing boundary, or by a Close that cuts the turn short (S4). The
 	// hub's Finished band measures from it: unlike UpdatedAt it never moves on

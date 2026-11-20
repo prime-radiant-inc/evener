@@ -1065,7 +1065,7 @@ export function applyReadResponse<M extends ThreadModel>(
   // retire, and the wait-free clear below keeps its own long-standing rule.
   const quotaWait = reconcileQuotaWait(
     model,
-    { ...fields, bootGeneration: resp.bootGeneration, runningTurnId: resp.thread.evener.activeTurnId },
+    { ...fields, runningTurnId: resp.thread.evener.activeTurnId },
     postCutWaitStamps,
   );
   const retireQuotaRetry = quotaWait.retireChip === true;
@@ -1136,7 +1136,11 @@ function readModelDisposition(held: HistoryState, freshHistory: HistoryState | u
 // the held model still holds from live frames or an earlier read. A read is
 // the authority on which wait stands — the server refreshes the failure
 // facet before the cut — but its stamp ordering decides how that authority
-// meets a held wait:
+// meets a held wait. Wait stamps are one strictly increasing sequence per
+// addressed session: the daemon persists the counter across a cold restore of
+// a released delegate runtime and across a daemon restart, so a read's stamp
+// compares directly against the held and ended stamps with no runtime
+// scoping:
 // - a read naming a NEWER wait adopts the new wait whole and retires the
 //   held one's chip with it: the read carries no chip metadata, and the old
 //   wait's model tag must not answer for the new wait;
@@ -1164,8 +1168,6 @@ interface QuotaWaitFields {
 function reconcileQuotaWait(
   held: ThreadModel,
   fresh: {
-    instanceId?: string;
-    bootGeneration?: string;
     quotaResumesAt?: string;
     quotaWaitStartedAt?: number;
     runningTurnId?: string;
@@ -1180,23 +1182,9 @@ function reconcileQuotaWait(
     postCutWaitStamps !== undefined &&
     (fresh.quotaWaitStartedAt ?? 0) === 0 &&
     postCutWaitStamps.has(held.quotaWaitStartedAt ?? 0);
-  // Wait stamps are a per-runtime sequence: a cold-restored daemon mints them
-  // from 1 again, so a fresh runtime's stamp must never be compared against
-  // the previous runtime's. The read names the runtime two ways: a changed
-  // instance id (a restored delegate behind a new runtime) or a changed boot
-  // generation (a daemon restart resuming the same session keeps its
-  // instanceId but restarts the numbering — issue #6933's companion). Either
-  // change voids every stamp the previous runtime left before any comparison
-  // runs. Absent values (an older daemon, or a hand-built model) keep the
-  // unscoped behavior.
-  const runtimeChanged =
-    (fresh.instanceId !== undefined && held.instanceId !== undefined && fresh.instanceId !== held.instanceId) ||
-    (fresh.bootGeneration !== undefined &&
-      held.history?.bootGeneration !== undefined &&
-      fresh.bootGeneration !== held.history.bootGeneration);
-  const heldStamp = runtimeChanged ? 0 : (held.quotaWaitStartedAt ?? 0);
+  const heldStamp = held.quotaWaitStartedAt ?? 0;
   const readStamp = fresh.quotaWaitStartedAt ?? 0;
-  const endedStamp = runtimeChanged ? 0 : (held.quotaWaitEndedStamp ?? 0);
+  const endedStamp = held.quotaWaitEndedStamp ?? 0;
   if (readStamp > 0) {
     // The same wait the model holds: refresh its instant, keep the chip. An
     // equal-stamp announcement fills metadata, never replaces the wait.
@@ -1254,17 +1242,6 @@ function reconcileQuotaWait(
   // stamp surviving as the retirement marker, chip and all. A model holding
   // no quota wait keeps every chip it has: an ordinary provider retry is not
   // this reconciliation's to retire.
-  if (runtimeChanged && (heldStamp > 0 || held.quotaWaitEndedStamp !== undefined)) {
-    // The previous runtime's stamps die with it — held and ended alike: the
-    // restored daemon's sequence starts over, so no old stamp may outlive
-    // the runtime that minted it to refuse the new one's waits.
-    return {
-      quotaResumesAt: undefined,
-      quotaWaitStartedAt: undefined,
-      quotaWaitEndedStamp: undefined,
-      retireChip: true,
-    };
-  }
   if (heldStamp > 0) {
     return {
       quotaResumesAt: undefined,
@@ -1279,8 +1256,9 @@ function reconcileQuotaWait(
   // keeping it would show stale wait metadata with nothing behind it. The
   // exception is the wake's own zero-delay chip, which is the retry's
   // PROGRESS rather than the wait's metadata: when the read still names that
-  // retrying call's turn running (same runtime — runtimeChanged above zeroed
-  // endedStamp), the read is not news about the call and the chip stands. An
+  // retrying call's turn running (wait stamps are one strictly increasing
+  // sequence per addressed session, so no runtime boundary resets the
+  // comparison), the read is not news about the call and the chip stands. An
   // ordinary provider retry (no quota state anywhere) keeps its chip too:
   // this reconciliation never retires what is not quota.
   const retryingTurn = held.modelRetry?.turnId ?? held.runningTurnId;
@@ -1423,11 +1401,7 @@ export function applyReadModel<M extends ThreadModel>(
   // summary, ordered by stamp against what the model holds. Only the
   // helper's explicit retireChip verdict may drop the held chip — an
   // equal-stamp refresh keeps it, and an ordinary retry is untouched.
-  const quotaWait = reconcileQuotaWait(
-    model,
-    { ...fresh, bootGeneration: fresh.history?.bootGeneration },
-    postCutWaitStamps,
-  );
+  const quotaWait = reconcileQuotaWait(model, fresh, postCutWaitStamps);
   const retireQuotaRetry = quotaWait.retireChip === true;
   const { modelRetry: _retainedRetry, ...baseWithoutRetry } = base;
   const carried = retireQuotaRetry ? baseWithoutRetry : base;

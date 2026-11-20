@@ -3742,15 +3742,12 @@ test("a read's stamped wait reconciles against the snapshot's running turn with 
   expect(woken.quotaResumesAt).toBeUndefined();
 });
 
-// A delegate's runtime can be cold-restored: the restored daemon mints wait
-// stamps from its own fresh sequence, so the new runtime's first wait can
-// compare LESS than the ended stamp the previous runtime left on the model.
-// Stamps order only waits the same runtime issued, and the read names the
-// runtime (EvenerThread.instanceId): a changed instance id voids the previous
-// runtime's stamps before any comparison, so the fresh wait installs. The
-// daemon-side fix — keeping allocation monotonic across restores — is
-// stages 0/1 territory; this is the client-side scoping.
-test("a changed runtime identity voids the previous runtime's wait stamps", () => {
+// Wait stamps are one strictly increasing sequence per addressed session: the
+// daemon persists the counter across a cold restore of a released delegate
+// runtime, so the restored runtime continues the previous runtime's numbering
+// rather than restarting it. A read from the new instance therefore keeps the
+// held ended stamp, and the next wait's greater stamp installs normally.
+test("a cold-restored runtime continues the previous runtime's wait stamp sequence", () => {
   const resumesAt = Date.parse("2026-11-07T14:30:00Z");
   let model = testHydrate({
     status: { type: "active" },
@@ -3762,31 +3759,62 @@ test("a changed runtime identity voids the previous runtime's wait stamps", () =
   expect(model.quotaWaitEndedStamp).toBe(5);
 
   // The cold restore surfaces as a read: the addressed delegate is the same,
-  // the runtime behind it is new (instanceId changed) and holds no wait.
+  // the runtime behind it is new and holds no wait.
   const restored = testThread({
     status: { type: "active" },
     evener: { activeTurnId: "turn_2", instanceId: "inst_new" },
   });
   const afterRead = applyReadResponse(model, { thread: restored }, 3500);
-  // The previous runtime's ended stamp died with its runtime.
-  expect(afterRead.quotaWaitEndedStamp).toBeUndefined();
+  // The ended stamp survives: the restored runtime's sequence continues from
+  // it, so no older stamp may be read as news after this point.
+  expect(afterRead.quotaWaitStartedAt).toBeUndefined();
+  expect(afterRead.quotaWaitEndedStamp).toBe(5);
 
-  // The restored runtime's first wait: stamp 1 again, a genuine start.
+  // The restored runtime's next wait: stamp 6, greater than the one the pane
+  // already saw, installs as a genuine start.
+  const nextResume = resumesAt + 7_200_000;
   const restarted = applyNotification(
     afterRead,
-    quotaRetry({ waitStartedAt: 1, resumesAt: resumesAt + 7_200_000, turnId: "turn_2" }),
+    quotaRetry({ waitStartedAt: 6, resumesAt: nextResume, turnId: "turn_2" }),
     4000,
   );
-  expect(restarted.quotaWaitStartedAt).toBe(1);
-  expect(restarted.quotaResumesAt).toBe(new Date(resumesAt + 7_200_000).toISOString());
+  expect(restarted.quotaWaitStartedAt).toBe(6);
+  expect(restarted.quotaResumesAt).toBe(new Date(nextResume).toISOString());
+});
+
+// A read whose cut predates the wake cannot resurrect the wait the wake
+// ended: a stamp below the held ended stamp is stale news, so it installs no
+// wait and no deadline.
+test("an older read stamp is refused after the wake ended a newer one", () => {
+  const resumesAt = Date.parse("2026-11-07T14:30:00Z");
+  let model = testHydrate({
+    status: { type: "active" },
+    evener: { activeTurnId: "turn_1" },
+  });
+  model = applyNotification(model, quotaRetry({ waitStartedAt: 5, resumesAt, turnId: "turn_1" }), 2000);
+  model = applyNotification(model, quotaRetry({ delayMs: 0, waitStartedAt: 5, turnId: "turn_1" }), 3000);
+  expect(model.quotaWaitEndedStamp).toBe(5);
+
+  // The read names an OLDER wait: a stamp below the held ended stamp is not
+  // news, so it installs no wait and no deadline.
+  const restored = testThread({
+    status: { type: "active" },
+    evener: {
+      activeTurnId: "turn_2",
+      failure: { title: "usage limit", resumesAt: resumesAt + 60_000, waitStartedAt: 3 },
+    },
+  });
+  const afterRead = applyReadResponse(model, { thread: restored }, 3500);
+  expect(afterRead.quotaWaitStartedAt).toBeUndefined();
+  expect(afterRead.quotaResumesAt).toBeUndefined();
+  expect(afterRead.quotaWaitEndedStamp).toBe(5);
 });
 
 // A daemon restart resuming the same session keeps its instanceId but bumps
-// the boot generation and restarts wait numbering (issue #6933's companion:
-// that issue fixes the allocation; this pins the client's guard). The read's
-// boot generation clears the previous boot's stamps before the new boot's
-// first wait reconciles.
-test("a changed boot generation voids the previous boot's wait stamps at the same instance", () => {
+// the boot generation. The counter is persisted with the session, so the new
+// boot continues the previous boot's numbering: the read keeps the held ended
+// stamp, and the next wait's greater stamp installs.
+test("a changed boot generation no longer voids the previous boot's wait stamps", () => {
   const resumesAt = Date.parse("2026-11-07T14:30:00Z");
   let model = testHydrateV6({
     status: { type: "active" },
@@ -3797,7 +3825,7 @@ test("a changed boot generation voids the previous boot's wait stamps at the sam
   model = applyNotification(model, quotaRetry({ delayMs: 0, waitStartedAt: 1, turnId: "turn_1" }), 3000);
   expect(model.quotaWaitEndedStamp).toBe(1);
 
-  // The restart: same instance, new boot generation, wait numbering restarted.
+  // The restart: same instance, new boot generation, numbering continued.
   const restartedRead = {
     thread: testThread({
       status: { type: "active" },
@@ -3808,15 +3836,17 @@ test("a changed boot generation voids the previous boot's wait stamps at the sam
     snapshot: { incarnation: "inc-1", length: 1 },
   } as ThreadReadResponse;
   const afterRead = applyReadResponse(model, restartedRead, 3500);
-  expect(afterRead.quotaWaitEndedStamp).toBeUndefined();
+  expect(afterRead.quotaWaitStartedAt).toBeUndefined();
+  expect(afterRead.quotaWaitEndedStamp).toBe(1);
 
+  const nextResume = resumesAt + 3_600_000;
   const restarted = applyNotification(
     afterRead,
-    quotaRetry({ waitStartedAt: 1, resumesAt: resumesAt + 3_600_000, turnId: "turn_2" }),
+    quotaRetry({ waitStartedAt: 2, resumesAt: nextResume, turnId: "turn_2" }),
     4000,
   );
-  expect(restarted.quotaWaitStartedAt).toBe(1);
-  expect(restarted.quotaResumesAt).toBe(new Date(resumesAt + 3_600_000).toISOString());
+  expect(restarted.quotaWaitStartedAt).toBe(2);
+  expect(restarted.quotaResumesAt).toBe(new Date(nextResume).toISOString());
 });
 
 // Deleted: "modelRetry clears when its turn completes" and "modelRetry

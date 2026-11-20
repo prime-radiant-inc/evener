@@ -161,6 +161,10 @@ func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model st
 	defer end()
 
 	s.noteParentJobActivity(jobPhaseModelRetrying)
+	// Save the minted stamp before announcing it, so a process death mid-wait
+	// cannot remint a stamp a pane already saw. A failed write only degrades
+	// to the pre-persistence behavior for this wait.
+	s.maybeAutoSave()
 	s.emitQuotaRetry(callErr, model, resetAt.Sub(now), wait.stamp, resetAt.UnixMilli(), callElapsed, &wait.failure)
 	select {
 	case <-ctx.Done():

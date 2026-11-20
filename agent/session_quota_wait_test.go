@@ -1522,6 +1522,95 @@ func TestQuotaWaitAnnouncementsCarryTheWaitIdentity(t *testing.T) {
 	run.awaitEnd(t, trip, "the call resumes at the reset")
 }
 
+// A delegate that completes a quota wait, releases its idle runtime and hits
+// quota again after a cold restore must not start its wait identity sequence
+// over: an open pane still holds the previous runtime's ended stamp, and the
+// client's stamp ordering would read the fresh wait as stale and refuse it
+// (issue #6933). The persisted counter is seeded back into the restored
+// session; TestQuotaWaitStampDurableBeforeAnnouncement pins the write side.
+func TestQuotaWaitStampSurvivesRestore(t *testing.T) {
+	meta := schema.SessionMeta{
+		ID:              "01QUOTAWAITSTAMP000001",
+		ProfileID:       "openai",
+		Model:           "gpt-5.2",
+		Config:          (SessionConfig{}).toSnapshot(),
+		QuotaWaitStamps: 5,
+	}
+	restored := restoreAskSession(t, meta, t.TempDir())
+	if got := restored.quotaWaitStamps; got != 5 {
+		t.Fatalf("restored quotaWaitStamps = %d, want 5: the wait identity sequence must carry across a cold restore", got)
+	}
+}
+
+// A wait's stamp is announced to clients, so it must be durable before the
+// announcement goes out: a process death mid-wait must not leave a pane
+// holding a stamp the next runtime could mint again for a different wait.
+// The test reads the persisted meta while the wait is still in flight, and
+// then drives a second wait of the same turn to pin that it mints
+// previous+1 — one strictly increasing sequence per session.
+func TestQuotaWaitStampDurableBeforeAnnouncement(t *testing.T) {
+	s, clk, _, adapter := newAttentionLivelockSession(t, usageLimitError(t, "openai", quotaResetAt))
+	var announcements quotaWaitAnnouncements
+	s.ConsumeEventsLossless(announcements.consume, func() {})
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	// Name the session up front: the background prompt namer otherwise runs a
+	// concurrent meta save, and this test's point is that the wait's own mint
+	// is what reaches the disk before its announcement.
+	if err := s.Rename("quota wait stamp test"); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+	trip := tripwireCtx(t).Done()
+	run := startInput(context.Background(), s, "start the work", EntryUserInput)
+	run.awaitQuotaWait(t, s)
+	// The start announcement is emitted after the durable save, so waiting for
+	// it also waits for the save.
+	announcements.awaitLen(t, 1)
+
+	s.mu.Lock()
+	stamp := s.quotaWait.stamp
+	s.mu.Unlock()
+	if stamp == 0 {
+		t.Fatal("fixture: the in-flight wait carries no stamp")
+	}
+	meta, err := schema.LoadSessionMeta(s.stateDir, s.ID())
+	if err != nil {
+		t.Fatalf("LoadSessionMeta: %v", err)
+	}
+	if meta.QuotaWaitStamps != stamp {
+		t.Fatalf("persisted QuotaWaitStamps = %d, want the in-flight wait's %d: the stamp is saved before it is announced", meta.QuotaWaitStamps, stamp)
+	}
+
+	// A steer wakes the first wait; the provider still meets the limit, so
+	// the call waits again within the same turn, minting the next stamp.
+	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "steer-next-stamp",
+		Input:            []appwire.InputItem{{Type: "text", Text: "is the quota back"}},
+	}); err != nil {
+		t.Fatalf("steer: %v", err)
+	}
+	testwait.Until(t, "the steer retries the call", func() bool { return streamCalls(adapter) == 2 })
+	announcements.awaitLen(t, 3)
+	s.mu.Lock()
+	next := s.quotaWait.stamp
+	s.mu.Unlock()
+	if next != stamp+1 {
+		t.Fatalf("the second wait's stamp = %d, want %d: one strictly increasing sequence per session", next, stamp+1)
+	}
+	meta, err = schema.LoadSessionMeta(s.stateDir, s.ID())
+	if err != nil {
+		t.Fatalf("LoadSessionMeta after the second wait: %v", err)
+	}
+	if meta.QuotaWaitStamps != next {
+		t.Fatalf("persisted QuotaWaitStamps after the second wait = %d, want %d", meta.QuotaWaitStamps, next)
+	}
+
+	recoverProvider(adapter)
+	reachReset(clk)
+	run.awaitEnd(t, trip, "the call resumes at the reset")
+}
+
 // The elapsed sample is the RETRY GROUP's time, not the whole model-call
 // phase's: a primary model that fails over a fallback which then hits quota
 // must not bill the fallback's wait the primary's runtime. The primary here

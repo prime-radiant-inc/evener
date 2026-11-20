@@ -446,6 +446,7 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 		WorktreeManaged:          s.worktreeCurrentManaged,
 		WorktreeRestoreRoot:      restoreRoot,
 		WorkMillis:               s.workMillis,
+		QuotaWaitStamps:          s.quotaWaitStamps,
 		LastTurnEndedAt:          s.lastTurnEndedAt,
 		LastMessage:              s.lastMessage,
 		CumulativeUsage:          cumulativeUsageSnapshot(s.contextMgr.CumulativeUsage()),
