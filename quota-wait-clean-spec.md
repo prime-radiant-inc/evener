@@ -6,12 +6,12 @@ It is written to be implemented from scratch against `origin/main`.
 
 ## Problem
 
-When a provider quota cap pauses a session, the pane and sidebar showed only a
-countdown to the reset: neither said the session was waiting on quota, and the
-sidebar row otherwise showed nothing. On reset the countdown disappeared
-instead of becoming a visible wait. A user sees a silent, apparently-wedged session for up to hours while
-the daemon is knowingly waiting out a reset, and a delegate pane opened or
-reloaded mid-wait showed no wait at all.
+When a provider quota cap pauses a session, the pane and sidebar showed a
+countdown to the reset labeled as a quota wait. When the reset passed while the
+retry was still pending, that indicator disappeared instead of becoming a
+visible pending wait. A user sees a silent, apparently-wedged session for up to
+hours while the daemon is knowingly waiting out a reset, and a delegate pane
+opened or reloaded mid-wait showed no wait at all.
 
 ## Stage 0 — Wire prerequisite (implements before any client work)
 
