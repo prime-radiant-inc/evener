@@ -1131,6 +1131,69 @@ func TestFind_ProjectName_DeletedSubdirKeepsSurvivingRepoAncestor(t *testing.T) 
 	}
 }
 
+// TestFind_ProjectName_DeletedSubdirThroughSymlinkedAncestor covers a session
+// that entered through a symlink to a checkout subdirectory and named a
+// directory inside it that was later removed. Resolving the recorded path as a
+// whole fails at the removed tail, so a walk over the link's lexical parents
+// misses the checkout the link points into and the deleted leaf would answer.
+func TestFind_ProjectName_DeletedSubdirThroughSymlinkedAncestor(t *testing.T) {
+	stateHome := pinStateHome(t)
+
+	checkout := newNamedCheckout(t, "aliased-repo")
+	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(checkout))
+	bucket, err := RuntimeDirForProjectWithStateHome(project, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+
+	sub := filepath.Join(checkout, "src")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("mkdir checkout subdirectory: %v", err)
+	}
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(sub, alias); err != nil {
+		t.Fatalf("symlink alias: %v", err)
+	}
+	row := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	row.EnvInfo.WorkingDir = filepath.Join(alias, "pkg")
+
+	if got, want := newProjectNameResolver().projectName(row, bucket), filepath.Base(checkout); got != want {
+		t.Fatalf("projectName(deleted subdirectory through a symlinked ancestor %q) = %q, want the surviving checkout's %q", row.EnvInfo.WorkingDir, got, want)
+	}
+}
+
+// TestFind_ProjectName_DeletedSubdirInsideNestedCheckoutUnderWorktrees covers a
+// session in a subdirectory of an independent checkout that sits under another
+// checkout's ".worktrees" directory. The deleted leaf must take the nested
+// checkout's name when that checkout is the bucket's project, not the name the
+// spelling-based marker would give the enclosing checkout.
+func TestFind_ProjectName_DeletedSubdirInsideNestedCheckoutUnderWorktrees(t *testing.T) {
+	stateHome := pinStateHome(t)
+
+	outer := newNamedCheckout(t, "outer-repo")
+	inner := filepath.Join(outer, ".worktrees", "inner")
+	gittest.Run(t, outer, "init", "-q", filepath.Join(".worktrees", "inner"))
+	gittest.Run(t, inner, "commit", "-q", "--allow-empty", "-m", "init")
+
+	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(inner))
+	bucket, err := RuntimeDirForProjectWithStateHome(project, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+	row := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	row.EnvInfo.WorkingDir = filepath.Join(inner, "pkg")
+
+	if got, want := newProjectNameResolver().projectName(row, bucket), "inner"; got != want {
+		t.Fatalf("projectName(deleted subdirectory of a nested checkout under %q) = %q, want the nested checkout's %q", outer+"/.worktrees", got, want)
+	}
+}
+
 // TestFind_ProjectName_StateLaneStopsGitWalkAtLaneRoot covers a shared --state-dir
 // that lives inside checkout A while holding a managed delegate lane for
 // checkout B. Deleting the originless lane leaves nothing at the lane path, so a

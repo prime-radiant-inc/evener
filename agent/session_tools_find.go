@@ -969,12 +969,12 @@ func newProjectNameResolver(bucketMetas ...map[string][]schema.SessionMeta) *pro
 //  2. What a record the row is TIED TO states: its owner, then its verified
 //     parent. Row-specific evidence must name the lane's project when the lane
 //     records one.
-//  3. Bucket-wide inference from siblings. It describes the bucket, not the
+//  3. A GONE path whose surviving checkout is exactly the project the bucket
+//     records: that ID check does not depend on the walk, which is what lets it
+//     lift the existence gate steps 1 and 2 apply.
+//  4. Bucket-wide inference from siblings. It describes the bucket, not the
 //     lane, so it only answers once nothing row-specific did.
-//  4. The path's own basename. A DELETED path instead takes the name of the
-//     surviving checkout above it when that checkout is exactly the project the
-//     bucket records: that ID check does not depend on the walk, which is what
-//     lets it lift the existence gate steps 1 and 2 apply.
+//  5. The path's own basename.
 //
 // Two properties hold at every site:
 //
@@ -1124,54 +1124,67 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 		return laneFallback
 	}
 
-	// 2. Resolve the main checkout from the .git layout. A label never needs a
-	// process: see mainRootOutcomeClean. Gated on the directory existing for the
-	// reason step 1 gives: a walk from a path that is gone describes its
-	// surroundings, not the checkout that used to sit there.
-	//
-	// It is gated on being absolute for the reason step 1 gives, and that reason
-	// applies to wd even though step 1 skipped it: a relative record names no
-	// checkout of its own. Walking "." resolves against THIS process, so a legacy
-	// row that saved --dir . would take the label of whichever repository the
-	// search happens to be running in.
-	//
-	// The existence verdict is taken once: step 4 asks the same question, and no
-	// step between the two writes.
-	wdExists := filepath.IsAbs(wd) && directoryExists(wd)
+	// A record that is not absolute names no checkout, which is the rule step 1
+	// already applies to every recorded path; answering "." here would label the
+	// row with a directory name that is not a name at all, and one that every
+	// relative record shares. The check sits before the walks because each of them
+	// would otherwise start from this process's directory: a legacy row that saved
+	// --dir . would take the label of whichever repository the search is running in.
+	if !filepath.IsAbs(wd) {
+		return ""
+	}
+	// One verdict serves steps 2 and 3: nothing between them writes.
+	wdExists := directoryExists(wd)
+
+	// 2. Resolve the main checkout from the .git layout for a directory that is
+	// still there. A label never needs a process: see mainRootOutcomeClean. A walk
+	// from a path that is gone describes its surroundings, not the checkout that
+	// used to sit there, which is why absence is step 3 rather than a guess here.
 	if wdExists {
 		if root := r.resolveMainRoot(wd); root != "" {
 			return filepath.Base(root)
 		}
 	}
 
-	// 3. ONLY if wd is structurally a worktree path whose checkout directory has no .git layout to resolve:
+	// 3. A GONE path may still take the name of the surviving checkout above it,
+	// and only when the bucket records a project and the walk finds exactly that
+	// project's root. The surviving prefix is resolved first: a recorded path that
+	// ran through a symlinked ancestor cannot be resolved as a whole once its tail
+	// is missing, and a walk started at the link's lexical parents misses the
+	// checkout the link points into.
+	//
+	// It is asked before step 4's spelling-based marker because that marker names
+	// whatever precedes ".worktrees", which can be an enclosing checkout while a
+	// surviving nested one is the project the bucket records.
+	//
+	// This is display-only. projectAt and projectRecord still report no project for
+	// a deleted ordinary path, and recordedOrdinaryProject still hashes the recorded
+	// path itself, so sibling and parent comparisons are unchanged. A legacy or
+	// shared bucket records no project, so nothing verifies the ancestor there and
+	// the recorded basename stays.
+	if !wdExists {
+		if bucketID, known := r.bucketProjectID(bucketDir); known {
+			resolved := resolveExistingPrefix(wd)
+			// A state-managed lane keeps its boundary: its identity is recorded in
+			// the state directory, and a walk past a pruned lane would answer with
+			// whichever checkout encloses the state dir.
+			if _, _, _, _, isLane := r.stateWorktreeOwner(resolved, bucketDir); !isLane {
+				if root := r.resolveMainRoot(resolved); root != "" &&
+					identifier.ProjectFromCanonicalPath(identifier.ResolveClean(root)).ID == bucketID {
+					return filepath.Base(root)
+				}
+			}
+		}
+	}
+
+	// 4. ONLY if wd is structurally a worktree path whose checkout directory has no .git layout to resolve:
 	if name, isWorktree := r.worktreePathFallback(wd, bucketDir, m.ParentSessionID); isWorktree {
 		return name
 	}
 
-	// 4. For any ordinary directory (e.g. /home/jesse/my-notes), return
-	// filepath.Base(wd). A record that is not absolute names no checkout, which is
-	// the rule steps 1 and 3 already apply to every recorded path; answering "."
-	// here would label the row with a directory name that is not a name at all,
-	// and one that every relative record shares.
-	if !filepath.IsAbs(wd) {
-		return ""
-	}
-	// A DELETED ordinary path may still take the name of the surviving checkout
-	// that encloses it, and only when the bucket records a project and the walk
-	// finds exactly that project's root above the missing path. This is a display
-	// fallback only: projectAt, projectRecord and recordedOrdinaryProject still
-	// report no project for a deleted ordinary path, and an existing directory is
-	// never relabelled. A legacy or shared bucket records no project, so nothing
-	// verifies the ancestor there and the recorded basename stays.
-	if !wdExists {
-		if bucketID, known := r.bucketProjectID(bucketDir); known {
-			if root := r.resolveMainRoot(wd); root != "" &&
-				identifier.ProjectFromCanonicalPath(identifier.ResolveClean(root)).ID == bucketID {
-				return filepath.Base(root)
-			}
-		}
-	}
+	// 5. Any other ordinary directory (e.g. /home/jesse/my-notes) is named by its
+	// own basename, and so is a gone directory whose surviving checkout does not
+	// match the bucket.
 	return filepath.Base(wd)
 }
 
