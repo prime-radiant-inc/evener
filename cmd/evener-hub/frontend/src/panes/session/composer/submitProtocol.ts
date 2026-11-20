@@ -172,16 +172,11 @@ export function captureRecoverySendIntent(displayedRef: string, recoveryId: stri
   return { displayedBarrier, durableSnapshot };
 }
 
-/** Performs the resend holding the destination claim lease: a destination
- * this tab is not already reading is hydrated under a foreground claim - the
- * same ensureThread/releaseThread pair useThreadClaim holds a pane's
- * subscription with - acquired only after ensureThread succeeds, so a failed
- * acquisition (whose rollback ensureThread already performed) releases
- * nothing, and the lease is released exactly once, after the resend. A
- * destination another reader already tracks needs no claim and takes none. */
+/** Performs the resend while holding a refcounted destination claim lease so
+ * the destination model stays pinned until `perform` settles; see
+ * `acquireUnreadThreadClaim`. */
 export async function withRecoveryDestinationClaim<T>(destinationRef: string, perform: () => Promise<T>): Promise<T> {
   const lease = await acquireUnreadThreadClaim(destinationRef);
-  if (lease === null) return perform();
   try {
     return await perform();
   } finally {
