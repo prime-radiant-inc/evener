@@ -92,6 +92,27 @@ func TestPlanContinuationIsStableAcrossBuilds(t *testing.T) {
 	}
 }
 
+// TestPlanContinuationCarriesTheV3Fingerprint pins that a plan from the real
+// registry client carries the cont-req-v3 cut-over prefix, so an anchor stored
+// before the cut-over holds a different string. The proof that such an anchor
+// resends full history lives in the agent package.
+func TestPlanContinuationCarriesTheV3Fingerprint(t *testing.T) {
+	t.Parallel()
+	c := continuationClient(t, fixtureRegistry(t, "https://api.openai.test/v1", nil))
+	req := userRequest("openai", "gpt-5.5")
+	req.Store = new(true)
+	plan, err := c.PlanResponsesContinuation(context.Background(), req)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if !strings.HasPrefix(plan.RequestFingerprint, "cont-req-v3:") {
+		t.Fatalf("RequestFingerprint = %q, want the v3 prefix", plan.RequestFingerprint)
+	}
+	if !strings.HasPrefix(plan.StorageScopeFingerprint, "cont-scope-v1:storage_scope:") {
+		t.Fatalf("StorageScopeFingerprint = %q, want the storage-scope shape", plan.StorageScopeFingerprint)
+	}
+}
+
 type planningOverride struct {
 	recordingAdapter
 	plan llm.ResponsesContinuationPlan

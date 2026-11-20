@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -395,6 +396,10 @@ type phase9RetryAdapter struct {
 	provider                string
 	storageScopeFingerprint string
 	storagePolicyLabel      string
+	// plan, when set, is the exact plan the adapter restates: the fixtures
+	// that pin a real client's fingerprints hand them over this way instead
+	// of rebuilding them from the request.
+	plan *llm.ResponsesContinuationPlan
 
 	// The scripted steps live in the shared engine: the step is read under
 	// its mutex and run outside it, so a blocked step never holds the script
@@ -441,6 +446,9 @@ func (a *phase9RetryAdapter) Stream(ctx context.Context, req llm.Request) (llm.S
 }
 
 func (a *phase9RetryAdapter) PlanResponsesContinuation(req llm.Request) (llm.ResponsesContinuationPlan, error) {
+	if a.plan != nil {
+		return *a.plan, nil
+	}
 	plan := phase4DIContinuationPlan(req)
 	if a.storageScopeFingerprint != "" {
 		plan.StorageScopeFingerprint = a.storageScopeFingerprint
@@ -598,5 +606,151 @@ func assertPhase9GateUsedFullHistory(t *testing.T, req llm.Request) {
 	}
 	if req.Continuation != nil && req.Continuation.PreviousResponseIDHash != "" {
 		t.Fatalf("Continuation = %+v, want no previous response hash", req.Continuation)
+	}
+}
+
+// phase9RealContinuationPlan is a genuine v3 plan computed by a real registry
+// client with a state dir: the fingerprints the session restates below come
+// from llm.Client.PlanResponsesContinuation, never from a hand-written string.
+func phase9RealContinuationPlan(t *testing.T, dir string) llm.ResponsesContinuationPlan {
+	t.Helper()
+	r, err := testRegistryWith(map[string]registry.Provider{
+		"openai": openaiInstance("https://api.openai.test/v1"),
+	})
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	real := llm.NewClient(llm.WithRegistry(r), llm.WithClientStateDir(dir))
+	plan, err := real.PlanResponsesContinuation(context.Background(), llm.Request{
+		Provider: "openai",
+		Model:    "gpt-5.4",
+		Messages: []llm.Message{llm.User("phase9 v2 anchor plan probe")},
+		Store:    new(true),
+	})
+	if err != nil {
+		t.Fatalf("real plan: %v", err)
+	}
+	if !strings.HasPrefix(plan.RequestFingerprint, "cont-req-v3:") ||
+		!strings.HasPrefix(plan.StorageScopeFingerprint, "cont-scope-v1:storage_scope:") ||
+		!plan.ContinuationStorageAllowed {
+		t.Fatalf("real plan = %+v, want a storable v3 plan", plan)
+	}
+	return plan
+}
+
+// phase9V2Twin is the stored anchor fingerprint a pre-cutover session wrote:
+// the real v3 plan fingerprint with only its version prefix moved back to v2.
+func phase9V2Twin(plan llm.ResponsesContinuationPlan) string {
+	return "cont-req-v2:" + strings.TrimPrefix(plan.RequestFingerprint, "cont-req-v3:")
+}
+
+// phase9AnchoredResponse is a final response that also records the response id
+// and the endpoint/handle provenance the session stores on the assistant turn,
+// so that turn can anchor the next delta.
+func phase9AnchoredResponse(message, responseID string) llm.Response {
+	resp := agenttest.FinalResponse(message)
+	resp.ID = responseID
+	resp.Raw = map[string]any{
+		"endpoint_url": "https://api.openai.test/v1/responses",
+		"id_hash":      "cont-handle-v1:response_id:" + responseID,
+	}
+	return resp
+}
+
+// TestSession_OpenAIResponsesContinuationPhase9V2AnchorCutover is the
+// end-to-end cont-req-v3 pin: a session whose last anchor stores the real v3
+// fingerprint under the v2 prefix cannot continue from it, so the first turn
+// resends full history and records the v3 plan's fingerprints on its response.
+// The second turn then continues from that fresh v3 anchor. The v3 subtest is
+// the control: the prefix alone is what blocked the first turn.
+func TestSession_OpenAIResponsesContinuationPhase9V2AnchorCutover(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name        string
+		fingerprint func(llm.ResponsesContinuationPlan) string
+		anchorID    string
+		inputs      []string
+		responseIDs []string
+		assert      func(t *testing.T, requests []llm.Request, plan llm.ResponsesContinuationPlan)
+	}{
+		{
+			name:        "v2 anchor resends full history then anchors on the new v3 response",
+			fingerprint: phase9V2Twin,
+			anchorID:    "resp_phase9_v2_cutover_anchor",
+			inputs:      []string{"phase9 first current user marker", "phase9 second current user marker"},
+			responseIDs: []string{"resp_phase9_v2_cutover_first", "resp_phase9_v2_cutover_second"},
+			assert: func(t *testing.T, requests []llm.Request, plan llm.ResponsesContinuationPlan) {
+				t.Helper()
+				if len(requests) != 2 {
+					t.Fatalf("request count = %d, want 2", len(requests))
+				}
+				first := requests[0]
+				assertPhase9GateUsedFullHistory(t, first)
+				if first.Continuation == nil || first.Continuation.RequestFingerprint != plan.RequestFingerprint {
+					t.Fatalf("v2 anchor Continuation = %+v, want the real v3 plan fingerprint %q", first.Continuation, plan.RequestFingerprint)
+				}
+				if !requestMessagesContainText(first.Messages, "phase9 prior user marker") ||
+					!requestMessagesContainText(first.Messages, "phase9 first current user marker") {
+					t.Fatalf("full-history request must resend the earlier turns: %+v", first.Messages)
+				}
+				second := requests[1]
+				if second.HistoryMode != llm.HistoryModeResponsesDelta || second.PreviousResponseID != "resp_phase9_v2_cutover_first" {
+					t.Fatalf("second request = %+v, want a delta re-anchored on the first v3 response", second)
+				}
+			},
+		},
+		{
+			name:        "v3 control continues from the seeded anchor",
+			fingerprint: func(plan llm.ResponsesContinuationPlan) string { return plan.RequestFingerprint },
+			anchorID:    "resp_phase9_v3_control_anchor",
+			inputs:      []string{"phase9 control current user marker"},
+			responseIDs: []string{"resp_phase9_v3_control_first"},
+			assert: func(t *testing.T, requests []llm.Request, _ llm.ResponsesContinuationPlan) {
+				t.Helper()
+				if len(requests) != 1 {
+					t.Fatalf("request count = %d, want 1", len(requests))
+				}
+				if requests[0].HistoryMode != llm.HistoryModeResponsesDelta ||
+					requests[0].PreviousResponseID != "resp_phase9_v3_control_anchor" {
+					t.Fatalf("v3 control request = %+v, want a delta from the seeded anchor", requests[0])
+				}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			plan := phase9RealContinuationPlan(t, dir)
+			adapter := &phase9RetryAdapter{provider: "openai", plan: &plan}
+			steps := make([]func(llm.Request) (llm.Response, error), 0, len(tc.responseIDs))
+			for i, responseID := range tc.responseIDs {
+				steps = append(steps, func(llm.Request) (llm.Response, error) {
+					return phase9AnchoredResponse(tc.inputs[i], responseID), nil
+				})
+			}
+			adapter.setSteps(steps)
+			client := llm.NewClient()
+			client.Register(adapter)
+			sess := newPhase9ContinuationSession(t, dir, client)
+			defer sess.Close()
+			drainSessionEvents(sess)
+			anchor := responsesContinuationEligibleAssistantTurn(tc.anchorID)
+			anchor.ResponseRequestFingerprint = tc.fingerprint(plan)
+			anchor.ResponseStorageScopeFingerprint = plan.StorageScopeFingerprint
+			sess.history = []schema.Turn{
+				schema.NewTurn(schema.TurnUserInput, llm.User("phase9 prior user marker")),
+				anchor,
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter (some tests use a loopback httptest server with no real I/O); only fires on a genuine hang.
+			defer cancel()
+			for _, input := range tc.inputs {
+				if _, err := sess.ProcessInput(ctx, input, nil); err != nil {
+					t.Fatalf("ProcessInput: %v", err)
+				}
+			}
+			tc.assert(t, adapter.Requests(), plan)
+		})
 	}
 }
