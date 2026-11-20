@@ -405,7 +405,9 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
           const text = event.clipboardData?.getData("text/plain").replace(/\r\n?/g, "\n");
           if (text)
             view.dispatch(
-              closeHistory(view.state.tr.insertText(text)).setMeta("paste", true).setMeta("uiEvent", "paste"),
+              closeHistory(view.state.tr.replaceSelectionWith(skillSchema.text(text), false))
+                .setMeta("paste", true)
+                .setMeta("uiEvent", "paste"),
             );
           return true;
         },

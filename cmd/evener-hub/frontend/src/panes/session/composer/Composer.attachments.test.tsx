@@ -1537,6 +1537,29 @@ test("deleting and retyping the closing bracket of a missing reference restores 
   expect(submitButton().disabled).toBe(true);
 });
 
+test("pasting over the opening bracket of a missing reference keeps it refused and repair preserves the pasted prefix", async () => {
+  const user = userEvent.setup();
+  writeComposerDraft("ref_a", {
+    text: "[image 1]",
+    skillNames: [],
+    stagedImageMarkers: [1],
+    stagedImageRanges: [{ marker: 1, start: 0, end: 9 }],
+  });
+  await mountComposerWithHandle("ref_a");
+  await user.click(textarea());
+  expect(screen.getByTestId("composer-unbacked-image")).toBeTruthy();
+
+  selectEditorText(textarea(), 0, 1);
+  await user.paste("See [");
+  expect(textarea().textContent).toBe("See [image 1]");
+  expect(screen.getByTestId("composer-unbacked-image")).toBeTruthy();
+  expect(submitButton().disabled).toBe(true);
+
+  fireEvent.click(within(screen.getByTestId("composer-unbacked-image")).getByRole("button"));
+  expect(textarea().textContent).toBe("See ");
+  expect(screen.queryByTestId("composer-unbacked-image")).toBeNull();
+});
+
 // The other order: the person deletes the staged ANCHOR and leaves the tile
 // behind - a tile whose text reference is gone but which is still attached.
 // The persistence pass must not read "a tile holds this number" as "the
