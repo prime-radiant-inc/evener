@@ -180,6 +180,7 @@ func (s *Session) emitDelegateUpdate(plan delegateUpdatePlan) {
 		// capture had filled, because a winning frame replaces every mutating
 		// field.
 		sample, holdSequence := s.delegateController.drainHoldForDelegateLocked(row.id)
+		s.delegateController.recordPublishedHoldSampleLocked(row.id, sample)
 		s.delegateController.mu.Unlock()
 		s.publishSessionActivityChanged(logicalOwner, ancestry, appwire.SessionActivityResourceDelegates)
 		data := delegateUpdatedDataFromStatus(delegateFrameStatusInfo(now, rootID, row))

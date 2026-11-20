@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
@@ -1048,5 +1049,63 @@ func TestDrainTurnSuspendsTheRowHoldAndRestoresIt(t *testing.T) {
 	}
 	if duringClear || session.drainHeld.Load() {
 		t.Fatal("the wrapper set a hold on a session that was not parked")
+	}
+}
+
+// A concurrent delegate list read between a descendant's durable update and
+// changedDrainHoldAncestorsLocked must not suppress the ancestor's hold update
+// in the subsequent publication.
+func TestChangedDrainHoldAncestorsSurvivesInterleavedRead(t *testing.T) {
+	t.Parallel()
+	tree := newRealDelegateTree(t, nil)
+	c := tree.c
+
+	// Reopen the grandchild and park the middle parent in its drain, then
+	// publish the parent's one-subagent hold so the baseline matches a live run.
+	c.mu.Lock()
+	if _, err := c.appendLocked(delegateControllerRunStartedEvent(tree.grandchildID, 2, delegatestore.TriggerOwnerInput, time.Now().UTC())); err != nil {
+		c.mu.Unlock()
+		t.Fatalf("reopen grandchild: %v", err)
+	}
+	tree.parentRuntime.drainHeld.Store(true)
+	parentPlan := c.capturedPlanLocked(tree.parent.DelegateID)
+	c.mu.Unlock()
+	c.emitDelegateUpdate(parentPlan)
+	drainPendingEvents(tree.s)
+
+	// Finish the grandchild durably, changing the parent's hold from 1 subagent
+	// to 0, then simulate a concurrent ListActivityDelegates read sampling the
+	// parent's hold before changedDrainHoldAncestorsLocked runs for the emission.
+	c.mu.Lock()
+	pkt := delegatestore.TerminalPacket{Kind: delegatestore.PacketReported, Message: json.RawMessage(`"done"`)}
+	if _, err := c.appendLocked(delegateRunFinishedEvent(
+		delegateLease{delegateID: tree.grandchildID, generation: 2},
+		delegatestore.OutcomeCompleted,
+		delegatestore.DispositionReported,
+		"",
+		time.Now().UTC(),
+		delegateDeliveryID(tree.grandchildID, 2),
+		&pkt,
+	)); err != nil {
+		c.mu.Unlock()
+		t.Fatalf("finish grandchild: %v", err)
+	}
+	grandchildPlan := c.capturedPlanLocked(tree.grandchildID)
+	readSample, readSeq := c.drainHoldForDelegateLocked(tree.parent.DelegateID)
+	if readSample != (delegateHoldSample{}) || readSeq == 0 {
+		c.mu.Unlock()
+		t.Fatalf("interleaved read sample=%+v seq=%d, want zero clearing sample with nonzero sequence", readSample, readSeq)
+	}
+	ancestors := c.changedDrainHoldAncestorsLocked(grandchildPlan.rows)
+	c.mu.Unlock()
+
+	if len(ancestors) != 1 || ancestors[0].id != tree.parent.DelegateID {
+		t.Fatalf("changedDrainHoldAncestorsLocked = %+v, want [%s] even after interleaved read", ancestors, tree.parent.DelegateID)
+	}
+
+	c.emitDelegateUpdate(grandchildPlan)
+	updates := drainRootDelegateUpdates(tree.s, tree.parent.DelegateID)
+	if len(updates) == 0 || updates[len(updates)-1].HoldSequence != readSeq {
+		t.Fatalf("emitted ancestor updates = %+v, want clearing HoldSequence %d matching interleaved read", updates, readSeq)
 	}
 }

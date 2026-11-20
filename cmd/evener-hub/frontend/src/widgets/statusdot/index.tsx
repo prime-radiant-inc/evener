@@ -77,14 +77,13 @@ export function StatusDot({ state, decorative = false }: StatusDotProps) {
 // (#4521 superseded): a >20s tool call, reasoning turn or child wait is still
 // active work, never a dead grey dot.
 const SUBAGENT_DOT: Record<
-  DelegateDotState,
+  Exclude<DelegateDotState, "quiet">,
   { family: Family; label: string; shape: "dot" | "diamond"; working: boolean } | null
 > = {
   // The shared states speak the session vocabulary's own words and hues, so a
   // session-status ruling reaches the subagent dot with no second table to
-  // update. Quiet reads exactly as fresh here.
+  // update. Quiet is normalized to fresh before lookup.
   fresh: { family: STATE_FAMILY.working, label: STATUS_LABEL.working, shape: "dot", working: true },
-  quiet: { family: STATE_FAMILY.working, label: STATUS_LABEL.working, shape: "dot", working: true },
   attention: { family: STATE_FAMILY["needs-you"], label: STATUS_LABEL["needs-you"], shape: "dot", working: false },
   failed: { family: STATE_FAMILY.failed, label: STATUS_LABEL.failed, shape: "diamond", working: false },
   // A settled row shows no dot, exactly as the main sessions' idle and

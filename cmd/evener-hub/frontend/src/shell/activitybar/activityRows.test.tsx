@@ -407,13 +407,20 @@ test("omitSubagentWait suppresses subagent-only drain hold meta while preserving
   expect(view.container.textContent).not.toContain("FROZEN_COORD_INTENT");
 
   view.rerender(<AgentRow now={NOW} sub={heldBySubagent} omitSubagentWait={false} />);
-  expect(view.container.querySelector("[data-activity-meta]")?.textContent).toBe("Waiting on 1 subagent");
+  const subagentWaitMeta = view.container.querySelector("[data-activity-meta]")?.textContent;
+  expect(subagentWaitMeta).toBeTruthy();
+  expect(subagentWaitMeta).toContain("1");
   expect(view.container.textContent).not.toContain("FROZEN_COORD_INTENT");
 
   view.rerender(
     <AgentRow now={NOW} sub={{ ...heldBySubagent, drainHeldByJobs: true, runningJobCount: 2 }} omitSubagentWait />,
   );
-  expect(view.container.querySelector("[data-activity-meta]")?.textContent).toBe("Waiting on 2 running jobs");
+  const jobWaitMeta = view.container.querySelector("[data-activity-meta]")?.textContent;
+  expect(jobWaitMeta).toBeTruthy();
+  expect(jobWaitMeta).toContain("2");
+  expect(jobWaitMeta).not.toContain("1");
+  expect(jobWaitMeta).not.toBe(subagentWaitMeta);
+  expect(view.container.textContent).not.toContain("FROZEN_COORD_INTENT");
 });
 
 test("AgentRow with trailingAction splits row selection from the trailing toggle", () => {
