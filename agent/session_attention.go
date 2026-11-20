@@ -3097,11 +3097,6 @@ func (s *Session) resolveAttentionDurablyForGeneration(ids []string, disposition
 	if err := s.appendAttentionResolutionsDurably(ids, disposition, resumeGeneration); err != nil {
 		return err
 	}
-	// A resolved row never becomes a request again, so the timer identity kept
-	// beside it for the delivery-time liveness check can never be read. The
-	// prune is outside the append above because that holds attentionMu and
-	// pendingJobNotifsMu is a leaf.
-	s.pruneStableWatchTickWatch(ids...)
 	return nil
 }
 

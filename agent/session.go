@@ -1042,23 +1042,6 @@ type Session struct {
 	// the append lands, so a failure at any point still owes exactly one
 	// attempt. Guarded by pendingJobNotifsMu.
 	stableWatchRetained map[string]retainedStableWatchNotice
-	// stableWatchTickWatch records, per durable attention identity, the timer
-	// watch that produced a non-terminal tick. A timer cleared after its tick
-	// was persisted but before it was presented must still suppress that tick:
-	// the queue makes this decision at DELIVERY time (timerWatchIsLive), and the
-	// durable row's frozen content cannot, so the timer identity is kept
-	// alongside the row and re-checked when the row is presented. A one-shot's
-	// terminal fire is deliberately absent: its fire is terminal even if the
-	// timer is cleared afterwards. Guarded by pendingJobNotifsMu.
-	stableWatchTickWatch map[string]string
-	// stableWatchTickBatch records, per repeating timer watch id, the newest
-	// unpresented tick batch the timer wrote: its durable row identity and the
-	// folded notification that row renders from. A tick arriving while an
-	// earlier one is still unpresented folds into that batch instead of writing
-	// another row, so missed ticks do not grow the transcript per tick. Once the
-	// row resolves the entry is dropped (pruneStableWatchTickWatch), and the
-	// next tick starts a fresh batch. Guarded by pendingJobNotifsMu.
-	stableWatchTickBatch map[string]stableWatchTickBatchEntry
 	// notifyWakeHolds counts in-flight holdJobNotificationWake holds, and
 	// notifyWakeDeferred records that a wake was suppressed while held. Guarded
 	// by pendingJobNotifsMu.

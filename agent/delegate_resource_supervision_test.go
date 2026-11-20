@@ -5052,15 +5052,15 @@ func TestDelegateResourceSupervision_ArmOnlyFollowsADurableAppend(t *testing.T) 
 }
 
 // TestDelegateResourceSupervision_ClearedRepeatingTickDoesNotPrompt pins the
-// delivery-time suppression of a tick whose timer was cleared after the tick was
-// persisted (#2340 review Low).
+// delivery-time suppression of a tick whose timer was cleared while the tick
+// waited unpresented.
 //
-// The queue drops such a tick when it drains, because it checks the timer's
-// liveness at DELIVERY time. The durable row cannot: its content is frozen and
-// already in the transcript. Without the recorded timer identity a cleared
-// repeating timer still prompted the model for a tick nobody owed. A one-shot
-// differs deliberately: its single fire is terminal, so a later clear must not
-// retract it.
+// A repeating tick lives on the ordinary queue until a leased handoff takes it,
+// and the queue checks the timer's liveness at DELIVERY time. So a clear that
+// lands before the handoff drops the batch with no transcript write at all, and
+// the model is never prompted for a tick nobody owes. A one-shot differs
+// deliberately: its single fire is terminal, so it goes durable at ingress and a
+// later clear must not retract it.
 func TestDelegateResourceSupervision_ClearedRepeatingTickDoesNotPrompt(t *testing.T) {
 	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
@@ -5071,21 +5071,26 @@ func TestDelegateResourceSupervision_ClearedRepeatingTickDoesNotPrompt(t *testin
 	waitForStableSupervisionRun(t, root, fixture.childID)
 	child := sub.sess
 
-	const watchID = "watch:life01-cleared"
-	// A repeating tick persisted while its timer was live, then cleared before
+	res, err := child.jobManager.configureWatch(watchArgs{Operation: "create", Source: "self", Target: "self", RepeatSeconds: 60, Note: "poll"})
+	if err != nil {
+		t.Fatalf("configure the repeating timer: %v", err)
+	}
+	watchID := res.WatchID
+	// A repeating tick queued while its timer was live, then cleared before
 	// anything presents it: the state the finding names.
 	repeating := jobNotification{Kind: jobNotificationKindWatch, WatchID: watchID, Reason: "repeat", Fires: 1, IntervalSeconds: 60}
-	repeatingID := stableWatchNoticeAttentionID(repeating)
-	if _, err := child.appendDelegateNotificationDurably(repeatingID, "repeating tick"); err != nil {
-		t.Fatalf("append the repeating tick: %v", err)
+	if child.jobManager.persistStableWatchPending(repeating) {
+		t.Fatal("the repeating tick was handled by the durable ingress instead of folding on the queue")
 	}
-	pending, err := child.pendingDelegateAttentionIDs()
-	if err != nil || !slices.Contains(pending, repeatingID) {
-		t.Fatalf("the appended tick is not pending (%v, %v): the test cannot describe a persisted tick", pending, err)
+	// Queue it without a concurrent wake: the drive below is the one this test
+	// observes.
+	child.enqueueJobNotification(repeating)
+	if child.peekNotifications() != 1 {
+		t.Fatalf("peekNotifications = %d with one queued repeating tick, want 1", child.peekNotifications())
 	}
-	child.pendingJobNotifsMu.Lock()
-	child.stableWatchTickWatch = map[string]string{repeatingID: watchID}
-	child.pendingJobNotifsMu.Unlock()
+	if _, err := child.jobManager.clearWatchByID(watchID); err != nil {
+		t.Fatalf("clear the repeating timer: %v", err)
+	}
 	if child.timerWatchIsLive(watchID) {
 		t.Fatal("the test's timer watch is live, so the tick is not the cleared case")
 	}
@@ -5103,22 +5108,37 @@ func TestDelegateResourceSupervision_ClearedRepeatingTickDoesNotPrompt(t *testin
 
 	// Drive the child the way production does.
 	root.driveChildIfNotStopGated(sub)
-	testwait.Until(t, "the cleared tick to be settled", func() bool {
-		pending, err := child.pendingDelegateAttentionIDs()
-		return err == nil && !slices.Contains(pending, repeatingID)
+	testwait.Until(t, "the cleared tick to leave the queue", func() bool {
+		return child.peekNotifications() == 0
 	})
 	select {
 	case <-prompted:
-		t.Fatal("a repeating tick whose timer was cleared still built a provider request: the durable rail skipped the queue's delivery-time clear check")
+		t.Fatal("a repeating tick whose timer was cleared still built a provider request: the handoff skipped the queue's delivery-time clear check")
 	default:
 	}
+	pending, err := child.pendingDelegateAttentionIDs()
+	if err != nil {
+		t.Fatalf("read pending attention: %v", err)
+	}
+	for _, id := range pending {
+		if isStableWatchAttentionID(id) {
+			t.Fatalf("a cleared repeating timer left durable row %q pending, so it wrote news nobody owes", id)
+		}
+	}
 
-	// A one-shot's terminal fire is NOT suppressible: it carries no timer
-	// identity, so the same check must leave it alone.
+	// Nothing retracts a one-shot's terminal fire: it is durable the moment it
+	// arrives, so the clear above must leave it pending.
 	terminal := jobNotification{Kind: jobNotificationKindWatch, WatchID: watchID, Reason: "after", Terminal: true, Fires: 1}
 	terminalID := stableWatchNoticeAttentionID(terminal)
-	if got := child.dropClearedStableWatchTicks([]string{terminalID}); len(got) != 1 {
-		t.Fatalf("a terminal one-shot fire was suppressed by a clear, want it kept: got %d id(s)", len(got))
+	if !child.jobManager.persistStableWatchPending(terminal) {
+		t.Fatal("a one-shot's terminal fire was not handled by the durable ingress")
+	}
+	pending, err = child.pendingDelegateAttentionIDs()
+	if err != nil {
+		t.Fatalf("read pending attention: %v", err)
+	}
+	if !slices.Contains(pending, terminalID) {
+		t.Fatal("the terminal one-shot fire is not pending, so the clear retracted a fact that already happened")
 	}
 }
 

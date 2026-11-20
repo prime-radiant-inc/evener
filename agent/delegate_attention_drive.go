@@ -69,12 +69,6 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 		}
 		return false
 	}
-	// A repeating tick whose timer was cleared after the row was persisted must
-	// not prompt the model: the queue makes that decision at delivery time, and
-	// this is the durable rail's equivalent point (LIFE-01, #2340 review Low).
-	if ids = sub.sess.dropClearedStableWatchTicks(ids); len(ids) == 0 {
-		return false
-	}
 	if observer := s.cfg.testOnly.delegateAttentionBeforeDriveClaim; observer != nil {
 		observer(sub)
 	}

@@ -113,226 +113,6 @@ func stableWatchNoticeOccurrence(n jobNotification) string {
 	}
 }
 
-// persistStableWatchPending is enqueueNotifications' stable-delegate branch: a
-// watch notice bound for a stable child becomes durable attention rather than a
-// queued notification, so the child can only run it inside a leased generation
-// (LIFE-01, #2340). It reports whether it handled the notice.
-//
-// Without this, the notice lands on the ordinary queue, whose only drain is an
-// EntryNotification turn -- and a stable child's unleased turn must not carry a
-// watch notice, so the gate would refuse the turn and leave the notice to be
-// refused again. That is a stranded delivery, not a fixed one. The reachable
-// case is the one the issue names: a watch-send diagnostic, emitted precisely
-// when the send rail had no other way to report the failure.
-//
-// A manager with no stable owner, or one whose owner is not a delegate, keeps
-// the ordinary rail. The owner and controller are snapshotted ONCE under jm.mu:
-// a new generation rewrites both fields under that same mutex, so re-reading
-// them after the transcript I/O would race a concurrent timer or shell
-// callback.
-// dropClearedStableWatchTicks removes the durable rows whose repeating timer
-// has since been cleared, resolving each as discarded.
-//
-// The queue drops such a tick at delivery time (timerWatchIsLive). A durable
-// row cannot be re-decided that way -- its content is frozen and it is already
-// in the transcript -- so the timer identity is kept beside it and checked
-// here, at the one point the row is about to become a request. A one-shot's
-// fire carries no timer identity and is never dropped: it is terminal even if
-// the timer is cleared afterwards (LIFE-01, #2340 review Low).
-func (s *Session) dropClearedStableWatchTicks(ids []string) []string {
-	if s == nil || len(ids) == 0 {
-		return ids
-	}
-	s.pendingJobNotifsMu.Lock()
-	tickWatch := make(map[string]string, len(ids))
-	for _, id := range ids {
-		if watchID, ok := s.stableWatchTickWatch[id]; ok {
-			tickWatch[id] = watchID
-		}
-	}
-	s.pendingJobNotifsMu.Unlock()
-	if len(tickWatch) == 0 {
-		return ids
-	}
-	kept := make([]string, 0, len(ids))
-	var cleared []string
-	for _, id := range ids {
-		watchID, isTick := tickWatch[id]
-		if isTick && !s.timerWatchIsLive(watchID) {
-			cleared = append(cleared, id)
-			continue
-		}
-		kept = append(kept, id)
-	}
-	if len(cleared) > 0 {
-		if err := s.resolveAttentionDurably(cleared, delegateAttentionDiscarded); err != nil {
-			// The row stays pending if the discard cannot be written: a
-			// presented stale tick is better than a silently lost clear, and
-			// the next drive retries the same discard.
-			s.emit(warningDataFromError("discard cleared watch tick", err))
-			return ids
-		}
-	}
-	return kept
-}
-
-// pruneStableWatchTickWatch drops the timer identity recorded beside each
-// attention row that has just resolved.
-//
-// The record exists so a clear landing AFTER a tick was persisted can still
-// suppress that tick before its delivery. A resolved row is never presented, so
-// that check can never run for it, and no other path deletes the entry: keeping
-// it would leave one entry per delivered tick for the life of the session.
-//
-// An unpresented tick batch is dropped with its row: a batch is the row's own
-// identity, so once the row resolves the next tick of that timer starts a fresh
-// batch rather than folding into a row the model has already seen.
-func (s *Session) pruneStableWatchTickWatch(ids ...string) {
-	if s == nil || len(ids) == 0 {
-		return
-	}
-	resolved := make(map[string]struct{}, len(ids))
-	s.pendingJobNotifsMu.Lock()
-	for _, id := range ids {
-		delete(s.stableWatchTickWatch, id)
-		resolved[id] = struct{}{}
-	}
-	for watchID, batch := range s.stableWatchTickBatch {
-		if _, ok := resolved[batch.attentionID]; ok {
-			delete(s.stableWatchTickBatch, watchID)
-		}
-	}
-	s.pendingJobNotifsMu.Unlock()
-}
-
-// stableWatchTickBatchEntry is the newest unpresented tick batch a repeating
-// timer wrote: the durable identity of its row and the notification that row
-// renders from, carrying the fires and lineage folded into it so far.
-type stableWatchTickBatchEntry struct {
-	attentionID  string
-	notification jobNotification
-}
-
-// foldStableWatchTickPending folds a repeating timer's new tick into the batch
-// an earlier tick of the same timer still has unpresented. It reports the folded
-// notification and the identity of the row it supersedes (empty when this tick
-// starts a fresh batch).
-//
-// A repeating timer whose ticks arrive while the delegate is busy would
-// otherwise write one durable row per missed tick, growing the transcript and
-// the next request without bound. The batch keeps the later interval and note of
-// the newest tick and unions the lineage, so the folded row states the whole
-// batch and nothing it stands for is narrowed.
-func (s *Session) foldStableWatchTickPending(n jobNotification) (folded jobNotification, supersedes string) {
-	if s == nil || n.WatchID == "" || n.Terminal {
-		return n, ""
-	}
-	s.pendingJobNotifsMu.Lock()
-	defer s.pendingJobNotifsMu.Unlock()
-	batch, ok := s.stableWatchTickBatch[n.WatchID]
-	if !ok || batch.attentionID == "" {
-		return n, ""
-	}
-	n.Fires += batch.notification.Fires
-	n.Provenance = provenance.Union(n.Provenance, batch.notification.Provenance)
-	if n.IntervalSeconds == 0 {
-		n.IntervalSeconds = batch.notification.IntervalSeconds
-	}
-	return n, batch.attentionID
-}
-
-// commitStableWatchTickBatch records the folded batch under its new identity and
-// retires the row it replaces.
-//
-// Durable rows are immutable, so a fold is expressed the way the reminder rail
-// expresses replacement: the newer row is persisted first, then the superseded
-// identity is resolved as discarded. A superseded row that was only retained is
-// simply dropped, because the folded content now stands for it. When the newer
-// row did NOT persist (it is retained instead), a superseded DURABLE row is left
-// pending: discarding it would retire it into nothing if the process stopped
-// before the retry landed. The duplicate statement that follows is the write
-// failure's cost, and a lost tick would not be.
-func (s *Session) commitStableWatchTickBatch(watchID, attentionID string, n jobNotification, supersedes string, persisted bool) {
-	if s == nil || watchID == "" || attentionID == "" {
-		return
-	}
-	s.pendingJobNotifsMu.Lock()
-	if s.stableWatchTickBatch == nil {
-		s.stableWatchTickBatch = make(map[string]stableWatchTickBatchEntry)
-	}
-	s.stableWatchTickBatch[watchID] = stableWatchTickBatchEntry{attentionID: attentionID, notification: n}
-	retire := supersedes != "" && supersedes != attentionID
-	if retire {
-		if _, retained := s.stableWatchRetained[supersedes]; retained {
-			delete(s.stableWatchRetained, supersedes)
-			retire = false
-		} else if !persisted {
-			retire = false
-		}
-	}
-	if retire {
-		// A superseded row is never presented again, so its timer record can
-		// never be consulted; dropping it here keeps the map from growing by one
-		// dead entry per folded tick.
-		delete(s.stableWatchTickWatch, supersedes)
-	}
-	s.pendingJobNotifsMu.Unlock()
-	if !retire {
-		return
-	}
-	if err := s.resolveAttentionDurably([]string{supersedes}, delegateAttentionDiscarded); err != nil {
-		s.emit(warningDataFromError("retire superseded watch tick", err))
-	}
-}
-
-// recordStableWatchTickWatch remembers which repeating timer a persisted
-// non-terminal tick row came from, so a clear landing after the append still
-// suppresses the row before its delivery. A one-shot's terminal fire carries no
-// timer identity: it is terminal even if the timer is cleared afterwards.
-func (s *Session) recordStableWatchTickWatch(n jobNotification, attentionID string) {
-	if s == nil || n.WatchID == "" || n.Terminal || attentionID == "" {
-		return
-	}
-	s.pendingJobNotifsMu.Lock()
-	if s.stableWatchTickWatch == nil {
-		s.stableWatchTickWatch = make(map[string]string)
-	}
-	s.stableWatchTickWatch[attentionID] = n.WatchID
-	s.pendingJobNotifsMu.Unlock()
-}
-
-// discardClearedStableWatchTicks resolves every unpresented tick the repeating
-// timer watchID still has pending as discarded.
-//
-// The drive's own drop (dropClearedStableWatchTicks) runs before it claims an
-// idle attention drive, which is too late for a tick recorded during a leased
-// turn that then clears its timer: that turn's next request would still present
-// it. Resolving the rows at the clear itself closes that window. A terminal
-// one-shot fire is not recorded here, so it is never discarded.
-func (jm *jobManager) discardClearedStableWatchTicks(watchID string) {
-	if jm == nil || watchID == "" {
-		return
-	}
-	owner, _ := jm.stableWatchOwner()
-	if owner == nil {
-		return
-	}
-	owner.pendingJobNotifsMu.Lock()
-	ids := make([]string, 0, len(owner.stableWatchTickWatch))
-	for id, tickWatchID := range owner.stableWatchTickWatch {
-		if tickWatchID == watchID {
-			ids = append(ids, id)
-		}
-	}
-	owner.pendingJobNotifsMu.Unlock()
-	if len(ids) == 0 {
-		return
-	}
-	// The timer is already gone, so every collected row is discarded. A row the
-	// liveness check still considers live is left pending rather than guessed at.
-	owner.dropClearedStableWatchTicks(ids)
-}
-
 // isStableWatchAttentionID reports whether attentionID names a watch notice
 // produced by this ingress. Classification is by identity, never by message
 // text: every id this file mints starts with stableWatchAttentionIDPrefix.
@@ -526,10 +306,6 @@ type retainedStableWatchNotice struct {
 	notification jobNotification
 	attentionID  string
 	content      string
-	// supersedes is the newer batch's predecessor: the unpresented tick row the
-	// folded notification replaced. It is retired once the folded row lands,
-	// never before, so a failure cannot retire a row into nothing.
-	supersedes string
 	// delivery, when set, is the resolved watch-send this notice carries. Its
 	// durable append IS that delivery reaching the model, so the send is
 	// acknowledged the moment a retry lands and never before.
@@ -544,13 +320,6 @@ type retainedStableWatchNotice struct {
 // delivery carries the resolved watch-send the notice acknowledges once it is
 // durable, or nil for a notice that owes no acknowledgement.
 func (s *Session) retainStableWatchPending(n jobNotification, attentionID, content string, delivery *deliverableJobNotification) {
-	s.retainStableWatchPendingSuperseding(n, attentionID, content, delivery, "")
-}
-
-// retainStableWatchPendingSuperseding is retainStableWatchPending for a notice
-// that folded an earlier unpresented row: supersedes names that row, which the
-// retry retires once this notice's append lands.
-func (s *Session) retainStableWatchPendingSuperseding(n jobNotification, attentionID, content string, delivery *deliverableJobNotification, supersedes string) {
 	if s == nil || attentionID == "" {
 		return
 	}
@@ -560,7 +329,7 @@ func (s *Session) retainStableWatchPendingSuperseding(n jobNotification, attenti
 	}
 	// Last write wins for one identity: the same occurrence retried describes
 	// the same statement, and a newer statement carries its own identity.
-	s.stableWatchRetained[attentionID] = retainedStableWatchNotice{notification: n, attentionID: attentionID, content: content, delivery: delivery, supersedes: supersedes}
+	s.stableWatchRetained[attentionID] = retainedStableWatchNotice{notification: n, attentionID: attentionID, content: content, delivery: delivery}
 	s.scheduleJobNotificationRetryLocked()
 	s.pendingJobNotifsMu.Unlock()
 }
@@ -598,10 +367,6 @@ func (s *Session) retryRetainedStableWatchPending() {
 		}
 		delete(s.stableWatchRetained, r.attentionID)
 		s.pendingJobNotifsMu.Unlock()
-		// The folded batch now stands for its predecessor: a superseded row that
-		// outlived this retry is retired HERE, once the newer row is durable.
-		s.commitStableWatchTickBatch(r.notification.WatchID, r.attentionID, r.notification, r.supersedes, true)
-		s.recordStableWatchTickWatch(r.notification, r.attentionID)
 		if r.delivery != nil {
 			// The row is durable, so the caller frame has reached the model: a
 			// settle that fails from here on is retried without rendering the
@@ -646,7 +411,50 @@ func (s *Session) retireSupersededStableWatchPending(n jobNotification, attentio
 	}
 }
 
+// persistStableWatchPending is enqueueNotifications' stable-delegate branch: a
+// watch notice bound for a stable child becomes durable attention rather than a
+// queued notification, so the child can only run it inside a leased generation.
+// It reports whether it handled the notice.
+//
+// Without this, the notice lands on the ordinary queue, whose only drain is an
+// EntryNotification turn -- and a stable child's unleased turn must not carry a
+// watch notice, so the gate would refuse the turn and leave the notice to be
+// refused again. That is a stranded delivery, not a fixed one. The reachable
+// case is the one the issue names: a watch-send diagnostic, emitted precisely
+// when the send rail had no other way to report the failure.
+//
+// A REPEATING TIMER'S tick is deliberately NOT handled here. It is a cadence,
+// not a fact: the ordinary queue already folds every tick of one timer into a
+// single entry (appendOrFoldJobNotificationLocked) and already drops a tick
+// whose timer was cleared before delivery (filterDeliverableJobNotifications).
+// Routing ticks through the durable rail instead wrote one immutable transcript
+// row per missed tick while the delegate was busy or unleased, which is exactly
+// the growth those queue rules exist to prevent. The one durable row a timer
+// causes is written when a leased handoff takes the folded queue entry.
+//
+// A manager with no stable owner, or one whose owner is not a delegate, keeps
+// the ordinary rail. The owner and controller are snapshotted ONCE under jm.mu:
+// a new generation rewrites both fields under that same mutex, so re-reading
+// them after the transcript I/O would race a concurrent timer or shell
+// callback.
 func (jm *jobManager) persistStableWatchPending(n jobNotification) bool {
+	// A repeating timer's tick belongs to the ordinary queue: its folding and
+	// its cleared-timer drop are already implemented there, and the durable
+	// rail's frozen rows cannot express either.
+	if n.WatchID != "" && !n.Terminal {
+		return false
+	}
+	return jm.persistStableWatchNotice(n)
+}
+
+// persistStableWatchNotice is persistStableWatchPending without the repeating-
+// tick gate: it writes ONE durable attention row for the notice and arms it.
+//
+// handOffQueuedWatchTicks is its second caller. A repeating timer's folded batch
+// is taken off the ordinary queue when an idle child is about to be driven, and
+// this is what turns that whole batch into the one row the leased generation
+// presents.
+func (jm *jobManager) persistStableWatchNotice(n jobNotification) bool {
 	owner, controller := jm.stableWatchOwner()
 	if owner == nil || owner.owningDelegateID == "" {
 		return false
@@ -675,22 +483,6 @@ func (jm *jobManager) persistStableWatchPending(n jobNotification) bool {
 		}
 		delivery = &resolved
 	}
-	// A repeating tick is dropped here when its timer has already been cleared
-	// (LIFE-01, #2340 review Low). The queue applies this check at delivery
-	// time; the durable row cannot, because its content is already frozen. The
-	// timer identity is recorded WITH the row so a clear that lands after this
-	// point still suppresses it (stableWatchTickAttentionWatchID).
-	if n.WatchID != "" && !n.Terminal && !owner.timerWatchIsLive(n.WatchID) {
-		// The timer was cleared before this tick was persisted: it is a tick
-		// nobody owes, exactly as the queue's own drop rules it.
-		return true
-	}
-	// A repeating timer's missed ticks are ONE statement, not one per tick: the
-	// queue folds them by watch id, and the durable rail must do the same or the
-	// transcript and the next request grow with every tick the delegate was too
-	// busy to read.
-	folded, supersedes := owner.foldStableWatchTickPending(n)
-	n = folded
 	attentionID := stableWatchNoticeAttentionID(n)
 	content := owner.formatJobNotificationReminder([]deliverableJobNotification{{notification: n}})
 	if controller != nil {
@@ -721,7 +513,7 @@ func (jm *jobManager) persistStableWatchPending(n jobNotification) bool {
 		// SAME identity through the session's existing notification retry
 		// wake; a retry reproduces stableWatchNoticeAttentionID, so the second
 		// attempt is a replay rather than a second item.
-		owner.retainStableWatchPendingSuperseding(n, attentionID, content, delivery, supersedes)
+		owner.retainStableWatchPending(n, attentionID, content, delivery)
 		owner.emit(warningDataFromError("persist stable watch attention", err))
 		return true
 	}
@@ -733,14 +525,6 @@ func (jm *jobManager) persistStableWatchPending(n jobNotification) bool {
 		// superseded identities.
 		owner.retireSupersededStableWatchPending(n, attentionID)
 	}
-	// The batch's new identity is current whether or not this append landed: a
-	// retained folded row is still the batch the next tick folds into, so the
-	// retry and the next tick describe one statement.
-	owner.commitStableWatchTickBatch(n.WatchID, attentionID, n, supersedes, appended)
-	// Remember which timer watch produced this tick, so a clear landing after
-	// this point can still suppress it. A one-shot is excluded: its fire is
-	// terminal, so a later clear must not retract it.
-	owner.recordStableWatchTickWatch(n, attentionID)
 	// The row is durable, so a watch-send it carries has reached the model:
 	// acknowledge that exact delivery. A replay of an already-present row
 	// settles too -- the earlier attempt's ack is what may have been lost.
@@ -758,6 +542,69 @@ func (jm *jobManager) persistStableWatchPending(n jobNotification) bool {
 		owner.emit(warningDataFromError("arm stable watch attention", err))
 	}
 	return true
+}
+
+// handOffQueuedWatchTicks turns the repeating timer ticks waiting on s's
+// ordinary notification queue into ONE durable attention row, so an idle stable
+// delegate presents them inside a leased generation instead of through an
+// unleased EntryNotification turn.
+//
+// The queue is where a repeating tick lives (see persistStableWatchPending): it
+// folds every missed tick of one timer into a single entry carrying the combined
+// fires and lineage, and it drops a tick whose timer was cleared. What the queue
+// cannot do is present that entry on a stable child, because the only turn that
+// drains the queue there is unleased and admission refuses a watch notice on it.
+// This is the handoff: the folded entries are claimed off the queue in one
+// critical section and turned into durable attention, exactly like any other
+// watch notice bound for this child.
+//
+// Claiming before persisting is what keeps a tick that arrives DURING the
+// append: it folds into a fresh queue entry of its own, so it is neither lost
+// nor merged into a row that has already been frozen. A failed append is not a
+// loss either -- the notice is retained under its own identity and re-attempted
+// by the paced retry.
+//
+// A tick whose timer has since been cleared is dropped without a write, the
+// same verdict filterDeliverableJobNotifications gives it. It reports whether
+// any entry was taken.
+func (s *Session) handOffQueuedWatchTicks() bool {
+	if s == nil || s.jobManager == nil || !stableDelegateChild(s) {
+		return false
+	}
+	// Nothing below can persist without a bound owner, and claiming the entries
+	// first would then drop them. Refuse before touching the queue.
+	if owner, _ := s.jobManager.stableWatchOwner(); owner == nil || owner.owningDelegateID == "" {
+		return false
+	}
+	s.pendingJobNotifsMu.Lock()
+	var ticks []jobNotification
+	if len(s.pendingJobNotifs) > 0 {
+		kept := s.pendingJobNotifs[:0]
+		for _, n := range s.pendingJobNotifs {
+			if n.WatchID != "" && !n.Terminal {
+				ticks = append(ticks, n)
+				continue
+			}
+			kept = append(kept, n)
+		}
+		s.pendingJobNotifs = kept
+	}
+	s.pendingJobNotifsMu.Unlock()
+	if len(ticks) == 0 {
+		return false
+	}
+	handedOff := false
+	for _, n := range ticks {
+		if !s.timerWatchIsLive(n.WatchID) {
+			// The timer was cleared while the batch waited: nobody owes it, so no
+			// row is written for news the model can no longer act on.
+			continue
+		}
+		if s.jobManager.persistStableWatchNotice(n) {
+			handedOff = true
+		}
+	}
+	return handedOff
 }
 
 // resolveStableWatchSend loads the CURRENT frame a watch-send token names and
