@@ -524,7 +524,7 @@ func escapeOutputTextBlocks(content []any, escape func(string) string) {
 	if escaped == joined {
 		return
 	}
-	pieces, ok := splitJoinedEscape(escaped, texts)
+	pieces, ok := llm.SplitJoinedEscape(escaped, texts)
 	if !ok {
 		for k, orig := range texts {
 			if text := escape(orig); text != orig {
@@ -539,25 +539,4 @@ func escapeOutputTextBlocks(content []any, escape func(string) string) {
 		}
 		content[at[k]].(map[string]any)["text"] = text
 	}
-}
-
-// splitJoinedEscape splits escaped, the escape of strings.Join(originals, "\n"),
-// back into one piece per original by each original's line count, reporting false
-// when the line structure no longer matches.
-func splitJoinedEscape(escaped string, originals []string) ([]string, bool) {
-	lines := strings.Split(escaped, "\n")
-	pieces := make([]string, 0, len(originals))
-	next := 0
-	for _, original := range originals {
-		n := strings.Count(original, "\n") + 1
-		if next+n > len(lines) {
-			return nil, false
-		}
-		pieces = append(pieces, strings.Join(lines[next:next+n], "\n"))
-		next += n
-	}
-	if next != len(lines) {
-		return nil, false
-	}
-	return pieces, true
 }

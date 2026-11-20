@@ -75,7 +75,7 @@ func TestRecoveredSummaryDisplaysAndReplaysAsSummary(t *testing.T) {
 	t.Parallel()
 	const frames = `{"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"thought"}` + "\n\n" + `{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_1","status":"completed"}}` + "\n\n" + `{"type":"response.output_text.delta","output_index":1,"delta":"answer"}` + "\n\n" + `{"type":"response.completed","response":{"output":[{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"thought"}]}]}}`
 	for _, r := range settledBoth(t, frames) {
-		_, items, _ := toResponsesInput([]llm.Message{r.Message}, "")
+		_, items, _ := toResponsesInput([]llm.Message{r.Message}, "", nil)
 		if got := jsonOf(t, items); r.ReasoningText() != "thought" || r.Text() != "answer" || !strings.Contains(got, `"summary_text"`) {
 			t.Fatalf("reasoning %q, replay %s: want the summary shown and replayed as summary", r.ReasoningText(), got)
 		}
@@ -87,7 +87,7 @@ func TestIncompleteStreamedSummaryDoesNotReplay(t *testing.T) {
 	t.Parallel()
 	const frames = `{"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"half"}` + "\n\n" + `{"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[]}}`
 	for _, r := range settledBoth(t, frames) {
-		_, items, _ := toResponsesInput([]llm.Message{r.Message}, "")
+		_, items, _ := toResponsesInput([]llm.Message{r.Message}, "", nil)
 		if th := r.Message.Content[0].Thinking; !th.ResponsesIncomplete || len(th.ResponsesSummaryParts) == 0 || r.ReasoningText() != "half" || len(items) != 0 {
 			t.Fatalf("reasoning %+v, replay %s: want a display-only summary", th, jsonOf(t, items))
 		}
@@ -194,7 +194,7 @@ func TestRecoveryKeepsTerminalPhaseAndOnlySearch(t *testing.T) {
 	for _, r := range settledBoth(t, frames) {
 		search := slices.DeleteFunc(slices.Clone(r.Message.Content), func(p llm.ContentPart) bool { return p.Kind != llm.ContentWebSearch })
 		text := slices.DeleteFunc(slices.Clone(r.Message.Content), func(p llm.ContentPart) bool { return p.Kind != llm.ContentText })
-		_, items, _ := toResponsesInput([]llm.Message{r.Message}, "")
+		_, items, _ := toResponsesInput([]llm.Message{r.Message}, "", nil)
 		think := r.Message.Content[0].Thinking
 		if len(search) != 1 || len(text) != 1 || text[0].Phase != "final_answer" || r.Text() != "answer" ||
 			think == nil || !slices.Contains(think.Summary, "think") || !strings.Contains(jsonOf(t, items), `"web_search_call"`) {
@@ -227,7 +227,7 @@ func TestIncompleteResponseKeepsCompletedStreamedReasoning(t *testing.T) {
 	const repeat = `{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"shown"}]}`
 	frames := done + nl + answer + nl + `{"type":"response.incomplete","response":{"id":"r","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[` + repeat + `]}}`
 	for _, r := range settledBoth(t, frames) {
-		_, items, _ := toResponsesInput([]llm.Message{r.Message}, "")
+		_, items, _ := toResponsesInput([]llm.Message{r.Message}, "", nil)
 		th := r.Message.Content[0].Thinking
 		if th == nil || th.ResponsesIncomplete || !strings.Contains(jsonOf(t, items), `"native"`) {
 			t.Fatalf("reasoning %+v, replay %s: want the completed thought kept and replayed", th, jsonOf(t, items))
@@ -244,7 +244,7 @@ func TestEncryptedReasoningReplaysTypedSummaries(t *testing.T) {
 		Summary:               nil, // display deduplication emptied it
 		ResponsesSummaryParts: []llm.ResponsesReasoningPart{{Type: "summary_text", Text: "shown"}},
 	}}}}
-	_, items, _ := toResponsesInput([]llm.Message{msg}, "")
+	_, items, _ := toResponsesInput([]llm.Message{msg}, "", nil)
 	if got := jsonOf(t, items); !strings.Contains(got, `"shown"`) {
 		t.Fatalf("replay %s, want the typed summary kept", got)
 	}
@@ -305,7 +305,7 @@ func TestExplicitIncompleteThoughtStaysCutOff(t *testing.T) {
 	const repeat = `{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"half"}]}`
 	frames := done + nl + `{"type":"response.completed","response":{"id":"r","status":"completed","output":[` + repeat + `]}}`
 	for _, r := range settledBoth(t, frames) {
-		_, items, _ := toResponsesInput([]llm.Message{r.Message}, "")
+		_, items, _ := toResponsesInput([]llm.Message{r.Message}, "", nil)
 		th := r.Message.Content[0].Thinking
 		if th == nil || !th.ResponsesIncomplete || len(items) != 0 {
 			t.Fatalf("reasoning %+v, replay %s: want the cut-off thought kept out of replay", th, jsonOf(t, items))
@@ -336,7 +336,7 @@ func TestStatuslessDoneReasoningStaysCompletedAtIncompleteTerminal(t *testing.T)
 		`{"type":"response.output_text.delta","output_index":1,"delta":"answer"}` + nl +
 		`{"type":"response.incomplete","response":{"id":"r","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[]}}`
 	for _, r := range settledBoth(t, frames) {
-		_, items, _ := toResponsesInput([]llm.Message{r.Message}, "")
+		_, items, _ := toResponsesInput([]llm.Message{r.Message}, "", nil)
 		th := r.Message.Content[0].Thinking
 		if th == nil || th.ResponsesIncomplete || !strings.Contains(jsonOf(t, items), `"finished thought"`) {
 			t.Fatalf("reasoning %+v, replay %s: want status-less done reasoning kept completed", th, jsonOf(t, items))
@@ -353,7 +353,7 @@ func TestDeltaOnlyReasoningWithStatuslessRepeatAtIncompleteTerminal(t *testing.T
 		`{"type":"response.output_text.delta","output_index":1,"delta":"answer"}` + nl +
 		`{"type":"response.incomplete","response":{"id":"r","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[{"type":"reasoning","id":"rs_delta","summary":[{"type":"summary_text","text":"think"}]}]}}`
 	for _, r := range settledBoth(t, frames) {
-		_, items, _ := toResponsesInput([]llm.Message{r.Message}, "")
+		_, items, _ := toResponsesInput([]llm.Message{r.Message}, "", nil)
 		th := r.Message.Content[0].Thinking
 		if th == nil || th.ID != "rs_delta" || th.ResponsesIncomplete ||
 			len(items) != 2 || !strings.Contains(jsonOf(t, items), `"rs_delta"`) || !strings.Contains(jsonOf(t, items), `"think"`) {

@@ -647,6 +647,27 @@ type Request struct {
 	AdapterTimeout *AdapterTimeout `json:"adapter_timeout,omitempty"`
 }
 
+// SplitJoinedEscape splits escaped, the result of escaping strings.Join(originals, "\n"),
+// back into one piece per original by each original's line count, reporting false
+// when the line structure no longer matches.
+func SplitJoinedEscape(escaped string, originals []string) (pieces []string, ok bool) {
+	lines := strings.Split(escaped, "\n")
+	pieces = make([]string, 0, len(originals))
+	at := 0
+	for _, original := range originals {
+		n := strings.Count(original, "\n") + 1
+		if at+n > len(lines) {
+			return nil, false
+		}
+		pieces = append(pieces, strings.Join(lines[at:at+n], "\n"))
+		at += n
+	}
+	if at != len(lines) {
+		return nil, false
+	}
+	return pieces, true
+}
+
 // FinishReason holds a canonical finish reason alongside the raw provider value.
 type FinishReason struct {
 	Reason string `json:"reason"`

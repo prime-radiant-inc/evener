@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/internal/mdfence"
+	"primeradiant.com/evener/llm"
 )
 
 // SplitJoinedEscape splits escaped, the escape of strings.Join(originals, "\n"),
@@ -23,21 +24,7 @@ import (
 // the pieces so the note keeps the boundaries the model's own text had. Sharing
 // the splitter keeps them splitting the same scan the same way.
 func SplitJoinedEscape(escaped string, originals []string) (pieces []string, ok bool) {
-	lines := strings.Split(escaped, "\n")
-	pieces = make([]string, 0, len(originals))
-	at := 0
-	for _, original := range originals {
-		n := strings.Count(original, "\n") + 1
-		if at+n > len(lines) {
-			return nil, false
-		}
-		pieces = append(pieces, strings.Join(lines[at:at+n], "\n"))
-		at += n
-	}
-	if at != len(lines) {
-		return nil, false
-	}
-	return pieces, true
+	return llm.SplitJoinedEscape(escaped, originals)
 }
 
 // harnessTagPrefix is one line-start tag and how its name compares. The
