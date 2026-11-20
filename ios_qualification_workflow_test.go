@@ -455,3 +455,38 @@ func TestIOSQualificationOverlapsTheRuntimeSetupWithTheBuild(t *testing.T) {
 		t.Error("ui-journeys does not run the installed-app journeys")
 	}
 }
+
+// Diagnostics artifacts exist only for post-run triage, so they expire in a
+// week. The build-products and runtime-pair handoffs are different: GitHub
+// re-runs failed jobs from the run page long after the run, and the new
+// attempt's journeys job must still find them, so the handoffs keep the
+// default 90-day retention.
+func TestIOSQualificationDiagnosticArtifactRetention(t *testing.T) {
+	workflow := readWorkflow(t, ".github/workflows/ios-qualification.yml")
+	diagnostics, handoffs := 0, 0
+	for _, job := range workflow.Jobs {
+		for _, step := range job.Steps {
+			if !strings.HasPrefix(step.Uses, "actions/upload-artifact@") {
+				continue
+			}
+			name := fmt.Sprint(step.With["name"])
+			if strings.Contains(name, "${{ github.run_attempt }}") {
+				diagnostics++
+				if got := fmt.Sprint(step.With["retention-days"]); got != "7" {
+					t.Errorf("diagnostics artifact %q retention-days = %q, want 7", name, got)
+				}
+			} else {
+				handoffs++
+				if _, ok := step.With["retention-days"]; ok {
+					t.Errorf("handoff artifact %q pins retention-days; a re-run of failed jobs after expiry must still find it", name)
+				}
+			}
+		}
+	}
+	if diagnostics != 2 {
+		t.Errorf("diagnostics uploads = %d, want 2 (build logs and journey logs)", diagnostics)
+	}
+	if handoffs != 2 {
+		t.Errorf("handoff uploads = %d, want 2 (build products and runtime pair)", handoffs)
+	}
+}
