@@ -124,8 +124,17 @@ type Descriptor struct {
 	FrozenRolePrompt  string              `json:"frozen_role_prompt,omitempty"`
 	TaskTemplates     []task.TaskTemplate `json:"task_templates,omitempty"`
 	ToolNameCeiling   []string            `json:"tool_name_ceiling,omitempty"`
-	FrozenSkillNames  []string            `json:"frozen_skill_names,omitempty"`
-	FrozenSkillBodies []string            `json:"frozen_skill_bodies,omitempty"`
+	// CeilingReachabilityExcluded names the tools the ceiling dropped for
+	// REACHABILITY rather than role authorization: the child could not register
+	// them in the workspace the ceiling was computed in (a CLI-only MCP server's
+	// tools, a Manager-composition-only tool). They are recorded separately
+	// because the two reasons have different lifetimes. A role denial is
+	// permanent; reachability can change under the delegate, and when it does the
+	// tool must come back. Absent on descriptors written before this field
+	// existed, where no reachability exclusion is known to have been applied.
+	CeilingReachabilityExcluded []string `json:"ceiling_reachability_excluded,omitempty"`
+	FrozenSkillNames            []string `json:"frozen_skill_names,omitempty"`
+	FrozenSkillBodies           []string `json:"frozen_skill_bodies,omitempty"`
 	// FrozenSkillMetadata carries each frozen preload's typed provenance
 	// (description, source, content digests) alongside the unchanged
 	// names/bodies. Absent on legacy descriptors, where the provenance stays

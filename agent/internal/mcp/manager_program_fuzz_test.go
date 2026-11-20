@@ -502,8 +502,15 @@ func mcpProgramConstructionCases(t *testing.T) {
 		t.Fatalf("confined command = %#v", confined)
 	}
 	joinedEnv := strings.Join(confinedCommand.Command.Env, "\n")
-	if confinedCommand.Command.Path != mcpProgramBwrapPath || !strings.Contains(joinedEnv, "MCP_PROGRAM_BASE=fixed") || !strings.Contains(joinedEnv, "PROGRAM_VALUE=kept") || !strings.Contains(joinedEnv, "MCP_SERVER_TOKEN=configured") || strings.Contains(joinedEnv, "EVENER_AMBIENT_API_KEY=") || strings.Contains(joinedEnv, "SSH_AUTH_SOCK=") || confinedCommand.Command.ExtraFiles != nil {
+	if confinedCommand.Command.Path != mcpProgramBwrapPath || !strings.Contains(joinedEnv, "MCP_PROGRAM_BASE=fixed") || strings.Contains(joinedEnv, "PROGRAM_VALUE=") || strings.Contains(joinedEnv, "MCP_SERVER_TOKEN=") || strings.Contains(joinedEnv, "EVENER_AMBIENT_API_KEY=") || strings.Contains(joinedEnv, "SSH_AUTH_SOCK=") || confinedCommand.Command.ExtraFiles != nil {
 		t.Fatalf("confined command = %#v", confined)
+	}
+	// The configured env reaches the server, not the launcher: both assignments
+	// ride bwrap's --setenv, on the far side of the confinement.
+	for name, want := range map[string]string{"PROGRAM_VALUE": "kept", "MCP_SERVER_TOKEN": "configured"} {
+		if got, ok := bwrapSetenvValue(confinedCommand.Command.Args, name); !ok || got != want {
+			t.Fatalf("confined command does not deliver %s=%s to the server: %v", name, want, confinedCommand.Command.Args)
+		}
 	}
 
 	// kata 83pm: remote MCP servers are trusted infrastructure, so net=off does

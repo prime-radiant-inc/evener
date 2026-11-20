@@ -620,6 +620,47 @@ fully built registry and this ceiling before caching the provider-facing tool
 surface. The ceiling is never widened by intrinsic child tools and always
 contains Config's effective result tool.
 
+The ceiling records its reachability exclusions separately, in
+CeilingReachabilityExcluded. A name leaves the ceiling for one of two reasons,
+and only one of them is permanent. A name the role forbids is authorization: it
+is absent from the ceiling because the grant withholds it, and it stays out
+through live construction, every resume, and cold restoration alike. A name the
+child could not register in the workspace the ceiling was computed in is
+reachability: a Manager-composition-only tool, or one served by an MCP server
+only the CLI layers declared at startup. The second kind is a fact about one
+workspace's configuration at one moment, so it is recorded rather than merely
+dropped.
+
+A recorded reachability exclusion is re-admitted when the child's own registry
+registers that name, because registration is the test: a name in the registry
+exists, so the child can call it. Registration is evaluated at two moments, and
+either one is enough. At construction the child applies the ceiling to the
+registry it built, so a name it registers there is kept. After construction an
+MCP server whose first connection failed is redialled on a later turn, and the
+tools that retry recovers are judged against the same effective ceiling, so a
+name the retry successfully registers is admitted then rather than staying
+excluded for the rest of the delegate's life. The second moment matters because
+a server that was briefly unreachable is indistinguishable, at commit time, from
+one an operator had not configured yet; treating the first failure as final
+would deny a tool the child subsequently registered.
+
+An operator who adds the CLI-only server to the project or global config
+therefore gets the tool back when the delegate is RECONSTRUCTED, instead of a
+delegate that registered it and was still denied it. Reconstructing means a
+cold restore, which builds the child from the descriptor and discovers servers
+again. Resuming a delegate that is still retained in memory is not a
+reconstruction: it hands back the live child, whose MCP manager and registry
+were built before the edit, so the new server is not discovered and the tool
+stays absent until the delegate is torn down and reconstructed. A server that
+was configured all along and failed its first connection is recovered by the
+retry instead: the MCP manager redials it on a later turn, and the tools that
+retry registers are judged against the effective ceiling, so they are admitted
+then rather than staying excluded for the rest of the delegate's life. A
+role-forbidden name is never in the registry, so no path can widen
+authorization, and the frozen role policy continues to bound the ceiling
+exactly as before. A descriptor written before this field existed records no
+exclusions, and nothing is re-admitted for it.
+
 When Config.ShareTasksWithChildren is enabled, the descriptor also records
 SharedTaskStoreOwnerSessionID. Live construction may attach the current shared
 TaskStore pointer only when that owner identity matches. Cold restoration must

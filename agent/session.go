@@ -110,13 +110,67 @@ func (s *Session) nextJobTreeRevision(kind events.EventKind) (string, uint64, bo
 // history, registered tools, context-management state, subagents, plugins, MCP
 // connections, and persistence settings.
 type Session struct {
-	conversation           conversationState
-	hubClient              SessionHubClient
-	hubGeneration          uint64
-	hubEnabled             bool
-	hubWatchSignal         chan struct{}
-	hubWatchCancels        map[string]context.CancelFunc
-	hubOrdinary            map[string]*tool.RegisteredTool
+	conversation    conversationState
+	hubClient       SessionHubClient
+	hubGeneration   uint64
+	hubEnabled      bool
+	hubWatchSignal  chan struct{}
+	hubWatchCancels map[string]context.CancelFunc
+	hubOrdinary     map[string]*tool.RegisteredTool
+	// managerOnlyTools names the tools Manager composition registered with no
+	// ordinary registration behind them (see composeHubRegistry). Every spawn
+	// path sets Manager=false, so a child never composes one, and the delegate
+	// tool ceiling must not advertise them.
+	managerOnlyTools map[string]bool
+	// cliMCPServers names the MCP servers only the CLI layers declare (see
+	// initMCP), and cliMCPToolNames the tools they registered. Every spawn path
+	// clears MCPConfigFiles and MCPInline, so a child never discovers those
+	// servers, and the delegate tool ceiling must not advertise their tools. The
+	// server names are kept so a retry that heals one re-derives the tools.
+	cliMCPServers   map[string]bool
+	cliMCPToolNames map[string]bool
+	// cliMCPEvidence is the project-configuration evidence the classification
+	// above was derived from: the file the layer-2 project config resolves to,
+	// what it contained, and whether it existed. The classification is only
+	// sound while this still describes the session's current workspace, so a
+	// probe re-verifies it and leaves MCP names eligible when it cannot (see
+	// probeCLIEvidenceFresh).
+	cliMCPEvidence cliMCPClassificationEvidence
+	// rosterExcludesCLIMCP is the ONE roster decision both cached surfaces read:
+	// the <available_agents> roster in the system prompt and the delegate tool
+	// definition's agent_type description are rendered from this boolean, so the
+	// two cannot disagree about which CLI-only MCP names a delegate may use.
+	//
+	// There is exactly one writer rule, and it is what replaced the shared
+	// verdict plus two cache version stamps: the value is set where a
+	// workspace-scoped probe outcome can be APPLIED to this session's roster —
+	// session init, the environment-swap reset, and request preparation
+	// (refreshCachesForExclusionChangeContext). The probe itself never writes
+	// here, so a caller whose workspace has moved on cannot erase the decision
+	// the installed workspace established.
+	//
+	// It is guarded by delegateExclusionsMu rather than s.mu because the ceiling
+	// is built on both paths: request preparation renders the roster already
+	// holding s.mu, and delegate creation derives a ceiling without it.
+	rosterExcludesCLIMCP bool
+	// delegateExclusionsMu guards the two sets above. They cannot ride s.mu:
+	// the delegate-create path computes the ceiling without holding s.mu, while
+	// the prompt-render path computes it already holding s.mu, and s.mu is not
+	// reentrant. Nothing takes s.mu while holding this lock.
+	delegateExclusionsMu sync.RWMutex
+	// evidenceProbes names the workspaces that have a CLI-MCP evidence check
+	// outstanding: at most one per key, so a workspace whose mount has stopped
+	// answering gets ONE parked check rather than one per model request. A
+	// request that finds its workspace's key taken answers unknown reachability
+	// immediately instead of starting a second check into the same stall, and the
+	// goroutine that claimed the key removes it when it finally answers.
+	//
+	// It is a lock of its own, not a ride on delegateExclusionsMu: an entry is
+	// added and removed around a check that takes no other lock, and sharing the
+	// read-mostly lock would make every ceiling build wait on map bookkeeping it
+	// never reads.
+	evidenceProbesMu       sync.Mutex
+	evidenceProbes         map[string]struct{}
 	hubRegistry            *tool.Registry
 	id                     string
 	cfg                    SessionConfig
@@ -1086,6 +1140,14 @@ type Session struct {
 	// MCP server connections
 	mcpMgr   *mcp.Manager
 	mcpTools []llm.ToolDefinition
+	// startupMCPProjectEvidence is the project layer THIS session read at its
+	// own startup, populated by initMCP from the same discovery pass that
+	// supplied its servers. It is what a sandboxed delegate this session
+	// constructs may expand through the process environment: the layer the
+	// launch already read, and not one a repository wrote into the workspace
+	// afterwards. Written once, under mu, during construction; read when a child
+	// is built.
+	startupMCPProjectEvidence mcpconfig.LayerEvidence
 
 	// Plugin-provided components
 	plugins             []plugin.Instance
@@ -1131,6 +1193,11 @@ type Session struct {
 	pendingSessionStartWaitEntered func()
 	pluginAgents                   map[string]plugin.Agent
 	pluginMCPConfigs               []mcpconfig.ServerConfig
+	// cliMCPOtherNamespaces is the registered-name prefixes the NON-CLI config
+	// layers supply, recorded beside the CLI server sets it qualifies. A CLI
+	// tool whose full registered name starts with one of these can also be
+	// registered by a server the child keeps, so it is not CLI-only.
+	cliMCPOtherNamespaces []string
 	// unsupportedPluginHookEvents accumulates all Claude-recognized events
 	// declared by loaded plugins that evener does not currently fire.
 	// Populated by initPlugins; used by DetailedStatus for diagnostics.
