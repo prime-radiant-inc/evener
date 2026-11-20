@@ -121,7 +121,7 @@ func (r *runner) hoistMetroBundle(ctx context.Context) error {
 	fmt.Fprintf(os.Stderr, "iOS qualification: metro-hoist (%s)\n", logPath)
 	cmd := exec.Command("/bin/bash", metroHoistScript(r.output))
 	cmd.Dir = r.native
-	cmd.Env = envvars.ApplyOverlay(os.Environ(), metroHoistEnv(r.hostSettings, staging))
+	cmd.Env = envvars.ApplyOverlay(commandEnv(), metroHoistEnv(r.hostSettings, staging))
 	cmd.Stdout, cmd.Stderr = log, log
 	if err := procgroup.Start(cmd); err != nil {
 		return errors.Join(err, log.Close())

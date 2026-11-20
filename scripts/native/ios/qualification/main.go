@@ -899,6 +899,16 @@ func (r *runner) command(ctx context.Context, name string, args ...string) ([]by
 	return r.commandOutput(ctx, name, true, args...)
 }
 
+// commandEnv is the environment every qualification child runs with: the
+// runner's own environment plus the two values the app config reads. CI=1 keeps
+// prebuild in its non-interactive path, and APPLE_TEAM_ID is what makes
+// app.config.js emit the fixture team and the share-target plugins, so a child
+// started without them builds a different app than the one qualification
+// prebuilds.
+func commandEnv() []string {
+	return append(os.Environ(), "CI=1", "APPLE_TEAM_ID=EVENERCI01")
+}
+
 func (r *runner) commandOutput(ctx context.Context, name string, capture bool, args ...string) (output []byte, result error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -912,7 +922,7 @@ func (r *runner) commandOutput(ctx context.Context, name string, capture bool, a
 	fmt.Fprintf(os.Stderr, "iOS qualification: %s (%s)\n", name, logPath)
 	cmd := exec.Command(args[0], args[1:]...) //nolint:noctx // Cancellation below stops and reaps the whole owned process group, not just the direct child.
 	cmd.Dir = r.native
-	cmd.Env = append(os.Environ(), "CI=1", "APPLE_TEAM_ID=EVENERCI01")
+	cmd.Env = commandEnv()
 	var stdout bytes.Buffer
 	cmd.Stdout, cmd.Stderr = log, log
 	if capture {
