@@ -1075,6 +1075,27 @@ func TestSeatbeltLiveRestrictedNetworkUnixSockets(t *testing.T) {
 		}
 	})
 
+	t.Run("restricted masked descendant socket denied", func(t *testing.T) {
+		maskedDir := filepath.Join(grantedDir, "masked")
+		if err := os.Mkdir(maskedDir, 0o700); err != nil {
+			t.Fatalf("Mkdir(%q): %v", maskedDir, err)
+		}
+		maskedSocket := filepath.Join(maskedDir, "s")
+		liveServeUnixSocket(t, maskedSocket)
+		maskedGrant := func(p *SandboxPolicy) {
+			p.ExtraReadRoots = []string{grantedDir}
+			p.DenylistAdd = []string{maskedDir}
+		}
+		rp, cwd := liveResolve(t, ModeRestricted, true, maskedGrant)
+		if out, exit := connect(t, rp, cwd, grantedSocket); exit != 0 || !strings.Contains(out, liveUnixSentinel) {
+			t.Errorf("an unmasked socket under the read root must stay reachable (exit=%d):\n%s", exit, out)
+		}
+		out, exit := connect(t, rp, cwd, maskedSocket)
+		if exit == 0 || strings.Contains(out, liveUnixSentinel) {
+			t.Errorf("a masked descendant socket must be denied (exit=%d):\n%s", exit, out)
+		}
+	})
+
 	t.Run("restricted udp exchanges a datagram", func(t *testing.T) {
 		pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 		if err != nil {

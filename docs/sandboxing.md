@@ -675,7 +675,9 @@ tools that default to deny.)
 On macOS, `restricted` mode with `net=on` narrows outbound further: a spawned
 process may use TCP and UDP, reach the mDNSResponder resolver socket
 (`/private/var/run/mDNSResponder`), and connect to AF_UNIX sockets only under its
-granted read roots — never every socket on the host. `read-only` and
+granted read roots — never every socket on the host. A socket under a masked
+path (for example a gpg-agent socket in `~/.gnupg` inside the worktree) stays
+unreachable even when its read root is granted. `read-only` and
 `workspace-write` keep the permissive-with-warnings outbound policy (#4224).
 
 `--sandbox-net off` governs the **tool plane**:

@@ -248,6 +248,13 @@ func denySection(rp ResolvedPolicy, ps *paramSet) string {
 		}
 		for _, k := range ps.defineBothSpellings(fmt.Sprintf("MASKED_%d", mi), m) {
 			rules = append(rules, "(deny file-read* file-write* "+literalAndSubpath(k)+")")
+			// A unix-socket grant is a subpath of the read root, and a file mask
+			// does not govern connect(), so deny outbound sockets under the mask
+			// too: a gpg-agent socket inside the worktree's ~/.gnupg must stay
+			// unreachable in restricted mode.
+			if rp.Mode == ModeRestricted && rp.Network {
+				rules = append(rules, unixSocketDeny(k))
+			}
 		}
 		mi++
 	}
@@ -404,6 +411,14 @@ func isDeviceFloorException(path string) bool {
 // everything beneath it: (literal (param K)) (subpath (param K)).
 func literalAndSubpath(key string) string {
 	return "(literal (param " + quoteParam(key) + ")) (subpath (param " + quoteParam(key) + "))"
+}
+
+// unixSocketDeny denies outbound connects to a unix socket at key or beneath it.
+// It takes the same MASKED_i params the file deny uses, so the two always name
+// the same masked paths and spellings.
+func unixSocketDeny(key string) string {
+	return "(deny network-outbound (remote unix-socket (literal (param " + quoteParam(key) +
+		"))) (remote unix-socket (subpath (param " + quoteParam(key) + "))))"
 }
 
 // buildAllowRule renders an (allow <action> (subpath (param KEY)) ...) rule over

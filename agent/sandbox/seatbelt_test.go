@@ -253,8 +253,26 @@ func TestSeatbeltNetworkRestrictedNarrowsOutbound(t *testing.T) {
 			t.Errorf("restricted net=on must grant unix sockets under %s; missing exact line %q", key, want)
 		}
 	}
-	if got := strings.Count(text, "(remote unix-socket"); got != len(readRoots) {
-		t.Errorf("restricted net=on emits %d (remote unix-socket) lines, want one per readable root (%d):\n%s", got, len(readRoots), text)
+	if got := strings.Count(text, "(allow network-outbound (remote unix-socket"); got != len(readRoots) {
+		t.Errorf("restricted net=on emits %d (allow network-outbound (remote unix-socket)) lines, want one per readable root (%d):\n%s", got, len(readRoots), text)
+	}
+	// A unix-socket grant is a subpath of the read root, so a socket under a
+	// masked path must be denied outbound as well (a gpg-agent socket in
+	// ~/.gnupg when the worktree is the home directory).
+	var masked []string
+	for _, p := range params {
+		if strings.HasPrefix(p.Key, "MASKED_") {
+			masked = append(masked, p.Key)
+		}
+	}
+	if len(masked) == 0 {
+		t.Fatal("restricted policy defines no masked paths, so the mask deny would be vacuous")
+	}
+	for _, key := range masked {
+		want := "(deny network-outbound (remote unix-socket (literal (param " + quoteParam(key) + "))) (remote unix-socket (subpath (param " + quoteParam(key) + "))))"
+		if !slices.Contains(strings.Split(text, "\n"), want) {
+			t.Errorf("restricted net=on must deny outbound to masked path %s; missing exact line %q", key, want)
+		}
 	}
 
 	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite} {
