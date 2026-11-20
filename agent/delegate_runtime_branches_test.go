@@ -133,6 +133,29 @@ func TestDelegateResult(t *testing.T) {
 	if result5.Status != jobstore.StatusRunning {
 		t.Errorf("status = %q, want running for empty snapshot", result5.Status)
 	}
+	// Plan updates override committed rows when the result is built.
+	committedRunning := delegateUpdatePlan{rows: []delegateSnapshot{
+		{id: "dlg_1", lifecycle: delegateLifecycleRunning, resumable: false},
+	}}
+	plans := delegateMutationPlans{updates: []delegateUpdatePlan{{rows: []delegateSnapshot{{
+		id:          "dlg_1",
+		lifecycle:   delegateLifecycleIdle,
+		resumable:   true,
+		lastOutcome: &delegatestore.Outcome{Status: delegatestore.OutcomeCompleted, Reason: "reported_result"},
+	}}}}}
+	fromPlans := startedDelegateResult(descriptor, "dlg_1", committedRunning, plans, nil)
+	if fromPlans.Status != jobstore.Status(delegateLifecycleIdle) ||
+		fromPlans.Resumable == nil || !*fromPlans.Resumable ||
+		fromPlans.Reason != "reported_result" ||
+		!fromPlans.RunningInBackground ||
+		fromPlans.Sandbox != nil {
+		t.Errorf("result from plan update = %+v", fromPlans)
+	}
+	// The error is returned as the exact object passed in.
+	wantErr := errors.New("fail")
+	if got := startedDelegateResult(descriptor, "dlg_1", committed, delegateMutationPlans{}, wantErr); !errors.Is(got.Err, wantErr) {
+		t.Errorf("err = %v, want the exact input object %v", got.Err, wantErr)
+	}
 }
 
 func TestLatestDelegateMutationSnapshot(t *testing.T) {
