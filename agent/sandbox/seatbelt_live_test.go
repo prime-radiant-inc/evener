@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -1048,6 +1049,50 @@ func TestSeatbeltLiveRestrictedNetworkUnixSockets(t *testing.T) {
 		}
 		if strings.Contains(out, liveUnixSentinel) {
 			t.Errorf("the granted unix socket answered under net=off:\n%s", out)
+		}
+	})
+
+	t.Run("restricted tcp reaches a loopback listener", func(t *testing.T) {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("net.Listen(tcp): %v", err)
+		}
+		t.Cleanup(func() { _ = ln.Close() })
+		go func() {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_, _ = conn.Write([]byte(liveUnixSentinel))
+			_ = conn.Close()
+		}()
+		port := strconv.Itoa(ln.Addr().(*net.TCPAddr).Port)
+		rp, cwd := liveResolve(t, ModeRestricted, true, grant)
+		out, exit := runUnderSeatbelt(t, rp, cwd, "/usr/bin/nc", "-G", "3", "-w", "3", "127.0.0.1", port)
+		if exit != 0 || !strings.Contains(out, liveUnixSentinel) {
+			t.Errorf("restricted net=on must allow a TCP connect (exit=%d):\n%s", exit, out)
+		}
+	})
+
+	t.Run("restricted udp exchanges a datagram", func(t *testing.T) {
+		pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("net.ListenPacket(udp): %v", err)
+		}
+		t.Cleanup(func() { _ = pc.Close() })
+		go func() {
+			buf := make([]byte, 64)
+			_, addr, err := pc.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			_, _ = pc.WriteTo([]byte(liveUnixSentinel), addr)
+		}()
+		port := strconv.Itoa(pc.LocalAddr().(*net.UDPAddr).Port)
+		rp, cwd := liveResolve(t, ModeRestricted, true, grant)
+		out, exit := runUnderSeatbelt(t, rp, cwd, "/bin/sh", "-c", "echo evener-udp | /usr/bin/nc -u -w 3 127.0.0.1 "+port)
+		if exit != 0 || !strings.Contains(out, liveUnixSentinel) {
+			t.Errorf("restricted net=on must allow a UDP exchange (exit=%d):\n%s", exit, out)
 		}
 	})
 }
