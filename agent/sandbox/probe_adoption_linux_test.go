@@ -57,12 +57,11 @@ const (
 	// refusal to name: a fork failure, a host at its process limit, and the
 	// like.
 	probeNoStart probeStart = "no-start"
-	// probeNoVerdict means a process existed and was cut short before it
-	// answered: its time bound killed it. Production's checkOutcome calls that
-	// CheckInconclusive, and naming it from that same call keeps this file's
-	// diagnostic from disagreeing with production. A launch that never produced
-	// a process is probeNoStart, even when production calls it inconclusive too
-	// (EAGAIN, ENOMEM).
+	// probeNoVerdict means a process existed and checkOutcome found the result
+	// inconclusive — the time bound had expired — rather than an answer. Naming
+	// it from that same call keeps this file's diagnostic from disagreeing with
+	// production. A launch that never produced a process is one of
+	// probeNoProgram, probeRefused, or probeNoStart.
 	probeNoVerdict probeStart = "no-verdict"
 )
 
@@ -121,8 +120,9 @@ func (o probeOutcome) ok() bool { return o.Start == probeRan && o.Exit == 0 }
 // The "no answer" verdict is production's own checkOutcome (probe.go) rather
 // than a second rule, so the diagnostic cannot disagree with production about
 // the run it is explaining. *exec.ExitError is asked first because os/exec
-// builds one only from a reaped ProcessState: it proves a process existed, not
-// that a bound ended it, so only a bound kill sets probeNoVerdict.
+// builds one only from a reaped ProcessState: it proves a process existed, so
+// the outcome is either that call's inconclusive verdict or the exit status,
+// never a launch failure.
 func outcomeFromRun(ctx context.Context, err error, stderr string) probeOutcome {
 	out := probeOutcome{Start: probeRan, Exit: -1, Stderr: stderr}
 	if err == nil {
