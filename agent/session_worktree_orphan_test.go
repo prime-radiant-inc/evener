@@ -789,6 +789,11 @@ type sharedDescendantLane struct {
 	sharedSub        *subagent
 	sharedDelegateID string
 	finish           func(llm.Request) llm.Response
+	// wake is the lane's shared drive edge: the notify callbacks driveUntil
+	// installs signal it, and every loop on the lane waits on it, so a
+	// finalize drain that captures and restores the callback restores the same
+	// edge every loop reads.
+	wake chan struct{}
 	// classifications records every delegateDeliveryClassified fire in this
 	// tree, so a tripwire can name whether the retained child's report reached
 	// the delivery admission path at all and with which deferral.
@@ -1144,6 +1149,7 @@ func spawnSharedDescendantLane(t *testing.T, r *wtRepo, laneName, standInDlg, st
 		sharedSub:        sharedSub,
 		sharedDelegateID: sharedDelegateID,
 		finish:           finish,
+		wake:             make(chan struct{}, 1),
 		classifications:  classifications,
 	}
 }
@@ -1202,27 +1208,22 @@ func TestSharedDescendantLaneRefusesUnheldScriptedPresentation(t *testing.T) {
 // until the foreign lock is the one that holds.
 func adoptForeignLane(t *testing.T, r *wtRepo, lanePath, foreignSID string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	// The adoption is a state, not a command's success: a background wake
+	// re-takes any gap, so retry until the lock that reads back is the foreign
+	// one.
+	testwait.UntilSeen(t, "the lane's foreign lock to hold", func() (bool, string) {
 		if _, locked, _ := r.laneLocked(t, lanePath); locked {
 			_, _ = runWorktreeGit(r.mainRoot, "worktree", "unlock", lanePath)
 		}
-		if _, lockErr := runWorktreeGit(r.mainRoot, "worktree", "lock", "--reason", worktree.FormatSessionMarker(foreignSID), lanePath); lockErr == nil {
-			// git took the lock, but require the lock that reads back to be
-			// the foreign one: a background wake re-takes any gap, and only
-			// the state, not the command's success, is the adoption.
-			if _, locked, reason := r.laneLocked(t, lanePath); locked {
-				if m, ok := worktree.ParseMarker(reason); ok && m.SessionID == foreignSID {
-					return
-				}
+		_, lockErr := runWorktreeGit(r.mainRoot, "worktree", "lock", "--reason", worktree.FormatSessionMarker(foreignSID), lanePath)
+		_, locked, reason := r.laneLocked(t, lanePath)
+		if lockErr == nil && locked {
+			if m, ok := worktree.ParseMarker(reason); ok && m.SessionID == foreignSID {
+				return true, ""
 			}
 		}
-		if time.Now().After(deadline) {
-			_, _, reason := r.laneLocked(t, lanePath)
-			t.Fatalf("adopting the lane for a foreign session kept losing to the tree's own wake: lane lock = %q", reason)
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+		return false, reason
+	})
 }
 
 // A shared descendant's wake must not launch into an ancestor lane another
@@ -1777,16 +1778,37 @@ func (l *sharedDescendantLane) driveUntil(stop <-chan struct{}) func() error {
 			flushMu.Unlock()
 		}
 	}
+	drive := func() {
+		flush()
+		l.root.driveDelegateAttention(l.delegateSub)
+	}
+	// The daemon reaches a presentation on its wake edge, not on a cadence: an
+	// arm and a deferred delivery both notify the delegate, and a refused drive
+	// arms the root's paced retry. Drive on those edges — and once up front for
+	// rows already presentable — until the caller's stop closes. A callback the
+	// test itself wired is its own driver and is left alone.
+	signal := func() {
+		select {
+		case l.wake <- struct{}{}:
+		default:
+		}
+	}
+	for _, sess := range []*Session{l.delegateSess, l.root} {
+		sess.mu.Lock()
+		unwired := sess.notifyFunc == nil
+		sess.mu.Unlock()
+		if unwired {
+			sess.SetNotifyFunc(signal)
+		}
+	}
+	drive()
 	go func() {
-		deadline := time.Now().Add(30 * time.Second)
-		for time.Now().Before(deadline) {
-			flush()
-			l.root.driveDelegateAttention(l.delegateSub)
-			time.Sleep(200 * time.Millisecond)
+		for {
 			select {
 			case <-stop:
 				return
-			default:
+			case <-l.wake:
+				drive()
 			}
 		}
 	}()
@@ -4381,9 +4403,17 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileCoordinatorDrainsForDescendant(t 
 		}
 		return coordinatorRequests >= 2
 	})
-	// Let the coordinator's turn ticker's last moment pass, so only the
-	// drain can keep the evidence fresh from here.
-	time.Sleep(delegateActivityPublishInterval + 500*time.Millisecond)
+	// The coordinator's own turn has ended, and with it its evidence ticker:
+	// only the finalization drain can keep the evidence fresh from here.
+	coordinatorSub := root.subagents.get(fixture.childID)
+	if coordinatorSub == nil {
+		t.Fatalf("the coordinator %s is not retained", fixture.childID)
+	}
+	testwait.Until(t, "the coordinator's finalization drain to take over", func() bool {
+		coordinatorSub.mu.Lock()
+		defer coordinatorSub.mu.Unlock()
+		return coordinatorSub.finalizing
+	})
 
 	// The lane's marker parent — the root — has now been idle past the
 	// operator's threshold: nothing of its own runs while the tree waits on
