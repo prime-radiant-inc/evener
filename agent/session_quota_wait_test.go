@@ -1525,9 +1525,9 @@ func TestQuotaWaitAnnouncementsCarryTheWaitIdentity(t *testing.T) {
 // A delegate that completes a quota wait, releases its idle runtime and hits
 // quota again after a cold restore must not start its wait identity sequence
 // over: an open pane still holds the previous runtime's ended stamp, and the
-// client's stamp ordering would read the fresh wait as stale and refuse it
-// (issue #6933). The persisted counter is seeded back into the restored
-// session; TestQuotaWaitStampDurableBeforeAnnouncement pins the write side.
+// client's stamp ordering would read the fresh wait as stale and refuse it.
+// The persisted counter is seeded back into the restored session;
+// TestQuotaWaitStampDurableBeforeAnnouncement pins the write side.
 func TestQuotaWaitStampSurvivesRestore(t *testing.T) {
 	meta := schema.SessionMeta{
 		ID:              "01QUOTAWAITSTAMP000001",
