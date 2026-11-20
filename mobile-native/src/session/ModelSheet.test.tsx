@@ -1433,6 +1433,60 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 		});
 	});
 
+	it("closes on the saved model's row without resuming or rewriting it", async () => {
+		// The cold read shows the model the session persists and holds no
+		// pending pick: nothing a departed process left behind is waiting to
+		// apply, so the saved model's own row is as much a no-op as a live
+		// session's is. Sending it would start a daemon to write the value the
+		// session already holds, and announce a change that changed nothing.
+		let resumed = false;
+		const client = new FakeClient("ready");
+		client.on("thread/unsubscribe", () => ({}));
+		client.on("thread/resume", () => {
+			resumed = true;
+			return { thread: liveThread(RESUMED_AUTHORITY) };
+		});
+		client.on("thread/read", () =>
+			resumed
+				? { thread: liveThread(RESUMED_AUTHORITY), bootGeneration: RESUMED_AUTHORITY.bootGeneration }
+				: { thread: COLD_THREAD },
+		);
+		client.on("thread/model/set", () => ({
+			disposition: "accepted" as const,
+			modelControl: snapshotFor(2, RESUMED_AUTHORITY, "claude-sonnet-5"),
+		}));
+		const service = createConversationService(client);
+		const cold = await service.open(REF);
+		// The production cold read: advertised changeModel, no model control.
+		expect(cold.modelControlState.kind).toBe("unsupported");
+		const controls = new SessionControls(
+			service,
+			async () => {},
+			() => {},
+			screenFence({ store: () => cold.ref, madeOn: cold.ref }),
+			() => cold,
+			() => true,
+			CATALOG,
+		);
+		onTestFinished(() => {
+			controls.dispose();
+			service.close();
+		});
+		const { host } = provide(cold, {}, { controls });
+		const tree = sheet();
+		const choice = pressable(tree, "Claude Sonnet 5");
+		// The saved model's own row is the selected one, which is what makes
+		// the shortcut's absence visible: tapping it resumes and writes.
+		expect(choice?.props.accessibilityState).toMatchObject({ selected: true });
+		act(() => choice?.props.onPress?.());
+		await settle();
+
+		expect(client.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
+		expect(client.calls.filter((call) => call.method === "thread/model/set")).toHaveLength(0);
+		expect(navigation.goBack).toHaveBeenCalledTimes(1);
+		expect(host.toast).not.toHaveBeenCalled();
+	});
+
 	it("resumes and sends when the selected row is the pending pick the departed daemon never applied", async () => {
 		// The daemon exits holding a pending pick: the client keeps the ready
 		// snapshot, and modelControlDisplay reports the pending target so the

@@ -31,6 +31,20 @@ import { effortName, qualifiedModelIdentity } from "./sessionFacts";
 
 const NOTHING_UNREAD: Unread = { model: null, vision: null };
 
+/** Whether the session's read holds a pick a departed process may never have
+ * applied: a cold session whose ready snapshot still carries a pending
+ * desired record. Only that row must run through the resume, because closing
+ * on it would strand the choice; a cold session with no pending pick holds a
+ * verified saved selection, and re-picking it is a no-op that must not start
+ * a daemon to say so. */
+function holdsUnappliedPick(session: MobileConversation): boolean {
+	return (
+		coldSessionCanResume(session) &&
+		session.modelControlState.kind === "ready" &&
+		session.modelControlState.snapshot.desired?.lifecycle === "pending"
+	);
+}
+
 export interface ModelHost {
 	session: MobileConversation;
 	/** Null while the hub is away: the sheet stays, and nothing can change. */
@@ -178,14 +192,15 @@ function ModelSheetBody({
 	};
 	const choose = (model: ModelDescriptor) => {
 		if (!vision && !modelPickCanSend(session)) return;
-		// The selected row is only a no-op on a LIVE session. A cold session can
-		// carry the same row as its display while holding no authority for it -
-		// a pick left pending when the daemon exited, whose snapshot the status
-		// frame keeps - and closing on it would strand the choice the departed
-		// process never applied. There the row runs through the resume and sends
-		// once on the authority the post-resume read establishes.
+		// The selected row is a no-op wherever the read that shows it is the
+		// truth: a LIVE session's row names the model running now, and a cold
+		// session's names its saved model unless the read holds a pick a
+		// departed process may never have applied - a pending desired record
+		// whose row the status frame keeps checked. That one row runs through
+		// the resume and sends once on the authority the post-resume read
+		// establishes.
 		//
-		// That exception is the primary picker's alone. A vision model is a
+		// The vision shortcut is unconditional. A vision model is a
 		// setting the saved read already reports as in effect, so re-picking it
 		// changes nothing and must not start a daemon to say so.
 		// A verified record short-circuits only what a publication has
@@ -194,7 +209,7 @@ function ModelSheetBody({
 		if (
 			verified(vision ? "vision" : "model", current) &&
 			`${model.provider}/${model.model}` === current &&
-			(vision || !coldSessionCanResume(session))
+			(vision || !holdsUnappliedPick(session))
 		) {
 			close();
 			return;
