@@ -314,13 +314,13 @@ func TestTrenderEntryLinesAreProjection(t *testing.T) {
 		},
 		{
 			// The other leak this oracle could not see: a copy's kind is public,
-			// so leaving it among the candidates let a render that emitted the
-			// copy match its source line and satisfy the subsequence check. The
-			// rendered line is the copy's own canonical form, ordinal included,
-			// so it can only match the source line the copy contributed.
+			// so leaving it among the candidates would let a render that emitted
+			// the copy match its source line. The render drops the ordinal a copy
+			// carries, so the emitted shape is the plain public one: only
+			// excluding the copy from the candidates keeps this a rejection.
 			name:     "fold copy emitted by the render",
 			file:     []string{trenderHeader, at(entryA, 0), at(foldCopy, 1)},
-			rendered: []string{at(entryA, 0), at(foldCopy, 1)},
+			rendered: []string{at(entryA, 0), at(redacted, 0)},
 			want:     false,
 		},
 		{
