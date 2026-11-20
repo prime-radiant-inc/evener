@@ -1938,6 +1938,22 @@ func TestDelegateAttentionFailedStartReopensConsumedReport(t *testing.T) {
 	// recovery pass an empty fold between consume and reopen, with no wake.
 	close(setupStop)
 	waitForTestSignal(t, setupDone, "the setup drive worker to exit before recovery")
+	// The failed drive reopens the consumed report before it returns, so the
+	// join above makes the row's presence deterministic; the recovery driver
+	// needs it pending, and the reopen appends without a notify.
+	pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs()
+	if pendErr != nil {
+		t.Fatalf("read the pending rows after the refusal: %v", pendErr)
+	}
+	reopened := false
+	for _, id := range pending {
+		if strings.Contains(id, delegateAttentionReopenMarker) {
+			reopened = true
+		}
+	}
+	if !reopened {
+		t.Fatalf("the failed start did not leave the reopened report pending: %v", pending)
+	}
 
 	// Give the lane back: an unlocked lane is re-locked under the tree's own
 	// marker at the next launch, so nothing but the stranded report can keep
