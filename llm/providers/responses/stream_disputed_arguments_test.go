@@ -40,10 +40,10 @@ func TestResponsesDisputedArgumentsSettleOnTheirIssuedCall(t *testing.T) {
 		}
 		var starts, ends []call
 		for _, ev := range events {
-			switch {
-			case ev.Type == llm.StreamEventToolCallStart:
+			switch ev.Type {
+			case llm.StreamEventToolCallStart:
 				starts = append(starts, call{ev.ToolCall.ID, ev.ToolCall.ItemID, ev.ToolCall.Name, ""})
-			case ev.Type == llm.StreamEventToolCallEnd:
+			case llm.StreamEventToolCallEnd:
 				ends = append(ends, call{ev.ToolCall.ID, ev.ToolCall.ItemID, ev.ToolCall.Name, ev.ToolCall.WireArguments()})
 			}
 		}
