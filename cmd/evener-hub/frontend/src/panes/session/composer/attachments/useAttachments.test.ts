@@ -711,3 +711,117 @@ test("an attachment that reuses a retired marker after clearSubmitted still sett
   await flush();
   expect(result.current.items[0]).toMatchObject({ marker: 1, name: "fresh.png", pending: false });
 });
+
+// The rebind repair: a retained tile's number can name an occurrence the
+// incoming draft spells as ordinary prose. The tile must move off it, and the
+// text must not change at all - this text belongs to the writer that produced
+// it, not to this composer's older tiles.
+test("renumberOff moves a retained tile off a marker the text spells, leaving the text byte-identical", async () => {
+  const editor = makeFakeEditor("");
+  const { result } = renderHook(() => useAttachments(editor));
+  act(() =>
+    result.current.replaceWithSettled([
+      { marker: 1, name: "retained.png", mediaType: "image/png", data: "AQID", pending: false },
+    ]),
+  );
+
+  act(() => result.current.renumberOff("incoming prose [image 1] tail"));
+
+  expect(result.current.items).toEqual([
+    { marker: 2, name: "retained.png", mediaType: "image/png", data: "AQID", pending: false },
+  ]);
+  // Byte-identical: the text was never written through the editor at all.
+  expect(editor.getText()).toBe("");
+  expect(result.current.toInputAttachments()).toEqual([
+    { marker: 2, name: "retained.png", mediaType: "image/png", data: "AQID" },
+  ]);
+});
+
+test("renumberOff leaves a tile whose marker the text does not spell", () => {
+  const editor = makeFakeEditor("");
+  const { result } = renderHook(() => useAttachments(editor));
+  act(() =>
+    result.current.replaceWithSettled([
+      { marker: 1, name: "retained.png", mediaType: "image/png", data: "AQID", pending: false },
+    ]),
+  );
+
+  act(() => result.current.renumberOff("incoming prose [image 2] tail"));
+
+  expect(result.current.items.map((item) => item.marker)).toEqual([1]);
+});
+
+test("renumberOff skips numbers the caller and the store reserve", () => {
+  const editor = makeFakeEditor("");
+  const { result } = renderHook(() => useAttachments(editor));
+  act(() =>
+    result.current.replaceWithSettled([
+      { marker: 1, name: "a.png", mediaType: "image/png", data: "AQID", pending: false },
+      { marker: 2, name: "b.png", mediaType: "image/png", data: "AQID", pending: false },
+    ]),
+  );
+
+  // 1 is spelled; 3 is reserved by the caller. The free number is 4.
+  act(() => result.current.renumberOff("[image 1]", [3]));
+
+  expect(result.current.items.map((item) => item.marker)).toEqual([4, 2]);
+});
+
+// Every moved tile takes a distinct number: two tiles spelled in one text must
+// never collapse onto a single marker, which would make them one identity.
+test("renumberOff gives each moved tile its own number", () => {
+  const editor = makeFakeEditor("");
+  const { result } = renderHook(() => useAttachments(editor));
+  act(() =>
+    result.current.replaceWithSettled([
+      { marker: 1, name: "a.png", mediaType: "image/png", data: "AQID", pending: false },
+      { marker: 2, name: "b.png", mediaType: "image/png", data: "AQID", pending: false },
+    ]),
+  );
+
+  act(() => result.current.renumberOff("[image 1] and [image 2]"));
+
+  const markers = result.current.items.map((item) => item.marker);
+  expect(new Set(markers).size).toBe(2);
+  expect(markers.every((marker) => marker > 2)).toBe(true);
+});
+
+// A moved tile keeps its identity through the move: the encode continuation
+// that is still in flight must settle the MOVED tile, not leave it pending.
+test("renumberOff preserves an in-flight encode's identity across the move", async () => {
+  const gate = installControlledImageStub();
+  const editor = makeFakeEditor("");
+  const { result } = renderHook(() => useAttachments(editor));
+  act(() => result.current.ingestFiles([makeFile("pending.png")], () => {}));
+  expect(result.current.items[0]).toMatchObject({ marker: 1, pending: true });
+
+  act(() => result.current.renumberOff("incoming [image 1]"));
+
+  await act(async () => {
+    gate.resolve();
+    await flush();
+  });
+
+  expect(result.current.items).toEqual([
+    { marker: 2, name: "pending.png", mediaType: "image/png", pending: false, data: "AQID", width: 8, height: 4 },
+  ]);
+  expect(result.current.hasPending).toBe(false);
+});
+
+test("renumberOff leaves the numbering high-water mark above every number it assigned", async () => {
+  const editor = makeFakeEditor("[image 1]");
+  const { result } = renderHook(() => useAttachments(editor));
+  act(() =>
+    result.current.replaceWithSettled([
+      { marker: 1, name: "retained.png", mediaType: "image/png", data: "AQID", pending: false },
+    ]),
+  );
+
+  act(() => result.current.renumberOff("[image 1]"));
+  act(() => result.current.ingestFiles([makeFile("fresh.png")], () => {}));
+  await flush();
+
+  // 1 is spelled by the text AND held by the moved tile at 2, so the fresh
+  // gesture starts at 3 rather than reusing either.
+  expect(result.current.items.map((item) => item.marker)).toEqual([2, 3]);
+});

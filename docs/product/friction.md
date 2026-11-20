@@ -480,6 +480,21 @@ is dropped, silently, while the text typed beside it survives. Attachments
 already submitted with the send ride the durable outbox row and are
 unaffected; the loss is bounded to content staged after the press.
 
+The text half is not lost silently any more. When a carried draft still
+spells a staged image marker whose bytes did not travel, the composer states
+it in place beside the draft: an inline notice naming the missing reference,
+and Send stays refused until the draft no longer carries it. The notice offers
+the repair - **Remove the reference** - which edits the draft itself, so the
+prose around it, the person's selections and every other attachment survive.
+Provenance follows the occurrence rather than the number: it is a mark on the
+exact marker text in the document, carried by the editor's own history. So
+deleting the occurrence clears the refusal on its own, an undo that restores
+it restores the refusal with it (even when the deletion blanked the draft),
+and a marker the person retypes is plain prose that sends. A retained
+composer's tile whose number an incoming draft spells as prose is moved to
+the next free number without touching that text, so the literal is never
+paired with the older tile's bytes.
+
 **Evidence.** The attachment store is created per composer mount
 ([sourceState.ts](../../cmd/evener-hub/frontend/src/panes/session/composer/sourceState.ts))
 and the carry moves only the persisted draft record
@@ -488,12 +503,20 @@ a queued entry's edit likewise keeps image attachments out of the composer
 ([Composer.tsx](../../cmd/evener-hub/frontend/src/panes/session/composer/Composer.tsx)),
 so ephemerality is the composer's existing boundary. The Send-resumes
 journey made the inconsistency user-visible by preserving the text half of
-the payload.
+the payload. The notice and its repair are Composer's
+`composer-unbacked-image` surface, gated on the same `askPending` as the
+editor it sits beside; the provenance is the `stagedAnchor` mark in
+[skillDocument.ts](../../cmd/evener-hub/frontend/src/panes/session/composer/skillDocument.ts),
+and the refusal itself is
+[submitProtocol's unbackedImageMarkersIn](../../cmd/evener-hub/frontend/src/panes/session/composer/submitProtocol.ts),
+read at the moment of sending.
 
-**Discuss.** Whether staged image attachments should persist per session (or
-per ref) like the text draft, surviving reloads and identity-following
-navigation under the same newer-wins carry rule, or whether the boundary
-stays and only the composer's copy makes it explicit to users.
+**Discuss.** Whether the image BYTES should persist per session (or per ref)
+like the text draft, surviving reloads and identity-following navigation under
+the same newer-wins carry rule, or whether the boundary stays and the
+composer's stated refusal plus its repair is the whole answer. The carried
+text's provenance question is settled; what remains open is whether a missing
+image is ever brought back rather than removed.
 
 **When discussed.** Record the accepted behavior with its acceptance
 scenario here.
