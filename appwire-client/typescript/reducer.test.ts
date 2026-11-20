@@ -3745,8 +3745,9 @@ test("a read's stamped wait reconciles against the snapshot's running turn with 
 // Wait stamps are one strictly increasing sequence per addressed session: the
 // daemon persists the counter across a cold restore of a released delegate
 // runtime, so the restored runtime continues the previous runtime's numbering
-// rather than restarting it. A read from the new instance therefore keeps the
-// held ended stamp, and the next wait's greater stamp installs normally.
+// rather than restarting it. The ordinary restore keeps the serving instance,
+// so the read keeps the held ended stamp and the next wait's greater stamp
+// installs normally.
 test("a cold-restored runtime continues the previous runtime's wait stamp sequence", () => {
   const resumesAt = Date.parse("2026-11-07T14:30:00Z");
   let model = testHydrate({
@@ -3759,10 +3760,11 @@ test("a cold-restored runtime continues the previous runtime's wait stamp sequen
   expect(model.quotaWaitEndedStamp).toBe(5);
 
   // The cold restore surfaces as a read: the addressed delegate is the same,
-  // the runtime behind it is new and holds no wait.
+  // and a released delegate runtime restores under the same serving instance
+  // with no wait.
   const restored = testThread({
     status: { type: "active" },
-    evener: { activeTurnId: "turn_2", instanceId: "inst_new" },
+    evener: { activeTurnId: "turn_2", instanceId: "inst_old" },
   });
   const afterRead = applyReadResponse(model, { thread: restored }, 3500);
   // The ended stamp survives: the restored runtime's sequence continues from
@@ -3784,12 +3786,14 @@ test("a cold-restored runtime continues the previous runtime's wait stamp sequen
 
 // A read whose cut predates the wake cannot resurrect the wait the wake
 // ended: a stamp below the held ended stamp is stale news, so it installs no
-// wait and no deadline.
+// wait and no deadline. The read comes from a new serving instance: a change
+// of serving owner no longer voids the held sequence, so the older stamp is
+// still refused.
 test("an older read stamp is refused after the wake ended a newer one", () => {
   const resumesAt = Date.parse("2026-11-07T14:30:00Z");
   let model = testHydrate({
     status: { type: "active" },
-    evener: { activeTurnId: "turn_1" },
+    evener: { activeTurnId: "turn_1", instanceId: "inst_old" },
   });
   model = applyNotification(model, quotaRetry({ waitStartedAt: 5, resumesAt, turnId: "turn_1" }), 2000);
   model = applyNotification(model, quotaRetry({ delayMs: 0, waitStartedAt: 5, turnId: "turn_1" }), 3000);
@@ -3801,6 +3805,7 @@ test("an older read stamp is refused after the wake ended a newer one", () => {
     status: { type: "active" },
     evener: {
       activeTurnId: "turn_2",
+      instanceId: "inst_new",
       failure: { title: "usage limit", resumesAt: resumesAt + 60_000, waitStartedAt: 3 },
     },
   });
