@@ -1,3 +1,9 @@
+import {
+  adoptableBootGeneration,
+  DAEMONLESS_BOOT_GENERATION,
+  liveBootGeneration,
+  retiresBootGeneration,
+} from "./bootGeneration";
 import type { AppwireClientLike } from "./clientLike";
 import { mutationErrorData, WireError } from "./errors";
 import { sameJsonValue } from "./plainObject";
@@ -39,6 +45,7 @@ export interface SessionActivityReadState {
   unavailable: boolean;
   permanent: boolean;
 }
+
 export interface SessionActivityCollectionState<Row> extends SessionActivityReadState {
   rows: readonly Row[];
   context: SessionActivityContext | null;
@@ -59,6 +66,14 @@ export interface SessionActivitySnapshot {
 }
 
 type ActivityRow = SessionDelegate | JobActivityJob | SessionWatch;
+/** A pushed delegate frame held for a row no read has admitted yet, with the
+ * boot generation its publisher stamped on it. An older peer stamps nothing,
+ * and an absent stamp is kept absent: it says nothing about identity, so it
+ * is never read as a generation and never retired as one. */
+interface BufferedDelegateFrame {
+  frame: EvenerDelegateInfo;
+  bootGeneration: string | undefined;
+}
 interface ActivityPage {
   context: SessionActivityContext;
   scope: SessionActivityScope;
@@ -188,7 +203,42 @@ export class SessionActivityStore {
   private readonly legacyDelegateReadRevisions = new Map<string, number>();
   /** Latest pushed frame per unknown row identity, applied once a read admits
    * the row so a settle during a later-page read is not dropped. */
-  private readonly bufferedUnknownDelegates = new Map<string, EvenerDelegateInfo>();
+  private readonly bufferedUnknownDelegates = new Map<string, BufferedDelegateFrame>();
+  /** The boot generation the delegate ordering is under, adopted from the
+   * frames' own stamps and from a caller that holds a source identity
+   * (`adoptBootGeneration`, for a store beside a transcript read model).
+   * Undefined until a source names itself: a peer too old to stamp its frames
+   * sends nothing about identity, and nothing is inferred on its behalf. */
+  private delegateBootGeneration: string | undefined;
+  /** The generation each loaded row's hold sample was published under, keyed
+   * by row identity. `holdSequence` is the publishing source's own counter and
+   * restarts at 1 when another daemon boots, so two samples order only when
+   * both name the same generation. A row with no entry wears a sample from a
+   * source that named no generation (an older peer), and such a sample orders
+   * only against another of its own kind. */
+  private readonly delegateHoldBootGenerations = new Map<string, string>();
+  /** The activity page each loaded row's hold sample was served by, keyed by
+   * row identity. A read carries no boot generation -- the collection's own
+   * source epoch is the only identity it names, and the epoch alone cannot tell
+   * a page the replacement served from one the daemon it replaced did, because
+   * any response refreshes it and the two sides learn a replacement
+   * independently. So a page's sample is attributed to the reading source: the
+   * ordering's boot transition count when it was served. A sample served
+   * before the latest transition predates the adopted generation without
+   * anything being guessed about it. At most one of this map and
+   * `delegateHoldBootGenerations` holds an identity: each records the sample
+   * the row wears now. */
+  private readonly delegatePageHolds = new Map<string, number>();
+  /** How many boot generations this store's delegate ordering has moved
+   * through. A page's hold sample cannot name its publisher, so this is what
+   * distinguishes a page the replacement served from one the daemon it
+   * replaced did. */
+  private bootTransitions = 0;
+  /** Boot generations the delegate ordering has moved past. A hold or buffered
+   * frame stamped with one of these was numbered by a daemon that no longer
+   * serves the thread, so its sequence can never order a sample the
+   * replacement takes. */
+  private readonly retiredDelegateBootGenerations = new Set<string>();
   /* The hold is ordered by `holdSequence`, the source's own monotonic counter,
    * and by nothing else. Entering and leaving the drain move no durable
    * delegate field, so the projection revision cannot order the hold: both
@@ -375,6 +425,7 @@ export class SessionActivityStore {
     this.generation += 1;
     const generation = this.generation;
     this.clearDelegates();
+    this.resetDelegateBootGenerations();
     // The replacement context has not been seen by noteContext yet; a fresh
     // session resets eligibility rather than reporting a live->retained flip.
     this.pushEligible = false;
@@ -837,9 +888,218 @@ export class SessionActivityStore {
     this.bufferedUnknownDelegates.clear();
     this.followUpDelegateRead = false;
   }
+  /** Drop everything the delegate ordering knows about the source it was
+   * reading: the adopted generation, the samples each loaded row was
+   * attributed to it under, and the generations it has moved past. The rows
+   * being replaced were a different session's, so their samples are not the
+   * replacement's to attribute, and a retired set from the replaced session
+   * names generations the replacement's frames can never be judged against. */
+  private resetDelegateBootGenerations(): void {
+    this.delegateBootGeneration = undefined;
+    this.delegateHoldBootGenerations.clear();
+    this.delegatePageHolds.clear();
+    this.bootTransitions = 0;
+    this.retiredDelegateBootGenerations.clear();
+  }
   private retireDelegates(): void {
     this.clearDelegates();
     this.reconcileDelegates();
+  }
+  /** Adopt the boot generation a caller holds for this thread's daemon, or for
+   * a generation a frame stamped.
+   *
+   * Adopting a different generation retires the one it replaced: the holds and
+   * buffered frames that daemon numbered are dropped with it, because its
+   * `holdSequence` counts from its own boot and can never order a sample its
+   * replacement takes. A token that names no owner (`unknown-owner`, an empty
+   * string, or an older peer's omission) adopts nothing and retires nothing:
+   * the store keeps whatever it already held.
+   *
+   * A token the adopted generation *ignores* is a departed boot of the same
+   * owner: a read issued before the owner's newer boot can answer after a frame
+   * already adopted it, and adopting that read's token back would restore holds
+   * the newer boot retired and judge its own later frames retired. A different
+   * owner, a higher counter, and attested absence all compare as replacements,
+   * so only a provably older counter of the same owner is refused. */
+  adoptBootGeneration(bootGeneration: string | undefined): void {
+    const adopted = adoptableBootGeneration(bootGeneration);
+    if (adopted === undefined || adopted === this.delegateBootGeneration) return;
+    if (retiresBootGeneration(this.delegateBootGeneration, adopted)) return;
+    const previous = this.delegateBootGeneration;
+    this.delegateBootGeneration = adopted;
+    this.bootTransitions += 1;
+    // A generation the ordering has returned to is current again: a late frame
+    // that named it must not be judged retired.
+    this.retiredDelegateBootGenerations.delete(adopted);
+    if (previous === undefined) {
+      // The first adoption names the source the rows already displayed were
+      // read from: the store reads one source at a time, so the samples that
+      // named no source are that source's. Attributing them here is what lets a
+      // later replacement retire exactly those samples and no others.
+      //
+      // A row a page served is not one of them. Its sample is the activity
+      // collection's, and the transcript's token names the history this read
+      // model found -- the two can already disagree when relay recovery
+      // switched daemons, so labelling a page with this token is exactly the
+      // mislabel that wiped a replacement's own hold.
+      for (const row of this.state.delegates.rows) {
+        const identity = rowIdentity("delegates", row);
+        if (this.delegateHoldBootGenerations.has(identity) || this.delegatePageHolds.has(identity)) continue;
+        if (hasDelegateHoldSample(row)) this.delegateHoldBootGenerations.set(identity, adopted);
+      }
+      // A page served before this first adoption was served by the source this
+      // adoption names: no replacement has been reported yet, so nothing says
+      // otherwise. Recording it under the transition this adoption opened is
+      // what lets the source's own frames order against it.
+      for (const [identity, transitions] of this.delegatePageHolds) {
+        if (transitions < this.bootTransitions) this.delegatePageHolds.set(identity, this.bootTransitions);
+      }
+    }
+    // The source being replaced takes the samples it numbered with it.
+    // Rows the store never attributed are left alone: nothing proved whose
+    // samples they wear, so nothing may be cleared on a guess.
+    if (previous !== undefined) this.retireDelegateBootGeneration(previous);
+    // A buffered frame from the retired generation names durable state the
+    // replacement never published, so it is dropped rather than settled. Its
+    // identity is released so a later frame can ask again.
+    for (const [identity, buffered] of this.bufferedUnknownDelegates) {
+      if (!this.bootGenerationRetired(buffered.bootGeneration)) continue;
+      this.bufferedUnknownDelegates.delete(identity);
+      this.seenUnknownDelegates.delete(identity);
+    }
+    if (this.bufferedUnknownDelegates.size === 0) this.followUpDelegateRead = false;
+    if (adopted === DAEMONLESS_BOOT_GENERATION) {
+      // Attested absence: the hub stamps this token on a *successful* read as
+      // saved-history provenance, which every caller gates out (`live`,
+      // docs/product/history-content.md), so reaching this method with it means
+      // a failed read established that nobody owns the thread. Nothing can be
+      // holding it open, so no wait may be displayed -- including a page's
+      // sample, which a live replacement's transition must not wipe.
+      this.retireAllHolds();
+      return;
+    }
+    // A page's sample cannot be attributed to the replaced daemon or to its
+    // replacement: reads carry no boot generation, and no frame re-publishes an
+    // unchanged wait to restore one that was cleared. So the samples the
+    // transition leaves unresolved are not wiped but re-read: the
+    // reconciliation walk re-serves the collection from the daemon serving the
+    // thread now, and that page settles every one of them.
+    if (previous !== undefined && this.unresolvedPageHolds()) this.reconcileDelegates();
+  }
+  /** The boot generation the delegate ordering is under, or undefined while no
+   * source has named itself. A binding that reuses rows a retired store
+   * retained reads this to tell a store that must be told whose samples those
+   * rows wear from one that has already learned a source of its own. */
+  get bootGeneration(): string | undefined {
+    return this.delegateBootGeneration;
+  }
+  /** Retire one generation's holds: every loaded row whose sample it numbered
+   * stops wearing that sample, and the generation joins the set a late frame
+   * or buffered frame is judged against. The wait belonged to a daemon that no
+   * longer serves the thread, so keeping it displayed would show a hold
+   * nothing can now release. */
+  private retireDelegateBootGeneration(previous: string): void {
+    this.retiredDelegateBootGenerations.add(previous);
+    this.clearHoldSamples((identity) => this.delegateHoldBootGenerations.get(identity) === previous);
+  }
+  /** Whether a generation is one the ordering has left: a sample it stamped
+   * cannot order against the adopted source's. An absent stamp names no
+   * generation and is never retired -- an older peer's frame says nothing
+   * about identity, so nothing about identity may be read into it. */
+  private bootGenerationRetired(bootGeneration: string | undefined): boolean {
+    if (bootGeneration === undefined) return false;
+    if (this.retiredDelegateBootGenerations.has(bootGeneration)) return true;
+    return retiresBootGeneration(this.delegateBootGeneration, bootGeneration);
+  }
+  /** Whether a loaded row still wears a hold sample a page served before the
+   * latest boot transition: the store cannot tell whether that page came from
+   * the daemon the transition replaced or from the one that replaced it. */
+  private unresolvedPageHolds(): boolean {
+    if (this.delegatePageHolds.size === 0) return false;
+    for (const row of this.state.delegates.rows) {
+      if (!hasDelegateHoldSample(row)) continue;
+      const transitions = this.delegatePageHolds.get(rowIdentity("delegates", row));
+      if (transitions !== undefined && transitions < this.bootTransitions) return true;
+    }
+    return false;
+  }
+  /** Clear every loaded row's hold sample. Only a token that attests nobody
+   * serves the thread any more earns this: no daemon is left whose wait the
+   * row could be reporting, so nothing may keep displaying one. */
+  private retireAllHolds(): void {
+    this.clearHoldSamples(() => true);
+  }
+  /** Clear the hold sample of every loaded row `shouldClear` selects, and the
+   * attribution each of those rows wears. Rows the predicate does not admit are
+   * left alone: nothing proved whose samples they wear, so nothing may be
+   * cleared on a guess. At most one of the two attribution maps holds an
+   * identity -- each records the sample the row wears now -- so clearing both
+   * here is what keeps that invariant without either caller repeating it. */
+  private clearHoldSamples(shouldClear: (identity: string) => boolean): void {
+    const rows = this.state.delegates.rows;
+    let next: SessionDelegate[] | null = null;
+    for (let at = 0; at < rows.length; at += 1) {
+      const row = rows[at];
+      if (!row) continue;
+      const identity = rowIdentity("delegates", row);
+      if (!shouldClear(identity)) continue;
+      this.delegateHoldBootGenerations.delete(identity);
+      this.delegatePageHolds.delete(identity);
+      const cleared = withoutDelegateHold(row);
+      if (cleared === row) continue;
+      if (!next) next = rows.slice();
+      next[at] = cleared;
+    }
+    if (next) this.publish({ delegates: { ...this.state.delegates, rows: next } });
+  }
+  /** Whether a loaded row's held sample orders against an incoming sample
+   * stamped `sampleBootGeneration`: both must name the same generation. A
+   * sample the row cannot attribute to the incoming one is not comparable -- a
+   * replaced daemon's sequence would otherwise outrank the replacement's first
+   * sample -- so the incoming sample stands instead, exactly as a first-sight
+   * one does.
+   *
+   * An incoming sample that names no generation says nothing about identity,
+   * so it compares with whatever the row holds, with one exception: a page's
+   * sample belongs to the activity source epoch it was served in, and a page
+   * from an older epoch is not this source's to order against. The sender's
+   * omission is no evidence it is another source's -- a previous-build daemon
+   * stamps its reads with its boot and its delegate frames not at all, and that
+   * source's page and frame must still order against each other. */
+  private holdsComparable(identity: string, sampleBootGeneration: string | undefined): boolean {
+    if (sampleBootGeneration === undefined) {
+      const page = this.delegatePageHolds.get(identity);
+      return page === undefined || page === this.bootTransitions;
+    }
+    const page = this.delegatePageHolds.get(identity);
+    if (page !== undefined) {
+      // A page names no boot generation of its own. It is the adopted source's
+      // only when it was served after the latest transition, and then only the
+      // generation the store holds for that source orders against it.
+      return page === this.bootTransitions && this.delegateBootGeneration === sampleBootGeneration;
+    }
+    return this.delegateHoldBootGenerations.get(identity) === sampleBootGeneration;
+  }
+  /** Attribute a row's hold sample to the generation that published it. A frame
+   * that omitted its stamp names no generation, so it is attributed the way a
+   * page is: to the activity source epoch the ordering is in now. Its sample
+   * orders against a page that same source served in this epoch, while the next
+   * transition makes it unresolved and re-reads it, exactly as it does a page's
+   * -- a replacement's samples are never ordered against it. */
+  private recordHoldBootGeneration(identity: string, bootGeneration: string | undefined): void {
+    if (bootGeneration === undefined) {
+      this.recordPageHold(identity);
+      return;
+    }
+    if (this.delegateHoldBootGenerations.get(identity) === bootGeneration) return;
+    this.delegatePageHolds.delete(identity);
+    this.delegateHoldBootGenerations.set(identity, bootGeneration);
+  }
+  /** Attribute a row's hold sample to the activity page that served it, under
+   * the boot transition the ordering is in now. */
+  private recordPageHold(identity: string): void {
+    this.delegateHoldBootGenerations.delete(identity);
+    this.delegatePageHolds.set(identity, this.bootTransitions);
   }
   /** Reconcile the observed delegates after a source or gate change. A
    * permanent read refusal stops the ordinary automatic reads, but a changed
@@ -905,15 +1165,33 @@ export class SessionActivityStore {
    * one: a merge recorded under an undefined epoch is invisible to the ordering
    * that response is about to establish, and its older snapshot would overwrite
    * the frame as first sight. The response's settlement reconciles the buffered
-   * frame with the row it served. */
-  private applyDelegateFrame(frame: EvenerDelegateInfo): void {
+   * frame with the row it served.
+   *
+   * `bootGeneration` is the identity the frame's own publisher stamped on it
+   * -- not the store's: a frame from a daemon the store has moved past
+   * is dropped, and a frame that names a generation the store has not adopted
+   * is what adopts it. One such frame may move an ordering the store already
+   * holds: a provably newer generation of the SAME owner, on a frame
+   * addressed to this thread, names the daemon serving the thread now. */
+  private applyDelegateFrame(frame: EvenerDelegateInfo, bootGeneration: string | undefined): void {
     if (!this.delegateFrameInScope(frame)) return;
+    if (this.bootGenerationRetired(bootGeneration)) return;
+    // Adopt a live frame stamp on first sight or when it proves the same owner
+    // advanced (retiresBootGeneration in reverse), before merging — otherwise a
+    // replacement daemon's older page can wipe a wait its first frame published.
+    const frameBoot = liveBootGeneration(bootGeneration);
+    if (
+      frameBoot !== undefined &&
+      (this.delegateBootGeneration === undefined || retiresBootGeneration(frameBoot, this.delegateBootGeneration))
+    ) {
+      this.adoptBootGeneration(frameBoot);
+    }
     const rows = this.state.delegates.rows;
     if (frame.childRef === undefined) {
       // A legacy frame carries no identity, so everything but its heartbeat
       // needs the read the revision ladder asks for.
       this.mergeLegacyDelegateActivity(frame);
-      this.noteUnknownDelegate(frame, undefined);
+      this.noteUnknownDelegate(frame, undefined, bootGeneration);
       return;
     }
     let index = -1;
@@ -935,17 +1213,30 @@ export class SessionActivityStore {
         // overwrite the frame with a snapshot that predates it. The frame is
         // buffered instead, and the response's settlement reconciles it with
         // the row it served.
-        this.bufferDelegateFrame(frame, delegateIdentityKey(frame.delegateId, frame.childRef));
+        this.bufferDelegateFrame(frame, delegateIdentityKey(frame.delegateId, frame.childRef), bootGeneration);
         return;
       }
     }
     if (index === -1) {
-      this.noteUnknownDelegate(frame, delegateFrameIdentity(frame));
+      this.noteUnknownDelegate(frame, delegateFrameIdentity(frame), bootGeneration);
       return;
     }
     const current = rows[index];
     if (!current) return;
-    const merged = this.mergeDelegateFrame(current, frame);
+    const { row: merged, holdFromFrame } = this.mergeDelegateFrame(current, frame, bootGeneration);
+    // The attribution names the sample the joined row wears now, not the frame:
+    // a row sample that outranked this frame's keeps the attribution it was
+    // loaded under -- the frame's generation for a stamped frame, which is the
+    // one the row's own sample named for it to have been comparable at all, and
+    // for an unstamped one the activity epoch both sides belong to.
+    //
+    // Recorded before the unchanged-row return below: a frame whose sample is
+    // already displayed still names the generation that published it, which is
+    // what the next adoption retires. An unchanged wait emits no update of its
+    // own, so skipping the attribution here would leave a page's attribution on
+    // a frame's sample forever.
+    const identity = delegateIdentityKey(current.delegateId, current.childRef);
+    if (holdFromFrame) this.recordHoldBootGeneration(identity, bootGeneration);
     if (merged === current) return;
     const next = rows.slice();
     next[index] = merged;
@@ -1001,13 +1292,18 @@ export class SessionActivityStore {
    * exactly as a loaded row does. Re-inserting moves the identity to the end,
    * so eviction drops the coldest identity rather than one a frame just
    * refreshed. */
-  private bufferDelegateFrame(frame: EvenerDelegateInfo, identity: string): void {
+  private bufferDelegateFrame(frame: EvenerDelegateInfo, identity: string, bootGeneration: string | undefined): void {
     const buffered = this.bufferedUnknownDelegates.get(identity);
     if (buffered) this.bufferedUnknownDelegates.delete(identity);
-    this.bufferedUnknownDelegates.set(
-      identity,
-      boundedDelegateFrame(buffered ? mergeDelegateFrames(buffered, frame) : frame),
-    );
+    // Two samples order against each other only when the same generation
+    // published both: a buffer entry from another daemon's boot numbers its
+    // holds from its own start, so the older entry is dropped rather than
+    // joined. An omission names no generation, and adds nothing either way.
+    const samePublisher = buffered !== undefined && buffered.bootGeneration === bootGeneration;
+    this.bufferedUnknownDelegates.set(identity, {
+      frame: boundedDelegateFrame(samePublisher ? mergeDelegateFrames(buffered.frame, frame) : frame),
+      bootGeneration: bootGeneration ?? buffered?.bootGeneration,
+    });
     if (this.bufferedUnknownDelegates.size > MAX_BUFFERED_DELEGATE_FRAMES) {
       const oldest = this.bufferedUnknownDelegates.keys().next();
       if (!oldest.done) {
@@ -1033,11 +1329,15 @@ export class SessionActivityStore {
    * once the walk ends. A legacy frame carries nothing a walk could settle, so
    * its read is queued even mid-walk: the drain finishes the walk first, then
    * the queued read re-serves the collection with the frame's change. */
-  private noteUnknownDelegate(frame: EvenerDelegateInfo, identity: string | undefined): void {
+  private noteUnknownDelegate(
+    frame: EvenerDelegateInfo,
+    identity: string | undefined,
+    bootGeneration: string | undefined,
+  ): void {
     const read = this.reads.delegates;
     if (read.observers === 0 && !read.oneShot) return;
     if (identity !== undefined) {
-      this.bufferDelegateFrame(frame, identity);
+      this.bufferDelegateFrame(frame, identity, bootGeneration);
       // A fresh walk in flight reaches the displayed boundary and settles the
       // buffered frames it can serve, so it is left to finish: asking again per
       // frame would restart that walk forever and never settle the promise it
@@ -1092,10 +1392,19 @@ export class SessionActivityStore {
   }
   /** The projector's join: the strictly greater revision supplies the snapshot
    * fields, while latestActivityAt is the independent maximum -- a lower
-   * revision may advance it, a higher one never moves it backward. */
-  private mergeDelegateFrame(current: SessionDelegate, frame: EvenerDelegateInfo): SessionDelegate {
+   * revision may advance it, a higher one never moves it backward.
+   *
+   * `holdFromFrame` reports whose sample the joined row wears, so the caller
+   * attributes exactly the sample the row now carries: a sample that beat the
+   * frame's keeps the attribution it was loaded under. */
+  private mergeDelegateFrame(
+    current: SessionDelegate,
+    frame: EvenerDelegateInfo,
+    bootGeneration: string | undefined,
+  ): { row: SessionDelegate; holdFromFrame: boolean } {
     const incoming = delegateRowFromFrame(current, frame);
-    const applied = this.appliedRevision(rowIdentity("delegates", current));
+    const identity = rowIdentity("delegates", current);
+    const applied = this.appliedRevision(identity);
     // No record for the current epoch means the map was retired (or this row was
     // never recorded): the loaded row's revision belongs to a retired journal, so
     // comparing against it would reject the replacement's frames, which rebuild
@@ -1115,10 +1424,16 @@ export class SessionActivityStore {
     // sequence was assigned in: a replacement daemon numbers its samples from
     // its own start, so a larger retired sequence would suppress a real wait,
     // or keep a finished one visible. The frame is first sight for this epoch,
-    // exactly as it is for the durable fields above.
-    const holdComparable = applied === undefined ? undefined : current;
+    // exactly as it is for the durable fields above. The same holds for the
+    // boot generation: only a sample the row and the frame both attribute to
+    // one generation can order against the other.
+    const holdComparable =
+      applied === undefined || !this.holdsComparable(identity, bootGeneration) ? undefined : current;
     const held = joinDelegateHold(merged, holdComparable, frame);
-    return delegateRowsEqual(held, current) ? current : held;
+    return {
+      row: delegateRowsEqual(held.row, current) ? current : held.row,
+      holdFromFrame: held.holdFromFrame,
+    };
   }
   private joinDelegateRows(
     incoming: readonly SessionDelegate[],
@@ -1140,6 +1455,13 @@ export class SessionActivityStore {
       const existing = previousById.get(identity);
       const applied = this.appliedRevision(identity);
       let merged: SessionDelegate;
+      // Whether the row ends up wearing the sample it already carried. A sample
+      // the row already wore can win the ordering below, and then the row keeps
+      // that sample's own attribution.
+      let keptHold = false;
+      let comparable = false;
+      const existingSequence = existing?.holdSequence ?? 0;
+      const servedSequence = row.holdSequence ?? 0;
       if (applied === undefined) {
         // First sight in this epoch -- or the first read after a replacement
         // cleared the map: the served row seeds the order and wins, so an old
@@ -1165,10 +1487,13 @@ export class SessionActivityStore {
         // restart at 1, so comparing across the boundary would carry a finished
         // wait forward — or suppress a real one. A row the ordering no longer
         // covers contributes no sample.
-        const resolved =
-          existing !== undefined && currentOrdering && (existing.holdSequence ?? 0) > (candidate.holdSequence ?? 0)
-            ? keepDelegateHold(candidate, existing)
-            : candidate;
+        comparable = this.holdsComparable(identity, this.delegateBootGeneration);
+        keptHold =
+          existing !== undefined &&
+          comparable &&
+          currentOrdering &&
+          (existing.holdSequence ?? 0) > (candidate.holdSequence ?? 0);
+        const resolved = keptHold && existing ? keepDelegateHold(candidate, existing) : candidate;
         merged = existing && delegateRowsEqual(resolved, existing) ? existing : resolved;
       }
       // Only a row this response served carries this response's journal: a row
@@ -1177,7 +1502,28 @@ export class SessionActivityStore {
       // the same id. An unrecorded row is first sight for the new epoch, as a
       // replacement's own rows are. A late response records nothing either: its
       // records would belong to an epoch the ordering has already left.
-      if (served.has(identity) && currentOrdering) this.recordAppliedDelegate(merged, this.reads.delegates.epoch);
+      if (served.has(identity) && currentOrdering) {
+        this.recordAppliedDelegate(merged, this.reads.delegates.epoch);
+        // A row this response served wears this page's hold sample unless the
+        // one it already wore won, and a page is attributed to the reading
+        // source -- the ordering's transition count -- rather than to the
+        // transcript's boot generation: only one of the two sides knows a
+        // replacement happened, and it need not be the transcript's. A late
+        // response is not the source's news and attributes nothing.
+        //
+        // One page re-attributes nothing, though: a page repeating the very
+        // sample the row already wears changes no fact about whose sample it
+        // is. When a frame stamped that sample, the stamp survives the repeat,
+        // because re-attributing it to the page would turn it into an
+        // unresolved page sample -- kept through the next generation adoption
+        // and re-read instead of retired with the daemon that published it.
+        const repeatedStampedHold =
+          existing !== undefined &&
+          comparable &&
+          existingSequence === servedSequence &&
+          this.delegateHoldBootGenerations.has(identity);
+        if (!keptHold && !repeatedStampedHold && hasDelegateHoldSample(merged)) this.recordPageHold(identity);
+      }
       return merged;
     });
   }
@@ -1202,14 +1548,20 @@ export class SessionActivityStore {
       if (row) loadedByIdentity.set(rowIdentity("delegates", row), at);
     }
     let settledRows: SessionDelegate[] | null = null;
-    for (const [identity, frame] of this.bufferedUnknownDelegates) {
+    for (const [identity, buffered] of this.bufferedUnknownDelegates) {
       const index = loadedByIdentity.get(identity);
       if (index === undefined) continue;
       this.bufferedUnknownDelegates.delete(identity);
       this.seenUnknownDelegates.delete(identity);
       const current = rows[index];
       if (!current) continue;
-      const merged = this.mergeDelegateFrame(current, frame);
+      const { row: merged, holdFromFrame } = this.mergeDelegateFrame(current, buffered.frame, buffered.bootGeneration);
+      // Same rule as the pushed-frame merge: the winning sample's attribution
+      // is recorded even when the displayed row is unchanged. A buffered frame
+      // repeats what a page already showed often -- it waited for a read to
+      // admit its row -- and that is exactly the case where the frame's stamp
+      // is the only evidence of which daemon published what is displayed.
+      if (holdFromFrame) this.recordHoldBootGeneration(identity, buffered.bootGeneration);
       if (merged === current) continue;
       if (!settledRows) settledRows = rows.slice();
       settledRows[index] = merged;
@@ -1348,7 +1700,9 @@ export class SessionActivityStore {
         // retained source keeps today's behavior: the activity-changed
         // invalidation re-reads the collection, so reports still land.
         if (!this.pushEligible) return;
-        this.applyDelegateFrame(notification.params.delegate);
+        // The frame carries the generation its own publisher booted under
+        // -- a peer too old to stamp it sends nothing about identity.
+        this.applyDelegateFrame(notification.params.delegate, notification.params.bootGeneration);
         return;
       case "evener/thread/activity/changed":
         if (
@@ -1448,7 +1802,7 @@ export class SessionActivityStore {
     }
     void lease
       .read({ includeTurns: false })
-      .then(() => {
+      .then((response) => {
         if (this.disposed || this.lease !== lease) return;
         if (generation !== this.generation) {
           const next = this.generation;
@@ -1459,6 +1813,16 @@ export class SessionActivityStore {
         if (!metadata) return;
         if (this.state.context && this.state.context.sessionId !== metadata.sessionId) return;
         if (this.runtimeThreadId !== null && metadata.threadId !== this.runtimeThreadId) return;
+        // Relay recovery can hand this same connected client a replacement
+        // daemon, and this lean read is the first response that names it. The
+        // adopted generation is what lets a page the replacement served and a
+        // frame it stamped order against each other: without it the page is
+        // not comparable to the frame, and an older page sample overwrites a
+        // newer wait the replacement published -- which nothing restores,
+        // since an unchanged hold emits no update of its own. `liveBootGeneration`
+        // keeps a saved-history `daemonless` success from displacing the live
+        // source this store already holds.
+        this.adoptBootGeneration(liveBootGeneration(response.bootGeneration));
         this.publish({ runtime: this.seedEscalations(metadata) });
       })
       .catch((error: unknown) => {
@@ -1625,11 +1989,11 @@ function joinDelegateHold(
   row: SessionDelegate,
   previous: SessionDelegate | undefined,
   frame: EvenerDelegateInfo,
-): SessionDelegate {
+): { row: SessionDelegate; holdFromFrame: boolean } {
   const currentSequence = previous?.holdSequence ?? 0;
   const frameSequence = frame.holdSequence ?? 0;
   if (previous !== undefined && currentSequence > frameSequence) {
-    return keepDelegateHold(row, previous);
+    return { row: keepDelegateHold(row, previous), holdFromFrame: false };
   }
   if (
     (row.drainHeldByJobs ?? false) === (frame.drainHeldByJobs ?? false) &&
@@ -1639,16 +2003,19 @@ function joinDelegateHold(
     row.runningSubagentCount === frame.runningSubagentCount &&
     row.holdSequence === frame.holdSequence
   ) {
-    return row;
+    return { row, holdFromFrame: true };
   }
   return {
-    ...row,
-    drainHeldByJobs: frame.drainHeldByJobs,
-    runningJobCount: frame.runningJobCount,
-    oldestRunningJobStartedAt: frame.oldestRunningJobStartedAt,
-    drainHeldBySubagents: frame.drainHeldBySubagents,
-    runningSubagentCount: frame.runningSubagentCount,
-    holdSequence: frame.holdSequence,
+    row: {
+      ...row,
+      drainHeldByJobs: frame.drainHeldByJobs,
+      runningJobCount: frame.runningJobCount,
+      oldestRunningJobStartedAt: frame.oldestRunningJobStartedAt,
+      drainHeldBySubagents: frame.drainHeldBySubagents,
+      runningSubagentCount: frame.runningSubagentCount,
+      holdSequence: frame.holdSequence,
+    },
+    holdFromFrame: true,
   };
 }
 
@@ -1673,6 +2040,37 @@ function keepDelegateHold(row: SessionDelegate, holds: SessionDelegate): Session
     drainHeldBySubagents: holds.drainHeldBySubagents,
     runningSubagentCount: holds.runningSubagentCount,
     holdSequence: holds.holdSequence,
+  };
+}
+
+/** Whether a row wears a hold sample at all: the sequence, or the fact it
+ * phrases. A row that never held carries none, so it is not a source's sample
+ * to attribute. */
+function hasDelegateHoldSample(row: SessionDelegate): boolean {
+  return (
+    row.holdSequence !== undefined ||
+    row.drainHeldByJobs !== undefined ||
+    row.runningJobCount !== undefined ||
+    row.oldestRunningJobStartedAt !== undefined ||
+    row.drainHeldBySubagents !== undefined ||
+    row.runningSubagentCount !== undefined
+  );
+}
+
+/** A row with its hold sample removed. A hold belongs to the daemon that
+ * sampled it, so once that daemon is replaced the sample is not the
+ * replacement's to display: the row keeps its durable fields and reports no
+ * wait until the new source says otherwise. */
+function withoutDelegateHold(row: SessionDelegate): SessionDelegate {
+  if (!hasDelegateHoldSample(row)) return row;
+  return {
+    ...row,
+    drainHeldByJobs: undefined,
+    runningJobCount: undefined,
+    oldestRunningJobStartedAt: undefined,
+    drainHeldBySubagents: undefined,
+    runningSubagentCount: undefined,
+    holdSequence: undefined,
   };
 }
 

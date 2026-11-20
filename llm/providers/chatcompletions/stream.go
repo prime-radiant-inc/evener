@@ -2,7 +2,6 @@ package chatcompletions
 
 import (
 	"bytes"
-	"cmp"
 	"context"
 	"encoding/json"
 	"maps"
@@ -39,10 +38,20 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 	var textStarted bool
 	var textBuf strings.Builder
 	var reasoningStarted bool
-	// detailsBuf and scalarBuf accumulate separately so any chunk order matches the non-stream fields.
-	var detailsBuf, scalarBuf strings.Builder
+	// Scalar text and structured reasoning_details accumulate separately so any
+	// chunk order matches the non-stream fields: the settled thinking part keeps
+	// both, while the live preview emits one copy into a single pane buffer.
+	var scalarBuf strings.Builder
 	var scalarField string
-	var lastDetailIdx *float64
+	details := &detailAssembly{byKey: map[detailKey]*strings.Builder{}}
+	// structuredBuf is the structured preview accumulated in arrival order and
+	// shown is the exact text sent to the live pane. While the two sources
+	// agree, the pane shows the agreed prefix plus the growth of the longer
+	// source; once they diverge it keeps per-frame precedence.
+	var structuredBuf strings.Builder
+	var shown strings.Builder
+	var agree int
+	var diverged bool
 	// encryptedDetails accumulates opaque reasoning.encrypted items (OpenRouter
 	// Gemini/o-series) in arrival order; they ride the thinking part's
 	// EncryptedContent so the reasoning chain survives replay.
@@ -116,7 +125,7 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 
 				// Build final response.
 				msg := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{}}
-				display, displayField := detailsBuf.String(), ""
+				display, displayField := details.display(), ""
 				if display == "" {
 					display, displayField = scalarBuf.String(), scalarField
 				}
@@ -234,40 +243,65 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 			}
 
 			// Accumulate opaque encrypted reasoning items (they carry no text,
-			// so reasoningFromDelta skips them).
+			// so the live preview skips them).
 			encryptedDetails = append(encryptedDetails, collectEncryptedDetails(choice.Delta.ReasoningDetails)...)
 
 			// Reasoning delta — providers vary the field name; take the first
 			// non-empty variant per chunk (duplicated identical fields must
 			// not double the text) and remember the field for replay.
-			if scalar, field := extractScalarReasoning(choice.Delta.ReasoningContent, choice.Delta.Reasoning, choice.Delta.ReasoningText); scalar != "" {
+			scalar, field := extractScalarReasoning(choice.Delta.ReasoningContent, choice.Delta.Reasoning, choice.Delta.ReasoningText)
+			if scalar != "" {
 				if scalarField == "" {
 					scalarField = field
 				}
 				scalarBuf.WriteString(scalar)
 			}
-			if delta, field := reasoningFromDelta(choice.Delta); delta != "" {
-				if !reasoningStarted {
-					s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningStart})
-					reasoningStarted = true
-				}
-				if field == "" {
-					before := detailsBuf.Len()
-					for _, d := range choice.Delta.ReasoningDetails {
-						if t := cmp.Or(d.Text, d.Thinking); t != "" {
-							if detailsBuf.Len() > 0 && (d.Index == nil || lastDetailIdx == nil || *d.Index != *lastDetailIdx) {
-								detailsBuf.WriteString("\n")
-							}
-							detailsBuf.WriteString(t)
-							lastDetailIdx = d.Index
+			structured := details.appendChunk(choice.Delta.ReasoningDetails)
+			if structured != "" {
+				structuredBuf.WriteString(structured)
+			}
+			delta := structured
+			if delta == "" {
+				delta = scalar
+			}
+			if delta != "" {
+				var send string
+				if !diverged {
+					s, d := scalarBuf.String(), structuredBuf.String()
+					for agree < len(s) && agree < len(d) && s[agree] == d[agree] {
+						agree++
+					}
+					if agree < len(s) && agree < len(d) {
+						// The sources diverge; from here the pane keeps per-frame
+						// precedence and the overlap check stops guiding it.
+						diverged = true
+					} else {
+						longer := s
+						if len(d) > len(s) {
+							longer = d
+						}
+						if len(longer) > shown.Len() {
+							send = longer[shown.Len():]
+							shown.WriteString(send)
 						}
 					}
-					delta = detailsBuf.String()[before:]
 				}
-				s.Send(llm.StreamEvent{
-					Type:           llm.StreamEventReasoningDelta,
-					ReasoningDelta: delta,
-				})
+				if diverged {
+					// Per-frame precedence: the structured candidate when the frame has
+					// one, else the scalar fragment. Divergence is permanent, and a repeat
+					// of the pane's suffix is still new text here.
+					send = delta
+				}
+				if send != "" {
+					if !reasoningStarted {
+						s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningStart})
+						reasoningStarted = true
+					}
+					s.Send(llm.StreamEvent{
+						Type:           llm.StreamEventReasoningDelta,
+						ReasoningDelta: send,
+					})
+				}
 			}
 
 			// Text delta — close reasoning first if transitioning.
@@ -348,4 +382,105 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 		},
 	}
 	runner.Run(sctx)
+}
+
+// detailKey identifies one reasoning_details item: the item for an index value,
+// or the single implicit item that unindexed pieces belong to.
+type detailKey struct {
+	indexed bool
+	index   float64
+}
+
+func detailKeyOf(d reasoningDetailItem) detailKey {
+	if d.Index == nil {
+		return detailKey{}
+	}
+	return detailKey{indexed: true, index: *d.Index}
+}
+
+// detailAssembly accumulates streamed reasoning_details text by item identity:
+// pieces of one item concatenate with no separator, and distinct items are
+// ordered by first appearance and joined by one newline in the settled display.
+type detailAssembly struct {
+	order []detailKey
+	byKey map[detailKey]*strings.Builder
+	// last is the item of the most recent text-bearing piece, across chunks;
+	// a different item in a later frame still starts a new preview line.
+	last    detailKey
+	lastSet bool
+}
+
+// appendChunk folds one chunk's pieces into the assembly and returns the text
+// that chunk contributes to the live preview. Pieces of one explicit index
+// concatenate whether or not a frame boundary separates them; unindexed pieces
+// inside a single array keep the provider's newline, matching the non-stream
+// join. Distinct items are separated by one newline in the preview, including
+// across a frame boundary.
+func (a *detailAssembly) appendChunk(details []reasoningDetailItem) string {
+	var out strings.Builder
+	var prev detailKey
+	first := true
+	// unindexedSeen records that this chunk already carried unindexed text, so
+	// every later unindexed piece in the same array needs its newline in the
+	// implicit item even when an indexed piece arrives between them.
+	unindexedSeen := false
+	for _, d := range details {
+		// Encrypted blocks are opaque replay material, never display text;
+		// collectEncryptedDetails carries them for continuation.
+		if d.Type == "reasoning.encrypted" {
+			continue
+		}
+		text := detailItemText(d)
+		if text == "" {
+			// An item's identity starts at its first appearance for text-bearing
+			// entries (indexed or unindexed) and indexed placeholders, so later
+			// text keeps this position. Null and encrypted entries stay out.
+			key := detailKeyOf(d)
+			if key.indexed || d.Type == "reasoning.text" || d.Type == "thinking" {
+				if _, ok := a.byKey[key]; !ok {
+					a.byKey[key] = &strings.Builder{}
+					a.order = append(a.order, key)
+				}
+			}
+			continue
+		}
+		key := detailKeyOf(d)
+		b := a.byKey[key]
+		if b == nil {
+			b = &strings.Builder{}
+			a.byKey[key] = b
+			a.order = append(a.order, key)
+		}
+		sameItem := out.Len() > 0 && key == prev
+		switch {
+		case first:
+			if a.lastSet && key != a.last {
+				out.WriteString("\n")
+			}
+		case !sameItem || !key.indexed:
+			out.WriteString("\n")
+		}
+		out.WriteString(text)
+		if !key.indexed && unindexedSeen {
+			b.WriteString("\n")
+		}
+		b.WriteString(text)
+		if !key.indexed {
+			unindexedSeen = true
+		}
+		prev = key
+		first = false
+		a.last, a.lastSet = key, true
+	}
+	return out.String()
+}
+
+// display is the settled reasoning text: non-empty items in first-appearance
+// order, joined by exactly one newline.
+func (a *detailAssembly) display() string {
+	texts := make([]string, 0, len(a.order))
+	for _, key := range a.order {
+		texts = append(texts, a.byKey[key].String())
+	}
+	return joinDetailTexts(texts)
 }
