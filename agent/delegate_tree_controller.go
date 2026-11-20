@@ -988,7 +988,8 @@ func (c *delegateTreeController) delegateOwnerOfSessionLocked(sessionID string) 
 //   - its own managed shells (runningOwnedShellJobs, filtered by the drain's
 //     isOwnedDrainJob), and
 //   - the descendant delegates still open below it, from this delegate's own
-//     subtree minus any run that is terminal.
+//     subtree minus any run that is terminal and minus any branch the drain
+//     abandoned at its current generation.
 //
 // A delegate mid-turn that merely started a background shell or a subagent has
 // the counts and no hold — it is still working, and its row must keep saying
@@ -1023,19 +1024,37 @@ func (c *delegateTreeController) sampleDrainHoldLocked(delegateID string) delega
 		}
 	}
 	running := 0
-	for id := range c.subtreeMembersLocked(delegateID) {
-		if id == delegateID {
-			continue
+	c.walkSubtreeLocked(delegateID, func(parentID, childID string) bool {
+		aggregate := c.durable[childID]
+		if c.childDrainAbandonedLocked(parentID, aggregate) {
+			// Match treeHasOutstandingWorkBesidesOwnJobs: an abandoned branch
+			// is not a wait.
+			return false
 		}
-		aggregate := c.durable[id]
 		if aggregate != nil && !delegateRunTerminal(aggregate.LatestOutcome, aggregate.CurrentRunOpen) {
 			running++
 		}
-	}
+		return true
+	})
 	if running > 0 {
 		sample.heldSubagents, sample.subagentCount = true, running
 	}
 	return sample
+}
+
+// childDrainAbandonedLocked reports whether the parent delegate's own session
+// gave up waiting on childID's current generation. The stamp lives on that
+// session under drainAbandonedMu, which session.go documents as a leaf, so
+// reading it here costs no lock-order inversion. The caller holds c.mu.
+func (c *delegateTreeController) childDrainAbandonedLocked(parentID string, aggregate *delegatestore.Aggregate) bool {
+	if aggregate == nil || aggregate.Descriptor.ChildSessionID == "" {
+		return false
+	}
+	parent := c.liveRuntimeLocked(parentID)
+	if parent == nil {
+		return false
+	}
+	return parent.drainAbandonedAtGeneration(aggregate.Descriptor.ChildSessionID, aggregate.Generation)
 }
 
 // drainHoldForDelegateLocked samples the delegate's hold and returns the
@@ -1708,6 +1727,13 @@ func (c *delegateTreeController) capturedPlanLocked(id string) delegateUpdatePla
 // client drops a same-revision frame whose mutating fields it cannot order, so
 // a plain notification would not land. The plan is captured under the
 // controller lock and emitted outside it, exactly as the other publications do.
+//
+// A clear sample is skipped when no hold can still be showing to a consumer:
+// the last sample a read handed out and the last sample published in a frame
+// are both clear. No row can carry a wait then, so the emit would only make an
+// open activity view reread an unchanged row. A clear that ends an outstanding
+// hold still publishes, whether the hold was seen by a read or by a published
+// frame, because that consumer's row carries the wait.
 func (c *delegateTreeController) publishDelegateHold(sessionID, delegateID string) {
 	if c == nil || delegateID == "" {
 		return
@@ -1719,9 +1745,41 @@ func (c *delegateTreeController) publishDelegateHold(sessionID, delegateID strin
 		c.mu.Unlock()
 		return
 	}
+	if !c.holdOutstandingLocked(delegateID) && c.sampleDrainHoldLocked(delegateID) == (delegateHoldSample{}) {
+		c.mu.Unlock()
+		return
+	}
 	plan := c.capturedPlanLocked(delegateID)
 	c.mu.Unlock()
 	c.emitDelegateUpdate(plan)
+}
+
+// publishAncestorHoldsAfterAbandonment publishes the abandoned delegate's row
+// so the ancestor join republishes every parked ancestor whose count changed.
+// The abandoned delegate's immediate parent may be mid-turn with no hold of its
+// own, so seeding from the holder's row would publish nothing; the abandoned
+// row's own event is what carries the ancestors.
+func (c *delegateTreeController) publishAncestorHoldsAfterAbandonment(delegateID string) {
+	if c == nil || delegateID == "" {
+		return
+	}
+	c.mu.Lock()
+	aggregate := c.durable[delegateID]
+	if aggregate == nil || aggregate.Descriptor.ParentDelegateID == "" {
+		c.mu.Unlock()
+		return
+	}
+	plan := c.capturedPlanLocked(delegateID)
+	c.mu.Unlock()
+	c.emitDelegateUpdate(plan)
+}
+
+// holdOutstandingLocked reports whether a drain hold for delegateID may still
+// be showing to a consumer: the last sample a read handed out or a frame
+// published was nonzero and has not been cleared since. The caller holds c.mu.
+func (c *delegateTreeController) holdOutstandingLocked(delegateID string) bool {
+	return c.holdSamples[delegateID].sample != (delegateHoldSample{}) ||
+		c.publishedHoldSamples[delegateID] != (delegateHoldSample{})
 }
 
 func (c *delegateTreeController) appendResumabilityClosureLocked(delegateID string, events ...delegatestore.Event) (delegateUpdatePlan, error) {

@@ -540,24 +540,36 @@ func classifyDelegateStopAdmission(state delegatestore.State, targetID string, m
 }
 
 // subtreeMembersLocked returns targetID and every transitive child below it.
-// It walks the delegateChildren index — one hop per edge instead of one full
-// durable scan per tree level — and the seen set keeps a corrupt journal's
-// parent loop from hanging the controller mutex, the same property the old
-// fixed-point closure provided.
 func (c *delegateTreeController) subtreeMembersLocked(targetID string) map[string]struct{} {
 	members := map[string]struct{}{targetID: {}}
+	c.walkSubtreeLocked(targetID, func(_, childID string) bool {
+		members[childID] = struct{}{}
+		return true
+	})
+	return members
+}
+
+// walkSubtreeLocked walks the delegateChildren index — one hop per edge
+// instead of one full durable scan per tree level. enter reports whether the
+// walk descends into a child, so a caller can prune a branch. The seen set
+// keeps a corrupt journal's parent loop from hanging the controller mutex, the
+// same property the old fixed-point closure provided.
+func (c *delegateTreeController) walkSubtreeLocked(targetID string, enter func(parentID, childID string) bool) {
+	seen := map[string]struct{}{targetID: {}}
 	stack := []string{targetID}
 	for len(stack) > 0 {
 		id := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
 		for child := range c.delegateChildren[id] {
-			if _, seen := members[child]; !seen {
-				members[child] = struct{}{}
+			if _, ok := seen[child]; ok {
+				continue
+			}
+			seen[child] = struct{}{}
+			if enter(id, child) {
 				stack = append(stack, child)
 			}
 		}
 	}
-	return members
 }
 
 func (c *delegateTreeController) stopCoversLocked(delegateID string) bool {
