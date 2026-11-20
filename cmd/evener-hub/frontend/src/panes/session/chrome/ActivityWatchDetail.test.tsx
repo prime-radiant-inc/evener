@@ -435,26 +435,33 @@ describe("ActivityWatchDetail watch facts", () => {
   test("an event watch states the joined event names", () => {
     render(
       <ActivityWatchDetail
-        row={row({ events: ["job.completed", "job.failed"], cadence: [{ kind: "events" }], deliveries: 2 })}
+        row={row({ events: ["job.completed", "job.failed"], cadence: [{ kind: "events" }], deliveries: 7 })}
         now={NOW}
       />,
     );
     const facts = screen.getByTestId("watch-facts").textContent ?? "";
     expect(facts).toContain("job.completed");
     expect(facts).toContain("job.failed");
-    expect(facts).toContain("2");
+    expect(facts).toContain("7");
   });
 
-  test("a wildcard event watch reads as session events", () => {
-    render(
+  test("a wildcard event watch adds condition evidence to an empty event list", () => {
+    const { rerender } = render(
+      <ActivityWatchDetail
+        row={row({ wildcardEvents: false, events: [], cadence: [{ kind: "events" }], deliveries: 0 })}
+        now={NOW}
+      />,
+    );
+    const without = screen.getByTestId("watch-facts").textContent;
+    rerender(
       <ActivityWatchDetail
         row={row({ wildcardEvents: true, events: [], cadence: [{ kind: "events" }], deliveries: 0 })}
         now={NOW}
       />,
     );
-    const facts = screen.getByTestId("watch-facts").textContent ?? "";
-    expect(facts.length).toBeGreaterThan(0);
-    expect(facts).not.toContain("job.");
+    const withWildcard = screen.getByTestId("watch-facts").textContent ?? "";
+    expect(withWildcard).not.toBe(without);
+    expect(withWildcard).not.toContain("job.");
   });
 
   test("a scheduled watch's newest delivery instant renders as local HH:MM", () => {
