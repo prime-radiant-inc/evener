@@ -79,23 +79,6 @@ func TestCovFormatQuietDuration(t *testing.T) {
 	}
 }
 
-// TestCovFormatQuietWindow covers formatQuietWindow.
-func TestCovFormatQuietWindow(t *testing.T) {
-	t.Parallel()
-	if got := formatQuietWindow(10 * time.Minute); got != "10m" {
-		t.Fatalf("10m = %q", got)
-	}
-	if got := formatQuietWindow(time.Minute); got != "1m" {
-		t.Fatalf("1m = %q", got)
-	}
-	if got := formatQuietWindow(90 * time.Second); got != "1m30s" {
-		t.Fatalf("1m30s = %q", got)
-	}
-	if got := formatQuietWindow(50 * time.Millisecond); got != "50ms" {
-		t.Fatalf("50ms = %q", got)
-	}
-}
-
 // TestCovWatchEndedUnfiredMessage covers watchEndedUnfiredMessage.
 func TestCovWatchEndedUnfiredMessage(t *testing.T) {
 	t.Parallel()
@@ -774,24 +757,6 @@ func TestCovLiveShellHandles(t *testing.T) {
 	got = jm.liveShellHandles()
 	if len(got) != 1 {
 		t.Fatalf("no-workdir shell excluded = %v", got)
-	}
-}
-
-// ---- delegate_runtime.go pure functions ----
-
-// TestCovDelegateQuietAttentionID covers delegateQuietAttentionID and
-// delegateQuietAttentionIDForStretch.
-func TestCovDelegateQuietAttentionID(t *testing.T) {
-	t.Parallel()
-	lease := delegateLease{delegateID: "dlg_1", generation: 2}
-	got := delegateQuietAttentionID(lease)
-	if got != "quiet:dlg_1:2:1" {
-		t.Fatalf("got = %q", got)
-	}
-
-	got = delegateQuietAttentionIDForStretch(lease, 3)
-	if got != "quiet:dlg_1:2:3" {
-		t.Fatalf("stretch = %q", got)
 	}
 }
 

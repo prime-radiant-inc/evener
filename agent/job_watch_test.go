@@ -134,6 +134,44 @@ func TestWaitForTestSignalReportsBeforeTheBinaryDeadline(t *testing.T) {
 	}
 }
 
+// awaitSignalLabel is the label the awaitSignal deadline regression's child
+// waits for. It is the test's own input, so the parent can look for it in the
+// child's output without reading production copy.
+const awaitSignalLabel = "sentinel-awaitsignal-7f3a"
+
+// awaitSignalDeadlineHelperEnv marks the re-exec'd child of
+// TestAwaitSignalReportsBeforeTheBinaryDeadline, so the parent never re-enters
+// the guard and the child never recurses.
+const awaitSignalDeadlineHelperEnv = "EVENER_AWAIT_SIGNAL_DEADLINE_HELPER"
+
+// Regression for #6811. awaitSignal reports with Errorf, because scripted steps
+// call it from provider goroutines, so the child's test fails through the
+// framework at 2.5s and exits 1. With the old fixed 30s guard the child died on
+// the 5s binary deadline instead: exit 2 and a goroutine dump, no label.
+func TestAwaitSignalReportsBeforeTheBinaryDeadline(t *testing.T) {
+	t.Parallel()
+	if os.Getenv(awaitSignalDeadlineHelperEnv) == "1" {
+		awaitSignal(t, make(chan struct{}), awaitSignalLabel)
+		t.Fatal("the guard returned on a channel that never closes")
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestAwaitSignalReportsBeforeTheBinaryDeadline$", "-test.timeout=5s")
+	cmd.Env = append(os.Environ(), awaitSignalDeadlineHelperEnv+"=1")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("a guard that never sees its signal passed its test\n%s", out)
+	}
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) {
+		t.Fatalf("the child test binary did not run: %v\n%s", err, out)
+	}
+	if code := exit.ExitCode(); code != 1 {
+		t.Fatalf("the child ended with exit status %d, not a failed test: the guard lost to the binary's deadline, or the binary never reached the test\n%s", code, out)
+	}
+	if !strings.Contains(string(out), awaitSignalLabel) {
+		t.Fatalf("the child failed its test without reporting the guard's label %q\n%s", awaitSignalLabel, out)
+	}
+}
+
 func loadWatchSendRecord(t *testing.T, jm *jobManager) jobstore.WatchSendRecord {
 	t.Helper()
 	return jobstore.FoldWatchSends(loadJobStoreEvents(t, jm))

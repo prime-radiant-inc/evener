@@ -124,6 +124,10 @@ func TestActivitySessionLabel(t *testing.T) {
 	if got := activitySessionLabel(meta); got != "sid" {
 		t.Fatalf("label = %q, want id for whitespace name", got)
 	}
+	// Empty meta has no label.
+	if got := activitySessionLabel(schema.SessionMeta{}); got != "" {
+		t.Fatalf("label = %q, want empty", got)
+	}
 }
 
 func TestSameActivityStateDir(t *testing.T) {
