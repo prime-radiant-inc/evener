@@ -298,7 +298,7 @@ xcrun simctl install "$sim_udid" "$app_path" >>"$output/simulator-warmup.log" 2>
 xcrun simctl launch "$sim_udid" "$bundle_id" >>"$output/simulator-warmup.log" 2>&1
 sleep 15
 xcrun simctl terminate "$sim_udid" "$bundle_id" >>"$output/simulator-warmup.log" 2>&1 ||
-	log "$(date -u +%FT%TZ) warmup: the warm app was already gone"
+	log "$(date -u +%FT%TZ) warmup: simulator terminate failed, see $output/simulator-warmup.log"
 log "$(date -u +%FT%TZ) warmup: install, first launch and settle took $(( $(date +%s) - install_start ))s"
 
 # The operator's shell can carry EVENER_* overrides — an Evener agent session
