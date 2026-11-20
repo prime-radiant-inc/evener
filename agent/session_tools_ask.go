@@ -626,7 +626,11 @@ func registerAskTool(reg *tool.Registry, s *Session, deps *toolDeps) {
 func turnResolvesAskBoundary(turn schema.Turn, origins map[string]steeringOrigin) bool {
 	switch turn.Kind {
 	case schema.TurnUserInput:
-		return true
+		// Only the person answering resolves the boundary. An agent-authored
+		// TurnUserInput is a delegate's first assignment or a fork's carried
+		// input, and an input from an agent session is not a reply the ask was
+		// waiting for.
+		return turn.Authorship == nil || turn.Authorship.Author.Kind != schema.TranscriptAuthorAgent
 	case schema.TurnSteering:
 		if turn.SteeringKind == events.SteeringKindInterrupted {
 			return true

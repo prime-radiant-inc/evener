@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/hooks"
+	"primeradiant.com/evener/agent/internal/sysmsg"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/sandbox"
@@ -2485,7 +2486,7 @@ func (rs replayScope) projectThinkingPart(p llm.ContentPart, provenanceKeeps boo
 // N4 exemption but still lose thinking the target does not want.
 // tool_call/tool_result and text/image content is never touched.
 func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Message {
-	t.Message = projectVoicePresentation(t)
+	t.Message = escapeTurnFrames(t, projectVoicePresentation(t))
 	if !rs.active() && !rs.DropThinking {
 		return t.Message
 	}
@@ -2537,6 +2538,66 @@ func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Messa
 	}
 	msg := t.Message
 	msg.Content = filtered
+	return msg
+}
+
+// escapeTurnFrames returns msg with the harness direction its text
+// could otherwise forge escaped, leaving every other turn byte-for-byte as
+// stored and never rewriting the framing the harness itself wrote. What a
+// person typed is untouched: a reply that opens with the answers marker
+// reaches the model as the reply it is.
+//
+// Model prose is escaped whole, since any frame opener in it is a forgery. A
+// turn the harness composes — a compaction artifact, a skill carrier, a
+// runtime reminder block, a notification block — may carry the harness's own
+// opener on any line, so only its answers markers are escaped: rewriting an
+// opener there would corrupt the frame the harness delivered.
+func escapeTurnFrames(t schema.Turn, msg llm.Message) llm.Message {
+	var escape func(string) string
+	switch t.Kind {
+	case schema.TurnCheckpoint, schema.TurnSummary, schema.TurnSystem:
+		escape = sysmsg.EscapeAnswersMarker
+	case schema.TurnAssistant:
+		escape = sysmsg.EscapeModelAuthoredFrames
+	case schema.TurnUserInput:
+		if t.Authorship == nil || t.Authorship.Author.Kind == schema.TranscriptAuthorHuman {
+			return msg
+		}
+		escape = sysmsg.EscapeModelAuthoredFrames
+	case schema.TurnSteering:
+		switch {
+		case t.SteeringSource == events.SteeringSourceParent:
+			// A parent's message is agent prose with no harness framing.
+			escape = sysmsg.EscapeModelAuthoredFrames
+		case t.SteeringKind != "":
+			escape = sysmsg.EscapeAnswersMarker
+		default:
+			// A kindless, source-less steer is the person's own.
+			return msg
+		}
+	default:
+		return msg
+	}
+	var content []llm.ContentPart
+	for i, p := range msg.Content {
+		// A machinery part is the harness's own text, whatever the turn's
+		// author: escaping it would rewrite the framing it exists to carry.
+		if p.Kind != llm.ContentText || p.Text == "" || p.Machinery {
+			continue
+		}
+		escaped := escape(p.Text)
+		if escaped == p.Text {
+			continue
+		}
+		if content == nil {
+			content = slices.Clone(msg.Content)
+		}
+		content[i].Text = escaped
+	}
+	if content == nil {
+		return msg
+	}
+	msg.Content = content
 	return msg
 }
 
