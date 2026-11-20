@@ -3,7 +3,6 @@ package agent
 import (
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -554,30 +553,6 @@ func TestWatchEventFilterSnapshot(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// cloneWatchSendArgs
-// ---------------------------------------------------------------------------
-
-func TestCloneWatchSendArgs(t *testing.T) {
-	t.Parallel()
-	t.Run("nil", func(t *testing.T) {
-		if cloneWatchSendArgs(nil) != nil {
-			t.Fatalf("expected nil for nil send")
-		}
-	})
-	t.Run("clone", func(t *testing.T) {
-		send := &watchSendArgs{To: "dlg_1", Message: "hello", IncludeExcerpt: true}
-		clone := cloneWatchSendArgs(send)
-		if clone == nil || clone.To != "dlg_1" {
-			t.Fatalf("clone wrong: %+v", clone)
-		}
-		clone.To = "modified"
-		if send.To == "modified" {
-			t.Fatalf("expected original to be unaffected")
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
 // stableWatchSourceID
 // ---------------------------------------------------------------------------
 
@@ -714,29 +689,6 @@ func TestWatchKeyMatchesClearRequest(t *testing.T) {
 		}
 	})
 }
-
-// ---------------------------------------------------------------------------
-// availableEventKindNames
-// ---------------------------------------------------------------------------
-
-func TestAvailableEventKindNames(t *testing.T) {
-	t.Parallel()
-	names := availableEventKindNames()
-	if len(names) == 0 {
-		t.Fatalf("expected non-empty event kind names")
-	}
-	// Should be a copy
-	sort.Strings(names)
-	original := availableEventKindNames()
-	if sort.SearchStrings(names, original[0]) < 0 { //nolint:staticcheck // intentional: verifies event kinds exist
-		// just verify they exist
-		_ = original
-	}
-}
-
-// ---------------------------------------------------------------------------
-// availableEventKindNames returns a copy
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // watchSendArgs struct

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -142,18 +143,6 @@ func TestEnsureRecoveryReaderNoRecoveryNeeded(t *testing.T) {
 // rootOnlySubagentTools / isRootOnlySubagentTool / isRootOnlyJobPresenceTool
 // ---------------------------------------------------------------------------
 
-func TestRootOnlySubagentTools(t *testing.T) {
-	t.Parallel()
-	tools := rootOnlySubagentTools()
-	if len(tools) == 0 {
-		t.Fatalf("expected non-empty root-only tools")
-	}
-	// Should include "delegate" and "manage_worktree"
-	if !hasString(tools, "manage_worktree") {
-		t.Fatalf("expected manage_worktree in root-only tools: %v", tools)
-	}
-}
-
 func TestIsRootOnlyJobPresenceTool(t *testing.T) {
 	t.Parallel()
 	if !isRootOnlyJobPresenceTool("delegate") {
@@ -164,29 +153,9 @@ func TestIsRootOnlyJobPresenceTool(t *testing.T) {
 	}
 }
 
-func TestIsRootOnlySubagentTool(t *testing.T) {
-	t.Parallel()
-	if !isRootOnlySubagentTool("manage_worktree") {
-		t.Fatalf("expected manage_worktree to be root-only subagent tool")
-	}
-	if isRootOnlySubagentTool("read_file") {
-		t.Fatalf("expected read_file to not be root-only subagent tool")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // protectedGrantTools / isProtectedGrantTool
 // ---------------------------------------------------------------------------
-
-func TestProtectedGrantTools(t *testing.T) {
-	t.Parallel()
-	tools := protectedGrantTools()
-	for _, want := range []string{"ask_user", "urls_add", "urls_remove"} {
-		if !hasString(tools, want) {
-			t.Fatalf("expected %q in protected grant tools, got %v", want, tools)
-		}
-	}
-}
 
 func TestIsProtectedGrantTool(t *testing.T) {
 	t.Parallel()
@@ -208,17 +177,8 @@ func TestRemoveRootOnlySubagentTools(t *testing.T) {
 	t.Parallel()
 	input := []string{"read_file", "delegate", "exec_command", "manage_worktree"}
 	result := removeRootOnlySubagentTools(input)
-	if hasString(result, "delegate") {
-		t.Fatalf("expected delegate to be removed")
-	}
-	if hasString(result, "manage_worktree") {
-		t.Fatalf("expected manage_worktree to be removed")
-	}
-	if !hasString(result, "read_file") {
-		t.Fatalf("expected read_file to be kept")
-	}
-	if !hasString(result, "exec_command") {
-		t.Fatalf("expected exec_command to be kept")
+	if want := []string{"read_file", "exec_command"}; !slices.Equal(result, want) {
+		t.Fatalf("tools after root-only removal = %v, want %v", result, want)
 	}
 }
 

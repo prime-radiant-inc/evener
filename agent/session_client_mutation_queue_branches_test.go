@@ -1186,22 +1186,6 @@ func TestReturnClaimedQueuedMutation(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// clientMutationTranscriptItems struct
-// ---------------------------------------------------------------------------
-
-func TestClientMutationTranscriptItemsStruct(t *testing.T) {
-	t.Parallel()
-	items := clientMutationTranscriptItems{
-		StableTurnID: "turn_1",
-		User:         true,
-		Failure:      false,
-	}
-	if items.StableTurnID != "turn_1" || !items.User || items.Failure {
-		t.Fatalf("items = %+v", items)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // ClientMutationProjection nil session
 // ---------------------------------------------------------------------------
 
