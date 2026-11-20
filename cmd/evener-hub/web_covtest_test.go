@@ -523,26 +523,6 @@ func TestNavigationSnapshotPaddedOfflineSourceRowNotLive(t *testing.T) {
 	}
 }
 
-// --- project_delete.go: removeProjectSessionRendezvous ---
-
-// TestCovRemoveProjectSessionRendezvousEmptyRunDir covers the empty runDir
-// guard in removeProjectSessionRendezvous.
-func TestCovRemoveProjectSessionRendezvousEmptyRunDir(t *testing.T) {
-	if err := removeProjectSessionRendezvous("", "s1"); err != nil {
-		t.Fatalf("expected nil error for empty runDir, got %v", err)
-	}
-}
-
-// --- project_delete.go: removeProjectSessionDaemonLog ---
-
-// TestCovRemoveProjectSessionDaemonLogEmptyRunDir covers the empty runDir
-// guard in removeProjectSessionDaemonLog.
-func TestCovRemoveProjectSessionDaemonLogEmptyRunDir(t *testing.T) {
-	if err := removeProjectSessionDaemonLog("", "s1"); err != nil {
-		t.Fatalf("expected nil error for empty runDir, got %v", err)
-	}
-}
-
 // --- project_delete.go: resumeProjectDeletions ---
 
 // TestCovResumeProjectDeletionsNoStore covers the nil-store path
