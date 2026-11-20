@@ -310,6 +310,7 @@ func adoptTerminalPhases(streamed []any, streamedRaw []json.RawMessage, terminal
 // its place, minus any call the terminal marks unfinished. A filtered answer is never recovered,
 // because the provider retracted it. Shared by the live decoder and offline recomputation.
 func settleResponsesTerminalOutput(r *llm.Response, rawResp map[string]any, acc *responsesOutputAccumulator) {
+	acc.settleTerminalDisputedArguments(rawResp)
 	terminalOutput, _ := rawResp["output"].([]any)
 	inc, recovered := rawResp["status"] == "incomplete", false // an incomplete response settles no finish reason
 	r.OutputSettled = true                                     // settles here, so a draft call never reaches ToolCalls

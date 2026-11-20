@@ -23,7 +23,16 @@ type responsesToolState struct {
 	// named only by item ID leaves it empty, so settlement still matches it by item ID.
 	issuedCallID string
 	started      bool
+	ended        bool
 	args         bytes.Buffer
+}
+
+// responsesDisputedArguments holds one argument observation for a call the
+// stream named before issuing it, while that frame's item ID belonged to a
+// different issued call. final marks a done frame's authoritative bytes.
+type responsesDisputedArguments struct {
+	name, args string
+	final      bool
 }
 
 // responsesOutputAccumulator tracks response.output_item.added/done and
@@ -38,6 +47,7 @@ type responsesToolState struct {
 type responsesOutputAccumulator struct {
 	toolStates   map[string]*responsesToolState
 	itemToCallID map[string]string
+	disputedArgs map[string][]responsesDisputedArguments
 	entries      []responsesAccumEntry
 	// reasoningTextSeen records that some reasoning item has already emitted text, so a
 	// later item's first part still needs the blank line the live preview renders.
@@ -112,6 +122,7 @@ func newResponsesOutputAccumulator() *responsesOutputAccumulator {
 	return &responsesOutputAccumulator{
 		toolStates:   map[string]*responsesToolState{},
 		itemToCallID: map[string]string{},
+		disputedArgs: map[string][]responsesDisputedArguments{},
 	}
 }
 
@@ -296,6 +307,55 @@ func (st *responsesToolState) noteIssuedCallID(callID, itemID string) {
 	}
 }
 
+// disputesIssuedOwner reports whether a frame's explicit call_id names a call
+// the stream has not issued while its item_id already belongs to another call.
+func (acc *responsesOutputAccumulator) disputesIssuedOwner(callID, itemID string) bool {
+	if callID == "" || itemID == "" || acc.toolStates[callID] != nil {
+		return false
+	}
+	owner := acc.itemToCallID[itemID]
+	return owner != "" && owner != callID
+}
+
+func (acc *responsesOutputAccumulator) holdDisputedArguments(callID, name, fragment string, final bool) {
+	acc.disputedArgs[callID] = append(acc.disputedArgs[callID], responsesDisputedArguments{name: name, args: fragment, final: final})
+}
+
+// settleDisputedArguments gives callID the observations held before it was issued.
+func (acc *responsesOutputAccumulator) settleDisputedArguments(callID string) {
+	held := acc.disputedArgs[callID]
+	if len(held) == 0 {
+		return
+	}
+	delete(acc.disputedArgs, callID)
+	st := acc.toolStateFor(callID, "", "")
+	for _, h := range held {
+		if h.final {
+			st.args.Reset()
+		}
+		st.args.WriteString(h.args)
+		st.name = cmp.Or(st.name, h.name)
+	}
+}
+
+// settleTerminalDisputedArguments lets the terminal's function-call records
+// issue the calls a disputed frame named.
+func (acc *responsesOutputAccumulator) settleTerminalDisputedArguments(rawResp map[string]any) {
+	if acc == nil || len(acc.disputedArgs) == 0 {
+		return
+	}
+	terminal, _ := rawResp["output"].([]any)
+	for _, raw := range terminal {
+		item, _ := raw.(map[string]any)
+		if item["type"] == "function_call" {
+			callID, _ := item["call_id"].(string)
+			if _, held := acc.disputedArgs[callID]; held {
+				acc.settleDisputedArguments(callID)
+			}
+		}
+	}
+}
+
 // HandleOutputItemAdded pre-registers a function_call tool state from a
 // response.output_item.added event's item, keyed by whichever of
 // call_id/item_id are present. Non-function_call items are a no-op (the
@@ -337,6 +397,7 @@ func (acc *responsesOutputAccumulator) HandleOutputItemAdded(payload, item map[s
 		st.name = name
 	}
 	acc.toolStates[stateID] = st
+	acc.settleDisputedArguments(callID)
 }
 
 // HandleFunctionCallArgumentsDelta merges one
@@ -368,20 +429,26 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDelta(payload 
 	if callID == "" || (delta == "" && name == "") {
 		return nil, "", false
 	}
+	fragment := delta
+	if delta != "" {
+		if rawDelta, rawOK := captureResponsesDeltaRaw(eventData); rawOK && rawDelta != nil {
+			if content, err := protocolhttp.RawStringContent(rawDelta); err == nil && len(content) > 0 {
+				fragment = string(content)
+			}
+		}
+	}
+	if acc.disputesIssuedOwner(issuedCallID, itemID) {
+		acc.holdDisputedArguments(callID, name, fragment, false)
+		return nil, "", false
+	}
 	st := acc.toolStateFor(callID, itemID, name)
 	st.noteIssuedCallID(issuedCallID, itemID)
 	if st.name == "" && name != "" {
 		st.name = name
 	}
 	if delta != "" {
-		fragment := []byte(delta)
-		if rawDelta, rawOK := captureResponsesDeltaRaw(eventData); rawOK && rawDelta != nil {
-			if content, err := protocolhttp.RawStringContent(rawDelta); err == nil && len(content) > 0 {
-				fragment = content
-			}
-		}
-		st.args.Write(fragment)
-		delta = string(fragment)
+		st.args.WriteString(fragment)
+		delta = fragment
 	}
 	return st, delta, true
 }
@@ -405,6 +472,21 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDone(payload m
 		callID = itemID
 	}
 	if callID == "" {
+		callID, _ = payload["id"].(string)
+	}
+	if callID == "" {
+		return nil, false
+	}
+	fragment := argsStr
+	if argsStr != "" {
+		if rawArgs, rawOK := captureResponsesArgumentsDoneRaw(eventData); rawOK && rawArgs != nil {
+			if content, err := protocolhttp.RawStringContent(rawArgs); err == nil {
+				fragment = string(content)
+			}
+		}
+	}
+	if acc.disputesIssuedOwner(issuedCallID, itemID) {
+		acc.holdDisputedArguments(callID, "", fragment, true)
 		return nil, false
 	}
 	st := acc.toolStateFor(callID, itemID, "")
@@ -415,13 +497,7 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDone(payload m
 	}
 	if argsStr != "" {
 		st.args.Reset()
-		if rawArgs, rawOK := captureResponsesArgumentsDoneRaw(eventData); rawOK && rawArgs != nil {
-			if content, err := protocolhttp.RawStringContent(rawArgs); err == nil {
-				st.args.Write(content)
-				return st, true
-			}
-		}
-		st.args.WriteString(argsStr)
+		st.args.WriteString(fragment)
 	}
 	return st, true
 }
@@ -492,6 +568,7 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 		return item, nil, "", false
 	}
 	st := acc.toolStateFor(callID, itemID, name)
+	acc.settleDisputedArguments(st.id)
 	st.noteIssuedCallID(issuedCallID, itemID)
 	if itemID != "" {
 		st.itemID = itemID
@@ -770,6 +847,7 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 					args, spelling := llm.NormalizeToolArguments([]byte(argsStr))
 					tc := llm.ToolCallData{ID: st.id, ItemID: st.itemID, Name: st.name, Arguments: args, ArgumentsSpelling: spelling, Type: "function"}
 					s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &tc})
+					st.ended = true
 				case rawItem == nil:
 					// Best-effort: treat as end-of-text.
 					if textStarted {
@@ -799,6 +877,7 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 				respBody := extractResponseObjectRaw(ev.Data)
 				built := fromResponses(rawResp, req.Model, respBody)
 				settleResponsesTerminalOutput(&built, rawResp, acc)
+				emitSettledToolCalls(s, &built, acc)
 				built.Provider = res.Instance
 				p.stampResponseIDHash(sctx, &built)
 				llm.StampEndpointURL(&built, r.EndpointURL, r.Material)
@@ -844,6 +923,23 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 		},
 	}
 	runner.Run(sctx)
+}
+
+// emitSettledToolCalls announces every call the settled response dispatches,
+// exactly once: a call output_item.done already ended is skipped, and a call
+// the stream started gets only its end, with the settled name and bytes.
+func emitSettledToolCalls(s *llm.ChanStream, r *llm.Response, acc *responsesOutputAccumulator) {
+	for _, call := range r.ToolCalls() {
+		st := acc.toolStates[call.ID]
+		if call.ID == "" || st != nil && st.ended {
+			continue
+		}
+		if st == nil || !st.started {
+			start := llm.ToolCallData{ID: call.ID, ItemID: call.ItemID, Name: call.Name, Type: "function"}
+			s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &start})
+		}
+		s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &call})
+	}
 }
 
 // responsesContentBearingPassthrough reports whether a Responses event the
