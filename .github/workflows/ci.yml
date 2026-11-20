@@ -758,6 +758,9 @@ jobs:
         if: ${{ matrix.scope != 'nonagent' }}
         with:
           go-cache-kind: race-agent
+          # agent-2 compiles every entry agent-1 uses, so the entries it wrote
+          # under race-agent-2 stand in until the first race-agent save exists.
+          go-cache-fallback-kind: race-agent-2
 
       - uses: ./.github/actions/setup-toolchain
         if: ${{ matrix.scope == 'nonagent' }}

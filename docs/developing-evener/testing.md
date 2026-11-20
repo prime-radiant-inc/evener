@@ -1176,7 +1176,10 @@ What is cached, and where it is saved:
   saved by the one that compiles the most (the `web-browser` shards share
   `web-browser`, saved by the cascade shard; the two agent race shards share
   `race-agent`, saved by `agent-2`, whose part also compiles the module's
-  subpackage tests).
+  subpackage tests). A job whose kind replaced another restores the retired
+  prefix as a fallback (`go-cache-fallback-kind`) until the first save of the
+  new kind lands, so the reshape adds no cold run: both agent race shards
+  restore `race-agent-2`.
 - **Go module cache, one entry for every kind**, `gomod-…`, saved by
   `static-build` alone (go-cache-save's `modules: "true"`). A job that needs a
   module the entry lacks downloads it on each run.
@@ -1252,13 +1255,14 @@ The iOS DerivedData kind is the exception to that shape: no Go kind holds what
 xcodebuild compiled, so it has its own explicit `actions/cache` steps in
 `ios-qualification.yml`, and it caches `Build` alone because the module cache
 would roughly double a 1GB entry. The 6GB target stands, and the fleet is above
-it: measured 2026-11-20, after the race shards began sharing `race-agent`, the
-Go, module and lint kinds total 7,562,333,972 bytes, and the iOS DerivedData
-tree adds about 605MB. Every kind in that total keeps a lane warm, so it does
-not shrink further without a lane building cold. Both generations at this size
-exceed the 10GB limit while a main push saves, so an entry the push never
-restored can still be evicted before `cache-prune` deletes the first
-generation; the arithmetic lives in the cache-budget issue (#6985).
+it: on 2026-11-20 the Go, module and lint kinds measured 8,315,126,220 bytes,
+and sharing `race-agent` projects them at 7,562,333,972 bytes once agent-2
+saves the shared kind; the iOS DerivedData tree adds about 605MB. Every kind in
+that total keeps a lane warm, so it does not shrink further without a lane
+building cold. Both generations at this size exceed the 10GB limit while a main
+push saves, so an entry the push never restored can still be evicted before
+`cache-prune` deletes the first generation; the arithmetic lives in the
+cache-budget issue (#6985).
 
 To read the budget, list the entries and the total:
 
