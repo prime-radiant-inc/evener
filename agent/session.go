@@ -1492,6 +1492,15 @@ type Session struct {
 	// session lock held, where not even Stop can intervene. Nil means nothing has
 	// been loaded yet, and every ordinary rebuild loads and replaces it.
 	appendSnapshot *appendContentSnapshot
+
+	envContextPending atomic.Bool // the next request owes an environment block
+	// envContextFoldRemoved is set by a fold that folded the last environment
+	// block out of history. That request owes the model a restatement of it, and
+	// only that request does: a fold that kept the block still deduplicates.
+	envContextFoldRemoved  atomic.Bool
+	envContextMCPConnected atomic.Bool // set when round-start MCP redial connects new tools
+	systemPromptFrozen     bool        // cachedSystemPrompt is the immutable launch prompt
+	persistFallbackPrompt  bool        // a restored header carries none, so meta records it
 }
 
 // appendContentSnapshot is one load of the append files, keyed by the exact path
@@ -2895,7 +2904,32 @@ func (s *Session) appendTurn(kind schema.TurnKind, m llm.Message) {
 // goroutine concurrently with this method running on the turn-processing
 // goroutine — see the field's doc comment.
 func (s *Session) maybeAppendEnvironmentContext() error {
-	return s.appendEnvironmentContext(true)
+	return s.appendEnvironmentContextWithPlacement(true, false)
+}
+
+func (s *Session) maybeAppendEnvironmentContextBeforeTrailingSteering() error {
+	return s.appendEnvironmentContextWithPlacement(true, true)
+}
+
+func isTrailingSteeringTurn(turn schema.Turn) bool {
+	return turn.Kind == schema.TurnSteering
+}
+
+func insertBeforeTrailingSteering(history []schema.Turn, turn schema.Turn) ([]schema.Turn, bool) {
+	idx := len(history)
+	for i, h := range slices.Backward(history) {
+		if isTrailingSteeringTurn(h) {
+			idx = i
+			continue
+		}
+		if h.Kind != schema.TurnModelSwitch {
+			break
+		}
+	}
+	if idx == len(history) {
+		return append(history, turn), false
+	}
+	return slices.Insert(history, idx, turn), true
 }
 
 // envRuntimeDrifted reports whether a runtime fact the launch prompt stated has moved.
@@ -2903,6 +2937,24 @@ func (s *Session) envRuntimeDrifted() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.envTracker != nil && s.envTracker.RuntimeDrifted(s.envRuntimeSnapshot(envctx.Snapshot{}))
+}
+
+// armEnvContext owes the next request a fresh environment block.
+func (s *Session) armEnvContext() { s.envContextPending.Store(true) }
+
+// needsFullInventoryBaseline reports whether launchEnvBaseline lacks runtime
+// tool/model inventory (legacy baselineless session, even if GitBranch was seeded).
+func (s *Session) needsFullInventoryBaseline() bool {
+	return s.launchEnvBaseline.Model == "" && s.launchEnvBaseline.CallableTools == ""
+}
+
+// envContextDue reports whether the next request owes an environment block:
+// an arm landed (a swap, a restore or a fold), or a stated fact moved.
+func (s *Session) envContextDue() bool {
+	if s.envContextPending.Load() {
+		return true
+	}
+	return s.envRuntimeDrifted()
 }
 
 // envRuntimeSnapshot fills the runtime facts the launch prompt states once. Callers hold s.mu.
@@ -2914,6 +2966,11 @@ func (s *Session) envRuntimeSnapshot(snap envctx.Snapshot) envctx.Snapshot {
 		}
 	}
 	snap.Model, snap.KnowledgeCutoff, snap.CommitTrailer = s.profile.Model(), s.envInfo.KnowledgeCutoff, s.commitTrailerPrompt()
+	if s.cfg.TurnEndsProcess {
+		snap.RunLifetime = "one-shot (process exits when turn drains; background shell jobs require job_watch to survive the turn and are stopped at exit)"
+	} else {
+		snap.RunLifetime = "persistent"
+	}
 	if le, ok := s.env.(*execenv.LocalExecutionEnvironment); ok {
 		snap.ScratchDir = le.SessionScratchDir()
 	}
@@ -2924,9 +2981,14 @@ func (s *Session) envRuntimeSnapshot(snap envctx.Snapshot) envctx.Snapshot {
 // appendEnvironmentContext can persist recovery context without publishing a
 // live event: restore seeds its projection from the completed transcript.
 func (s *Session) appendEnvironmentContext(publishEvent bool) error {
+	return s.appendEnvironmentContextWithPlacement(publishEvent, false)
+}
+
+func (s *Session) appendEnvironmentContextWithPlacement(publishEvent, beforeTrailingGoal bool) error {
 	if s.envCollector == nil {
 		return nil
 	}
+	wasPending := s.envContextPending.Swap(false)
 	snap := s.envCollector.Collect(envctx.Inputs{
 		Cwd:     s.currentEnv().WorkingDirectory(),
 		Sandbox: s.cfg.Sandbox,
@@ -2945,6 +3007,9 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 	if tracker == nil || s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		s.attentionMu.Unlock()
+		if wasPending {
+			s.envContextPending.Store(true)
+		}
 		return nil
 	}
 	snap = s.envRuntimeSnapshot(snap)
@@ -2956,6 +3021,7 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 	}
 	s.mu.Unlock()
 	if block == "" {
+		// Nothing is owed: the last block still states every fact.
 		s.attentionMu.Unlock()
 		return nil
 	}
@@ -2985,13 +3051,26 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 	err := s.appendTurnAfterTranscriptWriteLocked(
 		turn,
 		func() error { return s.writeTranscriptSyncedLocked(turn) },
-		func() { s.history = append(s.history, turn) },
+		func() {
+			if beforeTrailingGoal {
+				var inserted bool
+				s.history, inserted = insertBeforeTrailingSteering(s.history, turn)
+				if inserted {
+					s.bumpHistoryRevisionLocked()
+				}
+				return
+			}
+			s.history = append(s.history, turn)
+		},
 	)
 	committed := err == nil
 	if !committed {
 		s.mu.Lock()
 		s.envTracker = &before
 		s.mu.Unlock()
+		if wasPending {
+			s.envContextPending.Store(true)
+		}
 	}
 	if committed {
 		// Persist tracker state so resume stays silent when nothing changed.
@@ -3052,6 +3131,9 @@ func (s *Session) resetEnvContextTrackerLocked() bool {
 	}
 	s.envTracker = envctx.NewTracker(envctx.State{})
 	s.envTracker.SeedRuntime(s.launchEnvBaseline)
+	if s.systemPromptFrozen && s.needsFullInventoryBaseline() {
+		s.envTracker.RequireFullInventory()
+	}
 	for _, turn := range s.history {
 		if turn.Kind == schema.TurnEnvironment {
 			s.envTracker.ReplayBlock(turn.Message.Text())
@@ -3060,6 +3142,8 @@ func (s *Session) resetEnvContextTrackerLocked() bool {
 	s.envTracker.ResetState()
 	state := envctx.State{}
 	s.envContextState = &state
+	s.armEnvContext()                   // the fold took the last block out of history
+	s.envContextFoldRemoved.Store(true) // and this request owes the restatement
 	return true
 }
 

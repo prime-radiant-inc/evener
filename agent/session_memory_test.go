@@ -20,6 +20,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"primeradiant.com/evener/agent/envctx"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/artifactstore"
@@ -212,10 +213,10 @@ func TestMemoryGardeningSkillGatedBySaveCapability(t *testing.T) {
 				t.Fatal(err)
 			}
 			stop()
-			// A delegate receives no <skill-catalog> at all, so it expects a
-			// false catalog verdict like the other no-save shapes.
-			if catalogListed != tc.loadable {
-				t.Errorf("model catalog lists %s = %t, want %t", gardeningMemorySkillName, catalogListed, tc.loadable)
+			if block := lastTurnOfKind(t, s, schema.TurnEnvironment).Message.Text(); catalogListed != !tc.initialUnavailable {
+				t.Errorf("model catalog lists %s = %t, want %t", gardeningMemorySkillName, catalogListed, !tc.initialUnavailable)
+			} else if tc.revoke != "" && !strings.Contains(block, "removed tools: "+tc.revoke) {
+				t.Errorf("the environment diff does not report the revoked %s:\n%s", tc.revoke, block)
 			}
 			if bodyDelivered != tc.loadable {
 				t.Errorf("use_skill delivered the body = %t, want %t", bodyDelivered, tc.loadable)
@@ -1966,6 +1967,15 @@ func TestMemoryDisableResumeAndCompaction(t *testing.T) {
 			if len(r.history) < 12 {
 				t.Fatal("recorded history lost on disable")
 			}
+			if !tc.saved && tc.override {
+				if err := r.maybeAppendEnvironmentContext(); err != nil {
+					t.Fatalf("maybeAppendEnvironmentContext: %v", err)
+				}
+				block := lastTurnOfKind(t, r, schema.TurnEnvironment).Message.Text()
+				if !strings.Contains(block, "removed tools:") || !strings.Contains(block, "removed skills: gardening-memory") {
+					t.Fatalf("disabling memory on resume did not report removed tools and gardening-memory:\n%s", block)
+				}
+			}
 			if err := r.Compact(context.Background()); err != nil {
 				t.Fatal(err)
 			}
@@ -2012,6 +2022,113 @@ func TestMemoryDisableResumeAndCompaction(t *testing.T) {
 				t.Fatal("original historical record erased")
 			}
 		})
+	}
+}
+
+func TestLegacyBaselinelessRestoreWithDisableMemorySupersedesToolAndSkillInventory(t *testing.T) {
+	t.Parallel()
+	root, history, workspace := t.TempDir(), t.TempDir(), t.TempDir()
+	_ = memorySeedPage(t, root, "memory", "fact.md", "opaque-legacy-88")
+
+	client := llm.NewClient()
+	adapter := newFakeAdapter("openai", repeatFinalResponse(16, "turn")...)
+	client.Register(adapter)
+	s := newSession(t, withClient(client), withDir(workspace), withConfig(SessionConfig{
+		StateDir:        history,
+		MemoryStateRoot: root,
+		MemoryProjectID: "legacy-project",
+		testOnly:        testConfig{skipGitSnapshot: true, noSyncJobStore: true},
+	}))
+	launchPrompt := s.cachedSystemPrompt
+	if !strings.Contains(launchPrompt, "gardening-memory") || !strings.Contains(launchPrompt, "memory_write") {
+		t.Fatalf("setup: expected launch prompt to mention gardening-memory and memory_write")
+	}
+	s.Close()
+
+	// Plant the legacy pre-#6968 on-disk shape: saved launch prompt in header,
+	// empty LaunchEnvBaseline and EnvContext.
+	meta, err := schema.LoadSessionMeta(history, s.id)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta: %v", err)
+	}
+	meta.LaunchEnvBaseline = envctx.Snapshot{}
+	meta.EnvContext = nil
+	meta.EnvInfo.GitBranch = "main"
+	if err := schema.SaveSessionMeta(history, meta); err != nil {
+		t.Fatalf("SaveSessionMeta: %v", err)
+	}
+
+	r, err := RestoreSessionFromMetaWithConfig(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workspace), meta, RestoreSessionConfig{
+		StateDir: history, MemoryStateRoot: root, DisableMemory: true, CommitProvenance: "off",
+		testOnly: testConfig{skipGitSnapshot: true, noSyncJobStore: true},
+	})
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	if _, err := r.ProcessInput(context.Background(), "turn one", nil); err != nil {
+		t.Fatalf("ProcessInput(turn one): %v", err)
+	}
+	reqs := adapter.Requests()
+	if len(reqs) != 1 || reqs[0].Messages[0].Text() != launchPrompt {
+		t.Fatalf("restored prompt mutated or unexpected request count %d", len(reqs))
+	}
+	envBlock := lastTurnOfKind(t, r, schema.TurnEnvironment).Message.Text()
+	if strings.Contains(envBlock, "added tools:") || !strings.Contains(envBlock, "tools: ") || !strings.Contains(envBlock, "skills: ") || !strings.Contains(envBlock, "commit trailer: (disabled)") {
+		t.Fatalf("expected authoritative tools:/skills: and commit trailer: (disabled):\n%s", envBlock)
+	}
+	for line := range strings.SplitSeq(envBlock, "\n") {
+		if (strings.HasPrefix(line, "tools: ") && strings.Contains(line, "memory_write")) ||
+			(strings.HasPrefix(line, "skills: ") && strings.Contains(line, "gardening-memory")) {
+			t.Fatalf("disabled legacy restore still advertised memory tool or skill on %q:\n%s", line, envBlock)
+		}
+	}
+	if _, err := r.ProcessInput(context.Background(), "turn two", nil); err != nil {
+		t.Fatalf("ProcessInput(turn two): %v", err)
+	}
+	if got := countEnvironmentTurns(r); got != 1 {
+		t.Fatalf("second turn re-emitted environment block: count=%d, want 1", got)
+	}
+
+	// Compaction folds away the first ENVIRONMENT turn; the post-compaction
+	// block must still emit authoritative tools: and skills: inventory even
+	// though s.launchEnvBaseline.GitBranch was populated from meta.EnvInfo.
+	muteNoteElicitation(r)
+	r.contextMgr.PreserveRecentTurns = 0
+	if err := r.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if err := r.maybeAppendEnvironmentContext(); err != nil {
+		t.Fatalf("maybeAppendEnvironmentContext after compact: %v", err)
+	}
+	postCompactBlock := lastTurnOfKind(t, r, schema.TurnEnvironment).Message.Text()
+	if strings.Contains(postCompactBlock, "added tools:") || !strings.Contains(postCompactBlock, "tools: ") || !strings.Contains(postCompactBlock, "skills: ") {
+		t.Fatalf("post-compaction block lost authoritative tools:/skills: inventory:\n%s", postCompactBlock)
+	}
+	for line := range strings.SplitSeq(postCompactBlock, "\n") {
+		if (strings.HasPrefix(line, "tools: ") && strings.Contains(line, "memory_write")) ||
+			(strings.HasPrefix(line, "skills: ") && strings.Contains(line, "gardening-memory")) {
+			t.Fatalf("post-compaction block advertised disabled memory tool or skill on %q:\n%s", line, postCompactBlock)
+		}
+	}
+	r.Close()
+
+	reloaded, err := schema.LoadSessionMeta(history, s.id)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta(reloaded): %v", err)
+	}
+	r2, err := RestoreSessionFromMetaWithConfig(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workspace), reloaded, RestoreSessionConfig{
+		StateDir: history, MemoryStateRoot: root, DisableMemory: true, CommitProvenance: "off",
+		testOnly: testConfig{skipGitSnapshot: true, noSyncJobStore: true},
+	})
+	if err != nil {
+		t.Fatalf("second restore: %v", err)
+	}
+	defer r2.Close()
+	if _, err := r2.ProcessInput(context.Background(), "turn three", nil); err != nil {
+		t.Fatalf("ProcessInput(turn three): %v", err)
+	}
+	if got := countEnvironmentTurns(r2); got != 1 {
+		t.Fatalf("second restore re-emitted authoritative inventory: count=%d, want 1", got)
 	}
 }
 
@@ -3455,10 +3572,15 @@ func TestMemoryGuidanceFollowsCapabilities(t *testing.T) {
 				s.reg.Remove(tc.revoke)
 				refreshModelFacingCaches(s)
 			}
+			launchPrompt := s.cachedSystemPrompt
 			if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
 				t.Fatal(err)
 			}
-			_, section, read := strings.Cut(system.String(), memoryGuidanceHeading)
+			if system.String() != launchPrompt {
+				t.Fatal("the system prompt is not the launch prompt")
+			}
+			fresh, _, _ := s.renderSystemPrompt(s.currentEnv())
+			_, section, read := strings.Cut(fresh, memoryGuidanceHeading)
 			data, _ := s.buildPromptData(s.currentEnv())
 			if read != tc.read || data.MemoryRead != tc.read || data.MemorySaves != tc.save {
 				t.Fatalf("section=%v MemoryRead=%v MemorySaves=%v, want read=%v save=%v", read, data.MemoryRead, data.MemorySaves, tc.read, tc.save)

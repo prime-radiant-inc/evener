@@ -50,6 +50,19 @@ func prependSystemPromptToUserMessage(systemPrompt string, user llm.Message) llm
 	return combined
 }
 
+const restoredSystemPromptLabel = "transcript:system_prompt" // PROMPT_LOADED source of a restored prompt
+
+// validSavedSystemPrompt reports the prompt a saved field holds, or "" when what
+// it holds is render-failure prose rather than a prompt. Such a field is no
+// answer to "what did this session launch with", so every reader treats it as
+// empty and renders a fresh one.
+func validSavedSystemPrompt(p string) string {
+	if strings.HasPrefix(p, "Template rendering failed:") {
+		return ""
+	}
+	return p
+}
+
 // rebuildPromptCache caches system prompt components that don't change between
 // renders. env is the execution environment to render against: callers that
 // already hold s.mu (e.g. SetModel) must pass s.env directly; callers that
@@ -99,9 +112,15 @@ func (s *Session) refreshSystemPromptCache(env execenv.ExecutionEnvironment) (wa
 // exactly as it did before. Nothing else noticed append edits on their own:
 // there is no watcher and no digest, so this path was never their detection.
 func (s *Session) refreshSystemPromptCacheWithAppends(env execenv.ExecutionEnvironment, reuseAppends bool) (warning string, failed bool) {
+	// Turn 0 is immutable: changes arrive as appended diffs.
+	if s.systemPromptFrozen {
+		s.armEnvContext()
+		return "", false
+	}
 	if s.cfg.testOnly.minimalSystemPrompt {
 		s.cachedSystemPrompt = "test system prompt"
 		s.promptSourceLog = nil
+		s.systemPromptFrozen = true
 		return "", false
 	}
 	prompt, warning, failed := s.renderSystemPromptWithAppends(env, reuseAppends)
@@ -112,6 +131,7 @@ func (s *Session) refreshSystemPromptCacheWithAppends(env execenv.ExecutionEnvir
 	if !failed || s.cachedSystemPrompt == "" {
 		s.cachedSystemPrompt = prompt
 	}
+	s.systemPromptFrozen = !failed
 	return warning, failed
 }
 

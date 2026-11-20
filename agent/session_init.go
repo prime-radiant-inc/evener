@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -349,6 +350,10 @@ func (s *Session) wireJobManager(jm *jobManager) {
 
 // transcriptHeader is the header of a transcript this session creates.
 func (s *Session) transcriptHeader(createdAt time.Time) transcript.Header {
+	var prompt string // a failed render leaves prose in the cache, not a prompt
+	if s.systemPromptFrozen {
+		prompt = s.cachedSystemPrompt
+	}
 	return transcript.Header{
 		SessionID:        s.id,
 		ParentSessionID:  s.cfg.spawn.parentSessionID,
@@ -360,7 +365,7 @@ func (s *Session) transcriptHeader(createdAt time.Time) transcript.Header {
 		WorkingDir:       s.envInfo.WorkingDir,
 		Depth:            s.cfg.spawn.depth,
 		BuildVersion:     BuildVersion,
-		SystemPrompt:     s.cachedSystemPrompt,
+		SystemPrompt:     prompt,
 	}
 }
 
@@ -610,7 +615,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	// environment at restore time.
 	s.origin = envvars.EVENERSessionOrigin.Getenv()
 
-	promptSources, err := s.initSessionState(cfg.SessionStartKind, true)
+	promptSources, err := s.initSessionState(cfg.SessionStartKind, true, "")
 	if err != nil {
 		return nil, err
 	}
@@ -873,16 +878,17 @@ type RestoreSessionConfig struct {
 
 	// AgentsDocPath carries through to the restored Session's SessionConfig,
 	// REPLACING the persisted value rather than merging with it, exactly like
-	// TurnEndsProcess above. Which personal AGENTS.md a session reads belongs
-	// to whoever is restoring it — a hub hands over its own concrete config
-	// root, the same one Settings edits — not to the session on disk, whose
-	// snapshot predates the flag or names a root the hub has since left. Empty
-	// is the restorer's own answer as much as a path is, and means the one thing
-	// it means everywhere: no personal doc resolves in this environment. A hub
-	// whose config root is unresolvable and a plain `evener serve --resume` both
-	// read the file their own environment names and never one a departed hub
-	// persisted. The persisted field exists so a CHILD built from its parent's
-	// snapshot inherits the parent's answer; it does not outlive the run.
+	// TurnEndsProcess above. Resumed sessions keep their recorded launch system
+	// prompt verbatim, so AgentsDocPath only takes effect when a restore must
+	// render a missing or recovered prompt (such as after a launch render failure
+	// or a legacy mismatched fork) or when that session spawns a child session
+	// that renders its own prompt. In those cases, which personal AGENTS.md a
+	// session reads belongs to whoever is restoring it — a hub hands over its
+	// own concrete config root, the same one Settings edits — not to the session
+	// on disk, whose snapshot predates the flag or names a root the hub has since
+	// left. Empty is the restorer's own answer as much as a path is, and means
+	// no personal doc resolves when rendering in this environment. The persisted
+	// field exists so a CHILD built from its parent's snapshot inherits it.
 	AgentsDocPath string
 
 	// StartupMCPProjectEvidence is the project MCP layer the RESTORING
@@ -918,6 +924,16 @@ type RestoreSessionConfig struct {
 	// artifactStoreInherited marks a store handed down by the parent runtime.
 	// See SessionConfig.artifactStoreInherited.
 	artifactStoreInherited bool
+}
+
+func loadSessionMetaForRestore(restoreCfg RestoreSessionConfig, stateDir, id string) (schema.SessionMeta, error) {
+	if stateDir == "" || id == "" {
+		return schema.SessionMeta{}, os.ErrNotExist
+	}
+	if fs := restoreCfg.testOnly.metaFS; fs != nil {
+		return schema.LoadSessionMetaWithFS(fs, stateDir, id)
+	}
+	return schema.LoadSessionMeta(stateDir, id)
 }
 
 // RestoreSessionFromMetaWithConfig creates a Session from a SessionMeta,
@@ -1282,15 +1298,41 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// entries. Starting from zero also honors a compaction boundary: a retained
 	// post-compaction environment block is a full snapshot, while an absent one
 	// means the next turn must emit a fresh full block even if meta is stale.
+	restoredPrompt, ignoreLaunchBaseline := resolveEffectiveSavedSystemPrompt(
+		func(id string) (schema.SessionMeta, error) {
+			return loadSessionMetaForRestore(restoreCfg, cfg.StateDir, id)
+		},
+		meta, restoredTranscriptHeader.SystemPrompt,
+	)
+	persistFallbackPrompt := validSavedSystemPrompt(restoredTranscriptHeader.SystemPrompt) == "" || validSavedSystemPrompt(meta.LaunchSystemPrompt) != "" || ignoreLaunchBaseline
 	s.envTracker = envctx.NewTracker(envctx.State{})
 	s.envContextState = nil
-	s.launchEnvBaseline = meta.LaunchEnvBaseline // seed before replaying retained deltas
-	s.envTracker.SeedRuntime(s.launchEnvBaseline)
+	if !ignoreLaunchBaseline {
+		s.launchEnvBaseline = meta.LaunchEnvBaseline // seed before replaying retained deltas
+		if restoredPrompt != "" {
+			s.launchEnvBaseline.GitBranch = cmp.Or(s.launchEnvBaseline.GitBranch, meta.EnvInfo.GitBranch)
+			if s.launchEnvBaseline.GitBranch == "" {
+				if _, afterGit, ok := strings.Cut(restoredPrompt, "\n<git>\n"); ok {
+					gitBlock, _, _ := strings.Cut(afterGit, "\n</git>")
+					if _, after, ok := strings.Cut(gitBlock, "\nBranch: "); ok {
+						s.launchEnvBaseline.GitBranch, _, _ = strings.Cut(after, "\n")
+					}
+				}
+			}
+		}
+		s.envTracker.SeedRuntime(s.launchEnvBaseline)
+	}
+	if restoredPrompt != "" && s.needsFullInventoryBaseline() {
+		s.envTracker.RequireFullInventory()
+	}
 	for _, turn := range resumeHistory {
 		if turn.Kind == schema.TurnEnvironment && s.envTracker.ReplayBlock(turn.Message.Text()) {
 			state := s.envTracker.State()
 			s.envContextState = &state
 		}
+	}
+	if !s.envTracker.State().HasSent && len(resumeHistory) > 0 { // resumed into a moved worktree
+		s.armEnvContext()
 	}
 	if err := s.bootstrapDelegateResources(); err != nil {
 		return nil, err
@@ -1428,6 +1470,9 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if err := s.resumeWorktreeReentry(meta); err != nil {
 		return nil, err
 	}
+	if st := s.envTracker.State(); st.HasSent && s.currentEnv().WorkingDirectory() != st.Last.Cwd {
+		s.armEnvContext()
+	}
 	// Re-entry REPLACES the environment with a clone rooted in the persisted
 	// worktree; the clone adopts whatever scratch the caller's environment
 	// already owned, and initSessionState's snapshot below mints one for a
@@ -1448,7 +1493,10 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		endEnvironmentScratch(reenteredEnv)
 	}()
 
-	promptSources, err := s.initSessionState(cfg.SessionStartKind, !restoreCfg.deferRestoreSideEffects)
+	// meta is the only place a header that carries no prompt can record the one
+	// this session renders, so a later restore does not re-render from live inputs.
+	s.persistFallbackPrompt = persistFallbackPrompt
+	promptSources, err := s.initSessionState(cfg.SessionStartKind, !restoreCfg.deferRestoreSideEffects, restoredPrompt)
 	if err != nil {
 		return nil, err
 	}
@@ -1698,7 +1746,12 @@ func cacheReadPtr(n int64) *int {
 // resolution, skills discovery, tool registry setup, and MCP connection.
 // The Session struct fields (client, profile, env, cfg) must already be set.
 // Returns the prompt sources so the caller can emit events after SessionStart.
-func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, runSessionStartHooks bool) ([]promptSource, error) {
+func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, runSessionStartHooks bool, restoredPrompt string) ([]promptSource, error) {
+	// A failed render leaves prose in the cache, not a prompt, so the caller's
+	// resolution over two saved fields can land on either one. Clearing it here
+	// keeps the render below the only way such a session gets a prompt, and keeps
+	// the --system-prompt read asked for below.
+	restoredPrompt = validSavedSystemPrompt(restoredPrompt)
 	s.cheap = cheapmodel.New(s.client)
 	s.cheap.AdapterTimeout = s.providerAdapterTimeout()
 	env := s.currentEnv()
@@ -1755,7 +1808,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	}
 	s.pluginAgents = builtins
 
-	if s.cfg.SystemPromptFile != "" && !s.isSubagentSession() {
+	if s.cfg.SystemPromptFile != "" && !s.isSubagentSession() && restoredPrompt == "" {
 		b, err := os.ReadFile(s.cfg.SystemPromptFile)
 		if err != nil {
 			return nil, fmt.Errorf("reading system prompt override %s: %w", s.cfg.SystemPromptFile, err)
@@ -1910,19 +1963,6 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	s.hubEnabled = s.cfg.Manager
 	s.mu.Unlock()
 
-	// Cache instruction docs once; reused every round for system prompt rebuilds.
-	s.projectDocs, s.projectDocsTruncated = LoadInstructionDocs(s.currentEnv(), personalDocPath(s.cfg.AgentsDocPath), s.profile.ProjectDocFiles()...)
-	if s.projectDocsTruncated {
-		// A truncated doc silently drops the tail of the user's standing
-		// instructions from the prompt. Buffer the diagnostic here and let
-		// emitSessionStartEnvelope release it after SESSION_START (#1048).
-		s.pendingInstructionWarnings = append(s.pendingInstructionWarnings, events.WarningData{
-			Source:  "evener",
-			Code:    "instruction_docs_truncated",
-			Message: fmt.Sprintf("instruction docs exceeded the %dKB budget and were truncated; the prompt carries only the beginning of the oversized file", projectDocByteBudget/1024),
-		})
-	}
-
 	// Cache tool definitions and the rendered prompt. A render failure here is a
 	// construction-time diagnostic, so it BUFFERS rather than emitting: nothing
 	// may reach the stream before SESSION_START (see emitSessionStartEnvelope).
@@ -1943,7 +1983,30 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	s.setRosterExclusion(s.probeCLIEvidenceFresh(startupFreshCtx, env))
 	cancelStartupFresh()
 	s.rebuildToolDefsCache()
-	warning, renderFailed := s.refreshSystemPromptCache(env)
+	warning, renderFailed := "", false
+	if restoredPrompt != "" {
+		s.cachedSystemPrompt, s.systemPromptFrozen = restoredPrompt, true
+		s.promptSourceLog = []promptSource{{Label: restoredSystemPromptLabel, Size: len(restoredPrompt)}}
+	} else {
+		// Load instruction docs only when rendering a fresh launch prompt.
+		s.projectDocs, s.projectDocsTruncated = LoadInstructionDocs(s.currentEnv(), personalDocPath(s.cfg.AgentsDocPath), s.profile.ProjectDocFiles()...)
+		if s.projectDocsTruncated {
+			// A truncated doc silently drops the tail of the user's standing
+			// instructions from the prompt. Buffer the diagnostic here and let
+			// emitSessionStartEnvelope release it after SESSION_START (#1048).
+			s.pendingInstructionWarnings = append(s.pendingInstructionWarnings, events.WarningData{
+				Source:  "evener",
+				Code:    "instruction_docs_truncated",
+				Message: fmt.Sprintf("instruction docs exceeded the %dKB budget and were truncated; the prompt carries only the beginning of the oversized file", projectDocByteBudget/1024),
+			})
+		}
+		warning, renderFailed = s.refreshSystemPromptCache(env)
+		// Nothing was frozen, so the header this session writes carries no prompt
+		// and meta is the only place a later successful render survives a restart.
+		if renderFailed {
+			s.persistFallbackPrompt = true
+		}
+	}
 	if warning != "" {
 		s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings,
 			events.WarningData{Message: warning})
@@ -1955,9 +2018,11 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		// Role preloads join the skill inventory only after the permanent
 		// prompt carrying their complete instructions was admitted.
 		s.seedFrozenSkillPreloads()
-		// A resume already seeded meta's baseline; a launch captures it now.
-		if sessionStartKind != plugin.SessionStartKindResume {
+		// A resume with a restored prompt already seeded meta's baseline; a launch
+		// (or a resume that rendered a fresh prompt) captures its baseline now.
+		if sessionStartKind != plugin.SessionStartKindResume || restoredPrompt == "" {
 			s.launchEnvBaseline = s.envRuntimeSnapshot(envctx.Snapshot{})
+			s.launchEnvBaseline.GitBranch = cmp.Or(s.launchEnvBaseline.GitBranch, s.envInfo.GitBranch)
 			s.envTracker.SeedRuntime(s.launchEnvBaseline)
 		}
 	}
@@ -3070,6 +3135,7 @@ func (s *Session) retryFailedMCP(ctx context.Context) {
 	s.rebuildToolDefsCache()
 	promptWarning, _ := s.refreshSystemPromptCache(s.env) // already holding s.mu; currentEnv() would deadlock
 	s.mu.Unlock()
+	s.envContextMCPConnected.Store(true)
 	s.reportPromptRenderFailure(promptWarning)
 	for _, notice := range notices {
 		s.emitDiagnosticWarning(notice)
