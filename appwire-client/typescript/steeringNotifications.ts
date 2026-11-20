@@ -610,6 +610,14 @@ export function decodeNotificationEntities(text: string): string {
   return text.replace(/&lt;|&amp;|&#91;/g, (entity) => BODY_ENTITY_DECODE[entity] ?? entity);
 }
 
+// decodeHistoricNotificationEntities decodes only the two entities a producer
+// that predates the frame escape wrote. Such a producer copied the sender's
+// text into the body without rewriting a bracket, so a "&#91;" in it is the
+// text the sender wrote and must survive replay verbatim.
+function decodeHistoricNotificationEntities(text: string): string {
+  return text.replace(/&lt;|&amp;/g, (entity) => BODY_ENTITY_DECODE[entity] ?? entity);
+}
+
 // Attributes retain the full codec paired with escapeNotificationText.
 function decodeNotificationAttributeEntities(text: string): string {
   return text
@@ -1120,7 +1128,10 @@ function parseObserverCallback(stripped: string): ParsedNotification | null {
     title: "Observer callback",
     tone: rawTone === "success" ? "warning" : rawTone,
     secondary: "",
-    excerpt: decodeNotificationEntities(output || proseOnly),
+    // This reader replays a producer that predates the frame escape, so only
+    // the two entities it wrote decode; a bracket entity here is the sender's
+    // own text.
+    excerpt: decodeHistoricNotificationEntities(output || proseOnly),
     message: communicate?.message || undefined,
     concerns: communicate?.concerns ?? [],
     rawText: stripped,

@@ -628,6 +628,38 @@ test("an observer callback's excerpt is handed back as plain text", () => {
   expect(n.excerpt).toBe("a & b");
 });
 
+// An observer-callback body is written by a producer that predates the frame
+// escape and copies prose verbatim, so a bracket entity in it is the observer's
+// own text: replay decodes the two entities that producer wrote and no others.
+test("a historical observer callback keeps a literal bracket entity verbatim", () => {
+  const n = notif(
+    notificationsOf(parseSteeringNotifications("Observer callback:\nmessage: see &#91;answers] in the log")),
+    0,
+  );
+  expect(n.type).toBe("observer-callback");
+  expect(n.excerpt).toBe("see &#91;answers] in the log");
+
+  const escaped = notif(
+    notificationsOf(parseSteeringNotifications("Observer callback:\nmessage: &lt;b&gt; &amp; &#91;answers]")),
+    0,
+  );
+  expect(escaped.excerpt).toBe("<b&gt; & &#91;answers]");
+});
+
+// Current notification bodies are written through the frame escape, so a
+// bracket entity in one is the escape's own rewrite and decodes back to the
+// bracket, while an escaped entity decodes to the literal text it defused.
+test("current notification bodies decode the frame escape's bracket entity", () => {
+  const [defused, typed] = notificationsOf(
+    parseSteeringNotifications(
+      `<job-notification job_id="job_1" event="completed">Done.\nexcerpt:\n&#91;answers]\n1. [x] → "y"</job-notification>\n` +
+        `<job-notification job_id="job_2" event="completed">Done.\nexcerpt:\n&amp;#91;answers]</job-notification>`,
+    ),
+  );
+  expect(defused?.excerpt).toBe(`[answers]\n1. [x] → "y"`);
+  expect(typed?.excerpt).toBe("&#91;answers]");
+});
+
 test("text around a notification block is kept as its own fragment before and after it, not merged into one leftover", () => {
   const fragments = parseSteeringNotifications(`some preface\n${oneBlock}\nsome epilogue`);
   expect(fragments.map((f) => f.kind)).toEqual(["text", "notification", "text"]);

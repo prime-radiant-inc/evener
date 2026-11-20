@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/events"
-	"primeradiant.com/evener/agent/internal/runetrim"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -78,6 +78,8 @@ func (cm *Manager) ElicitNote(ctx context.Context, history []schema.Turn, loaded
 // whole job is to recover exact opaque values (tokens, IDs, hashes, paths) that
 // in a coding agent live in tool output, so per-result truncation would defeat
 // it — the maxChars budget is what bounds total size.
+const elicitTruncationNotice = "[... earlier history truncated ...]\n"
+
 func renderHistoryForElicit(history []schema.Turn, maxChars int) string {
 	var parts []string
 	total := 0
@@ -98,16 +100,18 @@ func renderHistoryForElicit(history []schema.Turn, maxChars int) string {
 		}
 		if escaped == "" || total+len(escaped) > maxChars {
 			if rem := maxChars - total; rem > 0 {
-				clipped := string(runetrim.TrimLeadingPartial([]byte(s[len(s)-rem:])))
-				// The clip keeps a suffix of the turn as written and escapes it
-				// once, here, so no cut splits an escaped opener. A clip can drop
-				// the opening delimiter of a fenced example the model wrote,
-				// which exposes the frames its body quotes at line start: the
-				// ranges the model wrote are intersected with the kept window, so
-				// that exposure is defused, while an example the clip left whole
-				// still carries its delimiters and keeps its bytes.
-				clipped = escapeSpansInSlice(clipped, len(s)-len(clipped), turnSpans)
-				parts = append(parts, "[... earlier history truncated ...]\n"+clipped)
+				// Escape only grows text: a raw turn that fit can still overrun once
+				// escaped (narrowed to fit rem), while a raw-over-budget turn keeps
+				// the rem-sized raw suffix and accepts escape growth.
+				from := clipElicitStart(s, len(s)-rem)
+				clipped := escapeSpansInSlice(s[from:], from, turnSpans)
+				for escaped != "" && len(clipped) > rem && from < len(s) {
+					excess := len(clipped) - rem
+					adv := max(1, (excess*(len(s)-from)+len(clipped)-1)/len(clipped))
+					from = clipElicitStart(s, from+adv)
+					clipped = escapeSpansInSlice(s[from:], from, turnSpans)
+				}
+				parts = append(parts, elicitTruncationNotice+clipped)
 			}
 			break
 		}
@@ -119,6 +123,19 @@ func renderHistoryForElicit(history []schema.Turn, maxChars int) string {
 		parts[l], parts[r] = parts[r], parts[l]
 	}
 	return strings.Join(parts, "")
+}
+
+// clipElicitStart returns at, moved forward to the first rune start at or after
+// it and clamped to s's length, so a clipped window starts on a whole character.
+func clipElicitStart(s string, at int) int {
+	at = max(at, 0)
+	if at > len(s) {
+		return len(s)
+	}
+	for at < len(s) && !utf8.RuneStart(s[at]) {
+		at++
+	}
+	return at
 }
 
 // spansInTurn returns spans, which are in body's coordinates, moved into the

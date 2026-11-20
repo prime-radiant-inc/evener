@@ -3,6 +3,7 @@ package contextmgr
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
@@ -577,5 +578,78 @@ func TestRenderHistoryForElicit_EscapesCompactionFrameExposedByClipping(t *testi
 				t.Fatalf("the clipped segment lost the harness's conversation heading:\n%s", got)
 			}
 		})
+	}
+}
+
+// elicitClipSuffix returns the kept suffix of a clipped render: the bytes after
+// the truncation notice.
+func elicitClipSuffix(t *testing.T, rendered string) string {
+	t.Helper()
+	_, suffix, ok := strings.Cut(rendered, elicitTruncationNotice)
+	if !ok {
+		t.Fatalf("a clipped render carries no truncation notice: %q", rendered)
+	}
+	return suffix
+}
+
+// A raw turn can fit the remaining budget and still overflow it once escaped:
+// the escape rewrites a marker's opening bracket into an entity, so the escaped
+// copy is longer than the turn as written. The clip keeps a tail of the raw turn
+// and sizes that tail against the escaped copy it becomes, so the kept suffix
+// fits the remaining budget and a frame the cut exposed stays defused.
+func TestRenderHistoryForElicit_RawTurnOverflowsOnceEscaped(t *testing.T) {
+	turn := schema.NewTurn(schema.TurnAssistant, llm.Assistant(strings.Repeat("[answers]\n", 64)))
+	label, body, spans := renderElicitTurn(turn)
+	raw, escaped := len(label)+len(body), len(escapeElicitTurn(label, body, spans))
+	if escaped <= raw {
+		t.Fatalf("the fixture's escape does not grow the turn: raw %d, escaped %d", raw, escaped)
+	}
+	// A budget that holds the turn as written and not its escaped copy.
+	maxChars := raw + (escaped-raw)/2
+	if maxChars < raw || maxChars >= escaped {
+		t.Fatalf("budget %d does not sit between the raw turn (%d) and its escaped copy (%d)", maxChars, raw, escaped)
+	}
+
+	got := renderHistoryForElicit([]schema.Turn{turn}, maxChars)
+
+	if !utf8.ValidString(got) {
+		t.Fatalf("the clipped render is not valid UTF-8: %q", got)
+	}
+	suffix := elicitClipSuffix(t, got)
+	if len(suffix) > maxChars {
+		t.Fatalf("the kept escaped suffix is %d bytes, the remaining budget is %d", len(suffix), maxChars)
+	}
+	requireNoRawFrameLine(t, "the clipped elicit render", got)
+	if !strings.Contains(suffix, "&#91;answers]") {
+		t.Fatalf("the kept suffix lost the turn's own text: %q", got)
+	}
+}
+
+// A clip edge falls on a rune start, never inside a multi-byte character, and
+// the escape that follows the cut is sized against the escaped copy: every
+// budget between the raw turn and its escaped copy keeps whole characters and
+// stays inside the budget it was given.
+func TestRenderHistoryForElicit_ClipKeepsWholeRunes(t *testing.T) {
+	const line = "[answers]\n1. [世界] → \"quoted\"\n"
+	turn := schema.NewTurn(schema.TurnAssistant, llm.Assistant(strings.Repeat(line, 64)))
+	label, body, spans := renderElicitTurn(turn)
+	raw, escaped := len(label)+len(body), len(escapeElicitTurn(label, body, spans))
+	if escaped <= raw {
+		t.Fatalf("the fixture's escape does not grow the turn: raw %d, escaped %d", raw, escaped)
+	}
+
+	for maxChars := raw + 1; maxChars < escaped; maxChars += 3 {
+		got := renderHistoryForElicit([]schema.Turn{turn}, maxChars)
+		if !utf8.ValidString(got) {
+			t.Fatalf("budget %d: the clipped render is not valid UTF-8: %q", maxChars, got)
+		}
+		suffix := elicitClipSuffix(t, got)
+		if len(suffix) > maxChars {
+			t.Fatalf("budget %d: the kept escaped suffix is %d bytes", maxChars, len(suffix))
+		}
+		if !strings.Contains(suffix, "世界") {
+			t.Fatalf("budget %d: the kept suffix lost whole characters: %q", maxChars, suffix)
+		}
+		requireNoRawFrameLine(t, "the clipped elicit render", got)
 	}
 }
