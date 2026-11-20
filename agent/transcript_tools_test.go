@@ -5899,3 +5899,164 @@ func TestFind_ProjectName_RecordedDotDotThroughASymlinkIntoAnotherLaneKeepsThatL
 		t.Fatalf("projectName(%q, recorded from one live lane through a symlink into another) = %q, want the resolved lane's checkout %q", row.EnvInfo.WorkingDir, got, want)
 	}
 }
+
+// TestFind_ProjectName_RecordedDotDotIntoAPointerlessLaneKeepsNoLabel covers a
+// recorded path that looks, by its spelling, like a directory in one live
+// managed lane and really is a directory in a second one: <laneA>/hop is a
+// symlink to <laneB>/subdir, so <laneA>/hop/.. is <laneB>. Lane B's Git pointer
+// is then removed, while its directory survives. The path is lane B, so lane A —
+// whose spelling the ".." collapses to — must not answer. Lane B's managed
+// project ID outlives the checkout in the lane path, but this fixture records no
+// session for it and no restore root, so nothing turns that ID into a checkout
+// name; the honest label is no label at all.
+func TestFind_ProjectName_RecordedDotDotIntoAPointerlessLaneKeepsNoLabel(t *testing.T) {
+	stateHome := pinStateHome(t)
+	repoA := newNamedCheckout(t, "pointerless-lane-repo-a")
+	repoB := newNamedCheckout(t, "pointerless-lane-repo-b")
+
+	projectA := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repoA))
+	bucketA, err := RuntimeDirForProjectWithStateHome(projectA, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper for %q: %v", repoA, err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucketA, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir the first project's bucket: %v", err)
+	}
+	laneA := filepath.Join(bucketA, "worktrees", projectA.ID, "dlg_pointerless_a")
+	gittest.Run(t, repoA, "worktree", "add", "-q", laneA, "-b", "lane-pointerless-a")
+
+	projectB := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repoB))
+	bucketB, err := RuntimeDirForProjectWithStateHome(projectB, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper for %q: %v", repoB, err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucketB, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir the second project's bucket: %v", err)
+	}
+	laneB := filepath.Join(bucketB, "worktrees", projectB.ID, "dlg_pointerless_b")
+	gittest.Run(t, repoB, "worktree", "add", "-q", laneB, "-b", "lane-pointerless-b")
+	subdir := filepath.Join(laneB, "subdir")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatalf("mkdir %q: %v", subdir, err)
+	}
+	if err := os.Symlink(subdir, filepath.Join(laneA, "hop")); err != nil {
+		t.Fatalf("symlink %q: %v", filepath.Join(laneA, "hop"), err)
+	}
+	// Lane B stays on disk but keeps no pointer to its checkout, so no Git walk
+	// from it can name repoB.
+	if err := os.Remove(filepath.Join(laneB, ".git")); err != nil {
+		t.Fatalf("remove lane B's Git pointer: %v", err)
+	}
+
+	row := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	row.Config.MemoryProjectID = projectA.ID
+	// Concatenated, not filepath.Join: Join cleans the ".." away, and the spelling
+	// under test must reach the resolver exactly as the session recorded it.
+	row.EnvInfo.WorkingDir = laneA + "/hop/.."
+
+	// The path really is lane B, and lane B's pointer is gone. No record here
+	// spells the checkout its project ID belonged to, so lane A's project must not
+	// answer for it and the label is empty.
+	if got, want := projectName(row, bucketA), ""; got != want {
+		t.Fatalf("projectName(%q, a lane A spelling that resolves into lane B %q after lane B's pointer was removed) = %q, want %q, not lane A's checkout %q", row.EnvInfo.WorkingDir, laneB, got, want, filepath.Base(repoA))
+	}
+}
+
+// TestFind_ProjectName_LexicalRetryOntoAFileInAnotherLaneKeepsTheRowsCheckout
+// covers a recorded path that cannot be resolved as a whole: <repoA>/link is a
+// symlink to a regular file inside another project's live managed lane, and the
+// recorded tail is <repoA>/link/build/.., where "build" does not exist under the
+// file. Cleaning the pair lexically onto <repoA>/link and then resolving that
+// spelling follows the file into lane B, whose own Git pointer names the foreign
+// project. A path that resolves to a regular file names no checkout: the lexical
+// retry must stop at repoA, the surviving directory the recorded path sat in and
+// the row's saved project's checkout.
+func TestFind_ProjectName_LexicalRetryOntoAFileInAnotherLaneKeepsTheRowsCheckout(t *testing.T) {
+	stateHome := pinStateHome(t)
+	repoA := newNamedCheckout(t, "lexical-file-lane-repo-a")
+	repoB := newNamedCheckout(t, "lexical-file-lane-repo-b")
+
+	projectA := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repoA))
+	bucketA, err := RuntimeDirForProjectWithStateHome(projectA, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper for %q: %v", repoA, err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucketA, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir the row's bucket: %v", err)
+	}
+
+	projectB := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repoB))
+	bucketB, err := RuntimeDirForProjectWithStateHome(projectB, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper for %q: %v", repoB, err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucketB, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir the other project's bucket: %v", err)
+	}
+	laneB := filepath.Join(bucketB, "worktrees", projectB.ID, "dlg_lexical_file_b")
+	gittest.Run(t, repoB, "worktree", "add", "-q", laneB, "-b", "lane-lexical-file-b")
+	data := filepath.Join(laneB, "data")
+	if err := os.WriteFile(data, []byte("not a directory\n"), 0o644); err != nil {
+		t.Fatalf("write the file inside lane B: %v", err)
+	}
+	if err := os.Symlink(data, filepath.Join(repoA, "link")); err != nil {
+		t.Fatalf("symlink %q: %v", filepath.Join(repoA, "link"), err)
+	}
+
+	row := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	row.Config.MemoryProjectID = projectA.ID
+	// Concatenated, not filepath.Join: Join cleans the ".." away, and the spelling
+	// under test must reach the resolver exactly as the session recorded it.
+	row.EnvInfo.WorkingDir = repoA + "/link/build/.."
+
+	// The path cannot resolve as a whole, and its lexical retry lands on a regular
+	// file in lane B. The surviving directory the record sat in is repoA, which is
+	// the row's saved project's checkout.
+	if got, want := projectName(row, bucketA), filepath.Base(repoA); got != want {
+		t.Fatalf("projectName(%q, a lexical retry onto a file in lane B %q) = %q, want the row's saved project's checkout %q", row.EnvInfo.WorkingDir, laneB, got, want)
+	}
+}
+
+// TestFind_ProjectName_WorktreeOfWorktreeMarkerKeepsTheInnerCheckout covers a
+// recorded path in a worktree of a worktree that is now gone: "feature" is
+// removed and "inner" loses its Git pointer, while the enclosing "outer"
+// checkout stays live. The spelling carries two ".worktrees" markers. The first
+// names outer, whose project ID disagrees with the row's saved project; the
+// second names inner, whose path is exactly the project ID the row saved. The
+// marker step must try the later candidate, because reading only the first falls
+// through to the recorded leaf "feature", which is a lane name and not a project.
+func TestFind_ProjectName_WorktreeOfWorktreeMarkerKeepsTheInnerCheckout(t *testing.T) {
+	stateHome := pinStateHome(t)
+	outer := newNamedCheckout(t, "nested-marker-outer")
+	inner := filepath.Join(outer, ".worktrees", "inner")
+	gittest.Run(t, outer, "worktree", "add", "-q", inner, "-b", "inner-branch")
+	feature := filepath.Join(inner, ".worktrees", "feature")
+	gittest.Run(t, inner, "worktree", "add", "-q", feature, "-b", "feature-branch")
+
+	innerProject := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(inner))
+	outerProject := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(outer))
+	bucket, err := RuntimeDirForProjectWithStateHome(outerProject, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper for %q: %v", outer, err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+
+	if err := os.RemoveAll(feature); err != nil {
+		t.Fatalf("remove feature worktree: %v", err)
+	}
+	// Inner keeps its directory but no longer points at its checkout, so the walk
+	// from the removed path can only reach the enclosing outer checkout.
+	if err := os.Remove(filepath.Join(inner, ".git")); err != nil {
+		t.Fatalf("remove inner's Git pointer: %v", err)
+	}
+
+	row := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	row.Config.MemoryProjectID = innerProject.ID
+	row.EnvInfo.WorkingDir = filepath.Join(outer, ".worktrees", "inner", ".worktrees", "feature")
+
+	if got, want := projectName(row, bucket), "inner"; got != want {
+		t.Fatalf("projectName(%q, worktree of the removed inner worktree) = %q, want the second marker's checkout %q", row.EnvInfo.WorkingDir, got, want)
+	}
+}

@@ -1050,43 +1050,24 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 	// are remembered, not walked, and collected even when the row records no
 	// project: a managed lane's recorded project ID can authorize the walk.
 	var prefixCandidates []string
+	// The marker step reads the same forms for the working directory; when the
+	// record already supplied that read, it is reused rather than repeated.
+	var wdPath recordedPath
+	wdKnown := false
 	for _, recorded := range recordPaths(m) {
 		if !filepath.IsAbs(recorded) {
 			continue
 		}
-		// The recorded SPELLING is kept, not resolved as a whole: resolving it
-		// moves a symlink to a regular file into the checkout that file lives in,
-		// and the checkout above the recorded path is then never seen. The prefix
-		// walk below resolves only the part that really is a surviving directory.
-		spelling := filepath.Clean(recorded)
-		// Resolve the recorded path as a whole only when it still names a
-		// DIRECTORY: its own spelling can collapse a ".." over a symlink into the
-		// wrong checkout, while a path that resolves to a regular file names no
-		// checkout at all — following it would adopt the project of whichever lane
-		// that file happens to sit in.
-		wholeDir := ""
-		wholeResolved := false
-		if target, ok := identifier.ResolveCleanOK(recorded); ok {
-			wholeResolved = true
-			if directoryExists(target) {
-				wholeDir = target
-			}
+		// One read of the recorded path, consumed by every site below.
+		p := newRecordedPath(recorded)
+		if !wdKnown && p.spelling == filepath.Clean(wd) {
+			wdPath, wdKnown = p, true
 		}
-		// A lane is classified where the path really is: the whole resolved
-		// directory when there is one, and the surviving prefix otherwise. A path
-		// that does not resolve as a whole also keeps its recorded spelling, because
-		// a pruned lane and a lane reached through a symlinked bucket are identified
-		// by the spelling the record kept.
-		resolved := resolveExistingPrefix(spelling)
-		laneCandidate := resolved
-		if wholeDir != "" {
-			laneCandidate = wholeDir
-		}
-		_, laneCheckRoot, _, laneCheckProject, laneCheck := r.stateWorktreeOwner(laneCandidate, bucketDir)
-		if !laneCheck && !wholeResolved {
-			laneCandidate = spelling
-			_, laneCheckRoot, _, laneCheckProject, laneCheck = r.stateWorktreeOwner(laneCandidate, bucketDir)
-		}
+		// A lane is classified once, where the path really is. The classified
+		// directory also carries the deferred lane path and its containment, so the
+		// lane a spelling merely looks like cannot answer for a path that now lives
+		// in another one.
+		laneCandidate, laneCheckRoot, laneCheckProject, laneCheck := r.laneAt(p, bucketDir)
 		if laneCheck {
 			if root := resolveMainRootWithin(laneCandidate, laneCheckRoot); root != "" {
 				return filepath.Base(root)
@@ -1096,7 +1077,7 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 			// checkout's project, which is the ordinary question below rather than
 			// this lane's. The root is resolved through its surviving prefix, because a
 			// lane root with a missing tail cannot be resolved as a whole.
-			if pathWithin(resolved, resolveExistingPrefix(laneCheckRoot)) {
+			if pathWithin(p.containment(), resolveExistingPrefix(laneCheckRoot)) {
 				if !laneSeen {
 					laneSeen = true
 					laneProjectID = laneCheckProject
@@ -1115,7 +1096,7 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 		// ancestry, and projectAt is where that rule lives. A path that is gone has
 		// nothing here to answer for it: a walk from it would describe the space it
 		// occupied, not the directory itself. Its surviving prefix is asked below.
-		if checkout, _, ok, _, hasGitRoot := r.projectAt(recorded, bucketDir); ok && checkout != "" {
+		if checkout, _, ok, _, hasGitRoot := r.projectAtPath(p, bucketDir); ok && checkout != "" {
 			// A surviving directory that resolves to no Git root is its own project,
 			// and its basename is that project's name — unless the path spells an
 			// in-repository worktree. The Git metadata that named the repository is
@@ -1137,32 +1118,13 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 			return filepath.Base(checkout)
 		}
 		// A recorded path whose TAIL is gone still names the checkout it sat in:
-		// the surviving prefix is that checkout, and it is where the removed
-		// directory really was. The walk starts at the nearest surviving DIRECTORY;
-		// nearestSurvivingDir says why a file there is not one. An ordinary prefix
-		// answers only when the checkout it resolves to is this row's project: the
-		// space a removed directory occupied belongs to whatever survives above it,
-		// and that is an affiliation the row has only when its own recording says so.
-		//
-		// It is asked before the marker below because that marker names whatever
-		// precedes ".worktrees", which can be an enclosing checkout while a
-		// surviving nested one is the row's project.
-		if _, laneRoot, _, managedProjectID, isLane := r.stateWorktreeOwner(resolved, bucketDir); isLane {
-			if root := resolveMainRootWithin(resolved, laneRoot); root != "" {
-				return filepath.Base(root)
-			}
-			// A lane whose checkout is gone is the same deferred case the branch
-			// above defers: the row's own record is asked before bucket-wide
-			// inference, and a lane with no usable evidence keeps an empty label
-			// instead of falling through to the removed leaf's basename.
-			if !laneSeen {
-				laneSeen = true
-				laneProjectID = managedProjectID
-				lanePath = resolved
-			}
-			continue
-		}
-		prefixCandidates = append(prefixCandidates, nearestSurvivingDir(resolved))
+		// the surviving directory is that checkout, and it is where the removed
+		// directory really was. nearestSurvivingDir says why a file there is not a
+		// directory to walk from. An ordinary prefix answers only when the checkout
+		// it resolves to is this row's project: the space a removed directory
+		// occupied belongs to whatever survives above it, and that is an affiliation
+		// the row has only when its own recording says so.
+		prefixCandidates = append(prefixCandidates, p.dir)
 	}
 	if laneSeen {
 		// The lane answered nothing on disk, but the record also carries the root
@@ -1245,18 +1207,25 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 	// answers nothing: a ".worktrees" directory that is itself a symlink to external
 	// storage erases the marker from the resolved spelling, and so does a recorded
 	// component that now exists as a regular file.
-	first := resolveExistingPrefix(wd)
-	spellings := []string{first}
-	if second := filepath.Clean(wd); second != first {
-		spellings = append(spellings, second)
+	//
+	// Every marker a spelling contains is tried, not just the first: a worktree of
+	// a worktree spells two, and a candidate whose project ID disagrees with the
+	// row must not keep a later one from being checked.
+	p := wdPath
+	if !wdKnown {
+		p = newRecordedPath(wd)
+	}
+	spellings := []string{p.prefix}
+	if p.spelling != p.prefix {
+		spellings = append(spellings, p.spelling)
 	}
 	for _, spelling := range spellings {
-		if name, repoDir, isWorktree := inRepoWorktreeProjectPath(spelling); isWorktree {
+		for _, marker := range inRepoWorktreeCandidates(spelling) {
 			if ownProject == "" && !bucketKnown {
-				return name
+				return marker.name
 			}
-			if r.checkoutIsRows(repoDir, ownProject, bucketProject, bucketKnown) {
-				return name
+			if r.checkoutIsRows(marker.repoDir, ownProject, bucketProject, bucketKnown) {
+				return marker.name
 			}
 		}
 	}
@@ -1332,23 +1301,53 @@ func (r *projectNameResolver) verifiedPrefixRoot(candidates []string, requiredPr
 // before it has no usable basename: the path IS a worktree path, so the caller
 // must not fall through to a basename that is a lane name.
 func inRepoWorktreeProjectPath(clean string) (name, repoDir string, isWorktree bool) {
+	if candidates := inRepoWorktreeCandidates(clean); len(candidates) > 0 {
+		return candidates[0].name, candidates[0].repoDir, true
+	}
+	return "", "", false
+}
+
+// worktreeMarker is one in-repository worktree path a spelling names: the
+// project label before its marker, and the checkout that label names.
+type worktreeMarker struct {
+	name    string
+	repoDir string
+}
+
+// inRepoWorktreeCandidates answers every in-repository worktree path a spelling
+// contains, one marker type at a time and nearest first within a marker. A
+// worktree of a worktree spells more than one, and a caller deciding a label
+// must be able to check a later candidate when the first names a different
+// project than the row's.
+func inRepoWorktreeCandidates(clean string) []worktreeMarker {
 	sep := string(filepath.Separator)
+	var candidates []worktreeMarker
 	for _, marker := range []string{
 		sep + ".claude" + sep + "worktrees" + sep,
 		sep + ".git" + sep + "worktrees" + sep,
 		sep + ".worktrees" + sep,
 	} {
-		if dir, _, ok := strings.Cut(clean, marker); ok {
-			if base := filepath.Base(dir); base != "" && base != "." && base != sep {
-				return base, dir, true
+		for start := 0; start < len(clean); {
+			i := strings.Index(clean[start:], marker)
+			if i < 0 {
+				break
 			}
-			return "", dir, true
+			dir := clean[:start+i]
+			candidates = append(candidates, worktreeMarker{name: worktreeMarkerName(dir), repoDir: dir})
+			start += i + 1
 		}
 	}
 	if dir, ok := strings.CutSuffix(clean, sep+".worktrees"); ok {
-		return filepath.Base(dir), dir, true
+		candidates = append(candidates, worktreeMarker{name: filepath.Base(dir), repoDir: dir})
 	}
-	return "", "", false
+	return candidates
+}
+
+func worktreeMarkerName(dir string) string {
+	if base := filepath.Base(dir); base != "" && base != "." && base != string(filepath.Separator) {
+		return base
+	}
+	return ""
 }
 
 // worktreeFallback answers a state worktree's project label. It evaluates
@@ -2125,6 +2124,11 @@ func (r *projectNameResolver) projectAt(recorded, bucketDir string) (checkout, p
 	if !filepath.IsAbs(recorded) {
 		return "", "", false, false, false
 	}
+	return r.projectAtPath(newRecordedPath(recorded), bucketDir)
+}
+
+// projectAtPath is projectAt for a path the caller already read.
+func (r *projectNameResolver) projectAtPath(p recordedPath, bucketDir string) (checkout, projectID string, ok, isLane, hasGitRoot bool) {
 	// Resolve the alias before anything walks this path. A recorded working
 	// directory can be a symlink into a checkout, and a Git walk over the
 	// symlink's own lexical parents misses the repository's .git entirely; the
@@ -2134,16 +2138,21 @@ func (r *projectNameResolver) projectAt(recorded, bucketDir string) (checkout, p
 	//
 	// A path that cannot be resolved as a whole falls back to its lexical Clean,
 	// which can still name a link; resolveFullyClean resolves that spelling too.
-	//
-	// A recorded path that resolves as a whole to a non-directory names no
-	// checkout of its own: following it would adopt the checkout the file happens
-	// to sit in, which is not an affiliation the recorded directory ever had. Its
-	// lane is read from the surviving directory prefix instead — a lane leaf that
-	// became a file still names its own lane, while a symlink to a file in another
-	// lane names nothing here.
-	target, resolved := identifier.ResolveCleanOK(recorded)
-	if resolved && !directoryExists(target) {
-		if _, _, _, managedProjectID, isLane := r.stateWorktreeOwner(resolveExistingPrefix(recorded), bucketDir); isLane {
+	// A recorded path that resolves to a regular file names no checkout of its
+	// own: the file is what replaced the directory, not what the directory named,
+	// and following it would adopt the checkout the file happens to sit in. Its
+	// lane is the one the surviving directory sits in, which is what lets a lane
+	// leaf that became a file still name its own lane. Both the whole-path form and
+	// the lexical retry are tested, because either can land on the file.
+	fileLeaf := p.resolves && p.whole == ""
+	clean := p.whole
+	if !p.resolves {
+		var resolved bool
+		clean, resolved = resolveFullyCleanOK(p.recorded)
+		fileLeaf = resolved && !directoryExists(clean)
+	}
+	if fileLeaf {
+		if _, _, _, managedProjectID, isLane := r.stateWorktreeOwner(p.prefix, bucketDir); isLane {
 			if managedProjectID != "" {
 				return "", managedProjectID, true, true, false
 			}
@@ -2151,12 +2160,8 @@ func (r *projectNameResolver) projectAt(recorded, bucketDir string) (checkout, p
 		}
 		return "", "", false, false, false
 	}
-	clean := target
-	if !resolved {
-		clean = resolveFullyClean(recorded)
-	}
-	if _, laneRoot, _, managedProjectID, isLane := r.stateWorktreeOwner(clean, bucketDir); isLane {
-		if root := resolveMainRootWithin(clean, laneRoot); root != "" {
+	if candidate, laneRoot, managedProjectID, isLane := r.laneAt(p, bucketDir); isLane {
+		if root := resolveMainRootWithin(candidate, laneRoot); root != "" {
 			return root, identifier.ProjectFromCanonicalPath(identifier.ResolveClean(root)).ID, true, true, true
 		}
 		if managedProjectID != "" {
@@ -2399,6 +2404,72 @@ func resolveExistingPrefix(path string) string {
 	}
 }
 
+// recordedPath is one recorded working directory read once, so every site that
+// asks where the path is reads the same answer. A record can be live, gone at
+// the tail, replaced by a regular file, or an expression such as
+// "<repo>/link/.." whose lexical spelling names a different directory than the
+// path really does.
+type recordedPath struct {
+	recorded string // as the row saved it, trimmed and absolute
+	spelling string // lexical Clean: the identity a pruned record keeps
+	prefix   string // surviving prefix with its missing tail kept, resolved
+	dir      string // the directory the record is read from, see newRecordedPath
+	whole    string // the whole path, resolved, only when it names a DIRECTORY
+	resolves bool   // the whole path resolved, to a directory or a regular file
+}
+
+// newRecordedPath reads the four forms once. dir is the directory the record
+// names: the whole resolved path when it names one, and otherwise the nearest
+// surviving directory. A whole path that resolves to a regular file is kept as
+// resolves without a dir of its own, because the file is what replaced the
+// directory, not what the directory named.
+func newRecordedPath(recorded string) recordedPath {
+	p := recordedPath{recorded: recorded, spelling: filepath.Clean(recorded)}
+	if target, ok := identifier.ResolveCleanOK(p.recorded); ok {
+		p.resolves = true
+		if directoryExists(target) {
+			p.whole = target
+		}
+	}
+	p.prefix = resolveExistingPrefix(p.spelling)
+	p.dir = p.whole
+	if p.dir == "" {
+		p.dir = nearestSurvivingDir(p.prefix)
+	}
+	return p
+}
+
+// containment is the form a lane's own boundary is tested against: the whole
+// resolved directory when the path still names one, and otherwise the surviving
+// prefix with its missing tail kept. A pruned lane stays inside its own lane
+// root, while a live path that leaves the lane through a symlink does not.
+func (p recordedPath) containment() string {
+	if p.whole != "" {
+		return p.whole
+	}
+	return p.prefix
+}
+
+// laneAt answers the lane a recorded path sits in, reading the path where it
+// really is. The whole resolved directory leads; the surviving prefix answers
+// next, with its missing tail kept so a pruned lane still spells its own lane
+// structure; the lexical spelling answers last, because a lane reached through a
+// symlinked bucket keeps the spelling the record wrote. A whole path that
+// resolves to a regular file is deliberately not followed: the file is what
+// replaced the directory, not the lane the file happens to sit in.
+func (r *projectNameResolver) laneAt(p recordedPath, bucketDir string) (candidate, laneRoot, projectID string, isLane bool) {
+	candidate = p.containment()
+	if _, laneRoot, _, projectID, isLane = r.stateWorktreeOwner(candidate, bucketDir); isLane {
+		return candidate, laneRoot, projectID, true
+	}
+	if !p.resolves && p.spelling != candidate {
+		if _, laneRoot, _, projectID, isLane = r.stateWorktreeOwner(p.spelling, bucketDir); isLane {
+			return p.spelling, laneRoot, projectID, true
+		}
+	}
+	return candidate, "", "", false
+}
+
 // isConfiguredStateHome reports whether home is the state home this process
 // computes from its own configuration. It is the one independent
 // identification of the state tree, so a path that merely spells the layout
@@ -2473,10 +2544,18 @@ func (r *projectNameResolver) resolveMainRoot(dir string) string {
 // the checkout the link points into. A path that resolves on the first attempt
 // is returned unchanged.
 func resolveFullyClean(path string) string {
+	clean, _ := resolveFullyCleanOK(path)
+	return clean
+}
+
+// resolveFullyCleanOK is resolveFullyClean reporting whether anything resolved.
+// A false result is the lexical spelling, which can still name a link; a caller
+// deciding whether the retry landed on a directory must check it.
+func resolveFullyCleanOK(path string) (string, bool) {
 	for {
 		clean, resolved := identifier.ResolveCleanOK(path)
 		if resolved || clean == path {
-			return clean
+			return clean, resolved
 		}
 		path = clean
 	}
