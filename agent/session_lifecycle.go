@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 var errBareTextWithoutResultTool = errors.New("model returned bare text without calling result tool")
@@ -39,6 +40,52 @@ func (e *emptyResponseExhaustedError) Error() string {
 
 func (e *emptyResponseExhaustedError) Is(target error) bool {
 	return target == errEmptyResponseExhausted
+}
+
+type googleInteractionSettlementError struct {
+	InteractionID string
+	Status        string
+}
+
+func (e *googleInteractionSettlementError) Error() string {
+	if e.InteractionID != "" {
+		return fmt.Sprintf("google interaction %q ended with status %q", e.InteractionID, e.Status)
+	}
+	return fmt.Sprintf("google interaction ended with status %q", e.Status)
+}
+
+func isGoogleNonAuthorizingTerminalSettlement(protocol string, finish llm.FinishReason) bool {
+	if protocol != registry.ProtocolGoogle {
+		return false
+	}
+	switch finish.Reason {
+	case llm.FinishReasonLength:
+		return finish.Raw == "incomplete" || finish.Raw == "budget_exceeded" || finish.Raw == "requires_continuation"
+	case llm.FinishReasonOther:
+		return finish.Raw == "cancelled"
+	default:
+		return false
+	}
+}
+
+func isGoogleNonAuthorizingStatus(protocol string, finish llm.FinishReason) bool {
+	return isGoogleNonAuthorizingTerminalSettlement(protocol, finish) ||
+		(protocol == registry.ProtocolGoogle && finish.Reason == llm.FinishReasonContentFilter)
+}
+
+func stripToolCallsFromMessage(msg llm.Message) llm.Message {
+	if !slices.ContainsFunc(msg.Content, func(p llm.ContentPart) bool { return p.Kind == llm.ContentToolCall }) {
+		return msg
+	}
+	filtered := make([]llm.ContentPart, 0, len(msg.Content))
+	for _, p := range msg.Content {
+		if p.Kind == llm.ContentToolCall {
+			continue
+		}
+		filtered = append(filtered, p)
+	}
+	msg.Content = filtered
+	return msg
 }
 
 type bareTextWithoutResultToolError struct {
@@ -1767,6 +1814,12 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		txt := resp.Text()
 		lastText = txt
 		calls := resp.ToolCalls()
+		googleTerminalSettlement := isGoogleNonAuthorizingTerminalSettlement(usedProfile.Protocol(), resp.Finish)
+		if isGoogleNonAuthorizingStatus(usedProfile.Protocol(), resp.Finish) {
+			resp.Message = stripToolCallsFromMessage(resp.Message)
+			calls = nil
+			s.resetCommunicatePreviews(communicatePreviewCalls)
+		}
 
 		// Two concepts of "empty":
 		// 1. noContent: no text and no tool calls — triggers retry logic
@@ -1784,9 +1837,27 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		if resp.Finish.Reason == llm.FinishReasonPauseTurn && len(resp.Message.Content) > 0 {
 			skipHistory = false
 		}
+		if googleTerminalSettlement && len(resp.Message.Content) > 0 {
+			skipHistory = false
+		}
 
 		if abortErr := errors.Join(s.emitAssistantResponse(ctx, resp, modelResp, txt, skipHistory, attempt), sessionLifecycleFault(ctx, "emit_assistant")); abortErr != nil {
 			return "", progressed, abortErr
+		}
+		if googleTerminalSettlement {
+			settlementErr := &googleInteractionSettlementError{
+				InteractionID: resp.ID,
+				Status:        resp.Finish.Raw,
+			}
+			errData := errorDataFromError(settlementErr)
+			errData.Cause = &events.ErrorCause{
+				Kind:     "provider",
+				Provider: usedProfile.ID(),
+				Model:    usedProfile.Model(),
+			}
+			s.emitTurnFailure(errData)
+			s.finishProcessingAtFailureBoundary(ctx)
+			return "", progressed, settlementErr
 		}
 		// pause_turn: model needs another turn (e.g. server-side web search still running).
 		if resp.Finish.Reason == llm.FinishReasonPauseTurn {

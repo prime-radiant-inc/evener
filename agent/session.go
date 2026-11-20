@@ -1957,42 +1957,6 @@ func (s *Session) resolveModelSwitchProfile(base *provider.Profile, target model
 	return base.WithModel(target.ref()), false, nil
 }
 
-// reapplyProviderSpecificTools updates the live tool registry when the session
-// switches between providers. Currently the only provider-specific function
-// tool is the Gemini web_search executor, which exists because the google
-// builder cannot combine google_search with function declarations:
-//   - switching TO a google-protocol profile that serves web search: register
-//     the real web_search executor
-//   - switching AWAY from one: remove web_search from the registry so it
-//     doesn't collide with the adapter-injected server tool used by OpenAI's
-//     and Anthropic's native web search.
-func (s *Session) reapplyProviderSpecificTools(oldProfile, newProfile *provider.Profile) {
-	googleWebSearch := func(p *provider.Profile) bool {
-		return p.Protocol() == registry.ProtocolGoogle && p.SupportsWebSearch()
-	}
-	switch {
-	case googleWebSearch(newProfile) && !googleWebSearch(oldProfile):
-		// Switching to Gemini: wire the real web_search executor. It must apply
-		// the same net=off egress gate as the statically-registered web tools
-		// (registerWebTools) — a mid-session provider switch must not make web
-		// egress reachable in a sandboxed session whose network is off.
-		_ = s.reg.Register(tool.RegisteredTool{
-			Definition: tool.DefWebSearch(),
-			Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-				if err := egressDeniedByNet(env, "web_search"); err != nil {
-					return nil, err
-				}
-				query := fmt.Sprint(args["query"])
-				return s.webSearch(ctx, query)
-			},
-		})
-	case googleWebSearch(oldProfile) && !googleWebSearch(newProfile):
-		// Switching away from Gemini: remove the function tool so non-Gemini
-		// providers can use their own native web-search mechanism.
-		s.reg.Remove("web_search")
-	}
-}
-
 // pendingModelSwitch is a switch picked mid-input, waiting for the turn
 // boundary. The primed instance and listing are the ones the pick-time
 // preflight fetched; the boundary's applyModelSwitch reuses them so a queued
@@ -2348,9 +2312,6 @@ func (s *Session) applyModelSwitch(target modelSwitchTarget, primedInstance stri
 	s.forgetSessionNamerQuotaExhaustionLocked()
 	if s.contextMgr != nil {
 		s.contextMgr.SetProfile(s.profile)
-	}
-	if s.reg != nil {
-		s.reapplyProviderSpecificTools(commitPrev, nextProfile)
 	}
 	s.rebuildToolDefsCache()
 	// Knowledge cutoff must be recomputed BEFORE the prompt-cache refresh

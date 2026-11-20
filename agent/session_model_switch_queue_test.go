@@ -821,8 +821,19 @@ func TestNewerPickReconcilesToolsAgainstTheProfileItActuallyReplaces(t *testing.
 			MaxSubagentDepth: 1,
 			testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 		}))
-	if s.reg.Get("web_search") == nil {
-		t.Fatal("pre-condition: the session must start with web_search wired for a web-searching google profile")
+	hasWireTool := func(name string) bool {
+		for _, td := range s.allToolDefinitions(0) {
+			if td.Name == name {
+				return true
+			}
+		}
+		return false
+	}
+	if s.reg.Get("web_search") != nil {
+		t.Fatal("pre-condition: google session must not register legacy web_search function tool")
+	}
+	if !hasWireTool("run_shell_command") || hasWireTool("shell") {
+		t.Fatal("pre-condition: the session must start with google wire tool aliases")
 	}
 	// The fixture session carries no cross-instance resolver; production wires
 	// cfg.ResolveProfile to the client's registry, so wire the same here and the
@@ -867,24 +878,24 @@ func TestNewerPickReconcilesToolsAgainstTheProfileItActuallyReplaces(t *testing.
 	<-newerCalled
 
 	// The older pick's enumeration returns and its commit lands while the
-	// newer pick is still parked: google -> openai, web_search removed.
+	// newer pick is still parked: google -> openai, wire tools updated.
 	close(releaseOlder)
 	if err := <-olderDone; err != nil {
 		t.Fatalf("older pick: %v", err)
 	}
-	if s.reg.Get("web_search") != nil {
-		t.Fatal("pre-condition: the intervening openai switch must have removed web_search")
+	if !hasWireTool("shell") || hasWireTool("run_shell_command") {
+		t.Fatal("pre-condition: the intervening openai switch must update wire tool aliases")
 	}
 
 	// The newer pick's enumeration returns and its commit lands on the openai
 	// profile: the transition it actually replaces is openai -> google, and
-	// the provider-specific tools the intervening switch removed must return.
+	// the google wire tool aliases must be restored.
 	close(releaseNewer)
 	if err := <-newerDone; err != nil {
 		t.Fatalf("newer pick: %v", err)
 	}
-	if s.reg.Get("web_search") == nil {
-		t.Fatal("web_search is missing after a same-provider pick landed past an intervening cross-provider switch; the commit must reconcile provider tools against the profile it actually replaces")
+	if !hasWireTool("run_shell_command") || hasWireTool("shell") {
+		t.Fatal("google wire tool aliases missing after a same-provider pick landed past an intervening cross-provider switch")
 	}
 	if got := s.Profile().Model(); got != "gemini-2.5-pro" {
 		t.Fatalf("profile model = %q; the newer pick must own the outcome (%q)", got, "gemini-2.5-pro")

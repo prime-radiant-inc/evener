@@ -237,18 +237,17 @@ func stoolCommunicateDeps() *toolDeps {
 // positive paths cannot reach HTTP; DenyEnv and a literal sandbox wrapper keep
 // every egress-policy case entirely local.
 //
-// It covers web_fetch's unconditional registration, Gemini-only web_search
-// registration, and all egressDeniedByNet outcomes: an env without a wrapper,
+// It covers web_fetch's unconditional registration and all egressDeniedByNet outcomes: an env without a wrapper,
 // a nil wrapper, a net-on wrapper, and a net-off wrapper. The net-off invariant
 // is particularly important: the dependency closure must never run.
 func FuzzStwebRegistrationEgress(f *testing.F) {
 	for _, seed := range [][]byte{
 		{},
-		{0, 0},                        // fetch only, env has no KernelWrapper
-		{1, 0, 1, 2, 3},               // both tools, unsandboxed
-		{1, 1, 4, 5, 6},               // both tools, nil wrapper
-		{1, 2, 7, 8, 9},               // both tools, network allowed
-		{1, 3, 10, 11, 12},            // both tools, network denied
+		{0, 0},                        // env has no KernelWrapper
+		{1, 0, 1, 2, 3},               // unsandboxed
+		{1, 1, 4, 5, 6},               // nil wrapper
+		{1, 2, 7, 8, 9},               // network allowed
+		{1, 3, 10, 11, 12},            // network denied
 		{255, 3, 255, 0, 128, 64, 32}, // long adversarial token, denied
 	} {
 		f.Add(seed)
@@ -281,12 +280,9 @@ type stweb_wrapperEnv struct {
 func (e *stweb_wrapperEnv) KernelWrapper() *sandbox.Wrapper { return e.stweb_wrapper }
 
 type stweb_trace struct {
-	Names        string
-	Fetch        stweb_result
-	Search       stweb_result
-	FetchCalls   int
-	SearchCalls  int
-	SearchActive bool
+	Names      string
+	Fetch      stweb_result
+	FetchCalls int
 }
 
 type stweb_result struct {
@@ -298,16 +294,14 @@ type stweb_result struct {
 func stweb_run(t *testing.T, data []byte) stweb_trace {
 	t.Helper()
 	r := &stweb_reader{data: data}
-	searchEnabled := r.stweb_bool()
+	_ = r.stweb_bool()
 	state := stweb_egressState(r.stweb_next() % 4)
 	token := r.stweb_token()
 
 	fetchURL := "https://fixture.invalid/" + token
 	question := "question-" + token
-	query := "query-" + token
-	var fetchCalls, searchCalls int
+	var fetchCalls int
 	deps := &toolDeps{
-		webSearchEnabled: searchEnabled,
 		web: webDeps{
 			fetch: func(_ context.Context, gotURL, gotQuestion string) (any, error) {
 				fetchCalls++
@@ -316,31 +310,19 @@ func stweb_run(t *testing.T, data []byte) stweb_trace {
 				}
 				return "fetched:" + gotURL + ":" + gotQuestion, nil
 			},
-			search: func(_ context.Context, gotQuery string) (any, error) {
-				searchCalls++
-				if gotQuery != query {
-					t.Fatalf("web_search dependency query = %q, want %q", gotQuery, query)
-				}
-				return "searched:" + gotQuery, nil
-			},
 		},
 	}
 	reg := tool.NewRegistry()
 	registerWebTools(reg, deps)
 
 	wantNames := "web_fetch"
-	if searchEnabled {
-		wantNames += ",web_search"
-	}
 	if got := strings.Join(reg.Names(), ","); got != wantNames {
 		t.Fatalf("registered web tools = %q, want %q", got, wantNames)
 	}
 	if registered := reg.Get("web_fetch"); registered == nil || registered.Exec == nil {
 		t.Fatal("web_fetch was not registered with an executor")
 	}
-	if registered := reg.Get("web_search"); searchEnabled && (registered == nil || registered.Exec == nil) {
-		t.Fatal("web_search was not registered with an executor")
-	} else if !searchEnabled && registered != nil {
+	if registered := reg.Get("web_search"); registered != nil {
 		t.Fatalf("web_search registration = %v, want false", registered != nil)
 	}
 
@@ -356,28 +338,11 @@ func stweb_run(t *testing.T, data []byte) stweb_trace {
 		t.Fatalf("web_fetch dependency calls = %d, want %d", got, want)
 	}
 
-	trace := stweb_trace{
-		Names:        wantNames,
-		Fetch:        stweb_projectResult(fetch),
-		FetchCalls:   fetchCalls,
-		SearchCalls:  searchCalls,
-		SearchActive: searchEnabled,
+	return stweb_trace{
+		Names:      wantNames,
+		Fetch:      stweb_projectResult(fetch),
+		FetchCalls: fetchCalls,
 	}
-	if !searchEnabled {
-		return trace
-	}
-
-	search := stweb_execute(t, reg, env, "stweb-search", "web_search", map[string]any{
-		"query":  query,
-		"intent": "search " + token,
-	})
-	stweb_assertResult(t, search, "web_search", "stweb-search", denied, "searched:"+query)
-	if got, want := searchCalls, stweb_callCount(denied); got != want {
-		t.Fatalf("web_search dependency calls = %d, want %d", got, want)
-	}
-	trace.Search = stweb_projectResult(search)
-	trace.SearchCalls = searchCalls
-	return trace
 }
 
 func stweb_env(t *testing.T, state stweb_egressState, seed uint64) execenv.ExecutionEnvironment {

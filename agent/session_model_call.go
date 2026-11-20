@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -239,10 +240,11 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// work — it is what keeps the boundary paired with the history this round
 	// actually expands (see the G4 note there).
 	scope := replayScope{
-		Instance:     profile.ID(),
-		Model:        profile.Model(),
-		Protocol:     profile.Protocol(),
-		InFlightFrom: inFlightFrom,
+		Instance:       profile.ID(),
+		Model:          profile.Model(),
+		Protocol:       profile.Protocol(),
+		InFlightFrom:   inFlightFrom,
+		ResultToolName: s.resultToolName(),
 		dropsToolResult: func(tr *llm.ToolResultData) bool {
 			_, rejected := suppressedDocuments[tr.ToolCallID]
 			return rejected
@@ -1420,7 +1422,7 @@ func (s *Session) buildModelRequest(profile *provider.Profile, sys string, histo
 		// decideNoToolCalls steers bare text back, and a delegate that ends
 		// without communicating gets communicateNudge.
 		ToolChoice: &llm.ToolChoice{Mode: "auto"},
-		WebSearch:  s.providerWebSearchEnabled(profile),
+		WebSearch:  s.providerWebSearchEnabled(profile) && protocolInjectsNativeWebSearch(profile.Protocol()),
 		AdapterTimeout: &llm.AdapterTimeout{
 			Connect:    10 * time.Second,
 			StreamRead: idleTimeout,
@@ -1732,7 +1734,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			// its ladder and stated default are the fallback model's, not the
 			// primary's.
 			fbReq.ReasoningEffort = resolveRequestEffort(origEffort, fbProfile.SupportsReasoning(), fbProfile.ReasoningEffortLevels(), fbProfile.DefaultReasoningEffort())
-			fbReq.WebSearch = s.providerWebSearchEnabled(fbProfile)
+			fbReq.WebSearch = s.providerWebSearchEnabled(fbProfile) && protocolInjectsNativeWebSearch(fbProfile.Protocol())
 			fbReq.ProviderOptions = fbProfile.ProviderOptions()
 			s.applyModelRequestMetadata(&fbReq)
 			var budget llm.TokenBudget
@@ -1980,9 +1982,10 @@ func (s *Session) forceCompactForModelRecovery(ctx context.Context) {
 // guards (openai Responses, openai-chat) or for the Responses-continuation
 // delta path is byte-identical to before this rule existed.
 type replayScope struct {
-	Instance string // outgoing instance (req.Provider)
-	Model    string // outgoing requested model (req.Model)
-	Protocol string // outgoing wire protocol; empty ⇒ no filtering
+	Instance       string // outgoing instance (req.Provider)
+	Model          string // outgoing requested model (req.Model)
+	Protocol       string // outgoing wire protocol; empty ⇒ no filtering
+	ResultToolName string // session's configured result tool name (empty defaults != "web_search")
 
 	// InFlightFrom is the history index of the first turn belonging to the
 	// in-flight turn. Turns at or after it are exempt from filtering: a
@@ -2167,12 +2170,35 @@ func (rs replayScope) canonicalize(model string) string {
 // webSearchReplayEligible reports whether a completed prior turn's web_search
 // raw blocks may replay verbatim. Empty provenance is eligible; otherwise the
 // producing protocol must match the target's — across protocols the raw
-// payload is foreign JSON and is dropped (G13).
+// payload is foreign JSON and is dropped (G13). ProtocolGoogle Grounding
+// results are never replayed to any target, including ProtocolGoogle itself.
 func (rs replayScope) webSearchReplayEligible(t schema.Turn) bool {
+	if rs.producerProtocol(t) == registry.ProtocolGoogle {
+		return false
+	}
 	if strings.TrimSpace(t.ResponseProvider) == "" {
 		return true
 	}
 	return rs.producerProtocol(t) == rs.Protocol
+}
+
+const (
+	omittedGoogleGroundedOutputText = "[historical grounded output omitted from model replay]"
+	omittedGoogleToolInputJSON      = `{"_omitted":"[historical grounded tool input omitted from model replay]"}`
+	omittedWebSearchToolOutputText  = "[historical web_search output omitted from model replay]"
+)
+
+func (rs replayScope) omitsLegacyWebSearchTool(inFlight bool) bool {
+	return rs.active() && !inFlight && rs.ResultToolName != "web_search"
+}
+
+func omitLegacyWebSearchToolCall(tc *llm.ToolCallData) *llm.ToolCallData {
+	cloned := *tc
+	cloned.Arguments = json.RawMessage(omittedGoogleToolInputJSON)
+	cloned.ParsedArguments = nil
+	cloned.ArgumentsSpelling = ""
+	cloned.RawArguments = ""
+	return &cloned
 }
 
 // projectThinkingPart applies the N4 provenance rule and the target's thinking
@@ -2212,10 +2238,16 @@ func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Messa
 	// not want thinking still gets the drop.
 	provenanceKeepsThinking := true
 	keepWebSearch := true
+	omitGoogleGroundedText := false
+	omitLegacyWebSearchTool := false
 	if rs.active() && !inFlight {
 		provenanceKeepsThinking = rs.thinkingReplayEligible(t)
 		keepWebSearch = rs.webSearchReplayEligible(t)
+		omitGoogleGroundedText = !keepWebSearch && t.Kind == schema.TurnAssistant &&
+			rs.producerProtocol(t) == registry.ProtocolGoogle &&
+			responseHasServerWebSearch(t.Message.Content)
 	}
+	omitLegacyWebSearchTool = rs.omitsLegacyWebSearchTool(inFlight)
 	// Allocate only when a part actually has to go: the chat drop visits every
 	// replayed message, and most carry no thinking part at all.
 	needsFilter := false
@@ -2227,6 +2259,18 @@ func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Messa
 			}
 		case llm.ContentWebSearch:
 			if !keepWebSearch {
+				needsFilter = true
+			}
+		case llm.ContentText:
+			if omitGoogleGroundedText && p.Text != "" {
+				needsFilter = true
+			}
+		case llm.ContentToolCall:
+			if omitLegacyWebSearchTool && p.ToolCall != nil && p.ToolCall.Name == "web_search" {
+				needsFilter = true
+			}
+		case llm.ContentToolResult:
+			if omitLegacyWebSearchTool && p.ToolResult != nil && p.ToolResult.Name == "web_search" {
 				needsFilter = true
 			}
 		}
@@ -2249,6 +2293,20 @@ func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Messa
 		case llm.ContentWebSearch:
 			if !keepWebSearch {
 				continue
+			}
+		case llm.ContentText:
+			if omitGoogleGroundedText && p.Text != "" {
+				p.Text = omittedGoogleGroundedOutputText
+			}
+		case llm.ContentToolCall:
+			if omitLegacyWebSearchTool && p.ToolCall != nil && p.ToolCall.Name == "web_search" {
+				p.ToolCall = omitLegacyWebSearchToolCall(p.ToolCall)
+			}
+		case llm.ContentToolResult:
+			if omitLegacyWebSearchTool && p.ToolResult != nil && p.ToolResult.Name == "web_search" {
+				tr := *p.ToolResult
+				tr.Content = omittedWebSearchToolOutputText
+				p.ToolResult = &tr
 			}
 		}
 		filtered = append(filtered, p)
@@ -2318,6 +2376,7 @@ func annotateSuppressedToolResult(tr *llm.ToolResultData) {
 func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message {
 	history := make([]llm.Message, 0, len(historyTurns))
 	pendingToolCalls := map[string]struct{}{}
+	var omittedWebSearchCallIDs map[string]struct{}
 	var deferredSteering []llm.Message
 
 	flushDeferredSteering := func() {
@@ -2372,6 +2431,10 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
 					tr := *p.ToolResult
+					_, pairedWebSearch := omittedWebSearchCallIDs[tr.ToolCallID]
+					if scope.omitsLegacyWebSearchTool(inFlight) && (tr.Name == "web_search" || pairedWebSearch) {
+						tr.Content = omittedWebSearchToolOutputText
+					}
 					droppedDocument := len(tr.ImageData) > 0 && scope.dropsToolResult != nil && scope.dropsToolResult(p.ToolResult)
 					if len(tr.ImageData) > 0 && (droppedDocument || scope.dropsMedia(tr.ImageMediaType)) {
 						// The target cannot see this payload (or the provider
@@ -2393,10 +2456,37 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 			}
 			resolveToolResults(t.Message)
 		case schema.TurnTool:
-			history = append(history, scope.stripToolResultMedia(scope.projectToolResultMedia(scope.projectTurnMessage(t, inFlight))))
+			msg := scope.stripToolResultMedia(scope.projectToolResultMedia(scope.projectTurnMessage(t, inFlight)))
+			if scope.omitsLegacyWebSearchTool(inFlight) && len(omittedWebSearchCallIDs) > 0 {
+				var cloned []llm.ContentPart
+				for idx, p := range msg.Content {
+					if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
+						if _, paired := omittedWebSearchCallIDs[p.ToolResult.ToolCallID]; paired {
+							if cloned == nil {
+								cloned = slices.Clone(msg.Content)
+								msg.Content = cloned
+							}
+							tr := *p.ToolResult
+							tr.Content = omittedWebSearchToolOutputText
+							cloned[idx].ToolResult = &tr
+						}
+					}
+				}
+			}
+			history = append(history, msg)
 			resolveToolResults(t.Message)
 		case schema.TurnAssistant:
 			endToolRound()
+			if scope.omitsLegacyWebSearchTool(inFlight) {
+				for _, p := range t.Message.Content {
+					if p.Kind == llm.ContentToolCall && p.ToolCall != nil && p.ToolCall.Name == "web_search" && p.ToolCall.ID != "" {
+						if omittedWebSearchCallIDs == nil {
+							omittedWebSearchCallIDs = map[string]struct{}{}
+						}
+						omittedWebSearchCallIDs[p.ToolCall.ID] = struct{}{}
+					}
+				}
+			}
 			message := scope.projectTurnMessage(t, inFlight)
 			history = append(history, message)
 			startToolRound(message)

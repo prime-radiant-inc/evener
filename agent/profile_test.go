@@ -130,7 +130,6 @@ func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
 			"delegate_send",
 			"task_list",
 			"web_fetch",
-			"web_search",
 			"communicate",
 			"use_skill",
 		})
@@ -671,9 +670,9 @@ func assertMissingTool(t *testing.T, p *provider.Profile, name string) {
 	}
 }
 
-func TestGeminiProfile_IncludesWebSearch(t *testing.T) {
+func TestGeminiProfile_ExcludesWebSearch(t *testing.T) {
 	t.Parallel()
-	assertHasTool(t, newGeminiProfile("gemini-test"), "web_search")
+	assertMissingTool(t, newGeminiProfile("gemini-test"), "web_search")
 	assertMissingTool(t, NewOpenAIProfile("gpt-5.2"), "web_search")
 	assertMissingTool(t, newAnthropicProfile("claude-test"), "web_search")
 }
