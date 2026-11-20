@@ -201,6 +201,14 @@ import { LiveSessionTitle } from "./session/LiveSessionTitle";
 import { useActivityPoll } from "./board/useActivityPoll";
 import { sheetKey, useProvideSheetHost } from "./sheet/sheetHosts";
 import { screenInFront, useScreenInFront } from "./sheet/useScreenInFront";
+import {
+	type CommandRefusal,
+	clearCommandRefusal,
+	commandRefusalPublished,
+	adoptCommandRefusal,
+	publishCommandRefusal,
+	subscribeToCommandRefusals,
+} from "./conversationCommandRefusals";
 import { takeQuote } from "./session/pendingQuote";
 import { type Coordinator, SubagentPanel } from "./subagents/SubagentPanel";
 import type { ActivityKind } from "./subagents/activityList";
@@ -558,10 +566,24 @@ function ConversationScreenView({
 	// What the last composer action couldn't do, and why: a command refused
 	// before it left the phone, one whose outcome the screen couldn't confirm,
 	// or a message the draft couldn't take back.
-	const [actionError, setActionError] = useState<{
-		reason: "not-sent" | "refused" | "unconfirmed" | "not-restored";
-		message: string;
-	} | null>(null);
+	const [actionError, setActionError] = useState<CommandRefusal | { reason: "not-restored"; message: string } | null>(
+		null,
+	);
+	// A refusal another composer published for this ref - the composer a KEYED
+	// route replacement unmounted - arrives on the channel this screen's ref
+	// reads, so it shows here exactly as its own action error would. Adopted on
+	// mount for the replacement composer's first render, and while mounted for
+	// a refusal a still-live sibling publishes for a later replacement.
+	const publishedRefusal = useSyncExternalStore(subscribeToCommandRefusals, () =>
+		commandRefusalPublished(route.params.hubId, route.params.ref),
+	);
+	useEffect(() => {
+		if (publishedRefusal === null) return;
+		// The take is what clears the snapshot; adopt and show together, so the
+		// composer's error line and the channel agree from one write.
+		const adopted = adoptCommandRefusal(route.params.hubId, route.params.ref);
+		if (adopted !== null) setActionError(adopted);
+	}, [publishedRefusal, route.params.hubId, route.params.ref]);
 	const [commandPending, setCommandPending] = useState(false);
 	const commandBusy = useRef(false);
 	const projectLookup = useRef<AbortController | null>(null);
@@ -750,7 +772,11 @@ function ConversationScreenView({
 	// The key of the route replaceForIdentity mounts in this one's place, so a
 	// command's answer can gate on the destination that survived the
 	// replacement (applyCommand's catch) rather than the key it removed.
+	// The ref that route points at is the channel a refused command publishes
+	// to: the replacement composer reads it by the ref it opened on, and this
+	// is the one place that knows both.
 	const survivingRouteKey = useRef<string | null>(null);
+	const survivingRouteRef = useRef<string | null>(null);
 	useEffect(() => {
 		currentIdentity.current = route.params.ref;
 	}, [route.params.ref]);
@@ -777,6 +803,7 @@ function ConversationScreenView({
 			// so the key is already there to record.
 			const state = navigation.getState();
 			survivingRouteKey.current = state.routes[state.index]?.key ?? null;
+			survivingRouteRef.current = to;
 		},
 		[navigation, route.key, route.params],
 	);
@@ -2035,6 +2062,9 @@ function ConversationScreenView({
 		)
 			return;
 		setActionError(null);
+		// A refusal adopted from the channel is this composer's own error line
+		// now, so a new command clears the channel's copy with the local one.
+		clearCommandRefusal(route.params.hubId, route.params.ref);
 		const currentBinding = () =>
 			connectionReady.current &&
 			screenInFront(navigation, route.key) &&
@@ -2162,17 +2192,31 @@ function ConversationScreenView({
 			// its own key; with no replacement behind the command, the
 			// destination is still the route the command was typed on. The
 			// draft keeps its association with that original ref either way.
-			if (!screenInFront(navigation, survivingRouteKey.current ?? route.key)) return;
-			setActionError(
+			const survivingKey = survivingRouteKey.current ?? route.key;
+			if (!screenInFront(navigation, survivingKey)) return;
+			const refusal =
 				error instanceof CommandArgumentError
-					? { reason: error instanceof CommandNotSentError ? "not-sent" : "refused", message: error.message }
+					? {
+							reason: error instanceof CommandNotSentError ? ("not-sent" as const) : ("refused" as const),
+							message: error.message,
+						}
 					: error instanceof WireError
-						? { reason: "refused", message: error.message }
+						? { reason: "refused" as const, message: error.message }
 						: {
-								reason: "unconfirmed",
+								reason: "unconfirmed" as const,
 								message: "Could not confirm the command. Check the session before trying again.",
-							},
-			);
+							};
+			setActionError(refusal);
+			// A KEYED replacement unmounts this composer and mounts a new one for
+			// the surviving route, so the local write above dies with this
+			// component: the refusal also rides the ref-keyed channel, and the
+			// composer that opens on the surviving ref adopts it on mount. The
+			// replacement recorded that ref when it recorded its key; with no
+			// replacement behind the command, the destination is still this
+			// composer and the local write above already reached it.
+			const survivingRef = survivingRouteRef.current;
+			if (survivingKey !== route.key && survivingRef !== null && survivingRef !== route.params.ref)
+				publishCommandRefusal(route.params.hubId, survivingRef, refusal);
 		} finally {
 			commandBusy.current = false;
 			setCommandPending(false);

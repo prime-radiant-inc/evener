@@ -716,11 +716,14 @@ func (s *Session) composeHubInputTools() {
 			// hub already observed inside the failure has to ride there too.
 			// The typed error still decides the outcome.
 			if observed, ok := appwire.ModelControlObservedOf(err); ok {
-				return managerControlFailure{ObservedModelControl: &observed}, err
+				// The observed snapshot projects the same way the success
+				// path's response does: the active model and any
+				// desired/lifecycle, never the authority fields.
+				return managerControlFailure{ObservedModelControl: projectModelControl("", &observed)}, err
 			}
 			return nil, err
 		}
-		return response, nil
+		return projectManagerControlResponse(response), nil
 	}
 	_ = s.reg.Register(registered)
 }
@@ -730,7 +733,86 @@ func (s *Session) composeHubInputTools() {
 // the model-control state the hub's own diagnostic read already observed
 // travels here instead of costing a second read.
 type managerControlFailure struct {
-	ObservedModelControl *appwire.ModelControlSnapshot `json:"observed_model_control"`
+	ObservedModelControl *projectedModelControl `json:"observed_model_control"`
+}
+
+// projectedModelDesired keeps what the model may act on from a desired record
+// and drops the client mutation id: that id is the client's proof of which
+// intent it is, and Manager never hands protocol identity to the model
+// (issue #6914).
+type projectedModelDesired struct {
+	ModelProvider string                        `json:"modelProvider"`
+	Model         string                        `json:"model"`
+	Lifecycle     appwire.ModelControlLifecycle `json:"lifecycle"`
+}
+
+// projectedModelControl is the model-facing projection of the wire's
+// ThreadModelSetResponse and observed ModelControlSnapshot: disposition, the
+// active model with its reasoning metadata, and the desired record with its
+// lifecycle. The authority instance id and boot generation, the snapshot
+// revision and the client mutation id stay on the wire path, which forwarding
+// and recovery still read.
+type projectedModelControl struct {
+	Disposition string                      `json:"disposition,omitempty"`
+	Active      *appwire.ModelControlActive `json:"active,omitempty"`
+	Desired     *projectedModelDesired      `json:"desired,omitempty"`
+}
+
+// projectModelControl builds the model-facing projection of one wire snapshot.
+func projectModelControl(disposition string, snapshot *appwire.ModelControlSnapshot) *projectedModelControl {
+	projected := &projectedModelControl{Disposition: disposition}
+	if snapshot == nil {
+		return projected
+	}
+	active := snapshot.Active
+	projected.Active = &active
+	if snapshot.Desired != nil {
+		projected.Desired = &projectedModelDesired{
+			ModelProvider: snapshot.Desired.ModelProvider,
+			Model:         snapshot.Desired.Model,
+			Lifecycle:     snapshot.Desired.Lifecycle,
+		}
+	}
+	return projected
+}
+
+// projectedSessionControl is the wire's SessionControlResponse with the model
+// arm shadowed by its model-facing projection: the embedded wire type carries
+// every other arm unchanged, and the shallower Model wins the JSON encoding
+// (issue #6914).
+type projectedSessionControl struct {
+	*appwire.SessionControlResponse
+	Model *projectedModelControl `json:"model,omitempty"`
+}
+
+// projectedSessionOperation is the wire's SessionOperationResponse with the
+// control arm shadowed by its projection, the same embedding rule as above.
+type projectedSessionOperation struct {
+	*appwire.SessionOperationResponse
+	Control *projectedSessionControl `json:"control,omitempty"`
+}
+
+// projectManagerControlResponse projects the model arm of a session_control
+// answer to what the model may act on. The wire's own
+// SessionOperationResponse - which forwarding and recovery still read - is
+// untouched; only what crosses into the tool result the model reads changes.
+func projectManagerControlResponse(response appwire.SessionOperationResponse) any {
+	if response.Control == nil || response.Control.Model == nil {
+		return response
+	}
+	wire := *response.Control
+	model := projectModelControl(string(wire.Model.Disposition), wire.Model.ModelControl)
+	// The embedded wire control keeps the model arm's identity fields alive in
+	// the embedded copy; nil it there so only the projection crosses - the
+	// shadowed Model is what encoding/json emits.
+	wire.Model = nil
+	return projectedSessionOperation{
+		SessionOperationResponse: &response,
+		Control: &projectedSessionControl{
+			SessionControlResponse: &wire,
+			Model:                  model,
+		},
+	}
 }
 
 func (s *Session) invokeHubInput(ctx context.Context, args map[string]any) (any, error) {

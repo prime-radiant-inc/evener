@@ -1202,6 +1202,101 @@ it("says why a typed /model was refused even when the resume replaced its route"
 	});
 });
 
+// The remount half of the same medium: REPLACE does not merely swap the route
+// key in the stack, it unmounts the initiating ConversationScreen and mounts a
+// new one for the replacement route. A refusal written to the initiating
+// component's state dies with it. The durable channel is keyed by the ref the
+// surviving route points at: the initiating screen publishes the refusal
+// there before it goes, and the replacement screen adopts it on mount.
+it("says why a typed /model was refused on the composer the replacement mounted", async () => {
+	const served = thread("ref-cold-model-remount", "idle");
+	(served as unknown as { status: { type: string } }).status = { type: "notLoaded" };
+	(served as unknown as { evener: Record<string, unknown> }).evener.capabilities = {
+		...CAPABILITIES,
+		changeModel: true,
+	};
+	const resolvedRef = "ref-cold-model-remount-resolved";
+	const resolved = thread(resolvedRef, "idle");
+	(resolved as unknown as { evener: Record<string, unknown> }).evener.capabilities = {
+		...CAPABILITIES,
+		changeModel: true,
+		modelControlVersion: 1,
+	};
+	(resolved as unknown as { evener: Record<string, unknown> }).evener.modelControl = {
+		authority: { instanceId: "instance-remount-resolved", bootGeneration: "test-boot" },
+		revision: 1,
+		active: {
+			modelProvider: "anthropic",
+			model: "claude-sonnet-5",
+			reasoningEffortLevels: [],
+			supportsReasoning: false,
+		},
+	};
+	(resolved as unknown as { evener: Record<string, unknown> }).evener.instanceId = "instance-remount-resolved";
+	otherThreads.set(resolvedRef, resolved);
+	// An opaque sentinel the daemon passes through: what the test proves is the
+	// refusal's visibility, not the wording of one daemon's refusal.
+	modelSetRefusal.message = "sentinel-refusal-reason-93f1";
+	const { tree, hub } = await mount(served);
+	const resumeThread = hub.client.resumeThread.bind(hub.client);
+	hub.client.resumeThread = async (ref: string) => {
+		const response = await resumeThread(ref);
+		return { thread: resolved } as unknown as typeof response;
+	};
+	// The production replacement: the topmost route is swapped for the resolved
+	// identity's key, and - as react-navigation does for REPLACE - the initiating
+	// screen unmounts while a new one mounts for the replacement route, in the
+	// same commit. The daemon has not answered the pick yet: the refusal still
+	// has to arrive on the composer that is on screen now.
+	const oldRoute = navigationState.state.routes[navigationState.state.index];
+	const replacementRoute = {
+		key: `conversation-${resolvedRef}`,
+		name: "Conversation",
+		params: { hubId: "hub-1", ref: resolvedRef, title: "Session" },
+	} as unknown as ConversationScreenProps["route"];
+	let replacement: ReactTestRenderer | null = null;
+	vi.mocked(navigation.replace).mockImplementationOnce(() => {
+		navigationState.state = {
+			index: 0,
+			routes: [replacementRoute, ...navigationState.state.routes.filter((route) => route.key !== oldRoute.key)],
+		};
+		act(() => {
+			tree.unmount();
+			// The replacement mounts in the same commit the initiator leaves, so
+			// the refusal the daemon sends after must reach it live.
+			replacement = render(<SessionScreen route={replacementRoute} navigation={navigation} />);
+		});
+	});
+
+	await type(tree, "/model anthropic/claude-sonnet-5");
+	await press(tree, "Set model");
+
+	// The initiating screen is gone, and the replacement has mounted in its
+	// place: exactly what REPLACE leaves behind.
+	const topmost = navigationState.state.routes[navigationState.state.index];
+	expect(topmost.key).toBe(`conversation-${resolvedRef}`);
+	// One resume behind the pick, and one refused mutation on the identity the
+	// resume resolved.
+	expect(hub.requests.filter((request) => request.method === "resumeThread")).toHaveLength(1);
+	const setCalls = hub.requests.filter((request) => request.method === "thread/model/set");
+	expect(setCalls).toHaveLength(1);
+	expect(setCalls[0]?.params).toMatchObject({ ref: resolvedRef });
+	// The refusal reaches the composer that is on screen now - the replacement's.
+	// The replacement was mounted at replace time, before the daemon answered:
+	// it shows the refusal through the channel subscription, not a mount read.
+	expect(replacement).not.toBe(null);
+	expect(actionErrors(replacement!)).toContain("refused");
+	expect(renderedText(replacement!)).toContain("sentinel-refusal-reason-93f1");
+	// The draft stays on the ref the command was typed on: the original ref's
+	// document holds the unconfirmed text, and the replacement's holds nothing.
+	expect(nativeDrafts().read({ hubId: "hub-1", sessionRef: "ref-cold-model-remount" })).toMatchObject({
+		unconfirmed: "/model anthropic/claude-sonnet-5",
+	});
+	expect(nativeDrafts().read({ hubId: "hub-1", sessionRef: resolvedRef })).toMatchObject({
+		unconfirmed: null,
+	});
+});
+
 // The same medium on a subagent's screen: the route a subagent's composer
 // lives on is named "Subagent", and replaceForIdentity preserves that name,
 // so the replacement mounted for the resolved identity is a "Subagent" route

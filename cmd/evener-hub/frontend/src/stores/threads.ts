@@ -5010,9 +5010,35 @@ export function modelPickCanSend(model: ThreadModel): boolean {
 // rejects before any model request is built, so a mutation is never replayed
 // on unproven authority. Post-dispatch refusals stay with the existing
 // recovery path.
-async function resumeColdSessionForModelSet(ref: string): Promise<string> {
+// The read claim this drive holds while it establishes that authority. The
+// resume's own refresh (refreshThread behind the identity fence) publishes
+// only through the ownership fence publishThreadHydration enforces, and a ref
+// with no pane parked on it - a watched session, or the new identity a resume
+// resolved that no pane has followed - has no owner, so that read would land
+// nowhere. The claim is the ownership shape a pane's mount takes (the canonical
+// claim, hold and subscription of ensureThread's opening, without its cache or
+// hydration lifetimes), so the read the resume (or this driver, below) issues
+// is projected through the same shared reducer and publishes the `ready`
+// snapshot the dispatch fences on. Held through the dispatch, because
+// releasing it first would drop the published model of a ref nobody else owns
+// before the mutation could read its authority; released on a refusal with
+// nothing dispatched.
+function claimColdPickRead(ref: string): () => void {
+  beginCanonicalThreadClaim(ref);
+  holdForeground(ref);
+  syncTranscriptResidencyOwners(ref);
+  syncThreadSubscription(ref, getWiredClient());
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    threadsStore.getState().releaseThread(ref);
+  };
+}
+
+async function resumeColdSessionForModelSet(ref: string): Promise<{ targetRef: string; release: () => void }> {
   const current = trackedThreadModel(ref);
-  if (!current || !needsResumeForModelSet(current)) return ref;
+  if (!current || !needsResumeForModelSet(current)) return { targetRef: ref, release: () => {} };
   // Held by reference: every writer replaces this map rather than mutating it.
   const hydrationsBefore = threadsStore.getState().hydrations;
   // Observed through a subscription, not read afterwards: the swap is
@@ -5024,17 +5050,43 @@ async function resumeColdSessionForModelSet(ref: string): Promise<string> {
   const stopObservingSwap = threadsStore.subscribe((state) => {
     swappedTo = state.resumedIdentities.get(ref) ?? swappedTo;
   });
+  // The claim precedes the resume so the resume's own refresh finds an owner
+  // for the original ref: without it, a watched-only session's post-resume
+  // refresh would publish nothing and the pick would be refused after the
+  // daemon already resumed.
+  const releases = [claimColdPickRead(ref)];
+  // Drains the claims once, newest first, from whichever exit path runs
+  // first: the dispatch's finally on success, the catch on every refusal.
+  const releaseClaims = () => {
+    while (releases.length > 0) releases.pop()?.();
+  };
   try {
     await threadsStore.getState().resumeSession(ref);
+    const targetRef = swappedTo ?? ref;
+    if (targetRef !== ref) {
+      // The resume resolved an identity no pane has followed. The drive's own
+      // refresh skipped it for the same reason; this driver performs the one
+      // read that establishes authority - the same thread/read a pane's mount
+      // would issue for the ref it opened - under a claim of its own.
+      releases.push(claimColdPickRead(targetRef));
+      await threadsStore.getState().refreshThread(targetRef);
+    }
+    const freshRead = (threadsStore.getState().hydrations.get(targetRef) ?? 0) > (hydrationsBefore.get(targetRef) ?? 0);
+    if (!freshRead || trackedThreadModel(targetRef)?.modelControlState.kind !== "ready") {
+      throw new Error("Resuming this session did not establish model-control authority");
+    }
+    return {
+      targetRef,
+      release: releaseClaims,
+    };
+  } catch (error) {
+    // Every failure here predates the dispatch, so the claims this function
+    // took are released with it: nothing was dispatched.
+    releaseClaims();
+    throw error;
   } finally {
     stopObservingSwap();
   }
-  const targetRef = swappedTo ?? ref;
-  const freshRead = (threadsStore.getState().hydrations.get(targetRef) ?? 0) > (hydrationsBefore.get(targetRef) ?? 0);
-  if (!freshRead || trackedThreadModel(targetRef)?.modelControlState.kind !== "ready") {
-    throw new Error("Resuming this session did not establish model-control authority");
-  }
-  return targetRef;
 }
 
 function startModelControlRecovery(
@@ -9708,83 +9760,91 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // a daemon able to bind the mutation, so it runs first and its own
     // hydration supplies the one authoritative read the request is fenced on.
     // A warm session never enters here and keeps its ordinary path.
-    const targetRef = await resumeColdSessionForModelSet(ref);
-    await waitForCurrentModelControl(targetRef);
-    const client = requireClient();
-    const current = trackedThreadModel(targetRef);
-    const authority = current ? modelControlAuthority(current) : undefined;
-    if (client.state !== "ready" || !authority) throw new Error("Session has no current model-control authority");
-    const fence: ModelControlRequestFence = {
-      authority,
-      clientGeneration: getReadyEpoch(),
-      readGeneration: modelControlReadSequences.get(targetRef) ?? 0,
-    };
-    const clientMutationId = createSecureUUID();
-    let rawResponse: unknown;
+    const coldPick = await resumeColdSessionForModelSet(ref);
+    const targetRef = coldPick.targetRef;
     try {
-      rawResponse = await client.request("thread/model/set", {
-        ref: targetRef,
-        modelProvider,
-        model,
-        clientMutationId,
-        expectedInstanceId: authority.instanceId,
-        expectedBootGeneration: authority.bootGeneration,
-      });
-    } catch (err) {
-      const recovery = modelControlRecoveryInput(err);
-      if (recovery) startModelControlRecovery(targetRef, recovery, client, fence);
-      throw mapConflict(err);
-    }
-    let response: MethodTypes["thread/model/set"]["result"];
-    try {
-      response = validateThreadModelSetResponse(rawResponse, clientMutationId);
-    } catch (error) {
-      startModelControlRecovery(targetRef, { kind: "postDispatchFailure" }, client, fence);
-      throw error;
-    }
-    // A newer read owning publication is not permission to resolve this
-    // operation: the fence decides who may write the displayed snapshot, and
-    // the validated disposition decides what this caller is told. Returning
-    // here made a superseded pick resolve success (the palette then confirmed
-    // the losing model) whenever a same-session refresh advanced the read
-    // generation while the mutation was in flight.
-    if (!modelControlFenceCurrent(targetRef, client, fence)) {
-      if (response.disposition === "superseded") throw supersededModelSetError(response);
-      // The fence is not the only thing that decides what this caller is told.
-      // A queued pick can pass admission and then fail deferred validation
-      // before the daemon refreshes the reply's snapshot, so the disposition
-      // still reads accepted while this exact mutation's desired record has
-      // already settled as rejected. A still-`pending` record is queued and may
-      // yet apply, so it stays a success.
+      await waitForCurrentModelControl(targetRef);
+      const client = requireClient();
+      const current = trackedThreadModel(targetRef);
+      const authority = current ? modelControlAuthority(current) : undefined;
+      if (client.state !== "ready" || !authority) throw new Error("Session has no current model-control authority");
+      const fence: ModelControlRequestFence = {
+        authority,
+        clientGeneration: getReadyEpoch(),
+        readGeneration: modelControlReadSequences.get(targetRef) ?? 0,
+      };
+      const clientMutationId = createSecureUUID();
+      let rawResponse: unknown;
+      try {
+        rawResponse = await client.request("thread/model/set", {
+          ref: targetRef,
+          modelProvider,
+          model,
+          clientMutationId,
+          expectedInstanceId: authority.instanceId,
+          expectedBootGeneration: authority.bootGeneration,
+        });
+      } catch (err) {
+        const recovery = modelControlRecoveryInput(err);
+        if (recovery) startModelControlRecovery(targetRef, recovery, client, fence);
+        throw mapConflict(err);
+      }
+      let response: MethodTypes["thread/model/set"]["result"];
+      try {
+        response = validateThreadModelSetResponse(rawResponse, clientMutationId);
+      } catch (error) {
+        startModelControlRecovery(targetRef, { kind: "postDispatchFailure" }, client, fence);
+        throw error;
+      }
+      // A newer read owning publication is not permission to resolve this
+      // operation: the fence decides who may write the displayed snapshot, and
+      // the validated disposition decides what this caller is told. Returning
+      // here made a superseded pick resolve success (the palette then confirmed
+      // the losing model) whenever a same-session refresh advanced the read
+      // generation while the mutation was in flight.
+      if (!modelControlFenceCurrent(targetRef, client, fence)) {
+        if (response.disposition === "superseded") throw supersededModelSetError(response);
+        // The fence is not the only thing that decides what this caller is told.
+        // A queued pick can pass admission and then fail deferred validation
+        // before the daemon refreshes the reply's snapshot, so the disposition
+        // still reads accepted while this exact mutation's desired record has
+        // already settled as rejected. A still-`pending` record is queued and may
+        // yet apply, so it stays a success.
+        if (modelSetReplyRejected(response, clientMutationId)) throw modelSetRejectedError(clientMutationId, response);
+        return;
+      }
+      const snapshot = response.modelControl;
+      if (!snapshot || !sameModelControlAuthority(snapshot.authority, fence.authority)) {
+        startModelControlRecovery(targetRef, { kind: "postDispatchFailure" }, client, fence);
+        validateThreadModelSetResponse(undefined, clientMutationId);
+        return;
+      }
+      const reduced = applyModelControlTransition(
+        targetRef,
+        { kind: "snapshot", source: "response", snapshot },
+        fence.authority,
+      );
+      if (reduced.replacementReadRequired) {
+        startModelControlReplacementRead(targetRef, client, fence);
+      }
+      // The daemon answered with the pick that won, not this one. The canonical
+      // snapshot above converged the client on the winner, but this mutation did
+      // not change the model, so the caller must not confirm it as if it had —
+      // the palette would otherwise toast success naming the losing pick. The
+      // disposition is the wire's own answer, never a guess from the snapshot.
+      if (response.disposition === "superseded") {
+        throw supersededModelSetError(response);
+      }
+      // Same evidence as the fence-refused branch above: the disposition says
+      // accepted, and the rejected lifecycle is the only sign the switch the
+      // caller was told about did not happen.
       if (modelSetReplyRejected(response, clientMutationId)) throw modelSetRejectedError(clientMutationId, response);
-      return;
+    } finally {
+      // The read claim held through the dispatch: released here so the claim
+      // a cold pick took never outlives it, whether the mutation was
+      // dispatched, refused, or rejected before any request left.
+      coldPick.release();
     }
-    const snapshot = response.modelControl;
-    if (!snapshot || !sameModelControlAuthority(snapshot.authority, fence.authority)) {
-      startModelControlRecovery(targetRef, { kind: "postDispatchFailure" }, client, fence);
-      validateThreadModelSetResponse(undefined, clientMutationId);
-      return;
-    }
-    const reduced = applyModelControlTransition(
-      targetRef,
-      { kind: "snapshot", source: "response", snapshot },
-      fence.authority,
-    );
-    if (reduced.replacementReadRequired) {
-      startModelControlReplacementRead(targetRef, client, fence);
-    }
-    // The daemon answered with the pick that won, not this one. The canonical
-    // snapshot above converged the client on the winner, but this mutation did
-    // not change the model, so the caller must not confirm it as if it had —
-    // the palette would otherwise toast success naming the losing pick. The
-    // disposition is the wire's own answer, never a guess from the snapshot.
-    if (response.disposition === "superseded") {
-      throw supersededModelSetError(response);
-    }
-    // Same evidence as the fence-refused branch above: the disposition says
-    // accepted, and the rejected lifecycle is the only sign the switch the
-    // caller was told about did not happen.
-    if (modelSetReplyRejected(response, clientMutationId)) throw modelSetRejectedError(clientMutationId, response);
   },
 
   async setReasoningEffort(ref, level) {
