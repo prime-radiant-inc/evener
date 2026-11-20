@@ -238,8 +238,12 @@ function sameAdoption(
  * history when an attachment replaces a selected missing reference. */
 function syncImageMarks(tr: EditorState["tr"], value: SkillEditorValue): void {
   const text = serializeSkillDocument(tr.doc).text;
-  tr.removeMark(0, tr.doc.content.size, skillSchema.marks.stagedAnchor);
-  tr.removeMark(0, tr.doc.content.size, skillSchema.marks.stagedImage);
+  if (tr.doc.rangeHasMark(0, tr.doc.content.size, skillSchema.marks.stagedAnchor)) {
+    tr.removeMark(0, tr.doc.content.size, skillSchema.marks.stagedAnchor);
+  }
+  if (tr.doc.rangeHasMark(0, tr.doc.content.size, skillSchema.marks.stagedImage)) {
+    tr.removeMark(0, tr.doc.content.size, skillSchema.marks.stagedImage);
+  }
   for (const range of adoptedMarkerRanges(text, value.adoptedImageMarkers, value.adoptedImageRanges)) {
     const from = textOffsetToDocumentPosition(tr.doc, range.start, 1);
     const to = textOffsetToDocumentPosition(tr.doc, range.end, -1);

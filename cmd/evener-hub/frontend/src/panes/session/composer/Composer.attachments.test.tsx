@@ -1429,6 +1429,7 @@ test("removing a staged tile leaves a surviving literal of the same number senda
 });
 
 test("removing a staged tile when an identical literal sits before its marker preserves the literal", async () => {
+  installCanvasStubs();
   const user = userEvent.setup();
   await mountComposerWithHandle("ref_a");
   await user.click(textarea());
@@ -1436,6 +1437,7 @@ test("removing a staged tile when an identical literal sits before its marker pr
     pastePngInto(textarea(), "shot.png");
   });
   await waitFor(() => expect(screen.getByRole("button", { name: "Remove shot.png" })).toBeTruthy());
+  await waitFor(() => expect(screen.getByRole("button", { name: "View shot.png" })).toBeTruthy());
 
   selectEditorText(textarea(), 0);
   await user.paste("[image 1] is literal. ");
@@ -1450,11 +1452,13 @@ test("removing a staged tile when an identical literal sits before its marker pr
 });
 
 test("deleting a staged marker and undoing restores its staged provenance across reload", async () => {
+  installCanvasStubs();
   await mountComposer("ref_a");
   act(() => {
     pastePngInto(textarea(), "shot.png");
   });
   await waitFor(() => expect(screen.getByRole("button", { name: "Remove shot.png" })).toBeTruthy());
+  await waitFor(() => expect(screen.getByRole("button", { name: "View shot.png" })).toBeTruthy());
   expect(textarea().textContent).toBe("[image 1]");
 
   // Delete the staged marker, then undo the deletion.
@@ -1475,6 +1479,7 @@ test("deleting a staged marker and undoing restores its staged provenance across
 });
 
 test("attaching a replacement over a selected missing reference preserves undo for an earlier prose edit", async () => {
+  installCanvasStubs();
   const user = userEvent.setup();
   writeComposerDraft("ref_a", {
     text: "hello [image 1] world",
@@ -1497,6 +1502,7 @@ test("attaching a replacement over a selected missing reference preserves undo f
     pastePngInto(textarea(), "replacement.png");
   });
   await waitFor(() => expect(screen.getByRole("button", { name: "Remove replacement.png" })).toBeTruthy());
+  await waitFor(() => expect(screen.getByRole("button", { name: "View replacement.png" })).toBeTruthy());
   expect(textarea().textContent).toBe("hello there [image 2] world");
   expect(screen.queryByTestId("composer-unbacked-image")).toBeNull();
 
@@ -1504,6 +1510,31 @@ test("attaching a replacement over a selected missing reference preserves undo f
   fireEvent.keyDown(textarea(), { key: "z", ctrlKey: true });
   expect(textarea().textContent).toBe("hello [image 2] world");
   expect(screen.getByRole("button", { name: "Remove replacement.png" })).toBeTruthy();
+});
+
+test("deleting and retyping the closing bracket of a missing reference restores the refusal", async () => {
+  const user = userEvent.setup();
+  writeComposerDraft("ref_a", {
+    text: "[image 1]",
+    skillNames: [],
+    stagedImageMarkers: [1],
+    stagedImageRanges: [{ marker: 1, start: 0, end: 9 }],
+  });
+  await mountComposerWithHandle("ref_a");
+  await user.click(textarea());
+  expect(screen.getByTestId("composer-unbacked-image")).toBeTruthy();
+
+  // Delete only the closing bracket: incomplete fragment is sendable.
+  insertEditorTextAt(textarea(), 8, "", 9);
+  expect(textarea().textContent).toBe("[image 1");
+  expect(screen.queryByTestId("composer-unbacked-image")).toBeNull();
+
+  // Type the closing bracket back: the original missing reference is refused again.
+  selectEditorText(textarea(), 8);
+  await user.paste("]");
+  expect(textarea().textContent).toBe("[image 1]");
+  expect(screen.getByTestId("composer-unbacked-image")).toBeTruthy();
+  expect(submitButton().disabled).toBe(true);
 });
 
 // The other order: the person deletes the staged ANCHOR and leaves the tile

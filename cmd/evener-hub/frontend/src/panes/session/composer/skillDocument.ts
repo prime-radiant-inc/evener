@@ -165,9 +165,34 @@ function noteMarkSpans(
 }
 
 /** Keeps only the spans whose slice of `text` is still exactly the literal
- * its marker names. */
-function intactStagedAnchors(text: string, spans: readonly StagedAnchorSpan[]): StagedAnchorSpan[] {
-  return spans.filter((span) => text.slice(span.start, span.end) === markerText(span.marker));
+ * its marker names, or whose non-empty marked fragment sits inside a restored
+ * complete literal of that same marker (for example, deleting `]` and typing
+ * `]` back onto the marked `[image 1` fragment). */
+function intactStagedAnchors(
+  doc: ProseMirrorNode,
+  text: string,
+  spans: readonly StagedAnchorSpan[],
+): StagedAnchorSpan[] {
+  const kept: StagedAnchorSpan[] = [];
+  const seen = new Set<string>();
+  for (const span of spans) {
+    if (span.end <= span.start) continue;
+    const needle = markerText(span.marker);
+    const minStart = Math.max(0, span.end - needle.length);
+    const maxStart = Math.min(span.start, text.length - needle.length);
+    for (let start = minStart; start <= maxStart; start++) {
+      const end = start + needle.length;
+      if (text.slice(start, end) !== needle) continue;
+      const key = `${span.marker}:${start}:${end}`;
+      if (seen.has(key)) break;
+      seen.add(key);
+      const from = start === span.start ? span.from : textOffsetToDocumentPosition(doc, start, 1);
+      const to = end === span.end ? span.to : textOffsetToDocumentPosition(doc, end, -1);
+      kept.push({ marker: span.marker, start, end, from, to });
+      break;
+    }
+  }
+  return kept;
 }
 
 /**
@@ -193,7 +218,7 @@ export function stagedAnchorSpans(doc: ProseMirrorNode): StagedAnchorSpan[] {
     noteMarkSpans(node, position, text.length, "stagedAnchor", spans);
     text += node.isText ? (node.text ?? "") : `/${node.attrs.name}`;
   });
-  return intactStagedAnchors(text, spans);
+  return intactStagedAnchors(doc, text, spans);
 }
 
 /** Text nodes for one run of prose, splitting out the exact occurrences the
@@ -294,13 +319,13 @@ export function serializeSkillDocument(doc: ProseMirrorNode): SkillEditorValue {
   // no longer exists. stagedAnchorSpans is that same judgement, shared with
   // the repair so a fragment the person edited is never called an anchor by
   // one and deleted by the other.
-  const adoptedImageRanges = intactStagedAnchors(text, anchorSpans).map(({ marker, start, end }) => ({
+  const adoptedImageRanges = intactStagedAnchors(doc, text, anchorSpans).map(({ marker, start, end }) => ({
     marker,
     start,
     end,
   }));
   const adoptedImageMarkers = markerNumbersOf(adoptedImageRanges);
-  const stagedImageRanges = intactStagedAnchors(text, stagedSpans).map(({ marker, start, end }) => ({
+  const stagedImageRanges = intactStagedAnchors(doc, text, stagedSpans).map(({ marker, start, end }) => ({
     marker,
     start,
     end,
