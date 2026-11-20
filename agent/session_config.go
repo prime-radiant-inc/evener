@@ -9,6 +9,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/mcpconfig"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/provider"
@@ -150,6 +151,17 @@ type SessionConfig struct {
 
 	// MCPInline are inline MCP server specs (--mcp flag, format: name:command args...).
 	MCPInline []string `json:"mcp_inline,omitempty"`
+
+	// StartupMCPProjectEvidence is the project MCP layer (PROJECT only, not the
+	// global layer) THIS session read at startup, carried so a sandboxed
+	// delegate it constructs can tell a layer the launch trusted from one that
+	// appeared around the session afterwards. It is engine-only and never
+	// persisted: it describes one workspace at one moment in one process, and a
+	// restore that inherited a stale copy from a snapshot would authorize a
+	// layer the restoring session never read. Nil therefore means "this process
+	// has no startup read to authorize anything", which is the fail-safe answer
+	// — see mcpconfig.DiscoverWithCLIOnlyAndEvidenceForProjectEnv.
+	StartupMCPProjectEvidence *mcpconfig.LayerEvidence `json:"-"`
 
 	// PluginDirs are directories to scan for plugins (each contains a plugin.yaml manifest).
 	PluginDirs []string `json:"plugin_dirs,omitempty"`
@@ -491,8 +503,14 @@ type spawnConfig struct {
 	// toolNameCeiling is the durable stable-delegate capability ceiling carried
 	// into construction. NewSession applies it after all intrinsic tools and
 	// ordinary spawn policy so the model-facing cache cannot exceed the ceiling.
-	toolNameCeiling         []string
-	communicateOutputSchema map[string]any
+	toolNameCeiling []string
+	// ceilingReachabilityExcluded names the tools the ceiling dropped for
+	// reachability rather than role authorization. They are re-admitted here,
+	// before the ceiling is applied, when this session can register them: the
+	// ceiling is a bound on what the child MAY use, and the reachability half of
+	// it describes a workspace that may since have changed.
+	ceilingReachabilityExcluded []string
+	communicateOutputSchema     map[string]any
 
 	// isolation is "worktree" for a delegate spawned with
 	// delegate(isolation:"worktree") (native worktree tools spec §9); empty

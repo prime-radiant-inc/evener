@@ -175,6 +175,14 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 	prior, _ := s.env.(*execenv.LocalExecutionEnvironment)
 	s.env = next
 	s.envInfo = ei
+	// The roster decision about the CLI-only MCP classification was made for the
+	// workspace being left, so it must not survive this swap: it goes back to
+	// "names eligible" and the next request probes the installed workspace. The
+	// classification itself was NOT derived from that workspace — it is what the
+	// CLI layers supply, and the evidence records the layers it came from — so
+	// keeping it lets the exclusion recover when this session returns to the
+	// workspace it describes (see resetRosterExclusionForWorkspaceChange).
+	s.resetRosterExclusionForWorkspaceChange()
 	if record != nil {
 		record()
 	}

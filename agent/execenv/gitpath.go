@@ -62,6 +62,31 @@ func GitRootOrEmptyContext(ctx context.Context, env ExecutionEnvironment, cwd st
 	return root
 }
 
+// GitRootOrEmptyFreshDefinitive is GitRootOrEmptyContext WITHOUT the
+// per-environment memo, for a caller asking whether a workspace has become a
+// repository since the session started. It keeps the resolver's definitive
+// flag, for a caller whose answer depends on the DIFFERENCE between
+// "this is not a repository" and "I could not find out".
+//
+// The memo exists to spare repeated forks at startup, and it is right for that:
+// a directory's answer does not change under a running session often. It is
+// wrong for a freshness check, which is asking precisely whether it has. A
+// session launched before `git init` would otherwise read the cached "no
+// repository" for the rest of its life and never notice the repository, and the
+// project MCP layer, that appeared around it.
+//
+// The flag is not decoration. A freshness check that reads a bare empty root as
+// "confirmed no repository" caches an absence nothing established: the
+// resolution that timed out or was cancelled says only that it could not ask,
+// and a worktree with a matching MCP fallback may well be sitting there. The
+// caller must keep the question open, which means it needs this flag.
+func GitRootOrEmptyFreshDefinitive(env ExecutionEnvironment, cwd string) (string, bool) {
+	if env == nil {
+		return "", false
+	}
+	return gitRootUncached(context.Background(), env, cwd)
+}
+
 // gitAnswered reports whether err from a git invocation is git's OWN answer — a
 // process that ran and chose its exit status — rather than a failure to obtain
 // an answer at all. It is what decides whether a resolution may be memoized
@@ -169,6 +194,28 @@ func ResolveMainRepoRoot(env ExecutionEnvironment, cwd string) string {
 	return root
 }
 
+// ResolveMainRepoRootFresh is ResolveMainRepoRoot WITHOUT the per-environment
+// memo, for a caller asking what the workspace is NOW rather than what it was
+// when the environment last asked.
+//
+// The memo is keyed by directory, and a directory's identity can change under a
+// running session: `git init` in a subdirectory of a checkout makes that
+// subdirectory its own repository, and every later question about it has a new
+// answer. A caller that compares identities across a launch — was this layer's
+// repository the one the launch authorized? — must not answer it from the
+// launch's memo, or a repository created since the launch inherits the enclosing
+// repository's identity and with it the enclosing repository's trust.
+//
+// The cost is one structural walk, or a git fork when the walk cannot decide,
+// and callers are those already resolving a project config path afresh.
+func ResolveMainRepoRootFresh(env ExecutionEnvironment, cwd string) string {
+	if env == nil {
+		return ""
+	}
+	root, _ := mainRepoRootUncached(env, cwd)
+	return root
+}
+
 // mainRepoRootUncached resolves cwd's main repository root, reporting whether
 // the answer is definitive on the same terms gitRootUncached does: it shares
 // the cache, so a resolution error must not be memoized here either.
@@ -198,7 +245,22 @@ func structuralWorktreeRoot(cwd string) (string, bool) {
 			if info.IsDir() {
 				return identifier.ResolveClean(dir), true
 			}
-			content, err := os.ReadFile(gitPath)
+			// Read through the capped reader, not os.ReadFile. This runs from
+			// the FRESH resolution: child construction asks for the root
+			// uncached so a repository that appeared after the parent started
+			// is still found, and it does so synchronously, before any
+			// subprocess timeout applies. A ".git" entry that has become a FIFO
+			// — a shared workspace another process can write into — makes a
+			// plain read block forever, so the child's discovery would hold
+			// delegate creation open past Stop. The capped reader opens
+			// non-blocking and admits only a regular file, so a pointer that is
+			// not one answers "unreadable" here.
+			//
+			// An unreadable pointer returns unresolved rather than "no
+			// repository", which is the same distinction the caller already
+			// carries: unknown reachability stays open instead of being
+			// recorded as an absence.
+			content, err := ReadFileCapped(gitPath)
 			if err == nil {
 				if _, ok := identifier.ParseGitdirPointer(string(content)); ok {
 					return identifier.ResolveClean(dir), true

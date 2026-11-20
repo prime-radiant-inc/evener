@@ -101,8 +101,8 @@ func steeringOpenerGoalFixture() []transcript.Entry {
 func TestProjectorSeesSteeringOwnerOpenerTurnID(t *testing.T) {
 	entries := steeringOpenerOwnerFixture()
 	var rec recordedProjection
-	if _, err := ItemTurnsFromEntries(transcript.Header{}, entries, recordingProjector(&rec)); err != nil {
-		t.Fatalf("ItemTurnsFromEntries: %v", err)
+	if _, err := itemTurnsFromEntries(transcript.Header{}, entries, recordingProjector(&rec)); err != nil {
+		t.Fatalf("itemTurnsFromEntries: %v", err)
 	}
 	if len(rec.turnIDs) != len(entries) {
 		t.Fatalf("projector invoked %d times, want %d; turnIDs=%v", len(rec.turnIDs), len(entries), rec.turnIDs)
@@ -123,8 +123,8 @@ func TestProjectorSeesSteeringOwnerOpenerTurnID(t *testing.T) {
 func TestProjectorSeesSteeringGoalOpenerTurnID(t *testing.T) {
 	entries := steeringOpenerGoalFixture()
 	var rec recordedProjection
-	if _, err := ItemTurnsFromEntries(transcript.Header{}, entries, recordingProjector(&rec)); err != nil {
-		t.Fatalf("ItemTurnsFromEntries: %v", err)
+	if _, err := itemTurnsFromEntries(transcript.Header{}, entries, recordingProjector(&rec)); err != nil {
+		t.Fatalf("itemTurnsFromEntries: %v", err)
 	}
 	if len(rec.turnIDs) != len(entries) {
 		t.Fatalf("projector invoked %d times, want %d; turnIDs=%v", len(rec.turnIDs), len(entries), rec.turnIDs)

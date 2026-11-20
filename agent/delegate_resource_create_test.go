@@ -1368,7 +1368,7 @@ func buildCommittedDelegate(root *Session, args delegateArgs, lane committedDele
 	if err != nil {
 		return runtime, delegateStartCommit{}, delegateIsolation{}, nil, fmt.Errorf("selectSubagentModel: %w", err)
 	}
-	toolNameCeiling := root.delegateEffectiveToolNameCeiling(selection, args, "")
+	toolNameCeiling, _ := root.delegateEffectiveToolNameCeiling(context.Background(), selection, args, "")
 	requestedSandbox := lane.sandbox
 	if requestedSandbox == nil {
 		requestedSandbox, err = root.requestedDelegateSandbox(args, toolNameCeiling)

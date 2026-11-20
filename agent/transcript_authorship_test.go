@@ -149,15 +149,31 @@ func TestTranscriptAuthorshipNestedParent(t *testing.T) {
 	// terminal communicate result, so opening the gate settles the run instead of
 	// returning bare text the run would nudge and re-enter on. The call also
 	// honors cancellation, so a close that begins while it is parked ends the
-	// run through that cancellation rather than blocking on the adapter.
-	middleRun := &authorshipGatedAdapter{name: "openai", entered: make(chan struct{}), gate: make(chan struct{})}
-	t.Cleanup(middleRun.release)
+	// run through that cancellation rather than blocking on the adapter. The
+	// gate is the adapter's otherwise step because the middle's id does not
+	// exist until createDelegate returns, with its first run already in flight;
+	// the root never calls this adapter and the leaf gets its own client.
+	middleRun := newSessionScriptAdapter("openai")
+	middleGate := make(chan struct{})
+	middleEntered := make(chan struct{})
+	closeMiddleEntered := sync.OnceFunc(func() { close(middleEntered) })
+	releaseMiddleRun := sync.OnceFunc(func() { close(middleGate) })
+	t.Cleanup(releaseMiddleRun)
+	middleRun.otherwise = func(ctx context.Context, _ llm.Request) (llm.Response, error) {
+		closeMiddleEntered()
+		select {
+		case <-middleGate:
+			return agenttest.FinalResponse("middle-answer"), nil
+		case <-ctx.Done():
+			return llm.Response{}, ctx.Err()
+		}
+	}
 	client.Register(middleRun)
 	middleResult := root.createDelegate(context.Background(), delegateArgs{Task: "middle-input", Name: "Middle", DelegationAllowance: new(1)})
 	if middleResult.Err != nil {
 		t.Fatal(middleResult.Err)
 	}
-	<-middleRun.entered
+	<-middleEntered
 	// The namer closes namerEntered when it reaches its provider call, so the
 	// receive is the completion this test waits for: it holds a blocking select
 	// rather than a loop that samples a state the close already reports. The
@@ -232,7 +248,7 @@ func TestTranscriptAuthorshipNestedParent(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		releaseNamer()
-		middleRun.release()
+		releaseMiddleRun()
 		joinNamers()
 	})
 	sub.mu.Lock()
@@ -301,7 +317,7 @@ func TestTranscriptAuthorshipNestedParent(t *testing.T) {
 	// already being removed. The settle happens here, not after the close: the
 	// namer gate stays shut until the post-close assertion below, so the parked
 	// namer this test exists to join is still parked when the close begins.
-	middleRun.release()
+	releaseMiddleRun()
 	// A finished generation closes its done channel and the next admitted run
 	// replaces it, and the middle is woken again when its leaf reports, so
 	// settling it means waiting out every generation that starts while this
@@ -627,42 +643,4 @@ func TestTranscriptAuthorshipQueuedExecution(t *testing.T) {
 	if !reflect.DeepEqual(seen, map[string]int{"first": 1, "second": 1}) {
 		t.Fatal(seen)
 	}
-}
-
-// authorshipGatedAdapter parks one provider call until release, and ends that
-// call on cancellation. Both halves matter to the caller: release settles a
-// parked run on its own terms, while cancellation lets a close that begins
-// while the call is parked end the run through its own stop instead of
-// blocking on the adapter.
-type authorshipGatedAdapter struct {
-	name    string
-	entered chan struct{}
-	gate    chan struct{}
-	// gateOnce guards the gate against a second release from a cleanup.
-	gateOnce sync.Once
-}
-
-func (a *authorshipGatedAdapter) Name() string { return a.name }
-
-func (a *authorshipGatedAdapter) release() { a.gateOnce.Do(func() { close(a.gate) }) }
-
-func (a *authorshipGatedAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
-	select {
-	case <-a.entered:
-	default:
-		close(a.entered)
-	}
-	select {
-	case <-a.gate:
-		resp := agenttest.FinalResponse("middle-answer")
-		resp.Provider = a.name
-		resp.Model = req.Model
-		return resp, nil
-	case <-ctx.Done():
-		return llm.Response{}, ctx.Err()
-	}
-}
-
-func (a *authorshipGatedAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
-	return nil, llm.ErrStreamUnsupported
 }

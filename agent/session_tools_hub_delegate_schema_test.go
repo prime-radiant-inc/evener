@@ -8,6 +8,7 @@ import (
 
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/internal/tool/repair"
+	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/llm"
 )
@@ -184,6 +185,231 @@ func TestManagerDelegateHubOnlyEmptyEnumPlaceholderIsNotRefused(t *testing.T) {
 	if res.PrevalErr != "" {
 		t.Fatalf("hub-only call with an empty enum placeholder was refused: %s", res.PrevalErr)
 	}
+}
+
+// TestHubDelegateSchemaCarriesTheCurrentRoster pins that a Manager session's
+// `delegate` schema carries the same role capabilities the prompt does: both
+// answer the same question and must be built from one current answer.
+//
+// The schema and its prompt roster answer the same
+// question — which roles exist and what each may use — so they must be built
+// from the same current registry and exclusion verdict. Manager composition
+// saves the definition before MCP initialization runs, so serving that copy
+// verbatim shows the model a startup capability list while the prompt a few
+// lines away advertises the current one: the same role described two ways on
+// one request.
+//
+// The comparison is against the roster the prompt would render, computed here
+// from the live registry. Asserting on a literal expected string would pin this
+// test to today's tool set; asserting that both surfaces agree is what the
+// invariant actually says.
+func TestHubDelegateSchemaCarriesTheCurrentRoster(t *testing.T) {
+	t.Parallel()
+	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
+
+	// A role whose default tools include a tool the session registers, so its
+	// roster entry is neither empty nor trivially stable.
+	root.mu.Lock()
+	root.pluginAgents["schema-probe"] = plugin.Agent{
+		Name:       "schema-probe",
+		Tools:      []string{"read_file", "shell"},
+		PluginName: "test",
+	}
+	root.rebuildToolDefsCache()
+	root.mu.Unlock()
+
+	roster := func() string {
+		root.mu.Lock()
+		defer root.mu.Unlock()
+		return root.delegateCapabilityRoster()
+	}
+	schemaRoster := func() string {
+		root.mu.Lock()
+		defer root.mu.Unlock()
+		registered := root.reg.Get("delegate")
+		if registered == nil {
+			t.Fatal("Manager delegate tool not registered")
+		}
+		props, _ := registered.Definition.Parameters["properties"].(map[string]any)
+		agentType, _ := props["agent_type"].(map[string]any)
+		description, _ := agentType["description"].(string)
+		return description
+	}
+
+	before := roster()
+	if before == "" {
+		t.Fatal("fixture is wrong: the Manager session rendered no roster, so this test could not tell the surfaces apart")
+	}
+	if !strings.Contains(schemaRoster(), before) {
+		t.Fatalf("the hub-composed delegate schema does not carry the current roster %q: %s", before, schemaRoster())
+	}
+
+	// Now move the world. A role added after the last composition changes the
+	// roster without touching the registry's delegate definition, which is the
+	// state Manager composition would otherwise freeze.
+	root.mu.Lock()
+	root.pluginAgents["late-role"] = plugin.Agent{
+		Name:       "late-role",
+		Tools:      []string{"read_file"},
+		PluginName: "test",
+	}
+	root.rebuildToolDefsCache()
+	root.mu.Unlock()
+
+	after := roster()
+	if after == before {
+		t.Fatalf("fixture is wrong: adding a role did not change the roster: %q", after)
+	}
+	if !strings.Contains(schemaRoster(), after) {
+		t.Errorf("the schema still advertises the roster from before the role was added, while the prompt advertises the current one: schema=%s want roster=%q", schemaRoster(), after)
+	}
+	if !strings.Contains(schemaRoster(), "late-role") {
+		t.Errorf("the schema does not name the role the prompt roster lists: %s", schemaRoster())
+	}
+}
+
+// TestHubRosterWriteLeavesThePublishedSchemaAlone pins that refreshing the
+// roster on a request does not edit the registered tool.
+//
+// Registry.Get returns the tool struct BY VALUE, but its Parameters map is the
+// registered one. A writer that reaches through that copy into
+// properties["agent_type"] therefore mutates the schema every other reader
+// sees: argument repair reads it while preparing a call, the transcript renders
+// it, and on a Manager session a goal update can rebuild the cache on another
+// goroutine at the same moment — a concurrent map write on live state.
+//
+// So the assertion is on the REGISTRATION, not on the returned definition: after
+// a refresh, the registered schema's agent_type description must be whatever
+// Manager composition put there, untouched.
+func TestHubRosterWriteLeavesThePublishedSchemaAlone(t *testing.T) {
+	t.Parallel()
+	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
+	root.mu.Lock()
+	root.pluginAgents["schema-probe"] = plugin.Agent{
+		Name:       "schema-probe",
+		Tools:      []string{"read_file"},
+		PluginName: "test",
+	}
+	root.rebuildToolDefsCache()
+	root.mu.Unlock()
+
+	description := func(definition llm.ToolDefinition) string {
+		props, _ := definition.Parameters["properties"].(map[string]any)
+		agentType, _ := props["agent_type"].(map[string]any)
+		text, _ := agentType["description"].(string)
+		return text
+	}
+
+	root.mu.Lock()
+	registered := root.reg.Get("delegate")
+	if registered == nil {
+		root.mu.Unlock()
+		t.Fatal("Manager delegate tool not registered")
+	}
+	// Exactly what a request path holds after Registry.Get: a struct copy whose
+	// Parameters map is still the registered one.
+	published := *registered
+	before := description(registered.Definition)
+	// Add a role BETWEEN the read and the write, so the roster this call writes
+	// differs from the one already baked into the registration. Writing an
+	// identical string would be invisible through a shared map, and the test
+	// would pass with the aliasing still there.
+	root.pluginAgents["late-role"] = plugin.Agent{
+		Name:       "late-role",
+		Tools:      []string{"read_file"},
+		PluginName: "test",
+	}
+	// A request-time refresh writes the current roster into ITS definition.
+	root.applyDelegateCapabilityRoster(&published.Definition)
+	after := description(registered.Definition)
+	root.mu.Unlock()
+
+	if after != before {
+		t.Errorf("the roster write reached through the registration's shared parameter map: registered description changed from %q to %q", before, after)
+	}
+	if strings.Contains(after, "late-role") {
+		t.Errorf("the registration gained the role that was only in the caller's roster: %s", after)
+	}
+
+	// The caller still gets the roster — the fix moves the write, it does not
+	// drop it. Assert the role that was added between the read and the write,
+	// not the phrase that introduces it: the phrase is in the registration
+	// already, so it would pass on a roster the refresh never touched.
+	if !strings.Contains(description(published.Definition), "late-role") {
+		t.Errorf("the refreshed definition did not receive the roster the caller resolved: %s", description(published.Definition))
+	}
+}
+
+// TestManagerAndOrdinaryDelegateSchemasAgreeOnTheRoster pins that the
+// capability list the model reads is the SAME string whether or not the session
+// is a Manager.
+//
+// The two paths build the delegate definition differently — Manager composition
+// composes a hub branch, the ordinary path calls delegateToolDefinition — but the
+// roster is one answer about one registry and one exclusion verdict, so a model
+// must not be told different capabilities for the same role depending on which
+// kind of session it is in.
+//
+// It also pins WHERE the Manager half writes it. The roster used to be applied a
+// second time during the request-path rebuild and published as a new
+// registration, which meant the registration was decorated twice per rebuild and
+// the second write could disagree with the first. With the write moved into
+// composition the registration a request serves is already current, and the two
+// paths must agree without a second pass.
+func TestManagerAndOrdinaryDelegateSchemasAgreeOnTheRoster(t *testing.T) {
+	t.Parallel()
+	rosterDescription := func(manager bool) string {
+		root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = manager })
+		root.mu.Lock()
+		defer root.mu.Unlock()
+		root.pluginAgents["schema-probe"] = plugin.Agent{
+			Name:       "schema-probe",
+			Tools:      []string{"read_file", "shell"},
+			PluginName: "test",
+		}
+		root.rebuildToolDefsCache()
+		return descriptionOfRegisteredDelegate(t, root)
+	}
+
+	ordinary := rosterDescription(false)
+	manager := rosterDescription(true)
+	if ordinary == "" {
+		t.Fatal("the ordinary session's delegate schema carries no agent_type description, so the comparison proves nothing")
+	}
+	if manager != ordinary {
+		t.Errorf("the Manager and ordinary delegate schemas describe the role capabilities differently:\nmanager:  %s\nordinary: %s", manager, ordinary)
+	}
+
+	// One decoration, however many rebuilds ran. The schema is recomposed on
+	// every rebuild, so a decoration that appended to the PREVIOUS composed
+	// description instead of composing from the base would grow the text without
+	// bound — and the roster is a sentence a model reads, not a set it dedupes.
+	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
+	root.mu.Lock()
+	defer root.mu.Unlock()
+	root.pluginAgents["schema-probe"] = plugin.Agent{Name: "schema-probe", Tools: []string{"read_file"}, PluginName: "test"}
+	root.rebuildToolDefsCache()
+	first := descriptionOfRegisteredDelegate(t, root)
+	for range 3 {
+		root.rebuildToolDefsCache()
+	}
+	if again := descriptionOfRegisteredDelegate(t, root); again != first {
+		t.Errorf("rebuilding the cache re-decorated the same schema:\nfirst: %s\nafter: %s", first, again)
+	}
+}
+
+// descriptionOfRegisteredDelegate returns the registered delegate schema's
+// agent_type description. Callers hold s.mu.
+func descriptionOfRegisteredDelegate(t *testing.T, s *Session) string {
+	t.Helper()
+	registered := s.reg.Get("delegate")
+	if registered == nil {
+		t.Fatal("delegate tool not registered")
+	}
+	props, _ := registered.Definition.Parameters["properties"].(map[string]any)
+	agentType, _ := props["agent_type"].(map[string]any)
+	description, _ := agentType["description"].(string)
+	return description
 }
 
 // The ordinary variant's effort description must state the hub branch's
