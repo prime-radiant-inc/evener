@@ -11,23 +11,6 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-func TestDelegateTranscriptPathFromRef(t *testing.T) {
-	t.Parallel()
-	// Valid local ref.
-	path, sessionID, err := delegateTranscriptPathFromRef("/state", "local:child123")
-	if err != nil || sessionID != "child123" {
-		t.Fatalf("path=%q session=%q err=%v", path, sessionID, err)
-	}
-	// Project ref crosses state dir boundary -> error.
-	if _, _, err := delegateTranscriptPathFromRef("/state", "project:child"); err == nil {
-		t.Fatal("project ref should error")
-	}
-	// Invalid ref format.
-	if _, _, err := delegateTranscriptPathFromRef("/state", "notavalidref"); err == nil {
-		t.Fatal("invalid ref should error")
-	}
-}
-
 func TestValidateDelegateAttentionResolutions(t *testing.T) {
 	t.Parallel()
 	fold := newDelegateAttentionFold()

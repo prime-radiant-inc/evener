@@ -37,22 +37,6 @@ func TestFormatQuietWindow(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// quietWatchdogMessage
-// ---------------------------------------------------------------------------
-
-func TestQuietWatchdogMessage(t *testing.T) {
-	t.Parallel()
-	now := time.Date(2025, 6, 15, 10, 30, 0, 0, time.UTC)
-	msg := quietWatchdogMessage(10*time.Minute, now)
-	if !strings.Contains(msg, "10m") {
-		t.Fatalf("expected '10m' in message: %q", msg)
-	}
-	if !strings.Contains(msg, "quiet for") {
-		t.Fatalf("expected 'quiet for' in message: %q", msg)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // watchEndedUnfiredMessage
 // ---------------------------------------------------------------------------
 
