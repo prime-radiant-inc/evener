@@ -1,6 +1,7 @@
 package chatcompletions
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -280,24 +281,34 @@ func extractReasoning(msg chatMessage) (text, field string) {
 // contract for reasoning_details; scalar fields retain the canonical registry
 // index mapping.
 func extractReasoningFields(reasoningContent, reasoning, reasoningText string, details []reasoningDetailItem) (text, field string) {
-	var b strings.Builder
+	texts := make([]string, 0, len(details))
 	for _, item := range details {
-		piece := item.Text
-		if piece == "" {
-			piece = item.Thinking
-		}
-		if piece == "" {
+		texts = append(texts, detailItemText(item))
+	}
+	if joined := joinDetailTexts(texts); joined != "" {
+		return joined, ""
+	}
+	return extractScalarReasoning(reasoningContent, reasoning, reasoningText)
+}
+
+// detailItemText is the text a reasoning_details item carries.
+func detailItemText(d reasoningDetailItem) string {
+	return cmp.Or(d.Text, d.Thinking)
+}
+
+// joinDetailTexts joins the non-empty pieces with one newline.
+func joinDetailTexts(texts []string) string {
+	var b strings.Builder
+	for _, text := range texts {
+		if text == "" {
 			continue
 		}
 		if b.Len() > 0 {
 			b.WriteString("\n")
 		}
-		b.WriteString(piece)
+		b.WriteString(text)
 	}
-	if b.Len() > 0 {
-		return b.String(), ""
-	}
-	return extractScalarReasoning(reasoningContent, reasoning, reasoningText)
+	return b.String()
 }
 
 func extractScalarReasoning(reasoningContent, reasoning, reasoningText string) (text, field string) {

@@ -2,7 +2,6 @@ package chatcompletions
 
 import (
 	"bytes"
-	"cmp"
 	"context"
 	"encoding/json"
 	"maps"
@@ -39,10 +38,13 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 	var textStarted bool
 	var textBuf strings.Builder
 	var reasoningStarted bool
-	// detailsBuf and scalarBuf accumulate separately so any chunk order matches the non-stream fields.
-	var detailsBuf, scalarBuf strings.Builder
+	// Scalar text and structured reasoning_details accumulate separately so any
+	// chunk order matches the non-stream fields: the settled thinking part keeps
+	// both, while the live preview emits one copy (see mirrorPreview).
+	var scalarBuf strings.Builder
 	var scalarField string
-	var lastDetailIdx *float64
+	details := &detailAssembly{byKey: map[detailKey]*strings.Builder{}}
+	var scalarEmitted, structuredEmitted bool
 	// encryptedDetails accumulates opaque reasoning.encrypted items (OpenRouter
 	// Gemini/o-series) in arrival order; they ride the thinking part's
 	// EncryptedContent so the reasoning chain survives replay.
@@ -116,7 +118,7 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 
 				// Build final response.
 				msg := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{}}
-				display, displayField := detailsBuf.String(), ""
+				display, displayField := details.display(), ""
 				if display == "" {
 					display, displayField = scalarBuf.String(), scalarField
 				}
@@ -247,27 +249,31 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 				scalarBuf.WriteString(scalar)
 			}
 			if delta, field := reasoningFromDelta(choice.Delta); delta != "" {
-				if !reasoningStarted {
-					s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningStart})
-					reasoningStarted = true
-				}
 				if field == "" {
-					before := detailsBuf.Len()
-					for _, d := range choice.Delta.ReasoningDetails {
-						if t := cmp.Or(d.Text, d.Thinking); t != "" {
-							if detailsBuf.Len() > 0 && (d.Index == nil || lastDetailIdx == nil || *d.Index != *lastDetailIdx) {
-								detailsBuf.WriteString("\n")
-							}
-							detailsBuf.WriteString(t)
-							lastDetailIdx = d.Index
-						}
+					delta = details.appendChunk(choice.Delta.ReasoningDetails)
+					// The pane already shows this text when it mirrors the scalar
+					// stream that came first; replay still keeps the structured
+					// text, only the live duplicate is dropped.
+					if mirrorPreview(details.display(), scalarBuf.String(), scalarEmitted) {
+						delta = ""
+					} else {
+						structuredEmitted = true
 					}
-					delta = detailsBuf.String()[before:]
+				} else if mirrorPreview(scalarBuf.String(), details.display(), structuredEmitted) {
+					delta = ""
+				} else {
+					scalarEmitted = true
 				}
-				s.Send(llm.StreamEvent{
-					Type:           llm.StreamEventReasoningDelta,
-					ReasoningDelta: delta,
-				})
+				if delta != "" {
+					if !reasoningStarted {
+						s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningStart})
+						reasoningStarted = true
+					}
+					s.Send(llm.StreamEvent{
+						Type:           llm.StreamEventReasoningDelta,
+						ReasoningDelta: delta,
+					})
+				}
 			}
 
 			// Text delta — close reasoning first if transitioning.
@@ -348,4 +354,76 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 		},
 	}
 	runner.Run(sctx)
+}
+
+// detailKey identifies one reasoning_details item: the item for an index value,
+// or the single implicit item that unindexed pieces belong to.
+type detailKey struct {
+	indexed bool
+	index   float64
+}
+
+func detailKeyOf(d reasoningDetailItem) detailKey {
+	if d.Index == nil {
+		return detailKey{}
+	}
+	return detailKey{indexed: true, index: *d.Index}
+}
+
+// detailAssembly accumulates streamed reasoning_details text by item identity:
+// pieces of one item concatenate with no separator, and distinct items are
+// ordered by first appearance and joined by one newline in the settled display.
+type detailAssembly struct {
+	order []detailKey
+	byKey map[detailKey]*strings.Builder
+}
+
+// appendChunk folds one chunk's pieces into the assembly and returns the text
+// that chunk contributes to the live preview. Pieces of one item inside a single
+// array keep the provider's newline, matching the non-stream join; a piece that
+// continues an item from an earlier chunk appends bare.
+func (a *detailAssembly) appendChunk(details []reasoningDetailItem) string {
+	var out strings.Builder
+	var prev detailKey
+	for _, d := range details {
+		text := detailItemText(d)
+		if text == "" {
+			continue
+		}
+		key := detailKeyOf(d)
+		continuation := out.Len() > 0 && key == prev
+		b := a.byKey[key]
+		if b == nil {
+			b = &strings.Builder{}
+			a.byKey[key] = b
+			a.order = append(a.order, key)
+		}
+		if out.Len() > 0 {
+			out.WriteString("\n")
+		}
+		out.WriteString(text)
+		if continuation {
+			b.WriteString("\n")
+		}
+		b.WriteString(text)
+		prev = key
+	}
+	return out.String()
+}
+
+// display is the settled reasoning text: non-empty items in first-appearance
+// order, joined by exactly one newline.
+func (a *detailAssembly) display() string {
+	texts := make([]string, 0, len(a.order))
+	for _, key := range a.order {
+		texts = append(texts, a.byKey[key].String())
+	}
+	return joinDetailTexts(texts)
+}
+
+// mirrorPreview reports whether streaming mine again would repeat text the live
+// pane already shows from the other representation: mine is a non-empty prefix
+// of the other source's text so far and that source already emitted a delta.
+func mirrorPreview(mine, other string, otherEmitted bool) bool {
+	return otherEmitted && mine != "" && strings.HasPrefix(other, mine)
 }
