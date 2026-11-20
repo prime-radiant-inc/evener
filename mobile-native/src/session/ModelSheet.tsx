@@ -5,9 +5,9 @@
 // consume the list's viewport. The session screen provides the session and
 // its controls through modelHosts.
 import {
-	coldSessionCanResume,
 	type ModelDescriptor,
 	modelControlDisplay,
+	holdsUnappliedPick,
 	sessionEffortLevels,
 } from "@evener/appwire-client";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
@@ -30,20 +30,6 @@ import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { effortName, qualifiedModelIdentity } from "./sessionFacts";
 
 const NOTHING_UNREAD: Unread = { model: null, vision: null };
-
-/** Whether the session's read holds a pick a departed process may never have
- * applied: a cold session whose ready snapshot still carries a pending
- * desired record. Only that row must run through the resume, because closing
- * on it would strand the choice; a cold session with no pending pick holds a
- * verified saved selection, and re-picking it is a no-op that must not start
- * a daemon to say so. */
-function holdsUnappliedPick(session: MobileConversation): boolean {
-	return (
-		coldSessionCanResume(session) &&
-		session.modelControlState.kind === "ready" &&
-		session.modelControlState.snapshot.desired?.lifecycle === "pending"
-	);
-}
 
 export interface ModelHost {
 	session: MobileConversation;

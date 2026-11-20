@@ -152,6 +152,21 @@ export function coldSessionCanResume(model: Pick<ModelPickTarget, "capabilities"
   return model.capabilities?.changeModel === true && SHUT_DOWN_STATUSES.has(model.status.type);
 }
 
+// Whether a cold session's read still holds a pick a departed process may
+// never have applied: a ready snapshot whose desired record is pending. The
+// daemon can exit between taking the pick and applying it, and the status
+// frame keeps that snapshot, so the row such a session draws as its own names
+// a choice nobody established rather than a model it runs.
+export function holdsUnappliedPick(
+  model: Pick<ModelPickTarget, "capabilities" | "status" | "modelControlState">,
+): boolean {
+  return (
+    coldSessionCanResume(model) &&
+    model.modelControlState.kind === "ready" &&
+    model.modelControlState.snapshot.desired?.lifecycle === "pending"
+  );
+}
+
 // Whether a read's boot generation names a running daemon. A saved view is
 // daemonless ("daemonless", or absent before any v6 read). But the hub also
 // fills a LIVE daemon's empty window from the saved index — servedFrom
@@ -211,8 +226,10 @@ function normalizedSnapshot(snapshot: ModelControlSnapshot): ModelControlSnapsho
 
 // Sets or clears the provider instance named beside a model id, keeping the
 // key's established shape: present only when some carrier named one, so a
-// thread that never carried the key does not gain it with an undefined value
-// (hydrateThread and the thread/model/changed branch keep the same rule).
+// thread that never carried the key does not gain it with an undefined value.
+// hydrateThread only sets (a fresh object has nothing to clear) and the
+// thread/model/changed branch only clears (its frame names the provider
+// itself); this helper does both, because a snapshot replaces the record.
 function modelProfilePatch(
   previous: string | undefined,
   next: string | undefined,

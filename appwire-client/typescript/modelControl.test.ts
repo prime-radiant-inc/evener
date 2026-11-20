@@ -568,14 +568,20 @@ describe("whole-snapshot reconciliation", () => {
   // without the third would pair the held id with the fresh body's stale
   // instance, so the phone's identity rule reads the held model as another
   // provider's.
-  test("restoreHeldModelControl carries the held provider instance with the held model", () => {
+  const heldWithInstance = () => {
     const held = ready(snapshot(1, { provider: "anthropic", model: "claude-sonnet-4-5" }));
     held.modelProfile = "anthropic";
-    const next = model(
+    return held;
+  };
+  const nextWithStaleInstance = () =>
+    model(
       { kind: "uninitialized", canonicalDisplay: { modelProvider: "openai/gpt-5.5", model: "openai/gpt-5.5" } },
       { modelProvider: "openai", model: "gpt-5.5", modelProfile: "openai" },
     );
 
+  test("restoreHeldModelControl carries the held provider instance with the held model", () => {
+    const held = heldWithInstance();
+    const next = nextWithStaleInstance();
     const restored = restoreHeldModelControl(next, held);
 
     expect(restored.modelProvider).toBe("anthropic");
@@ -585,10 +591,7 @@ describe("whole-snapshot reconciliation", () => {
 
   test("restoreHeldModelControl clears an instance the held model does not name", () => {
     const held = ready(snapshot(1, { provider: "anthropic", model: "claude-sonnet-4-5" }));
-    const next = model(
-      { kind: "uninitialized", canonicalDisplay: { modelProvider: "openai/gpt-5.5", model: "openai/gpt-5.5" } },
-      { modelProvider: "openai", model: "gpt-5.5", modelProfile: "openai" },
-    );
+    const next = nextWithStaleInstance();
 
     expect(restoreHeldModelControl(next, held).modelProfile).toBeUndefined();
   });
