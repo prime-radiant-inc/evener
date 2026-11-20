@@ -11,29 +11,6 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// SubagentStatus constants
-// ---------------------------------------------------------------------------
-
-func TestSubagentStatusConstants(t *testing.T) {
-	t.Parallel()
-	if SubagentRunning != "running" {
-		t.Fatalf("SubagentRunning = %q", SubagentRunning)
-	}
-	if SubagentCompleted != "completed" {
-		t.Fatalf("SubagentCompleted = %q", SubagentCompleted)
-	}
-	if SubagentFailed != "failed" {
-		t.Fatalf("SubagentFailed = %q", SubagentFailed)
-	}
-	if SubagentCancelled != "cancelled" {
-		t.Fatalf("SubagentCancelled = %q", SubagentCancelled)
-	}
-	if SubagentExhausted != "exhausted" {
-		t.Fatalf("SubagentExhausted = %q", SubagentExhausted)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // subagentResult struct
 // ---------------------------------------------------------------------------
 

@@ -1524,6 +1524,8 @@ func TestSubAgentStatus_Values(t *testing.T) {
 		{SubagentRunning, `"running"`},
 		{SubagentCompleted, `"completed"`},
 		{SubagentFailed, `"failed"`},
+		{SubagentCancelled, `"cancelled"`},
+		{SubagentExhausted, `"exhausted"`},
 	} {
 		b, err := json.Marshal(tc.status)
 		if err != nil {

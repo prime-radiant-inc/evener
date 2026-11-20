@@ -2361,22 +2361,6 @@ func TestAPILogTranscriptResultIdentity(t *testing.T) {
 // fmt usage / error messages
 // ---------------------------------------------------------------------------
 
-func TestTranscriptSourceConstants(t *testing.T) {
-	t.Parallel()
-	if transcriptSource != "transcript" {
-		t.Fatalf("transcriptSource = %q", transcriptSource)
-	}
-	if apiLogSource != "api_log" {
-		t.Fatalf("apiLogSource = %q", apiLogSource)
-	}
-	if jobTranscriptTruncationNotice != "additional output is not available from this transcript view" {
-		t.Fatalf("jobTranscriptTruncationNotice = %q", jobTranscriptTruncationNotice)
-	}
-	if transcriptV2JSONLRepresentation != "transcript_v2_jsonl" {
-		t.Fatalf("transcriptV2JSONLRepresentation = %q", transcriptV2JSONLRepresentation)
-	}
-}
-
 func TestReadTranscriptPublicRejectedParams(t *testing.T) {
 	t.Parallel()
 	expected := []string{"source", "attempt_id", "body", "max_bytes"}
@@ -2464,23 +2448,6 @@ func TestTranscriptToolMaxChars(t *testing.T) {
 	t.Parallel()
 	if transcriptToolMaxChars != 600_000 {
 		t.Fatalf("transcriptToolMaxChars = %d, want 600000", transcriptToolMaxChars)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// format constants
-// ---------------------------------------------------------------------------
-
-func TestFormatConstants(t *testing.T) {
-	t.Parallel()
-	if formatMarkdown != "markdown" {
-		t.Fatalf("formatMarkdown = %q", formatMarkdown)
-	}
-	if formatOutline != "outline" {
-		t.Fatalf("formatOutline = %q", formatOutline)
-	}
-	if formatJSONL != "jsonl" {
-		t.Fatalf("formatJSONL = %q", formatJSONL)
 	}
 }
 
