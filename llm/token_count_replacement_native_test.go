@@ -90,10 +90,13 @@ func replacementList(defs []ToolDefinition, protocol string) []map[string]any {
 // catalog does not name. A price taken from the empty catalog charges nothing for
 // those bytes, and an input cap below their cost admits a request over budget.
 func TestANativeRoutePricesTheToolsItWritesFromItsOptions(t *testing.T) {
+	t.Parallel()
 	for _, protocol := range []string{registry.ProtocolAnthropic, registry.ProtocolGoogle} {
 		t.Run(protocol, func(t *testing.T) {
+			t.Parallel()
 			option := replacementList(probeDefinitions(24), protocol)
-			if measured, err := json.Marshal(option); err != nil || len(measured) < 4 {
+			measured, err := json.Marshal(option)
+			if err != nil || len(measured) < 4 {
 				t.Fatalf("fixture does not bill anything: %d bytes, %v", len(measured), err)
 			}
 			req := Request{
@@ -106,11 +109,10 @@ func TestANativeRoutePricesTheToolsItWritesFromItsOptions(t *testing.T) {
 			}
 			res := nativeRow(protocol)
 
-			priced := priceEmittedToolSchemas(req, res)
-			if priced.ToolsJSONBytes <= 0 {
-				t.Fatalf("priced count = %d for a request whose only tools arrive through the %q option: the "+
-					"route writes them into the body, so they are part of what dispatches",
-					priced.ToolsJSONBytes, protocol)
+			if got := EffectiveToolsJSONBytes(req, res, false); got != len(measured) {
+				t.Fatalf("priced count = %d for a request whose only tools arrive through the %q option (%d "+
+					"bytes): the route writes them into the body, so they are part of what dispatches",
+					got, protocol, len(measured))
 			}
 
 			// The local reading bills that price, so a cap between a request
@@ -119,13 +121,13 @@ func TestANativeRoutePricesTheToolsItWritesFromItsOptions(t *testing.T) {
 			lower := EstimateInputTokensForResolved(res, Request{
 				Provider: req.Provider, Model: req.Model, Messages: req.Messages,
 			}).Tokens
-			upper := EstimateInputTokensForResolved(res, priced).Tokens
+			upper := EstimateInputTokensForRoute(res, req, false).Tokens
 			if upper <= lower {
 				t.Fatalf("fixture does not distinguish the readings: without tools=%d with the option=%d", lower, upper)
 			}
 			limit := capBetweenPrices(t, lower, upper)
 			c, _, bodies := declaredEmissionRoute(t, limit, protocol)
-			_, err := c.Complete(context.Background(), req)
+			_, err = c.Complete(context.Background(), req)
 			if _, ok := errors.AsType[*ContextBudgetError](err); !ok {
 				t.Fatalf("error = %v, want *ContextBudgetError: the request dispatches tools under a cap of %d, "+
 					"and %d request(s) reached the wire", err, limit, len(bodies()))
@@ -161,8 +163,10 @@ func TestANativeRoutePricesTheToolsItWritesFromItsOptions(t *testing.T) {
 // route without the constant is the control: there the option is the wire list
 // and its price stands.
 func TestANativeRoutePrefersTheTransportToolsConstant(t *testing.T) {
+	t.Parallel()
 	for _, protocol := range []string{registry.ProtocolAnthropic, registry.ProtocolGoogle} {
 		t.Run(protocol, func(t *testing.T) {
+			t.Parallel()
 			pinned := replacementList(probeDefinitions(2), protocol)
 			large := replacementList(probeDefinitions(24), protocol)
 			pinnedJSON, err := json.Marshal(pinned)
@@ -188,27 +192,29 @@ func TestANativeRoutePrefersTheTransportToolsConstant(t *testing.T) {
 
 			res := nativeRow(protocol)
 			res.Transport.Body = map[string]any{"tools": pinned}
-			priced := priceEmittedToolSchemas(req, res)
-			unpinned := priceEmittedToolSchemas(req, nativeRow(protocol))
-			if unpinned.ToolsJSONBytes <= 0 {
-				t.Fatalf("route without the constant priced the option at %d bytes, want a positive count: the "+
-					"option is that route's wire list", unpinned.ToolsJSONBytes)
+			priced := EffectiveToolsJSONBytes(req, res, false)
+			unpinned := EffectiveToolsJSONBytes(req, nativeRow(protocol), false)
+			if priced != len(pinnedJSON) {
+				t.Fatalf("priced count under a pinned list = %d, want the constant's %d: the constant runs after "+
+					"the option", priced, len(pinnedJSON))
 			}
-			if priced.ToolsJSONBytes >= unpinned.ToolsJSONBytes {
-				t.Fatalf("priced count under a pinned list = %d, the option's own = %d: the constant runs after "+
-					"the option, so %d bytes of option never reach the wire",
-					priced.ToolsJSONBytes, unpinned.ToolsJSONBytes, len(largeJSON))
+			if unpinned != len(largeJSON) {
+				t.Fatalf("route without the constant priced the option at %d bytes, want %d: the option is that "+
+					"route's wire list", unpinned, len(largeJSON))
 			}
 
 			// Admission takes the constant's price: under a cap between the two
 			// readings the request fits.
-			lower := EstimateInputTokensForResolved(res, priced).Tokens
-			upper := EstimateInputTokensForResolved(nativeRow(protocol), unpinned).Tokens
+			lower := EstimateInputTokensForRoute(res, req, false).Tokens
+			upper := EstimateInputTokensForRoute(nativeRow(protocol), req, false).Tokens
 			limit := capBetweenPrices(t, lower, upper)
 			c, _, bodies := declaredEmissionRouteWithBody(t, limit, protocol, map[string]any{"tools": pinned})
 			if _, err := c.Complete(context.Background(), req); err != nil {
-				t.Fatalf("Complete under a cap of %d: %v: the wire list is the pinned one, so this request fits",
-					limit, err)
+				if _, budget := errors.AsType[*ContextBudgetError](err); budget {
+					t.Fatalf("Complete under a cap of %d refused a request whose wire list is the %d-byte pinned "+
+						"one: %v", limit, len(pinnedJSON), err)
+				}
+				t.Fatalf("Complete under a cap of %d: %v", limit, err)
 			}
 			if got := len(bodies()); got != 1 {
 				t.Fatalf("requests on the wire = %d, want 1", got)
@@ -225,81 +231,13 @@ func nativeRow(protocol string) registry.Resolved {
 	return row
 }
 
-// A replacement tool list is measured the way a catalog is.
-//
-// A caller can hand the same tools through ProviderOptions that the builder
-// would produce from Request.Tools. The two are the same outgoing array, so they
-// must price the same: counting the replacement by its wire wrapper adds the type
-// and function envelope the catalog measurement does not have, and a cap between
-// the two counts then rejects the replacement alone. The oracle is the catalog's
-// own count through the same route.
-func TestAReplacementToolListPricedLikeTheCatalog(t *testing.T) {
-	for _, protocol := range []string{
-		registry.ProtocolOpenAIChat,
-		registry.ProtocolOpenAIResponses,
-		registry.ProtocolAnthropic,
-		registry.ProtocolGoogle,
-	} {
-		t.Run(protocol, func(t *testing.T) {
-			defs := probeDefinitions(8)
-			option := replacementList(defs, protocol)
-			res := nativeRow(protocol)
-
-			viaCatalog := priceEmittedToolSchemas(Request{
-				Provider: "emitted-price", Model: "model", Messages: []Message{User("x")},
-				Tools: defs, ToolsJSONBytes: ToolsJSONBytes(defs),
-			}, res)
-			viaOption := priceEmittedToolSchemas(Request{
-				Provider: "emitted-price", Model: "model", Messages: []Message{User("x")},
-				ProviderOptions: map[string]any{protocol: map[string]any{"tools": option}},
-			}, res)
-
-			if viaCatalog.ToolsJSONBytes <= 0 {
-				t.Fatalf("fixture does not bill the catalog: %d bytes", viaCatalog.ToolsJSONBytes)
-			}
-			if viaOption.ToolsJSONBytes != viaCatalog.ToolsJSONBytes {
-				t.Fatalf("replacement count = %d, catalog count = %d for the same outgoing tools array: the two "+
-					"paths measure one list, so a cap between them rejects only the replacement",
-					viaOption.ToolsJSONBytes, viaCatalog.ToolsJSONBytes)
-			}
-
-			// The readings agree, so one cap decides both requests the same way.
-			without := Request{Provider: "emitted-price", Model: "model", Messages: []Message{User("x")}}
-			lower := EstimateInputTokensForResolved(res, without).Tokens
-			upper := EstimateInputTokensForResolved(res, viaCatalog).Tokens
-			if upper <= lower {
-				t.Fatalf("fixture does not separate the readings: with tools=%d without=%d", upper, lower)
-			}
-			limit := capBetweenPrices(t, lower, upper)
-			c, _, bodies := declaredEmissionRoute(t, limit, protocol)
-			for _, req := range []Request{
-				{Provider: "emitted-price", Model: "model", Messages: []Message{User("x")},
-					Tools: defs, ToolsJSONBytes: ToolsJSONBytes(defs)},
-				{Provider: "emitted-price", Model: "model", Messages: []Message{User("x")},
-					ProviderOptions: map[string]any{protocol: map[string]any{"tools": option}}},
-			} {
-				_, err := c.Complete(context.Background(), req)
-				if _, ok := errors.AsType[*ContextBudgetError](err); !ok {
-					t.Fatalf("error = %v, want *ContextBudgetError: the request sends the same tool list under a "+
-						"cap of %d, and %d request(s) reached the wire",
-						err, limit, len(bodies()))
-				}
-			}
-			if got := len(bodies()); got != 0 {
-				t.Fatalf("requests on the wire = %d, want 0: a blocked request must not dispatch", got)
-			}
-		})
-	}
-}
-
 // A tool with no ToolDefinition equivalent is still counted by its own bytes.
 //
-// The normalization the catalog measurement uses has no meaning for a
-// provider-native tool: web_search, computer_use, and google_search are objects
-// the provider recognizes, not function declarations, so the bytes they add to
-// the wire are bytes the request dispatches. Dropping them because they do not
-// fit the definition shape would let a cap below their cost admit a request over
-// budget.
+// A replacement is measured where it lies, as a wire value, so a provider-native
+// tool — web_search, computer_use, google_search — is an object the provider
+// recognizes and its bytes are bytes the request dispatches. Dropping them
+// because they do not fit the catalog's definition shape would let a cap below
+// their cost admit a request over budget.
 func TestAProviderNativeToolIsCountedByItsOwnBytes(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -327,21 +265,21 @@ func TestAProviderNativeToolIsCountedByItsOwnBytes(t *testing.T) {
 				withNative := append(append([]map[string]any{}, option...), tc.native)
 				res := nativeRow(tc.protocol)
 
-				bare := priceEmittedToolSchemas(Request{
+				bare := EffectiveToolsJSONBytes(Request{
 					Provider: "emitted-price", Model: "model", Messages: []Message{User("x")},
 					ProviderOptions: map[string]any{tc.protocol: map[string]any{"tools": option}},
-				}, res)
-				withNativePriced := priceEmittedToolSchemas(Request{
+				}, res, false)
+				withNativePriced := EffectiveToolsJSONBytes(Request{
 					Provider: "emitted-price", Model: "model", Messages: []Message{User("x")},
 					ProviderOptions: map[string]any{tc.protocol: map[string]any{"tools": withNative}},
-				}, res)
-				if bare.ToolsJSONBytes <= 0 {
-					t.Fatalf("fixture does not bill the option's list: %d bytes", bare.ToolsJSONBytes)
+				}, res, false)
+				if bare <= 0 {
+					t.Fatalf("fixture does not bill the option's list: %d bytes", bare)
 				}
-				if want := len(nativeJSON) + 1; withNativePriced.ToolsJSONBytes-bare.ToolsJSONBytes != want {
+				if want := len(nativeJSON) + 1; withNativePriced-bare != want {
 					t.Fatalf("native tool added %d bytes to the price of %d tools, want its own %d plus the "+
 						"separator: a tool with no definition equivalent is still bytes the wire carries",
-						withNativePriced.ToolsJSONBytes-bare.ToolsJSONBytes, n, want)
+						withNativePriced-bare, n, want)
 				}
 			}
 		})

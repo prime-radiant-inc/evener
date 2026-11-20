@@ -155,7 +155,7 @@ func TestAdmissionRefusesARequestBilledBeforeTheSubstitution(t *testing.T) {
 	}
 	_, probe, _ := emittedPriceRoute(t, 1_000_000, registry.ProtocolOpenAIResponses, false)
 	advertised := EstimateInputTokensForResolved(probe, req).Tokens
-	emitted := EstimateInputTokensForResolved(probe, priceEmittedToolSchemas(req, probe)).Tokens
+	emitted := EstimateInputTokensForRoute(probe, req, false).Tokens
 	if emitted <= advertised {
 		t.Fatalf("fixture does not distinguish the two readings: advertised=%d emitted=%d", advertised, emitted)
 	}
@@ -226,7 +226,7 @@ func TestAdmissionPricesTheStrictProjectionAndOnlyOnACapableRoute(t *testing.T) 
 	}
 	_, strictProbe, _ := emittedPriceRoute(t, 1_000_000, registry.ProtocolOpenAIResponses, true)
 	advertised := EstimateInputTokensForResolved(strictProbe, req).Tokens
-	projected := EstimateInputTokensForResolved(strictProbe, priceEmittedToolSchemas(req, strictProbe)).Tokens
+	projected := EstimateInputTokensForRoute(strictProbe, req, false).Tokens
 	if projected <= advertised {
 		t.Fatalf("fixture does not distinguish the two readings: advertised=%d projected=%d",
 			advertised, projected)
@@ -234,7 +234,7 @@ func TestAdmissionPricesTheStrictProjectionAndOnlyOnACapableRoute(t *testing.T) 
 	// The control the fixture rests on: on a route without the capability the
 	// same catalog is sent unchanged, so its price is the advertised one.
 	_, relaxedProbe, _ := emittedPriceRoute(t, 1_000_000, registry.ProtocolOpenAIResponses, false)
-	if got := EstimateInputTokensForResolved(relaxedProbe, priceEmittedToolSchemas(req, relaxedProbe)).Tokens; got != advertised {
+	if got := EstimateInputTokensForRoute(relaxedProbe, req, false).Tokens; got != advertised {
 		t.Fatalf("route without strict enforcement priced the catalog at %d input tokens, want the advertised %d",
 			got, advertised)
 	}
@@ -428,7 +428,7 @@ func TestCountInputTokensPricesWhatTheRouteEmits(t *testing.T) {
 		t.Fatalf("CountInputTokens: %v", err)
 	}
 	advertised := EstimateInputTokensForResolved(res, req).Tokens
-	emitted := EstimateInputTokensForResolved(res, priceEmittedToolSchemas(req, res)).Tokens
+	emitted := EstimateInputTokensForRoute(res, req, false).Tokens
 	if emitted <= advertised {
 		t.Fatalf("fixture does not distinguish the two readings: advertised=%d emitted=%d",
 			advertised, emitted)
@@ -459,22 +459,22 @@ func TestAnUnsubstitutedRequestPricesAsBefore(t *testing.T) {
 	}
 
 	// A route without strict enforcement sends every schema as advertised.
-	if got := priceEmittedToolSchemas(req, responsesRowOn(false)); got.ToolsJSONBytes != advertised {
+	if got := EffectiveToolsJSONBytes(req, responsesRowOn(false), false); got != advertised {
 		t.Fatalf("unsubstituted count = %d, want the advertised %d: this catalog carries every schema its "+
-			"builder sends", got.ToolsJSONBytes, advertised)
+			"builder sends", got, advertised)
 	}
 	// A strict route must not report a change either: these required lists are
 	// already complete, so the projection only reorders them and the bytes are
 	// the same.
-	if got := priceEmittedToolSchemas(req, responsesRowOn(true)); got.ToolsJSONBytes != advertised {
+	if got := EffectiveToolsJSONBytes(req, responsesRowOn(true), false); got != advertised {
 		t.Fatalf("strict count = %d, want the advertised %d: the projection only reorders an already complete "+
-			"required list, so the emitted bytes are the same", got.ToolsJSONBytes, advertised)
+			"required list, so the emitted bytes are the same", got, advertised)
 	}
 	// And the estimate over the priced request equals the estimate over the
 	// original, which is the reading every caller already had.
 	res := responsesRowOn(true)
 	if a, b := EstimateInputTokensForResolved(res, req).Tokens,
-		EstimateInputTokensForResolved(res, priceEmittedToolSchemas(req, res)).Tokens; a != b {
+		EstimateInputTokensForRoute(res, req, false).Tokens; a != b {
 		t.Fatalf("estimate moved from %d to %d for a catalog whose emitted bytes are unchanged", a, b)
 	}
 }
@@ -540,16 +540,15 @@ func strictGrowthCatalog(n int) []ToolDefinition {
 	return defs
 }
 
-// The emitted price and the parameterless delta describe the same bytes, and
-// they must be charged once.
+// The emitted count is the whole charge: the parameterless substitution is part
+// of the list, so it cannot also be added on top of it.
 //
 // Admission prices the list the builder emits, which already carries the
-// substituted schemas for a parameterless tool, and then applies the adapter's
-// parameterless byte adjustment. Applied to the same request, the second step
-// would charge those bytes again: an input cap between the two counts refuses a
-// request that fits, and the count a caller sizes with is larger than the request
-// that dispatches. The recorded target is what tells the two apart, so this
-// pins each of the four paths that reach the budget.
+// substituted schemas for a parameterless tool. Applying the adapter's
+// parameterless byte adjustment over that answer would charge those bytes twice:
+// an input cap between the two counts refuses a request that fits, and the count
+// a caller sizes with is larger than the request that dispatches. Each route
+// reaches the one number its own builder answers with.
 func TestTheParameterlessDeltaIsChargedOnceOverAnEmittedPrice(t *testing.T) {
 	t.Parallel()
 	defs := preparedParameterlessCatalog(4)
@@ -569,25 +568,25 @@ func TestTheParameterlessDeltaIsChargedOnceOverAnEmittedPrice(t *testing.T) {
 		t.Fatalf("fixture does not distinguish the two counts: both %d", advertised)
 	}
 
-	// Priced for this target: the emitted count is the whole charge.
-	priced := priceEmittedToolSchemas(Request{Tools: defs, ToolsJSONBytes: advertised}, strict)
-	if got := effectiveToolsJSONBytes(priced, strict, false); got != emitted {
-		t.Fatalf("admitted input prices the catalog at %d, want the emitted %d: the parameterless delta was "+
-			"charged a second time over a count that already includes it", got, emitted)
+	// A stamped request and an unstamped one price the same list, once.
+	for _, req := range []Request{
+		{Tools: defs},
+		{Tools: defs, ToolsJSONBytes: advertised},
+	} {
+		if got := EffectiveToolsJSONBytes(req, strict, false); got != emitted {
+			t.Fatalf("admitted input prices the catalog at %d, want the emitted %d: the parameterless delta is "+
+				"charged a second time over a count that already includes it", got, emitted)
+		}
 	}
-	// Unpriced: the delta is how this path reaches the same number.
-	if got := effectiveToolsJSONBytes(Request{Tools: defs, ToolsJSONBytes: advertised}, strict, false); got != emitted {
-		t.Fatalf("unpriced admission prices the catalog at %d, want the emitted %d", got, emitted)
-	}
-	// Retargeted: the other route's own answer, not the strict charge.
-	retargeted := priceEmittedToolSchemas(priced, relaxed)
-	if got := effectiveToolsJSONBytes(retargeted, relaxed, false); got != advertised {
-		t.Fatalf("retargeted admission prices the catalog at %d, want the advertised %d: this route sends the "+
+	// The relaxed route sends these definitions unchanged, so its own count is
+	// the charge, not the strict one.
+	if got := EffectiveToolsJSONBytes(Request{Tools: defs, ToolsJSONBytes: advertised}, relaxed, false); got != advertised {
+		t.Fatalf("relaxed admission prices the catalog at %d, want the catalog's %d: this route sends the "+
 			"definitions it was handed", got, advertised)
 	}
-	// An override marshals the definitions it is handed, so the delta is the only
-	// charge and the advertised stamp is the baseline.
-	if got := effectiveToolsJSONBytes(Request{Tools: defs, ToolsJSONBytes: advertised}, strict, true); got != advertised {
-		t.Fatalf("override admission prices the catalog at %d, want the advertised %d", got, advertised)
+	// An override marshals the definitions it is handed, so the catalog's count
+	// is its wire count.
+	if got := EffectiveToolsJSONBytes(Request{Tools: defs, ToolsJSONBytes: advertised}, strict, true); got != advertised {
+		t.Fatalf("override admission prices the catalog at %d, want the catalog's %d", got, advertised)
 	}
 }

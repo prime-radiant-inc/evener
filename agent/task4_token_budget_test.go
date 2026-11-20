@@ -86,7 +86,7 @@ func TestBudgetModelDispatchUsesEffectiveContextWindowOverride(t *testing.T) {
 		InputTokensEstimate: 1_000,
 		MaxTokens:           new(1),
 	}
-	if _, _, err := budgetModelDispatchRequestWithBudget(profile, req); err == nil {
+	if _, _, err := budgetModelDispatchRequestWithBudget(profile, req, false); err == nil {
 		t.Fatal("dispatch admission ignored the effective 2000-token context-window override")
 	}
 }
@@ -176,7 +176,7 @@ func TestSessionAnchorTokenBudgetRecoveryClearsPrimaryAllocation(t *testing.T) {
 		PreviousResponseID: "resp-anchor",
 	}
 	fullHistory := []llm.Message{llm.User(strings.Repeat("history ", 100))}
-	fallback := responsesContinuationFullHistoryFallbackRequest(registry.Resolved{Instance: "budget-gw", ModelID: "test"}, req, fullHistory)
+	fallback := responsesContinuationFullHistoryFallbackRequest(registry.Resolved{Instance: "budget-gw", ModelID: "test"}, req, fullHistory, false)
 	if fallback.MaxTokens != nil {
 		t.Fatalf("anchor recovery MaxTokens = %d, want cleared before re-budgeting", *fallback.MaxTokens)
 	}
@@ -200,7 +200,7 @@ func TestContinuationFallbackRebuildEstimatesAgainstItsResolvedRow(t *testing.T)
 			{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: strings.Repeat("unsigned reasoning text ", 40)}},
 		}}},
 	}
-	got, ok := responsesContinuationModelFallbackRequest(res, req, nil)
+	got, ok := responsesContinuationModelFallbackRequest(res, req, nil, false)
 	if !ok {
 		t.Fatal("model fallback rebuild refused a full-history request")
 	}
@@ -646,7 +646,7 @@ func TestResponsesContinuationModelFallbackRequestStampsTheFallbacksIdentity(t *
 	}
 	fallback := registry.Resolved{Instance: "gateway", ModelID: "gateway-zz"}
 
-	got, ok := responsesContinuationModelFallbackRequest(fallback, primary, fullHistory)
+	got, ok := responsesContinuationModelFallbackRequest(fallback, primary, fullHistory, false)
 	if !ok {
 		t.Fatal("the round retained its full history, so the fallback request is constructible")
 	}

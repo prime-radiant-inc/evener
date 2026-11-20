@@ -10,7 +10,7 @@ import (
 
 // schemaLosingCatalog is a catalog whose advertised schema is larger than the
 // schema the route puts on the wire: every tool carries fields its protocol
-// strips before sending. The advertised bytes are therefore an overcharge, which
+// strips before sending. The catalog's bytes are therefore an overcharge, which
 // a cap between the two readings turns into a refusal of a request that fits.
 func schemaLosingCatalog(n int, params func() map[string]any) []ToolDefinition {
 	defs := make([]ToolDefinition, n)
@@ -65,11 +65,12 @@ func topLevelCombinatorSchema() map[string]any {
 // Both builders rewrite the parameter schema before sending it: Google drops the
 // JSON-Schema document metadata and additionalProperties its Schema proto has no
 // field for, and Anthropic strips a top-level combinator its endpoint rejects.
-// The advertised list therefore measures more than the request that dispatches,
-// and a cap between the two readings refuses a request that fits. The oracle is
-// the wire body itself: the price has to be the length of the definitions the
+// The catalog therefore measures more than the request that dispatches, and a
+// cap between the two readings refuses a request that fits. The oracle is the
+// wire body itself: the price has to be the length of the definitions the
 // server received.
 func TestThePriceIsTheSchemaTheProtocolEmits(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		protocol  string
@@ -90,6 +91,7 @@ func TestThePriceIsTheSchemaTheProtocolEmits(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			defs := schemaLosingCatalog(24, tc.params)
 			req := Request{
 				Provider:       "emitted-price",
@@ -111,37 +113,36 @@ func TestThePriceIsTheSchemaTheProtocolEmits(t *testing.T) {
 			wire := ToolsJSONBytes(wireToolDefs(t, dispatched[0], tc.schemaKey))
 			advertised := ToolsJSONBytes(defs)
 			if wire >= advertised {
-				t.Fatalf("fixture does not distinguish the prices: wire %d bytes, advertised %d: the protocol "+
+				t.Fatalf("fixture does not distinguish the prices: wire %d bytes, catalog %d: the protocol "+
 					"has to strip fields for this case to prove anything", wire, advertised)
 			}
 
-			priced := PriceToolSchemas(req, ampleRes)
-			if priced.ToolsJSONBytes != wire {
-				t.Fatalf("preflight price = %d bytes, want the wire list's %d (the caller advertised %d): the "+
-					"builder strips fields from this schema, so the advertised list is not what dispatches",
-					priced.ToolsJSONBytes, wire, advertised)
+			if got := EffectiveToolsJSONBytes(req, ampleRes, false); got != wire {
+				t.Fatalf("preflight price = %d bytes, want the wire list's %d (the catalog is %d): the "+
+					"builder strips fields from this schema, so the catalog is not what dispatches",
+					got, wire, advertised)
 			}
 			// The local reading a caller sizes the request with is the wire
-			// reading, measured over the wire list itself.
+			// reading.
 			wireReq := req
 			wireReq.ToolsJSONBytes = wire
 			lower := EstimateInputTokensForResolved(ampleRes, wireReq).Tokens
-			if got := EstimateInputTokensForResolved(ampleRes, priced).Tokens; got != lower {
+			if got := EstimateInputTokensForRoute(ampleRes, req, false).Tokens; got != lower {
 				t.Fatalf("preflight reading = %d input tokens, want the wire list's %d", got, lower)
 			}
 
-			// A cap between the advertised reading and the emitted one: the
+			// A cap between the catalog's reading and the emitted one: the
 			// request fits, so admission must let it through.
 			upper := EstimateInputTokensForResolved(ampleRes, req).Tokens
 			if upper <= lower {
-				t.Fatalf("fixture does not distinguish the readings: wire=%d advertised=%d", lower, upper)
+				t.Fatalf("fixture does not distinguish the readings: wire=%d catalog=%d", lower, upper)
 			}
 			limit := capBetweenPrices(t, lower, upper)
 			c, _, bodies := declaredEmissionRoute(t, limit, tc.protocol)
 			if _, err := c.Complete(context.Background(), req); err != nil {
 				if _, budget := errors.AsType[*ContextBudgetError](err); budget {
 					t.Fatalf("Complete under a cap of %d refused a request that dispatches %d input tokens: the "+
-						"advertised reading %d prices a schema the wire never carries", limit, lower, upper)
+						"catalog's reading %d prices a schema the wire never carries", limit, lower, upper)
 				}
 				t.Fatalf("Complete under a cap of %d: %v", limit, err)
 			}
@@ -154,11 +155,10 @@ func TestThePriceIsTheSchemaTheProtocolEmits(t *testing.T) {
 
 // A route that strips nothing must keep the price it already had.
 //
-// The derivers report an unchanged list for a schema every field of which
-// survives emission, so the count the request arrived with is reused. The
-// control is the same catalog through the same route, so a price that moved for
+// A schema every field of which survives emission emits the bytes the catalog
+// measures, so the price is the catalog's own count. A price that moved for
 // every request would show here.
-func TestAnUnstrippedSchemaKeepsTheAdvertisedPrice(t *testing.T) {
+func TestAnUnstrippedSchemaKeepsTheCatalogPrice(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name     string
@@ -185,10 +185,9 @@ func TestAnUnstrippedSchemaKeepsTheAdvertisedPrice(t *testing.T) {
 			res := registry.Resolved{Instance: "emitted-price", ModelID: "model", WireID: "model"}
 			res.Protocol = tc.protocol
 
-			priced := PriceToolSchemas(req, res)
-			if priced.ToolsJSONBytes != advertised {
-				t.Fatalf("priced count = %d, want the advertised %d: this schema survives emission byte for "+
-					"byte, so the count it arrived with describes the wire", priced.ToolsJSONBytes, advertised)
+			if got := EffectiveToolsJSONBytes(req, res, false); got != advertised {
+				t.Fatalf("priced count = %d, want the catalog's %d: this schema survives emission byte for "+
+					"byte, so the catalog's count describes the wire", got, advertised)
 			}
 		})
 	}

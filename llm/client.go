@@ -341,15 +341,6 @@ func (c *Client) Complete(ctx context.Context, req Request) (Response, error) {
 		req = ShapeRequest(req, t.res)
 	}
 	base := func(ctx context.Context, req Request) (Response, error) {
-		// An override marshals the definition it is handed, so no protocol's
-		// emission describes its wire list. The restore is what
-		// CountInputTokens does for the same request, and it must not depend on
-		// the registry resolving the instance: an override with no row behind it
-		// still sends its catalog, and forwarding another route's count would
-		// make preflight and dispatch describe different lists.
-		if t.override != nil {
-			req = dropRecordedToolEmission(req)
-		}
 		if t.resolved {
 			var err error
 			req, err = shapeAndApplyTokenBudget(req, t.res, t.override != nil)
@@ -392,12 +383,6 @@ func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 		req = ShapeRequest(req, t.res)
 	}
 	base := func(ctx context.Context, req Request) (Stream, error) {
-		// The same restore Complete makes, for the same reason: an override
-		// sends the catalog it is handed whether or not the registry resolves
-		// the instance.
-		if t.override != nil {
-			req = dropRecordedToolEmission(req)
-		}
 		if t.resolved {
 			var err error
 			req, err = shapeAndApplyTokenBudget(req, t.res, t.override != nil)
@@ -439,38 +424,22 @@ func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 // route's builder replaces a tool schema before sending it, so the count is
 // taken over the list that builder emits rather than over the one the request
 // arrived with. An override marshals the definition it was handed, so the list
-// it received is its wire list; the call site drops the recorded emission for
-// that route before this runs, and there is no builder emission to price here.
-//
-// The emitted price and the parameterless delta describe the same substitution
-// when the deriver already applied it, so the delta is skipped for a request
-// that is already priced for this target (see effectiveToolsJSONBytes). A
-// second charge for the same bytes is an input cap refusing a request that
-// fits.
+// it received is its wire list and the catalog's own count is the price.
 func shapeAndApplyTokenBudget(req Request, res registry.Resolved, override bool) (Request, error) {
 	req = ShapeRequest(req, res)
-	// The price is taken over the list the route's builder emits, not the one
-	// the request arrived with. This runs here rather than at either call site
-	// because admission is where the count is consumed, and every route that
-	// reaches the budget passes through this function.
-	if !override {
-		req = priceEmittedToolSchemas(req, res)
-	}
-	budgeted, _, err := applyTokenBudgetForTarget(req, res, override)
+	budgeted, _, err := ApplyTokenBudgetForRoute(req, res, override)
 	return budgeted, err
 }
 
-// applyTokenBudgetForTarget runs ApplyTokenBudget with the resolved adapter's
-// parameterless-schema byte adjustment applied once to a shallow copy, keeping
-// req.ToolsJSONBytes equal to the caller's declared-catalog stamp.
-func applyTokenBudgetForTarget(req Request, res registry.Resolved, override bool) (Request, TokenBudget, error) {
-	budgetReq := withEffectiveToolPrice(req, res, override)
-	budgeted, budget, err := ApplyTokenBudget(budgetReq, res)
-	if err != nil {
-		return req, budget, err
-	}
-	budgeted.ToolsJSONBytes = req.ToolsJSONBytes
-	return budgeted, budget, nil
+// ApplyTokenBudgetForRoute runs ApplyTokenBudget over the tool list res's route
+// emits (EffectiveToolsJSONBytes) without writing that count into the request:
+// the returned request carries the stamp the caller set, so a later price by
+// another route starts from the catalog rather than from this route's emission.
+//
+// override says an adapter override serves the request, so the catalog it is
+// handed is the list it dispatches.
+func ApplyTokenBudgetForRoute(req Request, res registry.Resolved, override bool) (Request, TokenBudget, error) {
+	return applyTokenBudgetWithToolBytes(req, res, EffectiveToolsJSONBytes(req, res, override))
 }
 
 // ModelListing is what Models returns: the instance's visible live-authoritative

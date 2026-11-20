@@ -195,7 +195,7 @@ func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile
 		FailFastAfter: modelRetryFailFastAfter,
 	}, func(ctx context.Context) (llm.AttemptReport, error) {
 		attemptStart := time.Now()
-		dispatchReq, budgetErr := budgetModelDispatchRequest(profile, req)
+		dispatchReq, _, budgetErr := s.budgetModelDispatchRequestForSession(profile, req)
 		if budgetErr != nil {
 			group.observe(attemptRecord{Phase: llm.PhaseOpen, Err: budgetErr, Duration: time.Since(attemptStart)}, nil)
 			return llm.AttemptReport{Phase: llm.PhaseOpen}, budgetErr
@@ -261,7 +261,7 @@ func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile
 
 	var conversation *conversationRequest
 	resp, err := llm.Retry(ctx, policy, s.cfg.LLMSleep, nil, func() (llm.Response, error) {
-		dispatchReq, budgetErr := budgetModelDispatchRequest(profile, req)
+		dispatchReq, _, budgetErr := s.budgetModelDispatchRequestForSession(profile, req)
 		if budgetErr != nil {
 			return llm.Response{}, budgetErr
 		}

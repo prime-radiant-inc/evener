@@ -19,6 +19,32 @@ func responsesRouteOn(instance string, strict bool) registry.Resolved {
 	return row
 }
 
+// budgetCapBetween returns an input cap strictly between two admissible input
+// readings, settling the safety reserve the cap itself decides: the lower price
+// fits and the upper one does not.
+func budgetCapBetween(t *testing.T, lower, upper int) int {
+	t.Helper()
+	if upper <= lower {
+		t.Fatalf("fixture does not straddle a cap: lower=%d upper=%d", lower, upper)
+	}
+	// The reserve grows with the cap, so walk the cap up until its own reserve
+	// leaves room for the lower price and no room for the upper one.
+	limit := lower
+	for range 128 {
+		next := lower + llm.SafetyReserveTokens(limit) + (upper-lower)/2
+		if next == limit {
+			break
+		}
+		limit = next
+	}
+	if safety := llm.SafetyReserveTokens(limit); lower+safety >= limit {
+		t.Fatalf("cap %d does not admit the lower price %d (reserve %d)", limit, lower, safety)
+	} else if upper+safety <= limit {
+		t.Fatalf("cap %d does not refuse the upper price %d (reserve %d)", limit, upper, safety)
+	}
+	return limit
+}
+
 // parameterlessTools is a catalog whose tools declare no parameters, so the
 // builder substitutes a schema for each and the emitted list is larger than the
 // advertised one.
@@ -48,38 +74,48 @@ func preparedParameterlessTools(n int) []llm.ToolDefinition {
 // route dispatches.
 //
 // A built-in builder substitutes a schema for a parameterless tool, and those
-// bytes occupy context. Budgeting the advertised catalog answers with fewer
-// input tokens, so the admitted output comes out larger here than the client
-// later admits: the user is warned about an allocation bigger than the one
-// dispatched, or not warned at all when the larger reading hides the clamp.
+// bytes occupy context. Budgeting the catalog answers with fewer input tokens,
+// so the admitted output comes out larger here than the client later admits:
+// the user is warned about an allocation bigger than the one dispatched, or not
+// warned at all when the larger reading hides the clamp.
 func TestTheSessionBudgetPricesTheEmittedToolSchema(t *testing.T) {
 	t.Parallel()
 	row := responsesRouteOn("budget-emitted", false)
 	defs := parameterlessTools(24)
 	req := llm.Request{Messages: []llm.Message{llm.User("hello")}, Tools: defs}
-	// Stamped with the advertised count, as a caller that measured its own list
+	// Stamped with the catalog's count, as a caller that measured its own list
 	// would.
-	req.ToolsJSONBytes = llm.ToolsJSONBytes(defs)
+	advertised := llm.ToolsJSONBytes(defs)
+	req.ToolsJSONBytes = advertised
 
-	priced := llm.PriceToolSchemas(req, row)
-	if priced.ToolsJSONBytes <= llm.ToolsJSONBytes(defs) {
-		t.Fatalf("fixture does not distinguish the prices: advertised=%d priced=%d",
-			llm.ToolsJSONBytes(defs), priced.ToolsJSONBytes)
-	}
-	// The budget function under test is the session's, so build a session on this
-	// row and compare its reading against the two prices.
 	profile := testOpenAICompatProfile("budget-emitted", "test", 0).WithResolved(row)
 	sess := newSession(t, withProfile(profile), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	defer sess.Close()
 
-	budgeted, _, err := sess.budgetModelDispatchRequestForSession(profile, req)
+	// The budget function under test is the session's, so compare its reading
+	// against the route's own price.
+	want := llm.EstimateInputTokensForRoute(row, req, false).Tokens
+	if want <= llm.EstimateInputTokensForResolved(row, req).Tokens {
+		t.Fatalf("fixture does not distinguish the readings: the route's price %d is not above the catalog's",
+			want)
+	}
+	budgeted, budget, err := sess.budgetModelDispatchRequestForSession(profile, req)
 	if err != nil {
 		t.Fatalf("budgetModelDispatchRequestForSession: %v", err)
 	}
-	if budgeted.ToolsJSONBytes != priced.ToolsJSONBytes {
-		t.Fatalf("session budget priced the catalog at %d, want the emitted %d: the warning it drives would "+
-			"describe an allocation the dispatch never had",
-			budgeted.ToolsJSONBytes, priced.ToolsJSONBytes)
+	// The budget adds its own reserve on top of the reading, and it reports that
+	// reserve, so the two halves pin the price without restating the rule.
+	if budget.SafetyTokens <= 0 {
+		t.Fatalf("budget reported no safety reserve: %+v", budget)
+	}
+	if got, wantTotal := budget.InputTokens, want+budget.SafetyTokens; got != wantTotal {
+		t.Fatalf("session budget priced the input at %d, want the emitted list's %d plus the %d reserve = %d: "+
+			"the warning it drives would describe an allocation the dispatch never had",
+			got, want, budget.SafetyTokens, wantTotal)
+	}
+	// Admission is a measurement: the caller's catalog stamp survives it.
+	if budgeted.ToolsJSONBytes != advertised {
+		t.Fatalf("budgeted request carries ToolsJSONBytes = %d, want the caller's %d", budgeted.ToolsJSONBytes, advertised)
 	}
 }
 
@@ -104,36 +140,39 @@ func TestTheSessionBudgetPricesTheStrictProjectionOnlyOnACapableRoute(t *testing
 	strictSess := newSession(t, withProfile(strictProfile), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	defer strictSess.Close()
 
-	budgeted, _, err := strictSess.budgetModelDispatchRequestForSession(strictProfile, req)
+	strictWant := llm.EstimateInputTokensForRoute(strictRow, req, false).Tokens
+	if strictWant <= llm.EstimateInputTokensForResolved(strictRow, req).Tokens {
+		t.Fatalf("fixture does not distinguish the readings: the projected price %d is not above the catalog's",
+			strictWant)
+	}
+	_, strictBudget, err := strictSess.budgetModelDispatchRequestForSession(strictProfile, req)
 	if err != nil {
 		t.Fatalf("budgetModelDispatchRequestForSession: %v", err)
 	}
-	if budgeted.ToolsJSONBytes <= advertised {
-		t.Fatalf("strict-capable budget priced the catalog at %d, want more than the advertised %d: the "+
-			"strict route substitutes the closed empty object",
-			budgeted.ToolsJSONBytes, advertised)
-	}
-	want := llm.PriceToolSchemas(req, strictRow).ToolsJSONBytes
-	if budgeted.ToolsJSONBytes != want {
-		t.Fatalf("strict budget priced the catalog at %d, want the emitted %d", budgeted.ToolsJSONBytes, want)
+	if got, wantTotal := strictBudget.InputTokens, strictWant+strictBudget.SafetyTokens; got != wantTotal {
+		t.Fatalf("strict budget priced the input at %d, want the projection's %d plus the %d reserve = %d",
+			got, strictWant, strictBudget.SafetyTokens, wantTotal)
 	}
 
 	// The control: the same catalog on a route without the capability is sent
-	// unchanged, so its price must be the advertised count.
+	// unchanged, so its price must be the catalog's count.
 	relaxedRow := responsesRouteOn("budget-emitted", false)
 	relaxedProfile := testOpenAICompatProfile("budget-emitted", "test", 0).WithResolved(relaxedRow)
 	relaxedSess := newSession(t, withProfile(relaxedProfile), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	defer relaxedSess.Close()
 
-	relaxedReq := req
-	relaxedReq.ToolsJSONBytes = advertised
-	relaxed, _, err := relaxedSess.budgetModelDispatchRequestForSession(relaxedProfile, relaxedReq)
+	relaxedWant := llm.EstimateInputTokensForRoute(relaxedRow, req, false).Tokens
+	if relaxedWant >= strictWant {
+		t.Fatalf("fixture does not separate the routes: relaxed=%d strict=%d", relaxedWant, strictWant)
+	}
+	_, relaxedBudget, err := relaxedSess.budgetModelDispatchRequestForSession(relaxedProfile, req)
 	if err != nil {
 		t.Fatalf("budgetModelDispatchRequestForSession: %v", err)
 	}
-	if relaxed.ToolsJSONBytes != advertised {
-		t.Fatalf("route without strict enforcement priced the catalog at %d, want the advertised %d: its "+
-			"builder sends this catalog unchanged", relaxed.ToolsJSONBytes, advertised)
+	if got, wantTotal := relaxedBudget.InputTokens, relaxedWant+relaxedBudget.SafetyTokens; got != wantTotal {
+		t.Fatalf("route without strict enforcement priced the input at %d, want the catalog's %d plus the %d "+
+			"reserve = %d: its builder sends this catalog unchanged",
+			got, relaxedWant, relaxedBudget.SafetyTokens, wantTotal)
 	}
 }
 
@@ -164,18 +203,19 @@ func TestTheSessionBudgetLeavesAnOverrideServedRouteUnpriced(t *testing.T) {
 
 	// The route has to be one the deriver would price, or the guard above is
 	// invisible and the test passes for the wrong reason.
-	if priced := llm.PriceToolSchemas(req, row); priced.ToolsJSONBytes == advertised {
-		t.Fatal("fixture does not distinguish the prices: the deriver left the count unchanged")
+	if projected := llm.EstimateInputTokensForRoute(row, req, false).Tokens; projected == advertised {
+		t.Fatal("fixture does not distinguish the routes: the deriver left the count unchanged")
 	}
 
-	budgeted, _, err := sess.budgetModelDispatchRequestForSession(profile, req)
+	_, budget, err := sess.budgetModelDispatchRequestForSession(profile, req)
 	if err != nil {
 		t.Fatalf("budgetModelDispatchRequestForSession: %v", err)
 	}
-	if budgeted.ToolsJSONBytes != advertised {
-		t.Fatalf("override-served budget priced the catalog at %d, want the advertised %d: an override "+
-			"marshals the definition it was handed, so a built-in deriver bills a list the wire never carries",
-			budgeted.ToolsJSONBytes, advertised)
+	overrideWant := llm.EstimateInputTokensForRoute(row, req, true).Tokens
+	if got, wantTotal := budget.InputTokens, overrideWant+budget.SafetyTokens; got != wantTotal {
+		t.Fatalf("override-served budget priced the input at %d, want the catalog's %d plus the %d reserve = %d: "+
+			"an override marshals the definition it was handed, so a built-in deriver bills a list the wire never "+
+			"carries", got, overrideWant, budget.SafetyTokens, wantTotal)
 	}
 }
 
@@ -185,8 +225,6 @@ func TestTheSessionBudgetLeavesAnOverrideServedRouteUnpriced(t *testing.T) {
 // to be billed over the emitted list here, or the full-history figure describes a
 // catalog the builder has already replaced and the smaller reading is the one
 // that governs.
-//
-// The stub observes the request it is handed rather than the count it produces.
 func TestContinuationShadowBillsTheSchemasTheRouteEmits(t *testing.T) {
 	t.Parallel()
 	row := responsesRouteOn("budget-emitted", false)
@@ -207,26 +245,22 @@ func TestContinuationShadowBillsTheSchemasTheRouteEmits(t *testing.T) {
 	var observed []llm.Request
 	sess.cfg.testOnly.responsesContinuationShadowEstimateFunc = func(r llm.Request) (int, bool) {
 		observed = append(observed, r)
-		return llm.EstimateInputTokensForResolved(profile.Resolved(), r).Tokens, true
+		return llm.EstimateInputTokensForRoute(profile.Resolved(), r, false).Tokens, true
 	}
 	got := sess.applyResponsesContinuationShadowEstimate(profile, req)
 
 	if len(observed) != 1 {
 		t.Fatalf("shadow estimate ran %d times, want once", len(observed))
 	}
-	if observed[0].ToolsJSONBytes <= advertised {
-		t.Fatalf("shadow billed ToolsJSONBytes = %d, want more than the advertised count %d: the route's "+
-			"builder substitutes a schema for a parameterless tool, so the full-history reading must bill the "+
-			"emitted list", observed[0].ToolsJSONBytes, advertised)
+	// The reading actually reaches the field admission takes the maximum of,
+	// and it describes the route's emitted list rather than the catalog.
+	want := llm.EstimateInputTokensForRoute(profile.Resolved(), req, false).Tokens
+	if want <= llm.EstimateInputTokensForResolved(profile.Resolved(), req).Tokens {
+		t.Fatalf("fixture does not distinguish the readings: the route's price %d is not above the catalog's", want)
 	}
-	// The reading actually reaches the field admission takes the maximum of.
-	if got.FullHistoryInputTokensEstimate <= 0 {
-		t.Fatalf("FullHistoryInputTokensEstimate = %d, want the priced reading", got.FullHistoryInputTokensEstimate)
-	}
-	priced := llm.EstimateInputTokensForResolved(profile.Resolved(), llm.PriceToolSchemas(req, profile.Resolved())).Tokens
-	if got.FullHistoryInputTokensEstimate < priced {
-		t.Fatalf("FullHistoryInputTokensEstimate = %d, want at least the emitted-list price %d",
-			got.FullHistoryInputTokensEstimate, priced)
+	if got.FullHistoryInputTokensEstimate != want {
+		t.Fatalf("FullHistoryInputTokensEstimate = %d, want the emitted-list price %d (the catalog reads %d)",
+			got.FullHistoryInputTokensEstimate, want, advertised)
 	}
 }
 
@@ -236,10 +270,7 @@ func TestContinuationShadowBillsTheSchemasTheRouteEmits(t *testing.T) {
 // An override marshals the definition it was handed, so its received list is its
 // wire list. Pricing it through a built-in deriver bills an emitted list the
 // override never sends, and an input cap between that figure and the override's
-// own estimate rejects a request the override could dispatch. The inflated
-// reading also outlives the case that produced it, because it is recorded on a
-// request that falls back to full history when the override has no continuation
-// planner.
+// own estimate rejects a request the override could dispatch.
 func TestContinuationShadowLeavesAnOverrideServedRouteUnpriced(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
@@ -264,25 +295,26 @@ func TestContinuationShadowLeavesAnOverrideServedRouteUnpriced(t *testing.T) {
 	}
 	advertised := llm.ToolsJSONBytes(tools)
 
+	// The guard has to be doing something: the same request priced through the
+	// deriver is larger than the catalog.
+	if projected := llm.EstimateInputTokensForRoute(row, req, false).Tokens; projected <= advertised {
+		t.Fatal("fixture does not distinguish the prices: the deriver left the count unchanged")
+	}
+
 	var observed []llm.Request
 	sess.cfg.testOnly.responsesContinuationShadowEstimateFunc = func(r llm.Request) (int, bool) {
 		observed = append(observed, r)
-		return llm.EstimateInputTokensForResolved(profile.Resolved(), r).Tokens, true
+		return llm.EstimateInputTokensForRoute(row, r, true).Tokens, true
 	}
-	sess.applyResponsesContinuationShadowEstimate(profile, req)
+	got := sess.applyResponsesContinuationShadowEstimate(profile, req)
 
 	if len(observed) != 1 {
 		t.Fatalf("shadow estimate ran %d times, want once", len(observed))
 	}
-	if got := observed[0].ToolsJSONBytes; got != req.ToolsJSONBytes {
-		t.Fatalf("override-served shadow billed ToolsJSONBytes = %d, want the advertised %d: an override "+
-			"marshals the definition it was handed, so pricing it through a built-in deriver bills a list "+
-			"the wire never carries", got, req.ToolsJSONBytes)
-	}
-	// The guard has to be doing something: the same request priced through the
-	// deriver is larger than the advertised count.
-	if priced := llm.PriceToolSchemas(req, row); priced.ToolsJSONBytes <= advertised {
-		t.Fatal("fixture does not distinguish the prices: the deriver left the count unchanged")
+	if got.FullHistoryInputTokensEstimate != llm.EstimateInputTokensForRoute(row, req, true).Tokens {
+		t.Fatalf("override-served shadow reading = %d, want the catalog's own %d: an override marshals the "+
+			"definition it was handed", got.FullHistoryInputTokensEstimate,
+			llm.EstimateInputTokensForRoute(row, req, true).Tokens)
 	}
 }
 
@@ -290,11 +322,9 @@ func TestContinuationShadowLeavesAnOverrideServedRouteUnpriced(t *testing.T) {
 //
 // The request arrives carrying the PRIMARY's tool count. When the primary's
 // builder substitutes a schema and the fallback sends the same catalog unchanged,
-// the two counts differ, and both fallback estimates are computed from that
-// field. Pricing after them corrects the count the dispatch carries but leaves
-// the two readings describing the primary's catalog — and admission takes the
-// maximum of the local estimate, the delta estimate and the full-history one, so
-// a cap between the two prices refuses a fallback that fits.
+// the two counts differ, and both fallback estimates are computed for the
+// fallback's own route. A fallback priced by the primary's catalog would let a
+// cap between the two prices refuse a fallback that fits.
 func TestTheFallbackPricesItsOwnCatalogBeforeItsHistoryEstimates(t *testing.T) {
 	t.Parallel()
 	// The primary is a Responses row whose builder substitutes a schema for a
@@ -311,35 +341,24 @@ func TestTheFallbackPricesItsOwnCatalogBeforeItsHistoryEstimates(t *testing.T) {
 	fallbackRow.Caps.StrictTools = new(false)
 	fallback := testOpenAICompatProfile("fallback-priced", "fallback", 0).WithResolved(fallbackRow)
 
-	tools := parameterlessTools(24)
+	// Enough tools that the two routes' readings differ by more than the
+	// minimum safety reserve, so a cap can admit one and refuse the other.
+	tools := parameterlessTools(200)
 	msgs := []llm.Message{llm.User("hello")}
-	primaryPrice := llm.EstimateInputTokensForResolved(primaryRow,
-		llm.PriceToolSchemas(llm.Request{Messages: msgs, Tools: tools}, primaryRow)).Tokens
-	fallbackPrice := llm.EstimateInputTokensForResolved(fallbackRow,
-		llm.PriceToolSchemas(llm.Request{Messages: msgs, Tools: tools}, fallbackRow)).Tokens
+	bare := llm.Request{Messages: msgs, Tools: tools}
+	primaryPrice := llm.EstimateInputTokensForRoute(primaryRow, bare, false).Tokens
+	fallbackPrice := llm.EstimateInputTokensForRoute(fallbackRow, bare, false).Tokens
 	if primaryPrice <= fallbackPrice {
 		t.Fatalf("fixture does not distinguish the two routes: primary=%d fallback=%d", primaryPrice, fallbackPrice)
 	}
 
-	// The request as the fallback loop receives it: the primary's catalog, priced
-	// by the primary.
-	req := llm.PriceToolSchemas(llm.Request{
-		Provider: primary.ID(),
-		Model:    primary.Model(),
-		Messages: msgs,
-		Tools:    tools,
-	}, primaryRow)
+	// The request as the fallback loop receives it: the catalog the primary
+	// priced, stamped by the primary.
+	req := bare
+	req.Provider = primary.ID()
+	req.Model = primary.Model()
 
-	// A cap strictly between the two prices. The fallback fits; the primary's
-	// reading does not.
-	applyCap := func(p *provider.Profile, limit int) *provider.Profile {
-		res := p.Resolved()
-		res.Caps.MaxInputTokens = new(limit)
-		res.Caps.ContextWindow = new(1_000_000)
-		return p.WithResolved(res)
-	}
-
-	uncapped := applyCap(fallback, 1_000_000)
+	uncapped := fallback
 	sess := newSession(t, withProfile(uncapped), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	defer sess.Close()
 
@@ -347,42 +366,38 @@ func TestTheFallbackPricesItsOwnCatalogBeforeItsHistoryEstimates(t *testing.T) {
 	if !ok {
 		t.Fatal("responsesContinuationFallbackRequest refused a request that carries full history")
 	}
-	// Pricing the fallback's own catalog is what makes its count its own price.
-	if built.ToolsJSONBytes != llm.ToolsJSONBytes(tools) {
-		t.Fatalf("fallback carries ToolsJSONBytes = %d, want its own catalog's %d: the Chat builder sends "+
-			"this catalog unchanged, so the primary's larger count describes a list this route never emits",
-			built.ToolsJSONBytes, llm.ToolsJSONBytes(tools))
+	// Both history estimates are the fallback route's own reading: the Chat
+	// builder sends this catalog unchanged, so nothing of the primary's price
+	// can reach them.
+	if got, want := built.InputTokensEstimate, fallbackPrice; got != want {
+		t.Fatalf("fallback InputTokensEstimate = %d, want its own route's %d (the primary reads %d)",
+			got, want, primaryPrice)
 	}
-	// The two admitted readings are built here rather than read back from the
-	// function under test, so a wrong ordering cannot make both sides agree: one
-	// form carries the fallback's own catalog price, the other the primary's. The
-	// budget then supplies the safety reserve and the maximum-of-three rule, so
-	// this test does not restate either.
-	ownReq := responsesContinuationFullHistoryWithInputEstimate(fallbackRow, llm.PriceToolSchemas(req, fallbackRow))
-	staleReq := responsesContinuationFullHistoryWithInputEstimate(fallbackRow, req)
-	_, ownBudget, err := llm.ApplyTokenBudget(ownReq, fallbackRow)
-	if err != nil {
-		t.Fatalf("budget on the fallback's own price: %v", err)
+	if got, want := built.FullHistoryInputTokensEstimate, fallbackPrice; got != want {
+		t.Fatalf("fallback FullHistoryInputTokensEstimate = %d, want its own route's %d (the primary reads %d)",
+			got, want, primaryPrice)
 	}
-	_, staleBudget, err := llm.ApplyTokenBudget(staleReq, fallbackRow)
-	if err != nil {
-		t.Fatalf("budget on the primary's price: %v", err)
-	}
-	if staleBudget.InputTokens <= ownBudget.InputTokens {
-		t.Fatalf("fixture does not distinguish the two readings: own=%d stale=%d",
-			ownBudget.InputTokens, staleBudget.InputTokens)
+	// Admission is a measurement: the caller's stamp on the request survives it.
+	if built.ToolsJSONBytes != req.ToolsJSONBytes {
+		t.Fatalf("fallback carries ToolsJSONBytes = %d, want the caller's %d", built.ToolsJSONBytes, req.ToolsJSONBytes)
 	}
 
-	limit := ownBudget.InputTokens + (staleBudget.InputTokens-ownBudget.InputTokens)/2
-	_, _, budgetErr := sess.budgetModelDispatchRequestForSession(applyCap(fallback, limit), built)
-	if budgetErr != nil {
-		t.Fatalf("fallback refused under a cap between the two prices (%d): %v", limit, budgetErr)
+	// A cap strictly between the two prices admits the fallback and would refuse
+	// a dispatch billed at the primary's reading.
+	applyCap := func(p *provider.Profile, limit int) *provider.Profile {
+		res := p.Resolved()
+		res.Caps.MaxInputTokens = new(limit)
+		res.Caps.ContextWindow = new(1_000_000)
+		return p.WithResolved(res)
+	}
+	limit := budgetCapBetween(t, fallbackPrice, primaryPrice)
+	if _, _, err := sess.budgetModelDispatchRequestForSession(applyCap(fallback, limit), built); err != nil {
+		t.Fatalf("fallback refused under a cap between the two prices (%d): %v", limit, err)
 	}
 	// The fallback's own limit is still enforced: the same request under a cap
 	// below its price is refused rather than dispatched.
-	_, _, tightErr := sess.budgetModelDispatchRequestForSession(applyCap(fallback, fallbackPrice-1), built)
-	if tightErr == nil {
-		t.Fatalf("fallback admitted under a cap of %d below its own price %d: the estimate stopped pricing "+
-			"the catalog", fallbackPrice-1, fallbackPrice)
+	if _, _, err := sess.budgetModelDispatchRequestForSession(applyCap(fallback, fallbackPrice-1), built); err == nil {
+		t.Fatalf("fallback admitted under a cap of %d below its own price %d: the estimate stopped pricing the "+
+			"catalog", fallbackPrice-1, fallbackPrice)
 	}
 }

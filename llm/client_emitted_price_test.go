@@ -3,7 +3,9 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -55,10 +57,10 @@ func parameterlessCatalog(n int) []ToolDefinition {
 // to describe the substituted list.
 //
 // The definition omits Parameters entirely, which is what the caller wrote: the
-// advertised count therefore carries no schema for it. The Responses builder
+// catalog's own count therefore carries no schema for it. The Responses builder
 // supplies the open empty object, so the request that dispatches is larger than
-// the one the advertised count describes, and an input cap between the two
-// prices admits a request over budget.
+// the one the catalog describes, and an input cap between the two prices admits
+// a request over budget.
 func TestThePriceIncludesTheSchemaTheBuilderSubstitutes(t *testing.T) {
 	t.Parallel()
 	res := responsesRowOn(false)
@@ -73,11 +75,10 @@ func TestThePriceIncludesTheSchemaTheBuilderSubstitutes(t *testing.T) {
 		ToolsJSONBytes: advertised,
 	}
 
-	priced := priceEmittedToolSchemas(req, res)
-	if priced.ToolsJSONBytes <= advertised {
-		t.Fatalf("priced count = %d, want more than the advertised %d: the builder supplies a schema for a "+
-			"parameterless tool, and that is the list the wire carries",
-			priced.ToolsJSONBytes, advertised)
+	priced := EffectiveToolsJSONBytes(req, res, false)
+	if priced <= advertised {
+		t.Fatalf("priced count = %d, want more than the catalog's %d: the builder supplies a schema for a "+
+			"parameterless tool, and that is the list the wire carries", priced, advertised)
 	}
 
 	// The expected number is the builder's own answer, not a second expression
@@ -94,8 +95,21 @@ func TestThePriceIncludesTheSchemaTheBuilderSubstitutes(t *testing.T) {
 	if !changed {
 		t.Fatal("the fixture does not make the builder change anything")
 	}
-	if want := ToolsJSONBytes(emitted); priced.ToolsJSONBytes != want {
-		t.Fatalf("priced count = %d, want the emitted list's %d", priced.ToolsJSONBytes, want)
+	if want := ToolsJSONBytes(emitted); priced != want {
+		t.Fatalf("priced count = %d, want the emitted list's %d", priced, want)
+	}
+
+	// The estimate bills that count, and the stamped request is left alone: a
+	// price is a measurement, not a request edit.
+	if got, want := EstimateInputTokensForRoute(res, req, false).Tokens,
+		EstimateInputTokensForResolved(res, Request{
+			Provider: req.Provider, Model: req.Model, Messages: req.Messages,
+			Tools: defs, ToolsJSONBytes: priced,
+		}).Tokens; got != want {
+		t.Fatalf("route reading = %d, want the emitted list's %d", got, want)
+	}
+	if req.ToolsJSONBytes != advertised {
+		t.Fatalf("the request's own stamp moved to %d, want the catalog's %d", req.ToolsJSONBytes, advertised)
 	}
 }
 
@@ -125,146 +139,97 @@ func TestAStrictProjectionChangesThePriceAndTheCapabilityDecidesIt(t *testing.T)
 		ToolsJSONBytes: advertised,
 	}
 
-	strictPriced := priceEmittedToolSchemas(req, responsesRowOn(true))
-	if strictPriced.ToolsJSONBytes <= advertised {
-		t.Fatalf("strict-capable price = %d, want more than the advertised %d: the projection closes the "+
-			"object and states a required list", strictPriced.ToolsJSONBytes, advertised)
+	strictPriced := EffectiveToolsJSONBytes(req, responsesRowOn(true), false)
+	if strictPriced <= advertised {
+		t.Fatalf("strict-capable price = %d, want more than the catalog's %d: the projection closes the "+
+			"object and states a required list", strictPriced, advertised)
 	}
 
 	// The control. A route without the capability sends this schema unchanged,
-	// so its price is the advertised count and nothing moved.
-	nonStrict := priceEmittedToolSchemas(req, responsesRowOn(false))
-	if nonStrict.ToolsJSONBytes != advertised {
-		t.Fatalf("route without strict enforcement priced the catalog at %d, want the advertised %d: its "+
-			"builder sends this schema unchanged", nonStrict.ToolsJSONBytes, advertised)
+	// so its price is the catalog's count and nothing moved.
+	if got := EffectiveToolsJSONBytes(req, responsesRowOn(false), false); got != advertised {
+		t.Fatalf("route without strict enforcement priced the catalog at %d, want the catalog's %d: its "+
+			"builder sends this schema unchanged", got, advertised)
 	}
 }
 
-// A count produced for one target is not a count for another, and that holds
-// even when the second target has no deriver at all.
+// A route with no deriver prices the list it is handed, whatever the request
+// carries.
 //
-// A caller may price a request for a strict Responses row and then send the same
-// request through a route whose protocol does not derive tool schemas. That
-// route marshals the definitions it was handed, so the list's own measurement is
-// its price. Leaving the Responses charge standing reports an input reading the
-// route never carries: an inflated local count, and an input cap between the two
-// refuses a request that fits.
-func TestARouteWithNoDeriverRecoversTheBaselinePrice(t *testing.T) {
-	t.Parallel()
-	// The stand-in has no EmitToolSchemas method, which is what makes it the
-	// case under test: every registered protocol derives, so this row is
-	// registered here rather than resolved from a real instance.
-	const protocolID = "test-proto-no-deriver"
-	RegisterProtocol(stubProtocol{id: protocolID})
-
+// The stand-in has no EmitToolSchemas method, so there is no emitted list to ask
+// about and the definitions the route receives are the definitions it sends.
+// Every registered protocol derives except this one, so the row is registered
+// here rather than resolved from a real instance.
+func TestARouteWithNoDeriverPricesTheListItIsHanded(t *testing.T) {
+	noDeriverRegistration.Do(func() {
+		RegisterProtocol(stubProtocol{id: noDeriverProtocolID})
+	})
 	defs := []ToolDefinition{{Name: "parameterless"}}
-	baseline := ToolsJSONBytes(defs)
+	declared := ToolsJSONBytes(defs)
 	req := Request{
 		Provider:       "emitted-price",
 		Model:          "model",
 		Messages:       []Message{User("x")},
 		Tools:          defs,
-		ToolsJSONBytes: baseline,
+		ToolsJSONBytes: declared,
 	}
-	forResponses := priceEmittedToolSchemas(req, responsesRowOn(true))
-	if forResponses.ToolsJSONBytes == baseline {
-		t.Fatalf("fixture does not distinguish the targets: the Responses projection left the count at the "+
-			"baseline %d, so retargeting cannot show a difference", baseline)
-	}
-
 	noDeriver := registry.Resolved{Instance: "emitted-price", ModelID: "model", WireID: "model"}
-	noDeriver.Protocol = protocolID
-	got := priceEmittedToolSchemas(forResponses, noDeriver)
-	if got.ToolsJSONBytes != baseline {
-		t.Fatalf("route without a deriver priced the catalog at %d, want the baseline %d: its builder sends the "+
-			"definitions it was handed, so the Responses charge describes a list this route never emits",
-			got.ToolsJSONBytes, baseline)
+	noDeriver.Protocol = noDeriverProtocolID
+
+	if got := EffectiveToolsJSONBytes(req, noDeriver, false); got != declared {
+		t.Fatalf("route without a deriver priced the catalog at %d, want the list it is handed, %d", got, declared)
+	}
+	strictCharge := EffectiveToolsJSONBytes(req, responsesRowOn(true), false)
+	if strictCharge == declared {
+		t.Fatalf("fixture does not distinguish the routes: the strict projection left the count at %d", declared)
+	}
+	// An override marshals the definitions it is handed, so a stamp the caller
+	// measured is the answer there; only a route with a builder re-derives.
+	stamped := req
+	stamped.ToolsJSONBytes = strictCharge
+	if got := EffectiveToolsJSONBytes(stamped, noDeriver, true); got != strictCharge {
+		t.Fatalf("an override's reading = %d, want the caller's stamp %d: an override marshals the definitions it "+
+			"is handed", got, strictCharge)
 	}
 }
 
-// A count produced for one target is not a count for another, even when the
-// second target's builder changes nothing.
+// noDeriverProtocolID names the deriver-less stand-in, and
+// noDeriverRegistration keeps the package-wide protocol registry from panicking
+// when the binary runs this test more than once in one process.
+const noDeriverProtocolID = "test-proto-no-deriver"
+
+var noDeriverRegistration sync.Once
+
+// A price produced for one route is not a price for another.
 //
-// A caller may build a request, price it against a strict Responses row, and
-// then reuse it on a non-strict route whose builder leaves the definitions
-// alone. That deriver reports no change, so a rule that keeps the incoming count
-// because "nothing changed" retains a charge for a closed schema this route
-// never emits. The price has to fall back to the list's own measurement before
-// the new decision is applied, and the unchanged-decision branch is exactly
-// where that has to happen.
-func TestARetargetedRequestRecoversTheBaselinePrice(t *testing.T) {
+// The same catalog on a strict Responses route and on a relaxed one emits
+// different bytes. Because the price is computed from the route rather than
+// carried on the request, retargeting a request cannot retain the first route's
+// charge.
+func TestARetargetedRequestPricesTheSecondRoutesSchemas(t *testing.T) {
 	t.Parallel()
 	defs := []ToolDefinition{{Name: "parameterless"}}
-	baseline := ToolsJSONBytes(defs)
-	req := Request{
-		Provider: "emitted-price",
-		Model:    "model",
-		Messages: []Message{User("x")},
-		Tools:    defs,
-	}
-	req.ToolsJSONBytes = baseline
-
-	forResponses := priceEmittedToolSchemas(req, responsesRowOn(true))
-	if forResponses.ToolsJSONBytes == baseline {
-		t.Fatalf("fixture does not distinguish the targets: the Responses projection left the count at the "+
-			"baseline %d, so retargeting cannot show a difference", baseline)
-	}
-
-	// A non-strict Responses route substitutes the open object for this tool and
-	// then reports a change, so the retarget is observable as a different price
-	// rather than as the baseline. The point is that it is not the strict price.
-	forRelaxed := priceEmittedToolSchemas(forResponses, responsesRowOn(false))
-	if forRelaxed.ToolsJSONBytes == forResponses.ToolsJSONBytes {
-		t.Fatalf("retargeted count = %d, the same as the strict price: the strict charge must not survive a "+
-			"retarget", forRelaxed.ToolsJSONBytes)
-	}
-	// And it is the relaxed route's own answer, which is smaller than the strict
-	// one because the closed object and stated required list are gone.
-	if forRelaxed.ToolsJSONBytes >= forResponses.ToolsJSONBytes {
-		t.Fatalf("relaxed price = %d, want less than the strict %d",
-			forRelaxed.ToolsJSONBytes, forResponses.ToolsJSONBytes)
-	}
-}
-
-// Pricing a request is an admission decision a caller may take early and
-// forward, so it has to be idempotent.
-//
-// The count this replaces described the substituted form, so the emitted price
-// differs from it by the difference between the two lists. Carrying that
-// difference across a call — adjusting the incoming count instead of assigning
-// the measurement — makes the result depend on how many times it was applied:
-// middleware that prepriced and forwarded, followed by admission, bills the
-// emitted list twice over. A cap between the two counts then refuses a request
-// that fits.
-func TestPricingTheEmittedListIsIdempotent(t *testing.T) {
-	t.Parallel()
-	res := responsesRowOn(true)
-	defs := parameterlessCatalog(6)
+	advertised := ToolsJSONBytes(defs)
 	req := Request{
 		Provider:       "emitted-price",
 		Model:          "model",
 		Messages:       []Message{User("x")},
 		Tools:          defs,
-		ToolsJSONBytes: ToolsJSONBytes(defs),
+		ToolsJSONBytes: advertised,
 	}
 
-	once := priceEmittedToolSchemas(req, res)
-	twice := priceEmittedToolSchemas(once, res)
-	if twice.ToolsJSONBytes != once.ToolsJSONBytes {
-		t.Fatalf("pricing twice = %d bytes, once = %d: the price must describe the emitted list, not "+
-			"accumulate a difference from the count it started with",
-			twice.ToolsJSONBytes, once.ToolsJSONBytes)
+	strict := EffectiveToolsJSONBytes(req, responsesRowOn(true), false)
+	if strict == advertised {
+		t.Fatalf("fixture does not distinguish the routes: the strict projection left the count at %d", advertised)
 	}
-	// The rule has to have done something, or the agreement above is the
-	// agreement of two unchanged counts rather than evidence that applying it
-	// twice is safe.
-	if once.ToolsJSONBytes == req.ToolsJSONBytes {
-		t.Fatalf("prepriced count = %d, unchanged from the advertised count: this route's builder substitutes a "+
-			"schema, so pricing it must move the count", once.ToolsJSONBytes)
+	relaxed := EffectiveToolsJSONBytes(req, responsesRowOn(false), false)
+	if relaxed == strict {
+		t.Fatalf("relaxed price = %d, the same as the strict %d: each route prices its own emission", relaxed, strict)
 	}
-	// The reading admission takes has to be the same on both paths.
-	if a, b := EstimateInputTokensForResolved(res, once).Tokens, EstimateInputTokensForResolved(res, twice).Tokens; a != b {
-		t.Fatalf("admission reading after one price = %d, after two = %d: the two must agree", a, b)
+	// The relaxed route's substituted open object is smaller than the closed one
+	// with its stated required list.
+	if relaxed >= strict {
+		t.Fatalf("relaxed price = %d, want less than the strict %d", relaxed, strict)
 	}
 }
 
@@ -329,12 +294,12 @@ func TestAByteNeutralProjectionDoesNotMarshalTheCatalog(t *testing.T) {
 				ToolsJSONBytes: ToolsJSONBytes(defs),
 			}
 			before := atomic.LoadInt32(&calls)
-			got := priceEmittedToolSchemas(req, res)
+			got := EffectiveToolsJSONBytes(req, res, false)
 			marshals := atomic.LoadInt32(&calls) - before
 
-			if got.ToolsJSONBytes != req.ToolsJSONBytes {
+			if got != req.ToolsJSONBytes {
 				t.Fatalf("priced count = %d, want the count it arrived with, %d: the projection only reorders a "+
-					"required list here, so the bytes are the same", got.ToolsJSONBytes, req.ToolsJSONBytes)
+					"required list here, so the bytes are the same", got, req.ToolsJSONBytes)
 			}
 			if marshals != 0 {
 				t.Fatalf("pricing the catalog marshaled it %d time(s), want 0: the projection answers the "+
@@ -365,13 +330,13 @@ func TestAByteNeutralProjectionDoesNotMarshalTheCatalog(t *testing.T) {
 	}}
 	advertisedChanging := ToolsJSONBytes(changing)
 	changingBefore := atomic.LoadInt32(&calls)
-	if priced := priceEmittedToolSchemas(Request{
+	if priced := EffectiveToolsJSONBytes(Request{
 		Provider:       "emitted-price",
 		Model:          "model",
 		Messages:       []Message{User("x")},
 		Tools:          changing,
 		ToolsJSONBytes: advertisedChanging,
-	}, res); priced.ToolsJSONBytes == advertisedChanging {
+	}, res, false); priced == advertisedChanging {
 		t.Fatal("a catalog whose projection closes the object was priced as unchanged")
 	}
 	if atomic.LoadInt32(&calls) == changingBefore {
@@ -435,7 +400,7 @@ func responsesWireToolSchemas(t *testing.T, body map[string]any) []map[string]an
 // The Responses builder copies each parameter schema before it decides what to
 // state on it, and the copy decodes a json.RawMessage subschema so the walk can
 // read the nodes inside. The decoded form re-encodes with the text those escapes
-// stood for, so the wire is shorter than the caller's list: pricing the caller's
+// stood for, so the wire is shorter than the caller's list: pricing the catalog's
 // count charges bytes the request never carries, and a cap between the two
 // prices refuses a request that fits.
 //
@@ -489,11 +454,10 @@ func TestARawSubschemaIsPricedAsTheBuilderDecodesIt(t *testing.T) {
 					"has to lose the escape sequences for this case to prove anything", want, advertised)
 			}
 
-			priced := priceEmittedToolSchemas(req, res)
-			if priced.ToolsJSONBytes != want {
-				t.Fatalf("priced count = %d, want the wire schema's %d (the caller's count is %d): the builder "+
+			if priced := EffectiveToolsJSONBytes(req, res, false); priced != want {
+				t.Fatalf("priced count = %d, want the wire schema's %d (the catalog's count is %d): the builder "+
 					"decodes the raw subschema, so the escaped form is not what dispatches",
-					priced.ToolsJSONBytes, want, advertised)
+					priced, want, advertised)
 			}
 		})
 	}
@@ -512,24 +476,27 @@ func TestARawSubschemaPriceLetsAFittingRequestThrough(t *testing.T) {
 		Messages: []Message{User("x")},
 		Tools:    defs,
 	}
-	wireReading := EstimateInputTokensForResolved(res, priceEmittedToolSchemas(req, res)).Tokens
+	wireReading := EstimateInputTokensForRoute(res, req, false).Tokens
 	escapedReading := EstimateInputTokensForResolved(res, req).Tokens
 	if escapedReading <= wireReading {
-		t.Fatalf("priced reading = %d, the caller's escaped count = %d: the builder decodes the raw subschema, so "+
+		t.Fatalf("priced reading = %d, the catalog's escaped count = %d: the builder decodes the raw subschema, so "+
 			"the priced reading has to be the smaller one", wireReading, escapedReading)
 	}
 	limit := capBetweenPrices(t, wireReading, escapedReading)
 
 	c, _, bodies := emittedPriceRoute(t, limit, registry.ProtocolOpenAIResponses, false)
 	if _, err := c.Complete(context.Background(), req); err != nil {
-		t.Fatalf("Complete under a cap of %d refused a request that dispatches %d input tokens: %v",
-			limit, wireReading, err)
+		if _, budget := errors.AsType[*ContextBudgetError](err); budget {
+			t.Fatalf("Complete under a cap of %d refused a request that dispatches %d input tokens: the wire "+
+				"list is smaller than the %d-byte catalog", limit, wireReading, advertised)
+		}
+		t.Fatalf("Complete under a cap of %d: %v", limit, err)
 	}
 	if got := len(bodies()); got != 1 {
 		t.Fatalf("requests on the wire = %d, want 1", got)
 	}
 	if wireBytes := ToolsJSONBytes([]ToolDefinition{{Name: defs[0].Name, Parameters: responsesWireParams(t, bodies()[0])}}); wireBytes >= advertised {
-		t.Fatalf("dispatched schema measures %d bytes against the caller's %d: the fixture's premise did not hold",
+		t.Fatalf("dispatched schema measures %d bytes against the catalog's %d: the fixture's premise did not hold",
 			wireBytes, advertised)
 	}
 }

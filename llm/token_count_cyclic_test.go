@@ -9,13 +9,10 @@ import (
 // Pricing a relaxed route must not walk a caller's parameters it does not
 // rewrite.
 //
-// A relaxed Chat or Responses route sends the schema it was handed, so the only
-// question the length comparison could answer is whether that schema differs
-// from itself. Walking it anyway takes the process down on a map that contains
-// itself: the root schema check passes and the recursive comparison follows the
-// cycle until the stack runs out. The count this comparison replaced was a
-// json.Marshal, which reports a cycle as an encoding error and leaves the
-// request alone.
+// A relaxed Chat or Responses route sends the schema it was handed, so there is
+// nothing to compare and nothing to marshal. A walk that follows the map anyway
+// takes the process down on a schema that contains itself, and the encoder
+// reports a cycle as an error rather than unbounded recursion.
 //
 // A stack overflow is unrecoverable, so this test cannot catch it: the run dies.
 // That is the failure it is written to show, and the fix is what lets the call
@@ -37,12 +34,11 @@ func TestPricingARelaxedRouteDoesNotWalkACyclicCatalog(t *testing.T) {
 			tool.Parameters = selfReferentialSchema()
 			req := Request{Tools: []ToolDefinition{tool}}
 
-			got := priceEmittedToolSchemas(req, tc.res)
-			// The request is unstamped, so the unchanged emission has no count
-			// to record and measuring the catalog here would be the walk the
-			// route's answer exists to avoid.
-			if got.emittedToolTarget != (emittedToolTargetKey{}) {
-				t.Fatalf("priced a catalog the route sends unchanged: recorded target %+v", got.emittedToolTarget)
+			// The route leaves this schema alone, so the answer is the catalog's
+			// own count: the encoder rejects it, which bills nothing, and no walk
+			// of the schema happened to find that out.
+			if got := EffectiveToolsJSONBytes(req, tc.res, false); got != 0 {
+				t.Fatalf("priced a catalog this route sends unchanged and the encoder rejects at %d bytes, want 0", got)
 			}
 		})
 	}

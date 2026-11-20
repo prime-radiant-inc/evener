@@ -165,7 +165,7 @@ func TestParameterlessToolIsPricedByTheSchemaTheAdapterSends(t *testing.T) {
 			if _, _, err := ApplyTokenBudget(wireReq, res); !errors.As(err, &budgetErr) || budgetErr.Limit != "max_input" {
 				t.Fatalf("wire catalog not refused at %d ceiling: err = %v", tight, err)
 			}
-			if _, _, err := applyTokenBudgetForTarget(adapterReq, res, tc.override); !errors.As(err, &budgetErr) || budgetErr.Limit != "max_input" {
+			if _, _, err := ApplyTokenBudgetForRoute(adapterReq, res, tc.override); !errors.As(err, &budgetErr) || budgetErr.Limit != "max_input" {
 				t.Fatalf("adapter catalog admitted under %d ceiling, but emitted schema exceeds it: err = %v", tight, err)
 			}
 
@@ -175,7 +175,7 @@ func TestParameterlessToolIsPricedByTheSchemaTheAdapterSends(t *testing.T) {
 			// unchanged so repeated calls never double-count the delta.
 			exact := wirePrice + SafetyReserveTokens(tight)
 			res.Caps.MaxInputTokens = &exact
-			admitted, _, err := applyTokenBudgetForTarget(adapterReq, res, tc.override)
+			admitted, _, err := ApplyTokenBudgetForRoute(adapterReq, res, tc.override)
 			if err != nil {
 				t.Fatalf("adapter catalog refused at exact emitted ceiling %d: %v", exact, err)
 			}
@@ -187,9 +187,9 @@ func TestParameterlessToolIsPricedByTheSchemaTheAdapterSends(t *testing.T) {
 			window := exact + 100
 			res.Caps.MaxInputTokens = nil
 			res.Caps.ContextWindow = &window
-			_, adapterBudget, err := applyTokenBudgetForTarget(adapterReq, res, tc.override)
+			_, adapterBudget, err := ApplyTokenBudgetForRoute(adapterReq, res, tc.override)
 			if err != nil {
-				t.Fatalf("applyTokenBudgetForTarget (adapter) at %d window: %v", window, err)
+				t.Fatalf("ApplyTokenBudgetForRoute (adapter) at %d window: %v", window, err)
 			}
 			_, wireBudget, err := ApplyTokenBudget(wireReq, res)
 			if err != nil {
@@ -258,12 +258,12 @@ func TestParameterlessToolIsPricedByTheSchemaTheAdapterSends(t *testing.T) {
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
 				unstamped := Request{Tools: nilDef}
-				if got := effectiveToolsJSONBytes(unstamped, tc.res, tc.override); got != tc.want {
-					t.Fatalf("effectiveToolsJSONBytes(unstamped) = %d, want %d", got, tc.want)
+				if got := EffectiveToolsJSONBytes(unstamped, tc.res, tc.override); got != tc.want {
+					t.Fatalf("EffectiveToolsJSONBytes(unstamped) = %d, want %d", got, tc.want)
 				}
 				stamped := Request{Tools: nilDef, ToolsJSONBytes: ToolsJSONBytes(nilDef)}
-				if got := effectiveToolsJSONBytes(stamped, tc.res, tc.override); got != tc.want {
-					t.Fatalf("effectiveToolsJSONBytes(caller-stamped) = %d, want %d", got, tc.want)
+				if got := EffectiveToolsJSONBytes(stamped, tc.res, tc.override); got != tc.want {
+					t.Fatalf("EffectiveToolsJSONBytes(caller-stamped) = %d, want %d", got, tc.want)
 				}
 			})
 		}
@@ -338,8 +338,8 @@ func TestParameterlessToolIsPricedByTheSchemaTheAdapterSends(t *testing.T) {
 			t.Fatalf("resolved credential = %q, want secret-token", res.Credential.Value)
 		}
 		wantClosed := ToolsJSONBytes([]ToolDefinition{{Name: "current_time", Parameters: closedEmptyToolParameters()}})
-		if got := effectiveToolsJSONBytes(gs.request(opts, gs.history), res, false); got != wantClosed {
-			t.Fatalf("effectiveToolsJSONBytes = %d, want closed schema size %d", got, wantClosed)
+		if got := EffectiveToolsJSONBytes(gs.request(opts, gs.history), res, false); got != wantClosed {
+			t.Fatalf("EffectiveToolsJSONBytes = %d, want closed schema size %d", got, wantClosed)
 		}
 		data, err := os.ReadFile(marker)
 		if err != nil || len(data) != 1 {

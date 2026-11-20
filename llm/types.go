@@ -630,47 +630,13 @@ type Request struct {
 	// treat Tools and every element's Parameters as immutable: the stamp
 	// describes the bytes at stamping time, so a schema edited in place would
 	// drift the estimate silently. Rebuild the list and re-measure instead.
+	//
+	// The stamp is the catalog's own count and nothing else: a route whose
+	// builder rewrites a schema prices that emission in the estimator
+	// (EffectiveToolsJSONBytes, EstimateInputTokensForRoute) without writing
+	// the answer back here, so a request priced for one route and then served
+	// by another cannot carry the first route's charge.
 	ToolsJSONBytes int `json:"-"`
-
-	// emittedToolTarget names the target whose schema decision produced
-	// ToolsJSONBytes, and emittedToolBaseline is the count the list measures
-	// without that decision applied. Both are set together with the emitted
-	// count and only by priceEmittedToolSchemas.
-	//
-	// A request can be priced for one target and then dispatched to another: a
-	// caller may build a request, price it against a strict Responses row, and
-	// reuse it on a non-strict Chat route. The second target's builder may leave
-	// the definitions unchanged, and an unchanged decision is exactly the case
-	// that would otherwise keep the first target's charge — the count is already
-	// set, so a deriver reporting no change leaves a price for a schema this
-	// route never emits. Recording the target and the baseline is what lets the
-	// next price start from the list rather than from another route's answer.
-	//
-	// emittedToolCount is the count that record produced. A request whose
-	// ToolsJSONBytes no longer equals it carries a different tool list — a caller
-	// replaced the catalog and stamped the replacement — so the record describes
-	// bytes this request does not carry and is dropped rather than restored over
-	// the new stamp.
-	//
-	// emittedToolCatalog names the catalog the record measured. A byte count is
-	// not an identity: a caller can rebuild a catalog from the schemas a builder
-	// synthesized and measure exactly the count that builder emitted, and a record
-	// keyed by its count alone would then restore the baseline of the catalog the
-	// caller discarded. The catalog is immutable for the record's life (see
-	// ToolsJSONBytes), so its own identity is the tie that count cannot be.
-	//
-	// emittedToolReplacement marks a count measured over a list a route writes
-	// over the catalog — a transport body tools constant, or a ProviderOptions
-	// tools value when the transport pins none — rather than over the catalog's
-	// own emission. That substitution is re-decided on every price, so the record
-	// is restored to the catalog's own count before it is applied again: keeping
-	// it because the target still matches would leave a replacement's price
-	// standing after the option that produced it was gone.
-	emittedToolTarget      emittedToolTargetKey
-	emittedToolBaseline    int
-	emittedToolCount       int
-	emittedToolReplacement bool
-	emittedToolCatalog     toolCatalogIdentity
 
 	AdapterTimeout *AdapterTimeout `json:"adapter_timeout,omitempty"`
 }

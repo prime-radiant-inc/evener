@@ -11,10 +11,10 @@ import (
 //
 // The request arrives carrying the primary's tool count, which describes the
 // schemas the primary's builder emits. An override sends the definitions it is
-// handed, so that count describes a catalog this route never emits — and both
-// fallback history estimates are computed from that field. Admission takes the
-// maximum of the local estimate and the full-history one, so leaving the primary's
-// count standing refuses a fallback that fits.
+// handed, so that count describes bytes this route never emits — and both
+// fallback history estimates must describe the override's list instead.
+// Admission takes the maximum of the local estimate and the full-history one, so
+// a history priced by the primary refuses a fallback that fits.
 func TestTheFallbackToAnOverridePricesItsOwnCatalog(t *testing.T) {
 	t.Parallel()
 	// The primary is a Responses row whose builder substitutes a schema for a
@@ -39,46 +39,41 @@ func TestTheFallbackToAnOverridePricesItsOwnCatalog(t *testing.T) {
 
 	tools := parameterlessTools(24)
 	msgs := []llm.Message{llm.User("hello")}
-	// The request as the fallback loop receives it: the primary's catalog, priced
-	// by the primary's builder.
-	req := llm.PriceToolSchemas(llm.Request{
+	primaryReq := llm.Request{
 		Provider: primary.ID(),
 		Model:    primary.Model(),
 		Messages: msgs,
 		Tools:    tools,
-	}, primaryRow)
-	advertised := llm.ToolsJSONBytes(tools)
-	if req.ToolsJSONBytes <= advertised {
-		t.Fatalf("fixture does not distinguish the prices: advertised=%d priced=%d",
-			advertised, req.ToolsJSONBytes)
+	}
+	primaryPrice := llm.EstimateInputTokensForRoute(primaryRow, primaryReq, false).Tokens
+	overridePrice := llm.EstimateInputTokensForRoute(fallbackRow, primaryReq, true).Tokens
+	if overridePrice >= primaryPrice {
+		t.Fatalf("fixture does not distinguish the routes: override=%d primary=%d", overridePrice, primaryPrice)
 	}
 
-	built, ok := sess.responsesContinuationFallbackRequest(fallback, req, msgs)
+	built, ok := sess.responsesContinuationFallbackRequest(fallback, primaryReq, msgs)
 	if !ok {
 		t.Fatal("responsesContinuationFallbackRequest refused a request that carries full history")
 	}
-	if built.ToolsJSONBytes != advertised {
-		t.Fatalf("fallback carries ToolsJSONBytes = %d, want the override's own catalog %d: an override marshals "+
-			"the definitions it is handed, so the primary's larger count describes a list this route never sends",
-			built.ToolsJSONBytes, advertised)
+	// Both history estimates are the override's own reading.
+	if got := built.InputTokensEstimate; got != overridePrice {
+		t.Fatalf("local estimate = %d, want the override's own %d (the primary reads %d)",
+			got, overridePrice, primaryPrice)
 	}
-	// Both history estimates are computed from the count above, so both have to
-	// describe the override's list rather than the primary's.
-	ownReq := req
-	ownReq.ToolsJSONBytes = advertised
-	own := llm.EstimateInputTokensForResolved(fallbackRow, ownReq)
-	if built.InputTokensEstimate != own.Tokens {
-		t.Fatalf("local estimate = %d, want the override's own %d", built.InputTokensEstimate, own.Tokens)
+	if got := built.FullHistoryInputTokensEstimate; got != overridePrice {
+		t.Fatalf("full-history estimate = %d, want the override's own %d (the primary reads %d)",
+			got, overridePrice, primaryPrice)
 	}
-	if built.FullHistoryInputTokensEstimate != own.Tokens {
-		t.Fatalf("full-history estimate = %d, want the override's own %d",
-			built.FullHistoryInputTokensEstimate, own.Tokens)
+	// Admission is a measurement, so the request's own stamp is untouched.
+	if built.ToolsJSONBytes != primaryReq.ToolsJSONBytes {
+		t.Fatalf("fallback carries ToolsJSONBytes = %d, want the caller's %d",
+			built.ToolsJSONBytes, primaryReq.ToolsJSONBytes)
 	}
 }
 
 // The budget a session uses to decide its warning prices an override-served
 // route from the list the override receives.
-func TestTheSessionBudgetForAnOverrideRestoresTheBaseline(t *testing.T) {
+func TestTheSessionBudgetForAnOverrideKeepsTheCatalogCount(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "budget-override"})
@@ -90,23 +85,28 @@ func TestTheSessionBudgetForAnOverrideRestoresTheBaseline(t *testing.T) {
 
 	tools := parameterlessTools(24)
 	advertised := llm.ToolsJSONBytes(tools)
-	// A request that arrives priced for the built-in builder the row names: the
-	// charge the override never incurs.
-	priced := llm.PriceToolSchemas(llm.Request{
+	req := llm.Request{
 		Messages:       []llm.Message{llm.User("hello")},
 		Tools:          tools,
 		ToolsJSONBytes: advertised,
-	}, row)
-	if priced.ToolsJSONBytes == advertised {
-		t.Fatal("fixture does not distinguish the prices: the deriver left the count unchanged")
+	}
+	// The route has to be one the deriver would price, or the override's own
+	// answer is indistinguishable from it and the test passes for the wrong
+	// reason.
+	if projected := llm.EstimateInputTokensForRoute(row, req, false).Tokens; projected == advertised {
+		t.Fatal("fixture does not distinguish the routes: the deriver left the count unchanged")
 	}
 
-	budgeted, _, err := sess.budgetModelDispatchRequestForSession(profile, priced)
+	budgeted, budget, err := sess.budgetModelDispatchRequestForSession(profile, req)
 	if err != nil {
 		t.Fatalf("budgetModelDispatchRequestForSession: %v", err)
 	}
+	overrideWant := llm.EstimateInputTokensForRoute(row, req, true).Tokens
+	if got, wantTotal := budget.InputTokens, overrideWant+budget.SafetyTokens; got != wantTotal {
+		t.Fatalf("override-served budget priced the input at %d, want the catalog's %d plus the %d reserve = %d: "+
+			"an override marshals the definition it was handed", got, overrideWant, budget.SafetyTokens, wantTotal)
+	}
 	if budgeted.ToolsJSONBytes != advertised {
-		t.Fatalf("override-served budget priced the catalog at %d, want the advertised %d: an override marshals "+
-			"the definition it was handed", budgeted.ToolsJSONBytes, advertised)
+		t.Fatalf("budgeted request carries ToolsJSONBytes = %d, want the catalog's %d", budgeted.ToolsJSONBytes, advertised)
 	}
 }
