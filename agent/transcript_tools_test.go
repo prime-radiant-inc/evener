@@ -1807,9 +1807,11 @@ func TestFind_ProjectName_RecordedCheckoutAnswersBeforeTheEnclosingWalk(t *testi
 }
 
 // TestFind_ProjectName_RecordedPathBecameAFile covers a recorded subdirectory that
-// a branch switch replaced with a regular file. Probing ".git" beneath the file
-// is ENOTDIR, not "no repository here", so the walk starts at the closest
-// surviving directory and still names the checkout above it.
+// a branch switch replaced with a regular file. mainRootAt treats the ENOTDIR
+// that probing ".git" beneath the file produces as ABSENCE, so a walk started at
+// the file would pass it by and climb into whatever encloses it. The walk starts
+// at the closest surviving DIRECTORY instead, and still names the checkout above
+// it.
 func TestFind_ProjectName_RecordedPathBecameAFile(t *testing.T) {
 	stateHome := pinStateHome(t)
 
@@ -5684,11 +5686,11 @@ func TestFind_ProjectName_DanglingSymlinkUnderAnAliasedLane(t *testing.T) {
 
 // TestFind_ProjectName_RecordedFileUnderALiveLaneKeepsTheProject covers a live
 // managed lane reached through a symlink alias whose recorded subdirectory is
-// now a regular file, as a branch switch can do. Probing "<file>/.git"
-// fails with ENOTDIR, which is not absence of a checkout, so the bounded walk
-// must pass the file by and keep climbing to the lane root: the lane's own Git
-// pointer still names the checkout, and this row has no restore root, owner,
-// parent or sibling that could name it instead.
+// now a regular file, as a branch switch can do. Probing "<file>/.git" fails with
+// ENOTDIR, which mainRootAt treats as ABSENCE, so the bounded walk passes the
+// file by and keeps climbing to the lane root: the lane's own Git pointer still
+// names the checkout, and this row has no restore root, owner, parent or sibling
+// that could name it instead.
 func TestFind_ProjectName_RecordedFileUnderALiveLaneKeepsTheProject(t *testing.T) {
 	repo := newNamedCheckout(t, "live-lane-file-repo")
 	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repo))
@@ -5719,12 +5721,11 @@ func TestFind_ProjectName_RecordedFileUnderALiveLaneKeepsTheProject(t *testing.T
 // sits BELOW a component that is now a regular file: <lane>/pkg is a file, and
 // the recorded directory is <alias>/pkg/cmd, where cmd does not exist. Resolving
 // the existing prefix hands back <lane>/pkg/cmd, so probing "<dir>/.git" fails
-// with ENOTDIR at every step down to the lane root. ENOTDIR establishes that a
-// component of dir is not a directory, so there is no directory there to ask and
-// no checkout that was found and refused; the bounded walk must pass it by and
-// keep climbing to the lane root, whose own Git pointer still names the
-// checkout. This row has no restore root, owner, parent or sibling that could
-// name it instead.
+// with ENOTDIR at every step down to the lane root. mainRootAt treats ENOTDIR as
+// ABSENCE: there is no directory there to ask and no checkout that was found and
+// refused, so the bounded walk passes it by and keeps climbing to the lane root,
+// whose own Git pointer still names the checkout. This row has no restore root,
+// owner, parent or sibling that could name it instead.
 func TestFind_ProjectName_RecordedFileAboveTheRecordedLeafKeepsTheLaneProject(t *testing.T) {
 	repo := newNamedCheckout(t, "live-lane-file-leaf-repo")
 	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repo))
@@ -5747,5 +5748,154 @@ func TestFind_ProjectName_RecordedFileAboveTheRecordedLeafKeepsTheLaneProject(t 
 
 	if got, want := projectName(row, stateDir), filepath.Base(repo); got != want {
 		t.Fatalf("projectName(%q, recorded leaf below a regular file under a live lane) = %q, want the lane's checkout %q", row.EnvInfo.WorkingDir, got, want)
+	}
+}
+
+// TestFind_ProjectName_RecordedSymlinkToAFileInAForeignLiveLane covers a deleted
+// subdirectory that was replaced by a symlink to a regular file inside ANOTHER
+// project's live managed lane. The whole-path retry follows that file into the
+// foreign lane, whose own Git pointer then names the other project before the
+// session's saved project is ever consulted. A path that resolves to a regular
+// file names no checkout at all: following it would adopt the project of
+// whichever lane the file happens to sit in. The lane classification must use
+// the directory-aware path, and the row's saved project must answer instead.
+//
+// This is the live-lane form of the file case above: there the file sat in the
+// row's own lane, so following it still named the right project and the defect
+// stayed hidden.
+func TestFind_ProjectName_RecordedSymlinkToAFileInAForeignLiveLane(t *testing.T) {
+	stateHome := pinStateHome(t)
+	repo := newNamedCheckout(t, "foreign-lane-file-repo")
+	other := newNamedCheckout(t, "foreign-lane-file-other")
+
+	// The row's own bucket: the row saved this project, and the recorded path is
+	// its subdirectory.
+	repoProject := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repo))
+	bucket, err := RuntimeDirForProjectWithStateHome(repoProject, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper for %q: %v", repo, err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir the row's bucket: %v", err)
+	}
+
+	// The foreign project's live managed lane. It is a genuine state lane, so a
+	// path that follows the recorded symlink into it classifies as that lane.
+	otherProject := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(other))
+	otherBucket, err := RuntimeDirForProjectWithStateHome(otherProject, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper for %q: %v", other, err)
+	}
+	if err := os.MkdirAll(filepath.Join(otherBucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir the other project's bucket: %v", err)
+	}
+	lane := filepath.Join(otherBucket, "worktrees", otherProject.ID, "dlg_foreign")
+	gittest.Run(t, other, "worktree", "add", "-q", lane, "-b", "lane-foreign")
+	data := filepath.Join(lane, "data")
+	if err := os.WriteFile(data, []byte("not a directory\n"), 0o644); err != nil {
+		t.Fatalf("write the file inside the foreign lane: %v", err)
+	}
+	if err := os.Symlink(data, filepath.Join(repo, "pkg")); err != nil {
+		t.Fatalf("symlink the recorded subdirectory to the foreign lane's file: %v", err)
+	}
+
+	row := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	row.Config.MemoryProjectID = repoProject.ID
+	row.EnvInfo.WorkingDir = filepath.Join(repo, "pkg")
+
+	if got, want := projectName(row, bucket), filepath.Base(repo); got != want {
+		t.Fatalf("projectName(%q, recorded subdirectory replaced by a symlink to a file in another project's live lane %q) = %q, want the row's saved project %q", row.EnvInfo.WorkingDir, lane, got, want)
+	}
+}
+
+// TestFind_ProjectName_RecordedDotDotThroughASymlinkKeepsTheResolvedCheckout
+// covers a saved working directory that goes through a symlink and back out with
+// "..": <repoA>/link points at <repoB>/subdir, so <repoA>/link/.. is <repoB>.
+// Cleaning the recorded spelling first collapses the pair lexically to <repoA>,
+// and transcript search then labels the session with the wrong repository even
+// though both checkouts are live. The original path must be resolved as a whole
+// while it still names a directory, and the surviving-directory fallback used
+// only when it is gone or has been replaced by a file.
+func TestFind_ProjectName_RecordedDotDotThroughASymlinkKeepsTheResolvedCheckout(t *testing.T) {
+	stateHome := pinStateHome(t)
+	repoA := newNamedCheckout(t, "dotdot-repo-a")
+	repoB := newNamedCheckout(t, "dotdot-repo-b")
+
+	subdir := filepath.Join(repoB, "subdir")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatalf("mkdir %q: %v", subdir, err)
+	}
+	if err := os.Symlink(subdir, filepath.Join(repoA, "link")); err != nil {
+		t.Fatalf("symlink %q: %v", filepath.Join(repoA, "link"), err)
+	}
+
+	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repoA))
+	bucket, err := RuntimeDirForProjectWithStateHome(project, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper for %q: %v", repoA, err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+
+	row := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	row.Config.MemoryProjectID = project.ID
+	// Concatenated, not filepath.Join: Join cleans the ".." away, and the spelling
+	// under test must reach the resolver exactly as the session recorded it.
+	row.EnvInfo.WorkingDir = repoA + "/link/.."
+
+	if got, want := projectName(row, bucket), filepath.Base(repoB); got != want {
+		t.Fatalf("projectName(%q, recorded through a symlink and back out with ..) = %q, want the resolved checkout %q", row.EnvInfo.WorkingDir, got, want)
+	}
+}
+
+// TestFind_ProjectName_RecordedDotDotThroughASymlinkIntoAnotherLaneKeepsThatLane
+// covers the same ".." over a symlink when both sides are live managed lanes:
+// <laneA>/hop points at <laneB>/subdir, so <laneA>/hop/.. is <laneB>. Cleaning
+// the spelling first collapses the pair lexically to <laneA>, whose lane the
+// resolver then answers before it ever resolves the path as a whole. The lane
+// the path really names must win over the lane its spelling looks like.
+func TestFind_ProjectName_RecordedDotDotThroughASymlinkIntoAnotherLaneKeepsThatLane(t *testing.T) {
+	stateHome := pinStateHome(t)
+	repoA := newNamedCheckout(t, "lane-dotdot-repo-a")
+	repoB := newNamedCheckout(t, "lane-dotdot-repo-b")
+
+	projectA := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repoA))
+	bucketA, err := RuntimeDirForProjectWithStateHome(projectA, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper for %q: %v", repoA, err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucketA, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir the first project's bucket: %v", err)
+	}
+	laneA := filepath.Join(bucketA, "worktrees", projectA.ID, "dlg_dotdot_a")
+	gittest.Run(t, repoA, "worktree", "add", "-q", laneA, "-b", "lane-dotdot-a")
+
+	projectB := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repoB))
+	bucketB, err := RuntimeDirForProjectWithStateHome(projectB, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper for %q: %v", repoB, err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucketB, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir the second project's bucket: %v", err)
+	}
+	laneB := filepath.Join(bucketB, "worktrees", projectB.ID, "dlg_dotdot_b")
+	gittest.Run(t, repoB, "worktree", "add", "-q", laneB, "-b", "lane-dotdot-b")
+	subdir := filepath.Join(laneB, "subdir")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatalf("mkdir %q: %v", subdir, err)
+	}
+	if err := os.Symlink(subdir, filepath.Join(laneA, "hop")); err != nil {
+		t.Fatalf("symlink %q: %v", filepath.Join(laneA, "hop"), err)
+	}
+
+	row := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	row.Config.MemoryProjectID = projectA.ID
+	// Concatenated, not filepath.Join: Join cleans the ".." away, and the spelling
+	// under test must reach the resolver exactly as the session recorded it.
+	row.EnvInfo.WorkingDir = laneA + "/hop/.."
+
+	if got, want := projectName(row, bucketA), filepath.Base(repoB); got != want {
+		t.Fatalf("projectName(%q, recorded from one live lane through a symlink into another) = %q, want the resolved lane's checkout %q", row.EnvInfo.WorkingDir, got, want)
 	}
 }
