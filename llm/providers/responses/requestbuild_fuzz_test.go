@@ -283,6 +283,15 @@ func FuzzResponsesBuildBody(f *testing.F) {
 	f.Add("m", "s", "u", []byte(`{}`), []byte(`{}`), byte(0), byte(128), byte(11))
 	f.Add("m", "s", "u", []byte(`{}`), []byte(`{}`), byte(2), byte(144), byte(11))
 
+	// A property-level anyOf of closed objects is strict-expressible, yet the
+	// strictified union node carries no explicit type. Both routes are seeded
+	// so the oracle pins each side of that split (input.go toolSchema).
+	unionParams := `{"type":"object","properties":{"payload":{"anyOf":[{"type":"object","properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false},{"type":"object","properties":{"b":{"type":"string"}},"required":["b"],"additionalProperties":false}]},"note":{"type":"string"}},"required":["payload","note"],"additionalProperties":false}`
+	// Standard Responses route: strictifies and stays strict.
+	f.Add("m", "s", "u", []byte(`{}`), []byte(unionParams), byte(131), byte(2), byte(0))
+	// Codex Responses Lite route: falls back to strict:false with types supplied.
+	f.Add("m", "s", "u", []byte(`{}`), []byte(unionParams), byte(131), byte(3), byte(0))
+
 	f.Fuzz(func(t *testing.T, model, system, user string, toolArgs, toolParams []byte, sel, capSel, shapeSel byte) {
 		req := buildFuzzResponsesRequest(model, system, user, toolArgs, toolParams, sel, capSel, shapeSel)
 		lite := capSel&1 == 1
@@ -428,9 +437,14 @@ func FuzzResponsesBuildBody(f *testing.F) {
 				// override can only be honored for a schema that already requires
 				// them all. A schema with an optional property is projected
 				// non-strict instead of made mandatory.
-				wantStrict := override && openaichat.StrictExpressible(schema)
+				strictOK := openaichat.StrictExpressible(schema)
+				expressible := override && strictOK
+				// The Lite route refuses a strict projection that leaves any node
+				// typeless, and falls back to the advertised schema with the
+				// types supplied (input.go toolSchema).
+				wantStrict := expressible && (!lite || openaichat.HasExplicitTypes(openaichat.StrictifyJSONSchema(schema)))
 				if len(toolRows) == 0 || toolRows[0]["strict"] != wantStrict {
-					t.Fatalf("tools[0].strict = %#v, want %v (override %v, expressible %v)", toolRows, wantStrict, override, openaichat.StrictExpressible(schema))
+					t.Fatalf("tools[0].strict = %#v, want %v (override %v, expressible %v, lite %v)", toolRows, wantStrict, override, strictOK, lite)
 				}
 				if wantStrict {
 					if typ, _ := schema["type"].(string); typ == "object" {
@@ -438,6 +452,13 @@ func FuzzResponsesBuildBody(f *testing.F) {
 						if params == nil || params["additionalProperties"] != false {
 							t.Fatalf("a strict tool must carry the strictified schema: %#v", toolRows[0]["parameters"])
 						}
+					}
+				} else if expressible {
+					// The Lite fallback emits the advertised schema with every
+					// walked node typed, which is what the provider requires.
+					params, _ := toolRows[0]["parameters"].(map[string]any)
+					if !openaichat.HasExplicitTypes(params) {
+						t.Fatalf("a Lite strict fallback must state a type on every node: %#v", toolRows[0]["parameters"])
 					}
 				}
 			}
