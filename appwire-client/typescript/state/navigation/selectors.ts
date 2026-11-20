@@ -351,9 +351,11 @@ export function waitingForQuotaText(remainingMs: number): string {
 /** The same wait's words once its reset instant has passed and the daemon
  * still holds the wait — the retry is owed to the call, not to the clock,
  * and may queue for an execution slot behind other drives. Crossing the
- * reset changes the promise, never the wait itself. */
+ * reset changes the promise, never the wait itself. The pending state leads
+ * because the rail row truncates from the end at its 200px XL width; the
+ * pane and hover card show the full sentence. */
 export function passedQuotaResetText(): string {
-  return "Waiting for quota · reset passed, retry pending";
+  return "Retry pending · quota reset passed";
 }
 
 /** The subagent counts a row's tally chip shows, or null when there is
