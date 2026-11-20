@@ -280,3 +280,48 @@ func TestResponsesTerminalCallDoesNotBorrowOwnerBytes(t *testing.T) {
 	want := []call{{"c1", "fc_first", "write_file", goodArgs}, {"c2", "fc_first", "f", ""}}
 	testResponsesDisputedCallSettles(t, frames, starts, want)
 }
+
+// A disputed call that has since been issued takes later observations directly:
+// they are announced on it, not buffered away behind the dispute.
+func TestResponsesIssuedDisputedCallTakesLaterFrames(t *testing.T) {
+	t.Parallel()
+	frames := []string{addedFirst, disputedDone(badArgs), addedOwned, disputedDelta("!"), secondEnd, noOutput}
+	events, live, recorded := decodeBoth(t, frames...)
+	deltas := callEvents(events, llm.StreamEventToolCallDelta)
+	if len(deltas) != 1 || deltas[0].id != "c2" || deltas[0].args != "!" {
+		t.Errorf("live deltas = %+v, want one c2 fragment %q", deltas, "!")
+	}
+	want := []call{{"c2", "fc_second", "f", badArgs + "!"}}
+	assertSettledCalls(t, live, recorded, want)
+}
+
+// An item-keyed call that ended before the terminal learns its real call ID is
+// announced once, live, even though the terminal names it by that ID.
+func TestResponsesLearnedCallIDEndsOnce(t *testing.T) {
+	t.Parallel()
+	added := `{"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_first","name":"f"}}`
+	delta := `{"type":"response.function_call_arguments.delta","item_id":"fc_first","call_id":"c9","delta":"{ \"a\" : 1 }"}`
+	itemEnd := `{"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","id":"fc_first","name":"f"}}`
+	frames := []string{added, delta, itemEnd, terminalWith(terminalCall("fc_first", "c9", "f", goodArgs))}
+	events, live, recorded := decodeBoth(t, frames...)
+	ends := []call{{"fc_first", "fc_first", "f", goodArgs}}
+	if got := callEvents(events, llm.StreamEventToolCallEnd); !slices.Equal(got, ends) {
+		t.Errorf("live ends = %+v, want exactly %+v", got, ends)
+	}
+	want := []call{{"c9", "fc_first", "f", goodArgs}}
+	assertSettledCalls(t, live, recorded, want)
+}
+
+// A content-filtered terminal retracted its answer: it must not borrow bytes the
+// stream had accumulated.
+func TestResponsesFilteredTerminalDoesNotBorrowBytes(t *testing.T) {
+	t.Parallel()
+	filtered := `{"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"content_filter"},"output":[` + terminalCall("fc_first", "c1", "write_file", "") + `]}}`
+	frames := []string{addedFirst, firstDelta, firstDone, filtered}
+	events, live, recorded := decodeBoth(t, frames...)
+	ends := []call{{"c1", "fc_first", "write_file", ""}}
+	if got := callEvents(events, llm.StreamEventToolCallEnd); !slices.Equal(got, ends) {
+		t.Errorf("live ends = %+v, want %+v", got, ends)
+	}
+	assertSettledCalls(t, live, recorded, ends)
+}

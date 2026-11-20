@@ -310,10 +310,12 @@ func adoptTerminalPhases(streamed []any, streamedRaw []json.RawMessage, terminal
 // its place, minus any call the terminal marks unfinished. A filtered answer is never recovered,
 // because the provider retracted it. Shared by the live decoder and offline recomputation.
 func settleResponsesTerminalOutput(r *llm.Response, rawResp map[string]any, acc *responsesOutputAccumulator) {
-	// Runs on every return path, including recovered output, so a terminal call
-	// that supplied no arguments is settled with the stream's own bytes before
-	// the live decoder announces it and before recorded replay returns it.
-	defer acc.fillTerminalArguments(r)
+	// A terminal call that supplied no arguments is settled with the stream's own
+	// bytes before the live decoder announces it and before recorded replay
+	// returns it. A filtered terminal retracted its answer, so it borrows nothing.
+	if r.Finish.Reason != llm.FinishReasonContentFilter {
+		acc.fillTerminalArguments(r)
+	}
 	terminalOutput, _ := rawResp["output"].([]any)
 	inc, recovered := rawResp["status"] == "incomplete", false // an incomplete response settles no finish reason
 	r.OutputSettled = true                                     // settles here, so a draft call never reaches ToolCalls
@@ -376,32 +378,25 @@ func settleResponsesTerminalOutput(r *llm.Response, rawResp map[string]any, acc 
 	}
 }
 
-// fillTerminalArguments gives a settled call the bytes the stream accumulated
-// when the terminal supplied none, matched by the call's explicit ID. A call the
-// terminal marks unfinished never enters r, so it is never filled.
+// fillTerminalArguments gives a terminal call the bytes the stream accumulated
+// when the terminal supplied none, matched by the call's explicit ID or, only
+// when that state learned no different call ID, by the item's state. It runs
+// before recovered output is merged in, so a recovered completion keeps the
+// bytes its own record carried.
 func (acc *responsesOutputAccumulator) fillTerminalArguments(r *llm.Response) {
 	if acc == nil || r == nil {
 		return
 	}
-	filled := map[*responsesToolState]bool{}
 	for i := range r.Message.Content {
 		part := &r.Message.Content[i]
 		tc := part.ToolCall
 		if part.Kind != llm.ContentToolCall || tc == nil || tc.ID == "" || len(tc.Arguments) > 0 {
 			continue
 		}
-		st := acc.toolStates[tc.ID]
-		if st == nil && tc.ItemID != "" {
-			// The item's owner may be another call; only a state that never learned
-			// a different call ID may stand in for this one.
-			if alt := acc.toolStates[tc.ItemID]; alt != nil && (alt.issuedCallID == "" || alt.issuedCallID == tc.ID) {
-				st = alt
-			}
-		}
-		if st == nil || st.args.Len() == 0 || filled[st] {
+		st := acc.lookupState(tc.ID, tc.ItemID)
+		if st == nil || st.args.Len() == 0 {
 			continue
 		}
-		filled[st] = true
 		tc.Arguments, tc.ArgumentsSpelling = llm.NormalizeToolArguments(st.args.Bytes())
 	}
 }
