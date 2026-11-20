@@ -93,7 +93,11 @@ type metroHoistRun struct {
 	log     *os.File
 	done    chan error
 	reaped  chan struct{}
-	pid     int
+	// failed is closed when the bundle exits non-zero, so the build can be
+	// stopped at once instead of waiting out the copy phase's deadline. It is
+	// closed rather than sent on, so the join and the build both read it.
+	failed chan struct{}
+	pid    int
 }
 
 // hoistMetroBundle rewrites the app phase into the copy step, emits the phase's
@@ -126,10 +130,20 @@ func (r *runner) hoistMetroBundle(ctx context.Context) error {
 	if err := procgroup.Start(cmd); err != nil {
 		return errors.Join(err, log.Close())
 	}
-	run := &metroHoistRun{logPath: logPath, log: log, done: make(chan error, 1), reaped: make(chan struct{}), pid: cmd.Process.Pid}
+	run := &metroHoistRun{
+		logPath: logPath,
+		log:     log,
+		done:    make(chan error, 1),
+		reaped:  make(chan struct{}),
+		failed:  make(chan struct{}),
+		pid:     cmd.Process.Pid,
+	}
 	r.hoist = run
 	go func() {
 		err := cmd.Wait()
+		if err != nil {
+			close(run.failed)
+		}
 		close(run.reaped)
 		run.done <- err
 	}()

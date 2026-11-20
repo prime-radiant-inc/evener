@@ -172,11 +172,35 @@ func qualify(ctx context.Context, output, derivedData string) (result error) {
 		return err
 	}
 	// Every exit path joins the bundle: a failed simulator or build must not
-	// leave a node process writing into the run output after the run ended.
-	defer func() { result = errors.Join(result, r.waitMetroHoist(ctx)) }()
+	// leave a node process writing into the run output after the run ended. The
+	// join is bounded so a hung bundle cannot hold the run past the failure that
+	// stopped the build.
+	defer func() {
+		joinCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
+		defer cancel()
+		result = errors.Join(result, r.waitMetroHoist(joinCtx))
+	}()
+	hoist := r.hoist
 	return r.withOwnedSimulator(ctx, simulatorName(output), func(udid string) error {
 		derived := r.derivedDataDir()
-		if _, err := r.commandOutput(ctx, "xcodebuild-release", false, releaseBuildCommand(udid, derived)...); err != nil {
+		// A bundle that dies after the startup probe stops the build here, rather
+		// than letting the copy phase wait out its deadline before the run fails.
+		buildCtx, cancelBuild := context.WithCancel(ctx)
+		defer cancelBuild()
+		if hoist != nil {
+			go func() {
+				select {
+				case <-hoist.failed:
+					cancelBuild()
+				case <-buildCtx.Done():
+				}
+			}()
+		}
+		if _, err := r.commandOutput(buildCtx, "xcodebuild-release", false, releaseBuildCommand(udid, derived)...); err != nil {
+			// Report the bundle failure when that is what stopped the build.
+			if hoistErr := r.waitMetroHoist(ctx); hoistErr != nil {
+				return hoistErr
+			}
 			return err
 		}
 		// The build only succeeded if its copy phase found a complete bundle, but
