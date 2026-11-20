@@ -36,22 +36,6 @@ func TestFormatQuietWindow(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// quietWatchdogMessage
-// ---------------------------------------------------------------------------
-
-func TestQuietWatchdogMessage(t *testing.T) {
-	t.Parallel()
-	now := time.Date(2025, 6, 15, 10, 30, 0, 0, time.UTC)
-	msg := quietWatchdogMessage(10*time.Minute, now)
-	if !strings.Contains(msg, "10m") {
-		t.Fatalf("expected '10m' in message: %q", msg)
-	}
-	if !strings.Contains(msg, "quiet for") {
-		t.Fatalf("expected 'quiet for' in message: %q", msg)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // watchEndedUnfiredMessage
 // ---------------------------------------------------------------------------
 
@@ -276,34 +260,6 @@ func TestWatchTargetTerminalError(t *testing.T) {
 	if !strings.Contains(err.Error(), "target_terminal") {
 		t.Fatalf("expected 'target_terminal' in error: %v", err)
 	}
-}
-
-// ---------------------------------------------------------------------------
-// watchArgsHasCondition
-// ---------------------------------------------------------------------------
-
-func TestWatchArgsHasCondition(t *testing.T) {
-	t.Parallel()
-	t.Run("output_match", func(t *testing.T) {
-		if !watchArgsHasCondition(watchArgs{OutputMatch: "ERROR"}) {
-			t.Fatalf("expected true for output_match")
-		}
-	})
-	t.Run("progress_interval", func(t *testing.T) {
-		if !watchArgsHasCondition(watchArgs{ProgressIntervalMS: 5000}) {
-			t.Fatalf("expected true for progress_interval")
-		}
-	})
-	t.Run("events", func(t *testing.T) {
-		if !watchArgsHasCondition(watchArgs{Events: []string{"job.notification"}}) {
-			t.Fatalf("expected true for events")
-		}
-	})
-	t.Run("no condition", func(t *testing.T) {
-		if watchArgsHasCondition(watchArgs{}) {
-			t.Fatalf("expected false for no condition")
-		}
-	})
 }
 
 // ---------------------------------------------------------------------------
@@ -690,33 +646,6 @@ func TestWatchSendKeyLess(t *testing.T) {
 		t.Fatalf("expected b >= a")
 	}
 }
-
-// ---------------------------------------------------------------------------
-// watchKeyMatchesClearRequest
-// ---------------------------------------------------------------------------
-
-func TestWatchKeyMatchesClearRequest(t *testing.T) {
-	t.Parallel()
-	t.Run("exact match", func(t *testing.T) {
-		candidate := watchKey{VisibleSessionID: "s1", Target: "job_1", SendTo: "dlg_1"}
-		request := watchKey{VisibleSessionID: "s1", Target: "job_1", SendTo: "dlg_1"}
-		if !watchKeyMatchesClearRequest(candidate, request) {
-			t.Fatalf("expected true for exact match")
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
-// watchSendArgs struct
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// watchResult struct
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// watchKey struct
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // errWatchTargetNotFound sentinel

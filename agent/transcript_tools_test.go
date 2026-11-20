@@ -1241,6 +1241,19 @@ func TestFind_ProjectName_CrossBucketParentNeedsLaneEvidence(t *testing.T) {
 	}
 }
 
+// discoverySnapshot is the bucket metadata snapshot discovery hands a resolver,
+// which is what activates the sibling evidence cache. Without it the resolver
+// reads live on every row, so a test about cached evidence would exercise only
+// the uncached path.
+func discoverySnapshot(t *testing.T, bucket string) map[string][]schema.SessionMeta {
+	t.Helper()
+	metas, err := schema.ListSessionMetas(bucket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return map[string][]schema.SessionMeta{bucket: metas}
+}
+
 // TestFind_ProjectName_CacheKeyedByEligibility covers the cache key. The
 // resolver is shared across result rows, and one bucket can answer differently
 // depending on the row: a session-owned lane with no project segment accepts any
@@ -1270,6 +1283,8 @@ func TestFind_ProjectName_CacheKeyedByEligibility(t *testing.T) {
 	if err := schema.SaveSessionMeta(bucket, other); err != nil {
 		t.Fatal(err)
 	}
+	// The snapshot is what puts the cache key this test covers under test.
+	snapshot := discoverySnapshot(t, bucket)
 
 	// The managed lane names repo A, so only evidence about A may answer for it,
 	// and there is none. Alone it must be labelled empty.
@@ -1281,13 +1296,13 @@ func TestFind_ProjectName_CacheKeyedByEligibility(t *testing.T) {
 	sessionLane := schema.SessionMeta{}
 	sessionLane.EnvInfo.WorkingDir = filepath.Join(bucket, "sessions", identifier.MustNewSessionID(), "worktrees", "dlg_session")
 
-	if got, want := newProjectNameResolver().projectName(managedLane, bucket), ""; got != want {
+	if got, want := newProjectNameResolver(snapshot).projectName(managedLane, bucket), ""; got != want {
 		t.Fatalf("projectName(managed lane for repo A, alone) = %q, want empty", got)
 	}
 
 	// Now the ordering that used to leak: the permissive row answers first and
 	// caches repo B under the bucket. The managed lane must not read that.
-	r := newProjectNameResolver()
+	r := newProjectNameResolver(snapshot)
 	if got, want := r.projectName(sessionLane, bucket), "repo-b"; got != want {
 		t.Fatalf("projectName(session-owned lane, no project segment) = %q, want the sibling's %q", got, want)
 	}
@@ -1297,7 +1312,7 @@ func TestFind_ProjectName_CacheKeyedByEligibility(t *testing.T) {
 
 	// The reverse order must also hold: a managed lane's answer is not served to
 	// the permissive row.
-	r2 := newProjectNameResolver()
+	r2 := newProjectNameResolver(snapshot)
 	if got := r2.projectName(managedLane, bucket); got != "" {
 		t.Fatalf("projectName(managed lane first) = %q, want empty", got)
 	}
@@ -2934,11 +2949,13 @@ func TestFind_ProjectName_SiblingRestoreRootBasenameFallback(t *testing.T) {
 	}
 }
 
-// TestFind_ProjectName_RowAnswersIndependentOfOrder covers the property the
-// removed sibling cache used to break. The resolver is shared across result
-// rows, so a bucket-wide cached label could be served to a later row that had a
-// different answer of its own. With no cache, every row's label is decided only
-// by its own evidence and the bucket's, never by which rows preceded it.
+// TestFind_ProjectName_RowAnswersIndependentOfOrder covers the property a
+// bucket-wide sibling cache used to break. The resolver is shared across result
+// rows, so a cached label keyed by the bucket alone could be served to a later
+// row that had a different answer of its own. The resolver is given discovery's
+// snapshot here, so the cache is active and the row answers must still be
+// decided only by their own evidence and the bucket's, never by which rows
+// preceded them.
 func TestFind_ProjectName_RowAnswersIndependentOfOrder(t *testing.T) {
 	stateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", stateHome)
@@ -2961,6 +2978,7 @@ func TestFind_ProjectName_RowAnswersIndependentOfOrder(t *testing.T) {
 	if err := schema.SaveSessionMeta(bucket, other); err != nil {
 		t.Fatal(err)
 	}
+	snapshot := discoverySnapshot(t, bucket)
 
 	managed := schema.SessionMeta{}
 	managed.EnvInfo.WorkingDir = filepath.Join(bucket, "worktrees", projectA.ID, "dlg_managed")
@@ -2970,14 +2988,14 @@ func TestFind_ProjectName_RowAnswersIndependentOfOrder(t *testing.T) {
 	// Alone first, then after the other row, then the reverse. Every row must
 	// return exactly what it returns alone.
 	const wantSession = "other-repo"
-	forward := newProjectNameResolver()
+	forward := newProjectNameResolver(snapshot)
 	if got, want := forward.projectName(session, bucket), wantSession; got != want {
 		t.Fatalf("projectName(session-owned row, first) = %q, want %q", got, want)
 	}
 	if got := forward.projectName(managed, bucket); got != "" {
 		t.Fatalf("projectName(managed lane after a session-owned row) = %q, want empty (the sibling names another project)", got)
 	}
-	backward := newProjectNameResolver()
+	backward := newProjectNameResolver(snapshot)
 	if got := backward.projectName(managed, bucket); got != "" {
 		t.Fatalf("projectName(managed lane, first) = %q, want empty", got)
 	}

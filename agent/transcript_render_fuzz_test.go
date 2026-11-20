@@ -156,10 +156,16 @@ func trender_isOmittedKind(line string) bool {
 }
 
 // trender_canonicalEntry re-encodes one JSONL line into the form the projection
-// oracle compares: "seq" dropped (the renderer renumbers it), and - when
-// redactPrivate is set - the private turn keys removed. The shallow map
-// round-trip matches the renderer's own, so object key order and inter-token
-// whitespace agree on both sides without the oracle reaching into nested values.
+// oracle compares: "seq" dropped (the renderer renumbers it), and - on the
+// source side (redactPrivate) - the private turn keys and every spelling of
+// original_ordinal dropped. The rendered side keeps original_ordinal, so a
+// render that leaks it cannot match. The key loop mirrors production's
+// dropOriginalOrdinalSpellings rather than calling it, which keeps the oracle an
+// independent definition.
+//
+// The shallow map round-trip matches the renderer's own, so object key order and
+// inter-token whitespace agree on both sides without the oracle reaching into
+// nested values.
 //
 // A line that is not a JSON object is returned unchanged; it can then never
 // equal a rendered entry line, which is the comparison outcome we want.
@@ -175,6 +181,11 @@ func trender_canonicalEntry(line string, redactPrivate bool) string {
 			delete(turn, "attention_id")
 			delete(turn, "attention_resolution")
 			delete(turn, "delegate_delivery_commits")
+			for key := range turn {
+				if strings.EqualFold(key, "original_ordinal") {
+					delete(turn, key)
+				}
+			}
 		}
 		encodedTurn, err := json.Marshal(turn)
 		if err != nil {
@@ -237,6 +248,11 @@ func TestTrenderEntryLinesAreProjection(t *testing.T) {
 	communicate := `{"kind":"entry","seq":%d,"turn":{"kind":"COMMUNICATE"}}`
 	// A fold copy carries its original's kind, so the kind alone cannot omit it.
 	foldCopy := `{"kind":"entry","seq":%d,"turn":{"kind":"USER_INPUT","original_ordinal":0}}`
+	// An explicit null decodes to a nil pointer, so trender_isOmittedKind does
+	// not treat this turn as a fold copy; the projection still never emits the
+	// key, so the source side has to drop it.
+	nullOrdinal := `{"kind":"entry","seq":%d,"turn":{"kind":"USER_INPUT","original_ordinal":null}}`
+	caseNullOrdinal := `{"kind":"entry","seq":%d,"turn":{"kind":"USER_INPUT","ORIGINAL_ORDINAL":null}}`
 	at := func(tmpl string, seq int) string { return fmt.Sprintf(tmpl, seq) }
 
 	tests := []struct {
@@ -298,13 +314,13 @@ func TestTrenderEntryLinesAreProjection(t *testing.T) {
 		},
 		{
 			// The other leak this oracle could not see: a copy's kind is public,
-			// so leaving it among the candidates let a render that emitted the
-			// copy match its source line and satisfy the subsequence check. The
-			// rendered line is the copy's own canonical form, ordinal included,
-			// so it can only match the source line the copy contributed.
+			// so leaving it among the candidates would let a render that emitted
+			// the copy match its source line. The render drops the ordinal a copy
+			// carries, so the emitted shape is the plain public one: only
+			// excluding the copy from the candidates keeps this a rejection.
 			name:     "fold copy emitted by the render",
 			file:     []string{trenderHeader, at(entryA, 0), at(foldCopy, 1)},
-			rendered: []string{at(entryA, 0), at(foldCopy, 1)},
+			rendered: []string{at(entryA, 0), at(redacted, 0)},
 			want:     false,
 		},
 		{
@@ -329,6 +345,24 @@ func TestTrenderEntryLinesAreProjection(t *testing.T) {
 			name:     "entry the file never held",
 			file:     []string{trenderHeader, at(entryA, 0)},
 			rendered: []string{at(entryB, 0)},
+			want:     false,
+		},
+		{
+			name:     "explicit null original_ordinal dropped from the render",
+			file:     []string{trenderHeader, at(nullOrdinal, 3)},
+			rendered: []string{at(redacted, 0)},
+			want:     true,
+		},
+		{
+			name:     "case-variant original_ordinal spelling dropped from the render",
+			file:     []string{trenderHeader, at(caseNullOrdinal, 3)},
+			rendered: []string{at(redacted, 0)},
+			want:     true,
+		},
+		{
+			name:     "original_ordinal retained by the render",
+			file:     []string{trenderHeader, at(nullOrdinal, 3)},
+			rendered: []string{at(nullOrdinal, 0)},
 			want:     false,
 		},
 	}

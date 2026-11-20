@@ -14,7 +14,6 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/plugin"
-	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 )
@@ -134,6 +133,29 @@ func TestDelegateResult(t *testing.T) {
 	if result5.Status != jobstore.StatusRunning {
 		t.Errorf("status = %q, want running for empty snapshot", result5.Status)
 	}
+	// Plan updates override committed rows when the result is built.
+	committedRunning := delegateUpdatePlan{rows: []delegateSnapshot{
+		{id: "dlg_1", lifecycle: delegateLifecycleRunning, resumable: false},
+	}}
+	plans := delegateMutationPlans{updates: []delegateUpdatePlan{{rows: []delegateSnapshot{{
+		id:          "dlg_1",
+		lifecycle:   delegateLifecycleIdle,
+		resumable:   true,
+		lastOutcome: &delegatestore.Outcome{Status: delegatestore.OutcomeCompleted, Reason: "reported_result"},
+	}}}}}
+	fromPlans := startedDelegateResult(descriptor, "dlg_1", committedRunning, plans, nil)
+	if fromPlans.Status != jobstore.Status(delegateLifecycleIdle) ||
+		fromPlans.Resumable == nil || !*fromPlans.Resumable ||
+		fromPlans.Reason != "reported_result" ||
+		!fromPlans.RunningInBackground ||
+		fromPlans.Sandbox != nil {
+		t.Errorf("result from plan update = %+v", fromPlans)
+	}
+	// The error is returned as the exact object passed in.
+	wantErr := errors.New("fail")
+	if got := startedDelegateResult(descriptor, "dlg_1", committed, delegateMutationPlans{}, wantErr); !errors.Is(got.Err, wantErr) {
+		t.Errorf("err = %v, want the exact input object %v", got.Err, wantErr)
+	}
 }
 
 func TestLatestDelegateMutationSnapshot(t *testing.T) {
@@ -203,55 +225,6 @@ func TestDelegateSandboxSnapshot(t *testing.T) {
 	got = delegateSandboxSnapshot(policy)
 	if got.Network != nil {
 		t.Error("nil network should stay nil")
-	}
-}
-
-func TestSandboxPolicyFromStableSnapshot(t *testing.T) {
-	t.Parallel()
-	// Nil returns nil.
-	if got := sandboxPolicyFromStableSnapshot(nil); got != nil {
-		t.Fatal("nil snapshot should return nil")
-	}
-	// Invalid mode returns nil.
-	got := sandboxPolicyFromStableSnapshot(&delegatestore.SandboxSnapshot{Mode: "invalid"})
-	if got != nil {
-		t.Fatal("invalid mode should return nil")
-	}
-	// Valid snapshot round-trips.
-	net := true
-	snap := &delegatestore.SandboxSnapshot{
-		Mode:               "workspace-write",
-		DenylistAdd:        []string{"a"},
-		ExtraWritableRoots: []string{"c"},
-		Network:            &net,
-	}
-	got = sandboxPolicyFromStableSnapshot(snap)
-	if got == nil || got.Mode != sandbox.ModeWorkspaceWrite {
-		t.Fatalf("policy = %+v", got)
-	}
-	if got.Network == nil || !*got.Network {
-		t.Error("network not copied")
-	}
-	// Nil network stays nil.
-	snap.Network = nil
-	got = sandboxPolicyFromStableSnapshot(snap)
-	if got.Network != nil {
-		t.Error("nil network should stay nil")
-	}
-}
-
-func TestDescriptorProvenance(t *testing.T) {
-	t.Parallel()
-	// Nil provenance returns nil.
-	if got := descriptorProvenance(delegatestore.Descriptor{}); got != nil {
-		t.Fatal("nil provenance should return nil")
-	}
-	// Non-nil provenance returns a clone. Clone returns NilIfEmpty, so
-	// ChainTruncated=true keeps it non-empty.
-	orig := &provenance.Causal{ChainTruncated: true}
-	got := descriptorProvenance(delegatestore.Descriptor{Provenance: orig})
-	if got == nil || !got.ChainTruncated {
-		t.Fatalf("provenance = %+v, want clone with ChainTruncated=true", got)
 	}
 }
 

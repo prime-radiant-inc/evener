@@ -1104,7 +1104,7 @@ func DefDoctorEvener() llm.ToolDefinition {
 				"state_dir": map[string]any{"type": "string", "description": "State root override. Defaults to this session's own state root. Rejected by plugins (the plugin store lives in the config root, not a state root) and lifecycle (the machines are compiled declarations)."},
 				"count":     map[string]any{"type": "string", "description": "transcript: print the structural invocation count of this tool name."},
 				"health":    map[string]any{"type": "boolean", "description": "transcript/apilog: mechanical health metrics / one-line API-health verdict."},
-				"range":     map[string]any{"type": "string", "description": "transcript: window of read_transcript turn numbers, with read_transcript's grammar: last:N | start:N | N-M. Omit for the whole transcript; a malformed range also renders it, with range_warning. Entries read_transcript omits carry no turn number and render with the turn before them."},
+				"range":     map[string]any{"type": "string", "description": "transcript: window of read_transcript turn numbers, with read_transcript's grammar: last:N | start:N | N-M. Omit for the whole transcript; a malformed range also renders it, with range_warning. Fold copies never appear; other entries read_transcript omits have no turn number and can still fall inside the selected window."},
 				"text_max":  map[string]any{"type": "integer", "description": "transcript: byte cap on each turn's rendered text and tool-result previews."},
 				"full_text": map[string]any{"type": "boolean", "description": "transcript: render turns whole, with no byte cap."},
 				"empty":     map[string]any{"type": "boolean", "description": "apilog: only empty responses."},

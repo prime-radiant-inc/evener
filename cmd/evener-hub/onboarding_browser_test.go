@@ -26,6 +26,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/internal/testfs"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 	"primeradiant.com/evener/rendezvous"
@@ -480,7 +481,7 @@ func newOnboardingGuardEnv(t *testing.T) *onboardingGuardEnv {
 	requireFreshDist(t)
 	// Read before isolation. Only video and sanitized visual evidence escape TempDir.
 	g := &onboardingGuardEnv{
-		root:        t.TempDir(),
+		root:        testfs.CanonicalTempDir(t),
 		recordVideo: os.Getenv("EVENER_ONBOARDING_VIDEO"),
 		evidenceDir: os.Getenv("EVENER_ONBOARDING_EVIDENCE_DIR"),
 		repo:        skillGuardRepoRoot(t),
