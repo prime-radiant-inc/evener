@@ -709,3 +709,40 @@ func assertRawArgsByIndex(t *testing.T, got, want [][]byte) {
 		}
 	}
 }
+
+// TestRawArgs_Stream_ToolCallEndNormalizesArgumentsAndKeepsSpelling pins the
+// live end event to the settled call's shape: Arguments is the canonical bytes
+// and the provider's formatted original rides as ArgumentsSpelling.
+func TestRawArgs_Stream_ToolCallEndNormalizesArgumentsAndKeepsSpelling(t *testing.T) {
+	t.Parallel()
+	const spelled = `{ "a" : "<x&y>" }`
+	const canonical = `{"a":"\u003cx\u0026y\u003e"}`
+	argsToken := string(jsonStringToken(spelled))
+	body := "event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"write_file\"}}\n\n" +
+		"event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"write_file\",\"arguments\":" + argsToken + "}}\n\n" +
+		"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"model\":\"gpt-5.5\",\"output\":[],\"usage\":{\"input_tokens\":3,\"output_tokens\":2,\"total_tokens\":5}}}\n\n"
+	srv, _ := server(t, http.StatusOK, body)
+	res := liveRes(srv, nil)
+	s, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), llm.ShapeRequest(userReq("hi"), res), res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var end *llm.ToolCallData
+	for ev := range s.Events() {
+		switch ev.Type {
+		case llm.StreamEventError:
+			t.Fatalf("stream error: %v", ev.Err)
+		case llm.StreamEventToolCallEnd:
+			end = ev.ToolCall
+		}
+	}
+	if end == nil {
+		t.Fatal("stream produced no ToolCallEnd event")
+	}
+	if got := string(end.Arguments); got != canonical {
+		t.Fatalf("ToolCallEnd Arguments = %q, want the canonical %q", got, canonical)
+	}
+	if got := string(end.ArgumentsSpelling); got != spelled {
+		t.Fatalf("ToolCallEnd ArgumentsSpelling = %q, want the provider's original %q", got, spelled)
+	}
+}

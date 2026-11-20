@@ -220,7 +220,8 @@ func (tc *ToolCallData) WireArguments() string {
 // preserved raw bytes for a call whose arguments were not valid JSON
 // (Arguments holds the replay-safe {} placeholder there), else the recorded
 // arguments. Byte-faithful in both branches; callers wanting tidy edges trim
-// presentation-side.
+// presentation-side. Arguments is the canonical form; WireArguments returns
+// the provider's spelling while it still normalizes to Arguments.
 func (tc *ToolCallData) SentArguments() string {
 	if tc.RawArguments != "" {
 		return tc.RawArguments

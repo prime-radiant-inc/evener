@@ -12,6 +12,9 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/chatcompletions"
+	"primeradiant.com/evener/llm/providers/responses"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // readTranscriptLines reads all non-empty lines from a JSONL transcript file.
@@ -356,4 +359,71 @@ func TestTranscriptPreservesToolArgumentsSpellingAndHTMLChars(t *testing.T) {
 	if got := entry.Turn.Message.Content; err != nil || !reflect.DeepEqual(got, calls) || got[0].ToolCall.WireArguments() != spelled {
 		t.Fatalf("restored %+v (%v), want live %+v replaying %q", got, err, calls, spelled)
 	}
+
+	// The restored call must also reach both wires with the provider's
+	// spelling. Build the bodies through the same exported BuildBody seam the
+	// session's protocol registry reaches, from the cold-restored message.
+	req := llm.Request{Model: "gpt-5.5", Messages: []llm.Message{
+		{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "hi"}}},
+		entry.Turn.Message,
+	}}
+	responsesRes := registry.Resolved{Instance: "openai", Protocol: registry.ProtocolOpenAIResponses, ModelID: "gpt-5.5", WireID: "gpt-5.5",
+		Caps: registry.Caps{Fields: registry.Baseline(registry.ProtocolOpenAIResponses)}}
+	responsesBody, err := (&responses.Protocol{}).BuildBody(llm.ShapeRequest(req, responsesRes), responsesRes)
+	if err != nil {
+		t.Fatalf("responses BuildBody: %v", err)
+	}
+	items, ok := responsesBody["input"].([]any)
+	if !ok {
+		t.Fatalf("responses input = %T, want []any", responsesBody["input"])
+	}
+	responsesArgs := firstToolArguments(items)
+	if responsesArgs != spelled {
+		t.Fatalf("responses wire arguments = %q, want the preserved spelling %q", responsesArgs, spelled)
+	}
+
+	chatRes := registry.Resolved{Instance: "openai", Protocol: registry.ProtocolOpenAIChat, ModelID: "gpt-5.5", WireID: "gpt-5.5",
+		Caps: registry.Caps{Fields: registry.Baseline(registry.ProtocolOpenAIChat)}}
+	chatBody, err := (&chatcompletions.Protocol{}).BuildBody(llm.ShapeRequest(req, chatRes), chatRes)
+	if err != nil {
+		t.Fatalf("chat BuildBody: %v", err)
+	}
+	msgs, ok := chatBody["messages"].([]map[string]any)
+	if !ok {
+		t.Fatalf("chat messages = %T, want []map[string]any", chatBody["messages"])
+	}
+	chatArgs := firstToolArguments(msgs)
+	if chatArgs != spelled {
+		t.Fatalf("chat wire arguments = %q, want the preserved spelling %q", chatArgs, spelled)
+	}
+}
+
+// firstToolArguments returns the first "arguments" string in a decoded request
+// body, walking maps and slices. The transcript fixture carries exactly one
+// tool call, on either wire shape.
+func firstToolArguments(v any) string {
+	switch x := v.(type) {
+	case map[string]any:
+		if args, ok := x["arguments"].(string); ok {
+			return args
+		}
+		for _, child := range x {
+			if args := firstToolArguments(child); args != "" {
+				return args
+			}
+		}
+	case []any:
+		for _, child := range x {
+			if args := firstToolArguments(child); args != "" {
+				return args
+			}
+		}
+	case []map[string]any:
+		for _, child := range x {
+			if args := firstToolArguments(child); args != "" {
+				return args
+			}
+		}
+	}
+	return ""
 }

@@ -767,7 +767,8 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 						tc := llm.ToolCallData{ID: st.id, ItemID: st.itemID, Name: st.name, Type: "function"}
 						s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &tc})
 					}
-					tc := llm.ToolCallData{ID: st.id, ItemID: st.itemID, Name: st.name, Arguments: json.RawMessage(argsStr), Type: "function"}
+					args, spelling := llm.NormalizeToolArguments([]byte(argsStr))
+					tc := llm.ToolCallData{ID: st.id, ItemID: st.itemID, Name: st.name, Arguments: args, ArgumentsSpelling: spelling, Type: "function"}
 					s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &tc})
 				case rawItem == nil:
 					// Best-effort: treat as end-of-text.

@@ -520,3 +520,55 @@ func TestPostToolBatch_RejectedArgumentsAndSynthesizedCallID(t *testing.T) {
 		t.Errorf("captured id-less call tool_input = %v, want the dispatched repaired arguments", captured[2].ToolInput)
 	}
 }
+
+// TestPostToolBatch_DeniedCallKeepsSpelledToolInput pins the batch rendering of
+// a call a PreToolUse hook denied. Nothing recorded dispatched arguments, so
+// the fallback must be the call's wire spelling: HTML escaping expands `<`,
+// `>`, and `&`, and here the canonical bytes cross the 2 MiB argument cap while
+// the provider's formatted original stays under it. Falling back to Arguments
+// therefore drops tool_input entirely.
+func TestPostToolBatch_DeniedCallKeepsSpelledToolInput(t *testing.T) {
+	t.Parallel()
+	f, capturedCalls := newPostToolBatchCaptureFixture(t, func(round int, req llm.Request) llm.Response {
+		return agenttest.FinalResponse("done")
+	})
+	// cat drains the oversized hook input so the deny's own output still lands.
+	denyCmd := `cat >/dev/null; printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"denied by batch test"}}'`
+	f.sess.hookRunner.Add(plugin.HookPreToolUse, plugin.RegisteredHook{Matcher: "Grep", Type: "command", Command: denyCmd, Timeout: 10})
+
+	const want = "<x&y>"
+	payload := strings.Repeat(want, 120_000)
+	spelling := `{ "pattern" : "` + payload + `" }`
+	canonical, kept := llm.NormalizeToolArguments([]byte(spelling))
+	if kept == "" {
+		t.Fatal("test setup: NormalizeToolArguments kept no spelling")
+	}
+	if len(spelling) > tool.MaxToolArgumentBytes || len(canonical) <= tool.MaxToolArgumentBytes {
+		t.Fatalf("test setup: spelling %d bytes, canonical %d bytes, want spelling under and canonical over the %d-byte cap",
+			len(spelling), len(canonical), tool.MaxToolArgumentBytes)
+	}
+	call := llm.ToolCallData{ID: "denied-spelled", Name: "grep", Arguments: canonical, ArgumentsSpelling: kept, Type: "function"}
+	res := f.sess.execTool(context.Background(), call, "")
+	if !res.IsError || res.PrevalOnly || res.Rejected {
+		t.Fatalf("denied grep = %+v, want a plain PreToolUse deny", res)
+	}
+	batch := f.sess.batchToolCalls([]llm.ToolCallData{call}, []tool.ExecResult{res})
+	if len(batch) != 1 {
+		t.Fatalf("batchToolCalls = %+v, want one entry", batch)
+	}
+	hi := f.sess.hookInput(plugin.HookPostToolBatch)
+	hi.ToolCalls = batch
+	batchRes := f.sess.hookRunner.RunPostToolBatch(context.Background(), hi)
+	if len(batchRes.UserMessages) != 0 || len(batchRes.ModelContext) != 0 {
+		t.Fatalf("capture hook produced output: %+v", batchRes)
+	}
+	captured := capturedCalls()
+	if len(captured) != 1 {
+		t.Fatalf("captured tool_calls = %d, want 1", len(captured))
+	}
+	for name, got := range map[string]any{"batch": batch[0].ToolInput["pattern"], "captured": captured[0].ToolInput["pattern"]} {
+		if got != payload {
+			t.Fatalf("%s tool_input.pattern = %d chars, want the spelled %d-char value", name, len(fmt.Sprint(got)), len(payload))
+		}
+	}
+}
