@@ -155,8 +155,10 @@ losing the conversation that made the evidence relevant.
   was. A phone's
   resting composer is one line too, but it keeps only the session menu and Send
   there; engaging the editor restores the full row, including Attach and the model
-  picker. A desktop card under 620px keeps the stacked control row and the folded
-  one-line field. The phone's resting card sheds Attach, the model chrome and the
+  picker. This phone treatment also holds on a primary-touch landscape viewport up
+  to 1000px wide and 700px tall, including the Duo's 951×669pt inner display, even
+  though that width uses the desktop shell. A fine-pointer desktop card under 620px keeps the stacked
+  control row and the folded one-line field. The phone's resting card sheds Attach, the model chrome and the
   activity line: the folded card is the phone's smallest surface, and the counts come
   back with the expanded card. At the 466px Duo cover width the control row
   tightens; focus, drafts, attachments, and question/approval docks keep their writing
@@ -171,6 +173,11 @@ losing the conversation that made the evidence relevant.
   `--space-2` gap, with the matching dock gap in
   `composer.module.css`), while the activity count line keeps the 44px `--tap-min` floor
   (`composer.module.css` `.activityRow`).
+- **Let the lowest footer own the safe area.** A pane with a flush `edgeFooter`
+  below its padded composer footer gives that edge footer the home-indicator band
+  at every width. The composer footer keeps only its ordinary `--space-3` gap, so a
+  wide landscape phone cannot reserve the same band once above the status bar and
+  again inside it.
 - **Keep the loading face honest and seat-scoped.** A loading session pane shows a `Loader`
   status over a static four-line `Skeleton` and delays its force-stop recovery copy by
   eight seconds (`RECOVERY_HINT_DELAY_MS` in
