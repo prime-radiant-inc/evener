@@ -358,10 +358,13 @@ func (s *Server) attachLiveWatches(data []appwire.Thread) {
 	}
 }
 
-// attachDescendantQuotaWaits puts each waiting descendant's usage-limit
-// summary on its row, as the root's envelope puts the root's on its own
-// (appThreadWithDiagnosticsLocked lets a summary with a resume time through on
-// a working thread). The summary is attached to the returned copy only.
+// attachDescendantQuotaWaits replaces each descendant row's copied usage-limit
+// summary with the live sample, as the root's envelope puts the root's on its
+// own (appThreadWithDiagnosticsLocked lets a summary with a resume time through
+// on a working thread). The sample lists only the descendants waiting now, so a
+// copied wait absent from it is stale and leaves the row on this refresh,
+// not the next; an ordinary failure carries no wait and stays as stored. Only
+// the returned copy changes, so thread/read keeps serving the stored summary.
 func (s *Server) attachDescendantQuotaWaits(descendants []appwire.Thread) {
 	s.mu.RLock()
 	fn := s.appDescendantQuotaWaitsFunc
@@ -375,8 +378,11 @@ func (s *Server) attachDescendantQuotaWaits(descendants []appwire.Thread) {
 	}
 	waits := fn(ids)
 	for i := range descendants {
-		if failure := waits[descendants[i].ID]; failure != nil {
-			descendants[i].Evener.Failure = appwire.CloneThreadFailure(failure)
+		row := &descendants[i]
+		if live := waits[row.ID]; live != nil {
+			row.Evener.Failure = appwire.CloneThreadFailure(live)
+		} else if failure := row.Evener.Failure; failure != nil && failure.ResumesAt > 0 {
+			row.Evener.Failure = nil
 		}
 	}
 }
