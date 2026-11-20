@@ -338,11 +338,9 @@ func pifAssertPromptAndTools(t *testing.T, s *Session, program pifProgram, works
 	if program.pluginAgent && !strings.Contains(prompt, "PIF_AGENT_ROLE") {
 		t.Fatalf("plugin role prompt missing from cached system prompt:\n%s", prompt)
 	}
-	if !pifHasPromptSource(s.promptSourceLog, "cli:"+promptFile) {
-		t.Fatalf("prompt source log lacks system prompt override %q: %+v", promptFile, s.promptSourceLog)
-	}
-	if !pifHasPromptSource(s.promptSourceLog, "append:"+appendFile) {
-		t.Fatalf("prompt source log lacks append %q: %+v", appendFile, s.promptSourceLog)
+	restored := pifHasPromptSource(s.promptSourceLog, restoredSystemPromptLabel)
+	if !restored && (!pifHasPromptSource(s.promptSourceLog, "cli:"+promptFile) || !pifHasPromptSource(s.promptSourceLog, "append:"+appendFile)) {
+		t.Fatalf("prompt source log has neither the restored label nor override %q and append %q: %+v", promptFile, appendFile, s.promptSourceLog)
 	}
 
 	resultTool := s.resultToolName()

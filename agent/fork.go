@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/spf13/afero"
@@ -222,6 +223,52 @@ func writeForkChild(fs afero.Fs, stateDir, parentID string, parentHeader transcr
 	return writeForkChildWithConfig(fs, stateDir, parentID, parentHeader, parentMeta, prefixEntries, divergenceTurn, editedMessage, nil, deps)
 }
 
+// forkInheritsParentPrompt reports whether a fork/aside child shares the
+// parent's role and plugin configuration and therefore inherits its launch
+// prompt and baseline.
+func forkInheritsParentPrompt(parentMeta schema.SessionMeta, childCfg schema.ConfigSnapshot) bool {
+	return !parentMeta.IsSubagent && !parentMeta.Manager && !parentMeta.Config.Manager &&
+		childCfg.AgentName == parentMeta.Config.AgentName && slices.Equal(childCfg.PluginDirs, parentMeta.Config.PluginDirs)
+}
+
+// resolveEffectiveSavedSystemPrompt resolves the launch system prompt a saved
+// session actually owns. A recovered Meta.LaunchSystemPrompt is authoritative;
+// otherwise headerPrompt is accepted only if walking the non-subagent ancestor
+// chain (while LaunchSystemPrompt == "") finds no unrecovered fork boundary
+// where !forkInheritsParentPrompt.
+func resolveEffectiveSavedSystemPrompt(loadMeta func(id string) (schema.SessionMeta, error), meta schema.SessionMeta, headerPrompt string) (prompt string, legacyMismatched bool) {
+	if recovered := validSavedSystemPrompt(meta.LaunchSystemPrompt); recovered != "" {
+		return recovered, false
+	}
+	header := validSavedSystemPrompt(headerPrompt)
+	if header == "" {
+		return "", false
+	}
+	cur := meta
+	visited := map[string]bool{cur.ID: true}
+	for cur.ParentSessionID != "" && !cur.IsSubagent {
+		if visited[cur.ParentSessionID] {
+			break
+		}
+		visited[cur.ParentSessionID] = true
+		parentMeta, err := loadMeta(cur.ParentSessionID)
+		if err != nil {
+			break
+		}
+		if !forkInheritsParentPrompt(parentMeta, cur.Config) {
+			return "", true
+		}
+		if recovered := validSavedSystemPrompt(parentMeta.LaunchSystemPrompt); recovered != "" {
+			if header == recovered {
+				return header, false
+			}
+			return "", true
+		}
+		cur = parentMeta
+	}
+	return header, false
+}
+
 func writeForkChildWithConfig(fs afero.Fs, stateDir, parentID string, parentHeader transcript.Header, parentMeta schema.SessionMeta, prefixEntries []transcript.Entry, divergenceTurn int, editedMessage *string, config *schema.ConfigSnapshot, deps forkSessionDeps) (string, error) {
 	// Mint a new child session ID.
 	childID, err := identifier.NewSessionID()
@@ -231,6 +278,21 @@ func writeForkChildWithConfig(fs afero.Fs, stateDir, parentID string, parentHead
 
 	// Build the child transcript header from the parent's fields.
 	now := time.Now().UTC()
+	childConfig := parentMeta.Config
+	if config != nil {
+		childConfig = config.Clone()
+	}
+	// A fork or aside is a new ordinary session, not a resumed Manager.
+	childConfig.Manager = false
+	// The child keeps the parent's launch prompt only when it is the same role:
+	// a delegate or Manager parent, or a config that reselects the agent or its
+	// plugins, makes this a new ordinary session that renders its own.
+	inherited := ""
+	if forkInheritsParentPrompt(parentMeta, childConfig) {
+		inherited, _ = resolveEffectiveSavedSystemPrompt(func(id string) (schema.SessionMeta, error) {
+			return schema.LoadSessionMetaWithFS(fs, stateDir, id)
+		}, parentMeta, parentHeader.SystemPrompt)
+	}
 	childHeader := transcript.Header{
 		SessionID:        childID,
 		ParentSessionID:  parentID,
@@ -240,7 +302,7 @@ func writeForkChildWithConfig(fs afero.Fs, stateDir, parentID string, parentHead
 		WorkingDir:       parentHeader.WorkingDir,
 		Depth:            parentHeader.Depth,
 		BuildVersion:     parentHeader.BuildVersion,
-		SystemPrompt:     parentHeader.SystemPrompt,
+		SystemPrompt:     inherited,
 		AgentTasks:       parentHeader.AgentTasks,
 		Task:             parentHeader.Task,
 		ParentToolCallID: parentHeader.ParentToolCallID,
@@ -295,12 +357,6 @@ func writeForkChildWithConfig(fs afero.Fs, stateDir, parentID string, parentHead
 	}
 
 	// Build and save the child meta.
-	childConfig := parentMeta.Config
-	if config != nil {
-		childConfig = config.Clone()
-	}
-	// A fork or aside is a new ordinary session, not a resumed Manager.
-	childConfig.Manager = false
 	// A fork child is written as a root, so it keeps a restricted root parent's
 	// memory-save verdict but never inherits a delegate parent's save-tool
 	// removal: the child registers the save tools when it launches. An aside
@@ -322,7 +378,9 @@ func writeForkChildWithConfig(fs afero.Fs, stateDir, parentID string, parentHead
 		DivergenceTurn:        divergenceTurn,
 		ForkLabel:             "", // child carries no fork label; parent gets it
 		MemorySaveUnavailable: memorySaveUnavailable,
-		LaunchEnvBaseline:     parentMeta.LaunchEnvBaseline,
+	}
+	if childHeader.SystemPrompt != "" { // an inheriting child replays onto the parent's baseline
+		childMeta.LaunchEnvBaseline = parentMeta.LaunchEnvBaseline
 	}
 
 	if err := deps.saveMeta(fs, stateDir, childMeta); err != nil {
