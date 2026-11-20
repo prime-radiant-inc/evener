@@ -421,6 +421,9 @@ func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
 				}
 			}
 		case ContentThinking, ContentRedThinking:
+			if p.Thinking != nil && p.Thinking.GoogleInteraction && t.protocol != registry.ProtocolGoogle {
+				continue
+			}
 			if t.stripOpaqueThinking {
 				// The blob never rides and a reasoning-disabled row builds no
 				// item at all; the remaining plaintext bills as built.
@@ -470,7 +473,7 @@ func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
 //
 // Chat reasoning is priced across the message by estimateMessageInputParts.
 func thinkingReplayChars(target targetInfo, p ContentPart) int {
-	if p.Thinking == nil {
+	if p.Thinking == nil || (p.Thinking.GoogleInteraction && target.protocol != registry.ProtocolGoogle) {
 		return 0
 	}
 	t := p.Thinking
@@ -583,7 +586,7 @@ func (p *reasoningTextPresence) UnmarshalJSON(raw []byte) error {
 }
 
 func (r *chatReasoningEstimate) add(target targetInfo, p ContentPart) {
-	if p.Kind != ContentThinking || p.Thinking == nil {
+	if p.Kind != ContentThinking || p.Thinking == nil || (p.Thinking.GoogleInteraction && target.protocol != registry.ProtocolGoogle) {
 		return
 	}
 	r.displayChars += len(p.Thinking.Text)

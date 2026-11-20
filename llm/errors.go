@@ -376,6 +376,14 @@ type providerCopier interface {
 	copyWithProvider(string) error
 }
 
+// ProviderCopier is implemented by provider-package errors that return a copy
+// of themselves attributed to another provider instance for RewriteErrorProvider.
+type ProviderCopier interface {
+	error
+	Provider() string
+	CopyWithProvider(string) error
+}
+
 // RewriteErrorProvider returns err attributed to provider: a copy of the same
 // concrete type, leaving the error it was given untouched. Returns err itself
 // when it carries no provider attribution to rewrite. Safe to call on nil.
@@ -400,6 +408,12 @@ func RewriteErrorProvider(err error, provider string) error {
 	}
 	//nolint:errorlint // deliberate: only the error itself is rewritten, never one inside a wrapper this package cannot rebuild (see above)
 	pc, ok := err.(providerCopier)
+	if !ok {
+		//nolint:errorlint // deliberate: same direct-error policy for cross-package providerCopier
+		if ext, ok := err.(ProviderCopier); ok && ext.Provider() != "" {
+			return ext.CopyWithProvider(provider)
+		}
+	}
 	if !ok || pc.Provider() == "" {
 		return err
 	}

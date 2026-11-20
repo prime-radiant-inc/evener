@@ -128,7 +128,8 @@ type ContentPart struct {
 	Kind ContentKind `json:"kind"`
 
 	Text       string          `json:"text,omitempty"`
-	Phase      string          `json:"phase,omitempty"` // OpenAI Responses API phase ("commentary", "final_answer")
+	Phase      string          `json:"phase,omitempty"`       // OpenAI Responses API phase ("commentary", "final_answer")
+	GoogleStep int             `json:"google_step,omitempty"` // 1-based Interactions model_output step index
 	Image      *ImageData      `json:"image,omitempty"`
 	Audio      *AudioData      `json:"audio,omitempty"`
 	Document   *DocumentData   `json:"document,omitempty"`
@@ -186,6 +187,13 @@ type ToolCallData struct {
 	// ThoughtSignature carries provider-specific thought-signature state (e.g., Gemini)
 	// required to continue tool-calling turns safely.
 	ThoughtSignature string `json:"thought_signature,omitempty"`
+	// GoogleInteraction marks a tool call originating from a Gemini Interactions
+	// function_call step, scoped to GoogleInstance and GoogleModel.
+	GoogleInteraction bool `json:"google_interaction,omitempty"`
+	// GoogleInstance and GoogleModel record the resolved Google instance and wire
+	// model ID that issued this Interactions tool call.
+	GoogleInstance string `json:"google_instance,omitempty"`
+	GoogleModel    string `json:"google_model,omitempty"`
 }
 
 // Spelling is a tool call's recorded bytes; a non-string value decodes to empty, not an error.
@@ -293,6 +301,10 @@ type ThinkingData struct {
 	// GoogleInteraction marks a Gemini Interactions thought step. A step that
 	// carries only a Signature is replay metadata with nothing to display.
 	GoogleInteraction bool `json:"google_interaction,omitempty"`
+	// GoogleInstance and GoogleModel record the resolved Google instance and wire
+	// model ID that issued this Interactions thought step.
+	GoogleInstance string `json:"google_instance,omitempty"`
+	GoogleModel    string `json:"google_model,omitempty"`
 	// Chat Completions scalar replay when Text includes structured reasoning.
 	ScalarReasoningField string `json:"scalar_reasoning_field,omitempty"`
 	ScalarReasoningText  string `json:"scalar_reasoning_text,omitempty"`
@@ -313,12 +325,15 @@ type ResponsesReasoningPart struct {
 // ReplayableResponsesPlaintext reports a finished Responses item with native
 // typed parts. A bare Text projection is display-only and never replays.
 func (t *ThinkingData) ReplayableResponsesPlaintext() bool {
-	return t != nil && !t.ResponsesIncomplete && !t.Redacted && t.EncryptedContent == "" &&
+	return t != nil && !t.GoogleInteraction && !t.ResponsesIncomplete && !t.Redacted && t.EncryptedContent == "" &&
 		(len(t.ResponsesContentParts) > 0 || len(t.ResponsesSummaryParts) > 0)
 }
 
 // ChatReplayText selects the text for the Chat Completions replay shape.
 func (t *ThinkingData) ChatReplayText(scalar bool) string {
+	if t == nil || t.GoogleInteraction {
+		return ""
+	}
 	if scalar && t.ScalarReasoningText != "" && IsOpenAICompatReasoningField(t.ScalarReasoningField) {
 		return t.ScalarReasoningText
 	}
