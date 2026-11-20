@@ -384,12 +384,7 @@ func TestCallWithoutResultsIsInterruptedAtCompletion(t *testing.T) {
 // completed while the index reports it interrupted.
 func TestFullReadFoldsInterruptedCompletionIntoTurnStatus(t *testing.T) {
 	fx := newFormatFixture(t, "interrupted call")
-	turns, err := apptranscript.ItemTurnsFromFile(writeFixture(t, fx), testMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
-		return apptranscript.ProjectTurn(turnID, entryIndex, turn, apptranscript.NewToolCallRegistry(), nil, nil)
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	turns := fullReadTurns(t, fx)
 	var full *appwire.Turn
 	for i := range turns {
 		if turns[i].ID == "turn_m22" {
@@ -406,4 +401,44 @@ func TestFullReadFoldsInterruptedCompletionIntoTurnStatus(t *testing.T) {
 	if indexed := turnOf(t, indexedCandidates(t, fx, -1), "turn_m22"); indexed.Status != appwire.TurnStatusInterrupted {
 		t.Fatalf("indexed turn_m22 = %s, want interrupted", dump(indexed))
 	}
+}
+
+// A completion and a reopen are transcript-only, so they join no group, but
+// the file's last one decides the execution's status: a reopen clears a prior
+// failure and the last completion sets the final state on every fragment,
+// exactly as the index reports it.
+func TestFullReadFoldsReopenAndCompletionInOrder(t *testing.T) {
+	fx := newFormatFixture(t, "open and reclaimed")
+	turns := fullReadTurns(t, fx)
+	fragments := 0
+	for i := range turns {
+		if turns[i].ID != "turn_m16" {
+			continue
+		}
+		fragments++
+		if turns[i].Status != appwire.TurnStatusCompleted || turns[i].Error != nil {
+			t.Fatalf("full read turn_m16 fragment %d = %s, want completed with no error", i, dump(turns[i]))
+		}
+	}
+	if fragments < 2 {
+		t.Fatalf("full read turn_m16 fragments = %d, want one per run: %s", fragments, dump(turns))
+	}
+	if indexed := turnOf(t, indexedCandidates(t, fx, -1), "turn_m16"); indexed.Status != appwire.TurnStatusCompleted || indexed.Error != nil {
+		t.Fatalf("indexed turn_m16 = %s, want completed with no error", dump(indexed))
+	}
+}
+
+// fullReadTurns projects a fixture through the whole-file reader with one
+// tool-call registry, the way the hub's past-turn merge projects a saved
+// session.
+func fullReadTurns(t testing.TB, fx fixture) []appwire.Turn {
+	t.Helper()
+	reg := apptranscript.NewToolCallRegistry()
+	turns, err := apptranscript.ItemTurnsFromFile(writeFixture(t, fx), testMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		return apptranscript.ProjectTurn(turnID, entryIndex, turn, reg, nil, nil)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return turns
 }

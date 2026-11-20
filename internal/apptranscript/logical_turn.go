@@ -88,26 +88,42 @@ type groupedTurn struct {
 type logicalTurnAccumulator struct {
 	turns   []groupedTurn
 	grouper TurnGrouper
-	// interruptedCompletions holds, per stamped turn id, the file recording the
-	// execution ending interrupted. The completion is transcript-only, so it
-	// joins no group, but its status belongs to the turn it names.
-	interruptedCompletions map[string]bool
+	// stampedStatus holds, per stamped turn id, the status the file's
+	// transcript-only completion and reopen records fold in file order, the
+	// same fold the index makes: a completion sets the status, a reopen
+	// clears it to in progress, and the last record wins. They join no group,
+	// but the status belongs to the turn they name.
+	stampedStatus map[string]string
 }
 
-// markInterruptedCompletion records a TURN_COMPLETION that ends its stamped
-// turn interrupted. Only an identity-format completion carries a turn id to
-// fold the status into.
-func (a *logicalTurnAccumulator) markInterruptedCompletion(turn *schema.Turn) {
-	if turn.Kind != schema.TurnCompletion || turn.Completion == nil || turn.Completion.Status != schema.TurnInterrupted {
-		return
-	}
+// foldStampedStatus folds a transcript-only TURN_COMPLETION or TURN_REOPEN
+// into its stamped turn's status, in file order. Only an identity-format
+// record carries a turn id to fold the status into.
+func (a *logicalTurnAccumulator) foldStampedStatus(turn *schema.Turn) {
 	if turn.Format != schema.TurnFormatIdentity || turn.TurnID == "" {
 		return
 	}
-	if a.interruptedCompletions == nil {
-		a.interruptedCompletions = map[string]bool{}
+	var status string
+	switch turn.Kind {
+	case schema.TurnCompletion:
+		status = appwire.TurnStatusCompleted
+		if turn.Completion != nil {
+			switch turn.Completion.Status {
+			case schema.TurnFailed:
+				status = appwire.TurnStatusFailed
+			case schema.TurnInterrupted:
+				status = appwire.TurnStatusInterrupted
+			}
+		}
+	case schema.TurnReopen:
+		status = appwire.TurnStatusInProgress
+	default:
+		return
 	}
-	a.interruptedCompletions[turn.TurnID] = true
+	if a.stampedStatus == nil {
+		a.stampedStatus = map[string]string{}
+	}
+	a.stampedStatus[turn.TurnID] = status
 }
 
 // TurnGrouper applies the logical-turn grouping rule to entries in file order.
@@ -197,8 +213,8 @@ func appendProjectedEntry(acc *logicalTurnAccumulator, project EntryProjector, t
 		// Written for the history projection phase 3 introduces. Today's
 		// projection passes over it as an item: it joins no group, closes
 		// none, and projects nothing, though its line still takes an entry
-		// index. An interrupted completion still names its turn's status.
-		acc.markInterruptedCompletion(&turn)
+		// index. A completion or reopen still names its turn's status.
+		acc.foldStampedStatus(&turn)
 		return
 	}
 	if turn.OriginalOrdinal != nil {
@@ -315,10 +331,14 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 			// later fragment's partial total, and the saved turn underreported
 			// tokens and cost against the index (#1166 review).
 			runStamps[group.turnID].apply(&turn)
-			// The recorded completion applies to every visible fragment of
-			// the turn.
-			if acc.interruptedCompletions[group.turnID] && turn.Status != appwire.TurnStatusFailed {
-				turn.Status = appwire.TurnStatusInterrupted
+			// The file's completion and reopen records set the execution's
+			// status in entry order, and the index surfaces the failure
+			// diagnostic only while that status is failed.
+			if status, ok := acc.stampedStatus[group.turnID]; ok {
+				turn.Status = status
+				if status != appwire.TurnStatusFailed {
+					turn.Error = nil
+				}
 			}
 		}
 		if prelude != nil && !preludeEmitted {
