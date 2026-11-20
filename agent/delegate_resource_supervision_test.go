@@ -5837,16 +5837,9 @@ func TestDelegateResourceSupervision_IdleStableDelegateTimerRoutesThroughLeasedA
 	// The timer is installed through the production create path on the child's
 	// own manager, so its fire is the cadence's own work.
 	jm := sub.sess.jobManager
-	parkedBefore := clk.BlockedCount()
 	if _, err := jm.configureWatch(watchArgs{Operation: "create", Source: "self", Target: runtimeMessageAliasCaller, RepeatSeconds: 60}); err != nil {
 		t.Fatalf("create the child's timer watch: %v", err)
 	}
-	// The create arms the ticker on its own goroutine, so advancing before that
-	// goroutine parks on the clock finds no waiter and the tick is lost. Waiting
-	// for the new waiter is the clock's own quiescence handshake.
-	testwait.Until(t, "the timer's ticker to arm on the child's clock", func() bool {
-		return clk.BlockedCount() > parkedBefore
-	})
 
 	// Count the child's wake instead of driving it, before the tick lands. A
 	// driving receiver presents the row and resolves it before the assertions

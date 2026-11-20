@@ -12,9 +12,9 @@ func (jm *jobManager) startProgressTimer(key watchKey, cfg *watchConfig, stop <-
 		return
 	}
 	interval := time.Duration(cfg.progressIntervalMS) * time.Millisecond
+	ticker := jm.clock.NewTicker(interval)
 
 	go func() {
-		ticker := jm.clock.NewTicker(interval)
 		defer ticker.Stop()
 
 		for {
