@@ -1590,6 +1590,8 @@ function delegateRowFromFrame(row: SessionDelegate, frame: EvenerDelegateInfo): 
     drainHeldByJobs: frame.drainHeldByJobs,
     runningJobCount: frame.runningJobCount,
     oldestRunningJobStartedAt: frame.oldestRunningJobStartedAt,
+    drainHeldBySubagents: frame.drainHeldBySubagents,
+    runningSubagentCount: frame.runningSubagentCount,
     holdSequence: frame.holdSequence,
     usage: frame.usage,
     worktree: frame.worktree,
@@ -1613,9 +1615,10 @@ export function isValidActivityTimestamp(value: string): boolean {
  * cannot be compared: the frame then supplies its own hold, as it does for
  * every durable field.
  *
- * The sample that wins supplies all four fields, taken from itself alone. A
- * cleared sample omits the count and the oldest start (`omitempty`), so reading
- * a missing field from the other side would restore exactly the wait the
+ * The sample that wins supplies every field the hold owns -- both hold flags,
+ * both counts, and the oldest job start -- taken from itself alone. A cleared
+ * sample omits the counts and the oldest start (`omitempty`), so reading a
+ * missing field from the other side would restore exactly the wait the
  * sequence just rejected -- and `row` is not a second source here, because the
  * durable merge may already have made it the losing frame. */
 function joinDelegateHold(
@@ -1632,6 +1635,8 @@ function joinDelegateHold(
     (row.drainHeldByJobs ?? false) === (frame.drainHeldByJobs ?? false) &&
     row.runningJobCount === frame.runningJobCount &&
     row.oldestRunningJobStartedAt === frame.oldestRunningJobStartedAt &&
+    (row.drainHeldBySubagents ?? false) === (frame.drainHeldBySubagents ?? false) &&
+    row.runningSubagentCount === frame.runningSubagentCount &&
     row.holdSequence === frame.holdSequence
   ) {
     return row;
@@ -1641,6 +1646,8 @@ function joinDelegateHold(
     drainHeldByJobs: frame.drainHeldByJobs,
     runningJobCount: frame.runningJobCount,
     oldestRunningJobStartedAt: frame.oldestRunningJobStartedAt,
+    drainHeldBySubagents: frame.drainHeldBySubagents,
+    runningSubagentCount: frame.runningSubagentCount,
     holdSequence: frame.holdSequence,
   };
 }
@@ -1652,6 +1659,8 @@ function keepDelegateHold(row: SessionDelegate, holds: SessionDelegate): Session
     (row.drainHeldByJobs ?? false) === (holds.drainHeldByJobs ?? false) &&
     row.runningJobCount === holds.runningJobCount &&
     row.oldestRunningJobStartedAt === holds.oldestRunningJobStartedAt &&
+    (row.drainHeldBySubagents ?? false) === (holds.drainHeldBySubagents ?? false) &&
+    row.runningSubagentCount === holds.runningSubagentCount &&
     row.holdSequence === holds.holdSequence
   ) {
     return row;
@@ -1661,6 +1670,8 @@ function keepDelegateHold(row: SessionDelegate, holds: SessionDelegate): Session
     drainHeldByJobs: holds.drainHeldByJobs,
     runningJobCount: holds.runningJobCount,
     oldestRunningJobStartedAt: holds.oldestRunningJobStartedAt,
+    drainHeldBySubagents: holds.drainHeldBySubagents,
+    runningSubagentCount: holds.runningSubagentCount,
     holdSequence: holds.holdSequence,
   };
 }
@@ -1706,6 +1717,8 @@ function mergeDelegateFrames(current: EvenerDelegateInfo, frame: EvenerDelegateI
     drainHeldByJobs: newer.drainHeldByJobs,
     runningJobCount: newer.runningJobCount,
     oldestRunningJobStartedAt: newer.oldestRunningJobStartedAt,
+    drainHeldBySubagents: newer.drainHeldBySubagents,
+    runningSubagentCount: newer.runningSubagentCount,
     holdSequence: newer.holdSequence,
   };
 }
@@ -1746,6 +1759,8 @@ const delegateRowFields: Record<keyof SessionDelegate, true> = {
   drainHeldByJobs: true,
   runningJobCount: true,
   oldestRunningJobStartedAt: true,
+  drainHeldBySubagents: true,
+  runningSubagentCount: true,
   holdSequence: true,
   usage: true,
   worktree: true,

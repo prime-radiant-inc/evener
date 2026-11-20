@@ -206,8 +206,8 @@ test("closed inactive history admits keyset pages and uses the direct-session to
   expect(screen.getByRole("button", { name: /inspect/ })).toBeTruthy();
   expect(screen.queryByRole("button", { name: /Load more/ })).toBeNull();
   expect(client.calls.filter((c) => c.method === "evener/thread/delegates/list").map((c) => c.params)).toEqual([
-    { ref, scope: "session" },
-    { ref, scope: "session", cursor: "page-two" },
+    { ref, scope: "subtree" },
+    { ref, scope: "subtree", cursor: "page-two" },
   ]);
   vi.unstubAllGlobals();
 });
@@ -218,9 +218,9 @@ test("a fresh sidebar case starts with inactive delegates folded after a prior r
     ...activitySummary(ref, scope),
     delegates: { known: true, active: 0, total: 1, completed: 1, failed: 0 },
   }));
-  client.on("evener/thread/delegates/list", () => ({
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
     context: activityContext(),
-    scope: "session",
+    scope: scope ?? "session",
     delegates: [
       activityDelegate({
         delegateId: "done-fresh",
@@ -266,7 +266,7 @@ test("exact child focus switches demand without sibling leakage or a navigation 
   act(() => installFocusedScope("remote:child"));
   await screen.findByRole("button", { name: /child-owned delegate/ });
   expect(screen.queryByRole("button", { name: /root-only sibling/ })).toBeNull();
-  expect(sessionActivitySnapshot(client, ref, "session")).toBeNull();
+  expect(sessionActivitySnapshot(client, ref, "subtree")).toBeNull();
   expect(client.calls.filter((c) => c.method === "evener/navigation/read")).toHaveLength(0);
 });
 
@@ -856,9 +856,9 @@ test("pending ancestry becomes useful parent navigation only after the domain pr
     ancestors: [{ ref: "remote:root", sessionId: "root", title: "Proven root" }],
   });
   client.on("evener/thread/activity/read", ({ scope }) => ({ ...activitySummary(ref, scope), context: context() }));
-  client.on("evener/thread/delegates/list", () => ({
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
     context: context(),
-    scope: "session",
+    scope: scope ?? "session",
     delegates: [],
     page: { complete: true, issues: [] },
   }));

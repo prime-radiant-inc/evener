@@ -72,18 +72,18 @@ export function StatusDot({ state, decorative = false }: StatusDotProps) {
 }
 
 // A subagent row's dot: the main sessions' status-dot vocabulary - a working
-// row spins, a failure is a diamond - with one state the session vocabulary
-// doesn't have: a running row gone quiet dims instead of disappearing,
-// because a quiet run is still open work.
+// row spins, a failure is a diamond. The shared quiet state dims on native,
+// but the web keeps an open run's working ring until terminal settlement
+// (#4521 superseded): a >20s tool call, reasoning turn or child wait is still
+// active work, never a dead grey dot.
 const SUBAGENT_DOT: Record<
-  DelegateDotState,
+  Exclude<DelegateDotState, "quiet">,
   { family: Family; label: string; shape: "dot" | "diamond"; working: boolean } | null
 > = {
   // The shared states speak the session vocabulary's own words and hues, so a
   // session-status ruling reaches the subagent dot with no second table to
-  // update; quiet - the one state the session set does not have - is ours.
+  // update. Quiet is normalized to fresh before lookup.
   fresh: { family: STATE_FAMILY.working, label: STATUS_LABEL.working, shape: "dot", working: true },
-  quiet: { family: "neutral", label: "Quiet", shape: "dot", working: false },
   attention: { family: STATE_FAMILY["needs-you"], label: STATUS_LABEL["needs-you"], shape: "dot", working: false },
   failed: { family: STATE_FAMILY.failed, label: STATUS_LABEL.failed, shape: "diamond", working: false },
   // A settled row shows no dot, exactly as the main sessions' idle and
@@ -92,10 +92,10 @@ const SUBAGENT_DOT: Record<
 };
 
 /** A subagent row's leading dot, from the shared quiet-encoding rule: the
- * alive dot spins while the row is fresh, dims once its run goes quiet, reads
- * amber for attention and a red diamond for failure, and disappears when the
- * row settles. `labeled` makes the dot name its state where the row does not
- * already carry the word somewhere a screen reader meets it. */
+ * alive dot keeps spinning while the row is open, reads amber for attention
+ * and a red diamond for failure, and disappears when the row settles.
+ * `labeled` makes the dot name its state where the row does not already carry
+ * the word somewhere a screen reader meets it. */
 export function SubagentDot({
   delegate,
   now,
@@ -106,7 +106,10 @@ export function SubagentDot({
   labeled?: boolean;
 }) {
   const state = delegateDotState(delegate, now);
-  const dot = SUBAGENT_DOT[state];
+  // The web never dims an open run: normalize the shared quiet state to fresh
+  // so the dot's attributes, class and spinner stay the working ones.
+  const effectiveState = state === "quiet" ? "fresh" : state;
+  const dot = SUBAGENT_DOT[effectiveState];
   if (!dot) return null;
   const working = dot.working ? ` ${BASE_CLASS.working}` : "";
   return (
@@ -114,7 +117,7 @@ export function SubagentDot({
       role="img"
       aria-label={dot.label}
       aria-hidden={labeled ? undefined : "true"}
-      data-state={state}
+      data-state={effectiveState}
       data-shape={dot.shape}
       className={`${BASE_CLASS.dot} ${FAMILY_CLASS[dot.family]}${working}`}
     />

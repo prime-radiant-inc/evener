@@ -654,3 +654,39 @@ describe("qualified activity evidence", () => {
 		expect(subagentLastLine(rowOf(done("none", { usage: {} })), null, (x) => x)?.tokens).toBeUndefined();
 	});
 });
+
+// A coordinator parked in its finalization drain on open descendants reports
+// that wait, not the intent it stated before the drain took the run. The hold
+// outranks the intent exactly as it does on the web; the count only phrases it.
+describe("a parked coordinator's drain wait", () => {
+	const withDrainHold = (d: ActivityDelegate, count: number): ActivityDelegate =>
+		({ ...d, drainHeldBySubagents: true, runningSubagentCount: count }) as ActivityDelegate;
+
+	it("names the subagents it waits on instead of its frozen intent", () => {
+		const parked = withDrainHold(running("c", { latestIntent: "Frozen pre-drain line." }), 2);
+		const why = subagentWhy(rowOf(parked), NOW);
+		expect(why.kind).toBe("waiting");
+		expect(why.text).toContain("2");
+		expect(why.text).not.toBe("Frozen pre-drain line.");
+
+		const one = subagentWhy(rowOf(withDrainHold(running("c", { latestIntent: "Frozen pre-drain line." }), 1)), NOW);
+		expect(one.kind).toBe("waiting");
+		expect(one.text).toContain("1");
+		// One subagent reads in the singular.
+		expect(one.text.replace("1", "#")).not.toBe(why.text.replace("2", "#"));
+	});
+
+	it("keeps the intent when nothing is held", () => {
+		// A count without the hold is a delegate still working with children.
+		const working = { ...running("w", { latestIntent: "Reading the board." }), runningSubagentCount: 2 };
+		expect(subagentWhy(rowOf(working as ActivityDelegate), NOW)).toEqual({
+			kind: "intent",
+			text: "Reading the board.",
+		});
+		// A hold with nothing countable states no wait either.
+		expect(subagentWhy(rowOf(withDrainHold(running("h", { latestIntent: "Reading." }), 0)), NOW)).toEqual({
+			kind: "intent",
+			text: "Reading.",
+		});
+	});
+});

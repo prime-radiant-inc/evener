@@ -522,6 +522,8 @@ func appwireDelegateInfo(data events.DelegateUpdatedData) appwire.EvenerDelegate
 		HoldSequence:              data.HoldSequence,
 		RunningJobCount:           data.RunningJobCount,
 		OldestRunningJobStartedAt: data.OldestRunningJobStartedAt,
+		DrainHeldBySubagents:      data.DrainHeldBySubagents,
+		RunningSubagentCount:      data.RunningSubagentCount,
 		QuietForMS:                appwire.ClonePointer(data.QuietForMS), DurationMS: appwire.ClonePointer(data.DurationMS), PacketKind: data.PacketKind,
 		Message: append(json.RawMessage(nil), data.Message...), StructuredResult: append(json.RawMessage(nil), data.StructuredResult...),
 		StructuredValid: appwire.ClonePointer(data.StructuredValid), StructuredReason: data.StructuredReason,
@@ -593,9 +595,9 @@ func mergeAppwireDelegateInfo(current, incoming appwire.EvenerDelegateInfo) (app
 //   - Durable fields (revision, status, lifecycle, report, timestamps) are
 //     ordered by ProjectionRevision. A higher revision is a newer row.
 //   - The drain hold (DrainHeldByJobs, RunningJobCount,
-//     OldestRunningJobStartedAt, HoldSequence) is ordered by HoldSequence
-//     alone, from the two samples being merged, within the current source
-//     epoch.
+//     OldestRunningJobStartedAt, DrainHeldBySubagents, RunningSubagentCount,
+//     HoldSequence) is ordered by HoldSequence alone, from the two samples
+//     being merged, within the current source epoch.
 //
 // The two orders are independent because they answer different questions. A
 // projection revision says "this row snapshot is current"; it says nothing
@@ -627,10 +629,14 @@ func applyDelegateHold(dst *appwire.EvenerDelegateInfo, current, incoming appwir
 	changed := dst.HoldSequence != newer.HoldSequence ||
 		dst.DrainHeldByJobs != newer.DrainHeldByJobs ||
 		dst.RunningJobCount != newer.RunningJobCount ||
-		dst.OldestRunningJobStartedAt != newer.OldestRunningJobStartedAt
+		dst.OldestRunningJobStartedAt != newer.OldestRunningJobStartedAt ||
+		dst.DrainHeldBySubagents != newer.DrainHeldBySubagents ||
+		dst.RunningSubagentCount != newer.RunningSubagentCount
 	dst.DrainHeldByJobs = newer.DrainHeldByJobs
 	dst.RunningJobCount = newer.RunningJobCount
 	dst.OldestRunningJobStartedAt = newer.OldestRunningJobStartedAt
+	dst.DrainHeldBySubagents = newer.DrainHeldBySubagents
+	dst.RunningSubagentCount = newer.RunningSubagentCount
 	dst.HoldSequence = newer.HoldSequence
 	return changed
 }

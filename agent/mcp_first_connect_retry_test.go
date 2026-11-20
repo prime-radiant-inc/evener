@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -29,12 +30,16 @@ func TestIntg_FailedFirstConnectRecoversWithinSession(t *testing.T) {
 	const toolName = "intgsvc__echo"
 
 	var firstRequestTools []string
+	var firstReq llm.Request
+	var hasFirstReq bool
 	var echoReply string
 	requests := 0
 	client := llm.NewClient()
 	client.Register(&agenttest.ScriptedAdapter{Provider: "openai", Responder: func(req llm.Request) llm.Response {
 		requests++
 		if requests == 1 {
+			firstReq = req
+			hasFirstReq = true
 			for _, td := range req.Tools {
 				firstRequestTools = append(firstRequestTools, td.Name)
 			}
@@ -69,6 +74,7 @@ func TestIntg_FailedFirstConnectRecoversWithinSession(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
+	launchPrompt := sess.cachedSystemPrompt
 
 	// The server did fail its first start, and the session recorded no tool for
 	// it.
@@ -89,6 +95,15 @@ func TestIntg_FailedFirstConnectRecoversWithinSession(t *testing.T) {
 
 	if !hasString(firstRequestTools, toolName) {
 		t.Fatalf("the recovered tool was not advertised on the turn's first request; tools were %v", firstRequestTools)
+	}
+	if !hasFirstReq || len(firstReq.Messages) == 0 || firstReq.Messages[0].Role != llm.RoleSystem || firstReq.Messages[0].Text() != launchPrompt {
+		t.Fatalf("MCP recovery mutated launch system prompt")
+	}
+	if !slices.ContainsFunc(firstReq.Messages, func(m llm.Message) bool {
+		txt := m.Text()
+		return strings.Contains(txt, "<environment_context>") && strings.Contains(txt, "added tools: "+toolName)
+	}) {
+		t.Fatalf("first request with recovered MCP tool missing <environment_context> with added tools: %s; messages=%+v", toolName, firstReq.Messages)
 	}
 	if echoReply != "echo: recovered" {
 		t.Fatalf("recovered tool result = %q, want %q", echoReply, "echo: recovered")
