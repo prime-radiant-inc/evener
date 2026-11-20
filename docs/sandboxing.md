@@ -441,11 +441,13 @@ paths only when they are outside its granted read roots. Relocated state roots
 must be checked against the effective policy too.
 
 Masking `/proc` is load-bearing: without it a `read_file("/proc/<evener-pid>/environ")`
-would leak Evener's own environment, including the provider API key. Masking the
+would leak Evener's own environment, including the provider API key. On Linux, masking the
 daemon sockets turns a `connect()` into `ECONNREFUSED`, so a session cannot drive a
 container daemon straight to host root even with `--sandbox-net off` (a read-only
 bind of `/` does not block a Unix-socket `connect()`, and `--unshare-net` does not
-affect `AF_UNIX`).
+affect `AF_UNIX`). On macOS, `restricted` mode with networking on denies
+`connect()` to masked sockets; `read-only` and `workspace-write` keep the
+permissive outbound policy.
 
 **One exception to "the mask wins", for the file tools: Evener's own content.**
 Installed plugins (the plugin store's `cache` and `bundled` directories under
