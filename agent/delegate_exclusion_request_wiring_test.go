@@ -62,22 +62,29 @@ func TestModelRequestRefreshesTheExclusionCachesWithoutASpawn(t *testing.T) {
 		t.Fatal("the request path did not carry the applied roster decision, so the fixture cannot observe a flip")
 	}
 	// The WIRE is what this test is for. The tool must be absent from the
-	// request before the edit, in both places a model reads it: the role roster
-	// in the system prompt the request carries, and the delegate schema's
-	// agent_type description inside the request's tool list.
+	// request before the edit, in the one place a model reads capabilities: the
+	// delegate schema's agent_type description inside the request's tool list.
 	if strings.Contains(before.systemPrompt, cliTool) {
 		t.Fatalf("the startup request's system prompt already advertises %s, so the edit cannot change what the model sees", cliTool)
 	}
 	if strings.Contains(before.delegateRoster, cliTool) {
 		t.Fatalf("the startup request's delegate schema already advertises %s, so the edit cannot change what the model sees", cliTool)
 	}
-	// The startup refresh runs the same frozen-prompt path, so a diff is already
-	// owed for it. Clear that one: the config edit is then the only thing that
-	// can arm the diff asserted below.
 	if !s.systemPromptFrozen {
 		t.Fatal("fixture is wrong: the session's launch prompt is not frozen, so this test cannot show the immutable-prompt rule")
 	}
-	s.envContextPending.Store(false)
+	// The launch prompt's roster must carry NO per-role tool list at all. This is
+	// the half that made the original defect possible: a launch-time tool list
+	// frozen into the prompt states capabilities a config edit cannot correct, so
+	// the model would read it beside the current list in the schema above.
+	if strings.Contains(before.systemPrompt, "Default tools") {
+		t.Error("the request's launch system prompt still carries a frozen per-role tool list, so it can contradict the current schema after a config edit")
+	}
+	// An older launch prompt CAN carry one (a session restored from before this
+	// change), so the schema must say plainly that it wins.
+	if !strings.Contains(before.delegateRoster, "authoritative") || !strings.Contains(before.delegateRoster, "supersedes") {
+		t.Error("the delegate schema does not state that its capability list is authoritative and supersedes an older prompt's, so a restored session has no stated precedence between two lists")
+	}
 
 	// The branch switches in place: the project layer now declares the server
 	// the CLI entry replaces, which makes the tool reachable for a child. No
@@ -107,9 +114,6 @@ func TestModelRequestRefreshesTheExclusionCachesWithoutASpawn(t *testing.T) {
 	}
 	if after.systemPrompt != before.systemPrompt {
 		t.Error("the config edit rewrote the frozen launch system prompt instead of delivering the roster change as an appended diff")
-	}
-	if !s.envContextPending.Load() {
-		t.Error("the request path kept the frozen launch prompt but armed no environment-context diff, so the newly reachable tool never reaches the model")
 	}
 }
 

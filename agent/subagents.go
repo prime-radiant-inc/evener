@@ -934,8 +934,24 @@ func (s *Session) startupMCPProjectLayer() *mcpconfig.LayerEvidence {
 
 // refreshCachesForExclusionChangeContext is the request path's ONE update of
 // the delegate roster decision. It probes reachability for the installed
-// workspace, and rebuilds both caches — tool definitions and system prompt —
-// only when that answer differs from the decision they were built from.
+// workspace, and rebuilds the delegate schema from that answer only when the
+// answer differs from the decision the schema was built from.
+//
+// It rebuilds the TOOL DEFINITIONS always, and the SYSTEM PROMPT only when that
+// prompt is still mutable. In the ordinary case it is not: the launch prompt is
+// Turn 0 and immutable (#6959), <available_agents> no longer carries a per-role
+// tool list (that list moved to the agent_type schema, which is rebuilt here),
+// so a roster flip cannot change a byte of it. Re-rendering anyway would arm an
+// environment-context diff that then rendered nothing — the runtime
+// <environment_context> tracks the parent's CALLABLE tool names, and a role's
+// ceiling is not one of them — so the model would be told a change was pending
+// and handed no statement of it.
+//
+// A session whose launch render FAILED has no immutable prompt yet
+// (systemPromptFrozen is false), and there the roster is part of the prompt
+// that will be sent, so it is re-rendered from the --system-prompt-append
+// snapshot exactly as before: re-reading the files with s.mu held is what a
+// stalled mount turns into a wedged session.
 //
 // It takes s.mu itself and must be called without it. The caller's context
 // bounds the probe, so Stop can interrupt preparation instead of leaving it on a
@@ -944,9 +960,7 @@ func (s *Session) startupMCPProjectLayer() *mcpconfig.LayerEvidence {
 // The probe answer is workspace-scoped and used locally: it is computed for the
 // env this session holds now, and applied only after re-checking under s.mu
 // that the env is still that one. A probe that finishes after a worktree switch
-// discards its own answer. The rebuild reuses the --system-prompt-append
-// snapshot (the true argument) so a stalled mount cannot wedge s.mu beyond
-// Stop's reach.
+// discards its own answer.
 func (s *Session) refreshCachesForExclusionChangeContext(ctx context.Context) {
 	if s == nil {
 		return
@@ -986,7 +1000,10 @@ func (s *Session) refreshCachesForExclusionChangeContext(ctx context.Context) {
 	}
 	s.setRosterExclusion(wantExclude)
 	s.rebuildToolDefsCache()
-	promptWarning, _ := s.refreshSystemPromptCacheWithAppends(s.env, true) // already holding s.mu; currentEnv() would deadlock
+	promptWarning := ""
+	if !s.systemPromptFrozen {
+		promptWarning, _ = s.refreshSystemPromptCacheWithAppends(s.env, true) // already holding s.mu; currentEnv() would deadlock
+	}
 	s.mu.Unlock()
 	s.reportPromptRenderFailure(promptWarning)
 }

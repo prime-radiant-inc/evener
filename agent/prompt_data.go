@@ -170,12 +170,19 @@ type agentTaskEntry struct {
 	ReplacedByParentTasks bool
 }
 
-// agentEntry is a spawnable agent for template rendering.
+// agentEntry is a spawnable agent for template rendering: what the role is for
+// and which tasks it starts with.
+//
+// It carries no tool list on purpose. The launch prompt is immutable (#6959),
+// so a per-role capability list rendered into it describes launch time forever;
+// a config edit that makes a tool reachable would then leave the prompt and the
+// delegate schema advertising different capabilities on one request. The
+// delegate tool's agent_type description is rebuilt per request and is the
+// single source for current per-role tools.
 type agentEntry struct {
-	Name         string
-	Description  string
-	DefaultTools string
-	TaskList     []agentTaskEntry
+	Name        string
+	Description string
+	TaskList    []agentTaskEntry
 }
 
 func toolNamesFromDefinitions(defs []llm.ToolDefinition) []string {

@@ -59,8 +59,19 @@ func TestExclusionRefreshDoesNotRereadStalledAppendFiles(t *testing.T) {
 
 	release := stallAppendFile(t, appendPath)
 
-	// The exclusion decision flips, which is what drives both caches down the
-	// reuse path.
+	// The exclusion refresh renders the prompt only while it is still mutable: a
+	// frozen launch prompt (#6959) carries no per-role tool list to correct, so
+	// the refresh leaves it alone and never reaches an append read. This fixture
+	// therefore stands for the one case that does render — a session whose launch
+	// render failed, leaving systemPromptFrozen false — because that render is
+	// where a stalled append file would wedge s.mu. Unfreezing here is what keeps
+	// the test from passing without ever entering the reuse path.
+	s.mu.Lock()
+	s.systemPromptFrozen = false
+	s.mu.Unlock()
+
+	// The exclusion decision flips, which is what drives the cache rebuild down
+	// the reuse path.
 	flipExclusionDecision(s)
 
 	// The error travels SEPARATELY from the prompt, because the pass condition

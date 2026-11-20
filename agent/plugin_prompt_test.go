@@ -21,6 +21,16 @@ import (
 // delegation allowance; allowedTools, when set, restricts its tool surface.
 func availableAgentEntriesForTest(t *testing.T, agents map[string]plugin.Agent, allowance int, allowedTools []string) []agentEntry {
 	t.Helper()
+	_, entries := availableAgentSessionForTest(t, agents, allowance, allowedTools)
+	return entries
+}
+
+// availableAgentSessionForTest is availableAgentEntriesForTest returning the
+// session as well, for a test that must read a role's capabilities from the
+// delegate schema — the single source — rather than from the prompt roster,
+// which no longer carries a tool list.
+func availableAgentSessionForTest(t *testing.T, agents map[string]plugin.Agent, allowance int, allowedTools []string) (*Session, []agentEntry) {
+	t.Helper()
 	cfg := SessionConfig{AgentsDocPath: filepath.Join(t.TempDir(), "no-personal-AGENTS.md")}
 	cfg.spawn.allowedToolNames = append([]string(nil), allowedTools...)
 	sess := newSession(t, withDir(t.TempDir()), withConfig(cfg))
@@ -32,7 +42,7 @@ func availableAgentEntriesForTest(t *testing.T, agents map[string]plugin.Agent, 
 	sess.pluginAgents = make(map[string]plugin.Agent, len(agents))
 	maps.Copy(sess.pluginAgents, agents)
 	data, _ := sess.buildPromptData(sess.currentEnv())
-	return data.AvailableAgents
+	return sess, data.AvailableAgents
 }
 
 // depthOneSubagentForTest builds a depth-1 child session with the given
@@ -144,7 +154,7 @@ func TestAvailableAgentsSection_WithAgents(t *testing.T) {
 		},
 		"my-plugin:tester": {Name: "tester", Description: "Generates test cases", PluginName: "my-plugin"},
 	}
-	entries := availableAgentEntriesForTest(t, agents, -1, nil)
+	sess, entries := availableAgentSessionForTest(t, agents, -1, nil)
 	byName := make(map[string]agentEntry, len(entries))
 	for _, e := range entries {
 		byName[e.Name] = e
@@ -156,9 +166,12 @@ func TestAvailableAgentsSection_WithAgents(t *testing.T) {
 	if tester, ok := byName["my-plugin:tester"]; !ok || tester.Description != "Generates test cases" {
 		t.Fatalf("tester entry = %+v (present %v)", tester, ok)
 	}
+	// The reviewer's callable tools are stated in the delegate schema, not in
+	// the prompt roster, so assert them where the model reads them.
+	roster := sess.delegateCapabilityRoster()
 	for _, want := range []string{"communicate", "grep_files", "read_file", "task_list"} {
-		if !strings.Contains(reviewer.DefaultTools, "`"+want+"`") {
-			t.Errorf("reviewer DefaultTools = %q, want %q", reviewer.DefaultTools, want)
+		if !strings.Contains(roster, "`"+want+"`") {
+			t.Errorf("reviewer capability roster = %q, want %q", roster, want)
 		}
 	}
 	if len(reviewer.TaskList) != 2 || reviewer.TaskList[0].ReplacedByParentTasks || !reviewer.TaskList[1].ReplacedByParentTasks {
