@@ -654,6 +654,10 @@ func (s *Session) waitCloseDrainHooks() {
 	if s == nil {
 		return
 	}
+	// The ordinary stop drain dispatches its settled warnings' hooks on its own
+	// tracked group. Close the gate first, so a driver this close abandoned can
+	// start no hook after the join, then wait for the ones already running.
+	s.joinStopWarningHooks()
 	s.closeDrainHooksWG.Wait()
 }
 

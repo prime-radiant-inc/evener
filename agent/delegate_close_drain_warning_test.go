@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -12,10 +13,12 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/execsupport/shellquote"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // closeDrainCascadeBudget is the close-cascade budget these tests mint with
@@ -150,6 +153,9 @@ func TestOrdinaryStopDrainDispatchesTheLostResultHookOnce(t *testing.T) {
 	// The close-time retry must not be the thing that delivers it.
 	f.root.retryCloseDrainWarnings(tripwireCtx(t))
 
+	// The hook is dispatched off the publishing goroutine, so join it before
+	// counting: the assertion is about exactly-once, not speed.
+	f.root.waitStopWarningHooks()
 	data, readErr := os.ReadFile(hookDispatchLog)
 	if readErr != nil && !os.IsNotExist(readErr) {
 		t.Fatalf("read hook dispatch log: %v", readErr)
@@ -158,6 +164,183 @@ func TestOrdinaryStopDrainDispatchesTheLostResultHookOnce(t *testing.T) {
 	if got != 1 {
 		t.Fatalf("the lost-result warning dispatched its Notification hook %d time(s), want exactly 1: "+
 			"a full buffer must not drop the notification, and a retry must not duplicate it", got)
+	}
+}
+
+// A close joins the ordinary stop drain's warning hooks before it closes the
+// transcript's event stream. A stop driver the close abandoned can still be
+// between a warning's publication and its hook dispatch at that moment, so the
+// join must close the dispatch gate: a hook started after the join would run the
+// user's command against a closing session, and nothing would wait for it
+// (#6939).
+func TestCloseDrainHookJoinRefusesLateOrdinaryWarningHooks(t *testing.T) {
+	late := &Session{}
+	var lateFired atomic.Int32
+	late.joinStopWarningHooks()
+	late.goStopWarningHook(func() { lateFired.Add(1) })
+	late.waitStopWarningHooks()
+	if got := lateFired.Load(); got != 0 {
+		t.Fatalf("a stop warning hook dispatched after the close's hook join ran %d time(s), want 0: "+
+			"the join must refuse hooks it did not wait for, or one races the transcript's teardown", got)
+	}
+
+	// The gate must not drop the hooks it was built to join: one started before
+	// the join is waited for and runs.
+	started := &Session{}
+	var startedFired atomic.Int32
+	started.goStopWarningHook(func() { startedFired.Add(1) })
+	started.joinStopWarningHooks()
+	if got := startedFired.Load(); got != 1 {
+		t.Fatalf("a stop warning hook started before the close's hook join ran %d time(s), want 1: "+
+			"the join waits for the hooks already dispatched", got)
+	}
+}
+
+// An ordinary stop's warning hook outlives the stop driver that published the
+// warning: the driver returns while the user's command still reports to the
+// session. Retirement must therefore see the hook as a blocker, or it can cancel
+// the command and close the transcript before its completion is recorded
+// (#6939).
+func TestStopWarningHookHoldsRetirementLease(t *testing.T) {
+	root := newQueuePersistTestSession(t, t.TempDir())
+	controller, err := NewRetirementController(0, clock.Real())
+	if err != nil {
+		t.Fatalf("NewRetirementController: %v", err)
+	}
+	if err := controller.AttachRoot(root); err != nil {
+		t.Fatalf("AttachRoot: %v", err)
+	}
+	root.retirementController.Store(controller)
+
+	started := make(chan struct{})
+	resume := make(chan struct{})
+	finished := make(chan struct{})
+	root.goStopWarningHook(func() {
+		close(started)
+		<-resume
+		close(finished)
+	})
+	<-started
+
+	claim, snapshot, err := controller.TryClaim(true)
+	if err != nil {
+		close(resume)
+		t.Fatalf("TryClaim: %v", err)
+	}
+	if claim != nil {
+		close(resume)
+		t.Fatal("retirement claimed the session while a stop warning hook was still running: " +
+			"the hook would be cancelled and the transcript closed under its command")
+	}
+	if !slices.ContainsFunc(snapshot.Blockers, func(b RetirementBlocker) bool { return b.Category == "notification" }) {
+		close(resume)
+		t.Fatalf("retirement's blockers omit the running stop warning hook: %+v", snapshot)
+	}
+	close(resume)
+	<-finished
+	root.waitStopWarningHooks()
+	root.Close()
+}
+
+// A close that gives up on a stalled ordinary stop driver must still deliver the
+// lost-result warning that pass settled. The warning names a receipt already gone
+// from the store, so that pass holds its only copy: the abandon cancels the
+// drain, and the close's caller closes the event stream when close returns, so
+// the pass's own later publication would land nowhere. The close publishes the
+// pass's registered warning in its place, and the publication claim keeps it to
+// exactly one delivery.
+func TestClosePublishesAbandonedStopPassWarningsOnce(t *testing.T) {
+	f, _ := newSeededStrandedStop(t)
+
+	hookDispatchLog := filepath.Join(t.TempDir(), "hook-dispatches")
+	runner := hooks.NewRunner(nil, "test-model")
+	runner.Add(plugin.HookNotification, plugin.RegisteredHook{
+		Matcher: "*",
+		Type:    "command",
+		Command: `printf 'hit\n' >> ` + shellquote.Literal(hookDispatchLog),
+		Timeout: 30,
+	})
+	f.root.hookRunner = runner
+	f.root.env = execenv.NewLocalExecutionEnvironment(t.TempDir())
+
+	settled := make(chan struct{})
+	release := make(chan struct{})
+	var stalled atomic.Bool
+	ObserveStopPassWarningsSettled = func() {
+		if stalled.CompareAndSwap(false, true) {
+			close(settled)
+			<-release
+		}
+	}
+	defer func() { ObserveStopPassWarningsSettled = nil }()
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+
+	driver := newDelegateStopDriver()
+	f.controller.mu.Lock()
+	stop := f.controller.stop
+	if stop == nil {
+		f.controller.mu.Unlock()
+		t.Fatal("fixture has no pending stop for a close to join")
+	}
+	stop.driver = driver
+	f.controller.stopDriver = driver
+	f.controller.mu.Unlock()
+	driven := make(chan struct{})
+	go func() {
+		f.controller.runStopReconcileDriver(stop, driver, f.root)
+		close(driven)
+	}()
+	testwait.Until(t, "the stop pass to register its settled warning", func() bool {
+		select {
+		case <-settled:
+			return true
+		default:
+			return false
+		}
+	})
+
+	// The close gives up on the driver: its stop join runs on a context that is
+	// already done, so the driver is abandoned mid-cleanup.
+	closeCtx, cancelClose := context.WithCancel(t.Context())
+	cancelClose()
+	if err := f.controller.closeRuntimeTree(closeCtx); err == nil {
+		t.Fatal("closeRuntimeTree returned nil while the stop driver was stalled mid-cleanup: " +
+			"this guard did not exercise an abandoned driver")
+	}
+	// The close returns from here and its caller closes the stream, so the
+	// abandoned pass's warning must already be on it.
+	if got := len(drainSessionWarnings(f.root)); got != 1 {
+		t.Fatalf("the close delivered %d lost-result warning(s) from the abandoned pass, want exactly 1: "+
+			"the warning named a receipt already gone from the store, and the pass's own publication "+
+			"would run after the event stream was closed", got)
+	}
+
+	close(release)
+	testwait.Until(t, "the abandoned stop driver to finish", func() bool {
+		select {
+		case <-driven:
+			return true
+		default:
+			return false
+		}
+	})
+	f.root.waitStopWarningHooks()
+	if got := len(drainSessionWarnings(f.root)); got != 0 {
+		t.Fatalf("the abandoned stop driver published its pass's warning again after the close delivered "+
+			"it: %d duplicate warning event(s), want 0", got)
+	}
+	data, readErr := os.ReadFile(hookDispatchLog)
+	if readErr != nil {
+		t.Fatalf("the delivered warning never dispatched its Notification hook: %v", readErr)
+	}
+	if got := strings.Count(string(data), "hit"); got != 1 {
+		t.Fatalf("the delivered warning dispatched its Notification hook %d time(s), want exactly 1", got)
 	}
 }
 

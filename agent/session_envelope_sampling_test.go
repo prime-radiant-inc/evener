@@ -83,6 +83,13 @@ var envelopeSamplingForbiddenLocks = []envelopeSamplingLock{
 		s.modelSwitchPublishMu.Lock()
 		return s.modelSwitchPublishMu.Unlock
 	}},
+	// The stop-warning hook gate is a leaf taken only to register or refuse a
+	// dispatch and to close the join; nothing holds it across an emit or a hook
+	// command, and no sampling method takes it.
+	{owner: "Session", field: "stopWarningHooksMu", hold: func(s *Session) func() {
+		s.stopWarningHooksMu.Lock()
+		return s.stopWarningHooksMu.Unlock
+	}},
 	{owner: "Session", field: "restMu", hold: func(s *Session) func() {
 		s.restMu.Lock()
 		return s.restMu.Unlock

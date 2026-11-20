@@ -173,6 +173,11 @@ type delegateTreeController struct {
 	// reaches the store. Tests inject a chosen append error; nil in
 	// production.
 	appendFault   func([]delegatestore.Event) error
+	// stopWarningPublication is the pass an ordinary stop driver has settled
+	// but not published yet. A close that abandons that driver takes it and
+	// publishes in the driver's place; the publication's once makes the
+	// warning appear exactly once. Guarded by mu.
+	stopWarningPublication *stopWarningPublication
 	attentionOpen delegateAttentionWriterOpener
 }
 

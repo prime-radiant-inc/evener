@@ -277,6 +277,78 @@ func (s *Session) emitWithProvenance(data events.EventData, p *provenance.Causal
 	}
 }
 
+// emitWarningDeferringHook is emitWithProvenance for a warning whose
+// Notification hook must not hold its publisher. The event still goes out
+// synchronously, so the stream receives the warning now and the hook fires
+// whether or not the send found a free slot. The hook itself is the user's
+// command, may run for its whole timeout, and is dispatched on the tracked hook
+// goroutine a close already joins, so it cannot keep the stop reconcile driver
+// busy behind new stop admission or a pre-disposal close join (#6939).
+func (s *Session) emitWarningDeferringHook(data events.EventData) {
+	if s == nil || s.events == nil {
+		return
+	}
+	data, ev := s.sendEvent(data, s.activeCausalProvenance())
+	if s.jobManager != nil {
+		s.jobManager.onSessionEvent(ev)
+	}
+	message, title := warningHookMessage(data), warningHookTitle(data)
+	s.goStopWarningHook(func() {
+		s.fireNotificationHook(message, title)
+	})
+}
+
+// goStopWarningHook runs fn on the session's tracked stop-warning hook
+// goroutine unless the close's hook join already closed that gate. After the
+// join, an abandoned stop driver's late publication starts no hook the close
+// did not see: its warning event still reaches the stream through the caller,
+// but the user's command is dropped rather than racing teardown.
+//
+// The hook outlives the stop driver that published the warning, so it holds a
+// retirement lease for its whole run: retirement must not take the session's
+// transcript down while the user's command reports to it. Taking the lease
+// before the goroutine starts means a retirement that already claimed refuses
+// the hook instead of racing it, and joinStopWarningHooks waits for the release.
+func (s *Session) goStopWarningHook(fn func()) {
+	s.stopWarningHooksMu.Lock()
+	if s.stopWarningHooksClosed {
+		s.stopWarningHooksMu.Unlock()
+		return
+	}
+	s.stopWarningHooks.Add(1)
+	s.stopWarningHooksMu.Unlock()
+	release, err := s.beginRetirementMutation("notification")
+	if err != nil {
+		s.stopWarningHooks.Done()
+		return
+	}
+	go func() {
+		defer s.stopWarningHooks.Done()
+		defer release()
+		fn()
+	}()
+}
+
+// waitStopWarningHooks waits for the stop-warning hooks already started. It is
+// also the seam that makes an asynchronous dispatch observable to a test.
+func (s *Session) waitStopWarningHooks() {
+	if s != nil {
+		s.stopWarningHooks.Wait()
+	}
+}
+
+// joinStopWarningHooks closes the stop-warning hook gate and waits for the
+// hooks that started before it closed.
+func (s *Session) joinStopWarningHooks() {
+	if s == nil {
+		return
+	}
+	s.stopWarningHooksMu.Lock()
+	s.stopWarningHooksClosed = true
+	s.stopWarningHooksMu.Unlock()
+	s.waitStopWarningHooks()
+}
+
 // emitContext is emit on a caller's publication bound. A nil bound is the
 // session's ordinary path, unchanged.
 func (s *Session) emitContext(ctx context.Context, data events.EventData) {

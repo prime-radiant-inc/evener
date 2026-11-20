@@ -6,6 +6,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"primeradiant.com/evener/agent/events"
@@ -697,6 +698,7 @@ func (c *delegateTreeController) closeRuntimeTree(ctx context.Context) error {
 		err := c.joinOrDrainStopForClose(stopCtx, pending)
 		cancelStop()
 		if err != nil {
+			c.publishAbandonedStopWarnings(ctx)
 			return err
 		}
 	}
@@ -731,6 +733,7 @@ func (c *delegateTreeController) closeRuntimeTree(ctx context.Context) error {
 		err = c.drainStopForClose(stopCtx, c.stopForResult(result))
 		cancelStop()
 		if err != nil {
+			c.publishAbandonedStopWarnings(ctx)
 			return err
 		}
 	}
@@ -746,6 +749,7 @@ func (c *delegateTreeController) closeRuntimeTree(ctx context.Context) error {
 		teardownChildSession(ctx, child)
 	}
 	if _, err := c.joinStopReconcileDriver(ctx); err != nil {
+		c.publishAbandonedStopWarnings(ctx)
 		return err
 	}
 	return nil
@@ -821,6 +825,13 @@ func (c *delegateTreeController) drainStopForClose(ctx context.Context, stop *de
 // publishDrainWarnings publishes the warnings a stop pass settled, on the path
 // that caller owns.
 //
+// Each pass publishes the warnings it settled after its shell repairs and
+// attention cleanup. On the ordinary path the event send stays synchronous
+// while the user's Notification hook runs on the session's tracked hook
+// goroutine, so the hook cannot hold the next pass that records completion, new
+// stop admission, or a close join (#6939). The close path publishes on its
+// bounded publication context.
+//
 // The two callers have different obligations and must not share one publisher:
 //
 //   - The ordinary stop driver (warningsOnly false) publishes on emit, the
@@ -844,9 +855,35 @@ func (s *Session) publishDrainWarnings(ctx context.Context, warningsOnly bool, w
 		return
 	}
 	for _, warning := range warnings {
-		s.emit(warning)
+		s.emitWarningDeferringHook(warning)
 	}
 }
+
+// stopWarningPublication is one ordinary stop pass's settled warnings. The pass
+// publishes it when its cleanup finishes; a close that abandons the pass's driver
+// publishes it instead, so the receipt it names -- already gone from the store --
+// still reaches the stream. once makes exactly one of the two attempts deliver
+// it, whether the driver gets there after the close or never gets there at all.
+type stopWarningPublication struct {
+	once     sync.Once
+	root     *Session
+	warnings []events.WarningData
+}
+
+func (p *stopWarningPublication) publish(ctx context.Context) {
+	if p == nil {
+		return
+	}
+	p.once.Do(func() {
+		p.root.publishDrainWarnings(ctx, false, p.warnings)
+	})
+}
+
+// ObserveStopPassWarningsSettled, when non-nil, runs after a driver-driven stop
+// pass has registered its settled warnings and before it starts the cleanup that
+// precedes their publication. Tests use it to hold a pass mid-cleanup while a
+// close gives up on its driver.
+var ObserveStopPassWarningsSettled func()
 
 // drainStopAbandonable is drainStop plus an optional abandon signal. The stop
 // driver passes its own cancellable context's Done channel, so a close join
@@ -870,12 +907,12 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 	// parked on the session's own delivery path spends the budget reserved for
 	// leaving collectible worktrees on disk.
 	//
-	// The bound is PASSED to each Reconcile, not installed on the controller.
-	// The controller is shared with the live root, so a bound installed here
-	// applied to every delegate publication for as long as this drain ran: an
-	// unrelated sibling finishing in that window had its update and activity
-	// suppressed by this pass's deadline. A bound belongs to the pass that
-	// supplied it.
+	// The bound lives in this pass, not on the controller: pubCtx carries it to
+	// this pass's publications through publishDrainWarnings, while Reconcile
+	// takes only the evidence snapshot. A bound installed on the shared
+	// controller would reach every delegate publication for as long as this drain
+	// ran, so an unrelated sibling finishing in that window could have its update
+	// and activity suppressed by this pass's deadline.
 	// Each Reconcile hands back a retirement-mutation lease, and the drain
 	// deliberately holds every one until it returns. Collect them and release
 	// all on return — LIFO, as the per-iteration defers did — rather than
@@ -935,6 +972,28 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 		if plans.retirementRelease != nil {
 			retirementReleases = append(retirementReleases, plans.retirementRelease)
 		}
+		// The driver's pass registers its settled warnings before it starts the
+		// cleanup that precedes their publication, so a close that gives up on a
+		// pass stalled in that cleanup can publish them in the driver's place
+		// (publishAbandonedStopWarnings). The close's own drains run inline and
+		// register nothing.
+		var publication *stopWarningPublication
+		if abandon != nil && root != nil && len(plans.warnings) > 0 {
+			publication = &stopWarningPublication{root: root, warnings: plans.warnings}
+			c.registerStopWarningPublication(publication)
+			if ObserveStopPassWarningsSettled != nil {
+				ObserveStopPassWarningsSettled()
+			}
+		}
+		publishPlansWarnings := func() {
+			if publication != nil {
+				publication.publish(pubCtx)
+				return
+			}
+			if root != nil {
+				root.publishDrainWarnings(pubCtx, warningsOnly, plans.warnings)
+			}
+		}
 		if err != nil {
 			if errors.Is(err, errDelegateTargetBusy) {
 				if channelClosed(abandon) {
@@ -945,22 +1004,30 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 			// A warning the pass settled is published even when the pass
 			// failed: the receipt that produced it is gone from the store,
 			// so no later pass can settle it again.
-			if root != nil {
-				root.publishDrainWarnings(pubCtx, warningsOnly, plans.warnings)
-			}
+			publishPlansWarnings()
 			return err
 		}
-		// Publication comes before any plan runs. A warning this pass settled
-		// names a receipt that was abandoned during the pass and cannot be
-		// settled again, so a repair or cleanup that fails below must not carry
-		// it out of the drain unpublished. Publishing first also keeps the
-		// warning off the plan-execution path: it is news, not an effect.
-		if root != nil {
-			root.publishDrainWarnings(pubCtx, warningsOnly, plans.warnings)
+		// A warning this pass settled names a receipt that was abandoned during
+		// the pass and cannot be settled again, so it is published on this pass.
+		// The cleanup loops publish it on their own error exits, because those
+		// return before the loop's end.
+		//
+		// The close path publishes it BEFORE the repairs and cleanup: its send is
+		// bounded by the cascade's shared publication cutoff, and a repair that
+		// crosses that cutoff would otherwise spend the only attempt the warning
+		// gets. The ordinary path publishes it AFTER them, because publishing
+		// before a synchronous Notification hook -- the shape the close path
+		// retains nothing for -- let the hook delay that cleanup and leave clients
+		// on a stale stop state (#6939). Its hook dispatches on the session's
+		// tracked goroutine, so the hook cannot hold the next pass that records
+		// stop completion, new stop admission, or a close join.
+		if warningsOnly {
+			publishPlansWarnings()
+			plans.warnings = nil
 		}
-		plans.warnings = nil
 		for _, plan := range plans.shellRepairs {
 			if err := executeDelegateShellRepair(plan, c.now()); err != nil {
+				publishPlansWarnings()
 				return err
 			}
 		}
@@ -969,9 +1036,12 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 				if errors.Is(err, errDelegateStaleLease) {
 					continue
 				}
+				publishPlansWarnings()
 				return err
 			}
 		}
+		publishPlansWarnings()
+		plans.warnings = nil
 		if warningsOnly {
 			// The plans withheld here own delivery claims, and a claimed
 			// delivery is never re-planned. Give the claims back so each
@@ -1043,6 +1113,34 @@ func (c *delegateTreeController) joinStopReconcileDriver(ctx context.Context) (b
 	return c.joinExactStopReconcileDriver(ctx, driver)
 }
 
+func (c *delegateTreeController) registerStopWarningPublication(p *stopWarningPublication) {
+	c.mu.Lock()
+	c.stopWarningPublication = p
+	c.mu.Unlock()
+}
+
+func (c *delegateTreeController) takeStopWarningPublication() *stopWarningPublication {
+	c.mu.Lock()
+	p := c.stopWarningPublication
+	c.stopWarningPublication = nil
+	c.mu.Unlock()
+	return p
+}
+
+// publishAbandonedStopWarnings publishes the pass an abandoned ordinary stop
+// driver had settled but not yet published. The abandon cancels that driver's
+// drain and the event stream closes once the close returns, so the pass's own
+// publication would arrive after the stream was gone. The close publishes the
+// same publication in the driver's place: its once makes exactly one of the two
+// attempts deliver the warning, never both and never neither.
+func (c *delegateTreeController) publishAbandonedStopWarnings(ctx context.Context) {
+	p := c.takeStopWarningPublication()
+	if p == nil {
+		return
+	}
+	p.publish(ctx)
+}
+
 func (c *delegateTreeController) closeStoreAfterStopReconcileDriver(ctx context.Context) error {
 	c.mu.Lock()
 	var idleTimers []idleReleaseTimerHandle
@@ -1058,6 +1156,7 @@ func (c *delegateTreeController) closeStoreAfterStopReconcileDriver(ctx context.
 	}
 	joined, driverErr := c.joinExactStopReconcileDriver(ctx, driver)
 	if !joined {
+		c.publishAbandonedStopWarnings(ctx)
 		return driverErr
 	}
 	return errors.Join(driverErr, c.store.Close())
