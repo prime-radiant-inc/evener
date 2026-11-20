@@ -501,7 +501,7 @@ func TestFullReadIgnoresAReplayedFailureCopy(t *testing.T) {
 		entryLine(older),
 		entryLine(inTurn("turn_c1", standalone(schema.TurnFailure, "latest failure"))),
 		entryLine(completion("turn_c1", schema.TurnFailed, 20, 700)),
-		entryLine(foldCopy(older, 0)),
+		entryLine(foldCopy(older, 2)),
 	}
 	turns := fullReadTurns(t, fx)
 	indexed := turnOf(t, indexedCandidates(t, fx, -1), "turn_c1")
@@ -517,6 +517,61 @@ func TestFullReadIgnoresAReplayedFailureCopy(t *testing.T) {
 	}
 	if fragments == 0 {
 		t.Fatalf("full read has no turn_c1: %s", dump(turns))
+	}
+}
+
+// An execution the file leaves open — no completion record after its start —
+// is in progress, not done: the index opens a stamped execution at in
+// progress and only a completion ends it, so a read of a file that stops
+// mid-execution must not claim the turn finished.
+func TestFullReadKeepsAnOpenExecutionInProgress(t *testing.T) {
+	fx := newFormatFixture(t, "open and reclaimed")
+	fx.lines = fx.lines[:2]
+	turns := fullReadTurns(t, fx)
+	var full *appwire.Turn
+	for i := range turns {
+		if turns[i].ID == "turn_m15" {
+			full = &turns[i]
+			break
+		}
+	}
+	if full == nil {
+		t.Fatalf("no turn_m15 in the full read: %s", dump(turns))
+	}
+	if full.Status != appwire.TurnStatusInProgress || full.CompletedAt != nil || full.DurationMS != nil {
+		t.Fatalf("full read turn_m15 = %s, want inProgress with no completion", dump(*full))
+	}
+	if indexed := turnOf(t, indexedCandidates(t, fx, 2), "turn_m15"); indexed.Status != appwire.TurnStatusInProgress {
+		t.Fatalf("indexed turn_m15 = %s, want inProgress", dump(indexed))
+	}
+}
+
+// A TURN_FAILURE record is a diagnostic, not a terminal state: the index
+// surfaces it only once a completion reports the execution failed, so an
+// open execution that carries one still reads in progress with no error.
+func TestFullReadKeepsAnOpenExecutionOutOfFailed(t *testing.T) {
+	fx := newFormatFixture(t, "open and reclaimed")
+	fx.lines = []fixtureLine{
+		entryLine(opens("turn_f1", schema.TurnSpanExecution, user("start"))),
+		entryLine(inTurn("turn_f1", assistant(text("working")))),
+		entryLine(inTurn("turn_f1", standalone(schema.TurnFailure, "run failed"))),
+	}
+	turns := fullReadTurns(t, fx)
+	var full *appwire.Turn
+	for i := range turns {
+		if turns[i].ID == "turn_f1" {
+			full = &turns[i]
+			break
+		}
+	}
+	if full == nil {
+		t.Fatalf("no turn_f1 in the full read: %s", dump(turns))
+	}
+	if full.Status != appwire.TurnStatusInProgress || full.Error != nil {
+		t.Fatalf("full read turn_f1 = %s, want inProgress with no diagnostic", dump(*full))
+	}
+	if indexed := turnOf(t, indexedCandidates(t, fx, -1), "turn_f1"); indexed.Status != appwire.TurnStatusInProgress || indexed.Error != nil {
+		t.Fatalf("indexed turn_f1 = %s, want inProgress with no diagnostic", dump(indexed))
 	}
 }
 

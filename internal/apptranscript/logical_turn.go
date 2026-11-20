@@ -145,6 +145,18 @@ func (a *logicalTurnAccumulator) foldStampedFailure(turn *schema.Turn) {
 	a.stampedFailure[turn.TurnID] = *turn
 }
 
+// stampedExecution reports whether a stamped group is an execution. The index
+// opens every identity span as an execution unless its opener records a
+// prelude, gap or delivery (build.go's turnKindOf), and only an execution
+// starts in progress.
+func stampedExecution(entries []schema.Turn) bool {
+	switch entries[0].TurnKind {
+	case schema.TurnSpanGap, schema.TurnSpanDelivery, schema.TurnSpanPrelude:
+		return false
+	}
+	return true
+}
+
 // TurnGrouper applies the logical-turn grouping rule to entries in file order.
 // Its zero value is the state before the first entry.
 //
@@ -352,6 +364,15 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 			// later fragment's partial total, and the saved turn underreported
 			// tokens and cost against the index (#1166 review).
 			runStamps[group.turnID].apply(&turn)
+			// A stamped execution's status comes only from its completion and
+			// reopen records: the index opens it at in progress and leaves it
+			// there until one arrives, so a bare TURN_FAILURE is only a
+			// diagnostic for a later failed completion, not a terminal state.
+			// Every other identity span is completed from its start.
+			if stampedExecution(group.entries) {
+				turn.Status = appwire.TurnStatusInProgress
+				turn.Error = nil
+			}
 			// The file's completion and reopen records set the execution's
 			// status in entry order, and the index surfaces the failure
 			// diagnostic only while that status is failed.
