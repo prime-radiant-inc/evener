@@ -1933,6 +1933,21 @@ func TestDelegateAttentionFailedStartReopensConsumedReport(t *testing.T) {
 	testwait.Until(t, "the presentation start to refuse the foreign-held lane", func() bool {
 		return lane.root.childDrainAbandoned(lane.delegateSess.id)
 	})
+	// The refusal settles by reopening the consumed report as a fresh row,
+	// appended without a notify. Give the lane back only once that row exists,
+	// or the recovery driver's first pass finds nothing to present.
+	testwait.Until(t, "the failed start to reopen the consumed report", func() bool {
+		pending, err := lane.delegateSess.pendingDelegateAttentionIDs()
+		if err != nil {
+			return false
+		}
+		for _, id := range pending {
+			if strings.Contains(id, delegateAttentionReopenMarker) {
+				return true
+			}
+		}
+		return false
+	})
 	// Stop and join the setup worker before the lane is unlocked: a buffered
 	// wake would otherwise begin another foreign-lock attempt that leaves the
 	// recovery pass an empty fold between consume and reopen, with no wake.
@@ -3393,7 +3408,8 @@ func TestDelegateAttentionResidentDrivePassDoesNotRebuildReleasedStopHold(t *tes
 
 	// Present the retained child's report and park it in its first model
 	// request: the loop's flush idiom pumps a delivery the spawn deferred
-	// past its last drain cut.
+	// past its last drain cut. The worker's exit stays observable because the
+	// single-pass assertions below must not race a buffered wake of its own.
 	flushErr, setupDone := lane.startDrive(entered)
 	select {
 	case <-entered:
@@ -3504,6 +3520,16 @@ func TestDelegateAttentionResidentDrivePassDoesNotRebuildReleasedStopHold(t *tes
 	lane.delegateSess.attentionMu.Unlock()
 	if !held {
 		t.Fatal("premise broken: the stop's settle did not hold the reopened row from automatic drives")
+	}
+	// The setup driver's stop closed when the presentation parked; wait its
+	// worker out before a row is armed again, so no buffered wake of its own can
+	// run a direct pass behind the single-pass assertions below.
+	select {
+	case <-setupDone:
+	// TRIPWIRE: the worker exits on its next stop check; the bound only fires
+	// on a genuine hang.
+	case <-time.After(testwait.Budget(t)):
+		t.Fatal("the setup driver never exited after the presentation parked")
 	}
 
 	// A new row arrives and its successful arm is a wake from a new event:
