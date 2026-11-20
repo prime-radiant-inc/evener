@@ -11,6 +11,7 @@ import {
   modelControlRecoveryInput,
   modelPickCanSend,
   reduceModelControl,
+  restoreHeldModelControl,
   validateThreadModelSetResponse,
 } from "./modelControl";
 import type {
@@ -514,6 +515,85 @@ describe("whole-snapshot reconciliation", () => {
       reasoningEffortLevels: ["minimal", "low", "medium", "high"],
       supportsReasoning: true,
     });
+  });
+
+  // The read that established authority carried the daemon's provider
+  // instance beside the bare model id (Thread.evener.profile, hydrated as
+  // modelProfile), and the phone's identity rule prefers that instance when
+  // qualifying the id. A snapshot that names another provider must replace
+  // it: the stale instance would re-qualify the new model as the old
+  // provider's until a fresh read arrived.
+  test("a cross-provider snapshot replaces the provider the projected id is qualified by", () => {
+    const initial = ready(snapshot(1, { provider: "anthropic", model: "claude-sonnet-4-5" }));
+    initial.modelProfile = "anthropic";
+
+    const result = reduceModelControl(initial, {
+      kind: "snapshot",
+      source: "notification",
+      snapshot: snapshot(2, { provider: "openai", model: "gpt-5.5" }),
+    });
+
+    expect(result).toMatchObject({ decision: "applied", replacementReadRequired: false });
+    expect(result.model).toMatchObject({
+      modelProvider: "openai",
+      model: "gpt-5.5",
+      modelProfile: "openai",
+    });
+  });
+
+  // A snapshot whose two active fields agree names no provider apart from the
+  // id: the identity is already whole, so the instance a previous read left
+  // beside it must not survive to double-qualify it.
+  test("a snapshot with no provider named apart from the id clears a stale instance", () => {
+    const initial = ready(snapshot(1, { provider: "anthropic", model: "claude-sonnet-4-5" }));
+    initial.modelProfile = "anthropic";
+
+    const result = reduceModelControl(initial, {
+      kind: "snapshot",
+      source: "notification",
+      snapshot: snapshot(2, {
+        provider: "anthropic/claude-opus-4-6",
+        model: "anthropic/claude-opus-4-6",
+      }),
+    });
+
+    expect(result).toMatchObject({ decision: "applied", replacementReadRequired: false });
+    expect(result.model.modelProvider).toBe("anthropic/claude-opus-4-6");
+    expect(result.model.model).toBe("anthropic/claude-opus-4-6");
+    expect(result.model.modelProfile).toBeUndefined();
+  });
+
+  // The held model's identity is a triple: the two fields a snapshot fills
+  // and the provider instance named beside them. Restoring the first two
+  // without the third would pair the held id with the fresh body's stale
+  // instance, so the phone's identity rule reads the held model as another
+  // provider's.
+  const heldWithInstance = () => {
+    const held = ready(snapshot(1, { provider: "anthropic", model: "claude-sonnet-4-5" }));
+    held.modelProfile = "anthropic";
+    return held;
+  };
+  const nextWithStaleInstance = () =>
+    model(
+      { kind: "uninitialized", canonicalDisplay: { modelProvider: "openai/gpt-5.5", model: "openai/gpt-5.5" } },
+      { modelProvider: "openai", model: "gpt-5.5", modelProfile: "openai" },
+    );
+
+  test("restoreHeldModelControl carries the held provider instance with the held model", () => {
+    const held = heldWithInstance();
+    const next = nextWithStaleInstance();
+    const restored = restoreHeldModelControl(next, held);
+
+    expect(restored.modelProvider).toBe("anthropic");
+    expect(restored.model).toBe("claude-sonnet-4-5");
+    expect(restored.modelProfile).toBe("anthropic");
+  });
+
+  test("restoreHeldModelControl clears an instance the held model does not name", () => {
+    const held = ready(snapshot(1, { provider: "anthropic", model: "claude-sonnet-4-5" }));
+    const next = nextWithStaleInstance();
+
+    expect(restoreHeldModelControl(next, held).modelProfile).toBeUndefined();
   });
 
   test("a retired response stays outside the reducer through the existing request fence", () => {

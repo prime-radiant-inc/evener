@@ -152,6 +152,21 @@ export function coldSessionCanResume(model: Pick<ModelPickTarget, "capabilities"
   return model.capabilities?.changeModel === true && SHUT_DOWN_STATUSES.has(model.status.type);
 }
 
+// Whether a cold session's read still holds a pick a departed process may
+// never have applied: a ready snapshot whose desired record is pending. The
+// daemon can exit between taking the pick and applying it, and the status
+// frame keeps that snapshot, so the row such a session draws as its own names
+// a choice nobody established rather than a model it runs.
+export function holdsUnappliedPick(
+  model: Pick<ModelPickTarget, "capabilities" | "status" | "modelControlState">,
+): boolean {
+  return (
+    coldSessionCanResume(model) &&
+    model.modelControlState.kind === "ready" &&
+    model.modelControlState.snapshot.desired?.lifecycle === "pending"
+  );
+}
+
 // Whether a read's boot generation names a running daemon. A saved view is
 // daemonless ("daemonless", or absent before any v6 read). But the hub also
 // fills a LIVE daemon's empty window from the saved index — servedFrom
@@ -209,23 +224,53 @@ function normalizedSnapshot(snapshot: ModelControlSnapshot): ModelControlSnapsho
   return { ...snapshot, active: { ...snapshot.active, reasoningEffortLevels: [] } };
 }
 
+// Sets or clears the provider instance named beside a model id, keeping the
+// key's established shape: present only when some carrier named one, so a
+// thread that never carried the key does not gain it with an undefined value.
+// hydrateThread only sets (a fresh object has nothing to clear) and the
+// thread/model/changed branch only clears (its frame names the provider
+// itself); this helper does both, because a snapshot replaces the record.
+function modelProfilePatch(
+  previous: string | undefined,
+  next: string | undefined,
+): Partial<Pick<ThreadModel, "modelProfile">> {
+  if (next !== undefined) return { modelProfile: next };
+  if (previous === undefined) return {};
+  return { modelProfile: undefined };
+}
+
 function projectModelControlSnapshot(model: ThreadModel, snapshot: ModelControlSnapshot): ThreadModel {
+  // The snapshot names the running model the way a read does: the provider
+  // instance in active.modelProvider with the bare id beside it, or one whole
+  // identity in both fields when no instance is named apart. modelProfile is
+  // the client's name for that instance (hydrateThread's Thread.evener.profile),
+  // and qualifiedModelIdentity prefers it when qualifying the id, so it must
+  // follow the snapshot: a cross-provider switch that left the previous read's
+  // instance in place would qualify the new provider's model as the old one's.
+  const profile = snapshot.active.modelProvider === snapshot.active.model ? undefined : snapshot.active.modelProvider;
   return {
     ...model,
     modelControlState: { kind: "ready", snapshot },
     modelProvider: snapshot.active.modelProvider,
     model: snapshot.active.model,
+    ...modelProfilePatch(model.modelProfile, profile),
     reasoningEffortLevels: [...(snapshot.active.reasoningEffortLevels ?? [])],
     supportsReasoning: snapshot.active.supportsReasoning,
   };
 }
 
 export function restoreHeldModelControl(next: ThreadModel, held: ThreadModel): ThreadModel {
+  // The held model's identity is a triple: the two fields above and the
+  // provider instance named beside them. Restoring the first two without the
+  // third would pair the held id with the fresh body's stale instance, so the
+  // instance rides with the other held fields - and one the held model does
+  // name cannot survive beside an id it does not qualify.
   return {
     ...next,
     modelControlState: held.modelControlState,
     modelProvider: held.modelProvider,
     model: held.model,
+    ...modelProfilePatch(next.modelProfile, held.modelProfile),
     reasoningEffortLevels: held.reasoningEffortLevels,
     supportsReasoning: held.supportsReasoning,
   };

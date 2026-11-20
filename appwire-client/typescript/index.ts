@@ -553,6 +553,7 @@ export type {
 } from "./modelControl";
 export {
   coldSessionCanResume,
+  holdsUnappliedPick,
   modelControlAuthority,
   modelControlDisplay,
   modelControlRecoveryInput,
