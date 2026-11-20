@@ -11,16 +11,19 @@
 # private hub, provider and connection state; the simulator is created and
 # deleted by the qualification binary that starts this child, never here.
 #
-# WHAT IT DOES: builds the runtime pair and the evener binary, starts the
-# fixture provider and an isolated hub under private XDG directories with
-# HOME inherited, reads the fixture-only connection data from a mode-0600
-# private file, injects it into the generated test-run configuration in
-# place, runs the three journeys against the downloaded Release app, and
-# validates the xcresult: every intended test identity executed, none
-# skipped, zero failures. The private state never reaches the output
-# directory or any uploaded artifact, with two deliberate exceptions: this
-# run's own daemon logs, whose round diagnostics (steers, turn completions,
-# the reason a round stopped) are copied out before the state goes, and
+# WHAT IT DOES: installs the runtime pair the workflow's setup job built
+# beside the app build (revision and checksums verified first), or builds the
+# pair itself when none is supplied or the selected harness does not read the
+# variable — then starts the fixture provider and an isolated hub under
+# private XDG directories with HOME inherited, reads the fixture-only
+# connection data from a mode-0600 private file, injects it into the generated
+# test-run configuration in place, runs the three journeys against the
+# downloaded Release app, and validates the xcresult: every intended test
+# identity executed, none skipped, zero failures. The private state never
+# reaches the output directory or any uploaded artifact, with two deliberate
+# exceptions: this run's own daemon logs, whose round diagnostics (steers,
+# turn completions, the reason a round stopped) are copied out before the
+# state goes, and
 # XCTest's own activity record of the onboarding typing, which lands in the
 # uploaded test log and result bundle. Both carry only fixture-only data —
 # the connection data guards a throwaway loopback hub that dies with the run —

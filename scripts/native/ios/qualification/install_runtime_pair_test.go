@@ -56,17 +56,29 @@ func TestInstallRuntimePairRefusesUnsafePairs(t *testing.T) {
 		out, err := cmd.CombinedOutput()
 		return string(out), err
 	}
+	notCopied := func(t *testing.T, dest string) {
+		t.Helper()
+		for _, name := range []string{"evener", "fixture-provider"} {
+			if _, err := os.Stat(filepath.Join(dest, name)); err == nil {
+				t.Errorf("a refused pair still copied %s into the run directory", name)
+			}
+		}
+	}
 	refused := func(t *testing.T, out string, err error, dest string) {
 		t.Helper()
 		exit, ok := errors.AsType[*exec.ExitError](err)
 		if !ok || exit.ExitCode() != 1 {
 			t.Fatalf("install-runtime-pair.sh exit = %v, want exit 1; output:\n%s", err, out)
 		}
-		for _, name := range []string{"evener", "fixture-provider"} {
-			if _, err := os.Stat(filepath.Join(dest, name)); err == nil {
-				t.Errorf("a refused pair still copied %s into the run directory", name)
-			}
+		notCopied(t, dest)
+	}
+	usageRefused := func(t *testing.T, out string, err error, dest string) {
+		t.Helper()
+		exit, ok := errors.AsType[*exec.ExitError](err)
+		if !ok || exit.ExitCode() != 2 {
+			t.Fatalf("install-runtime-pair.sh exit = %v, want exit 2 for a usage error; output:\n%s", err, out)
 		}
+		notCopied(t, dest)
 	}
 
 	t.Run("matching pair installed", func(t *testing.T) {
@@ -145,38 +157,19 @@ func TestInstallRuntimePairRefusesUnsafePairs(t *testing.T) {
 		out, err := run(t, "", nil, pair, identity, dest)
 		refused(t, out, err, dest)
 	})
-	t.Run("relative pair is not resolved through CDPATH", func(t *testing.T) {
+	t.Run("relative pair directory refused", func(t *testing.T) {
 		t.Parallel()
-		root := t.TempDir()
-		cwd := filepath.Join(root, "cwd")
+		cwd := t.TempDir()
 		writePair(t, filepath.Join(cwd, "pair"), pairRevision)
-		decoyRoot := filepath.Join(root, "decoy")
-		writePair(t, filepath.Join(decoyRoot, "pair"), pairRevision)
-		// The real pair's bytes no longer match its manifest; the decoy's do.
-		writeFile(t, filepath.Join(cwd, "pair", "fixture-provider"), "#!/bin/sh\nexit 1\n")
 		dest := t.TempDir()
-		out, err := run(t, cwd, []string{"CDPATH=" + decoyRoot}, "pair", writeIdentity(t, pairRevision), dest)
-		refused(t, out, err, dest)
+		out, err := run(t, cwd, nil, "pair", writeIdentity(t, pairRevision), dest)
+		usageRefused(t, out, err, dest)
 	})
-	t.Run("symlink and dot-dot are resolved physically", func(t *testing.T) {
+	t.Run("relative destination directory refused", func(t *testing.T) {
 		t.Parallel()
-		root := t.TempDir()
-		cwd := filepath.Join(root, "cwd")
-		writePair(t, filepath.Join(cwd, "pair"), pairRevision)
-		other := filepath.Join(root, "other")
-		writePair(t, filepath.Join(other, "pair"), pairRevision)
-		// The path sym/../pair is cwd/pair to a logical cd and other/pair to
-		// the kernel that copies; only the physical directory may be trusted.
-		writeFile(t, filepath.Join(other, "pair", "evener"), "#!/bin/sh\nexit 1\n")
-		if err := os.MkdirAll(filepath.Join(other, "deep"), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Symlink(filepath.Join(other, "deep"), filepath.Join(cwd, "sym")); err != nil {
-			t.Skipf("symlinks are unavailable: %v", err)
-		}
-		dest := t.TempDir()
-		out, err := run(t, cwd, nil, "sym/../pair", writeIdentity(t, pairRevision), dest)
-		refused(t, out, err, dest)
+		pair, identity, dest := newFixture(t)
+		out, err := run(t, filepath.Dir(dest), nil, pair, identity, filepath.Base(dest))
+		usageRefused(t, out, err, dest)
 	})
 }
 
