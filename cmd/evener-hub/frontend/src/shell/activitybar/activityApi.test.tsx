@@ -750,71 +750,88 @@ it("keeps a settled child revealed on an earlier page visible when a later page 
   }
 });
 
-it("keeps an already-revealed grandchild when one page delivers both of its ancestors", async () => {
-  const client = activityClient();
-  ActivityBoundaryObserver.reset();
-  vi.stubGlobal("IntersectionObserver", ActivityBoundaryObserver);
-  const settled = { terminal: true, status: "completed", outcome: "completed", lifecycle: "idle" } as const;
-  const grandchild = activityDelegate({
-    delegateId: "settled-gc-p1",
-    name: "settled-grandchild",
-    ownerRef: "remote:settled-mid",
-    rootRef: activityRef,
-    childRef: "remote:settled-gc",
-    parentDelegateId: "settled-mid-p2",
-    ...settled,
-  });
-  const mid = activityDelegate({
-    delegateId: "settled-mid-p2",
-    name: "settled-mid",
-    ownerRef: "remote:settled-top",
-    rootRef: activityRef,
-    childRef: "remote:settled-mid",
-    parentDelegateId: "settled-top-p2",
-    ...settled,
-  });
-  const top = activityDelegate({
-    delegateId: "settled-top-p2",
-    name: "settled-top",
-    ownerRef: activityRef,
-    rootRef: activityRef,
-    childRef: "remote:settled-top",
-    ...settled,
-  });
-  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
-    ...activitySummary(ref, scope),
-    delegates: { known: true, total: 3, active: 0, completed: 3, failed: 0 },
-  }));
-  client.on("evener/thread/delegates/list", ({ ref, scope, cursor }) => ({
-    context: activityContext(ref),
-    scope: scope ?? "session",
-    delegates: cursor ? [mid, top] : [grandchild],
-    page: cursor ? { complete: true, issues: [] } : { complete: false, nextCursor: "page-2", issues: [] },
-  }));
-  try {
-    connectionStore.getState().connect(client);
-    const { container } = render(<AgentsTab now={NOW} scope={scope()} />);
-    const gcAnchor = `[data-activity-anchor=${JSON.stringify('delegate:["remote:settled-gc","settled-gc-p1"]')}]`;
-    const topAnchor = `[data-activity-anchor=${JSON.stringify('delegate:["remote:settled-top","settled-top-p2"]')}]`;
-    const fold = await waitFor(() => inactiveFold(container, 3));
-    fireEvent.click(fold.querySelector("summary")!);
-
-    // The grandchild is visible on page 1, with both of its ancestors still
-    // unloaded.
-    expect(document.querySelector(gcAnchor)).not.toBeNull();
-    expect(document.querySelector(topAnchor)).toBeNull();
-
-    // Page 2 delivers the middle and top rows together. Neither was rendered
-    // before, so only a rolled-up reveal keeps the grandchild in view.
-    await act(async () => ActivityBoundaryObserver.intersect());
-    await waitFor(() => expect(document.querySelector(topAnchor)).not.toBeNull());
-    expect(document.querySelector(gcAnchor)).not.toBeNull();
-  } finally {
-    cleanup();
-    vi.unstubAllGlobals();
+it.each(["refresh", "reconnect"] as const)(
+  "keeps an already-revealed grandchild when one page delivers both of its ancestors through %s",
+  async (recovery) => {
+    const client = activityClient();
     ActivityBoundaryObserver.reset();
-  }
-});
+    vi.stubGlobal("IntersectionObserver", ActivityBoundaryObserver);
+    const settled = { terminal: true, status: "completed", outcome: "completed", lifecycle: "idle" } as const;
+    const grandchild = activityDelegate({
+      delegateId: "settled-gc-p1",
+      name: "settled-grandchild",
+      ownerRef: "remote:settled-mid",
+      rootRef: activityRef,
+      childRef: "remote:settled-gc",
+      parentDelegateId: "settled-mid-p2",
+      ...settled,
+    });
+    const mid = activityDelegate({
+      delegateId: "settled-mid-p2",
+      name: "settled-mid",
+      ownerRef: "remote:settled-top",
+      rootRef: activityRef,
+      childRef: "remote:settled-mid",
+      parentDelegateId: "settled-top-p2",
+      ...settled,
+    });
+    const top = activityDelegate({
+      delegateId: "settled-top-p2",
+      name: "settled-top",
+      ownerRef: activityRef,
+      rootRef: activityRef,
+      childRef: "remote:settled-top",
+      ...settled,
+    });
+    client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+      ...activitySummary(ref, scope),
+      delegates: { known: true, total: 3, active: 0, completed: 3, failed: 0 },
+    }));
+    client.on("evener/thread/delegates/list", ({ ref, scope, cursor }) => ({
+      context: activityContext(ref),
+      scope: scope ?? "session",
+      delegates: cursor ? [mid, top] : [grandchild],
+      page: cursor ? { complete: true, issues: [] } : { complete: false, nextCursor: "page-2", issues: [] },
+    }));
+    try {
+      connectionStore.getState().connect(client);
+      const { container } = render(<AgentsTab now={NOW} scope={scope()} />);
+      const gcAnchor = `[data-activity-anchor=${JSON.stringify('delegate:["remote:settled-gc","settled-gc-p1"]')}]`;
+      const topAnchor = `[data-activity-anchor=${JSON.stringify('delegate:["remote:settled-top","settled-top-p2"]')}]`;
+      const fold = await waitFor(() => inactiveFold(container, 3));
+      fireEvent.click(fold.querySelector("summary")!);
+
+      // The grandchild is visible on page 1, with both of its ancestors still
+      // unloaded.
+      expect(document.querySelector(gcAnchor)).not.toBeNull();
+      expect(document.querySelector(topAnchor)).toBeNull();
+
+      // Page 2 delivers the middle and top rows together. Neither was rendered
+      // before, so only a rolled-up reveal keeps the grandchild in view.
+      await act(async () => ActivityBoundaryObserver.intersect());
+      await waitFor(() => expect(document.querySelector(topAnchor)).not.toBeNull());
+      expect(document.querySelector(gcAnchor)).not.toBeNull();
+
+      // A recovery re-reads every page while the tab stays mounted. The revealed
+      // row and the later page's row must both survive the rebuilt walk.
+      act(() => {
+        if (recovery === "refresh") {
+          client.emitNotification(activityChangedNotification({ ref: activityRef, threadId: "owner" }, ["delegates"]));
+        } else {
+          client.emitStateChange("reconnecting");
+          client.emitReady();
+        }
+      });
+      await act(async () => ActivityBoundaryObserver.intersect());
+      await waitFor(() => expect(document.querySelector(topAnchor)).not.toBeNull());
+      expect(document.querySelector(gcAnchor)).not.toBeNull();
+    } finally {
+      cleanup();
+      vi.unstubAllGlobals();
+      ActivityBoundaryObserver.reset();
+    }
+  },
+);
 
 it("collapses settled top-level nodes with settled descendants by default and caps indentation at depth 3", async () => {
   const client = activityClient();
