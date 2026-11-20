@@ -463,10 +463,10 @@ func TestSystemPromptRendersTheSessionData(t *testing.T) {
 					)
 				}
 				for _, agent := range d.AvailableAgents {
-					values = append(values,
-						promptValue{"agent name", agent.Name},
-						promptValue{"agent default tools", agent.DefaultTools},
-					)
+					// The roster states the role and its tasks. A role's callable
+					// tools live in the delegate schema, so they are not a prompt
+					// value this test can require.
+					values = append(values, promptValue{"agent name", agent.Name})
 					for _, task := range agent.TaskList {
 						values = append(values, promptValue{"agent task", task.Title})
 					}

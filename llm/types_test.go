@@ -369,22 +369,40 @@ func TestNormalizeToolArguments(t *testing.T) {
 	}
 }
 
-// TestStripOpaqueThinkingForCrossProvider: the kept part loses its blob and a
-// non-compat signature, a shape reasoningItem refuses drops, and the stored part
-// is never mutated. The wire-level cases live in the agent package.
+// TestStripOpaqueThinkingForCrossProvider: the kept part loses its blob, its
+// provider-issued item id and a non-compat signature, a shape reasoningItem
+// refuses drops, and the stored part is never mutated. The wire-level cases live
+// in the agent package.
 func TestStripOpaqueThinkingForCrossProvider(t *testing.T) {
 	t.Parallel()
 	native := []ResponsesReasoningPart{{Type: "reasoning_text", Text: "t"}}
-	stored := &ThinkingData{EncryptedContent: "enc_A", Signature: "sig_anth", ResponsesContentParts: native}
+	stored := &ThinkingData{ID: "rs_foreign", EncryptedContent: "enc_A", Signature: "sig_anth", ResponsesContentParts: native}
 	got, dropped := StripOpaqueThinkingForCrossProvider(ContentPart{Kind: ContentThinking, Thinking: stored})
-	if dropped || got.Thinking.EncryptedContent != "" || got.Thinking.Signature != "" {
-		t.Fatalf("got dropped=%v thinking=%+v, want the portable half without blob or signature", dropped, got.Thinking)
+	if dropped || got.Thinking.EncryptedContent != "" || got.Thinking.ID != "" || got.Thinking.Signature != "" {
+		t.Fatalf("got dropped=%v thinking=%+v, want the portable half without blob, provider item id or signature", dropped, got.Thinking)
 	}
-	if stored.EncryptedContent != "enc_A" || stored.Signature != "sig_anth" {
+	if stored.ID != "rs_foreign" || stored.EncryptedContent != "enc_A" || stored.Signature != "sig_anth" {
 		t.Fatalf("the strip mutated the stored part: %+v", stored)
 	}
 	if _, dropped := StripOpaqueThinkingForCrossProvider(ContentPart{Kind: ContentThinking,
 		Thinking: &ThinkingData{Signature: "reasoning_content", ResponsesSummaryParts: native}}); dropped {
 		t.Fatal("a compat reasoning_details field must survive as wire continuation state")
+	}
+}
+
+// TestStripOpaqueThinkingForCrossProviderClearsAnIDOnlyPart covers the
+// changed-part check: when the provider-issued item id is the only foreign
+// state, the copy must still differ from the input, or the caller keeps the
+// stored part and replays the source instance's id.
+func TestStripOpaqueThinkingForCrossProviderClearsAnIDOnlyPart(t *testing.T) {
+	t.Parallel()
+	native := []ResponsesReasoningPart{{Type: "reasoning_text", Text: "t"}}
+	stored := &ThinkingData{ID: "rs_only", ResponsesContentParts: native}
+	got, dropped := StripOpaqueThinkingForCrossProvider(ContentPart{Kind: ContentThinking, Thinking: stored})
+	if dropped || got.Thinking == stored || got.Thinking.ID != "" {
+		t.Fatalf("got dropped=%v thinking=%+v, want a changed copy without the provider item id", dropped, got.Thinking)
+	}
+	if stored.ID != "rs_only" {
+		t.Fatalf("the strip mutated the stored part: %+v", stored)
 	}
 }

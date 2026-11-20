@@ -137,6 +137,7 @@
 
 .edgeFooter {
   flex: none;
+  padding-bottom: var(--dock-clearance);
 }
 
 @media (max-width: 899px) {
@@ -175,22 +176,6 @@
     padding-bottom: var(--dock-clearance);
   }
 
-  /* The flush edge footer below this dock is the pane's bottom edge and owns
-   * the home-indicator band (the session status bar), so reserving the inset
-   * here too would leave a dead strip between the composer and that bar. */
-  .footerBeforeEdge {
-    padding-bottom: var(--space-3);
-  }
-
-  /* While the composer is editing the status bar hides (it would sit between
-   * the input and the keyboard), so the dock is the bottom edge again and
-   * takes the home-indicator band back for the case where focus outlives the
-   * keyboard. The editing attribute also holds while a composer control or
-   * menu owns focus. */
-  :global(body):has([data-composer-editing]) .footerBeforeEdge {
-    padding-bottom: var(--dock-clearance);
-  }
-
   /* The composer's activity line is the phone's bottom edge when it renders:
    * its chips are already the tap-floor height, and reserving the
    * home-indicator band below them spends that band twice. A phone pane
@@ -199,6 +184,25 @@
    * not this one. */
   .footer:has(:global([data-composer-activity-line="true"])) {
     padding-bottom: 0;
+  }
+}
+
+/* A flush edge footer below this dock is the pane's bottom edge and owns the
+ * home-indicator band. Reserve only the ordinary gap here at every width;
+ * otherwise a wide touch viewport spends the safe-area band twice. Keep this
+ * after the phone .footer rule so it wins for a footer/edge-footer pair there
+ * too; the editing and Duo-cover overrides have higher specificity. */
+.footerBeforeEdge {
+  padding-bottom: var(--space-3);
+}
+
+@media (max-width: 899px) {
+  /* A narrow pane with an edge footer moves the padded footer back to
+   * keyboard-aware clearance while any composer owns editing. Session mounts
+   * its own edge footer only above this breakpoint, so its landscape status
+   * bar stays visible during editing. */
+  :global(body):has([data-composer-editing]) .footerBeforeEdge {
+    padding-bottom: var(--dock-clearance);
   }
 }
 

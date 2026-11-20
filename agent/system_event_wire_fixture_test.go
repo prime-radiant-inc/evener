@@ -19,6 +19,7 @@ package agent
 // (wire_fixture_test.go).
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -228,10 +229,21 @@ func systemEventWireFailedTurn(t *testing.T) appwire.Turn {
 	project := func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
 		return apptranscript.ProjectTurn(turnID, turnIndex, turn, reg, nil, nil)
 	}
-	turns, err := apptranscript.ItemTurnsFromEntries(transcript.Header{}, []transcript.Entry{
-		{Kind: "entry", Seq: 1, Turn: user},
-		{Kind: "entry", Seq: 2, Turn: failure},
-	}, project)
+	path := filepath.Join(t.TempDir(), "system-event-wire.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	if err := w.Append(user); err != nil {
+		t.Fatalf("append user turn: %v", err)
+	}
+	if err := w.Append(failure); err != nil {
+		t.Fatalf("append failure turn: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close transcript: %v", err)
+	}
+	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, project)
 	if err != nil {
 		t.Fatalf("project the failed turn: %v", err)
 	}

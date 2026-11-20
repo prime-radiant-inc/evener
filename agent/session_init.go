@@ -891,6 +891,16 @@ type RestoreSessionConfig struct {
 	// field exists so a CHILD built from its parent's snapshot inherits it.
 	AgentsDocPath string
 
+	// StartupMCPProjectEvidence is the project MCP layer the RESTORING
+	// process read at its startup, replacing whatever the persisted snapshot
+	// could never have carried. It is what a sandboxed delegate restored out of
+	// this process may expand through the process environment, and it belongs to
+	// the process hosting the tree now for the same reason AgentsDocPath does:
+	// the layer is a fact about this workspace as THIS process read it. Nil is
+	// the fail-safe answer (nothing is authorized) and is what a caller that
+	// never called discovery leaves.
+	StartupMCPProjectEvidence *mcpconfig.LayerEvidence
+
 	// OnRestoredTranscript, when set, receives the transcript this resume
 	// validated: the header (its SessionID already checked against the
 	// session's id), the final decoded entry list after every restore-time
@@ -1057,6 +1067,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		return nil, err
 	}
 	cfg.AgentsDocPath = strings.TrimSpace(restoreCfg.AgentsDocPath)
+	cfg.StartupMCPProjectEvidence = restoreCfg.StartupMCPProjectEvidence
 	if strings.TrimSpace(restoreCfg.OpenAIResponsesContinuation) != "" {
 		cfg.OpenAIResponsesContinuation = strings.TrimSpace(restoreCfg.OpenAIResponsesContinuation)
 	}
@@ -1920,8 +1931,9 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		}
 	}
 	if len(s.cfg.spawn.toolNameCeiling) > 0 {
-		ceiling := make(map[string]bool, len(s.cfg.spawn.toolNameCeiling))
-		for _, name := range s.cfg.spawn.toolNameCeiling {
+		effective := effectiveChildToolCeiling(s.cfg.spawn.toolNameCeiling, s.cfg.spawn.ceilingReachabilityExcluded, s.reg)
+		ceiling := make(map[string]bool, len(effective))
+		for _, name := range effective {
 			ceiling[name] = true
 		}
 		// Stable delegates freeze a capability ceiling before their durable start.
@@ -1955,6 +1967,22 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	// Cache tool definitions and the rendered prompt. A render failure here is a
 	// construction-time diagnostic, so it BUFFERS rather than emitting: nothing
 	// may reach the stream before SESSION_START (see emitSessionStartEnvelope).
+	// Settle the delegate roster decision FIRST. These two caches are what the
+	// transcript's system prelude records, and the roster they carry reflects
+	// that decision. Building them with it still unknown writes a prelude that
+	// request preparation then corrects before the first model call, so the saved
+	// prelude and the request after it describe one session two ways. initMCP has
+	// already installed the classification and its evidence here; this probe turns
+	// it into the decision. It does I/O — config reads and one git fork — and must
+	// run without s.mu, which this point in construction satisfies.
+	//
+	// Bounded, not Background: startup runs on a path a user can cancel, and a
+	// mount that stalls must not hold session construction open forever. An
+	// expired probe leaves reachability unknown, which keeps the names eligible and
+	// lets construction finish; the first model request probes again.
+	startupFreshCtx, cancelStartupFresh := context.WithTimeout(context.Background(), exclusionFreshnessRequestBudget)
+	s.setRosterExclusion(s.probeCLIEvidenceFresh(startupFreshCtx, env))
+	cancelStartupFresh()
 	s.rebuildToolDefsCache()
 	warning, renderFailed := "", false
 	if restoredPrompt != "" {
@@ -2747,10 +2775,52 @@ func commandUnenforcedFieldWarnings(p plugin.Instance) []events.WarningData {
 // initMCP discovers and connects to MCP servers if configured.
 // Uses a 30-second timeout since NewSession doesn't take a context.
 func (s *Session) initMCP() error {
-	configs, cfgWarnings, err := mcpconfig.Discover(s.currentEnv(), s.cfg.MCPConfigFiles, s.cfg.MCPInline)
+	// One call supplies BOTH the servers this session connects and the evidence
+	// the delegate classification is derived from, so a file edited mid-startup
+	// cannot pair a fresh digest with a stale classification.
+	//
+	// A SANDBOXED DELEGATE passes its parent's startup project evidence and its
+	// own sandboxedness: it was constructed by a running session rather than
+	// launched by a user who trusted this workspace, so the project layer keeps
+	// the process environment only while it still says what the parent read at
+	// its own startup (see DiscoverWithCLIOnlyAndEvidenceForProjectEnv).
+	env := s.currentEnv()
+	sandboxed := s.mcpProjectLayerIsSandboxedWithoutLaunchTrust(env)
+	configs, reach, configEvidence, cfgWarnings, err := mcpconfig.DiscoverWithCLIOnlyAndEvidenceForProjectEnv(
+		env, s.cfg.MCPConfigFiles, s.cfg.MCPInline,
+		s.cfg.StartupMCPProjectEvidence, sandboxed,
+		s.mcpHostNetworkDisabled(env))
 	if err != nil {
 		return err
 	}
+	// Which project layer authorizes the delegates THIS session constructs is a
+	// different question from what this session just discovered, and the two
+	// must not be conflated.
+	//
+	// A ROOT session's own startup read IS the launch: the user launched into
+	// this workspace, so the layer it read is the layer a sandboxed delegate may
+	// expand. It records that unconditionally, absence included — an absent
+	// layer recorded as a path with no digest is a fact a later check can
+	// verify, while an unrecorded one authorizes nothing.
+	//
+	// A SANDBOXED DELEGATE is not a launch. Its discovery may have registered
+	// servers this process could only reach through a `${VAR:-default}`
+	// fallback, and recording THAT layer as the authorization would promote it:
+	// a nested delegate (depth 2) would then be told the depth-1 process
+	// launched against a config the depth-1 process never actually saw
+	// authorized, and would expand real host credentials out of it. So a
+	// sandboxed delegate carries forward EXACTLY what its own parent authorized
+	// for it, and nothing it discovered itself.
+	evidence := configEvidence.Project
+	if sandboxed {
+		evidence = mcpconfig.LayerEvidence{}
+		if prior := s.cfg.StartupMCPProjectEvidence; prior != nil {
+			evidence = *prior
+		}
+	}
+	s.mu.Lock()
+	s.startupMCPProjectEvidence = evidence
+	s.mu.Unlock()
 	for _, w := range cfgWarnings {
 		s.pendingMCPWarnings = append(s.pendingMCPWarnings, events.WarningData{
 			Source: string(diagnostic.SourceMCP), Title: "MCP config error", Message: w,
@@ -2784,7 +2854,218 @@ func (s *Session) initMCP() error {
 	}
 	s.mcpMgr = mgr
 	s.mcpTools = mgr.ToolDefinitions()
+	// The servers the CLI layers supply are recorded so the delegate ceiling can
+	// tell which of this session's tool names a child might not reach. Nothing
+	// is connected for this: the classification comes from discovery metadata
+	// alone, because a shadowed entry must never be dialled (see
+	// recordCLIMCPServers).
+	s.recordCLIMCPServers(reach.CLIServers, configEvidence)
+	// The namespaces the OTHER layers supply, in the form MCP registration
+	// derives. cliMCPToolNames needs them to answer whether a CLI tool's full
+	// registered name could also come from a non-CLI server the child loads:
+	// registration sanitizes the whole "server__tool" join, so comparing server
+	// names alone cannot see that a project "team" exposing "docs__lookup" and a
+	// CLI "team__docs" exposing "lookup" both register "team__docs__lookup".
+	s.setShadowedLayerNamespaces(reach.OtherLayerNamespaces)
+	s.recordCLIMCPTools(mgr)
 	return nil
+}
+
+// mcpProjectLayerIsSandboxedWithoutLaunchTrust reports whether this session is a
+// delegate running under a sandbox that withholds host credentials from it, so
+// the project MCP layer must not be expanded through the host environment it
+// cannot itself read.
+//
+// Two conditions decide it, and both must hold:
+//
+//   - The session is a delegate. A root session's project layer belongs to the
+//     launch the user made into this workspace, which is the trust decision
+//     Discover documents; only a session CONSTRUCTED by another session can
+//     discover a layer that appeared around the tree afterwards.
+//   - A sandbox is in force. Nothing is withheld from an unsandboxed delegate in
+//     a shared workspace, so restricting its project layer would turn off a
+//     feature without protecting anything. The sandbox is read from the
+//     environment's resolved policy as well as the configured mode name, because
+//     a read-only delegate scope derives its box from the tool policy and the
+//     name alone would miss it.
+func (s *Session) mcpProjectLayerIsSandboxedWithoutLaunchTrust(env execenv.ExecutionEnvironment) bool {
+	if !s.isSubagentSession() {
+		return false
+	}
+	if !sandbox.ModeIsOff(s.cfg.Sandbox) {
+		return true
+	}
+	return sandboxSnapshotFromEnv(env) != nil
+}
+
+// mcpHostNetworkDisabled reports whether this session's sandbox has network
+// disabled, which is the condition under which an MCP server can reach the host
+// network that the sandbox denies the session itself.
+//
+// Both places the resolved policy can live are consulted, because they answer
+// for different construction paths: a session restored from a snapshot carries
+// its mode on the config and has it re-resolved onto the env, while a delegate
+// built by a running parent carries an already-provisioned policy on the env.
+// A configured `+nonet` that produced no resolved policy at all still counts —
+// the intent to deny egress is what the MCP layer must honor, and reading only
+// the resolved policy would let the gap authorize a server.
+func (s *Session) mcpHostNetworkDisabled(env execenv.ExecutionEnvironment) bool {
+	if le, ok := env.(*execenv.LocalExecutionEnvironment); ok && le.Sandbox != nil && le.Sandbox.Enforced() {
+		return !le.Sandbox.Network
+	}
+	if s.cfg.SandboxNet != nil {
+		return !*s.cfg.SandboxNet
+	}
+	return false
+}
+
+// effectiveChildToolCeiling is the ceiling a child session should enforce: the
+// frozen role ceiling, plus any name that ceiling dropped only for REACHABILITY
+// and that this session's registry can register right now.
+//
+// The two halves have different lifetimes. A role denial is a statement about
+// what the delegate MAY use, and it never expires. A reachability exclusion is a
+// statement about one workspace's configuration at the moment the ceiling was
+// computed — the child could not register the name then — and an operator adding
+// the CLI-only server to the project or global config makes it registrable. When
+// that happens the frozen name must come back, or cold resume strips a tool the
+// child has successfully registered.
+//
+// Registration is the test, not configuration: a name in the registry exists, so
+// the child can call it. A role-forbidden name is never in the registry, so it
+// cannot be re-admitted by this path.
+//
+// One function, called by the enforcement point AND by the post-restore check, so
+// the ceiling the child runs under and the ceiling it is judged against are the
+// same set.
+func effectiveChildToolCeiling(ceiling, reachabilityExcluded []string, reg *tool.Registry) []string {
+	if len(reachabilityExcluded) == 0 || reg == nil {
+		return ceiling
+	}
+	registered := reg.RegisteredNames()
+	effective := append([]string(nil), ceiling...)
+	for _, name := range reachabilityExcluded {
+		if !registered[name] || hasString(ceiling, name) {
+			continue
+		}
+		effective = append(effective, name)
+	}
+	return effective
+}
+
+// recordCLIMCPServers records, from discovery metadata alone, the servers the
+// CLI layers supply.
+//
+// It connects nothing. A name another layer also declares is not an exclusion at
+// all, and it needs no separate bookkeeping here: cliMCPToolNames keeps a name
+// eligible whenever another layer's namespace could produce it, which covers a
+// server this session's CLI entry shadows. What remains is the honest exclusion —
+// a server only the CLI layers declare, which a child, having cleared those
+// layers, cannot register.
+func (s *Session) recordCLIMCPServers(cliServers []string, evidence mcpconfig.ConfigEvidence) {
+	if len(cliServers) == 0 {
+		s.setCLIMCPServers(nil, evidence)
+		return
+	}
+	servers := make(map[string]bool, len(cliServers))
+	for _, name := range cliServers {
+		servers[name] = true
+	}
+	s.setCLIMCPServers(servers, evidence)
+}
+
+// recordCLIMCPTools re-derives the CLI-only MCP tool names from the manager's
+// live per-server tool lists, so a first connect and a later retry that heals a
+// server both describe the same set. It is the single authority for the TOOL
+// names, and every path that changes either input calls it.
+func (s *Session) recordCLIMCPTools(mgr *mcp.Manager) {
+	servers := s.cliMCPServersSnapshot()
+	if len(servers) == 0 || mgr == nil || s.reg == nil {
+		s.setCLIMCPToolNames(nil)
+		return
+	}
+	s.setCLIMCPToolNames(cliMCPToolNames(servers, s.cliMCPOtherNamespacesSnapshot(), mgr.Servers(), s.reg))
+}
+
+// cliMCPToolNames is the one place that says which of a parent's tool names a
+// child cannot reach, given the servers the CLI layers supply. Both the startup
+// registration and a retry that heals a server call it, so the two cannot
+// describe different sets.
+//
+// The rule: the exclusion follows a registration that actually happened, on a
+// server the child cannot rediscover, and never a name that merely appears in a
+// list.
+//
+//   - Only a name the registry actually holds counts. "failed" contributes
+//     nothing: failRegister rolls back every name that conn added, yet
+//     Servers() still reports the names it DISCOVERED, so a name another
+//     server registered first would otherwise be attributed to the failed CLI
+//     server. "degraded" keeps contributing, because a dropped transport leaves
+//     the tools it registered in place.
+//   - A name whose FULL registered form another layer's server could also
+//     produce is not excluded, even when no server name matches. Registration
+//     sanitizes the complete "<server>__<tool>" join, so a project server
+//     "team" exposing "docs__lookup" and a CLI server "team__docs" exposing
+//     "lookup" both register "team__docs__lookup". The CLI server really
+//     registered it here, so a name-level comparison calls it CLI-only and
+//     strips it from the child's ceiling — while the child discovers the same
+//     name from the project server. The check is which NAMESPACES another layer
+//     supplies, from configuration evidence only: nothing is connected.
+//
+// A name another layer declares in the SAME namespace — a CLI entry shadowing a
+// project or plugin server — is covered by that same prefix check: the other
+// layer's sanitized server name is a prefix of the tool's registered name, so it
+// stays eligible. That is why no separate shadowed-server set is needed.
+func cliMCPToolNames(servers map[string]bool, otherPrefixes []string, infos []mcpconfig.ServerInfo, reg *tool.Registry) map[string]bool {
+	if len(servers) == 0 || reg == nil {
+		return nil
+	}
+	names := make(map[string]bool)
+	for _, info := range infos {
+		if !servers[info.Name] || info.Status == "failed" {
+			continue
+		}
+		for _, name := range info.Tools {
+			if reg.Get(name) == nil {
+				continue
+			}
+			// The full registered name may come from a server the child keeps:
+			// a non-CLI layer whose sanitized prefix is a prefix of this name.
+			if suppliedByAnotherLayer(name, otherPrefixes) {
+				continue
+			}
+			names[name] = true
+		}
+	}
+	return names
+}
+
+// suppliedByAnotherLayer reports whether a registered tool name could have been
+// produced by a server in a layer the child keeps.
+//
+// MCP registration names a tool by sanitizing "<server>__<tool>" as one string,
+// so a name's origin cannot be recovered by splitting it — the server name
+// itself may contain underscores. Asking instead whether any non-CLI namespace
+// is a PREFIX of the name is the answer that does not need to split: if
+// "<prefix>__" begins the name, a server with that namespace exposing the
+// remainder registers exactly this name.
+//
+// The separator is registration's own DOUBLE underscore, and both characters
+// matter. A single "_" lets "github" claim "github_enterprise__search", a
+// different server the child may not reach at all — the permissive direction,
+// where the roster advertises a tool that does not exist. Requiring an exact
+// match instead would stop matching legitimate compound names like
+// "team__docs__lookup". Only the true separator gets both directions right.
+func suppliedByAnotherLayer(name string, otherPrefixes []string) bool {
+	for _, prefix := range otherPrefixes {
+		if prefix == "" {
+			continue
+		}
+		if strings.HasPrefix(name, prefix+"__") {
+			return true
+		}
+	}
+	return false
 }
 
 // reconnectRecoveryWarning records a restored connection before the tool retry
@@ -2825,13 +3106,19 @@ func (s *Session) retryFailedMCP(ctx context.Context) {
 	}
 	var notices []events.WarningData
 	s.mu.Lock()
+	// The same ceiling the session is actually running with. A cold-resumed
+	// delegate may have re-admitted a name the frozen list excluded only for
+	// reachability; judging a late registration against the bare frozen list
+	// would delete the tool a retry just recovered, and no later retry would
+	// bring it back because the server is connected now.
+	effective := effectiveChildToolCeiling(s.cfg.spawn.toolNameCeiling, s.cfg.spawn.ceilingReachabilityExcluded, s.reg)
 	for _, r := range recovered {
 		// A retry must not widen the session's tool policy: the startup
 		// registration is filtered by the allowed/denied/ceiling rules after
 		// initMCP returns, so a late registration applies the same predicate.
 		callable := 0
 		for _, name := range r.Tools {
-			if s.hubToolDenied(name) {
+			if s.hubToolDeniedAgainst(effective, name) {
 				s.reg.Remove(name)
 				continue
 			}
@@ -2845,6 +3132,7 @@ func (s *Session) retryFailedMCP(ctx context.Context) {
 		}
 	}
 	s.mcpTools = s.mcpMgr.ToolDefinitions()
+	s.recordCLIMCPTools(s.mcpMgr)
 	s.rebuildToolDefsCache()
 	promptWarning, _ := s.refreshSystemPromptCache(s.env) // already holding s.mu; currentEnv() would deadlock
 	s.mu.Unlock()
