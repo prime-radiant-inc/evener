@@ -1500,8 +1500,9 @@ frontend defect is structurally invisible to `vitest`. The guards in
   viewport: the rail's own body is the scroll container, not the document. A
   live insertion that pushes a rail row's menu trigger out of the rail body
   dismisses that menu, and the dismissal must return focus to the trigger
-  without moving the rail body's scroll offset; the fixture holds that row's
-  actions reveal so the row's hover-quiet fade cannot take focus away first.
+  without moving the rail body's scroll offset; the fixture keeps that row's
+  actions visible so the hover-quiet fade cannot blur the trigger once focus
+  is restored.
   The
   Overview sweep also opens the Tasks tab over a scripted task list taller than any
   swept viewport and asserts the tab's own scroller owns that list while the
