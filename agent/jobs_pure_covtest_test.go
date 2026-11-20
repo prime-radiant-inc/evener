@@ -411,8 +411,8 @@ func TestCovFormatJobStop(t *testing.T) {
 	t.Parallel()
 	// Shell job.
 	reason := "done"
-	got := formatJobStop(jobStopResult{ID: "job1", Type: "shell", Status: "completed", Outcome: "done", Reason: &reason})
-	if !strings.Contains(got, "shell") || !strings.Contains(got, "job1") || !strings.Contains(got, "completed") || !strings.Contains(got, "done") {
+	got := formatJobStop(jobStopResult{ID: "job1", Type: "shell", Status: "completed", Outcome: "completed_during_stop", Reason: &reason})
+	if !strings.Contains(got, "shell") || !strings.Contains(got, "job1") || !strings.Contains(got, "completed") || !strings.Contains(got, "completed_during_stop") || !strings.Contains(got, "done") {
 		t.Fatalf("shell stop = %q", got)
 	}
 
