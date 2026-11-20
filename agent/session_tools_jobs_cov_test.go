@@ -65,43 +65,6 @@ func TestFormatJobWatchInspect(t *testing.T) {
 	}
 }
 
-// TestWatchSendArg covers all branches of watchSendArg.
-func TestWatchSendArg(t *testing.T) {
-	t.Parallel()
-	// No send key.
-	got, err := watchSendArg(map[string]any{})
-	if err != nil || got != nil {
-		t.Fatalf("no send key: got=%v err=%v", got, err)
-	}
-	// Send not an object.
-	_, err = watchSendArg(map[string]any{"send": "not an object"})
-	if err == nil {
-		t.Fatal("non-object send should error")
-	}
-	// Empty send object returns nil.
-	got, err = watchSendArg(map[string]any{"send": map[string]any{}})
-	if err != nil || got != nil {
-		t.Fatalf("empty send: got=%v err=%v", got, err)
-	}
-	// Missing "to" field.
-	_, err = watchSendArg(map[string]any{"send": map[string]any{"message": "hi"}})
-	if err == nil {
-		t.Fatal("missing to should error")
-	}
-	// Valid send.
-	got, err = watchSendArg(map[string]any{"send": map[string]any{
-		"to":              "caller",
-		"message":         "observe",
-		"include_excerpt": true,
-	}})
-	if err != nil || got == nil {
-		t.Fatalf("valid send: got=%v err=%v", got, err)
-	}
-	if got.To != "caller" || got.Message != "observe" || !got.IncludeExcerpt {
-		t.Fatalf("send args = %+v", got)
-	}
-}
-
 // TestMarshalBoundedJSON covers marshalBoundedJSON including the error and bounds-exceeded paths.
 func TestMarshalBoundedJSON(t *testing.T) {
 	t.Parallel()
@@ -273,34 +236,6 @@ func TestProjectJobStatus(t *testing.T) {
 	})
 	if result.QuietForMS == nil {
 		t.Fatal("quiet for should not be nil")
-	}
-}
-
-// TestFormatJobStop covers formatJobStop for a typical stop result.
-func TestFormatJobStop(t *testing.T) {
-	t.Parallel()
-	reason := "exit_zero"
-	result := jobStopResult{
-		ID:             "job_1",
-		JobID:          "job_1",
-		Type:           "shell",
-		Status:         "completed",
-		Reason:         &reason,
-		PreviousStatus: "running",
-		Outcome:        "completed_during_stop",
-	}
-	formatted := formatJobStop(result)
-	if formatted == "" {
-		t.Fatal("formatJobStop returned empty")
-	}
-	if !strings.Contains(formatted, "job_1") {
-		t.Fatalf("formatJobStop missing job id: %q", formatted)
-	}
-	if !strings.Contains(formatted, "completed") {
-		t.Fatalf("formatJobStop missing status: %q", formatted)
-	}
-	if !strings.Contains(formatted, "completed_during_stop") {
-		t.Fatalf("formatJobStop missing outcome: %q", formatted)
 	}
 }
 

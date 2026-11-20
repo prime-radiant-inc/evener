@@ -684,25 +684,9 @@ func TestRemoteHubSubscribeThreadUnsubscribesOnTeardown(t *testing.T) {
 		t.Fatal("subscription out did not close on cancellation")
 	}
 
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		for _, call := range remote.calls() {
-			if call.method != appwire.MethodThreadUnsubscribe {
-				continue
-			}
-			var params appwire.ThreadUnsubscribeParams
-			if err := json.Unmarshal(call.params, &params); err != nil {
-				t.Fatalf("decode unsubscribe params: %v", err)
-			}
-			if params.Ref == "local:S" {
-				return
-			}
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no thread/unsubscribe for local:S was sent; calls = %+v", remote.calls())
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.UntilSeen(t, "a thread/unsubscribe for local:S to be sent", func() (bool, string) {
+		return sawRemoteUnsubscribe(t, remote, "local:S"), fmt.Sprintf("calls = %+v", remote.calls())
+	})
 }
 
 // installedSubscriberIn reads the routing target for key under the source's
@@ -1444,9 +1428,10 @@ func TestRemoteHubStalledSubscriptionCannotOverflowSharedClient(t *testing.T) {
 
 	// The client's notification buffer must keep draining through all of this.
 	// A drain parked on the stalled subscription stops reading, this buffer
-	// overflows, and appwire tears the connection down under it. The periodic
-	// yield keeps the drain's own throughput (it unmarshals every frame) ahead
-	// of this loop, so a failure here can only be the parked drain.
+	// overflows, and appwire tears the connection down under it. The pacing is
+	// this test's control, not a poll: it keeps the producer below the drain's
+	// per-frame work, so an overflow here can only mean the drain was parked
+	// and never that this loop outran a correct drain on a loaded host.
 	for i := 0; i <= appwire.NotificationBufferCap; i++ {
 		if err := remote.push(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{ThreadID: "U", Ref: "local:U"}); err != nil {
 			t.Fatalf("client stopped reading its notification stream at push %d of %d (shared drain blocked on a stalled subscription): %v",
@@ -1487,25 +1472,9 @@ func TestRemoteHubSubscribeThreadFailedInstallUnsubscribesRemote(t *testing.T) {
 		t.Fatal("SubscribeThread succeeded despite the refused subscribe")
 	}
 
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		for _, call := range remote.calls() {
-			if call.method != appwire.MethodThreadUnsubscribe {
-				continue
-			}
-			var params appwire.ThreadUnsubscribeParams
-			if err := json.Unmarshal(call.params, &params); err != nil {
-				t.Fatalf("decode unsubscribe params: %v", err)
-			}
-			if params.Ref == "local:S" {
-				return
-			}
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no thread/unsubscribe for local:S after a failed subscribe; calls = %+v", remote.calls())
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.UntilSeen(t, "a thread/unsubscribe for local:S after a failed subscribe", func() (bool, string) {
+		return sawRemoteUnsubscribe(t, remote, "local:S"), fmt.Sprintf("calls = %+v", remote.calls())
+	})
 }
 
 // Test 22: a controller-level replacement read is never forwarded to the
@@ -1784,16 +1753,9 @@ func expectResync(t *testing.T, out <-chan appwire.Notification, threadID, ref s
 // naming ref.
 func waitForRemoteUnsubscribe(t *testing.T, remote *pushableRemote, ref string) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if sawRemoteUnsubscribe(t, remote, ref) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no thread/unsubscribe for %s; calls = %+v", ref, remote.calls())
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.UntilSeen(t, "a thread/unsubscribe for "+ref, func() (bool, string) {
+		return sawRemoteUnsubscribe(t, remote, ref), fmt.Sprintf("calls = %+v", remote.calls())
+	})
 }
 
 // Test 28: a successful subscribe hands the relay a leading resync carrying the
@@ -2643,13 +2605,9 @@ func TestRemoteHubSubscribeCancelReleasesWhenConnectionEnds(t *testing.T) {
 
 	// The connection ends, which settles the pending request and runs cleanup.
 	_ = remote.client.Close()
-	deadline := time.Now().Add(2 * time.Second)
-	for installedSubscriberIn(t, remote.source, "S") != nil {
-		if time.Now().After(deadline) {
-			t.Fatal("the connection-settled attach was never released")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	testwait.Until(t, "the connection-settled attach to be released", func() bool {
+		return installedSubscriberIn(t, remote.source, "S") == nil
+	})
 }
 
 // A successful subscribe that a concurrent replacement displaces before

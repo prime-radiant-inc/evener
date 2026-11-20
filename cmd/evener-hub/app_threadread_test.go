@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -2537,5 +2538,70 @@ func TestPastEntryTurnsRendersACommunicateDeliveryLikeTheIndex(t *testing.T) {
 				t.Fatalf("indexed items = %v, want the delivery message present=%v", indexed, tc.wantMessage)
 			}
 		})
+	}
+}
+
+// A recorded communicate whose tool result was never saved must render under
+// the turn it names, at the recorded entry — not flushed into a later
+// standalone steering turn that happens to come last. The index uses the
+// recorded entry, so both readers must agree on its turn, item and row.
+func TestPastEntryTurnsKeepsARecordedCommunicateOutOfALaterSteeringTurn(t *testing.T) {
+	identity := func(turnID string, turn schema.Turn) schema.Turn {
+		turn.Format, turn.TurnID = schema.TurnFormatIdentity, turnID
+		return turn
+	}
+	// The assistant call carries inherited authorship: that is the shape whose
+	// raw communicate arguments reach the pending-call flush, so clearing them
+	// on the recorded delivery is what the test must exercise.
+	call := identity("turn_6906", schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+		{Kind: llm.ContentText, Text: "working"},
+		{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "com1", Name: "communicate", Arguments: mustJSON(map[string]string{"message": "hi"})}},
+	}}})
+	call.Authorship = &schema.TranscriptAuthorship{Inherited: true}
+	delivery := identity("turn_6906", schema.NewTurn(schema.TurnCommunicate, llm.User("")))
+	delivery.Communicate = &schema.CommunicateInfo{CallID: "com1", Message: "hi", EndTurn: true}
+	steering := identity("turn_steer", schema.NewTurn(schema.TurnSteering, llm.User("steer elsewhere")))
+	steering.TurnKind, steering.SteeringSource = schema.TurnSpanDelivery, events.SteeringSourceUser
+	cfg, pastEntry, path := seedIndexedPastSession(t,
+		execution("turn_6906", schema.NewTurn(schema.TurnUserInput, llm.User("start"))),
+		call,
+		delivery,
+		completedExecution("turn_6906"),
+		steering,
+	)
+	describe := func(turnID string, item appwire.ThreadItem) string {
+		return turnID + "|" + item.ID + "|" + item.Type + "|" + item.CallID + "|" + item.Status + "|" + item.Text
+	}
+	var indexed []string
+	for _, candidate := range indexLatestWindow(t, path, appwire.TranscriptItemPageLimit).Candidates {
+		indexed = append(indexed, describe(candidate.TurnID, candidate.Item))
+	}
+	var replayed []string
+	for _, turn := range requirePastEntryTurns(t, cfg, pastEntry) {
+		for _, item := range turn.Items {
+			replayed = append(replayed, describe(turn.ID, item))
+		}
+	}
+	if !reflect.DeepEqual(replayed, indexed) {
+		t.Fatalf("replay items = %v, indexed = %v", replayed, indexed)
+	}
+	want := describe("turn_6906", appwire.ThreadItem{ID: "item_assistant_3_0", Type: "agentMessage", CallID: "com1", Status: appwire.TurnStatusCompleted, Text: "hi"})
+	deliveries, steeringRows := 0, 0
+	for _, got := range replayed {
+		if got == want {
+			deliveries++
+		}
+		if strings.HasPrefix(got, "turn_steer|") {
+			steeringRows++
+			if strings.Contains(got, "|agentMessage|") {
+				t.Fatalf("replay items = %v, want no delivery under the steering turn", replayed)
+			}
+		}
+	}
+	if deliveries != 1 {
+		t.Fatalf("replay items = %v, want the recorded delivery once under turn_6906", replayed)
+	}
+	if steeringRows != 1 {
+		t.Fatalf("replay items = %v, want the steering delivery's own single row", replayed)
 	}
 }
