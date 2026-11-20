@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"syscall"
 	"testing"
@@ -153,7 +154,7 @@ func TestDelegateResult(t *testing.T) {
 	}
 	// The error is returned as the exact object passed in.
 	wantErr := errors.New("fail")
-	if got := startedDelegateResult(descriptor, "dlg_1", committed, delegateMutationPlans{}, wantErr); !errors.Is(got.Err, wantErr) {
+	if got := startedDelegateResult(descriptor, "dlg_1", committed, delegateMutationPlans{}, wantErr); !reflect.ValueOf(got.Err).Equal(reflect.ValueOf(wantErr)) {
 		t.Errorf("err = %v, want the exact input object %v", got.Err, wantErr)
 	}
 }
