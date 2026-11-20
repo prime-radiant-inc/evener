@@ -41,46 +41,6 @@ func TestDelegateAttentionID(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// delegateWaiterToken struct
-// ---------------------------------------------------------------------------
-
-func TestDelegateWaiterTokenStruct(t *testing.T) {
-	t.Parallel()
-	token := delegateWaiterToken{id: 42}
-	if token.id != 42 {
-		t.Fatalf("id = %d", token.id)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// delegateInlineWaiter struct
-// ---------------------------------------------------------------------------
-
-func TestDelegateInlineWaiterStruct(t *testing.T) {
-	t.Parallel()
-	w := &delegateInlineWaiter{
-		token:      delegateWaiterToken{id: 1},
-		generation: 3,
-		resolution: make(chan delegateInlineResolution, 1),
-	}
-	if w.token.id != 1 || w.generation != 3 {
-		t.Fatalf("struct wrong: %+v", w)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// delegateInlineResolution struct
-// ---------------------------------------------------------------------------
-
-func TestDelegateInlineResolutionStruct(t *testing.T) {
-	t.Parallel()
-	r := delegateInlineResolution{fallback: true}
-	if !r.fallback {
-		t.Fatalf("expected fallback=true")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // delegateToolResultCommit
 // ---------------------------------------------------------------------------
 
@@ -116,30 +76,6 @@ func TestDelegateToolResultCommitMismatchedDeliveryID(t *testing.T) {
 	_, err := commit.Complete(true)
 	if !errors.Is(err, errDelegateStaleLease) {
 		t.Fatalf("expected errDelegateStaleLease for mismatched deliveryID, got %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// delegateDeliveryToken struct
-// ---------------------------------------------------------------------------
-
-func TestDelegateDeliveryTokenStruct(t *testing.T) {
-	t.Parallel()
-	token := delegateDeliveryToken{processID: 5, deliveryID: "del_1"}
-	if token.processID != 5 || token.deliveryID != "del_1" {
-		t.Fatalf("struct wrong: %+v", token)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// delegateDeliveryClaimToken struct
-// ---------------------------------------------------------------------------
-
-func TestDelegateDeliveryClaimTokenStruct(t *testing.T) {
-	t.Parallel()
-	token := delegateDeliveryClaimToken{processID: 10, deliveryID: "del_2"}
-	if token.processID != 10 || token.deliveryID != "del_2" {
-		t.Fatalf("struct wrong: %+v", token)
 	}
 }
 
