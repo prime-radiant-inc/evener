@@ -133,10 +133,11 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		// no lease in context -- a restored delegate's first task, a
 		// notification drive waiting out quota, an unserved session's framed
 		// entry -- and refusing those would break work the product permits. The
-		// watch notice is the one payload that must never arrive this way,
-		// because its ingress made it durable attention whose whole point is a
-		// governed generation (LIFE-01, #2340).
-		if s.hasPendingWatchNotification() {
+		// watch notice assigned to this turn is the one payload that must never
+		// arrive this way: a leased generation presents it, so this request
+		// would show it twice and once outside that generation. A notice still
+		// on the queue stays there for the drive that reserves one.
+		if s.hasAwaitingWatchNotification() {
 			return nil, "", nil, llm.Request{}, nil, "", errDelegateStableModelTurnUnleased
 		}
 	}
@@ -361,15 +362,6 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		// path below measures what was appended since this capture against it,
 		// and a filtered projection must not reopen that window.
 		presentedBoundary = len(snapshot) + len(droppedAt)
-		// A row the ledger discarded was retracted before any request could
-		// present it, and it stays in the transcript only as the audit record.
-		// It must not reach the model from either side of the gate: the lease
-		// lets this turn present unresolved rows, never a retracted one.
-		if filtered, droppedAt := s.filterWatchAttentionTurns(snapshot, false); len(droppedAt) > 0 {
-			scope.InFlightFrom = shiftReplayBoundaryForDrops(scope.InFlightFrom, droppedAt)
-			heldDropped = true
-			snapshot = filtered
-		}
 		presentedTurns = snapshot
 		history, claimErr = s.delegateController.CompleteModelRequest(claim, snapshot, scope)
 		if claimErr != nil {
@@ -377,34 +369,9 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			return nil, "", nil, llm.Request{}, nil, "", claimErr
 		}
 	} else {
-		// An admitted UNLEASED turn of a stable child must not carry a watch
-		// notice. The notice can land after this turn's drive started but
-		// before this snapshot, and its own leased wake is deferred by the
-		// drive guard, so without this drop the request would hand the notice
-		// to the provider and the leased re-drive would present it a second
-		// time -- once outside a committed generation, which is exactly what
-		// the gate exists to prevent. The row stays pending for the drive that
-		// can present it under a lease. A row the ledger discarded is dropped
-		// here as it is on a leased turn.
-		//
-		// The filter is ONE decision: the slice it returns is what this request
-		// expands AND what continuation planning sees, so a later builder that
-		// consumes the same slice inherits it. presentedBoundary deliberately
-		// does NOT move: it is the window the skill rebuild measures "turns
-		// appended since the snapshot" against, and shrinking it would make the
-		// dropped rows read as appended and put them straight back.
-		//
-		// A projection that keeps a watch row out is a nonstandard view of the
-		// resident history, so continuation planning must not anchor across
-		// the gap: heldDropped makes this request dispatch full-history.
-		if filtered, droppedAt := s.filterWatchAttentionTurns(historyTurns, s.stableChildTurnNeedsLease(ctx)); len(droppedAt) > 0 {
-			// Each drop shifts every later turn one position left, and
-			// scope.InFlightFrom is an INDEX into this projection.
-			scope.InFlightFrom = shiftReplayBoundaryForDrops(scope.InFlightFrom, droppedAt)
-			historyTurns = filtered
-			presentedTurns = filtered
-			heldDropped = true
-		}
+		// A watch notice reaches the transcript only through the leased handoff,
+		// so an unleased projection has no watch row to keep out of the request:
+		// the queue holds whatever this turn may not present.
 		history = expandHistory(historyTurns, scope)
 	}
 
@@ -472,15 +439,6 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		}
 		historyTurns = append([]schema.Turn{}, s.history...)
 		s.mu.Unlock()
-		// The appended turns join the projected history, so they pass the same
-		// watch-eligibility filter the snapshot did. Without it a diagnostic
-		// that landed after the snapshot would ride this rebuild to the
-		// provider on an unleased turn, before any leased generation could
-		// present it.
-		if filtered, droppedAt := s.filterWatchAttentionTurns(appended, s.stableChildTurnNeedsLease(ctx)); len(droppedAt) > 0 {
-			heldDropped = true
-			appended = filtered
-		}
 		if len(appended) == 0 {
 			return false, nil
 		}
@@ -607,21 +565,6 @@ func (s *Session) foldHistoryBeforeRequest(ctx context.Context, round, sysLen in
 			snapAppends := s.persistedAppendLogBase + len(s.persistedAppendLog)
 			s.mu.Unlock()
 
-			// A compaction input is a REQUEST input in disguise: whatever the
-			// fold keeps of a turn reaches the model through the summary it
-			// publishes. A watch row the ledger discarded, and (on an unleased
-			// stable-child turn) one that is still unresolved, must not reach
-			// the model there either, so the projection applies the same filter
-			// it applies to a request.
-			//
-			// The filtered length is the fold's own pre-length: it measures the
-			// copy ManageContext was given, which is the copy it manages and
-			// publishes. The snapshot length stays the merge boundary below,
-			// because the turns the filter omitted are still resident and still
-			// appended after the snapshot.
-			historyTurns, droppedAt := s.filterWatchAttentionTurns(historyTurns, s.stableChildTurnNeedsLease(ctx))
-			filteredPreManageLen := len(historyTurns)
-
 			// Variant B (forced note): if a compaction is imminent, elicit +
 			// pin a must-keep note from the model BEFORE the fold, so
 			// erosion-prone facts are re-stamped verbatim rather than
@@ -654,12 +597,7 @@ func (s *Session) foldHistoryBeforeRequest(ctx context.Context, round, sysLen in
 				if round == 0 {
 					s.turnHistoryBaseline = len(published)
 				} else {
-					// The baseline indexes the RESIDENT history, which the
-					// filter did not shorten: the omitted rows are still there,
-					// before whatever the fold kept, so the boundary moves past
-					// them before the fold's own shrink applies.
-					s.turnHistoryBaseline = shiftReplayBoundaryForDrops(s.turnHistoryBaseline, droppedAt)
-					s.shrinkTurnHistoryBaseline(filteredPreManageLen, managedLen, injectedTurns)
+					s.shrinkTurnHistoryBaseline(snapshotLen, managedLen, injectedTurns)
 					s.growTurnHistoryBaseline(restoredAt)
 				}
 				baselineSynced = true

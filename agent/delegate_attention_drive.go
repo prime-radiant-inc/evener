@@ -57,7 +57,7 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 			return true
 		}
 		if len(ids) == 0 {
-			if queued := sub.sess.queuedWatchTickAttentionID(); queued != "" {
+			if queued := sub.sess.queuedWatchNoticeAttentionID(); queued != "" {
 				ids = []string{queued}
 			}
 		}
@@ -153,10 +153,10 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 	// select again while the claim fences every competing drive. A reservation
 	// already held for this runtime must still retry its exact accepted marker.
 	//
-	// tickID is re-decided here: a reservation already held for this runtime
-	// has already taken its batch off the queue, so presenting one again from
-	// the queue would claim a second batch under a committed identity.
-	tickID := ""
+	// watchNoticeID is re-decided here: a reservation already held for this
+	// runtime has already written its row, so presenting one again from the
+	// queue would write a second row under a committed identity.
+	watchNoticeID := ""
 	if retryID := s.delegateController.reservedAttentionID(sub.sess); retryID != "" {
 		ids = []string{retryID}
 	} else {
@@ -166,8 +166,8 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 			return true
 		}
 		if len(pending) == 0 {
-			if queued := sub.sess.queuedWatchTickAttentionID(); queued != "" {
-				pending, tickID = []string{queued}, queued
+			if queued := sub.sess.queuedWatchNoticeAttentionID(); queued != "" {
+				pending, watchNoticeID = []string{queued}, queued
 			} else {
 				if err := s.delegateController.clearResolvedDelegateAttention(sub.sess.owningDelegateID); err != nil {
 					s.emit(warningDataFromError("clear resolved delegate attention", err))
@@ -182,22 +182,22 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 		if !errors.Is(err, errDelegateTargetBusy) && !errors.Is(err, errTreeAtCapacity) {
 			s.emit(warningDataFromError("reserve delegate attention", err))
 		}
-		// At capacity the folded batch stays on the queue, where further ticks
-		// keep folding into it: nothing is written and nothing is lost.
+		// At capacity the notice stays on the queue, where further ticks keep
+		// folding into it: nothing is written and nothing is lost.
 		s.delegateController.retryDelegateAttentionLater()
-		if tickID != "" {
-			// A queued timer batch is invisible to the controller: it has no
+		if watchNoticeID != "" {
+			// A queued watch notice is invisible to the controller: it has no
 			// durable row and so no wake ID, which is all
 			// retryDelegateAttentionLater re-drives. The child's own notification
-			// retry is the rail that owns the batch, and its firing wakes this
-			// parent drive -- so the batch is taken as soon as a slot frees,
+			// retry is the rail that owns the notice, and its firing wakes this
+			// parent drive -- so the notice is taken as soon as a slot frees,
 			// without waiting for another tick or an unrelated wake.
 			sub.sess.scheduleJobNotificationRetry()
 		}
 		return true
 	}
-	if tickID != "" {
-		if !s.presentQueuedWatchTicks(sub, reservation, tickID) {
+	if watchNoticeID != "" {
+		if !s.presentQueuedWatchNotice(sub, reservation, watchNoticeID) {
 			return true
 		}
 	}

@@ -252,12 +252,12 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 			return skippedToolResult(call, err)
 		}
 	} else if s.stableChildTurnNeedsLease(ctx) {
-		// Same rule as model admission (LIFE-01, #2340): a stable delegate child's
-		// tool call belongs to a generation, so one carrying a pending watch notice
-		// is refused instead of running outside the controller's accounting. A turn
-		// with no watch notice pending is a legitimate unleased path and is left
+		// Same rule as model admission: a stable delegate child's tool call belongs
+		// to a generation, so one whose turn carries a watch notice is refused
+		// instead of running outside the controller's accounting. A turn with no
+		// watch notice assigned to it is a legitimate unleased path and is left
 		// alone, exactly as model admission leaves it.
-		if s.hasPendingWatchNotification() {
+		if s.hasAwaitingWatchNotification() {
 			return skippedToolResult(call, errDelegateStableModelTurnUnleased)
 		}
 	}

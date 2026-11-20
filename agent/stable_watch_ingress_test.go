@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -11,7 +12,6 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
-	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/internal/testwait"
@@ -82,50 +82,6 @@ func TestUnleasedTurnNeitherPresentsNorSpinsOnARepeatingTick(t *testing.T) {
 	}
 }
 
-// peekNotifications counts only what a notification turn can actually deliver.
-// A retained watch notice has no durable row yet, so acceptNotificationInput
-// would drain nothing for it and finish as a no-op -- which is exactly the turn
-// the drain must not keep starting. The notice stays owed work, so the paced
-// retry and the retirement checks still see it.
-func TestPeekNotificationsExcludesRetainedWatchNotice(t *testing.T) {
-	t.Parallel()
-	child, _ := drainingDelegateWithUpdate(t, nil)
-	child.pendingJobNotifsMu.Lock()
-	child.stableWatchRetained = nil
-	child.pendingJobNotifs = nil
-	child.jobNotifsAwaitingRequest = nil
-	child.pendingJobNotifsMu.Unlock()
-
-	notice := watchNotification("job:retained-peek", "repeat")
-	notice.WatchID = "watch:retained-peek"
-	notice.Fires = 1
-	notice.IntervalSeconds = 30
-	attentionID := stableWatchNoticeAttentionID(notice)
-	child.retainStableWatchPending(notice, attentionID, "retained row")
-
-	if peek := child.peekNotifications(); peek != 0 {
-		t.Fatalf("peekNotifications = %d, want 0: a retained notice has nothing a notification turn can deliver, so counting it starts empty turns", peek)
-	}
-	child.pendingJobNotifsMu.Lock()
-	owed := child.owedJobNotificationsLocked()
-	armed := child.jobNotifyRetry.active
-	child.pendingJobNotifsMu.Unlock()
-	if owed != 1 {
-		t.Fatalf("owedJobNotificationsLocked = %d, want 1: a retained notice is owed work until its retry lands", owed)
-	}
-	if !armed {
-		t.Fatal("the notification retry chain is not armed, so nothing re-attempts the retained notice")
-	}
-
-	// A queued notification is deliverable and must still be counted.
-	child.pendingJobNotifsMu.Lock()
-	child.pendingJobNotifs = append(child.pendingJobNotifs, watchNotification("job:queued-peek", "after"))
-	child.pendingJobNotifsMu.Unlock()
-	if peek := child.peekNotifications(); peek != 1 {
-		t.Fatalf("peekNotifications = %d with one queued notification, want 1", peek)
-	}
-}
-
 // timerTickNotification builds the notice a repeating timer's fire produces.
 func timerTickNotification(jobID, watchID, occurrence string, fires int, p *provenance.Causal) jobNotification {
 	n := watchNotification(jobID, "repeat")
@@ -162,9 +118,6 @@ func TestRepeatingTimerTicksFoldOnTheQueueWithoutTranscriptRows(t *testing.T) {
 		timerTickNotification("", watchID, "tick:fold:2", 1, second),
 		timerTickNotification("", watchID, "tick:fold:3", 1, third),
 	} {
-		if jm.persistStableWatchPending(tick) {
-			t.Fatalf("tick %q was handled by the durable ingress: a repeating tick must fold on the queue instead of writing an immutable row per tick", tick.Occurrence)
-		}
 		child.enqueueJobNotificationAndNotify(tick)
 	}
 
@@ -190,7 +143,7 @@ func TestRepeatingTimerTicksFoldOnTheQueueWithoutTranscriptRows(t *testing.T) {
 
 	// A drive that reserves the batch is what makes it durable, and it writes
 	// ONE row stating the whole batch.
-	if !presentQueuedTicksForTest(t, child) {
+	if !presentQueuedWatchNoticeForTest(t, child) {
 		t.Fatal("the folded timer batch was not presented under a reservation")
 	}
 	if got := attentionRowCount(t, child); got != rowsBefore+1 {
@@ -241,16 +194,13 @@ func TestClearedRepeatingTimerDropsItsFoldedBatchWithoutRows(t *testing.T) {
 	}
 	watchID := res.WatchID
 	tick := timerTickNotification("", watchID, "tick:clear:1", 1, nil)
-	if jm.persistStableWatchPending(tick) {
-		t.Fatal("the repeating tick was handled by the durable ingress")
-	}
 	child.enqueueJobNotificationAndNotify(tick)
 	rowsBefore := attentionRowCount(t, child)
 
 	if _, err := jm.clearWatchByID(watchID); err != nil {
 		t.Fatalf("clear the repeating timer: %v", err)
 	}
-	if presentQueuedTicksForTest(t, child) {
+	if presentQueuedWatchNoticeForTest(t, child) {
 		t.Fatal("a cleared timer's folded batch was handed off, so its ticks became durable news nobody owes")
 	}
 	if got := attentionRowCount(t, child); got != rowsBefore {
@@ -269,19 +219,14 @@ func TestClearedRepeatingTimerDropsItsFoldedBatchWithoutRows(t *testing.T) {
 		}
 	}
 
-	// A terminal one-shot fire is a fact that already happened, so it is durable
-	// at ingress and the same clear leaves it pending: only a cadence is dropped.
+	// A terminal one-shot fire is a fact that already happened, so the same
+	// clear leaves it on the queue for the leased handoff: only a cadence is
+	// dropped.
 	terminal := timerTickNotification("", watchID, "", 1, nil)
 	terminal.Terminal = true
-	if !jm.persistStableWatchPending(terminal) {
-		t.Fatal("a one-shot's terminal fire was not handled by the durable ingress")
-	}
-	pending, err = child.pendingDelegateAttentionIDs()
-	if err != nil {
-		t.Fatalf("read pending attention: %v", err)
-	}
-	if !slices.Contains(pending, stableWatchNoticeAttentionID(terminal)) {
-		t.Fatal("the terminal one-shot fire is not pending, so the clear retracted a fact that already happened")
+	child.enqueueJobNotificationAndNotify(terminal)
+	if got, want := child.queuedWatchNoticeAttentionID(), stableWatchNoticeAttentionID(terminal); got != want {
+		t.Fatalf("the queued terminal fire reports identity %q, want %q: the clear retracted a fact that already happened", got, want)
 	}
 }
 
@@ -310,10 +255,10 @@ func queuedTimerFires(sess *Session) []int {
 	return fires
 }
 
-// presentQueuedTicksForTest runs the drive's own reserve-then-present sequence
-// for the child's folded repeating-timer batch, registering the child with its
+// presentQueuedWatchNoticeForTest runs the drive's own reserve-then-present
+// sequence for the child's queued watch notice, registering the child with its
 // controller as an idle delegate first so the reservation has a candidate.
-func presentQueuedTicksForTest(t *testing.T, child *Session) bool {
+func presentQueuedWatchNoticeForTest(t *testing.T, child *Session) bool {
 	t.Helper()
 	controller := child.delegateController
 	seedDelegateControllerIdle(t, controller, child.owningDelegateID, "")
@@ -322,7 +267,7 @@ func presentQueuedTicksForTest(t *testing.T, child *Session) bool {
 	controller.mu.Unlock()
 	owner := &Session{id: "root-session", stateDir: child.stateDir, delegateController: controller}
 	sub := &subagent{sess: child}
-	attentionID := child.queuedWatchTickAttentionID()
+	attentionID := child.queuedWatchNoticeAttentionID()
 	if attentionID == "" {
 		return false
 	}
@@ -330,7 +275,7 @@ func presentQueuedTicksForTest(t *testing.T, child *Session) bool {
 	if err != nil {
 		return false
 	}
-	presented := owner.presentQueuedWatchTicks(sub, reservation, attentionID)
+	presented := owner.presentQueuedWatchNotice(sub, reservation, attentionID)
 	if presented {
 		if err := controller.AbortStart(reservation); err != nil {
 			t.Fatalf("release the presented batch's reservation: %v", err)
@@ -406,15 +351,15 @@ func TestRepeatingTicksWaitForDriveCapacityAsOneFoldedBatch(t *testing.T) {
 	if got := queuedTimerFires(child); !slices.Equal(got, []int{len(occurrences)}) {
 		t.Fatalf("queued batch fire counts = %v, want [%d]: every missed tick belongs to the one queued entry", got, len(occurrences))
 	}
-	attentionID := child.queuedWatchTickAttentionID()
+	attentionID := child.queuedWatchNoticeAttentionID()
 	if attentionID == "" {
-		t.Fatal("the queued batch reports no attention identity")
+		t.Fatal("the queued notice reports no attention identity")
 	}
 	reservation, err := controller.ReserveAttention(child, attentionID)
 	if err != nil {
 		t.Fatalf("reserve the folded batch: %v", err)
 	}
-	if !root.presentQueuedWatchTicks(sub, reservation, attentionID) {
+	if !root.presentQueuedWatchNotice(sub, reservation, attentionID) {
 		t.Fatal("the reserved generation did not present the folded batch")
 	}
 	// The row the presentation wrote is the one this generation reserved: the
@@ -442,117 +387,6 @@ func TestRepeatingTicksWaitForDriveCapacityAsOneFoldedBatch(t *testing.T) {
 	}
 	if got := len(fold.order); got != rowsBefore+1 {
 		t.Fatalf("the fold holds %d attention row(s), want %d: the folded batch is one row, not one per tick", got, rowsBefore+1)
-	}
-}
-
-// A fold is a request input in disguise: what it keeps can reach the model
-// through the summary it publishes. On an unleased stable-child turn an
-// unresolved watch row must therefore be filtered out before ForceCompact sees
-// it, and the row must survive the fold as pending work for the leased turn
-// that can present it. The snapshot length stays the resident history's, so the
-// publish merges back against the same prefix the fold was snapshotted from
-// rather than re-appending the tail the filter only removed from the fold's
-// input.
-func TestFoldWithForceCompactFiltersUnresolvedWatchRows(t *testing.T) {
-	t.Parallel()
-	child := newWatchFilterSession(t)
-	evs, evMu, doneCh := collectEvents(child)
-	child.owningDelegateID = "dlg_fold_filter"
-	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
-	child.delegateController = controller
-
-	watchRow := func(occurrence string) schema.Turn {
-		n := timerTickNotification("job:fold-filter", "watch:fold-filter", occurrence, 1, nil)
-		return delegateAttentionTurn(stableWatchNoticeAttentionID(n), llm.User("watch notice "+occurrence), child.sclock().Now())
-	}
-	rows := []schema.Turn{watchRow("tick:filter:1"), watchRow("tick:filter:2")}
-	ordinaryTexts := []string{"first", "second", "third", "fourth", "fifth", "sixth"}
-	// The rows sit INSIDE the folded prefix: everything before the preserved
-	// tail is what the fold summarizes away, and both rows fall there.
-	history := []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User(ordinaryTexts[0]))}
-	history = append(history, rows...)
-	for _, text := range ordinaryTexts[1:] {
-		history = append(history, schema.NewTurn(schema.TurnUserInput, llm.User(text)))
-	}
-	residentLen := len(history)
-	child.mu.Lock()
-	child.history = history
-	child.mu.Unlock()
-	for _, row := range rows {
-		if _, err := child.appendDelegateNotificationDurably(row.AttentionID, row.Message.Text()); err != nil {
-			t.Fatalf("append the unresolved watch row: %v", err)
-		}
-	}
-
-	child.contextMgr = contextmgr.NewManager(child.profile, nil, nil)
-	child.contextMgr.PreserveRecentTurns = 3
-
-	if ok, refusal := child.foldWithForceCompact(context.Background(), "", nil, triggerAuto, false); !ok {
-		t.Fatalf("fold lost publication: %v", refusal)
-	}
-	child.Close()
-	<-doneCh
-
-	// The checkpoint layer reports the length of the slice ForceCompact was
-	// handed, which is the fold's own input -- the view the summarizer would
-	// have had. The two watch rows are the only turns the filter removes.
-	var turnsBefore, turnsAfter int
-	var sawCheckpointLayer bool
-	evMu.Lock()
-	for _, ev := range *evs {
-		ccd, ok := ev.Data.(events.ContextCompactionData)
-		if !ok || ccd.Layer != "checkpoint" {
-			continue
-		}
-		sawCheckpointLayer = true
-		turnsBefore = ccd.TurnsBefore
-		turnsAfter = ccd.TurnsAfter
-	}
-	evMu.Unlock()
-	if !sawCheckpointLayer {
-		t.Fatal("the fold reported no checkpoint layer, so nothing proves what input it folded")
-	}
-	if want := residentLen - len(rows); turnsBefore != want {
-		t.Fatalf("the fold's input held %d turn(s), want %d: an unresolved watch row reached ForceCompact on a turn with no lease to present it", turnsBefore, want)
-	}
-	if turnsAfter <= 0 || turnsAfter >= turnsBefore {
-		t.Fatalf("the checkpoint layer reported %d turn(s) after folding %d, want a shorter non-empty history", turnsAfter, turnsBefore)
-	}
-
-	child.mu.Lock()
-	published := append([]schema.Turn{}, child.history...)
-	child.mu.Unlock()
-	if len(published) == 0 || published[0].Kind != schema.TurnCheckpoint {
-		t.Fatalf("published history starts with %v, want a checkpoint", published[0].Kind)
-	}
-	// Dropping it from the fold input DEFERS it: the row stays pending, and the
-	// publish puts it back into resident history for the leased turn that can
-	// present it.
-	pending, err := child.pendingDelegateAttentionIDs()
-	if err != nil {
-		t.Fatalf("read pending attention: %v", err)
-	}
-	for _, row := range rows {
-		if !slices.Contains(pending, row.AttentionID) {
-			t.Fatalf("watch row %q is no longer pending, so the fold lost it instead of deferring it", row.AttentionID)
-		}
-	}
-	held := 0
-	for _, turn := range published {
-		if isStableWatchAttentionID(turn.AttentionID) {
-			held++
-		}
-	}
-	if held != len(rows) {
-		t.Fatalf("published history holds %d watch row(s), want the %d deferred ones", held, len(rows))
-	}
-	// The snapshot length is the resident history's, not the filtered input's:
-	// the turns the filter dropped are still resident and are not appended a
-	// second time by the merge. The preserved tail proves it exactly once each.
-	for _, text := range ordinaryTexts[len(ordinaryTexts)-3:] {
-		if n := countTurnText(published, text); n != 1 {
-			t.Fatalf("published history holds %d copies of %q, want 1: the merge boundary was taken from the filtered input", n, text)
-		}
 	}
 }
 
@@ -591,8 +425,7 @@ func sortedWatchKeys(p *provenance.Causal) []string {
 // turn.
 func TestUnleasedRoundBoundaryLeavesTheTickQueuedAndCarriesTheCompletion(t *testing.T) {
 	t.Parallel()
-	child, jm, _ := stableWatchSendChild(t)
-	child.jobManager.enqueue = child.enqueueJobNotificationAndNotify
+	child, jm, _ := stableWatchRequestChild(t)
 
 	res, err := jm.configureWatch(watchArgs{Operation: "create", Source: "self", Target: "self", RepeatSeconds: 60, Note: "poll"})
 	if err != nil {
@@ -638,6 +471,77 @@ func TestUnleasedRoundBoundaryLeavesTheTickQueuedAndCarriesTheCompletion(t *test
 	if reminders != 1 {
 		t.Fatalf("notification reminders in the transcript = %d, want 1 for the ordinary completion", reminders)
 	}
+
+	// The round this turn is about to build must be admitted: a notice on the
+	// queue is the leased drive's work, and refusing every unleased round beside
+	// one would stand the child's ordinary work down until the drive wins
+	// capacity. The request therefore builds, and it carries the completion
+	// while the tick stays out of it.
+	_, _, _, req, _, _, err := child.prepareModelRequestWithError(context.Background(), 0, new(events.RoundTimings))
+	if err != nil {
+		t.Fatalf("the unleased round beside a queued tick = %v, want it admitted", err)
+	}
+	if !requestMessagesContainText(req.Messages, ordinaryJobID) {
+		t.Fatalf("the request does not carry the ordinary completion %q: the round dropped work it was admitted for", ordinaryJobID)
+	}
+	if requestMessagesContainText(req.Messages, "Timer fired") {
+		t.Fatal("the request carries the repeating timer's tick: the notice reached the provider without a generation")
+	}
+
+	// Tool admission reads the same rule at the same instant. A second tick
+	// arriving before the call must not refuse it, and must not be presented by
+	// it either: the call runs and the batch keeps folding on the queue.
+	child.enqueueJobNotificationAndNotify(timerTickNotification("", watchID, "tick:midturn:2", 1, nil))
+	var probeCalls atomic.Int32
+	child.registerTool("midturn_probe", "records that ordinary work ran",
+		map[string]any{
+			"type":       "object",
+			"properties": map[string]any{"path": map[string]any{"type": "string"}},
+		},
+		func(_ context.Context, args any) (any, error) {
+			probeCalls.Add(1)
+			return "ran", nil
+		})
+	toolRes := child.execTool(context.Background(), llm.ToolCallData{
+		Name:      "midturn_probe",
+		ID:        "call:midturn",
+		Arguments: json.RawMessage(`{"path":"midturn"}`),
+	}, "")
+	if toolRes.IsError {
+		t.Fatalf("ordinary tool call beside a queued tick = %+v, want it admitted", toolRes)
+	}
+	if got := probeCalls.Load(); got != 1 {
+		t.Fatalf("probe invocations = %d, want 1: the unleased turn must keep running its own work", got)
+	}
+	if got := queuedTimerFires(child); !slices.Equal(got, []int{2}) {
+		t.Fatalf("queued timer fires after the tool call = %v, want [2]: both ticks belong to the queue", got)
+	}
+	if got := attentionRowCount(t, child); got != rowsBefore {
+		t.Fatalf("attention rows went %d -> %d across the tool call, want no growth", rowsBefore, got)
+	}
+}
+
+// stableWatchRequestChild is stableWatchSendChild on a session that can build
+// and dispatch a model request. The queue-first boundary decides what an
+// unleased turn may PRESENT, and that only shows where a real request exists:
+// the bare fixture has no profile, context manager, or provider.
+func stableWatchRequestChild(t *testing.T) (*Session, *jobManager, *delegateTreeController) {
+	t.Helper()
+	child := newSession(t,
+		withConfig(SessionConfig{
+			MaxSubagentDepth: 1,
+			testOnly: testConfig{
+				skipGitSnapshot:     true,
+				minimalSystemPrompt: true,
+				noSyncJobStore:      true,
+			},
+		}),
+		withStateDir(t.TempDir()))
+	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
+	child.owningDelegateID = "dlg_stable_send"
+	child.delegateController = controller
+	child.jobManager.bindDelegateParent(controller, delegateLease{delegateID: child.owningDelegateID, generation: 1}, nil, child)
+	return child, child.jobManager, controller
 }
 
 // A queued timer batch has no durable row, so it has no wake ID: the
@@ -721,5 +625,107 @@ func TestCapacityRefusedTimerBatchIsDeliveredByTheNotificationRetry(t *testing.T
 	}
 	if got := queuedTimerFires(child); len(got) != 0 {
 		t.Fatalf("queued timer fires after the retry = %v, want none", got)
+	}
+}
+
+// A tick's row is written by the presentation, before the start commits. A
+// commit the controller refuses keeps the reservation, and the queue entry that
+// produced the row is gone, so no wake ID names the work any more. The refusal
+// must therefore leave the start drivable exactly as it stands: the retry
+// commits the SAME row under the SAME generation, without another tick and
+// without a second row.
+func TestRefusedCommitKeepsThePresentedBatchDrivableToItsGeneration(t *testing.T) {
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("tick read") },
+	})
+	clk := agenttest.NewFakeClock()
+	root := restoreSupervisionRoot(t, fixture, clk)
+	sub := warmStableSupervisionDelegate(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	child := sub.sess
+	warmFinished := latestDelegateControllerRunFinished(t, root.delegateController, fixture.delegateID)
+	warmRequests := supervisionRequestCount(fixture.adapter)
+	rowsBefore := attentionRowCount(t, child)
+
+	var faults atomic.Int32
+	updateSessionTestConfig(root, func(cfg *testConfig) {
+		cfg.delegateAttentionCommitStartFault = func() error {
+			faults.Add(1)
+			return errors.New("commit refused by the storage fixture")
+		}
+	})
+
+	res, err := child.jobManager.configureWatch(watchArgs{Operation: "create", Source: "self", Target: "self", RepeatSeconds: 60, Note: "poll"})
+	if err != nil {
+		t.Fatalf("configure the repeating timer: %v", err)
+	}
+	watchID := res.WatchID
+	child.enqueueJobNotificationAndNotify(timerTickNotification("", watchID, "tick:commit:1", 1, nil))
+
+	// The drive reserves the batch, presents it as one durable row, and fails to
+	// commit the generation that would present it.
+	root.driveChildIfNotStopGated(sub)
+	refused := faults.Load()
+	if refused == 0 {
+		t.Fatal("the refused start never reached the commit")
+	}
+	if got := supervisionRequestCount(fixture.adapter); got != warmRequests {
+		t.Fatalf("provider requests after the refused commit = %d, want %d: a start that did not commit ran a turn", got, warmRequests)
+	}
+	if got := attentionRowCount(t, child); got != rowsBefore+1 {
+		t.Fatalf("attention rows after the refused commit = %d, want %d: the presentation wrote the batch's one row", got, rowsBefore+1)
+	}
+	if got := queuedTimerFires(child); len(got) != 0 {
+		t.Fatalf("queued timer fires after the refused commit = %v, want none: the row replaced the queue entry", got)
+	}
+	// The row the refusal left behind has no wake ID to be selected by. It must
+	// still read as drivable work, or the recovery below has nothing to start and
+	// the batch waits forever for a tick that already arrived.
+	if !root.delegateController.hasRunnableDelegateAttention() {
+		t.Fatal("the refused start is not runnable: the presented row lost its only route to a generation")
+	}
+	root.delegateController.mu.Lock()
+	selectedID, selectedAttentionID, selected := root.delegateController.nextIdleDelegateAttentionLocked()
+	root.delegateController.mu.Unlock()
+	if !selected || selectedID != fixture.delegateID || selectedAttentionID == "" {
+		t.Fatalf("the drive's selection = (%q, %q, %v), want the refused start's own generation: the presented row is invisible to the retry",
+			selectedID, selectedAttentionID, selected)
+	}
+
+	// Storage recovers. Nothing else happens: no tick arrives and no drive is
+	// called by hand. The refused start's own retry rail must start it.
+	updateSessionTestConfig(root, func(cfg *testConfig) { cfg.delegateAttentionCommitStartFault = nil })
+	clk.Advance(jobNotificationRetryInitialDelay)
+	clk.Drain()
+
+	testwait.Until(t, "the presented batch to commit on its retry", func() bool {
+		return supervisionRequestCount(fixture.adapter) > warmRequests
+	})
+	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	requests := fixture.adapter.Requests()
+	leases := fixture.adapter.RequestLeases()
+	if len(requests) != warmRequests+1 || len(leases) != len(requests) {
+		t.Fatalf("provider requests/leases = %d/%d, want %d records: the retry must start the batch once", len(requests), len(leases), warmRequests+1)
+	}
+	if !requestsContain(requests[warmRequests:warmRequests+1], "Timer fired") {
+		t.Fatalf("the retried request does not carry the timer's tick: the row was committed but never presented")
+	}
+	carried := leases[warmRequests]
+	if carried.delegateID != fixture.delegateID {
+		t.Fatalf("the retried request's lease names delegate %q, want %q", carried.delegateID, fixture.delegateID)
+	}
+	if carried.generation <= warmFinished.Generation {
+		t.Fatalf("the retried request's generation = %d, want greater than the warm generation %d", carried.generation, warmFinished.Generation)
+	}
+	// The same batch is one row: the retry committed the retained presentation
+	// rather than writing the notice a second time.
+	if got := attentionRowCount(t, child); got != rowsBefore+1 {
+		t.Fatalf("attention rows after the retry = %d, want %d: the retry re-presented the batch instead of committing it", got, rowsBefore+1)
+	}
+	if got := queuedTimerFires(child); len(got) != 0 {
+		t.Fatalf("queued timer fires after the retry = %v, want none: the batch was already presented", got)
 	}
 }

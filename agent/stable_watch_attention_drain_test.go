@@ -10,23 +10,20 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
-// A stable delegate's watch notice is durable attention, so it never reaches the
-// notification queue and peekNotifications cannot see it. The successor
-// attention drive refuses a delegate that is already finalizing, and the
-// parent's drive skips a child whose only undelivered work is watch attention.
-// So while the delegate is parked in its finalization drain, the drain's own
-// turn gate is the only thing that can present the notice -- without it the
-// model waits for the owned shell to exit before receiving the reminder that
-// lets it decide whether to stop the shell.
+// A watch notice waits on the child's ordinary notification queue until a
+// leased handoff reserves the generation that presents it. While the delegate is
+// parked in its finalization drain the successor attention drive refuses it, so
+// the drain's own turn gate is what presents the notice: the drain runs under
+// the run's lease, so its notification turn may carry the notice as ordinary
+// steering. Without that gate the model waits for the owned shell to exit before
+// receiving the reminder that lets it decide whether to stop the shell.
 //
 // The assertion is made while the shell is still held, so a turn carrying the
-// notice can only come from the drain's own gate. The fold check proves the
-// notice was recorded as durable attention whatever the drain has since done
-// with it: the gate may already have woken and consumed it by the time the
-// bubble settles.
+// notice can only come from the drain's own gate.
 func TestDrainRunsANotificationTurnForAPendingStableWatchNotice(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
@@ -35,15 +32,15 @@ func TestDrainRunsANotificationTurnForAPendingStableWatchNotice(t *testing.T) {
 
 		notice := watchSendDiagnosticNotification("watch:drain-notice", fixture.shellJobID, "watch send failed: delivery_id=drain-notice")
 		child.jobManager.enqueueWatchNotifications([]jobNotification{notice})
-		if queued := child.peekNotifications(); queued != 0 {
-			t.Fatalf("the watch notice left %d item(s) on the ordinary queue, want 0: the ingress did not take the durable rail", queued)
+		if queued := child.peekNotifications(); queued != 1 {
+			t.Fatalf("the watch notice left %d item(s) on the ordinary queue, want 1: a notice waits there for the leased handoff", queued)
 		}
 		fold, err := readDelegateAttentionFold(child.TranscriptPath(), child.id)
 		if err != nil {
 			t.Fatalf("read child attention fold: %v", err)
 		}
-		if !slices.Contains(fold.order, stableWatchNoticeAttentionID(notice)) {
-			t.Fatal("the enqueued notice was not recorded as durable attention")
+		if slices.Contains(fold.order, stableWatchNoticeAttentionID(notice)) {
+			t.Fatal("a queued notice already wrote a durable row: it becomes durable only when a reservation presents it")
 		}
 
 		// Let the bubble settle: with the shell still held, everything that can
@@ -68,34 +65,56 @@ func TestDrainRunsANotificationTurnForAPendingStableWatchNotice(t *testing.T) {
 	})
 }
 
-// A leased turn is admitted for a watch notice already resolved into the
-// session's transcript: the notice is in the history the request projects, and
-// the turn consumes what it presents. Without an admission rule for durable
-// watch attention the leased turn stands down and the row is presented by
-// nobody, because only a leased generation may run it.
+// A leased turn carries a watch notice: the notice waits on the session's
+// ordinary queue, and a turn under a committed generation is allowed to take it
+// as ordinary notification steering, because that turn consumes what it
+// presents. An unleased turn on the same session is refused instead, so the
+// notice reaches the provider exactly once and only inside a generation.
 func TestStableWatchAttentionIsAdmittedForALeasedTurn(t *testing.T) {
 	t.Parallel()
 	child, _, _ := stableWatchSendChild(t)
 	// newTestJM discards notifications; the production ingress is the session's
-	// own enqueue, which is what routes a stable child's watch notice onto the
-	// durable rail.
+	// own enqueue, which is the rail a watch notice arrives on.
 	child.jobManager.enqueue = child.enqueueJobNotificationAndNotify
 
 	notice := watchSendDiagnosticNotification("watch:accept-notice", "job:accept-notice", "watch send failed: delivery_id=accept-notice")
 	child.jobManager.enqueueWatchNotifications([]jobNotification{notice})
-	if queued := child.peekNotifications(); queued != 0 {
-		t.Fatalf("the watch notice left %d item(s) on the ordinary queue, want 0: the ingress did not take the durable rail", queued)
+	if queued := child.peekNotifications(); queued != 1 {
+		t.Fatalf("the watch notice left %d item(s) on the ordinary queue, want 1: a notice waits there for the leased handoff", queued)
 	}
-	if !child.hasPendingStableWatchAttention() {
-		t.Fatal("the enqueued notice does not read as pending watch attention")
+	if child.hasPendingStableWatchAttention() {
+		t.Fatal("a queued notice already reads as durable watch attention: it becomes durable only when a reservation presents it")
 	}
 
+	// The unleased attempt hands the notice back untouched: nothing it could
+	// carry may present the notice, and consuming it here would lose the tick.
 	if child.acceptNotificationInput(context.Background(), "unleased-turn") {
-		t.Fatal("an unleased notification drive was admitted for a watch notice it cannot consume")
+		t.Fatal("an unleased notification drive was admitted for a watch notice it cannot present")
+	}
+	if queued := child.peekNotifications(); queued != 1 {
+		t.Fatalf("the unleased drive left %d item(s) queued, want 1: the notice must stay for the leased drive", queued)
 	}
 	leased := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, delegateLease{delegateID: child.owningDelegateID, generation: 1})
 	if !child.acceptNotificationInput(leased, "leased-turn") {
 		t.Fatal("the delegate's own leased turn was not admitted for its watch notice")
+	}
+	if queued := child.peekNotifications(); queued != 0 {
+		t.Fatalf("the leased turn left %d item(s) queued, want 0: the turn that carries the notice consumes it", queued)
+	}
+	if child.hasAwaitingWatchNotification() {
+		t.Fatal("the leased turn left the notice assigned to a request that will never carry it")
+	}
+	child.mu.Lock()
+	history := append([]schema.Turn{}, child.history...)
+	child.mu.Unlock()
+	presented := 0
+	for _, turn := range history {
+		if turn.Kind == schema.TurnSteering && strings.Contains(turn.Message.Text(), "delivery_id=accept-notice") {
+			presented++
+		}
+	}
+	if presented != 1 {
+		t.Fatalf("the notice appears in %d steering turn(s), want 1: the leased turn's reminder is what reaches the provider", presented)
 	}
 }
 
@@ -221,9 +240,9 @@ func newOneShotTerminalWatchFixture(t *testing.T) *oneShotTerminalWatchFixture {
 
 // A one-shot delegate that ends its turn with a terminal communicate has
 // declared the run over. A watch notice that arrived before that answer is news
-// it already declined to wait for, and presenting it after the answer would
-// reopen a paid model turn on a run nothing is waiting on. The notice is still
-// recorded durably; it is resolved as discarded rather than consumed.
+// it already declined to wait for: the drain's entry cutoff drops it from the
+// queue, and presenting it after the answer would reopen a paid model turn on a
+// run nothing is waiting on.
 //
 // A notice that arrives after the drain has entered is untouched by the cutoff
 // and still reaches the model, and the accepted report survives the drain turns
@@ -244,21 +263,19 @@ func TestOneShotTerminalCommunicateSelfWatchDoesNotReopenTurn(t *testing.T) {
 			t.Fatalf("provider requests while the owned shell is still held = %d, want the initial and pre-drain turns only: the terminal communicate reopened a turn whose request read %q", len(requests), extra)
 		}
 
+		// The cutoff dropped the pre-answer notice from the queue and wrote no
+		// row for it: the run it would have woken already declared itself over.
+		if queued := child.peekNotifications(); queued != 0 {
+			t.Fatalf("%d watch notification(s) survived the terminal cutoff, want 0", queued)
+		}
 		fold, err := readDelegateAttentionFold(child.TranscriptPath(), child.id)
 		if err != nil {
 			t.Fatalf("read child attention fold: %v", err)
 		}
-		var noticeID string
 		for _, id := range fold.order {
 			if isStableWatchAttentionID(id) {
-				noticeID = id
+				t.Fatalf("the terminal cutoff left durable watch row %q for news the model declined to wait for", id)
 			}
-		}
-		if noticeID == "" {
-			t.Fatal("the self watch's notice was not recorded as durable attention")
-		}
-		if got, resolved := fold.resolutions[noticeID]; !resolved || got != delegateAttentionDiscarded {
-			t.Fatalf("pre-entry watch notice disposition = %q (resolved %v), want discarded", got, resolved)
 		}
 
 		// The cutoff runs once at drain entry, so a notice delivered to the drain

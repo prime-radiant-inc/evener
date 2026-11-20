@@ -448,30 +448,45 @@ func TestDelegateResourceSupervision_StableChildMustHaveALeaseForModelTurns(t *t
 		return resp.Text(), nil
 	}
 
-	// Model admission: the stable child refuses an unleased request build.
-	// The case is the issue's own: a watch notice sitting on the child's
-	// ordinary queue. Production ingress turns a stable child's watch notice
-	// into durable attention, so a queued one is the legacy rail this gate
-	// defends against -- a future path that demotes a notice back to the queue
-	// must fail loudly here rather than run a turn the controller never leased.
-	sub.sess.enqueueJobNotification(jobNotification{
+	// Model admission: the stable child refuses an unleased request build that
+	// would carry a watch notice. The case is a notice already assigned to the
+	// turn, which is the only shape that reaches the provider.
+	watchNotice := deliverableJobNotification{notification: jobNotification{
 		Kind:   jobNotificationKindWatch,
 		JobID:  "job:unleased-admission",
 		Status: jobNotificationEventWatch,
 		Reason: "watch send failed",
-	})
-	if !sub.sess.hasPendingWatchNotification() {
-		t.Fatal("the queued watch notice is not visible to admission")
+	}}
+	sub.sess.pendingJobNotifsMu.Lock()
+	sub.sess.jobNotifsAwaitingRequest = append(sub.sess.jobNotifsAwaitingRequest, awaitedJobNotification{deliverable: watchNotice})
+	sub.sess.pendingJobNotifsMu.Unlock()
+	if !sub.sess.hasAwaitingWatchNotification() {
+		t.Fatal("the watch notice assigned to the turn is not visible to admission")
 	}
 	_, _, _, _, _, _, err := sub.sess.prepareModelRequestWithError(context.Background(), 0, new(events.RoundTimings))
 	if !errors.Is(err, errDelegateStableModelTurnUnleased) {
 		t.Fatalf("unleased model request on the stable child = %v, want the unleased-turn refusal", err)
 	}
+	// The refusal is measured before anything else can spend a request: it must
+	// come before the context-management phase, whose elicitation and summary are
+	// provider calls.
 	if got := supervisionRequestCount(fixture.adapter); got != warmRequests {
 		t.Fatalf("provider requests after an unleased round = %d, want %d: the refusal came after a provider call", got, warmRequests)
 	}
 	if elicited != 0 {
 		t.Fatalf("note elicitation ran %d time(s) for an unleased round, want 0: the refusal came after request preparation", elicited)
+	}
+	// A notice still on the queue is the leased drive's work, so it neither
+	// refuses this turn nor reaches its request: ordinary work proceeds.
+	sub.sess.pendingJobNotifsMu.Lock()
+	sub.sess.jobNotifsAwaitingRequest = nil
+	sub.sess.pendingJobNotifsMu.Unlock()
+	sub.sess.enqueueJobNotification(watchNotification("job:queued-admission", "watch send failed"))
+	if sub.sess.hasAwaitingWatchNotification() {
+		t.Fatal("a queued watch notice reads as work assigned to this turn")
+	}
+	if _, _, _, _, _, _, err := sub.sess.prepareModelRequestWithError(context.Background(), 0, new(events.RoundTimings)); errors.Is(err, errDelegateStableModelTurnUnleased) {
+		t.Fatalf("unleased model request beside a queued watch notice = %v, want it admitted", err)
 	}
 	// Tool admission: same rule, and the case must be one the guard alone can
 	// refuse. A malformed call is useless as evidence: ordinary validation returns
@@ -481,6 +496,9 @@ func TestDelegateResourceSupervision_StableChildMustHaveALeaseForModelTurns(t *t
 	// (s.comm.updated, session_execution.go:497-501). A refusal must therefore
 	// leave that effect ABSENT, which a valid call makes discriminating and the
 	// old bare-error assertion did not.
+	sub.sess.pendingJobNotifsMu.Lock()
+	sub.sess.jobNotifsAwaitingRequest = append(sub.sess.jobNotifsAwaitingRequest, awaitedJobNotification{deliverable: watchNotice})
+	sub.sess.pendingJobNotifsMu.Unlock()
 	before := sub.sess.communicateUpdate()
 	res := sub.sess.execTool(context.Background(), llm.ToolCallData{
 		Name:      "communicate",
@@ -701,15 +719,13 @@ func TestDelegateResourceSupervision_DiagnosticDeliveredAsALeasedGeneration(t *t
 // is handed over, and unless the non-handoff rollback re-drives the child's
 // undelivered attention the queued notification sits undriven forever.
 //
-// The notice is injected through the PRODUCTION watch ingress, not straight into
-// a queue (#2340): a watch notice bound for a stable child now becomes durable
-// attention, so a test that pushed one onto the ordinary queue would be
-// exercising a rail production no longer uses -- and #2340's admission gate
-// refuses a stable child's unleased turn that would carry one, so the old shape
-// no longer drives anything. The assertions therefore split the premise in two:
-// the ingress must leave NOTHING queued and the item durably pending while the
-// claim is held, and the rollback's re-drive must then settle exactly one
-// committed generation for it.
+// The notice is injected through the PRODUCTION watch ingress, which leaves it
+// on the child's ordinary notification queue: a notice becomes durable attention
+// only when a leased handoff reserves the generation that presents it, and no
+// row may be written for it while the wake that would present it is refused. The
+// assertions split the premise in two: the ingress must leave the notice queued
+// and undurable while the claim is held, and the rollback's re-drive must then
+// settle exactly one committed generation for it.
 //
 // This test is load-bearing for that fix: with the rollback's re-drive removed,
 // the notification enqueued while the claim was held is never drained and the
@@ -733,9 +749,9 @@ func TestDelegateResourceSupervision_CommittedSendStartRollbackRedrivesDroppedWa
 				return
 			}
 			// A real watch notice arrives with the claim held, through the same
-			// ingress every watch notice travels. For a stable child it becomes
-			// durable attention rather than a queued notification, and its wake
-			// reads the claim and refuses, leaving the item armed and undriven.
+			// ingress every watch notice travels. It waits on the ordinary queue,
+			// and its wake reads the claim and refuses, leaving it queued and
+			// undriven: nothing may make it durable without a reservation.
 			jm := candidate.sess.jobManager
 			if jm == nil {
 				t.Errorf("the stable child has no job manager to deliver the watch notice")
@@ -750,9 +766,11 @@ func TestDelegateResourceSupervision_CommittedSendStartRollbackRedrivesDroppedWa
 			}
 			mu.Lock()
 			claimSeen = true
+			// Queued and not durable: the claim refused the wake, and no
+			// reservation exists to turn the notice into a transcript row.
 			wakeDropped = root.childCommittedSendStart(childSessionID) &&
-				len(pending) > 0 &&
-				candidate.sess.peekNotifications() == 0
+				len(pending) == 0 &&
+				candidate.sess.peekNotifications() == 1
 			mu.Unlock()
 			// Fail the send after the claim: abort the in-flight reservation so
 			// the commit below cannot hand a run over.
@@ -773,7 +791,7 @@ func TestDelegateResourceSupervision_CommittedSendStartRollbackRedrivesDroppedWa
 		t.Fatal("the committed send start claim was never observed")
 	}
 	if !dropped {
-		t.Fatal("the claim did not leave the child's watch attention durably pending and off the ordinary queue")
+		t.Fatal("the claim did not leave the child's watch notice queued and undriven")
 	}
 
 	// The rollback's re-drive is now the only thing that can present the item.
@@ -4970,87 +4988,6 @@ func TestDelegateResourceSupervision_RepeatingTickIsANewOccurrence(t *testing.T)
 	}
 }
 
-// TestDelegateResourceSupervision_ArmOnlyFollowsADurableAppend pins the
-// persist-then-arm order and the retained-retry path (#2340 review M4).
-//
-// A watch notice must never go back on the ordinary queue -- that is the
-// unleased route the gate closes -- so a failed durable append cannot simply be
-// requeued. It must also not be dropped: the source pending send is already
-// removed, so nothing else would ever retry the failure report. The notice is
-// retained under its own identity and re-attempted by the existing notification
-// retry wake, and the leased attention is armed only once the row is durable.
-func TestDelegateResourceSupervision_ArmOnlyFollowsADurableAppend(t *testing.T) {
-	fixture := newColdDelegateFixture(t, "")
-	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
-	})
-	root := restoreSupervisionRoot(t, fixture, nil)
-	sub := warmStableSupervisionDelegate(t, root, fixture)
-	waitForStableSupervisionRun(t, root, fixture.childID)
-	child := sub.sess
-
-	// Force the durable append to fail: with no attached writer the append is
-	// refused outright, which is the exact branch under test. Restoring the
-	// writer is what lets the retry succeed.
-	child.mu.Lock()
-	writer := child.transcript
-	ready := child.transcriptReady
-	child.transcript = nil
-	child.transcriptReady = false
-	child.mu.Unlock()
-	restore := func() {
-		child.mu.Lock()
-		child.transcript = writer
-		child.transcriptReady = ready
-		child.mu.Unlock()
-	}
-
-	notice := watchSendDiagnosticNotification("watch:life01-m4", "job:life01-m4", "watch send failed: delivery_id=life01-m4")
-	attentionID := stableWatchNoticeAttentionID(notice)
-	child.jobManager.enqueueWatchNotifications([]jobNotification{notice})
-
-	child.pendingJobNotifsMu.Lock()
-	retained, held := child.stableWatchRetained[attentionID]
-	queued := len(child.pendingJobNotifs)
-	owed := child.owedJobNotificationsLocked()
-	child.pendingJobNotifsMu.Unlock()
-	if queued != 0 {
-		t.Fatalf("a failed durable append left %d notice(s) on the ordinary unleased queue, want 0", queued)
-	}
-	if !held {
-		t.Fatal("a failed durable append dropped the notice instead of retaining it under its own identity: the source pending send is already removed, so the failure report is lost")
-	}
-	if retained.content == "" {
-		t.Fatal("the retained notice kept no content, so its retry cannot replay the same item")
-	}
-	if owed == 0 {
-		t.Fatal("a retained notice is not counted as owed work, so the retry wake disarms and nothing re-attempts it")
-	}
-
-	// The retry must land the SAME occurrence and then arm it. While the writer
-	// is still detached it must FAIL and keep the notice retained.
-	child.retryRetainedStableWatchPending()
-	child.pendingJobNotifsMu.Lock()
-	stillRetained := len(child.stableWatchRetained)
-	child.pendingJobNotifsMu.Unlock()
-	if stillRetained != 1 {
-		t.Fatalf("a retry whose append failed left %d notice(s) retained, want 1: the failure report was dropped on the retry", stillRetained)
-	}
-	restore()
-	child.retryRetainedStableWatchPending()
-	child.pendingJobNotifsMu.Lock()
-	remaining := len(child.stableWatchRetained)
-	child.pendingJobNotifsMu.Unlock()
-	if remaining != 0 {
-		t.Fatalf("the retry left %d notice(s) retained, want 0", remaining)
-	}
-	// The identity must be the same one, so the retry was a replay rather than
-	// a second item.
-	if got := stableWatchNoticeAttentionID(notice); got != attentionID {
-		t.Fatalf("retried notice identity = %q, want %q", got, attentionID)
-	}
-}
-
 // TestDelegateResourceSupervision_ClearedRepeatingTickDoesNotPrompt pins the
 // delivery-time suppression of a tick whose timer was cleared while the tick
 // waited unpresented.
@@ -5059,8 +4996,8 @@ func TestDelegateResourceSupervision_ArmOnlyFollowsADurableAppend(t *testing.T) 
 // and the queue checks the timer's liveness at DELIVERY time. So a clear that
 // lands before the handoff drops the batch with no transcript write at all, and
 // the model is never prompted for a tick nobody owes. A one-shot differs
-// deliberately: its single fire is terminal, so it goes durable at ingress and a
-// later clear must not retract it.
+// deliberately: its single fire is terminal, so the same clear leaves it
+// deliverable rather than retracting a fact that already happened.
 func TestDelegateResourceSupervision_ClearedRepeatingTickDoesNotPrompt(t *testing.T) {
 	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
@@ -5079,9 +5016,6 @@ func TestDelegateResourceSupervision_ClearedRepeatingTickDoesNotPrompt(t *testin
 	// A repeating tick queued while its timer was live, then cleared before
 	// anything presents it: the state the finding names.
 	repeating := jobNotification{Kind: jobNotificationKindWatch, WatchID: watchID, Reason: "repeat", Fires: 1, IntervalSeconds: 60}
-	if child.jobManager.persistStableWatchPending(repeating) {
-		t.Fatal("the repeating tick was handled by the durable ingress instead of folding on the queue")
-	}
 	// Queue it without a concurrent wake: the drive below is the one this test
 	// observes.
 	child.enqueueJobNotification(repeating)
@@ -5126,35 +5060,25 @@ func TestDelegateResourceSupervision_ClearedRepeatingTickDoesNotPrompt(t *testin
 		}
 	}
 
-	// Nothing retracts a one-shot's terminal fire: it is durable the moment it
-	// arrives, so the clear above must leave it pending.
+	// Nothing retracts a one-shot's terminal fire: the clear above must leave it
+	// presentable, so the leased handoff can still turn it into durable
+	// attention.
 	terminal := jobNotification{Kind: jobNotificationKindWatch, WatchID: watchID, Reason: "after", Terminal: true, Fires: 1}
 	terminalID := stableWatchNoticeAttentionID(terminal)
-	if !child.jobManager.persistStableWatchPending(terminal) {
-		t.Fatal("a one-shot's terminal fire was not handled by the durable ingress")
-	}
-	fold, err := readDelegateAttentionFold(child.TranscriptPath(), child.ID())
-	if err != nil {
-		t.Fatalf("read attention fold: %v", err)
-	}
-	if !slices.Contains(fold.order, terminalID) || fold.resolutions[terminalID] == delegateAttentionDiscarded {
-		t.Fatalf("the terminal one-shot fire was lost or discarded (resolution=%q), so the clear retracted a fact that already happened", fold.resolutions[terminalID])
+	child.enqueueJobNotification(terminal)
+	if got := child.queuedWatchNoticeAttentionID(); got != terminalID {
+		t.Fatalf("the queued terminal fire reports identity %q, want %q: the clear retracted a fact that already happened", got, terminalID)
 	}
 }
 
-// TestDelegateResourceSupervision_UnleasedTurnDoesNotCarryAWatchDiagnostic is
-// the review's M3 case, and the one that matters most for the gate.
+// TestDelegateResourceSupervision_UnleasedTurnDoesNotCarryAWatchDiagnostic pins
+// the boundary that keeps a watch diagnostic off an unleased request.
 //
-// A watch diagnostic is appended to the child's history as durable attention the
-// moment it arrives. Admission refuses a turn that would carry a watch notice,
-// but it reads the job-notification QUEUE -- and the ingress deliberately leaves
-// that queue empty. An ordinary job completion running an unleased turn would
-// therefore expand the history containing the diagnostic and hand it to the
-// provider with no lease, which is precisely what the gate exists to prevent.
-//
-// The assertion that must fail without the fix is the projected history: the
-// unleased projection drops the unresolved watch row and keeps it pending, so
-// the leased drive is the only route that can present it.
+// A watch notice waits on the child's notification queue, so it is nowhere in
+// the transcript an unleased turn projects: the history that turn expands holds
+// no watch row at all. Only the leased handoff writes the row, under the
+// identity it reserved. An unleased turn running beside a queued diagnostic
+// therefore cannot carry it, and the notice is still owed afterwards.
 func TestDelegateResourceSupervision_UnleasedTurnDoesNotCarryAWatchDiagnostic(t *testing.T) {
 	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
@@ -5165,56 +5089,41 @@ func TestDelegateResourceSupervision_UnleasedTurnDoesNotCarryAWatchDiagnostic(t 
 	waitForStableSupervisionRun(t, root, fixture.childID)
 	child := sub.sess
 
-	// Put the child in the state the finding describes: a watch attention turn
-	// in resident history that is still unresolved. The row is written through
-	// the same durable append the ingress uses, and the transcript is what makes
-	// it pending, so this is the production shape rather than a synthetic one.
-	attentionID := stableWatchNoticeAttentionID(watchSendDiagnosticNotification("watch:life01-m3", "job:life01-m3", "watch send failed: delivery_id=life01-m3"))
-	content := "watch send failed on job:life01-m3"
-	if _, err := child.appendDelegateNotificationDurably(attentionID, content); err != nil {
-		t.Fatalf("append durable watch attention: %v", err)
+	// The production shape: the diagnostic takes the queue, as every watch notice
+	// does, and nothing has reserved a generation for it yet.
+	notice := watchSendDiagnosticNotification("watch:life01-m3", "job:life01-m3", "watch send failed: delivery_id=life01-m3")
+	attentionID := stableWatchNoticeAttentionID(notice)
+	child.enqueueJobNotification(notice)
+	if got := child.queuedWatchNoticeAttentionID(); got != attentionID {
+		t.Fatalf("queued diagnostic identity = %q, want %q", got, attentionID)
 	}
 	pending, err := child.pendingDelegateAttentionIDs()
 	if err != nil {
 		t.Fatalf("read pending delegate attention: %v", err)
 	}
-	if !slices.Contains(pending, attentionID) {
-		t.Fatalf("the appended watch attention is not pending (%v): the test cannot describe an unresolved row", pending)
+	if slices.Contains(pending, attentionID) {
+		t.Fatalf("the queued diagnostic is already durable attention (%v): the queue is the only rail before the handoff", pending)
 	}
 
-	// The unleased projection must not carry it.
+	// No unleased projection can carry it: the transcript holds no row for it.
 	child.mu.Lock()
 	history := append([]schema.Turn{}, child.history...)
 	child.mu.Unlock()
-	kept, droppedAt := child.filterWatchAttentionTurns(history, true)
-	if len(droppedAt) == 0 {
-		t.Fatal("an unresolved watch attention turn survived the unleased projection: the diagnostic would be presented with no lease")
-	}
-	for _, turn := range kept {
+	for _, turn := range history {
 		if turn.AttentionID == attentionID {
-			t.Fatal("the diagnostic turn is still in the unleased projection")
+			t.Fatal("the queued diagnostic is already a transcript row: an unleased request would present it with no lease")
 		}
 	}
-	// Dropping it from the projection must DEFER it, not lose it: it stays
-	// pending for the drive that can present it under a lease.
-	pending, err = child.pendingDelegateAttentionIDs()
-	if err != nil {
-		t.Fatalf("read pending delegate attention after the drop: %v", err)
-	}
-	if !slices.Contains(pending, attentionID) {
-		t.Fatal("the diagnostic is no longer pending, so dropping it from the unleased projection lost it instead of deferring it")
-	}
-
-	// The boundary shift must keep the in-flight exemption: dropping rows
-	// before the boundary moves it left by exactly that many.
-	if got := shiftReplayBoundaryForDrops(3, []int{0, 1}); got != 1 {
-		t.Fatalf("in-flight boundary after two drops before it = %d, want 1", got)
+	// The notice is still owed, and still the queue's: the leased drive that
+	// reserves its generation is what turns it into attention.
+	if _, kept := child.queuedWatchNotice(attentionID); !kept {
+		t.Fatal("the diagnostic left the queue without a leased handoff writing its row: the notice was lost")
 	}
 }
 
 // stableWatchSendChild arms a stable-delegate child over its own job manager:
-// the shape persistStableWatchPending requires, an owner that is a delegate
-// child with a controller, and a transcript to append durable rows to.
+// the shape the leased handoff requires, an owner that is a delegate child with
+// a controller, and a transcript to append durable rows to.
 func stableWatchSendChild(t *testing.T) (*Session, *jobManager, *delegateTreeController) {
 	t.Helper()
 	child := newDelegateAttentionTestSession(t)
@@ -5282,372 +5191,4 @@ func TestWatchProgressTickOccurrenceIsUniquePerFire(t *testing.T) {
 	if stableWatchNoticeAttentionID(first) == stableWatchNoticeAttentionID(second) {
 		t.Fatal("two progress ticks share an attention identity: the second would be dropped as a replay")
 	}
-}
-
-// TestStableDelegateReminderRetirementLeavesOtherWatchAttentionPending pins the
-// scope of reminder replacement: a newer snapshot retires older reminders and
-// nothing else.
-func TestStableDelegateReminderRetirementLeavesOtherWatchAttentionPending(t *testing.T) {
-	t.Parallel()
-	child, _, _ := stableWatchSendChild(t)
-
-	tick := jobNotification{Kind: jobNotificationKindWatch, WatchID: "watch:tick", Reason: "repeat", Fires: 1, IntervalSeconds: 60}
-	tick.Occurrence = "tick:watch:tick:1"
-	tickID := stableWatchNoticeAttentionID(tick)
-	diagnostic := watchSendDiagnosticNotification("watch:diag", "job:diag", "watch send failed")
-	diagnosticID := stableWatchNoticeAttentionID(diagnostic)
-	older := watchNotification("", longRunningJobsReason)
-	older.Note = "- job_a: running 20m"
-	olderID := stableWatchNoticeAttentionID(older)
-	newer := watchNotification("", longRunningJobsReason)
-	newer.Note = "- job_a: running 25m"
-	newerID := stableWatchNoticeAttentionID(newer)
-
-	for _, pair := range []struct{ id, content string }{
-		{tickID, "tick row"},
-		{diagnosticID, "diagnostic row"},
-		{olderID, "older reminder"},
-	} {
-		if _, err := child.appendDelegateNotificationDurably(pair.id, pair.content); err != nil {
-			t.Fatalf("append %q: %v", pair.content, err)
-		}
-	}
-	if _, err := child.appendDelegateNotificationDurably(newerID, "newer reminder"); err != nil {
-		t.Fatalf("append the newer reminder: %v", err)
-	}
-	child.retireSupersededStableWatchPending(newer, newerID)
-
-	pending, err := child.pendingDelegateAttentionIDs()
-	if err != nil {
-		t.Fatalf("read pending attention: %v", err)
-	}
-	if slices.Contains(pending, olderID) {
-		t.Fatal("the superseded reminder is still pending: a stale listing keeps prompting for jobs that may be done")
-	}
-	for _, id := range []string{tickID, diagnosticID, newerID} {
-		if !slices.Contains(pending, id) {
-			t.Fatalf("%q is no longer pending after a reminder was replaced (%v): retirement reached beyond reminders", id, pending)
-		}
-	}
-}
-
-// TestJobNotificationRetryRearmsForRetainedWatchNotice pins the retry chain: a
-// retained watch notice whose retry fails again must leave a timer armed, or the
-// notice sits retained with nothing to re-attempt it.
-func TestJobNotificationRetryRearmsForRetainedWatchNotice(t *testing.T) {
-	t.Parallel()
-	child, _, _ := stableWatchSendChild(t)
-	clk := agenttest.NewFakeClockAt(time.Unix(1_700_000_000, 0).UTC())
-	child.clock = clk
-
-	child.mu.Lock()
-	writer, ready := child.transcript, child.transcriptReady
-	child.transcript, child.transcriptReady = nil, false
-	child.mu.Unlock()
-	t.Cleanup(func() {
-		child.mu.Lock()
-		child.transcript, child.transcriptReady = writer, ready
-		child.mu.Unlock()
-	})
-
-	notice := watchSendDiagnosticNotification("watch:retry", "job:retry", "watch send failed")
-	child.retainStableWatchPending(notice, stableWatchNoticeAttentionID(notice), "retained row")
-	child.pendingJobNotifsMu.Lock()
-	armed := child.jobNotifyRetry.active
-	child.pendingJobNotifsMu.Unlock()
-	if !armed {
-		t.Fatal("retaining a notice left no retry timer armed")
-	}
-
-	clk.Advance(jobNotificationRetryInitialDelay)
-	clk.Drain()
-
-	child.pendingJobNotifsMu.Lock()
-	retained := len(child.stableWatchRetained)
-	armed = child.jobNotifyRetry.active
-	delay := child.jobNotifyRetry.delay
-	child.pendingJobNotifsMu.Unlock()
-	if retained != 1 {
-		t.Fatalf("%d notice(s) retained after a retry whose append failed, want 1", retained)
-	}
-	if !armed {
-		t.Fatal("a failed retry left the notice retained with no timer armed, so nothing re-attempts it")
-	}
-	if delay <= jobNotificationRetryInitialDelay {
-		t.Fatalf("retry delay after a failed retry = %s, want it backed off past %s", delay, jobNotificationRetryInitialDelay)
-	}
-
-	// Once the append can land, the chain ends: no notice is retained and the
-	// timer is not re-armed.
-	child.mu.Lock()
-	child.transcript, child.transcriptReady = writer, ready
-	child.mu.Unlock()
-	clk.Advance(delay)
-	clk.Drain()
-
-	child.pendingJobNotifsMu.Lock()
-	retained = len(child.stableWatchRetained)
-	armed = child.jobNotifyRetry.active
-	child.pendingJobNotifsMu.Unlock()
-	if retained != 0 {
-		t.Fatalf("%d notice(s) retained after the retry landed, want 0", retained)
-	}
-	if armed {
-		t.Fatal("the retry chain stayed armed after the last retained notice landed")
-	}
-}
-
-// newWatchFilterSession builds a durable session so attention rows can be
-// written to a real transcript.
-func newWatchFilterSession(t *testing.T) *Session {
-	t.Helper()
-	stateDir := t.TempDir()
-	if err := os.MkdirAll(schema.SessionsDir(stateDir), 0o755); err != nil {
-		t.Fatalf("mkdir sessions: %v", err)
-	}
-	return newSession(t, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: stateDir}))
-}
-
-// TestStableWatchAttentionFilterDropsRetractedRows pins the one projection rule
-// every builder applies to watch attention rows.
-//
-// A row the ledger resolved as discarded was retracted before any request
-// presented it and is kept in the transcript only as the audit record, so it is
-// dropped from every projection. A row still pending is dropped only where the
-// turn cannot consume it -- an unleased stable-delegate turn -- and is kept
-// otherwise, because resolution can only happen through a turn that presents
-// it. An unreadable ledger cannot confirm which rows were retracted, so watch
-// rows wait for a later drive while ordinary work proceeds.
-func TestStableWatchAttentionFilterDropsRetractedRows(t *testing.T) {
-	t.Parallel()
-	sess := newWatchFilterSession(t)
-
-	discardedID := stableWatchNoticeAttentionID(watchSendDiagnosticNotification("watch:filter", "job:filter-retracted", "retracted notice"))
-	if _, err := sess.appendDelegateNotificationDurably(discardedID, "retracted watch notice"); err != nil {
-		t.Fatalf("append the retracted watch row: %v", err)
-	}
-	if err := sess.resolveAttentionDurably([]string{discardedID}, delegateAttentionDiscarded); err != nil {
-		t.Fatalf("discard the retracted watch row: %v", err)
-	}
-	pendingID := stableWatchNoticeAttentionID(watchSendDiagnosticNotification("watch:filter", "job:filter-pending", "pending notice"))
-	if _, err := sess.appendDelegateNotificationDurably(pendingID, "pending watch notice"); err != nil {
-		t.Fatalf("append the pending watch row: %v", err)
-	}
-
-	sess.mu.Lock()
-	history := append([]schema.Turn{}, sess.history...)
-	sess.mu.Unlock()
-	if len(history) != 2 {
-		t.Fatalf("resident history holds %d turn(s), want the two watch rows the test appended", len(history))
-	}
-
-	// A leased turn, and any turn that is not an unleased stable-delegate turn,
-	// may present an unresolved row: only the retracted one is dropped.
-	kept, droppedAt := sess.filterWatchAttentionTurns(history, false)
-	if len(droppedAt) != 1 || droppedAt[0] != 0 {
-		t.Fatalf("leased projection dropped turn(s) at %v, want only the retracted row at index 0", droppedAt)
-	}
-	if len(kept) != 1 || kept[0].AttentionID != pendingID {
-		t.Fatalf("leased projection kept %d turn(s), want the pending watch row alone", len(kept))
-	}
-
-	// An unleased stable-delegate turn cannot consume what it presents, so the
-	// unresolved row is deferred to the leased drive that owes it.
-	kept, droppedAt = sess.filterWatchAttentionTurns(history, true)
-	if len(droppedAt) != 2 || droppedAt[0] != 0 || droppedAt[1] != 1 {
-		t.Fatalf("unleased projection dropped turn(s) at %v, want both watch rows", droppedAt)
-	}
-	if len(kept) != 0 {
-		t.Fatalf("unleased projection kept %d watch turn(s), want none", len(kept))
-	}
-
-	// Dropping the rows from a projection must not lose the ledger: the
-	// retracted row stays on disk as the audit record and the pending row stays
-	// pending for the drive that can present it.
-	fold, err := sess.readDelegateAttentionFold(transcriptPath(sess.stateDir, sess.id), sess.id)
-	if err != nil {
-		t.Fatalf("read the attention fold: %v", err)
-	}
-	if fold.content[discardedID].Text() != "retracted watch notice" {
-		t.Fatal("the retracted row is gone from the transcript, so the audit record of the retraction was lost")
-	}
-	// A restored session reads the same file cold. Both the row and the marker
-	// that retracted it must be there, so the restored projection drops the row
-	// from the model's history and still holds the audit record.
-	_, entries, _, err := readTranscript(context.Background(), transcriptPath(sess.stateDir, sess.id), sess.stateDir)
-	if err != nil {
-		t.Fatalf("read the transcript cold: %v", err)
-	}
-	coldFold, err := foldDelegateAttention(entries)
-	if err != nil {
-		t.Fatalf("fold the transcript cold: %v", err)
-	}
-	if coldFold.resolutions[discardedID] != delegateAttentionDiscarded {
-		t.Fatal("a cold read of the transcript does not report the retraction, so a restored session would present the retracted row")
-	}
-	if coldFold.content[discardedID].Text() != "retracted watch notice" {
-		t.Fatal("a cold read of the transcript lost the retracted row's audit record")
-	}
-	pending, err := sess.pendingDelegateAttentionIDs()
-	if err != nil {
-		t.Fatalf("read pending attention: %v", err)
-	}
-	if !slices.Contains(pending, pendingID) {
-		t.Fatal("the dropped unresolved row is no longer pending: dropping it from a projection lost it instead of deferring it")
-	}
-
-	// An unreadable ledger cannot confirm which rows were retracted: every watch
-	// row waits, and ordinary turns still project.
-	sess.cfg.testOnly.delegateAttentionReadFold = func(string, string) (delegateAttentionFold, error) {
-		return delegateAttentionFold{}, errors.New("attention ledger unreadable")
-	}
-	defer func() { sess.cfg.testOnly.delegateAttentionReadFold = nil }()
-	ordinary := schema.NewTurn(schema.TurnUserInput, llm.User("ordinary work"))
-	withOrdinary := append([]schema.Turn{ordinary}, history...)
-	kept, droppedAt = sess.filterWatchAttentionTurns(withOrdinary, false)
-	if len(droppedAt) != 2 || droppedAt[0] != 1 || droppedAt[1] != 2 {
-		t.Fatalf("projection over an unreadable ledger dropped turn(s) at %v, want both watch rows", droppedAt)
-	}
-	if len(kept) != 1 || kept[0].Kind != schema.TurnUserInput || kept[0].AttentionID != "" {
-		t.Fatalf("projection over an unreadable ledger kept %d turn(s), want the ordinary turn alone", len(kept))
-	}
-}
-
-// TestStableWatchAttentionSkillRebuildExcludesAppendedRow pins the skill rebuild
-// to the same watch-eligibility rule the snapshot projection applies.
-//
-// A watch row can land after a request's history snapshot and before the
-// appended-skill rebuild re-reads the tail. The rebuild appends that tail to the
-// projected history, so without the filter the row reaches the provider on an
-// unleased turn, before any leased generation could present it.
-func TestStableWatchAttentionSkillRebuildExcludesAppendedRow(t *testing.T) {
-	t.Parallel()
-	sess := newWatchFilterSession(t)
-	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
-	sess.owningDelegateID = "dlg_skill_rebuild"
-	sess.delegateController = controller
-
-	sess.mu.Lock()
-	sess.history = []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("earlier work"))}
-	// An obligation with no recorded identity cannot be delivered, so
-	// prepareSkillDelivery appends its typed explanation and the request
-	// rebuilds through the appended-skill path.
-	sess.skillLifecycle.Obligations = append(sess.skillLifecycle.Obligations, schema.SkillDeliveryObligation{
-		InvocationID: "inv-watch-rebuild",
-		Route:        "model_tool",
-	})
-	sess.skillLifecycle.Revision++
-	sess.mu.Unlock()
-
-	const watchContent = "watch row that landed after the snapshot"
-	attentionID := stableWatchNoticeAttentionID(watchSendDiagnosticNotification("watch:rebuild", "job:rebuild", "rebuild notice"))
-	var landOnce sync.Once
-	updateSessionTestConfig(sess, func(cfg *testConfig) {
-		cfg.afterModelHistorySnapshot = func() {
-			landOnce.Do(func() {
-				if _, err := sess.appendDelegateNotificationDurably(attentionID, watchContent); err != nil {
-					t.Errorf("append the watch row after the snapshot: %v", err)
-				}
-			})
-		}
-	})
-
-	var timings events.RoundTimings
-	_, _, _, req, _, _, err := sess.prepareModelRequestWithError(context.Background(), 0, &timings)
-	if err != nil {
-		t.Fatalf("prepare the unleased stable-child request: %v", err)
-	}
-	if got := strings.Count(requestText(req), watchContent); got != 0 {
-		t.Fatalf("the request presented the watch row that landed after the snapshot %d time(s), want 0: it would reach the provider with no lease", got)
-	}
-	// Dropping it from the request must DEFER it, not lose it.
-	pending, err := sess.pendingDelegateAttentionIDs()
-	if err != nil {
-		t.Fatalf("read pending delegate attention: %v", err)
-	}
-	if !slices.Contains(pending, attentionID) {
-		t.Fatal("the watch row is no longer pending: excluding it from the rebuilt request lost it instead of deferring it")
-	}
-}
-
-// TestStableWatchAttentionFoldDoesNotDuplicateSnapshottedTail pins the fold's
-// tail merge to the UNFILTERED snapshot length.
-//
-// foldHistoryBeforeRequest hands a filtered copy of history to context
-// management, but the turns it omitted are still resident and still sit after
-// the snapshot. Publishing with the filtered length makes the merge boundary
-// fall inside the snapshot, so turns the fold already accounts for are appended
-// a second time.
-func TestStableWatchAttentionFoldDoesNotDuplicateSnapshottedTail(t *testing.T) {
-	t.Parallel()
-	sess := newWatchFilterSession(t)
-	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
-	sess.owningDelegateID = "dlg_fold_tail"
-	sess.delegateController = controller
-
-	const toolResultText = "tool result the fold already accounted for"
-	attentionID := stableWatchNoticeAttentionID(watchSendDiagnosticNotification("watch:fold", "job:fold", "fold notice"))
-	if _, err := sess.appendDelegateNotificationDurably(attentionID, "watch row before the tool result"); err != nil {
-		t.Fatalf("append the watch row: %v", err)
-	}
-	sess.mu.Lock()
-	watchTurn := sess.history[0]
-	sess.history = []schema.Turn{
-		schema.NewTurn(schema.TurnUserInput, llm.User("run the tool")),
-		watchTurn,
-		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
-			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call:fold", Name: "shell", Arguments: json.RawMessage(`{}`), Type: "function"}},
-		}}),
-		schema.NewTurn(schema.TurnToolResults, llm.ToolResult("call:fold", toolResultText, false)),
-	}
-	sess.mu.Unlock()
-
-	// A turn landing during context management is the production shape the
-	// merge boundary exists for: it must appear once, like the snapshot turns.
-	concurrent := schema.NewTurn(schema.TurnUserInput, llm.User("turn that landed during the fold"))
-	sess.strategy = &appendingFoldStrategy{sess: sess, turn: concurrent}
-
-	if !sess.foldHistoryBeforeRequest(context.Background(), 1, 0) {
-		t.Fatal("the fold did not publish, so the test never exercised the tail merge")
-	}
-	sess.mu.Lock()
-	published := append([]schema.Turn{}, sess.history...)
-	sess.mu.Unlock()
-
-	var toolResults, concurrentTurns int
-	for _, turn := range published {
-		for _, part := range turn.Message.Content {
-			if part.Kind == llm.ContentToolResult && part.ToolResult != nil && part.ToolResult.Content == toolResultText {
-				toolResults++
-			}
-		}
-		if turn.Message.Text() == "turn that landed during the fold" {
-			concurrentTurns++
-		}
-	}
-	if toolResults != 1 {
-		t.Fatalf("the published history holds the tool result %d time(s), want 1: the filtered pre-length moved the merge boundary inside the snapshot", toolResults)
-	}
-	if concurrentTurns != 1 {
-		t.Fatalf("the published history holds the turn that landed during the fold %d time(s), want 1", concurrentTurns)
-	}
-}
-
-// appendingFoldStrategy appends one turn to the session's history while context
-// management runs, between the fold's snapshot and its publish.
-type appendingFoldStrategy struct {
-	sess *Session
-	turn schema.Turn
-}
-
-func (s *appendingFoldStrategy) Name() string                    { return "appending-fold" }
-func (s *appendingFoldStrategy) Tools() []toolpkg.RegisteredTool { return nil }
-
-func (s *appendingFoldStrategy) ManageContext(context.Context, *[]schema.Turn, int, func(events.EventKind, events.EventData)) error {
-	s.sess.recordTurn(s.turn, s.turn)
-	return nil
-}
-
-func (s *appendingFoldStrategy) AfterAction(context.Context, []schema.Turn, *llm.Client) error {
-	return nil
 }

@@ -1088,14 +1088,6 @@ type Session struct {
 	// completion rode that request, so the reply is an answer, not
 	// housekeeping. Guarded by pendingJobNotifsMu.
 	jobNotifsDelivered uint64
-	// stableWatchRetained holds watch notices whose durable append has NOT yet
-	// succeeded, keyed by attention identity. A watch notice must never go back
-	// on the ordinary queue (that is the unleased route the gate closes), so a
-	// failed append retains the notice here and the existing notification retry
-	// wake re-attempts it under the SAME identity. Rows are removed only once
-	// the append lands, so a failure at any point still owes exactly one
-	// attempt. Guarded by pendingJobNotifsMu.
-	stableWatchRetained map[string]retainedStableWatchNotice
 	// notifyWakeHolds counts in-flight holdJobNotificationWake holds, and
 	// notifyWakeDeferred records that a wake was suppressed while held. Guarded
 	// by pendingJobNotifsMu.
@@ -1599,20 +1591,6 @@ func (s *Session) appendOrFoldJobNotificationLocked(n jobNotification) {
 }
 
 func (s *Session) enqueueJobNotificationAndNotify(n jobNotification) {
-	// A watch notice bound for a STABLE delegate child must become durable
-	// attention instead of a queued notification (LIFE-01, #2340). The queue is
-	// drained only by an EntryNotification turn, which for a stable child runs
-	// with no lease in context, and such a turn must not carry a watch notice
-	// (stableChildTurnNeedsLease). Refusing it there without this ingress would
-	// strand the notice rather than deliver it, and the reachable case is
-	// exactly the one the issue names: a watch-send diagnostic, which arrives
-	// when the send rail had no other way to report the failure.
-	//
-	// A notice that is not a watch, or a session that is not a stable delegate
-	// child, takes the ordinary rail unchanged.
-	if n.isWatch() && stableDelegateChild(s) && s.jobManager != nil && s.jobManager.persistStableWatchPending(n) {
-		return
-	}
 	s.pendingJobNotifsMu.Lock()
 	s.appendOrFoldJobNotificationLocked(n)
 	held := s.notifyWakeHolds > 0
@@ -1693,12 +1671,10 @@ func (s *Session) drainJobNotifications() []jobNotification {
 	return drained
 }
 
-// hasPendingWatchNotification reports whether the model notifications this
-// session still owes include a watch notice. It is the narrow predicate model
-// and tool admission use to find the one payload that must never reach a model
-// through an unleased turn (LIFE-01, #2340): a watch notice's ingress turns it
-// into durable attention precisely so a governed generation presents it, and a
-// turn that finds one queued instead is the legacy path this issue closes.
+// hasPendingWatchNotification reports whether the session holds a watch notice
+// anywhere on its notification rail: queued, or assigned to the current turn
+// and awaiting its request. The parent drain reads it to keep a watch notice off
+// an unleased drive turn.
 //
 // The kind is the whole test. Nothing here reads reason or body text, so a
 // caller cannot be refused for what a notice says -- only for what it is.
@@ -1713,6 +1689,29 @@ func (s *Session) hasPendingWatchNotification() bool {
 			return true
 		}
 	}
+	for _, a := range s.jobNotifsAwaitingRequest {
+		if a.deliverable.notification.isWatch() {
+			return true
+		}
+	}
+	return false
+}
+
+// hasAwaitingWatchNotification reports whether a watch notice is assigned to
+// the CURRENT turn: it is waiting for this turn's request to carry it. That is
+// the work admission must refuse on an unleased stable-child turn, because it
+// would reach the provider through that request.
+//
+// A notice still on the queue is deliberately NOT this predicate's business: it
+// belongs to the leased drive that reserves a generation for it, and refusing
+// ordinary unleased work merely because such a notice is waiting would stand
+// down every turn the child has until the drive wins capacity.
+func (s *Session) hasAwaitingWatchNotification() bool {
+	if s == nil {
+		return false
+	}
+	s.pendingJobNotifsMu.Lock()
+	defer s.pendingJobNotifsMu.Unlock()
 	for _, a := range s.jobNotifsAwaitingRequest {
 		if a.deliverable.notification.isWatch() {
 			return true
@@ -1738,22 +1737,6 @@ func (s *Session) stableChildTurnNeedsLease(ctx context.Context) bool {
 		return false
 	}
 	return true
-}
-
-// refuseUnleasedWatchNotice reports whether this turn would carry a watch
-// notice without a lease. acceptNotificationInput asks BEFORE it writes the
-// reminder, because the admission gate reads the queue and the drain below
-// empties it first (session_notifications.go).
-func (s *Session) refuseUnleasedWatchNotice(ctx context.Context, jobNotifs []deliverableJobNotification) bool {
-	if !s.stableChildTurnNeedsLease(ctx) {
-		return false
-	}
-	for _, d := range jobNotifs {
-		if d.notification.isWatch() {
-			return true
-		}
-	}
-	return false
 }
 
 // splitUnleasedWatchNotices partitions this turn's deliverable notifications by
@@ -1815,11 +1798,6 @@ func (s *Session) hasPendingOrdinaryNotification() bool {
 // request has carried yet. The drain-loop tail uses it to decide whether to run
 // a notification turn next; the actual drain stays in acceptNotificationInput so
 // the queue is consumed exactly once, inside the turn that surfaces it.
-//
-// A retained watch notice is deliberately NOT counted here. It is owed work, but
-// it has nothing acceptNotificationInput can deliver until its paced retry makes
-// the durable append land: counting it would start a notification turn that
-// delivers nothing, over and over, for as long as the write keeps failing.
 func (s *Session) peekNotifications() int {
 	s.pendingJobNotifsMu.Lock()
 	defer s.pendingJobNotifsMu.Unlock()
@@ -1828,16 +1806,8 @@ func (s *Session) peekNotifications() int {
 
 // owedJobNotificationsLocked counts the notifications a notification wake still
 // has to bring to the model. The caller holds pendingJobNotifsMu.
-//
-// Unlike peekNotifications it includes the retained watch notices: they keep the
-// retry chain armed and keep a retirement from reading the session as settled
-// while a failure report is still due.
 func (s *Session) owedJobNotificationsLocked() int {
-	// A retained watch notice is owed work: its durable append failed, so it is
-	// neither delivered nor dropped until a retry lands (LIFE-01, #2340 review
-	// M4). Counting it here keeps the retry chain armed and keeps a retirement
-	// from reading the session as settled while a failure report is still due.
-	return len(s.pendingJobNotifs) + len(s.jobNotifsAwaitingRequest) + len(s.stableWatchRetained)
+	return len(s.pendingJobNotifs) + len(s.jobNotifsAwaitingRequest)
 }
 
 // countJobNotificationsDelivered records n job notifications delivered to the
@@ -1966,20 +1936,6 @@ func (s *Session) scheduleJobNotificationRetryLocked() {
 		}
 		pending := s.owedJobNotificationsLocked() > 0
 		s.jobNotifyRetry.settle(pending, delay, jobNotificationRetryMaxDelay)
-		s.pendingJobNotifsMu.Unlock()
-		// A retained watch notice is owed work too, so this wake re-attempts it
-		// rather than only delivering queued notifications (LIFE-01, #2340
-		// review M4).
-		s.retryRetainedStableWatchPending()
-		// A retry that failed again left the notice retained with this firing
-		// spent, so the chain is re-armed here. Without it the notice sits
-		// retained with no timer, and only an unrelated wake would re-attempt
-		// it. The delay keeps backing off because the retained notice still
-		// counts as owed work; it stops once none remain.
-		s.pendingJobNotifsMu.Lock()
-		if len(s.stableWatchRetained) > 0 {
-			s.scheduleJobNotificationRetryLocked()
-		}
 		s.pendingJobNotifsMu.Unlock()
 		if pending {
 			s.notify()

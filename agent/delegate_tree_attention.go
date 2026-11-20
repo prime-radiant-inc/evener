@@ -694,7 +694,47 @@ func (c *delegateTreeController) hasPendingDelegateAttention() bool {
 			return true
 		}
 	}
-	return false
+	_, _, retained := c.retainedAttentionReservationLocked()
+	return retained
+}
+
+// retainedAttentionReservationLocked names a start reservation whose attention
+// row was written and whose generation never committed, with the identity that
+// row was written under.
+//
+// The reservation holds the child's drive slot and its exact generation, and it
+// publishes no wake ID: the queue entry that produced the row is gone, so every
+// wake-cache scan reads nothing for it. Without this predicate the retry would
+// find no work and the row would wait forever after the storage that refused
+// the commit recovers. The predicate answers for a reservation this drive can
+// still commit: a cancelled, stopped, closing or non-resumable delegate is left
+// to its teardown, exactly as an ineligible wake is.
+//
+// The caller holds c.mu.
+func (c *delegateTreeController) retainedAttentionReservationLocked() (delegateID, attentionID string, ok bool) {
+	for _, record := range c.reservations {
+		if record == nil || record.trigger != delegatestore.TriggerAttention || record.runtime == nil || record.attentionID == "" {
+			continue
+		}
+		if record.ctx != nil && record.ctx.Err() != nil {
+			continue
+		}
+		if c.stopCoversLocked(record.delegateID) || !c.idleRestorableLocked(record.delegateID) {
+			continue
+		}
+		if c.laneHandoffCoversLocked(record.delegateID) {
+			continue
+		}
+		if blocked, _ := c.ancestorFenceLocked(c.durable[record.delegateID].Descriptor.ParentDelegateID); blocked {
+			continue
+		}
+		if !ok || record.delegateID < delegateID {
+			delegateID = record.delegateID
+			attentionID = record.attentionID
+			ok = true
+		}
+	}
+	return delegateID, attentionID, ok
 }
 
 // delegateAttentionWakeEligibleLocked reports whether delegateID could accept
@@ -878,7 +918,10 @@ func (c *delegateTreeController) hasRunnableDelegateAttention() bool {
 			return true
 		}
 	}
-	return false
+	// A retained reservation has no wake ID to be selected by, so it is
+	// runnable exactly when this drive can still commit it.
+	_, _, retained := c.retainedAttentionReservationLocked()
+	return retained
 }
 
 func (c *delegateTreeController) retryDelegateAttentionLater() {
@@ -972,7 +1015,9 @@ func (c *delegateTreeController) nextIdleDelegateAttentionLocked() (string, stri
 		delegateIDs = append(delegateIDs, delegateID)
 	}
 	if len(delegateIDs) == 0 {
-		return "", "", false
+		// Nothing owes a wake, but a reservation may still hold a row whose
+		// commit failed: retrying its exact generation is this drive's work.
+		return c.retainedAttentionReservationLocked()
 	}
 	// Turns: a delegate the drive has not picked yet first, in id order,
 	// then the one it picked longest ago. One delegate that can't be restored,

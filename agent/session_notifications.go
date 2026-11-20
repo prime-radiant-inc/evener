@@ -46,20 +46,13 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 	s.enqueueOwnCallerWatchSendTokens()
 	jobNotifs, retryJobNotifs, injectedJobNotifs := s.filterDeliverableJobNotifications(s.drainJobNotifications())
 	jobNotifs, injectedJobNotifs = s.withoutAwaitingRequest(jobNotifs), s.withoutAwaitingRequest(injectedJobNotifs)
-	// This turn must not write a watch reminder it is not allowed to carry. The
-	// gate in prepareModelRequestWithError reads the QUEUE, and everything below
-	// drains it: a watch notice has no terminal generation, so awaitRequestFor-
-	// JobNotifications settles it before the first request is prepared and the
-	// queue is empty by the time admission looks. The reminder would then ride
-	// the transcript into an unleased turn that admission had no evidence left
-	// to refuse (LIFE-01, #2340). So the refusal happens here, while the notice
-	// is still in hand, and the notice goes back to the queue untouched.
-	if s.refuseUnleasedWatchNotice(ctx, jobNotifs) {
-		s.requeueJobNotifications(append(jobNotifications(jobNotifs), retryJobNotifs...))
-		s.requeueJobNotifications(jobNotifications(injectedJobNotifs))
-		s.finishNotificationNoop()
-		return false
-	}
+	// A watch notice this turn may not carry goes back to the queue before the
+	// reminder is written: an unleased stable-child turn presents no watch
+	// notice, and the reminder would otherwise ride the transcript into it. The
+	// requeued notice keeps folding where it was, and the leased drive that
+	// reserves its generation claims it.
+	jobNotifs, deferredWatch := s.splitUnleasedWatchNotices(ctx, jobNotifs)
+	s.requeueJobNotifications(jobNotifications(deferredWatch))
 	if sessionLifecycleFault(ctx, "inject_watch_notification") != nil {
 		jobNotifs = append(jobNotifs, deliverableJobNotification{
 			notification: jobNotification{Kind: jobNotificationKindWatch, JobID: "injected-watch", Status: jobNotificationEventWatch},
