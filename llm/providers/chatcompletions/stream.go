@@ -267,8 +267,19 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 					// The structured candidate may include this frame's scalar
 					// bytes too, so account for them before a later scalar
 					// mirror arrives.
-					if s, next := unseen(scalar, shown.String(), scalarOffset); s == "" {
-						scalarOffset = next
+					if scalar != "" {
+						pending := shown.String()[min(scalarOffset, shown.Len()):]
+						if pending != "" && strings.HasPrefix(scalar, pending) {
+							// The frame's scalar fragment mirrors the pane and
+							// extends it; the suffix is unseen content, so it
+							// joins the same preview.
+							extra := scalar[len(pending):]
+							shown.WriteString(extra)
+							scalarOffset = shown.Len()
+							send += extra
+						} else if s, next := unseen(scalar, shown.String(), scalarOffset); s == "" {
+							scalarOffset = next
+						}
 					}
 				} else {
 					send, scalarOffset = unseen(delta, shown.String(), scalarOffset)
@@ -404,9 +415,21 @@ func (a *detailAssembly) appendChunk(details []reasoningDetailItem) string {
 	var out strings.Builder
 	var prev detailKey
 	first := true
+	// unindexedSeen records that this chunk already carried unindexed text, so
+	// every later unindexed piece in the same array needs its newline in the
+	// implicit item even when an indexed piece arrives between them.
+	unindexedSeen := false
 	for _, d := range details {
 		text := detailItemText(d)
 		if text == "" {
+			// An indexed item's identity starts at its first appearance, even
+			// when that appearance carries no text: empty items contribute
+			// nothing to the display, but later text must keep this position.
+			key := detailKeyOf(d)
+			if key.indexed && a.byKey[key] == nil {
+				a.byKey[key] = &strings.Builder{}
+				a.order = append(a.order, key)
+			}
 			continue
 		}
 		key := detailKeyOf(d)
@@ -426,10 +449,13 @@ func (a *detailAssembly) appendChunk(details []reasoningDetailItem) string {
 			out.WriteString("\n")
 		}
 		out.WriteString(text)
-		if sameItem && !key.indexed {
+		if !key.indexed && unindexedSeen {
 			b.WriteString("\n")
 		}
 		b.WriteString(text)
+		if !key.indexed {
+			unindexedSeen = true
+		}
 		prev = key
 		first = false
 		a.last, a.lastSet = key, true

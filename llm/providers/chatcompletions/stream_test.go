@@ -50,6 +50,16 @@ func TestStreamMixedReasoningMatchesNonStreaming(t *testing.T) {
 		// Fragments of one explicit index concatenate whether they share a
 		// frame or not: the frame boundary is not an item boundary.
 		{"adjacent-same-index-one-chunk", `{"reasoning_details":[{"type":"reasoning.text","text":"recheck","index":0}]}`, "recheck", "recheck", `{"reasoning_details":[{"type":"reasoning.text","text":"re","index":0},{"type":"reasoning.text","text":"check","index":0}]}`},
+		// A mixed frame's scalar fragment mirrors the pane and extends it:
+		// the unseen scalar suffix must join the same preview.
+		{"mixed-mirror-extension-joins-preview", `{"reasoning_content":"abc","reasoning_details":[{"type":"reasoning.text","text":"abc","index":0}]}`, "abc", "ab|c", `{"reasoning_content":"ab","reasoning_details":[{"type":"reasoning.text","text":"a","index":0}]}` + "\x00" + `{"reasoning_content":"c"}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"bc","index":0}]}`},
+		// Unindexed pieces of one array keep their newline in the implicit
+		// item even when an indexed piece arrives between them.
+		{"unindexed-pieces-around-indexed", `{"reasoning_details":[{"type":"reasoning.text","text":"step"},{"type":"reasoning.text","text":"other","index":1},{"type":"reasoning.text","text":"one"}]}`, "step\none\nother", "step\nother\none", `{"reasoning_details":[{"type":"reasoning.text","text":"step"},{"type":"reasoning.text","text":"other","index":1},{"type":"reasoning.text","text":"one"}]}`},
+		// An indexed item's identity is registered on first appearance even
+		// when that appearance carries no text, so settled order follows
+		// appearance rather than first non-empty text.
+		{"empty-first-index-orders-by-appearance", `{"reasoning_details":[{"type":"reasoning.text","text":"","index":0},{"type":"reasoning.text","text":"forecast","index":1},{"type":"reasoning.text","text":"plan","index":0}]}`, "plan\nforecast", "forecast|\nplan", `{"reasoning_details":[{"type":"reasoning.text","text":"","index":0}]}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"forecast","index":1}]}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"plan","index":0}]}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			resp, err := ExtractRecordedResponse([]byte(`{"choices":[{"message":`+tc.msg+`}]}`), "m")
