@@ -808,38 +808,6 @@ func TestDisposableReasonGitError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// worktreeCreateCoreResult struct
-// ---------------------------------------------------------------------------
-
-func TestWorktreeCreateCoreResultStruct(t *testing.T) {
-	t.Parallel()
-	r := worktreeCreateCoreResult{
-		Path:     "/path",
-		Branch:   "branch",
-		BaseSHA:  "abc123",
-		MainRoot: "/root",
-	}
-	if r.Path != "/path" || r.Branch != "branch" {
-		t.Fatalf("struct wrong: %+v", r)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// managedEntry struct
-// ---------------------------------------------------------------------------
-
-func TestManagedEntryStruct(t *testing.T) {
-	t.Parallel()
-	e := managedEntry{
-		Path: "/path",
-		Name: "wt1",
-	}
-	if e.Name != "wt1" || e.Path != "/path" {
-		t.Fatalf("struct wrong: %+v", e)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // lockStateFromPorcelain
 // ---------------------------------------------------------------------------
 

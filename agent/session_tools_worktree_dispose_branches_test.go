@@ -173,27 +173,6 @@ func TestMetaDirForLane(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// WorktreeDisposeResult struct
-// ---------------------------------------------------------------------------
-
-func TestWorktreeDisposeResultStruct(t *testing.T) {
-	t.Parallel()
-	result := WorktreeDisposeResult{
-		DelegateID:      "dlg_1",
-		LanePath:        "/path",
-		Branch:          "dlg_1",
-		AlreadyDisposed: true,
-		Message:         "disposed",
-	}
-	if result.DelegateID != "dlg_1" || result.LanePath != "/path" || result.Branch != "dlg_1" {
-		t.Fatalf("struct fields wrong: %+v", result)
-	}
-	if !result.AlreadyDisposed || result.Message != "disposed" {
-		t.Fatalf("struct fields wrong: %+v", result)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // stableWorktreeDisposalReason constant
 // ---------------------------------------------------------------------------
 
