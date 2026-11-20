@@ -245,8 +245,13 @@ func (s *Session) hasSettleableWatchSendOnly() bool {
 }
 
 // deferQueuedWatchNoticesToAttention moves every WATCH notice off this session's
-// ordinary queue and into durable delegate attention, returning how many it
-// moved (LIFE-01, #2340).
+// ordinary queue and into durable delegate attention (LIFE-01, #2340). It
+// reports how many it moved and how many it could not make durable.
+//
+// The two counts are separate because a caller deciding whether to refuse work
+// must answer for the batch this call took, not for the queue it leaves behind:
+// a notice that arrives while the deferral runs is not part of that batch and
+// belongs to its own delivery pass.
 //
 // A drive for a stable child's watch-only queue is refused, and refusing it must
 // not leave the notice sitting on a queue that no turn may drain. Two things go
@@ -264,11 +269,11 @@ func (s *Session) hasSettleableWatchSendOnly() bool {
 // this queue can carry: the frame it names is either stale, already in the
 // transcript, or unpublished, and only the last of those is work. See
 // resolveQueuedWatchSendTokens.
-func (s *Session) deferQueuedWatchNoticesToAttention() int {
+func (s *Session) deferQueuedWatchNoticesToAttention() (deferred, failed int) {
 	if s == nil {
-		return 0
+		return 0, 0
 	}
-	deferred := s.resolveQueuedWatchSendTokens()
+	deferred, failed = s.resolveQueuedWatchSendTokens()
 	s.pendingJobNotifsMu.Lock()
 	remaining := make([]jobNotification, 0, len(s.pendingJobNotifs))
 	var moved []jobNotification
@@ -307,13 +312,14 @@ func (s *Session) deferQueuedWatchNoticesToAttention() int {
 				// is NOT put back: see persistDeferredWatchNotice on why
 				// re-offering it presents it twice.
 				retry = append(retry, n)
+				failed++
 				continue
 			}
 		}
 		deferred++
 	}
 	s.requeueJobNotifications(retry)
-	return deferred
+	return deferred, failed
 }
 
 // driveChildIfNotStopGated is the wake-edge drive: it skips a stop-gated child so
@@ -625,14 +631,18 @@ func (s *Session) retryRestoredPendingWatchSends(_ context.Context) error {
 //
 // Resolution runs before every decision that reads the queue, so the drive and
 // the deferral see the work that is really there.
-func (s *Session) resolveQueuedWatchSendTokens() int {
+//
+// It reports how many tokens it made durable and how many it had to leave owed:
+// a token whose frame could not be made durable is requeued, and that is the
+// shape admission must still refuse for.
+func (s *Session) resolveQueuedWatchSendTokens() (deferred, failed int) {
 	if s == nil {
-		return 0
+		return 0, 0
 	}
 	s.pendingJobNotifsMu.Lock()
 	if len(s.pendingJobNotifs) == 0 {
 		s.pendingJobNotifsMu.Unlock()
-		return 0
+		return 0, 0
 	}
 	remaining := make([]jobNotification, 0, len(s.pendingJobNotifs))
 	var tokens []jobNotification
@@ -645,23 +655,25 @@ func (s *Session) resolveQueuedWatchSendTokens() int {
 	}
 	if len(tokens) == 0 {
 		s.pendingJobNotifsMu.Unlock()
-		return 0
+		return 0, 0
 	}
 	s.pendingJobNotifs = remaining
 	s.pendingJobNotifsMu.Unlock()
 	var retry []jobNotification
-	deferred := 0
 	for _, n := range tokens {
-		retryToken, madeDurable := s.resolveQueuedWatchSendToken(n)
+		retryToken, madeDurable, tokenFailed := s.resolveQueuedWatchSendToken(n)
 		if madeDurable {
 			deferred++
+		}
+		if tokenFailed {
+			failed++
 		}
 		if retryToken {
 			retry = append(retry, n)
 		}
 	}
 	s.requeueJobNotifications(retry)
-	return deferred
+	return deferred, failed
 }
 
 // resolveQueuedWatchSendToken settles one token. It reports whether the token
@@ -674,24 +686,29 @@ func (s *Session) resolveQueuedWatchSendTokens() int {
 // has the frame, so only the delivered record is outstanding and no lease is
 // needed to write it. An untranscribed one goes to durable attention, where a
 // leased generation presents it.
-func (s *Session) resolveQueuedWatchSendToken(n jobNotification) (retry, deferred bool) {
+func (s *Session) resolveQueuedWatchSendToken(n jobNotification) (retry, deferred, failed bool) {
 	jm, cfg, state, ok := s.resolveWatchSendToken(n.WatchSend)
 	if !ok {
-		return false, false
+		return false, false, false
 	}
 	if jm.watchSendTranscribed(state.DeliveryID) {
 		if err := jm.settleTranscribedWatchSend(cfg, state); err != nil {
 			s.emit(events.WarningData{Message: "watch send settle failed: " + err.Error()})
-			return true, false
+			// The frame is in the transcript, so nothing is presented by the
+			// retry and nothing needs making durable: only its delivered record
+			// is outstanding. Back on the queue for another settle attempt, but
+			// NOT a deferral failure -- refusing work for an already-presented
+			// frame would strand the ordinary completions beside it.
+			return true, false, false
 		}
-		return false, false
+		return false, false, false
 	}
 	deferred, err := s.deferWatchSendFrameToAttention(jm, cfg, state)
 	if err != nil {
 		s.emit(warningDataFromError("defer queued watch send", err))
-		return true, false
+		return true, false, true
 	}
-	return false, deferred
+	return false, deferred, false
 }
 
 // deferWatchSendFrameToAttention makes one caller-targeted watch frame durable
@@ -732,11 +749,28 @@ func (s *Session) deferWatchSendFrameToAttention(jm *jobManager, cfg *watchConfi
 		}
 		return false, err
 	}
+	// The row is durable, so the frame IS delivered: the leased generation the
+	// arm below wakes presents it, and no unleased pass may render it again.
+	// Marking it transcribed is what makes that at-most-once, and it has to
+	// happen before the arm. The arm wakes the receiver, whose notification
+	// drain resolves this very delivery; a delivery still untranscribed is
+	// work it hands back to durable attention or presents, either of which
+	// appends the frame a second time. Marking it first means a drain that
+	// beats the delivered record takes the transcribed path, which settles
+	// only, and a failed settle is retried by settleTranscribedWatchSend
+	// without rendering.
+	jm.noteWatchSendTranscribed(state.DeliveryID)
 	if err := s.armDelegateAttention(attentionID); err != nil {
 		s.emit(warningDataFromError("arm deferred watch send", err))
 	}
 	if jm.isCurrentPendingWatchSend(cfg, state) {
-		if err := jm.settleWatchSendDelivered(cfg, state); err != nil {
+		// The transcribed settle is the retry that owns this record now: it
+		// acknowledges the frame and, when the journal refuses, backs off and
+		// finally settles in memory only. The plain settle would leave the
+		// frame pending on every failure, and a later drain would find it
+		// transcribed and retry the same way regardless -- so this is the same
+		// recovery, taken without re-rendering in between.
+		if err := jm.settleTranscribedWatchSend(cfg, state); err != nil {
 			s.emit(warningDataFromError("settle deferred watch send", err))
 		}
 	}

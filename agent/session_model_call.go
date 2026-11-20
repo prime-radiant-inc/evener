@@ -177,9 +177,17 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		// first, and the refusal is what remains: a watch notice that could NOT
 		// be made durable. That one must not run unleased, because accepting it
 		// would write it straight into an unleased reminder.
+		//
+		// The refusal reads the result of the batch THIS call took, not the
+		// queue afterwards. A notice that arrives while the deferral runs is
+		// not part of that batch and must not be refused here: it was never
+		// offered to this request, no attempted deferral failed, and its own
+		// delivery pass will take it. Reading the queue again made a fresh
+		// arrival look like a failed deferral and aborted an ordinary
+		// completion turn whose writes all succeeded.
 		if s.hasPendingWatchNotification() {
-			s.deferQueuedWatchNoticesToAttention()
-			if s.hasPendingWatchNotification() {
+			_, failed := s.deferQueuedWatchNoticesToAttention()
+			if failed > 0 {
 				return nil, "", nil, llm.Request{}, nil, "", errDelegateStableModelTurnUnleased
 			}
 		}

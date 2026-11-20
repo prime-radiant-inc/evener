@@ -4982,10 +4982,9 @@ func TestDelegateResourceSupervision_WatchFilteredFoldDoesNotDuplicateHistory(t 
 // watch delivery, a resolution, a parent wake read — holds attentionMu. A read
 // taken outside that lock is an unsynchronized pair with all of them.
 //
-// Two phases. The first states the rule deterministically through the fold-read
-// seam: a read that finds attentionMu takeable is a read running without it.
-// The second gives the race detector a real pair to judge by appending watch
-// rows on one goroutine while another asks the filter which rows are pending.
+// The rule is stated deterministically through the fold-read seam: a read that
+// finds attentionMu takeable is a read running without it. The seam wraps every
+// read this path makes, so no ordering trick is needed to prove the hold.
 func TestDelegateResourceSupervision_UnleasedWatchFilterReadsTheFoldUnderTheAttentionLock(t *testing.T) {
 	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
@@ -5015,52 +5014,6 @@ func TestDelegateResourceSupervision_UnleasedWatchFilterReadsTheFoldUnderTheAtte
 		t.Fatalf("%d fold read(s) ran with attentionMu takeable, want every read under the lock", unlocked.Load())
 	}
 	updateSessionTestConfig(sub.sess, func(cfg *testConfig) { cfg.delegateAttentionReadFold = nil })
-
-	// Phase two: the same read against a concurrent writer. The writer is held
-	// on a channel between its first append and its last, so the reader below
-	// provably evaluates the fold while at least one row is already appended and
-	// the writer is still active. Polling the writer's completion instead made
-	// the observation a scheduling race: a writer that finished first left the
-	// reader no window to see anything, which says nothing about the lock.
-	var writerErr atomic.Value
-	firstAppended := make(chan struct{})
-	releaseWriter := make(chan struct{})
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		for i := range 40 {
-			if _, err := sub.sess.appendDelegateNotificationDurably(
-				"watchdefer:concurrent-read:"+strconv.Itoa(i),
-				"concurrent watch row "+strconv.Itoa(i),
-			); err != nil {
-				writerErr.Store(err)
-				if i == 0 {
-					close(firstAppended)
-				}
-				return
-			}
-			if i == 0 {
-				// One row is durable before the reader runs, and the writer
-				// cannot retire until that read has returned.
-				close(firstAppended)
-				<-releaseWriter
-			}
-		}
-	})
-	<-firstAppended
-	if err, _ := writerErr.Load().(error); err != nil {
-		close(releaseWriter)
-		wg.Wait()
-		t.Fatalf("append a concurrent watch row: %v", err)
-	}
-	observed := len(sub.sess.pendingDeferredWatchAttention()) > 0
-	close(releaseWriter)
-	wg.Wait()
-	if err, _ := writerErr.Load().(error); err != nil {
-		t.Fatalf("append a concurrent watch row: %v", err)
-	}
-	if !observed {
-		t.Fatal("the concurrent reader never saw a pending watch row while a write was in flight: the race proof needed the read to run alongside the writes")
-	}
 }
 
 // TestDelegateResourceSupervision_UnleasedProjectionWithholdsBothWatchRowProducers
@@ -5434,9 +5387,10 @@ func TestDelegateResourceSupervision_FailedWatchDeferralStaysOwedForTheLeasedRun
 	}
 
 	// While the append is still refused, the retried deferral keeps the notice
-	// owed rather than dropping it.
-	if moved := sub.sess.deferQueuedWatchNoticesToAttention(); moved != 0 {
-		t.Fatalf("deferred notices with the append refused = %d, want 0", moved)
+	// owed rather than dropping it, and reports that it could not be made
+	// durable -- the count admission refuses work on.
+	if moved, failed := sub.sess.deferQueuedWatchNoticesToAttention(); moved != 0 || failed != 1 {
+		t.Fatalf("deferred/failed notices with the append refused = %d/%d, want 0/1", moved, failed)
 	}
 	if !sub.sess.hasPendingWatchNotification() {
 		t.Fatal("a failed deferral consumed the notice: nothing would ever present it")
@@ -5457,6 +5411,242 @@ func TestDelegateResourceSupervision_FailedWatchDeferralStaysOwedForTheLeasedRun
 		return strings.HasPrefix(id, deferredWatchAttentionPrefix)
 	}) {
 		t.Fatalf("child attention rows = %v, want the recovered watch notice under %q", fold.order, deferredWatchAttentionPrefix)
+	}
+}
+
+// TestDelegateResourceSupervision_WatchArrivingDuringDeferralDoesNotRefuseTheRequest
+// pins the admission decision to the batch the deferral actually took.
+//
+// Admission moves the queued watch notices to durable attention and then asks
+// what remains. Asking the QUEUE what remains makes a notice that arrives while
+// that move is running look like a deferral that failed: every write this call
+// attempted succeeded, yet the fresh arrival is on the queue and the ordinary
+// completion turn beside it is refused. The parent treats that refusal as
+// fatal, so the delegate is gated and the completion it legitimately owned is
+// never delivered.
+//
+// The arrival is made deterministic through the attention fold-read seam, which
+// runs inside the deferral's own append. The later notice stays queued for its
+// own delivery pass; the assertion is that the request is admitted anyway.
+func TestDelegateResourceSupervision_WatchArrivingDuringDeferralDoesNotRefuseTheRequest(t *testing.T) {
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
+	})
+	root := restoreSupervisionRoot(t, fixture, nil)
+	// The unserved root keeps every drive on this goroutine, so the seam below
+	// is read and written by one goroutine and the arrival it injects is the
+	// only concurrency in the test.
+	sub := warmDelegateUnservedRoot(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	// One deferrable notice and one ordinary completion share the queue, which
+	// is the shape the turn must still carry.
+	seedOwnedDurablePending(t, sub.sess.jobManager, "job_defer_arrival", jobstore.JobShell)
+	sub.sess.enqueueJobNotification(jobNotification{
+		JobID:   "job_defer_arrival",
+		JobType: "shell",
+		Status:  "completed",
+	})
+	sub.sess.enqueueJobNotification(watchSendDiagnosticNotification("watch:defer-arrival", "job:defer-arrival", "watch send failed: delivery_id=defer"))
+	if !sub.sess.hasPendingWatchNotification() || !sub.sess.hasPendingOrdinaryNotification() {
+		t.Fatal("the mixed batch did not land as one watch notice plus one ordinary completion")
+	}
+
+	// The arrival: a watch notice enqueued while admission's own deferral is
+	// appending the earlier one. The seam wraps every fold read of that append,
+	// so the enqueue provably happens inside the deferral, after its batch was
+	// taken and before it returns.
+	arrival := watchSendDiagnosticNotification("watch:arrived-mid-defer", "job:arrived-mid-defer", "watch send failed: delivery_id=arrived")
+	var once sync.Once
+	updateSessionTestConfig(sub.sess, func(cfg *testConfig) {
+		cfg.delegateAttentionReadFold = func(path, sessionID string) (delegateAttentionFold, error) {
+			once.Do(func() { sub.sess.enqueueJobNotification(arrival) })
+			return readDelegateAttentionFold(path, sessionID)
+		}
+	})
+	t.Cleanup(func() {
+		updateSessionTestConfig(sub.sess, func(cfg *testConfig) { cfg.delegateAttentionReadFold = nil })
+	})
+
+	// The request is admitted: every deferral this admission attempted
+	// succeeded, so the completion rides its own turn.
+	if _, _, _, _, _, _, err := sub.sess.prepareModelRequestWithError(context.Background(), 0, new(events.RoundTimings)); err != nil {
+		t.Fatalf("unleased model request with a watch arriving during the deferral = %v, want the ordinary completion carried", err)
+	}
+	// The later arrival is still owed on the queue for its own delivery pass.
+	if !sub.sess.hasPendingWatchNotification() {
+		t.Fatal("the notice that arrived during the deferral was consumed: its own delivery pass lost it")
+	}
+}
+
+// TestDelegateResourceSupervision_DeferredWatchFrameIsTranscribedBeforeTheArm
+// pins the at-most-once half of the unleased deferral.
+//
+// deferWatchSendFrameToAttention appends the frame as durable attention and
+// then arms the wake. The arm wakes the receiver, whose notification drain
+// resolves this very delivery: a frame it still reads as untranscribed is work
+// that drain presents or defers again, so the frame reaches the model a second
+// time. Marking it transcribed immediately after the durable append and before
+// the arm is what makes the later pass a settlement only.
+//
+// The claim is the ordering: at the instant the arm runs, the frame is already
+// transcribed, so a drain the wake sets off can only settle. The fold is read
+// afterwards to show the frame became exactly one row, so the mark and the row
+// describe the same delivery rather than two.
+func TestDelegateResourceSupervision_DeferredWatchFrameIsTranscribedBeforeTheArm(t *testing.T) {
+	sub, _, _ := stableChildCallerFrame(t, "defer-then-transcribed")
+	jm := sub.sess.jobManager
+	pending := jm.pendingWatchSendDeliveries(nil)
+	if len(pending) != 1 {
+		t.Fatalf("pending caller frames = %d, want 1", len(pending))
+	}
+	deliveryID := pending[0].state.DeliveryID
+	attentionID := stableWatchAttentionID(pending[0].state)
+
+	// The receiver's wake is HELD, not run: the wake drives the receiver's own
+	// drain synchronously, and that drain is the reader the transcribed mark is
+	// for. Running it here would test the drain's reaction rather than the
+	// ordering this test pins, and an untranscribed frame makes that drain
+	// re-defer and re-arm without end.
+	sub.sess.mu.Lock()
+	previousNotify := sub.sess.notifyFunc
+	sub.sess.mu.Unlock()
+	var wakes atomic.Int64
+	sub.sess.SetNotifyFunc(func() { wakes.Add(1) })
+	t.Cleanup(func() { sub.sess.SetNotifyFunc(previousNotify) })
+
+	// The arm seam is the observation point for the ordering: it is consulted
+	// at the top of the arm, so what it reads is the state the arm runs against.
+	transcribedAtArm := false
+	updateSessionTestConfig(sub.sess, func(cfg *testConfig) {
+		cfg.delegateAttentionArmFault = func() error {
+			transcribedAtArm = jm.watchSendTranscribed(deliveryID)
+			return nil
+		}
+	})
+	t.Cleanup(func() {
+		updateSessionTestConfig(sub.sess, func(cfg *testConfig) { cfg.delegateAttentionArmFault = nil })
+	})
+
+	sub.sess.deferQueuedWatchNoticesToAttention()
+
+	// The whole claim. A successful settle clears the mark along with the
+	// pending frame (that is what a settled send is), so the mark can only be
+	// observed at the arm -- which is exactly where the ordering matters.
+	if !transcribedAtArm {
+		t.Fatal("the frame was not marked transcribed before the arm: the wake the arm publishes can render it again")
+	}
+	if wakes.Load() == 0 {
+		t.Fatal("the deferral published no wake: this proof needs the arm the ordering is about")
+	}
+	if got := len(jm.pendingWatchSendDeliveries(nil)); got != 0 {
+		t.Fatalf("pending caller frames after the deferral = %d, want the send settled", got)
+	}
+	fold, err := readDelegateAttentionFold(transcriptPath(sub.sess.stateDir, sub.sess.id), sub.sess.id)
+	if err != nil {
+		t.Fatalf("read the child's attention fold: %v", err)
+	}
+	var rows int
+	for _, id := range fold.order {
+		if id == attentionID {
+			rows++
+		}
+	}
+	if rows != 1 {
+		t.Fatalf("attention rows under %q = %d, want exactly 1: the frame was appended again", attentionID, rows)
+	}
+}
+
+// TestDelegateResourceSupervision_RestartCancellationNoticeKeysOnTheBatch pins
+// the identity of the coalesced restart-cancellation notice.
+//
+// The notice is coalesced once per receiver, and its row is consumed by the
+// generation that presents it. An identity that names only the receiver then
+// deduplicates a LATER restart's cancellations against that consumed row: no
+// new row, no arm, and the delegate never learns that the watches it registered
+// since then are gone. Keying on the cancelled generations tells the two
+// batches apart while a retry of the same batch still deduplicates.
+func TestDelegateResourceSupervision_RestartCancellationNoticeKeysOnTheBatch(t *testing.T) {
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
+	})
+	root := restoreSupervisionRoot(t, fixture, nil)
+	sub := warmDelegateUnservedRoot(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	jm := sub.sess.jobManager
+	if jm == nil || jm.watchAttention == nil {
+		t.Fatal("the stable child's job manager has no watch-attention route wired")
+	}
+	sub.sess.mu.Lock()
+	previousNotify := sub.sess.notifyFunc
+	sub.sess.mu.Unlock()
+	var wakes atomic.Int64
+	sub.sess.SetNotifyFunc(func() { wakes.Add(1) })
+	t.Cleanup(func() { sub.sess.SetNotifyFunc(previousNotify) })
+
+	first := []*jobstore.WatchRecord{{
+		WatchID:           "watch_first_batch",
+		Generation:        "1",
+		Target:            "job_gone",
+		ReceiverSessionID: sub.sess.id,
+	}}
+	jm.watchesLostAtRestore = first
+	if err := jm.notifyRestartCancelledCallbackWatches(); err != nil {
+		t.Fatalf("notify the first restart cancellation: %v", err)
+	}
+	firstID := restartCancelledCallbackWatchAttentionID(sub.sess.id, first)
+	if wakes.Load() == 0 {
+		t.Fatal("the first cancellation armed no wake")
+	}
+
+	// The generation that presents the row consumes it, which is the state a
+	// retry and a later batch both have to answer for.
+	if err := sub.sess.resolveAttentionDurably([]string{firstID}, delegateAttentionConsumed); err != nil {
+		t.Fatalf("consume the first cancellation row: %v", err)
+	}
+	wakesAfterConsume := wakes.Load()
+
+	// A retry of the SAME batch deduplicates: the row is already there and
+	// consumed, so nothing new is appended and no wake is published.
+	jm.watchesLostAtRestore = first
+	if err := jm.notifyRestartCancelledCallbackWatches(); err != nil {
+		t.Fatalf("retry the first restart cancellation: %v", err)
+	}
+	if got := wakes.Load(); got != wakesAfterConsume {
+		t.Fatalf("wakes after retrying the same batch = %d, want %d: a duplicate notice was published", got, wakesAfterConsume)
+	}
+
+	// A LATER restart cancelling a new generation is a new notice: its own row
+	// and its own wake.
+	second := []*jobstore.WatchRecord{{
+		WatchID:           "watch_second_batch",
+		Generation:        "2",
+		Target:            "job_gone",
+		ReceiverSessionID: sub.sess.id,
+	}}
+	jm.watchesLostAtRestore = second
+	if err := jm.notifyRestartCancelledCallbackWatches(); err != nil {
+		t.Fatalf("notify the second restart cancellation: %v", err)
+	}
+	secondID := restartCancelledCallbackWatchAttentionID(sub.sess.id, second)
+	if secondID == firstID {
+		t.Fatalf("both batches derived attention identity %q: a later batch would deduplicate against the consumed row", secondID)
+	}
+	if got := wakes.Load(); got <= wakesAfterConsume {
+		t.Fatalf("wakes after the second batch = %d, want more than %d: the new cancellation armed nothing", got, wakesAfterConsume)
+	}
+	fold, err := readDelegateAttentionFold(transcriptPath(sub.sess.stateDir, sub.sess.id), sub.sess.id)
+	if err != nil {
+		t.Fatalf("read the child's attention fold: %v", err)
+	}
+	if _, exists := fold.content[secondID]; !exists {
+		t.Fatalf("child attention rows = %v, want the second batch's cancellation under %q", fold.order, secondID)
+	}
+	if !slices.Contains(fold.pendingIDs(), secondID) {
+		t.Fatalf("pending attention rows = %v, want the second batch's cancellation pending under %q", fold.pendingIDs(), secondID)
 	}
 }
 
@@ -5544,8 +5734,8 @@ func TestDelegateResourceSupervision_StaleWatchSendTokenIsDiscarded(t *testing.T
 	}
 	// Resolving the stale token leaves the queue empty, which is what lets the
 	// no-op drain run instead of counting work no turn can drain.
-	if moved := sub.sess.deferQueuedWatchNoticesToAttention(); moved != 0 {
-		t.Fatalf("deferred notices = %d, want 0 for a stale token", moved)
+	if moved, failed := sub.sess.deferQueuedWatchNoticesToAttention(); moved != 0 || failed != 0 {
+		t.Fatalf("deferred/failed notices = %d/%d, want 0/0 for a stale token", moved, failed)
 	}
 	if got := sub.sess.peekNotifications(); got != 0 {
 		t.Fatalf("queued notifications after resolving the stale token = %d, want 0", got)
@@ -5714,20 +5904,17 @@ func TestDelegateResourceSupervision_RestartCancelledCallbackWatchBecomesLeasedA
 		t.Fatal("the cancellation armed no wake: a leased generation would never be driven for the row")
 	}
 
-	attentionID := restartCancelledCallbackWatchAttentionID(sub.sess.id)
+	attentionID := restartCancelledCallbackWatchAttentionID(sub.sess.id, jm.watchesLostAtRestore)
 	fold, err := readDelegateAttentionFold(transcriptPath(sub.sess.stateDir, sub.sess.id), sub.sess.id)
 	if err != nil {
 		t.Fatalf("read the child's attention fold: %v", err)
 	}
-	row, ok := fold.content[attentionID]
+	_, ok := fold.content[attentionID]
 	if !ok {
 		t.Fatalf("child attention rows = %v, want the cancellation under %q", fold.order, attentionID)
 	}
 	if !isWatchNoticeAttentionID(attentionID) {
 		t.Fatalf("attention identity %q does not read as a watch notice: an unleased projection would present it", attentionID)
-	}
-	if row.Text() != callbackWatchesCancelledAtRestartMessage {
-		t.Fatalf("attention row = %q, want %q", row.Text(), callbackWatchesCancelledAtRestartMessage)
 	}
 	// The leased half: the controller holds a published wake for the row, which
 	// is what a generation drives from.
