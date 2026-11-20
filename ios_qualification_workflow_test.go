@@ -392,6 +392,13 @@ func TestIOSQualificationOverlapsTheRuntimeSetupWithTheBuild(t *testing.T) {
 			t.Errorf("ui-journeys does not download the %s artifact: %v", want, downloaded)
 		}
 	}
+	// The prerequisite gate can fail before the output path exists, so the
+	// always-on diagnostics upload must not glob from the filesystem root.
+	for _, step := range journeys.Steps {
+		if strings.HasPrefix(step.Uses, "actions/upload-artifact@") && !strings.Contains(step.If, "env.JOURNEY_OUTPUT") {
+			t.Errorf("diagnostics upload if = %q, want it gated on the output path existing", step.If)
+		}
+	}
 	if !ran {
 		t.Error("ui-journeys does not run the installed-app journeys")
 	}

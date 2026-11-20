@@ -393,11 +393,13 @@ jobs:
       - name: Run the installed-app journeys
         env:
           # run-ui-tests.sh uses this pair instead of building one, and checks
-          # its revision byte-for-byte against the checked-out tree.
+          # its revision and checksums against the checked-out tree.
           EVENER_QUALIFICATION_RUNTIME_BINARIES: ${{ env.JOURNEY_RUNTIME_PAIR }}
         run: bash scripts/native/ios/run-ui-journeys.sh --products "$JOURNEY_PRODUCTS" --output "$JOURNEY_OUTPUT"
       - name: Upload journey diagnostics
-        if: always()
+        # The prerequisite gate fails before the output path exists; without
+        # this condition the paths below would glob from the filesystem root.
+        if: ${{ always() && env.JOURNEY_OUTPUT != '' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ios-journeys-${{ github.run_id }}-${{ github.run_attempt }}
