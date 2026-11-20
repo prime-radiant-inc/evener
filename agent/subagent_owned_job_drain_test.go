@@ -134,14 +134,14 @@ func newOwnedJobDrainFixture(t *testing.T) *ownedJobDrainFixture {
 //
 // The child reaches its drain's park before this function returns, so a hook
 // that needs the fixture or a watch installed afterwards would fire too early.
-// Such a hook waits on the ready channel it is handed, which closes once the
-// fixture is built and again from the test's cleanup, so a setup failure cannot
-// leave the drain parked on a wait nothing releases.
-func newOwnedJobDrainFixtureWithParkedHook(t *testing.T, parked func(*Session, <-chan struct{})) *ownedJobDrainFixture {
+// Such a hook selects on ready and cancelled (t.Context().Done()): ready closes
+// once the fixture and watch are in place, and cancelled closes before any
+// t.Cleanup (including parent.Close) runs so a setup failure unblocks the hook
+// without firing into a nil fixture.
+func newOwnedJobDrainFixtureWithParkedHook(t *testing.T, parked func(*Session, <-chan struct{}, <-chan struct{})) *ownedJobDrainFixture {
 	t.Helper()
 	ready := make(chan struct{})
 	var readyOnce sync.Once
-	t.Cleanup(func() { readyOnce.Do(func() { close(ready) }) })
 	idleReported := make(chan struct{})
 	shellHandled := make(chan struct{})
 	freshHandled := make(chan struct{})
@@ -169,7 +169,7 @@ func newOwnedJobDrainFixtureWithParkedHook(t *testing.T, parked func(*Session, <
 	var parkedHook func(*Session)
 	if parked != nil {
 		parkedHook = func(s *Session) {
-			parked(s, ready)
+			parked(s, ready, t.Context().Done())
 		}
 	}
 	parent, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), env, SessionConfig{

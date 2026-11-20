@@ -5794,32 +5794,13 @@ func TestDelegateResourceSupervision_RestartCancelledCallbackWatchBecomesLeasedA
 }
 
 // TestDelegateResourceSupervision_IdleStableDelegateTimerRoutesThroughLeasedAttention
-// pins the real rail the split defers: an idle stable delegate's timer fires
-// while nothing has leased the child, so the notice it makes must reach the
-// model through leased attention and never through an unleased request.
-//
-// The fire is a real timer tick on the child's own job manager, advanced by the
-// fixture clock, so what is deferred here is the notice the production cadence
-// makes rather than a hand-built one. The child is idle: the warm run has
-// quiesced, so nothing holds a lease, and the only presentation left to this
-// row is the one its arm drives.
-//
-// The wake is held for the body of the test, which is what makes the fire
-// observable: an unheld wake drives the child's leased generation at once, and
-// that generation presents and settles the notice before it can be read on the
-// queue. Holding the wake is production behaviour — the same primitive the
-// cadence uses to keep one event's notices in one turn — so the queue the
-// assertions read is the queue a real notification turn would open on.
-//
-// Three things make the proof mean something:
-//
-//   - The row is DURABLE and its wake is COMMITTED on the controller, which is
-//     the leased half. A notice left on the queue has neither.
-//   - The unleased request the child builds carries no watch turn, so the row
-//     never rides outside a lease.
-//   - An ordinary completion queued after the fire is still carried by the next
-//     unleased turn. A split that stranded the queue behind the watch rail would
-//     pass the first two and fail this one.
+// pins the end-to-end timer path on an idle stable delegate with no other
+// pending work: a real repeat_seconds timer fires through the parent's real
+// wake callback, unleased acceptance defers it to durable attention, and the
+// parent re-drives the child under a lease to present the timer note in one
+// provider request and settle the row. Mixed-batch ordinary completions are
+// covered separately by
+// TestDelegateResourceSupervision_MixedBatchCarriesTheCompletionAndDefersTheWatch.
 func TestDelegateResourceSupervision_IdleStableDelegateTimerRoutesThroughLeasedAttention(t *testing.T) {
 	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
@@ -5843,119 +5824,32 @@ func TestDelegateResourceSupervision_IdleStableDelegateTimerRoutesThroughLeasedA
 		t.Fatalf("create the child's timer watch: %v", err)
 	}
 
-	// Count the child's wake instead of driving it, before the tick lands. A
-	// driving receiver presents the row and resolves it before the assertions
-	// below can read the armed state, and the arm wakes the receiver itself --
-	// through notify, not through the notification queue -- so the wake is what
-	// has to be held. The release at the end runs the drive on purpose.
-	sub.sess.mu.Lock()
-	previousNotify := sub.sess.notifyFunc
-	sub.sess.mu.Unlock()
-	var wakes atomic.Int64
-	sub.sess.SetNotifyFunc(func() { wakes.Add(1) })
-	var restoreOnce sync.Once
-	releaseWake := func() { restoreOnce.Do(func() { sub.sess.SetNotifyFunc(previousNotify) }) }
-	t.Cleanup(releaseWake)
-	// Registering a callback wakes once for work already owed, so the fire's own
-	// wake is the difference from here.
-	wakesBeforeFire := wakes.Load()
-
-	// Fire the timer the way its own ticker does, on the fixture clock.
+	// Fire the timer through the real parent wake callback with no shell
+	// completion queued. The idle child's unleased acceptance must defer the
+	// tick to durable attention, and the parent must re-drive it under a lease
+	// to present the timer note in a single provider request and settle the row.
+	preFireRequests := supervisionRequestCount(fixture.adapter)
 	clk.Advance(60 * time.Second)
-	// Wait for the wake callback itself before inspecting the queue: the
-	// producer releases the queue lock before invoking notify, so observing
-	// the queued notice first can race ahead of the wake increment.
-	testwait.Until(t, "the timer fire to arm the child's wake", func() bool {
-		return wakes.Load() > wakesBeforeFire
-	})
-	if got := queuedWatchNotices(t, sub.sess); got != 1 {
-		t.Fatalf("queued watch notices = %d, want the one the timer fired", got)
-	}
-
-	// The timer notice is on the queue and the child is unleased, so the split is
-	// what has to move it: this is the same code the notification turn runs at
-	// its opening write.
-	if kept := applyUnleasedWatchSplit(t, sub.sess); len(kept) != 0 {
-		t.Fatalf("notices carried by the split = %v, want the timer notice deferred and nothing else", carriedNotificationJobIDs(kept))
-	}
-	if got := queuedWatchNotices(t, sub.sess); got != 0 {
-		t.Fatalf("watch notices still queued = %d, want the deferred row to own it", got)
-	}
-
-	// The durable half: a watch row the unleased projection withholds.
-	pending := sub.sess.pendingDeferredWatchAttention()
-	var rowID string
-	for id := range pending {
-		if strings.HasPrefix(id, deferredWatchAttentionPrefix) {
-			rowID = id
+	testwait.Until(t, "the leased generation to present the timer notice", func() bool {
+		if supervisionRequestCount(fixture.adapter) <= preFireRequests {
+			return false
 		}
+		return requestsContain(fixture.adapter.Requests()[preFireRequests:], timerNote)
+	})
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	if got := supervisionRequestCount(fixture.adapter) - preFireRequests; got != 1 {
+		t.Fatalf("provider requests for timer-only wake = %d, want 1", got)
 	}
-	if rowID == "" {
-		t.Fatalf("pending watch rows = %v, want the timer notice under %q", pending, deferredWatchAttentionPrefix)
-	}
-	// The leased half: the controller holds a committed wake for that row, which
-	// is what a generation drives from. Without it the row waits for a drive that
-	// never comes.
-	controller := sub.sess.delegateController
-	controller.mu.Lock()
-	state := controller.attention[fixture.delegateID]
-	committed := false
-	if state != nil {
-		_, committed = state.committedWakeIDs[rowID]
-	}
-	controller.mu.Unlock()
-	if !committed {
-		t.Fatalf("controller committed no wake for %q: the row would wait for a drive that never comes", rowID)
-	}
-
-	// The unleased request still builds, and it does not present the row: the
-	// projection withholds exactly the pending watch attention.
-	_, _, unleasedHistory, _, _, _, err := sub.sess.prepareModelRequestWithError(context.Background(), 0, new(events.RoundTimings))
+	fold, err := readDelegateAttentionFold(transcriptPath(sub.sess.stateDir, sub.sess.id), sub.sess.id)
 	if err != nil {
-		t.Fatalf("unleased model request on the stable child = %v", err)
+		t.Fatalf("read child attention fold: %v", err)
 	}
-	if len(unleasedHistory) == 0 {
-		t.Fatal("the unleased request built an empty history: this proof needs the request the row was withheld from")
-	}
-	for _, msg := range unleasedHistory {
-		if strings.Contains(msg.Text(), timerNote) {
-			t.Fatal("the unleased request presents the deferred timer notice: the row rode outside a lease")
-		}
-	}
-
-	// The ordinary rail still works beside it: a completion queued now is carried
-	// by the next unleased turn rather than stranded behind the watch row.
-	seedOwnedDurablePending(t, jm, "job_after_timer", jobstore.JobShell)
-	sub.sess.enqueueJobNotification(jobNotification{JobID: "job_after_timer", JobType: "shell", Status: "completed"})
-	markProcessing(sub.sess)
-	if !sub.sess.acceptNotificationInput(context.Background(), "after-timer") {
-		t.Fatal("an ordinary completion was refused after the timer notice: the drain is stalled behind the watch rail")
-	}
-	carried := sub.sess.jobNotificationsAwaitingRequest()
-	var carriedCompletion bool
-	for _, d := range carried {
-		if d.notification.JobID == "job_after_timer" {
-			carriedCompletion = true
-		}
-	}
-	if !carriedCompletion {
-		t.Fatalf("notifications awaiting the request = %#v, want the completion carried past the timer notice", carried)
-	}
-
-	// Release the hold: the wake the fire armed now reaches the child, and the
-	// generation it drives is the one that must present and settle the row. A row
-	// left pending here would be attention no turn ever collects.
-	requestsBeforeRelease := supervisionRequestCount(fixture.adapter)
-	releaseWake()
-	testwait.Until(t, "the leased generation to present and settle the deferred timer row", func() bool {
-		if supervisionRequestCount(fixture.adapter) <= requestsBeforeRelease {
-			return false
-		}
-		if !requestsContain(fixture.adapter.Requests()[requestsBeforeRelease:], timerNote) {
-			return false
-		}
-		return !sub.sess.pendingDeferredWatchAttention()[rowID]
+	settledTimerRow := slices.ContainsFunc(fold.order, func(id string) bool {
+		return strings.HasPrefix(id, deferredWatchAttentionPrefix) && fold.resolutions[id] == delegateAttentionConsumed
 	})
+	if !settledTimerRow {
+		t.Fatalf("attention resolutions = %v, want a consumed %q row", fold.resolutions, deferredWatchAttentionPrefix)
+	}
 }
 
 // TestProgressTicksCarryDistinctDeliveryOrdinals pins the identity half of the
@@ -6147,14 +6041,18 @@ func TestDelegateResourceSupervision_LiveWatchedCommandNoticeReachesTheFinalizin
 	const note = "watch delivery under test"
 	var fired sync.Once
 	var fixture *ownedJobDrainFixture
-	parked := func(s *Session, ready <-chan struct{}) {
+	parked := func(s *Session, ready, cancelled <-chan struct{}) {
 		if s == nil || s.owningDelegateID == "" {
 			return
 		}
 		// The drain parks as soon as the child is finalizing, which is before
 		// the fixture exists and before the watch below is installed. Firing
 		// then would spend the only fire on a watch that does not exist yet.
-		<-ready
+		select {
+		case <-ready:
+		case <-cancelled:
+			return
+		}
 		fired.Do(func() {
 			// The command the delegate owns is still alive and prints the
 			// readiness line now, which is the fire.
