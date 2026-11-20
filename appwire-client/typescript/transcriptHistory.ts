@@ -1285,10 +1285,7 @@ function reconcileQuotaWait(
   // this reconciliation never retires what is not quota.
   const retryingTurn = held.modelRetry?.turnId ?? held.runningTurnId;
   const liveZeroDelayRetry =
-    held.modelRetry !== undefined &&
-    held.modelRetry.delayMs === 0 &&
-    retryingTurn !== undefined &&
-    fresh.runningTurnId === retryingTurn;
+    held.modelRetry?.delayMs === 0 && retryingTurn !== undefined && fresh.runningTurnId === retryingTurn;
   const endedQuotaChip =
     heldStamp === 0 &&
     endedStamp > 0 &&
