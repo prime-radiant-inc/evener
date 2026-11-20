@@ -1325,6 +1325,12 @@ func TestFind_ProjectName_ForeignBucketKeepsRowsOwnMarker(t *testing.T) {
 	if err := os.RemoveAll(feature); err != nil {
 		t.Fatalf("remove worktree: %v", err)
 	}
+	// The checkout's own Git metadata goes too. While it is there the surviving
+	// checkout lookup answers from the walk before the marker is asked, and this
+	// test is about the marker's saved-ID check.
+	if err := os.RemoveAll(filepath.Join(repo, ".git")); err != nil {
+		t.Fatalf("remove checkout git dir: %v", err)
+	}
 
 	row := schema.SessionMeta{ID: identifier.MustNewSessionID()}
 	row.Config.MemoryProjectID = repoProject.ID
