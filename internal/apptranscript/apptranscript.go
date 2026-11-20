@@ -449,6 +449,12 @@ func ProjectEntryParts(turnID string, entryIndex int, turn schema.Turn, reg *Too
 			delete(reg.CommAuthorship, turn.Communicate.CallID)
 		}
 		if item, ok := CommunicateItem(turnID, entryIndex, turn); ok {
+			// A delivery whose message repeats the assistant text already shown
+			// in this turn renders once, not twice — the index suppresses the
+			// same echo (build.go's echoesAwaiting).
+			if reg != nil && item.Text != "" && turnID == reg.LastAssistantTurnID && EchoesAssistantText(reg.LastAssistantText, item.Text) {
+				return nil, nil
+			}
 			return []appwire.ThreadItem{item}, []int{0}
 		}
 		return nil, nil

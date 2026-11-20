@@ -274,9 +274,25 @@ func appendProjectedEntry(acc *logicalTurnAccumulator, project EntryProjector, t
 	}
 	if turn.Kind.TranscriptOnly() {
 		// Written for the history projection phase 3 introduces. Today's
-		// projection passes over it as an item: it joins no group, closes
-		// none, and projects nothing, though its line still takes an entry
-		// index. A completion or reopen still names its turn's status.
+		// projection passes over it as an item: it joins no group and closes
+		// none, though its line still takes an entry index. A visible record
+		// still names its turn's item — the index lists a COMMUNICATE delivery
+		// and a NOTICE there — so project it and attach what it shows to the
+		// turn it names. A completion or reopen names its turn's status.
+		if project != nil && turn.TurnID != "" {
+			if items := project(turn, turn.TurnID, entryIndex); len(items) > 0 {
+				for i := len(acc.turns) - 1; i >= 0; i-- {
+					if acc.turns[i].turnID != turn.TurnID {
+						continue
+					}
+					acc.turns[i].items = append(acc.turns[i].items, items...)
+					for range items {
+						acc.turns[i].itemEntries = append(acc.turns[i].itemEntries, entryIndex)
+					}
+					break
+				}
+			}
+		}
 		if turn.Kind == schema.TurnCompletion && turn.Format == schema.TurnFormatIdentity && turn.TurnID != "" {
 			if acc.stampedCompletionAt == nil {
 				acc.stampedCompletionAt = map[string][]int{}
