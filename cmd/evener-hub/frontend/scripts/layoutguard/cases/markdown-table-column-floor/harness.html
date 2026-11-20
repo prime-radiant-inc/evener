@@ -61,9 +61,42 @@
   </section>
 </template>
 
+<!-- The entity chip as EntityText renders it into a table cell: the host
+     span, the entityref group (inline-flex, nowrap in prose), HoverCard's
+     inline-block wrapper, the mono trigger text, and OpenButton's inline
+     shell. The button stands in for IconButton's 28px sm hit target with a
+     plain 28px button: the chip's width is driven by the ID text, not the
+     button's internals. -->
+<template id="entity-chip-template">
+  <table>
+    <thead>
+      <tr>
+        <th align="left">Delegate</th>
+        <th align="left">Notes</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>
+          <span data-entity-host
+            ><span class="group"
+              ><span class="wrapper"
+                ><span class="trigger" tabindex="0">dlg_034zr72gvjghwwewx2pn2z</span
+                ><span class="inline" data-open-shell
+                  ><button type="button" aria-label="Open delegate transcript" style="width: 28px; height: 28px"></button></span
+              ></span></span></span
+          >
+        </td>
+        <td>queued the qualification lane and waited once on the settle detector</td>
+      </tr>
+    </tbody>
+  </table>
+</template>
+
 <script>
 const fixtures = __LAYOUTGUARD_WIDTH_MATRIX__;
 const template = document.querySelector("#fixture-template");
+const entityChipTemplate = document.querySelector("#entity-chip-template");
 const fixtureRoot = document.querySelector(".fixtures");
 for (const spec of fixtures) {
   const fragment = template.content.cloneNode(true);
@@ -71,6 +104,9 @@ for (const spec of fixtures) {
   fixture.dataset.width = String(spec.width);
   fixture.querySelector(".fixtureLabel").textContent = `${spec.width}px transcript column`;
   fixture.querySelector("[data-pane]").style.width = `${spec.width}px`;
+  fixture
+    .querySelector("[data-root]")
+    .append(entityChipTemplate.content.cloneNode(true));
   fixtureRoot.append(fragment);
 }
 
@@ -89,15 +125,26 @@ function chOf(cell) {
 window.measure = () =>
   [...document.querySelectorAll(".fixture")].map((fixture) => {
     const pane = fixture.querySelector("[data-pane]").getBoundingClientRect();
-    const table = fixture.querySelector("table").getBoundingClientRect();
-    const headerCells = [...fixture.querySelectorAll("thead th")];
+    const [table, entityTable] = [...fixture.querySelectorAll("table")];
+    const tableBox = table.getBoundingClientRect();
+    const headerCells = [...table.querySelectorAll("thead th")];
     const ch = chOf(headerCells[0]);
+    const entityCells = [...entityTable.querySelectorAll("thead th")];
+    const chipHost = fixture.querySelector("[data-entity-host]");
+    const chipCell = chipHost.closest("td");
+    const chip = chipHost.getBoundingClientRect();
+    const chipCellBox = chipCell.getBoundingClientRect();
     return {
       width: Number(fixture.dataset.width),
       paneWidth: pane.width,
-      tableWidth: table.width,
+      tableWidth: tableBox.width,
       ch,
       colWidths: headerCells.map((c) => c.getBoundingClientRect().width),
+      entityTableWidth: entityTable.getBoundingClientRect().width,
+      entityColWidths: entityCells.map((c) => c.getBoundingClientRect().width),
+      chipWidth: chip.width,
+      chipRight: chip.right,
+      chipCellRight: chipCellBox.right,
     };
   });
 </script>

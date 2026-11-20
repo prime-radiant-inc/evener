@@ -1,10 +1,14 @@
 {
   "name": "markdown-table-column-floor",
-  "description": "markdown: in a width-constrained GFM table, no column may collapse below a readable floor while a long-content column takes the width - the observed live failure rendered 'GH Status' at ~2 characters per line because one cell's long max-content line stole the table (2026-11-19, hub session local:0350DTJsY0196rA6MHasBF)",
+  "description": "markdown: in a width-constrained GFM table, no column may collapse below a readable floor while a long-content column takes the width, and a cell's enhanced entity chip stays inside its column - the observed live failure rendered 'GH Status' at ~2 characters per line because one cell's long max-content line stole the table (2026-11-19, hub session local:0350DTJsY0196rA6MHasBF)",
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",
-    "widgets/markdown/markdown.module.css"
+    "styles/motion.module.css",
+    "widgets/markdown/markdown.module.css",
+    "panes/session/transcript/entityref.module.css",
+    "widgets/hovercard/hovercard.module.css",
+    "widgets/openbutton/openbutton.module.css"
   ],
   "widthMatrix": [{ "width": 422 }, { "width": 700 }],
   "mutation": {
