@@ -12,77 +12,43 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// escapeRetainedCompaction returns a previous compaction's text with the frames
-// the model authored defused, as its kind's layout defines them: a summary names
-// one fenced model body, and a checkpoint names a body per section. Whatever the
-// layout, the harness markers and the partner's messages keep every byte.
+// escapeRetainedCompaction returns the copy of a previous compaction a request
+// carries, with the frames the model authored defused as the turn's stored
+// layout names them. text is that copy, already cut at the cap the request
+// applied; stored is the turn's whole text, which is what the layout is read
+// from.
 //
-// It is the seam between the stored turn and the copy a later request carries,
-// so the caller hands it the text it is about to send — truncated, at the cap
-// that request applied — rather than the stored bytes. A cap can cut a summary's
-// carried messages away, and the turn then no longer recomposes as the layout it
-// was written in, so its own fenced body is escaped by the opening that still
-// names it.
-func escapeRetainedCompaction(text string, kind schema.TurnKind) string {
-	escaped, _ := escapeRetainedCompactionRanges(text, kind)
+// The layout has to be read before the cap: a cap that cuts inside a compaction
+// removes the framing its own recognition compares against, and a summary read
+// from the cut copy would then answer no model-authored body at all. The ranges
+// the stored text answers are intersected with the kept prefix instead, so a
+// model-authored frame the cut exposed is still defused and the partner's
+// messages keep every byte.
+func escapeRetainedCompaction(text, stored string, kind schema.TurnKind) string {
+	var spans []textSpan
+	for _, span := range retainedCompactionModelSpans(stored, kind) {
+		if span.start >= len(text) {
+			continue
+		}
+		spans = append(spans, textSpan{start: span.start, end: min(span.end, len(text))})
+	}
+	escaped, _ := escapeModelSpans(text, spans)
 	return escaped
 }
 
-// escapeRetainedCompactionRanges is escapeRetainedCompaction, and also returns
-// the ranges it escaped in the returned text's coordinates. A caller that keeps
-// only a suffix of the copy — a history cap clips it — uses them to re-escape
-// exactly the part a clip exposed.
-func escapeRetainedCompactionRanges(text string, kind schema.TurnKind) (string, []textSpan) {
-	return escapeModelRanges(text, retainedCompactionModelSpans(text, kind))
-}
-
-// retainedCompactionModelSpans returns the ranges of a previous compaction's
-// text its kind's layout names as the model's: a summary names one fenced body,
-// a checkpoint names a body per section. Whatever the layout, the harness
-// markers and the partner's messages are outside every range.
-//
-// A cap can cut a summary's carried messages away, and the turn then no longer
-// recomposes as the layout it was written in; the opening and the heading that
-// still name its one body are what the fallback reads.
+// retainedCompactionModelSpans returns the ranges of a previous compaction the
+// model wrote, as the layout of its stored text names them: a summary names one
+// fenced body and the carried blocks a heading marks as a model's, a checkpoint
+// names a body per section. Whatever the layout, the harness markers and the
+// partner's messages are outside every range.
 func retainedCompactionModelSpans(text string, kind schema.TurnKind) []textSpan {
 	switch kind {
 	case schema.TurnSummary:
-		if spans := summaryModelSpans(text); len(spans) > 0 {
-			return spans
-		}
-		return summaryModelSpanByOpening(text)
+		return summaryModelSpans(text)
 	case schema.TurnCheckpoint:
 		return retainedCheckpointModelSpans(text)
 	}
 	return nil
-}
-
-// summaryModelSpanByOpening returns the fenced body under a summary turn's own
-// heading when the text before that heading is the opening this package writes.
-//
-// It covers the summary whose carried conversation a cap cut away: the layout
-// check cannot recompose it, but the opening and the heading still name the one
-// body the model wrote. That body has to be the section's last content. A
-// summary in an older layout can open the same way and then keep writing prose
-// below its fenced example, and that prose is the model's text too, so such a
-// block answers no span here and is escaped whole by its caller.
-func summaryModelSpanByOpening(text string) []textSpan {
-	start, body, end, ok := markdownSectionSpan(text, summaryModelTextHeading)
-	if !ok || !isSummaryTurnOpening(text[:start]) {
-		return nil
-	}
-	spans := fencedBlockSpans(text[body:end])
-	if len(spans) != 1 {
-		return nil
-	}
-	rest := text[body+spans[0].BodyEnd : end]
-	if i := strings.IndexByte(rest, '\n'); i >= 0 {
-		rest = rest[i+1:]
-	}
-	if strings.TrimSpace(rest) != "" {
-		return nil
-	}
-	return []textSpan{{start: body + spans[0].BodyStart, end: body + spans[0].BodyEnd}}
 }
 
 // foldCutoff is where a compaction of history that keeps preserveRecent
@@ -253,11 +219,14 @@ historyLoop:
 			// the budget from it.
 			//
 			// A compaction is carried whole, and its own layout decides what is
-			// model-authored: the escape runs after the cap so a cut that
-			// exposes a frame is defused too. Its harness markers and the
-			// partner's messages keep every byte.
-			text := truncate(t.Message.Text(), min(maxCheckpointChars, max(maxHistoryChars-b.Len(), 0)))
-			text = escapeRetainedCompaction(text, t.Kind)
+			// model-authored. The layout is read from the stored turn, before
+			// the cap: the cap runs after it so a cut that exposes a frame is
+			// defused too, and the ranges it answers are intersected with what
+			// the cap kept. Its harness markers and the partner's messages keep
+			// every byte.
+			stored := t.Message.Text()
+			text := truncate(stored, min(maxCheckpointChars, max(maxHistoryChars-b.Len(), 0)))
+			text = escapeRetainedCompaction(text, stored, t.Kind)
 			b.WriteString("Previous compaction: ")
 			b.WriteString(text)
 			b.WriteString("\n")

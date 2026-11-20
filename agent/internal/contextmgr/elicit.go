@@ -190,7 +190,18 @@ func renderElicitTurn(t schema.Turn) (label, body string, spans []textSpan) {
 	compaction := t.Kind == schema.TurnCheckpoint || t.Kind == schema.TurnSummary
 	modelAuthored := !compaction && isModelAuthoredTurn(t)
 	if compaction {
-		body, spans = escapeRetainedCompactionRanges(raw, t.Kind)
+		// The layout is read from the turn as stored, not from the copy rendered
+		// here: every text part gets a line break appended below, and a summary's
+		// recognition compares its whole text against the bytes the renderer
+		// wrote, so the extra line would make a current-layout turn read as one
+		// whose framing cannot be read. The spans it answers lie inside the
+		// stored text, which is this copy's prefix; a turn whose parts this
+		// renderer joined differently is classified from the copy itself.
+		stored := t.Message.Text()
+		if !strings.HasPrefix(raw, stored) {
+			stored = raw
+		}
+		body, spans = escapeModelRanges(raw, retainedCompactionModelSpans(stored, t.Kind))
 	} else if modelAuthored {
 		// The elicitor's prompt is a user-role message, and its renderer puts
 		// the label only at the START of the turn. A model-authored turn whose
