@@ -684,6 +684,20 @@ func (s *Session) foldWithForceCompact(ctx context.Context, instructions string,
 		snapAppends := s.persistedAppendLogBase + len(s.persistedAppendLog)
 		s.mu.Unlock()
 
+		// A compaction input is a REQUEST input in disguise: whatever the fold
+		// keeps of a turn can reach the model through the summary it publishes.
+		// A watch row the ledger discarded, and (on an unleased stable-child
+		// turn) one that is still unresolved, must not reach the model there
+		// either, so the fold applies the same filter a request does.
+		//
+		// The filtered length is the fold's own pre-length: it measures the copy
+		// ForceCompact was given, which is the copy it manages and publishes. The
+		// snapshot length stays the merge boundary below, because the turns the
+		// filter omitted are still resident and still appended after the
+		// snapshot.
+		histCopy, droppedAt := s.filterWatchAttentionTurns(histCopy, s.stableChildTurnNeedsLease(ctx))
+		filteredPreLen := len(histCopy)
+
 		compactionCtx, emitFn, commit, foldInjectedCount := s.stageCompactionEffects(ctx, &histCopy, trigger, instructions)
 		commit.captured = captured
 		if automatic {
@@ -695,7 +709,12 @@ func (s *Session) foldWithForceCompact(ctx context.Context, instructions string,
 		injected := foldInjectedCount()
 
 		ok, refused := s.publishFoldTransaction(snapLen, snapRevision, snapAppends, histCopy, commit, func(_ []schema.Turn, restoredAt []int) {
-			s.shrinkTurnHistoryBaseline(snapLen, postLen, injected)
+			// The baseline indexes the RESIDENT history, which the filter did not
+			// shorten: the omitted rows are still there, before whatever the fold
+			// kept, so the boundary moves past them before the fold's own shrink
+			// applies.
+			s.turnHistoryBaseline = shiftReplayBoundaryForDrops(s.turnHistoryBaseline, droppedAt)
+			s.shrinkTurnHistoryBaseline(filteredPreLen, postLen, injected)
 			s.growTurnHistoryBaseline(restoredAt)
 		})
 		if ok {

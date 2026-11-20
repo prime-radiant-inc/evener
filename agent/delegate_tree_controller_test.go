@@ -516,6 +516,7 @@ var delegateControllerDormancyExpectedInventory = map[delegateControllerDormancy
 	{filename: "session_attention.go", function: "(*Session).finishAttentionTurn", kind: "session attention method", symbol: "resolveAttentionDurably"}:                                1,
 	{filename: "session_attention.go", function: "(*Session).finishRootDelegateAttentionTurn", kind: "session attention method", symbol: "resolveAttentionDurably"}:                    1,
 	{filename: "watch_frame.go", function: "(*Session).dropClearedStableWatchTicks", kind: "session attention method", symbol: "resolveAttentionDurably"}:                              1,
+	{filename: "watch_frame.go", function: "(*Session).commitStableWatchTickBatch", kind: "session attention method", symbol: "resolveAttentionDurably"}:                               1,
 	{filename: "watch_frame.go", function: "(*Session).retireSupersededStableWatchPending", kind: "session attention method", symbol: "resolveAttentionDurably"}:                       1,
 	{filename: "watch_frame.go", function: "(*Session).discardTerminalStableWatchPending", kind: "session attention method", symbol: "resolveAttentionDurably"}:                        1,
 	{filename: "session_events.go", function: "(*Session).SetDescendantEventFunc", kind: "lifecycle method", symbol: "Snapshot"}:                                                       1,

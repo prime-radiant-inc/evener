@@ -1051,6 +1051,14 @@ type Session struct {
 	// terminal fire is deliberately absent: its fire is terminal even if the
 	// timer is cleared afterwards. Guarded by pendingJobNotifsMu.
 	stableWatchTickWatch map[string]string
+	// stableWatchTickBatch records, per repeating timer watch id, the newest
+	// unpresented tick batch the timer wrote: its durable row identity and the
+	// folded notification that row renders from. A tick arriving while an
+	// earlier one is still unpresented folds into that batch instead of writing
+	// another row, so missed ticks do not grow the transcript per tick. Once the
+	// row resolves the entry is dropped (pruneStableWatchTickWatch), and the
+	// next tick starts a fresh batch. Guarded by pendingJobNotifsMu.
+	stableWatchTickBatch map[string]stableWatchTickBatchEntry
 	// notifyWakeHolds counts in-flight holdJobNotificationWake holds, and
 	// notifyWakeDeferred records that a wake was suppressed while held. Guarded
 	// by pendingJobNotifsMu.
@@ -1724,14 +1732,23 @@ func (s *Session) hasPendingOrdinaryNotification() bool {
 // request has carried yet. The drain-loop tail uses it to decide whether to run
 // a notification turn next; the actual drain stays in acceptNotificationInput so
 // the queue is consumed exactly once, inside the turn that surfaces it.
+//
+// A retained watch notice is deliberately NOT counted here. It is owed work, but
+// it has nothing acceptNotificationInput can deliver until its paced retry makes
+// the durable append land: counting it would start a notification turn that
+// delivers nothing, over and over, for as long as the write keeps failing.
 func (s *Session) peekNotifications() int {
 	s.pendingJobNotifsMu.Lock()
 	defer s.pendingJobNotifsMu.Unlock()
-	return s.owedJobNotificationsLocked()
+	return len(s.pendingJobNotifs) + len(s.jobNotifsAwaitingRequest)
 }
 
 // owedJobNotificationsLocked counts the notifications a notification wake still
 // has to bring to the model. The caller holds pendingJobNotifsMu.
+//
+// Unlike peekNotifications it includes the retained watch notices: they keep the
+// retry chain armed and keep a retirement from reading the session as settled
+// while a failure report is still due.
 func (s *Session) owedJobNotificationsLocked() int {
 	// A retained watch notice is owed work: its durable append failed, so it is
 	// neither delivered nor dropped until a retry lands (LIFE-01, #2340 review

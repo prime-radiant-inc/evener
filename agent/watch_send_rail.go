@@ -1224,9 +1224,21 @@ func (jm *jobManager) closeWatchConfigSnapshots(targets []watchConfigTerminalSna
 
 func (jm *jobManager) detachWatchConfigSnapshots(targets []watchConfigTerminalSnapshot) {
 	jm.mu.Lock()
-	defer jm.mu.Unlock()
+	var detachedTimers []string
 	for _, target := range targets {
+		if target.cfg != nil && target.cfg.timer {
+			detachedTimers = append(detachedTimers, target.cfg.watchID)
+		}
 		jm.detachWatchConfigSnapshotLocked(target)
+	}
+	jm.mu.Unlock()
+	// A repeating timer that has just been cleared or stopped will never fire
+	// again, so any tick of it still waiting unpresented is news nobody owes and
+	// must not reach the model in the next request of the turn that cleared it.
+	// This runs outside jm.mu because resolving the rows takes the session's
+	// attention ledger.
+	for _, watchID := range detachedTimers {
+		jm.discardClearedStableWatchTicks(watchID)
 	}
 }
 
