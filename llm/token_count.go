@@ -494,6 +494,8 @@ func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
 				// item at all; the remaining plaintext bills as built.
 				if p.Kind == ContentThinking && p.Thinking != nil && !t.reasoningOff {
 					kept := *p.Thinking
+					// The cross-provider strip drops the id with the blob.
+					kept.ID = ""
 					kept.EncryptedContent = ""
 					chars += responsesReasoningChars(&kept)
 				}

@@ -37,25 +37,6 @@ func TestSubagentStatusConstants(t *testing.T) {
 // subagentResult struct
 // ---------------------------------------------------------------------------
 
-func TestSubagentResultStruct(t *testing.T) {
-	t.Parallel()
-	r := subagentResult{
-		AgentID:       "agent_1",
-		Status:        SubagentCompleted,
-		Closed:        true,
-		Output:        "result text",
-		Success:       true,
-		TurnsUsed:     5,
-		TranscriptRef: "local:abc",
-	}
-	if r.AgentID != "agent_1" || r.Status != SubagentCompleted {
-		t.Fatalf("struct wrong: %+v", r)
-	}
-	if !r.Closed || !r.Success || r.TurnsUsed != 5 {
-		t.Fatalf("struct wrong: %+v", r)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // delegateSalvagedDraftNote constant
 // ---------------------------------------------------------------------------
@@ -565,19 +546,6 @@ func TestRestoreFrozenSkillBodiesValid(t *testing.T) {
 // preparedSubagentRun struct
 // ---------------------------------------------------------------------------
 
-func TestPreparedSubagentRunStruct(t *testing.T) {
-	t.Parallel()
-	p := &preparedSubagentRun{
-		task:       "do the work",
-		agentType:  "default",
-		workingDir: "/path",
-		isolation:  "worktree",
-	}
-	if p.task != "do the work" || p.agentType != "default" {
-		t.Fatalf("struct wrong: %+v", p)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // preparedSubagentRun.disposeUnadopted
 // ---------------------------------------------------------------------------
@@ -606,21 +574,6 @@ func TestDisposeUnadoptedSubagentSessionNil(t *testing.T) {
 // ---------------------------------------------------------------------------
 // subagent struct fields
 // ---------------------------------------------------------------------------
-
-func TestSubagentStruct(t *testing.T) {
-	t.Parallel()
-	sub := &subagent{
-		id:        "dlg_1",
-		status:    SubagentRunning,
-		turnsUsed: 3,
-	}
-	if sub.id != "dlg_1" || sub.status != SubagentRunning {
-		t.Fatalf("struct wrong: %+v", sub)
-	}
-	if sub.turnsUsed != 3 {
-		t.Fatalf("turnsUsed = %d", sub.turnsUsed)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // sandboxSnapshotFromEnv (tested via frozenDelegateSandboxMatches)

@@ -887,12 +887,19 @@ func (s *Session) boundedEvidenceCurrent(ctx context.Context, evidence cliMCPCla
 	}
 	result := make(chan bool, 1)
 	go func() {
-		// Released however the check ends, including after this caller gave up:
-		// until the read answers, the workspace really does have a check
-		// outstanding, and answering "unknown" is honest. The removal is what lets
-		// a later request probe this workspace again.
-		defer s.releaseEvidenceProbe(key)
-		result <- evidence.layers.EvidenceCurrent(env)
+		current := evidence.layers.EvidenceCurrent(env)
+		// Released when the check ANSWERS, not when its caller collects the
+		// answer. The claim means "a check is outstanding", and once the read has
+		// returned there is none. Holding the claim until the caller receives the
+		// answer makes an answered probe look in flight, so a second check on the
+		// same workspace is refused and reports the evidence as unknown. A caller
+		// that gave up is unaffected: the claim is held until this read answers,
+		// which is the one-at-a-time rule.
+		s.releaseEvidenceProbe(key)
+		if hook := s.cfg.testOnly.evidenceProbeChecked; hook != nil {
+			hook()
+		}
+		result <- current
 	}()
 	select {
 	case current := <-result:

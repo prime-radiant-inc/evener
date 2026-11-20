@@ -255,6 +255,12 @@ type testConfig struct {
 	// delegate still finalizing, just before it waits for the release. Nil
 	// in production.
 	delegateSendAwaitingFinalization func()
+	// evidenceProbeChecked observes a CLI-MCP freshness probe whose check has
+	// returned: the workspace's one-at-a-time claim is released, and the answer
+	// is about to be published to the caller. Tests hold the probe there to put
+	// the request path in the window between an answered check and its delivery.
+	// Nil in production.
+	evidenceProbeChecked func()
 
 	// registerTool injects deterministic registration failures. Nil preserves
 	// direct Registry.Register calls.

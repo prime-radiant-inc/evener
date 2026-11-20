@@ -12,6 +12,9 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/chatcompletions"
+	"primeradiant.com/evener/llm/providers/responses"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // readTranscriptLines reads all non-empty lines from a JSONL transcript file.
@@ -355,5 +358,59 @@ func TestTranscriptPreservesToolArgumentsSpellingAndHTMLChars(t *testing.T) {
 	entry, err := DecodeEntry([]byte(last[len(last)-1]))
 	if got := entry.Turn.Message.Content; err != nil || !reflect.DeepEqual(got, calls) || got[0].ToolCall.WireArguments() != spelled {
 		t.Fatalf("restored %+v (%v), want live %+v replaying %q", got, err, calls, spelled)
+	}
+
+	// The restored call must also reach both wires with the provider's
+	// spelling. Build the bodies through the same exported BuildBody seam the
+	// session's protocol registry reaches, from the cold-restored message.
+	req := llm.Request{Model: "gpt-5.5", Messages: []llm.Message{
+		{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "hi"}}},
+		entry.Turn.Message,
+	}}
+	responsesRes := registry.Resolved{Instance: "openai", Protocol: registry.ProtocolOpenAIResponses, ModelID: "gpt-5.5", WireID: "gpt-5.5",
+		Caps: registry.Caps{Fields: registry.Baseline(registry.ProtocolOpenAIResponses)}}
+	responsesBody, err := (&responses.Protocol{}).BuildBody(llm.ShapeRequest(req, responsesRes), responsesRes)
+	if err != nil {
+		t.Fatalf("responses BuildBody: %v", err)
+	}
+	items, ok := responsesBody["input"].([]any)
+	if !ok {
+		t.Fatalf("responses input = %T, want []any", responsesBody["input"])
+	}
+	var responsesArgs any
+	for _, raw := range items {
+		item, _ := raw.(map[string]any)
+		if item["type"] == "function_call" && item["call_id"] == spell.ID {
+			responsesArgs = item["arguments"]
+		}
+	}
+	if responsesArgs != spelled {
+		t.Fatalf("responses function_call arguments = %v, want the preserved spelling %q", responsesArgs, spelled)
+	}
+
+	chatRes := registry.Resolved{Instance: "openai", Protocol: registry.ProtocolOpenAIChat, ModelID: "gpt-5.5", WireID: "gpt-5.5",
+		Caps: registry.Caps{Fields: registry.Baseline(registry.ProtocolOpenAIChat)}}
+	chatBody, err := (&chatcompletions.Protocol{}).BuildBody(llm.ShapeRequest(req, chatRes), chatRes)
+	if err != nil {
+		t.Fatalf("chat BuildBody: %v", err)
+	}
+	msgs, ok := chatBody["messages"].([]map[string]any)
+	if !ok {
+		t.Fatalf("chat messages = %T, want []map[string]any", chatBody["messages"])
+	}
+	var chatArgs any
+	for _, msg := range msgs {
+		if msg["role"] != "assistant" {
+			continue
+		}
+		calls, _ := msg["tool_calls"].([]map[string]any)
+		for _, call := range calls {
+			if fn, _ := call["function"].(map[string]any); call["id"] == spell.ID {
+				chatArgs = fn["arguments"]
+			}
+		}
+	}
+	if chatArgs != spelled {
+		t.Fatalf("chat assistant tool call arguments = %v, want the preserved spelling %q", chatArgs, spelled)
 	}
 }
