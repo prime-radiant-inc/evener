@@ -105,7 +105,7 @@ func (r *runner) hoistMetroBundle(ctx context.Context) error {
 	// resolved settings it would bundle with the wrong project environment and
 	// the build would still look green. Fail before anything runs.
 	if len(r.hostSettings) == 0 {
-		return fmt.Errorf("metro hoist: no resolved build settings for the app target")
+		return errors.New("metro hoist: no resolved build settings for the app target")
 	}
 	if _, err := r.command(ctx, "metro-hoist-patch", metroHoistArgs(r.root, r.output)...); err != nil {
 		return err
