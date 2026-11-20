@@ -9,6 +9,7 @@ import {
 	type ModelControlDisplay,
 	modelControlDisplay,
 	holdsUnappliedPick,
+	snapshotProfile,
 	sessionEffortLevels,
 } from "@evener/appwire-client";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
@@ -36,13 +37,13 @@ const NOTHING_UNREAD: Unread = { model: null, vision: null };
  *
  * A ready snapshot's display target comes from the daemon, which names the
  * provider instance in the target's own modelProvider field even when the
- * pair is equal (snapshotProfile's rule in the shared client), so the identity
- * joins from the explicit fields - and a pending target must join from its
- * own, since the profile the projection keeps beside the raw fields belongs to
- * the ACTIVE model, not the pick. Every other display - a saved read's single
- * model field, a recovery's copy of one - keeps the profile-based rule: the id
- * stands bare there, and the instance the read named beside it (modelProfile)
- * is what qualifies it.
+ * pair is equal (snapshotProfile decides that, so the slash rule lives in the
+ * shared client alone), so the identity joins from the explicit fields - and a
+ * pending target must join from its own, since the profile the projection
+ * keeps beside the raw fields belongs to the ACTIVE model, not the pick. Every
+ * other display - a saved read's single model field, a recovery's copy of one -
+ * keeps the profile-based rule: the id stands bare there, and the instance the
+ * read named beside it (modelProfile) is what qualifies it.
  */
 function sheetModelIdentity(
 	session: Pick<MobileConversation, "modelControlState" | "modelProfile">,
@@ -50,7 +51,7 @@ function sheetModelIdentity(
 ): string {
 	if (
 		target.modelProvider !== target.model ||
-		(session.modelControlState.kind === "ready" && !target.modelProvider.includes("/"))
+		(session.modelControlState.kind === "ready" && snapshotProfile(target) !== undefined)
 	) {
 		return `${target.modelProvider}/${target.model}`;
 	}

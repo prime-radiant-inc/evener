@@ -563,6 +563,7 @@ export {
   reduceModelControl,
   restoreHeldModelControl,
   sameModelControlAuthority,
+  snapshotProfile,
   validateThreadModelSetResponse,
 } from "./modelControl";
 export type { PathPickableRow, PathRow } from "./pathRows";
