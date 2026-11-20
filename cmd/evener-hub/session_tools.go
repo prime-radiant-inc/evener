@@ -958,6 +958,33 @@ func liveReadDaemonless(read appwire.ThreadReadResponse) bool {
 		(!read.Thread.Evener.MutationStateAuthoritative && read.Thread.Evener.Manager)
 }
 
+// liveReplyOwner reports the identity a successful LIVE reply established for a
+// thread - its boot generation and the epoch the reply was projected under -
+// and UnknownOwnerBootGeneration when the reply establishes no owner.
+//
+// This is the identity a later failure of the same read needs to carry. A live
+// daemon that answers with its own boot token and no items has NAMED itself:
+// the client can then retire the sequence it holds from the daemon that reply
+// replaced instead of keeping it, where an ownerless token would tell the
+// client nothing and leaving the outgoing sequence in place lets it outrank the
+// replacement's first update.
+//
+// The saved-history tokens are not owners: `daemonless` is the hub answering
+// from the transcript, and `unknown-owner` is the explicit refusal to claim
+// one. An empty token is a peer too old to stamp anything. Both are reported
+// as `unknown-owner`, so a failure stamped with this identity claims only what
+// the reply established.
+func liveReplyOwner(read appwire.ThreadReadResponse) (string, uint64) {
+	if liveReadDaemonless(read) {
+		return appwire.UnknownOwnerBootGeneration, 0
+	}
+	switch read.BootGeneration {
+	case "", appwire.UnknownOwnerBootGeneration, appwire.DaemonlessBootGeneration:
+		return appwire.UnknownOwnerBootGeneration, 0
+	}
+	return read.BootGeneration, read.Epoch
+}
+
 // savedFallbackAnswers reports whether a failed live read here is answered from
 // the persisted transcript instead of surfacing its error: every
 // non-subscribing read, and a subscribing read from a source without an atomic
@@ -1452,7 +1479,21 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 		})
 		if pastErr != nil {
 			read.finish(false)
-			return appwire.ThreadReadResponse{}, stampSavedHistoryReadError(pastErr, appwire.UnknownOwnerBootGeneration)
+			// The live reply that made this fallback necessary is EVIDENCE: it
+			// answered with a boot token and no items, which is the thread's
+			// serving daemon naming itself rather than the hub's own
+			// transcript-only answer. Keep it. A client that has only the
+			// enrichment's failure to go on cannot tell which source now owns
+			// the thread, so it keeps the outgoing sequence and that sequence
+			// can outrank the replacement's first update.
+			//
+			// Only an ownerless reply leaves the stamp at `unknown-owner`: the
+			// daemonless token claims nobody serves the thread, which the live
+			// reply has just contradicted, and the live token is the whole of
+			// what this read established. The structured diagnostic is
+			// preserved either way - only the identity it carries changes.
+			owner, epoch := liveReplyOwner(resp)
+			return appwire.ThreadReadResponse{}, appwire.WithHistoryReadIdentity(appserver.WireError(pastErr), owner, epoch)
 		}
 		if ok {
 			pastPage = &past
