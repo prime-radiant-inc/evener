@@ -225,11 +225,22 @@ func unavailableThreadReadResponseOwned(
 }
 
 // daemonlessReadError stamps a failed saved-history read's error with the
-// daemonless generation and epoch 0, with no snapshot. Call it only where
-// absence is established: a failed read must never claim a daemon is gone,
-// because the only evidence it has is that it failed.
+// daemonless generation and epoch 0, with no snapshot, and ATTESTING that the
+// absence was established. Call it only where absence is established: a failed
+// read must never claim a daemon is gone, because the only evidence it has is
+// that it failed.
+//
+// The attestation is what a forwarding hub reads (appwire.NormalizeForwardedHistoryError):
+// it must demote an UNQUALIFIED `daemonless` from a legacy peer, whose stamp
+// says nothing about whether a daemon runs, and must preserve this one, which
+// does say so. Without the distinction a controller would demote both, and a
+// client holding a wait on a daemon that really exited would keep showing it
+// until the saved history became readable again.
 func daemonlessReadError(err error) error {
-	return stampSavedHistoryReadError(err, appwire.DaemonlessBootGeneration)
+	if err == nil {
+		return nil
+	}
+	return appwire.WithAttestedAbsence(appserver.WireError(err), 0)
 }
 
 // unknownOwnerReadError stamps a failed saved-history read's error with the

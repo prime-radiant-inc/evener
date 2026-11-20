@@ -105,7 +105,14 @@ export {
 export type { MarkerAttachment } from "./attachmentMarkers";
 export { translateAttachmentMarkers } from "./attachmentMarkers";
 export type { BootGenerationAction } from "./bootGeneration";
-export { compareBootGeneration, DAEMONLESS_BOOT_GENERATION } from "./bootGeneration";
+export {
+  adoptableBootGeneration,
+  compareBootGeneration,
+  DAEMONLESS_BOOT_GENERATION,
+  liveBootGeneration,
+  retiresBootGeneration,
+  UNKNOWN_OWNER_BOOT_GENERATION,
+} from "./bootGeneration";
 export type { BuiltinMatch } from "./builtinInvocation";
 export { findBuiltinArgument, matchBuiltinInvocation } from "./builtinInvocation";
 export { slashCommandInvocation, visibleCatalogCommands } from "./catalogCommands";
