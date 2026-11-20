@@ -1232,6 +1232,71 @@ func TestFind_ProjectName_DeletedForeignProjectInMismatchedBucket(t *testing.T) 
 	}
 }
 
+// TestFind_ProjectName_ForeignProjectMarkerKeepsBasename covers the same
+// mismatched bucket as above when the recorded path also spells a ".worktrees"
+// marker: the marker names the bucket's project, which the row's own saved
+// project contradicts, so the recorded basename must answer instead.
+func TestFind_ProjectName_ForeignProjectMarkerKeepsBasename(t *testing.T) {
+	stateHome := pinStateHome(t)
+
+	outer := newNamedCheckout(t, "marker-owner-repo")
+	inner := filepath.Join(outer, ".worktrees", "inner")
+	gittest.Run(t, outer, "init", "-q", filepath.Join(".worktrees", "inner"))
+	gittest.Run(t, inner, "commit", "-q", "--allow-empty", "-m", "init")
+
+	outerProject := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(outer))
+	innerProject := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(inner))
+	bucket, err := RuntimeDirForProjectWithStateHome(outerProject, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+	if err := os.RemoveAll(inner); err != nil {
+		t.Fatalf("remove inner checkout: %v", err)
+	}
+
+	row := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	row.Config.MemoryProjectID = innerProject.ID
+	row.EnvInfo.WorkingDir = inner
+
+	if got, want := newProjectNameResolver().projectName(row, bucket), "inner"; got != want {
+		t.Fatalf("projectName(deleted marker path of project %q stored in %q's bucket) = %q, want the recorded basename %q", innerProject.ID, outerProject.ID, got, want)
+	}
+}
+
+// TestFind_ProjectName_DeletedSubdirThroughSymlinkToLiveLane covers a recorded
+// path that reaches a live state-managed lane through a symlinked ancestor and
+// names a subdirectory of the lane that was removed. The lane's own pointer
+// still names the checkout, so the deleted leaf must not answer.
+func TestFind_ProjectName_DeletedSubdirThroughSymlinkToLiveLane(t *testing.T) {
+	stateHome := pinStateHome(t)
+
+	main, _ := gittest.NewLinkedWorktree(t)
+	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(main))
+	bucket, err := RuntimeDirForProjectWithStateHome(project, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+	lane := filepath.Join(bucket, "worktrees", project.ID, "dlg_aliased_lane")
+	gittest.Run(t, main, "worktree", "add", "-q", lane, "-b", "lane-aliased")
+
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(lane, alias); err != nil {
+		t.Fatalf("symlink alias: %v", err)
+	}
+	row := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	row.EnvInfo.WorkingDir = filepath.Join(alias, "pkg")
+
+	if got, want := newProjectNameResolver().projectName(row, bucket), filepath.Base(main); got != want {
+		t.Fatalf("projectName(deleted subdirectory through a symlink to a live lane %q) = %q, want the lane checkout's %q", row.EnvInfo.WorkingDir, got, want)
+	}
+}
+
 // TestFind_ProjectName_StateLaneStopsGitWalkAtLaneRoot covers a shared --state-dir
 // that lives inside checkout A while holding a managed delegate lane for
 // checkout B. Deleting the originless lane leaves nothing at the lane path, so a

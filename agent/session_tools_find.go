@@ -1146,46 +1146,66 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 		}
 	}
 
-	// 3. A GONE path may still take the name of the surviving checkout above it,
-	// and only when the bucket records a project and the walk finds exactly that
-	// project's root. The surviving prefix is resolved first: a recorded path that
-	// ran through a symlinked ancestor cannot be resolved as a whole once its tail
-	// is missing, and a walk started at the link's lexical parents misses the
-	// checkout the link points into.
+	// 3. A GONE path may still take the name of a checkout that survives above it.
+	// Two shapes answer here, in this order.
 	//
-	// It is asked before step 4's spelling-based marker because that marker names
-	// whatever precedes ".worktrees", which can be an enclosing checkout while a
-	// surviving nested one is the project the bucket records.
+	// A state-managed lane keeps its boundary, and a lane the record reaches only
+	// through a symlinked ancestor is asked the question step 1 asks: its own
+	// pointer names the checkout while the lane survives, and its metadata answers
+	// once the checkout is pruned. An ordinary path answers only when the bucket
+	// records a project and the walk finds exactly that project's root. The
+	// surviving prefix is resolved first: a recorded path that ran through a
+	// symlinked ancestor cannot be resolved as a whole once its tail is missing,
+	// and a walk started at the link's lexical parents misses the checkout the link
+	// points into.
+	//
+	// The step is asked before step 4's spelling-based marker because that marker
+	// names whatever precedes ".worktrees", which can be an enclosing checkout
+	// while a surviving nested one is the project the bucket records.
 	//
 	// This is display-only. projectAt and projectRecord still report no project for
 	// a deleted ordinary path, and recordedOrdinaryProject still hashes the recorded
 	// path itself, so sibling and parent comparisons are unchanged. A legacy or
-	// shared bucket records no project, so nothing verifies the ancestor there and
-	// this step stays out of the answer: the marker fallback in step 4 and the
-	// basename in step 5 answer as they did before.
+	// shared bucket records no project, so the ordinary branch does not answer
+	// there; step 4's marker and step 5's basename answer as they did before.
+	//
+	// A row that records a project of its own contradicts the bucket when the two
+	// differ, which --state-dir aimed at the wrong bucket produces: neither the
+	// bucket's project nor an ancestor of it describes this row, so the ordinary
+	// branch is refused and so is the marker in step 4.
+	bucketProject, bucketKnown := r.bucketProjectID(bucketDir)
+	ownProject := strings.TrimSpace(m.Config.MemoryProjectID)
+	foreignRow := bucketKnown && ownProject != "" && ownProject != bucketProject
+
 	if !wdExists {
-		if bucketID, known := r.bucketProjectID(bucketDir); known {
-			// A row that records a project of its own contradicts the bucket when the
-			// two differ, which --state-dir aimed at the wrong bucket produces: the
-			// ancestor describes that bucket's project, not this row's.
-			if own := strings.TrimSpace(m.Config.MemoryProjectID); own == "" || own == bucketID {
-				resolved := resolveExistingPrefix(wd)
-				// A state-managed lane keeps its boundary: its identity is recorded
-				// in the state directory, and a walk past a pruned lane would answer
-				// with whichever checkout encloses the state dir.
-				if _, _, _, _, isLane := r.stateWorktreeOwner(resolved, bucketDir); !isLane {
-					if root := r.resolveMainRoot(resolved); root != "" &&
-						identifier.ProjectFromCanonicalPath(identifier.ResolveClean(root)).ID == bucketID {
-						return filepath.Base(root)
-					}
-				}
+		resolved := resolveExistingPrefix(wd)
+		// A state-managed lane keeps its boundary, and a lane the record reaches
+		// through a symlinked ancestor is asked the question step 1 asks: its own
+		// pointer names the checkout while the lane survives, and its metadata
+		// answers once the checkout is pruned.
+		if _, laneRoot, _, _, isLane := r.stateWorktreeOwner(resolved, bucketDir); isLane {
+			if root := resolveMainRootWithin(resolved, laneRoot); root != "" {
+				return filepath.Base(root)
+			}
+			if name, _ := r.worktreePathFallback(resolved, bucketDir, m.ParentSessionID); name != "" {
+				return name
+			}
+		} else if bucketKnown && !foreignRow {
+			if root := r.resolveMainRoot(resolved); root != "" &&
+				identifier.ProjectFromCanonicalPath(identifier.ResolveClean(root)).ID == bucketProject {
+				return filepath.Base(root)
 			}
 		}
 	}
 
-	// 4. ONLY if wd is structurally a worktree path whose checkout directory has no .git layout to resolve:
-	if name, isWorktree := r.worktreePathFallback(wd, bucketDir, m.ParentSessionID); isWorktree {
-		return name
+	// 4. ONLY if wd is structurally a worktree path whose checkout directory has no .git layout to resolve.
+	// The marker names the project before its ".worktrees" segment, which is the
+	// bucket's project in the mismatched-bucket case: a contradicted row keeps its
+	// recorded basename instead.
+	if !foreignRow {
+		if name, isWorktree := r.worktreePathFallback(wd, bucketDir, m.ParentSessionID); isWorktree {
+			return name
+		}
 	}
 
 	// 5. Any other ordinary directory (e.g. /home/jesse/my-notes) is named by its
