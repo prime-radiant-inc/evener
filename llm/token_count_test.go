@@ -1065,6 +1065,7 @@ func TestEstimateMessagesInputTokensForResolved_BillsThinkingShapesByAdapter(t *
 		{"google drops a redacted part", row(google, registry.Caps{}), part(ContentRedThinking, &ThinkingData{Text: text}), 0},
 
 		{"responses bills the blob, id and summaries", row(responses, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: blob, ID: id, Summary: []string{summary}}), (blobChars + idChars + summaryChars) / 4},
+		{"responses bills typed summaries beside a blob verbatim over trimmed fallback", row(responses, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: blob, ID: id, Summary: []string{summary, summary}, ResponsesSummaryParts: []ResponsesReasoningPart{{Type: "summary_text", Text: "    " + summary}}}), (blobChars + idChars + summaryChars + 4) / 4},
 		{"responses drops the display text beside the blob", row(responses, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: blob, Text: text}), blobChars / 4},
 		{"responses bills typed parts once", row(responses, registry.Caps{}), thinking(&ThinkingData{ResponsesContentParts: []ResponsesReasoningPart{{Type: "reasoning_text", Text: text}, {Type: "reasoning_text", Text: text}}}), 2 * textChars / 4},
 		{"responses bills the typed content parts, not the Summary projection", row(responses, registry.Caps{}), thinking(&ThinkingData{ResponsesContentParts: []ResponsesReasoningPart{{Type: "reasoning_text", Text: text}}, Summary: []string{summary}}), textChars / 4},
