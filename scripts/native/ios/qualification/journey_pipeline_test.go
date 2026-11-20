@@ -102,7 +102,7 @@ func TestJourneyProductsRequireEveryBuiltProduct(t *testing.T) {
 func TestJourneysValidateDownloadedProductsBeforeCreatingOutput(t *testing.T) {
 	t.Parallel()
 	out := filepath.Join(t.TempDir(), "not-created")
-	err := journeys(context.Background(), out, t.TempDir())
+	err := journeys(context.Background(), out, t.TempDir(), "")
 	if !errors.Is(err, errIncompleteProducts) {
 		t.Fatalf("incomplete downloaded products: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestJourneysRefuseLinuxAfterValidatingProducts(t *testing.T) {
 	t.Parallel()
 	derived, _ := journeyProductsFixture(t)
 	out := filepath.Join(t.TempDir(), "not-created")
-	if err := journeys(context.Background(), out, derived); !errors.Is(err, errMacRequired) {
+	if err := journeys(context.Background(), out, derived, ""); !errors.Is(err, errMacRequired) {
 		t.Fatalf("expected Mac prerequisite refusal, got %v", err)
 	}
 	if _, err := os.Stat(out); !errors.Is(err, os.ErrNotExist) {
@@ -127,11 +127,10 @@ func TestJourneysRefuseLinuxAfterValidatingProducts(t *testing.T) {
 	}
 }
 
-// The UI job owns its simulator the same way the build job does: one runner
-// creates the device and the same runner deletes it on every exit, including
-// the failed journey path.
-func TestOwnedSimulatorIsDeletedWhenTheJourneyFails(t *testing.T) {
-	dir := t.TempDir()
+// fakeXcrun puts a stub xcrun on PATH that answers the simulator calls the
+// runner makes and records every invocation to the returned file.
+func fakeXcrun(t *testing.T, dir string) string {
+	t.Helper()
 	bin := filepath.Join(dir, "bin")
 	if err := os.Mkdir(bin, 0o700); err != nil {
 		t.Fatal(err)
@@ -158,6 +157,24 @@ exit 0
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("XCRUN_CALLS", record)
+	return record
+}
+
+func readCalls(t *testing.T, record string) []string {
+	t.Helper()
+	data, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+}
+
+// The UI job owns its simulator the same way the build job does: one runner
+// creates the device and the same runner deletes it on every exit, including
+// the failed journey path.
+func TestOwnedSimulatorIsDeletedWhenTheJourneyFails(t *testing.T) {
+	dir := t.TempDir()
+	record := fakeXcrun(t, dir)
 
 	r := &runner{native: dir, output: dir}
 	sentinel := errors.New("journey failed")
@@ -175,11 +192,7 @@ exit 0
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("the journey failure did not surface: %v", err)
 	}
-	data, readErr := os.ReadFile(record)
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	calls := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+	calls := readCalls(t, record)
 	if !slices.Contains(calls, "simctl delete "+journeyFixtureUDID) {
 		t.Fatalf("the owning runner left its simulator behind: %v", calls)
 	}
@@ -200,6 +213,109 @@ exit 0
 	}
 	if started {
 		t.Fatal("the run started without an owned simulator")
+	}
+}
+
+// The pre-boot mode refuses a non-Mac host before it creates any state, the
+// same way the journeys mode does.
+func TestSimulatorModeRefusesLinux(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux capability refusal")
+	}
+	out := filepath.Join(t.TempDir(), "not-created")
+	if err := prepareSimulator(context.Background(), out); !errors.Is(err, errMacRequired) {
+		t.Fatalf("expected Mac prerequisite refusal, got %v", err)
+	}
+	if _, err := os.Stat(out); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the pre-boot began on Linux: %v", err)
+	}
+}
+
+// The pre-boot mode creates the run's device and starts booting it, then
+// exits: waiting for the boot belongs to the journey script's bootstatus.
+func TestSimulatorModeCreatesAndStartsItsDevice(t *testing.T) {
+	dir := t.TempDir()
+	record := fakeXcrun(t, dir)
+	r := &runner{native: dir, output: dir}
+	if err := r.bootSimulator(context.Background()); err != nil {
+		t.Fatalf("boot the run simulator: %v", err)
+	}
+	calls := readCalls(t, record)
+	if !slices.Contains(calls, "simctl boot "+journeyFixtureUDID) {
+		t.Fatalf("the pre-boot step never started the device: %v", calls)
+	}
+	identity, err := os.ReadFile(filepath.Join(dir, "simulator-identity.json"))
+	if err != nil || !strings.Contains(string(identity), journeyFixtureUDID) {
+		t.Fatalf("pre-booted simulator identity = %q, %v", identity, err)
+	}
+}
+
+// The journeys mode adopts the device the pre-boot step started and deletes it
+// on the way out exactly as it deletes one it created: one run, one owner.
+func TestAdoptedSimulatorIsStillDeleted(t *testing.T) {
+	dir := t.TempDir()
+	record := fakeXcrun(t, dir)
+	simulatorDir := filepath.Join(dir, "simulator")
+	if err := os.Mkdir(simulatorDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(simulatorDir, "simulator-identity.json"),
+		[]byte(`{"udid":"`+journeyFixtureUDID+`","runtime":"ios-26-6","deviceType":"iphone-17"}`))
+	writeTestFile(t, filepath.Join(simulatorDir, "simulator-boot.log"), []byte("fixture boot"))
+	output := filepath.Join(dir, "output")
+	if err := os.Mkdir(output, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	r := &runner{native: dir, output: output}
+	if err := r.adoptSimulator(context.Background(), simulatorDir); err != nil {
+		t.Fatalf("adopt the pre-booted simulator: %v", err)
+	}
+	started := false
+	if err := r.withSimulator(context.Background(), "Evener-qualification-fixture", true, func(udid string) error {
+		started = true
+		if udid != journeyFixtureUDID {
+			t.Fatalf("adopted simulator = %q, want %q", udid, journeyFixtureUDID)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("the adopted run failed: %v", err)
+	}
+	if !started {
+		t.Fatal("the adopted simulator never reached the run")
+	}
+	calls := readCalls(t, record)
+	if slices.ContainsFunc(calls, func(call string) bool { return strings.HasPrefix(call, "simctl create ") }) {
+		t.Fatalf("the adopting run created a second device: %v", calls)
+	}
+	if !slices.Contains(calls, "simctl delete "+journeyFixtureUDID) {
+		t.Fatalf("the adopting run left its device behind: %v", calls)
+	}
+	if _, err := os.Stat(filepath.Join(output, "simulator-boot.log")); err != nil {
+		t.Fatalf("the pre-boot log did not reach the run output: %v", err)
+	}
+}
+
+// A pre-boot that did not survive fails before the journey child starts, and
+// names the contract that broke rather than the journey that trips over it.
+func TestAdoptSimulatorRefusesAPreBootThatDidNotSurvive(t *testing.T) {
+	dir := t.TempDir()
+	_ = fakeXcrun(t, dir)
+	output := filepath.Join(dir, "output")
+	if err := os.Mkdir(output, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	r := &runner{native: dir, output: output}
+	if err := r.adoptSimulator(context.Background(), filepath.Join(dir, "absent")); err == nil {
+		t.Fatal("an absent pre-boot directory was accepted")
+	}
+	simulatorDir := filepath.Join(dir, "simulator")
+	if err := os.Mkdir(simulatorDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(simulatorDir, "simulator-identity.json"),
+		[]byte(`{"udid":"11111111-2222-3333-4444-555555555555","runtime":"ios-26-6","deviceType":"iphone-17"}`))
+	if err := r.adoptSimulator(context.Background(), simulatorDir); err == nil || !strings.Contains(err.Error(), "no longer installed") {
+		t.Fatalf("a device that is gone was adopted: %v", err)
 	}
 }
 
