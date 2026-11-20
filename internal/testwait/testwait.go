@@ -78,6 +78,21 @@ func Budget(t testing.TB) time.Duration {
 	return budgetAt(t, time.Now())
 }
 
+// BudgetOrCeiling is Budget for a helper whose callers include synctest
+// bubbles. Testing forbids reading the binary deadline inside a bubble, and
+// that refusal is the only panic this recovers; a bubble gets the ceiling,
+// which costs no wall time there because the fake clock advances to the timer
+// once every goroutine in the bubble blocks.
+func BudgetOrCeiling(t testing.TB) (budget time.Duration) {
+	budget = waitCeiling
+	defer func() {
+		if p := recover(); p != nil && p != "testing: t.Deadline called inside synctest bubble" {
+			panic(p)
+		}
+	}()
+	return Budget(t)
+}
+
 // budgetAt is Budget as of now, so a caller that anchored its wait to an earlier
 // instant measures the remaining deadline from that instant.
 func budgetAt(t testing.TB, now time.Time) time.Duration {

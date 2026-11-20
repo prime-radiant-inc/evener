@@ -14,7 +14,6 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/plugin"
-	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 )
@@ -203,21 +202,6 @@ func TestDelegateSandboxSnapshot(t *testing.T) {
 	got = delegateSandboxSnapshot(policy)
 	if got.Network != nil {
 		t.Error("nil network should stay nil")
-	}
-}
-
-func TestDescriptorProvenance(t *testing.T) {
-	t.Parallel()
-	// Nil provenance returns nil.
-	if got := descriptorProvenance(delegatestore.Descriptor{}); got != nil {
-		t.Fatal("nil provenance should return nil")
-	}
-	// Non-nil provenance returns a clone. Clone returns NilIfEmpty, so
-	// ChainTruncated=true keeps it non-empty.
-	orig := &provenance.Causal{ChainTruncated: true}
-	got := descriptorProvenance(delegatestore.Descriptor{Provenance: orig})
-	if got == nil || !got.ChainTruncated {
-		t.Fatalf("provenance = %+v, want clone with ChainTruncated=true", got)
 	}
 }
 

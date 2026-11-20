@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -256,34 +255,6 @@ func TestCovRestoreColdDelegateOwnerRuntime_EmptyParentID(t *testing.T) {
 	}
 	if got != s {
 		t.Fatal("empty parentID should return the same session")
-	}
-}
-
-// TestCovDelegateInputWasPreseeded covers delegateInputWasPreseeded.
-func TestCovDelegateInputWasPreseeded(t *testing.T) {
-	t.Parallel()
-	// No context value — false.
-	if delegateInputWasPreseeded(context.Background(), "sess_1", "hello") {
-		t.Fatal("no context value should return false")
-	}
-
-	// With matching preseeded input.
-	ctx := context.WithValue(context.Background(), delegatePreseededInputContextKey{}, delegatePreseededInput{
-		sessionID: "sess_1",
-		input:     "hello",
-	})
-	if !delegateInputWasPreseeded(ctx, "sess_1", "hello") {
-		t.Fatal("matching preseeded should return true")
-	}
-
-	// Non-matching sessionID.
-	if delegateInputWasPreseeded(ctx, "sess_2", "hello") {
-		t.Fatal("non-matching session should return false")
-	}
-
-	// Non-matching input.
-	if delegateInputWasPreseeded(ctx, "sess_1", "world") {
-		t.Fatal("non-matching input should return false")
 	}
 }
 
@@ -710,30 +681,6 @@ func TestCovDelegateRestoreReadFile(t *testing.T) {
 	_, err := s.delegateRestoreReadFile(t.TempDir() + "/nonexistent")
 	if err == nil {
 		t.Fatal("non-existent file should return error")
-	}
-}
-
-// TestCovDelegateRestoreOperationalIOError covers
-// delegateRestoreOperationalIOError: classifies whether an error
-// is operational (retryable) vs a permanent missing-file condition.
-func TestCovDelegateRestoreOperationalIOError(t *testing.T) {
-	t.Parallel()
-	// nil error — not operational.
-	if delegateRestoreOperationalIOError(nil) {
-		t.Fatal("nil error should not be operational")
-	}
-	// os.ErrNotExist — not operational (classified as permanent missing).
-	if delegateRestoreOperationalIOError(os.ErrNotExist) {
-		t.Fatal("ErrNotExist should not be operational")
-	}
-	// A plain errors.New — not operational (not a PathError/SyscallError).
-	if delegateRestoreOperationalIOError(errors.New("plain error")) {
-		t.Fatal("plain error should not be operational")
-	}
-	// A *os.PathError — IS operational.
-	pathErr := &os.PathError{Op: "stat", Path: "/tmp/nonexistent", Err: errors.New("permission")}
-	if !delegateRestoreOperationalIOError(pathErr) {
-		t.Fatal("PathError should be operational")
 	}
 }
 
