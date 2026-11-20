@@ -753,6 +753,79 @@ it("collapses settled top-level nodes with settled descendants by default and ca
   expect(within(foldDetails).getByRole("button", { name: /settled-descendant/ })).toBeTruthy();
 });
 
+it("keeps an open inactive-history group open when its coordinator settles", async () => {
+  const client = activityClient();
+  let coordSettled = false;
+  const coord = activityDelegate({
+    delegateId: "coord-settling",
+    name: "settling-coordinator",
+    ownerRef: activityRef,
+    rootRef: activityRef,
+    childRef: "remote:coord-settling",
+    terminal: false,
+  });
+  const settledCoord = activityDelegate({
+    ...coord,
+    terminal: true,
+    status: "completed",
+    outcome: "completed",
+    lifecycle: "idle",
+  });
+  const settledChild = activityDelegate({
+    delegateId: "settled-worker",
+    name: "settled-worker",
+    ownerRef: "remote:coord-settling",
+    rootRef: activityRef,
+    childRef: "remote:settled-worker",
+    parentDelegateId: "coord-settling",
+    terminal: true,
+    status: "completed",
+    outcome: "completed",
+    lifecycle: "idle",
+  });
+  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref, scope),
+    delegates: {
+      known: true,
+      total: 2,
+      active: coordSettled ? 0 : 1,
+      completed: coordSettled ? 2 : 1,
+      failed: 0,
+    },
+  }));
+  client.on("evener/thread/delegates/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    delegates: [coordSettled ? settledCoord : coord, settledChild],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  const { container } = render(<AgentsTab now={NOW} scope={scope()} />);
+
+  const coordAnchor = `[data-activity-anchor=${JSON.stringify('delegate:["remote:coord-settling","coord-settling"]')}]`;
+  await waitFor(() => expect(document.querySelector(coordAnchor)).not.toBeNull());
+  const fold = inactiveFold(container, 1);
+  fireEvent.click(fold.querySelector("summary")!);
+  const [group] = disclosuresWhere(fold, (summary) => summary.startsWith("settling-coordinator"));
+  expect(group).toBeTruthy();
+  expect(within(fold).queryByRole("button", { name: /settled-worker/ })).toBeNull();
+  fireEvent.click(group!.querySelector("summary")!);
+  expect(within(fold).getByRole("button", { name: /settled-worker/ })).toBeTruthy();
+
+  // Settlement moves the coordinator from the group header to a settled row.
+  // That row's branch toggle must carry the open state the reader left on the
+  // group instead of folding the settled child away.
+  coordSettled = true;
+  await act(async () => {
+    client.emitNotification(activityChangedNotification({ ref: activityRef, threadId: "owner" }, ["delegates"]));
+  });
+  await waitFor(() => expect(fold.contains(document.querySelector(coordAnchor))).toBe(true));
+  expect(within(fold).getByRole("button", { name: /settled-worker/ })).toBeTruthy();
+  expect(
+    within(fold).getByRole("button", { name: "Collapse settling-coordinator" }).getAttribute("aria-expanded"),
+  ).toBe("true");
+});
+
 it("keeps coordinator wait visible on partial pages until every held descendant is visible", async () => {
   const client = activityClient();
   ActivityBoundaryObserver.reset();
