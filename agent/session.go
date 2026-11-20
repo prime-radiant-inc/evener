@@ -1689,6 +1689,30 @@ func (s *Session) refuseUnleasedWatchNotice(ctx context.Context, jobNotifs []del
 	return false
 }
 
+// splitUnleasedWatchNotices partitions this turn's deliverable notifications by
+// whether the turn may carry them: a stable delegate child's turn with no lease
+// in context must not carry a watch notice (stableChildTurnNeedsLease), so those
+// are handed back for the leased drive that reserves the generation presenting
+// them, and everything else stays with the turn.
+//
+// It is the ONE partition behind both refusals. acceptNotificationInput asks it
+// before writing the reminder, and injectLaterJobNotifications asks it at each
+// round boundary, so a notice that arrives while an already-admitted unleased
+// turn runs cannot reach the provider through that turn's next request.
+func (s *Session) splitUnleasedWatchNotices(ctx context.Context, jobNotifs []deliverableJobNotification) (carry, deferred []deliverableJobNotification) {
+	if !s.stableChildTurnNeedsLease(ctx) {
+		return jobNotifs, nil
+	}
+	for _, d := range jobNotifs {
+		if d.notification.isWatch() {
+			deferred = append(deferred, d)
+			continue
+		}
+		carry = append(carry, d)
+	}
+	return carry, deferred
+}
+
 // hasPendingOrdinaryNotification reports whether the session's ordinary
 // notification rail holds anything that is NOT a watch notice: a terminal shell
 // completion, a forwarded nested report, steering owed to the model.
@@ -1903,6 +1927,19 @@ func (s *Session) resetJobNotificationRetry() {
 		return
 	}
 	s.jobNotifyRetry.reset()
+	s.pendingJobNotifsMu.Unlock()
+}
+
+// scheduleJobNotificationRetry arms the paced notification retry from a caller
+// that does not hold the queue lock. A firing wakes the session through its
+// notify edge while the queue still owes work, which is what re-enters a
+// notification drive that gave up on capacity rather than on an empty queue.
+func (s *Session) scheduleJobNotificationRetry() {
+	if s == nil {
+		return
+	}
+	s.pendingJobNotifsMu.Lock()
+	s.scheduleJobNotificationRetryLocked()
 	s.pendingJobNotifsMu.Unlock()
 }
 

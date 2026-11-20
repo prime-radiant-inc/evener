@@ -185,11 +185,22 @@ func (s *Session) settleDeliveredJobNotifications(ctx context.Context, jobNotifs
 // end. Completions among them settle when that request is dispatched (see
 // awaitRequestForJobNotifications); a failed transcript write puts them all
 // back in the queue for the next wake.
+//
+// A watch notice this turn may not carry is handed back instead of written: a
+// stable delegate child's turn with no lease in context presents no watch
+// notice (stableChildTurnNeedsLease), exactly as acceptNotificationInput
+// decides. Writing one here would put it in the transcript for a request this
+// turn is about to build, and admission reads the queue -- which the drain below
+// empties -- so the refusal there would find nothing left to refuse. The
+// requeued notice keeps folding where it was and the leased drive that reserves
+// its generation claims it.
 func (s *Session) injectLaterJobNotifications(ctx context.Context) {
 	jobNotifs, retryJobNotifs, injectedJobNotifs := s.filterDeliverableJobNotifications(s.drainJobNotifications())
 	jobNotifs, injectedJobNotifs = s.withoutAwaitingRequest(jobNotifs), s.withoutAwaitingRequest(injectedJobNotifs)
 	s.requeueJobNotifications(retryJobNotifs)
 	s.requeueJobNotifications(s.markJobNotificationsDelivered(injectedJobNotifs))
+	jobNotifs, deferred := s.splitUnleasedWatchNotices(ctx, jobNotifs)
+	s.requeueJobNotifications(jobNotifications(deferred))
 	if len(jobNotifs) == 0 {
 		return
 	}

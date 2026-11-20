@@ -185,6 +185,15 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 		// At capacity the folded batch stays on the queue, where further ticks
 		// keep folding into it: nothing is written and nothing is lost.
 		s.delegateController.retryDelegateAttentionLater()
+		if tickID != "" {
+			// A queued timer batch is invisible to the controller: it has no
+			// durable row and so no wake ID, which is all
+			// retryDelegateAttentionLater re-drives. The child's own notification
+			// retry is the rail that owns the batch, and its firing wakes this
+			// parent drive -- so the batch is taken as soon as a slot frees,
+			// without waiting for another tick or an unrelated wake.
+			sub.sess.scheduleJobNotificationRetry()
+		}
 		return true
 	}
 	if tickID != "" {

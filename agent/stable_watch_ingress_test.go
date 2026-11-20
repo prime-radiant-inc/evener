@@ -2,15 +2,19 @@ package agent
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"reflect"
 	"slices"
-	"strings"
+	"sync/atomic"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -292,6 +296,20 @@ func attentionRowCount(t *testing.T, sess *Session) int {
 	return len(fold.order)
 }
 
+// queuedTimerFires reports the fire count of each repeating-timer batch still on
+// the session's notification queue, in queue order.
+func queuedTimerFires(sess *Session) []int {
+	sess.pendingJobNotifsMu.Lock()
+	defer sess.pendingJobNotifsMu.Unlock()
+	var fires []int
+	for _, n := range sess.pendingJobNotifs {
+		if n.WatchID != "" && !n.Terminal {
+			fires = append(fires, n.Fires)
+		}
+	}
+	return fires
+}
+
 // presentQueuedTicksForTest runs the drive's own reserve-then-present sequence
 // for the child's folded repeating-timer batch, registering the child with its
 // controller as an idle delegate first so the reservation has a candidate.
@@ -382,6 +400,12 @@ func TestRepeatingTicksWaitForDriveCapacityAsOneFoldedBatch(t *testing.T) {
 	if err := controller.AbortStart(held); err != nil {
 		t.Fatalf("release the drive slot: %v", err)
 	}
+	// The folded entry states the whole wait in its own fire count: three missed
+	// ticks are ONE queued entry carrying three fires, and that entry is what the
+	// handoff below turns into a single durable row.
+	if got := queuedTimerFires(child); !slices.Equal(got, []int{len(occurrences)}) {
+		t.Fatalf("queued batch fire counts = %v, want [%d]: every missed tick belongs to the one queued entry", got, len(occurrences))
+	}
 	attentionID := child.queuedWatchTickAttentionID()
 	if attentionID == "" {
 		t.Fatal("the queued batch reports no attention identity")
@@ -413,12 +437,11 @@ func TestRepeatingTicksWaitForDriveCapacityAsOneFoldedBatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the attention fold after the reservation: %v", err)
 	}
-	content, ok := fold.content[attentionID]
-	if !ok {
+	if _, ok := fold.content[attentionID]; !ok {
 		t.Fatalf("the batch's row %q is not in the fold: %v", attentionID, fold.pendingIDs())
 	}
-	if !strings.Contains(content.Text(), "3 times") {
-		t.Fatalf("the row states %q, want it to state the batch's three fires", content.Text())
+	if got := len(fold.order); got != rowsBefore+1 {
+		t.Fatalf("the fold holds %d attention row(s), want %d: the folded batch is one row, not one per tick", got, rowsBefore+1)
 	}
 }
 
@@ -557,4 +580,146 @@ func sortedWatchKeys(p *provenance.Causal) []string {
 	}
 	slices.Sort(keys)
 	return keys
+}
+
+// A tick that lands between rounds of an already-admitted unleased
+// notification turn is the same defect as one that lands before it starts: the
+// round boundary drains the queue and writes what it finds for the request being
+// built, so a watch notice written there reaches the provider with no lease. The
+// boundary must partition instead -- the tick goes back to the queue for the
+// leased drive, and the ordinary completion in the same drain still joins the
+// turn.
+func TestUnleasedRoundBoundaryLeavesTheTickQueuedAndCarriesTheCompletion(t *testing.T) {
+	t.Parallel()
+	child, jm, _ := stableWatchSendChild(t)
+	child.jobManager.enqueue = child.enqueueJobNotificationAndNotify
+
+	res, err := jm.configureWatch(watchArgs{Operation: "create", Source: "self", Target: "self", RepeatSeconds: 60, Note: "poll"})
+	if err != nil {
+		t.Fatalf("configure the repeating timer: %v", err)
+	}
+	watchID := res.WatchID
+	rowsBefore := attentionRowCount(t, child)
+
+	// The tick and the completion both arrive while the turn is between rounds.
+	child.enqueueJobNotificationAndNotify(timerTickNotification("", watchID, "tick:midturn:1", 1, nil))
+	const ordinaryJobID = "job:midturn"
+	enqueueCompletedJobNotification(t, child, ordinaryJobID)
+
+	child.injectLaterJobNotifications(context.Background())
+
+	if got := queuedTimerFires(child); !slices.Equal(got, []int{1}) {
+		t.Fatalf("queued timer fires after the round boundary = %v, want [1]: the tick must stay on the queue for the leased drive", got)
+	}
+	// The ordinary completion is the turn's own work and still joins the request.
+	carried := child.jobNotificationsAwaitingRequest()
+	if len(carried) != 1 || carried[0].notification.JobID != ordinaryJobID {
+		t.Fatalf("completions awaiting the request = %#v, want the one ordinary completion", carried)
+	}
+	for _, d := range carried {
+		if d.notification.isWatch() {
+			t.Fatalf("a watch notice is awaiting the request (%#v): an unleased turn must never carry one", d.notification)
+		}
+	}
+	// Nothing about the tick became durable content of this turn.
+	if got := attentionRowCount(t, child); got != rowsBefore {
+		t.Fatalf("attention rows went %d -> %d across the round boundary, want no growth: the batch is not the unleased turn's to present", rowsBefore, got)
+	}
+	// The boundary wrote the completion's reminder and no second one for the tick.
+	child.mu.Lock()
+	history := append([]schema.Turn{}, child.history...)
+	child.mu.Unlock()
+	reminders := 0
+	for _, turn := range history {
+		if turn.Kind == schema.TurnSteering && turn.SteeringKind == events.SteeringKindNotification {
+			reminders++
+		}
+	}
+	if reminders != 1 {
+		t.Fatalf("notification reminders in the transcript = %d, want 1 for the ordinary completion", reminders)
+	}
+}
+
+// A queued timer batch has no durable row, so it has no wake ID: the
+// controller's attention retry looks only for wake IDs and cannot see it. The
+// capacity refusal must therefore arm the rail that does own the batch -- the
+// child's notification retry, whose firing wakes the parent's drive. Then the
+// folded batch is delivered as soon as a slot frees, with no new tick and no
+// explicit drive.
+func TestCapacityRefusedTimerBatchIsDeliveredByTheNotificationRetry(t *testing.T) {
+	t.Parallel()
+	child, jm, controller := stableWatchSendChild(t)
+	seedDelegateControllerIdle(t, controller, child.owningDelegateID, "")
+	seedDelegateControllerIdle(t, controller, "dlg_capacity_holder", "")
+	holder := &Session{id: "holder-session", stateDir: child.stateDir, delegateController: controller}
+	controller.mu.Lock()
+	controller.live[child.owningDelegateID] = &delegateLiveState{runtime: child}
+	controller.live["dlg_capacity_holder"] = &delegateLiveState{runtime: holder}
+	controller.mu.Unlock()
+	clk := agenttest.NewFakeClock()
+	child.clock = clk
+
+	root := &Session{id: "root-session", stateDir: child.stateDir, delegateController: controller}
+	sub := &subagent{sess: child}
+	// Production wires a stable child's notify edge to the parent's wake-edge
+	// drive (subagents.go, delegate_restore_idle.go). The retry's firing reaches
+	// the drive through exactly that edge.
+	child.SetNotifyFunc(func() { root.driveChildIfNotStopGated(sub) })
+	t.Cleanup(func() { child.SetNotifyFunc(nil) })
+	var drives atomic.Int32
+	updateSessionTestConfig(root, func(cfg *testConfig) {
+		cfg.delegateAttentionBeforeDriveClaim = func(*subagent) { drives.Add(1) }
+		// The start stops after the batch's row is written and before a launch:
+		// this fixture owns no provider, and the row plus the emptied queue is
+		// everything the delivery itself is made of.
+		cfg.delegateAttentionCommitStartFault = func() error {
+			return errors.New("commit refused by the ingest fixture")
+		}
+	})
+
+	res, err := jm.configureWatch(watchArgs{Operation: "create", Source: "self", Target: "self", RepeatSeconds: 60, Note: "poll"})
+	if err != nil {
+		t.Fatalf("configure the repeating timer: %v", err)
+	}
+	watchID := res.WatchID
+	rowsBefore := attentionRowCount(t, child)
+
+	// Another delegate holds the tree's only drive slot, so the batch's
+	// reservation is refused for capacity and the ticks keep folding.
+	held, err := controller.ReserveAttention(holder, "attention:capacity-holder")
+	if err != nil {
+		t.Fatalf("hold the drive slot: %v", err)
+	}
+	for i := range 3 {
+		child.enqueueJobNotificationAndNotify(timerTickNotification("", watchID, fmt.Sprintf("tick:retry:%d", i+1), 1, nil))
+		if got := queuedTimerFires(child); !slices.Equal(got, []int{i + 1}) {
+			t.Fatalf("queued timer fires after %d tick(s) = %v, want [%d]", i+1, got, i+1)
+		}
+		if got := attentionRowCount(t, child); got != rowsBefore {
+			t.Fatalf("attention rows went %d -> %d while the drive budget was full, want no growth", rowsBefore, got)
+		}
+	}
+	drivesBefore := drives.Load()
+
+	// A slot frees while the delegate is idle. Nothing else happens: no tick
+	// arrives, no drive is called by hand, and the controller's own attention
+	// retry has no owner here because a queued batch is not a controller wake.
+	if err := controller.AbortStart(held); err != nil {
+		t.Fatalf("release the drive slot: %v", err)
+	}
+	clk.Advance(jobNotificationRetryInitialDelay)
+	clk.Drain()
+
+	if got := drives.Load() - drivesBefore; got != 1 {
+		t.Fatalf("attention drives started by the retry = %d, want 1: the freed slot must re-enter the drive on its own", got)
+	}
+	testwait.Until(t, "the folded batch to become one durable row", func() bool {
+		return attentionRowCount(t, child) == rowsBefore+1
+	})
+	if queued := child.peekNotifications(); queued != 0 {
+		t.Fatalf("peekNotifications = %d after the retry, want 0: the whole batch left the queue", queued)
+	}
+	if got := queuedTimerFires(child); len(got) != 0 {
+		t.Fatalf("queued timer fires after the retry = %v, want none", got)
+	}
 }
