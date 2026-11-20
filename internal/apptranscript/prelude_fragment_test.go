@@ -2,6 +2,7 @@ package apptranscript
 
 import (
 	"fmt"
+	"reflect"
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
@@ -12,17 +13,13 @@ import (
 
 // A header emitted on its own is a fragment of the prelude turn when the file
 // later records a prelude run: the prompt and that run are one turn, so each
-// says it has the other. The projection must not count a run whose items all
-// settled elsewhere as a fragment, so only visible runs move the flags.
+// says it has the other. A run whose items all settled elsewhere is not a
+// boundary, so only visible runs move the flags.
 func TestPreludeHeaderAndRunAreFragmentsOfOneTurn(t *testing.T) {
-	stamped := func(turnID string, kind schema.TurnSpanKind, turn schema.Turn) transcript.Entry {
-		turn.Format, turn.TurnID, turn.TurnKind = schema.TurnFormatIdentity, turnID, kind
-		return transcript.Entry{Turn: turn}
-	}
 	header := transcript.Header{SessionID: "prelude_fragment", SystemPrompt: "You are Evener."}
 	entries := []transcript.Entry{
-		stamped("turn_e1", schema.TurnSpanExecution, schema.NewTurn(schema.TurnUserInput, llm.User("run"))),
-		stamped(appwire.SystemPreludeTurnID, schema.TurnSpanPrelude, schema.NewTurn(schema.TurnUserInput, llm.User("first prompt"))),
+		identityEntry(1, schema.Turn{Kind: schema.TurnUserInput, TurnID: "turn_e1", TurnKind: schema.TurnSpanExecution, Message: llm.User("run")}),
+		identityEntry(2, schema.Turn{Kind: schema.TurnUserInput, TurnID: appwire.SystemPreludeTurnID, TurnKind: schema.TurnSpanPrelude, Message: llm.User("first prompt")}),
 	}
 	reg := NewToolCallRegistry()
 	turns, err := itemTurnsFromEntries(header, entries, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
@@ -32,20 +29,16 @@ func TestPreludeHeaderAndRunAreFragmentsOfOneTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var described []string
+	var got []string
 	for _, turn := range turns {
-		described = append(described, fmt.Sprintf("%s|%s|earlier=%v|later=%v", turn.ID, turn.ItemsView, turn.HasEarlierItems, turn.HasLaterItems))
+		got = append(got, fmt.Sprintf("%s|%s|earlier=%v|later=%v", turn.ID, turn.ItemsView, turn.HasEarlierItems, turn.HasLaterItems))
 	}
-	if len(turns) != 3 {
-		t.Fatalf("turns = %v, want the header, the execution and the prelude run", described)
+	want := []string{
+		appwire.SystemPreludeTurnID + "|fragment|earlier=false|later=true",
+		"turn_e1|full|earlier=false|later=false",
+		appwire.SystemPreludeTurnID + "|fragment|earlier=true|later=false",
 	}
-	if got := described[0]; got != appwire.SystemPreludeTurnID+"|fragment|earlier=false|later=true" {
-		t.Fatalf("header turn = %s, want a leading fragment with later items", got)
-	}
-	if got := described[1]; got != "turn_e1|full|earlier=false|later=false" {
-		t.Fatalf("execution turn = %s, want a whole turn of its own", got)
-	}
-	if got := described[2]; got != appwire.SystemPreludeTurnID+"|fragment|earlier=true|later=false" {
-		t.Fatalf("prelude run = %s, want a trailing fragment with earlier items", got)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("turns = %v, want the header, the execution and the prelude run as %v", got, want)
 	}
 }
