@@ -135,7 +135,7 @@ func TestLockSessionMetaCrossProcessAppliesToOsFs(t *testing.T) {
 	}
 	const id = "02wMz5Txv1C3Hut0M8GCeB"
 
-	release, applied, err := lockSessionMetaCrossProcess(afero.NewOsFs(), dir, id)
+	release, applied, _, err := lockSessionMetaCrossProcess(afero.NewOsFs(), dir, id, false)
 	if err != nil {
 		t.Fatalf("pointer OsFs: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestLockSessionMetaCrossProcessAppliesToOsFs(t *testing.T) {
 	}
 	release()
 
-	release, applied, err = lockSessionMetaCrossProcess(afero.OsFs{}, dir, id)
+	release, applied, _, err = lockSessionMetaCrossProcess(afero.OsFs{}, dir, id, false)
 	if err != nil {
 		t.Fatalf("value OsFs: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestLockSessionMetaCrossProcessAppliesToOsFs(t *testing.T) {
 	}
 	release()
 
-	release, applied, err = lockSessionMetaCrossProcess(afero.NewMemMapFs(), dir, id)
+	release, applied, _, err = lockSessionMetaCrossProcess(afero.NewMemMapFs(), dir, id, false)
 	if err != nil {
 		t.Fatalf("MemMapFs: %v", err)
 	}

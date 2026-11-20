@@ -542,13 +542,77 @@ func SaveSessionMeta(dir string, meta SessionMeta) error {
 // in-memory or sandboxed filesystem to exercise persistence without touching
 // real disk.
 func SaveSessionMetaWithFS(fs afero.Fs, dir string, meta SessionMeta) error {
+	return saveSessionMetaWithFS(fs, dir, meta, false)
+}
+
+// ErrSessionMetaLocked reports that a try-save found the session's metadata
+// already being written, by another goroutine or process, and wrote nothing
+// rather than wait.
+var ErrSessionMetaLocked = errors.New("session meta locked")
+
+// TrySaveSessionMeta writes a SessionMeta like SaveSessionMeta, but never waits
+// on a concurrent metadata writer: it reports ErrSessionMetaLocked and writes
+// nothing when the session's locks are held. It is for callers that must not
+// stall on metadata persistence.
+func TrySaveSessionMeta(dir string, meta SessionMeta) error {
+	return TrySaveSessionMetaWithFS(sessionMetaFS, dir, meta)
+}
+
+// TrySaveSessionMetaWithFS is TrySaveSessionMeta through fs, the try-save
+// counterpart of SaveSessionMetaWithFS.
+func TrySaveSessionMetaWithFS(fs afero.Fs, dir string, meta SessionMeta) error {
+	return saveSessionMetaWithFS(fs, dir, meta, true)
+}
+
+func saveSessionMetaWithFS(fs afero.Fs, dir string, meta SessionMeta, try bool) error {
 	if err := ValidateSessionID(meta.ID); err != nil {
 		return err
 	}
 	lock := sessionMetaWriteLock(meta.ID)
-	lock.Lock()
+	if try {
+		if !lock.TryLock() {
+			return ErrSessionMetaLocked
+		}
+	} else {
+		lock.Lock()
+	}
 	defer lock.Unlock()
+	if try {
+		return trySaveSessionMetaLocked(fs, dir, meta)
+	}
 	return saveSessionMetaLocked(fs, dir, meta)
+}
+
+// trySaveSessionMetaLocked performs the write with the session's in-process
+// write lock already held, treating a cross-process lock held elsewhere as
+// ErrSessionMetaLocked rather than waiting for it.
+func trySaveSessionMetaLocked(fs afero.Fs, dir string, meta SessionMeta) error {
+	return withSessionMetaCrossProcessTryLock(fs, dir, meta.ID, func() error {
+		return writeSessionMetaLocked(fs, dir, meta)
+	})
+}
+
+// withSessionMetaCrossProcessTryLock runs fn with the session's cross-process
+// meta lock held (and the sessions dir ensured), or reports
+// ErrSessionMetaLocked without running it when another process holds the lock.
+// The caller must already hold the in-process striped lock.
+func withSessionMetaCrossProcessTryLock(fs afero.Fs, dir, id string, fn func() error) error {
+	sessDir := SessionsDir(dir)
+	if err := fs.MkdirAll(sessDir, 0o755); err != nil {
+		return fmt.Errorf("create sessions dir: %w", err)
+	}
+	release, _, busy, err := lockSessionMetaCrossProcess(fs, dir, id, true)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return errSessionsDirAbsent
+		}
+		return fmt.Errorf("lock session meta: %w", err)
+	}
+	if busy {
+		return ErrSessionMetaLocked
+	}
+	defer release()
+	return fn()
 }
 
 // AppendSessionObservedBy records a deduplicated observer UI relationship
@@ -659,7 +723,7 @@ func withExistingSessionsDirLock(fs afero.Fs, dir, id string, fn func() error) e
 	// The Revision increment is a read-modify-write, and the daemon rewrites the
 	// same session's meta out of process, so the in-process striped lock alone
 	// cannot serialize it. Hold a file lock across the load/increment/rename.
-	release, _, err := lockSessionMetaCrossProcess(fs, dir, id)
+	release, _, _, err := lockSessionMetaCrossProcess(fs, dir, id, false)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return errSessionsDirAbsent

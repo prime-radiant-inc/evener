@@ -146,18 +146,20 @@ func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model st
 	s.mu.Unlock()
 	defer drive.waitEnded()
 	// Save the minted stamp before the wait is visible to any read, so a
-	// process death mid-wait cannot remint a stamp a pane already saw. A failed
-	// write publishes the wait unstamped: the counter never reached disk, so a
-	// restore could mint this number again, and a pane must not be handed a
-	// stamp its next runtime can reuse. The wait, its timer and its wakes run
-	// the same either way.
-	saveErr := s.autoSaveMeta()
+	// process death mid-wait cannot remint a stamp a pane already saw. The
+	// attempt does not wait for a concurrent metadata writer: lock contention
+	// publishes the wait unstamped instead of holding up a retry the user
+	// already asked for. A failed write also publishes it unstamped: the
+	// counter never reached disk, so a restore could mint this number again,
+	// and a pane must not be handed a stamp its next runtime can reuse. The
+	// wait, its timer and its wakes run the same either way.
+	saved, saveErr := s.tryAutoSaveMeta()
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		return false, nil
 	}
-	if saveErr == nil {
+	if saved {
 		wait.stamp = stamp
 		wait.failure.WaitStartedAt = stamp
 	}
@@ -182,12 +184,13 @@ func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model st
 
 	s.noteParentJobActivity(jobPhaseModelRetrying)
 	s.emitQuotaRetry(callErr, model, resetAt.Sub(now), wait.stamp, resetAt.UnixMilli(), callElapsed, &wait.failure)
-	// The failed-save warning follows the start announcement: a configured
-	// Notification hook runs inside an emit, and the roster samples the wait on
-	// the start event, so the wait must already be announced before the warning
-	// can run that hook.
+	// The failed-save warning follows the start announcement: the roster
+	// samples the wait on the start event, so the wait must already be
+	// announced. It is a diagnostic (emitDiagnosticWarning), so it never runs a
+	// Notification hook that would keep the turn from serving a reset, a wake
+	// or Stop.
 	if saveErr != nil {
-		s.emit(events.WarningData{Message: fmt.Sprintf("auto-save failed: %v", saveErr)})
+		s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("auto-save failed: %v", saveErr)})
 	}
 	select {
 	case <-ctx.Done():

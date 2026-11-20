@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -19,9 +20,12 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/goal"
+	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
@@ -1757,6 +1761,164 @@ func TestQuotaWaitPublishesUnstampedWhenItsStampCannotBeSaved(t *testing.T) {
 	visible := s.RestingFailure()
 	if visible.WaitStartedAt != 0 {
 		t.Fatalf("published WaitStartedAt = %d after a failed save, want unstamped", visible.WaitStartedAt)
+	}
+
+	recoverProvider(adapter)
+	reachReset(clk)
+	run.awaitEnd(t, trip, "the call resumes at the reset")
+	if got := streamCalls(adapter); got != 2 {
+		t.Fatalf("model calls = %d, want 2: the wait must retry once", got)
+	}
+}
+
+// gatedStreamingAdapter holds the first model call behind gate, so a test can
+// arrange state at the call boundary and still drive the same adapter fixture.
+type gatedStreamingAdapter struct {
+	*streamingAdapter
+	gate func()
+}
+
+func (a *gatedStreamingAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	a.gate()
+	return a.streamingAdapter.Stream(ctx, req)
+}
+
+// A metadata writer holding the save lock must not stall the turn before its
+// wait loop: the wait is published unstamped instead, and the user's retry is
+// not held up behind the writer.
+func TestQuotaWaitPublishesUnstampedWhileAMetaWriterHoldsTheLock(t *testing.T) {
+	callStarted := make(chan struct{})
+	releaseCall := make(chan struct{})
+	var startOnce sync.Once
+	dir := t.TempDir()
+	adapter := &streamingAdapter{name: "openai", streamErr: usageLimitError(t, "openai", quotaResetAt)}
+	c := llm.NewClient()
+	c.Register(&gatedStreamingAdapter{streamingAdapter: adapter, gate: func() {
+		startOnce.Do(func() { close(callStarted) })
+		<-releaseCall
+	}})
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	clk := agenttest.NewFakeClock()
+	s := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{
+		StateDir:       dir,
+		LLMRetryPolicy: &policy,
+		clock:          clk,
+	}))
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if err := s.Rename("quota wait meta writer test"); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+
+	trip := tripwireCtx(t).Done()
+	run := startInput(context.Background(), s, "start the work", EntryUserInput)
+	testwait.Until(t, "the first model call begins", func() bool {
+		select {
+		case <-callStarted:
+			return true
+		default:
+			return false
+		}
+	})
+	// Hold the save mutex the wait's stamp save would wait on, then let the
+	// call meet the usage limit.
+	s.metaSaveMu.Lock()
+	release := sync.OnceFunc(s.metaSaveMu.Unlock)
+	defer release()
+	close(releaseCall)
+	testwait.Until(t, "the wait is published unstamped while a metadata writer holds the save lock", func() bool {
+		f := s.RestingFailure()
+		return f != nil && f.WaitStartedAt == 0
+	})
+	release()
+	recoverProvider(adapter)
+	reachReset(clk)
+	run.awaitEnd(t, trip, "the call resumes at the reset")
+	if got := streamCalls(adapter); got != 2 {
+		t.Fatalf("model calls = %d, want 2: the wait must retry once", got)
+	}
+}
+
+// The failed-save warning is a diagnostic: a configured Notification hook must
+// not run on the turn goroutine, where a slow hook would keep the wait from
+// serving a reset, a wake or a Stop.
+func TestFailedStampSaveWarningDoesNotRunTheNotificationHook(t *testing.T) {
+	s, clk, _, adapter := newAttentionLivelockSession(t, usageLimitError(t, "openai", quotaResetAt))
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if err := s.Rename("quota wait hook test"); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+	// Fail only the rename whose staged payload carries the wait stamp.
+	stagedPath := schema.SessionMetaPath(s.stateDir, s.ID()) + ".tmp"
+	fail := &notesRenameFailureFS{Fs: afero.NewOsFs(), err: errors.New("injected metadata write failure")}
+	failed := make(chan struct{})
+	var failedOnce sync.Once
+	fail.before = func() {
+		data, err := os.ReadFile(stagedPath)
+		fail.fail = err == nil && bytes.Contains(data, []byte(`"quota_wait_stamps"`))
+		if fail.fail {
+			failedOnce.Do(func() { close(failed) })
+		}
+	}
+	s.cfg.testOnly.metaFS = fail
+
+	marker := filepath.Join(t.TempDir(), "notification-hook")
+	runner := hooks.NewRunner(nil, "")
+	runner.Add(plugin.HookNotification, plugin.RegisteredHook{
+		Matcher: "*",
+		Type:    "command",
+		Command: "touch " + shellquote.Literal(marker),
+		Timeout: 5,
+	})
+	s.hookRunner = runner
+
+	warnings := make(chan events.WarningData, 16)
+	s.ConsumeEventsLossless(func(ev events.SessionEvent) {
+		if data, ok := ev.Data.(events.WarningData); ok {
+			select {
+			case warnings <- data:
+			default:
+			}
+		}
+	}, func() {})
+
+	trip := tripwireCtx(t).Done()
+	run := startInput(context.Background(), s, "start the work", EntryUserInput)
+	testwait.Until(t, "the wait's metadata write fails", func() bool {
+		select {
+		case <-failed:
+			return true
+		default:
+			return false
+		}
+	})
+	testwait.Until(t, "the wait becomes visible unstamped", func() bool {
+		f := s.RestingFailure()
+		return f != nil && f.WaitStartedAt == 0
+	})
+	testwait.Until(t, "the failed-save warning reaches the consumer", func() bool {
+		for {
+			select {
+			case w := <-warnings:
+				if strings.Contains(w.Message, "auto-save failed") {
+					return true
+				}
+			default:
+				return false
+			}
+		}
+	})
+	// The hook would run after the event is sent on the turn goroutine, so give
+	// it the chance it would have had before asserting it never ran.
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(marker); err == nil {
+			t.Fatal("the failed-save warning ran the Notification hook")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 
 	recoverProvider(adapter)

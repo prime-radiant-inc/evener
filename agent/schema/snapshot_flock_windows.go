@@ -3,6 +3,7 @@
 package schema
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 
@@ -21,12 +22,13 @@ import (
 // Windows is not a shipped target, but the schema package keeps the same seam as
 // transcriptindex and installid rather than a silent no-op: LockFileEx takes the
 // same exclusive whole-file lock, waiting for it exactly as the Unix flock does.
+// nowait reports a lock another process holds as busy instead of waiting for it.
 //
-// The returned bool reports whether cross-process locking applied: an injected
-// non-OS filesystem (tests) has no shared file to lock, so only the in-process
-// mutex serializes those writers. The returned func releases the lock. The lock
-// file is left in place; unlocking the range and closing the handle releases it.
-func lockSessionMetaCrossProcess(fs afero.Fs, dir, id string) (func(), bool, error) {
+// applied reports whether cross-process locking applies: an injected non-OS
+// filesystem (tests) has no shared file to lock, so only the in-process mutex
+// serializes those writers. The returned func releases the lock. The lock file
+// is left in place; unlocking the range and closing the handle releases it.
+func lockSessionMetaCrossProcess(fs afero.Fs, dir, id string, nowait bool) (release func(), applied, busy bool, err error) {
 	// afero.NewOsFs returns *afero.OsFs — its OsFs methods have pointer
 	// receivers — and that pointer form is what production constructs and what
 	// the check below must accept. The value form is accepted too so a caller
@@ -35,23 +37,30 @@ func lockSessionMetaCrossProcess(fs afero.Fs, dir, id string) (func(), bool, err
 	switch fs.(type) {
 	case *afero.OsFs, afero.OsFs:
 	default:
-		return func() {}, false, nil
+		return func() {}, false, false, nil
 	}
 	lockPath := filepath.Join(SessionsDir(dir), id+SessionMetaLockSuffix)
 	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
-		return nil, true, err
+		return nil, true, false, err
 	}
 	// The whole-file range is [0, 2^64), so the low and high 32-bit halves are
 	// both all ones. Without LOCKFILE_FAIL_IMMEDIATELY the call blocks until the
 	// range is free, matching the Unix flock's waiting semantics.
+	how := uint32(windows.LOCKFILE_EXCLUSIVE_LOCK)
+	if nowait {
+		how |= windows.LOCKFILE_FAIL_IMMEDIATELY
+	}
 	var overlapped windows.Overlapped
-	if err := windows.LockFileEx(windows.Handle(f.Fd()), windows.LOCKFILE_EXCLUSIVE_LOCK, 0, ^uint32(0), ^uint32(0), &overlapped); err != nil {
+	if err := windows.LockFileEx(windows.Handle(f.Fd()), how, 0, ^uint32(0), ^uint32(0), &overlapped); err != nil {
 		_ = f.Close()
-		return nil, true, err
+		if nowait && errors.Is(err, windows.ERROR_LOCK_VIOLATION) {
+			return nil, true, true, nil
+		}
+		return nil, true, false, err
 	}
 	return func() {
 		_ = windows.UnlockFileEx(windows.Handle(f.Fd()), 0, ^uint32(0), ^uint32(0), &overlapped)
 		_ = f.Close()
-	}, true, nil
+	}, true, false, nil
 }
