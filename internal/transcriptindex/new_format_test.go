@@ -575,6 +575,34 @@ func TestFullReadKeepsAnOpenExecutionOutOfFailed(t *testing.T) {
 	}
 }
 
+// A span's kind is recorded on its opener, and a gap's opener can be a
+// transcript-only notice: the full read skips the notice, so the first entry
+// it sees of the gap carries no kind and must not pass for an execution.
+func TestFullReadKeepsAGapOpenedByANoticeCompleted(t *testing.T) {
+	fx := newFormatFixture(t, "notices")
+	fx.lines = []fixtureLine{
+		entryLine(opens("t_gap_n1", schema.TurnSpanGap, noticed(schema.NoticeInfo{Kind: schema.NoticeGoalEnded, GoalEnded: &schema.GoalEndedNotice{Status: "complete", Iterations: 2}}))),
+		entryLine(inTurn("t_gap_n1", withModel(standalone(schema.TurnModelSwitch, "switched to gpt-next"), "gpt-next"))),
+	}
+	turns := fullReadTurns(t, fx)
+	var full *appwire.Turn
+	for i := range turns {
+		if turns[i].ID == "t_gap_n1" {
+			full = &turns[i]
+			break
+		}
+	}
+	if full == nil {
+		t.Fatalf("no t_gap_n1 in the full read: %s", dump(turns))
+	}
+	if full.Status != appwire.TurnStatusCompleted {
+		t.Fatalf("full read t_gap_n1 = %s, want completed", dump(*full))
+	}
+	if indexed := turnOf(t, indexedCandidates(t, fx, -1), "t_gap_n1"); indexed.Status != appwire.TurnStatusCompleted {
+		t.Fatalf("indexed t_gap_n1 = %s, want completed", dump(indexed))
+	}
+}
+
 // fullReadTurns projects a fixture through the whole-file reader with one
 // tool-call registry, the way the hub's past-turn merge projects a saved
 // session.

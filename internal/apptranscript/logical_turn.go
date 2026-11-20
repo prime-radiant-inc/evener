@@ -99,6 +99,12 @@ type logicalTurnAccumulator struct {
 	// failed stamped turn reports it on every visible fragment, not only on
 	// the fragment whose entries carry it.
 	stampedFailure map[string]schema.Turn
+	// stampedKind holds, per stamped turn id, the span kind its opener
+	// recorded. The opener can be a transcript-only record (a gap's notice),
+	// which joins no group, so the group's own first entry may carry no kind;
+	// the index still classifies the turn by its opener (build.go's
+	// turnKindOf).
+	stampedKind map[string]schema.TurnSpanKind
 }
 
 // foldStampedStatus folds a transcript-only TURN_COMPLETION or TURN_REOPEN
@@ -145,12 +151,12 @@ func (a *logicalTurnAccumulator) foldStampedFailure(turn *schema.Turn) {
 	a.stampedFailure[turn.TurnID] = *turn
 }
 
-// stampedExecution reports whether a stamped group is an execution. The index
+// stampedExecution reports whether a stamped turn is an execution. The index
 // opens every identity span as an execution unless its opener records a
 // prelude, gap or delivery (build.go's turnKindOf), and only an execution
 // starts in progress.
-func stampedExecution(entries []schema.Turn) bool {
-	switch entries[0].TurnKind {
+func (a *logicalTurnAccumulator) stampedExecution(turnID string) bool {
+	switch a.stampedKind[turnID] {
 	case schema.TurnSpanGap, schema.TurnSpanDelivery, schema.TurnSpanPrelude:
 		return false
 	}
@@ -247,6 +253,18 @@ func appendProjectedEntry(acc *logicalTurnAccumulator, project EntryProjector, t
 		// joins no group, matching the reference projector and the index, and
 		// it must not re-fold a status or failure the original already folded.
 		return
+	}
+	// A span records its kind on its opener, and the opener can be a
+	// transcript-only record that joins no group; keep it for the group the
+	// span's later entries open. Fold copies are history for resume and are
+	// skipped above, like the index skips them.
+	if turn.Format == schema.TurnFormatIdentity && turn.TurnID != "" && turn.TurnKind != "" {
+		if acc.stampedKind == nil {
+			acc.stampedKind = map[string]schema.TurnSpanKind{}
+		}
+		if _, ok := acc.stampedKind[turn.TurnID]; !ok {
+			acc.stampedKind[turn.TurnID] = turn.TurnKind
+		}
 	}
 	if turn.Kind.TranscriptOnly() {
 		// Written for the history projection phase 3 introduces. Today's
@@ -369,7 +387,7 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 			// there until one arrives, so a bare TURN_FAILURE is only a
 			// diagnostic for a later failed completion, not a terminal state.
 			// Every other identity span is completed from its start.
-			if stampedExecution(group.entries) {
+			if acc.stampedExecution(group.turnID) {
 				turn.Status = appwire.TurnStatusInProgress
 				turn.Error = nil
 			}
