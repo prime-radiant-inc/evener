@@ -890,12 +890,11 @@ func (s *Session) boundedEvidenceCurrent(ctx context.Context, evidence cliMCPCla
 		current := evidence.layers.EvidenceCurrent(env)
 		// Released when the check ANSWERS, not when its caller collects the
 		// answer. The claim means "a check is outstanding", and once the read has
-		// returned there is none. Releasing after the send left a window where an
-		// answered probe still looked in flight, so a caller that had received its
-		// answer could ask again — the request path does exactly that — and be told
-		// "unknown", clearing a standing roster decision (#7065). A caller that
-		// gave up is unaffected: the claim is held until this read answers, which
-		// is the one-at-a-time rule.
+		// returned there is none. Holding the claim until the caller receives the
+		// answer makes an answered probe look in flight, so a second check on the
+		// same workspace is refused and reports the evidence as unknown. A caller
+		// that gave up is unaffected: the claim is held until this read answers,
+		// which is the one-at-a-time rule.
 		s.releaseEvidenceProbe(key)
 		if hook := s.cfg.testOnly.evidenceProbeChecked; hook != nil {
 			hook()
