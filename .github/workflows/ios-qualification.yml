@@ -269,6 +269,23 @@ jobs:
           # serves only that ref (see "CI Caches" in
           # docs/developing-evener/testing.md).
           cache: false
+      # The runtime pair this job builds downloads modules on every run from a
+      # cold GOMODCACHE. ci.yml's static-build saves the repository's one
+      # shared module cache (`gomod-…`) on main pushes; this job restores the
+      # newest entry by prefix and saves nothing, so the restore adds no entry
+      # to the budget and needs no cache-prune prefix. A module cache holds
+      # module sources and checksums, never compiled objects, so the entry a
+      # Linux amd64 runner wrote restores cleanly here.
+      - name: Resolve the shared Go module cache
+        id: gomod-cache
+        run: echo "dir=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+      - name: Restore the shared Go module cache
+        id: gomod-restore
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ steps.gomod-cache.outputs.dir }}
+          key: gomod-${{ github.sha }}
+          restore-keys: gomod-
       - name: Set up Node 22.13.1
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
