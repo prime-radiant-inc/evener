@@ -2,125 +2,247 @@ package agent
 
 import (
 	"context"
+	"path/filepath"
+	"slices"
 	"testing"
+
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/mcpconfig"
 )
 
-// TestFreshnessVerdictDoesNotSurviveAnEnvironmentSwap pins that an answer about
-// one workspace cannot become the verdict for another.
+// TestStaleProbeCannotEraseANewerWorkspaceDecision is the regression test for
+// the whole spiraling finding.
 //
-// A swap installs the new environment and then clears the old verdict. A check
-// already in flight, started against the workspace being left, finishes after
-// that and would write its answer back — restoring a claim about a workspace the
-// session no longer occupies. In the permissive direction that keeps the NEW
-// workspace's fallback tool out of the roster, which is the defect this
-// classification exists to prevent, arriving through the swap path.
+// Three rounds of fixes grew out of ONE shape — a probe PUBLISHING its answer
+// into session state — and each round patched a different way that publication
+// could go wrong: a timed-out caller erased a newer verdict, a completed obsolete
+// caller erased it too, and a caller holding an old revision could replace the
+// new revision's probe slot.
 //
-// The assertion is on the revision guard, so the check never has to reach the
-// filesystem: the verdict is published only for the environment it was computed
-// for.
-func TestFreshnessVerdictDoesNotSurviveAnEnvironmentSwap(t *testing.T) {
-	t.Parallel()
-	s := &Session{}
+// The design under test removes the publication. A probe returns its answer to
+// its caller, and only request preparation — under s.mu, after confirming the
+// workspace it probed is still installed — writes the one roster decision. So
+// this test runs the obsolete caller to completion against the workspace the
+// session has left, and then drives a real model request for the installed
+// workspace. The decision the installed workspace established must survive both.
+func TestStaleProbeCannotEraseANewerWorkspaceDecision(t *testing.T) {
+	// Not parallel: hermeticInfraEnv calls t.Setenv.
+	hermeticInfraEnv(t)
+	rootA := realTempDirForTest(t)
+	runInfraGit(t, rootA, "init", "-q")
+	writeInfraFile(t, filepath.Join(rootA, ".evener", "mcp.json"),
+		`{"mcpServers":{"svc":{"command":"/bin/a"}}}`, 0o644)
+	envA := execenv.NewLocalExecutionEnvironment(rootA)
 
-	// Hold the single-flight with a check for the CURRENT revision, so the waiter
-	// under test occupies the join path rather than starting a new worker.
-	done := make(chan struct{})
-	s.freshnessCheckMu.Lock()
-	startRevision := s.cliMCPEnvRevision
-	s.freshnessCheck = &exclusionFreshnessCheck{done: done, revision: startRevision}
-	s.freshnessCheckMu.Unlock()
+	rootB := realTempDirForTest(t)
+	runInfraGit(t, rootB, "init", "-q")
+	writeInfraFile(t, filepath.Join(rootB, ".evener", "mcp.json"),
+		`{"mcpServers":{"svc":{"command":"/bin/b"}}}`, 0o644)
+	envB := execenv.NewLocalExecutionEnvironment(rootB)
 
-	// The swap lands while that check is in flight: the revision moves and the old
-	// verdict is dropped, exactly as invalidateCLIMCPClassification does.
-	s.invalidateCLIMCPClassification()
-
-	// The check now finishes, reporting a verdict about the OLD environment.
-	s.freshnessCheckMu.Lock()
-	s.freshnessCheck.fresh = true
-	s.freshnessCheck = nil
-	s.freshnessCheckMu.Unlock()
-	close(done)
-
-	// A refresh that read its revision before the swap and lands its result after
-	// must not record it.
-	if s.cliMCPEnvRevision == startRevision {
-		t.Fatalf("fixture is wrong: the swap did not move the revision, so nothing would be discarded")
+	// Evidence for each workspace's own layers.
+	_, _, evidenceA, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidenceForProjectEnv(envA, nil, nil, nil, false, false)
+	if err != nil {
+		t.Fatalf("discover A: %v", err)
 	}
-	s.publishFreshnessForRevision(true, startRevision)
+	_, _, evidenceB, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidenceForProjectEnv(envB, nil, nil, nil, false, false)
+	if err != nil {
+		t.Fatalf("discover B: %v", err)
+	}
+	// A's evidence must NOT verify against B, or the obsolete probe's answer
+	// would be indistinguishable from a current one and the test would prove
+	// nothing.
+	if evidenceA.EvidenceCurrent(envB) {
+		t.Fatal("fixture is wrong: A's evidence verifies against B, so the two workspaces cannot be told apart")
+	}
 
-	s.delegateExclusionsMu.RLock()
-	known := s.cliMCPEvidenceFreshKnown
-	fresh := s.cliMCPEvidenceFresh
-	s.delegateExclusionsMu.RUnlock()
-	if known {
-		t.Errorf("a verdict computed for a workspace the session left was published (fresh=%v); the new workspace must start unknown", fresh)
+	const cliTool = "svc__echo"
+	s := newSession(t, withEnv(envB))
+	s.setCLIMCPToolNames(map[string]bool{cliTool: true})
+	s.setCLIMCPServers(map[string]bool{"svc": true}, nil, evidenceB)
+	s.setRosterExclusion(true)
+	// B's own answer really is "exclude", so the request path below has a
+	// standing decision to preserve rather than one it would clear anyway.
+	if !s.probeCLIEvidenceFresh(context.Background(), envB) {
+		t.Fatal("fixture is wrong: B's evidence does not verify against B, so there is no current answer to preserve")
+	}
+
+	// The obsolete caller finishes its own question about A.
+	if !s.boundedEvidenceCurrent(context.Background(), cliMCPClassificationEvidence{layers: evidenceA}, envA) {
+		t.Fatal("fixture is wrong: A's evidence did not verify against A, so the obsolete caller had no answer at all")
+	}
+	// It wrote nothing. There is no shared verdict for it to erase.
+	if !s.rosterExclusion() {
+		t.Fatal("an obsolete probe erased the installed workspace's roster decision, so the next request would advertise tools that workspace's children cannot register")
+	}
+
+	// And the real request path, which probes the INSTALLED workspace, keeps it:
+	// B's evidence verifies, so the standing decision is confirmed, not cleared.
+	s.refreshCachesForExclusionChangeContext(context.Background())
+	if !s.rosterExclusion() {
+		t.Error("the request path cleared the installed workspace's decision after an obsolete probe ran")
+	}
+	if got := s.removeChildUnreachableTools([]string{cliTool, "read_file"}, "", s.rosterExclusion()); slices.Contains(got, cliTool) {
+		t.Errorf("the roster re-admitted %q after an obsolete probe ran: %v", cliTool, got)
 	}
 }
 
-// TestFreshnessVerdictIsPublishedForItsOwnRevision is the other direction: a
-// result whose environment is still installed is recorded, so the guard is a
-// revision check and not a refusal to ever publish.
-func TestFreshnessVerdictIsPublishedForItsOwnRevision(t *testing.T) {
-	t.Parallel()
-	s := &Session{}
-	s.publishFreshnessForRevision(true, s.cliMCPEnvRevision)
+// TestTimedOutProbeLeavesTheRosterDecisionStanding is the timing half: a probe
+// whose caller gives up must not clear a decision that is already in force.
+//
+// The old design forgot the verdict on a timeout, which left the roster
+// permissive — a safe direction in isolation, but the same write raced a newer
+// publication and erased it. Both are impossible here because the only writer of
+// the decision is the request path, and it writes only from a probe that ANSWERED
+// for the installed workspace.
+func TestTimedOutProbeLeavesTheRosterDecisionStanding(t *testing.T) {
+	// Not parallel: hermeticInfraEnv calls t.Setenv.
+	hermeticInfraEnv(t)
+	root := realTempDirForTest(t)
+	runInfraGit(t, root, "init", "-q")
+	writeInfraFile(t, filepath.Join(root, ".evener", "mcp.json"),
+		`{"mcpServers":{"svc":{"command":"/bin/a"}}}`, 0o644)
+	local := execenv.NewLocalExecutionEnvironment(root)
+	_, _, evidence, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidenceForProjectEnv(local, nil, nil, nil, false, false)
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	env := stalledGitEnv{ExecutionEnvironment: local, started: make(chan struct{})}
 
-	s.delegateExclusionsMu.RLock()
-	known := s.cliMCPEvidenceFreshKnown
-	fresh := s.cliMCPEvidenceFresh
-	s.delegateExclusionsMu.RUnlock()
-	if !known || !fresh {
-		t.Errorf("a verdict for the installed environment was discarded: known=%v fresh=%v", known, fresh)
+	s := &Session{env: env}
+	s.setCLIMCPToolNames(map[string]bool{"svc__echo": true})
+	s.setCLIMCPServers(map[string]bool{"svc": true}, nil, evidence)
+	s.setRosterExclusion(true)
+
+	// A bound far below the stall, so the probe returns while the read is stuck.
+	ctx, cancel := context.WithTimeout(context.Background(), freshnessRequestBound)
+	defer cancel()
+	if s.probeCLIEvidenceFresh(ctx, s.currentEnv()) {
+		t.Fatal("a probe that could not finish answered true; an unobserved layer is unknown, never current")
+	}
+	select {
+	case <-env.started:
+	default:
+		t.Fatal("the probe never reached the git call, so this fixture did not exercise the stall it claims to")
+	}
+
+	if !s.rosterExclusion() {
+		t.Error("a timed-out probe cleared the standing roster decision")
 	}
 }
 
-// TestJoinedFreshnessAnswerIsNotPublishedUnderAnotherRevision pins the JOINER's
-// half of the same rule.
+// TestProbeReturnsTheAnswerToItsCaller pins that the probe is a QUESTION with an
+// ANSWER, not a state transition.
 //
-// A joiner reads the answer to a check it did not start, and that answer
-// describes the environment its WORKER began in. A check can outlive a cancelled
-// delegate call, and the session can switch worktrees before the next
-// shared-workspace spawn: if the joiner published the answer under its own
-// revision, a fresh verdict for the workspace the session left would strip a tool
-// the new workspace provides from the next child's durable ceiling. That is the
-// wrong direction — uncertainty must leave a name eligible, never remove it.
-func TestJoinedFreshnessAnswerIsNotPublishedUnderAnotherRevision(t *testing.T) {
+// This is the property that makes the whole design work, and it is worth its own
+// test because every previous round lost it: the probe returned nothing and
+// published instead, so its only observable effect was on shared state — which is
+// exactly what made the ordering cases possible.
+func TestProbeReturnsTheAnswerToItsCaller(t *testing.T) {
+	// Not parallel: hermeticInfraEnv calls t.Setenv.
+	hermeticInfraEnv(t)
+	root := realTempDirForTest(t)
+	runInfraGit(t, root, "init", "-q")
+	layer := filepath.Join(root, ".evener", "mcp.json")
+	writeInfraFile(t, layer, `{"mcpServers":{"svc":{"command":"/bin/a"}}}`, 0o644)
+	env := execenv.NewLocalExecutionEnvironment(root)
+	_, _, evidence, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, nil, nil, nil, false, false)
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+
+	s := &Session{env: env}
+	s.setCLIMCPToolNames(map[string]bool{"svc__echo": true})
+	s.setCLIMCPServers(map[string]bool{"svc": true}, nil, evidence)
+
+	if !s.probeCLIEvidenceFresh(context.Background(), env) {
+		t.Fatal("the probe did not report current evidence for the workspace the evidence describes")
+	}
+	// The answer did not become state: the roster decision is still the safe
+	// default, so a later caller is free to reach its own answer.
+	if s.rosterExclusion() {
+		t.Error("the probe wrote the roster decision; only the request path may, under s.mu, after confirming the workspace is still installed")
+	}
+
+	// The other direction: evidence for a layer that has since changed answers
+	// false, and again writes nothing.
+	writeInfraFile(t, layer, `{"mcpServers":{"svc":{"command":"/bin/changed"}}}`, 0o644)
+	if s.probeCLIEvidenceFresh(context.Background(), env) {
+		t.Error("the probe reported current evidence for a layer that changed")
+	}
+	if s.rosterExclusion() {
+		t.Error("the probe wrote the roster decision")
+	}
+}
+
+// TestProbeSkipsWorkItCouldNotUse pins the two short-circuits, which are what
+// keep the request path from paying for an answer nothing reads.
+//
+// Neither is a behavioural nicety: with no classified CLI names the exclusion
+// could not remove anything, and with an unverifiable plugin source the CLI half
+// is never applied. In both cases a probe on every model round would be pure
+// cost, and on a stalled mount it would be the full budget of it.
+func TestProbeSkipsWorkItCouldNotUse(t *testing.T) {
 	t.Parallel()
-	s := &Session{}
-	s.cliMCPToolNames = map[string]bool{"svc__echo": true}
 
-	// A check for the OLD workspace is still in flight. Its revision is the one
-	// the session had before the swap below.
-	workerRevision := s.cliMCPEnvRevision
-	done := make(chan struct{})
-	s.freshnessCheckMu.Lock()
-	s.freshnessCheck = &exclusionFreshnessCheck{done: done, revision: workerRevision, fresh: true, settled: true}
-	s.freshnessCheckMu.Unlock()
-
-	// The session switches worktrees: a new revision, and the old verdict dropped.
-	s.invalidateCLIMCPClassification()
-	callerRevision := s.cliMCPEnvRevision
-	if callerRevision == workerRevision {
-		t.Fatal("fixture is wrong: the swap did not move the revision, so there is no mismatch to discard")
+	// Nothing classified: no probe, and the answer is the safe one.
+	noNames := &Session{}
+	if noNames.probeCLIEvidenceFresh(context.Background(), nil) {
+		t.Error("a session with no classified CLI names probed anyway")
 	}
 
-	// A NEWER verdict the installed workspace recorded, which the stale answer
-	// must leave standing rather than overwrite.
-	s.publishFreshnessForRevision(false, callerRevision)
-
-	// Let the old check finish, then JOIN it from the new revision. This is the
-	// caller-side path: the answer is the worker's, not this caller's.
-	close(done)
-	s.refreshCLIEvidenceFreshnessContext(context.Background())
-
-	s.delegateExclusionsMu.RLock()
-	known := s.cliMCPEvidenceFreshKnown
-	fresh := s.cliMCPEvidenceFresh
-	s.delegateExclusionsMu.RUnlock()
-	if !known {
-		t.Error("the joined answer from the old workspace cleared the newer verdict the installed workspace had recorded")
+	// A configured plugin directory: the child reloads it from disk, so the CLI
+	// half cannot be applied and the probe's answer would be discarded.
+	withPlugin := &Session{cfg: SessionConfig{PluginDirs: []string{t.TempDir()}}}
+	withPlugin.setCLIMCPToolNames(map[string]bool{"svc__echo": true})
+	if withPlugin.probeCLIEvidenceFresh(context.Background(), nil) {
+		t.Error("a session with an unverifiable plugin source probed anyway")
 	}
-	if fresh {
-		t.Error("the joined answer from the old workspace replaced the newer verdict: it was published under the caller's revision")
+
+	// A plugin config, even with no configured directory, is the same case.
+	withPluginConfig := &Session{pluginMCPConfigs: []mcpconfig.ServerConfig{{Name: "plugin_svc"}}}
+	withPluginConfig.setCLIMCPToolNames(map[string]bool{"svc__echo": true})
+	if withPluginConfig.probeCLIEvidenceFresh(context.Background(), nil) {
+		t.Error("a session whose plugin MCP configs cannot be fingerprinted probed anyway")
+	}
+}
+
+// TestProbeAgainstAChangedWorkspaceAnswersFalse is the workspace-scoping half,
+// stated directly on the helper the two callers share.
+//
+// A session that switches branches in place, or has a repository initialized
+// around it, keeps its environment, so nothing else would notice that a layer now
+// declares a server the startup snapshot never saw. The probe must answer for the
+// WORKSPACE it is given, not for the evidence's own workspace.
+func TestProbeAgainstAChangedWorkspaceAnswersFalse(t *testing.T) {
+	// Not parallel: hermeticInfraEnv calls t.Setenv.
+	hermeticInfraEnv(t)
+	root := realTempDirForTest(t)
+	runInfraGit(t, root, "init", "-q")
+	layer := filepath.Join(root, ".evener", "mcp.json")
+	writeInfraFile(t, layer, `{"mcpServers":{"svc":{"command":"/bin/a"}}}`, 0o644)
+	env := execenv.NewLocalExecutionEnvironment(root)
+	_, _, evidence, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, nil, nil, nil, false, false)
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+
+	s := &Session{env: env}
+	s.setCLIMCPToolNames(map[string]bool{"svc__echo": true})
+	s.setCLIMCPServers(map[string]bool{"svc": true}, nil, evidence)
+	if !s.probeCLIEvidenceFresh(context.Background(), env) {
+		t.Fatal("fixture is wrong: the probe did not verify unchanged evidence, so the negative below proves nothing")
+	}
+
+	// The layer gains a server the child could discover.
+	writeInfraFile(t, layer, `{"mcpServers":{"svc":{"command":"/bin/a"},"other":{"command":"/bin/c"}}}`, 0o644)
+	if s.probeCLIEvidenceFresh(context.Background(), env) {
+		t.Error("the probe reported current evidence after the project layer changed, so the roster would keep excluding a name that layer makes reachable")
+	}
+
+	// A different workspace entirely: the evidence describes the first one.
+	other := execenv.NewLocalExecutionEnvironment(realTempDirForTest(t))
+	if s.probeCLIEvidenceFresh(context.Background(), other) {
+		t.Error("the probe reported current evidence for a workspace the evidence does not describe")
 	}
 }

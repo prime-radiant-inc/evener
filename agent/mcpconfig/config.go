@@ -28,6 +28,19 @@ type ServerConfig struct {
 	Env     map[string]string // extra env vars (merged with process env)
 	URL     string            // sse/http: server URL
 	Headers map[string]string // sse/http: extra headers
+	// DenyNetworkException withholds the trusted-infrastructure network
+	// carve-out from this server. It is set on a project-layer stdio entry that
+	// a sandboxed delegate admitted WITHOUT launch authorization, so the spawn
+	// runs under ordinary sandbox confinement: net=off severs its egress
+	// exactly as it severs a model-authored spawn, while local tools still
+	// work. The zero value keeps the existing exception for every global, CLI,
+	// plugin, and launch-authorized server, which is why the field is a
+	// refusal and not an allowance.
+	//
+	// It is discovery metadata for the spawn site, never configuration: the
+	// JSON tag keeps it out of any encoding of a server, and no config layer
+	// can set it.
+	DenyNetworkException bool `json:"-"`
 }
 
 // ServerInfo describes a connected MCP server and its tools.
@@ -618,6 +631,15 @@ func projectRepoRoot(env execenv.ExecutionEnvironment) string {
 // empty when the layer was simply absent, and Path is empty when the layer could
 // not be verified at all.
 //
+// Path is ALSO empty for a layer whose bytes read but did not PARSE. Dropping
+// such a layer here is not the same as establishing its absence: a sandboxed
+// child parses the file entry by entry and registers the entries beside the
+// broken one, so a classification derived from the dropped layer understates
+// what the child reaches. Empty Path is the established "unknown reachability"
+// answer — EvidenceCurrent returns false for it — and every reader then leaves
+// the affected names eligible. The digest stays recorded, because it was taken
+// from the same read and remains a true statement about those bytes.
+//
 // It exists because a classification derived from the parsed layer and a
 // fingerprint taken by a second read are two facts that can disagree — a file
 // edited between them pairs a stale classification with a fresh digest, and the
@@ -839,14 +861,17 @@ func DiscoverWithLaunchEnv(env execenv.ExecutionEnvironment, extraFiles, inlineS
 // which is the difference between withholding a credential and disabling the
 // repository's whole MCP config.
 //
-// noNet refuses the network exception for unauthorized remote servers. A
-// sandboxed session's stdio MCP servers run under ConfineTrustedInfra, which
-// deliberately keeps the network reachable even at net=off (see
-// agent/internal/mcp), and sse/http servers are dialled by the host process
-// itself, so an unauthorized `{"type":"http","url":...}` entry would reach the
-// host network no matter what the sandbox says. With noNet, such an entry is
-// skipped with a warning instead of connected. Launch-authorized servers keep
-// the exception: the launch is what authorized them.
+// The network exception follows authorization too. A sandboxed session's stdio
+// MCP servers run under ConfineTrustedInfra, which deliberately keeps the
+// network reachable even at net=off (see agent/internal/mcp), and sse/http
+// servers are dialled by the host process itself — so an unauthorized project
+// entry would reach the host network no matter what the sandbox says. A stdio
+// entry is therefore still ADMITTED, with DenyNetworkException set, so the spawn
+// site confines it ordinarily and net=off severs its egress while its local
+// tools keep working. A network-transport entry cannot be saved that way, and
+// with noNet it is skipped with a warning instead of connected.
+// Launch-authorized servers keep the exception: the launch is what authorized
+// them.
 //
 // The layers the user authors — the global config and the CLI files — always
 // keep the process environment, and so do the inline specs, which are not
@@ -998,27 +1023,42 @@ func (o discoverOptions) projectLayerReadOptions(env execenv.ExecutionEnvironmen
 // process, and a stdio entry is spawned through ConfineTrustedInfra, which keeps
 // egress even at net=off on the grounds that MCP config the model cannot write
 // is trusted infrastructure. That premise holds only for entries the launch
-// authorized. With noNet, an unauthorized network-transport entry is refused
-// here instead of connected: the sandbox has already withheld the credentials it
-// would carry, and this is the other half — it does not get the host's network
-// either.
+// authorized, so an unauthorized entry loses the exception in the way its
+// transport allows:
 //
-// Authorized servers and stdio servers pass through untouched, as does every
-// server when noNet is not set.
+//   - A stdio entry is ADMITTED, so its local tools still work, and marked
+//     DenyNetworkException, so the spawn site confines it with ordinary sandbox
+//     confinement and net=off severs its egress like any model-influenced spawn.
+//   - With noNet, a network-transport entry is REFUSED here instead of
+//     connected: the sandbox has already withheld the credentials it would
+//     carry, and this is the other half — it does not get the host's network
+//     either. With the network enabled there is no exception to withhold, so it
+//     is admitted unchanged.
+//
+// Authorized servers pass through untouched, as does every server when nothing
+// is sandboxed.
 func (o discoverOptions) admitProjectServers(read layerRead) ([]ServerConfig, []string) {
-	if !o.noNet || !o.sandboxed {
+	if !o.sandboxed {
 		return read.Configs, nil
 	}
 	admitted := make([]ServerConfig, 0, len(read.Configs))
 	var warnings []string
 	for _, cfg := range read.Configs {
-		if read.Authorized[cfg.Name] || !usesNetworkTransport(cfg) {
-			admitted = append(admitted, cfg)
+		switch {
+		case read.Authorized[cfg.Name]:
+		case !usesNetworkTransport(cfg):
+			// The denial is a refusal of the carve-out, not of the server: the
+			// entry still loads and still runs, under the same confinement a
+			// model-authored spawn gets.
+			cfg.DenyNetworkException = true
+		case !o.noNet:
+		default:
+			warnings = append(warnings, fmt.Sprintf(
+				"MCP server %q in %s was not launch-authorized, so it is not connected over the host network while this session's sandbox has network disabled",
+				cfg.Name, read.Evidence.Path))
 			continue
 		}
-		warnings = append(warnings, fmt.Sprintf(
-			"MCP server %q in %s was not launch-authorized, so it is not connected over the host network while this session's sandbox has network disabled",
-			cfg.Name, read.Evidence.Path))
+		admitted = append(admitted, cfg)
 	}
 	return admitted, warnings
 }
@@ -1099,6 +1139,29 @@ func discoverLayers(o discoverOptions) ([]ServerConfig, []CLIOnlyServer, ConfigE
 			if err != nil {
 				if !errors.Is(err, os.ErrNotExist) {
 					warnings = append(warnings, fmt.Sprintf("MCP config %s: %v", projPath, err))
+					// A layer that failed to parse is INCONCLUSIVE, not
+					// established. This read dropped the whole layer, but a
+					// sandboxed child parses the same file entry by entry and
+					// registers every literal entry beside the broken one, so
+					// the classification derived from the dropped layer (a
+					// CLI-only server whose name the layer also declares) does
+					// not describe what the child will find. Clearing the path
+					// is what makes it say so: the evidence can no longer
+					// verify, every reader treats that as unknown reachability,
+					// and the CLI-only names stay ELIGIBLE for the child to try.
+					//
+					// Absence is the other arm and stays recorded: a layer that
+					// is not there is a fact discovery established, while a
+					// layer it could not read is not.
+					//
+					// The digest and per-server digests are kept. They were
+					// recorded from the same bytes and remain true statements
+					// about them; what is withdrawn is the claim that this read
+					// established the layer's contents. Authorization for a
+					// child keys on the path (see projectLayerEligible), so the
+					// withdrawal is also the conservative direction there: a
+					// layer the launch could not parse authorizes nothing.
+					evidence.Project.Path = ""
 				}
 			} else {
 				warnings = append(warnings, read.Warnings...)

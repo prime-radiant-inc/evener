@@ -99,17 +99,9 @@ func (s *Session) refreshSystemPromptCache(env execenv.ExecutionEnvironment) (wa
 // exactly as it did before. Nothing else noticed append edits on their own:
 // there is no watcher and no digest, so this path was never their detection.
 func (s *Session) refreshSystemPromptCacheWithAppends(env execenv.ExecutionEnvironment, reuseAppends bool) (warning string, failed bool) {
-	// Read the decision version BEFORE rendering and stamp it with the prompt. The
-	// stamp then names the decision this prompt was built from, not whatever the
-	// decision happens to be once the render returns: a flip landing mid-render
-	// leaves the stamp old, and the next request rebuilds. Stamping the current
-	// version afterwards would mark a prompt current that was rendered from the
-	// previous answer.
-	builtFrom := s.exclusionVersion()
 	if s.cfg.testOnly.minimalSystemPrompt {
 		s.cachedSystemPrompt = "test system prompt"
 		s.promptSourceLog = nil
-		s.cachedPromptExclusionVersion = builtFrom
 		return "", false
 	}
 	prompt, warning, failed := s.renderSystemPromptWithAppends(env, reuseAppends)
@@ -119,7 +111,6 @@ func (s *Session) refreshSystemPromptCacheWithAppends(env execenv.ExecutionEnvir
 	// text, so the model is still told why it has none.
 	if !failed || s.cachedSystemPrompt == "" {
 		s.cachedSystemPrompt = prompt
-		s.cachedPromptExclusionVersion = builtFrom
 	}
 	return warning, failed
 }

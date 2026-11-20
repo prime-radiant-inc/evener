@@ -166,11 +166,9 @@ var envelopeSamplingPermittedLocks = map[string]string{
 	"Session.executionFrontierMu": "the recorded listener takes only this leaf and releases it before emitting; " +
 		"sampling takes Session.mu then this leaf, so no reverse edge can cycle",
 	"Session.delegateExclusionsMu": "it guards the two name sets the delegate tool ceiling subtracts, " +
-		"which no envelope sample reads or derives from: the exclusion is applied when a ceiling is " +
-		"built, never while sampling an envelope",
-	"Session.freshnessCheckMu": "it guards only the single-flight pointer a delegate ceiling " +
-		"derivation joins, and every hold is a field read or write: the wait on the check's done " +
-		"channel happens AFTER the unlock (sampleExclusionFreshness), so no sample can block on it",
+		"and the one roster decision rendered from them, which no envelope sample reads or derives " +
+		"from: the exclusion is applied when a ceiling is built, never while sampling an envelope. " +
+		"Every hold is a field read or write, and no I/O or channel wait happens inside one",
 }
 
 // TestEnvelopeSamplingNeverBlocksOnAnEmitHeldLock runs every method the daemon's

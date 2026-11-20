@@ -185,6 +185,58 @@ func TestMCPStdioServerUnsandboxedUnchanged(t *testing.T) {
 	}
 }
 
+// TestMCPStdioServerDeniesNetworkExceptionUnderNetOff is Finding 1's proof at
+// the spawn site.
+//
+// ServerConfig.DenyNetworkException marks a stdio server that discovery admitted
+// without launch authorization under a network-disabled sandbox. Such a server
+// must be confined with w.Confine — the same confinement a model-authored spawn
+// gets — so net=off severs its egress with --unshare-net. Every other stdio
+// server keeps the trusted-infrastructure carve-out
+// (TestMCPStdioServerKeepsNetworkUnderNetOff pins that half).
+func TestMCPStdioServerDeniesNetworkExceptionUnderNetOff(t *testing.T) {
+	w := testWrapperNetOff(t)
+	cfg := stdioCfg()
+	cfg.DenyNetworkException = true
+
+	dial := productionDial(cfg, w)
+	tr, err := dial(context.Background())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	ct, ok := tr.(*mcpsdk.CommandTransport)
+	if !ok || ct.Command == nil {
+		t.Fatalf("expected a *CommandTransport with a command, got %T", tr)
+	}
+	// The denial is exactly "confine it like any other model-influenced spawn":
+	// net=off must reach the argv.
+	if !slices.Contains(ct.Command.Args, "--unshare-net") {
+		t.Errorf("an unauthorized stdio project server under net=off must have its network severed (--unshare-net): %v", ct.Command.Args)
+	}
+	// It is still an ordinary sandboxed spawn: every other confinement applies.
+	if ct.Command.Args[0] != "/usr/bin/bwrap" || ct.Command.Path != "/usr/bin/bwrap" {
+		t.Errorf("a denied stdio server must still be spawned under bwrap: args[0]=%q path=%q", ct.Command.Args[0], ct.Command.Path)
+	}
+	if !slices.Contains(ct.Command.Args, "--unshare-pid") {
+		t.Errorf("a denied stdio server must still be kernel-confined: %v", ct.Command.Args)
+	}
+	if ct.Command.ExtraFiles != nil {
+		t.Errorf("fd hygiene: a sandboxed MCP server must inherit no extra fds")
+	}
+
+	// The same config under a network-ENABLED sandbox is unaffected: the field
+	// only withholds an exception, and there is nothing to withhold when egress
+	// is allowed anyway.
+	tr, err = productionDial(cfg, testWrapper(t))(context.Background())
+	if err != nil {
+		t.Fatalf("dial under net=on: %v", err)
+	}
+	ct = tr.(*mcpsdk.CommandTransport)
+	if slices.Contains(ct.Command.Args, "--unshare-net") {
+		t.Errorf("net=on must not emit --unshare-net at all: %v", ct.Command.Args)
+	}
+}
+
 // A session started in a nested package launches its stdio MCP server at the
 // Git worktree root, so the env floor must judge npm's project config there. A
 // root .npmrc naming an unserved external cache has to fall back to the session

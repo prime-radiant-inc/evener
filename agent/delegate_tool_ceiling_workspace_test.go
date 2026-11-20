@@ -50,14 +50,18 @@ func TestChildUnreachableToolsFollowTheDelegateWorkspace(t *testing.T) {
 		s.setManagerOnlyTools(map[string]bool{managerTool: true})
 		s.setCLIMCPToolNames(map[string]bool{cliTool: true})
 		s.setCLIMCPServers(map[string]bool{"svc": true}, nil, evidence)
-		s.refreshCLIEvidenceFreshnessContext(context.Background())
 		return s
 	}
 	ceiling := []string{managerTool, cliTool, ordinary}
 
 	t.Run("same workspace excludes both", func(t *testing.T) {
 		t.Parallel()
-		got := newSession().removeChildUnreachableTools(ceiling, "")
+		s := newSession()
+		// The probe is this caller's answer for this caller's workspace.
+		if !s.probeCLIEvidenceFresh(context.Background(), s.currentEnv()) {
+			t.Fatal("fixture is wrong: the evidence did not verify against the workspace it describes")
+		}
+		got := s.removeChildUnreachableTools(ceiling, "", true)
 		if slices.Contains(got, managerTool) || slices.Contains(got, cliTool) {
 			t.Errorf("same-workspace ceiling kept an unreachable tool: %v", got)
 		}
@@ -68,7 +72,8 @@ func TestChildUnreachableToolsFollowTheDelegateWorkspace(t *testing.T) {
 
 	t.Run("worktree spawn keeps the MCP tool and still drops the manager tool", func(t *testing.T) {
 		t.Parallel()
-		got := newSession().removeChildUnreachableTools(ceiling, "worktree")
+		// A worktree spawn does not probe at all; its ceiling ignores the MCP half.
+		got := newSession().removeChildUnreachableTools(ceiling, "worktree", false)
 		if !slices.Contains(got, cliTool) {
 			t.Errorf("a worktree spawn excluded %q, but its lane may declare that server: %v", cliTool, got)
 		}
@@ -77,18 +82,19 @@ func TestChildUnreachableToolsFollowTheDelegateWorkspace(t *testing.T) {
 		}
 	})
 
-	// A workspace change invalidates the VERDICT, not the classification. The
+	// A workspace change invalidates the DECISION, not the classification. The
 	// classification is what the CLI layers supply, which a swap does not change;
 	// clearing it too meant an environment swap erased the exclusion for the rest
 	// of the session, so returning to the unchanged original workspace could not
 	// recover it and CLI-only tools stayed advertised.
-	t.Run("a workspace change invalidates the verdict but keeps the classification", func(t *testing.T) {
+	t.Run("a workspace change invalidates the decision but keeps the classification", func(t *testing.T) {
 		t.Parallel()
 		moved := newSession()
-		moved.invalidateCLIMCPClassification()
-		got := moved.removeChildUnreachableTools(ceiling, "")
+		moved.setRosterExclusion(true)
+		moved.resetRosterExclusionForWorkspaceChange()
+		got := moved.removeChildUnreachableTools(ceiling, "", moved.rosterExclusion())
 		if !slices.Contains(got, cliTool) {
-			t.Errorf("the invalidated verdict left %q excluded in an environment it does not describe: %v", cliTool, got)
+			t.Errorf("the reset decision left %q excluded in an environment it does not describe: %v", cliTool, got)
 		}
 		if slices.Contains(got, managerTool) {
 			t.Errorf("a workspace change must not re-admit the Manager-only tool %q: %v", managerTool, got)

@@ -284,8 +284,11 @@ func productionDial(cfg mcpconfig.ServerConfig, wrapper *sandbox.Wrapper) func(c
 func productionDialWithEnv(cfg mcpconfig.ServerConfig, wrapper *sandbox.Wrapper, environ func() []string) func(context.Context) (mcpsdk.Transport, error) {
 	return func(ctx context.Context) (mcpsdk.Transport, error) {
 		// MCP servers — stdio and remote (sse/http) alike — are trusted
-		// infrastructure: they are launched only from config layers the model
-		// cannot write, so net=off does not sever them (kata 83pm). Model-directed
+		// infrastructure, so net=off does not sever them (kata 83pm). That holds
+		// for config layers the model cannot write and for project servers the
+		// launch authorized; a project stdio server a sandboxed delegate admitted
+		// without authorization carries DenyNetworkException and is confined
+		// ordinarily instead (see confineCommandUnderSandbox). Model-directed
 		// egress (web_fetch/web_search) is unaffected and stays refused elsewhere.
 		t, err := transportForConfigWithEnv(cfg, environ)
 		if err != nil {
@@ -300,7 +303,7 @@ func productionDialWithEnv(cfg mcpconfig.ServerConfig, wrapper *sandbox.Wrapper,
 				if err := confirmSandboxForServer(ctx, wrapper); err != nil {
 					return nil, err
 				}
-				confineCommandUnderSandbox(ct.Command, cfg.Env, wrapper, environ)
+				confineCommandUnderSandbox(ct.Command, cfg, wrapper, environ)
 			}
 		}
 		return t, nil
@@ -341,21 +344,39 @@ const serverSandboxRecheckPause = time.Second
 // configured cfg.Env var — even a secret-named one, which is deliberate server
 // configuration — survives. The floor (ssh-agent handle, cloud creds, TMPDIR,
 // cache redirect) is applied last.
-// environ must return the parent environment to scrub before cfgEnv is
+//
+// Which wrapper method applies is cfg.DenyNetworkException's question, and it is
+// the whole trusted-infrastructure decision:
+//
+//   - The default is ConfineTrustedInfra: the server's config came from a layer
+//     the model cannot write (global, CLI, plugin) or from a project layer the
+//     launch authorized, so it is trusted infrastructure (kata 83pm) and keeps
+//     egress even at net=off.
+//   - A project server a sandboxed delegate admitted WITHOUT launch
+//     authorization (mcpconfig.DiscoverWithCLIOnlyAndEvidenceForProjectEnv) sets
+//     DenyNetworkException, and gets Confine instead: the ordinary confinement a
+//     model-authored spawn receives, so net=off severs its network while local
+//     tools keep working.
+//
+// Both methods wrap the argv and set cmd.Dir for Seatbelt the same way, so the
+// filesystem confinement, exec floor, and fd hygiene are identical either way.
+// environ must return the parent environment to scrub before cfg.Env is
 // applied. productionDial passes os.Environ; deterministic construction tests
 // pass a fixed slice.
-func confineCommandUnderSandbox(cmd *exec.Cmd, cfgEnv map[string]string, w *sandbox.Wrapper, environ func() []string) {
-	base := mergeEnvInto(sandbox.ScrubSecretEnv(environ()), cfgEnv)
+func confineCommandUnderSandbox(cmd *exec.Cmd, cfg mcpconfig.ServerConfig, w *sandbox.Wrapper, environ func() []string) {
+	base := mergeEnvInto(sandbox.ScrubSecretEnv(environ()), cfg.Env)
 	// The floor must judge npm's project config from the directory the server
 	// is confined to, not the session's launch dir.
 	workingDir := w.Policy().Git.WorktreeRoot
 	cmd.Env = sandbox.ApplyEnvFloorInDir(base, w.Policy(), w.SessionTmp(), workingDir)
-	// ConfineTrustedInfra wraps the argv and, for Seatbelt, sets cmd.Dir to the
-	// worktree so a macOS MCP server starts in the same directory a Linux
-	// (bwrap, via --chdir) one does — sandbox-exec has no chdir flag. Unlike
-	// Confine, it keeps network access under net=off: MCP servers are trusted
-	// infrastructure (kata 83pm), not model-directed egress.
-	w.ConfineTrustedInfra(cmd, workingDir)
+	// Confinement wraps the argv and, for Seatbelt, sets cmd.Dir to the worktree
+	// so a macOS MCP server starts in the same directory a Linux (bwrap, via
+	// --chdir) one does — sandbox-exec has no chdir flag.
+	if cfg.DenyNetworkException {
+		w.Confine(cmd, workingDir)
+	} else {
+		w.ConfineTrustedInfra(cmd, workingDir)
+	}
 	cmd.ExtraFiles = nil
 }
 

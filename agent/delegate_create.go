@@ -307,11 +307,16 @@ func (s *Session) delegateActor(ctx context.Context) (delegateActor, error) {
 // authorization and recovery on one bound, and the removed names let a cold
 // resume tell a role denial (permanent) from a reachability denial, which is a
 // fact about the workspace the ceiling was computed in.
-// ctx is the CALLER's, because deriving the ceiling waits on the in-flight
-// freshness check. That wait must end when the caller does: a delegate tool call
-// that joins a check stalled on a dead mount would otherwise wait on it forever,
-// past Stop cancelling the turn. An expired wait leaves reachability unknown,
-// which keeps the names eligible and lets the spawn proceed.
+//
+// The reachability half is decided HERE, from a bounded probe of this session's
+// current workspace, and the outcome is used locally: it reaches the descriptor
+// this spawn records and nothing else. A worktree lane skips the probe entirely,
+// because its ceiling ignores the MCP half whatever the answer says.
+//
+// ctx is the CALLER's, because the probe waits on I/O. That wait must end when
+// the caller does: a delegate tool call stalled on a dead mount would otherwise
+// wait past Stop cancelling the turn. An expired probe answers "unknown", which
+// keeps the names eligible and lets the spawn proceed.
 func (s *Session) delegateEffectiveToolNameCeiling(ctx context.Context, selection subagentModelSelection, args delegateArgs, isolationName string) (ceiling, reachabilityExcluded []string) {
 	return s.subagentToolNameCeilingAndExcluded(ctx, selection.agent, args.grantsDelegation(), isolationName)
 }

@@ -63,11 +63,9 @@ func TestCLIClassificationEvidenceTreatsAnUnreadableLayerAsUnknown(t *testing.T)
 	if err := syscall.Mkfifo(layer, 0o600); err != nil {
 		t.Skipf("this platform cannot create a named pipe: %v", err)
 	}
-	s := &Session{env: env}
-
 	result := make(chan bool, 1)
 	go func() {
-		result <- s.cliMCPClassificationCurrent(cliMCPClassificationEvidence{layers: evidence}, s.currentEnv())
+		result <- evidence.EvidenceCurrent(env)
 	}()
 	select {
 	case current := <-result:

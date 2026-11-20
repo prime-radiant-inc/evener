@@ -274,13 +274,6 @@ func (s *Session) rebuildToolDefsCache() {
 		}
 		return
 	}
-	// The definitions below read the delegate ceiling, which the CLI-MCP
-	// exclusion can change while the session runs. Record which decision they
-	// were built from so the request path can rebuild on a flip. This stamps the
-	// DEFINITIONS cache only: the prompt is a separate cache with its own stamp,
-	// set where refreshSystemPromptCache renders, so a caller that rebuilds one
-	// without the other cannot mark the other current.
-	s.cachedExclusionVersion = s.exclusionVersion()
 	s.composeHubRegistry()
 	registered := s.reg.RegisteredNames()
 

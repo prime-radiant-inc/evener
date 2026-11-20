@@ -52,16 +52,14 @@ func TestModelRequestRefreshesTheExclusionCachesWithoutASpawn(t *testing.T) {
 	s.setCLIMCPToolNames(map[string]bool{cliTool: true})
 	// Settle the caches on the startup answer, so the edit below is the only
 	// thing that can move them.
-	for range 4 {
-		s.refreshCachesForExclusionChangeContext(context.Background())
-	}
-	if !s.cliMCPExclusionApplied {
+	s.refreshCachesForExclusionChangeContext(context.Background())
+	if !s.rosterExclusion() {
 		t.Fatal("the fixture did not start with the exclusion applied")
 	}
 
 	before := prepareRequestSnapshot(t, s)
-	if before.exclusionVersion == 0 {
-		t.Fatal("the request path stamped no exclusion version, so the fixture cannot observe a rebuild")
+	if !before.rosterExcludesCLIMCP {
+		t.Fatal("the request path did not carry the applied roster decision, so the fixture cannot observe a flip")
 	}
 	// The WIRE is what this test is for. The tool must be absent from the
 	// request before the edit, in both places a model reads it: the role roster
@@ -80,11 +78,11 @@ func TestModelRequestRefreshesTheExclusionCachesWithoutASpawn(t *testing.T) {
 	writeInfraFile(t, projectPath, `{"mcpServers":{"svc":{"command":"/bin/b"}}}`, 0o644)
 
 	after := prepareRequestSnapshot(t, s)
-	if s.cliMCPExclusionApplied {
+	if s.rosterExclusion() {
 		t.Error("the request path kept applying the startup exclusion after an in-place config edit")
 	}
-	if after.exclusionVersion == before.exclusionVersion {
-		t.Fatalf("the model request still serves caches built from exclusion version %d after a config edit, so the refresh is not wired into the request path", before.exclusionVersion)
+	if after.rosterExcludesCLIMCP {
+		t.Fatal("the model request still carries the startup roster decision after a config edit, so the refresh is not wired into the request path")
 	}
 	// Both provider-facing surfaces must now carry the name, read from the
 	// RETURNED request. Recomputing the roster from live session state is what
@@ -104,9 +102,9 @@ func TestModelRequestRefreshesTheExclusionCachesWithoutASpawn(t *testing.T) {
 type requestSnapshot struct {
 	systemPrompt   string
 	delegateRoster string
-	// exclusionVersion is the version the tool-definition cache was built from,
+	// rosterExcludesCLIMCP is the decision the rendered caches were built from,
 	// which is how a rebuild on the request path is observable.
-	exclusionVersion uint64
+	rosterExcludesCLIMCP bool
 }
 
 // prepareRequestSnapshot drives one real model request and reads the request it
@@ -137,9 +135,7 @@ func prepareRequestSnapshot(t *testing.T, s *Session) requestSnapshot {
 	if snapshot.delegateRoster == "" {
 		t.Fatal("the prepared request has no delegate tool definition with an agent_type description, so the schema half cannot be observed")
 	}
-	s.mu.Lock()
-	snapshot.exclusionVersion = s.cachedExclusionVersion
-	s.mu.Unlock()
+	snapshot.rosterExcludesCLIMCP = s.rosterExclusion()
 	return snapshot
 }
 

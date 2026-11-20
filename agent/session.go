@@ -135,56 +135,26 @@ type Session struct {
 	// above was derived from: the file the layer-2 project config resolves to,
 	// what it contained, and whether it existed. The classification is only
 	// sound while this still describes the session's current workspace, so a
-	// ceiling build re-verifies it and leaves MCP names eligible when it cannot
-	// (see cliMCPClassificationCurrent).
+	// probe re-verifies it and leaves MCP names eligible when it cannot (see
+	// probeCLIEvidenceFresh).
 	cliMCPEvidence cliMCPClassificationEvidence
-	// cliMCPEvidenceFresh is whether cliMCPEvidence still describes what a child
-	// would discover now, resolved OUTSIDE s.mu and stored for the ceiling build
-	// to read. cliMCPEvidenceFreshKnown distinguishes "never resolved" from
-	// "resolved false", the same way cliMCPExclusionKnown does below.
+	// rosterExcludesCLIMCP is the ONE roster decision both cached surfaces read:
+	// the <available_agents> roster in the system prompt and the delegate tool
+	// definition's agent_type description are rendered from this boolean, so the
+	// two cannot disagree about which CLI-only MCP names a delegate may use.
 	//
-	// The split exists because the two requirements pull against each other: the
-	// answer has to be re-derived often (a config edit must not wait for a
-	// delegate spawn), and it must not be derived while holding s.mu (the ceiling
-	// is built under it, and the derivation reads the filesystem and runs git).
-	// So the request path resolves the verdict before it takes the lock, writes it
-	// here under delegateExclusionsMu, and the ceiling reads the stored answer
-	// without doing any I/O. Not-yet-resolved keeps names eligible: unknown
-	// reachability never excludes.
-	cliMCPEvidenceFresh      bool
-	cliMCPEvidenceFreshKnown bool
-	// cliMCPExclusionApplied records whether the CLI-MCP half of the delegate
-	// exclusion is currently in force, and cliMCPExclusionVersion counts the
-	// times that answer changed. A change invalidates every cached view derived
-	// from it: the rendered <available_agents> roster and the delegate tool
-	// definition. cliMCPExclusionKnown distinguishes "never decided" from
-	// "decided false", so the first decision counts as a change.
-	cliMCPExclusionKnown   bool
-	cliMCPExclusionApplied bool
-	cliMCPExclusionVersion uint64
-	// cliMCPEnvRevision counts the environment installs this session has made. A
-	// freshness check is an answer ABOUT one environment, so its result is
-	// discarded if the environment changed while it ran: the swap already dropped
-	// the old verdict, and a check that started before the swap must not write a
-	// new one from the workspace the session just left.
-	cliMCPEnvRevision uint64
-	// freshnessCheck is non-nil while one freshness check is in flight, so a
-	// stalled filesystem costs the request path one goroutine however many
-	// requests arrive meanwhile. The in-flight check carries its own result:
-	// waiting on a check and then reading session state could see a newer check's
-	// unfinished answer instead.
-	freshnessCheckMu sync.Mutex
-	freshnessCheck   *exclusionFreshnessCheck
-	// cachedExclusionVersion is the decision version the cached TOOL DEFINITIONS
-	// were built from, and cachedPromptExclusionVersion the one the cached SYSTEM
-	// PROMPT was built from. They are two fields because they are two caches with
-	// two rebuild paths: SetVisionModel rebuilds only the definitions, so a single
-	// shared stamp let that rebuild mark the prompt current too, and the next
-	// request then skipped the refresh and kept serving a roster from the old
-	// decision. Each cache stamps its own version where it is rebuilt.
-	cachedExclusionVersion uint64
-	// cachedPromptExclusionVersion is read under s.mu with the prompt it stamps.
-	cachedPromptExclusionVersion uint64
+	// There is exactly one writer rule, and it is what replaced the shared
+	// verdict plus two cache version stamps: the value is set where a
+	// workspace-scoped probe outcome can be APPLIED to this session's roster —
+	// session init, the environment-swap reset, and request preparation
+	// (refreshCachesForExclusionChangeContext). The probe itself never writes
+	// here, so a caller whose workspace has moved on cannot erase the decision
+	// the installed workspace established.
+	//
+	// It is guarded by delegateExclusionsMu rather than s.mu because the ceiling
+	// is built on both paths: request preparation renders the roster already
+	// holding s.mu, and delegate creation derives a ceiling without it.
+	rosterExcludesCLIMCP bool
 	// delegateExclusionsMu guards the two sets above. They cannot ride s.mu:
 	// the delegate-create path computes the ceiling without holding s.mu, while
 	// the prompt-render path computes it already holding s.mu, and s.mu is not

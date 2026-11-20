@@ -59,8 +59,10 @@ func TestUnresolvableGitRootKeepsCLINamesEligible(t *testing.T) {
 	confirmed.setManagerOnlyTools(nil)
 	confirmed.setCLIMCPServers(map[string]bool{"svc": true}, nil, evidence)
 	confirmed.setCLIMCPToolNames(map[string]bool{"svc__echo": true})
-	confirmed.refreshCLIEvidenceFreshnessContext(context.Background())
-	if got := confirmed.removeChildUnreachableTools([]string{"svc__echo", "read_file"}, ""); slices.Contains(got, "svc__echo") {
+	if !confirmed.probeCLIEvidenceFresh(context.Background(), confirmed.currentEnv()) {
+		t.Fatal("fixture is wrong: the evidence did not verify in the confirmed non-repository it was captured from")
+	}
+	if got := confirmed.removeChildUnreachableTools([]string{"svc__echo", "read_file"}, "", true); slices.Contains(got, "svc__echo") {
 		t.Fatalf("fixture is wrong: a confirmed absent project layer did not apply the exclusion, so the second half could not show it being lifted: %v", got)
 	}
 
@@ -75,9 +77,12 @@ func TestUnresolvableGitRootKeepsCLINamesEligible(t *testing.T) {
 	s.setManagerOnlyTools(nil)
 	s.setCLIMCPServers(map[string]bool{"svc": true}, nil, evidence)
 	s.setCLIMCPToolNames(map[string]bool{"svc__echo": true})
-	s.refreshCLIEvidenceFreshnessContext(context.Background())
+	exclude := s.probeCLIEvidenceFresh(context.Background(), s.currentEnv())
+	if exclude {
+		t.Fatal("fixture is wrong: an unresolvable root answered \"current\", so the exclusion below was never lifted")
+	}
 
-	got := s.removeChildUnreachableTools([]string{"svc__echo", "read_file"}, "")
+	got := s.removeChildUnreachableTools([]string{"svc__echo", "read_file"}, "", exclude)
 	if !slices.Contains(got, "svc__echo") {
 		t.Errorf("an unresolvable Git root was treated as confirmed absence, so %q stayed excluded; unknown reachability must let the child try: %v", "svc__echo", got)
 	}

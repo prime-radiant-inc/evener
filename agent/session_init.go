@@ -1925,21 +1925,21 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	// Cache tool definitions and the rendered prompt. A render failure here is a
 	// construction-time diagnostic, so it BUFFERS rather than emitting: nothing
 	// may reach the stream before SESSION_START (see emitSessionStartEnvelope).
-	// Resolve the CLI-MCP freshness verdict FIRST. These two caches are what the
-	// transcript's system prelude records, and the roster they carry reflects the
-	// exclusion decision derived from that verdict. Building them with the verdict
-	// still unknown writes a prelude that request preparation then corrects
-	// before the first model call, so the saved prelude and the request after it
-	// describe one session two ways. initMCP has already installed the
-	// classification and its evidence here; this is the check that turns it into
-	// a verdict. It does I/O — config reads and one git fork — and must run
-	// without s.mu, which this point in construction satisfies.
+	// Settle the delegate roster decision FIRST. These two caches are what the
+	// transcript's system prelude records, and the roster they carry reflects
+	// that decision. Building them with it still unknown writes a prelude that
+	// request preparation then corrects before the first model call, so the saved
+	// prelude and the request after it describe one session two ways. initMCP has
+	// already installed the classification and its evidence here; this probe turns
+	// it into the decision. It does I/O — config reads and one git fork — and must
+	// run without s.mu, which this point in construction satisfies.
+	//
 	// Bounded, not Background: startup runs on a path a user can cancel, and a
 	// mount that stalls must not hold session construction open forever. An
-	// expired check leaves reachability unknown, which keeps the names eligible and
-	// lets construction finish; the first model request re-resolves it.
+	// expired probe leaves reachability unknown, which keeps the names eligible and
+	// lets construction finish; the first model request probes again.
 	startupFreshCtx, cancelStartupFresh := context.WithTimeout(context.Background(), exclusionFreshnessRequestBudget)
-	s.refreshCLIEvidenceFreshnessContext(startupFreshCtx)
+	s.setRosterExclusion(s.probeCLIEvidenceFresh(startupFreshCtx, env))
 	cancelStartupFresh()
 	s.rebuildToolDefsCache()
 	warning, renderFailed := s.refreshSystemPromptCache(env)

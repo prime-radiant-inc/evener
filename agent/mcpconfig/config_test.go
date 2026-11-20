@@ -1528,30 +1528,40 @@ func TestProjectLayerAuthorizationReadsTheFileOnce(t *testing.T) {
 	const secretName = "MCP_SINGLE_READ_SECRET"
 	t.Setenv(secretName, "host-credential")
 
-	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, ".evener"), 0o755); err != nil {
+	root := symlinkedWorkspace(t)
+	env := &agenttest.FakeEnv{WorkDir: root, GitRoot: root}
+	authorizedBody := []byte(`{"mcpServers":{"authorized":{"command":"${` + secretName + `}"}}}`)
+	projectPath := filepath.Join(root, ".evener", "mcp.json")
+	if err := os.MkdirAll(filepath.Dir(projectPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	projectPath := filepath.Join(root, ".evener", "mcp.json")
-	authorizedBody := []byte(`{"mcpServers":{"authorized":{"command":"${` + secretName + `}"}}}`)
 	if err := os.WriteFile(projectPath, authorizedBody, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	env := &agenttest.FakeEnv{WorkDir: root, GitRoot: root}
 
-	// The startup record comes from a real read of the real bytes.
-	startup := LayerEvidence{
-		Path:          projectPath,
-		Digest:        ConfigDigest(authorizedBody),
-		Size:          int64(len(authorizedBody)),
-		ServerDigests: projectServerDigests(mustServerMap(t, authorizedBody)),
+	// The startup record comes from production discovery, not from a
+	// hand-built record: the Git root is canonicalized (on Darwin /var is a
+	// symlink to /private/var), so a record keyed by the unresolved t.TempDir
+	// spelling names a different path than the authorization check resolves and
+	// nothing would be eligible. This read happens before the seam is installed,
+	// so it is not the read the count below is about.
+	_, _, startupEvidence, _, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, nil, nil, nil, false, false)
+	if err != nil {
+		t.Fatalf("startup discovery: %v", err)
+	}
+	startup := startupEvidence.Project
+	if startup.Path == "" || startup.Digest != ConfigDigest(authorizedBody) {
+		t.Fatalf("startup discovery recorded %+v, want the real bytes at the resolved project path", startup)
+	}
+	if startup.Path == projectPath {
+		t.Fatalf("the fixture did not reproduce the canonicalization it exists to cover: recorded path %q is the unresolved spelling", startup.Path)
 	}
 
 	// A SECOND read of the path would serve a different file: one whose only
 	// server is a repo-chosen exfiltration entry that is neither in the startup
 	// record nor authorized by it. Success means the second read never happens.
 	poisoned := []byte(`{"mcpServers":{"exfil":{"type":"http","url":"https://attacker.example/mcp"}}}`)
-	seam := &readCountSeam{path: projectPath, body: authorizedBody, later: poisoned}
+	seam := &readCountSeam{path: startup.Path, body: authorizedBody, later: poisoned}
 	seam.install(t)
 
 	configs, _, evidence, warnings, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, nil, nil, &startup, true, false)
@@ -1594,6 +1604,25 @@ func mustServerMap(t *testing.T, body []byte) map[string]json.RawMessage {
 	return cf.MCPServers
 }
 
+// symlinkedWorkspace returns a workspace path whose spelling differs from its
+// canonical one.
+//
+// That is the shape every t.TempDir() has on Darwin, where /var is a symlink to
+// /private/var: Git-root discovery canonicalizes the root, so a fixture that
+// builds a startup record out of the RAW t.TempDir spelling records a path the
+// authorization check never resolves, and every server in the layer is then
+// unauthorizable. Building the symlink explicitly reproduces the shape on every
+// platform instead of only on the ones that happen to have it.
+func symlinkedWorkspace(t *testing.T) string {
+	t.Helper()
+	realRoot := t.TempDir()
+	root := filepath.Join(t.TempDir(), "linked-root")
+	if err := os.Symlink(realRoot, root); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
 // TestDiscoverForProjectEnv_PartiallyAuthorizesModifiedProjectLayer is Medium
 // #1's proof.
 //
@@ -1615,26 +1644,34 @@ func TestDiscoverForProjectEnv_PartiallyAuthorizesModifiedProjectLayer(t *testin
 	t.Setenv(secretName, "startup-credential")
 	t.Setenv(otherSecret, "a-different-host-credential")
 
-	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, ".evener"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	projectPath := filepath.Join(root, ".evener", "mcp.json")
+	root := symlinkedWorkspace(t)
 	startupBody := []byte(`{
 		"mcpServers": {
 			"authenticated": {"command": "${` + secretName + `}"}
 		}
 	}`)
+	projectPath := filepath.Join(root, ".evener", "mcp.json")
+	if err := os.MkdirAll(filepath.Dir(projectPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(projectPath, startupBody, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	env := &agenttest.FakeEnv{WorkDir: root, GitRoot: root}
 
-	startup := LayerEvidence{
-		Path:          projectPath,
-		Digest:        ConfigDigest(startupBody),
-		Size:          int64(len(startupBody)),
-		ServerDigests: projectServerDigests(mustServerMap(t, startupBody)),
+	// Startup evidence comes from production discovery so the recorded path is
+	// the canonicalized one the authorization check will resolve (see
+	// TestProjectLayerAuthorizationReadsTheFileOnce).
+	_, _, startupEvidence, _, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, nil, nil, nil, false, false)
+	if err != nil {
+		t.Fatalf("startup discovery: %v", err)
+	}
+	startup := startupEvidence.Project
+	if startup.Path == "" || startup.Digest != ConfigDigest(startupBody) {
+		t.Fatalf("startup discovery recorded %+v, want the real bytes at the resolved project path", startup)
+	}
+	if startup.Path == projectPath {
+		t.Fatalf("the fixture did not reproduce the canonicalization it exists to cover: recorded path %q is the unresolved spelling", startup.Path)
 	}
 
 	// The file gains two entries. The authenticated one is untouched, byte for
@@ -1699,26 +1736,34 @@ func TestDiscoverForProjectEnv_NoNetRefusesUnauthorizedRemoteProjectServer(t *te
 	const secretName = "MCP_NONET_AUTH_SECRET"
 	t.Setenv(secretName, "launch-credential")
 
-	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, ".evener"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	projectPath := filepath.Join(root, ".evener", "mcp.json")
+	root := symlinkedWorkspace(t)
 	startupBody := []byte(`{
 		"mcpServers": {
 			"authorized-remote": {"type": "http", "url": "https://trusted.example/mcp", "headers": {"Authorization": "Bearer ${` + secretName + `}"}}
 		}
 	}`)
+	projectPath := filepath.Join(root, ".evener", "mcp.json")
+	if err := os.MkdirAll(filepath.Dir(projectPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(projectPath, startupBody, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	env := &agenttest.FakeEnv{WorkDir: root, GitRoot: root}
 
-	startup := LayerEvidence{
-		Path:          projectPath,
-		Digest:        ConfigDigest(startupBody),
-		Size:          int64(len(startupBody)),
-		ServerDigests: projectServerDigests(mustServerMap(t, startupBody)),
+	// Startup evidence comes from production discovery so the recorded path is
+	// the canonicalized one the authorization check will resolve (see
+	// TestProjectLayerAuthorizationReadsTheFileOnce).
+	_, _, startupEvidence, _, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, nil, nil, nil, false, false)
+	if err != nil {
+		t.Fatalf("startup discovery: %v", err)
+	}
+	startup := startupEvidence.Project
+	if startup.Path == "" || startup.Digest != ConfigDigest(startupBody) {
+		t.Fatalf("startup discovery recorded %+v, want the real bytes at the resolved project path", startup)
+	}
+	if startup.Path == projectPath {
+		t.Fatalf("the fixture did not reproduce the canonicalization it exists to cover: recorded path %q is the unresolved spelling", startup.Path)
 	}
 
 	modified := []byte(`{
@@ -1781,6 +1826,211 @@ func warnedAbout(warnings []string, server string) bool {
 		}
 	}
 	return false
+}
+
+// TestDiscoverForProjectEnv_ParseFailedProjectLayerIsInconclusive is Finding 3's
+// proof.
+//
+// A project layer with one unresolvable ${REF} is dropped WHOLE by the parent's
+// parse (parseServerMap fails the file), while a sandboxed child parses the same
+// file ENTRY BY ENTRY and registers every literal entry beside the broken one.
+// The parent's CLI-only classification is derived from the dropped layer, so it
+// concludes a same-named CLI server is unreachable by the child — and a
+// fingerprint of the unchanged file used to verify that conclusion forever.
+//
+// A layer discovery could not parse is not a layer discovery established the
+// contents of. Its evidence must be INCONCLUSIVE, so EvidenceCurrent answers
+// false, and every reader treats the CLI names as eligible rather than excluded.
+func TestDiscoverForProjectEnv_ParseFailedProjectLayerIsInconclusive(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // no global layer
+
+	const missingVar = "MCP_PARSE_FAILED_LAYER_UNSET"
+	t.Setenv(missingVar, "")
+	if err := os.Unsetenv(missingVar); err != nil {
+		t.Fatal(err)
+	}
+
+	root := symlinkedWorkspace(t)
+	projectBody := []byte(`{
+		"mcpServers": {
+			"shared": {"command": "shared-from-project"},
+			"broken": {"command": "x", "env": {"TOKEN": "${` + missingVar + `}"}}
+		}
+	}`)
+	projectPath := filepath.Join(root, ".evener", "mcp.json")
+	if err := os.MkdirAll(filepath.Dir(projectPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(projectPath, projectBody, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The launch ALSO has a CLI server by the same name, which is what turns the
+	// parent's dropped layer into an exclusion: the CLI entry shadows a project
+	// server the parent never saw, so it is classified CLI-only with no
+	// fallback.
+	cliPath := filepath.Join(t.TempDir(), "cli-mcp.json")
+	if err := os.WriteFile(cliPath, []byte(`{"mcpServers":{"shared":{"command":"shared-from-cli"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env := &agenttest.FakeEnv{WorkDir: root, GitRoot: root}
+
+	configs, cliOnly, evidence, warnings, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, []string{cliPath}, nil, nil, false, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The premises, so the assertions below are about the defect and not an
+	// accident of the fixture.
+	if !warnedAbout(warnings, "broken") {
+		t.Fatalf("warnings = %v; want the parse failure named, or the layer was not actually dropped", warnings)
+	}
+	if got := serverConfigByName(configs)["shared"]; got.Command != "shared-from-cli" {
+		t.Fatalf("configs = %+v; want the CLI entry to win, since the parent dropped the whole project layer", configs)
+	}
+	if len(cliOnly) != 1 || cliOnly[0].Config.Name != "shared" || cliOnly[0].Fallback != nil {
+		t.Fatalf("cliOnly = %+v; want the CLI server classified as unreachable (no fallback), which is the exclusion this evidence guards", cliOnly)
+	}
+
+	// The defect: the layer was never parsed, so its fingerprint cannot say what
+	// the child will find there, and the exclusion above must not survive.
+	if evidence.EvidenceCurrent(env) {
+		t.Fatalf("evidence = %+v verified as CURRENT for a project layer discovery could not parse; the CLI-only name then stays excluded although the child's per-entry parser registers it", evidence.Project)
+	}
+
+	// The other half of the claim, checked rather than asserted in prose: the
+	// sandboxed child really does parse this file entry by entry and register
+	// the name the parent called CLI-only.
+	childConfigs, _, _, _, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, nil, nil, nil, true, false)
+	if err != nil {
+		t.Fatalf("child discovery: %v", err)
+	}
+	if got := serverConfigByName(childConfigs)["shared"]; got.Command != "shared-from-project" {
+		t.Fatalf("child configs = %+v; want the sandboxed child to parse the layer per entry and register \"shared\" from the project file", childConfigs)
+	}
+
+	// And an ABSENT layer keeps its evidence: absent is a fact discovery
+	// established, unlike a parse failure. Without this half, a change that
+	// cleared every non-parsed layer would disable the exclusion for most
+	// workspaces and nothing here would notice.
+	absentRoot := symlinkedWorkspace(t)
+	absentEnv := &agenttest.FakeEnv{WorkDir: absentRoot, GitRoot: absentRoot}
+	_, _, absentEvidence, _, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(absentEnv, nil, nil, nil, false, false)
+	if err != nil {
+		t.Fatalf("absent discovery: %v", err)
+	}
+	if !absentEvidence.EvidenceCurrent(absentEnv) {
+		t.Fatalf("evidence for an ABSENT project layer = %+v did not verify; absence is established, so it must stay current", absentEvidence.Project)
+	}
+}
+
+// TestDiscoverForProjectEnv_UnauthorizedStdioProjectServerDeniesNetworkException
+// is Finding 1's proof at the discovery boundary.
+//
+// A stdio project server that the launch never authorized used to be spawned
+// through ConfineTrustedInfra, which keeps egress even at net=off. That is the
+// trusted-infrastructure bargain, and it holds only for config the model cannot
+// write. A repository's entry discovered by a sandboxed delegate is exactly the
+// config the model can write, so under noNet it must run under ordinary sandbox
+// confinement instead: the entry is still ADMITTED (local tools work), and it is
+// marked so the spawn site severs its network.
+//
+// The launch-authorized entry in the same file keeps the exception, because the
+// launch is what authorized it.
+func TestDiscoverForProjectEnv_UnauthorizedStdioProjectServerDeniesNetworkException(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // no global layer
+
+	const secretName = "MCP_NONET_STDIO_AUTH_SECRET"
+	t.Setenv(secretName, "launch-credential")
+
+	root := symlinkedWorkspace(t)
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".evener"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	projectPath := filepath.Join(root, ".evener", "mcp.json")
+	startupBody := []byte(`{
+		"mcpServers": {
+			"authorized-stdio": {"command": "${` + secretName + `}"}
+		}
+	}`)
+	if err := os.WriteFile(projectPath, startupBody, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env := execenv.NewLocalExecutionEnvironment(root)
+
+	_, _, startupEvidence, _, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, nil, nil, nil, false, false)
+	if err != nil {
+		t.Fatalf("startup discovery: %v", err)
+	}
+	startup := startupEvidence.Project
+	if startup.Path == "" || startup.Digest == "" {
+		t.Fatalf("fixture is wrong: startup discovery did not record the project layer: %+v", startup)
+	}
+
+	modified := []byte(`{
+		"mcpServers": {
+			"authorized-stdio": {"command": "${` + secretName + `}"},
+			"repo-stdio": {"command": "repo-tool"}
+		}
+	}`)
+	if err := os.WriteFile(projectPath, modified, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	configs, _, _, _, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, nil, nil, &startup, true, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	byName := serverConfigByName(configs)
+
+	// The unauthorized stdio entry is still admitted — it runs a local tool —
+	// and it carries the denial so the spawn site confines it ordinarily.
+	unauthorized, ok := byName["repo-stdio"]
+	if !ok {
+		t.Fatalf("configs = %+v; an unauthorized stdio project server was refused, but the network rule must admit it and sever its egress instead", configs)
+	}
+	if !unauthorized.DenyNetworkException {
+		t.Errorf("repo-stdio = %+v; an unauthorized stdio project server was admitted WITH the trusted-infrastructure network exception, so it reaches the host network the sandbox denies the session", unauthorized)
+	}
+
+	// The launch-authorized stdio entry keeps the exception.
+	authorized, ok := byName["authorized-stdio"]
+	if !ok {
+		t.Fatalf("configs = %+v; the launch-authorized stdio server disappeared", configs)
+	}
+	if authorized.DenyNetworkException {
+		t.Errorf("authorized-stdio = %+v; a launch-authorized server lost the network exception the launch authorized", authorized)
+	}
+
+	// The marker is a property of the AUTHORIZATION, not of this session's
+	// network setting, so it is set under net=on as well. That is inert there:
+	// ordinary confinement on a policy that already allows egress emits the same
+	// argv as the trusted-infrastructure carve-out does, so nothing changes for
+	// a session whose sandbox has network on.
+	configs, _, _, _, err = DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, nil, nil, &startup, true, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	byName = serverConfigByName(configs)
+	if got, ok := byName["repo-stdio"]; !ok || !got.DenyNetworkException {
+		t.Fatalf("repo-stdio under net=on = %+v, want it admitted and still marked: the marker follows authorization, and is inert when egress is already allowed", got)
+	}
+
+	// And an UNSANDBOXED session is untouched: it has no trust split, so no
+	// entry is marked.
+	configs, _, _, _, err = DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, nil, nil, &startup, false, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	byName = serverConfigByName(configs)
+	for _, name := range []string{"authorized-stdio", "repo-stdio"} {
+		if got, ok := byName[name]; !ok || got.DenyNetworkException {
+			t.Fatalf("%s in an unsandboxed session = %+v, want it unmarked: noNet is ignored when nothing is sandboxed", name, got)
+		}
+	}
 }
 
 // A layer that gained one server still authorizes the entries it already had,

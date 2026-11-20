@@ -59,9 +59,9 @@ func TestExclusionRefreshDoesNotRereadStalledAppendFiles(t *testing.T) {
 
 	release := stallAppendFile(t, appendPath)
 
-	// The exclusion decision flips, which is what marks both caches stale and
-	// drives the rebuild down the reuse path.
-	staleExclusionDecision(s)
+	// The exclusion decision flips, which is what drives both caches down the
+	// reuse path.
+	flipExclusionDecision(s)
 
 	// The error travels SEPARATELY from the prompt, because the pass condition
 	// is that request preparation SUCCEEDED from the snapshot. Folding the two
@@ -124,7 +124,7 @@ func TestExclusionRefreshReusesAPartialAppendLoad(t *testing.T) {
 		AgentsDocPath:      filepath.Join(dir, "absent-AGENTS.md"),
 	}))
 	release := stallAppendFile(t, appendPath)
-	staleExclusionDecision(s)
+	flipExclusionDecision(s)
 
 	got := awaitAppendReuse(t, s, release)
 	if len(got.appends) != 1 || got.appends[0] != body {
@@ -205,12 +205,12 @@ func stallAppendFile(t *testing.T, path string) (release func()) {
 	}
 }
 
-// staleExclusionDecision moves the recorded exclusion decision, which is what
-// marks the prompt cache stale and drives the next build down the reuse path.
-func staleExclusionDecision(s *Session) {
-	s.delegateExclusionsMu.Lock()
-	s.cliMCPExclusionKnown = true
-	s.cliMCPExclusionApplied = true
-	s.cliMCPExclusionVersion++
-	s.delegateExclusionsMu.Unlock()
+// flipExclusionDecision moves the recorded roster decision, which is what makes
+// the next request rebuild both caches down the reuse path.
+//
+// The session's evidence is deliberately left EMPTY: nothing can verify against
+// it, so the probe the rebuild runs answers "not current" and the flip is the one
+// this fixture asked for. The assertion is about the append read, not the answer.
+func flipExclusionDecision(s *Session) {
+	s.setRosterExclusion(!s.rosterExclusion())
 }
