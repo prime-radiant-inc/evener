@@ -217,12 +217,12 @@ stops between bounded directory reads and before further removals; an incomplete
 listing does not authorize deletion, and a later pass can retry unfinished work.
 An individual filesystem call already in progress may still block until it returns.
 
-| Mode | File-tool reads | File-tool writes | Spawned-process reads | Spawned-process writes |
-|---|---|---|---|---|
-| `off` (default) | anywhere | anywhere | anywhere | anywhere |
-| `read-only` | anywhere minus the denylist | denied (temp only) | anywhere minus the denylist | temp only |
-| `workspace-write` | anywhere minus the denylist | worktree + temp + contained caches | anywhere minus the denylist | worktree + temp + caches + git metadata (not config/hooks) |
-| `restricted` | worktree + Evener content (read-only) | worktree + temp | worktree + system read roots + developer toolchain + global git config files + hook/MCP paths + Evener content + temp | worktree + temp + git metadata (not config/hooks) |
+| Mode | File-tool reads | File-tool writes | Spawned-process reads | Spawned-process writes | Network (`net=on`, macOS) |
+|---|---|---|---|---|---|
+| `off` (default) | anywhere | anywhere | anywhere | anywhere | unrestricted |
+| `read-only` | anywhere minus the denylist | denied (temp only) | anywhere minus the denylist | temp only | all outbound (permissive) |
+| `workspace-write` | anywhere minus the denylist | worktree + temp + contained caches | anywhere minus the denylist | worktree + temp + caches + git metadata (not config/hooks) | all outbound (permissive) |
+| `restricted` | worktree + Evener content (read-only) | worktree + temp | worktree + system read roots + developer toolchain + global git config files + hook/MCP paths + Evener content + temp | worktree + temp + git metadata (not config/hooks) | TCP/UDP + mDNSResponder socket, AF_UNIX only under granted read roots |
 
 - **`off`** applies no sandbox confinement.
 - **`read-only`** cannot commit or write project files; only the session temp is
@@ -441,11 +441,13 @@ paths only when they are outside its granted read roots. Relocated state roots
 must be checked against the effective policy too.
 
 Masking `/proc` is load-bearing: without it a `read_file("/proc/<evener-pid>/environ")`
-would leak Evener's own environment, including the provider API key. Masking the
+would leak Evener's own environment, including the provider API key. On Linux, masking the
 daemon sockets turns a `connect()` into `ECONNREFUSED`, so a session cannot drive a
 container daemon straight to host root even with `--sandbox-net off` (a read-only
 bind of `/` does not block a Unix-socket `connect()`, and `--unshare-net` does not
-affect `AF_UNIX`).
+affect `AF_UNIX`). On macOS, `restricted` mode with networking on denies
+`connect()` to masked sockets; `read-only` and `workspace-write` keep the
+permissive outbound policy.
 
 **One exception to "the mask wins", for the file tools: Evener's own content.**
 Installed plugins (the plugin store's `cache` and `bundled` directories under
@@ -671,6 +673,14 @@ LLM-API connection, not a credential fd.
 `--sandbox-net` defaults to **on** when sandboxed: filesystem containment is the
 load-bearing guarantee, and egress denial is opt-in. (This deliberately differs from
 tools that default to deny.)
+
+On macOS, `restricted` mode with `net=on` narrows outbound further: a spawned
+process may use TCP and UDP, reach the mDNSResponder resolver socket
+(`/private/var/run/mDNSResponder`), and connect to AF_UNIX sockets only under its
+granted read roots — never every socket on the host. A socket under a masked
+path (for example a gpg-agent socket in `~/.gnupg` inside the worktree) stays
+unreachable even when its read root is granted. `read-only` and
+`workspace-write` keep the permissive-with-warnings outbound policy (#4224).
 
 `--sandbox-net off` governs the **tool plane**:
 
