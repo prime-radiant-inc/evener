@@ -884,6 +884,9 @@ func (s *Session) recordDrainAbandonedChild(childSessionID, delegateID string, g
 	if already && previous.delegateID == delegateID && previous.generation == generation {
 		return
 	}
+	if s.delegateController != nil {
+		s.delegateController.publishAncestorHoldsAfterAbandonment(delegateID)
+	}
 	s.emit(events.WarningData{
 		Message:    fmt.Sprintf("no longer waiting on delegate %s: %s", delegateID, reason),
 		Source:     "drain",
@@ -932,6 +935,19 @@ func (s *Session) childDrainAbandoned(childSessionID string) bool {
 	defer s.drainAbandonedMu.Unlock()
 	abandoned, exists := s.drainAbandonedChildren[childSessionID]
 	return exists && abandoned.generation == row.generation
+}
+
+// drainAbandonedAtGeneration reports whether childSessionID's row was given up
+// on at exactly this generation. drainAbandonedMu is a leaf, so the
+// controller's hold sampler may call this under its own lock.
+func (s *Session) drainAbandonedAtGeneration(childSessionID string, generation uint64) bool {
+	if s == nil || childSessionID == "" {
+		return false
+	}
+	s.drainAbandonedMu.Lock()
+	defer s.drainAbandonedMu.Unlock()
+	abandoned, exists := s.drainAbandonedChildren[childSessionID]
+	return exists && abandoned.generation == generation
 }
 
 // clearDrainAbandonedDelegate clears every drain-abandonment stamp recorded
