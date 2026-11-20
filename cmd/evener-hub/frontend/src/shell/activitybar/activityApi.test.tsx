@@ -5,7 +5,7 @@ import { activityChangedNotification } from "@evener/appwire-client/testing/noti
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
-import { sessionActivitySnapshot } from "../../stores/sessionActivity";
+import { sessionActivitySnapshot, settleSessionActivityForTests } from "../../stores/sessionActivity";
 import {
   activityClient,
   activityContext,
@@ -814,16 +814,25 @@ it.each(["refresh", "reconnect"] as const)(
 
       // A recovery re-reads every page while the tab stays mounted. The revealed
       // row and the later page's row must both survive the rebuilt walk.
-      act(() => {
+      const readsBefore = client.calls.filter((call) => call.method === "evener/thread/delegates/list").length;
+      // Join the walk in the same synchronous window as the invalidation: the
+      // store registers the paced pages-to-the-boundary walk as one read span.
+      await act(async () => {
         if (recovery === "refresh") {
           client.emitNotification(activityChangedNotification({ ref: activityRef, threadId: "owner" }, ["delegates"]));
         } else {
           client.emitStateChange("reconnecting");
           client.emitReady();
         }
+        await settleSessionActivityForTests(client, activityRef, "subtree", "delegates");
       });
-      await act(async () => ActivityBoundaryObserver.intersect());
-      await waitFor(() => expect(document.querySelector(topAnchor)).not.toBeNull());
+      const recoveryReads = client.calls
+        .filter((call) => call.method === "evener/thread/delegates/list")
+        .slice(readsBefore)
+        .map((call) => call.params);
+      expect(recoveryReads).toContainEqual({ ref: activityRef, scope: "subtree" });
+      expect(recoveryReads).toContainEqual({ ref: activityRef, scope: "subtree", cursor: "page-2" });
+      expect(document.querySelector(topAnchor)).not.toBeNull();
       expect(document.querySelector(gcAnchor)).not.toBeNull();
     } finally {
       cleanup();
