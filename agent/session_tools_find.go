@@ -1044,6 +1044,11 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 	laneSeen := false
 	lanePath := ""
 	laneProjectID := ""
+	// prefixRoot is an ordinary checkout that a GONE recorded path survives in. It
+	// is remembered rather than answered: the row's own lane evidence is asked
+	// first, because a lane path records the project it belongs to while an
+	// enclosing checkout that merely accepts the bucket's ID is weaker evidence.
+	prefixRoot := ""
 	for _, recorded := range recordPaths(m) {
 		if !filepath.IsAbs(recorded) {
 			continue
@@ -1062,18 +1067,25 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 			if root := resolveMainRootWithin(laneCandidate, laneRoot); root != "" {
 				return filepath.Base(root)
 			}
-			if !laneSeen {
-				laneSeen = true
-				laneProjectID = managedProjectID
-				// The path is REMEMBERED, not resolved. Its fallback is bucket-wide
-				// inference — an origin an owner, a parent or a sibling saved — and
-				// resolving those candidates walks recorded paths. The row still has
-				// fields after this one, and its own record may still name the
-				// project; asking the fallback here would do that work before either
-				// question was put, and the work is what an unavailable mount stalls.
-				lanePath = laneCandidate
+			// A lane owns only what stays inside its own root. A symlink beneath it
+			// can point at another checkout, and the surviving prefix then names that
+			// checkout's project, which is the ordinary question below rather than
+			// this lane's. The root is resolved through its surviving prefix, because a
+			// lane root with a missing tail cannot be resolved as a whole.
+			if pathWithin(resolved, resolveExistingPrefix(laneRoot)) {
+				if !laneSeen {
+					laneSeen = true
+					laneProjectID = managedProjectID
+					// The path is REMEMBERED, not resolved. Its fallback is bucket-wide
+					// inference — an origin an owner, a parent or a sibling saved — and
+					// resolving those candidates walks recorded paths. The row still has
+					// fields after this one, and its own record may still name the
+					// project; asking the fallback here would do that work before either
+					// question was put, and the work is what an unavailable mount stalls.
+					lanePath = laneCandidate
+				}
+				continue
 			}
-			continue
 		}
 		// An ordinary recorded path that is still there answers from its Git
 		// ancestry, and projectAt is where that rule lives. A path that is gone has
@@ -1102,14 +1114,10 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 		}
 		// A recorded path whose TAIL is gone still names the checkout it sat in:
 		// the surviving prefix is that checkout, and it is where the removed
-		// directory really was. Full resolution and the lane classification above
-		// both read the whole path, so neither can answer here; the prefix is asked
-		// instead, with the same two questions in the same order.
-		//
-		// A prefix that is a lane keeps its boundary and is deferred exactly as a
-		// lane the record names directly is: the bounded walk answers while the
-		// lane's pointer resolves, and otherwise the row's own record is asked
-		// before bucket-wide inference. An ordinary prefix answers only when the
+		// directory really was. The walk is anchored at the nearest surviving
+		// DIRECTORY, because a recorded path whose leaf became a regular file makes
+		// "<leaf>/.git" an ENOTDIR that the walk treats as a checkout it could not
+		// read rather than as "look above". An ordinary prefix answers only when the
 		// checkout it resolves to is this row's project: the space a removed
 		// directory occupied belongs to whatever survives above it, and that is an
 		// affiliation the row has only when its own recording says so.
@@ -1135,11 +1143,13 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 		// No recorded project ID can accept an ordinary walk's answer, so the walk
 		// can only be thrown away — and reading a relocated .git can stall on an
 		// unavailable mount. The marker and the recorded basename still answer.
-		if ownProject == "" && !bucketKnown {
-			continue
-		}
-		if root := r.resolveMainRoot(resolved); root != "" && r.checkoutIsRows(root, ownProject, bucketProject, bucketKnown) {
-			return filepath.Base(root)
+		// No recorded project ID can accept an ordinary walk's answer, so the walk
+		// can only be thrown away — and reading a relocated .git can stall on an
+		// unavailable mount. The marker and the recorded basename still answer.
+		if prefixRoot == "" && (ownProject != "" || bucketKnown) {
+			if root := r.resolveMainRoot(nearestSurvivingDir(resolved)); root != "" && r.checkoutIsRows(root, ownProject, bucketProject, bucketKnown) {
+				prefixRoot = root
+			}
 		}
 	}
 	if laneSeen {
@@ -1173,6 +1183,9 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 		// evidence the resolver has, so it answers last rather than first.
 		laneFallback, _ := r.worktreePathFallback(lanePath, bucketDir, m.ParentSessionID)
 		return laneFallback
+	}
+	if prefixRoot != "" {
+		return filepath.Base(prefixRoot)
 	}
 
 	// A record that is not absolute names no checkout, which is the rule step 1
@@ -2231,6 +2244,24 @@ func pathWithin(path, root string) bool {
 		return filepath.IsAbs(path)
 	}
 	return strings.HasPrefix(path, root+string(filepath.Separator))
+}
+
+// nearestSurvivingDir returns the closest directory that really exists at or
+// above path. A recorded path whose last component was replaced by a regular file
+// is not a directory to walk from: probing "<file>/.git" fails with ENOTDIR,
+// which the Git walk treats as a checkout it could not read rather than as "look
+// above", and the deleted directory's own name would answer instead.
+func nearestSurvivingDir(path string) string {
+	for {
+		if info, err := os.Stat(path); err == nil && info.IsDir() {
+			return path
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return path
+		}
+		path = parent
+	}
 }
 
 // resolveExistingPrefix resolves every component of path that exists and keeps

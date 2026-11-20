@@ -1577,6 +1577,107 @@ func TestFind_ProjectName_SymlinkInsideOneLaneIntoAnother(t *testing.T) {
 	}
 }
 
+// TestFind_ProjectName_SavedLaneOutranksTheEnclosingCheckout covers a lane for an
+// independent checkout B nested inside checkout A, stored in A's bucket, after B
+// and its lane are gone. A walk from the dead restore root finds A and A's bucket
+// accepts it, but the lane path records B and B's own restore root still names
+// the project.
+func TestFind_ProjectName_SavedLaneOutranksTheEnclosingCheckout(t *testing.T) {
+	stateHome := pinStateHome(t)
+
+	outer := newNamedCheckout(t, "enclosing-repo")
+	inner := filepath.Join(outer, "vendor", "nested")
+	gittest.Run(t, outer, "init", "-q", filepath.Join("vendor", "nested"))
+	gittest.Run(t, inner, "commit", "-q", "--allow-empty", "-m", "init")
+	outerProject := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(outer))
+	innerProject := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(inner))
+	bucket, err := RuntimeDirForProjectWithStateHome(outerProject, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+	lane := filepath.Join(bucket, "worktrees", innerProject.ID, "dlg_nested")
+	gittest.Run(t, inner, "worktree", "add", "-q", lane, "-b", "nested-lane")
+	if err := os.RemoveAll(inner); err != nil {
+		t.Fatalf("remove nested checkout: %v", err)
+	}
+	if err := os.RemoveAll(lane); err != nil {
+		t.Fatalf("remove lane: %v", err)
+	}
+
+	row := schema.SessionMeta{ID: identifier.MustNewSessionID(), WorktreePath: lane, WorktreeRestoreRoot: inner}
+	row.EnvInfo.WorkingDir = inner
+
+	if got, want := newProjectNameResolver().projectName(row, bucket), "nested"; got != want {
+		t.Fatalf("projectName(lane of %q inside %q's bucket) = %q, want the lane project's restore root %q", innerProject.ID, outerProject.ID, got, want)
+	}
+}
+
+// TestFind_ProjectName_RecordedPathBecameAFile covers a recorded subdirectory that
+// a branch switch replaced with a regular file. Probing ".git" beneath the file
+// is ENOTDIR, not "no repository here", so the walk starts at the closest
+// surviving directory and still names the checkout above it.
+func TestFind_ProjectName_RecordedPathBecameAFile(t *testing.T) {
+	stateHome := pinStateHome(t)
+
+	checkout := newNamedCheckout(t, "file-for-subdir-repo")
+	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(checkout))
+	bucket, err := RuntimeDirForProjectWithStateHome(project, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+	recorded := filepath.Join(checkout, "pkg")
+	if err := os.WriteFile(recorded, []byte("not a directory\n"), 0o644); err != nil {
+		t.Fatalf("write file over the recorded subdirectory: %v", err)
+	}
+
+	row := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	row.EnvInfo.WorkingDir = recorded
+
+	if got, want := newProjectNameResolver().projectName(row, bucket), filepath.Base(checkout); got != want {
+		t.Fatalf("projectName(recorded subdirectory %q that is now a file) = %q, want the surviving checkout %q", recorded, got, want)
+	}
+}
+
+// TestFind_ProjectName_SymlinkOutOfLaneToOrdinaryCheckout covers a symlink inside
+// managed lane A that points at an ordinary checkout B, with the recorded
+// subdirectory of B removed. The path is not lane A's evidence: it resolves into
+// B, which is the row's own saved project and must be named.
+func TestFind_ProjectName_SymlinkOutOfLaneToOrdinaryCheckout(t *testing.T) {
+	stateHome := pinStateHome(t)
+
+	mainA := newNamedCheckout(t, "lane-owner-repo")
+	projectA := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(mainA))
+	bucketA, err := RuntimeDirForProjectWithStateHome(projectA, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucketA, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+	lane := filepath.Join(bucketA, "worktrees", projectA.ID, "dlg_out")
+	gittest.Run(t, mainA, "worktree", "add", "-q", lane, "-b", "lane-out")
+
+	target := newNamedCheckout(t, "ordinary-target-repo")
+	targetProject := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(target))
+	if err := os.Symlink(target, filepath.Join(lane, "link")); err != nil {
+		t.Fatalf("symlink out of the lane: %v", err)
+	}
+
+	row := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	row.Config.MemoryProjectID = targetProject.ID
+	row.EnvInfo.WorkingDir = filepath.Join(lane, "link", "pkg")
+
+	if got, want := newProjectNameResolver().projectName(row, bucketA), filepath.Base(target); got != want {
+		t.Fatalf("projectName(path through a symlink out of lane A into %q) = %q, want the target checkout %q", target, got, want)
+	}
+}
+
 // TestFind_ProjectName_StateLaneStopsGitWalkAtLaneRoot covers a shared --state-dir
 // that lives inside checkout A while holding a managed delegate lane for
 // checkout B. Deleting the originless lane leaves nothing at the lane path, so a
