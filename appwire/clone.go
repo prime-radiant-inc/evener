@@ -3,8 +3,6 @@ package appwire
 import (
 	"encoding/json"
 	"slices"
-
-	"primeradiant.com/evener/agent/provenance"
 )
 
 // CloneThread returns a copy of t in which every known nested mutable field
@@ -88,7 +86,18 @@ func CloneSessionObservationMetadata(value *SessionObservationMetadata) *Session
 	out := *value
 	out.AnswerToTurnIDs = append([]string(nil), value.AnswerToTurnIDs...)
 	out.ResolvedAskCalls = append([]PendingAskCall(nil), value.ResolvedAskCalls...)
-	out.Causal = provenance.Clone(value.Causal)
+	out.TerminalAccepted = ClonePointer(value.TerminalAccepted)
+	// The causal record is copied verbatim rather than through
+	// provenance.Clone: a copy preserves the original's values, while
+	// provenance.Clone normalizes an empty record to nil and re-runs the
+	// chain and fire bounds, which a copy has no business doing.
+	if value.Causal != nil {
+		causal := *value.Causal
+		causal.WatchKeys = slices.Clone(value.Causal.WatchKeys)
+		causal.Chain = slices.Clone(value.Causal.Chain)
+		causal.FireKeys = slices.Clone(value.Causal.FireKeys)
+		out.Causal = &causal
+	}
 	return &out
 }
 
