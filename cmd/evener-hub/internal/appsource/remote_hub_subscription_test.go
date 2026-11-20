@@ -1041,16 +1041,10 @@ func TestRemoteHubFailedReplacementForwardsBufferedNotifications(t *testing.T) {
 	if err := remote.push(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{ThreadID: "S", Ref: "local:S"}); err != nil {
 		t.Fatalf("push: %v", err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if sub := installedSubscriberIn(t, remote.source, "S"); sub != nil && len(sub.in) > 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the delta never reached the in-flight replacement's buffer")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	testwait.Until(t, "the delta to reach the in-flight replacement's buffer", func() bool {
+		sub := installedSubscriberIn(t, remote.source, "S")
+		return sub != nil && len(sub.in) > 0
+	})
 
 	unblock()
 	if err := <-done; err == nil {
@@ -1208,20 +1202,18 @@ func TestRemoteHubRouteStallRetiresSubscriptionAndKeepsOthersFlowing(t *testing.
 
 	// S's out closes: the relay's resync signal. Drain whatever was buffered,
 	// then require the close.
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		select {
-		case _, ok := <-outS:
-			if !ok {
-				return
+	testwait.Until(t, "the stalled subscription's out to close", func() bool {
+		for {
+			select {
+			case _, ok := <-outS:
+				if !ok {
+					return true
+				}
+			default:
+				return false
 			}
-		default:
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("stalled subscription's out never closed")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	})
 }
 
 // Test 17: jitter that fits the buffer is delivered, not resynced. The hand-off
@@ -2190,8 +2182,7 @@ func waitForRemoteSubscribeCall(t *testing.T, remote *pushableRemote) {
 // depends on routing having moved.
 func waitForRemoteSubscribeCalls(t *testing.T, remote *pushableRemote, n int) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for {
+	testwait.UntilSeen(t, fmt.Sprintf("%d subscribed thread/read calls", n), func() (bool, string) {
 		seen := 0
 		for _, call := range remote.calls() {
 			if call.method != appwire.MethodThreadRead {
@@ -2205,14 +2196,8 @@ func waitForRemoteSubscribeCalls(t *testing.T, remote *pushableRemote, n int) {
 				seen++
 			}
 		}
-		if seen >= n {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%d subscribed thread/read calls recorded, want %d; calls = %+v", seen, n, remote.calls())
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return seen >= n, fmt.Sprintf("%d subscribed thread/read calls recorded; calls = %+v", seen, remote.calls())
+	})
 }
 
 // TestRemoteHubSubscribeThreadRejectsDisplacedSettle pins the concurrent
@@ -2424,6 +2409,10 @@ func TestRemoteHubRetireKeepsCanonicalRemoteRefForSameClientReplacement(t *testi
 		t.Fatalf("first SubscribeThread: %v", err)
 	}
 	expectResync(t, out, "stable", "host:stable")
+	predecessor := installedSubscriberIn(t, remote.source, "stable")
+	if predecessor == nil {
+		t.Fatal("the first subscription was not installed")
+	}
 
 	// The same remote thread, addressed with the ID it holds after an identity
 	// replacement, displaces the first subscription on the same client.
@@ -2444,14 +2433,16 @@ func TestRemoteHubRetireKeepsCanonicalRemoteRefForSameClientReplacement(t *testi
 		t.Fatal("displaced subscription out did not close")
 	}
 
-	deadline := time.Now().Add(200 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		for _, call := range remote.calls() {
-			if call.method == appwire.MethodThreadUnsubscribe {
-				t.Fatalf("predecessor unsubscribed the live replacement's remote ref: %s", string(call.params))
-			}
+	// Retirement runs after the pump closes out, and holds remoteMu across its
+	// decision and any unsubscribe. Retiring the predecessor here therefore
+	// joins the pump's retirement when it is in flight; when it has not run
+	// yet, this call makes the same decision first and the pump's repeat reads
+	// the same ownership. A wire unsubscribe cannot go unrecorded either way.
+	remote.source.retireSubscription(predecessor)
+	for _, call := range remote.calls() {
+		if call.method == appwire.MethodThreadUnsubscribe {
+			t.Fatalf("predecessor unsubscribed the live replacement's remote ref: %s", string(call.params))
 		}
-		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -2772,6 +2763,10 @@ func TestRemoteHubDiscardSubscriberRetiresUnrestorablePrevious(t *testing.T) {
 		t.Fatalf("first SubscribeThread: %v", err)
 	}
 	expectResync(t, out1, "S", "host:S")
+	predecessor := installedSubscriberIn(t, source, "S")
+	if predecessor == nil {
+		t.Fatal("the first subscription was not installed")
+	}
 
 	// A replacement attaches (displacing the live subscription) and its read is
 	// parked, so it is still in flight when the third subscription installs.
@@ -2826,16 +2821,16 @@ func TestRemoteHubDiscardSubscriberRetiresUnrestorablePrevious(t *testing.T) {
 	// Retiring the predecessor must not unsubscribe the remote ref the live
 	// third subscription holds: the remote keeps one subscription per
 	// (connection, thread), and dropping it would silence that subscription.
-	deadline := time.Now().Add(200 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		unsubscribedMu.Lock()
-		refs := append([]string(nil), unsubscribed...)
-		unsubscribedMu.Unlock()
-		for _, ref := range refs {
-			if ref == "local:S" {
-				t.Fatalf("the retired predecessor unsubscribed the live third subscription's remote ref: %+v", refs)
-			}
+	// Retirement holds remoteMu across its decision and any unsubscribe, so
+	// this call joins the pump's retirement when it is in flight and otherwise
+	// makes the same decision first; the pump's repeat reads the same ownership.
+	source.retireSubscription(predecessor)
+	unsubscribedMu.Lock()
+	refs := append([]string(nil), unsubscribed...)
+	unsubscribedMu.Unlock()
+	for _, ref := range refs {
+		if ref == "local:S" {
+			t.Fatalf("the retired predecessor unsubscribed the live third subscription's remote ref: %+v", refs)
 		}
-		time.Sleep(10 * time.Millisecond)
 	}
 }
