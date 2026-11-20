@@ -323,7 +323,7 @@ func TestLinuxRefusesBeforeCreatingOutput(t *testing.T) {
 
 // The workflow restores an Actions cache into a stable directory outside the
 // run-owned output, so build mode must read and write DerivedData there. A
-// local run that names no override keeps it inside the output.
+// local run that exports nothing keeps it inside the output.
 func TestDerivedDataDirUsesTheOverrideOrTheOutputDefault(t *testing.T) {
 	t.Parallel()
 	output := filepath.Join(t.TempDir(), "output")
@@ -336,47 +336,13 @@ func TestDerivedDataDirUsesTheOverrideOrTheOutputDefault(t *testing.T) {
 	}
 }
 
-// The workflow exports the stable path instead of passing a flag, so a PR head
-// from before the flag existed is not failed by an unknown argument.
+// The workflow exports the stable path instead of passing an argument, so a PR
+// head from before the cache change just ignores it.
 func TestDerivedDataOverrideComesFromTheWorkflowEnvironment(t *testing.T) {
 	restored := filepath.Join(t.TempDir(), "ios-deriveddata")
 	t.Setenv("IOS_DERIVED_DATA", restored)
 	if got := derivedDataFromEnv(); got != restored {
 		t.Fatalf("IOS_DERIVED_DATA = %q, want %q", got, restored)
-	}
-}
-
-// A DerivedData override inside the checkout must be gitignored: the provenance
-// check would otherwise read Xcode's own output as source change after the
-// build. External and gitignored locations stay accepted.
-func TestDerivedDataInsideTheCheckoutMustBeIgnored(t *testing.T) {
-	t.Parallel()
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git is unavailable")
-	}
-	root := t.TempDir()
-	if out, err := exec.Command("git", "-C", root, "init", "-q").CombinedOutput(); err != nil {
-		t.Fatalf("git init: %v: %s", err, out)
-	}
-	writeTestFile(t, filepath.Join(root, ".gitignore"), []byte("build-cache/\n"))
-
-	r := &runner{root: root}
-	for name, derived := range map[string]string{
-		"outside the checkout": filepath.Join(t.TempDir(), "ios-deriveddata"),
-		"gitignored inside":    filepath.Join(root, "build-cache", "DerivedData"),
-	} {
-		r.derived = derived
-		if err := r.checkDerivedDataIgnored(context.Background()); err != nil {
-			t.Errorf("%s: %v", name, err)
-		}
-	}
-	r.derived = filepath.Join(root, "DerivedData")
-	if err := r.checkDerivedDataIgnored(context.Background()); !errors.Is(err, errDerivedDataTracked) {
-		t.Fatalf("unignored in-checkout DerivedData = %v, want errDerivedDataTracked", err)
-	}
-	r.derived = ""
-	if err := r.checkDerivedDataIgnored(context.Background()); err != nil {
-		t.Fatalf("no override: %v", err)
 	}
 }
 

@@ -161,10 +161,10 @@ jobs:
           npm ci --prefix appwire-client/typescript
       - name: Test qualification policy
         run: go test ./scripts/native/ios/qualification
-      # Build mode reads IOS_DERIVED_DATA from the environment rather than a
-      # flag: a pull-request head from before the cache change carries this
-      # script without the flag, and the selector tests such a head. It then
-      # builds inside its output and the save step below finds no tree.
+      # Build mode reads IOS_DERIVED_DATA from the environment. A pull-request
+      # head from before the cache change carries this script and ignores the
+      # variable: it builds inside its run-owned output, and the products step
+      # below falls back to that tree.
       - name: Build, verify and prepare the UI test products
         run: bash scripts/native/ios/build-simulator.sh --output "$QUALIFICATION_OUTPUT"
       # The app bundles must keep their executable bits and the xctestrun its

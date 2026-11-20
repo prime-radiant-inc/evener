@@ -227,8 +227,9 @@ func TestIOSQualificationRestoresAndSavesTheDerivedDataBuild(t *testing.T) {
 	if !strings.Contains(job.Steps[mark].Run, "xcodebuild-release.log") {
 		t.Errorf("save-ready step does not require the release build to have started:\n%s", job.Steps[mark].Run)
 	}
-	// The handoff is the exported variable, not a flag: a pull-request head
-	// from before the flag exists must still parse its own build script.
+	// The handoff is the exported variable, not a command argument: a
+	// pull-request head from before the cache change must still parse its own
+	// build script.
 	if strings.Contains(job.Steps[build].Run, "--derived-data") {
 		t.Errorf("build step passes --derived-data, which an older PR head's script rejects:\n%s", job.Steps[build].Run)
 	}

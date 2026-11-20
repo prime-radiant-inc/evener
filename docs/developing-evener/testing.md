@@ -1244,10 +1244,9 @@ under 6GB. Restore with go-cache-restore (or setup-toolchain's
 The iOS DerivedData kind is the exception to that shape: no Go kind holds what
 xcodebuild compiled, so it has its own explicit `actions/cache` steps in
 `ios-qualification.yml`, and it caches `Build` alone because the module cache
-would roughly double a 1GB entry. The 2026-11-19 measurement was already
-above the 6GB target before this kind; the arithmetic and the proposed trim of
-the duplicated race build kinds are in the change that added it. The 6GB target
-stands.
+would roughly double a 1GB entry. The 6GB target stands; the measured
+arithmetic and the proposed trim of the duplicated race build kinds live in the
+cache-budget issue (#6985).
 
 To read the budget, list the entries and the total:
 

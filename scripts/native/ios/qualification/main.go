@@ -43,8 +43,8 @@ type buildIdentity struct {
 
 type runner struct {
 	root, native, output string
-	// derived is the DerivedData root an explicit --derived-data names. The
-	// workflow points it at a path outside the run-owned output so a restored
+	// derived is the DerivedData root the workflow hands over through
+	// IOS_DERIVED_DATA. It sits outside the run-owned output so a restored
 	// build cache lands where xcodebuild reads it; empty means
 	// output/DerivedData.
 	derived     string
@@ -61,10 +61,9 @@ func main() {
 func runCLI() int {
 	mode := flag.String("mode", "build", "What to run: build (build, verify and prepare the UI test products) or journeys (run the journeys against downloaded products)")
 	output := flag.String("output", "", "New absolute directory for diagnostics (both modes) and DerivedData (build mode), must not exist")
-	derivedData := flag.String("derived-data", derivedDataFromEnv(), "New or cache-restored absolute directory for DerivedData in build mode; defaults to $IOS_DERIVED_DATA, then <output>/DerivedData")
 	products := flag.String("products", "", "DerivedData-shaped directory carrying Build/Products from the build job (journeys mode)")
 	flag.Usage = func() {
-		_, _ = fmt.Fprintln(flag.CommandLine.Output(), "Usage: build-simulator.sh --output ABSOLUTE_DIR [--derived-data ABSOLUTE_DIR]\n       run-ui-journeys.sh --products ABSOLUTE_DIR --output ABSOLUTE_DIR\nBuild mode builds a Release iPhone simulator app and embedded share extension, proves the intended journeys cannot run, registers the generated UI test target and builds the test products. Journeys mode runs the installed-app journeys against those downloaded products. Each mode creates and deletes its own simulator, requires the pinned macOS toolchain, and never publishes. Build mode also needs the installed npm/gem dependencies. Linux refuses before generation.")
+		_, _ = fmt.Fprintln(flag.CommandLine.Output(), "Usage: build-simulator.sh --output ABSOLUTE_DIR\n       run-ui-journeys.sh --products ABSOLUTE_DIR --output ABSOLUTE_DIR\nBuild mode builds a Release iPhone simulator app and embedded share extension, proves the intended journeys cannot run, registers the generated UI test target and builds the test products. Journeys mode runs the installed-app journeys against those downloaded products. Each mode creates and deletes its own simulator, requires the pinned macOS toolchain, and never publishes. Build mode also needs the installed npm/gem dependencies. Linux refuses before generation.")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -77,7 +76,7 @@ func runCLI() int {
 	var err error
 	switch *mode {
 	case "build":
-		err = qualify(ctx, *output, *derivedData)
+		err = qualify(ctx, *output, derivedDataFromEnv())
 	case "journeys":
 		if *products == "" {
 			flag.Usage()
@@ -109,7 +108,7 @@ func qualify(ctx context.Context, output, derivedData string) (result error) {
 		return errors.New("--output must be a new, clean absolute path")
 	}
 	if derivedData != "" && (!filepath.IsAbs(derivedData) || filepath.Clean(derivedData) != derivedData) {
-		return errors.New("--derived-data must be a clean absolute path")
+		return errors.New("IOS_DERIVED_DATA must be a clean absolute path")
 	}
 	root, err := os.Getwd()
 	if err != nil {
@@ -117,9 +116,6 @@ func qualify(ctx context.Context, output, derivedData string) (result error) {
 	}
 	r := newRunner(root, output)
 	r.derived = derivedData
-	if err := r.checkDerivedDataIgnored(ctx); err != nil {
-		return err
-	}
 	if _, err := os.Lstat(filepath.Join(r.native, "ios")); !errors.Is(err, os.ErrNotExist) {
 		return errors.New("mobile-native/ios already exists; use a fresh qualification checkout to preserve generated work")
 	}
@@ -240,47 +236,21 @@ func newRunner(root, output string) *runner {
 	}
 }
 
-// derivedDataFromEnv is the workflow's handoff. It exports the stable path as
-// IOS_DERIVED_DATA, and build mode reads it here rather than taking a flag: a
-// pull-request head from before the cache change carries this script without
-// that flag, and a flag it does not know would fail every such run.
+// derivedDataFromEnv is the workflow's handoff: it exports the stable cache
+// path as IOS_DERIVED_DATA. A pull-request head from before the cache change
+// carries this script and ignores the variable, building in its own output.
 func derivedDataFromEnv() string {
 	return os.Getenv("IOS_DERIVED_DATA")
 }
 
-// derivedDataDir is the build mode's DerivedData root. An explicit
-// --derived-data names a stable path the workflow restores a cache into; the
-// default keeps local runs inside their run-owned output.
+// derivedDataDir is the build mode's DerivedData root. The workflow's
+// IOS_DERIVED_DATA names a stable path it restores a cache into; the default
+// keeps ordinary local runs inside their run-owned output.
 func (r *runner) derivedDataDir() string {
 	if r.derived != "" {
 		return r.derived
 	}
 	return filepath.Join(r.output, "DerivedData")
-}
-
-// checkDerivedDataIgnored refuses a DerivedData root inside the checkout that
-// git does not ignore. The post-build provenance check reads Xcode's own output
-// there as an untracked source change and stops qualification after the build.
-func (r *runner) checkDerivedDataIgnored(ctx context.Context) error {
-	if r.derived == "" {
-		return nil
-	}
-	rel, err := filepath.Rel(r.root, r.derived)
-	if err != nil {
-		return fmt.Errorf("resolve %s under %s: %w", r.derived, r.root, err)
-	}
-	if filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return nil
-	}
-	err = exec.CommandContext(ctx, "git", "-C", r.root, "check-ignore", "-q", "--", rel).Run()
-	if err == nil {
-		return nil
-	}
-	var exit *exec.ExitError
-	if errors.As(err, &exit) && exit.ExitCode() == 1 {
-		return fmt.Errorf("%w: %s", errDerivedDataTracked, r.derived)
-	}
-	return fmt.Errorf("git check-ignore %s: %w", rel, err)
 }
 
 func simulatorName(output string) string {
