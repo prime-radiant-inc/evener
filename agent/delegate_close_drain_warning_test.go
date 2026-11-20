@@ -16,7 +16,6 @@ import (
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/execsupport/shellquote"
-	"primeradiant.com/evener/internal/testwait"
 )
 
 // closeDrainCascadeBudget is the close-cascade budget these tests mint with
@@ -151,12 +150,9 @@ func TestOrdinaryStopDrainDispatchesTheLostResultHookOnce(t *testing.T) {
 	// The close-time retry must not be the thing that delivers it.
 	f.root.retryCloseDrainWarnings(tripwireCtx(t))
 
-	// The hook is dispatched off the publishing goroutine, so wait for the
-	// dispatch before counting: the assertion is about exactly-once, not speed.
-	testwait.Until(t, "the lost-result warning's Notification hook to dispatch", func() bool {
-		data, readErr := os.ReadFile(hookDispatchLog)
-		return readErr == nil && strings.Contains(string(data), "hit")
-	})
+	// The hook is dispatched off the publishing goroutine, so join it before
+	// counting: the assertion is about exactly-once, not speed.
+	f.root.waitStopWarningHooks()
 	data, readErr := os.ReadFile(hookDispatchLog)
 	if readErr != nil && !os.IsNotExist(readErr) {
 		t.Fatalf("read hook dispatch log: %v", readErr)
@@ -165,6 +161,35 @@ func TestOrdinaryStopDrainDispatchesTheLostResultHookOnce(t *testing.T) {
 	if got != 1 {
 		t.Fatalf("the lost-result warning dispatched its Notification hook %d time(s), want exactly 1: "+
 			"a full buffer must not drop the notification, and a retry must not duplicate it", got)
+	}
+}
+
+// A close joins the ordinary stop drain's warning hooks before it closes the
+// transcript's event stream. A stop driver the close abandoned can still be
+// between a warning's publication and its hook dispatch at that moment, so the
+// join must close the dispatch gate: a hook started after the join would run the
+// user's command against a closing session, and nothing would wait for it
+// (#6939).
+func TestCloseDrainHookJoinRefusesLateOrdinaryWarningHooks(t *testing.T) {
+	late := &Session{}
+	var lateFired atomic.Int32
+	late.joinStopWarningHooks()
+	late.goStopWarningHook(func() { lateFired.Add(1) })
+	late.waitStopWarningHooks()
+	if got := lateFired.Load(); got != 0 {
+		t.Fatalf("a stop warning hook dispatched after the close's hook join ran %d time(s), want 0: "+
+			"the join must refuse hooks it did not wait for, or one races the transcript's teardown", got)
+	}
+
+	// The gate must not drop the hooks it was built to join: one started before
+	// the join is waited for and runs.
+	started := &Session{}
+	var startedFired atomic.Int32
+	started.goStopWarningHook(func() { startedFired.Add(1) })
+	started.joinStopWarningHooks()
+	if got := startedFired.Load(); got != 1 {
+		t.Fatalf("a stop warning hook started before the close's hook join ran %d time(s), want 1: "+
+			"the join waits for the hooks already dispatched", got)
 	}
 }
 

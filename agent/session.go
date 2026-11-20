@@ -564,6 +564,13 @@ type Session struct {
 	// after those removals and before the retries and teardown it can still
 	// publish through.
 	closeDrainHooksWG sync.WaitGroup
+	// stopWarningHooks tracks the Notification hooks an ordinary stop drain
+	// published asynchronously (session_events.go). Close joins them with the
+	// other drain hooks; once that join closes the gate, an abandoned stop
+	// driver's late publication starts no hook the close did not see.
+	stopWarningHooks       sync.WaitGroup
+	stopWarningHooksMu     sync.Mutex
+	stopWarningHooksClosed bool
 
 	steeringQueue []steeringMessage
 	// steeringInFlight holds the client steers popSteeringHead has taken out of

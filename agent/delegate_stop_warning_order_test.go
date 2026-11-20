@@ -141,15 +141,15 @@ func requireStrandedStopWarningAndRepairShareOneReconcile(t *testing.T) {
 }
 
 // An ordinary stop settles a lost-result warning and a shell repair in the same
-// reconcile pass. The warning's Notification hook is dispatched synchronously
-// by emit, so publishing it before the repair runs delays the repair behind the
-// user's hook command and leaves clients on a stale stop state (#6939).
+// reconcile pass. Publishing the warning before the repair runs delays the
+// repair behind the user's Notification hook command and leaves clients on a
+// stale stop state (#6939).
 //
 // The old order is observable from the hook itself: it records the store size it
 // sees. Published before the repair, the hook sees the pre-drain size; published
 // after the plans run, it sees the repair's appended events. The hook then
 // blocks until the test releases it, so the test can also check that the stop
-// is complete while a synchronous hook is still running.
+// completes while the hook is still running.
 func TestOrdinaryStopPublishesLostResultWarningAfterShellRepairs(t *testing.T) {
 	requireStrandedStopWarningAndRepairShareOneReconcile(t)
 
@@ -168,8 +168,11 @@ func TestOrdinaryStopPublishesLostResultWarningAfterShellRepairs(t *testing.T) {
 		Type:    "command",
 		Command: `size=$(wc -c < ` + shellquote.Literal(shellPath) + `); printf '%s\n' "$size" > ` + shellquote.Literal(observationPath) +
 			`; : > ` + shellquote.Literal(startedPath) +
-			`; i=0; while [ ! -f ` + shellquote.Literal(proceedPath) + ` ] && [ "$i" -lt 600 ]; do sleep 0.05; i=$((i+1)); done`,
-		Timeout: 30,
+			`; i=0; while [ ! -f ` + shellquote.Literal(proceedPath) + ` ] && [ "$i" -lt 1200 ]; do sleep 0.05; i=$((i+1)); done`,
+		// The loop bound outlives testwait's 30s ceiling: a synchronous dispatch
+		// then holds the driver past the wait and fails there, where a shorter
+		// bound would let a blocked driver look like a slow one.
+		Timeout: 120,
 	})
 	f.root.hookRunner = runner
 	f.root.env = execenv.NewLocalExecutionEnvironment(t.TempDir())
@@ -189,28 +192,15 @@ func TestOrdinaryStopPublishesLostResultWarningAfterShellRepairs(t *testing.T) {
 		_, statErr := os.Stat(startedPath)
 		return statErr == nil
 	})
-	// The hook is now running. The stop must already be complete, and the
-	// reconcile driver must already have finished: a Notification hook may not
-	// hold the completion clients see, new stop admission, or a close join
-	// behind its command (#6939).
-	if !channelClosed(f.stop.done) {
+	// The hook is now running and blocked. The drain must reach its completion
+	// without waiting for it: the remaining passes record completion and the
+	// driver returns while the user's command is still running (#6939).
+	release := func() {
 		if writeErr := os.WriteFile(proceedPath, []byte("go\n"), 0o644); writeErr != nil {
 			t.Fatalf("release the blocked hook: %v", writeErr)
 		}
-		t.Fatal("the stop was not complete while the Notification hook was still running: the ordinary " +
-			"stop dispatched the lost-result warning before its final pass recorded completion (#6939)")
 	}
-	if !channelClosed(driver.done) {
-		if writeErr := os.WriteFile(proceedPath, []byte("go\n"), 0o644); writeErr != nil {
-			t.Fatalf("release the blocked hook: %v", writeErr)
-		}
-		t.Fatal("the stop reconcile driver was still busy while the Notification hook was running: " +
-			"a user hook may not hold new stop admission or a close join behind its command (#6939)")
-	}
-	if err := os.WriteFile(proceedPath, []byte("go\n"), 0o644); err != nil {
-		t.Fatalf("release the blocked hook: %v", err)
-	}
-	testwait.Until(t, "the stop reconcile driver to finish", func() bool {
+	testwait.Until(t, "the stop reconcile driver to finish while the Notification hook is blocked", func() bool {
 		select {
 		case <-driven:
 			return true
@@ -219,11 +209,15 @@ func TestOrdinaryStopPublishesLostResultWarningAfterShellRepairs(t *testing.T) {
 		}
 	})
 	if driver.err != nil {
+		release()
 		t.Fatalf("ordinary stop driver: %v", driver.err)
 	}
 	if !channelClosed(f.stop.done) {
-		t.Fatal("the ordinary stop drain did not complete the stop")
+		release()
+		t.Fatal("the ordinary stop was not complete while the Notification hook was still running: " +
+			"the lost-result warning's hook held the completion clients see behind its command (#6939)")
 	}
+	release()
 
 	raw, err := os.ReadFile(observationPath)
 	if err != nil {
@@ -281,10 +275,7 @@ func TestOrdinaryStopPublishesSettledWarningWhenShellRepairFails(t *testing.T) {
 			"not exercise the repair error exit", err, shellPath)
 	}
 
-	testwait.Until(t, "the settled lost-result warning's Notification hook to dispatch", func() bool {
-		_, statErr := os.Stat(hookDispatchLog)
-		return statErr == nil
-	})
+	f.root.waitStopWarningHooks()
 	data, readErr := os.ReadFile(hookDispatchLog)
 	if readErr != nil {
 		t.Fatalf("the drain returned %v and the settled lost-result warning never dispatched its "+

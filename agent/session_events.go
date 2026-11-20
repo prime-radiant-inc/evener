@@ -293,9 +293,50 @@ func (s *Session) emitWarningDeferringHook(data events.EventData) {
 		s.jobManager.onSessionEvent(ev)
 	}
 	message, title := warningHookMessage(data), warningHookTitle(data)
-	s.closeDrainHooksWG.Go(func() {
+	s.goStopWarningHook(func() {
 		s.fireNotificationHook(message, title)
 	})
+}
+
+// goStopWarningHook runs fn on the session's tracked stop-warning hook
+// goroutine unless the close's hook join already closed that gate. After the
+// join, an abandoned stop driver's late publication starts no hook the close
+// did not see: its warning event still reaches the stream through the caller,
+// but the user's command is dropped rather than racing teardown. A hook that
+// started before the join is waited for by joinStopWarningHooks, so the
+// transcript cannot close under it.
+func (s *Session) goStopWarningHook(fn func()) {
+	s.stopWarningHooksMu.Lock()
+	if s.stopWarningHooksClosed {
+		s.stopWarningHooksMu.Unlock()
+		return
+	}
+	s.stopWarningHooks.Add(1)
+	s.stopWarningHooksMu.Unlock()
+	go func() {
+		defer s.stopWarningHooks.Done()
+		fn()
+	}()
+}
+
+// waitStopWarningHooks waits for the stop-warning hooks already started. It is
+// also the seam that makes an asynchronous dispatch observable to a test.
+func (s *Session) waitStopWarningHooks() {
+	if s != nil {
+		s.stopWarningHooks.Wait()
+	}
+}
+
+// joinStopWarningHooks closes the stop-warning hook gate and waits for the
+// hooks that started before it closed.
+func (s *Session) joinStopWarningHooks() {
+	if s == nil {
+		return
+	}
+	s.stopWarningHooksMu.Lock()
+	s.stopWarningHooksClosed = true
+	s.stopWarningHooksMu.Unlock()
+	s.waitStopWarningHooks()
 }
 
 // emitContext is emit on a caller's publication bound. A nil bound is the

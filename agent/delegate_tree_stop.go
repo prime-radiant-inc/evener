@@ -821,11 +821,12 @@ func (c *delegateTreeController) drainStopForClose(ctx context.Context, stop *de
 // publishDrainWarnings publishes the warnings a stop pass settled, on the path
 // that caller owns.
 //
-// The ordinary stop publishes the warnings its passes settled once the drain
-// has finished, so the completion update reaches clients before the hook; its
-// event send stays synchronous while the user's hook runs on the tracked hook
-// goroutine, so the hook cannot hold the reconcile driver behind new stop
-// admission. The reconcile-error exit rides that same deferred publication.
+// Each pass publishes the warnings it settled after its shell repairs and
+// attention cleanup. On the ordinary path the event send stays synchronous
+// while the user's Notification hook runs on the session's tracked hook
+// goroutine, so the hook cannot hold the next pass that records completion, new
+// stop admission, or a close join (#6939). The close path publishes on its
+// bounded publication context.
 //
 // The two callers have different obligations and must not share one publisher:
 //
@@ -915,20 +916,6 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 		defer cancelCapped()
 		pubCtx = capped
 	}
-	// A warning an ordinary pass settled names a receipt that is already gone
-	// from the store, so it must be published exactly once, and only after the
-	// drain has recorded completion: emit dispatches the configured
-	// Notification hook synchronously, so publishing earlier would hold the
-	// state clients see behind the hook's command (#6939). Every exit, including
-	// an error or an abandoned drain, runs this publication.
-	var settledWarnings []events.WarningData
-	if !warningsOnly {
-		defer func() {
-			if root != nil {
-				root.publishDrainWarnings(pubCtx, false, settledWarnings)
-			}
-		}()
-	}
 	for {
 		select {
 		case <-stop.done:
@@ -970,37 +957,24 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 			// A warning the pass settled is published even when the pass
 			// failed: the receipt that produced it is gone from the store,
 			// so no later pass can settle it again.
-			if warningsOnly {
-				publishPlansWarnings()
-			} else {
-				settledWarnings = append(settledWarnings, plans.warnings...)
-			}
+			publishPlansWarnings()
 			return err
 		}
 		// A warning this pass settled names a receipt that was abandoned during
-		// the pass and cannot be settled again, so nothing below may carry it out
-		// of the drain unpublished. The two callers publish it at different
-		// points, though:
+		// the pass and cannot be settled again, so it is published on this pass,
+		// AFTER the shell repairs and attention cleanup below. Publishing before
+		// them let a synchronous Notification hook delay that cleanup and leave
+		// clients on a stale stop state (#6939). The cleanup loops publish it on
+		// their own error exits, because those return before this point.
 		//
-		//   - The close drain (warningsOnly true) withholds the delegate updates
-		//     and delivery replay, but still executes the shell repairs and
-		//     attention cleanup below, so it publishes here, bounded by pubCtx,
-		//     and clears the warnings before those plans run.
-		//   - The ordinary stop (warningsOnly false) collects them and publishes
-		//     them when the drain returns, after the completion update. Publishing
-		//     here would run emit -- and with it the configured Notification
-		//     hook, synchronously -- before the shell repairs and attention
-		//     cleanup below, and before the pass that records completion,
-		//     delaying that work and leaving clients on a stale stop state
-		//     (#6939).
-		if warningsOnly {
-			publishPlansWarnings()
-		} else {
-			settledWarnings = append(settledWarnings, plans.warnings...)
-		}
-		plans.warnings = nil
+		// The ordinary path dispatches the warning's hook on the session's
+		// tracked hook goroutine, so even here the hook cannot hold the next pass
+		// that records stop completion, new stop admission, or a close join. The
+		// close path publishes on its bounded publication context and withholds
+		// the delegate updates and delivery replay below.
 		for _, plan := range plans.shellRepairs {
 			if err := executeDelegateShellRepair(plan, c.now()); err != nil {
+				publishPlansWarnings()
 				return err
 			}
 		}
@@ -1009,9 +983,12 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 				if errors.Is(err, errDelegateStaleLease) {
 					continue
 				}
+				publishPlansWarnings()
 				return err
 			}
 		}
+		publishPlansWarnings()
+		plans.warnings = nil
 		if warningsOnly {
 			// The plans withheld here own delivery claims, and a claimed
 			// delivery is never re-planned. Give the claims back so each
