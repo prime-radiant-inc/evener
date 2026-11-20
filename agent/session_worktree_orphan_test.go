@@ -789,6 +789,14 @@ type sharedDescendantLane struct {
 	sharedSub        *subagent
 	sharedDelegateID string
 	finish           func(llm.Request) llm.Response
+	// wake is the lane's shared drive edge: the notify callbacks driveUntil
+	// installs signal it, and every loop on the lane waits on it, so a
+	// finalize drain that captures and restores the callback restores the same
+	// edge every loop reads.
+	wake chan struct{}
+	// testDone closes with the test's own context: a drive worker ends on it,
+	// so a failed wait cannot leave a worker driving past test end.
+	testDone <-chan struct{}
 	// classifications records every delegateDeliveryClassified fire in this
 	// tree, so a tripwire can name whether the retained child's report reached
 	// the delivery admission path at all and with which deferral.
@@ -1144,6 +1152,8 @@ func spawnSharedDescendantLane(t *testing.T, r *wtRepo, laneName, standInDlg, st
 		sharedSub:        sharedSub,
 		sharedDelegateID: sharedDelegateID,
 		finish:           finish,
+		wake:             make(chan struct{}, 1),
+		testDone:         t.Context().Done(),
 		classifications:  classifications,
 	}
 }
@@ -1755,46 +1765,97 @@ func (l *sharedDescendantLane) releaseSeededAnnounceHold(t *testing.T) {
 	}
 }
 
-// driveUntil loops the root's attention drive over the lane's delegate with
-// the seeding idiom the attention mechanism tests share: a delivery the
-// spawn deferred past its last drain cut is pumped while the delegate is
-// idle, the drive runs, and the loop exits when stop closes or its own
-// budget passes. It returns the last flush error, for the failure dumps
-// that name a stranded delivery.
+// driveUntil starts a drive worker in the seeding idiom the attention
+// mechanism tests share and returns its last flush error, for the failure dumps
+// that name a stranded delivery. See startDrive.
 func (l *sharedDescendantLane) driveUntil(stop <-chan struct{}) func() error {
+	flush, _ := l.startDrive(stop)
+	return flush
+}
+
+// startDrive starts one drive worker and returns the flush-error reader plus a
+// channel that closes when the worker exits. The worker drives once up front
+// for rows already presentable, then on each wake edge the lane's notify
+// callbacks signal: the daemon reaches a presentation on its wake edge, not on
+// a cadence, and a refused drive arms the root's paced retry. A callback the
+// test itself wired is its own driver and is left alone. stop outranks a
+// buffered wake — once the caller closes it, no further pass runs, or a pass
+// after the stop would drive a runtime the test has already moved past and
+// bypass whatever resident path it arms next. The worker ends on the test's own
+// context too, so a failed wait cannot leave it driving past test end.
+func (l *sharedDescendantLane) startDrive(stop <-chan struct{}) (func() error, <-chan struct{}) {
 	var flushMu sync.Mutex
 	var flushErr error
-	flush := func() {
+	record := func(err error) {
+		if err == nil {
+			return
+		}
+		flushMu.Lock()
+		flushErr = err
+		flushMu.Unlock()
+	}
+	// The seeding idiom's pass: a delivery the spawn deferred past its last
+	// drain cut is pumped while the delegate is idle, then the drive runs.
+	drive := func() {
 		l.delegateSub.mu.Lock()
 		busy := l.delegateSub.running || l.delegateSub.driving || l.delegateSub.finalizing
 		l.delegateSub.mu.Unlock()
-		if busy {
-			return
+		if !busy {
+			record(l.delegateSess.flushPendingDelegateDeliveries())
 		}
-		if err := l.delegateSess.flushPendingDelegateDeliveries(); err != nil {
-			flushMu.Lock()
-			flushErr = err
-			flushMu.Unlock()
+		l.root.driveDelegateAttention(l.delegateSub)
+	}
+	signal := func() {
+		select {
+		case l.wake <- struct{}{}:
+		default:
 		}
 	}
+	for _, sess := range []*Session{l.delegateSess, l.root} {
+		sess.mu.Lock()
+		unwired := sess.notifyFunc == nil
+		sess.mu.Unlock()
+		if unwired {
+			sess.SetNotifyFunc(signal)
+		}
+	}
+	drive()
+	done := make(chan struct{})
 	go func() {
-		deadline := time.Now().Add(30 * time.Second)
-		for time.Now().Before(deadline) {
-			flush()
-			l.root.driveDelegateAttention(l.delegateSub)
-			time.Sleep(200 * time.Millisecond)
+		defer close(done)
+		stopped := func() bool {
+			select {
+			case <-stop:
+				return true
+			case <-l.testDone:
+				return true
+			default:
+				return false
+			}
+		}
+		for {
+			if stopped() {
+				return
+			}
 			select {
 			case <-stop:
 				return
-			default:
+			case <-l.testDone:
+				return
+			case <-l.wake:
 			}
+			if stopped() {
+				return
+			}
+			drive()
 		}
 	}()
-	return func() error {
+	read := func() error {
 		flushMu.Lock()
 		defer flushMu.Unlock()
 		return flushErr
 	}
+	return read, done
 }
 
 // A presentation start that consumes a retained child's report owes the
