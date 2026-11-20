@@ -42,10 +42,11 @@ type ScanLimits struct {
 	MaxBytes  int64
 	MaxEvents int
 	// MaxLineBytes bounds a single line's memory cost independently of
-	// MaxBytes/MaxEvents — see DefaultMaxLineBytes. Unlike those two, this
-	// is not a truncation knob: exceeding it always reports ErrLineTooLong
-	// and returns no partial result, because a single line that long is
-	// corruption, not a legitimately large journal.
+	// MaxBytes/MaxEvents — see DefaultMaxLineBytes. Unlike those two, it is
+	// not a truncation knob: a line beyond it returns ErrLineTooLong with no
+	// partial result, which establishes only that the line exceeded this
+	// scan's budget, not that the journal is damaged — no scan observed a
+	// byte it could not decode. See ScanEventsFrom for the per-error contract.
 	MaxLineBytes int64
 	// EndOffset, when positive, is the last byte this scan may read: the
 	// scan behaves as though the file ended there, returning cleanly at that
