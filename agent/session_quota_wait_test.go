@@ -1903,7 +1903,7 @@ func TestFailedStampSaveWarningDoesNotRunTheNotificationHook(t *testing.T) {
 		for {
 			select {
 			case w := <-warnings:
-				if strings.Contains(w.Message, "auto-save failed") {
+				if w.Code == events.WarningCodeSessionMetaSaveFailed {
 					return true
 				}
 			default:

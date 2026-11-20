@@ -190,7 +190,10 @@ func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model st
 	// Notification hook that would keep the turn from serving a reset, a wake
 	// or Stop.
 	if saveErr != nil {
-		s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("auto-save failed: %v", saveErr)})
+		s.emitDiagnosticWarning(events.WarningData{
+			Code:    events.WarningCodeSessionMetaSaveFailed,
+			Message: fmt.Sprintf("auto-save failed: %v", saveErr),
+		})
 	}
 	select {
 	case <-ctx.Done():
