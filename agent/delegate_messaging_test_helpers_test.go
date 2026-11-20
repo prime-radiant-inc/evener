@@ -251,7 +251,7 @@ func awaitSignal(t *testing.T, ch <-chan struct{}, what string) {
 	select {
 	case <-ch:
 	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
-	case <-time.After(30 * time.Second):
+	case <-time.After(testwait.BudgetOrCeiling(t)):
 		t.Errorf("timed out waiting for %s", what)
 	}
 }
