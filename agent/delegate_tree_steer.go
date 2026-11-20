@@ -245,7 +245,7 @@ func (c *delegateTreeController) BeginModelRequest(lease delegateLease) (*delega
 // CompleteModelRequest binds the claim's admitted steers, drops the steers that
 // landed after it, and returns the filtered turns with the in-flight boundary
 // moved into that projection's coordinates. The caller expands these turns and
-// records the same scope as the round's fallback source (#6947).
+// records the same scope as the round's fallback source.
 func (c *delegateTreeController) CompleteModelRequest(claim *delegateModelRequestClaim, history []schema.Turn, scope replayScope) ([]schema.Turn, replayScope, error) {
 	defer c.retirementChanged()
 	c.mu.Lock()

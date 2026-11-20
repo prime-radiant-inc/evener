@@ -441,9 +441,9 @@ func TestDelegateControllerModelSnapshotDefersSteerAcceptedAfterRequestBind(t *t
 	}
 }
 
-// #6947: the bound round records its unprojected fallback source from the
-// controller's filtered turns, so a steer the controller defers cannot ride a
-// failover: callModelWithFallback re-expands those same turns.
+// The bound round records its unprojected fallback source from the controller's
+// filtered turns, so a steer the controller defers cannot ride a failover:
+// callModelWithFallback re-expands those same turns.
 func TestDelegateFallbackSourceUsesControllerFilteredTurns(t *testing.T) {
 	runtime := newSession(t, withStateDir(t.TempDir()))
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
@@ -485,9 +485,9 @@ func TestDelegateFallbackSourceUsesControllerFilteredTurns(t *testing.T) {
 	}
 }
 
-// #6947: the in-flight boundary indexes the projection CompleteModelRequest
-// returns, so it moves with every row that projection removes: a late steer it
-// drops, and a bound steer it lifts to the tail.
+// The in-flight boundary indexes the projection CompleteModelRequest returns,
+// so it moves with every row that projection removes: a late steer it drops,
+// and a bound steer it lifts to the tail.
 func TestDelegateControllerModelRequestShiftsInFlightBoundary(t *testing.T) {
 	t.Run("late steer", func(t *testing.T) {
 		c, _ := newDelegateControllerTestHarness(t, 1, 1)
