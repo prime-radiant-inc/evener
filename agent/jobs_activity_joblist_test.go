@@ -390,6 +390,22 @@ func TestActivityJobList_StrandedAppendLeavesThePublishedChunksAlone(t *testing.
 	if !slices.Contains(secondIDs, strandedB.JobID) {
 		t.Fatalf("the second overlay lost its own stranded %q", strandedB.JobID)
 	}
+
+	// One durable row leaves the fold's only chunk partial. Appending the
+	// stranded row as a fresh chunk would make len() read 512+1, though the
+	// list holds two rows: len() assumes every chunk but the last is full.
+	partial := newActivityJobList(records[:1])
+	overlaid := partial.withLiveRebuilt(
+		map[string]*jobstore.JobRecord{strandedA.JobID: strandedA},
+		map[string]struct{}{strandedA.JobID: {}},
+		nil,
+	)
+	if got := overlaid.len(); got != 2 {
+		t.Fatalf("overlay over a partial last chunk reports %d rows, want 2", got)
+	}
+	if got := len(slices.Collect(overlaid.all())); got != 2 {
+		t.Fatalf("overlay over a partial last chunk iterates %d rows, want 2", got)
+	}
 }
 
 // TestActivityJobList_SubstitutionLeavesThePublishedChunksAlone pins the
