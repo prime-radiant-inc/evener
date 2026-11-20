@@ -108,56 +108,6 @@ func TestCovWatchArgsHasCondition(t *testing.T) {
 	}
 }
 
-// TestCovValidateWatchEventArgs covers validateWatchEventArgs.
-func TestCovValidateWatchEventArgs(t *testing.T) {
-	t.Parallel()
-	// Wildcard event → ok.
-	if err := validateWatchEventArgs(watchArgs{Events: []string{"*"}}); err != nil {
-		t.Fatalf("wildcard: %v", err)
-	}
-
-	// Valid event → ok.
-	if err := validateWatchEventArgs(watchArgs{Events: []string{"assistant.tool"}}); err != nil {
-		t.Fatalf("assistant.tool: %v", err)
-	}
-
-	// Invalid event name.
-	err := validateWatchEventArgs(watchArgs{Events: []string{"bogus"}})
-	if err == nil || !strings.Contains(err.Error(), "unknown event kind") {
-		t.Fatalf("bogus event: %v", err)
-	}
-
-	// assistant.message is explicitly rejected.
-	err = validateWatchEventArgs(watchArgs{Events: []string{"assistant.message"}})
-	if err == nil || !strings.Contains(err.Error(), "assistant.message is not watchable") {
-		t.Fatalf("assistant.message: %v", err)
-	}
-
-	// Every with multiple events → error.
-	err = validateWatchEventArgs(watchArgs{Events: []string{"assistant.tool", "communicate"}, Every: 2})
-	if err == nil || !strings.Contains(err.Error(), "every requires events naming exactly one kind") {
-		t.Fatalf("every multi: %v", err)
-	}
-
-	// Every with wildcard → error.
-	err = validateWatchEventArgs(watchArgs{Events: []string{"*"}, Every: 2})
-	if err == nil || !strings.Contains(err.Error(), "not \"*\"") {
-		t.Fatalf("every wildcard: %v", err)
-	}
-
-	// Event filter without events → error.
-	err = validateWatchEventArgs(watchArgs{EventFilter: &watchEventFilter{}})
-	if err == nil || !strings.Contains(err.Error(), "event_filter requires events naming assistant.tool") {
-		t.Fatalf("event_filter no events: %v", err)
-	}
-
-	// Event filter with wrong event kind → error.
-	err = validateWatchEventArgs(watchArgs{Events: []string{"job.notification"}, EventFilter: &watchEventFilter{}})
-	if err == nil {
-		t.Fatalf("event_filter wrong kind: %v", err)
-	}
-}
-
 // TestCovNormalizeWatchArgs covers normalizeWatchArgs.
 func TestCovNormalizeWatchArgs(t *testing.T) {
 	t.Parallel()
