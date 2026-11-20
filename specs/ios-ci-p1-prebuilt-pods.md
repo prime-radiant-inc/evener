@@ -738,3 +738,49 @@ steady state and 10 GB eviction line, one generation per lock-hash is affordable
 and per-flavor per-lock-hash fan-out is not — the same conclusion as section 7.
 Hosting them as a workflow artifact or a cache entry restored to
 `EXPO_PRECOMPILED_MODULES_PATH` avoids a new external host.
+
+## 13. Per-target timing measured: E3 is off the critical path
+
+Run 44735786110, branch `lab/p1-timing-1` @ `e835adab04` (cut from main
+`335f3f92b8`, cold, build-only), build job 136286693974, 12:26:28→12:46:15Z
+(19m47s). Phases: pod-resolve 126 s, pod-deployment 48 s, **xcodebuild-release
+780 s** (build end 777.9 s). 1029 CompileC, 61 targets.
+
+The release build now logs every line with its elapsed seconds, so a target's
+last activity is its finish time. Ranked by last activity, with the tail each
+target leaves behind:
+
+```
+target                            compiles  last_s   tail_s
+EXConstants                              5   777.9      0.0
+Evener                                   8   777.9      0.0
+ExpoModulesJSI                           0   777.9      0.0
+Pods-Evener (aggregate)                  1   689.0     89.0
+ExpoCameraBarcodeScanning                3   687.7     90.2
+Expo                                     8   678.0     99.9
+ExpoCamera                               2   674.1    103.8
+ExpoFileSystem                          13   673.0    105.0
+ExpoSQLite / ExpoFont                    3   667.4    110.5
+ExpoModulesCore                         41   584.6    193.3
+RNReanimated                           125   526.0    252.0
+ReactNativeEnrichedMarkdown            168   507.7    270.2
+RNScreens                               91   343.2    434.7
+```
+
+ZXingObjC (163), RNWorklets and safe-area-context never enter the top 40, so
+they finish before 343 s. **Every pod E3 would prebuild finishes 250–435 s
+before the build ends.** Removing them cannot shorten this build: the same
+mechanism that nulled E1, now measured rather than suspected.
+
+What actually sets the clock: the last Expo compiles at 625–690 s, then an
+**89 s tail** that is entirely app-target work — `[CP] Check Pods
+Manifest.lock` and `[Expo] Configure project` start at 689.0 s, followed by
+asset catalog, storyboards, resource copies, link and validate to 777.8 s.
+Timing summary: CompileC 1029 tasks/1355.68 s, PhaseScriptExecution 48/155.07 s,
+SwiftCompile 34/118.77 s, SwiftDriver 32/80.45 s, ScanDependencies 581/65.88 s.
+
+The xcresulttool path added no per-target data: `xcrun xcresulttool get
+build-results --path … --format json` succeeded and wrote 483 KB, but the
+document carries only action-level fields (`startTime`, `endTime`, `status`,
+`warnings`) and the report printed `build-timings: 0 duration entries from
+xcresulttool`. The timestamp table is the instrument that works.
