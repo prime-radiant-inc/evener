@@ -709,3 +709,20 @@ func assertRawArgsByIndex(t *testing.T, got, want [][]byte) {
 		}
 	}
 }
+
+// TestRawArgs_Stream_ToolCallEndNormalizesArgumentsAndKeepsSpelling pins the
+// live end event to the settled call's shape: Arguments is the canonical bytes
+// and the provider's formatted original rides as ArgumentsSpelling.
+func TestRawArgs_Stream_ToolCallEndNormalizesArgumentsAndKeepsSpelling(t *testing.T) {
+	t.Parallel()
+	const spelled = `{ "a" : "<x&y>" }`
+	const canonical = `{"a":"\u003cx\u0026y\u003e"}`
+	events, _ := responsesEventsFromSSE(t, rawArgsResponsesSSE(spelled))
+	end := toolEvent(t, events, llm.StreamEventToolCallEnd)
+	if got := string(end.Arguments); got != canonical {
+		t.Fatalf("ToolCallEnd Arguments = %q, want the canonical %q", got, canonical)
+	}
+	if got := string(end.ArgumentsSpelling); got != spelled {
+		t.Fatalf("ToolCallEnd ArgumentsSpelling = %q, want the provider's original %q", got, spelled)
+	}
+}
