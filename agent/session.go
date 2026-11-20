@@ -785,7 +785,11 @@ type Session struct {
 	executionFrontier   events.ExecutionFrontier
 	frontierWake        chan struct{}
 	frontierPending     []string
-	frontierStopped     bool
+	// frontierDeferred holds executions the history fenced behind a pending
+	// publication. They enter frontierPending only at that publication handoff,
+	// so a buffered wake cannot emit a turn the history cannot read yet.
+	frontierDeferred []string
+	frontierStopped  bool
 	// Armed only by constructors, never by bare Sessions or runtime writes.
 	frontierStartupPending bool
 	frontierEmitterWG      sync.WaitGroup // lifetime worker, joined at the event-stream close boundary
