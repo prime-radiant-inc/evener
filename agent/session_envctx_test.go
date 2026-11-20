@@ -1076,9 +1076,12 @@ func TestCompactedGitSessionResumedOutsideGitReportsNoRepo(t *testing.T) {
 			stateDir := t.TempDir()
 			client := llm.NewClient()
 			client.Register(newFakeAdapter("openai", repeatFinalResponse(4, "ok")...))
-			s, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(gitDir), SessionConfig{
+			gitEnv := execenv.NewLocalExecutionEnvironment(gitDir)
+			gitProbes := fixedEnvProbes()
+			gitProbes.GitBranch = func(cwd string) string { return snapshotGitBranch(gitEnv, cwd) }
+			s, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), gitEnv, SessionConfig{
 				StateDir: stateDir,
-				testOnly: testConfig{noSyncJobStore: true, envProbes: fixedEnvProbes()},
+				testOnly: testConfig{noSyncJobStore: true, envProbes: gitProbes},
 			})
 			if err != nil {
 				t.Fatalf("NewSession: %v", err)
@@ -1103,9 +1106,12 @@ func TestCompactedGitSessionResumedOutsideGitReportsNoRepo(t *testing.T) {
 			nonGitDir := t.TempDir()
 			rClient := llm.NewClient()
 			rClient.Register(newFakeAdapter("openai", repeatFinalResponse(16, "resumed")...))
-			r, err := RestoreSessionFromMetaWithConfig(rClient, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(nonGitDir), meta, RestoreSessionConfig{
+			nonGitEnv := execenv.NewLocalExecutionEnvironment(nonGitDir)
+			nonGitProbes := fixedEnvProbes()
+			nonGitProbes.GitBranch = func(cwd string) string { return snapshotGitBranch(nonGitEnv, cwd) }
+			r, err := RestoreSessionFromMetaWithConfig(rClient, NewOpenAIProfile("gpt-5.2"), nonGitEnv, meta, RestoreSessionConfig{
 				StateDir: stateDir,
-				testOnly: testConfig{noSyncJobStore: true, envProbes: fixedEnvProbes()},
+				testOnly: testConfig{noSyncJobStore: true, envProbes: nonGitProbes},
 			})
 			if err != nil {
 				t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
