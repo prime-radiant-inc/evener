@@ -1669,13 +1669,11 @@ func (s *Session) stableChildTurnNeedsLease(ctx context.Context) bool {
 // retries the append. An error the child can see beats a silently swallowed
 // failure report, and the ordinary completions beside it still ride this turn.
 //
-// It returns the notices the turn may carry and reports whether it deferred
-// anything.
-func (s *Session) deferUnleasedWatchNotices(ctx context.Context, jobNotifs []deliverableJobNotification) ([]deliverableJobNotification, bool) {
+// It returns the notices the turn may carry.
+func (s *Session) deferUnleasedWatchNotices(ctx context.Context, jobNotifs []deliverableJobNotification) []deliverableJobNotification {
 	if !s.stableChildTurnNeedsLease(ctx) {
-		return jobNotifs, false
+		return jobNotifs
 	}
-	deferred := false
 	var retry []jobNotification
 	kept := jobNotifs[:0:0]
 	for _, d := range jobNotifs {
@@ -1688,12 +1686,11 @@ func (s *Session) deferUnleasedWatchNotices(ctx context.Context, jobNotifs []del
 			// here would present it outside a lease, so it goes to durable
 			// attention under its delivery identity and the send settles there;
 			// a frame that cannot be made durable stays owed on the queue.
-			if _, err := s.deferWatchSendFrameToAttention(d.watchJM, d.watchCfg, d.watchState); err != nil {
+			if err := s.deferWatchSendFrameToAttention(d.watchJM, d.watchCfg, d.watchState); err != nil {
 				s.emit(warningDataFromError("defer unleased watch send", err))
 				retry = append(retry, d.notification)
 				continue
 			}
-			deferred = true
 			continue
 		}
 		appended, err := s.persistDeferredWatchNotice(d.notification)
@@ -1709,10 +1706,9 @@ func (s *Session) deferUnleasedWatchNotices(ctx context.Context, jobNotifs []del
 				continue
 			}
 		}
-		deferred = true
 	}
 	s.requeueJobNotifications(retry)
-	return kept, deferred
+	return kept
 }
 
 // deferredWatchAttentionPrefix marks the durable attention rows this half

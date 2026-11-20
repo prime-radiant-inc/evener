@@ -46,7 +46,7 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 	// watch notices matters: a batch that holds a recovered shell completion
 	// beside one would otherwise requeue whole and retry forever, because every
 	// retry sees the same pair.
-	jobNotifs, _ = s.deferUnleasedWatchNotices(ctx, jobNotifs)
+	jobNotifs = s.deferUnleasedWatchNotices(ctx, jobNotifs)
 	if sessionLifecycleFault(ctx, "inject_watch_notification") != nil {
 		jobNotifs = append(jobNotifs, deliverableJobNotification{
 			notification: jobNotification{Kind: jobNotificationKindWatch, JobID: "injected-watch", Status: jobNotificationEventWatch},
@@ -171,7 +171,7 @@ func (s *Session) injectLaterJobNotifications(ctx context.Context) {
 	// request is prepared. Writing it here would put it into history outside a
 	// leased generation, so defer it to durable attention while letting ordinary
 	// completions in the same batch ride this round.
-	jobNotifs, _ = s.deferUnleasedWatchNotices(ctx, jobNotifs)
+	jobNotifs = s.deferUnleasedWatchNotices(ctx, jobNotifs)
 	if len(jobNotifs) == 0 {
 		return
 	}

@@ -674,14 +674,7 @@ func (s *Session) foldHistoryBeforeRequest(ctx context.Context, round, sysLen in
 				if round == 0 {
 					s.turnHistoryBaseline = len(published)
 				} else {
-					// The boundary was captured against the unfiltered resident
-					// history, but this fold folds the filtered projection, so the
-					// withheld rows before it are not in the folded result for it to
-					// slide past. Move it down for those first, then apply the fold's
-					// own shrink from the FILTERED pre-fold length.
-					s.turnHistoryBaseline = shiftBoundaryForDrops(s.turnHistoryBaseline, filteredDroppedAt)
-					s.shrinkTurnHistoryBaseline(filteredPreLen, managedLen, injectedTurns)
-					s.growTurnHistoryBaseline(restoredAt)
+					s.rebaseTurnHistoryBaselineAfterFilteredFold(filteredDroppedAt, filteredPreLen, managedLen, injectedTurns, restoredAt)
 				}
 				baselineSynced = true
 			})
@@ -764,6 +757,18 @@ func shiftBoundaryForDrops(boundary int, droppedAt []int) int {
 		shifted = 0
 	}
 	return shifted
+}
+
+// rebaseTurnHistoryBaselineAfterFilteredFold adjusts turnHistoryBaseline for a
+// fold that ran over a watch-filtered projection of resident history. The
+// boundary was captured against the unfiltered resident history, so withheld
+// rows before it are shifted out first, then the fold's own shrink (measured
+// against the filtered pre-fold length) and any restored attention rows are
+// applied. Callers must hold s.mu.
+func (s *Session) rebaseTurnHistoryBaselineAfterFilteredFold(droppedAt []int, filteredPreLen, postLen, injected int, restoredAt []int) {
+	s.turnHistoryBaseline = shiftBoundaryForDrops(s.turnHistoryBaseline, droppedAt)
+	s.shrinkTurnHistoryBaseline(filteredPreLen, postLen, injected)
+	s.growTurnHistoryBaseline(restoredAt)
 }
 
 // applyResponsesContinuationAnchorPlanning returns the request to dispatch and,

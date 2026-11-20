@@ -428,18 +428,17 @@ func (s *Session) retryRestoredPendingWatchSends(_ context.Context) error {
 // retry owns it, so putting the token back would present the frame unleased as
 // well as to the leased run the row already waits for.
 //
-// It reports whether it made a row durable. A frame that is no longer current
-// is not presentable, so it reports false and no error: the token names nothing
-// and is discarded rather than retried forever.
-func (s *Session) deferWatchSendFrameToAttention(jm *jobManager, cfg *watchConfig, state jobstore.WatchSendState) (bool, error) {
+// A frame that is no longer current is not presentable: it returns no error,
+// because the token names nothing and is discarded rather than retried forever.
+func (s *Session) deferWatchSendFrameToAttention(jm *jobManager, cfg *watchConfig, state jobstore.WatchSendState) error {
 	if s == nil || jm == nil || cfg == nil || state.DeliveryID == "" {
-		return false, errors.New("watch send deferral identity is incomplete")
+		return errors.New("watch send deferral identity is incomplete")
 	}
 	// The frame may have been cleared or superseded since the token was built.
 	// A superseded frame's successor carries the content, and a cleared watch's
 	// frame is no longer owed, so neither is presentable.
 	if !jm.isCurrentPendingWatchSend(cfg, state) {
-		return false, nil
+		return nil
 	}
 	attentionID := stableWatchAttentionID(state)
 	if s.delegateController != nil {
@@ -449,7 +448,7 @@ func (s *Session) deferWatchSendFrameToAttention(jm *jobManager, cfg *watchConfi
 		if s.delegateController != nil {
 			s.delegateController.attentionCauses.forget(attentionID)
 		}
-		return false, err
+		return err
 	}
 	// The row is durable, so the frame IS delivered: the leased generation the
 	// arm below wakes presents it, and no unleased pass may render it again.
@@ -476,5 +475,5 @@ func (s *Session) deferWatchSendFrameToAttention(jm *jobManager, cfg *watchConfi
 			s.emit(warningDataFromError("settle deferred watch send", err))
 		}
 	}
-	return true, nil
+	return nil
 }
