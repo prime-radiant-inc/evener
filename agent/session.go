@@ -1655,19 +1655,14 @@ func (s *Session) stableChildTurnNeedsLease(ctx context.Context) bool {
 // deferUnleasedWatchNotices is THE RULE's one split point. On a leased turn it
 // does nothing: the lease is the presentation a watch notice waits for, so the
 // whole batch rides the turn. On an unleased stable-delegate turn it partitions
-// the batch three ways:
+// the batch two ways:
 //
 //   - An ordinary notice stays in kept and proceeds normally. It has no lease to
 //     inherit but is perfectly deliverable, and it is the only half some turns
 //     own.
-//   - A caller-targeted watch frame the model ALREADY has stays in kept: only
-//     its delivered record is outstanding, so settling it presents nothing and
-//     needs no lease (the zero-model drain).
-//   - Everything else watch-shaped goes to durable leased attention: an
-//     untranscribed caller frame under its delivery identity
-//     (deferWatchSendFrameToAttention), and any other watch notice under the
-//     deferral identity (persistDeferredWatchNotice). A leased generation then
-//     presents it.
+//   - Every watch notice goes to durable leased attention under the deferral
+//     identity (persistDeferredWatchNotice). A leased generation then presents
+//     it.
 //
 // Order is persist-then-suppress. Suppressing first and persisting after leaves
 // a window in which the notice is neither queued nor durable, which loses it.
@@ -1688,18 +1683,6 @@ func (s *Session) deferUnleasedWatchNotices(ctx context.Context, jobNotifs []del
 	for _, d := range jobNotifs {
 		if !d.notification.isWatch() {
 			kept = append(kept, d)
-			continue
-		}
-		if d.watchJM != nil {
-			// A watch-SEND frame the model has not transcribed yet. Rendering it
-			// here would present it outside a lease, so it goes to durable
-			// attention under its delivery identity and the send settles there;
-			// a frame that cannot be made durable stays owed on the queue.
-			if err := s.deferWatchSendFrameToAttention(d.watchJM, d.watchCfg, d.watchState); err != nil {
-				s.emit(warningDataFromError("defer unleased watch send", err))
-				retry = append(retry, d.notification)
-				continue
-			}
 			continue
 		}
 		appended, err := s.persistDeferredWatchNotice(d.notification)

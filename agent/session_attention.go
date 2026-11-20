@@ -2975,7 +2975,15 @@ func (s *Session) dropResidentDelegateAttentionTurnLocked(attentionID string) {
 }
 
 func (s *Session) readDelegateAttentionFold(path, sessionID string) (delegateAttentionFold, error) {
-	if readFold := s.cfg.testOnly.delegateAttentionReadFold; readFold != nil {
+	// The hook is read under s.mu because a test installs and clears it under
+	// that same lock (updateSessionTestConfig). Every caller reaches here with
+	// s.mu released -- the rows above read what the fold needs from it and drop
+	// it again -- so taking it here nests under no caller's hold. attentionMu
+	// stays the outer lock: nothing under s.mu takes it.
+	s.mu.Lock()
+	readFold := s.cfg.testOnly.delegateAttentionReadFold
+	s.mu.Unlock()
+	if readFold != nil {
 		return readFold(path, sessionID)
 	}
 	return s.attentionFoldCursor.read(path, sessionID)
