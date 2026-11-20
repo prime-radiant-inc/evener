@@ -90,7 +90,7 @@ import {
   steerTooltipLabel,
   submitTooltipLabel,
 } from "./controlTooltips";
-import { useDuoCoverLayout, useNarrowComposer } from "./narrowComposer";
+import { useDuoCoverLayout, useLandscapePhoneLayout, useNarrowComposer } from "./narrowComposer";
 import {
   editQueuedPendingTurn,
   refreshPendingTurnsProjection,
@@ -344,6 +344,7 @@ function ComposerWithSubmission({
   // narrowComposer.ts measures the pane, not the viewport.
   const [narrow, attachNarrowRef] = useNarrowComposer();
   const duoCoverLayout = useDuoCoverLayout();
+  const landscapePhoneLayout = useLandscapePhoneLayout();
   const composerRootRef = useRef<HTMLDivElement | null>(null);
   const attachComposerRoot = useCallback(
     (element: HTMLDivElement | null) => {
@@ -1040,7 +1041,7 @@ function ComposerWithSubmission({
   // Attach. The actions slot never sheds, so Stop stays reachable while a
   // turn runs, and the resting leading never swaps while one of its own
   // controls is pressed.
-  const controlsCollapsed = isMobile && resting;
+  const controlsCollapsed = (isMobile || landscapePhoneLayout) && resting;
 
   // The phone's activity counts are a glance line below the card. A folded
   // resting card is the phone's smallest surface, so it shows no line; the
@@ -1503,6 +1504,7 @@ function ComposerWithSubmission({
             <Dropzone onFiles={(files) => attachments.ingestFiles(files, (message) => toasts.push("error", message))}>
               <PromptCard
                 data-testid="composer-input-card"
+                controlsTestId="composer-controls"
                 hidden={askPending}
                 folded={folded}
                 foldedCompact={controlsCollapsed}

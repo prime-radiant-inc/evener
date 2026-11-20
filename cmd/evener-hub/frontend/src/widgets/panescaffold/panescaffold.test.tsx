@@ -264,6 +264,7 @@ test("the footer fills to the screen's bottom edge while keeping its content cle
   const css = readModuleCss(import.meta.url, "panescaffold.module.css");
   const footerRule = css.match(/\.footer \{([^}]*)\}/)?.[1] ?? "";
   expect(footerRule).toContain("padding-bottom: calc(var(--space-3) + var(--dock-clearance))");
+  expect(topRuleBlock(css, ".edgeFooter")).toContain("padding-bottom: var(--dock-clearance)");
   // The phone keeps only keyboard-aware safe-area clearance below the card.
   expect(css).toMatch(
     new RegExp(
@@ -271,12 +272,9 @@ test("the footer fills to the screen's bottom edge while keeping its content cle
     ),
   );
   // A flush edge footer below this one (the session status bar) is the pane's
-  // bottom edge and owns the band, so the dock must not reserve it twice.
-  expect(css).toMatch(
-    new RegExp(
-      `@media ${escapeRegExp(MOBILE_QUERY)} \\{[\\s\\S]*?\\.footerBeforeEdge \\{[^}]*padding-bottom: var\\(--space-3\\)`,
-    ),
-  );
+  // bottom edge and owns the band at every width, including a landscape phone
+  // whose width crosses the desktop shell boundary.
+  expect(topRuleBlock(css, ".footerBeforeEdge")).toContain("padding-bottom: var(--space-3)");
   // While the composer is focused the status bar hides, so the dock takes
   // the home-indicator band back (focus can outlive the keyboard).
   expect(css).toMatch(

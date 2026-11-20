@@ -335,6 +335,20 @@ func TestClonePointerOwnsItsValue(t *testing.T) {
 }
 
 func TestCloneThreadOwnsObservationEvidence(t *testing.T) {
+	// A copy preserves the original's values, so a present-but-empty causal
+	// must stay present and empty; only provenance.Clone normalizes it to nil.
+	t.Run("an empty causal survives the copy", func(t *testing.T) {
+		empty := &SessionObservationMetadata{Causal: &provenance.Causal{}}
+		copied := CloneSessionObservationMetadata(empty)
+		if copied.Causal == nil {
+			t.Fatal("an empty causal became nil through the clone")
+		}
+		if !reflect.DeepEqual(copied, empty) {
+			t.Fatalf("clone = %+v, want a copy of %+v", copied, empty)
+		}
+	})
+
+	accepted := true
 	original := Thread{Turns: []Turn{{ID: "turn", Items: []ThreadItem{{
 		ID:   "answer",
 		Type: "userMessage",
@@ -343,7 +357,12 @@ func TestCloneThreadOwnsObservationEvidence(t *testing.T) {
 			AnswerToTurnIDs:        []string{"asked-turn"},
 			ResolvedAskCalls:       []PendingAskCall{{TurnID: "asked-turn", CallID: "call-1"}},
 			ResolvedAskLegacyCount: 2,
-			Causal:                 &provenance.Causal{WatchKeys: []provenance.WatchKey{{WatchID: "w", WatchGeneration: "1"}}},
+			TerminalAccepted:       &accepted,
+			Causal: &provenance.Causal{
+				WatchKeys: []provenance.WatchKey{{WatchID: "w", WatchGeneration: "1"}},
+				Chain:     []provenance.Entry{{Kind: "watch", WatchID: "w", WatchGeneration: "1", DeliveryID: "delivery"}},
+				FireKeys:  []provenance.FireKey{{WatchID: "w", WatchGeneration: "1", DeliveryID: "delivery"}},
+			},
 		},
 	}}}}}
 	clone := CloneThread(original)
@@ -354,9 +373,15 @@ func TestCloneThreadOwnsObservationEvidence(t *testing.T) {
 	if observation == original.Turns[0].Items[0].Observation {
 		t.Fatal("clone shares the observation with the original")
 	}
+	if observation.TerminalAccepted == original.Turns[0].Items[0].Observation.TerminalAccepted {
+		t.Fatal("clone shares the terminal-accepted flag with the original")
+	}
 	observation.ResolvedAskCalls[0] = PendingAskCall{TurnID: "other", CallID: "other"}
 	observation.AnswerToTurnIDs[0] = "other"
+	*observation.TerminalAccepted = false
 	observation.Causal.WatchKeys[0] = provenance.WatchKey{WatchID: "other", WatchGeneration: "9"}
+	observation.Causal.Chain[0].DeliveryID = "other"
+	observation.Causal.FireKeys[0].DeliveryID = "other"
 	held := original.Turns[0].Items[0].Observation
 	if held.ResolvedAskCalls[0].CallID != "call-1" {
 		t.Fatalf("a cloned call pair changed the original: %+v", held.ResolvedAskCalls)
@@ -364,8 +389,17 @@ func TestCloneThreadOwnsObservationEvidence(t *testing.T) {
 	if held.AnswerToTurnIDs[0] != "asked-turn" {
 		t.Fatalf("a cloned turn link changed the original: %v", held.AnswerToTurnIDs)
 	}
+	if held.TerminalAccepted == nil || *held.TerminalAccepted != true {
+		t.Fatalf("a cloned terminal-accepted flag changed the original: %v", held.TerminalAccepted)
+	}
 	if held.Causal.WatchKeys[0].WatchID != "w" {
 		t.Fatalf("a cloned causal key changed the original: %+v", held.Causal.WatchKeys)
+	}
+	if held.Causal.Chain[0].DeliveryID != "delivery" {
+		t.Fatalf("a cloned causal chain changed the original: %+v", held.Causal.Chain)
+	}
+	if held.Causal.FireKeys[0].DeliveryID != "delivery" {
+		t.Fatalf("a cloned causal fire key changed the original: %+v", held.Causal.FireKeys)
 	}
 	if CloneSessionObservationMetadata(nil) != nil {
 		t.Fatal("a nil observation cloned to a non-nil one")

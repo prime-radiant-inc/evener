@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/evener/agent/internal/goal"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/internal/transcriptindex"
@@ -307,7 +308,7 @@ func TestNotificationTurnOwnsDirectRetrySteering(t *testing.T) {
 	project := func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
 		return apptranscript.ProjectTurn(turnID, turnIndex, turn, apptranscript.NewToolCallRegistry(), nil, nil)
 	}
-	coldTurns, err := apptranscript.ItemTurnsFromEntries(data.Header, data.Entries, project)
+	coldTurns, err := apptranscript.ItemTurnsFromFile(sess.TranscriptPath(), transcript.DefaultMaxLineBytes, project)
 	if err != nil {
 		t.Fatalf("cold projection: %v", err)
 	}

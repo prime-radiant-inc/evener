@@ -57,9 +57,9 @@ func TestItemReadersGroupContinuationEntries(t *testing.T) {
 	path := writeEntries(t, entries...)
 
 	fromFile := requireItemTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
-	fromEntries, err := ItemTurnsFromEntries(transcript.Header{}, entries, sequentialTestProjector())
+	fromEntries, err := itemTurnsFromEntries(transcript.Header{}, entries, sequentialTestProjector())
 	if err != nil {
-		t.Fatalf("ItemTurnsFromEntries: %v", err)
+		t.Fatalf("itemTurnsFromEntries: %v", err)
 	}
 	for _, read := range []struct {
 		name  string

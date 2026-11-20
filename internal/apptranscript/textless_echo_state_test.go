@@ -148,7 +148,7 @@ func TestTextlessAssistantEchoDoesNotSuppressCrossTurnMessage(t *testing.T) {
 // TestTextlessAssistantDoesNotZeroReloadEchoState calls ProjectTurn directly
 // with a hardcoded turnID, bypassing appendProjectedEntry's opener-ID
 // propagation; if that propagation regressed, the existing test would still
-// pass. This test drives ItemTurnsFromEntries (appendProjectedEntry →
+// pass. This test drives itemTurnsFromEntries (appendProjectedEntry →
 // groupedAppTurnProjection) with DISTINCT StableTurnIDs on the two ASSISTANT
 // entries (turn_a on entry 1, turn_b on entry 3). All four entries share one
 // logical group (ASSISTANT is a continuation, not an opener), so the group's
@@ -173,9 +173,9 @@ func TestGroupingEchoFixPropagatesOpenerTurnID(t *testing.T) {
 		return ProjectTurn(turnID, turnIndex, turn, reg, nil, nil)
 	}
 
-	turns, err := ItemTurnsFromEntries(transcript.Header{}, entries, projector)
+	turns, err := itemTurnsFromEntries(transcript.Header{}, entries, projector)
 	if err != nil {
-		t.Fatalf("ItemTurnsFromEntries: %v", err)
+		t.Fatalf("itemTurnsFromEntries: %v", err)
 	}
 	FlushUnpairedCommunicates(&turns, reg)
 

@@ -168,6 +168,7 @@ func (s *Session) composeHubRegistry() {
 		}
 	}
 	if !s.hubEnabled {
+		s.setManagerOnlyTools(nil)
 		s.hubOrdinary = nil
 		return
 	}
@@ -221,8 +222,31 @@ func (s *Session) composeHubRegistry() {
 	}
 	s.composeHubWatchTool()
 	s.composeHubInputTools()
-	s.composeHubDelegateTool()
 	s.composeHubStopTool()
+	// Recorded once every branch EXCEPT the delegate has registered what it will:
+	// a tool is Manager-only when nothing ordinary supplied it (hubOrdinary's nil
+	// base), core registration never supplied it either, and this composition
+	// therefore did. A nil base alone is not enough: this session's own
+	// allowed/denied policy may have removed an ordinary registration after
+	// initMCP, and a child runs core registration itself, so it would still
+	// register those. A branch that skipped a name leaves it unregistered, and
+	// such a name is not one composition supplies.
+	//
+	// The delegate is composed AFTER this for one reason: its schema carries the
+	// per-role capability roster, and that roster subtracts this set. Decorating
+	// it before the set was recorded would bake in the previous rebuild's answer,
+	// so the schema and the prompt roster a few lines away could list different
+	// tools for the same role. Deferring the delegate costs nothing here: its own
+	// membership is decided by a nil hubOrdinary base, in which case it registers
+	// nothing, so it contributes no member to the set above.
+	managerOnly := make(map[string]bool, len(s.hubOrdinary))
+	for name, base := range s.hubOrdinary {
+		if base == nil && !s.coreToolNames[name] && s.reg.Get(name) != nil {
+			managerOnly[name] = true
+		}
+	}
+	s.setManagerOnlyTools(managerOnly)
+	s.composeHubDelegateTool()
 }
 
 // managerDelegateDefinition keeps the owned-delegate contract on calls without
@@ -320,6 +344,13 @@ func (s *Session) composeHubDelegateTool() {
 	registered := *base
 	ordinary := s.hubOrdinaryAvailable(name)
 	registered.Definition = managerDelegateDefinition(registered.Definition, ordinary)
+	// The capability roster is written HERE, once, for the same reason the
+	// ordinary definition writes it: this schema is what a Manager request
+	// serves. composeHubRegistry re-runs on every rebuildToolDefsCache, so the
+	// registration this replaces is rebuilt from current state each time rather
+	// than carrying a startup list — which is why the rebuild below needs no
+	// second registration of the same tool.
+	s.applyDelegateCapabilityRoster(&registered.Definition)
 	// The hub branch refuses arguments outside its accepted set before
 	// argument repair can drop them: a Manager-only profile's closed top
 	// level would otherwise let repair silently discard a named argument and
