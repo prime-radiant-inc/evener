@@ -514,16 +514,11 @@ func testHubRelayInterruptedRead(t *testing.T, disconnect bool) {
 		t.Fatalf("interrupted read retained %d command owners", got)
 	}
 	// The read after the interruption must be served *and subscribed*, and the
-	// subscription has to be this read's own. `client` subscribed to rootRef
-	// before the interrupted read, so that subscription alone would carry root
-	// notes to the relay and out to any downstream connection: a follow-up read
-	// that returned the right ref without subscribing would still look fine.
-	// Move the relay-holding demand to the child ref, then run the follow-up
-	// read on a fresh downstream client, so the only subscription that can
-	// deliver the notes below to that client is the one the read establishes.
-	if _, err := client.ThreadRead(f.ctx, appwire.ThreadReadParams{Ref: childRef, Subscribe: true}); err != nil {
-		t.Fatalf("hold the relay on %s: %v", childRef, err)
-	}
+	// subscription has to be this read's own: Subscriptions delivers a note only
+	// to the connections holding a subscription for it
+	// (internal/appserver/subscriptions.go), so the follow-up read runs on a
+	// fresh downstream client and the notes below arrive only if that read
+	// subscribed it.
 	after := f.open()
 	served, err := after.ThreadRead(f.ctx, appwire.ThreadReadParams{Ref: rootRef, Subscribe: true})
 	if err != nil {
