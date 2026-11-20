@@ -11,6 +11,7 @@ import { deferred } from "@evener/appwire-client/testing/deferred";
 import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { beforeEach, expect, test, vi } from "vitest";
 import { resetPendingTurnsStoreForTests } from "../panes/session/composer/queue/pendingTurnsStore";
+import { withRecoveryDestinationClaim } from "../panes/session/composer/submitProtocol";
 import { ALL_CAPABILITIES } from "../threadTestUtils";
 import { resetConnectionStoreForTests } from "./connection";
 import {
@@ -19,6 +20,7 @@ import {
   releaseEntryTranscriptReader,
   setProductionEntryCacheForTests,
 } from "./entryTranscriptRoutes";
+import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { deleteMutationDatabase } from "./mutationOutboxTestUtils";
 import { entryHistoryKey, setSessionCacheLookupDeadlineForTests } from "./sessionCacheSchema";
 import type { SessionEntryCache } from "./sessionEntryCache";
@@ -29,6 +31,7 @@ import {
   installHydrationRetrySchedulerForTests,
   markCacheSessionsDeleted,
   resetThreadsStoreForTests,
+  setMutationStorageForTests,
   settleEntryTranscriptForTests,
   threadsStore,
 } from "./threads";
@@ -61,6 +64,14 @@ function entryRouteOf(ref: string): EntryTranscriptRoute {
 function historyFailedRejection(): WireError {
   return new WireError("thread history failed at entry 3", -32000, {
     evenerErrorInfo: "transcriptHistoryFailed",
+  });
+}
+
+// The hub's automatic-retry answer: the index is being rebuilt off the read
+// path, and the same read is authorized to try again.
+function rebuildingRejection(): WireError {
+  return new WireError("thread history is being rebuilt in the background", -32000, {
+    evenerErrorInfo: "transcriptIndexRebuilding",
   });
 }
 
@@ -650,13 +661,19 @@ test("a cached lookup finishing after the last pane closes does not attach a rea
   await cache.dispose();
 }, 20_000);
 
-// A claim's read publishes routing state and opens no cache, so a pane opening
-// over one still owes the route's bounded lookup before it reads: the shell on
-// disk is the pane's to restore. The claim's read is background ownership, not a
-// pane's, so the pane spends its own read rather than adopting one that was
-// never issued on its behalf; both answers land on the one destination.
-test("a pane opening over a claim's read restores the cache and then reads for itself", async () => {
+// A pane that opens over a claim's outstanding read restores the cache it may
+// hold and then joins that read, because the ref already has one read on this
+// connection and a second one supersedes the first read's publication - which
+// is the claim's own verification. The source response is held until the pane
+// has joined, so the join is proven by the read count rather than by a lucky
+// ordering, and that one response must then grant the lease and let the resend
+// reach the outbox.
+test("a pane opening over a claim's read joins it, and that response grants the lease and reaches the outbox", async () => {
   const ref = "local:pane-over-claim-read";
+  // Installed before any store work: the mutation runtime binds its storage
+  // once, and the resend below is the write this test is about.
+  const storage = new MutationOutboxIndexedDB({ databaseName: `pane-join-${crypto.randomUUID()}` });
+  setMutationStorageForTests(storage);
   const cache = createEntryCacheFixture();
   setProductionEntryCacheForTests(cache.cache);
   setSessionCacheLookupDeadlineForTests(30_000);
@@ -673,6 +690,20 @@ test("a pane opening over a claim's read restores the cache and then reads for i
   const claim = acquireUnreadThreadClaim(ref);
   await flushUntil(() => reads === 1);
 
+  // The resend the claim protects: it writes a row of its own once the claim
+  // grants, so a lease that never grants is a send nobody can make.
+  const resent = withRecoveryDestinationClaim(ref, async () => {
+    const outbox = await storage.enqueueIntent({
+      targetRef: ref,
+      threadId: `thr_${ref}`,
+      method: "turn/start",
+      payload: { ref, input: [{ type: "text", text: "retry me" }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "retry me" }] },
+    });
+    return outbox.clientMutationId;
+  });
+
   // The pane opens over the claim's read, which is still on the wire and has
   // published nothing: the lookup is this pane's own.
   const pane = threadsStore.getState().ensureThread(ref);
@@ -682,15 +713,102 @@ test("a pane opening over a claim's read restores the cache and then reads for i
   });
   expect(shellInstalled, "the pane restored the cached shell").toBe(true);
   expect(lookups, "the pane spent the route's cached lookup").toHaveBeenCalled();
+  // The pane joined the read the claim started instead of issuing its own: the
+  // response below is still held, and an acquisition that superseded the claim's
+  // read would already have put its own on the wire.
+  await pump(40);
+  expect(reads, "the pane joined the claim's read rather than superseding it").toBe(1);
 
   // The source's answer carries the fresh incarnation: it is what displaces the
-  // older shell the pane restores.
+  // older shell the pane restores, and it is the one response both waiters use.
   claimRead.resolve(freshIncarnationAnswer(ref));
   await pane;
+  const clientMutationId = await resent;
   const lease = await claim;
-  expect(threadsStore.getState().threads.has(ref), "the pane restored and then hydrated the destination").toBe(true);
+
+  expect(
+    threadsStore.getState().threads.get(ref)?.capabilities.send,
+    "the lease carries the source's capabilities",
+  ).toBe(true);
+  expect(entryRouteOf(ref).cachedUnverified, "the source response verified the route").toBe(false);
+  expect(
+    threadsStore.getState().threads.get(ref)?.history?.incarnation,
+    "the joined response is the one that published",
+  ).toBe("inc-2");
+  await expect(storage.getOutbox(clientMutationId), "the resend reached the outbox").resolves.toBeDefined();
   lease.release();
+  threadsStore.getState().releaseThread(ref);
+  storage.close();
   await cache.dispose();
+}, 20_000);
+
+// The hub's transcriptIndexRebuilding answer is an authorization to retry, not a
+// refusal. A resend to an unopened destination whose index is being rebuilt must
+// keep its claim on the store's owned paced retry and grant the lease when that
+// retry verifies the destination - refusing there would turn the hub's explicit
+// invitation to wait into a failed send the person has to press again.
+test("a rebuilding index on an unopened destination keeps the claim waiting and grants the lease when it recovers", async () => {
+  const ref = "local:rebuilding-destination";
+  const fake = connectMutationClient();
+  let reads = 0;
+  fake.on("thread/read", () => {
+    reads += 1;
+    if (reads === 1) throw rebuildingRejection();
+    return readResponse(ref);
+  });
+  const { retry, restore } = captureRetryScheduler();
+  const claim = acquireUnreadThreadClaim(ref);
+  // The hub authorized a retry, so the claim must still be waiting - neither
+  // granted nor refused - once the retry is armed.
+  await flushUntil(() => retry.fire !== undefined);
+  expect(reads, "the claim's read was the one the hub answered with its rebuild").toBe(1);
+  expect(await settleOutcome(claim), "the claim waits on the paced retry").toBe("pending");
+  expect(threadsStore.getState().repairingRefs.has(ref), "the store reports the rebuild it is recovering from").toBe(
+    true,
+  );
+
+  retry.fire?.();
+  const lease = await claim;
+
+  expect(reads, "the recovery's read is the claim's verification, not a duplicate").toBe(2);
+  expect(threadsStore.getState().threads.has(ref), "the verified destination is resident for the resend").toBe(true);
+  expect(threadsStore.getState().repairingRefs.has(ref), "the recovery cleared the repair status").toBe(false);
+  // The lease keeps the destination for dispatch and never owns its bodies.
+  expect(foregroundHolds(ref), "a granted claim takes no pane hold").toBe(0);
+  expect(backgroundHolds(ref), "a granted claim keeps exactly its own lease").toBe(1);
+  lease.release();
+  await vi.waitFor(() => expect(threadsStore.getState().threads.has(ref)).toBe(false));
+  restore();
+}, 20_000);
+
+// The other half of the same contract: a deletion that lands while the claim
+// waits out the rebuild's retry releases the lease promptly instead of parking
+// the resend behind a destination the fence has already retired.
+test("a deletion during a rebuilding wait releases the claim's lease", async () => {
+  const ref = "local:rebuilding-then-deleted";
+  const fake = connectMutationClient();
+  let reads = 0;
+  fake.on("thread/read", () => {
+    reads += 1;
+    if (reads === 1) throw rebuildingRejection();
+    return readResponse(ref);
+  });
+  const { retry, restore } = captureRetryScheduler();
+  const holdsBefore = backgroundHolds(ref);
+  const claim = acquireUnreadThreadClaim(ref);
+  const outcome = settleOutcome(claim);
+  await flushUntil(() => retry.fire !== undefined);
+
+  markCacheSessionsDeleted([ref]);
+
+  expect(await outcome, "the fence refuses the waiting claim").toBe("rejected");
+  expect(backgroundHolds(ref), "the refused claim leaves no lease behind").toBe(holdsBefore);
+  // A retry that fires after the fence must not resurrect the destination.
+  retry.fire?.();
+  await pump();
+  expect(reads, "no read follows the fence").toBe(1);
+  expect(threadsStore.getState().threads.has(ref)).toBe(false);
+  restore();
 }, 20_000);
 
 // A saved-index fallback for the same owner is the continuation of the history

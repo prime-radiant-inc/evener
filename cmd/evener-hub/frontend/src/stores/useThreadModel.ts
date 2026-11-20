@@ -9,13 +9,7 @@ import type { TranscriptReadView } from "../panes/session/transcript/transcriptR
 import { connectionStore } from "./connection";
 import { hasConversationHandoff, registerConversationClaim } from "./conversationClaimHandoff";
 import type { ForegroundHold } from "./threadOwners";
-import {
-  acquireBackgroundThread,
-  threadRoutingVerified,
-  threadsStore,
-  useThreadsStore,
-  verifyThreadRouting,
-} from "./threads";
+import { acquireBackgroundThread, threadRoutingVerified, threadsStore, useThreadsStore } from "./threads";
 
 // useThreadClaim holds one ensureThread(ref) claim while the caller is
 // mounted, starting it once the connection is ready, and releases it on
@@ -92,14 +86,13 @@ const ThreadClaimRefusal = {
  * counts, so the pane that also holds the destination can unmount mid-resend
  * without retiring the model the enqueued row's dispatch reads.
  *
- * A resident destination whose source read has landed is handed out as it
- * stands: the lease is what keeps it alive, and no read is issued for an
- * answer already known. Anything else - an unopened destination, a cached
- * shell, a read in flight - is verified through the store's bounded tracked
- * refresh, which is the same read a pane would receive. A destination the hub
- * has confirmed deleted, or one that stays unverified, is not handed out at
- * all: the lease is released before rejecting, so a refused resend leaves no
- * hold behind. */
+ * The lease's `ready` is the whole verification: it settles once the
+ * destination's routing state is verified on a live connection, joining the
+ * tracked read the store already owes the ref and waiting on the owned retry
+ * lifecycle for the recovery a hub authorizes (a rebuilding index, a socket
+ * loss). A destination the hub has confirmed deleted, or one whose read
+ * lifecycle ended without verifying it, is not handed out at all: the lease is
+ * released before rejecting, so a refused resend leaves no hold behind. */
 export async function acquireUnreadThreadClaim(ref: string): Promise<ThreadClaimLease> {
   const lease = acquireBackgroundThread(ref);
   const release = (): void => {
@@ -113,23 +106,7 @@ export async function acquireUnreadThreadClaim(ref: string): Promise<ThreadClaim
     // about to publish into, and refuse a resend the hub never answered.
     await lease.ready;
     if (missing()) throw new Error(ThreadClaimRefusal.deleted);
-    // A verified destination is handed out as it stands: no read is spent on an
-    // answer already known. Anything else - an unopened destination, a cached
-    // shell, a read a socket loss cut short - is verified through the store's
-    // bounded tracked read, which joins a read already in flight on this
-    // connection and issues one only when this connection has none. A
-    // destination the hub confirmed deleted, or one that stays unverified, is
-    // not handed out: the lease is released before rejecting, so a refused
-    // resend leaves no hold behind.
-    if (!threadRoutingVerified(ref)) {
-      // The lease's own attempt already answered for this connection: whatever
-      // the hub said, re-reading it here would turn that answer into a retry
-      // loop the claim has no recovery surface for.
-      if (lease.attempt === "answered") throw new Error(ThreadClaimRefusal.unverified);
-      const verification = await verifyThreadRouting(ref);
-      if (verification === "deleted") throw new Error(ThreadClaimRefusal.deleted);
-      if (verification !== "verified") throw new Error(ThreadClaimRefusal.unverified);
-    }
+    if (!threadRoutingVerified(ref)) throw new Error(ThreadClaimRefusal.unverified);
   } catch (error) {
     release();
     throw error;

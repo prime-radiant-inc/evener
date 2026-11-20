@@ -245,11 +245,11 @@ test("a cached shell is verified through a tracked refresh before the lease is h
 // A claim's background lease keeps the destination alive without standing in
 // for a pane's cached lookup: the pane that opens over the claim's pending read
 // still spends the route's bounded lookup, so it paints the restored
-// transcript rather than loading over a usable cache. The claim's own attempt
-// was overtaken by that open and published nothing, and a destination with no
-// verified model is not written to: the claim refuses and releases its lease
-// instead of handing out an unverified destination.
-test("a pane opening beside a claim still restores its cached transcript", async () => {
+// transcript rather than loading over a usable cache. Its own read is the
+// claim's read - the pane joins it instead of issuing a second one that would
+// supersede it - so the one answer both publishes the pane's model and
+// verifies the destination the claim is for.
+test("a pane opening beside a claim joins its read and both settle on one answer", async () => {
   const ref = "local:cached-pane";
   const cache = new SessionEntryCache({
     indexedDB: new IDBFactory(),
@@ -262,24 +262,26 @@ test("a pane opening beside a claim still restores its cached transcript", async
   // The claim's read stays on the wire, so the destination has no model while
   // the pane opens beside it.
   const claimRead = deferred<ThreadReadResponse>();
-  fake.on("thread/read", () => claimRead.promise);
+  let reads = 0;
+  fake.on("thread/read", () => {
+    reads += 1;
+    return claimRead.promise;
+  });
   const holdsBefore = backgroundHolds(ref);
   const claim = acquireUnreadThreadClaim(ref);
-  // Observed from the start: the refusal is the claim's own answer, and a
-  // handler attached after the pane settles would read as an unhandled
-  // rejection in the meantime.
-  const refused = claim.then(
-    () => undefined,
-    (error: unknown) => error,
-  );
   await flushUntil(() => fake.calls.some((call) => call.method === "thread/read"));
   const pane = threadsStore.getState().ensureThread(ref);
   expect(lookup, "the pane still owes its own cached lookup").toHaveBeenCalled();
   claimRead.resolve(readResponse(ref));
   await pane;
   expect(threadsStore.getState().threads.has(ref), "the pane restores the cached transcript").toBe(true);
-  expect(await refused, "the overtaken claim refuses rather than writing unverified").toBeInstanceOf(Error);
-  expect(backgroundHolds(ref), "a refused claim leaves no lease behind").toBe(holdsBefore);
+  const lease = await claim;
+  // The pane's read was the claim's read: a second one on the wire would have
+  // superseded the claim's publication, leaving the lease waiting on an answer
+  // only the superseded read could give.
+  expect(reads, "the pane joined the claim's read rather than superseding it").toBe(1);
+  expect(backgroundHolds(ref), "the joined answer verifies the claim's destination").toBe(holdsBefore + 1);
+  lease.release();
   threadsStore.getState().releaseThread(ref);
   await vi.waitFor(() => expect(threadsStore.getState().threads.has(ref)).toBe(false));
   cache.close();
