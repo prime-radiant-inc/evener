@@ -163,6 +163,17 @@ func (r *runner) hoistMetroBundle(ctx context.Context) error {
 	return nil
 }
 
+// hoistFailed reports whether the bundle process has already exited non-zero.
+// The channel is closed on that exit, so the probe never blocks.
+func hoistFailed(run *metroHoistRun) bool {
+	select {
+	case <-run.failed:
+		return true
+	default:
+		return false
+	}
+}
+
 // waitMetroHoist joins the hoisted bundle. A failure here fails the run even
 // when the build looked green: the copy phase moves whatever the script left
 // behind, and a half-written bundle would otherwise surface only in the

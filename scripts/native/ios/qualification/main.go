@@ -174,9 +174,10 @@ func qualify(ctx context.Context, output, derivedData string) (result error) {
 	// Every exit path joins the bundle: a failed simulator or build must not
 	// leave a node process writing into the run output after the run ended. The
 	// join is bounded so a hung bundle cannot hold the run past the failure that
-	// stopped the build.
+	// stopped the build, and it keeps the run's own cancellation so an
+	// interrupted run stops the bundle instead of waiting the bound out.
 	defer func() {
-		joinCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
+		joinCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer cancel()
 		result = errors.Join(result, r.waitMetroHoist(joinCtx))
 	}()
@@ -197,9 +198,15 @@ func qualify(ctx context.Context, output, derivedData string) (result error) {
 			}()
 		}
 		if _, err := r.commandOutput(buildCtx, "xcodebuild-release", false, releaseBuildCommand(udid, derived)...); err != nil {
-			// Report the bundle failure when that is what stopped the build.
-			if hoistErr := r.waitMetroHoist(ctx); hoistErr != nil {
-				return hoistErr
+			// When the bundle is what stopped the build, report its error now. An
+			// independent build failure keeps its own error, and the bounded
+			// cleanup above reaps the bundle.
+			if hoist != nil && hoistFailed(hoist) {
+				joinCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+				defer cancel()
+				if hoistErr := r.waitMetroHoist(joinCtx); hoistErr != nil {
+					return hoistErr
+				}
 			}
 			return err
 		}
