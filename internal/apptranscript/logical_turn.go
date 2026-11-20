@@ -105,6 +105,12 @@ type logicalTurnAccumulator struct {
 	// the index still classifies the turn by its opener (build.go's
 	// turnKindOf).
 	stampedKind map[string]schema.TurnSpanKind
+	// stampedCompletionAt holds, per stamped turn id, the entry indexes of the
+	// execution's completion records in file order. A completion ends the
+	// execution for the calls that were awaiting it (build.go's
+	// interruptAwaitedCalls), but a call announced after a later reopen is not
+	// its concern.
+	stampedCompletionAt map[string][]int
 }
 
 // foldStampedStatus folds a transcript-only TURN_COMPLETION or TURN_REOPEN
@@ -271,6 +277,12 @@ func appendProjectedEntry(acc *logicalTurnAccumulator, project EntryProjector, t
 		// projection passes over it as an item: it joins no group, closes
 		// none, and projects nothing, though its line still takes an entry
 		// index. A completion or reopen still names its turn's status.
+		if turn.Kind == schema.TurnCompletion && turn.Format == schema.TurnFormatIdentity && turn.TurnID != "" {
+			if acc.stampedCompletionAt == nil {
+				acc.stampedCompletionAt = map[string][]int{}
+			}
+			acc.stampedCompletionAt[turn.TurnID] = append(acc.stampedCompletionAt[turn.TurnID], entryIndex)
+		}
 		acc.foldStampedStatus(&turn)
 		return
 	}
@@ -324,7 +336,7 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 	runItems := make(map[string]map[int][]appwire.ThreadItem, len(runsByTurn))
 	runStamps := make(map[string]executionStamp, len(runsByTurn))
 	for turnID, runs := range runsByTurn {
-		runItems[turnID] = executionItems(runs, acc.turns)
+		runItems[turnID] = executionItems(acc, turnID, runs, acc.turns)
 		runStamps[turnID] = stampOfRuns(runs, acc.turns)
 	}
 	// visibleRuns are, per stamped turn id, the runs that still emit items
@@ -382,27 +394,29 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 			// later fragment's partial total, and the saved turn underreported
 			// tokens and cost against the index (#1166 review).
 			runStamps[group.turnID].apply(&turn)
-			// A stamped execution's status comes only from its completion and
-			// reopen records: the index opens it at in progress and leaves it
-			// there until one arrives, so a bare TURN_FAILURE is only a
-			// diagnostic for a later failed completion, not a terminal state.
-			// Every other identity span is completed from its start.
 			if acc.stampedExecution(group.turnID) {
+				// A stamped execution's status comes only from its completion
+				// and reopen records: the index opens it at in progress and
+				// leaves it there until one arrives, so a bare TURN_FAILURE is
+				// only a diagnostic for a later failed completion, not a
+				// terminal state. The index surfaces the failure diagnostic
+				// only while the folded status is failed.
 				turn.Status = appwire.TurnStatusInProgress
 				turn.Error = nil
-			}
-			// The file's completion and reopen records set the execution's
-			// status in entry order, and the index surfaces the failure
-			// diagnostic only while that status is failed.
-			if status, ok := acc.stampedStatus[group.turnID]; ok {
-				turn.Status = status
-				if status == appwire.TurnStatusFailed {
-					if failure, ok := acc.stampedFailure[group.turnID]; ok {
-						StampTurnFailure(&turn, failure)
+				if status, ok := acc.stampedStatus[group.turnID]; ok {
+					turn.Status = status
+					if status == appwire.TurnStatusFailed {
+						if failure, ok := acc.stampedFailure[group.turnID]; ok {
+							StampTurnFailure(&turn, failure)
+						}
 					}
-				} else {
-					turn.Error = nil
 				}
+			} else {
+				// Only a legacy turn latches a failure or an interrupted
+				// steering marker; a stamped gap, prelude or delivery is
+				// completed, and a completion record never ends one.
+				turn.Status = appwire.TurnStatusCompleted
+				turn.Error = nil
 			}
 		}
 		if prelude != nil && !preludeEmitted {
@@ -511,7 +525,7 @@ func stampOfRuns(runs []int, groups []groupedTurn) executionStamp {
 // result's own entry — build.go's applyResults matches against the turn's
 // awaiting entry — so a delivery between an announcement and its result leaves
 // the match intact, and a reused id across a delivery keeps both rows.
-func executionItems(runs []int, groups []groupedTurn) map[int][]appwire.ThreadItem {
+func executionItems(acc *logicalTurnAccumulator, turnID string, runs []int, groups []groupedTurn) map[int][]appwire.ThreadItem {
 	// announcement is one item that OPENED a call: where it sits, and the entry
 	// that announced it.
 	type announcement struct {
@@ -561,6 +575,9 @@ func executionItems(runs []int, groups []groupedTurn) map[int][]appwire.ThreadIt
 	// position in the run's own item list, so they are dropped at the end
 	// without shifting any index that was already recorded.
 	settled := map[[2]int]bool{}
+	// answered marks the announcement rows a result merged into, so the
+	// completion that ends the execution leaves them alone.
+	answered := map[[2]int]bool{}
 	for _, run := range runs {
 		out[run] = make([]appwire.ThreadItem, 0, len(groups[run].items))
 		for j, item := range groups[run].items {
@@ -620,6 +637,33 @@ func executionItems(runs []int, groups []groupedTurn) map[int][]appwire.ThreadIt
 			merged.TurnID = opener.TurnID
 			out[target.run][target.at] = merged
 			settled[[2]int{run, j}] = true
+			answered[[2]int{target.run, target.at}] = true
+		}
+	}
+	// A completion ends the execution for its awaiting calls: the index makes
+	// the completion a contributor of every call of the latest announcing
+	// entry that no result answered, and window.go projects that contributor
+	// as interrupted (build.go's interruptAwaitedCalls). Calls announced after
+	// a reopen belong to a later completion, so each record is applied at its
+	// own place in the file.
+	for _, completionAt := range acc.stampedCompletionAt[turnID] {
+		awaiting := -1
+		for _, entryIndex := range announcing {
+			if entryIndex > completionAt {
+				break
+			}
+			awaiting = entryIndex
+		}
+		if awaiting < 0 {
+			continue
+		}
+		for _, calls := range announcements {
+			for _, call := range calls {
+				if call.entry != awaiting || answered[[2]int{call.run, call.at}] {
+					continue
+				}
+				out[call.run][call.at].Status = appwire.TurnStatusInterrupted
+			}
 		}
 	}
 	for _, run := range runs {

@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"testing"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
@@ -600,6 +601,62 @@ func TestFullReadKeepsAGapOpenedByANoticeCompleted(t *testing.T) {
 	}
 	if indexed := turnOf(t, indexedCandidates(t, fx, -1), "t_gap_n1"); indexed.Status != appwire.TurnStatusCompleted {
 		t.Fatalf("indexed t_gap_n1 = %s, want completed", dump(indexed))
+	}
+}
+
+// A completion ends the execution for its calls too: the index marks every
+// call of the awaiting assistant entry that no result answered as
+// interrupted, so the full read must not leave them running.
+func TestFullReadInterruptsUnansweredCallsAtCompletion(t *testing.T) {
+	fx := newFormatFixture(t, "interrupted call")
+	turns := fullReadTurns(t, fx)
+	statuses := map[string]string{}
+	for _, turn := range turns {
+		for _, item := range turn.Items {
+			if item.CallID != "" {
+				statuses[item.CallID] = item.Status
+			}
+		}
+	}
+	indexed := map[string]string{}
+	for _, item := range itemsOf(indexedCandidates(t, fx, -1), "turn_m22") {
+		if item.CallID != "" {
+			indexed[item.CallID] = item.Status
+		}
+	}
+	if statuses["ic1"] != appwire.TurnStatusInterrupted || indexed["ic1"] != appwire.TurnStatusInterrupted {
+		t.Fatalf("unanswered call ic1: full read %q, indexed %q, want interrupted both", statuses["ic1"], indexed["ic1"])
+	}
+	if !reflect.DeepEqual(statuses, indexed) {
+		t.Fatalf("full read call statuses = %v, indexed = %v", statuses, indexed)
+	}
+}
+
+// Only a legacy turn latches an interrupted steering marker: a stamped gap or
+// prelude stays completed when a cancellation writes one into it.
+func TestFullReadKeepsAnInterruptedSteeringGapCompleted(t *testing.T) {
+	fx := newFormatFixture(t, "gap turns")
+	canceled := steering("cancelled before it began")
+	canceled.SteeringKind = events.SteeringKindInterrupted
+	fx.lines = []fixtureLine{
+		entryLine(opens("t_gap_c1", schema.TurnSpanGap, canceled)),
+	}
+	turns := fullReadTurns(t, fx)
+	var full *appwire.Turn
+	for i := range turns {
+		if turns[i].ID == "t_gap_c1" {
+			full = &turns[i]
+			break
+		}
+	}
+	if full == nil {
+		t.Fatalf("no t_gap_c1 in the full read: %s", dump(turns))
+	}
+	if full.Status != appwire.TurnStatusCompleted {
+		t.Fatalf("full read t_gap_c1 = %s, want completed", dump(*full))
+	}
+	if indexed := turnOf(t, indexedCandidates(t, fx, -1), "t_gap_c1"); indexed.Status != appwire.TurnStatusCompleted {
+		t.Fatalf("indexed t_gap_c1 = %s, want completed", dump(indexed))
 	}
 }
 
