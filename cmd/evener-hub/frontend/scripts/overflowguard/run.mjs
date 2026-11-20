@@ -695,20 +695,53 @@ function assertDuoLandscapeComposer(measurement) {
       failures.push("the engaged field and controls did not return to their stacked rows");
     }
   }
+  failures.push(...assertLandscapeEdgeFooter(measurement));
+  return failures;
+}
+
+function assertLandscapeEdgeFooter(measurement) {
+  const failures = [];
   if (!nearlyEqual(measurement.edgeFooterPaddingBottom, measurement.safeArea)) {
     failures.push(
       `edge footer safe-area padding=${measurement.edgeFooterPaddingBottom}px, expected ${measurement.safeArea}px`,
     );
   }
-  if (measurement.statusChips.length === 0 || measurement.paneBottom === null) {
-    failures.push("the landscape status chips or pane bottom are missing");
+  if (measurement.statusChips.length === 0 || measurement.paneBottom === null || measurement.statusbar === null) {
+    failures.push("the landscape status bar, chips, or pane bottom are missing");
   } else {
+    const statusbarClearance = measurement.paneBottom - measurement.statusbar.bottom;
+    if (!nearlyEqual(statusbarClearance, measurement.safeArea)) {
+      failures.push(`status bar leaves ${statusbarClearance}px below itself, expected ${measurement.safeArea}px`);
+    }
+    const highestChipTop = Math.min(...measurement.statusChips.map((chip) => chip.top));
     const lowestChipBottom = Math.max(...measurement.statusChips.map((chip) => chip.bottom));
-    const clearance = measurement.paneBottom - lowestChipBottom;
-    if (!nearlyEqual(clearance, measurement.safeArea)) {
-      failures.push(`status chips leave ${clearance}px below themselves, expected ${measurement.safeArea}px`);
+    if (
+      highestChipTop < measurement.statusbar.top - GEOMETRY_TOLERANCE ||
+      lowestChipBottom > measurement.statusbar.bottom + GEOMETRY_TOLERANCE
+    ) {
+      failures.push("status chips escape the status bar's content box");
     }
   }
+  return failures;
+}
+
+function assertFinePointerLandscapeComposer(measurement) {
+  const failures = [];
+  if (measurement.primaryTouch) failures.push("the fine-pointer landscape fixture realized a touch pointer");
+  if (measurement.card === null || measurement.card.width >= 620) {
+    failures.push("the fine-pointer fixture no longer exercises a card below the desktop folded threshold");
+  }
+  if (measurement.foldedCompact) failures.push("a fine-pointer landscape desktop incorrectly compacted its controls");
+  if (!measurement.modelTrigger?.visible) failures.push("the fine-pointer resting row lost its model picker");
+  if (measurement.editorMinLines !== "1lh") failures.push("the fine-pointer folded field is not one line");
+  if (
+    measurement.field === null ||
+    measurement.controls === null ||
+    measurement.field.bottom > measurement.controls.top + GEOMETRY_TOLERANCE
+  ) {
+    failures.push("the fine-pointer folded field and controls did not stay stacked");
+  }
+  failures.push(...assertLandscapeEdgeFooter(measurement));
   return failures;
 }
 
@@ -1964,6 +1997,36 @@ async function main() {
           const shape = measurement.focus === "editor" ? "expanded editor and full controls" : "one folded row";
           console.log(
             `${label} ... PASS - ${shape}, footer gap=${measurement.gap}px, status clearance=${measurement.safeArea}px`,
+          );
+        }
+      }
+      const finePointerLandscapeMeasurements = await measureComposerFooter(
+        cdpEndpoint,
+        `http://127.0.0.1:${vitePort}/overflowharness.html?w=572&h=669`,
+        572,
+        safeAreaSupported,
+        {
+          width: 951,
+          height: 669,
+          mobile: false,
+          deviceScaleFactor: 3,
+          touch: false,
+          safeAreas: safeAreaSupported ? [34] : [0],
+          focusStates: ["none"],
+        },
+      );
+      for (const measurement of finePointerLandscapeMeasurements) {
+        const failures = [
+          ...assertComposerFooter(measurement),
+          ...assertFinePointerLandscapeComposer(measurement),
+        ];
+        const label = `951x669 fine-pointer landscape composer safe-area=${measurement.safeArea}`;
+        if (failures.length > 0) {
+          failed++;
+          console.log(`${label} ... FAIL - ${failures.join("; ")}; ${JSON.stringify(measurement)}`);
+        } else {
+          console.log(
+            `${label} ... PASS - stacked controls and visible model, footer gap=${measurement.gap}px, status clearance=${measurement.safeArea}px`,
           );
         }
       }

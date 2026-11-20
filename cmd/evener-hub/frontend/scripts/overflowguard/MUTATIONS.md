@@ -338,3 +338,15 @@ the focused state was exercised. Adding `.edgeFooter { padding-bottom:
 var(--dock-clearance) }` and PromptCard's existing `controlsTestId` hook turned
 the full matrix green: resting keeps one row and focus restores full controls,
 while both states keep the 12px composer gap and 34px status-chip clearance.
+
+The paired fine-pointer case uses the same 951×669 viewport and 572px pane with
+touch disabled. It requires the stacked controls and visible model picker. A
+mutation removing `(pointer: coarse) and (hover: none)` from
+`LANDSCAPE_PHONE_QUERY` failed with `a fine-pointer landscape desktop
+incorrectly compacted its controls`, `the fine-pointer resting row lost its
+model picker`, and `the fine-pointer folded field and controls did not stay
+stacked`. Restoring those conditions passed: `951x669 fine-pointer landscape
+composer safe-area=34 ... PASS - stacked controls and visible model, footer
+gap=12px, status clearance=34px`. The safe-area assertion reads the status bar's
+bottom edge and chip containment because smaller fine-pointer chips are centred
+in their 30px bar rather than filling its height.

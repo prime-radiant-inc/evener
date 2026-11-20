@@ -197,11 +197,10 @@
 }
 
 @media (max-width: 899px) {
-  /* While the composer is editing the status bar hides (it would sit between
-   * the input and the keyboard), so the dock is the bottom edge again and
-   * takes the home-indicator band back for the case where focus outlives the
-   * keyboard. The editing attribute also holds while a composer control or
-   * menu owns focus. */
+  /* A narrow pane with an edge footer moves the padded footer back to
+   * keyboard-aware clearance while any composer owns editing. Session mounts
+   * its own edge footer only above this breakpoint, so its landscape status
+   * bar stays visible during editing. */
   :global(body):has([data-composer-editing]) .footerBeforeEdge {
     padding-bottom: var(--dock-clearance);
   }
