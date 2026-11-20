@@ -1,6 +1,7 @@
 package chatcompletions
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -200,13 +201,6 @@ type chatDelta struct {
 // exactly one is read per chunk.
 var reasoningFieldNames = llm.OpenAICompatReasoningFields()
 
-// reasoningFromDelta returns the chunk's reasoning text and the field it
-// arrived on. Both response paths use the same precedence and detail joining
-// so a provider payload decodes identically in stream and non-stream mode.
-func reasoningFromDelta(d chatDelta) (text, field string) {
-	return extractReasoningFields(d.ReasoningContent, d.Reasoning, d.ReasoningText, d.ReasoningDetails)
-}
-
 type chatChunkToolCall struct {
 	Index        int               `json:"index"`
 	ID           string            `json:"id,omitempty"`
@@ -276,28 +270,38 @@ func extractReasoning(msg chatMessage) (text, field string) {
 }
 
 // extractReasoningFields prefers reasoning_details when it contains text,
-// joining pieces with newlines. Its empty field preserves the special replay
-// contract for reasoning_details; scalar fields retain the canonical registry
-// index mapping.
+// assembling it by item identity exactly as the stream path does. Its empty
+// field preserves the special replay contract for reasoning_details; scalar
+// fields retain the canonical registry index mapping.
 func extractReasoningFields(reasoningContent, reasoning, reasoningText string, details []reasoningDetailItem) (text, field string) {
-	var b strings.Builder
-	for _, item := range details {
-		piece := item.Text
-		if piece == "" {
-			piece = item.Thinking
+	if len(details) > 0 {
+		assembly := &detailAssembly{byKey: map[detailKey]*strings.Builder{}}
+		assembly.appendChunk(details)
+		if display := assembly.display(); display != "" {
+			return display, ""
 		}
-		if piece == "" {
+	}
+	return extractScalarReasoning(reasoningContent, reasoning, reasoningText)
+}
+
+// detailItemText is the text a reasoning_details item carries.
+func detailItemText(d reasoningDetailItem) string {
+	return cmp.Or(d.Text, d.Thinking)
+}
+
+// joinDetailTexts joins the non-empty pieces with one newline.
+func joinDetailTexts(texts []string) string {
+	var b strings.Builder
+	for _, text := range texts {
+		if text == "" {
 			continue
 		}
 		if b.Len() > 0 {
 			b.WriteString("\n")
 		}
-		b.WriteString(piece)
+		b.WriteString(text)
 	}
-	if b.Len() > 0 {
-		return b.String(), ""
-	}
-	return extractScalarReasoning(reasoningContent, reasoning, reasoningText)
+	return b.String()
 }
 
 func extractScalarReasoning(reasoningContent, reasoning, reasoningText string) (text, field string) {

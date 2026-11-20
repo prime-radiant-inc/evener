@@ -245,6 +245,25 @@ runtime_pair="${EVENER_QUALIFICATION_RUNTIME_BINARIES:-}"
 
 cd "$repo_root"
 
+# Issue #5992: the first journey otherwise runs on a simulator that is still
+# settling from its first boot, paying it as a 19-74s first launch and slowed
+# UI queries, with every observed first-journey failure inside that window.
+# Boot the device here so it settles while the runtime pair is installed or
+# built; after that the app gets one launch of its own before xcodebuild
+# runs. This warms the device and the app's first-launch
+# caches only: every journey and every assertion below still runs unchanged,
+# and the warmup's own app instance is terminated before the measured run
+# starts.
+warmup_start="$(date +%s)"
+if ! bundle_id="$(plutil -extract CFBundleIdentifier raw -o - "$app_path/Info.plist" 2>"$output/simulator-warmup.log")" || [ -z "$bundle_id" ]; then
+	echo "$SCRIPT_NAME: cannot read CFBundleIdentifier from $app_path/Info.plist, see $output/simulator-warmup.log" >&2
+	exit 1
+fi
+if ! xcrun simctl boot "$sim_udid" >>"$output/simulator-warmup.log" 2>&1; then
+	echo "$SCRIPT_NAME: simctl boot failed, inspect $output/simulator-warmup.log" >&2
+	exit 1
+fi
+
 if [ -n "$runtime_pair" ]; then
 	# The hub's daemons are exec'd from $evener_binary and carry the run
 	# directory's basename in argv, which is how cleanup proves it owns them;
@@ -266,6 +285,21 @@ else
 	go build -o "$evener_binary" ./cmd/evener >"$output/build-evener.log" 2>&1
 	go build -o "$provider_binary" ./scripts/native/ios/fixture-provider >>"$output/build-evener.log" 2>&1
 fi
+
+# The device has had the pair install and the runtime builds' time to settle
+# since simctl boot; wait for boot to finish (normally already true), install
+# the app under test and give it its first launch. The settle is bounded
+# warmup time, never a pacing mechanism for an assertion.
+log "$(date -u +%FT%TZ) warmup: waiting for the run simulator's first boot"
+xcrun simctl bootstatus "$sim_udid" -b >>"$output/simulator-warmup.log" 2>&1
+log "$(date -u +%FT%TZ) warmup: boot finished $(( $(date +%s) - warmup_start ))s after warmup start"
+install_start="$(date +%s)"
+xcrun simctl install "$sim_udid" "$app_path" >>"$output/simulator-warmup.log" 2>&1
+xcrun simctl launch "$sim_udid" "$bundle_id" >>"$output/simulator-warmup.log" 2>&1
+sleep 15
+xcrun simctl terminate "$sim_udid" "$bundle_id" >>"$output/simulator-warmup.log" 2>&1 ||
+	log "$(date -u +%FT%TZ) warmup: simulator terminate failed, see $output/simulator-warmup.log"
+log "$(date -u +%FT%TZ) warmup: install, first launch and settle took $(( $(date +%s) - install_start ))s"
 
 # The operator's shell can carry EVENER_* overrides — an Evener agent session
 # exports them — and EVENER_STATE_DIR or EVENER_CREDENTIALS_CONFIG outrank the
