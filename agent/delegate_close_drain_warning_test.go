@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/execsupport/shellquote"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // closeDrainCascadeBudget is the close-cascade budget these tests mint with
@@ -150,6 +151,12 @@ func TestOrdinaryStopDrainDispatchesTheLostResultHookOnce(t *testing.T) {
 	// The close-time retry must not be the thing that delivers it.
 	f.root.retryCloseDrainWarnings(tripwireCtx(t))
 
+	// The hook is dispatched off the publishing goroutine, so wait for the
+	// dispatch before counting: the assertion is about exactly-once, not speed.
+	testwait.Until(t, "the lost-result warning's Notification hook to dispatch", func() bool {
+		data, readErr := os.ReadFile(hookDispatchLog)
+		return readErr == nil && strings.Contains(string(data), "hit")
+	})
 	data, readErr := os.ReadFile(hookDispatchLog)
 	if readErr != nil && !os.IsNotExist(readErr) {
 		t.Fatalf("read hook dispatch log: %v", readErr)

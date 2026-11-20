@@ -277,6 +277,27 @@ func (s *Session) emitWithProvenance(data events.EventData, p *provenance.Causal
 	}
 }
 
+// emitWarningDeferringHook is emitWithProvenance for a warning whose
+// Notification hook must not hold its publisher. The event still goes out
+// synchronously, so the stream receives the warning now and the hook fires
+// whether or not the send found a free slot. The hook itself is the user's
+// command, may run for its whole timeout, and is dispatched on the tracked hook
+// goroutine a close already joins, so it cannot keep the stop reconcile driver
+// busy behind new stop admission or a pre-disposal close join (#6939).
+func (s *Session) emitWarningDeferringHook(data events.EventData) {
+	if s == nil || s.events == nil {
+		return
+	}
+	data, ev := s.sendEvent(data, s.activeCausalProvenance())
+	if s.jobManager != nil {
+		s.jobManager.onSessionEvent(ev)
+	}
+	message, title := warningHookMessage(data), warningHookTitle(data)
+	s.closeDrainHooksWG.Go(func() {
+		s.fireNotificationHook(message, title)
+	})
+}
+
 // emitContext is emit on a caller's publication bound. A nil bound is the
 // session's ordinary path, unchanged.
 func (s *Session) emitContext(ctx context.Context, data events.EventData) {

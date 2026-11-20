@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -178,17 +179,20 @@ func TestOrdinaryStopPublishesLostResultWarningAfterShellRepairs(t *testing.T) {
 		t.Fatalf("stat seeded shell store: %v", err)
 	}
 
-	drainResult := make(chan error, 1)
+	driver := newDelegateStopDriver()
+	driven := make(chan struct{})
 	go func() {
-		drainResult <- f.controller.drainStopAbandonable(tripwireCtx(t), f.controller.stopForResult(f.stop), f.root, nil, false)
+		f.controller.runStopReconcileDriver(f.controller.stopForResult(f.stop), driver, f.root)
+		close(driven)
 	}()
 	testwait.Until(t, "the lost-result warning's Notification hook to start", func() bool {
 		_, statErr := os.Stat(startedPath)
 		return statErr == nil
 	})
-	// The hook is now running inside the drain and blocking it. The stop must
-	// already be complete: a synchronous Notification hook may not hold the
-	// completion clients see behind its command (#6939).
+	// The hook is now running. The stop must already be complete, and the
+	// reconcile driver must already have finished: a Notification hook may not
+	// hold the completion clients see, new stop admission, or a close join
+	// behind its command (#6939).
 	if !channelClosed(f.stop.done) {
 		if writeErr := os.WriteFile(proceedPath, []byte("go\n"), 0o644); writeErr != nil {
 			t.Fatalf("release the blocked hook: %v", writeErr)
@@ -196,16 +200,26 @@ func TestOrdinaryStopPublishesLostResultWarningAfterShellRepairs(t *testing.T) {
 		t.Fatal("the stop was not complete while the Notification hook was still running: the ordinary " +
 			"stop dispatched the lost-result warning before its final pass recorded completion (#6939)")
 	}
+	if !channelClosed(driver.done) {
+		if writeErr := os.WriteFile(proceedPath, []byte("go\n"), 0o644); writeErr != nil {
+			t.Fatalf("release the blocked hook: %v", writeErr)
+		}
+		t.Fatal("the stop reconcile driver was still busy while the Notification hook was running: " +
+			"a user hook may not hold new stop admission or a close join behind its command (#6939)")
+	}
 	if err := os.WriteFile(proceedPath, []byte("go\n"), 0o644); err != nil {
 		t.Fatalf("release the blocked hook: %v", err)
 	}
-	select {
-	case err := <-drainResult:
-		if err != nil {
-			t.Fatalf("ordinary stop drain: %v", err)
+	testwait.Until(t, "the stop reconcile driver to finish", func() bool {
+		select {
+		case <-driven:
+			return true
+		default:
+			return false
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the ordinary stop drain did not return after the Notification hook was released")
+	})
+	if driver.err != nil {
+		t.Fatalf("ordinary stop driver: %v", driver.err)
 	}
 	if !channelClosed(f.stop.done) {
 		t.Fatal("the ordinary stop drain did not complete the stop")
@@ -226,10 +240,10 @@ func TestOrdinaryStopPublishesLostResultWarningAfterShellRepairs(t *testing.T) {
 	}
 }
 
-// A shell repair that fails returns before executeDelegateMutationPlans, which
-// is where a successful ordinary stop publishes the warnings its pass settled.
-// The error exit must publish them itself: the receipt they name is already gone
-// from the store, so no later pass can rediscover them (#6939).
+// A shell repair that fails aborts the drain before it can finish, so the
+// warning the pass settled must still reach its publication on that error exit:
+// the receipt it names is already gone from the store, so no later pass can
+// rediscover it (#6939).
 //
 // The seam is a read-only store: evidence collection opens it O_RDONLY and sees
 // the pending repair, while the repair's O_RDWR open fails. Root bypasses the
@@ -261,11 +275,16 @@ func TestOrdinaryStopPublishesSettledWarningWhenShellRepairFails(t *testing.T) {
 		t.Fatal("the ordinary stop drain succeeded despite the read-only shell store: the fixture did " +
 			"not exercise the repair failure this guard exists for")
 	}
-	if !strings.Contains(err.Error(), shellPath) {
-		t.Fatalf("the drain failed with %v, not the read-only shell store %s: this guard did not "+
-			"exercise the repair error exit", err, shellPath)
+	var pathErr *os.PathError
+	if !errors.As(err, &pathErr) || pathErr.Op != "open" || pathErr.Path != shellPath {
+		t.Fatalf("the drain failed with %v, not an open of the read-only shell store %s: this guard did "+
+			"not exercise the repair error exit", err, shellPath)
 	}
 
+	testwait.Until(t, "the settled lost-result warning's Notification hook to dispatch", func() bool {
+		_, statErr := os.Stat(hookDispatchLog)
+		return statErr == nil
+	})
 	data, readErr := os.ReadFile(hookDispatchLog)
 	if readErr != nil {
 		t.Fatalf("the drain returned %v and the settled lost-result warning never dispatched its "+

@@ -822,10 +822,10 @@ func (c *delegateTreeController) drainStopForClose(ctx context.Context, stop *de
 // that caller owns.
 //
 // The ordinary stop publishes the warnings its passes settled once the drain
-// has finished, so the completion update reaches clients before a synchronous
-// Notification hook can delay it. This helper is therefore the close drain's
-// publisher; the ordinary stop's reconcile-error exit rides the same deferred
-// publication as its successful passes.
+// has finished, so the completion update reaches clients before the hook; its
+// event send stays synchronous while the user's hook runs on the tracked hook
+// goroutine, so the hook cannot hold the reconcile driver behind new stop
+// admission. The reconcile-error exit rides that same deferred publication.
 //
 // The two callers have different obligations and must not share one publisher:
 //
@@ -850,7 +850,7 @@ func (s *Session) publishDrainWarnings(ctx context.Context, warningsOnly bool, w
 		return
 	}
 	for _, warning := range warnings {
-		s.emit(warning)
+		s.emitWarningDeferringHook(warning)
 	}
 }
 
