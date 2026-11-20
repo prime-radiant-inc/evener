@@ -24,8 +24,20 @@ import { useMediaQuery } from "../../../shell/useIsMobile";
 // lower edge above ordinary portrait phones so their composer stays unchanged.
 const DUO_COVER_QUERY = "(min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4)";
 
+// A phone can cross the shell's 899px width boundary in landscape. The Duo's
+// inner display is 951x669pt there, so its session pane still needs the
+// compact resting controls even though the shell around it is desktop.
+// Primary-pointer and size bounds keep hybrid laptops and full-size tablets
+// from inheriting the phone-only controls.
+export const LANDSCAPE_PHONE_QUERY =
+  "(pointer: coarse) and (hover: none) and (orientation: landscape) and (max-width: 1000px) and (max-height: 700px)";
+
 export function useDuoCoverLayout(): boolean {
   return useMediaQuery(DUO_COVER_QUERY);
+}
+
+export function useLandscapePhoneLayout(): boolean {
+  return useMediaQuery(LANDSCAPE_PHONE_QUERY);
 }
 
 /** The composer content width at and below which the narrow layout answers:
