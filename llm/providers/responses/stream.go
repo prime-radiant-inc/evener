@@ -22,18 +22,25 @@ type responsesToolState struct {
 	// issuedCallID is the provider's own call_id for this call. A call the stream
 	// named only by item ID leaves it empty, so settlement still matches it by item ID.
 	issuedCallID string
-	started      bool
-	ended        bool
-	args         bytes.Buffer
+	// provisional marks arguments the stream observed before it issued the call:
+	// bytes held under the call's own ID while the frame's item belonged to
+	// another. An added, done or terminal record that issues the call clears it.
+	provisional bool
+	started     bool
+	ended       bool
+	args        bytes.Buffer
 }
 
-// responsesDisputedArguments holds one argument observation for a call the
-// stream named before issuing it, while that frame's item ID belonged to a
-// different issued call. final marks a done frame's authoritative bytes.
-type responsesDisputedArguments struct {
-	name, args string
-	final      bool
-}
+// responsesFrameDisposition says what the live decoder should emit for one
+// argument frame: the typed events, nothing while the call is unissued, or the
+// raw payload when the frame cannot be mapped at all.
+type responsesFrameDisposition int
+
+const (
+	responsesFrameEmitted responsesFrameDisposition = iota
+	responsesFrameBuffered
+	responsesFramePassthrough
+)
 
 // responsesOutputAccumulator tracks response.output_item.added/done and
 // response.function_call_arguments.delta/done events to reconstruct the
@@ -47,7 +54,6 @@ type responsesDisputedArguments struct {
 type responsesOutputAccumulator struct {
 	toolStates   map[string]*responsesToolState
 	itemToCallID map[string]string
-	disputedArgs map[string][]responsesDisputedArguments
 	entries      []responsesAccumEntry
 	// reasoningTextSeen records that some reasoning item has already emitted text, so a
 	// later item's first part still needs the blank line the live preview renders.
@@ -122,7 +128,6 @@ func newResponsesOutputAccumulator() *responsesOutputAccumulator {
 	return &responsesOutputAccumulator{
 		toolStates:   map[string]*responsesToolState{},
 		itemToCallID: map[string]string{},
-		disputedArgs: map[string][]responsesDisputedArguments{},
 	}
 }
 
@@ -309,51 +314,51 @@ func (st *responsesToolState) noteIssuedCallID(callID, itemID string) {
 
 // disputesIssuedOwner reports whether a frame's explicit call_id names a call
 // the stream has not issued while its item_id already belongs to another call.
+// An item-keyed state has no issued call ID yet, so the explicit ID is that
+// call's real one: the frame records it on that state instead of disputing.
 func (acc *responsesOutputAccumulator) disputesIssuedOwner(callID, itemID string) bool {
 	if callID == "" || itemID == "" || acc.toolStates[callID] != nil {
 		return false
 	}
 	owner := acc.itemToCallID[itemID]
-	return owner != "" && owner != callID
+	if owner == "" || owner == callID {
+		return false
+	}
+	st := acc.toolStates[owner]
+	return st != nil && st.issuedCallID != ""
 }
 
-func (acc *responsesOutputAccumulator) holdDisputedArguments(callID, name, fragment string, final bool) {
-	acc.disputedArgs[callID] = append(acc.disputedArgs[callID], responsesDisputedArguments{name: name, args: fragment, final: final})
+// bufferObservedArguments records one argument observation for a call the
+// stream named before issuing it. Observations append in arrival order, except
+// a completion that carries arguments, which replaces everything before it.
+func (acc *responsesOutputAccumulator) bufferObservedArguments(callID, name, fragment string, reset bool) {
+	st := acc.toolStateFor(callID, "", name)
+	st.provisional = true
+	if st.name == "" && name != "" {
+		st.name = name
+	}
+	if reset {
+		st.args.Reset()
+	}
+	st.args.WriteString(fragment)
 }
 
-// settleDisputedArguments gives callID the observations held before it was issued.
-func (acc *responsesOutputAccumulator) settleDisputedArguments(callID string) {
-	held := acc.disputedArgs[callID]
-	if len(held) == 0 {
-		return
+// argumentCallID resolves the call one function-call argument frame belongs to:
+// the provider's own call_id, else the call_id an earlier event filed for the
+// frame's item, else the item_id, else the frame's own id field.
+func (acc *responsesOutputAccumulator) argumentCallID(payload map[string]any) (issuedCallID, itemID, callID string) {
+	issuedCallID, _ = payload["call_id"].(string)
+	itemID, _ = payload["item_id"].(string)
+	if callID = issuedCallID; callID == "" && itemID != "" {
+		callID = acc.itemToCallID[itemID]
 	}
-	delete(acc.disputedArgs, callID)
-	st := acc.toolStateFor(callID, "", "")
-	for _, h := range held {
-		if h.final {
-			st.args.Reset()
-		}
-		st.args.WriteString(h.args)
-		st.name = cmp.Or(st.name, h.name)
+	if callID == "" {
+		callID = itemID
 	}
-}
-
-// settleTerminalDisputedArguments lets the terminal's function-call records
-// issue the calls a disputed frame named.
-func (acc *responsesOutputAccumulator) settleTerminalDisputedArguments(rawResp map[string]any) {
-	if acc == nil || len(acc.disputedArgs) == 0 {
-		return
+	if callID == "" {
+		callID, _ = payload["id"].(string)
 	}
-	terminal, _ := rawResp["output"].([]any)
-	for _, raw := range terminal {
-		item, _ := raw.(map[string]any)
-		if item["type"] == "function_call" {
-			callID, _ := item["call_id"].(string)
-			if _, held := acc.disputedArgs[callID]; held {
-				acc.settleDisputedArguments(callID)
-			}
-		}
-	}
+	return issuedCallID, itemID, callID
 }
 
 // HandleOutputItemAdded pre-registers a function_call tool state from a
@@ -396,8 +401,10 @@ func (acc *responsesOutputAccumulator) HandleOutputItemAdded(payload, item map[s
 	if st.name == "" && name != "" {
 		st.name = name
 	}
+	if callID != "" {
+		st.provisional = false
+	}
 	acc.toolStates[stateID] = st
-	acc.settleDisputedArguments(callID)
 }
 
 // HandleFunctionCallArgumentsDelta merges one
@@ -405,29 +412,18 @@ func (acc *responsesOutputAccumulator) HandleOutputItemAdded(payload, item map[s
 // tool state, resolving call_id via item_id when call_id is absent. eventData
 // preserves bytes the decoded payload string coerced; capture or unescape
 // failure falls back to that string. The returned delta is the effective
-// fragment written to state, for byte-identical live emission. ok is false
-// when the event can't be mapped to a tool call at all -- the caller should
-// pass the raw payload through unmodified in that case.
-func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDelta(payload map[string]any, eventData []byte) (state *responsesToolState, delta string, ok bool) {
+// fragment written to state, for byte-identical live emission. disp tells the
+// caller whether to emit the typed events, hold the frame silently while its
+// call is unissued, or pass the raw payload through unmodified.
+func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDelta(payload map[string]any, eventData []byte) (state *responsesToolState, delta string, disp responsesFrameDisposition) {
 	delta, _ = payload["delta"].(string)
 	if delta == "" {
 		delta, _ = payload["arguments"].(string)
 	}
-	issuedCallID, _ := payload["call_id"].(string)
-	callID := issuedCallID
-	itemID, _ := payload["item_id"].(string)
-	if callID == "" && itemID != "" {
-		callID = acc.itemToCallID[itemID]
-	}
-	if callID == "" {
-		callID = itemID
-	}
-	if callID == "" {
-		callID, _ = payload["id"].(string)
-	}
+	issuedCallID, itemID, callID := acc.argumentCallID(payload)
 	name, _ := payload["name"].(string)
 	if callID == "" || (delta == "" && name == "") {
-		return nil, "", false
+		return nil, "", responsesFramePassthrough
 	}
 	fragment := delta
 	if delta != "" {
@@ -438,10 +434,14 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDelta(payload 
 		}
 	}
 	if acc.disputesIssuedOwner(issuedCallID, itemID) {
-		acc.holdDisputedArguments(callID, name, fragment, false)
-		return nil, "", false
+		acc.bufferObservedArguments(callID, name, fragment, false)
+		return nil, "", responsesFrameBuffered
 	}
 	st := acc.toolStateFor(callID, itemID, name)
+	if st.provisional {
+		acc.bufferObservedArguments(st.id, name, fragment, false)
+		return nil, "", responsesFrameBuffered
+	}
 	st.noteIssuedCallID(issuedCallID, itemID)
 	if st.name == "" && name != "" {
 		st.name = name
@@ -450,7 +450,7 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDelta(payload 
 		st.args.WriteString(fragment)
 		delta = fragment
 	}
-	return st, delta, true
+	return st, delta, responsesFrameEmitted
 }
 
 // HandleFunctionCallArgumentsDone applies a
@@ -458,24 +458,13 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDelta(payload 
 // bytes, overriding whatever deltas were accumulated so far, resolving
 // call_id via item_id when needed. eventData preserves bytes the decoded
 // payload string coerced; capture or unescape failure falls back to that
-// string. ok is false when the event carried no resolvable call_id -- the
-// caller should pass the raw payload through.
-func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDone(payload map[string]any, eventData []byte) (state *responsesToolState, ok bool) {
+// string. disp tells the caller whether to emit the typed events, hold the
+// frame silently while its call is unissued, or pass the raw payload through.
+func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDone(payload map[string]any, eventData []byte) (state *responsesToolState, disp responsesFrameDisposition) {
 	argsStr, _ := payload["arguments"].(string)
-	issuedCallID, _ := payload["call_id"].(string)
-	callID := issuedCallID
-	itemID, _ := payload["item_id"].(string)
-	if callID == "" && itemID != "" {
-		callID = acc.itemToCallID[itemID]
-	}
+	issuedCallID, itemID, callID := acc.argumentCallID(payload)
 	if callID == "" {
-		callID = itemID
-	}
-	if callID == "" {
-		callID, _ = payload["id"].(string)
-	}
-	if callID == "" {
-		return nil, false
+		return nil, responsesFramePassthrough
 	}
 	fragment := argsStr
 	if argsStr != "" {
@@ -485,21 +474,26 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDone(payload m
 			}
 		}
 	}
+	hasArgs := argsStr != ""
 	if acc.disputesIssuedOwner(issuedCallID, itemID) {
-		acc.holdDisputedArguments(callID, "", fragment, true)
-		return nil, false
+		acc.bufferObservedArguments(callID, "", fragment, hasArgs)
+		return nil, responsesFrameBuffered
 	}
 	st := acc.toolStateFor(callID, itemID, "")
+	if st.provisional {
+		acc.bufferObservedArguments(st.id, "", fragment, hasArgs)
+		return nil, responsesFrameBuffered
+	}
 	st.noteIssuedCallID(issuedCallID, itemID)
 	if itemID != "" {
 		st.itemID = itemID
 		acc.itemToCallID[itemID] = st.id
 	}
-	if argsStr != "" {
+	if hasArgs {
 		st.args.Reset()
 		st.args.WriteString(fragment)
 	}
-	return st, true
+	return st, responsesFrameEmitted
 }
 
 // HandleOutputItemDone processes a response.output_item.done event's item,
@@ -567,14 +561,21 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 	if callID == "" {
 		return item, nil, "", false
 	}
-	st := acc.toolStateFor(callID, itemID, name)
-	acc.settleDisputedArguments(st.id)
-	st.noteIssuedCallID(issuedCallID, itemID)
-	if itemID != "" {
-		st.itemID = itemID
-		acc.itemToCallID[itemID] = st.id
-		acc.toolStates[itemID] = st
+	var st *responsesToolState
+	if acc.disputesIssuedOwner(issuedCallID, itemID) {
+		// The explicit call ID names a call this item does not own. Complete that
+		// call and leave the item's issued owner untouched.
+		st = acc.toolStateFor(callID, "", name)
+	} else {
+		st = acc.toolStateFor(callID, itemID, name)
+		if itemID != "" {
+			st.itemID = itemID
+			acc.itemToCallID[itemID] = st.id
+			acc.toolStates[itemID] = st
+		}
 	}
+	st.provisional = false
+	st.noteIssuedCallID(issuedCallID, itemID)
 	if st.name == "" && name != "" {
 		st.name = name
 	}
@@ -818,10 +819,12 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 					s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningDelta, ReasoningDelta: reasoningPartSeparator})
 				}
 			case "response.function_call_arguments.delta":
-				st, delta, ok := acc.HandleFunctionCallArgumentsDelta(payload, ev.Data)
-				if !ok {
-					// Can't map reliably; pass through.
+				st, delta, disp := acc.HandleFunctionCallArgumentsDelta(payload, ev.Data)
+				switch disp {
+				case responsesFramePassthrough:
 					s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload, ContentBearing: true})
+					return nil
+				case responsesFrameBuffered:
 					return nil
 				}
 				if !st.started {
@@ -832,7 +835,7 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 				tc := llm.ToolCallData{ID: st.id, ItemID: st.itemID, Name: st.name, Arguments: []byte(delta), Type: "function"}
 				s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallDelta, ToolCall: &tc})
 			case "response.function_call_arguments.done":
-				if _, ok := acc.HandleFunctionCallArgumentsDone(payload, ev.Data); !ok {
+				if _, disp := acc.HandleFunctionCallArgumentsDone(payload, ev.Data); disp == responsesFramePassthrough {
 					s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload, ContentBearing: true})
 				}
 			case "response.output_item.done":
@@ -930,8 +933,14 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 // the stream started gets only its end, with the settled name and bytes.
 func emitSettledToolCalls(s *llm.ChanStream, r *llm.Response, acc *responsesOutputAccumulator) {
 	for _, call := range r.ToolCalls() {
+		if call.ID == "" {
+			continue
+		}
 		st := acc.toolStates[call.ID]
-		if call.ID == "" || st != nil && st.ended {
+		if st != nil && st.ended {
+			continue
+		}
+		if acc.endedSynthesizedCall(call.ItemID) {
 			continue
 		}
 		if st == nil || !st.started {
@@ -940,6 +949,18 @@ func emitSettledToolCalls(s *llm.ChanStream, r *llm.Response, acc *responsesOutp
 		}
 		s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &call})
 	}
+}
+
+// endedSynthesizedCall reports whether the wire item already ended under
+// its synthesized item ID, so a terminal that later supplies the real call ID
+// does not announce the same logical call twice. An issued call sharing the item
+// ID keeps its own state and is not matched.
+func (acc *responsesOutputAccumulator) endedSynthesizedCall(itemID string) bool {
+	if itemID == "" {
+		return false
+	}
+	st := acc.toolStates[itemID]
+	return st != nil && st.ended && st.id == itemID && st.issuedCallID == ""
 }
 
 // responsesContentBearingPassthrough reports whether a Responses event the
