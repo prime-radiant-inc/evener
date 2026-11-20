@@ -3423,8 +3423,6 @@ func TestParseReadSessionTranscriptArgsMaxBytesWithBody(t *testing.T) {
 
 var _ = fmt.Sprintf
 
-// --- roborev fix round 3: RED test for finding 5 ---
-
 // TestApiLogResultTranscriptPlaceholder_LegacyBucketCarriesCallTranscriptRef
 // asserts that when the result's transcript_ref is empty (legacy-bucket bare-ID
 // read, where refFor returns ""), the re_read handle falls back to the original

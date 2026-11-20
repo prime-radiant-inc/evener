@@ -77,7 +77,7 @@ func TestSession_LoopDetection_EmitsEventAndInjectsSteering(t *testing.T) {
 	}
 
 	// Spec: loop detection warning is recorded as a SteeringTurn in history, and
-	// (review round 2) carries SteeringKind on the turn itself — not only on
+	// carries SteeringKind on the turn itself — not only on
 	// the live SteeringInjectedData event — so a reload labels it the same way
 	// the live transcript did.
 	sess.mu.Lock()

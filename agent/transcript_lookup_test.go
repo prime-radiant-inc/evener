@@ -657,8 +657,6 @@ func TestFind_LegacyBucketSessionInAllProjects(t *testing.T) {
 	}
 }
 
-// --- roborev fix round 1: RED tests ---
-
 // TestFind_LegacyBucketOmitsEmptyTranscriptRef asserts that a find result for
 // a session in a legacy-named bucket (whose name fails ValidateProjectID, so
 // refFor returns "") never surfaces an empty transcript_ref. The JSON wire
@@ -728,8 +726,6 @@ func TestResolveTranscript_AmbiguousBareIDTwoLegacyBuckets(t *testing.T) {
 		t.Errorf("ambiguity error does not name legacy bucket fedcba9876543210: %q", msg)
 	}
 }
-
-// --- roborev fix round 2: RED tests ---
 
 // TestReadMarkdownTranscript_LegacyBucketBareIDOmitsEmptyTranscriptRef asserts
 // that a markdown read_transcript against a legacy-bucket bare session ID
@@ -900,8 +896,6 @@ func TestFind_LegacyBucketTextFormatShowsBareIDAddressing(t *testing.T) {
 	}
 }
 
-// --- roborev fix round 3: RED tests ---
-
 // TestEnumerateBuckets_SkipsSymlinkedBucket asserts that a symlink under
 // evener/projects/ pointing outside the state root is NOT enumerated as a
 // bucket. enumerateBuckets uses os.Stat (follows symlinks), so a symlinked
@@ -1011,11 +1005,9 @@ func TestApiLogAttemptEnvelope_OmitsEmptyTranscriptRef(t *testing.T) {
 	}
 }
 
-// --- roborev fix round 4: RED tests ---
-
 // TestResolveTranscript_ExplicitProjRefRejectsSymlinkedBucket asserts that an
 // explicit proj:<bucket>:<sid> ref pointing at a symlinked bucket is REJECTED.
-// Round 3 made enumerateBuckets skip symlinks (os.Lstat), but the explicit
+// enumerateBuckets skips symlinks (os.Lstat), but the explicit
 // proj: branch resolves the bucket by filepath.Join(stateHome, "evener",
 // "projects", projectID) followed by os.Stat — which FOLLOWS symlinks. A
 // symlink with a grammar-valid name (e.g. link-0123456789, which passes
@@ -1051,8 +1043,6 @@ func TestResolveTranscript_ExplicitProjRefRejectsSymlinkedBucket(t *testing.T) {
 		t.Fatalf("expected error mentioning symlink for symlinked bucket ref, got: %v", err)
 	}
 }
-
-// --- roborev fix round 5: RED tests ---
 
 // TestResolveTranscript_CurrentSessionRejectsSymlinkedTranscript asserts that
 // the ""/"current" fast-path rejects a symlinked current-session transcript.
@@ -1195,18 +1185,16 @@ func TestReadAPILogSummary_SymlinkedSidecarRejected(t *testing.T) {
 	}
 }
 
-// --- roborev fix round 6: RED tests ---
-
 // TestSymlinkErrorDeep_SymlinkedAncestorAboveStateRootDoesNotBreakReads
 // asserts that a symlinked ancestor ABOVE the state root (e.g. a symlinked
 // $HOME or /tmp on macOS: /var -> /private/var) does not cause reads to fail.
-// Round 5's symlinkErrorDeep walks every ancestor up to /, Lstat-ing each
+// symlinkErrorDeep walks every ancestor up to /, Lstat-ing each
 // one. When the state root is under a symlinked path, every read fails with
 // "traverses a symlink" even though nothing under the state root is a
 // symlink. The walk must be bounded to the state root (or bucket dir).
 //
-// REGRESSION from round 5: this is a functional regression — the threat
-// model does not cover ancestors of a runtime-configured path.
+// The unbounded walk is a functional regression — the threat model does not
+// cover ancestors of a runtime-configured path.
 func TestSymlinkErrorDeep_SymlinkedAncestorAboveStateRootDoesNotBreakReads(t *testing.T) {
 	t.Parallel()
 	// Real state home with a bucket and transcript.
@@ -1380,8 +1368,6 @@ func TestFindBareIDBuckets_SymlinkedSessionsDirDoesNotMatch(t *testing.T) {
 	}
 }
 
-// --- roborev fix round 7: RED tests ---
-
 // TestEnumerateBuckets_SymlinkedEvenerAncestorRejected asserts that
 // enumerateBuckets does not return buckets reached through a symlinked
 // stateHome/evener ancestor. filepath.Glob follows the symlinked prefix, and
@@ -1463,13 +1449,11 @@ func TestFind_SymlinkedEvenerAncestorOmitsSymlinkedBucketSession(t *testing.T) {
 	}
 }
 
-// --- roborev fix round 8: RED tests ---
-
 // TestResolveTranscript_CurrentSessionSymlinkedEvenerAncestorNotRejected
 // asserts that the current-session fast-path ("") rejects a transcript reached
 // through a symlinked stateHome/evener ancestor. enumerateBuckets Lstats
 // stateHome/evener and stateHome/evener/projects and refuses to enumerate when
-// either is a symlink (round 7). But the current-session path uses
+// either is a symlink. But the current-session path uses
 // symlinkErrorDeep(p, currentStateDir) — rooted at the bucket, not the state
 // home — so the layout ancestors (evener/, evener/projects/) are above the
 // root and not checked. A symlinked evener/ (a plausible state-dir relocation
@@ -1489,8 +1473,8 @@ func TestResolveTranscript_CurrentSessionSymlinkedEvenerAncestorNotRejected(t *t
 	writeTranscript(t, bucket, sid)
 
 	// Symlink evener/ in a separate home — evener/ itself is a symlink within
-	// the state root, not an ancestor above it (the round-6 regression test
-	// covers ancestors above the state root).
+	// the state root, not an ancestor above it (the symlinked-ancestor test
+	// above covers that case).
 	linkHome := t.TempDir()
 	if err := os.Symlink(filepath.Join(realHome, "evener"), filepath.Join(linkHome, "evener")); err != nil {
 		t.Fatal(err)
@@ -1612,8 +1596,6 @@ func TestSymlinkErrorDeep_SidecarGuardDirRootMissesSymlinkedSessionsDir(t *testi
 			"the symlink (walk is empty); got unexpected error: %v", err)
 	}
 }
-
-// --- roborev fix round 10: RED tests ---
 
 // TestResolveTranscript_SymlinkedCurrentBucketDirRejected asserts that
 // resolveTranscript rejects a current-bucket path when the bucket dir itself
