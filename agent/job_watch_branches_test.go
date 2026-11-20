@@ -754,63 +754,17 @@ func TestAvailableEventKindNames(t *testing.T) {
 // availableEventKindNames returns a copy
 // ---------------------------------------------------------------------------
 
-func TestWatchEventFilterStruct(t *testing.T) {
-	t.Parallel()
-	f := watchEventFilter{ToolName: "exec_command", Status: "ok"}
-	if f.ToolName != "exec_command" || f.Status != "ok" {
-		t.Fatalf("struct wrong: %+v", f)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // watchSendArgs struct
 // ---------------------------------------------------------------------------
-
-func TestWatchSendArgsStruct(t *testing.T) {
-	t.Parallel()
-	s := watchSendArgs{To: "dlg_1", Message: "msg", IncludeExcerpt: true}
-	if s.To != "dlg_1" || s.Message != "msg" || !s.IncludeExcerpt {
-		t.Fatalf("struct wrong: %+v", s)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // watchResult struct
 // ---------------------------------------------------------------------------
 
-func TestWatchResultStruct(t *testing.T) {
-	t.Parallel()
-	r := watchResult{
-		WatchID:            "watch_1",
-		Source:             "self",
-		Target:             "job_123",
-		Watching:           true,
-		OutputMatch:        "ERROR",
-		Events:             []string{"job.notification"},
-		ProgressIntervalMS: 5000,
-	}
-	if r.WatchID != "watch_1" || r.Source != "self" {
-		t.Fatalf("struct wrong: %+v", r)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // watchKey struct
 // ---------------------------------------------------------------------------
-
-func TestWatchKeyStruct(t *testing.T) {
-	t.Parallel()
-	k := watchKey{
-		VisibleSessionID:   "sess_1",
-		Target:             "job_1",
-		SendTo:             "dlg_1",
-		ReceiverSessionID:  "sess_2",
-		ReceiverDelegateID: "dlg_2",
-	}
-	if k.VisibleSessionID != "sess_1" || k.Target != "job_1" {
-		t.Fatalf("struct wrong: %+v", k)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // errWatchTargetNotFound sentinel
