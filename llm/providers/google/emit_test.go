@@ -189,3 +189,76 @@ func googleClone(t *testing.T, defs []llm.ToolDefinition) []llm.ToolDefinition {
 	}
 	return out
 }
+
+// selfReferentialSchema is a schema whose properties map contains the schema
+// itself: legal Go, rejected by the encoder, and unbounded to a walk that
+// follows every value it reaches.
+func selfReferentialSchema() map[string]any {
+	schema := map[string]any{"type": "object", "additionalProperties": false}
+	props := map[string]any{}
+	schema["properties"] = props
+	props["self"] = schema
+	return schema
+}
+
+// selfReferentialSliceSchema is the same cycle closed through a slice: the
+// element list holds the list. The sanitizer descends into []any as well as
+// map[string]any, so a guard that tracked only maps would still recurse here.
+func selfReferentialSliceSchema() map[string]any {
+	items := make([]any, 1)
+	items[0] = items
+	return map[string]any{"type": "object", "properties": map[string]any{"items": items}}
+}
+
+// A schema that contains itself is unbounded to the sanitizer, so the deriver
+// has to refuse it before rebuilding anything.
+//
+// A stack overflow is unrecoverable, so this test cannot catch one: the run
+// dies with the whole binary. That is the failure it is written to show, and
+// the cycle check is what lets the call return. The answer it must give is the
+// catalog's own count — no emitted list — because the encoder rejects a cyclic
+// catalog and there is no wire form to price.
+func TestTheDeriverRefusesACyclicSchemaRatherThanFollowingIt(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		root map[string]any
+	}{
+		{"a map that contains itself", selfReferentialSchema()},
+		{"a slice that contains itself", selfReferentialSliceSchema()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			defs := []llm.ToolDefinition{{Name: "cyclic", Parameters: tc.root}}
+			emitted, changed := (&Protocol{}).EmitToolSchemas(defs, registry.Resolved{})
+			if changed || emitted != nil {
+				t.Fatalf("deriver answered (%v, %v) for a cyclic catalog, want (nil, false): the caller has to keep "+
+					"the catalog's own count", emitted, changed)
+			}
+		})
+	}
+}
+
+// One subschema reachable from two positions is shared, not cyclic, and
+// refusing it would stop pricing a list the route really sends.
+func TestASharedSubschemaIsNotACycle(t *testing.T) {
+	t.Parallel()
+	shared := map[string]any{"type": "string", "description": "shared between two properties"}
+	defs := []llm.ToolDefinition{{
+		Name: "shared",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"first":  shared,
+				"second": shared,
+			},
+		},
+	}}
+	emitted, changed := (&Protocol{}).EmitToolSchemas(defs, registry.Resolved{})
+	if !changed || emitted == nil {
+		t.Fatalf("deriver answered (%v, %v) for a shared acyclic subtree, want the emitted list", emitted, changed)
+	}
+	if got, want := llm.ToolsJSONBytes(emitted), llm.ToolsJSONBytes(defs); got != want {
+		t.Fatalf("emitted list measures %d bytes, want the catalog's %d: nothing in this schema is dropped", got, want)
+	}
+}

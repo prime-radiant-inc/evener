@@ -1,11 +1,17 @@
 package agent
 
 import (
+	"context"
+	"strconv"
 	"testing"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
+
+	_ "primeradiant.com/evener/llm/providers/google" // the round prepares through the real Gemini builder
 )
 
 // responsesRouteOn returns a resolved Responses row with the strict-tools
@@ -399,5 +405,161 @@ func TestTheFallbackPricesItsOwnCatalogBeforeItsHistoryEstimates(t *testing.T) {
 	if _, _, err := sess.priceRoundRoute(applyCap(fallback, fallbackPrice-1), built).admit(built); err == nil {
 		t.Fatalf("fallback admitted under a cap of %d below its own price %d: the estimate stopped pricing the "+
 			"catalog", fallbackPrice-1, fallbackPrice)
+	}
+}
+
+// geminiStrippedCatalog is a tool list Gemini's builder sends smaller than the
+// catalog advertises.
+//
+// Every schema carries the JSON Schema document metadata and
+// additionalProperties the Gemini Schema proto has no field for, so the
+// sanitizer drops them and the wire list is smaller than the advertised one.
+// The direction matters: a route that priced the catalog here overstates the
+// request, and a window between the two readings then clamps output the
+// dispatch never had to give up.
+func geminiStrippedCatalog(n int) []llm.ToolDefinition {
+	defs := make([]llm.ToolDefinition, n)
+	for i := range defs {
+		defs[i] = llm.ToolDefinition{
+			Name:        "schema_probe_" + strconv.Itoa(i),
+			Description: "a tool whose schema Gemini emits smaller than the catalog",
+			Parameters: map[string]any{
+				"$schema":              "https://json-schema.org/draft/2020-12/schema",
+				"$id":                  "https://example.com/schema-probe/" + strconv.Itoa(i),
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"path": map[string]any{
+						"type":        "string",
+						"description": "the file to read",
+						"$comment":    "documented for readers of the schema",
+					},
+				},
+				"required": []string{"path"},
+			},
+		}
+	}
+	return defs
+}
+
+// geminiBudgetRound prepares one round of a session on a built-in Gemini route
+// whose window and output allocation are given, and returns the prepared
+// request beside every event the session emitted while preparing.
+//
+// The tools go in through registerTool, the same lifecycle path a plugin or MCP
+// server uses, and the session has no adapter for the google id: the round is
+// priced by the built-in protocol's deriver, with no override to hand it a
+// catalog it could mistake for a wire list.
+func geminiBudgetRound(t *testing.T, window, output int, defs []llm.ToolDefinition) (llm.Request, []events.SessionEvent) {
+	t.Helper()
+	profile := newGeminiProfile("gemini-2.5-flash")
+	res := profile.Resolved()
+	res.Caps.ContextWindow = new(window)
+	res.Caps.MaxOutputTokens = new(output)
+	profile = profile.WithResolved(res)
+
+	client := llm.NewClient()
+	client.Register(newFakeAdapter("openai"))
+	sess := newSession(t, withClient(client), withProfile(profile), withDir(t.TempDir()),
+		withConfig(minimalTestSessionConfig(t)))
+	if sess.servesAnOverride(profile) {
+		t.Fatalf("the round is served by an override for %q, so no built-in deriver prices it", profile.ID())
+	}
+	for _, def := range defs {
+		sess.registerTool(def.Name, def.Description, def.Parameters,
+			func(context.Context, any) (any, error) { return nil, nil })
+	}
+	eventsDone := captureSessionEvents(sess)
+	// A fold would rewrite the history this round prices, and pressure is not
+	// what is under test here.
+	sess.strategy = nil
+	sess.history = []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("task"))}
+
+	_, _, _, req, _, _, err := sess.prepareModelRequestWithError(context.Background(), 0, new(events.RoundTimings))
+	if err != nil {
+		sess.Close()
+		t.Fatalf("prepareModelRequestWithError: %v", err)
+	}
+	sess.Close()
+	return req, <-eventsDone
+}
+
+// contextBudgetWarnings filters the captured events down to the coded budget
+// warnings, which is how a client decides to demote one; no phrasing is read.
+func contextBudgetWarnings(captured []events.SessionEvent) []events.WarningData {
+	var warnings []events.WarningData
+	for _, warning := range warningEvents(captured) {
+		if warning.Code == events.WarningCodeContextBudget {
+			warnings = append(warnings, warning)
+		}
+	}
+	return warnings
+}
+
+// The round's own preparation has to price the schemas the route emits, not the
+// catalog it was handed.
+//
+// This runs the production path, prepareModelRequestWithError, on a built-in
+// Gemini route with no override adapter: the sanitizer strips the document
+// metadata and additionalProperties its Schema proto cannot hold, so the
+// emitted list is smaller than the advertised one and the two prices differ.
+//
+// The window sits between them. Priced from the emitted list the request fits
+// and the model keeps its whole output allocation; priced from the catalog it
+// does not, and the round both clamps the allocation and raises the coded
+// budget warning before dispatching, describing an allocation the dispatch
+// never had to give up.
+func TestThePreparedRoundPricesTheSchemasTheRouteEmits(t *testing.T) {
+	t.Parallel()
+	defs := geminiStrippedCatalog(16)
+	const output = 1024
+
+	// Measure the two readings on a request the production path actually built:
+	// the window does not affect the estimate, so a wide one here is safe.
+	measured, _ := geminiBudgetRound(t, 2_000_000, output, defs)
+	profile := newGeminiProfile("gemini-2.5-flash")
+	res := profile.Resolved()
+	res.Caps.ContextWindow = new(2_000_000)
+	res.Caps.MaxOutputTokens = new(output)
+
+	catalogReading := llm.EstimateInputTokensForResolved(res, measured).Tokens
+	emittedReading := llm.EstimateInputTokensForRoute(res, measured, false).Tokens
+	if catalogReading <= emittedReading {
+		t.Fatalf("fixture does not distinguish the readings: the catalog reads %d and the emitted list %d: the "+
+			"sanitizer has to strip fields for this case to prove anything", catalogReading, emittedReading)
+	}
+	// The window has to leave the emitted reading room for the whole allocation
+	// and give the catalog reading one token less. Admission's own reserve is
+	// folded in, so the window is the fixed point of its own percentage.
+	safety := 0
+	window := 0
+	for range 8 {
+		next := catalogReading + safety + output - 1
+		if next == window {
+			break
+		}
+		window = next
+		safety = llm.SafetyReserveTokens(window)
+	}
+	if emittedReading+safety+output > window {
+		t.Fatalf("window %d does not leave the emitted reading %d room for the %d allocation plus the %d reserve",
+			window, emittedReading, output, safety)
+	}
+	if catalogReading+safety+output <= window {
+		t.Fatalf("window %d admits the catalog reading %d plus the %d allocation and %d reserve",
+			window, catalogReading, output, safety)
+	}
+
+	req, captured := geminiBudgetRound(t, window, output, defs)
+	if req.MaxTokens == nil {
+		t.Fatal("prepared request carries no output allocation")
+	}
+	if got := *req.MaxTokens; got != output {
+		t.Fatalf("prepared MaxTokens = %d, want the route's own %d under a window of %d that admits the emitted "+
+			"reading %d (the catalog reads %d): the round priced a tool list the wire never carries",
+			got, output, window, emittedReading, catalogReading)
+	}
+	if warnings := contextBudgetWarnings(captured); len(warnings) != 0 {
+		t.Fatalf("preparation raised %d coded budget warnings under a window it fits: %+v", len(warnings), warnings)
 	}
 }

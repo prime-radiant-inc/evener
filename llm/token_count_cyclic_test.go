@@ -54,3 +54,45 @@ func selfReferentialSchema() map[string]any {
 	props["self"] = schema
 	return schema
 }
+
+// selfReferentialSliceSchema closes a cycle through a slice rather than a map:
+// the element list contains itself. A guard that tracked only maps would still
+// follow this one forever.
+func selfReferentialSliceSchema() map[string]any {
+	items := make([]any, 1)
+	items[0] = items
+	return map[string]any{"type": "object", "properties": map[string]any{"items": items}}
+}
+
+// A Google route rebuilds every tool schema before measuring it, so a catalog
+// it cannot encode has to answer with the catalog's own count rather than being
+// followed.
+//
+// The rebuild is the sanitizer that strips the fields Gemini's Schema proto has
+// no room for, and it descends into every map and slice it reaches. A schema
+// that contains itself therefore has no leaf, and the process dies on a stack
+// overflow: unrecoverable, so this test cannot catch it and the run dies
+// instead. That is the failure it is written to show, and the cycle check is
+// what lets the call return.
+func TestPricingAGoogleRouteDoesNotWalkACyclicCatalog(t *testing.T) {
+	t.Parallel()
+	row := registry.Resolved{Instance: "cyclic-google", ModelID: "model", WireID: "model"}
+	row.Protocol = registry.ProtocolGoogle
+	for _, tc := range []struct {
+		name   string
+		schema map[string]any
+	}{
+		{"map cycle", selfReferentialSchema()},
+		{"slice cycle", selfReferentialSliceSchema()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			req := Request{Tools: []ToolDefinition{{Name: "cyclic", Parameters: tc.schema}}}
+			// No wire form to price: the encoder rejects this catalog, so the
+			// route's own count is the catalog's, which bills nothing.
+			if got := EffectiveToolsJSONBytes(req, row, false); got != 0 {
+				t.Fatalf("priced a catalog this route cannot encode at %d bytes, want 0", got)
+			}
+		})
+	}
+}

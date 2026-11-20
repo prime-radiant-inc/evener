@@ -4,6 +4,7 @@ import (
 	"slices"
 
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/internal/openaichat"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -40,9 +41,21 @@ func wireFunctionParameters(t llm.ToolDefinition) map[string]any {
 // schema nothing was dropped from still measures the bytes the catalog
 // measures, so the price is the same either way; skipping that marshal is a
 // separate cost to take up on its own.
+//
+// A schema that contains itself is refused before any of that: the sanitizer
+// rebuilds every container it reaches, so a cyclic one has no leaf to stop at
+// and takes the process down with a stack overflow. A catalog the encoder
+// rejects has no wire form to price, so reporting no change keeps the caller on
+// the catalog's own count — the same answer every route gives a list the
+// encoder cannot measure.
 func (*Protocol) EmitToolSchemas(baseline []llm.ToolDefinition, res registry.Resolved) ([]llm.ToolDefinition, bool) {
 	if len(baseline) == 0 {
 		return nil, false
+	}
+	for i := range baseline {
+		if openaichat.CyclicSchema(baseline[i].Parameters) {
+			return nil, false
+		}
 	}
 	sent := slices.Clone(baseline)
 	for i := range sent {
