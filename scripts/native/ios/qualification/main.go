@@ -198,17 +198,9 @@ func qualify(ctx context.Context, output, derivedData string) (result error) {
 			}()
 		}
 		if _, err := r.commandOutput(buildCtx, "xcodebuild-release", false, releaseBuildCommand(udid, derived)...); err != nil {
-			// A build stopped by the bundle's own failure reports the bundle, not
-			// the cancellation it caused. A build that failed on its own keeps its
-			// error and an interrupted run keeps the interruption; the bounded
-			// cleanup above carries the bundle diagnostic in both cases.
-			if hoist != nil && ctx.Err() == nil && errors.Is(err, context.Canceled) {
-				joinCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-				defer cancel()
-				if hoistErr := r.waitMetroHoist(joinCtx); hoistErr != nil {
-					return hoistErr
-				}
-			}
+			// The bounded cleanup above joins the bundle's own error when there is
+			// one, so a build stopped by a failed bundle carries both diagnostics
+			// and an independently failed build is never replaced by a later one.
 			return err
 		}
 		// The build only succeeded if its copy phase found a complete bundle, but
