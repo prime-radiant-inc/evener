@@ -12,7 +12,6 @@ import { ClientProvider } from "../../shell/clientContext";
 import * as StatusBarModule from "../../shell/statusbar/StatusBar";
 import { resetMobileViewportForTests } from "../../shell/useIsMobile";
 import { resetWorkspaceStoreForTests } from "../../shell/workspace";
-import { resetActivityPanelStoreForTests } from "../../stores/activityPanel";
 import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { setProductionEntryCacheForTests } from "../../stores/entryTranscriptRoutes";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
@@ -83,7 +82,6 @@ beforeEach(() => {
   resetTranscriptPagingForTests();
   resetAskDockStoreForTests();
   resetNavigationStoreForTests();
-  resetActivityPanelStoreForTests();
   resetActivitySidebarStoreForTests();
   resetMobileViewportForTests();
   mutationStorage = new MutationOutboxIndexedDB();
@@ -98,7 +96,6 @@ afterEach(() => {
   cleanup();
   resetPendingTurnsStoreForTests();
   resetAskDockStoreForTests();
-  resetActivityPanelStoreForTests();
   resetActivitySidebarStoreForTests();
   resetMobileViewportForTests();
   resetWorkspaceStoreForTests();

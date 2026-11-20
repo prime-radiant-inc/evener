@@ -1,11 +1,11 @@
-// Shared wire-rejection classifiers for the session-chrome panels
-// (TasksPanel, ActivityPanel). Both panels fetch their row lists through the
-// same hub resume-and-forward path and so classify the same two EXPECTED
-// rejections identically: a source that cannot answer the call at all
-// (actionUnavailable - an expected capability gap, not a bug, so it earns an
-// honest inline "not available" state and no toast) and a thread the hub
+// Shared wire-rejection classifiers for the session-chrome task panel and the
+// session-activity reads. Both go through the same hub resume-and-forward path
+// and so classify the same two EXPECTED rejections identically: a source that
+// cannot answer the call at all (actionUnavailable - an expected capability
+// gap, not a bug, so it earns an honest inline "not available" state and no
+// toast) and a thread the hub
 // never tracked at all (isThreadNotFound - terminal, no retry). Extracted
-// from TasksPanel.tsx so both panels can share the same two checks - one
+// from TasksPanel.tsx so every reader shares the same two checks - one
 // definition, so they can never drift apart on what counts as recoverable.
 import { WireError } from "./errors";
 

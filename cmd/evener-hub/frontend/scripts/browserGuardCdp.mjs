@@ -991,7 +991,7 @@ export async function evaluate(send, expression) {
  *
  * Same-origin frames count as part of the page, and are checked ONE DOCUMENT AT
  * A TIME. A case may build its fixtures inside srcdoc iframes - layoutguard's
- * activity-tree-responsive builds three - and each of those documents links the
+ * transcript-rail-icon-seats builds two - and each of those documents links the
  * stylesheet for itself. Pooling every face into one list and asking whether the
  * TOTAL is empty would let one fixture frame lose its stylesheet, and silently
  * revert to a host fallback, while its siblings kept theirs and carried the
@@ -1000,10 +1000,8 @@ export async function evaluate(send, expression) {
  * The page's load event, which every caller has already awaited, does not fire
  * until subframes have loaded, so their documents are complete here and need no
  * readiness dance of their own. Awaiting each frame's own fonts.ready is not
- * bookkeeping: before it, activity-tree-responsive measured its fixtures
- * mid-swap in a fallback (measured, on this machine: a deep row label 663px
- * wide and an 835px panel, against 671px and 856px once the frames' faces are
- * actually settled).
+ * bookkeeping: a frame measured before its own faces settle reports a
+ * fallback's metrics.
  *
  * Deliberately NOT a hardcoded family list, and deliberately not "a face must
  * have LOADED". A face loads only when some text actually uses it, so a case

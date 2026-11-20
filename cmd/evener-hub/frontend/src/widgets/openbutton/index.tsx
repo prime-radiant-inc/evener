@@ -14,8 +14,8 @@
 // row with the affordance is the height of a row without it.
 //
 // The affordance always rides inside something clickable (a disclosure head,
-// a tool row's summary line, an activity-tree row), so it owns
-// stopPropagation: a click here must never also toggle the enclosing row.
+// a tool row's summary line), so it owns stopPropagation: a click here must
+// never also toggle the enclosing row.
 import type { MouseEvent } from "react";
 import { IconButton } from "../iconbutton";
 import { requireClass } from "../internal/requireClass";
@@ -61,8 +61,8 @@ export interface OpenButtonProps {
   /** Click handler for the button form. An href anchor navigates instead
    * and only stopPropagates. */
   onClick?: (event: MouseEvent<HTMLButtonElement>) => void;
-  /** Forwards to the underlying control: activity-tree rows are their own
-   * tab stop, so their nested open glyph takes -1 there. */
+  /** Forwards to the underlying control: a row that is its own tab stop
+   * passes -1 so its nested open glyph stays out of the tab order. */
   tabIndex?: number;
   /** Associates the button form with an external description element. */
   describedBy?: string;
@@ -97,9 +97,9 @@ export function OpenButton({ label, onClick, tabIndex, describedBy, href, word =
     onClick?.(event);
   }
   return (
-    // data-open-shell is the surfaces' hook for context-specific geometry
-    // (dense activity rows cap the hit HEIGHT at the row's so neighbors'
-    // targets never overlap - activitypanel.module.css).
+    // data-open-shell is the surfaces' hook for context-specific geometry:
+    // the shell is the Open control's full hit size, and a surface may clamp
+    // it further without shrinking the control itself.
     <span className={CLASS.inline} data-open-shell>
       <IconButton
         label={label ?? "Open"}

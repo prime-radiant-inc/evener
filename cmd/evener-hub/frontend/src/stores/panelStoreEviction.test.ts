@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
-import { activityPanelStore } from "./activityPanel";
 import { resetPanelStoreEvictionForTests } from "./panelStoreEviction";
 import { tasksPanelStore } from "./tasksPanel";
 
@@ -12,13 +11,11 @@ describe("panel store eviction", () => {
   beforeEach(() => {
     resetWorkspaceStoreForTests();
     tasksPanelStore.getState().resetForTests();
-    activityPanelStore.getState().resetForTests();
     resetPanelStoreEvictionForTests();
   });
   afterEach(() => {
     resetWorkspaceStoreForTests();
     tasksPanelStore.getState().resetForTests();
-    activityPanelStore.getState().resetForTests();
   });
 
   test("retains entries while a session pane references the ref", async () => {
@@ -29,30 +26,6 @@ describe("panel store eviction", () => {
     });
     await settle();
     expect(tasksPanelStore.getState().entries.has("ref_a")).toBe(true);
-  });
-
-  test.each(["sessionTasks", "sessionDetails"] as const)(
-    "retains Activity disclosure while %s references the ref",
-    async (type) => {
-      activityPanelStore.getState().toggleFold("ref_a", "fold:qualified");
-      workspaceStore.setState({
-        panes: [{ id: "activity_a", type, params: { ref: "ref_a" }, slot: "secondary" }],
-        focusedPaneId: "activity_a",
-      });
-      await settle();
-      expect(activityPanelStore.getState().entries.has("ref_a")).toBe(true);
-    },
-  );
-
-  test("evicts Activity disclosure after its last session pane closes", async () => {
-    activityPanelStore.getState().toggleFold("ref_a", "fold:qualified");
-    workspaceStore.setState({
-      panes: [{ id: "activity_a", type: "session", params: { ref: "ref_a" }, slot: "main" }],
-      focusedPaneId: "activity_a",
-    });
-    workspaceStore.getState().closePane("activity_a");
-    await settle();
-    expect(activityPanelStore.getState().entries.has("ref_a")).toBe(false);
   });
 
   test("retains an open backgrounded panel without a thread claim", async () => {

@@ -18,10 +18,8 @@ import "../styles/global.css";
 import { connectionStore } from "../stores/connection";
 import { threadsStore } from "../stores/threads";
 
-// This harness renders SessionChrome - and with it ActivityPanel - outside the
-// app shell that wires the activity stores, so the panel's continuation control
-// needs the summary link registered here, the same way AppShell.tsx and
-// dev/surface-sections/chrome.tsx do.
+// This harness renders SessionChrome outside the app shell, so it relies on the
+// chrome's own activity wiring rather than the shell's.
 
 const params = new URLSearchParams(window.location.search);
 const theme = params.get("theme");

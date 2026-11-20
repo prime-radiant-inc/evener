@@ -12,7 +12,6 @@ import { StackHost } from "../../shell/mobile/StackHost";
 import { NeedsYouProvider } from "../../shell/NeedsYouProvider";
 import { resetMobileViewportForTests } from "../../shell/useIsMobile";
 import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
-import { resetActivityPanelStoreForTests } from "../../stores/activityPanel";
 import { resetConnectionStoreForTests } from "../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
@@ -195,7 +194,6 @@ beforeEach(() => {
   resetTranscriptPagingForTests();
   resetAskDockStoreForTests();
   resetNavigationStoreForTests();
-  resetActivityPanelStoreForTests();
   resetActivitySidebarStoreForTests();
   resetMobileViewportForTests();
   mutationStorage = new MutationOutboxIndexedDB();
@@ -210,7 +208,6 @@ afterEach(() => {
   cleanup();
   resetPendingTurnsStoreForTests();
   resetAskDockStoreForTests();
-  resetActivityPanelStoreForTests();
   resetActivitySidebarStoreForTests();
   resetMobileViewportForTests();
   resetWorkspaceStoreForTests();

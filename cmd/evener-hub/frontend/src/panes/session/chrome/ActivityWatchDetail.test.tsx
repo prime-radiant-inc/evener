@@ -9,6 +9,7 @@ import {
   formatClockTime,
   hydrateThread,
   projectSessionActivity,
+  watchDurationLabel,
   watchFacts,
   watchRowID,
 } from "@evener/appwire-client";
@@ -26,7 +27,7 @@ import {
 } from "../../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { EntityViewsProvider } from "../../../transcriptDisplay/entityViews";
-import { ActivityWatchDetail } from "./ActivityRowDetail";
+import { ActivityWatchDetail } from "./ActivityWatchDetail";
 
 afterEach(() => {
   cleanup();
@@ -64,6 +65,10 @@ function row(overrides: Partial<EvenerWatchInfo> = {}): ActivityWatchRow {
 function leftOf(element: HTMLElement): number {
   const value = element.style.left;
   return Number.parseFloat(value);
+}
+
+function armedLabel(): string {
+  return watchDurationLabel((NOW - Date.parse(CREATED)) / 1000);
 }
 
 describe("ActivityWatchDetail timeline", () => {
@@ -416,6 +421,60 @@ describe("ActivityWatchDetail timeline", () => {
     expect(text).not.toMatch(/dropped/i);
     expect(text).not.toMatch(/\bnext\b/i);
     expect(text).not.toMatch(/countdown/i);
+  });
+});
+
+describe("ActivityWatchDetail watch facts", () => {
+  test("an output watch states its target and match", () => {
+    render(
+      <ActivityWatchDetail
+        row={row({ target: "job_ab12cd", outputMatch: "/DONE/", cadence: [{ kind: "output" }], deliveries: 0 })}
+        now={NOW}
+      />,
+    );
+    expect(screen.getByTestId("watch-facts").textContent).toBe(
+      `Waiting on job_ab12cd, matching /DONE/ · armed ${armedLabel()} ago · no deliveries yet`,
+    );
+  });
+
+  test("an event watch states the joined event names", () => {
+    render(
+      <ActivityWatchDetail
+        row={row({ events: ["job.completed", "job.failed"], cadence: [{ kind: "events" }], deliveries: 2 })}
+        now={NOW}
+      />,
+    );
+    expect(screen.getByTestId("watch-facts").textContent).toBe(
+      `Waiting on job.completed, job.failed · armed ${armedLabel()} ago · 2 deliveries`,
+    );
+  });
+
+  test("a wildcard event watch reads as session events", () => {
+    render(
+      <ActivityWatchDetail
+        row={row({ wildcardEvents: true, events: [], cadence: [{ kind: "events" }], deliveries: 0 })}
+        now={NOW}
+      />,
+    );
+    expect(screen.getByTestId("watch-facts").textContent).toBe(
+      `Waiting on session events · armed ${armedLabel()} ago · no deliveries yet`,
+    );
+  });
+
+  test("a scheduled watch's newest delivery instant renders as local HH:MM", () => {
+    render(
+      <ActivityWatchDetail
+        row={row({
+          cadence: [{ kind: "every", seconds: 600 }],
+          deliveries: 3,
+          deliveryTimes: ["2026-08-05T14:50:00Z", "2026-08-05T14:58:00Z"],
+        })}
+        now={NOW}
+      />,
+    );
+    expect(screen.getByTestId("watch-facts").textContent).toContain(
+      `last at ${formatClockTime("2026-08-05T14:58:00Z")}`,
+    );
   });
 });
 

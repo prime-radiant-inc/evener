@@ -1164,9 +1164,7 @@ observes session-scoped jobs and delegates for inline entity links and controls.
 It shares those reads with other holders of the same binding. If neither
 collection is already observed, mounting the transcript starts up to two bounded
 initial collection reads. Closing it releases that demand. Transcript watch
-references use the transcript's own watch evidence. The
-[recursive activity panel](../../cmd/evener-hub/frontend/src/panes/session/chrome/ActivityPanel.tsx)
-observes subtree collections while its body is open. These view lifetimes do not
+references use the transcript's own watch evidence. This view lifetime does not
 cause an `evener/thread/*` activity read for every session in the navigation
 rail; the rail's open title card makes only its own one-ref pulse read, as
 described under [Navigation session status](#navigation-session-status).
@@ -1187,16 +1185,14 @@ and `AgentsTab`): the tab renders the subtree's active branches nested beneath
 their parents (collapsible, expanded by default, with nested-row activation
 drilling along the loaded chain) above one bottom `total - active` inactive fold
 that groups settled runs by parent, reconciling the `active/total` header and
-footer counts with the visible list. An open Activity sheet shares that same
-subtree store (see [Client lifetimes](#client-lifetimes)).
+footer counts with the visible list.
 The workspace registers only Tasks and Details session panels. Saved Activity
 placements are unknown panes: the existing workspace restore omits them,
 preserves registered panes and selects useful surviving focus. A valid primary
 route wins before the empty-workspace Welcome fallback. Retirement leaves
 Overview's independent per-session open/About choice intact and issues no
 deletion or lifecycle mutation. Standalone Details retains its shared accounting
-renderer. The recursive Activity Sheet and inline discovery retain subtree
-inspection through their existing owners.
+renderer.
 Session action menus offer Delete only for a local top-level session whose
 lifecycle is stopped, including a confirmed crash identified by an errored
 navigation row with `failure.cause_kind: "crashed"`. Live sessions and ordinary
@@ -1204,34 +1200,8 @@ non-crashed errors keep Delete hidden; Force shutdown remains the recovery actio
 for eligible live sessions.
 Expanded watch details reveal the full user note as wrapped text, regardless of
 how much fits in the compact collapsed row.
-The recursive Activity Sheet groups every settled job and delegate, including
-failures, under its existing per-session Inactive folds. Counts include every
-entry grouped there. Opening a fold reveals rows in their original order with
-details collapsed by default. Active descendants and the ancestors needed to
-reach them remain outside the folds, regardless of an ancestor's settled outcome.
-Settled jobs keep their glyphs and status text in ordinary quiet ink; a settled
-delegate shows the dot's settled vocabulary instead - no mark done, the red
-diamond failed. True outcomes remain
-available to assistive technology even when duration replaces visible status;
-live questions, approvals and current errors retain their attention treatment.
-Detail, action and read failures remain recovery information, not settled outcomes.
-The shared entity index includes every loaded entry regardless of disclosure and
-keeps its fold origin truthful. Folding does not change owner-qualified output or
-child transcript actions, watches, paging or shared reconnect recovery. Overview
-and native retain their separate history groups and own-session error priority.
-The [panel view store](../../cmd/evener-hub/frontend/src/stores/activityPanel.ts)
-retains sheet visibility, disclosure choices and each collection's last loaded
-row identity by session ref for the lifetime of its retained workspace panes.
-Opening a child conversation releases the hidden subtree read demand. Back acquires
-fresh demand through the shared binding and restores the inspected extent using
-the existing page boundary, yielding 100 ms between pages. Delegates, jobs and
-watches restore independently until their saved identity arrives or an
-authoritative complete read proves it absent. A partial first page cannot replace
-an outstanding boundary. The view stores only identities, not resource rows,
-cursors or retry state; the shared store continues to own failed-page recovery.
-Explicitly closing the sheet clears extent restoration and keeps the sheet closed
-across navigation. A changed resolved session clears the former session's extent
-and disclosure choices. Closing the last retaining pane evicts this view state.
+Overview and native retain their separate history groups and own-session error
+priority.
 
 Activity delegate rows use the shared opener, which requests the child's
 conversation pane — reusing an already open one for that session — and keeps

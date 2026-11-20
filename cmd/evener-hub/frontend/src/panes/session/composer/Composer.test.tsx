@@ -15,7 +15,6 @@ import { paletteStore } from "../../../shell/palette/paletteController";
 import { MOBILE_QUERY } from "../../../shell/useIsMobile";
 import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
-import { resetActivityPanelStoreForTests } from "../../../stores/activityPanel";
 import { useCommandCatalog } from "../../../stores/commandCatalog";
 import { resetConnectionStoreForTests } from "../../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
@@ -607,7 +606,6 @@ beforeEach(() => {
   resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
-  resetActivityPanelStoreForTests();
   resetPendingTurnsStoreForTests();
   // askDockStore reconciles reactively off threadsStore (registered once at
   // module load - askDockStore.ts's own header comment), so its byRef map
@@ -637,7 +635,6 @@ afterEach(() => {
   vi.useRealTimers();
   resetActivitySidebarStoreForTests();
   resetWorkspaceStoreForTests();
-  resetActivityPanelStoreForTests();
   // A narrow-layout test leaves its stub installed; jsdom has no real
   // ResizeObserver, so the honest baseline for the next test is none at all.
   delete (globalThis as { ResizeObserver?: typeof ResizeObserver }).ResizeObserver;

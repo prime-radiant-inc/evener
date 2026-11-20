@@ -9,7 +9,6 @@ import { ClientProvider } from "../../shell/clientContext";
 import { resetMobileViewportForTests } from "../../shell/useIsMobile";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
-import { resetActivityPanelStoreForTests } from "../../stores/activityPanel";
 import { resetConnectionStoreForTests } from "../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { resetNavigationStoreForTests } from "../../stores/navigation/store";
@@ -46,7 +45,6 @@ beforeEach(() => {
   resetTranscriptPagingForTests();
   resetAskDockStoreForTests();
   resetNavigationStoreForTests();
-  resetActivityPanelStoreForTests();
   resetActivitySidebarStoreForTests();
   resetMobileViewportForTests();
   resetFindRequestsForTests();
@@ -62,7 +60,6 @@ afterEach(() => {
   cleanup();
   resetPendingTurnsStoreForTests();
   resetAskDockStoreForTests();
-  resetActivityPanelStoreForTests();
   resetActivitySidebarStoreForTests();
   resetMobileViewportForTests();
   resetWorkspaceStoreForTests();

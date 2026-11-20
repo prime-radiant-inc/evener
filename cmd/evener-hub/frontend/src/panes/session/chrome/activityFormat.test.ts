@@ -6,7 +6,6 @@ import {
   isFailedStatus,
   jobStatusDisplay,
   jobStatusDotState,
-  quietAnchorMillis,
 } from "./activityFormat";
 
 test("Overview labels retain unknown activity instead of inventing a zero count", () => {
@@ -42,14 +41,6 @@ test("formatUsagePair renders arrows with compact counts", () => {
   expect(formatUsagePair({ inputTokens: 41200, outputTokens: 6100 })).toBe("↑41.2K ↓6.1K");
   expect(formatUsagePair({ inputTokens: 900, outputTokens: 12 })).toBe("↑900 ↓12");
   expect(formatUsagePair(undefined)).toBeNull();
-});
-
-test("quietAnchorMillis prefers lastOutputAt, falls back to startedAt", () => {
-  expect(quietAnchorMillis({ lastOutputAt: "2026-08-05T15:02:11Z", startedAt: "2026-08-05T15:00:00Z" })).toBe(
-    Date.parse("2026-08-05T15:02:11Z"),
-  );
-  expect(quietAnchorMillis({ startedAt: "2026-08-05T15:00:00Z" })).toBe(Date.parse("2026-08-05T15:00:00Z"));
-  expect(quietAnchorMillis({ startedAt: "not a date" })).toBe(0);
 });
 
 test("jobStatusDotState maps statuses onto StatusDot states", () => {

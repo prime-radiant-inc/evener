@@ -1,12 +1,12 @@
 // entityViews.tsx is the single source EntityRef resolves ids from: the entity
 // views available to it in this subtree. It is deliberately NOT part of
-// TranscriptRenderContext. The session chrome renders EntityRef too - in a
-// dense row's detail strip - and the chrome has no disclosure/config state to
-// fabricate, so it cannot wrap its rows in TranscriptRenderProvider. A context
-// that carries only the map keeps the chrome's owner (ActivityPanelBody) from
-// inventing transcript state, and it moves the map's invalidation off the
-// transcript render context: replacing the map now re-renders EntityRef
-// consumers alone, not every transcript row.
+// TranscriptRenderContext. Surfaces outside the transcript subtree read the
+// map too - the Overview activity sidebar's watch detail strip does - and they
+// have no disclosure/config state to fabricate, so they cannot wrap their
+// rows in TranscriptRenderProvider. A context that carries only the map keeps
+// those readers from inventing transcript state, and it moves the map's
+// invalidation off the transcript render context: replacing the map now
+// re-renders EntityRef consumers alone, not every transcript row.
 //
 // No provider means no map: EntityRef renders the id as plain text, exactly as
 // it did before any map reached it.
@@ -37,7 +37,7 @@ export function EntityViewsProvider({
 }
 
 /** Returns the entity views available here, or undefined when no provider owns
- * them (a direct render, or the chrome before ActivityPanelBody mounts). */
+ * them (a direct render, or a surface outside the transcript subtree). */
 export function useEntityViews(): ReadonlyMap<string, EntityView> | undefined {
   return useContext(EntityViewsContext);
 }
