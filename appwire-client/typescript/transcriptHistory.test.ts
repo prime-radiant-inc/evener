@@ -1199,7 +1199,11 @@ test("a read carrying a newer stamped wait retires the older wait's retry", () =
 
 // A read whose failure names no wait clears the held wait's whole record and
 // records the ended stamp from the wait it dropped, so a later buffered frame
-// or read that still captured the ended wait cannot restamp it.
+// or read that still captured the ended wait cannot restamp it. The wait's own
+// positive-delay chip retires with it even though the read still names the
+// retrying turn running: this read discovered the wait had ended before its
+// wake reached this client, so the chip is the ended wait's metadata, not the
+// retry's progress.
 test("a wait-free read clears the held stamped wait and records its ended stamp", () => {
   const deadline = Date.parse("2026-11-07T14:30:00Z");
   let model = testHydrate({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } });
@@ -1225,11 +1229,12 @@ test("a wait-free read clears the held stamped wait and records its ended stamp"
   );
   expect(model.quotaWaitStartedAt).toBe(4);
 
-  const resumed = testThread({ status: { type: "active" } });
+  const resumed = testThread({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } });
   const after = applyReadResponse(model, { thread: resumed }, 2000);
   expect(after.quotaResumesAt).toBeUndefined();
   expect(after.quotaWaitStartedAt).toBeUndefined();
   expect(after.quotaWaitEndedStamp).toBe(4);
+  expect(after.modelRetry).toBeUndefined();
 });
 
 // A read that captured the wait while it still stood must be refused by the
@@ -1376,14 +1381,16 @@ test("a wait-free read keeps an ordinary provider retry", () => {
   expect(after.modelRetry?.attempt).toBe(2);
 });
 
-// The wake's zero-delay chip is the retry's progress state, and it survives
-// the boundary as it always has — but it is also the last quota artifact on
-// the model once the wait is gone (the ended stamp records the wait's end).
-// A later authoritative read that names no wait retires that chip: the read
-// is the authority on presence, and a chip left over from an ended wait would
-// show stale retry progress with nothing behind it. An ordinary provider
-// retry's chip is not this reconciliation's to retire (the test above).
-test("a wait-free read retires the ended wait's leftover zero-delay chip", () => {
+// The wake's zero-delay chip is the retry's progress state, and a read that
+// still names that retrying turn running is not news about the call: the chip
+// stands (the test below). A read that names NO active turn — or another
+// turn, or one whose runtime changed — no longer names the retrying call
+// running, so the leftover chip is the ended wait's last artifact and the read
+// retires it: the read is the authority on presence, and a chip left over
+// from an ended wait would show stale retry progress with nothing behind it.
+// An ordinary provider retry's chip is not this reconciliation's to retire
+// (the test above).
+test("a wait-free read that no longer names the retrying turn retires the leftover zero-delay chip", () => {
   const deadline = Date.parse("2026-11-07T14:30:00Z");
   let model = testHydrate({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } });
   // The wait starts...
@@ -1433,11 +1440,81 @@ test("a wait-free read retires the ended wait's leftover zero-delay chip", () =>
   expect(model.modelRetry?.delayMs).toBe(0);
   expect(model.quotaWaitEndedStamp).toBe(4);
 
-  // The authoritative wait-free read retires the leftover chip.
+  // The wait-free read names no active turn, so it does not name the
+  // retrying call running: the leftover chip retires.
   const resumed = testThread({ status: { type: "active" } });
   const after = applyReadResponse(model, { thread: resumed }, 2000);
   expect(after.modelRetry).toBeUndefined();
   expect(after.quotaWaitEndedStamp).toBe(4);
+});
+
+// The wake's zero-delay chip is the retry's PROGRESS state, not the wait's own
+// metadata, so a read that lands while the resumed call is still in flight
+// (it still names the same turn running on the same runtime) is not news
+// about the call: the chip and its receipt instant survive. The status fold
+// draws the same line — reducer.ts's endedWaitChip retires only the chip's
+// positive delay.
+test("a wait-free read of the same running turn keeps the wake's zero-delay chip", () => {
+  const deadline = Date.parse("2026-11-07T14:30:00Z");
+  let model = testHydrate({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } });
+  // The wait starts...
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 0,
+        delayMs: 21_600_000,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 0,
+        waitStartedAt: 4,
+        resumesAt: deadline,
+      },
+    },
+    1500,
+  );
+  // ...and its wake clears the hold, leaving the progress chip and the ended
+  // stamp.
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 0,
+        delayMs: 0,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 0,
+        waitStartedAt: 4,
+      },
+    },
+    1600,
+  );
+  expect(model.quotaResumesAt).toBeUndefined();
+  expect(model.modelRetry?.delayMs).toBe(0);
+  expect(model.quotaWaitEndedStamp).toBe(4);
+
+  // The read lands mid-retry: the retrying call's turn is still the running
+  // one, so the read says nothing about the call.
+  const read = testThread({ status: { type: "active" }, evener: { activeTurnId: "turn_1" } });
+  const after = applyReadResponse(model, { thread: read }, 2000);
+
+  expect(after.modelRetry).toBeDefined();
+  expect(after.modelRetry?.delayMs).toBe(0);
+  expect(after.modelRetry?.attempt).toBe(1);
+  expect(after.modelRetry?.receivedAt).toBe(1600);
+  expect(after.quotaWaitStartedAt).toBeUndefined();
+  expect(after.quotaWaitEndedStamp).toBe(4);
+  expect(after.quotaResumesAt).toBeUndefined();
 });
 
 // The daemon's retired-input list is the only durable evidence that a canceled

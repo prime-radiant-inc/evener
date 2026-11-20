@@ -15,14 +15,22 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-func settledBoth(t *testing.T, frames string) []*llm.Response {
+// settledBothEvents settles one SSE body through the live decoder and the recorded
+// replay, returning the live events and both settled responses.
+func settledBothEvents(t *testing.T, frames string) ([]llm.StreamEvent, []*llm.Response) {
+	t.Helper()
 	body := []byte("data: " + strings.ReplaceAll(frames, "\n\n", "\n\ndata: ") + "\n\n")
-	_, live := responsesEventsFromSSE(t, string(body))
+	events, live := responsesEventsFromSSE(t, string(body))
 	recorded, err := ExtractRecordedResponse(body, "gpt-5.5") // both paths must settle the same body
 	if err != nil {
 		t.Fatal(err)
 	}
-	return []*llm.Response{live, &recorded}
+	return events, []*llm.Response{live, &recorded}
+}
+
+func settledBoth(t *testing.T, frames string) []*llm.Response {
+	_, responses := settledBothEvents(t, frames)
+	return responses
 }
 
 func summary(r *llm.Response) string {
@@ -217,6 +225,45 @@ func TestDisownedCallComparesCallIDFirst(t *testing.T) {
 	}
 }
 
+// A streamed call the provider named only by item ID carries that ID as a synthesized call_id.
+// When an incomplete terminal repeats the same item with the provider's real call_id, the item
+// ID still disowns the unfinished call; only a provider-issued call_id is compared as a call_id.
+func TestIncompleteTerminalDisownsCallNamedOnlyByItemID(t *testing.T) {
+	t.Parallel()
+	const nl = "\n\n"
+	frames := `{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_a","name":"probe"}}` + nl +
+		`{"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_a","arguments":"{}"}}` + nl +
+		`{"type":"response.output_text.delta","output_index":1,"delta":"answer"}` + nl +
+		`{"type":"response.incomplete","response":{"id":"r","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[{"type":"function_call","id":"fc_a","call_id":"call_real","name":"probe","arguments":"{}","status":"incomplete"}]}}`
+	for _, r := range settledBoth(t, frames) {
+		if calls := r.ToolCalls(); len(calls) != 0 {
+			t.Errorf("settled calls = %v, want the unfinished item-ID call disowned", calls)
+		}
+		if got := r.Text(); got != "answer" {
+			t.Errorf("settled text = %q, want the recovered answer", got)
+		}
+	}
+}
+
+// A call that opens by item ID and settles its real call_id at done keeps that issued id for
+// settlement, so an incomplete terminal for a different call on the same item ID cannot suppress it.
+func TestCompletedCallKeepsRealCallIDAgainstIncompleteSibling(t *testing.T) {
+	t.Parallel()
+	const nl = "\n\n"
+	frames := `{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_a","name":"probe"}}` + nl +
+		`{"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_a","call_id":"call_real","arguments":"{}"}}` + nl +
+		`{"type":"response.output_text.delta","output_index":1,"delta":"answer"}` + nl +
+		`{"type":"response.incomplete","response":{"id":"r","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[{"type":"function_call","id":"fc_a","call_id":"call_other","name":"other","arguments":"{}","status":"incomplete"}]}}`
+	for _, r := range settledBoth(t, frames) {
+		if calls := r.ToolCalls(); len(calls) != 1 || calls[0].ID != "fc_a" || string(calls[0].Arguments) != "{}" {
+			t.Errorf("settled calls = %v, want the completed item-ID call kept once", calls)
+		}
+		if got := r.Text(); got != "answer" {
+			t.Errorf("settled text = %q, want the recovered answer", got)
+		}
+	}
+}
+
 // A response-wide incomplete status cuts off no thought the stream already completed, and the native
 // parts still replay on the next request.
 func TestIncompleteResponseKeepsCompletedStreamedReasoning(t *testing.T) {
@@ -263,6 +310,22 @@ func TestRecoveredMessagesTakeTheirOwnPhase(t *testing.T) {
 	for _, r := range settledBoth(t, frames) {
 		if got := summary(r); got != "stop one|commentary two|final_answer" {
 			t.Errorf("settled = %q, want each message on its own phase", got)
+		}
+	}
+}
+
+// A terminal placeholder an explicit item ID already names is reserved before the ordinal
+// fallback runs, so an anonymous streamed message at that ordinal never claims its phase.
+func TestAnonymousMessageNeverClaimsIDMatchedPhase(t *testing.T) {
+	t.Parallel()
+	const nl = "\n\n"
+	frames := `{"type":"response.output_text.delta","output_index":0,"delta":"one"}` + nl +
+		`{"type":"response.output_item.added","output_index":1,"item":{"type":"message","id":"m2"}}` + nl +
+		`{"type":"response.output_text.delta","item_id":"m2","output_index":1,"delta":"two"}` + nl +
+		`{"type":"response.completed","response":{"status":"completed","output":[{"type":"message","id":"m2","phase":"final_answer","content":[{"type":"output_text","text":""}]}]}}`
+	for _, r := range settledBoth(t, frames) {
+		if got := summary(r); got != "stop one| two|final_answer" {
+			t.Errorf("settled = %q, want the anonymous message unphased and m2 on final_answer", got)
 		}
 	}
 }

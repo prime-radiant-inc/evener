@@ -284,8 +284,11 @@ func productionDial(cfg mcpconfig.ServerConfig, wrapper *sandbox.Wrapper) func(c
 func productionDialWithEnv(cfg mcpconfig.ServerConfig, wrapper *sandbox.Wrapper, environ func() []string) func(context.Context) (mcpsdk.Transport, error) {
 	return func(ctx context.Context) (mcpsdk.Transport, error) {
 		// MCP servers — stdio and remote (sse/http) alike — are trusted
-		// infrastructure: they are launched only from config layers the model
-		// cannot write, so net=off does not sever them (kata 83pm). Model-directed
+		// infrastructure, so net=off does not sever them (kata 83pm). That holds
+		// for config layers the model cannot write and for project servers the
+		// launch authorized; a project stdio server a sandboxed delegate admitted
+		// without authorization carries DenyNetworkException and is confined
+		// ordinarily instead (see confineCommandUnderSandbox). Model-directed
 		// egress (web_fetch/web_search) is unaffected and stays refused elsewhere.
 		t, err := transportForConfigWithEnv(cfg, environ)
 		if err != nil {
@@ -300,7 +303,7 @@ func productionDialWithEnv(cfg mcpconfig.ServerConfig, wrapper *sandbox.Wrapper,
 				if err := confirmSandboxForServer(ctx, wrapper); err != nil {
 					return nil, err
 				}
-				confineCommandUnderSandbox(ct.Command, cfg.Env, wrapper, environ)
+				confineCommandUnderSandbox(ct.Command, cfg, wrapper, environ)
 			}
 		}
 		return t, nil
@@ -332,31 +335,116 @@ const serverSandboxRecheckPause = time.Second
 
 // confineCommandUnderSandbox rewrites a stdio MCP server's *exec.Cmd so it runs
 // inside the session sandbox: the bwrap invocation is prepended to the argv, the
-// env is rebuilt with secret hygiene + the sandbox floor, and ExtraFiles is
-// emptied so the server inherits no evener fds beyond stdio.
+// launcher's environment is rebuilt with secret hygiene + the sandbox floor, the
+// server's configured cfg.Env is delivered to the CONFINED child alone, and
+// ExtraFiles is emptied so the server inherits no evener fds beyond stdio.
+//
+// cmd.Env is the environment of the SANDBOX LAUNCHER, not of the server. bwrap
+// and sandbox-exec are dynamically linked and read LD_PRELOAD, LD_LIBRARY_PATH,
+// DYLD_INSERT_LIBRARIES and the rest from their own environment before any
+// namespace, mount, or Seatbelt policy exists — and an MCP server's cfg.Env can
+// come from a config layer a repository writes. It therefore never joins
+// cmd.Env: the Confine*WithChildEnv methods apply it on the far side of the
+// confinement (bwrap --setenv, or /usr/bin/env after sandbox-exec's --), which
+// is the server's own loader environment and nothing else.
 //
 // The parent environment is scrubbed of credential-named vars (evener's own
-// provider key et al.) BEFORE the server's configured cfg.Env is layered on top,
-// so an ambient secret never reaches the confined server while an explicitly
-// configured cfg.Env var — even a secret-named one, which is deliberate server
-// configuration — survives. The floor (ssh-agent handle, cloud creds, TMPDIR,
-// cache redirect) is applied last.
-// environ must return the parent environment to scrub before cfgEnv is
-// applied. productionDial passes os.Environ; deterministic construction tests
-// pass a fixed slice.
-func confineCommandUnderSandbox(cmd *exec.Cmd, cfgEnv map[string]string, w *sandbox.Wrapper, environ func() []string) {
-	base := mergeEnvInto(sandbox.ScrubSecretEnv(environ()), cfgEnv)
+// provider key et al.), so an ambient secret never reaches the confined server,
+// while an explicitly configured cfg.Env var — even a secret-named one, which is
+// deliberate server configuration — still arrives through the child-env channel.
+// The floor (ssh-agent handle, cloud creds, TMPDIR, cache redirect) is applied to
+// the launcher env last, and the same base is what the child env layers over, so
+// the confined server's effective environment is unchanged by where the
+// assignments are applied.
+//
+// Which wrapper method applies is cfg.DenyNetworkException's question, and it is
+// the whole trusted-infrastructure decision:
+//
+//   - The default is ConfineTrustedInfraWithChildEnv: the server's config came
+//     from a layer the model cannot write (global, CLI, plugin) or from a project
+//     layer the launch authorized, so it is trusted infrastructure (kata 83pm)
+//     and keeps egress even at net=off.
+//   - A project server a sandboxed delegate admitted WITHOUT launch
+//     authorization (mcpconfig.DiscoverWithCLIOnlyAndEvidenceForProjectEnv) sets
+//     DenyNetworkException, and gets the ordinary confinement instead, so net=off
+//     severs its network while local tools keep working.
+//
+// Both methods wrap the argv and set cmd.Dir for Seatbelt the same way, so the
+// filesystem confinement, exec floor, fd hygiene, and child-env delivery are
+// identical either way. environ must return the parent environment to scrub.
+// productionDial passes os.Environ; deterministic construction tests pass a
+// fixed slice.
+func confineCommandUnderSandbox(cmd *exec.Cmd, cfg mcpconfig.ServerConfig, w *sandbox.Wrapper, environ func() []string) {
 	// The floor must judge npm's project config from the directory the server
 	// is confined to, not the session's launch dir.
 	workingDir := w.Policy().Git.WorktreeRoot
-	cmd.Env = sandbox.ApplyEnvFloorInDir(base, w.Policy(), w.SessionTmp(), workingDir)
-	// ConfineTrustedInfra wraps the argv and, for Seatbelt, sets cmd.Dir to the
-	// worktree so a macOS MCP server starts in the same directory a Linux
-	// (bwrap, via --chdir) one does — sandbox-exec has no chdir flag. Unlike
-	// Confine, it keeps network access under net=off: MCP servers are trusted
-	// infrastructure (kata 83pm), not model-directed egress.
-	w.ConfineTrustedInfra(cmd, workingDir)
+	scrubbed := sandbox.ScrubSecretEnv(environ())
+	// The launcher's environment holds only the scrubbed parent environment and
+	// the floor. cfg.Env never joins it (see the doc comment above).
+	launcherEnv := sandbox.ApplyEnvFloorInDir(scrubbed, w.Policy(), w.SessionTmp(), workingDir)
+	cmd.Env = launcherEnv
+	// The child's environment is cfg.Env as the FLOOR leaves it behind the
+	// confinement, so applying it there changes nothing the server observes: a
+	// floor-dropped credential (the ssh-agent handle) is still dropped from it,
+	// and a floor-redirected cache still carries the floor's value. It is
+	// expressed as the DELTA from the launcher's own environment because the two
+	// are not related by one: the floor derives assignments from the environment
+	// it judges, so a configured npm_config_userconfig can move npm_config_cache
+	// to a different scratch path, and it removes names a config supplied.
+	var childEnv sandbox.ChildEnvDelta
+	if len(cfg.Env) > 0 {
+		childEnv = floorChildEnv(launcherEnv, sandbox.ApplyEnvFloorInDir(
+			mergeEnvInto(scrubbed, cfg.Env), w.Policy(), w.SessionTmp(), workingDir))
+	}
+	// Confinement wraps the argv and, for Seatbelt, sets cmd.Dir to the worktree
+	// so a macOS MCP server starts in the same directory a Linux (bwrap, via
+	// --chdir) one does — sandbox-exec has no chdir flag.
+	if cfg.DenyNetworkException {
+		w.ConfineWithChildEnv(cmd, workingDir, childEnv)
+	} else {
+		w.ConfineTrustedInfraWithChildEnv(cmd, workingDir, childEnv)
+	}
 	cmd.ExtraFiles = nil
+}
+
+// floorChildEnv is the delta that turns the launcher's environment into the
+// environment the floor gives a server configured with cfg.Env: every name the
+// floored merge assigns differently from the floored base, plus every name the
+// merge REMOVES and the base still carries.
+//
+// The comparison is by NAME over both environments rather than over cfg.Env's
+// keys, because the floor does not merely pass names through. It derives some
+// from the environment it judges — a configured npm_config_userconfig moves
+// npm's effective cache, so the floor's npm_config_cache redirect lands at a
+// different scratch path — and those derived names are exactly the ones a
+// cfg.Env-keyed overlay dropped. A name whose floored value equals the
+// launcher's is not in the delta: the launcher already carries it, and bwrap
+// starts the child from the launcher's environment.
+func floorChildEnv(launcherEnv, flooredMerged []string) sandbox.ChildEnvDelta {
+	base, merged := envMap(launcherEnv), envMap(flooredMerged)
+	delta := sandbox.ChildEnvDelta{Set: map[string]string{}}
+	for name, value := range merged {
+		if b, present := base[name]; !present || b != value {
+			delta.Set[name] = value
+		}
+	}
+	for name := range base {
+		if _, present := merged[name]; !present {
+			delta.Unset = append(delta.Unset, name)
+		}
+	}
+	return delta
+}
+
+// envMap indexes env by name, last occurrence wins, matching exec.
+func envMap(env []string) map[string]string {
+	out := make(map[string]string, len(env))
+	for _, entry := range env {
+		if name, value, ok := strings.Cut(entry, "="); ok {
+			out[name] = value
+		}
+	}
+	return out
 }
 
 // ToolDefinitions returns namespaced tool definitions from servers whose

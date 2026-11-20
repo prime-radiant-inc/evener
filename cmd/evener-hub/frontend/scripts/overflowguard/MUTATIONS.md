@@ -299,3 +299,54 @@ details')[1].open !== false`, and the same at 1400px.
 and `"toggled":true`.
 
 **Verified:** 2026-11-16. **Expect:** fail.
+
+## Landscape phone folded row and single safe-area owner
+
+The real-composer fixture renders a 572px session pane inside a 951×669pt
+coarse-pointer landscape viewport with a 34px bottom safe area. That keeps the
+card at 524px, below PromptCard's 620px desktop folded threshold, while the
+shell uses its desktop edge footer. The assertions require compact folded
+controls, a shared field/control row, and only the ordinary 12px footer gap.
+Both resting and editor-focus states are measured: focus must restore Attach,
+the model picker, and the stacked two-line editor. The edge footer must reserve
+the 34px band, leaving the status chips 34px above the viewport bottom.
+
+**Mutation performed:** used the pre-fix conditions:
+`controlsCollapsed = isMobile && resting` in `Composer.tsx`, and the
+`.footerBeforeEdge { padding-bottom: var(--space-3) }` exemption only inside the
+`max-width: 899px` media block in `panescaffold.module.css`.
+
+**Result before restore:** FAIL:
+`951x669 Duo landscape composer safe-area=34 ... desktop bottom padding/gap=46/46px, expected unchanged 12px; the resting landscape phone did not compact its controls; folded field and controls remain stacked`.
+The card measured 125px tall, and the field/control centres were
+504.203125/547. This is the reported shape, not a fixture-only approximation.
+
+**Result after restore:** PASS:
+`951x669 Duo landscape composer safe-area=34 ... one folded row, footer gap=12px, card width=524px`.
+The existing phone safe-area/keyboard matrix and desktop 900/1400px footer
+cases remained green in both runs.
+
+**Command:** `node scripts/overflowguard/run.mjs --footer-only 951`.
+
+**Verified:** 2026-11-20. **Expect:** fail when either pre-fix condition is restored.
+
+The independent review then pointed out that the edge footer did not actually
+own the band and that the first version measured only the resting state. With
+the new assertions red, Chrome reported `edge footer safe-area padding=0px,
+expected 34px`, `status chips leave 0px below themselves, expected 34px`, and
+the focused state was exercised. Adding `.edgeFooter { padding-bottom:
+var(--dock-clearance) }` and PromptCard's existing `controlsTestId` hook turned
+the full matrix green: resting keeps one row and focus restores full controls,
+while both states keep the 12px composer gap and 34px status-chip clearance.
+
+The paired fine-pointer case uses the same 951×669 viewport and 572px pane with
+touch disabled. It requires the stacked controls and visible model picker. A
+mutation removing `(pointer: coarse) and (hover: none)` from
+`LANDSCAPE_PHONE_QUERY` failed with `a fine-pointer landscape desktop
+incorrectly compacted its controls`, `the fine-pointer resting row lost its
+model picker`, and `the fine-pointer folded field and controls did not stay
+stacked`. Restoring those conditions passed: `951x669 fine-pointer landscape
+composer safe-area=34 ... PASS - stacked controls and visible model, footer
+gap=12px, status clearance=34px`. The safe-area assertion reads the status bar's
+bottom edge and chip containment because smaller fine-pointer chips are centred
+in their 30px bar rather than filling its height.

@@ -393,12 +393,20 @@ async function measureComposerSend(cdpEndpoint, url, width) {
 // Keep the oracle outside window.measure(): read production DOM boxes and the
 // browser's actual env() value, not the footer's own padding formula. Only the
 // keyboard custom property is simulated, not an iOS Safari keyboard/viewport.
-async function measureComposerFooter(cdpEndpoint, url, width, safeAreaSupported) {
+async function measureComposerFooter(
+  cdpEndpoint,
+  url,
+  width,
+  safeAreaSupported,
+  { safeAreas: requestedSafeAreas, focusStates: requestedFocusStates, ...viewportOverrides } = {},
+) {
   const page = await connectOnlyPage(cdpEndpoint);
   const { send } = page;
-  const mobile = width < 900;
+  const viewport = { width, height: 900, ...viewportOverrides };
+  const mobile = viewport.width < 900;
+  if (viewport.mobile === undefined) viewport.mobile = mobile;
   try {
-    await applyViewport(send, { width, height: 900, mobile });
+    await applyViewport(send, viewport);
     await navigateTo(page, url, BOOT);
     await assertGuardOrigin(send, new URL(url).host);
     await evaluate(send, "window.settled");
@@ -407,10 +415,12 @@ async function measureComposerFooter(cdpEndpoint, url, width, safeAreaSupported)
     // textbox focus would set activeElement without matching :focus (and the
     // phone footer's focus rule would never apply in the measurement).
     await send("Emulation.setFocusEmulationEnabled", { enabled: true });
-    const viewportDiagnostic = diagnoseRealizedViewport({ width, height: 900 }, await realizedViewport(send));
+    const viewportDiagnostic = diagnoseRealizedViewport(viewport, await realizedViewport(send));
     if (viewportDiagnostic) throw new Error(viewportDiagnostic);
     const measurements = [];
-    for (const safeArea of mobile && safeAreaSupported ? [0, 34] : [0]) {
+    const safeAreas = requestedSafeAreas ?? (mobile && safeAreaSupported ? [0, 34] : [0]);
+    const focusStates = requestedFocusStates ?? (mobile ? ["none", "editor", "button"] : ["none"]);
+    for (const safeArea of safeAreas) {
       // Verified against this Chrome's /json/protocol: the required `insets`
       // parameter references SafeAreaInsets, whose optional bottom is integer.
       if (safeAreaSupported) await send("Emulation.setSafeAreaInsetsOverride", { insets: { bottom: safeArea } });
@@ -470,6 +480,8 @@ async function measureComposerFooter(cdpEndpoint, url, width, safeAreaSupported)
             return {
               safeArea: ${safeArea}, keyboard: ${keyboard}, actualSafeArea, focus,
               mobile: matchMedia('(max-width: 899px)').matches,
+              viewportWidth: window.innerWidth,
+              primaryTouch: matchMedia('(pointer: coarse) and (hover: none)').matches,
               paneBottom: pane?.getBoundingClientRect().bottom ?? null,
               cards: cards.length, footerBottom,
               lastBottom, gap: lastBottom === null || footerBottom === null ? null : footerBottom - lastBottom,
@@ -479,6 +491,7 @@ async function measureComposerFooter(cdpEndpoint, url, width, safeAreaSupported)
               paddingBottom: footer ? Number.parseFloat(getComputedStyle(footer).paddingBottom) : null,
               edgeFooterCount: pane?.querySelectorAll('[data-testid="pane-edge-footer"]').length ?? 0,
               edgeFooterBottom: edgeFooter?.getBoundingClientRect().bottom ?? null,
+              edgeFooterPaddingBottom: edgeFooter ? Number.parseFloat(getComputedStyle(edgeFooter).paddingBottom) : null,
               statusbarDisplay: statusbar ? getComputedStyle(statusbar).display : null,
               statusPaddingBottom: statusbar ? Number.parseFloat(getComputedStyle(statusbar).paddingBottom) : null,
               tapMin: statusbar ? Number.parseFloat(getComputedStyle(statusbar).getPropertyValue('--tap-min')) || 44 : null,
@@ -494,7 +507,9 @@ async function measureComposerFooter(cdpEndpoint, url, width, safeAreaSupported)
               // slot reserving width it cannot fill starves the field while
               // looking like a rendering quirk rather than a clipped control.
               card: rect(cards[0]),
+              foldedCompact: cards[0]?.getAttribute('data-folded-compact') === 'true',
               field: rect(form?.querySelector('[class*="field"]')),
+              controls: rect(cards[0]?.querySelector('[data-testid="composer-controls"]')),
               modelTrigger: modelTrigger
                 ? {
                     visible: visible(modelTrigger),
@@ -513,9 +528,10 @@ async function measureComposerFooter(cdpEndpoint, url, width, safeAreaSupported)
               metadataInEdgeFooter: Boolean(metadata?.closest('[data-testid="pane-edge-footer"]')),
             };
           };
-          return matchMedia('(max-width: 899px)').matches
-            ? [await measure("none"), await measure("editor"), await measure("button")]
-            : [await measure("none")];
+          const states = ${JSON.stringify(focusStates)};
+          const results = [];
+          for (const state of states) results.push(await measure(state));
+          return results;
         })()`,
           )),
         );
@@ -529,9 +545,9 @@ async function measureComposerFooter(cdpEndpoint, url, width, safeAreaSupported)
   }
 }
 
-function assertComposerFooter(measurement, width) {
+function assertComposerFooter(measurement) {
   const failures = [];
-  const mobile = width < 900;
+  const mobile = measurement.viewportWidth < 900;
   const requiredClearance = Math.max(0, measurement.safeArea - measurement.keyboard);
   if (measurement.mobile !== mobile) {
     failures.push("realized footer viewport mismatch");
@@ -578,6 +594,7 @@ function assertComposerFooter(measurement, width) {
           `resting field takes ${Math.round(fieldShare * 100)}% of the card (${JSON.stringify(measurement.field)} in ${JSON.stringify(measurement.card)})`,
         );
       }
+      failures.push(...assertCompactFoldedRow(measurement));
     }
     // The folded resting card is the phone's smallest surface: it shows no
     // activity line, and the counts come back with the expanded card.
@@ -638,6 +655,93 @@ function assertComposerFooter(measurement, width) {
       `desktop bottom padding/gap=${measurement.paddingBottom}/${measurement.gap}px, expected unchanged 12px`,
     );
   }
+  return failures;
+}
+
+function assertCompactFoldedRow(measurement) {
+  const failures = [];
+  if (!measurement.foldedCompact) failures.push("the resting phone did not compact its controls");
+  if (measurement.field === null || measurement.controls === null) {
+    failures.push("the folded field or control row is missing");
+  } else {
+    const fieldCenter = (measurement.field.top + measurement.field.bottom) / 2;
+    const controlsCenter = (measurement.controls.top + measurement.controls.bottom) / 2;
+    if (!nearlyEqual(fieldCenter, controlsCenter)) {
+      failures.push(
+        `folded field and controls remain stacked (centres ${fieldCenter}/${controlsCenter}, card ${JSON.stringify(measurement.card)})`,
+      );
+    }
+  }
+  return failures;
+}
+
+function assertDuoLandscapeComposer(measurement) {
+  const resting = measurement.focus !== "editor";
+  const failures = resting ? assertCompactFoldedRow(measurement) : [];
+  if (!measurement.primaryTouch) failures.push("the wide touch landscape fixture did not realize its primary touch pointer");
+  if (measurement.card === null || measurement.card.width >= 620) {
+    failures.push("the fixture no longer exercises a folded card below the desktop one-line threshold");
+  }
+  if (!resting) {
+    if (measurement.foldedCompact) failures.push("editor focus left the landscape phone controls compact");
+    if (!measurement.attachVisible) failures.push("editor focus did not restore Attach");
+    if (!measurement.modelTrigger?.visible) failures.push("editor focus did not restore the model picker");
+    if (measurement.editorMinLines !== "2lh") failures.push("editor focus did not restore the two-line field");
+    if (
+      measurement.field === null ||
+      measurement.controls === null ||
+      measurement.field.bottom > measurement.controls.top + GEOMETRY_TOLERANCE
+    ) {
+      failures.push("the engaged field and controls did not return to their stacked rows");
+    }
+  }
+  failures.push(...assertLandscapeEdgeFooter(measurement));
+  return failures;
+}
+
+function assertLandscapeEdgeFooter(measurement) {
+  const failures = [];
+  if (!nearlyEqual(measurement.edgeFooterPaddingBottom, measurement.safeArea)) {
+    failures.push(
+      `edge footer safe-area padding=${measurement.edgeFooterPaddingBottom}px, expected ${measurement.safeArea}px`,
+    );
+  }
+  if (measurement.statusChips.length === 0 || measurement.paneBottom === null || measurement.statusbar === null) {
+    failures.push("the landscape status bar, chips, or pane bottom are missing");
+  } else {
+    const statusbarClearance = measurement.paneBottom - measurement.statusbar.bottom;
+    if (!nearlyEqual(statusbarClearance, measurement.safeArea)) {
+      failures.push(`status bar leaves ${statusbarClearance}px below itself, expected ${measurement.safeArea}px`);
+    }
+    const highestChipTop = Math.min(...measurement.statusChips.map((chip) => chip.top));
+    const lowestChipBottom = Math.max(...measurement.statusChips.map((chip) => chip.bottom));
+    if (
+      highestChipTop < measurement.statusbar.top - GEOMETRY_TOLERANCE ||
+      lowestChipBottom > measurement.statusbar.bottom + GEOMETRY_TOLERANCE
+    ) {
+      failures.push("status chips escape the status bar's content box");
+    }
+  }
+  return failures;
+}
+
+function assertFinePointerLandscapeComposer(measurement) {
+  const failures = [];
+  if (measurement.primaryTouch) failures.push("the fine-pointer landscape fixture realized a touch pointer");
+  if (measurement.card === null || measurement.card.width >= 620) {
+    failures.push("the fine-pointer fixture no longer exercises a card below the desktop folded threshold");
+  }
+  if (measurement.foldedCompact) failures.push("a fine-pointer landscape desktop incorrectly compacted its controls");
+  if (!measurement.modelTrigger?.visible) failures.push("the fine-pointer resting row lost its model picker");
+  if (measurement.editorMinLines !== "1lh") failures.push("the fine-pointer folded field is not one line");
+  if (
+    measurement.field === null ||
+    measurement.controls === null ||
+    measurement.field.bottom > measurement.controls.top + GEOMETRY_TOLERANCE
+  ) {
+    failures.push("the fine-pointer folded field and controls did not stay stacked");
+  }
+  failures.push(...assertLandscapeEdgeFooter(measurement));
   return failures;
 }
 
@@ -1865,6 +1969,67 @@ async function main() {
         console.log(
           "composer footer ... LIMITATION - Chrome has no real safe-area override, nonzero safe-area cases skipped",
         );
+      const duoLandscapeMeasurements = await measureComposerFooter(
+        cdpEndpoint,
+        `http://127.0.0.1:${vitePort}/overflowharness.html?w=572&h=669`,
+        572,
+        safeAreaSupported,
+        {
+          width: 951,
+          height: 669,
+          mobile: true,
+          deviceScaleFactor: 3,
+          touch: true,
+          safeAreas: safeAreaSupported ? [34] : [0],
+          focusStates: ["none", "editor"],
+        },
+      );
+      for (const measurement of duoLandscapeMeasurements) {
+        const failures = [
+          ...assertComposerFooter(measurement),
+          ...assertDuoLandscapeComposer(measurement),
+        ];
+        const label = `951x669 Duo landscape composer safe-area=${measurement.safeArea} focus=${measurement.focus}`;
+        if (failures.length > 0) {
+          failed++;
+          console.log(`${label} ... FAIL - ${failures.join("; ")}; ${JSON.stringify(measurement)}`);
+        } else {
+          const shape = measurement.focus === "editor" ? "expanded editor and full controls" : "one folded row";
+          console.log(
+            `${label} ... PASS - ${shape}, footer gap=${measurement.gap}px, status clearance=${measurement.safeArea}px`,
+          );
+        }
+      }
+      const finePointerLandscapeMeasurements = await measureComposerFooter(
+        cdpEndpoint,
+        `http://127.0.0.1:${vitePort}/overflowharness.html?w=572&h=669`,
+        572,
+        safeAreaSupported,
+        {
+          width: 951,
+          height: 669,
+          mobile: false,
+          deviceScaleFactor: 3,
+          touch: false,
+          safeAreas: safeAreaSupported ? [34] : [0],
+          focusStates: ["none"],
+        },
+      );
+      for (const measurement of finePointerLandscapeMeasurements) {
+        const failures = [
+          ...assertComposerFooter(measurement),
+          ...assertFinePointerLandscapeComposer(measurement),
+        ];
+        const label = `951x669 fine-pointer landscape composer safe-area=${measurement.safeArea}`;
+        if (failures.length > 0) {
+          failed++;
+          console.log(`${label} ... FAIL - ${failures.join("; ")}; ${JSON.stringify(measurement)}`);
+        } else {
+          console.log(
+            `${label} ... PASS - stacked controls and visible model, footer gap=${measurement.gap}px, status clearance=${measurement.safeArea}px`,
+          );
+        }
+      }
       for (const width of [...new Set([320, 390, 430, 460, 540, 760, 899, 900, 1400, ...sweep])]) {
         const measurements = await measureComposerFooter(
           cdpEndpoint,
@@ -1873,7 +2038,7 @@ async function main() {
           safeAreaSupported,
         );
         for (const measurement of measurements) {
-          const failures = assertComposerFooter(measurement, width);
+          const failures = assertComposerFooter(measurement);
           const label = `${width}px composer footer safe-area=${measurement.safeArea} keyboard=${measurement.keyboard}${measurement.focus !== "none" ? ` ${measurement.focus}` : ""}`;
           if (failures.length > 0) {
             failed++;
