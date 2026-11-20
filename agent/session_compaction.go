@@ -674,6 +674,11 @@ func mergeFoldReplayTail(retained, pending []schema.Turn, concurrent map[uint64]
 // recovery) rather than one a user or agent requested: an identical
 // consecutive summary failure stays suppressed, like the pre-request pass,
 // instead of always publishing.
+//
+// Compaction is an auxiliary provider call made on an UNLEASED turn too, so its
+// input obeys THE RULE (see deferUnleasedWatchNotices): a still-pending watch
+// row must not ride into a summary any more than into a request, because the
+// summary is what later requests expand. Identity, not content, decides.
 func (s *Session) foldWithForceCompact(ctx context.Context, instructions string, captured *schema.SkillCompactionOperation, trigger compactionTrigger, automatic bool) (ok bool, refusal error) {
 	const maxAttempts = 2
 	for range maxAttempts {
@@ -683,6 +688,22 @@ func (s *Session) foldWithForceCompact(ctx context.Context, instructions string,
 		snapRevision := s.historyRevision
 		snapAppends := s.persistedAppendLogBase + len(s.persistedAppendLog)
 		s.mu.Unlock()
+
+		// snapLen is NOT recomputed from the filtered slice. It is the
+		// PUBLICATION MERGE BOUNDARY: publishFoldedHistory appends
+		// s.history[snapLen:] onto the folded result to carry turns that
+		// arrived concurrently. Lowering it to the filtered length makes every
+		// turn between the two look like a concurrent append, so the fold
+		// re-appends history that was already in the snapshot it folded --
+		// duplicated ordinary history, in exchange for withholding one notice.
+		// The filter applies to what the summarizer SEES; the boundary stays
+		// the length of the snapshot that was taken.
+		//
+		// The drop positions are kept because the turn-history boundary indexes
+		// the FILTERED projection this fold uses: a drop strictly before it
+		// moves it.
+		histCopy, droppedAt := s.dropUnleasedWatchAttentionTurns(ctx, histCopy)
+		filteredPreLen := len(histCopy)
 
 		compactionCtx, emitFn, commit, foldInjectedCount := s.stageCompactionEffects(ctx, &histCopy, trigger, instructions)
 		commit.captured = captured
@@ -695,8 +716,7 @@ func (s *Session) foldWithForceCompact(ctx context.Context, instructions string,
 		injected := foldInjectedCount()
 
 		ok, refused := s.publishFoldTransaction(snapLen, snapRevision, snapAppends, histCopy, commit, func(_ []schema.Turn, restoredAt []int) {
-			s.shrinkTurnHistoryBaseline(snapLen, postLen, injected)
-			s.growTurnHistoryBaseline(restoredAt)
+			s.rebaseTurnHistoryBaselineAfterFilteredFold(droppedAt, filteredPreLen, postLen, injected, restoredAt)
 		})
 		if ok {
 			return true, nil

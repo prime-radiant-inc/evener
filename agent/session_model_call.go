@@ -106,7 +106,50 @@ func effectiveReasoningEffort(cfg, override string, escalated bool) string {
 // It also returns the full-history message list a planned continuation delta was
 // cut from. That list is the round's, not the request's: the retry after a
 // rejected anchor rebuilds from it, and nothing on the wire ever carries it.
+
+// admitCompactionAuxiliaryCall re-asks the controller for the lease this turn
+// holds, immediately before an auxiliary provider call (the compaction note
+// elicitor or the summarizer) dispatches (LIFE-01, #2340).
+//
+// The lease is validated once at the start of preparation, but a Stop can record
+// its durable fence at any point after. The main request is protected by
+// BeginModelRequest at dispatch; these auxiliary calls have no such claim, so the
+// same admission is applied here or a Stop recorded between preparation and
+// compaction would still let a summarizer request out.
+//
+// A session with no controller, or a turn with no lease, is not this gate's
+// business: an unleased turn's provider calls are the ordinary non-delegate
+// path, and duplicating the lease check here would refuse maintenance work
+// that never reaches a provider.
+func (s *Session) admitCompactionAuxiliaryCall(ctx context.Context) error {
+	lease, ok := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
+	if !ok || s.delegateController == nil {
+		return nil
+	}
+	return s.delegateController.admitModelRequestLease(lease)
+}
+
 func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t *events.RoundTimings) (profile *provider.Profile, sys string, history []llm.Message, req llm.Request, fullHistory []llm.Message, reasoningEffort string, err error) {
+	// A lease's admission comes FIRST, before any phase that can reach a
+	// provider. This function is not only a request builder: the
+	// context-management phase below elicits a compaction note
+	// (maybeElicitNoteBeforeCompaction) and summarizes history inside
+	// ManageContext, both of which are provider calls. A check placed after
+	// those phases would refuse the round only after the turn had already
+	// spent one, which is the very thing it exists to prevent.
+	//
+	// A root session is not a delegate and has no generation to hold, so it
+	// keeps the ordinary path.
+	if _, leased := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); leased {
+		// A lease in context is not enough: it must still be the child's live
+		// generation, and no stop may be pending. The fold's provider calls are
+		// cancelled by the round's context, but a stop recorded between that
+		// cancellation check and compaction's own start would otherwise let a
+		// fenced turn spend a summarizer request.
+		if err := s.admitCompactionAuxiliaryCall(ctx); err != nil {
+			return nil, "", nil, llm.Request{}, nil, "", err
+		}
+	}
 	if err := s.flushPendingDelegateDeliveries(); err != nil {
 		return nil, "", nil, llm.Request{}, nil, "", err
 	}
@@ -312,12 +355,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			// in-flight boundary — an index into the projection — moves with
 			// each drop strictly before it, the same rule the resident drop
 			// applies to the baseline.
-			unfilteredInFlight := projection.inFlightFrom
-			for _, at := range droppedAt {
-				if at < unfilteredInFlight {
-					projection.inFlightFrom--
-				}
-			}
+			projection.inFlightFrom = shiftBoundaryForDrops(projection.inFlightFrom, droppedAt)
 		} else {
 			projection = s.delegateModelHistorySnapshotWithCoverage()
 		}
@@ -335,6 +373,34 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			return nil, "", nil, llm.Request{}, nil, "", claimErr
 		}
 	} else {
+		// THE RULE's other reach (LIFE-01, #2340): an unleased turn expands the
+		// resident history, and that history is where a deferred watch notice
+		// lives -- deferral IS an append. Holding the still-pending rows out by
+		// durable identity is what keeps the notice out of an unleased request
+		// AND out of its compaction input; a leased turn is the presentation the
+		// notice waits for and drops nothing here.
+		filtered, droppedAt := s.dropUnleasedWatchAttentionTurns(ctx, historyTurns)
+		if len(droppedAt) > 0 {
+			// presentedBoundary is NOT adjusted here, and that is load-bearing.
+			// It indexes the UNFILTERED resident history, which the skill-rebuild
+			// path windows off with `s.history[presentedBoundary:]` to find turns
+			// appended since this snapshot. Moving it down would make every
+			// dropped row look like a freshly appended turn, and the rebuild would
+			// re-append exactly the notice this drop just removed.
+			//
+			// scope.InFlightFrom is different: it indexes the projection this
+			// request expands, so a drop before it must shift it, the same rule
+			// the held-attention drop applies.
+			scope.InFlightFrom = shiftBoundaryForDrops(scope.InFlightFrom, droppedAt)
+			historyTurns = filtered
+			// Continuation planning rebuilds the request from the turns it is
+			// given, so it must see the same filtered projection this request
+			// expands -- otherwise the delta re-introduces the dropped row.
+			presentedTurns = filtered
+			// A projection that does not hold the whole resident history must not
+			// seed or continue from a stored anchor.
+			heldDropped = true
+		}
 		history = expandHistory(historyTurns, scope)
 	}
 
@@ -396,14 +462,32 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		// not the round snapshot (historyTurns): a leased delegate round
 		// projects the controller's later snapshot, which can already hold the
 		// turns that landed in between and would otherwise be appended again.
+		boundary := presentedBoundary
 		if len(s.history) > presentedBoundary {
 			appended = append(appended, s.history[presentedBoundary:]...)
+			// The boundary stays on the UNFILTERED length: it indexes resident
+			// history, and moving it down with the drop below would make every
+			// withheld row look like a fresh append on the next rebuild.
 			presentedBoundary = len(s.history)
 		}
 		historyTurns = append([]schema.Turn{}, s.history...)
 		s.mu.Unlock()
 		if len(appended) == 0 {
 			return false, nil
+		}
+		// The rebuild projects the resident history anew, so it obeys the same
+		// withholding rule as the request it replaces: a still-pending watch row
+		// that landed after this request's snapshot must not ride in through the
+		// appended tail. The re-snapshot and the tail are filtered in ONE pass so
+		// the projection and the planning copy below can never disagree about
+		// which rows are withheld, and the tail's boundary is moved into the
+		// filtered coordinates the same way the in-flight boundary is.
+		filtered, droppedAt := s.dropUnleasedWatchAttentionTurns(ctx, historyTurns)
+		if len(droppedAt) > 0 {
+			heldDropped = true
+			boundary = shiftBoundaryForDrops(boundary, droppedAt)
+			historyTurns = filtered
+			appended = filtered[boundary:]
 		}
 		// The appended turns land after the in-flight boundary and project
 		// as-is; append them rather than re-running the delegate claim.
@@ -526,11 +610,63 @@ func (s *Session) foldHistoryBeforeRequest(ctx context.Context, round, sysLen in
 			snapAppends := s.persistedAppendLogBase + len(s.persistedAppendLog)
 			s.mu.Unlock()
 
+			// Compaction is an auxiliary provider call made on an UNLEASED
+			// turn too, so its input obeys THE RULE as well (LIFE-01, #2340):
+			// a still-pending watch row must not ride into a summary any more
+			// than into the request, because the summary is what later requests
+			// expand. Identity, not content, decides.
+			//
+			// preManageLen is NOT recomputed from the filtered slice. It is the
+			// PUBLICATION MERGE BOUNDARY: publishFoldedHistory appends
+			// s.history[preManageLen:] onto the folded result to carry turns that
+			// arrived concurrently. Lowering it to the filtered length makes every
+			// turn between the two look like a concurrent append, so the fold
+			// re-appends history that was already in the snapshot it folded --
+			// duplicated ordinary history, in exchange for withholding one notice.
+			// The filter applies to what the summarizer SEES; the boundary stays
+			// the length of the snapshot that was taken.
+			//
+			// The drop positions are kept because the in-flight turn boundary
+			// indexes the FILTERED projection this fold and this request both
+			// use: a drop strictly before it moves it, the same rule the
+			// held-attention drop applies to its own positions.
+			historyTurns, filteredDroppedAt := s.dropUnleasedWatchAttentionTurns(ctx, historyTurns)
+			filteredPreLen := len(historyTurns)
+
+			// Auxiliary-call admission (LIFE-01, #2340). The lease was validated
+			// once at the top of preparation, but preparation is long: the
+			// elicitation below and the fold's summarizer are BOTH provider
+			// calls. A Stop that records its durable fence after that first check
+			// and before either of them would otherwise let an auxiliary request
+			// out, with BeginModelRequest rejecting only the main request
+			// afterwards. Re-asking here, at the dispatch boundary, is what makes
+			// a Stop between preparation and compaction actually prevent the
+			// auxiliary call. A live generation still compacts normally.
+			if err := s.admitCompactionAuxiliaryCall(ctx); err != nil {
+				// The fold is abandoned, not failed: no fold ran, so no boundary
+				// was published and the caller establishes its own from the
+				// current history exactly as it does when both attempts lose the
+				// race. The main request then meets the same fence at
+				// BeginModelRequest and refuses there.
+				return false
+			}
+
 			// Variant B (forced note): if a compaction is imminent, elicit +
 			// pin a must-keep note from the model BEFORE the fold, so
 			// erosion-prone facts are re-stamped verbatim rather than
 			// decaying through successive summaries.
 			s.maybeElicitNoteBeforeCompaction(ctx, historyTurns, sysLen)
+
+			// The elicitation above is itself a provider call, and it can take
+			// a while. A Stop that records its durable fence DURING it would
+			// otherwise let the summarizer below dispatch anyway: the check at
+			// the top of this attempt has already run, and BeginModelRequest
+			// only guards the round's main request. Re-asking here, at the
+			// summarizer's own dispatch boundary, is what makes that Stop count
+			// (LIFE-01, #2340).
+			if err := s.admitCompactionAuxiliaryCall(ctx); err != nil {
+				return false
+			}
 
 			// This per-request fold is the REQUESTING caller of the pending
 			// AUTOMATIC operation (the one this round's elicitation just
@@ -558,8 +694,7 @@ func (s *Session) foldHistoryBeforeRequest(ctx context.Context, round, sysLen in
 				if round == 0 {
 					s.turnHistoryBaseline = len(published)
 				} else {
-					s.shrinkTurnHistoryBaseline(preManageLen, managedLen, injectedTurns)
-					s.growTurnHistoryBaseline(restoredAt)
+					s.rebaseTurnHistoryBaselineAfterFilteredFold(filteredDroppedAt, filteredPreLen, managedLen, injectedTurns, restoredAt)
 				}
 				baselineSynced = true
 			})
@@ -625,6 +760,35 @@ func (s *Session) growTurnHistoryBaseline(restoredAt []int) {
 			s.turnHistoryBaseline++
 		}
 	}
+}
+
+// shiftBoundaryForDrops moves a boundary that indexes a projection down by the
+// number of dropped rows strictly before it, clamped at 0. Each drop shifts
+// every later turn one position left, so the boundary moves with each drop that
+// precedes it.
+func shiftBoundaryForDrops(boundary int, droppedAt []int) int {
+	shifted := boundary
+	for _, at := range droppedAt {
+		if at < boundary {
+			shifted--
+		}
+	}
+	if shifted < 0 {
+		shifted = 0
+	}
+	return shifted
+}
+
+// rebaseTurnHistoryBaselineAfterFilteredFold adjusts turnHistoryBaseline for a
+// fold that ran over a watch-filtered projection of resident history. The
+// boundary was captured against the unfiltered resident history, so withheld
+// rows before it are shifted out first, then the fold's own shrink (measured
+// against the filtered pre-fold length) and any restored attention rows are
+// applied. Callers must hold s.mu.
+func (s *Session) rebaseTurnHistoryBaselineAfterFilteredFold(droppedAt []int, filteredPreLen, postLen, injected int, restoredAt []int) {
+	s.turnHistoryBaseline = shiftBoundaryForDrops(s.turnHistoryBaseline, droppedAt)
+	s.shrinkTurnHistoryBaseline(filteredPreLen, postLen, injected)
+	s.growTurnHistoryBaseline(restoredAt)
 }
 
 // applyResponsesContinuationAnchorPlanning returns the request to dispatch and,
