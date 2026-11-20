@@ -970,6 +970,143 @@ func TestHubRelayDaemonGoneReachesARouteBoundWhileAnotherRouteIsServed(t *testin
 	awaitRelayResync(t, root.Notifications(), rootThreadID, rootRef, 5*time.Second)
 }
 
+// A departure retained for a route that is still binding must be served even
+// when the loop selects an ordinary notification before it can wake on the
+// route change that retention left pending. Refreshing the parked wake at
+// that point would replace the closed channel and lose the departure.
+func TestHubRelayDaemonGoneSurvivesAnOrdinaryDeliverySelectedFirst(t *testing.T) {
+	const (
+		rootThreadID  = "ordinary-selected-root"
+		childThreadID = "ordinary-selected-child"
+	)
+	rootRef := "local:" + rootThreadID
+	childRef := "local:" + childThreadID
+	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
+	defer cancel()
+
+	deliveries := make(chan appsource.RelayDelivery)
+	childReadEntered, releaseChildRead := make(chan struct{}), make(chan struct{})
+	lease := &scriptedRelaySessionLease{
+		readFunc: func(params appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+			if params.Ref == childRef {
+				close(childReadEntered)
+				<-releaseChildRead
+			}
+			ref, err := appwire.ParseRef(params.Ref)
+			if err != nil {
+				return appsource.RelayReadResult{}, err
+			}
+			return appsource.RelayReadResult{
+				Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+					ID: ref.ThreadID, Source: ref.SourceID,
+					Evener: appwire.EvenerThread{Ref: params.Ref},
+				}},
+				Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+			}, nil
+		},
+		deliveries: deliveries,
+	}
+	source := &relaySessionTestSource{
+		lease: lease,
+		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) {
+			return appwire.ParseRef(rootRef)
+		},
+	}
+
+	// Park the second accepted delivery, the ordinary one, before the loop
+	// refreshes the wake the retained departure is parked on.
+	acceptEntered, releaseAccept := make(chan struct{}), make(chan struct{})
+	var accepted atomic.Int32
+	acceptObservation := func() {
+		if accepted.Add(1) == 2 {
+			close(acceptEntered)
+			<-releaseAccept
+		}
+	}
+	t.Cleanup(installAtomicObserver(&observeHubRelayAcceptEntry, acceptObservation))
+
+	var relays *hubRelay
+	previousObserveRelay := observeHubRelay
+	observeHubRelay = func(r *hubRelay) { relays = r }
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	appServer := newHubAppServer(testWebConfig(t, hubcore.WebConfig{}), sources)
+	observeHubRelay = previousObserveRelay
+	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
+	defer hub.Close()
+	root := dialHubRPC(t, hub)
+	defer root.Close()
+	child := dialHubRPC(t, hub)
+	defer child.Close()
+	for _, client := range []*appwire.Client{root, child} {
+		mustInitializeHubClient(t, client)
+	}
+	if _, err := root.ThreadRead(ctx, appwire.ThreadReadParams{Ref: rootRef, Subscribe: true}); err != nil {
+		t.Fatalf("root ThreadRead: %v", err)
+	}
+	if relays == nil {
+		t.Fatal("hub relay was not observed")
+	}
+	awaitActivityRelayCondition(ctx, t, func() bool {
+		return relays.relayCommandCount(rootRef) == 0 && appServer.SubscriberCount(rootRef) == 1
+	}, "root route did not become live")
+
+	childRead := make(chan error, 1)
+	go func() {
+		_, err := child.ThreadRead(ctx, appwire.ThreadReadParams{Ref: childRef, Subscribe: true})
+		childRead <- err
+	}()
+	awaitActivityRelaySignal(ctx, t, childReadEntered, "child read did not enter")
+
+	// The departure reaches the live root route and is retained for the
+	// child's read in flight.
+	acknowledged := make(chan struct{})
+	var acknowledgedOnce sync.Once
+	deliveries <- appsource.RelayDelivery{
+		Notification: appsource.DaemonGoneResync(),
+		DaemonGone:   true,
+		Acknowledge:  func() { acknowledgedOnce.Do(func() { close(acknowledged) }) },
+		Proceed:      func() {},
+	}
+	awaitRelayResync(t, root.Notifications(), rootThreadID, rootRef, 5*time.Second)
+	awaitActivityRelaySignal(ctx, t, acknowledged, "the retained departure was not acknowledged")
+
+	// The only ready select case is this ordinary delivery: the wake the
+	// departure is parked on stays open until the child binds.
+	ordinaryAcknowledged := make(chan struct{})
+	ordinaryParams := testRawJSON(t, appwire.OverlayDeltaParams{
+		Ref: rootRef, ThreadID: rootThreadID, Delta: "ordinary",
+	})
+	go func() {
+		deliveries <- appsource.RelayDelivery{
+			Notification: appwire.Notification{
+				Method: appwire.NotifyOverlayDelta,
+				Params: ordinaryParams,
+			},
+			Acknowledge: func() { close(ordinaryAcknowledged) },
+		}
+	}()
+	awaitActivityRelaySignal(ctx, t, acceptEntered, "the ordinary delivery was not accepted")
+
+	// Bind and release the child route while the ordinary delivery is
+	// parked, so the wake the departure is parked on closes before the loop
+	// could refresh it.
+	close(releaseChildRead)
+	if err := <-childRead; err != nil {
+		t.Fatalf("child ThreadRead: %v", err)
+	}
+	awaitActivityRelayCondition(ctx, t, func() bool {
+		return relays.relayCommandCount(childRef) == 0 && appServer.SubscriberCount(childRef) == 1
+	}, "child route did not become live and released")
+	close(releaseAccept)
+
+	awaitRelayResync(t, child.Notifications(), childThreadID, childRef, 5*time.Second)
+	if got := <-root.Notifications(); got.Method != appwire.NotifyOverlayDelta {
+		t.Fatalf("root notification method = %q, want %q", got.Method, appwire.NotifyOverlayDelta)
+	}
+	awaitActivityRelaySignal(ctx, t, ordinaryAcknowledged, "the ordinary delivery was not acknowledged")
+}
+
 // A hub built without a roster has no local daemons to list, and says so: it
 // registers no local source, so a local ref is refused as "source not found"
 // rather than resolved against a source that quietly lists nothing.

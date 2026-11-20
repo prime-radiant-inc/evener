@@ -339,7 +339,17 @@ func (r *hubRelay) startAcknowledgedFanout(
 			return false
 		}
 		acceptDelivery := func(delivery appsource.RelayDelivery) {
-			captureRouteChange()
+			// Test-only: observe the entry before the wake is refreshed.
+			if observe := observeHubRelayAcceptEntry.Load(); observe != nil {
+				(*observe)()
+			}
+			// A capture taken while a delivery is pending would replace the
+			// closed channel that proves its snapshot is stale, and the loop
+			// would park on the fresh channel with nothing left to wake it.
+			// The pass such a change already woke serves the retained delivery.
+			if len(pendingDeliveries) == 0 {
+				captureRouteChange()
+			}
 			if delivery.DaemonGone {
 				// Acknowledged as soon as every subscribed route has it: the
 				// relay session needs the acknowledgement only to release the

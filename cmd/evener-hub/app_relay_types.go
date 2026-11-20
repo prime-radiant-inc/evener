@@ -379,6 +379,11 @@ var observeHubRelayPendingBackpressure atomic.Pointer[func()]
 var observeHubRelayRoutePublication atomic.Pointer[func()]
 var observeHubRelayDeliveryRead atomic.Pointer[func(string)]
 
+// observeHubRelayAcceptEntry runs at the start of acceptDelivery, before the
+// loop refreshes the wake it parks on, so a test can select an ordinary
+// delivery while a departure is still retained. Production leaves it nil.
+var observeHubRelayAcceptEntry atomic.Pointer[func()]
+
 // threadRelayTarget resolves the relay key (source.ID()+":"+threadID) and the
 // bare threadID for a read-shaped request. This is the delivery routing
 // identity, not the canonical session identity used to cancel pending reads.
