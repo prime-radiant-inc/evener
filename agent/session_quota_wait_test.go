@@ -1,9 +1,11 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -11,6 +13,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/spf13/afero"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
@@ -1609,6 +1613,108 @@ func TestQuotaWaitStampDurableBeforeAnnouncement(t *testing.T) {
 	recoverProvider(adapter)
 	reachReset(clk)
 	run.awaitEnd(t, trip, "the call resumes at the reset")
+}
+
+// gatedMetaFS blocks the first session-metadata write whose payload carries a
+// wait stamp, so a test can sample what a read serves while that save is still
+// in flight.
+type gatedMetaFS struct {
+	afero.Fs
+	entered chan struct{}
+	release chan struct{}
+	block   sync.Once
+}
+
+func (g *gatedMetaFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	f, err := g.Fs.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return &gatedMetaFile{File: f, gate: g}, nil
+}
+
+type gatedMetaFile struct {
+	afero.File
+	gate *gatedMetaFS
+}
+
+func (f *gatedMetaFile) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte(`"quota_wait_stamps"`)) {
+		f.gate.block.Do(func() {
+			close(f.gate.entered)
+			<-f.gate.release
+		})
+	}
+	return f.File.Write(p)
+}
+
+// A read or an event bridge can sample the session while its wait's stamp is
+// being saved. The wait must not be published until the minted stamp is
+// durable: a read that served the wait before the write committed would hand a
+// pane a stamp that a process death could let the next runtime mint again.
+func TestQuotaWaitIsNotVisibleBeforeItsStampIsSaved(t *testing.T) {
+	s, clk, _, adapter := newAttentionLivelockSession(t, usageLimitError(t, "openai", quotaResetAt))
+	var announcements quotaWaitAnnouncements
+	s.ConsumeEventsLossless(announcements.consume, func() {})
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	// Name the session up front: the background prompt namer otherwise runs a
+	// concurrent meta save, and this test's point is which write the gate holds.
+	if err := s.Rename("quota wait publish gate test"); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+	gate := &gatedMetaFS{Fs: afero.NewOsFs(), entered: make(chan struct{}), release: make(chan struct{})}
+	var releaseOnce sync.Once
+	closeRelease := func() { releaseOnce.Do(func() { close(gate.release) }) }
+	defer closeRelease()
+	s.cfg.testOnly.metaFS = gate
+
+	trip := tripwireCtx(t).Done()
+	run := startInput(context.Background(), s, "start the work", EntryUserInput)
+	testwait.Until(t, "the wait's metadata save begins", func() bool {
+		select {
+		case <-gate.entered:
+			return true
+		default:
+			return false
+		}
+	})
+
+	// Sample the summary the way a read does, while the write is blocked
+	// inside the save.
+	during := s.RestingFailure()
+	closeRelease()
+
+	testwait.Until(t, "the wait becomes visible after its stamp is saved", func() bool {
+		failure := s.RestingFailure()
+		return failure != nil && failure.WaitStartedAt != 0
+	})
+	visible := s.RestingFailure()
+	if during != nil && during.WaitStartedAt == visible.WaitStartedAt {
+		t.Fatalf("a read served the wait's stamp %d while its save was still in flight", during.WaitStartedAt)
+	}
+	meta, err := schema.LoadSessionMeta(s.stateDir, s.ID())
+	if err != nil {
+		t.Fatalf("LoadSessionMeta: %v", err)
+	}
+	if meta.QuotaWaitStamps != visible.WaitStartedAt {
+		t.Fatalf("persisted QuotaWaitStamps = %d, want the visible wait's %d", meta.QuotaWaitStamps, visible.WaitStartedAt)
+	}
+	announcements.awaitLen(t, 1)
+	started := announcements.snapshot()
+	if started[0].WaitStartedAt != visible.WaitStartedAt {
+		t.Fatalf("start announcement carries stamp %d, want the read summary's %d", started[0].WaitStartedAt, visible.WaitStartedAt)
+	}
+
+	// The wait proceeds: the retry goes out at the reset on the recovered
+	// provider.
+	recoverProvider(adapter)
+	reachReset(clk)
+	run.awaitEnd(t, trip, "the call resumes at the reset")
+	if got := streamCalls(adapter); got != 2 {
+		t.Fatalf("model calls = %d, want 2: the wait must retry once", got)
+	}
 }
 
 // The elapsed sample is the RETRY GROUP's time, not the whole model-call

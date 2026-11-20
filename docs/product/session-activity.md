@@ -133,10 +133,13 @@ delegate's own thread read serves the same stored wait across that window,
 clearing it only when the retry goes out or the turn ends, never on the
 deadline. A woken retry that meets the limit again starts a fresh wait in the
 same turn. The sequence that identifies waits is kept in session metadata
-beside the session's other carried counters, so a session restored behind a new
-runtime, or resumed after a daemon restart, issues stamps greater than any an
-open client already saw. The restart still interrupts the active wait; the
-summary clears with its turn.
+beside the session's other carried counters: the metadata carries the last wait
+stamp, so a cold-restored delegate's runtime continues the sequence instead of
+starting it over. The client does not rely on that yet. It keeps comparing
+stamps only within an issuing runtime — a changed instance id or boot generation
+voids the previous runtime's stamps — until the wire carries a continuity signal
+that a restored runtime continued the sequence. The restart still interrupts
+the active wait; the summary clears with its turn.
 
 Question resolution returns to working presentation while children run. Once
 the last running child settles, each client resumes its normal parent-state and

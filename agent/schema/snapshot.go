@@ -685,6 +685,13 @@ func writeSessionMetaLocked(fs afero.Fs, dir string, meta SessionMeta) error {
 	previous, err := loadSessionMetaFS(fs, dir, meta.ID)
 	if err == nil {
 		meta.ObservedBy = stableUnion(previous.ObservedBy, meta.ObservedBy)
+		// The wait-stamp counter is a high-water mark: a labeled fork's
+		// parent-meta write carries a snapshot loaded before the live session
+		// minted a later stamp, and rolling it back would let a restore reuse
+		// a stamp a pane already saw.
+		if previous.QuotaWaitStamps > meta.QuotaWaitStamps {
+			meta.QuotaWaitStamps = previous.QuotaWaitStamps
+		}
 		if previous.Revision == math.MaxUint64 {
 			return fmt.Errorf("session meta revision overflow for %s", meta.ID)
 		}

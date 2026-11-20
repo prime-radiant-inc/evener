@@ -137,20 +137,33 @@ func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model st
 	// wait is published, so whoever sees the session waiting sees a drive
 	// whose bound no longer runs.
 	drive.waitBegins()
-	// The stamp is minted in the publishing hold, so every wait the session
-	// issues compares greater than the one before it.
+	// The stamp is minted in this hold, so every wait the session issues
+	// compares greater than the one before it. It is not published here: the
+	// wait becomes visible only once the minted stamp is durable.
 	s.quotaWaitStamps++
 	wait.stamp = s.quotaWaitStamps
 	wait.failure.WaitStartedAt = wait.stamp
+	s.mu.Unlock()
+	defer drive.waitEnded()
+	// Save the minted stamp before the wait is visible to any read, so a
+	// process death mid-wait cannot remint a stamp a pane already saw. A failed
+	// write only degrades to the pre-persistence behavior for this wait.
+	s.maybeAutoSave()
+	s.mu.Lock()
+	if s.closingOrClosedLocked() {
+		s.mu.Unlock()
+		return false, nil
+	}
 	s.quotaWait = wait
 	// A wake that came while the request was in flight, a switch already
 	// picked, or a steer that arrived after the last steering drain began
-	// (and so may not be in this request) retries at once.
+	// (and so may not be in this request) retries at once. The checks run
+	// again in this publishing hold, so a wake or switch that arrived while
+	// the stamp was being saved is not lost between the holds.
 	if s.quotaWakes != wakesBefore || len(s.pendingModels) > 0 || s.steerArrivals != s.steerArrivalsDrained {
 		wait.wake <- struct{}{}
 	}
 	s.mu.Unlock()
-	defer drive.waitEnded()
 	end := sync.OnceFunc(func() {
 		s.mu.Lock()
 		if s.quotaWait == wait {
@@ -161,10 +174,6 @@ func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model st
 	defer end()
 
 	s.noteParentJobActivity(jobPhaseModelRetrying)
-	// Save the minted stamp before announcing it, so a process death mid-wait
-	// cannot remint a stamp a pane already saw. A failed write only degrades
-	// to the pre-persistence behavior for this wait.
-	s.maybeAutoSave()
 	s.emitQuotaRetry(callErr, model, resetAt.Sub(now), wait.stamp, resetAt.UnixMilli(), callElapsed, &wait.failure)
 	select {
 	case <-ctx.Done():
