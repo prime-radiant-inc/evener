@@ -7,7 +7,9 @@ import {
 	type SessionActivitySnapshot,
 	SessionActivityStore,
 	projectSessionActivity,
+	adoptableBootGeneration,
 	acquireThreadSubscription,
+	retiresBootGeneration,
 	type ThreadSubscriptionLease,
 } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../conversation/services/conversation";
@@ -36,6 +38,7 @@ export class SubagentTree {
 	private coordinatorModel: string | null = null;
 	private modelGeneration = 0;
 	private observedSessionID: string | null = null;
+	private followedBootGeneration: string | undefined;
 	private activityObservers = 0;
 	private stopActivity: (() => void)[] = [];
 	private snapshot: SubagentTreeSnapshot;
@@ -118,6 +121,27 @@ export class SubagentTree {
 		if (this.store && this.activityObservers > 0 && this.stopActivity.length === 0)
 			this.stopActivity = [this.store.observe("delegates"), this.store.observe("jobs")];
 	}
+	/** The follow read names the daemon serving the coordinator, and the store
+	 * must hold that identity: a rebooted coordinator retires the replaced
+	 * daemon's holds, and a row that keeps a retired generation's wait would
+	 * show one nothing can release.
+	 *
+	 * The remembered generation outlives the store, because a client swap
+	 * reuses the rows the retired store retained. A fresh store does not know
+	 * whose samples those rows wear, so it is told that first — ordering the
+	 * rows under the generation that published them — and only then the
+	 * replacement, which is what retires them. A read naming no generation (an
+	 * older peer) and one the tree has already moved past both change nothing. */
+	private adoptFollowedBootGeneration(bootGeneration: string | undefined): void {
+		const adopted = adoptableBootGeneration(bootGeneration);
+		if (adopted === undefined) return;
+		const previous = this.followedBootGeneration;
+		if (previous === adopted) return;
+		if (retiresBootGeneration(previous, adopted)) return;
+		if (previous !== undefined) this.store?.adoptBootGeneration(previous);
+		this.store?.adoptBootGeneration(adopted);
+		this.followedBootGeneration = adopted;
+	}
 	async follow(): Promise<void> {
 		const client = this.client;
 		const modelGeneration = this.modelGeneration;
@@ -130,6 +154,7 @@ export class SubagentTree {
 				modelGeneration === this.modelGeneration &&
 				(!this.observedSessionID || response.thread.id === this.observedSessionID)
 			) {
+				this.adoptFollowedBootGeneration(response.bootGeneration);
 				this.coordinatorModel = response.thread.modelProvider || null;
 				this.publish();
 			}

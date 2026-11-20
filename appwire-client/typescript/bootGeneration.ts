@@ -8,6 +8,12 @@
  * with no daemon running for the session (appwire.DaemonlessBootGeneration). */
 export const DAEMONLESS_BOOT_GENERATION = "daemonless";
 
+/** The boot generation the hub stamps on a failed read that never established
+ * who serves the thread (appwire.UnknownOwnerBootGeneration). It is not a
+ * claim that no daemon runs, and it is no counter: it names no owner, so it
+ * adopts no source and retires nothing a source published. */
+export const UNKNOWN_OWNER_BOOT_GENERATION = "unknown-owner";
+
 /**
  * What a client does with a read response or history update, given the boot
  * generation it holds for the thread:
@@ -25,15 +31,47 @@ export type BootGenerationAction = "apply" | "ignore" | "replace";
  * "<n>@<rootSessionID>" (a descendant served by its root's daemon) or
  * "daemonless". Two tokens compare numerically only when both are counters of
  * the same owner; anything else that differs replaces.
+ *
+ * `undefined` is a token an older peer omitted: nothing was said about
+ * identity, which is the same nothing-held an empty string spells.
  */
-export function compareBootGeneration(held: string, incoming: string): BootGenerationAction {
-  if (held === incoming) return "apply";
-  const heldCounter = parseBootGeneration(held);
-  const incomingCounter = parseBootGeneration(incoming);
+export function compareBootGeneration(held: string | undefined, incoming: string | undefined): BootGenerationAction {
+  const heldToken = held ?? "";
+  const incomingToken = incoming ?? "";
+  if (heldToken === incomingToken) return "apply";
+  const heldCounter = parseBootGeneration(heldToken);
+  const incomingCounter = parseBootGeneration(incomingToken);
   if (!heldCounter || !incomingCounter || heldCounter.owner !== incomingCounter.owner) return "replace";
   if (incomingCounter.counter < heldCounter.counter) return "ignore";
   if (incomingCounter.counter === heldCounter.counter) return "apply";
   return "replace";
+}
+
+/**
+ * The generation a wire token lets a client adopt, or undefined when it names
+ * none. A peer too old to stamp the field omits it, sending nothing about
+ * identity; `unknown-owner` is the hub's explicit refusal to claim one. Neither
+ * may adopt a source, and neither may retire what one published.
+ */
+export function adoptableBootGeneration(token: string | undefined): string | undefined {
+  return token === undefined || token === "" || token === UNKNOWN_OWNER_BOOT_GENERATION ? undefined : token;
+}
+
+/**
+ * Whether adopting `adopted` retires a sample stamped `candidate`. Only a
+ * generation the adopted one ignores retires: a lower counter of the same
+ * owner, published by a daemon boot that owner has moved past. A sample from a
+ * different owner, or from a generation ahead of the adopted one, is kept, as
+ * is one whose publisher named no generation at all.
+ *
+ * A caller that holds no adopted generation retires nothing, so it can ask
+ * this of whatever it holds without guarding the question.
+ */
+export function retiresBootGeneration(adopted: string | undefined, candidate: string | undefined): boolean {
+  if (adopted === undefined) return false;
+  const stamp = adoptableBootGeneration(candidate);
+  if (stamp === undefined) return false;
+  return compareBootGeneration(adopted, stamp) === "ignore";
 }
 
 const MAX_UINT64 = (1n << 64n) - 1n;

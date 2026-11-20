@@ -779,6 +779,18 @@ export interface EvenerDelegateInfo {
 export interface EvenerDelegateParams {
   threadId: string;
   ref: string;
+  /**
+   * BootGeneration is the serving daemon's boot generation for the thread
+   * this frame is addressed to, exactly as history/updated carries it: the
+   * counter for the root, "<n>@<rootSessionID>" for a descendant
+   * (DescendantBootGeneration). See CompareBootGeneration.
+   *
+   * Unlike history/updated's field this one is omitted when empty: a peer
+   * too old to stamp it, and a hub-synthesized frame (such as the relay's
+   * own notice), may not carry it at all. Absence therefore means "this
+   * frame says nothing about identity", never "the generation is empty".
+   */
+  bootGeneration?: string;
   delegate: EvenerDelegateInfo;
 }
 
@@ -3181,6 +3193,19 @@ export interface OverlayResetParams {
 export interface OverlayUpsertedParams {
   threadId: string;
   ref: string;
+  /**
+   * BootGeneration is the serving daemon's boot generation for this
+   * thread, exactly as history/updated carries it: the counter for the
+   * root, "<n>@<rootSessionID>" for a descendant
+   * (DescendantBootGeneration). See CompareBootGeneration.
+   *
+   * Unlike history/updated's field this one is omitted when empty: a peer
+   * too old to stamp it, and a hub-synthesized frame (such as the relay's
+   * own give-up notice), may not carry it at all. Absence therefore means
+   * "this frame says nothing about identity", never "the generation is
+   * empty".
+   */
+  bootGeneration?: string;
   item: OverlayItem;
 }
 

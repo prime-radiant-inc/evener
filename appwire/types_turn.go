@@ -523,9 +523,20 @@ const (
 // OverlayUpsertedParams is the payload of overlay/upserted: one overlay item
 // was created or replaced.
 type OverlayUpsertedParams struct {
-	ThreadID string      `json:"threadId"`
-	Ref      string      `json:"ref"`
-	Item     OverlayItem `json:"item"`
+	ThreadID string `json:"threadId"`
+	Ref      string `json:"ref"`
+	// BootGeneration is the serving daemon's boot generation for this
+	// thread, exactly as history/updated carries it: the counter for the
+	// root, "<n>@<rootSessionID>" for a descendant
+	// (DescendantBootGeneration). See CompareBootGeneration.
+	//
+	// Unlike history/updated's field this one is omitted when empty: a peer
+	// too old to stamp it, and a hub-synthesized frame (such as the relay's
+	// own give-up notice), may not carry it at all. Absence therefore means
+	// "this frame says nothing about identity", never "the generation is
+	// empty".
+	BootGeneration string      `json:"bootGeneration,omitempty"`
+	Item           OverlayItem `json:"item"`
 }
 
 // OverlayDeltaField selects which field of a targeted overlay item an

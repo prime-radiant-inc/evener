@@ -1148,6 +1148,7 @@ Underlying Go kind: `string` (no struct fields).
 |-------|---------|-----------|----------|
 | `threadId` | string |  |  |
 | `ref` | string |  |  |
+| `bootGeneration` | string | yes |  |
 | `delegate` | [appwire.EvenerDelegateInfo](#evenerdelegateinfo) |  |  |
 
 
@@ -3179,6 +3180,7 @@ Underlying Go kind: `string` (no struct fields).
 |-------|---------|-----------|----------|
 | `threadId` | string |  |  |
 | `ref` | string |  |  |
+| `bootGeneration` | string | yes |  |
 | `item` | [appwire.OverlayItem](#overlayitem) |  |  |
 
 

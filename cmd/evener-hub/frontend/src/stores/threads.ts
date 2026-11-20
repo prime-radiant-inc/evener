@@ -2,6 +2,7 @@ import {
   type ComposerMention,
   canWriteSharedNotes,
   isTurnError,
+  retiresBootGeneration,
   retryEligibility,
   TURN_CONTINUATION_TEXT,
 } from "@evener/appwire-client";
@@ -45,6 +46,7 @@ import {
   canonicalSkillNames,
   collectAuthoritativeMutationIds,
   compareBootGeneration,
+  ErrorTranscriptHistoryFailed,
   errorText,
   frontierFromCursor,
   historyFallback,
@@ -65,6 +67,7 @@ import {
   SHUT_DOWN_STATUSES,
   type ThreadSubscriptionLease,
   WireError,
+  wireRejectionPayload,
   wireThreadSubscriptions,
 } from "@evener/appwire-client";
 import {
@@ -157,6 +160,7 @@ import { trackProjectionWork } from "./projectionWork";
 import { createReadyGenerationCallback } from "./readyGenerationCallback";
 import { isRecoveryFenced, isResumeOnly, isSendResumes, type ResumeOnlySignals } from "./recoveryFence";
 import { createSecureUUID } from "./secureUUID";
+import { adoptSessionActivityBootGeneration } from "./sessionActivity";
 import { entryHistoryKey, type TranscriptResolvedIdentity } from "./sessionCacheSchema";
 import type { SessionEntryCache } from "./sessionEntryCache";
 import { ShardedMap, shardedMap } from "./shardedMap";
@@ -4379,6 +4383,37 @@ interface ThreadHydration {
 // asks), has no signal, and records a history failure on the watched model.
 type HydrationRead = { kind: "thread"; signal?: AbortSignal } | { kind: "watched"; includeTurns: boolean };
 
+// The source identity a frame or read establishes reaches this tab's activity
+// store for the ref: the store that holds a delegate row must
+// know whose daemon numbered its hold, or a replacement inherits a wait
+// nothing can release. A token naming no owner adopts nothing, so an older
+// peer's omission and the hub's `unknown-owner` refusal leave an established
+// source's hold standing.
+//
+// `heldBootGeneration` is what the ref's history already adopted. A token that
+// generation IGNORES is a departed daemon's late frame — the reducer discards
+// its content for the same reason — so it adopts nothing and retires nothing:
+// the live source's holds are not a stale frame's to clear.
+function adoptThreadSourceBootGeneration(
+  client: AppwireClientLike,
+  ref: string,
+  bootGeneration: string | undefined,
+  heldBootGeneration: string | undefined,
+): void {
+  if (retiresBootGeneration(heldBootGeneration, bootGeneration)) return;
+  adoptSessionActivityBootGeneration(client, ref, bootGeneration);
+}
+
+// A history-read rejection can attest the source that failed while naming no
+// snapshot: a forwarded hub error carries the generation it holds for the
+// thread. Reading the field is all this does — `adoptBootGeneration` decides
+// what a token means, so `unknown-owner` and an omission stay no-ops.
+function readErrorBootGeneration(err: unknown): string | undefined {
+  return wireRejectionPayload(err, ErrorTranscriptHistoryFailed, "bootGeneration", (value) =>
+    typeof value === "string" ? value : undefined,
+  );
+}
+
 async function readThreadHydration(
   client: AppwireClientLike,
   ref: string,
@@ -4446,6 +4481,12 @@ async function readThreadHydration(
     // this hydration's own base model (superseded generations are ignored by
     // applyHistoryReadFailure itself).
     if (isTranscriptHistoryFailedError(err) && pending.baseModel) {
+      adoptThreadSourceBootGeneration(
+        client,
+        ref,
+        readErrorBootGeneration(err),
+        pending.baseModel.history?.bootGeneration,
+      );
       const failedModel = applyHistoryReadFailure(pending.baseModel, errorText(err), pending.requestGeneration ?? 0);
       const entry = tracked ? existingEntryRoute(ref) : undefined;
       if (!tracked) {
@@ -4489,6 +4530,10 @@ async function readThreadHydration(
   // watched read never asked for history: its absent cursor is not a
   // source-named end of older history (#5585).
   const frontier = includeTurns ? frontierFromCursor(response) : "unknown";
+  // The read names the source that served it. Adopt it before any model this
+  // attempt builds can be published, so a replaced daemon's held rows leave in
+  // the same step the replacement's history lands.
+  adoptThreadSourceBootGeneration(client, ref, response.bootGeneration, pending.baseModel?.history?.bootGeneration);
   const model =
     !discardHeldHistory && pending.baseModel?.history !== undefined
       ? tracked
@@ -6871,6 +6916,19 @@ function handleNotification(n: AnyNotification): void {
   const previousThreads = threadsStore.getState().threads;
   if (route) {
     const refs = "ref" in route ? [route.ref] : [...(currentRefsByThreadId.get(route.threadId) ?? [])];
+    // A live frame stamps the generation its own publisher booted under. Every
+    // activity store this tab holds for the routed refs adopts it, and adopts
+    // nothing from a frame naming no owner (an older peer, or a hub-synthesized
+    // notice). Adoption precedes this frame's own fold: a replacement's first
+    // frame is what retires the daemon it replaced.
+    if (n.method === "evener/delegate/updated" || n.method === "history/updated" || n.method === "overlay/upserted") {
+      const stamped = (n.params as { bootGeneration?: string }).bootGeneration;
+      if (wiredClient) {
+        for (const ref of refs) {
+          adoptThreadSourceBootGeneration(wiredClient, ref, stamped, trackedThreadModel(ref)?.history?.bootGeneration);
+        }
+      }
+    }
     for (const ref of refs) {
       const fixture = entryTranscriptRoute(ref);
       if (fixture && threadsStore.getState().clearInFlight !== undefined && canonicalThreadOwnerActive(ref)) {

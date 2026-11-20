@@ -98,6 +98,7 @@ test("a buffered hold older than the release does not reinstate the wait", async
 
 // @vitest-environment node
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { UNKNOWN_OWNER_BOOT_GENERATION } from "./bootGeneration";
 import { WireError } from "./errors";
 import { MAX_INTENT_CODE_POINTS } from "./sessionActivity";
 import { type SessionActivitySnapshot, SessionActivityStore } from "./sessionActivityStore";
@@ -448,6 +449,13 @@ const frameInfo = (overrides: Partial<EvenerDelegateInfo> = {}): EvenerDelegateI
 const pushedFrame = (delegate: EvenerDelegateInfo): AnyNotification => ({
   method: "evener/delegate/updated",
   params: { threadId: "session", ref: activityRef, delegate },
+});
+
+// The same frame with the boot generation its publisher stamped on it: the
+// generation is the frame's, not the delegate row's.
+const pushedFrameFrom = (bootGeneration: string, delegate: EvenerDelegateInfo): AnyNotification => ({
+  method: "evener/delegate/updated",
+  params: { threadId: "session", ref: activityRef, bootGeneration, delegate },
 });
 
 // An eligible client: both the summary and delegates reads answer a live
@@ -3310,4 +3318,231 @@ test("a count-moving delegate change still refreshes the summary", async () => {
       callsTo(client, "evener/thread/activity/read") === beforeSummary + 1 && !store.getSnapshot().summaryState.loading,
   );
   expect(callsTo(client, "evener/thread/delegates/list")).toBe(beforeDelegates);
+});
+
+// --- Boot generation ---
+//
+// A replacement daemon numbers its hold samples from its own boot, so a
+// sequence the replaced daemon assigned can never order a sample the
+// replacement takes. The retired source's hold is retired with it: the
+// replacement's first unheld frame wins on its own merit, not by losing to a
+// larger number from a daemon that is gone.
+
+const BOOT_ONE = "1";
+const BOOT_TWO = "2";
+
+test("a replaced source's held row is retired, so the replacement's first unheld frame wins", async () => {
+  const client = pushClient();
+  const context = pushContext();
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context,
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [
+      delegateRow({
+        projectionRevision: 4,
+        drainHeldByJobs: true,
+        holdSequence: 98,
+        runningJobCount: 2,
+        oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
+      }),
+    ],
+  }));
+  const store = owner(client);
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.complete);
+  // The read that served the row was the replaced daemon's, and the store
+  // learns which daemon that was from the source it is replacing.
+  store.adoptBootGeneration(BOOT_ONE);
+  expect(store.getSnapshot().delegates.rows[0]?.holdSequence).toBe(98);
+
+  // The replacement boots and sends its first unheld sample: its own sequence
+  // restarts at 1, so the retired daemon's 98 must not out-rank it.
+  store.adoptBootGeneration(BOOT_TWO);
+  client.emitNotification(pushedFrameFrom(BOOT_TWO, frameInfo({ projectionRevision: 4, holdSequence: 1 })));
+  const row = store.getSnapshot().delegates.rows[0];
+  expect(row?.holdSequence).toBe(1);
+  expect(row?.drainHeldByJobs ?? false).toBe(false);
+  expect(row?.runningJobCount ?? 0).toBe(0);
+});
+
+test("a frame stamped by the replaced generation cannot re-hold the row after adoption", async () => {
+  const client = pushClient();
+  const store = owner(client);
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.complete);
+
+  store.adoptBootGeneration(BOOT_TWO);
+  // A late frame from the boot the store has left: it names a bigger hold than
+  // the replacement's own, and must be dropped rather than applied.
+  client.emitNotification(
+    pushedFrameFrom(
+      BOOT_ONE,
+      frameInfo({
+        projectionRevision: 4,
+        holdSequence: 98,
+        drainHeldByJobs: true,
+        runningJobCount: 2,
+        oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
+      }),
+    ),
+  );
+  const row = store.getSnapshot().delegates.rows[0];
+  expect(row?.holdSequence ?? 0).toBe(0);
+  expect(row?.drainHeldByJobs ?? false).toBe(false);
+});
+
+// A buffered frame carries its publisher's generation with it: an
+// identity no loaded row can take yet waits for a read to admit it, and by the
+// time that read lands the source may have been replaced. The buffered frame
+// from the replaced daemon must not settle onto a row, while one the
+// replacement stamped settles normally -- the two are separate identities, so
+// one buffer entry cannot stand in for both.
+test("a buffered frame from the replaced generation is dropped on adoption, and the replacement's is settled", async () => {
+  const client = pushClient();
+  const admit = deferred<void>();
+  const readStarted = deferred<void>();
+  const context = pushContext();
+  let served = 0;
+  client.on("evener/thread/delegates/list", async ({ scope }) => {
+    served += 1;
+    if (served > 1) {
+      readStarted.resolve();
+      await admit.promise;
+    }
+    return {
+      context,
+      scope: scope ?? "session",
+      page: { complete: true, issues: [] },
+      // Both identities are admitted only by the second response; the first
+      // response carries the row the store starts from, under another id.
+      delegates:
+        served > 1
+          ? [
+              delegateRow({ delegateId: "delegate-old", childRef: "remote:delegate-old", projectionRevision: 4 }),
+              delegateRow({ delegateId: "delegate-new", childRef: "remote:delegate-new", projectionRevision: 4 }),
+            ]
+          : [],
+    };
+  });
+  const store = owner(client);
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.complete);
+
+  // One frame per unknown identity, from two different daemons: the replaced
+  // one's hold, and the replacement's unheld sample. Both are buffered.
+  client.emitNotification(
+    pushedFrameFrom(
+      BOOT_ONE,
+      frameInfo({
+        delegateId: "delegate-old",
+        childRef: "remote:delegate-old",
+        // A higher revision than the read's row: without the attribution this
+        // frame would win the durable merge and paint the replaced daemon's
+        // state over the row the replacement just served.
+        projectionRevision: 9,
+        status: "failed",
+        phase: "failed",
+        holdSequence: 98,
+        drainHeldByJobs: true,
+        runningJobCount: 2,
+        oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
+      }),
+    ),
+  );
+  client.emitNotification(
+    pushedFrameFrom(
+      BOOT_TWO,
+      frameInfo({
+        delegateId: "delegate-new",
+        childRef: "remote:delegate-new",
+        projectionRevision: 4,
+        holdSequence: 1,
+      }),
+    ),
+  );
+
+  // The read that admits the rows lands after both frames buffered, and the
+  // store adopts the replacement before it does.
+  activityChanged(client, ["delegates"]);
+  await readStarted.promise;
+  store.adoptBootGeneration(BOOT_TWO);
+  admit.resolve();
+  await activityState(store, () => store.getSnapshot().delegates.rows.length === 2);
+  const rowOf = (delegateId: string) => store.getSnapshot().delegates.rows.find((row) => row.delegateId === delegateId);
+  // The replacement's frame settled on its own row...
+  expect(rowOf("delegate-new")?.holdSequence).toBe(1);
+  // ...while the replaced daemon's frame never landed at all: nothing it
+  // carried -- durable state or hold -- may reach a row the replacement serves.
+  expect(rowOf("delegate-old")?.status).toBe("completed");
+  expect(rowOf("delegate-old")?.holdSequence ?? 0).toBe(0);
+  expect(rowOf("delegate-old")?.drainHeldByJobs ?? false).toBe(false);
+});
+
+// An older peer stamps nothing on its frames, so the store must not read the
+// omission as identity: a frame with no generation keeps today's behavior, and
+// nothing it carries is dropped.
+test("a frame from a peer that omits bootGeneration degrades gracefully", async () => {
+  const client = pushClient();
+  const store = owner(client);
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.complete);
+
+  // Adoption of a real generation never retires an unstamped sample: the
+  // omission says nothing about which daemon published it.
+  store.adoptBootGeneration(BOOT_TWO);
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({
+        projectionRevision: 4,
+        holdSequence: 7,
+        drainHeldByJobs: true,
+        runningJobCount: 1,
+        oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
+      }),
+    ),
+  );
+  const row = store.getSnapshot().delegates.rows[0];
+  expect(row?.holdSequence).toBe(7);
+  expect(row?.drainHeldByJobs).toBe(true);
+});
+
+// unknown-owner is the hub's refusal to name a daemon, not a claim that the
+// daemon is gone: adopting it must not retire a live source's hold, because
+// the hold is the live daemon's own and nothing here proved it was replaced.
+test("unknown-owner does not retire a live source's hold", async () => {
+  const client = pushClient();
+  const context = pushContext();
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context,
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [
+      delegateRow({
+        projectionRevision: 4,
+        drainHeldByJobs: true,
+        holdSequence: 98,
+        runningJobCount: 2,
+        oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
+      }),
+    ],
+  }));
+  const store = owner(client);
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.complete);
+  store.adoptBootGeneration(BOOT_ONE);
+
+  store.adoptBootGeneration(UNKNOWN_OWNER_BOOT_GENERATION);
+  // The frame is the live daemon's own first unheld sample and would win on
+  // its own; what must not happen is the hold being dropped for a claim the
+  // hub did not make. A later held sample at a lower sequence still loses.
+  client.emitNotification(
+    pushedFrameFrom(
+      BOOT_ONE,
+      frameInfo({ projectionRevision: 4, holdSequence: 96, drainHeldByJobs: true, runningJobCount: 2 }),
+    ),
+  );
+  const row = store.getSnapshot().delegates.rows[0];
+  expect(row?.holdSequence).toBe(98);
+  expect(row?.drainHeldByJobs).toBe(true);
 });
