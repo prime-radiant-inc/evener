@@ -3,6 +3,7 @@ package transcriptindex
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
@@ -456,6 +457,66 @@ func TestFullReadSharesTheStampedFailureDiagnostic(t *testing.T) {
 	}
 	if indexed := turnOf(t, indexedCandidates(t, fx, -1), "turn_d1"); indexed.Status != appwire.TurnStatusFailed || indexed.Error == nil {
 		t.Fatalf("indexed turn_d1 = %s, want failed with the file's diagnostic", dump(indexed))
+	}
+}
+
+// A reopen is a status record in its own right: a turn the file reopened and
+// never completed again reports in progress, not the status of the run it
+// reopened.
+func TestFullReadReportsAReopenedTurnInProgress(t *testing.T) {
+	fx := newFormatFixture(t, "open and reclaimed")
+	fx.lines = []fixtureLine{
+		entryLine(opens("turn_r1", schema.TurnSpanExecution, user("start"))),
+		entryLine(inTurn("turn_r1", assistant(text("working")))),
+		entryLine(completion("turn_r1", schema.TurnFailed, 20, 700)),
+		entryLine(reopen("turn_r1")),
+	}
+	turns := fullReadTurns(t, fx)
+	var full *appwire.Turn
+	for i := range turns {
+		if turns[i].ID == "turn_r1" {
+			full = &turns[i]
+			break
+		}
+	}
+	if full == nil {
+		t.Fatalf("no turn_r1 in the full read: %s", dump(turns))
+	}
+	if full.Status != appwire.TurnStatusInProgress {
+		t.Fatalf("full read turn_r1 = %s, want inProgress", dump(*full))
+	}
+	if indexed := turnOf(t, indexedCandidates(t, fx, -1), "turn_r1"); indexed.Status != appwire.TurnStatusInProgress {
+		t.Fatalf("indexed turn_r1 = %s, want inProgress", dump(indexed))
+	}
+}
+
+// A compaction fold copy repeats an entry an original already supplied. The
+// replay must not re-fold a stale failure over the latest original one.
+func TestFullReadIgnoresAReplayedFailureCopy(t *testing.T) {
+	older := inTurn("turn_c1", standalone(schema.TurnFailure, "older failure"))
+	fx := newFormatFixture(t, "open and reclaimed")
+	fx.lines = []fixtureLine{
+		entryLine(opens("turn_c1", schema.TurnSpanExecution, user("start"))),
+		entryLine(inTurn("turn_c1", assistant(text("working")))),
+		entryLine(older),
+		entryLine(inTurn("turn_c1", standalone(schema.TurnFailure, "latest failure"))),
+		entryLine(completion("turn_c1", schema.TurnFailed, 20, 700)),
+		entryLine(foldCopy(older, 0)),
+	}
+	turns := fullReadTurns(t, fx)
+	indexed := turnOf(t, indexedCandidates(t, fx, -1), "turn_c1")
+	fragments := 0
+	for i := range turns {
+		if turns[i].ID != "turn_c1" {
+			continue
+		}
+		fragments++
+		if turns[i].Status != appwire.TurnStatusFailed || !reflect.DeepEqual(turns[i].Error, indexed.Error) {
+			t.Fatalf("full read turn_c1 fragment %d = %s, want the index's diagnostic %+v", i, dump(turns[i]), indexed.Error)
+		}
+	}
+	if fragments == 0 {
+		t.Fatalf("full read has no turn_c1: %s", dump(turns))
 	}
 }
 

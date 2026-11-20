@@ -228,7 +228,14 @@ func (a *logicalTurnAccumulator) appendEntry(entry schema.Turn, entryIndex int, 
 // in the same logical turn, so the healed-communicate echo check scopes
 // correctly on the full read (where per-entry IDs differ within a group).
 func appendProjectedEntry(acc *logicalTurnAccumulator, project EntryProjector, turn schema.Turn, entryIndex int) {
-	acc.foldStampedFailure(&turn)
+	if turn.OriginalOrdinal != nil {
+		// A compaction fold copy is model history for resume; its original
+		// already projects and already contributes its usage, so buffering the
+		// copy would double a turn's usage (and a session's derived total). It
+		// joins no group, matching the reference projector and the index, and
+		// it must not re-fold a status or failure the original already folded.
+		return
+	}
 	if turn.Kind.TranscriptOnly() {
 		// Written for the history projection phase 3 introduces. Today's
 		// projection passes over it as an item: it joins no group, closes
@@ -237,13 +244,7 @@ func appendProjectedEntry(acc *logicalTurnAccumulator, project EntryProjector, t
 		acc.foldStampedStatus(&turn)
 		return
 	}
-	if turn.OriginalOrdinal != nil {
-		// A compaction fold copy is model history for resume; its original
-		// already projects and already contributes its usage, so buffering the
-		// copy would double a turn's usage (and a session's derived total). It
-		// joins no group, matching the reference projector and the index.
-		return
-	}
+	acc.foldStampedFailure(&turn)
 	// Project under the id of the group appendEntry will buffer the entry
 	// into: the same grouping decision, made on a copy so appendEntry still
 	// places the entry itself. A steering opener takes its own group's id,
