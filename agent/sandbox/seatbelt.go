@@ -104,9 +104,10 @@ func SeatbeltPolicy(rp ResolvedPolicy, sessionTmp string, canon Canonicalizer) (
 	}
 	ps := &paramSet{canon: canon}
 
-	read := buildAllowRule("file-read*", readRootKeys(rp, sessionTmp, ps))
+	readKeys := readRootKeys(rp, sessionTmp, ps)
+	read := buildAllowRule("file-read*", readKeys)
 	write := buildAllowRule("file-write*", writeRootKeys(rp, sessionTmp, ps))
-	network := networkSection(rp)
+	network := networkSection(rp, readKeys)
 	denials := denySection(rp, ps)
 
 	sections := []string{seatbeltBasePolicy}
@@ -420,16 +421,36 @@ func buildAllowRule(action string, rootKeys []string) string {
 	return "(allow " + action + "\n  " + strings.Join(comps, "\n  ") + "\n)"
 }
 
-// networkSection is the network allow, appended only when egress is on. The
-// blanket outbound/inbound allows open the socket layer; the embedded network
-// policy adds the platform service lookups (DNS, SecurityServer, configd) a
-// process needs to resolve names and validate TLS. net=off returns "" — the
-// base's (deny default) then blocks all egress with no explicit deny.
-func networkSection(rp ResolvedPolicy) string {
+// networkSection is the network allow, appended only when egress is on.
+//
+// Restricted mode gets a closed outbound set instead of the blanket allow
+// (#4180): TCP/UDP, the mDNSResponder resolver socket, and a unix-socket grant
+// per read root (the params the file-read allow already defines, so no read-root
+// path text enters the policy). Read-only and workspace-write keep the blanket
+// allow byte-for-byte (#4224); the ruling is documented in docs/sandboxing.md.
+// net=off returns "" — the base's (deny default) then blocks all egress with no
+// explicit deny.
+func networkSection(rp ResolvedPolicy, readKeys []string) string {
 	if !rp.Network {
 		return ""
 	}
-	return "(allow network-outbound)\n(allow network-inbound)\n" + seatbeltNetworkPolicy
+	var out strings.Builder
+	if rp.Mode != ModeRestricted {
+		out.WriteString("(allow network-outbound)\n")
+	} else {
+		out.WriteString("(allow network-outbound\n  (remote tcp)\n  (remote udp)\n  (literal \"/private/var/run/mDNSResponder\"))\n")
+		// ReadAnywhere has no roots to name, and (subpath "/") would restore the
+		// blanket this branch exists to remove. Resolve never pairs it with
+		// restricted mode; a hand-built policy gets TCP/UDP and no unix grant.
+		if rp.Spawned.Read != ReadAnywhere {
+			for _, key := range readKeys {
+				out.WriteString("(allow network-outbound (remote unix-socket " + subpathParam(key) + "))\n")
+			}
+		}
+	}
+	out.WriteString("(allow network-inbound)\n")
+	out.WriteString(seatbeltNetworkPolicy)
+	return out.String()
 }
 
 // seatbeltArgs assembles the full sandbox-exec argv:

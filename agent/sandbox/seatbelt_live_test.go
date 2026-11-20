@@ -4,6 +4,7 @@ package sandbox
 
 import (
 	"errors"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -906,4 +907,151 @@ func TestSeatbeltLiveReadsEvenerContentThroughTheMask(t *testing.T) {
 			})
 		}
 	}
+}
+
+// liveUnixSentinel is what a live unix-socket listener writes to each accepted
+// connection.
+const liveUnixSentinel = "EVENER-UNIX-OK\n"
+
+// liveShortTempDir returns a canonical directory on a short path. AF_UNIX's
+// sun_path is 104 bytes on macOS and t.TempDir's test-name path does not fit it,
+// so the sockets in the network test live under /tmp.
+func liveShortTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "ev")
+	if err != nil {
+		t.Fatalf("MkdirTemp(/tmp): %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	canonical, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%q): %v", dir, err)
+	}
+	return canonical
+}
+
+// liveServeUnixSocket starts a unix listener at path that writes the sentinel to
+// every accepted connection and closes it.
+func liveServeUnixSocket(t *testing.T, path string) {
+	t.Helper()
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("net.Listen(unix, %q): %v", path, err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_, _ = conn.Write([]byte(liveUnixSentinel))
+			_ = conn.Close()
+		}
+	}()
+}
+
+// liveDNSProbe returns the hostname-resolution command to run and the output
+// marker a successful answer carries: dscacheutil when present, else nslookup.
+func liveDNSProbe(t *testing.T) (resolver string, args []string, marker string) {
+	t.Helper()
+	if _, err := os.Stat("/usr/bin/dscacheutil"); err == nil {
+		t.Logf("name resolution probe: /usr/bin/dscacheutil -q host -a name example.com")
+		return "/usr/bin/dscacheutil", []string{"-q", "host", "-a", "name", "example.com"}, "ip_address:"
+	}
+	if _, err := os.Stat("/usr/bin/nslookup"); err == nil {
+		t.Logf("name resolution probe: /usr/bin/nslookup example.com")
+		return "/usr/bin/nslookup", []string{"example.com"}, "Name:"
+	}
+	t.Skip("no /usr/bin/dscacheutil or /usr/bin/nslookup on this host")
+	return "", nil, ""
+}
+
+// TestSeatbeltLiveRestrictedNetworkUnixSockets proves #4180's ruling against the
+// real kernel, one case per subtest: restricted net=on connects to a unix socket
+// under a granted read root, denies one outside every granted root, and still
+// resolves hostnames (the mDNSResponder exception); workspace-write net=on keeps
+// the permissive socket policy; restricted net=off denies even the granted
+// socket. The sockets live in short /tmp directories because sun_path is 104
+// bytes and the materialized worktree's t.TempDir path does not fit — the granted
+// one is admitted as a read root via ExtraReadRoots.
+func TestSeatbeltLiveRestrictedNetworkUnixSockets(t *testing.T) {
+	requireLiveSeatbelt(t)
+	if _, err := os.Stat("/usr/bin/nc"); err != nil {
+		t.Skipf("live seatbelt test: /usr/bin/nc not available: %v", err)
+	}
+
+	grantedDir := liveShortTempDir(t)
+	ungrantedDir := liveShortTempDir(t)
+	grantedSocket := filepath.Join(grantedDir, "s")
+	ungrantedSocket := filepath.Join(ungrantedDir, "s")
+	liveServeUnixSocket(t, grantedSocket)
+	liveServeUnixSocket(t, ungrantedSocket)
+
+	grant := func(p *SandboxPolicy) { p.ExtraReadRoots = []string{grantedDir} }
+	connect := func(t *testing.T, rp ResolvedPolicy, cwd, socket string) (string, int) {
+		t.Helper()
+		return runUnderSeatbelt(t, rp, cwd, "/usr/bin/nc", "-U", socket)
+	}
+
+	t.Run("restricted granted read root connects", func(t *testing.T) {
+		rp, cwd := liveResolve(t, ModeRestricted, true, grant)
+		out, exit := connect(t, rp, cwd, grantedSocket)
+		if exit != 0 {
+			t.Fatalf("restricted net=on must allow a unix-socket connect under a granted read root (exit=%d):\n%s", exit, out)
+		}
+		if !strings.Contains(out, liveUnixSentinel) {
+			t.Errorf("the granted-root unix-socket connect must read the sentinel, got:\n%s", out)
+		}
+	})
+
+	t.Run("restricted ungranted socket denied", func(t *testing.T) {
+		rp, cwd := liveResolve(t, ModeRestricted, true, grant)
+		out, exit := connect(t, rp, cwd, ungrantedSocket)
+		if exit == 0 {
+			t.Errorf("restricted net=on must deny a unix-socket connect outside every granted read root, but nc exited 0:\n%s", out)
+		}
+		if strings.Contains(out, liveUnixSentinel) {
+			t.Errorf("the ungranted unix socket answered, so the connect was not denied:\n%s", out)
+		}
+		if !strings.Contains(strings.ToLower(out), "not permitted") {
+			t.Logf("denial message (shape not required): %s", strings.TrimSpace(out))
+		}
+	})
+
+	t.Run("restricted hostname resolution", func(t *testing.T) {
+		resolver, args, marker := liveDNSProbe(t)
+		baseline, err := exec.Command(resolver, args...).CombinedOutput() //nolint:gosec,noctx // baseline host probe
+		if err != nil || !strings.Contains(string(baseline), marker) {
+			t.Skipf("this host cannot resolve example.com outside the sandbox: %v (%s)", err, baseline)
+		}
+		rp, cwd := liveResolve(t, ModeRestricted, true, grant)
+		command := append([]string{resolver}, args...)
+		out, exit := runUnderSeatbelt(t, rp, cwd, command...)
+		if exit != 0 || !strings.Contains(out, marker) {
+			t.Errorf("restricted net=on must resolve hostnames through the mDNSResponder exception (exit=%d):\n%s", exit, out)
+		}
+	})
+
+	t.Run("workspace-write ungranted socket connects", func(t *testing.T) {
+		rp, cwd := liveResolve(t, ModeWorkspaceWrite, true)
+		out, exit := connect(t, rp, cwd, ungrantedSocket)
+		if exit != 0 {
+			t.Fatalf("workspace-write net=on must keep the permissive outbound policy (exit=%d):\n%s", exit, out)
+		}
+		if !strings.Contains(out, liveUnixSentinel) {
+			t.Errorf("workspace-write must read the ungranted socket's sentinel, got:\n%s", out)
+		}
+	})
+
+	t.Run("restricted net off granted socket denied", func(t *testing.T) {
+		rp, cwd := liveResolve(t, ModeRestricted, false, grant)
+		out, exit := connect(t, rp, cwd, grantedSocket)
+		if exit == 0 {
+			t.Errorf("restricted net=off must deny the granted-root unix-socket connect, but nc exited 0:\n%s", out)
+		}
+		if strings.Contains(out, liveUnixSentinel) {
+			t.Errorf("the granted unix socket answered under net=off:\n%s", out)
+		}
+	})
 }

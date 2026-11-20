@@ -201,8 +201,72 @@ func TestSeatbeltPlatformDefaultsGating(t *testing.T) {
 			t.Errorf("%v net=%v: platform-defaults present=%v, want %v", tc.mode, tc.net, got, tc.wantDefaults)
 		}
 		wantNet := tc.net
-		if got := strings.Contains(text, "(allow network-outbound)"); got != wantNet {
-			t.Errorf("%v net=%v: network allow present=%v, want %v", tc.mode, tc.net, got, wantNet)
+		// Restricted mode is the one mode that narrows outbound (#4180): it emits
+		// the closed TCP/UDP + mDNSResponder block instead of the bare allow.
+		wantBare := wantNet && tc.mode != ModeRestricted
+		if got := slices.Contains(strings.Split(text, "\n"), "(allow network-outbound)"); got != wantBare {
+			t.Errorf("%v net=%v: blanket network-outbound allow present=%v, want %v", tc.mode, tc.net, got, wantBare)
+		}
+		wantNarrowed := wantNet && tc.mode == ModeRestricted
+		if got := strings.Contains(text, "(allow network-outbound\n  (remote tcp)"); got != wantNarrowed {
+			t.Errorf("%v net=%v: narrowed network-outbound allow present=%v, want %v", tc.mode, tc.net, got, wantNarrowed)
+		}
+	}
+}
+
+// TestSeatbeltNetworkRestrictedNarrowsOutbound pins #4180: restricted mode with
+// egress on must not emit the blanket (allow network-outbound) that reaches every
+// AF_UNIX socket on the host (tmux, ssh-agent). It permits TCP/UDP, the
+// mDNSResponder resolver socket, and one unix-socket grant per granted read root.
+// Read-only and workspace-write keep the blanket allow byte-for-byte (the #4224
+// permissive-with-warnings posture).
+func TestSeatbeltNetworkRestrictedNarrowsOutbound(t *testing.T) {
+	t.Parallel()
+	const (
+		narrowed = "(allow network-outbound\n  (remote tcp)\n  (remote udp)\n  (literal \"/private/var/run/mDNSResponder\"))"
+		bare     = "(allow network-outbound)\n(allow network-inbound)\n"
+		unixLine = "(allow network-outbound (remote unix-socket "
+	)
+
+	rp, _ := seatbeltResolve(t, ModeRestricted, true, MainCheckout)
+	text, params := SeatbeltPolicy(rp, "/evener-session-tmp", identityCanon)
+
+	if !strings.Contains(text, narrowed) {
+		t.Errorf("restricted net=on must emit the narrowed outbound block:\nwant:\n%s\ngot:\n%s", narrowed, text)
+	}
+	if strings.Contains(text, bare) {
+		t.Errorf("restricted net=on must not emit the blanket outbound allow:\n%s", text)
+	}
+
+	var readRoots []string
+	for _, p := range params {
+		if strings.HasPrefix(p.Key, "READABLE_ROOT_") {
+			readRoots = append(readRoots, p.Key)
+		}
+	}
+	if len(readRoots) == 0 {
+		t.Fatal("restricted policy defines no readable roots, so the unix-socket grant would be vacuous")
+	}
+	for _, key := range readRoots {
+		want := unixLine + subpathParam(key) + "))"
+		if !slices.Contains(strings.Split(text, "\n"), want) {
+			t.Errorf("restricted net=on must grant unix sockets under %s; missing exact line %q", key, want)
+		}
+	}
+	if got := strings.Count(text, "(remote unix-socket"); got != len(readRoots) {
+		t.Errorf("restricted net=on emits %d (remote unix-socket) lines, want one per readable root (%d):\n%s", got, len(readRoots), text)
+	}
+
+	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite} {
+		rp, _ := seatbeltResolve(t, mode, true, MainCheckout)
+		text, _ := SeatbeltPolicy(rp, "/evener-session-tmp", identityCanon)
+		if !strings.Contains(text, bare) {
+			t.Errorf("%v net=on must keep the blanket outbound allow:\n%s", mode, text)
+		}
+		for _, unwanted := range []string{"remote tcp", "remote unix-socket"} {
+			if strings.Contains(text, unwanted) {
+				t.Errorf("%v net=on must keep its permissive outbound policy; found %q", mode, unwanted)
+			}
 		}
 	}
 }

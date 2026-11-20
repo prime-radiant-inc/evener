@@ -144,7 +144,20 @@
   (subpath (param "WRITABLE_ROOT_9"))
 )
 ; network
-(allow network-outbound)
+(allow network-outbound
+  (remote tcp)
+  (remote udp)
+  (literal "/private/var/run/mDNSResponder"))
+(allow network-outbound (remote unix-socket (subpath (param "READABLE_ROOT_0"))))
+(allow network-outbound (remote unix-socket (subpath (param "READABLE_ROOT_1"))))
+(allow network-outbound (remote unix-socket (subpath (param "READABLE_ROOT_2"))))
+(allow network-outbound (remote unix-socket (subpath (param "READABLE_ROOT_3"))))
+(allow network-outbound (remote unix-socket (subpath (param "READABLE_ROOT_4"))))
+(allow network-outbound (remote unix-socket (subpath (param "READABLE_ROOT_5"))))
+(allow network-outbound (remote unix-socket (subpath (param "READABLE_ROOT_6"))))
+(allow network-outbound (remote unix-socket (subpath (param "READABLE_ROOT_7"))))
+(allow network-outbound (remote unix-socket (subpath (param "READABLE_ROOT_8"))))
+(allow network-outbound (remote unix-socket (subpath (param "READABLE_ROOT_9"))))
 (allow network-inbound)
 ; Evener Seatbelt network policy. Appended (after the base) ONLY when the resolved
 ; network decision is on. net=off is the ABSENCE of this section — the base's
