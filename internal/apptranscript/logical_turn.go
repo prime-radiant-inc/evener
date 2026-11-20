@@ -473,13 +473,10 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 		// follows the header has an earlier fragment even when it is the only
 		// stamped run of its id.
 		if runs := visibleRuns[group.turnID]; group.stamped {
-			at := 0
-			for k, run := range runs {
-				if run == i {
-					at = k
-				}
-			}
-			visible, earlier := len(runs), at > 0
+			// The runs are in file order and this one emits items, so it is in
+			// runs: the first and last runs decide the two flags without
+			// scanning the list once per fragment.
+			visible, earlier := len(runs), i != runs[0]
 			if headerStandalone && group.turnID == appwire.SystemPreludeTurnID {
 				visible++
 				earlier = true
@@ -487,7 +484,7 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 			if visible > 1 {
 				turn.ItemsView = appwire.TurnItemsViewFragment
 				turn.HasEarlierItems = earlier
-				turn.HasLaterItems = at < len(runs)-1
+				turn.HasLaterItems = i != runs[len(runs)-1]
 			}
 		}
 		turns = append(turns, turn)
