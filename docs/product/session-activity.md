@@ -134,12 +134,15 @@ clearing it only when the retry goes out or the turn ends, never on the
 deadline. A woken retry that meets the limit again starts a fresh wait in the
 same turn. The sequence that identifies waits is kept in session metadata
 beside the session's other carried counters: the metadata carries the last wait
-stamp, so a cold-restored delegate's runtime continues the sequence instead of
-starting it over. The client does not rely on that yet. It keeps comparing
-stamps only within an issuing runtime — a changed instance id or boot generation
-voids the previous runtime's stamps — until the wire carries a continuity signal
-that a restored runtime continued the sequence. The restart still interrupts
-the active wait; the summary clears with its turn.
+stamp, so a cold-restored delegate's runtime, which keeps the same serving
+instance and boot generation, continues the sequence instead of starting it
+over, and the pane's held ended stamp admits the next wait as greater. A changed
+instance id or boot generation still voids the client's previous stamps, the
+compatibility rule for a daemon that restarts its numbering; dropping that rule
+needs a continuity signal on the wire. A failed metadata save publishes the wait
+unstamped rather than a stamp a restore could mint again, so the pane shows no
+wait from that stamp while the roster row still carries it. The restart still
+interrupts the active wait; the summary clears with its turn.
 
 Question resolution returns to working presentation while children run. Once
 the last running child settles, each client resumes its normal parent-state and

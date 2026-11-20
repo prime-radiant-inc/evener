@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -141,14 +142,21 @@ func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model st
 	// compares greater than the one before it. It is not published here: the
 	// wait becomes visible only once the minted stamp is durable.
 	s.quotaWaitStamps++
-	wait.stamp = s.quotaWaitStamps
-	wait.failure.WaitStartedAt = wait.stamp
+	stamp := s.quotaWaitStamps
 	s.mu.Unlock()
 	defer drive.waitEnded()
 	// Save the minted stamp before the wait is visible to any read, so a
 	// process death mid-wait cannot remint a stamp a pane already saw. A failed
-	// write only degrades to the pre-persistence behavior for this wait.
-	s.maybeAutoSave()
+	// write publishes the wait unstamped: the counter never reached disk, so a
+	// restore could mint this number again, and a pane must not be handed a
+	// stamp its next runtime can reuse. The wait, its timer and its wakes run
+	// the same either way.
+	if err := s.autoSaveMeta(); err != nil {
+		s.emit(events.WarningData{Message: fmt.Sprintf("auto-save failed: %v", err)})
+	} else {
+		wait.stamp = stamp
+		wait.failure.WaitStartedAt = stamp
+	}
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()

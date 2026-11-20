@@ -1717,6 +1717,78 @@ func TestQuotaWaitIsNotVisibleBeforeItsStampIsSaved(t *testing.T) {
 	}
 }
 
+// failingMetaFS fails the session-metadata write whose payload carries a wait
+// stamp, so a test can assert what the session publishes when the stamp never
+// reaches disk.
+type failingMetaFS struct {
+	afero.Fs
+	failed chan struct{}
+	once   sync.Once
+}
+
+func (f *failingMetaFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	file, err := f.Fs.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return &failingMetaFile{File: file, gate: f}, nil
+}
+
+type failingMetaFile struct {
+	afero.File
+	gate *failingMetaFS
+}
+
+func (f *failingMetaFile) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte(`"quota_wait_stamps"`)) {
+		f.gate.once.Do(func() { close(f.gate.failed) })
+		return 0, errors.New("injected metadata write failure")
+	}
+	return f.File.Write(p)
+}
+
+// A failed stamp save must not publish a stamp: the counter never reached disk,
+// so a restore can mint the same number again, and a pane that saw it would
+// reject the next runtime's wait. The wait itself still runs and still retries.
+func TestQuotaWaitPublishesUnstampedWhenItsStampCannotBeSaved(t *testing.T) {
+	s, clk, _, adapter := newAttentionLivelockSession(t, usageLimitError(t, "openai", quotaResetAt))
+	var announcements quotaWaitAnnouncements
+	s.ConsumeEventsLossless(announcements.consume, func() {})
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if err := s.Rename("quota wait save failure test"); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+	fail := &failingMetaFS{Fs: afero.NewOsFs(), failed: make(chan struct{})}
+	s.cfg.testOnly.metaFS = fail
+
+	trip := tripwireCtx(t).Done()
+	run := startInput(context.Background(), s, "start the work", EntryUserInput)
+	testwait.Until(t, "the wait's metadata write fails", func() bool {
+		select {
+		case <-fail.failed:
+			return true
+		default:
+			return false
+		}
+	})
+	testwait.Until(t, "the wait becomes visible", func() bool {
+		return s.RestingFailure() != nil
+	})
+	visible := s.RestingFailure()
+	if visible.WaitStartedAt != 0 {
+		t.Fatalf("published WaitStartedAt = %d after a failed save, want unstamped", visible.WaitStartedAt)
+	}
+
+	recoverProvider(adapter)
+	reachReset(clk)
+	run.awaitEnd(t, trip, "the call resumes at the reset")
+	if got := streamCalls(adapter); got != 2 {
+		t.Fatalf("model calls = %d, want 2: the wait must retry once", got)
+	}
+}
+
 // The elapsed sample is the RETRY GROUP's time, not the whole model-call
 // phase's: a primary model that fails over a fallback which then hits quota
 // must not bill the fallback's wait the primary's runtime. The primary here
