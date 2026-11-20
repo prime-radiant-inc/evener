@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"strconv"
 	"sync"
 	"time"
 
@@ -32,7 +33,8 @@ type quotaWait struct {
 	// failure is what the session's row says while the call waits: the
 	// usage limit, and when the call resumes by itself.
 	failure appwire.ThreadFailure
-	// stamp is the wait's identity (quotaWaitStamps at the wait's start):
+	// stamp is the wait's identity (the value nextQuotaWaitStampLocked
+	// mints):
 	// the same value on its start announcement, its zero-delay wake, and
 	// the failure summary a read serves. Strictly increasing per session,
 	// never a wall-clock instant, so a later wait of the same turn always
@@ -131,16 +133,18 @@ func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model st
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
-		return false, nil
+		return false, closingWaitError(ctx)
 	}
 	// A drive's slot is given back and its hung-turn bound paused before the
 	// wait is published, so whoever sees the session waiting sees a drive
 	// whose bound no longer runs.
 	drive.waitBegins()
-	// The stamp is minted in the publishing hold, so every wait the session
-	// issues compares greater than the one before it.
-	s.quotaWaitStamps++
-	wait.stamp = s.quotaWaitStamps
+	// The stamp is minted in this hold from the durable boot generation and
+	// this runtime's sequence, so it is safe to expose without a metadata
+	// write: a restore can only mint from a later generation's range, and no
+	// write can sit between the limit and a cancellation. Every wait this
+	// runtime issues still compares greater than the one before it.
+	wait.stamp = s.nextQuotaWaitStampLocked()
 	wait.failure.WaitStartedAt = wait.stamp
 	s.quotaWait = wait
 	// A wake that came while the request was in flight, a switch already
@@ -194,6 +198,61 @@ func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model st
 	}
 	s.injectDrainedSteering()
 	return true, nil
+}
+
+// closingWaitError is the error a wait returns when the session closes under
+// it: the turn's own cancellation when it has one, so the round ends as an
+// ordinary stop rather than retaining the provider's quota error. A goal whose
+// turn ends on a cancellation can resume; one that ends on the quota error
+// cannot.
+func closingWaitError(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return context.Canceled
+}
+
+// A wait's stamp comes from a numeric range reserved to one runtime, keyed by
+// the session's durable boot generation: generation*quotaWaitRangeWidth plus a
+// sequence that rises with each wait the runtime issues. Restores mint a later
+// generation before serving input, so a restored session's first wait compares
+// greater than every wait the previous runtime issued, without any stamp being
+// written to session metadata.
+const (
+	// quotaWaitRangeWidth is the stamps one generation's range can issue. A
+	// runtime waits out at most one usage limit per model call, so the width
+	// is far beyond what one runtime can spend.
+	quotaWaitRangeWidth = 1_000_000_000
+	// maxExactStamp is the largest consecutive integer a JavaScript client
+	// represents exactly. A stamp stays within it so every client compares
+	// two stamps as numbers.
+	maxExactStamp = 1<<53 - 1
+)
+
+// nextQuotaWaitStampLocked mints the current wait's stamp and counts it. The
+// caller holds s.mu.
+//
+// Because the stamp is exposed to clients as soon as it is minted, no
+// metadata write may stand between the limit and the stamp: the boot
+// generation was minted durably once, before the runtime served input, and a
+// restore can only mint from a later generation's range. A session with no
+// installed generation (a test, or one that never mints) serves generation 1,
+// as does a token that does not parse. A generation above the exact range's
+// capacity saturates at the last generation that fits, so the stamp never
+// leaves the range a client compares; a session that many boots deep
+// (millions) would reuse that range and stop increasing across restores.
+func (s *Session) nextQuotaWaitStampLocked() uint64 {
+	generation := uint64(1)
+	if s.bootGeneration != "" {
+		if parsed, err := strconv.ParseUint(s.bootGeneration, 10, 64); err == nil && parsed > 0 {
+			generation = parsed
+		}
+	}
+	if limit := uint64((maxExactStamp - quotaWaitRangeWidth + 1) / quotaWaitRangeWidth); generation > limit {
+		generation = limit
+	}
+	s.quotaWaitStamps++
+	return generation*uint64(quotaWaitRangeWidth) + s.quotaWaitStamps
 }
 
 // applyModelSwitchPickedDuringWait applies a switch picked while the call
