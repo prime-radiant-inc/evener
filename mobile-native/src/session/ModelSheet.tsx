@@ -6,6 +6,7 @@
 // its controls through modelHosts.
 import {
 	type ModelDescriptor,
+	type ModelControlDisplay,
 	modelControlDisplay,
 	holdsUnappliedPick,
 	sessionEffortLevels,
@@ -30,6 +31,35 @@ import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { effortName, qualifiedModelIdentity } from "./sessionFacts";
 
 const NOTHING_UNREAD: Unread = { model: null, vision: null };
+
+/** The qualified "provider/model" the sheet's rows compare against.
+ *
+ * A ready snapshot's display target comes from the daemon, which names the
+ * provider instance in the target's own modelProvider field even when the
+ * pair is equal (snapshotProfile's rule in the shared client), so the identity
+ * joins from the explicit fields - and a pending target must join from its
+ * own, since the profile the projection keeps beside the raw fields belongs to
+ * the ACTIVE model, not the pick. Every other display - a saved read's single
+ * model field, a recovery's copy of one - keeps the profile-based rule: the id
+ * stands bare there, and the instance the read named beside it (modelProfile)
+ * is what qualifies it.
+ */
+function sheetModelIdentity(
+	session: Pick<MobileConversation, "modelControlState" | "modelProfile">,
+	target: ModelControlDisplay,
+): string {
+	if (
+		target.modelProvider !== target.model ||
+		(session.modelControlState.kind === "ready" && !target.modelProvider.includes("/"))
+	) {
+		return `${target.modelProvider}/${target.model}`;
+	}
+	return qualifiedModelIdentity({
+		modelProfile: session.modelProfile,
+		modelProvider: target.modelProvider,
+		model: target.model,
+	});
+}
 
 export interface ModelHost {
 	session: MobileConversation;
@@ -111,17 +141,11 @@ function ModelSheetBody({
 	// authoritative display target - the live snapshot's desired-or-active one,
 	// the connection's canonical display, or a recovery's last safe one - so
 	// the pending pick and the recovery keep their row while the raw fields
-	// would show the stale active model. A target whose two fields agree names
-	// a bare id, so the snapshot's provider instance (modelProfile) qualifies
-	// it: the id may carry a slash of its own (an OpenRouter row is
-	// "anthropic/claude-opus-5"), so the provider named beside the id is the
-	// only thing that says the identity is whole.
+	// would show the stale active model. sheetModelIdentity decides whether
+	// the target's explicit fields already name the instance or the id stands
+	// bare waiting for the profile.
 	const modelTarget = modelControlDisplay(session);
-	const current = vision
-		? session.visionModel
-		: modelTarget.modelProvider === modelTarget.model
-			? qualifiedModelIdentity({ ...session, modelProvider: modelTarget.modelProvider, model: modelTarget.model })
-			: `${modelTarget.modelProvider}/${modelTarget.model}`;
+	const current = vision ? session.visionModel : sheetModelIdentity(session, modelTarget);
 	const canChange = vision ? session.capabilities.changeVisionModel : session.capabilities.changeModel;
 	// The rows below decide "already set" by comparing against the session's
 	// projection, and that is only the answer once a read has landed after the

@@ -494,6 +494,66 @@ describe("choosing a model (spec 8.5)", () => {
 		},
 	);
 
+	// The bundled kimi-for-coding target's snapshot carries the instance name
+	// in both active fields (the shared snapshotProfile rule keeps the
+	// instance), so the sheet must check its row from the explicit fields - and
+	// a tap on the running row must not send a setter.
+	const KIMI_CATALOG: ModelListResponse = {
+		data: [{ provider: "kimi-for-coding", model: "kimi-for-coding", displayName: "Kimi for Coding" }],
+	};
+
+	it("checks the bundled target whose instance equals its id from the snapshot's equal fields", () => {
+		provide(conversation({ modelProvider: "kimi-for-coding", model: "kimi-for-coding" }), { catalog: KIMI_CATALOG });
+		const tree = sheet();
+		expect(pressable(tree, "Kimi for Coding")?.props.accessibilityState).toMatchObject({ selected: true });
+	});
+
+	it("closes without a write when the bundled equal-fields row is tapped", async () => {
+		const { calls, controls } = provide(conversation({ modelProvider: "kimi-for-coding", model: "kimi-for-coding" }), {
+			catalog: KIMI_CATALOG,
+		});
+		const tree = sheet();
+		act(() => pressable(tree, "Kimi for Coding")?.props.onPress());
+		await settle();
+		expect(controls.changeModel).not.toHaveBeenCalled();
+		expect(calls).toEqual(["goBack"]);
+	});
+
+	// A pending pick of the bundled target while another model runs: the
+	// projection's modelProfile still names the ACTIVE instance, so qualifying
+	// the pending target through it would check the wrong provider's row.
+	it("checks a pending pick of the bundled target over a different running model", () => {
+		provide(
+			conversation({
+				model: "claude-sonnet-5",
+				modelProvider: "anthropic",
+				modelProfile: "anthropic",
+				modelControlState: {
+					kind: "ready",
+					snapshot: {
+						authority: { instanceId: "instance-a", bootGeneration: "7" },
+						revision: 2,
+						active: {
+							modelProvider: "anthropic",
+							model: "claude-sonnet-5",
+							reasoningEffortLevels: ["low", "medium", "high"],
+							supportsReasoning: true,
+						},
+						desired: {
+							clientMutationId: "request-3",
+							modelProvider: "kimi-for-coding",
+							model: "kimi-for-coding",
+							lifecycle: "pending",
+						},
+					},
+				},
+			}),
+			{ catalog: KIMI_CATALOG },
+		);
+		const tree = sheet();
+		expect(pressable(tree, "Kimi for Coding")?.props.accessibilityState).toMatchObject({ selected: true });
+	});
+
 	it("changes the model, closes, and confirms once", async () => {
 		const { calls, controls, host } = provide(conversation());
 		const tree = sheet();
