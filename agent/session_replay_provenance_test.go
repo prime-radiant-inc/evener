@@ -81,12 +81,31 @@ func dispatchCopyForTarget(turns []schema.Turn, scope replayScope, _ bool) []llm
 }
 
 // wireBodyForTarget builds the body the given protocol's real serializer emits
-// for msgs, with the dispatch escape every session request carries.
+// for msgs.
 //
-// The escape is the request's, so it is applied to the payload the serializer
-// assembles and to nothing else: reading the body is the only way to see what a
-// target actually sends.
+// It is for a message list with no session attempt behind it, so it builds the
+// request the list needs and carries the same escape every session request
+// carries. An assertion about what a session dispatches must go through
+// wireBodyForRequest on the request the session actually made, or it would
+// state the test's own escape instead of the session's.
 func wireBodyForTarget(t *testing.T, res registry.Resolved, msgs []llm.Message) map[string]any {
+	t.Helper()
+	return wireBodyForRequest(t, res, llm.Request{
+		Model:               res.WireID,
+		Messages:            msgs,
+		EscapeAssistantText: sysmsg.EscapeModelAuthoredFrames,
+	})
+}
+
+// wireBodyForRequest builds the body the given protocol's real serializer emits
+// for req as it stands.
+//
+// The request is serialized whole and unmodified, so the escape applied to the
+// assembled payload is the request's own: a session attempt reaches the wire
+// with the callback Session.buildModelRequest put on it, and a test reading this
+// body reads the session's wiring rather than a copy of it. Only the shaping a
+// dispatch applies is repeated here.
+func wireBodyForRequest(t *testing.T, res registry.Resolved, req llm.Request) map[string]any {
 	t.Helper()
 	var proto llm.Protocol
 	switch res.Protocol {
@@ -101,11 +120,6 @@ func wireBodyForTarget(t *testing.T, res registry.Resolved, msgs []llm.Message) 
 	default:
 		t.Fatalf("no serializer wired for protocol %q", res.Protocol)
 	}
-	req := llm.Request{
-		Model:               res.WireID,
-		Messages:            msgs,
-		EscapeAssistantText: sysmsg.EscapeModelAuthoredFrames,
-	}
 	body, err := proto.BuildBody(llm.ShapeRequest(req, res), res)
 	if err != nil {
 		t.Fatalf("BuildBody: %v", err)
@@ -117,7 +131,19 @@ func wireBodyForTarget(t *testing.T, res registry.Resolved, msgs []llm.Message) 
 // target's wire as, in wire order.
 func assistantTextsOnWire(t *testing.T, res registry.Resolved, msgs []llm.Message) []string {
 	t.Helper()
-	body := wireBodyForTarget(t, res, msgs)
+	return assistantTextsInBody(t, res, wireBodyForTarget(t, res, msgs))
+}
+
+// assistantTextsInRequest returns every assistant text payload req reaches the
+// target's wire as, in wire order, with req's own escape applied.
+func assistantTextsInRequest(t *testing.T, res registry.Resolved, req llm.Request) []string {
+	t.Helper()
+	return assistantTextsInBody(t, res, wireBodyForRequest(t, res, req))
+}
+
+// assistantTextsInBody reads the assistant text payloads a built body carries.
+func assistantTextsInBody(t *testing.T, res registry.Resolved, body map[string]any) []string {
+	t.Helper()
 	switch res.Protocol {
 	case registry.ProtocolOpenAIChat:
 		messages, _ := body["messages"].([]map[string]any)
@@ -1261,10 +1287,10 @@ func TestExpandHistory_HumanAnswersTurnStaysAuthoritative(t *testing.T) {
 }
 
 // wireCarriesExactText reports whether an assistant payload the protocol emits
-// for req contains want byte for byte.
+// for req contains want byte for byte, with req's own escape applied.
 func wireCarriesExactText(t *testing.T, protocol string, req llm.Request, want string) bool {
 	t.Helper()
-	for _, text := range assistantWireTexts(t, protocol, req.Messages) {
+	for _, text := range assistantTextsInRequest(t, resolvedForProtocol(protocol), req) {
 		if strings.Contains(text, want) {
 			return true
 		}
@@ -1413,11 +1439,11 @@ func servePreparedRequest(t *testing.T, history []schema.Turn, protocol string) 
 
 // assertNoModelFrameOnWire fails when an assistant payload a dispatched request
 // reaches the protocol's wire as opens an input frame at line start. The request
-// carries the model's own bytes, so the body the serializer builds is the only
-// place the guarantee can be read.
+// carries the model's own bytes and its own escape, so the body the serializer
+// builds from that request is the only place the guarantee can be read.
 func assertNoModelFrameOnWire(t *testing.T, target, protocol string, req llm.Request) {
 	t.Helper()
-	assertNoAssistantFrameOnWire(t, target, assistantWireTexts(t, protocol, req.Messages))
+	assertNoAssistantFrameOnWire(t, target, assistantTextsInRequest(t, resolvedForProtocol(protocol), req))
 }
 
 // TestExpandHistory_BlockEmittingTargetsEscapeEachPart pins which protocols

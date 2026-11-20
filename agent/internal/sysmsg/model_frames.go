@@ -2,11 +2,15 @@ package sysmsg
 
 import (
 	"slices"
+	"sort"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 
-	"primeradiant.com/evener/agent/internal/mdfence"
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/ast"
+	"github.com/yuin/goldmark/text"
+
 	"primeradiant.com/evener/llm"
 )
 
@@ -127,11 +131,18 @@ func harnessTagMatches(line string, tag harnessTagPrefix) (rest string, ok bool)
 // persist.
 //
 // Code is not prose and is left alone, as the doctor's detector leaves it: a
-// line inside a fenced block (including one opened inside a list item),
-// inside an indented code block, or beginning with a block quote marker is the
-// model quoting a frame rather than emitting one, and escaping it would
-// corrupt a legitimate example. A two-space list continuation line is prose to
-// both readers and is escaped.
+// line inside a fenced block (including one opened inside a list item or a
+// block quote), inside an indented code block, or beginning with a block quote
+// marker is the model quoting a frame rather than emitting one, and escaping it
+// would corrupt a legitimate example. A list continuation line is prose to both
+// readers and is escaped.
+//
+// Which lines are code is the CommonMark reader's answer, not this function's:
+// the text is parsed and the code blocks' own lines are taken from the parse
+// (codeLineMask). The escape therefore cannot disagree with the provider's
+// Markdown about a construct — a spaced thematic break, an ordered list that
+// may not interrupt a paragraph, a setext underline — and a line the reader
+// treats as code keeps every byte.
 //
 // One pass, so the escape is idempotent: an already-escaped opener no longer
 // matches, and its "&lt;" is not itself a frame. Text with no frame opener
@@ -143,10 +154,9 @@ func EscapeModelAuthoredFrames(text string) string {
 	}
 	var b strings.Builder
 	created := false
-	var fence mdfence.Tracker
-	var lists listContainer
-	var blocks blockState
+	code := codeLineMask(text)
 	pos := 0
+	index := 0
 	// The last numbered answer line's offset, found once. A marker carrying a
 	// note is a frame only when an answer line follows it, and "an answer
 	// follows" is the same question as "the LAST answer is after it" — so one
@@ -157,41 +167,7 @@ func EscapeModelAuthoredFrames(text string) string {
 	for line := range strings.Lines(text) {
 		content := strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
 		out := line
-		// One list scope for the line, read from the state BEFORE it: it answers
-		// both questions the line asks — does a fence opened here belong to a
-		// list item, and is this line indented code — and the two must agree, or
-		// a fence the item holds is read as a document-level block that outlives
-		// it (#6493 review).
-		//
-		// A block's own content may look like a list, and what it holds is quoted
-		// text, not structure, so the list is not stepped while one is open. The
-		// exception is the line that ENDS the block: it belongs to the enclosing
-		// item, so its scope is resolved here and the fence is told so below.
-		// Without that, an unclosed nested fence dedenting onto the parent's
-		// four-column prose would hand this line scope zero, the prose would read
-		// as page-indented code, and a model-authored frame in it would survive
-		// in both replay and checkpoint capture.
-		//
-		// A marker that may not interrupt the open paragraph is that paragraph's
-		// continuation text: it opens no item and any fence delimiter on it is
-		// text, so a frame below stays prose and is escaped. The paragraph state
-		// read here is the state BEFORE this line, which is what "may this line
-		// interrupt it" asks.
-		interrupts := lists.interruptsParagraph(content, blocks)
-		container, enclosing, openedItem := 0, 0, false
-		if !fence.Inside() || fence.LeavesItem(content) {
-			container, enclosing, openedItem = lists.step(content, !interrupts)
-		}
-		// A paragraph-continuation line is not fence structure either: the
-		// delimiter on it is text, so the tracker is left where it is. The
-		// tracker is never holding a block here, because a line inside one
-		// leaves no paragraph open behind it.
-		inBlock := false
-		if interrupts {
-			inBlock = fence.StepInBlockIn(content, container, enclosing)
-		}
-		inCode := blocks.step(content, container, openedItem, inBlock)
-		if !inBlock && !inCode && !isQuotedLine(content) {
+		if !code[index] && !isQuotedLine(content) {
 			if escaped, ok := escapeFrameOpener(content, pos+len(line) <= lastAnswer); ok {
 				out = escaped + line[len(content):]
 			}
@@ -210,6 +186,7 @@ func EscapeModelAuthoredFrames(text string) string {
 			b.WriteString(line)
 		}
 		pos += len(line)
+		index++
 	}
 	if !created {
 		return text
@@ -406,354 +383,85 @@ func isQuotedLine(content string) bool {
 	return strings.HasPrefix(strings.TrimLeft(content, " "), ">")
 }
 
-// indentedCode reports whether content is indented far enough to be Markdown
-// code, which is only one of the two questions code asks: an indented line
-// under an open paragraph is that paragraph's continuation text rather than a
-// block, and blockState is what answers whether a code block may begin here.
-//
-// The four columns are measured from the enclosing list item's content
-// indentation, not from the page. A list nested far enough in reaches four
-// columns with its own prose: an ordered list's ten-plus item is `   11. ` at
-// the marker's width, and a frame opener aligned with that item's text sits at
-// four columns while being the item's ordinary continuation text. Measuring
-// from the page exempted that prose and left its opener raw in both replay and
-// checkpoint excerpts, while real code inside the item — four columns past the
-// item's content, which is where Markdown puts it — keeps its bytes.
-//
-// container is the item's content indentation, 0 outside a list.
-func indentedCode(content string, container int) bool {
-	if strings.TrimSpace(content) == "" {
-		return false
-	}
-	return mdfence.LeadingColumns(content) >= container+4
-}
+// markdownParser is the CommonMark reader the escape asks which lines are code.
+// A goldmark parser keeps no per-parse state — every parse reads the shared
+// parser's tables and writes its own context — so one parser serves concurrent
+// callers.
+var markdownParser = goldmark.DefaultParser()
 
-// blockState tracks the block structure that decides whether an indented line
-// is code, so the escape reads the text as its reader parses it.
+// codeLineMask reports, for each line of source, whether the CommonMark reader
+// parses that line as a code block's content. A fence's own delimiter lines
+// need no entry: the reader keeps them out of the block's lines, and a line
+// that begins with a fence character opens no frame whatever follows it.
 //
-// An indented code block cannot interrupt a paragraph: four columns under a
-// line of prose are that paragraph's continuation text, so a frame there is
-// the author speaking and is escaped. The block begins only where no paragraph
-// is open — at the start of the text or after another block ends — and once
-// begun it holds the lines under it, blank ones included, until a non-blank
-// line dedents out of it.
-//
-// The paragraph state is read from the lines themselves, so it models the
-// block openers a model actually writes: ATX headings, thematic breaks, setext
-// underlines, block quotes and list items. An HTML block is not modelled, and
-// an indented line under one is read as paragraph continuation text, which
-// escapes a frame there rather than sparing it.
-type blockState struct {
-	// inParagraph reports that the lines so far leave paragraph text open, so
-	// an indented line continuing it is prose.
-	inParagraph bool
-	// inCode reports that the lines so far leave an indented code block open,
-	// so a blank line or a line still indented four columns stays code.
-	inCode bool
-	// quotedParagraph reports that the open paragraph is a block quote's body.
-	// A lazy continuation line continues a paragraph, but a list marker cannot
-	// be one: outside the quote, a marker ends the quote and starts a list of
-	// its own, so the interruption rule does not apply to it.
-	quotedParagraph bool
-}
-
-// step advances over one line and reports whether the line is indented code.
-// content is the line without its line ending, container is the enclosing list
-// item's content indentation, openedItem reports that the line opens a list
-// item, and inFenced reports that the line belongs to a fenced block.
-func (b *blockState) step(content string, container int, openedItem, inFenced bool) bool {
-	// A fenced block is not paragraph text and what it holds is not an
-	// indented code block: the opener interrupts any paragraph, and the block
-	// leaves none open behind it.
-	if inFenced {
-		b.inParagraph, b.inCode, b.quotedParagraph = false, false, false
-		return false
-	}
-	// A blank line ends a paragraph and stays inside an indented code block.
-	if strings.TrimSpace(content) == "" {
-		b.inParagraph, b.quotedParagraph = false, false
-		return b.inCode
-	}
-	indented := indentedCode(content, container)
-	// An indented line begins or continues a code block only where no
-	// paragraph is open.
-	if indented && (b.inCode || !b.inParagraph) {
-		b.inCode, b.inParagraph, b.quotedParagraph = true, false, false
-		return true
-	}
-	b.inCode = false
-	if indented {
-		// The paragraph above is still open, so this line continues it.
-		return false
-	}
-	// A setext heading's underline turns the paragraph above it into a heading,
-	// so the indented line under the underline begins a code block rather than
-	// continuing a paragraph. Only a paragraph can be underlined, which is why
-	// this is read here and not as a block opener of its own.
-	if b.inParagraph && setextUnderline(content, container) {
-		b.inParagraph, b.quotedParagraph = false, false
-		return false
-	}
-	b.inParagraph = opensParagraph(content, container, openedItem)
-	b.quotedParagraph = b.inParagraph && isBlockQuoteBody(content, container, openedItem)
-	return false
-}
-
-// opensParagraph reports whether the block a non-blank, non-indented line
-// begins leaves paragraph text open under it.
-//
-// A heading and a thematic break open no paragraph, and neither does a block
-// quote or list item carrying no text of its own; the quote's or item's own
-// text begins one.
-func opensParagraph(content string, container int, openedItem bool) bool {
-	if openedItem {
-		rest, ok := itemText(content)
-		if !ok || rest == "" {
-			return false
+// Tabs are expanded before the parse so tab-separated nested list markers align
+// to four-column stops consistently with CommonMark column measurement.
+func codeLineMask(source string) []bool {
+	b := []byte(expandTabs(source))
+	starts := lineStarts(b)
+	mask := make([]bool, len(starts))
+	doc := markdownParser.Parse(text.NewReader(b))
+	_ = ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
+		if !entering {
+			return ast.WalkContinue, nil
 		}
-		return opensParagraph(rest, 0, false)
-	}
-	if atxHeading(content, container) || thematicBreak(content, container) {
-		return false
-	}
-	if rest, ok := blockQuoteMarker(content, container); ok {
-		return strings.TrimSpace(rest) != ""
-	}
-	return true
-}
-
-// isBlockQuoteBody reports whether the paragraph opensParagraph just read is a
-// block quote's own body, so its later continuation lines are inside the quote.
-func isBlockQuoteBody(content string, container int, openedItem bool) bool {
-	if openedItem {
-		rest, ok := itemText(content)
-		if !ok {
-			return false
+		if n.Kind() != ast.KindCodeBlock && n.Kind() != ast.KindFencedCodeBlock {
+			return ast.WalkContinue, nil
 		}
-		return isBlockQuoteBody(rest, 0, false)
-	}
-	_, ok := blockQuoteMarker(content, container)
-	return ok
+		lines := n.Lines()
+		for i := 0; i < lines.Len(); i++ {
+			mask[lineIndex(starts, lines.At(i).Start)] = true
+		}
+		return ast.WalkContinue, nil
+	})
+	return mask
 }
 
-// setextUnderline reports whether content is a setext heading underline at or
-// within three columns past container: a run of "=", whose heading it makes.
-// The "-" form is a thematic break to this scan either way, so it needs no
-// separate rule.
-func setextUnderline(content string, container int) bool {
-	at := mdfence.LeadingIndentEnd(content)
-	if mdfence.LeadingColumns(content[:at])-container > 3 {
-		return false
+// lineStarts returns the byte offset at which each line of b begins, so a line
+// index and an offset convert into each other without a rescan.
+func lineStarts(b []byte) []int {
+	starts := make([]int, 1, 32)
+	for i, c := range b {
+		if c == '\n' {
+			starts = append(starts, i+1)
+		}
 	}
-	run := strings.TrimRight(content[at:], " \t")
-	return run != "" && strings.Trim(run, "=") == ""
+	return starts
 }
 
-// atxHeading reports whether content begins an ATX heading at or within three
-// columns past container: one to six "#" followed by whitespace or the end of
-// the line.
-func atxHeading(content string, container int) bool {
-	at := mdfence.LeadingIndentEnd(content)
-	if mdfence.LeadingColumns(content[:at])-container > 3 {
-		return false
-	}
-	hashes := content[at:]
-	n := len(hashes) - len(strings.TrimLeft(hashes, "#"))
-	if n == 0 || n > 6 {
-		return false
-	}
-	return n == len(hashes) || hashes[n] == ' ' || hashes[n] == '\t'
+// lineIndex returns the index of the line pos falls on.
+func lineIndex(starts []int, pos int) int {
+	return max(sort.SearchInts(starts, pos+1)-1, 0)
 }
 
-// thematicBreak reports whether content is a thematic break at or within three
-// columns past container: three or more of "-", "_" or "*", with only spaces
-// and tabs between them and nothing after the last one.
-func thematicBreak(content string, container int) bool {
-	at := mdfence.LeadingIndentEnd(content)
-	if mdfence.LeadingColumns(content[:at])-container > 3 {
-		return false
+// expandTabs returns source with every tab replaced by spaces to the next
+// four-column stop, keeping every line break intact.
+func expandTabs(source string) string {
+	if !strings.Contains(source, "\t") {
+		return source
 	}
-	run := strings.TrimRight(content[at:], " \t")
-	if run == "" {
-		return false
-	}
-	mark := run[0]
-	if mark != '-' && mark != '_' && mark != '*' {
-		return false
-	}
-	n := 0
-	for i := 0; i < len(run); i++ {
-		switch run[i] {
-		case mark:
-			n++
-		case ' ', '\t':
+	var b strings.Builder
+	b.Grow(len(source) + 8)
+	column := 0
+	for i := 0; i < len(source); {
+		r, size := utf8.DecodeRuneInString(source[i:])
+		switch r {
+		case '\n':
+			column = 0
+		case '\r':
+		case '\t':
+			spaces := 4 - column%4
+			for range spaces {
+				b.WriteByte(' ')
+			}
+			column += spaces
+			i += size
+			continue
 		default:
-			return false
+			column++
 		}
+		b.WriteString(source[i : i+size])
+		i += size
 	}
-	return n >= 3
-}
-
-// blockQuoteMarker reports whether content begins a block quote at or within
-// three columns past container, returning the text after the marker.
-func blockQuoteMarker(content string, container int) (rest string, ok bool) {
-	at := mdfence.LeadingIndentEnd(content)
-	if mdfence.LeadingColumns(content[:at])-container > 3 {
-		return "", false
-	}
-	rest, ok = strings.CutPrefix(content[at:], ">")
-	if !ok {
-		return "", false
-	}
-	return strings.TrimLeft(rest, " \t"), true
-}
-
-// itemText returns the text a list item's marker line carries after the marker
-// and the whitespace separating it, and whether the line opens an item.
-func itemText(content string) (string, bool) {
-	at := mdfence.LeadingIndentEnd(content)
-	if at >= len(content) {
-		return "", false
-	}
-	n, ok := mdfence.ListMarker(content[at:])
-	if !ok {
-		return "", false
-	}
-	return strings.TrimLeft(content[at+n:], " \t"), true
-}
-
-// listContainer tracks the content indentation of every Markdown list item the
-// scan is inside, so an item's own text is not mistaken for page-indented code.
-//
-// It is a stack because the structure is one: an item may contain an item that
-// contains an item, and a line dedenting out of the innermost one belongs to
-// whichever enclosing item it still fits inside. Holding only the current item
-// and the one above it lost the rest, so a line dedenting two levels at once
-// fell through to column zero, and prose in an outer item whose content starts
-// at column four read as page-indented code with the frame in it surviving.
-//
-// A blank line stays inside the current item, since a blank line neither ends
-// an item nor opens code.
-type listContainer struct {
-	// items is the content indentation of each enclosing item, outermost
-	// first. The last one is the current item; an empty stack is the top level.
-	items []int
-}
-
-// current returns the content indentation of the item the scan is inside, or 0
-// at the top level.
-func (l *listContainer) current() int {
-	if len(l.items) == 0 {
-		return 0
-	}
-	return l.items[len(l.items)-1]
-}
-
-// enclosing returns the content indentation of the item above the current one,
-// or 0 when the current item is the outermost.
-func (l *listContainer) enclosing() int {
-	if len(l.items) < 2 {
-		return 0
-	}
-	return l.items[len(l.items)-2]
-}
-
-// step returns the content indentation that applies to line — the innermost item
-// whose content the line still reaches, taken from a marker line, or 0 when the
-// line sits outside any item — the content indentation of the item that
-// ENCLOSES it, resolved after the dedent and before the line's own item opens,
-// and whether the line opens an item.
-//
-// opensNoItem reports that a marker on the line is paragraph continuation text
-// to the reader rather than structure, so the line opens no item: the caller
-// has already applied the interruption rule that decides this, and the scope
-// walk must not invent an item the reader does not see.
-//
-// The enclosing scope is what a fence opened on the line belongs to, and it is
-// not the scope the scan has just moved to: a sibling item's marker line has
-// already left the previous sibling, so its enclosing item is the one above both
-// of them. Only this walk knows that, which is why it is returned rather than
-// left for the tracker to infer from the column it recorded last.
-func (l *listContainer) step(content string, opensNoItem bool) (scope, enclosing int, openedItem bool) {
-	if strings.TrimSpace(content) == "" {
-		return l.current(), l.enclosing(), false
-	}
-	indent := mdfence.LeadingColumns(content)
-	// Leave every item the line is indented out of. Popping one level at a time
-	// is what keeps the enclosing item that the line DOES fit inside, which a
-	// two-slot walk could not: it had nowhere to put the level above.
-	for len(l.items) > 0 && indent < l.items[len(l.items)-1] {
-		l.items = l.items[:len(l.items)-1]
-	}
-	enclosing = l.current()
-	// Where the item's text begins comes from mdfence.ListItemContent, the same
-	// parser the fence tracker reads, so the two cannot disagree about the
-	// content column. The marker's separator is Markdown whitespace — a space or
-	// a tab — and a tab after a two-digit marker puts the content at column four,
-	// which counting literal spaces alone had put at three (#6493).
-	//
-	// A marker opens an item only within three columns of the enclosing item's
-	// content. Further in it is indented code, and a marker-shaped line inside
-	// code is example text rather than structure: treating it as an item
-	// invented a scope whose content column then classified the code's own frame
-	// lines as prose and rewrote the quoted example.
-	//
-	// The marker is read at the byte offset where the indentation ends, not at
-	// the leading SPACE count: indentation is columns, so a tab-indented nested
-	// marker has no leading spaces and a marker that is not at byte zero. Read
-	// from the space count, the nested item went unrecorded, and its
-	// continuation prose — four columns past the parent's content, one column
-	// past the item's own — measured as indented code and kept its frame
-	// (#6493 review).
-	if itemContent, ok := mdfence.ListItemContent(content, mdfence.LeadingIndentEnd(content)); ok && !opensNoItem && indent-enclosing <= 3 {
-		l.items = append(l.items, itemContent)
-		return l.current(), enclosing, true
-	}
-	return l.current(), enclosing, false
-}
-
-// interruptsParagraph reports whether line may interrupt the paragraph that is
-// open above it, which is the question that decides whether the marker on the
-// line opens a list item and whether a fence delimiter on it opens a block.
-//
-// CommonMark lets a list item interrupt a paragraph only when the list can start
-// there: a bullet always can, and an ordered list can only when its start number
-// is 1. A marker with any other start number written directly under prose is
-// lazy continuation text of that paragraph — the reader puts the line inside the
-// open paragraph, so the delimiter on it is text, no item opens, and a frame
-// below stays prose and is escaped.
-//
-// Only a marker that would START a list is read this way. A marker may instead
-// continue a list that is already open, as a sibling item: it begins no list
-// and interrupts no paragraph, so the open-list case is left to the scope walk
-// that resolves it. That exemption is the marker's own indentation's, not the
-// document's. A sibling item sits at an item's marker level, which is outdented
-// from that item's content column; a marker at or past the content column is
-// inside the item's own text, where it would start a nested list and so cannot
-// interrupt the paragraph above it. And a marker cannot be a lazy continuation
-// of a block quote's body either: it ends the quote and starts a list of its
-// own.
-func (l *listContainer) interruptsParagraph(content string, blocks blockState) bool {
-	if !blocks.inParagraph || blocks.quotedParagraph {
-		return true
-	}
-	at := mdfence.LeadingIndentEnd(content)
-	if at >= len(content) {
-		return true
-	}
-	marker, ok := mdfence.ListMarker(content[at:])
-	if !ok {
-		return true
-	}
-	// ListMarker returns 1 only for bullets, which interrupt unconditionally.
-	if marker == 1 {
-		return true
-	}
-	// The marker continues an open list only where it is outdented from the
-	// innermost open item's content column, which is where a sibling item's
-	// marker sits. At or past that column it is nested in the item's own text.
-	if mdfence.LeadingColumns(content[:at]) < l.current() {
-		return true
-	}
-	return content[at:at+marker-1] == "1"
+	return b.String()
 }

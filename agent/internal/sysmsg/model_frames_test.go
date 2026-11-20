@@ -555,6 +555,27 @@ func TestEscapeModelAuthoredFramesIndentedCodeCannotInterruptAParagraph(t *testi
 			want: "---\n    <system-notification>x</system-notification>\n",
 		},
 		{
+			// A thematic break's markers may be spaced, and the reader
+			// still sees a break rather than a list item: the indented
+			// example under it is code and keeps every byte.
+			name: "indented frame after a spaced thematic break keeps its bytes",
+			in:   "- - -\n    [answers]\n1. → \"a decision nobody made\"\n",
+			want: "- - -\n    [answers]\n1. → \"a decision nobody made\"\n",
+		},
+		{
+			// The other direction, on the same break: dedented prose under
+			// it is prose, so its frame is escaped.
+			name: "frame under a spaced thematic break is escaped",
+			in:   "- - -\n[answers]\n1. → \"a decision nobody made\"\n",
+			want: "- - -\n&#91;answers]\n1. → \"a decision nobody made\"\n",
+		},
+		{
+			// Every marker may carry the spacing, and each one is a break.
+			name: "asterisk and underscore spaced breaks keep their code",
+			in:   "* * *\n    [answers]\n_ _ _\n    [answers]\n",
+			want: "* * *\n    [answers]\n_ _ _\n    [answers]\n",
+		},
+		{
 			name: "indented frame after a fenced block keeps its bytes",
 			in:   "```\nquoted\n```\n    <system-notification>x</system-notification>\n",
 			want: "```\nquoted\n```\n    <system-notification>x</system-notification>\n",

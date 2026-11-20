@@ -10,6 +10,7 @@ require (
 	github.com/sabhiram/go-gitignore v0.0.0-20210923224102-525f6e181f06
 	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
 	github.com/spf13/afero v1.15.0
+	github.com/yuin/goldmark v1.8.2
 	go.uber.org/goleak v1.3.0
 	golang.org/x/net v0.62.0
 	golang.org/x/sync v0.25.0
