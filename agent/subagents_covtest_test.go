@@ -83,17 +83,6 @@ func TestCovRootOnlySubagentTools(t *testing.T) {
 	}
 }
 
-// TestCovIsRootOnlyJobPresenceTool covers isRootOnlyJobPresenceTool.
-func TestCovIsRootOnlyJobPresenceTool(t *testing.T) {
-	t.Parallel()
-	if !isRootOnlyJobPresenceTool("delegate") {
-		t.Fatal("delegate should be root-only")
-	}
-	if isRootOnlyJobPresenceTool("exec_command") {
-		t.Fatal("exec_command should not be root-only")
-	}
-}
-
 // TestCovIsRootOnlySubagentTool covers isRootOnlySubagentTool.
 func TestCovIsRootOnlySubagentTool(t *testing.T) {
 	t.Parallel()
@@ -122,15 +111,6 @@ func TestCovProtectedGrantTools(t *testing.T) {
 	}
 	if isProtectedGrantTool("exec_command") {
 		t.Fatal("exec_command should not be protected")
-	}
-}
-
-// TestCovRemoveRootOnlySubagentTools covers removeRootOnlySubagentTools.
-func TestCovRemoveRootOnlySubagentTools(t *testing.T) {
-	t.Parallel()
-	got := removeRootOnlySubagentTools([]string{"read_file", "delegate", "exec_command"})
-	if want := []string{"read_file", "exec_command"}; !slices.Equal(got, want) {
-		t.Fatalf("tools after root-only removal = %v, want %v", got, want)
 	}
 }
 
