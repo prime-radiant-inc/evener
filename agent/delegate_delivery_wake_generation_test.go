@@ -54,6 +54,47 @@ func TestDeliveryAckCarriesTheGenerationItJournaled(t *testing.T) {
 	}
 }
 
+// A delivery's claim belongs to the generation it was admitted in. A stop that
+// settles between the admission and its acknowledgment is newer evidence than
+// the report, so the acknowledgment's release must not cover it: a reader of
+// the journal would otherwise treat the report as delivered in the run that
+// stop ended.
+func TestDeliveryAckReleasesThroughTheGenerationItsClaimWasAdmittedIn(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 2, 1)
+	seedDelegateControllerIdle(t, c, "dlg_hold", "")
+	seedDelegateControllerIdle(t, c, "dlg_child", "dlg_hold")
+	seedDelegateControllerDelivery(t, c, "dlg_child")
+	plans := c.ReplayDeliveries()
+	if len(plans) != 1 || plans[0].delegateID != "dlg_child" || plans[0].ownerDelegateID != "dlg_hold" {
+		t.Fatalf("replayed delivery plans = %#v, want one report from dlg_child to dlg_hold", plans)
+	}
+	// The owner is idle at generation 0 when the delivery is admitted.
+	token, admitted, err := c.BeginDelivery(plans[0])
+	if err != nil || !admitted {
+		t.Fatalf("BeginDelivery = admitted:%t err:%v", admitted, err)
+	}
+
+	// The stop settles after the admission and before the acknowledgment
+	// publishes anything. It is newer evidence than the delivery, so its quiet
+	// must stand.
+	journalStopAtGeneration(t, c, "dlg_hold", 1)
+
+	acked, err := c.CompleteDelivery(token, true)
+	if err != nil {
+		t.Fatalf("CompleteDelivery: %v", err)
+	}
+
+	c.mu.Lock()
+	released := c.durable["dlg_hold"].AttentionHoldReleasedGeneration
+	c.mu.Unlock()
+	if released != 0 {
+		t.Fatalf("the acknowledgment released generation %d, want 0: the delivery was admitted before generation 1 settled, so the stop that settled it is newer evidence and a reader treats the report as delivered in the run that stop ended", released)
+	}
+	if acked.ackWakeGeneration != 0 {
+		t.Fatalf("the acknowledgment carried generation %d, want the admission generation 0: a sample taken at acknowledgment time supersedes the stop that settled after the delivery", acked.ackWakeGeneration)
+	}
+}
+
 // journalStopAtGeneration settles a user stop at generation for delegateID,
 // leaving the aggregate idle at that generation with no release journaled: the
 // newest quiet the delegate's rows carry.
