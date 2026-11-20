@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/cheapmodel"
+	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -629,5 +631,21 @@ func TestCrossInstanceResponsesStripsOpaqueBlobKeepsNativePlaintext(t *testing.T
 	}
 	if !strings.Contains(issuer, `"id":"rs_foreign"`) || !strings.Contains(issuer, `"encrypted_content":"enc_A"`) {
 		t.Fatalf("the issuer must keep its own item id and blob: %s", issuer)
+	}
+
+	// Pressure prices that same wire: the foreign target bills the native
+	// plaintext only, while the issuer pays for its own item id and blobs.
+	for _, tc := range []struct {
+		instance string
+		tokens   int
+	}{
+		{"openai-b", (len("plain") + len("answer")) / 4},
+		{"openai-a", (len("rs_foreign") + len("enc_A") + len("enc_only") + len("answer")) / 4},
+	} {
+		res := registry.Resolved{Instance: tc.instance, ModelID: "gpt-5.4", WireID: "gpt-5.4", Protocol: registry.ProtocolOpenAIResponses}
+		cm := contextmgr.NewManager(provider.FromResolved(res, nil), nil, cheapmodel.New(nil))
+		if got := cm.EstimateUsage(turns, 0).Used; got != tc.tokens {
+			t.Fatalf("pressure for %s = %d tokens, want %d: price what the wire sends", tc.instance, got, tc.tokens)
+		}
 	}
 }
