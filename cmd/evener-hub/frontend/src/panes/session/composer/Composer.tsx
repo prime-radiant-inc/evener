@@ -1058,12 +1058,9 @@ function ComposerWithSubmission({
     // that restores the text restores the mark. Read before persistDraft so the
     // record this keystroke writes already agrees with what Send will see.
     setAdoptedImageRanges(value.adoptedImageRanges ?? [], value.adoptedImageMarkers ?? []);
-    // The staged occurrences come back from the editor, which mapped them
-    // through the very transactions that produced this value: typing before an
-    // anchor moves it, a paste of an identical literal beside it leaves it
-    // where the editor put it, and a delete or an undo moves them back. They
-    // are not a document mark, so an ordinary edit never rebuilds the document
-    // to apply them - see SkillEditorValue.stagedImageRanges.
+    // Staged occurrences are serialized from the document's stagedImage marks,
+    // so typing, pasting, deleting, and undo keep their exact positions without
+    // rebuilding the document - see SkillEditorValue.stagedImageRanges.
     setStagedImageRanges(value.stagedImageRanges ?? []);
     if (recoveryOwnerLeaseRef.current === null) persistDraft(value.text);
     // Every keystroke re-evaluates the trailing-token match fresh - a token
@@ -1500,7 +1497,7 @@ function ComposerWithSubmission({
                   .map((marker) => markerText(marker))
                   .join(
                     ", ",
-                  )} referred to here is not attached in this composer. Remove it, or select it and attach the image again, before sending.`}
+                  )} referred to here is not attached in this composer. Attach the replacement beside it first, then use Remove the reference once the preview appears, before sending.`}
               </InlineNotice>
             )}
             <Dropzone onFiles={(files) => attachments.ingestFiles(files, (message) => toasts.push("error", message))}>

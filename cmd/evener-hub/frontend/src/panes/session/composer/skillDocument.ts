@@ -54,18 +54,12 @@ export interface SkillEditorValue {
    * the person typed beside the anchor - and one repair press then deletes
    * their prose. Naming the occurrence keeps the two apart.
    *
-   * Unlike the adopted side, this is NOT a document mark. A staging write both
-   * inserts its literal and names the occurrence, and the source already
-   * reconciles the position across that write from the splice it performed. A
-   * mark would make every paste a non-echo value change, and applying one
-   * rebuilds the document - which ends the session's undo history and
-   * re-derives its atoms' separators.
-   *
-   * It rides on this value only so the editor can map it through the
-   * transactions it applies (mapStagedImageRanges). `sameEditorValue`
-   * deliberately ignores it: it records where an occurrence IS, not what the
-   * document shows, so a new position must never read as a value the editor has
-   * to re-apply - that would rebuild the document and end the undo history. */
+   * Like the adopted side, this is stored in the ProseMirror document as a
+   * `stagedImage` mark and serialized back into ranges by
+   * `serializeSkillDocument`, so undo and ordinary edits keep exact positions.
+   * `SkillEditor` syncs these marks in place (`addToHistory: false`) and
+   * `sameEditorValue` ignores them so position updates never rebuild the
+   * document or disturb undo history. */
   stagedImageRanges?: ImageMarkerRange[];
 }
 
@@ -378,10 +372,8 @@ export function patchSelectionText(
     adoptedImageMarkers: markerNumbersOf(ranges),
     adoptedImageRanges: ranges,
   };
-  // The staged side is carried through the round-trip by hand: serialization
-  // rebuilds the value from the document, and the document has no mark for
-  // "this occurrence was staged" (see stagedImageRanges). What the patch
-  // computed is therefore re-attached to whatever serialization returned.
+  // Re-attach the reconciled staged ranges onto the serialized value so
+  // `SkillEditor` syncs the updated `stagedImage` marks in place.
   const keep = (patched: SkillEditorValue): SkillEditorValue =>
     stagedImageRanges.length === 0 ? patched : { ...patched, stagedImageRanges };
   if (!value.mentions) return keep(serializeSkillDocument(parseSkillDocument({ ...adopted, text })));
