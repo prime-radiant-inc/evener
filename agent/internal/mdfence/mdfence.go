@@ -52,19 +52,13 @@ func (t *Tracker) StepInBlock(line string) bool {
 	return t.Step(line) || t.Inside()
 }
 
-// leavesItem reports whether line is non-blank and indented less than the
-// content indentation of the item the tracker is inside. A blank line stays
-// inside the item: it neither ends one nor opens code.
-func leavesItem(line string, container int) bool {
-	return container > 0 && strings.TrimSpace(line) != "" && LeadingColumns(line) < container
-}
-
 // Step advances over line and reports whether it opened or closed a block.
 func (t *Tracker) Step(line string) bool {
-	// A line that leaves the item ends any fence the item holds: it is read on
-	// its own from here, as a new opener or as ordinary content.
-	base := t.container
-	if leavesItem(line, t.container) {
+	// A non-blank line indented less than the list item's content leaves the
+	// item, and any fence the item holds ends with it: the line is read on its
+	// own from here, as a new opener or as ordinary content. A blank line stays
+	// inside the item.
+	if t.container > 0 && strings.TrimSpace(line) != "" && LeadingColumns(line) < t.container {
 		t.length, t.container = 0, 0
 	}
 	if t.length == 0 {
@@ -76,18 +70,12 @@ func (t *Tracker) Step(line string) bool {
 			t.char, t.length = char, n
 			return true
 		}
-		if char, n, container := runInList(line, base); n != 0 {
+		if char, n, container := runInList(line); n != 0 {
 			t.char, t.length, t.container = char, n, container
 			return true
 		}
 		return false
 	}
-	return t.stepOpen(line)
-}
-
-// stepOpen advances over line while a block is open, reporting whether the line
-// closed it.
-func (t *Tracker) stepOpen(line string) bool {
 	char, n, after := runAt(line, t.container)
 	if n == 0 {
 		return false
@@ -104,37 +92,26 @@ func (t *Tracker) stepOpen(line string) bool {
 // its character, its length and the rest of the line. The length is 0 when the
 // line is not indented that far or does not start with a fence.
 func runAt(line string, base int) (char byte, n int, after string) {
-	// A fence sits at the item's content column, or up to three columns past it.
-	// The whole indentation is measured in columns because a tab reaches the
-	// next four-column stop and may overshoot the content column: the overshoot
-	// counts against the three, or a line four columns past the item — indented
-	// code — would read as three and open a fence that is not there (#6493).
-	columns, rest := indentColumns(line, 0)
-	total := columns - base
-	if total < 0 || total > 3 {
+	if len(line) < base || strings.TrimLeft(line[:base], " ") != "" {
 		return 0, 0, ""
 	}
-	return fenceRun(rest)
-}
-
-// fenceRun returns the fence that begins s, which must already have its
-// indentation removed: its character, its length and the rest of the line.
-func fenceRun(s string) (char byte, n int, after string) {
-	if s == "" || (s[0] != '`' && s[0] != '~') {
+	line = line[base:]
+	indent := LeadingSpaces(line)
+	if indent > 3 || indent == len(line) || (line[indent] != '`' && line[indent] != '~') {
 		return 0, 0, ""
 	}
-	char = s[0]
-	after = strings.TrimLeft(s, string(char))
-	n = len(s) - len(after)
+	char = line[indent]
+	rest := strings.TrimLeft(line[indent:], string(char))
+	n = len(line) - indent - len(rest)
 	if n < minFence {
 		return 0, 0, ""
 	}
 	// A backtick fence's info string may not contain a backtick, so a line like
 	// "- ```status=done```" is an inline code span, not a fence (#4435).
-	if char == '`' && strings.Contains(after, "`") {
+	if char == '`' && strings.Contains(rest, "`") {
 		return 0, 0, ""
 	}
-	return char, n, after
+	return char, n, rest
 }
 
 // runInList returns the fence a line opens inside a single list item: a list
@@ -142,73 +119,28 @@ func fenceRun(s string) (char byte, n int, after string) {
 // content indentation: the marker and the spaces after it, which is the column
 // the fence opens at, and the column the matching closing fence is read from.
 // Its fence is 0 when the line is not a fence on a list item.
-//
-// base is the content indentation of the item the marker sits inside: 0 at the
-// top level, and the enclosing item's content indentation for a nested item,
-// whose marker line is indented past the enclosing item's own text. A nested
-// marker line is a list item's marker line like any other, so the fence on it
-// belongs to the item it opens rather than to the page (#6493).
-func runInList(line string, base int) (char byte, n, container int) {
-	// The marker is read from the item the line sits inside. A line indented
-	// less than that item's content has left it — a sibling item, or one
-	// further out — so its marker is read from the page instead. Resolving this
-	// here, after any dedent, is what keeps a sibling item's own fence readable:
-	// searching from the previous item's column missed the marker, and the
-	// item's closing delimiter then read as a fresh opener.
-	offset, ok := indentEnd(line, base)
-	if !ok {
-		offset, ok = indentEnd(line, 0)
-		if !ok {
-			return 0, 0, 0
-		}
-	}
-	// The marker is the first non-WHITESPACE byte after that offset, and
-	// whitespace here is a space or a tab. Skipping spaces alone stopped at a
-	// tab, so a nested item whose indentation reached the parent's content
-	// column with spaces and then continued with a tab was recognized by the
-	// scope walker but had no fence read from its marker line: the item's real
-	// closing delimiter then read as a fresh opener and the prose after it
-	// kept its model-authored frame (#6493 review).
-	markerAt := offset
-	for markerAt < len(line) && (line[markerAt] == ' ' || line[markerAt] == '\t') {
-		markerAt++
-	}
-	if markerAt >= len(line) {
+func runInList(line string) (char byte, n, container int) {
+	indent := LeadingSpaces(line)
+	if indent > 3 || indent == len(line) {
 		return 0, 0, 0
 	}
-	// A marker more than three COLUMNS further in than the enclosing item's
-	// content is indented code, not an item. Columns, not bytes, because a tab
-	// reaches the next four-column stop and its width depends on where it
-	// starts.
-	if LeadingColumns(line[:markerAt])-LeadingColumns(line[:offset]) > 3 {
-		return 0, 0, 0
-	}
-	// The item's content column comes from the one parser that says where an
-	// item's text begins, so this agrees with the scope walker by construction.
-	//
-	// It is measured on the ORIGINAL line, at the marker's own byte offset:
-	// a tab's width depends on the column it starts at, so slicing the parent
-	// indentation away first measured the tab as though it began at the page
-	// margin. A nested marker at column two followed by a tab then recorded
-	// column six instead of four, and the item's real closing delimiter at
-	// four ended the item and read as a fresh opener (#6493).
-	content, contentAt, ok := listItemContentAt(line, markerAt)
+	marker, ok := ListMarker(line[indent:])
 	if !ok {
 		return 0, 0, 0
 	}
-	char, n, _ = fenceRun(line[contentAt:])
+	after := line[indent+marker:]
+	spaces := len(after) - len(strings.TrimLeft(after, " "))
+	if spaces < 1 || spaces > 4 {
+		return 0, 0, 0
+	}
+	char, n, _ = runAt(after[spaces:], 0)
 	if n == 0 {
 		return 0, 0, 0
 	}
 	// The item's content indentation is the marker and the spaces that follow
 	// it; the opening fence sits at its start. A closing fence may sit up to
 	// three columns further (runAt allows that), but not less.
-	//
-	// It is counted in columns, since that is what every reader compares it
-	// against: leavesItem and the escape's four-column code threshold both
-	// measure the line in columns, and a tab in the prefix would put the two
-	// measures asunder.
-	return char, n, content
+	return char, n, indent + marker + spaces
 }
 
 // LeadingSpaces returns the ASCII spaces line starts with. Fence indentation is
@@ -235,100 +167,21 @@ func ListMarker(line string) (int, bool) {
 	return i + 1, true
 }
 
-// listItemContentAt returns the column a list item's content starts at, and the
-// byte offset it starts at, for a line whose marker begins at line[at:]. ok is
-// false when the line is not a list item at all.
-//
-// It is the one place that says where an item's text begins, so the scope walker
-// and the fence tracker cannot disagree about it. The separator after the marker
-// is Markdown whitespace, which is a space OR a tab, and it is measured in
-// columns because a tab reaches the next four-column stop: one tab after a
-// two-digit marker starts the content at column four, and counting only literal
-// spaces put it at three.
-//
-// The column is absolute (counted from the page), so a caller that knows the
-// enclosing item's content column can compare directly.
-func listItemContentAt(line string, at int) (content, contentAt int, ok bool) {
-	if at < 0 || at >= len(line) {
-		return 0, 0, false
-	}
-	marker, ok := ListMarker(line[at:])
-	if !ok {
-		return 0, 0, false
-	}
-	// Columns are counted from the page, so the marker's own width is added to
-	// the column the marker starts at. A leading marker is one byte wide but a
-	// ten-plus one is three, and only the ordered case has width to worry about.
-	column := LeadingColumns(line[:at]) + marker
-	start := column
-	for i := at + marker; i < len(line); i++ {
-		switch line[i] {
-		case ' ':
-			column++
-		case '\t':
-			column += 4 - column%4
-		default:
-			// One to four columns of separation, as CommonMark allows.
-			if sep := column - start; sep < 1 || sep > 4 {
-				return 0, 0, false
-			}
-			return column, i, true
-		}
-	}
-	return 0, 0, false
-}
-
 // LeadingColumns returns the columns of whitespace a line starts with, a tab
 // reaching the next four-column stop. A blank line is all its whitespace.
 func LeadingColumns(line string) int {
-	columns, _ := indentColumns(line, 0)
-	return columns
-}
-
-// indentColumns returns the columns of whitespace line starts with and the rest
-// of the line after it, so a caller that needs both does not measure twice.
-func indentColumns(line string, from int) (columns int, rest string) {
-	for i, r := range line[from:] {
+	columns := 0
+	for _, r := range line {
 		switch r {
 		case ' ':
 			columns++
 		case '\t':
 			columns += 4 - columns%4
 		default:
-			return columns, line[from+i:]
+			return columns
 		}
 	}
-	return columns, ""
-}
-
-// indentEnd returns the byte offset at which line has consumed base columns of
-// indentation, and whether it has that much.
-//
-// Indentation is counted in COLUMNS, because that is what it is: a tab reaches
-// the next four-column stop, so one tab can supply the four columns of a
-// two-digit ordered item's content indentation. Reading that prefix as literal
-// spaces rejected the tab, so a fence or delimiter aligned with the item's
-// content went unrecognized (#6493). The bytes themselves are untouched: the
-// caller slices at the returned offset and keeps whatever it finds there.
-func indentEnd(line string, base int) (int, bool) {
-	if base <= 0 {
-		return 0, true
-	}
-	columns := 0
-	for i := 0; i < len(line); i++ {
-		if columns >= base {
-			return i, true
-		}
-		switch line[i] {
-		case ' ':
-			columns++
-		case '\t':
-			columns += 4 - columns%4
-		default:
-			return 0, false
-		}
-	}
-	return 0, columns >= base
+	return columns
 }
 
 // Pick returns a backtick fence guaranteed not to be closed by any backtick run

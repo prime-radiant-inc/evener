@@ -718,6 +718,12 @@ func summaryModelSpans(text string) []textSpan {
 // fenced example below its own prose, is not this layout. The section ends at
 // the conversation heading the renderer writes below it, so a turn whose carried
 // conversation a budget cut away still answers its model body here.
+//
+// A budget can also cut the summary inside the fenced body itself, leaving the
+// fence open to the end of the text. That body is the model's text as much as a
+// closed one is, and the fence that opened it still says where it begins, so its
+// range is answered from the block the open fence starts rather than refusing the
+// whole layout.
 func summaryHeadingModelSpans(text string) []textSpan {
 	start, body, end, ok := markdownSectionSpan(text, summaryModelTextHeading)
 	if !ok || !isSummaryTurnOpening(text[:start]) {
@@ -725,13 +731,34 @@ func summaryHeadingModelSpans(text string) []textSpan {
 	}
 	section := text[body:end]
 	if _, ok := soleFencedText(section); !ok {
-		return nil
+		// Only the clipped shape is read here: the fence opens the section and
+		// nothing closes it, which is what a cut inside the body leaves. Prose
+		// before a fence, or prose after a closed one, is a reply writing under
+		// this heading rather than the layout, and it answers no body.
+		if end != len(text) || !opensUnclosedFence(section) {
+			return nil
+		}
 	}
 	blocks := parseMarkdownBlocks(section)
 	if len(blocks) != 1 || blocks[0].BodyStart < 0 {
 		return nil
 	}
 	return []textSpan{{start: body + blocks[0].BodyStart, end: body + blocks[0].BodyEnd}}
+}
+
+// opensUnclosedFence reports whether section's first non-blank line opens a
+// fenced block that no later line closes, which is the shape a budget leaves
+// when it cuts a summary inside the body fenced under its heading.
+func opensUnclosedFence(section string) bool {
+	lines := strings.Split(section, "\n")
+	for len(lines) > 0 && strings.TrimSpace(lines[0]) == "" {
+		lines = lines[1:]
+	}
+	var fence mdfence.Tracker
+	if len(lines) == 0 || !fence.Step(lines[0]) {
+		return false
+	}
+	return !slices.ContainsFunc(lines[1:], fence.Step)
 }
 
 // legacySummaryModelSpans returns the reply a summary in the older layout
