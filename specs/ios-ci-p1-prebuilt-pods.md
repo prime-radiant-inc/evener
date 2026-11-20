@@ -495,3 +495,143 @@ against anything but that same-day band.
   `.a`, `du` for the tree.
 - Cache usage: `gh api repos/prime-radiant-inc/evener/actions/cache/usage` and the
   caches listing.
+
+## 11. E1 measured: runs A, B and C
+
+Lane record. E1 = flip Expo's `buildFromSource` list to empty on a lab branch, fold
+the resulting `Podfile.lock`, build, then run the journeys.
+
+### Run A (44680282631) — the lock mechanism, red for the right reason
+
+Branch `lab/p1-expo-core-prebuilt` @ `08d959090a` (one-line `buildFromSource` flip,
+`-showBuildTimingSummary`, `run-journeys` dispatch gate). Build job 136101758493,
+05:19:43→05:25:10Z (327 s), FAILURE:
+
+```
+CocoaPods resolution differs from the committed lock
+##[error]Process completed with exit code 1.
+```
+
+immediately after `iOS qualification: pod-resolve`, before pod-deployment — the
+predicted `errLockMismatch`, not an infra or resolution failure. `ui-journeys`
+(136103757415) was `skipped`, which also proves the dispatch gate.
+
+Candidate from artifact 14603953601 (85,923 B, 2,795 lines, sha256
+`84aa0d8c4d2142355a501f35d9dbbdb0fe1c6b1bbbd83344b4873c3d7d2c9d90`):
+`PODFILE CHECKSUM` unchanged at `7c31c3c8f2b67ab9c4be6038460369cc413fda3c`,
+COCOAPODS 1.16.2, `ExpoModulesCore (58.0.30)` SPEC CHECKSUM
+`71ef92defce9…` → `2581d6f690…`.
+
+The lock diff is the cascade: five pods move to `:podspec` (ExpoModulesCore,
+ExpoModulesWorklets, ExpoFileSystem, ExpoFont, ExpoImageManipulator) and three
+source pods leave the graph entirely — libwebp (all subspecs), SDWebImage/Core,
+SDWebImageWebPCoder, the last two bundled inside ExpoImageManipulator's prebuilt
+and stripped by `strip_bundled_deps_from_spec`. expo-camera, ExpoModulesJSI and
+28 other Expo modules stay source: `resolve_prebuilt_status` propagates
+unavailability, so one `buildFromSource` entry had kept the whole family on
+source.
+
+### Run B (44706549207) — the mechanism held, the clock did not move
+
+Branch @ `6aa28ba76b` (candidate lock folded in byte-identical), build-only.
+Build job 136187478682, 08:56:43→09:15:11Z (1108 s), SUCCESS. Cold: `Cache not
+found for input keys: ios-deriveddata-macos26-xcode-26.6-0ade225f…`.
+
+Consumed, not fallback — pod-resolve printed `[Expo-precompiled] Precompiled
+modules:` with `📦 ExpoFileSystem (58.0.13)`, `📦 ExpoFont (58.0.11)`,
+`📦 ExpoImageManipulator (58.0.16)` `∟ SDWebImage.xcframework (5.21.6)`
+`∟ SDWebImageWebPCoder.xcframework (0.15.0)`, `📦 ExpoModulesCore (58.0.30)`,
+`📦 ExpoModulesWorklets (58.0.30)`; the base run's
+`⚠️ ExpoModulesCore (58.0.30) (configured by buildFromSource)` and
+`Precompiled modules enabled but no xcframeworks found` lines are gone. The four
+`building from source (prebuilt tarball not found)` lines left are RNReanimated,
+RNScreens, RNWorklets, safe-area-context.
+
+Compiles: **1029/47 → 765/42 (−264 CompileC, −5 SwiftCompile)**, compiling
+targets 46 → 38. Per target: libwebp −126, SDWebImage −73, ExpoModulesCore −40,
+ExpoFileSystem −12, ExpoModulesWorklets −7, SDWebImageWebPCoder −4, ExpoFont −1,
+ExpoImageManipulator −1. Link proof: `-framework ExpoModulesCore/ExpoFileSystem/
+ExpoFont/ExpoImageManipulator/ExpoModulesWorklets/ExpoModulesJSI` and
+`[CP] Embed Pods Frameworks` rsyncing four new `.framework`s into
+`Evener.app/Frameworks`; `** BUILD SUCCEEDED **`.
+
+Phases, marker to marker: setup 154.2 → pod-resolve 122.9 → pod-deployment 30.7
+→ settings 9.1 → **xcodebuild-release 668.8** → build-for-testing 54.9.
+`Build Timing Summary`: CompileC 765 tasks/1192.357 s, PhaseScriptExecution
+58/159.561 s, SwiftCompile 29/79.914 s, SwiftDriver 27/72.220 s, ScanDependencies
+349/57.641 s.
+
+### Run C (44714495859) — the runtime surface held, sample #2 is slower
+
+Same branch, `run-journeys=true`, dispatched 09:53:17Z.
+
+Build job 136214292405, 09:53:22→10:18:35Z (1513 s, 25m13s), SUCCESS, also cold.
+Phases: setup 183.4 → pod-resolve 163.1 → pod-deployment 43.6 → settings 13.4 →
+**xcodebuild-release 923.8** → build-for-testing 87.8. DerivedData: Build 2.0 G,
+Products 806 M, ModuleCache 827 M.
+
+Journeys job 136226604809, 10:18:38→10:34:11Z (15m33s), SUCCESS — inside the
+15m03–18m56s band, at its fast end. `ui-journey` phase 10:20:36→10:33:50Z
+(13m14s), of which xcodebuild test execution was 347.4 s:
+
+```
+==> xcodebuild exit: 0
+==> journey testSavedHubMarkdownAndDraftRecovery passed
+==> journey testSheetGestureKeepsControlsUsable passed
+==> journey testWarmAndColdShareSchemeActivation passed
+==> all three qualification journeys passed
+
+Executed 3 tests, with 0 failures (0 unexpected) in 347.398 (347.404) seconds
+testSavedHubMarkdownAndDraftRecovery  282.485 s
+testSheetGestureKeepsControlsUsable    44.379 s
+testWarmAndColdShareSchemeActivation   20.535 s
+```
+
+Dyld: the app launched four times (`Launch com.primeradiant.evener.native`) and
+no line in the job log or the artifact matches `Library not loaded`, `dyld:`,
+`Symbol not found` or `image not found`. The bundle in the products artifact is
+the one the build job produced with the four `.framework`s embedded; a missing or
+mis-signed dynamic framework aborts at launch and would have failed every
+journey. Three passing journeys is the dyld proof for ExpoModulesCore,
+ExpoFileSystem, ExpoFont and ExpoImageManipulator.
+
+Webp: **not proven.** `grep -c -iE "webp"` and `grep -c -iE "image|photo"` on
+`scripts/native/ios/EvenerQualificationUITests.swift` both return 0, and no log
+in the artifact mentions webp. The SDWebImage/libwebp code now lives inside
+ExpoImageManipulator's xcframework and links into the app, but no journey decodes
+a webp image, so run C says nothing about a decode path regression.
+
+#5992 corpus: first launch → automation session 4.59 s → 30.77 s (**26.2 s**),
+second launch 224.75 s → 227.09 s (**2.3 s**), third and fourth < 0.5 s. The
+26.2 s sits inside #5992's documented 19–60 s first-launch band for *passing*
+runs, and the 2.3 s second launch sits inside its "later launches ~4 s" range.
+Run C is therefore a confirming datum for that issue, not a new pathology — and
+it is not a #5992 failure.
+
+### Verdict
+
+- Mechanism: **verified win.** Five pods consumed as prebuilt xcframeworks, three
+  source pods out of the graph, −264 CompileC, app links and embeds them, app
+  launches, all three journeys pass.
+- Wall clock: **not proven, and no longer looks favourable.** Run B 668.8 s sits
+  inside the 583.0–823.7 s B1 band; run C 923.8 s is above it.
+- Normalised by box speed (pod-install time as the proxy — B1's own slow/fast
+  ratios are 1.413 for xcodebuild and 1.410 for pod install, so box speed scales
+  both), xcodebuild/pod-install is 4.046 and 4.054 for the two B1 controls and
+  4.354 and 4.469 for runs B and C. Both variant samples are ~7–10 % worse per
+  unit of box speed. Caveat: the proxy is unvalidated and two samples are not a
+  band; an interleaved same-day control run is the only clean settlement.
+- The 264 removed compiles were running in parallel with, and were never on, the
+  critical path. What remains sets it: ReactNativeEnrichedMarkdown 167,
+  ZXingObjC 163, RNReanimated 125, RNScreens 91, RNWorklets 58, ReactCodegen 42,
+  and ExpoModulesJSI's ~128 s nested-build script phase.
+
+### Decision
+
+Do not claim a duration win for E1. Land the mechanism only if the product PR can
+carry it on its merits (fewer compiles, smaller build graph), and spend the next
+runs on the four RN pods still building from source (RNReanimated, RNScreens,
+RNWorklets, safe-area-context) and on ExpoModulesJSI's script phase, which is
+where the critical path actually is. Journeys jobs also spend ~6m20s of their
+13m14s phase outside the tests (runtime pair build, hub/provider start, simulator
+boot) — a separate lever from anything in this report.
