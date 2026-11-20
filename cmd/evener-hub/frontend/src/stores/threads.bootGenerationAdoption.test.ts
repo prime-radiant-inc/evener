@@ -6,9 +6,14 @@
 // daemon exited, so it adopts nothing; a *failed* `daemonless` answer is the
 // hub's attested absence and does retire the hold. A forwarded `unknown-owner`
 // failure names no source: it must adopt nothing and retire nothing.
+//
+// Adoption is an OWNED attempt's fact. A read a newer attempt has superseded
+// may not name the ref's source when it finally answers: its token names the
+// daemon it was issued against, not the one serving the ref now.
 import "fake-indexeddb/auto";
 import type { AnyNotification, SessionDelegatesResponse, ThreadReadResponse } from "@evener/appwire-client";
 import { DAEMONLESS_BOOT_GENERATION, type SessionActivityStore, WireError } from "@evener/appwire-client";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { connectReadyFakeClient } from "../testing/connectionTestUtils";
@@ -287,6 +292,118 @@ describe("adopting a source identity reaches the ref's activity store", () => {
         .catch(() => undefined);
 
       expect(heldSequence(activity.store)).toBeUndefined();
+    } finally {
+      stop();
+      activity.release();
+    }
+  });
+
+  // An ORIGINAL initial history read can outlive the daemon it was issued
+  // against: a daemon replacement resync reads, publishes and adopts the new
+  // daemon while that first attempt is still in flight. When the first attempt
+  // finally answers it still names the DEPARTED daemon, and adopting it would
+  // retire the replacement's freshly published hold — which nothing corrects,
+  // because an unchanged hold emits no update of its own.
+  test("an initial history read answering after a replacement resync does not re-adopt the departed daemon", async () => {
+    const initial = deferred<ThreadReadResponse>();
+    // The generation every ordinary read answers with, and the switch that
+    // makes exactly one read hang: the initial attempt's.
+    let generation = "1";
+    let holdInitial = false;
+    let initialIssued = false;
+    const client = connectReadyFakeClient((fake) => {
+      fake.on("thread/read", () => {
+        if (holdInitial && !initialIssued) {
+          initialIssued = true;
+          return initial.promise;
+        }
+        return Promise.resolve(read(generation));
+      });
+      fake.on("evener/thread/delegates/list", () => delegates());
+      fake.on("thread/unsubscribe", () => ({}));
+    });
+    const activity = acquireSessionActivity(client, REF);
+    const stop = activity.store.observe("delegates");
+    try {
+      // A lean watch establishes the ref's subscription and loads the held
+      // delegate row from the daemon generation 1, so the initial read below
+      // can be the one that hangs.
+      await threadsStore.getState().watchThread(REF);
+      await waitFor(() => expect(heldSequence(activity.store)).toBe(7));
+      holdInitial = true;
+      const opening = threadsStore.getState().ensureThread(REF);
+      await waitFor(() => expect(initialIssued).toBe(true));
+
+      // The daemon is replaced while the initial read is still in flight. The
+      // replacement resync publishes generation 2 and adopts it, and the
+      // replacement's own frame numbers a hold under its generation.
+      generation = "2";
+      await threadsStore.getState().refreshThread(REF);
+      await waitFor(() => expect(activity.store.bootGeneration).toBe("2"));
+      client.emitNotification(holdFrame("2"));
+      await waitFor(() => expect(heldSequence(activity.store)).toBe(8));
+
+      // The superseded initial attempt answers with the departed generation.
+      initial.resolve(read("1"));
+      await opening;
+
+      expect(activity.store.bootGeneration).toBe("2");
+      expect(heldSequence(activity.store)).toBe(8);
+    } finally {
+      stop();
+      activity.release();
+    }
+  });
+
+  // A latest-window read is superseded within its own map by the next begin,
+  // which clears its base model — but a WATCHED read and a TRACKED read keep
+  // separate pending entries, so a watched attempt can still hold its base
+  // model after a tracked read has published over it. Its rejection's
+  // `daemonless` attests the absence the watcher's own daemon was issued
+  // against, not the ref's current source, and retiring every hold on it
+  // clears a live replacement's wait.
+  test("a stale daemonless rejection from a superseded watched read does not clear the replacement's hold", async () => {
+    const staleWatched = deferred<ThreadReadResponse>();
+    let readsServed = 0;
+    const client = connectReadyFakeClient((fake) => {
+      fake.on("thread/read", () => {
+        readsServed += 1;
+        if (readsServed === 1) return Promise.resolve(read("1"));
+        // The rich re-read of the same ref is the attempt that answers late.
+        if (readsServed === 2) return staleWatched.promise;
+        return Promise.resolve(read("2"));
+      });
+      fake.on("evener/thread/delegates/list", () => delegates());
+      fake.on("thread/unsubscribe", () => ({}));
+    });
+    const activity = acquireSessionActivity(client, REF);
+    const stop = activity.store.observe("delegates");
+    try {
+      await threadsStore.getState().watchThread(REF);
+      await waitFor(() => expect(heldSequence(activity.store)).toBe(7));
+      // A rich watched re-read inherits the watched model's generation 1 as
+      // its base model, and stays pending while the tracked read below runs.
+      const upgrading = threadsStore.getState().watchThread(REF, { includeTurns: true });
+      await waitFor(() => expect(readsServed).toBe(2));
+
+      // A pane opens the ref and reads the daemon that replaced generation 1.
+      await threadsStore.getState().ensureThread(REF);
+      await waitFor(() => expect(activity.store.bootGeneration).toBe("2"));
+      client.emitNotification(holdFrame("2"));
+      await waitFor(() => expect(heldSequence(activity.store)).toBe(8));
+
+      // The superseded watched attempt answers with attested absence for the
+      // daemon it was issued against.
+      staleWatched.reject(
+        new WireError("thread history failed", -32000, {
+          evenerErrorInfo: "transcriptHistoryFailed",
+          bootGeneration: DAEMONLESS_BOOT_GENERATION,
+        }),
+      );
+      await upgrading.catch(() => undefined);
+
+      expect(activity.store.bootGeneration).toBe("2");
+      expect(heldSequence(activity.store)).toBe(8);
     } finally {
       stop();
       activity.release();

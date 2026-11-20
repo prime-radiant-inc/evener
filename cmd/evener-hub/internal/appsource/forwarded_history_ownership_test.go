@@ -64,33 +64,14 @@ func TestRemoteHubReadForwardsLegacyHistoryAbsenceAsUnknownOwner(t *testing.T) {
 	}
 }
 
-// The other direction: a hub's own confirmed absence is evidence it can stand
-// behind - it asked the roster and got absence - so it must reach the client
-// still named daemonless. Normalizing at the remote boundary must not swallow
-// the one token that really ends a wait.
-func TestLocalHistoryAbsenceKeepsItsDaemonlessStamp(t *testing.T) {
-	t.Parallel()
-	legacy := appwire.WireError{
-		Code:    appwire.CodeInternalError,
-		Message: "thread history failed",
-		Data:    appwire.ErrorData{EvenerErrorInfo: appwire.ErrorTranscriptHistoryFailed},
-	}
-	confirmed := appwire.WithHistoryReadIdentity(legacy, appwire.DaemonlessBootGeneration, 2)
-	data, ok := confirmed.Data.(appwire.HistoryReadErrorData)
-	if !ok {
-		t.Fatalf("Data = %T, want HistoryReadErrorData", confirmed.Data)
-	}
-	if data.BootGeneration != appwire.DaemonlessBootGeneration || data.Epoch == nil || *data.Epoch != 2 {
-		t.Fatalf("confirmed absence = %q epoch %v, want daemonless epoch 2", data.BootGeneration, data.Epoch)
-	}
-}
-
-// The REMOTE attested case, which is different from the local one above: the
-// forwarding layer normalizes at the boundary, so a peer that established the
-// absence must say so or its real finding is demoted along with a legacy
-// peer's blanket stamp. Without this the browser would keep a hold on a daemon
-// that has exited, for as long as the saved history stays unreadable - and an
-// unchanged hold emits no update of its own to correct it.
+// The other direction, over a hop: the forwarding layer normalizes at the
+// remote boundary, so a peer that established the absence must say so or its
+// real finding is demoted along with a legacy peer's blanket stamp. Without
+// this the browser would keep a hold on a daemon that has exited, for as long
+// as the saved history stays unreadable - and an unchanged hold emits no
+// update of its own to correct it. The hub's own local stamp is pinned where
+// that stamp is chosen (cmd/evener-hub's
+// TestPastFallbackWithoutServingSourceStampsDaemonless).
 func TestRemoteHubKeepsAttestedAbsence(t *testing.T) {
 	t.Parallel()
 	source, _ := newScriptedRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {

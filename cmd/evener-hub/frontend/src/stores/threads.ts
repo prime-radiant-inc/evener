@@ -4382,6 +4382,12 @@ interface ThreadHydration {
   response: ThreadReadResponse;
   fixtureNotifications: ReceivedTranscriptUpdate[];
   discardHeldHistory?: true;
+  // The source identity this read names for the ref, already filtered through
+  // `liveBootGeneration`: a `daemonless` success is saved-history provenance
+  // and names no source. The publication gates below adopt it, so a superseded
+  // attempt's late response cannot re-adopt the daemon a replacement resync
+  // already retired.
+  sourceBootGeneration?: string;
 }
 
 // The two hydration lifecycles read a ref the same way and differ in these
@@ -4419,6 +4425,27 @@ function adoptThreadSourceBootGeneration(
 ): void {
   if (retiresBootGeneration(heldBootGeneration, bootGeneration)) return;
   adoptSessionActivityBootGeneration(client, ref, bootGeneration);
+}
+
+// Whether the attempt that produced a read's outcome still owns the ref's
+// hydration: its pending entry is the current one for its map, no newer
+// history read of either kind has been issued since (`readSequence`, the only
+// ordering that spans the tracked and watched maps), it read under the
+// connection and ready generation still wired, and (tracked reads) the ref
+// still has a canonical owner. Publication re-decides the same facts, and
+// publishThreadRepairing already fences its verdict on the same sequence.
+//
+// An adoption that skipped them would let a superseded attempt re-adopt the
+// daemon it was issued against — an initial read answering after a replacement
+// resync already adopted the daemon that replaced it, or a watched rejection
+// landing after the tracked read that published over it — and retire the
+// replacement's holds. Nothing corrects that: an unchanged hold emits no
+// update of its own.
+function hydrationAttemptOwnsRef(ref: string, pending: PendingThreadHydration, tracked: boolean): boolean {
+  if (pending.client !== getWiredClient() || pending.epoch !== getReadyEpoch()) return false;
+  if ((threadReadSequences.get(ref) ?? 0) !== pending.readSequence) return false;
+  if (!tracked) return pendingWatchedHydrations.get(ref) === pending;
+  return pendingThreadHydrations.get(ref) === pending && canonicalThreadOwnerActive(ref);
 }
 
 // A history-read rejection can attest the source that failed while naming no
@@ -4498,22 +4525,24 @@ async function readThreadHydration(
     // this hydration's own base model (superseded generations are ignored by
     // applyHistoryReadFailure itself).
     if (isTranscriptHistoryFailedError(err) && pending.baseModel) {
-      adoptThreadSourceBootGeneration(
-        client,
-        ref,
-        readErrorBootGeneration(err),
-        pending.baseModel.history?.bootGeneration,
-      );
+      const ownsAttempt = hydrationAttemptOwnsRef(ref, pending, tracked);
+      // A rejection from a superseded attempt may change no activity: the
+      // replacement's resync already adopted the source now serving the ref,
+      // and this read's own token names the daemon it was issued against.
+      if (ownsAttempt) {
+        adoptThreadSourceBootGeneration(
+          client,
+          ref,
+          readErrorBootGeneration(err),
+          pending.baseModel.history?.bootGeneration,
+        );
+      }
       const failedModel = applyHistoryReadFailure(pending.baseModel, errorText(err), pending.requestGeneration ?? 0);
       const entry = tracked ? existingEntryRoute(ref) : undefined;
       if (!tracked) {
         putWatchedThreadModel(ref, failedModel);
       } else if (entry?.repository) {
-        if (
-          pending.client === getWiredClient() &&
-          pending.epoch === getReadyEpoch() &&
-          pendingThreadHydrations.get(ref) === pending
-        ) {
+        if (ownsAttempt) {
           entry.repository.acceptReadFailure(errorText(err), pending.requestGeneration ?? 0, {
             lifetime: entry.lifetime,
           });
@@ -4547,16 +4576,6 @@ async function readThreadHydration(
   // watched read never asked for history: its absent cursor is not a
   // source-named end of older history (#5585).
   const frontier = includeTurns ? frontierFromCursor(response) : "unknown";
-  // The read names the source that served it. Adopt it before any model this
-  // attempt builds can be published, so a replaced daemon's held rows leave in
-  // the same step the replacement's history lands. A `daemonless` answer is
-  // saved-history provenance instead, and must leave the live source standing.
-  adoptThreadSourceBootGeneration(
-    client,
-    ref,
-    liveBootGeneration(response.bootGeneration),
-    pending.baseModel?.history?.bootGeneration,
-  );
   const model =
     !discardHeldHistory && pending.baseModel?.history !== undefined
       ? tracked
@@ -4580,10 +4599,18 @@ async function readThreadHydration(
   const fixtureNotifications = pending.notifications.slice();
   const cutModel = withoutResolvedEscalations(ref, pending, model);
   applyHydrationResponseCut(pending, ref, cutModel);
+  // The read names the source that served it, and a `daemonless` answer names
+  // none (saved-history provenance, not proof the daemon exited). Adopting it
+  // is the publication gates' call, not this attempt's: only an attempt that
+  // still owns the ref may change its activity, or a superseded initial read
+  // returning after a replacement resync would re-adopt the departed daemon
+  // and retire the replacement's holds.
+  const sourceBootGeneration = liveBootGeneration(response.bootGeneration);
   return {
     model: cutModel,
     response,
     fixtureNotifications,
+    sourceBootGeneration,
     ...(discardHeldHistory ? { discardHeldHistory: true } : {}),
   };
 }
@@ -6173,6 +6200,7 @@ function publishThreadHydration(
   pending: PendingThreadHydration,
   model: ThreadModel,
   adoptedEntryRead: boolean,
+  sourceBootGeneration: string | undefined,
 ): ThreadModel | null {
   if (pendingThreadHydrations.get(ref) !== pending) return null;
   if (getReadyEpoch() !== pending.epoch || getWiredClient() !== pending.client) return null;
@@ -6184,6 +6212,18 @@ function publishThreadHydration(
     retirePendingHydration(ref, pending, pendingThreadHydrations);
     return null;
   }
+  // The attempt that owns the ref is the only one whose read may name the
+  // source serving it. Adopted HERE, past every ownership check above and
+  // before the model this read built is published, so a replaced daemon's
+  // held rows leave in the same step the replacement's history lands - and a
+  // superseded read's late response, which returned null above, adopts
+  // nothing and retires nothing.
+  adoptThreadSourceBootGeneration(
+    pending.client,
+    ref,
+    sourceBootGeneration,
+    pending.baseModel?.history?.bootGeneration,
+  );
 
   const live = threadsStore.getState().threads.get(ref);
   const entry = existingEntryRoute(ref);
@@ -6354,7 +6394,13 @@ async function publishAndReconcileThreadHydration(
 ): Promise<ThreadModel | null> {
   if (pendingThreadHydrations.get(ref) !== pending || !canonicalThreadOwnerActive(ref)) return null;
   const adoptedEntryRead = (await acceptEntryTranscriptHydration(ref, pending, hydration)) === true;
-  const published = publishThreadHydration(ref, pending, hydration.model, adoptedEntryRead);
+  const published = publishThreadHydration(
+    ref,
+    pending,
+    hydration.model,
+    adoptedEntryRead,
+    hydration.sourceBootGeneration,
+  );
   if (!published) return null;
   pruneConsumedQueueRows(ref, published);
   const snapshotCurrent =
@@ -6643,6 +6689,7 @@ function publishWatchedHydration(
   model: ThreadModel,
   includeTurns: boolean,
   generation: number,
+  sourceBootGeneration: string | undefined,
 ): ThreadModel | null {
   // Same ready-generation gate as publishThreadHydration, for the same reason.
   // No owner check beside it: unlike a pinned thread ref, a watched ref cannot
@@ -6652,6 +6699,14 @@ function publishWatchedHydration(
   // entry exists. storeWatchedModel re-decides both a call later regardless.
   if (pendingWatchedHydrations.get(ref) !== pending) return null;
   if (getReadyEpoch() !== pending.epoch) return null;
+  // Same gate on the adoption, for the same reason as publishThreadHydration:
+  // a watched read superseded by a newer one may not name the source.
+  adoptThreadSourceBootGeneration(
+    pending.client,
+    ref,
+    sourceBootGeneration,
+    pending.baseModel?.history?.bootGeneration,
+  );
 
   const live = threadsStore.getState().watchedThreads.get(ref);
   const replayed = replayHydrationNotifications(preserveLiveActiveTurn(model, live), pending.notifications);
@@ -7643,10 +7698,10 @@ async function refreshWatchedThread(
   );
   // Same as refreshTrackedThread: publishWatchedHydration re-decides this.
   const hydration = readThreadHydration(client, ref, Date.now(), pending, { kind: "watched", includeTurns }).then(
-    ({ model }) =>
+    ({ model, sourceBootGeneration }) =>
       isDiscardedReadResult(pending, model)
         ? (pending.baseModel ?? null)
-        : publishWatchedHydration(ref, pending, model, includeTurns, generation),
+        : publishWatchedHydration(ref, pending, model, includeTurns, generation, sourceBootGeneration),
   );
   const hasPublishedModel = threadsStore.getState().watchedThreads.has(ref);
   const hasSufficientPublishedModel =
@@ -8626,7 +8681,9 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         kind: "watched",
         includeTurns: needTurns,
       })
-        .then(({ model }) => publishWatchedHydration(ref, pending, model, needTurns, generation))
+        .then(({ model, sourceBootGeneration }) =>
+          publishWatchedHydration(ref, pending, model, needTurns, generation, sourceBootGeneration),
+        )
         .finally(() => {
           retirePendingHydration(ref, pending, pendingWatchedHydrations);
         });
