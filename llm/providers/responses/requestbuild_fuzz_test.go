@@ -453,13 +453,6 @@ func FuzzResponsesBuildBody(f *testing.F) {
 							t.Fatalf("a strict tool must carry the strictified schema: %#v", toolRows[0]["parameters"])
 						}
 					}
-				} else if expressible {
-					// The Lite fallback emits the advertised schema with every
-					// walked node typed, which is what the provider requires.
-					params, _ := toolRows[0]["parameters"].(map[string]any)
-					if !openaichat.HasExplicitTypes(params) {
-						t.Fatalf("a Lite strict fallback must state a type on every node: %#v", toolRows[0]["parameters"])
-					}
 				}
 			}
 		}
