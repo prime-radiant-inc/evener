@@ -154,7 +154,20 @@ type Session struct {
 	// the delegate-create path computes the ceiling without holding s.mu, while
 	// the prompt-render path computes it already holding s.mu, and s.mu is not
 	// reentrant. Nothing takes s.mu while holding this lock.
-	delegateExclusionsMu   sync.RWMutex
+	delegateExclusionsMu sync.RWMutex
+	// evidenceProbes names the workspaces that have a CLI-MCP evidence check
+	// outstanding: at most one per key, so a workspace whose mount has stopped
+	// answering gets ONE parked check rather than one per model request. A
+	// request that finds its workspace's key taken answers unknown reachability
+	// immediately instead of starting a second check into the same stall, and the
+	// goroutine that claimed the key removes it when it finally answers.
+	//
+	// It is a lock of its own, not a ride on delegateExclusionsMu: an entry is
+	// added and removed around a check that takes no other lock, and sharing the
+	// read-mostly lock would make every ceiling build wait on map bookkeeping it
+	// never reads.
+	evidenceProbesMu       sync.Mutex
+	evidenceProbes         map[string]struct{}
 	hubRegistry            *tool.Registry
 	id                     string
 	cfg                    SessionConfig
@@ -1483,15 +1496,6 @@ type Session struct {
 	systemPromptOverride string
 	cachedSystemPrompt   string
 	promptSourceLog      []promptSource
-	// appendSnapshot records what the last --system-prompt-append load found:
-	// which files it read, and which it could not. A prompt rebuild that is NOT
-	// about those files reuses it instead of reading them again. A rebuild caused
-	// by a delegate-reachability change holds s.mu while it runs, and os.ReadFile
-	// does not observe cancellation: an append file that was readable at startup
-	// and whose mount has since stalled would block request preparation with the
-	// session lock held, where not even Stop can intervene. Nil means nothing has
-	// been loaded yet, and every ordinary rebuild loads and replaces it.
-	appendSnapshot *appendContentSnapshot
 
 	envContextPending atomic.Bool // the next request owes an environment block
 	// envContextFoldRemoved is set by a fold that folded the last environment
@@ -1501,27 +1505,6 @@ type Session struct {
 	envContextMCPConnected atomic.Bool // set when round-start MCP redial connects new tools
 	systemPromptFrozen     bool        // cachedSystemPrompt is the immutable launch prompt
 	persistFallbackPrompt  bool        // a restored header carries none, so meta records it
-}
-
-// appendContentSnapshot is one load of the append files, keyed by the exact path
-// list it was read for. The key is part of the value because a snapshot is only
-// a valid substitute for the read it replaces: a different list of paths asks a
-// different question.
-//
-// An omission is part of the answer. A partial load is recorded as it happened —
-// the files that read, in configured order, plus the paths that did not — so a
-// later reuse discloses the same omission the read would have. Substituting only
-// the files that once loaded would turn a later unreadable file into a silent
-// resurrection of instructions that are no longer on disk.
-type appendContentSnapshot struct {
-	paths      []string
-	loaded     []appendContentEntry
-	unreadable []string
-}
-
-type appendContentEntry struct {
-	path    string
-	content string
 }
 
 type sessionDetachedProcess struct {

@@ -81,6 +81,28 @@ func loadFileWithEnv(path string, env valueexpr.Env) ([]ServerConfig, error) {
 	})
 }
 
+// LoadFileUntrusted is LoadFile for a config layer evener does not author —
+// the project's .evener/mcp.json or a plugin's .mcp.json. A $(command)
+// expression here would run on the host the moment the config loads, so it
+// is refused at parse time instead of executed.
+//
+// It is the file-level entry point for the same trust class ParseServerMapUntrusted
+// serves for an already-read server map; discovery reads its layers through
+// layerRead, which parses each layer once and records the evidence for those
+// bytes, so this exists for callers that hold a path and no discovery options.
+func LoadFileUntrusted(path string) ([]ServerConfig, error) {
+	return loadFileUntrustedWithEnv(path, processExpansionEnv())
+}
+
+// loadFileUntrustedWithEnv is LoadFileUntrusted with the expansion environment
+// supplied by the caller. It is a thin wrapper over the shared untrusted parser,
+// so a $(command) is refused here exactly as it is for a project layer.
+func loadFileUntrustedWithEnv(path string, env valueexpr.Env) ([]ServerConfig, error) {
+	return loadFile(path, func(s string) (string, error) {
+		return expandEnvVarsUntrustedInEnv(s, env)
+	})
+}
+
 // readConfigFile is execenv.ReadFileCapped behind a package variable, so a test
 // can count how many times discovery reads a layer and can serve different bytes
 // to a second read. The single-read property is the security claim these tests

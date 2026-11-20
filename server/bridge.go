@@ -44,7 +44,7 @@ func BridgeWithObserver(srv *Server, eventCh <-chan events.SessionEvent, observe
 // nobody noticed.
 //
 // So: EMIT WITH NO LOCK HELD. agent/session_prompts.go is the worked example —
-// renderSystemPromptWithAppends returns its diagnostic instead of emitting it,
+// renderSystemPrompt returns its diagnostic instead of emitting it,
 // precisely because three of its callers hold s.mu.
 //
 // DO NOT READ THE LIST BELOW AS COMPLETE. The reachable set spans at least four

@@ -167,6 +167,34 @@ func (s *Session) delegateAgentTypeNames() []string {
 	return s.delegatableAgentNames()
 }
 
+// withoutDelegateAllowance hides the delegation_allowance property when no legal
+// grant lets the child delegate, so the model is not offered a parameter it
+// cannot meaningfully set.
+//
+// It returns a definition whose property map is its OWN. The definition it is
+// handed can be a copy of a published registration — Manager composition's is —
+// and Registry.Get hands out the tool struct by value while Parameters is the
+// registered map. A delete through that copy would edit the schema every other
+// reader sees, including argument repair on the request being prepared.
+func withoutDelegateAllowance(td llm.ToolDefinition) llm.ToolDefinition {
+	properties, ok := td.Parameters["properties"].(map[string]any)
+	if !ok {
+		return td
+	}
+	if _, present := properties["delegation_allowance"]; !present {
+		return td
+	}
+	clonedProperties := maps.Clone(properties)
+	clonedParameters := maps.Clone(td.Parameters)
+	if clonedProperties == nil || clonedParameters == nil {
+		return td
+	}
+	delete(clonedProperties, "delegation_allowance")
+	clonedParameters["properties"] = clonedProperties
+	td.Parameters = clonedParameters
+	return td
+}
+
 // sessionShellDefinition is the shell schema for this session's live
 // environment: mode "detached" is advertised only when the environment reports
 // it can disown a process (issue #4422). Both the advertised cache and the
@@ -308,48 +336,26 @@ func (s *Session) rebuildToolDefsCache() {
 		if registered[td.Name] {
 			// Manager composition already owns both the ordinary and hub branches.
 			// Keep its parameters as well as its description on provider requests.
+			// Composition writes the capability roster too, on every rebuild, so
+			// there is one writer of this schema and nothing left to re-decorate
+			// here.
 			if _, composed := s.hubOrdinary[td.Name]; s.hubEnabled && composed {
 				td = s.reg.Get(td.Name).Definition
 			}
 			if td.Name == "delegate" {
 				if !s.hubEnabled {
 					td = s.delegateToolDefinition()
-				} else {
-					// The hub branch keeps Manager composition's parameters and
-					// validation, but its agent_type DESCRIPTION must come from the
-					// same current registry and exclusion verdict as the prompt
-					// roster. Manager composition saved that description before MCP
-					// initialization, so serving it verbatim shows the model a
-					// startup capability list while the prompt a few lines away
-					// advertises the current one — the same role, described two ways
-					// on one request. A config edit that makes a CLI-only tool
-					// reachable refreshes the prompt and leaves this schema behind,
-					// so the tool appears in the roster and is missing from the
-					// schema that grants it.
-					s.applyDelegateCapabilityRoster(&td)
-					// Publish the refreshed schema as a NEW registration. The
-					// request path serves the registered definition
-					// (s.reg.Get(td.Name) above), so leaving the old registration in
-					// place would advertise the stale roster on every later request.
-					// Mutating it in place is not the alternative: Registry.Get
-					// returns the tool by value while its Parameters map is the
-					// registered one, so an in-place write edits a map other readers
-					// are using. Registering a copy replaces the whole value under
-					// the registry's own lock, which is the only write that is safe
-					// while a request is preparing a call.
-					if regTool := s.reg.Get("delegate"); regTool != nil {
-						updated := *regTool
-						updated.Definition = td
-						_ = s.reg.Register(updated)
-					}
 				}
 				// When no legal grant lets the child delegate, delegation_allowance has
 				// a single useful value — a no-op knob. Hide it so the model is not
 				// offered a parameter it cannot meaningfully set.
+				//
+				// The delete runs on a CLONE. In Manager mode td is composition's
+				// registered definition, whose Parameters map IS the registered one:
+				// a delete through it would edit the schema argument repair and every
+				// other reader see, on the very request this cache serves.
 				if !canGrantDelegation(s.delegationAllowance) {
-					if props, ok := td.Parameters["properties"].(map[string]any); ok {
-						delete(props, "delegation_allowance")
-					}
+					td = withoutDelegateAllowance(td)
 				}
 				if !s.hubEnabled && s.delegationAllowance > 0 && s.reg != nil && s.reg.Get("delegate") != nil {
 					regTool := s.reg.Get("delegate")

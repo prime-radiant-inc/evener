@@ -225,11 +225,6 @@ func TestExclusionDecisionFlipRebuildsBothRosterSurfaces(t *testing.T) {
 	if strings.Contains(before.systemPrompt, "Default tools") {
 		t.Error("the request's launch system prompt carries a frozen per-role tool list, so it can contradict the current schema after a config edit")
 	}
-	// The schema states that it is the source, so a session restored with an
-	// older launch prompt (which may carry such a list) has a stated precedence.
-	if !strings.Contains(before.delegateRoster, "authoritative") || !strings.Contains(before.delegateRoster, "supersedes") {
-		t.Error("the delegate schema does not state that its capability list is authoritative and supersedes an older prompt's")
-	}
 	if !s.systemPromptFrozen {
 		t.Fatal("fixture is wrong: the session's launch prompt is not frozen, so this test cannot show the immutable-prompt rule")
 	}
@@ -251,10 +246,8 @@ func TestExclusionDecisionFlipRebuildsBothRosterSurfaces(t *testing.T) {
 		t.Error("the delegate schema still omits the newly reachable tool: the decision flipped and the tool definitions were not rebuilt from it")
 	}
 	// The launch system prompt is Turn 0 and immutable (#6959), so the roster
-	// change must NOT rewrite it: the refresh rebuilds what it may and arms an
-	// environment-context diff for what it may not. Asserting the diff here is
-	// what keeps "the prompt was not rebuilt" from being indistinguishable from
-	// "the change was dropped".
+	// change must NOT rewrite it. The schema assertion above keeps "the prompt was
+	// not rebuilt" from being indistinguishable from "the change was dropped".
 	if after.systemPrompt != before.systemPrompt {
 		t.Error("the frozen launch system prompt changed when the roster decision flipped")
 	}

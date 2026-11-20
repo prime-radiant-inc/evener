@@ -9,7 +9,6 @@ import (
 	"errors"
 	"strings"
 
-	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/tool"
@@ -421,14 +420,4 @@ func delegateToolNameCeiling(reg *tool.Registry, resultToolName string, allTools
 		return nil
 	}
 	return delegateToolNameCeilingFromRegistered(reg.RegisteredNames(), reg, resultToolName, allTools, allowed, denied, canDelegate, isolation)
-}
-
-// buildPromptData is buildPromptDataWithAppends with the append files read again.
-func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData, []promptSource) {
-	return s.buildPromptDataWithAppends(env, false)
-}
-
-// renderSystemPrompt is renderSystemPromptWithAppends with the append files read again.
-func (s *Session) renderSystemPrompt(env execenv.ExecutionEnvironment) (string, string, bool) {
-	return s.renderSystemPromptWithAppends(env, false)
 }

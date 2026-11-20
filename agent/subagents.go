@@ -869,9 +869,29 @@ func (s *Session) probeCLIEvidenceFresh(ctx context.Context, env execenv.Executi
 // work: the goroutine finishes (and is collected) whenever the filesystem
 // answers, and this caller returns the moment its context says stop. The
 // buffered result channel is what lets that goroutine exit without a receiver.
+//
+// Because the abandoned goroutine outlives the caller, this is also where the
+// ONE-at-a-time rule lives: at most one check is outstanding per workspace. A
+// caller whose workspace already has one answers unknown reachability
+// immediately rather than parking a second goroutine in the same stall, so a
+// mount that stopped answering costs one parked check for the session instead of
+// one per model request plus a full budget of waiting each time. The key is the
+// workspace, so a healthy second workspace is unaffected — its own check runs.
 func (s *Session) boundedEvidenceCurrent(ctx context.Context, evidence cliMCPClassificationEvidence, env execenv.ExecutionEnvironment) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	key := evidenceProbeKey(env)
+	if !s.claimEvidenceProbe(key) {
+		return false
+	}
 	result := make(chan bool, 1)
 	go func() {
+		// Released however the check ends, including after this caller gave up:
+		// until the read answers, the workspace really does have a check
+		// outstanding, and answering "unknown" is honest. The removal is what lets
+		// a later request probe this workspace again.
+		defer s.releaseEvidenceProbe(key)
 		result <- evidence.layers.EvidenceCurrent(env)
 	}()
 	select {
@@ -880,6 +900,48 @@ func (s *Session) boundedEvidenceCurrent(ctx context.Context, evidence cliMCPCla
 	case <-ctx.Done():
 		return false
 	}
+}
+
+// evidenceProbeKey names the workspace a check is about. The working directory
+// is the identity the check itself reads through — the project layer resolves
+// from it and the evidence is compared against what it holds — and it is a
+// string, so it can key a map. The environment cannot: `==` on two interfaces
+// holding the same non-comparable dynamic type panics, and an environment is an
+// interface a struct value may satisfy.
+//
+// An environment the check cannot name is the empty key, which keeps those
+// callers on the same one-at-a-time rule instead of exempting them from it.
+func evidenceProbeKey(env execenv.ExecutionEnvironment) string {
+	if env == nil {
+		return ""
+	}
+	return env.WorkingDirectory()
+}
+
+// claimEvidenceProbe records key as having a check outstanding, or reports that
+// it already does. A nil map is created on first use, so a zero Session — which
+// tests build directly — claims normally.
+func (s *Session) claimEvidenceProbe(key string) bool {
+	s.evidenceProbesMu.Lock()
+	defer s.evidenceProbesMu.Unlock()
+	if _, inFlight := s.evidenceProbes[key]; inFlight {
+		return false
+	}
+	if s.evidenceProbes == nil {
+		s.evidenceProbes = make(map[string]struct{})
+	}
+	s.evidenceProbes[key] = struct{}{}
+	return true
+}
+
+// releaseEvidenceProbe clears key, so a workspace whose check has finished can
+// be probed again. A key nobody holds is not an error: the release is what the
+// completing check owes, and a double release can only mean this ran after the
+// map was already cleared for that key.
+func (s *Session) releaseEvidenceProbe(key string) {
+	s.evidenceProbesMu.Lock()
+	defer s.evidenceProbesMu.Unlock()
+	delete(s.evidenceProbes, key)
 }
 
 func (s *Session) setManagerOnlyTools(names map[string]bool) {
@@ -937,21 +999,14 @@ func (s *Session) startupMCPProjectLayer() *mcpconfig.LayerEvidence {
 // workspace, and rebuilds the delegate schema from that answer only when the
 // answer differs from the decision the schema was built from.
 //
-// It rebuilds the TOOL DEFINITIONS always, and the SYSTEM PROMPT only when that
-// prompt is still mutable. In the ordinary case it is not: the launch prompt is
-// Turn 0 and immutable (#6959), <available_agents> no longer carries a per-role
-// tool list (that list moved to the agent_type schema, which is rebuilt here),
-// so a roster flip cannot change a byte of it. Re-rendering anyway would arm an
-// environment-context diff that then rendered nothing — the runtime
+// It rebuilds the TOOL DEFINITIONS and nothing else. The launch prompt is Turn 0
+// and immutable (#6959), and <available_agents> no longer carries a per-role tool
+// list — that list moved to the agent_type schema, which is rebuilt here — so a
+// roster flip cannot change a byte of the prompt. Re-rendering it anyway would
+// arm an environment-context diff that then rendered nothing: the runtime
 // <environment_context> tracks the parent's CALLABLE tool names, and a role's
-// ceiling is not one of them — so the model would be told a change was pending
-// and handed no statement of it.
-//
-// A session whose launch render FAILED has no immutable prompt yet
-// (systemPromptFrozen is false), and there the roster is part of the prompt
-// that will be sent, so it is re-rendered from the --system-prompt-append
-// snapshot exactly as before: re-reading the files with s.mu held is what a
-// stalled mount turns into a wedged session.
+// ceiling is not one of them, so the model would be told a change was pending and
+// handed no statement of it.
 //
 // It takes s.mu itself and must be called without it. The caller's context
 // bounds the probe, so Stop can interrupt preparation instead of leaving it on a
@@ -1000,12 +1055,7 @@ func (s *Session) refreshCachesForExclusionChangeContext(ctx context.Context) {
 	}
 	s.setRosterExclusion(wantExclude)
 	s.rebuildToolDefsCache()
-	promptWarning := ""
-	if !s.systemPromptFrozen {
-		promptWarning, _ = s.refreshSystemPromptCacheWithAppends(s.env, true) // already holding s.mu; currentEnv() would deadlock
-	}
 	s.mu.Unlock()
-	s.reportPromptRenderFailure(promptWarning)
 }
 
 // resetRosterExclusionForWorkspaceChange runs when the session's workspace

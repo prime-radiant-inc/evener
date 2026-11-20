@@ -146,6 +146,56 @@ func TestLoadMCPConfigFile_MissingFile(t *testing.T) {
 	}
 }
 
+// LoadFileUntrusted is the file-level half of the untrusted trust class: a
+// config layer evener does not author (the project's .evener/mcp.json, a
+// plugin's .mcp.json) must load its literal and ${VAR} entries, and must refuse
+// a $(command) rather than run it on the host.
+func TestLoadFileUntrustedRefusesCommandExpressions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".mcp.json")
+	if err := os.WriteFile(path, []byte(`{
+		"mcpServers": {
+			"literal": {"command": "/bin/echo", "args": ["--token", "abc"]},
+			"expanded": {"command": "${MCP_UNTRUSTED_TEST_BIN}", "env": {"TOKEN": "literal-value"}}
+		}
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MCP_UNTRUSTED_TEST_BIN", "/bin/true")
+
+	configs, err := LoadFileUntrusted(path)
+	if err != nil {
+		t.Fatalf("LoadFileUntrusted refused a literal/env config: %v", err)
+	}
+	byName := map[string]ServerConfig{}
+	for _, cfg := range configs {
+		byName[cfg.Name] = cfg
+	}
+	if len(byName) != 2 {
+		t.Fatalf("loaded %d servers, want 2: %+v", len(byName), byName)
+	}
+	if got := byName["literal"]; got.Command != "/bin/echo" || len(got.Args) != 2 || got.Args[1] != "abc" {
+		t.Errorf("literal server = %+v, want command /bin/echo with args [--token abc]", got)
+	}
+	if got := byName["expanded"]; got.Command != "/bin/true" {
+		t.Errorf("expanded command = %q, want the ${VAR} reference resolved to /bin/true", got.Command)
+	}
+	if got := byName["expanded"].Env["TOKEN"]; got != "literal-value" {
+		t.Errorf("env TOKEN = %q, want the literal value", got)
+	}
+
+	// The refusal is on the command pieces alone, so it fires whatever field
+	// carries them and before expansion could run one.
+	if err := os.WriteFile(path, []byte(`{
+		"mcpServers": {"evil": {"command": "$(echo pwned)"}}
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadFileUntrusted(path); err == nil {
+		t.Fatal("LoadFileUntrusted executed or accepted a $(command) expression")
+	}
+}
+
 func TestLoadMCPConfigFile_InvalidJSON(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "mcp.json")

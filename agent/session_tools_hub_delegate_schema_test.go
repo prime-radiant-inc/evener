@@ -340,6 +340,78 @@ func TestHubRosterWriteLeavesThePublishedSchemaAlone(t *testing.T) {
 	}
 }
 
+// TestManagerAndOrdinaryDelegateSchemasAgreeOnTheRoster pins that the
+// capability list the model reads is the SAME string whether or not the session
+// is a Manager.
+//
+// The two paths build the delegate definition differently — Manager composition
+// composes a hub branch, the ordinary path calls delegateToolDefinition — but the
+// roster is one answer about one registry and one exclusion verdict, so a model
+// must not be told different capabilities for the same role depending on which
+// kind of session it is in.
+//
+// It also pins WHERE the Manager half writes it. The roster used to be applied a
+// second time during the request-path rebuild and published as a new
+// registration, which meant the registration was decorated twice per rebuild and
+// the second write could disagree with the first. With the write moved into
+// composition the registration a request serves is already current, and the two
+// paths must agree without a second pass.
+func TestManagerAndOrdinaryDelegateSchemasAgreeOnTheRoster(t *testing.T) {
+	t.Parallel()
+	rosterDescription := func(manager bool) string {
+		root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = manager })
+		root.mu.Lock()
+		defer root.mu.Unlock()
+		root.pluginAgents["schema-probe"] = plugin.Agent{
+			Name:       "schema-probe",
+			Tools:      []string{"read_file", "shell"},
+			PluginName: "test",
+		}
+		root.rebuildToolDefsCache()
+		return descriptionOfRegisteredDelegate(t, root)
+	}
+
+	ordinary := rosterDescription(false)
+	manager := rosterDescription(true)
+	if ordinary == "" {
+		t.Fatal("the ordinary session's delegate schema carries no agent_type description, so the comparison proves nothing")
+	}
+	if manager != ordinary {
+		t.Errorf("the Manager and ordinary delegate schemas describe the role capabilities differently:\nmanager:  %s\nordinary: %s", manager, ordinary)
+	}
+
+	// One decoration, however many rebuilds ran. The schema is recomposed on
+	// every rebuild, so a decoration that appended to the PREVIOUS composed
+	// description instead of composing from the base would grow the text without
+	// bound — and the roster is a sentence a model reads, not a set it dedupes.
+	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
+	root.mu.Lock()
+	defer root.mu.Unlock()
+	root.pluginAgents["schema-probe"] = plugin.Agent{Name: "schema-probe", Tools: []string{"read_file"}, PluginName: "test"}
+	root.rebuildToolDefsCache()
+	first := descriptionOfRegisteredDelegate(t, root)
+	for range 3 {
+		root.rebuildToolDefsCache()
+	}
+	if again := descriptionOfRegisteredDelegate(t, root); again != first {
+		t.Errorf("rebuilding the cache re-decorated the same schema:\nfirst: %s\nafter: %s", first, again)
+	}
+}
+
+// descriptionOfRegisteredDelegate returns the registered delegate schema's
+// agent_type description. Callers hold s.mu.
+func descriptionOfRegisteredDelegate(t *testing.T, s *Session) string {
+	t.Helper()
+	registered := s.reg.Get("delegate")
+	if registered == nil {
+		t.Fatal("delegate tool not registered")
+	}
+	props, _ := registered.Definition.Parameters["properties"].(map[string]any)
+	agentType, _ := props["agent_type"].(map[string]any)
+	description, _ := agentType["description"].(string)
+	return description
+}
+
 // The ordinary variant's effort description must state the hub branch's
 // absent-effort default too: the base "inherits from parent" text alone
 // would tell a hub caller the new session inherits the parent's effort,

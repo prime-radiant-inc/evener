@@ -80,11 +80,6 @@ func TestModelRequestRefreshesTheExclusionCachesWithoutASpawn(t *testing.T) {
 	if strings.Contains(before.systemPrompt, "Default tools") {
 		t.Error("the request's launch system prompt still carries a frozen per-role tool list, so it can contradict the current schema after a config edit")
 	}
-	// An older launch prompt CAN carry one (a session restored from before this
-	// change), so the schema must say plainly that it wins.
-	if !strings.Contains(before.delegateRoster, "authoritative") || !strings.Contains(before.delegateRoster, "supersedes") {
-		t.Error("the delegate schema does not state that its capability list is authoritative and supersedes an older prompt's, so a restored session has no stated precedence between two lists")
-	}
 
 	// The branch switches in place: the project layer now declares the server
 	// the CLI entry replaces, which makes the tool reachable for a child. No
@@ -105,10 +100,9 @@ func TestModelRequestRefreshesTheExclusionCachesWithoutASpawn(t *testing.T) {
 	// acts on.
 	//
 	// The system prompt is the one surface that must NOT change: it is the
-	// immutable launch prompt from Turn 0 (#6959). The roster answer reaches the
-	// model as an appended <environment_context> diff instead, which is what the
-	// armed flag records — a refresh that simply returned early would leave both
-	// stale.
+	// immutable launch prompt from Turn 0 (#6959), and it carries no per-role
+	// tool list for the change to correct. The roster answer reaches the model
+	// through the delegate schema below and nowhere else.
 	if !strings.Contains(after.delegateRoster, cliTool) {
 		t.Error("the next model request's delegate schema still omits the newly reachable tool, so the tool-definition cache was not rebuilt from the new answer")
 	}

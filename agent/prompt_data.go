@@ -142,8 +142,7 @@ type promptData struct {
 	CLIAppends []string
 
 	// unreadableAppends lists SystemPromptAppend paths whose read failed, so
-	// renderSystemPromptWithAppends can disclose that the requested file was left
-	// out. It is not a template input.
+	// renderSystemPrompt can disclose that the requested file was left out. It is not a template input.
 	unreadableAppends []string
 }
 
