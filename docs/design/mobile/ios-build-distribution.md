@@ -95,8 +95,9 @@ separate from TestFlight and has no release secrets
 or publishing step. Existing Linux native/API gates remain required. Its policy
 step also proves the bundle verification is real: a copied build whose share
 extension was removed fails verification while the untouched build still passes.
-The lane's green path always includes the installed-app journeys, in two jobs
-that run beside the build. `simulator-build` builds Release and verifies the
+The lane's green path always includes the installed-app journeys, in a setup
+job that runs beside the simulator build and a journeys job that waits for
+both. `simulator-build` builds Release and verifies the
 host and share extension, proves the red side before the generated
 `EvenerQualificationUITests` target exists, registers that target, and compiles
 the test products against the same DerivedData; it uploads those products as a
