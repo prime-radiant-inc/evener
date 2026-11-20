@@ -40,11 +40,15 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 	var reasoningStarted bool
 	// Scalar text and structured reasoning_details accumulate separately so any
 	// chunk order matches the non-stream fields: the settled thinking part keeps
-	// both, while the live preview emits one copy (see mirrorPreview).
+	// both, while the live preview emits one copy (see converge).
 	var scalarBuf strings.Builder
 	var scalarField string
 	details := &detailAssembly{byKey: map[detailKey]*strings.Builder{}}
-	var scalarEmitted, structuredEmitted bool
+	// scalarShown and structuredShown hold what each representation already put
+	// on the live pane; the offsets track how much of the other one's shown text
+	// the current representation has accounted for.
+	var scalarShown, structuredShown strings.Builder
+	var scalarOffset, structuredOffset int
 	// encryptedDetails accumulates opaque reasoning.encrypted items (OpenRouter
 	// Gemini/o-series) in arrival order; they ride the thinking part's
 	// EncryptedContent so the reasoning chain survives replay.
@@ -249,29 +253,26 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 				scalarBuf.WriteString(scalar)
 			}
 			if delta, field := reasoningFromDelta(choice.Delta); delta != "" {
+				var send string
 				if field == "" {
-					delta = details.appendChunk(choice.Delta.ReasoningDetails)
-					// The pane already shows this text when it mirrors the scalar
-					// stream that came first; replay still keeps the structured
-					// text, only the live duplicate is dropped.
-					if mirrorPreview(details.display(), scalarBuf.String(), scalarEmitted) {
-						delta = ""
-					} else {
-						structuredEmitted = true
+					send = converge(details.appendChunk(choice.Delta.ReasoningDetails), scalarShown.String(), &structuredOffset)
+					if send != "" {
+						structuredShown.WriteString(send)
 					}
-				} else if mirrorPreview(scalarBuf.String(), details.display(), structuredEmitted) {
-					delta = ""
 				} else {
-					scalarEmitted = true
+					send = converge(delta, structuredShown.String(), &scalarOffset)
+					if send != "" {
+						scalarShown.WriteString(send)
+					}
 				}
-				if delta != "" {
+				if send != "" {
 					if !reasoningStarted {
 						s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningStart})
 						reasoningStarted = true
 					}
 					s.Send(llm.StreamEvent{
 						Type:           llm.StreamEventReasoningDelta,
-						ReasoningDelta: delta,
+						ReasoningDelta: send,
 					})
 				}
 			}
@@ -379,9 +380,10 @@ type detailAssembly struct {
 }
 
 // appendChunk folds one chunk's pieces into the assembly and returns the text
-// that chunk contributes to the live preview. Pieces of one item inside a single
-// array keep the provider's newline, matching the non-stream join; a piece that
-// continues an item from an earlier chunk appends bare.
+// that chunk contributes to the live preview. Pieces of one explicit index
+// concatenate whether or not a frame boundary separates them; unindexed pieces
+// inside a single array keep the provider's newline, matching the non-stream
+// join. Distinct items are separated by one newline in the preview.
 func (a *detailAssembly) appendChunk(details []reasoningDetailItem) string {
 	var out strings.Builder
 	var prev detailKey
@@ -391,18 +393,18 @@ func (a *detailAssembly) appendChunk(details []reasoningDetailItem) string {
 			continue
 		}
 		key := detailKeyOf(d)
-		continuation := out.Len() > 0 && key == prev
 		b := a.byKey[key]
 		if b == nil {
 			b = &strings.Builder{}
 			a.byKey[key] = b
 			a.order = append(a.order, key)
 		}
-		if out.Len() > 0 {
+		sameItem := out.Len() > 0 && key == prev
+		if out.Len() > 0 && !(sameItem && key.indexed) {
 			out.WriteString("\n")
 		}
 		out.WriteString(text)
-		if continuation {
+		if sameItem && !key.indexed {
 			b.WriteString("\n")
 		}
 		b.WriteString(text)
@@ -421,9 +423,27 @@ func (a *detailAssembly) display() string {
 	return joinDetailTexts(texts)
 }
 
-// mirrorPreview reports whether streaming mine again would repeat text the live
-// pane already shows from the other representation: mine is a non-empty prefix
-// of the other source's text so far and that source already emitted a delta.
-func mirrorPreview(mine, other string, otherEmitted bool) bool {
-	return otherEmitted && mine != "" && strings.HasPrefix(other, mine)
+// converge returns the part of candidate the live pane has not shown yet from
+// the other representation's emitted preview, and advances offset past the bytes
+// of that preview the candidate accounts for. A mirror contributes nothing; a
+// candidate that extends the other preview contributes only its unseen suffix.
+func converge(candidate, otherShown string, offset *int) string {
+	if candidate == "" {
+		return ""
+	}
+	if *offset > len(otherShown) {
+		*offset = len(otherShown)
+	}
+	remaining := otherShown[*offset:]
+	switch {
+	case strings.HasPrefix(remaining, candidate):
+		*offset += len(candidate)
+		return ""
+	case strings.HasPrefix(candidate, remaining):
+		*offset = len(otherShown)
+		return candidate[len(remaining):]
+	default:
+		*offset = len(otherShown)
+		return candidate
+	}
 }

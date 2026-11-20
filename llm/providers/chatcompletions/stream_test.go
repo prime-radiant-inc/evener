@@ -37,7 +37,10 @@ func TestStreamMixedReasoningMatchesNonStreaming(t *testing.T) {
 		{"mirror-multi-item-scalar", `{"reasoning_content":"plan\nfore","reasoning_details":[{"type":"reasoning.text","text":"plan","index":0},{"type":"reasoning.text","text":"fore","index":1}]}`, "plan\nfore", "plan\nfore", `{"reasoning_details":[{"type":"reasoning.text","text":"plan","index":0},{"type":"reasoning.text","text":"fore","index":1}]}` + "\x00" + `{"reasoning_content":"plan\nfore"}`},
 		// Differing text is not a mirror: the live pane keeps both, and the
 		// settled text comes from the structured item.
-		{"near-miss-not-mirror", `{"reasoning_content":"hello world","reasoning_details":[{"type":"reasoning.text","text":"hello world!"}]}`, "hello world!", "hello world|hello world!", `{"reasoning_content":"hello world"}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"hello world!"}]}`},
+		{"near-miss-sends-unseen-suffix", `{"reasoning_content":"hello world","reasoning_details":[{"type":"reasoning.text","text":"hello world!"}]}`, "hello world!", "hello world|!", `{"reasoning_content":"hello world"}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"hello world!"}]}`},
+		// Fragments of one explicit index concatenate whether they share a
+		// frame or not: the frame boundary is not an item boundary.
+		{"adjacent-same-index-one-chunk", `{"reasoning_details":[{"type":"reasoning.text","text":"recheck","index":0}]}`, "recheck", "recheck", `{"reasoning_details":[{"type":"reasoning.text","text":"re","index":0},{"type":"reasoning.text","text":"check","index":0}]}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			resp, err := ExtractRecordedResponse([]byte(`{"choices":[{"message":`+tc.msg+`}]}`), "m")
@@ -66,20 +69,25 @@ func TestStreamMixedReasoningMatchesNonStreaming(t *testing.T) {
 	}
 }
 
-// TestStreamMirrorScalarReplayFields pins that a scalar stream suppressed as a
-// mirror of the structured preview still reaches the settled thinking part's
-// replay fields: only the live preview converges, the replay keeps both.
-func TestStreamMirrorScalarReplayFields(t *testing.T) {
+// TestStreamMirrorSendsUnseenSuffix pins that a structured delta which extends
+// what the scalar preview already showed sends only the unseen suffix, and that
+// the suppressed scalar text still reaches the settled thinking part's replay
+// fields: only the live preview converges, the replay keeps both.
+func TestStreamMirrorSendsUnseenSuffix(t *testing.T) {
 	t.Parallel()
-	sse := `data: {"choices":[{"delta":{"reasoning_content":"hello world"}}]}` + "\n\n" +
-		`data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","text":"hello "}]}}]}` + "\n\n" +
-		`data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","text":"world"}]}}]}` + "\n\n" +
+	sse := `data: {"choices":[{"delta":{"reasoning_content":"a"}}]}` + "\n\n" +
+		`data: {"choices":[{"delta":{"reasoning_content":"b","reasoning_details":[{"type":"reasoning.text","text":"ab"}]}}]}` + "\n\n" +
 		"data: [DONE]\n\n"
 	events, terminal := chatStreamEvents(t, sse, nil)
 	if terminal != nil {
 		t.Fatalf("stream error: %v", terminal)
 	}
+	var emitted []string
 	for _, ev := range events {
+		if ev.Type == llm.StreamEventReasoningDelta {
+			emitted = append(emitted, ev.ReasoningDelta)
+			continue
+		}
 		if ev.Type != llm.StreamEventFinish {
 			continue
 		}
@@ -92,10 +100,13 @@ func TestStreamMirrorScalarReplayFields(t *testing.T) {
 		if thinking == nil {
 			t.Fatalf("content = %+v, want a thinking part", ev.Response.Message.Content)
 		}
-		if thinking.Text != "hello world" {
+		if strings.Join(emitted, "|") != "a|b" {
+			t.Fatalf("live deltas = %q, want the unseen suffix only", emitted)
+		}
+		if thinking.Text != "ab" {
 			t.Fatalf("thinking text = %q, want the structured item's text", thinking.Text)
 		}
-		if thinking.ScalarReasoningField != "reasoning_content" || thinking.ScalarReasoningText != "hello world" {
+		if thinking.ScalarReasoningField != "reasoning_content" || thinking.ScalarReasoningText != "ab" {
 			t.Fatalf("scalar replay = (%q, %q), want the suppressed scalar stream replayed",
 				thinking.ScalarReasoningField, thinking.ScalarReasoningText)
 		}

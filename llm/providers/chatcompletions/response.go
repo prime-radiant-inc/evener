@@ -277,16 +277,16 @@ func extractReasoning(msg chatMessage) (text, field string) {
 }
 
 // extractReasoningFields prefers reasoning_details when it contains text,
-// joining pieces with newlines. Its empty field preserves the special replay
-// contract for reasoning_details; scalar fields retain the canonical registry
-// index mapping.
+// assembling it by item identity exactly as the stream path does. Its empty
+// field preserves the special replay contract for reasoning_details; scalar
+// fields retain the canonical registry index mapping.
 func extractReasoningFields(reasoningContent, reasoning, reasoningText string, details []reasoningDetailItem) (text, field string) {
-	texts := make([]string, 0, len(details))
-	for _, item := range details {
-		texts = append(texts, detailItemText(item))
-	}
-	if joined := joinDetailTexts(texts); joined != "" {
-		return joined, ""
+	if len(details) > 0 {
+		assembly := &detailAssembly{byKey: map[detailKey]*strings.Builder{}}
+		assembly.appendChunk(details)
+		if display := assembly.display(); display != "" {
+			return display, ""
+		}
 	}
 	return extractScalarReasoning(reasoningContent, reasoning, reasoningText)
 }
