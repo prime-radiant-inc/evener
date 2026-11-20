@@ -250,7 +250,7 @@ function modelProfilePatch(
 // already whole only when the equal pair carries a slash: instance names
 // cannot, so that is a saved view's single prequalified field, and the instance
 // a previous read left beside it would double-qualify it.
-function snapshotProfile(active: ModelControlSnapshot["active"]): string | undefined {
+export function snapshotProfile(active: Pick<ModelControlDisplay, "modelProvider" | "model">): string | undefined {
   return active.modelProvider === active.model && active.modelProvider.includes("/") ? undefined : active.modelProvider;
 }
 
