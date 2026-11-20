@@ -181,7 +181,15 @@ const (
 	makeMarkerEnv     = "QUALIFICATION_TEST_MAKE_MARKER"
 	goMarkerEnv       = "QUALIFICATION_TEST_GO_MARKER"
 	runLogEnv         = "QUALIFICATION_TEST_RUN_LOG"
+
+	// simStateEnv makes the xcrun stub describe a device that already exists,
+	// so a run adopting a pre-booted device is told apart from a cold one.
+	simStateEnv = "QUALIFICATION_TEST_SIM_STATE"
 )
+
+// simUDID is the device the fixture identity, the simulated listing and the
+// assertions all name.
+const simUDID = "QUALIFICATION-TEST-SIM"
 
 // providerStub is the pair's fixture-provider: it records that the run started
 // it and exits, which ends the runner at provider readiness in every case.
@@ -223,8 +231,17 @@ chmod +x "$out"
 // TestRunnerWarmsTheSimulatorBeforeTheJourneys; here the stub only has to let
 // the runner reach the pair decision, and it shares the run log with the
 // provider stub so the fixture can prove the warmup ran before the provider.
+// A device listing in QUALIFICATION_TEST_SIM_STATE's state stands in for the
+// one the workflow's pre-boot step started.
 const xcrunStub = `#!/bin/sh
 printf 'xcrun %s\n' "$*" >> "$QUALIFICATION_TEST_RUN_LOG"
+case "$*" in
+"simctl list --json devices")
+	if [ -n "${QUALIFICATION_TEST_SIM_STATE:-}" ]; then
+		printf '{"devices":{"ios-26-6":[{"udid":"%s","state":"%s"}]}}\n' "QUALIFICATION-TEST-SIM" "$QUALIFICATION_TEST_SIM_STATE"
+	fi
+	;;
+esac
 exit 0
 `
 
@@ -266,7 +283,7 @@ func TestRunUITestsStartsTheSuppliedPairInsteadOfBuilding(t *testing.T) {
 	writeExecutable(t, filepath.Join(stubs, "sleep"), sleepStub)
 
 	type fixture struct {
-		identity                                              string
+		identity, simState                                    string
 		output                                                string
 		providerMarker, makeMarker, goMarker, runLog, appPath string
 	}
@@ -293,8 +310,8 @@ func TestRunUITestsStartsTheSuppliedPairInsteadOfBuilding(t *testing.T) {
 			appPath:        filepath.Join(app, "Evener"),
 		}
 		writeFile(t, f.identity, fmt.Sprintf(
-			"{\"sourceRevision\":%q,\"appPath\":%q,\"simulatorUDID\":\"QUALIFICATION-TEST-SIM\"}\n",
-			identityRevision, filepath.Join(app, "Evener")))
+			"{\"sourceRevision\":%q,\"appPath\":%q,\"simulatorUDID\":%q}\n",
+			identityRevision, filepath.Join(app, "Evener"), simUDID))
 		return f
 	}
 	run := func(t *testing.T, f *fixture, pair string) (string, error) {
@@ -307,6 +324,7 @@ func TestRunUITestsStartsTheSuppliedPairInsteadOfBuilding(t *testing.T) {
 			makeMarkerEnv + "=" + f.makeMarker,
 			goMarkerEnv + "=" + f.goMarker,
 			runLogEnv + "=" + f.runLog,
+			simStateEnv + "=" + f.simState,
 		}
 		if pair != "" {
 			env = append(env, "EVENER_QUALIFICATION_RUNTIME_BINARIES="+pair)
@@ -371,11 +389,7 @@ func TestRunUITestsStartsTheSuppliedPairInsteadOfBuilding(t *testing.T) {
 			"xcrun simctl terminate QUALIFICATION-TEST-SIM com.example.evener",
 			"provider",
 		}
-		data, readErr := os.ReadFile(f.runLog)
-		if readErr != nil {
-			t.Fatalf("the run recorded no simulator or provider calls: %v", readErr)
-		}
-		calls := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+		calls := readCalls(t, f.runLog)
 		next := 0
 		for _, call := range calls {
 			if next < len(warmup) && call == warmup[next] {
@@ -384,6 +398,38 @@ func TestRunUITestsStartsTheSuppliedPairInsteadOfBuilding(t *testing.T) {
 		}
 		if next != len(warmup) {
 			t.Fatalf("the run did not warm the simulator in order before the provider started; calls = %v, want %v", calls, warmup)
+		}
+		// A cold device is booted exactly once; a second boot would fail on a
+		// device the run started itself.
+		if boots := countCalls(calls, "xcrun simctl boot "+simUDID); boots != 1 {
+			t.Errorf("cold run booted the device %d times, want exactly one; calls = %v", boots, calls)
+		}
+	})
+	t.Run("a device the pre-boot step started is not booted twice", func(t *testing.T) {
+		t.Parallel()
+		// Booting is the state that matters: the pre-boot step returns as soon
+		// as simctl starts the device, so the journeys usually see it before
+		// bootstatus finishes.
+		for _, state := range []string{"Booted", "Booting"} {
+			t.Run(state, func(t *testing.T) {
+				t.Parallel()
+				f := newFixture(t, pairRevision)
+				f.simState = state
+				pair := t.TempDir()
+				writePairFixture(t, pair, pairRevision, providerStub)
+				out, err := run(t, f, pair)
+				failedAtProvider(t, out, err)
+				if !startedPair(t, f) {
+					t.Errorf("the supplied pair's fixture-provider was not started; output:\n%s", out)
+				}
+				calls := readCalls(t, f.runLog)
+				if boots := countCalls(calls, "xcrun simctl boot "+simUDID); boots != 0 {
+					t.Errorf("a device in state %s was booted again %d time(s); calls = %v", state, boots, calls)
+				}
+				if waited := countCalls(calls, "xcrun simctl bootstatus "+simUDID+" -b"); waited != 1 {
+					t.Errorf("the run did not wait on bootstatus for the %s device; calls = %v", state, calls)
+				}
+			})
 		}
 	})
 	t.Run("a pair from another revision is refused before anything starts", func(t *testing.T) {
@@ -420,6 +466,17 @@ func writeFile(t *testing.T, path, data string) {
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// countCalls returns how many recorded calls equal want exactly.
+func countCalls(calls []string, want string) int {
+	n := 0
+	for _, call := range calls {
+		if call == want {
+			n++
+		}
+	}
+	return n
 }
 
 // writePairFixture writes the pair the setup job uploads: the two binaries,
