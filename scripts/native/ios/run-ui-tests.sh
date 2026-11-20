@@ -249,8 +249,8 @@ cd "$repo_root"
 # settling from its first boot, paying it as a 19-74s first launch and slowed
 # UI queries, with every observed first-journey failure inside that window.
 # Boot the device here so it settles while the runtime pair is installed or
-# built and the hub comes up; after that the app gets one launch of its own
-# before xcodebuild runs. This warms the device and the app's first-launch
+# built; after that the app gets one launch of its own before xcodebuild
+# runs. This warms the device and the app's first-launch
 # caches only: every journey and every assertion below still runs unchanged,
 # and the warmup's own app instance is terminated before the measured run
 # starts.
@@ -290,11 +290,10 @@ fi
 # The device has had the pair install and the runtime builds' time to settle
 # since simctl boot; wait for boot to finish (normally already true), install
 # the app under test and give it its first launch. The settle is bounded
-# warmup time, never a pacing mechanism for an assertion: the journeys and
-# their waits are untouched.
+# warmup time, never a pacing mechanism for an assertion.
 log "$(date -u +%FT%TZ) warmup: waiting for the run simulator's first boot"
 xcrun simctl bootstatus "$sim_udid" -b >>"$output/simulator-warmup.log" 2>&1
-log "$(date -u +%FT%TZ) warmup: boot finished $(( $(date +%s) - warmup_start ))s after boot start"
+log "$(date -u +%FT%TZ) warmup: boot finished $(( $(date +%s) - warmup_start ))s after warmup start"
 install_start="$(date +%s)"
 xcrun simctl install "$sim_udid" "$app_path" >>"$output/simulator-warmup.log" 2>&1
 xcrun simctl launch "$sim_udid" "$bundle_id" >>"$output/simulator-warmup.log" 2>&1

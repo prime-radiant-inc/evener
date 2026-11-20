@@ -217,8 +217,9 @@ chmod +x "$out"
 `
 
 // xcrunStub answers the simulator work the runner does before it starts the
-// journeys. The warmup's call order is held by the runner audit tests; here
-// the stub only has to let the runner reach the pair decision.
+// journeys. The warmup's call order is held by
+// TestRunnerWarmsTheSimulatorBeforeTheJourneys; here the stub only has to let
+// the runner reach the pair decision.
 const xcrunStub = `#!/bin/sh
 exit 0
 `

@@ -8,7 +8,7 @@ import (
 
 // The qualification journeys pay issue #5992's cold-device cost whenever the
 // first journey starts on a simulator still settling from its first boot:
-// first launches of 22-74s against 1-3s relaunches in the same run, 3-10x
+// first launches of 19-74s against 1-3s relaunches in the same run, 3-10x
 // slow UI queries, and the only observed first-journey failure inside that
 // window. run-ui-tests.sh therefore boots the disposable device, waits for
 // the boot to finish, installs the app under test and gives it one launch
@@ -17,9 +17,9 @@ import (
 // The order is the mechanism. A boot placed after the test run, an install
 // without the boot, or a warm app instance left running into the measured
 // journeys all leave the script looking warm while the first journey still
-// pays the cold-device cost. This test holds the sequence, not the wording:
-// every step below must appear, and in this order, before the xcodebuild
-// invocation.
+// pays the cold-device cost. This test holds the sequence and the settle
+// duration, not the wording: every step below must appear, and in this order,
+// before the xcodebuild invocation.
 func TestRunnerWarmsTheSimulatorBeforeTheJourneys(t *testing.T) {
 	const script = "scripts/native/ios/run-ui-tests.sh"
 	data, err := os.ReadFile(script)
