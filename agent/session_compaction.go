@@ -676,7 +676,7 @@ func mergeFoldReplayTail(retained, pending []schema.Turn, concurrent map[uint64]
 // instead of always publishing.
 //
 // Compaction is an auxiliary provider call made on an UNLEASED turn too, so its
-// input obeys THE RULE (see deferUnleasedWatchNotices): a still-pending watch
+// input obeys THE RULE (see splitUnleasedWatchNotices): a still-pending watch
 // row must not ride into a summary any more than into a request, because the
 // summary is what later requests expand. Identity, not content, decides.
 func (s *Session) foldWithForceCompact(ctx context.Context, instructions string, captured *schema.SkillCompactionOperation, trigger compactionTrigger, automatic bool) (ok bool, refusal error) {

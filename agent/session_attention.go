@@ -3456,13 +3456,22 @@ func (s *Session) dropUnleasedWatchAttentionTurns(ctx context.Context, turns []s
 // writes for the receiver of a watch frame.
 const watchSendAttentionPrefix = "watch:"
 
+// deferredWatchAttentionPrefix marks durable watch rows written by the
+// retired unleased deferral writer. Nothing writes it any more: the queue is
+// the only writer of a new notice, and a leased presentation is what turns one
+// into a row. The prefix stays because transcripts written before that change
+// still hold these rows, and the unleased projection has to keep withholding
+// one whose notice no generation has presented yet.
+const deferredWatchAttentionPrefix = "watchdefer:"
+
 // isWatchNoticeAttentionID reports whether id names a durable watch notice
-// row. Three producers write one: the send rail, which delivers a frame to its
-// receiver under watchSendAttentionPrefix; an unleased turn that may not carry a
-// notice, which parks it under deferredWatchAttentionPrefix; and the queue-first
-// leased handoff, which turns a queued notice into durable attention under
-// stableWatchAttentionIDPrefix. Withholding a live notice from a projection must
-// answer for every producer, so the prefixes are decided in one place.
+// row. Two writers produce one: the send rail, which delivers a frame to its
+// receiver under watchSendAttentionPrefix; and the queue-first leased handoff,
+// which turns a queued notice into durable attention under
+// stableWatchAttentionIDPrefix. deferredWatchAttentionPrefix is read for rows
+// left by the retired deferral writer. Withholding a live notice from a
+// projection must answer for every row a transcript can hold, so the prefixes
+// are decided in one place.
 func isWatchNoticeAttentionID(id string) bool {
 	return strings.HasPrefix(id, watchSendAttentionPrefix) ||
 		strings.HasPrefix(id, deferredWatchAttentionPrefix) ||

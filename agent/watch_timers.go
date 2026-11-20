@@ -229,7 +229,7 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 			n.Occurrence = "tick:" + cfg.watchID + ":" + strconv.FormatInt(cfg.lastClockFire.UnixNano(), 10) + ":" + strconv.FormatUint(cfg.tickSeq, 10)
 		}
 		// The identity of this fire, taken before countWatchDeliveryLocked below
-		// counts it, and 1-based because deferredWatchAttentionID reads a
+		// counts it, and 1-based because a durable identity reads a
 		// non-positive ordinal as "no ordinal". Every progress tick is its own
 		// delivery, timer or not: two ticks of one watch differ here and nowhere
 		// else, so without this a second tick re-derives the first tick's

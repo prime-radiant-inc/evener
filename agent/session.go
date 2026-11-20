@@ -2,14 +2,11 @@ package agent
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1703,29 +1700,6 @@ func (s *Session) hasPendingWatchNotification() bool {
 	return false
 }
 
-// hasAwaitingWatchNotification reports whether a watch notice is assigned to
-// the CURRENT turn: it is waiting for this turn's request to carry it. That is
-// the work admission must refuse on an unleased stable-child turn, because it
-// would reach the provider through that request.
-//
-// A notice still on the queue is deliberately NOT this predicate's business: it
-// belongs to the leased drive that reserves a generation for it, and refusing
-// ordinary unleased work merely because such a notice is waiting would stand
-// down every turn the child has until the drive wins capacity.
-func (s *Session) hasAwaitingWatchNotification() bool {
-	if s == nil {
-		return false
-	}
-	s.pendingJobNotifsMu.Lock()
-	defer s.pendingJobNotifsMu.Unlock()
-	for _, a := range s.jobNotifsAwaitingRequest {
-		if a.deliverable.notification.isWatch() {
-			return true
-		}
-	}
-	return false
-}
-
 // hasPendingOrdinaryNotification reports whether the session's ordinary
 // notification rail holds anything that is NOT a watch notice: a terminal shell
 // completion, a forwarded nested report, steering owed to the model.
@@ -1780,9 +1754,9 @@ func (s *Session) stableChildTurnNeedsLease(ctx context.Context) bool {
 }
 
 // THE RULE. A watch notice becomes model-visible only at a LEASED presentation.
-// Every path that would write one into a turn's reminder must therefore either
-// carry a lease or persist durable delegate attention and defer the notice, and
-// it must do so BEFORE the write.
+// A stable delegate child's unleased turn therefore carries no watch notice:
+// every path that would write one into a turn's reminder asks
+// splitUnleasedWatchNotices first and hands the notices back instead.
 //
 // The rule is about the WRITE, not the queue. Admission that reads the queue is
 // blind by construction: a watch notice has no terminal generation, so
@@ -1793,141 +1767,46 @@ func (s *Session) stableChildTurnNeedsLease(ctx context.Context) bool {
 // A refusal that stops the whole turn is wrong even when it is right about the
 // watch notice: a batch can hold a recovered shell completion beside a watch
 // notice, and the completion has no lease to inherit but is perfectly
-// deliverable. So the operation is a SPLIT, not a verdict: defer the watch
-// notices to durable attention, keep the rest, and let the ordinary turn carry
-// and settle what it legitimately owns.
+// deliverable. So the operation is a SPLIT, not a verdict: hand the watch
+// notices back to the queue, keep the rest, and let the ordinary turn carry and
+// settle what it legitimately owns.
 //
 // No flag distinguishes "this notice may run without a lease". The structural
 // predicate is the child's ownership (stableChildTurnNeedsLease) plus the
 // notice's kind (jobNotification.isWatch).
 
-// deferUnleasedWatchNotices is THE RULE's one split point. On a leased turn it
+// splitUnleasedWatchNotices is THE RULE's one split point. On a leased turn it
 // does nothing: the lease is the presentation a watch notice waits for, so the
 // whole batch rides the turn. On an unleased stable-delegate turn it partitions
 // the batch two ways:
 //
-//   - An ordinary notice stays in kept and proceeds normally. It has no lease to
-//     inherit but is perfectly deliverable, and it is the only half some turns
-//     own.
-//   - Every watch notice goes to durable leased attention under the deferral
-//     identity (persistDeferredWatchNotice). A leased generation then presents
-//     it.
+//   - An ordinary notice stays in carry and proceeds normally. It has no lease
+//     to inherit but is perfectly deliverable, and it is the only half some
+//     turns own.
+//   - Every watch notice goes back to s.pendingJobNotifs, where it keeps folding
+//     and where the leased drive that reserves its generation takes it. The
+//     queue is the ONLY writer of a new notice: no unleased turn may append one,
+//     because a row written there would be inside the very history an unleased
+//     request expands (dropUnleasedWatchAttentionTurns) and outside the
+//     generation that consumes it.
 //
-// Order is persist-then-suppress. Suppressing first and persisting after leaves
-// a window in which the notice is neither queued nor durable, which loses it.
-// A notice whose append fails is NOT left in the deliverable set: the writer
-// would put it into this unleased reminder and settle it before a leased
-// generation could present it, which is the leak this split exists to close. It
-// goes back on the queue instead, owed and untouched, while the next attempt
-// retries the append. An error the child can see beats a silently swallowed
-// failure report, and the ordinary completions beside it still ride this turn.
+// requeueJobNotifications arms the paced notification retry, whose firing wakes
+// the parent's drive, so a handed-back notice is retried by the rail that owns
+// it rather than by another unleased turn.
 //
 // It returns the notices the turn may carry.
-func (s *Session) deferUnleasedWatchNotices(ctx context.Context, jobNotifs []deliverableJobNotification) []deliverableJobNotification {
+func (s *Session) splitUnleasedWatchNotices(ctx context.Context, jobNotifs []deliverableJobNotification) (carry, deferred []deliverableJobNotification) {
 	if !s.stableChildTurnNeedsLease(ctx) {
-		return jobNotifs
+		return jobNotifs, nil
 	}
-	var retry []jobNotification
-	kept := jobNotifs[:0:0]
 	for _, d := range jobNotifs {
-		if !d.notification.isWatch() {
-			kept = append(kept, d)
+		if d.notification.isWatch() {
+			deferred = append(deferred, d)
 			continue
 		}
-		appended, err := s.persistDeferredWatchNotice(d.notification)
-		if err != nil {
-			s.emit(warningDataFromError("persist deferred watch notice", err))
-			if !appended {
-				// Not durable, so it must not ride this reminder. Back on the
-				// queue, owed and untouched, for the next attempt to make it
-				// durable. A notice that IS durable is not re-offered here: that
-				// would present it unleased as well as to the leased run that
-				// row already waits for.
-				retry = append(retry, d.notification)
-				continue
-			}
-		}
+		carry = append(carry, d)
 	}
-	s.requeueJobNotifications(retry)
-	return kept
-}
-
-// deferredWatchAttentionPrefix marks the durable attention rows this half
-// creates. An unleased projection reads it to hold exactly its own unresolved
-// watch rows out of a request (dropUnleasedWatchAttentionTurns).
-const deferredWatchAttentionPrefix = "watchdefer:"
-
-// deferredWatchAttentionID is the durable attention identity of a watch notice
-// this half defers (LIFE-01, #2340).
-//
-// It is derived from the notice's own durable facts so a retry of the SAME
-// delivery derives the SAME id: appendDelegateNotificationDurably treats an
-// identical identity and content as a no-op and a reused identity with different
-// content as corruption.
-//
-// The watch, the job and the reason are NOT enough to name a delivery. A
-// repeating timer fires the same watch, for the same job, for the same reason,
-// every interval; keyed on those three alone the second fire reuses the first
-// fire's resolved row, arms no wake, and the notice is silently dropped, while a
-// fire whose rendered body changed ('2 times since your last turn') instead
-// collides as conflicting content. So the identity carries the delivery: the
-// fire's own ordinal for a timer tick, or the delivery id on the notice's
-// lineage for a condition fire. A notice with neither -- a send-rail diagnostic
-// -- keeps the coarser identity, because one repeated failure really is one item
-// and it has no delivery of its own to tell apart.
-func deferredWatchAttentionID(n jobNotification) string {
-	scope := n.WatchID
-	if scope == "" {
-		scope = n.OriginWatchID
-	}
-	if scope == "" {
-		scope = n.JobID
-	}
-	sum := sha256.Sum256([]byte(n.Reason))
-	id := deferredWatchAttentionPrefix + scope + ":" + n.JobID + ":" + hex.EncodeToString(sum[:8])
-	if n.DeliveryOrdinal > 0 {
-		return id + ":" + strconv.Itoa(n.DeliveryOrdinal)
-	}
-	if deliveryID := provenance.LatestDeliveryID(n.Provenance); deliveryID != "" {
-		return id + ":" + deliveryID
-	}
-	return id
-}
-
-// persistDeferredWatchNotice makes one watch notice durable delegate attention
-// and arms its wake, so a leased generation presents it after this turn declines
-// to carry it. It is the deferral half of THE RULE above.
-//
-// The two steps are reported separately because they fail differently. A failed
-// APPEND means the notice is not durable, so the caller must keep it owed. A
-// failed ARM means the notice IS already durable -- the row exists and a leased
-// generation will present it when something arms it -- and returning it to the
-// deliverable set would be worse than useless: the next writer would put the
-// same notice into an unleased reminder while its durable row stayed pending, so
-// it would be presented unleased AND presented again by the leased run. The arm
-// retry owns that recovery; the caller must not re-offer the notice.
-func (s *Session) persistDeferredWatchNotice(n jobNotification) (appended bool, err error) {
-	attentionID := deferredWatchAttentionID(n)
-	content := s.formatJobNotificationReminder([]deliverableJobNotification{{notification: n}})
-	if s.delegateController != nil {
-		// Register the notice's cause before the item can be presented: a
-		// runaway-watch diagnostic carries the chain the breaker stopped, and the
-		// response event must descend from it or the breaker reads that response
-		// as a fresh trigger and fires again.
-		s.delegateController.attentionCauses.remember(attentionID, n.Provenance)
-	}
-	if n.JobID == "" {
-		s.jobStatusPolls.forgetAll()
-	} else {
-		s.jobStatusPolls.forget(n.JobID)
-	}
-	if _, err := s.appendDelegateNotificationDurably(attentionID, content); err != nil {
-		if s.delegateController != nil {
-			s.delegateController.attentionCauses.forget(attentionID)
-		}
-		return false, err
-	}
-	return true, s.armDelegateAttention(attentionID)
+	return carry, deferred
 }
 
 // peekNotifications reports how many notifications are still owed to the model

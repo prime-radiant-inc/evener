@@ -82,10 +82,10 @@ func (jm *jobManager) fireLongRunningReminder() {
 
 // longRunningJobsNotification builds the reminder for one cadence fire.
 // deliveryID is that fire's own identity and rides the notice's lineage, so
-// deferredWatchAttentionID derives this fire's durable attention identity from
-// it: every fire says the same thing about the same jobs, so without a
-// per-fire identity two fires would derive one durable attention identity and
-// the second would be dropped as a replay of the first.
+// the leased presentation's durable identity is derived from it: every fire
+// says the same thing about the same jobs, so without a per-fire identity two
+// fires would derive one durable attention identity and the second would be
+// dropped as a replay of the first.
 //
 // It must be a per-fire value, not a position in a cadence this manager
 // counted: a restored manager starts counting again, and the pre-restore

@@ -150,21 +150,6 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		if err := s.admitCompactionAuxiliaryCall(ctx); err != nil {
 			return nil, "", nil, llm.Request{}, nil, "", err
 		}
-	} else if s.stableChildTurnNeedsLease(ctx) {
-		// An unleased turn is only THIS issue's defect when it is carrying a
-		// watch notice. Several legitimate paths run a stable child's turn with
-		// no lease in context -- a restored delegate's first task, a
-		// notification drive waiting out quota, an unserved session's framed
-		// entry -- and refusing those would break work the product permits. The
-		// watch notice assigned to this turn is the one payload that must never
-		// arrive this way: a leased generation presents it, so this request
-		// would show it twice and once outside that generation. A notice still
-		// on the queue stays there for the drive that reserves one, or has
-		// already been deferred to durable attention, which the unleased
-		// projection withholds by identity (dropUnleasedWatchAttentionTurns).
-		if s.hasAwaitingWatchNotification() {
-			return nil, "", nil, llm.Request{}, nil, "", errDelegateStableModelTurnUnleased
-		}
 	}
 	if err := s.flushPendingDelegateDeliveries(); err != nil {
 		return nil, "", nil, llm.Request{}, nil, "", err

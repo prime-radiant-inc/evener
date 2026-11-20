@@ -90,8 +90,15 @@ that child and presents it; the row is written before the queue entry is removed
 so a failed write leaves the entry in place for the retry. A refused commit keeps
 the reservation, so the retry commits that same row instead of writing the notice
 a second time. A child turn that already holds a lease delivers a queued notice
-as ordinary notification steering. A notice no handoff has reserved is not
-durable, so a restart before that reservation loses it.
+as ordinary notification steering, and a child turn without one hands the notice
+back to this same queue rather than writing a row, at both the opening accept and
+the round boundary; the queue and the leased handoff are the only writers, and
+the child's paced notification retry wakes the drive that retries. A queued
+replay of a row the transcript has already resolved is dropped at the handoff and
+its reservation released, so a repeated failure cannot hold a drive slot for a
+statement nothing still owes. A notice no handoff has reserved is not durable, so
+a restart before that reservation loses it; recovering a notice interrupted
+before its reservation is separate work (#7011, #7081).
 
 ```mermaid
 flowchart LR
@@ -552,7 +559,7 @@ Defaults and timeout semantics:
 - `max_runtime_ms` is an optional process runtime limit for shell jobs. If the process is still running after `max_runtime_ms`, Evener stops it and finalizes the job as `stopped` with reason `run_timeout`. It bounds how long the process may *run*, distinct from the foreground wait.
 - Omitted or zero `max_runtime_ms` sets no process-runtime deadline for streaming shell jobs, whether foreground, promoted, or background. Session shutdown and explicit cancellation can still stop session-owned jobs. Instead of a deadline, Evener reminds the owning session about jobs that have run too long: every 30 minutes, while the session owns shell jobs that have been running for at least 30 minutes, it sends ONE reminder listing all of them (job id, truncated command, age, and time since last output). The cadence is fixed (no backoff, no cap, no acknowledgement); a job that finished is not listed, and delegates are not listed. The model decides whether a listed job is expected or should be stopped with `job_stop`. The model-facing shell schema no longer exposes `max_runtime_ms`; the parser still accepts it for compatibility.
 
-  The reminder rides the job-notification rail, so an idle session is woken for it and an active turn receives it with its next model request. That rail has one exception. A stable delegate's turn may not present a watch-typed notice without a lease, so when the reminder reaches an unleased stable-delegate turn it is deferred into the delegate's durable attention transcript instead, where the generation that does hold the lease presents it; a retry of the same reminder reuses its identity and deduplicates. A reminder still undelivered in the notification queue is replaced by a newer one, so a queued session holds at most one listing current jobs; a reminder already deferred to durable attention stays pending until a leased generation presents it. The reminder cadence itself is in memory: a restart ends its jobs as `runtime_lost`, so nothing re-fires a reminder across a restart, and none is owed for jobs the new process does not have. A reminder that already became durable attention outlives the restart as a pending row and is presented by whichever generation next holds the lease.
+  The reminder rides the job-notification rail, so an idle session is woken for it and an active turn receives it with its next model request. That rail has one exception. A stable delegate's turn may not present a watch-typed notice without a lease, so an unleased stable-delegate turn hands the reminder back to that child's notification queue instead of writing it; the leased handoff that reserves the child's generation is the only writer of a durable watch row, and the child's paced notification retry wakes the drive that performs it. An ordinary completion in the same batch still rides the unleased turn, because it has no lease to inherit but is deliverable. A reminder still undelivered in the notification queue is replaced by a newer one, so a queued session holds at most one listing current jobs. The reminder cadence itself is in memory: a restart ends its jobs as `runtime_lost`, so nothing re-fires a reminder across a restart, and none is owed for jobs the new process does not have. A reminder that already became durable attention outlives the restart as a pending row and is presented by whichever generation next holds the lease.
 - A shell command that completes before the tool returns does not inject a terminal notification; the terminal result is already in the tool result. Return field `timed_out`, when present, means the foreground wait expired; it never means the process hit `max_runtime_ms`.
 - To learn when a launch-and-return command reaches a state (e.g. a server printing "ready"), use `job_watch(operation="create", source=<job_id>, output_match=...)` and continue from the notification — an output-match watch catch-up-scans a job's retained output even if it already finished.
 

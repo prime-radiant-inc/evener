@@ -50,6 +50,21 @@ func watchSendDiagnosticNotification(watchID, jobID, reason string) jobNotificat
 	return n
 }
 
+// watchSendDiagnosticNotificationForDelivery is watchSendDiagnosticNotification
+// for a failure that names the delivery it is about.
+//
+// The delivery id is what makes the diagnostic a distinct occurrence. Without
+// it, every firing of one watch shares a source identity, so the second
+// diagnostic about the same watch, job and reason reads as a replay of the
+// first and the durable attention fold treats it as already resolved.
+func watchSendDiagnosticNotificationForDelivery(watchID, jobID, deliveryID, reason string) jobNotification {
+	n := watchSendDiagnosticNotification(watchID, jobID, reason)
+	if deliveryID != "" {
+		n.Occurrence = "delivery:" + deliveryID
+	}
+	return n
+}
+
 // stableWatchNoticeAttentionID is the durable attention identity of a watch
 // notice a leased handoff presents for a stable delegate child.
 //
@@ -106,6 +121,28 @@ func isStableWatchAttentionID(attentionID string) bool {
 	return strings.HasPrefix(attentionID, stableWatchAttentionIDPrefix)
 }
 
+// stableWatchAttentionResolved reports whether the owner's transcript fold
+// already carries a resolution for attentionID, either consumed by a generation
+// or discarded.
+//
+// It answers exactly one question: is this row still owed? A pending row is,
+// and a row this drive's own reservation has just accepted is too — acceptance
+// resolves it, but the notice that resolution consumed is this generation's to
+// present, and the caller checks that case before asking here.
+func (s *Session) stableWatchAttentionResolved(attentionID string) bool {
+	if s == nil || attentionID == "" {
+		return false
+	}
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	fold, err := s.delegateAttentionFoldLocked()
+	if err != nil {
+		return false
+	}
+	resolution, ok := fold.resolutions[attentionID]
+	return ok && (resolution == delegateAttentionConsumed || resolution == delegateAttentionDiscarded)
+}
+
 // queuedWatchNoticePresentable reports whether the leased handoff may turn n
 // into durable attention. A watch-send token is not: its frame is rendered by
 // key from the sending manager's live state at accept time, so the notification
@@ -125,10 +162,15 @@ func queuedWatchNoticePresentable(n jobNotification) bool {
 // queue entry under the same identity, so the notification retry replays one
 // occurrence rather than starting a second item: appendDelegateNotification-
 // Durably treats the same identity and content as a no-op.
-func (jm *jobManager) appendStableWatchNotice(n jobNotification, attentionID string) error {
+//
+// appended=false with no err means the row was ALREADY durable under this
+// identity: this notice is a replay of a statement the fold has recorded. The
+// caller must then decide by the fold's resolution, not assume the row is its
+// own to consume.
+func (jm *jobManager) appendStableWatchNotice(n jobNotification, attentionID string) (appended bool, err error) {
 	owner, controller := jm.stableWatchOwner()
 	if owner == nil || owner.owningDelegateID == "" {
-		return errors.New("stable watch notice has no stable delegate owner")
+		return false, errors.New("stable watch notice has no stable delegate owner")
 	}
 	content := owner.formatJobNotificationReminder([]deliverableJobNotification{{notification: n}})
 	if controller != nil {
@@ -147,8 +189,7 @@ func (jm *jobManager) appendStableWatchNotice(n jobNotification, attentionID str
 	} else {
 		owner.jobStatusPolls.forget(n.JobID)
 	}
-	_, err := owner.appendDelegateNotificationDurably(attentionID, content)
-	return err
+	return owner.appendDelegateNotificationDurably(attentionID, content)
 }
 
 // queuedWatchNoticeAttentionID reports the attention identity of the first
@@ -230,6 +271,13 @@ func (s *Session) removeQueuedWatchNotice(attentionID string) bool {
 // leaves the next attempt to re-read whatever is really owed; a cleared timer
 // owes nothing, so its notice is dropped from the queue with no row written and
 // no retry unless more watch work is waiting behind it.
+//
+// A replay of a row the fold has already RESOLVED is the same kind of no-op: the
+// statement was presented and consumed by an earlier generation, so there is
+// nothing left for this one to carry. The append reports the row was already
+// durable, the fold reports it consumed, and the queued entry is dropped and the
+// reservation released. Without that release the drive slot stays held for a row
+// no later attempt can commit, which blocks every later start.
 func (s *Session) presentQueuedWatchNotice(sub *subagent, reservation *delegateStartReservation, attentionID string) bool {
 	abort := func(retry bool) bool {
 		if err := s.delegateController.AbortStart(reservation); err != nil {
@@ -261,10 +309,19 @@ func (s *Session) presentQueuedWatchNotice(sub *subagent, reservation *delegateS
 		sub.sess.removeQueuedWatchNotice(attentionID)
 		return abort(sub.sess.queuedWatchNoticeAttentionID() != "")
 	}
-	if err := sub.sess.jobManager.appendStableWatchNotice(notice, attentionID); err != nil {
+	appended, err := sub.sess.jobManager.appendStableWatchNotice(notice, attentionID)
+	if err != nil {
 		sub.sess.emit(warningDataFromError("persist stable watch attention", err))
 		sub.sess.scheduleJobNotificationRetry()
 		return abort(true)
+	}
+	if !appended && sub.sess.stableWatchAttentionResolved(attentionID) {
+		// The row is already durable and already consumed: this notice replays a
+		// statement an earlier generation presented, so this one presents nothing.
+		// Dropping the replay and releasing the reservation keeps the drive slot
+		// free for work that is still owed.
+		sub.sess.removeQueuedWatchNotice(attentionID)
+		return abort(sub.sess.queuedWatchNoticeAttentionID() != "")
 	}
 	sub.sess.removeQueuedWatchNotice(attentionID)
 	return true

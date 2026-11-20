@@ -293,7 +293,7 @@ func (jm *jobManager) deliverPendingWatchSend(cfg *watchConfig, state jobstore.W
 	if ensurePending {
 		if err := jm.appendWatchSendPendingState(cfg, state); err != nil {
 			jm.enqueueWatchNotifications([]jobNotification{
-				watchSendDiagnosticNotification(state.Key.WatchID, state.Key.ResolvedWatchedIdentity, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
+				watchSendDiagnosticNotificationForDelivery(state.Key.WatchID, state.Key.ResolvedWatchedIdentity, state.DeliveryID, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
 			})
 			return false, err
 		}
@@ -324,13 +324,13 @@ func (jm *jobManager) dropWatchSendWithLineage(state jobstore.WatchSendState, cf
 		WatchSend: &dropped,
 	}}); err != nil {
 		jm.enqueueWatchNotifications([]jobNotification{
-			watchSendDiagnosticNotification(state.Key.WatchID, state.Key.ResolvedWatchedIdentity, "watch send dropped state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
+			watchSendDiagnosticNotificationForDelivery(state.Key.WatchID, state.Key.ResolvedWatchedIdentity, state.DeliveryID, "watch send dropped state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
 		})
 		return err
 	}
 	jm.removePendingWatchSend(cfg, dropped.Key, dropped.UpdateSeq)
 	jm.releaseStableWatchReceipt(dropped.DeliveryID)
-	diagnostic := watchSendDiagnosticNotification(state.Key.WatchID, state.Key.ResolvedWatchedIdentity, "watch send failed: delivery_id="+state.DeliveryID+": "+dropped.DiagnosticReason)
+	diagnostic := watchSendDiagnosticNotificationForDelivery(state.Key.WatchID, state.Key.ResolvedWatchedIdentity, state.DeliveryID, "watch send failed: delivery_id="+state.DeliveryID+": "+dropped.DiagnosticReason)
 	diagnostic.Provenance = provenance.Clone(lineage)
 	jm.enqueueWatchNotifications([]jobNotification{diagnostic})
 	return nil
@@ -683,7 +683,7 @@ func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d w
 	if len(record.evictions) != 0 && jm.appendEvents == nil && len(teardownEvents) == 0 {
 		if err := jm.appendWatchSendEvents(record.pendingEvents); err != nil {
 			jm.enqueueWatchNotifications([]jobNotification{
-				watchSendDiagnosticNotification(state.Key.WatchID, state.Key.ResolvedWatchedIdentity, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
+				watchSendDiagnosticNotificationForDelivery(state.Key.WatchID, state.Key.ResolvedWatchedIdentity, state.DeliveryID, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
 			})
 			return state, false, err
 		}
@@ -698,7 +698,7 @@ func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d w
 			if err != nil {
 				jm.removeWatchSendTerminalSnapshots(applied)
 				jm.enqueueWatchNotifications([]jobNotification{
-					watchSendDiagnosticNotification(state.Key.WatchID, state.Key.ResolvedWatchedIdentity, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
+					watchSendDiagnosticNotificationForDelivery(state.Key.WatchID, state.Key.ResolvedWatchedIdentity, state.DeliveryID, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
 				})
 				return record.persisted, true, err
 			}
@@ -719,7 +719,7 @@ func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d w
 	}
 	if err := jm.appendWatchSendEvents(group); err != nil {
 		jm.enqueueWatchNotifications([]jobNotification{
-			watchSendDiagnosticNotification(state.Key.WatchID, state.Key.ResolvedWatchedIdentity, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
+			watchSendDiagnosticNotificationForDelivery(state.Key.WatchID, state.Key.ResolvedWatchedIdentity, state.DeliveryID, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
 		})
 		return state, false, err
 	}
@@ -761,7 +761,7 @@ func (jm *jobManager) verifyStableWatchEnqueue(enqueueReceipt *delegateWatchRece
 	deliveryReceipt, err := enqueueReceipt.controller.CompleteWatchEnqueue(enqueueReceipt)
 	if err != nil {
 		jm.enqueueWatchNotifications([]jobNotification{
-			watchSendDiagnosticNotification(persisted.Key.WatchID, persisted.Key.ResolvedWatchedIdentity, "watch send stable enqueue failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
+			watchSendDiagnosticNotificationForDelivery(persisted.Key.WatchID, persisted.Key.ResolvedWatchedIdentity, persisted.DeliveryID, "watch send stable enqueue failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
 		})
 		return false, err
 	}
@@ -769,7 +769,7 @@ func (jm *jobManager) verifyStableWatchEnqueue(enqueueReceipt *delegateWatchRece
 	folded, err := jm.store.LoadWatchSends()
 	if err != nil {
 		jm.enqueueWatchNotifications([]jobNotification{
-			watchSendDiagnosticNotification(persisted.Key.WatchID, persisted.Key.ResolvedWatchedIdentity, "watch send stable enqueue failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
+			watchSendDiagnosticNotificationForDelivery(persisted.Key.WatchID, persisted.Key.ResolvedWatchedIdentity, persisted.DeliveryID, "watch send stable enqueue failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
 		})
 		return true, err
 	}
@@ -777,7 +777,7 @@ func (jm *jobManager) verifyStableWatchEnqueue(enqueueReceipt *delegateWatchRece
 	if pending == nil || pending.DeliveryID != persisted.DeliveryID || pending.UpdateSeq != persisted.UpdateSeq {
 		verr := errors.New("stable watch pending frame did not survive durable refold")
 		jm.enqueueWatchNotifications([]jobNotification{
-			watchSendDiagnosticNotification(persisted.Key.WatchID, persisted.Key.ResolvedWatchedIdentity, "watch send stable enqueue failed: "+limitWatchText(verr.Error(), watchReadErrorMaxChars)),
+			watchSendDiagnosticNotificationForDelivery(persisted.Key.WatchID, persisted.Key.ResolvedWatchedIdentity, persisted.DeliveryID, "watch send stable enqueue failed: "+limitWatchText(verr.Error(), watchReadErrorMaxChars)),
 		})
 		return true, verr
 	}
@@ -938,7 +938,7 @@ func (jm *jobManager) planWatchSendPending(state jobstore.WatchSendState, d watc
 				TS:        now,
 				WatchSend: &evictedState,
 			}}},
-			diagnostic: watchSendDiagnosticNotification(evictedState.Key.WatchID, evictedState.Key.ResolvedWatchedIdentity, "watch send evicted: "+evictedState.TriggerIdentity),
+			diagnostic: watchSendDiagnosticNotificationForDelivery(evictedState.Key.WatchID, evictedState.Key.ResolvedWatchedIdentity, evictedState.DeliveryID, "watch send evicted: "+evictedState.TriggerIdentity),
 		})
 		overflow--
 	}

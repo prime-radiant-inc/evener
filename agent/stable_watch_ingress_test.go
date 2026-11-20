@@ -19,10 +19,9 @@ import (
 )
 
 // An unleased stable-child turn must never present a repeating timer's tick: it
-// has no generation to consume what it presents, and admission refuses a watch
-// notice on it. The refusal must also leave the batch untouched on the queue,
-// because the queue is where missed ticks keep folding until a leased drive
-// reserves the generation that presents them.
+// has no generation to consume what it presents. The refusal must also leave the
+// batch untouched on the queue, because the queue is where missed ticks keep
+// folding and it is the only writer of a new watch notice.
 func TestUnleasedTurnNeitherPresentsNorSpinsOnARepeatingTick(t *testing.T) {
 	t.Parallel()
 	child, jm, _ := stableWatchSendChild(t)
@@ -40,37 +39,32 @@ func TestUnleasedTurnNeitherPresentsNorSpinsOnARepeatingTick(t *testing.T) {
 	}
 	rowsBefore := attentionRowCount(t, child)
 
-	// The unleased accept must stand down: the tick is deferred to durable
-	// attention (THE RULE, #2340), so this turn has nothing it may carry. The
-	// deferral is an append, which is the whole point: the row it writes is what
-	// a leased generation presents, and the unleased projection withholds it by
-	// identity.
+	// The unleased accept must stand down: it has no lease to present the tick
+	// under, so the notice goes back to the queue and this turn carries nothing.
 	if child.acceptNotificationInput(context.Background(), "unleased-tick") {
 		t.Fatal("an unleased turn was admitted for a repeating tick it cannot present")
 	}
-	// The tick left the queue for durable attention: it can no longer ride an
-	// unleased turn, and a later leased generation still presents it.
-	if queued := child.peekNotifications(); queued != 0 {
-		t.Fatalf("peekNotifications = %d after an unleased accept, want 0: the tick was deferred off the ordinary rail", queued)
+	// The tick is still owed, and still on the rail it arrived on: handing it
+	// back is what keeps the leased drive able to reserve its generation.
+	if queued := child.peekNotifications(); queued != 1 {
+		t.Fatalf("peekNotifications = %d after an unleased accept, want 1: the tick belongs on the queue until a leased drive reserves its generation", queued)
 	}
-	if got := attentionRowCount(t, child); got != rowsBefore+1 {
-		t.Fatalf("attention rows went %d -> %d for an unleased accept, want one deferred row: the leased generation it waits for has nothing to present otherwise", rowsBefore, got)
+	// The unleased turn wrote no watch row: a row written here would sit inside
+	// the history an unleased request expands and outside the generation that
+	// consumes it.
+	if got := attentionRowCount(t, child); got != rowsBefore {
+		t.Fatalf("attention rows went %d -> %d for an unleased accept, want no new row", rowsBefore, got)
 	}
-	if !child.hasPendingStableWatchAttention() && !child.hasPendingWatchNotification() {
-		// The row is durable attention, not a queued notice: whichever accessor
-		// the fold exposes must still see it as owed.
-		t.Log("the deferred tick is held as durable attention under the deferral identity")
-	}
-	// A second unleased accept has no deliverable work left: the tick is already
-	// durable, so nothing rides this turn either.
+	// A second unleased accept stands down the same way, leaving the one batch
+	// exactly where it was rather than spinning.
 	if child.acceptNotificationInput(context.Background(), "unleased-tick-again") {
 		t.Fatal("a second unleased turn was admitted with no deliverable work")
 	}
-	if queued := child.peekNotifications(); queued != 0 {
-		t.Fatalf("peekNotifications = %d across two unleased accepts, want 0", queued)
+	if queued := child.peekNotifications(); queued != 1 {
+		t.Fatalf("peekNotifications = %d across two unleased accepts, want 1", queued)
 	}
-	if got := attentionRowCount(t, child); got != rowsBefore+1 {
-		t.Fatalf("attention rows went %d -> %d across two unleased accepts, want the deferral to stay one row", rowsBefore, got)
+	if got := attentionRowCount(t, child); got != rowsBefore {
+		t.Fatalf("attention rows went %d -> %d across two unleased accepts, want no new row", rowsBefore, got)
 	}
 
 	// An ordinary notification on the same rail is untouched by the refusal.
@@ -79,8 +73,8 @@ func TestUnleasedTurnNeitherPresentsNorSpinsOnARepeatingTick(t *testing.T) {
 	if !child.hasPendingOrdinaryNotification() {
 		t.Fatal("the ordinary notification is gone after the refusal: the tick refusal must not take ordinary work off the rail")
 	}
-	if got := attentionRowCount(t, child); got != rowsBefore+1 {
-		t.Fatalf("attention rows went %d -> %d after an ordinary notification, want only the tick's deferral: an ordinary completion writes no durable watch row", rowsBefore, got)
+	if got := attentionRowCount(t, child); got != rowsBefore {
+		t.Fatalf("attention rows went %d -> %d after an ordinary notification, want no new row: an ordinary completion writes no durable watch row", rowsBefore, got)
 	}
 }
 
@@ -229,6 +223,65 @@ func TestClearedRepeatingTimerDropsItsFoldedBatchWithoutRows(t *testing.T) {
 	child.enqueueJobNotificationAndNotify(terminal)
 	if got, want := child.queuedWatchNoticeAttentionID(), stableWatchNoticeAttentionID(terminal); got != want {
 		t.Fatalf("the queued terminal fire reports identity %q, want %q: the clear retracted a fact that already happened", got, want)
+	}
+}
+
+// A repeated failure of one send watch produces a diagnostic whose identity
+// includes the delivery it is about. When an earlier generation already
+// presented and consumed one such row, a queued replay of it names an
+// ALREADY-RESOLVED row: nothing is owed, so the handoff must drop the replay and
+// release its reservation. Holding the reservation for a row no retry can
+// commit would wedge the drive slot and block every later start.
+func TestQueuedReplayOfAResolvedNoticeReleasesItsReservation(t *testing.T) {
+	t.Parallel()
+	child, _, controller := stableWatchSendChild(t)
+	child.jobManager.enqueue = child.enqueueJobNotificationAndNotify
+	seedDelegateControllerIdle(t, controller, child.owningDelegateID, "")
+	controller.mu.Lock()
+	controller.live[child.owningDelegateID] = &delegateLiveState{runtime: child}
+	controller.mu.Unlock()
+	root := &Session{id: "root-session", stateDir: child.stateDir, delegateController: controller}
+	sub := &subagent{sess: child}
+
+	// The first firing's row, written and then consumed by the generation that
+	// presented it.
+	first := watchSendDiagnosticNotificationForDelivery("watch:replay", "job:replay", "delivery-one", "watch send failed: delivery_id=delivery-one")
+	attentionID := stableWatchNoticeAttentionID(first)
+	if appended, err := child.jobManager.appendStableWatchNotice(first, attentionID); err != nil || !appended {
+		t.Fatalf("present the first diagnostic: appended=%v err=%v", appended, err)
+	}
+	if err := child.resolveAttentionDurablyForGeneration([]string{attentionID}, delegateAttentionConsumed, 1); err != nil {
+		t.Fatalf("consume the first diagnostic: %v", err)
+	}
+	if !child.stableWatchAttentionResolved(attentionID) {
+		t.Fatal("the consumed row does not read as resolved")
+	}
+
+	// A later firing of the same watch replays that identical delivery, so the
+	// queue holds a notice naming the row above.
+	child.jobManager.enqueueWatchNotifications([]jobNotification{first})
+	if got := child.queuedWatchNoticeAttentionID(); got != attentionID {
+		t.Fatalf("queued identity = %q, want %q", got, attentionID)
+	}
+
+	reservation, err := controller.ReserveAttention(child, attentionID)
+	if err != nil {
+		t.Fatalf("reserve the replayed notice: %v", err)
+	}
+	if root.presentQueuedWatchNotice(sub, reservation, attentionID) {
+		t.Fatal("the handoff presented a replay of an already-resolved row: nothing was owed, so the generation has nothing to carry")
+	}
+	// The replay left the queue: it names a statement already in the transcript,
+	// so leaving it would make every later drive read the same no-op again.
+	if queued := child.peekNotifications(); queued != 0 {
+		t.Fatalf("peekNotifications = %d after the replay was refused, want 0", queued)
+	}
+	// And the reservation is gone, so the drive slot is free for real work.
+	if err := controller.AbortStart(reservation); err == nil {
+		t.Fatal("the reservation was still held after the replay was refused: a slot held for an already-consumed row blocks every later start")
+	}
+	if got := attentionRowCount(t, child); got != 1 {
+		t.Fatalf("attention rows = %d, want 1: the replay wrote no second row", got)
 	}
 }
 
@@ -422,9 +475,9 @@ func sortedWatchKeys(p *provenance.Causal) []string {
 // notification turn is the same defect as one that lands before it starts: the
 // round boundary drains the queue and writes what it finds for the request being
 // built, so a watch notice written there reaches the provider with no lease. The
-// boundary must partition instead -- the tick is deferred to durable attention
-// for the leased drive, and the ordinary completion in the same drain still
-// joins the turn.
+// boundary must partition instead -- the tick goes back on the queue for the
+// leased drive, and the ordinary completion in the same drain still joins the
+// turn.
 func TestUnleasedRoundBoundaryDefersTheTickAndCarriesTheCompletion(t *testing.T) {
 	t.Parallel()
 	child, jm, _ := stableWatchRequestChild(t)
@@ -443,8 +496,8 @@ func TestUnleasedRoundBoundaryDefersTheTickAndCarriesTheCompletion(t *testing.T)
 
 	child.injectLaterJobNotifications(context.Background())
 
-	if got := queuedTimerFires(child); len(got) != 0 {
-		t.Fatalf("queued timer fires after the round boundary = %v, want none: the tick was deferred off the ordinary rail", got)
+	if got := queuedTimerFires(child); !slices.Equal(got, []int{1}) {
+		t.Fatalf("queued timer fires after the round boundary = %v, want [1]: the tick stays on the queue for the leased drive", got)
 	}
 	// The ordinary completion is the turn's own work and still joins the request.
 	carried := child.jobNotificationsAwaitingRequest()
@@ -456,11 +509,10 @@ func TestUnleasedRoundBoundaryDefersTheTickAndCarriesTheCompletion(t *testing.T)
 			t.Fatalf("a watch notice is awaiting the request (%#v): an unleased turn must never carry one", d.notification)
 		}
 	}
-	// The tick became durable attention under a watch-row identity, which is what
-	// a leased generation presents. It is NOT part of this turn: the unleased
-	// projection withholds it by identity.
-	if got := attentionRowCount(t, child); got != rowsBefore+1 {
-		t.Fatalf("attention rows went %d -> %d across the round boundary, want one deferred watch row", rowsBefore, got)
+	// The boundary wrote no watch row. Only a leased reservation creates the row a
+	// generation presents, so the tick stays queued until one exists.
+	if got := attentionRowCount(t, child); got != rowsBefore {
+		t.Fatalf("attention rows went %d -> %d across the round boundary, want no new row", rowsBefore, got)
 	}
 	// The boundary wrote the completion's reminder and no second one for the tick.
 	child.mu.Lock()
@@ -476,11 +528,11 @@ func TestUnleasedRoundBoundaryDefersTheTickAndCarriesTheCompletion(t *testing.T)
 		t.Fatalf("notification reminders in the transcript = %d, want 1 for the ordinary completion", reminders)
 	}
 
-	// The round this turn is about to build must be admitted: a deferred watch
-	// row is the leased drive's work, and refusing every unleased round beside one
-	// would stand the child's ordinary work down until the drive wins capacity.
-	// The request therefore builds, and it carries the completion while the
-	// deferred tick is withheld from it.
+	// The round this turn is about to build must be admitted: the queued tick is
+	// the leased drive's work, and refusing every unleased round beside one would
+	// stand the child's ordinary work down until the drive wins capacity. The
+	// request therefore builds, and it carries the completion while the queued
+	// tick is withheld from it.
 	_, _, _, req, _, _, err := child.prepareModelRequestWithError(context.Background(), 0, new(events.RoundTimings))
 	if err != nil {
 		t.Fatalf("the unleased round beside a queued tick = %v, want it admitted", err)
@@ -494,7 +546,7 @@ func TestUnleasedRoundBoundaryDefersTheTickAndCarriesTheCompletion(t *testing.T)
 
 	// Tool admission reads the same rule at the same instant. A second tick
 	// arriving before the call must not refuse it, and must not be presented by
-	// it either: the call runs and the second tick joins the deferred work.
+	// it either: the call runs and the second tick joins the queued work.
 	child.enqueueJobNotificationAndNotify(timerTickNotification("", watchID, "tick:midturn:2", 1, nil))
 	var probeCalls atomic.Int32
 	child.registerTool("midturn_probe", "records that ordinary work ran",
@@ -518,14 +570,13 @@ func TestUnleasedRoundBoundaryDefersTheTickAndCarriesTheCompletion(t *testing.T)
 		t.Fatalf("probe invocations = %d, want 1: the unleased turn must keep running its own work", got)
 	}
 	// The second tick is still the leased drive's work, never this turn's. It
-	// arrives after the first was deferred, so it has no queue neighbour to fold
-	// into and waits on the ordinary rail for the drive that reserves its
-	// generation -- exactly the state the round boundary must not write from.
-	if got := queuedTimerFires(child); len(got) != 1 {
-		t.Fatalf("queued timer fires after the tool call = %v, want the one new tick waiting for the leased drive", got)
+	// folds into the queued batch, so the two ticks are one statement of two
+	// fires waiting for the drive that reserves their generation.
+	if got := queuedTimerFires(child); !slices.Equal(got, []int{2}) {
+		t.Fatalf("queued timer fires after the tool call = %v, want [2]: both ticks fold into one queued batch", got)
 	}
-	if got := attentionRowCount(t, child); got != rowsBefore+1 {
-		t.Fatalf("attention rows went %d -> %d across the tool call, want only the first tick's deferral", rowsBefore, got)
+	if got := attentionRowCount(t, child); got != rowsBefore {
+		t.Fatalf("attention rows went %d -> %d across the tool call, want no new row", rowsBefore, got)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -22,14 +23,46 @@ import (
 // steering. Without that gate the model waits for the owned shell to exit before
 // receiving the reminder that lets it decide whether to stop the shell.
 //
-// The assertion is made while the shell is still held, so a turn carrying the
-// notice can only come from the drain's own gate.
+// The notice is queued and its queue depth read while the drain is held at its
+// park, so neither reading races a dequeue by the drain's own gate. The
+// assertion that the notice reached the provider is made while the shell is
+// still held, so a turn carrying it can only come from that gate.
 func TestDrainRunsANotificationTurnForAPendingStableWatchNotice(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
-		fixture := newOwnedJobDrainFixture(t)
+		// heldAtPark reports that the drain is parked; releasePark unblocks it.
+		heldAtPark := make(chan struct{})
+		releasePark := make(chan struct{})
+		var holdOnce sync.Once
+		parked := func(s *Session, ready, cancelled <-chan struct{}) {
+			if s == nil || s.owningDelegateID == "" {
+				return
+			}
+			select {
+			case <-ready:
+			case <-cancelled:
+				return
+			}
+			holdOnce.Do(func() {
+				close(heldAtPark)
+				<-releasePark
+			})
+		}
+		fixture := newOwnedJobDrainFixtureWithParkedHook(t, parked)
 		child := fixture.child.sess
+		fixture.releaseParked()
 
+		select {
+		case <-heldAtPark:
+		case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
+			t.Fatal("subagent's owned job-tree drain never reached its park")
+		}
+
+		// The drain is held, so nothing can consume the queue between these reads
+		// and the assertions that follow.
+		if queued := child.peekNotifications(); queued != 0 {
+			t.Fatalf("peekNotifications = %d before the notice is queued, want 0", queued)
+		}
 		notice := watchSendDiagnosticNotification("watch:drain-notice", fixture.shellJobID, "watch send failed: delivery_id=drain-notice")
 		child.jobManager.enqueueWatchNotifications([]jobNotification{notice})
 		if queued := child.peekNotifications(); queued != 1 {
@@ -43,6 +76,8 @@ func TestDrainRunsANotificationTurnForAPendingStableWatchNotice(t *testing.T) {
 			t.Fatal("a queued notice already wrote a durable row: it becomes durable only when a reservation presents it")
 		}
 
+		close(releasePark)
+
 		// Let the bubble settle: with the shell still held, everything that can
 		// run without a new wake has run.
 		synctest.Wait()
@@ -50,10 +85,8 @@ func TestDrainRunsANotificationTurnForAPendingStableWatchNotice(t *testing.T) {
 		if !requestsContain(requests, "delivery_id=drain-notice") {
 			t.Fatalf("no provider request carried the watch notice while the owned shell was still running (%d request(s)): the drain left the reminder for the shell's exit", len(requests))
 		}
-		if !requestsContain(requests, "child shell complete") {
-			// The shell is still held, so its completion cannot have arrived:
-			// reaching here with the notice means the drain ran its own turn.
-			t.Log("the notice was presented before the shell completed")
+		if requestsContain(requests, "child shell complete") {
+			t.Fatal("the shell's completion reached the provider before the shell was released: this proof needs the notice presented while the shell was still held")
 		}
 
 		fixture.env.releaseJob()
@@ -68,14 +101,14 @@ func TestDrainRunsANotificationTurnForAPendingStableWatchNotice(t *testing.T) {
 // A leased turn carries a watch notice: the notice waits on the session's
 // ordinary queue, and a turn under a committed generation is allowed to take it
 // as ordinary notification steering, because that turn consumes what it
-// presents. An unleased turn is refused and defers the notice to durable
-// attention instead, so the notice reaches the provider exactly once and only
-// inside a generation.
+// presents. An unleased turn is refused and hands the notice back to that queue
+// instead, so the notice reaches the provider exactly once and only inside a
+// generation.
 //
 // The two directions run on their own fixtures. They are not one queue over two
-// turns: the unleased half DEFERS the notice (THE RULE, #2340), which takes it
-// off the ordinary rail for good, so a leased accept afterwards has nothing left
-// to carry and legitimately stands down.
+// turns: the unleased half leaves the notice on its rail with no row written, so
+// the fixture is reset rather than re-read and each direction states its own
+// boundary.
 func TestStableWatchAttentionIsAdmittedForALeasedTurn(t *testing.T) {
 	t.Parallel()
 	child, _, _ := stableWatchSendChild(t)
@@ -92,22 +125,22 @@ func TestStableWatchAttentionIsAdmittedForALeasedTurn(t *testing.T) {
 		t.Fatal("a queued notice already reads as durable watch attention: it becomes durable only when a reservation presents it")
 	}
 
-	// DIRECTION ONE -- an unleased turn cannot carry the notice, so it DEFERS it
-	// to durable attention rather than presenting it: the row it writes is what a
-	// leased generation presents, and the unleased projection withholds it by
-	// identity.
+	// DIRECTION ONE -- an unleased turn cannot carry the notice, so it hands it
+	// back to the queue rather than presenting it: the queue is the only writer
+	// of a new watch notice, and the leased handoff that reserves the generation
+	// presents it from there.
 	if child.acceptNotificationInput(context.Background(), "unleased-turn") {
 		t.Fatal("an unleased notification drive was admitted for a watch notice it cannot present")
 	}
-	if queued := child.peekNotifications(); queued != 0 {
-		t.Fatalf("the unleased drive left %d item(s) queued, want 0: the notice was deferred off the ordinary rail", queued)
+	if queued := child.peekNotifications(); queued != 1 {
+		t.Fatalf("the unleased drive left %d item(s) queued, want 1: the notice stays on the rail until a leased handoff reserves its generation", queued)
 	}
 	foldAfterUnleased, foldErr := readDelegateAttentionFold(child.TranscriptPath(), child.id)
 	if foldErr != nil {
 		t.Fatalf("read the child's attention fold after the unleased turn: %v", foldErr)
 	}
-	if !slices.ContainsFunc(foldAfterUnleased.order, isWatchNoticeAttentionID) {
-		t.Fatalf("child attention rows = %v, want the deferred watch notice: it must stay owed to a leased generation", foldAfterUnleased.order)
+	if slices.ContainsFunc(foldAfterUnleased.order, isWatchNoticeAttentionID) {
+		t.Fatalf("child attention rows = %v, want none: an unleased turn writes no watch row, because a row written here would sit outside the generation that consumes it", foldAfterUnleased.order)
 	}
 
 	// DIRECTION TWO -- a LEASED turn on a fresh fixture carries a queued notice as
@@ -127,8 +160,12 @@ func TestStableWatchAttentionIsAdmittedForALeasedTurn(t *testing.T) {
 	if queued := leasedChild.peekNotifications(); queued != 0 {
 		t.Fatalf("the leased turn left %d item(s) queued, want 0: the turn that carries the notice consumes it", queued)
 	}
-	if leasedChild.hasAwaitingWatchNotification() {
-		t.Fatal("the leased turn left the notice assigned to a request that will never carry it")
+	leasedFold, leasedFoldErr := readDelegateAttentionFold(leasedChild.TranscriptPath(), leasedChild.id)
+	if leasedFoldErr != nil {
+		t.Fatalf("read the leased child's attention fold: %v", leasedFoldErr)
+	}
+	if len(leasedFold.order) != 0 {
+		t.Fatalf("leased child attention rows = %v, want none: a leased turn carries the notice as ordinary steering and writes no row for it", leasedFold.order)
 	}
 	leasedChild.mu.Lock()
 	history := append([]schema.Turn{}, leasedChild.history...)

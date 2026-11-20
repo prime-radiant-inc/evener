@@ -251,15 +251,6 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		if err := s.delegateController.BeginTool(lease); err != nil {
 			return skippedToolResult(call, err)
 		}
-	} else if s.stableChildTurnNeedsLease(ctx) {
-		// Same rule as model admission: a stable delegate child's tool call belongs
-		// to a generation, so one whose turn carries a watch notice is refused
-		// instead of running outside the controller's accounting. A turn with no
-		// watch notice assigned to it is a legitimate unleased path and is left
-		// alone, exactly as model admission leaves it.
-		if s.hasAwaitingWatchNotification() {
-			return skippedToolResult(call, errDelegateStableModelTurnUnleased)
-		}
 	}
 	// There is deliberately no separate unleased-tool refusal here (LIFE-01,
 	// #2340). Tool admission cannot read the queue: a watch notice that arrives
@@ -268,12 +259,11 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	// already answered. Refusing them would return errors for valid calls and
 	// drop work the turn owns.
 	//
-	// The rule is enforced one level up instead: a tool call exists only as the
-	// answer to a model request, and every model request passes admission in
-	// prepareModelRequestWithError. A turn that would present a watch notice
-	// without a lease is refused there, so no such request reaches a provider and
-	// no tool call can come back from one. Tools of a leased request keep their
-	// BeginTool accounting above.
+	// The rule is enforced at notification boundaries instead:
+	// splitUnleasedWatchNotices keeps watch notices off unleased turns at both
+	// acceptNotificationInput and injectLaterJobNotifications, so no unleased
+	// request carries one and no tool call can come back from one. Tools of a
+	// leased request keep their BeginTool accounting above.
 
 	// Self-heal off-distribution tool calls before hooks/dispatch. Snapshot the
 	// provider name-map here (execTool runs outside s.mu) — never lock inside

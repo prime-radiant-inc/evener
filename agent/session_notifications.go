@@ -46,13 +46,13 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 	s.enqueueOwnCallerWatchSendTokens()
 	jobNotifs, retryJobNotifs, injectedJobNotifs := s.filterDeliverableJobNotifications(s.drainJobNotifications())
 	jobNotifs, injectedJobNotifs = s.withoutAwaitingRequest(jobNotifs), s.withoutAwaitingRequest(injectedJobNotifs)
-	// THE RULE (LIFE-01, #2340) at the OPENING write. A watch notice this turn
-	// has no lease to carry is deferred to durable attention; the ordinary
-	// completions in the same batch stay and ride this turn. Deferring only the
-	// watch notices matters: a batch that holds a recovered shell completion
-	// beside one would otherwise requeue whole and retry forever, because every
-	// retry sees the same pair.
-	jobNotifs = s.deferUnleasedWatchNotices(ctx, jobNotifs)
+	// THE RULE at the OPENING write. A watch notice this turn has no lease to
+	// carry goes back to the queue, where the leased drive that reserves its
+	// generation takes it; the ordinary completions in the same batch stay and
+	// ride this turn. Splitting only the watch notices matters: a batch that
+	// holds a recovered shell completion beside one would otherwise requeue whole
+	// and retry forever, because every retry sees the same pair.
+	jobNotifs, deferredJobNotifs := s.splitUnleasedWatchNotices(ctx, jobNotifs)
 	if sessionLifecycleFault(ctx, "inject_watch_notification") != nil {
 		jobNotifs = append(jobNotifs, deliverableJobNotification{
 			notification: jobNotification{Kind: jobNotificationKindWatch, JobID: "injected-watch", Status: jobNotificationEventWatch},
@@ -73,6 +73,7 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 	// admitted for it.
 	hasDurableAttention := s.coversPresentedAttention(ctx) && (s.hasPendingDelegateUpdateAttention() || s.hasPendingStableWatchAttention())
 	s.requeueJobNotifications(retryJobNotifs)
+	s.requeueJobNotifications(jobNotifications(deferredJobNotifs))
 	injectedFailures := s.markJobNotificationsDelivered(injectedJobNotifs)
 	s.requeueJobNotifications(injectedFailures)
 	// A parked rail stands down here too, even with attention pending: the
@@ -183,10 +184,9 @@ func (s *Session) settleDeliveredJobNotifications(ctx context.Context, jobNotifs
 // stable delegate child's turn with no lease in context presents no watch
 // notice (stableChildTurnNeedsLease), exactly as acceptNotificationInput
 // decides. Writing one here would put it in the transcript for a request this
-// turn is about to build, and admission reads the queue -- which the drain below
-// empties -- so the refusal there would find nothing left to refuse. The
-// requeued notice keeps folding where it was and the leased drive that reserves
-// its generation claims it.
+// turn is about to build. The requeued notice keeps folding where it was, its
+// paced retry wakes the parent's drive, and the leased drive that reserves its
+// generation claims it.
 func (s *Session) injectLaterJobNotifications(ctx context.Context) {
 	jobNotifs, retryJobNotifs, injectedJobNotifs := s.filterDeliverableJobNotifications(s.drainJobNotifications())
 	jobNotifs, injectedJobNotifs = s.withoutAwaitingRequest(jobNotifs), s.withoutAwaitingRequest(injectedJobNotifs)
@@ -194,9 +194,10 @@ func (s *Session) injectLaterJobNotifications(ctx context.Context) {
 	s.requeueJobNotifications(s.markJobNotificationsDelivered(injectedJobNotifs))
 	// A watch notice can arrive after the opening drain and before this round's
 	// request is prepared. Writing it here would put it into history outside a
-	// leased generation, so defer it to durable attention while letting ordinary
-	// completions in the same batch ride this round.
-	jobNotifs = s.deferUnleasedWatchNotices(ctx, jobNotifs)
+	// leased generation, so it goes back on the queue while ordinary completions
+	// in the same batch ride this round.
+	jobNotifs, deferredJobNotifs := s.splitUnleasedWatchNotices(ctx, jobNotifs)
+	s.requeueJobNotifications(jobNotifications(deferredJobNotifs))
 	if len(jobNotifs) == 0 {
 		return
 	}
