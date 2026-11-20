@@ -216,6 +216,26 @@ STUB
 chmod +x "$out"
 `
 
+// xcrunStub answers the simulator work the runner does before it starts the
+// journeys. The warmup's call order is held by the runner audit tests; here
+// the stub only has to let the runner reach the pair decision.
+const xcrunStub = `#!/bin/sh
+exit 0
+`
+
+// plutilStub answers the warmup's bundle-identifier read; the fixture app is
+// an empty directory and carries no Info.plist of its own.
+const plutilStub = `#!/bin/sh
+printf '%s\n' 'com.example.evener'
+`
+
+// sleepStub keeps the fixture from paying the warmup's real-time settle. The
+// settle is measured in lab runs, not here, and the provider stub still ends
+// the run at exit 1.
+const sleepStub = `#!/bin/sh
+exit 0
+`
+
 // TestRunUITestsStartsTheSuppliedPairInsteadOfBuilding drives run-ui-tests.sh
 // itself with a stub toolchain. A verified pair supplied through
 // EVENER_QUALIFICATION_RUNTIME_BINARIES must be what the run starts, with
@@ -236,6 +256,9 @@ func TestRunUITestsStartsTheSuppliedPairInsteadOfBuilding(t *testing.T) {
 	stubs := t.TempDir()
 	writeExecutable(t, filepath.Join(stubs, "make"), makeStub)
 	writeExecutable(t, filepath.Join(stubs, "go"), goStub)
+	writeExecutable(t, filepath.Join(stubs, "xcrun"), xcrunStub)
+	writeExecutable(t, filepath.Join(stubs, "plutil"), plutilStub)
+	writeExecutable(t, filepath.Join(stubs, "sleep"), sleepStub)
 
 	type fixture struct {
 		identity                             string
