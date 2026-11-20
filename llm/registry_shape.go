@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/llm/registry"
@@ -65,6 +66,30 @@ type ToolSchemaDeriver interface {
 	// An unchanged list returns nil and false, so a caller holding a count over
 	// baseline reuses it rather than re-measuring the catalog.
 	EmitToolSchemas(baseline []ToolDefinition, res registry.Resolved) ([]ToolDefinition, bool)
+}
+
+// ProjectToolSchemas is the loop every EmitToolSchemas implementation runs: it
+// maps baseline through project, which returns the schema tool i is sent with
+// and reports whether that is the caller's own map.
+//
+// An untouched tool keeps the definition it arrived as, so the bytes the caller
+// measured over baseline still describe it. The first tool that is not leaves a
+// clone of the list behind, and the remaining tools write into that clone. A
+// list none of which changed returns nil and false, so its caller keeps the
+// count it already holds rather than re-measuring the catalog.
+func ProjectToolSchemas(baseline []ToolDefinition, project func(t ToolDefinition) (params map[string]any, untouched bool)) ([]ToolDefinition, bool) {
+	var sent []ToolDefinition
+	for i, t := range baseline {
+		params, untouched := project(t)
+		if untouched {
+			continue
+		}
+		if sent == nil {
+			sent = slices.Clone(baseline)
+		}
+		sent[i].Parameters = params
+	}
+	return sent, sent != nil
 }
 
 // samplingPaths names the prunable paths that carry the request-level

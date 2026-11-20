@@ -167,12 +167,10 @@ func StrictifyJSONSchema(in map[string]any) map[string]any {
 // strict mode and nothing else. A node whose value set implies no single type
 // is left exactly as advertised.
 //
-// A schema whose copy states no type and decoded nothing is returned with
-// rewritten false: the copy encodes exactly as the map it was handed, so a byte
-// count measured over the catalog still describes it. A copy that decoded a
-// json.RawMessage subschema encodes differently from the value it replaced and is
-// reported as a rewrite, because it is the copy that ships.
-func SupplyDerivedTypes(schema map[string]any) (supplied map[string]any, rewritten bool) {
+// The copy always ships, so a caller pricing the wire measures it: a copy that
+// states nothing encodes exactly as the map it was handed and measures the same,
+// which is the price either way.
+func SupplyDerivedTypes(schema map[string]any) map[string]any {
 	return supplyTypes(schema, false)
 }
 
@@ -180,33 +178,23 @@ func SupplyDerivedTypes(schema map[string]any) (supplied map[string]any, rewritt
 // and for unions (anyOf/oneOf) whose branches all guarantee explicit JSON types,
 // including container ("object", "array") and multi-type unions. It is used on
 // non-strict Codex Responses Lite schemas where every node must carry an
-// explicit "type". See SupplyDerivedTypes for the rewritten report.
-func SupplyExplicitTypes(schema map[string]any) (supplied map[string]any, rewritten bool) {
+// explicit "type".
+func SupplyExplicitTypes(schema map[string]any) map[string]any {
 	return supplyTypes(schema, true)
 }
 
-// supplyTypes copies schema, states every derived type allowContainerAndMulti
-// lets it state, and reports whether the schema it returns is a rewrite.
-//
-// The answer is a fact about the copy, not a measurement: either it carries
-// something the original did not — a stated type, a decoded json.RawMessage
-// subschema — or it does not, and then it encodes exactly as the caller's own
-// map does. Nothing here compares two encodings, and a caller that gets a
-// rewrite measures the copy with the encoder the wire uses.
-//
-// The copy is returned either way. A schema that contains itself is the one
-// case where that matters: the copy is the finite value cut from the cycle,
-// which has no wire form at all, so it is reported as no rewrite and the count
-// the catalog already holds stands.
-func supplyTypes(schema map[string]any, allowContainerAndMulti bool) (map[string]any, bool) {
-	copied, decodedRaw := copySchemaValue(schema, nil)
-	cp, _ := copied.(map[string]any)
+// supplyTypes copies schema and states every derived type allowContainerAndMulti
+// lets it state. The copy is what the builder ships, so it is returned whether or
+// not anything was stated.
+func supplyTypes(schema map[string]any, allowContainerAndMulti bool) map[string]any {
+	cp, _ := copySchema(schema).(map[string]any)
 	if cp == nil {
 		// A nil root is the absent schema rather than a JSON null: the empty
 		// schema is what the builder sends for it.
-		return map[string]any{}, true
+		return map[string]any{}
 	}
-	return cp, supplyDerivedTypes(cp, dialectOf(cp), allowContainerAndMulti) || decodedRaw
+	supplyDerivedTypes(cp, dialectOf(cp), allowContainerAndMulti)
+	return cp
 }
 
 // HasExplicitTypes reports whether every reachable schema node carries a
@@ -305,12 +293,11 @@ var (
 )
 
 // supplyDerivedTypes states a derived type on every node whose value set implies
-// one, reporting whether it stated any.
-func supplyDerivedTypes(m map[string]any, dialect schemaDialect, allowContainerAndMulti bool) bool {
+// one.
+func supplyDerivedTypes(m map[string]any, dialect schemaDialect, allowContainerAndMulti bool) {
 	if m == nil {
-		return false
+		return
 	}
-	stated := false
 	// $schema may be declared again at an embedded schema resource, and it
 	// governs the keywords below that node. A const under a draft-4 resource
 	// asserts nothing, so the outer dialect must not be applied through it.
@@ -325,9 +312,7 @@ func supplyDerivedTypes(m map[string]any, dialect schemaDialect, allowContainerA
 	// alternative guarantees the same scalar type.
 	for _, keyword := range singleSubschemaKeywords {
 		if sub, ok := m[keyword].(map[string]any); ok {
-			if supplyDerivedTypes(sub, dialect, allowContainerAndMulti) {
-				stated = true
-			}
+			supplyDerivedTypes(sub, dialect, allowContainerAndMulti)
 		}
 	}
 	for _, keyword := range listSubschemaKeywords {
@@ -337,9 +322,7 @@ func supplyDerivedTypes(m map[string]any, dialect schemaDialect, allowContainerA
 		}
 		for _, it := range arr {
 			if sub, ok := it.(map[string]any); ok {
-				if supplyDerivedTypes(sub, dialect, allowContainerAndMulti) {
-					stated = true
-				}
+				supplyDerivedTypes(sub, dialect, allowContainerAndMulti)
 			}
 		}
 	}
@@ -350,9 +333,7 @@ func supplyDerivedTypes(m map[string]any, dialect schemaDialect, allowContainerA
 		}
 		for _, v := range named {
 			if sub, ok := v.(map[string]any); ok {
-				if supplyDerivedTypes(sub, dialect, allowContainerAndMulti) {
-					stated = true
-				}
+				supplyDerivedTypes(sub, dialect, allowContainerAndMulti)
 			}
 		}
 	}
@@ -362,14 +343,11 @@ func supplyDerivedTypes(m map[string]any, dialect schemaDialect, allowContainerA
 		if _, has := m["type"]; !has {
 			if name, ok := derivedScalarType(m, dialect); ok {
 				m["type"] = name
-				stated = true
 			} else if typ, ok := derivedUnionType(m, allowContainerAndMulti); ok {
 				m["type"] = typ
-				stated = true
 			}
 		}
 	}
-	return stated
 }
 
 // derivedUnionType returns the enclosing JSON type guaranteed by every
@@ -1520,26 +1498,21 @@ func strictifyJSONSchemaInPlace(m map[string]any) {
 // sighting would silently drop a schema the caller wrote. Only a node that
 // contains itself is a cycle.
 func copySchema(v any) any {
-	copied, _ := copySchemaValue(v, nil)
-	return copied
+	return copySchemaValue(v, nil)
 }
 
 // copySchemaValue copies v, with path holding the container identity of every
-// ancestor currently being copied, and reports whether the copy decoded a
-// json.RawMessage subschema.
-//
-// That report is what a caller pricing the wire needs: a decoded subschema
-// re-encodes with the text its escapes stood for, so the copy is a different
-// length and has to be measured. A cut looping edge needs no report, because
-// the schema that contains itself has no wire form to measure at all; the copy
-// is returned and its caller decides what a cut list is worth.
-func copySchemaValue(v any, path map[containerKey]bool) (any, bool) {
+// ancestor currently being copied. A decoded json.RawMessage subschema
+// re-encodes with the text its escapes stood for, so the copy differs in length
+// from the value it replaced; a caller pricing the wire therefore measures the
+// copy it returns.
+func copySchemaValue(v any, path map[containerKey]bool) any {
 	if key, ok := containerIdentity(v); ok {
 		if path[key] {
 			// The node contains itself. The empty schema is the one value that
 			// admits everything the original did, so the looping edge is not
 			// narrowed by the cut.
-			return map[string]any{}, false
+			return map[string]any{}
 		}
 		if path == nil {
 			path = map[containerKey]bool{}
@@ -1608,12 +1581,9 @@ func containerIdentity(v any) (containerKey, bool) {
 // deepCopyWith copies a schema value, normalising the Go spellings a builder
 // writes into the decoded spellings the walk reads.
 //
-// path carries the ancestor chain, so a looping edge is cut rather than
-// recursed into. The result reports whether the copy decoded a json.RawMessage
-// subschema, which re-encodes differently from the value it replaced; a plain
-// copy reports false. A cut looping edge is not reported, because it is not a
-// change in what the copy encodes — there is no wire form to encode.
-func deepCopyWith(v any, path map[containerKey]bool) (any, bool) {
+// path carries the ancestor chain, so a looping edge is cut rather than recursed
+// into.
+func deepCopyWith(v any, path map[containerKey]bool) any {
 	switch x := v.(type) {
 	case map[string]any:
 		// A typed nil map marshals as JSON null. Rebuilding it as an empty map
@@ -1622,16 +1592,13 @@ func deepCopyWith(v any, path map[containerKey]bool) (any, bool) {
 		// this function: a map read from a nil interface panics either way, and
 		// StrictifyJSONSchema handles the root with a comma-ok assertion.
 		if x == nil {
-			return nil, false
+			return nil
 		}
 		out := make(map[string]any, len(x))
-		var wrote bool
 		for k, vv := range x {
-			copied, decoded := copySchemaValue(vv, path)
-			out[k] = copied
-			wrote = wrote || decoded
+			out[k] = copySchemaValue(vv, path)
 		}
-		return out, wrote
+		return out
 	case map[string]map[string]any:
 		// A Go builder writes properties as map[string]map[string]any, and the
 		// default arm would return that map itself: the copy would share the
@@ -1639,16 +1606,13 @@ func deepCopyWith(v any, path map[containerKey]bool) (any, bool) {
 		// the caller's schema. Normalising to map[string]any here is what makes
 		// the copy independent and lets the walk reach each child.
 		if x == nil {
-			return nil, false
+			return nil
 		}
 		out := make(map[string]any, len(x))
-		var wrote bool
 		for k, vv := range x {
-			copied, decoded := copySchemaValue(vv, path)
-			out[k] = copied
-			wrote = wrote || decoded
+			out[k] = copySchemaValue(vv, path)
 		}
-		return out, wrote
+		return out
 	case []map[string]any:
 		// The slice sibling of the arm above: a Go builder writes anyOf,
 		// oneOf and allOf as []map[string]any, and the default arm would return
@@ -1656,29 +1620,23 @@ func deepCopyWith(v any, path map[containerKey]bool) (any, bool) {
 		// skipped and a typeless node inside one reached the provider
 		// unchanged.
 		if x == nil {
-			return nil, false
+			return nil
 		}
 		out := make([]any, len(x))
-		var wrote bool
 		for i := range x {
-			copied, decoded := copySchemaValue(x[i], path)
-			out[i] = copied
-			wrote = wrote || decoded
+			out[i] = copySchemaValue(x[i], path)
 		}
-		return out, wrote
+		return out
 	case []any:
 		// A typed nil slice marshals as JSON null for the same reason.
 		if x == nil {
-			return nil, false
+			return nil
 		}
 		out := make([]any, len(x))
-		var wrote bool
 		for i := range x {
-			copied, decoded := copySchemaValue(x[i], path)
-			out[i] = copied
-			wrote = wrote || decoded
+			out[i] = copySchemaValue(x[i], path)
 		}
-		return out, wrote
+		return out
 	case json.RawMessage:
 		// A caller may supply a subschema as raw JSON. The walk and the
 		// projection both branch on map[string]any, so a raw child is invisible
@@ -1698,7 +1656,7 @@ func deepCopyWith(v any, path map[containerKey]bool) (any, bool) {
 		// A raw scalar is left untouched: it is a value rather than a list of
 		// subschemas, and nothing here rewrites one.
 		if len(x) == 0 {
-			return v, false
+			return v
 		}
 		// The whole value has to be one JSON value before it is decoded. A
 		// decoder reads the first value and stops, so a schema object followed
@@ -1707,25 +1665,24 @@ func deepCopyWith(v any, path map[containerKey]bool) (any, bool) {
 		// rejected the tool. Malformed values are left as they are so that
 		// rejection still happens at the encoder.
 		if !json.Valid(x) {
-			return v, false
+			return v
 		}
 		var decoded any
 		decoder := json.NewDecoder(bytes.NewReader(x))
 		decoder.UseNumber()
 		if err := decoder.Decode(&decoded); err != nil {
-			return v, false
+			return v
 		}
 		switch decoded.(type) {
 		case map[string]any, []any:
 
 		default:
-			return v, false
+			return v
 		}
 		// The decoded map re-encodes with the text the raw escapes stood for, so
 		// the copy is a different length from the value it replaced.
-		copied, _ := copySchemaValue(decoded, path)
-		return copied, true
+		return copySchemaValue(decoded, path)
 	default:
-		return v, false
+		return v
 	}
 }

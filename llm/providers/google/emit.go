@@ -1,8 +1,6 @@
 package google
 
 import (
-	"slices"
-
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providers/internal/openaichat"
 	"primeradiant.com/evener/llm/registry"
@@ -49,17 +47,12 @@ func wireFunctionParameters(t llm.ToolDefinition) map[string]any {
 // the catalog's own count — the same answer every route gives a list the
 // encoder cannot measure.
 func (*Protocol) EmitToolSchemas(baseline []llm.ToolDefinition, res registry.Resolved) ([]llm.ToolDefinition, bool) {
-	if len(baseline) == 0 {
-		return nil, false
-	}
-	for i := range baseline {
-		if openaichat.CyclicSchema(baseline[i].Parameters) {
+	for _, t := range baseline {
+		if openaichat.CyclicSchema(t.Parameters) {
 			return nil, false
 		}
 	}
-	sent := slices.Clone(baseline)
-	for i := range sent {
-		sent[i].Parameters = wireFunctionParameters(baseline[i])
-	}
-	return sent, true
+	return llm.ProjectToolSchemas(baseline, func(t llm.ToolDefinition) (map[string]any, bool) {
+		return wireFunctionParameters(t), false
+	})
 }

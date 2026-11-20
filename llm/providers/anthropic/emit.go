@@ -1,8 +1,6 @@
 package anthropic
 
 import (
-	"slices"
-
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -50,22 +48,5 @@ func wireInputSchema(t llm.ToolDefinition) (params map[string]any, untouched boo
 // rewritten tool makes the list a change, and the caller measures the emitted
 // list with the encoder the wire uses.
 func (*Protocol) EmitToolSchemas(baseline []llm.ToolDefinition, res registry.Resolved) ([]llm.ToolDefinition, bool) {
-	if len(baseline) == 0 {
-		return nil, false
-	}
-	var sent []llm.ToolDefinition
-	for i := range baseline {
-		params, untouched := wireInputSchema(baseline[i])
-		if untouched {
-			continue
-		}
-		if sent == nil {
-			sent = slices.Clone(baseline)
-		}
-		sent[i].Parameters = params
-	}
-	if sent == nil {
-		return nil, false
-	}
-	return sent, true
+	return llm.ProjectToolSchemas(baseline, wireInputSchema)
 }

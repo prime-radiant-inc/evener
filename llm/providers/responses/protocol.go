@@ -66,27 +66,10 @@ func (*Protocol) BuildBody(req llm.Request, res registry.Resolved) (map[string]a
 // and false and the count it already holds is reused rather than re-marshaling
 // the catalog.
 func (*Protocol) EmitToolSchemas(baseline []llm.ToolDefinition, res registry.Resolved) ([]llm.ToolDefinition, bool) {
-	if len(baseline) == 0 {
-		return nil, false
-	}
 	strict := registry.BoolValue(res.Caps.StrictTools)
 	lite := registry.BoolValue(res.Caps.ResponsesLite)
-	var sent []llm.ToolDefinition
-	for i, t := range baseline {
+	return llm.ProjectToolSchemas(baseline, func(t llm.ToolDefinition) (map[string]any, bool) {
 		params, _, untouched := toolSchema(t, strict, lite)
-		if untouched {
-			// The decision returned the caller's own map, so the count the
-			// request arrived with already describes it and there is nothing to
-			// measure.
-			continue
-		}
-		if sent == nil {
-			sent = slices.Clone(baseline)
-		}
-		sent[i].Parameters = params
-	}
-	if sent == nil {
-		return nil, false
-	}
-	return sent, true
+		return params, untouched
+	})
 }

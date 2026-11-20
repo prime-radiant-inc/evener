@@ -1496,7 +1496,7 @@ func TestSupplyDerivedTypesReadsEveryConcreteEnumShape(t *testing.T) {
 	for name, argument := range schemas {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			emitted, _ := SupplyDerivedTypes(map[string]any{
+			emitted := SupplyDerivedTypes(map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,
 				"properties":           map[string]any{"mode": argument},
@@ -1624,7 +1624,7 @@ func TestSupplyDerivedTypesReachesEverySchemaPosition(t *testing.T) {
 	for _, pos := range positions {
 		t.Run(pos.name, func(t *testing.T) {
 			t.Parallel()
-			emitted, _ := SupplyDerivedTypes(map[string]any{
+			emitted := SupplyDerivedTypes(map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,
 				"properties":           map[string]any{"headers": pos.build(inner())},
@@ -1731,7 +1731,7 @@ func TestSupplyDerivedTypesWalksEverySchemaBearingKeyword(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			advertised := map[string]any{pos.keyword: pos.value}
-			emitted, _ := SupplyDerivedTypes(map[string]any{
+			emitted := SupplyDerivedTypes(map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,
 				"properties":           map[string]any{"inner": advertised},
@@ -1826,7 +1826,7 @@ func TestSchemaBearingKeywordsMatchTheWalkTables(t *testing.T) {
 // that name as a keyword and change what the parent accepts.
 func TestSupplyDerivedTypesDoesNotReadAPropertyNameAsAKeyword(t *testing.T) {
 	t.Parallel()
-	emitted, _ := SupplyDerivedTypes(map[string]any{
+	emitted := SupplyDerivedTypes(map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"enum":   map[string]any{"type": "string"},
@@ -1882,7 +1882,7 @@ func TestSupplyDerivedTypesReadsEveryTypedEnumSlice(t *testing.T) {
 			if name == "bools" {
 				want = "boolean"
 			}
-			emitted, _ := SupplyDerivedTypes(map[string]any{
+			emitted := SupplyDerivedTypes(map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,
 				"properties":           map[string]any{"mode": argument},
@@ -1910,7 +1910,7 @@ func TestTypedEnumSlicesStillDeclineWhatTheyCannotName(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			emitted, _ := SupplyDerivedTypes(map[string]any{
+			emitted := SupplyDerivedTypes(map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,
 				"properties":           map[string]any{"mode": argument},
@@ -1927,7 +1927,7 @@ func TestTypedEnumSlicesStillDeclineWhatTheyCannotName(t *testing.T) {
 	// that requires an explicit type on every node reject the whole request.
 	t.Run("nil members name null", func(t *testing.T) {
 		t.Parallel()
-		emitted, _ := SupplyDerivedTypes(map[string]any{
+		emitted := SupplyDerivedTypes(map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties":           map[string]any{"mode": map[string]any{"enum": []any{nil}}},
@@ -2007,7 +2007,7 @@ func TestConstIsOnlyReadInADialectThatAssertsIt(t *testing.T) {
 			if tc.dialect != "" {
 				schema["$schema"] = tc.dialect
 			}
-			emitted, _ := SupplyDerivedTypes(schema)
+			emitted := SupplyDerivedTypes(schema)
 			payload := emitted["properties"].(map[string]any)["payload"].(map[string]any)
 			_, typed := payload["type"]
 			if typed != tc.wantTyped {
@@ -2057,7 +2057,7 @@ func TestADialectDeclarationSelectsByItsValueNotItsSpelling(t *testing.T) {
 			t.Parallel()
 			schema := copySchema(fixed).(map[string]any)
 			schema["$schema"] = tc.decl
-			emitted, _ := SupplyDerivedTypes(schema)
+			emitted := SupplyDerivedTypes(schema)
 			payload := emitted["properties"].(map[string]any)["payload"].(map[string]any)
 			if _, typed := payload["type"]; typed {
 				t.Fatalf("emitted %v under the %s declaration: const asserts nothing before draft 6, so stating "+
@@ -2097,7 +2097,7 @@ func TestEnumIsReadInEveryDialect(t *testing.T) {
 		if dialect != "" {
 			schema["$schema"] = dialect
 		}
-		emitted, _ := SupplyDerivedTypes(schema)
+		emitted := SupplyDerivedTypes(schema)
 		payload := emitted["properties"].(map[string]any)["payload"].(map[string]any)
 		if payload["type"] != "string" {
 			t.Fatalf("enum under %q has type %#v, want \"string\": enum is an assertion in every dialect", dialect, payload["type"])
@@ -2131,7 +2131,7 @@ func TestSupplyDerivedTypesReadsTheJSONAnEnumEncodes(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			emitted, _ := SupplyDerivedTypes(map[string]any{
+			emitted := SupplyDerivedTypes(map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,
 				"properties":           map[string]any{"mode": map[string]any{"enum": tc.enum}},
@@ -2162,7 +2162,7 @@ func TestSupplyDerivedTypesWalksTypedPropertyMaps(t *testing.T) {
 	typed := map[string]map[string]any{
 		"mode": {"enum": []string{"fast", "safe"}},
 	}
-	emitted, _ := SupplyDerivedTypes(map[string]any{
+	emitted := SupplyDerivedTypes(map[string]any{
 		"type":                 "object",
 		"additionalProperties": false,
 		"properties":           typed,
@@ -2210,7 +2210,7 @@ func TestSupplyDerivedTypesReadsAnEmbeddedDialect(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			emitted, _ := SupplyDerivedTypes(map[string]any{
+			emitted := SupplyDerivedTypes(map[string]any{
 				"$schema":              "https://json-schema.org/draft/2020-12/schema",
 				"type":                 "object",
 				"additionalProperties": false,
@@ -2266,7 +2266,7 @@ func TestSupplyDerivedTypesReadsANamedTypeThroughItsEncoder(t *testing.T) {
 	t.Parallel()
 	t.Run("enum of a string-encoding named int", func(t *testing.T) {
 		t.Parallel()
-		emitted, _ := SupplyDerivedTypes(map[string]any{
+		emitted := SupplyDerivedTypes(map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
@@ -2287,7 +2287,7 @@ func TestSupplyDerivedTypesReadsANamedTypeThroughItsEncoder(t *testing.T) {
 	})
 	t.Run("const of a string-encoding named int", func(t *testing.T) {
 		t.Parallel()
-		emitted, _ := SupplyDerivedTypes(map[string]any{
+		emitted := SupplyDerivedTypes(map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
@@ -2314,7 +2314,7 @@ func TestSupplyDerivedTypesWalksTypedSubschemaLists(t *testing.T) {
 		{"const": "fast"},
 		{"const": "safe"},
 	}
-	emitted, _ := SupplyDerivedTypes(map[string]any{
+	emitted := SupplyDerivedTypes(map[string]any{
 		"type":                 "object",
 		"additionalProperties": false,
 		"properties":           map[string]any{"mode": map[string]any{"anyOf": typed}},
@@ -2373,7 +2373,7 @@ func TestTypedNilPointerEncoderDoesNotPanicInInference(t *testing.T) {
 					t.Fatalf("inference panicked on a typed nil pointer: %v", r)
 				}
 			}()
-			emitted, _ := SupplyDerivedTypes(map[string]any{
+			emitted := SupplyDerivedTypes(map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,
 				"properties":           map[string]any{"mode": map[string]any{"enum": []any{member}}},
@@ -2394,7 +2394,7 @@ func TestTypedNilPointerEncoderDoesNotPanicInInference(t *testing.T) {
 
 	t.Run("a null beside a string leaves the set unnameable", func(t *testing.T) {
 		t.Parallel()
-		emitted, _ := SupplyDerivedTypes(map[string]any{
+		emitted := SupplyDerivedTypes(map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
@@ -2428,7 +2428,7 @@ func TestTypedNilPointerEncoderDoesNotPanicInInference(t *testing.T) {
 					t.Fatalf("inference panicked on a typed nil const: %v", r)
 				}
 			}()
-			emitted, _ := SupplyDerivedTypes(map[string]any{
+			emitted := SupplyDerivedTypes(map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,
 				"properties":           map[string]any{"mode": map[string]any{"const": member}},
@@ -2476,7 +2476,7 @@ func TestEnumReadsAPointerReceiverEncoderPerElement(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			emitted, _ := SupplyDerivedTypes(map[string]any{
+			emitted := SupplyDerivedTypes(map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,
 				"properties":           map[string]any{"mode": map[string]any{"enum": enum}},
@@ -2562,7 +2562,7 @@ func TestRecursiveSchemaIsCopiedWithoutUnboundedRecursion(t *testing.T) {
 		child["description"] = "unrelated"
 		done := make(chan map[string]any, 1)
 		go func() {
-			out, _ := SupplyDerivedTypes(schema)
+			out := SupplyDerivedTypes(schema)
 			done <- out
 		}()
 		select {
@@ -2591,7 +2591,7 @@ func TestRecursiveSchemaIsCopiedWithoutUnboundedRecursion(t *testing.T) {
 			},
 			"required": []string{"left", "right"},
 		}
-		out, _ := SupplyDerivedTypes(schema)
+		out := SupplyDerivedTypes(schema)
 		props := out["properties"].(map[string]any)
 		for _, name := range []string{"left", "right"} {
 			node, ok := props[name].(map[string]any)
@@ -2617,7 +2617,7 @@ func TestRawJSONSubschemaIsReadLikeADecodedOne(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			emitted, _ := SupplyDerivedTypes(map[string]any{
+			emitted := SupplyDerivedTypes(map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,
 				"properties":           map[string]any{"mode": child},
@@ -2646,7 +2646,7 @@ func TestMalformedRawSubschemaIsLeftToTheEncoder(t *testing.T) {
 	t.Parallel()
 	const malformed = `{"enum":["fast","safe"]} trailing`
 	child := json.RawMessage(malformed)
-	emitted, _ := SupplyDerivedTypes(map[string]any{
+	emitted := SupplyDerivedTypes(map[string]any{
 		"type":                 "object",
 		"additionalProperties": false,
 		"properties":           map[string]any{"mode": child},
@@ -3010,7 +3010,7 @@ func TestRawSubschemaListsAreWalkedForDerivedTypes(t *testing.T) {
 			schema := map[string]any{
 				"anyOf": tc.anyOf,
 			}
-			out, _ := SupplyDerivedTypes(schema)
+			out := SupplyDerivedTypes(schema)
 			branches, ok := out["anyOf"].([]any)
 			if !ok {
 				t.Fatalf("anyOf = %#v, want a walkable list", out["anyOf"])
@@ -3087,7 +3087,7 @@ func TestConstStatesTheTypeItsEncodingNames(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			emitted, _ := SupplyDerivedTypes(map[string]any{
+			emitted := SupplyDerivedTypes(map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,
 				"properties":           map[string]any{"mode": map[string]any{"const": tc.constValue}},
@@ -3120,7 +3120,7 @@ func TestConstPointerAndStringAdmitTheSameArgument(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			emitted, _ := SupplyDerivedTypes(map[string]any{
+			emitted := SupplyDerivedTypes(map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,
 				"properties":           map[string]any{"mode": map[string]any{"const": constValue}},
@@ -3168,7 +3168,7 @@ func TestNestedAnyOfOfTypedScalarBranchesIsCertified(t *testing.T) {
 		if projectedMode["type"] != "string" {
 			t.Fatalf("projected enclosing mode.type = %#v, want \"string\": every branch guarantees string", projectedMode["type"])
 		}
-		nonStrict, _ := SupplyDerivedTypes(schema)
+		nonStrict := SupplyDerivedTypes(schema)
 		nonStrictMode := nonStrict["properties"].(map[string]any)["mode"].(map[string]any)
 		if nonStrictMode["type"] != "string" {
 			t.Fatalf("non-strict enclosing mode.type = %#v, want \"string\": every branch guarantees string", nonStrictMode["type"])
@@ -3412,7 +3412,7 @@ func TestNestedAnyOfOfTypedScalarBranchesIsCertified(t *testing.T) {
 						t.Fatalf("advertised schema rejected %#v", a)
 					}
 				}
-				emitted, _ := SupplyDerivedTypes(tc.schema)
+				emitted := SupplyDerivedTypes(tc.schema)
 				mode := emitted["properties"].(map[string]any)["mode"].(map[string]any)
 				gotType, hasType := mode["type"]
 				if tc.wantType == nil {
@@ -3730,7 +3730,7 @@ func TestANullOnlyValueSetStatesItsType(t *testing.T) {
 	for name, argument := range cases {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			emitted, _ := SupplyDerivedTypes(map[string]any{
+			emitted := SupplyDerivedTypes(map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,
 				"properties":           map[string]any{"mode": argument},
@@ -3758,7 +3758,7 @@ func TestAMixedNullAndScalarSetStaysTypeless(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			emitted, _ := SupplyDerivedTypes(map[string]any{
+			emitted := SupplyDerivedTypes(map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,
 				"properties":           map[string]any{"mode": argument},
