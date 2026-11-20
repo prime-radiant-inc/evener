@@ -57,11 +57,23 @@ export function ModelSheet({ route, navigation }: NativeStackScreenProps<Routes,
 	// or the conversation underneath it. Only this exact route, still on top,
 	// is the sheet the answer may close. The session keeps the acknowledgement
 	// and the readback either way; only the dismissal depends on the route.
-	const close = () => {
+	const stillOnTop = () => {
 		const stack = navigation.getState();
-		if (stack.routes[stack.index]?.key === route.key) sheet.finish();
+		return stack.routes[stack.index]?.key === route.key;
 	};
-	return <ModelSheetBody host={host} vision={setting === "vision"} query={query} setQuery={setQuery} close={close} />;
+	const close = () => {
+		if (stillOnTop()) sheet.finish();
+	};
+	return (
+		<ModelSheetBody
+			host={host}
+			vision={setting === "vision"}
+			query={query}
+			setQuery={setQuery}
+			close={close}
+			stillOnTop={stillOnTop}
+		/>
+	);
 }
 
 function ModelSheetBody({
@@ -70,12 +82,18 @@ function ModelSheetBody({
 	query,
 	setQuery,
 	close,
+	stillOnTop,
 }: {
 	host: ModelHost;
 	vision: boolean;
 	query: string;
 	setQuery(query: string): void;
 	close(): void;
+	/** Whether this sheet's own route still holds the top of the stack: the
+	 * same condition close() no-ops on. An accepted reply that lands after the
+	 * reader left must still reach the store, but the reader who left is owed
+	 * no toast for a route they are no longer looking at. */
+	stillOnTop(): boolean;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
@@ -156,6 +174,11 @@ function ModelSheetBody({
 			if (outcome.disposition === "accepted") {
 				if (!closes) return;
 				close();
+				// The toast (with its accessibility announcement) follows the
+				// reader, exactly as the dismissal above does: an accepted pick
+				// whose sheet was swiped away before the reply lands is a change
+				// the session records, not one this departed route announces.
+				if (!stillOnTop()) return;
 				then?.();
 				return;
 			}
