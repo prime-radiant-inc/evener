@@ -85,10 +85,19 @@ func GitEntryResolvesToCommon(candidate, common string) bool {
 // ResolveClean returns the symlink-resolved, cleaned form of path, falling back
 // to a plain Clean when the path cannot be resolved (e.g. it does not exist).
 func ResolveClean(path string) string {
+	resolved, _ := ResolveCleanOK(path)
+	return resolved
+}
+
+// ResolveCleanOK is ResolveClean, reporting whether path resolved through its
+// symlinks. ok is false when any component is missing or unresolved, and the
+// returned form is then only a plain Clean — which can still name a symlink
+// itself, because Clean cancels a "missing/.." pair lexically.
+func ResolveCleanOK(path string) (string, bool) {
 	if resolved, err := filepath.EvalSymlinks(path); err == nil {
-		return filepath.Clean(resolved)
+		return filepath.Clean(resolved), true
 	}
-	return filepath.Clean(path)
+	return filepath.Clean(path), false
 }
 
 func mainCheckoutLocal(cwd string) (string, bool, error) {

@@ -2,7 +2,9 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -73,15 +75,24 @@ func settingsHubOverview(cfg hubcore.WebConfig) *appwire.SettingsHubOverview {
 }
 
 // operationStoreQuarantine reports the store's health signal, or nil when there
-// is no store or no completed quarantine to describe.
+// is no store or no completed quarantine to describe. The signal's aside path
+// is captured at store open, so it is re-checked here: an operator who archived
+// the set-aside file gets the custody path and epoch without a path to a file
+// that no longer exists. A stat failure other than not-exist keeps the path.
 func operationStoreQuarantine(store *hostops.Store) *appwire.SettingsOperationStoreQuarantine {
 	signal := store.Quarantine()
 	if signal == nil {
 		return nil
 	}
+	asideFile := signal.AsideFile
+	if asideFile != "" {
+		if _, err := os.Stat(asideFile); errors.Is(err, fs.ErrNotExist) {
+			asideFile = ""
+		}
+	}
 	return &appwire.SettingsOperationStoreQuarantine{
 		QuarantinedFile: signal.QuarantinedFile,
-		AsideFile:       signal.AsideFile,
+		AsideFile:       asideFile,
 		CustodyFile:     signal.CustodyFile,
 		QuarantineEpoch: signal.QuarantineEpoch,
 	}

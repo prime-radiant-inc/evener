@@ -530,7 +530,12 @@ indentation capped at depth 3; an expanded parent held open solely by visible
 child subagents omits redundant wait text and shows it when collapsed), and
 drills the cascade along the row's loaded parent-to-child chain when a nested
 row is activated. Loaded descendants whose parent row arrives on a later page
-render at top level until that parent lands and nests them automatically. All
+render at top level until that parent lands and nests them automatically. An
+inactive row the reader could already see stays visible when that happens: the
+tab opens each inactive branch above a row it has already rendered, so a page
+that delivers several ancestors at once does not fold the row away, and an
+explicit collapse of that branch still wins. That memory belongs to the mounted
+tab, so a remount starts from the default closed state. All
 settled runs in the subtree fold into one bottom `total - active` inactive
 disclosure from the subtree summary (independently of the rows downloaded so
 far), grouping settled runs by parent inside the fold. Jobs uses the
@@ -721,6 +726,11 @@ is available. Authority comes from the owner the job ID encodes
 forwarded copy carries the owner's own claim and is indistinguishable from the
 original by its fields, so only the journal the bytes were read from separates
 them. A row whose claim contradicts the identifier is not authoritative at all.
+When the resolved owner is fenced, that fence is checked before any owner
+journal is consulted: the saved metadata read answers from the scoped copy's
+retained metadata, and output owned by the fenced owner is not served at all —
+the read answers not-found, because the fenced owner's state is not this read's
+to state. An unfenced owner's journal is consulted under the ranking rule below.
 
 Authority alone does not decide a read, because a record can be the owner's and
 still not establish the job's state. One rule covers both: **a record that is

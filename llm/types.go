@@ -465,22 +465,27 @@ func TrimThinkingForReplayMessage(msg Message, dropPlain bool) Message {
 }
 
 // StripOpaqueThinkingForCrossProvider returns the thinking part an
-// openai-responses target may take from a foreign turn: the blob and a
-// cryptographic signature come off. It answers ReplayableResponsesPlaintext,
-// the rule reasoningItem applies, and dropped reports the part must go.
+// openai-responses target may take from a foreign turn: the blob, the
+// provider-issued item id and a cryptographic signature come off. It answers
+// ReplayableResponsesPlaintext, the rule reasoningItem applies, and dropped
+// reports the part must go.
 func StripOpaqueThinkingForCrossProvider(p ContentPart) (ContentPart, bool) {
 	if p.Kind != ContentThinking || p.Thinking == nil || p.Thinking.Redacted {
 		return p, true
 	}
 	kept := *p.Thinking
-	kept.EncryptedContent = ""
-	if !IsOpenAICompatReasoningField(kept.Signature) {
-		kept.Signature = ""
+	changed := kept.ID != ""
+	kept.ID = ""
+	if kept.EncryptedContent != "" {
+		kept.EncryptedContent, changed = "", true
+	}
+	if kept.Signature != "" && !IsOpenAICompatReasoningField(kept.Signature) {
+		kept.Signature, changed = "", true
 	}
 	if !kept.ReplayableResponsesPlaintext() {
 		return p, true
 	}
-	if kept.EncryptedContent == p.Thinking.EncryptedContent && kept.Signature == p.Thinking.Signature {
+	if !changed {
 		return p, false
 	}
 	p.Thinking = &kept
