@@ -169,6 +169,9 @@ var envelopeSamplingPermittedLocks = map[string]string{
 		"and the one roster decision rendered from them, which no envelope sample reads or derives " +
 		"from: the exclusion is applied when a ceiling is built, never while sampling an envelope. " +
 		"Every hold is a field read or write, and no I/O or channel wait happens inside one",
+	"Session.evidenceProbesMu": "it guards only the in-flight workspace-key set for MCP freshness probes, " +
+		"which no envelope sample reads or derives from. Every hold is a map lookup, insert, or delete, " +
+		"with no I/O, emit, or channel wait inside one",
 }
 
 // TestEnvelopeSamplingNeverBlocksOnAnEmitHeldLock runs every method the daemon's
