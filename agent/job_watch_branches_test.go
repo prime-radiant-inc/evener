@@ -263,34 +263,6 @@ func TestWatchTargetTerminalError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// watchArgsHasCondition
-// ---------------------------------------------------------------------------
-
-func TestWatchArgsHasCondition(t *testing.T) {
-	t.Parallel()
-	t.Run("output_match", func(t *testing.T) {
-		if !watchArgsHasCondition(watchArgs{OutputMatch: "ERROR"}) {
-			t.Fatalf("expected true for output_match")
-		}
-	})
-	t.Run("progress_interval", func(t *testing.T) {
-		if !watchArgsHasCondition(watchArgs{ProgressIntervalMS: 5000}) {
-			t.Fatalf("expected true for progress_interval")
-		}
-	})
-	t.Run("events", func(t *testing.T) {
-		if !watchArgsHasCondition(watchArgs{Events: []string{"job.notification"}}) {
-			t.Fatalf("expected true for events")
-		}
-	})
-	t.Run("no condition", func(t *testing.T) {
-		if watchArgsHasCondition(watchArgs{}) {
-			t.Fatalf("expected false for no condition")
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
 // watchArgsIsOutputMatchOnly
 // ---------------------------------------------------------------------------
 
@@ -673,21 +645,6 @@ func TestWatchSendKeyLess(t *testing.T) {
 	if watchSendKeyLess(b, a) {
 		t.Fatalf("expected b >= a")
 	}
-}
-
-// ---------------------------------------------------------------------------
-// watchKeyMatchesClearRequest
-// ---------------------------------------------------------------------------
-
-func TestWatchKeyMatchesClearRequest(t *testing.T) {
-	t.Parallel()
-	t.Run("exact match", func(t *testing.T) {
-		candidate := watchKey{VisibleSessionID: "s1", Target: "job_1", SendTo: "dlg_1"}
-		request := watchKey{VisibleSessionID: "s1", Target: "job_1", SendTo: "dlg_1"}
-		if !watchKeyMatchesClearRequest(candidate, request) {
-			t.Fatalf("expected true for exact match")
-		}
-	})
 }
 
 // ---------------------------------------------------------------------------
