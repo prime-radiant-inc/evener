@@ -677,7 +677,6 @@ process may use TCP and UDP, reach the mDNSResponder resolver socket
 (`/private/var/run/mDNSResponder`), and connect to AF_UNIX sockets only under its
 granted read roots — never every socket on the host. `read-only` and
 `workspace-write` keep the permissive-with-warnings outbound policy (#4224).
-Jesse, 2026-11-20, on #4180.
 
 `--sandbox-net off` governs the **tool plane**:
 

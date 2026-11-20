@@ -951,20 +951,16 @@ func liveServeUnixSocket(t *testing.T, path string) {
 	}()
 }
 
-// liveDNSProbe returns the hostname-resolution command to run and the output
-// marker a successful answer carries: dscacheutil when present, else nslookup.
+// liveDNSProbe returns the system hostname-resolution command to run and the
+// output marker a successful answer carries. It must go through mDNSResponder:
+// nslookup is not a fallback, because it can resolve directly over the allowed
+// TCP/UDP rules and would pass even with the mDNSResponder exception missing.
 func liveDNSProbe(t *testing.T) (resolver string, args []string, marker string) {
 	t.Helper()
-	if _, err := os.Stat("/usr/bin/dscacheutil"); err == nil {
-		t.Logf("name resolution probe: /usr/bin/dscacheutil -q host -a name example.com")
-		return "/usr/bin/dscacheutil", []string{"-q", "host", "-a", "name", "example.com"}, "ip_address:"
+	if _, err := os.Stat("/usr/bin/dscacheutil"); err != nil {
+		t.Skipf("live seatbelt test: /usr/bin/dscacheutil not available: %v", err)
 	}
-	if _, err := os.Stat("/usr/bin/nslookup"); err == nil {
-		t.Logf("name resolution probe: /usr/bin/nslookup example.com")
-		return "/usr/bin/nslookup", []string{"example.com"}, "Name:"
-	}
-	t.Skip("no /usr/bin/dscacheutil or /usr/bin/nslookup on this host")
-	return "", nil, ""
+	return "/usr/bin/dscacheutil", []string{"-q", "host", "-a", "name", "example.com"}, "ip_address:"
 }
 
 // TestSeatbeltLiveRestrictedNetworkUnixSockets proves #4180's ruling against the
