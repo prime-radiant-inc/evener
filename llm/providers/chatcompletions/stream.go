@@ -44,10 +44,14 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 	var scalarBuf strings.Builder
 	var scalarField string
 	details := &detailAssembly{byKey: map[detailKey]*strings.Builder{}}
-	// shown is the live pane text; each source's offset tracks how much of it
-	// that source has already accounted for, so a mirror does not repeat bytes.
+	// structuredBuf is the structured preview accumulated in arrival order and
+	// shown is the exact text sent to the live pane. While the two sources
+	// agree, the pane shows the agreed prefix plus the growth of the longer
+	// source; once they diverge it keeps per-frame precedence.
+	var structuredBuf strings.Builder
 	var shown strings.Builder
-	var scalarOffset, structuredOffset int
+	var agree int
+	var diverged bool
 	// encryptedDetails accumulates opaque reasoning.encrypted items (OpenRouter
 	// Gemini/o-series) in arrival order; they ride the thinking part's
 	// EncryptedContent so the reasoning chain survives replay.
@@ -253,37 +257,41 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 				scalarBuf.WriteString(scalar)
 			}
 			structured := details.appendChunk(choice.Delta.ReasoningDetails)
+			if structured != "" {
+				structuredBuf.WriteString(structured)
+			}
 			delta := structured
 			if delta == "" {
 				delta = scalar
 			}
 			if delta != "" {
 				var send string
-				if structured != "" {
-					send, structuredOffset = unseen(delta, shown.String(), structuredOffset)
-					if send != "" {
-						shown.WriteString(send)
+				if !diverged {
+					s, d := scalarBuf.String(), structuredBuf.String()
+					for agree < len(s) && agree < len(d) && s[agree] == d[agree] {
+						agree++
 					}
-					// The structured candidate may include this frame's scalar
-					// bytes too, so account for them before a later scalar
-					// mirror arrives.
-					if scalar != "" {
-						pending := shown.String()[min(scalarOffset, shown.Len()):]
-						if pending != "" && strings.HasPrefix(scalar, pending) {
-							// The frame's scalar fragment mirrors the pane and
-							// extends it; the suffix is unseen content, so it
-							// joins the same preview.
-							extra := scalar[len(pending):]
-							shown.WriteString(extra)
-							scalarOffset = shown.Len()
-							send += extra
-						} else if s, next := unseen(scalar, shown.String(), scalarOffset); s == "" {
-							scalarOffset = next
+					if agree < len(s) && agree < len(d) {
+						// The sources diverge; from here the pane keeps per-frame
+						// precedence and the overlap check stops guiding it.
+						diverged = true
+					} else {
+						longer := s
+						if len(d) > len(s) {
+							longer = d
+						}
+						if len(longer) > shown.Len() && strings.HasPrefix(longer, shown.String()) {
+							send = longer[shown.Len():]
+							shown.WriteString(send)
 						}
 					}
-				} else {
-					send, scalarOffset = unseen(delta, shown.String(), scalarOffset)
-					if send != "" {
+				}
+				if diverged && send == "" {
+					// Per-frame precedence: the structured candidate when the
+					// frame has one, else the scalar fragment. A fragment the
+					// pane already ends with is a repeat, not new text.
+					if !strings.HasSuffix(shown.String(), delta) {
+						send = delta
 						shown.WriteString(send)
 					}
 				}
@@ -422,13 +430,17 @@ func (a *detailAssembly) appendChunk(details []reasoningDetailItem) string {
 	for _, d := range details {
 		text := detailItemText(d)
 		if text == "" {
-			// An indexed item's identity starts at its first appearance, even
-			// when that appearance carries no text: empty items contribute
-			// nothing to the display, but later text must keep this position.
+			// An item's identity starts at its first appearance, even when
+			// that appearance carries no text: empty items contribute nothing
+			// to the display, but later text must keep this position. A
+			// text-bearing entry registers its item this way, indexed or
+			// unindexed; metadata-only entries (encrypted) stay out.
 			key := detailKeyOf(d)
-			if key.indexed && a.byKey[key] == nil {
-				a.byKey[key] = &strings.Builder{}
-				a.order = append(a.order, key)
+			if key.indexed || d.Type == "reasoning.text" || d.Type == "thinking" {
+				if _, ok := a.byKey[key]; !ok {
+					a.byKey[key] = &strings.Builder{}
+					a.order = append(a.order, key)
+				}
 			}
 			continue
 		}
@@ -471,26 +483,4 @@ func (a *detailAssembly) display() string {
 		texts = append(texts, a.byKey[key].String())
 	}
 	return joinDetailTexts(texts)
-}
-
-// unseen returns the part of candidate the pane has not displayed yet, and the
-// offset this source has accounted for afterwards: past the bytes the pane
-// already shows, or past the candidate once it is appended.
-func unseen(candidate, shown string, offset int) (send string, next int) {
-	if candidate == "" {
-		return "", offset
-	}
-	if offset > len(shown) {
-		offset = len(shown)
-	}
-	remaining := shown[offset:]
-	switch {
-	case strings.HasPrefix(candidate, remaining):
-		send = candidate[len(remaining):]
-		return send, len(shown) + len(send)
-	case strings.HasPrefix(remaining, candidate):
-		return "", offset + len(candidate)
-	default:
-		return candidate, len(shown) + len(candidate)
-	}
 }

@@ -60,6 +60,14 @@ func TestStreamMixedReasoningMatchesNonStreaming(t *testing.T) {
 		// when that appearance carries no text, so settled order follows
 		// appearance rather than first non-empty text.
 		{"empty-first-index-orders-by-appearance", `{"reasoning_details":[{"type":"reasoning.text","text":"","index":0},{"type":"reasoning.text","text":"forecast","index":1},{"type":"reasoning.text","text":"plan","index":0}]}`, "plan\nforecast", "forecast|\nplan", `{"reasoning_details":[{"type":"reasoning.text","text":"","index":0}]}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"forecast","index":1}]}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"plan","index":0}]}`},
+		// The structured mirror lags the scalar stream by a frame: each scalar
+		// growth must reach the pane even when the structured item catches up
+		// in the next frame, so the preview keeps the stream's order.
+		{"staggered-mirror-keeps-scalar-growth", `{"reasoning_content":"abc","reasoning_details":[{"type":"reasoning.text","text":"abc","index":0}]}`, "abc", "a|b|c", `{"reasoning_content":"a"}` + "\x00" + `{"reasoning_content":"b","reasoning_details":[{"type":"reasoning.text","text":"a","index":0}]}` + "\x00" + `{"reasoning_content":"c"}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"bc","index":0}]}`},
+		// An unindexed text-bearing entry registers the implicit item on first
+		// appearance even when its text is empty, so later unindexed text keeps
+		// the position of its earlier empty appearance.
+		{"empty-unindexed-first-orders-by-appearance", `{"reasoning_details":[{"type":"reasoning.text","text":""},{"type":"reasoning.text","text":"forecast","index":1},{"type":"reasoning.text","text":"plan"}]}`, "plan\nforecast", "forecast|\nplan", `{"reasoning_details":[{"type":"reasoning.text","text":""}]}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"forecast","index":1}]}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"plan"}]}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			resp, err := ExtractRecordedResponse([]byte(`{"choices":[{"message":`+tc.msg+`}]}`), "m")
