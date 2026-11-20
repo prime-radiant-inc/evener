@@ -119,7 +119,7 @@ func (r *runner) hoistMetroBundle(ctx context.Context) error {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "iOS qualification: metro-hoist (%s)\n", logPath)
-	cmd := exec.Command("/bin/bash", metroHoistScript(r.output))
+	cmd := exec.Command("/bin/bash", metroHoistScript(r.output)) //nolint:noctx // Cancellation stops and reaps the whole owned process group, not just the direct child.
 	cmd.Dir = r.native
 	cmd.Env = envvars.ApplyOverlay(commandEnv(), metroHoistEnv(r.hostSettings, staging))
 	cmd.Stdout, cmd.Stderr = log, log
