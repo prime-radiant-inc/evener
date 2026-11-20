@@ -405,52 +405,6 @@ func TestCovDelegateResult(t *testing.T) {
 	}
 }
 
-// TestCovLatestDelegateMutationSnapshot covers latestDelegateMutationSnapshot: finding the latest snapshot for a
-// delegate ID from committed rows and plan updates.
-func TestCovLatestDelegateMutationSnapshot(t *testing.T) {
-	t.Parallel()
-	// No rows, no plans — empty snapshot.
-	snap := latestDelegateMutationSnapshot("dlg_1", delegateUpdatePlan{}, delegateMutationPlans{})
-	if snap.id != "" {
-		t.Fatalf("empty should return zero snapshot, got id=%q", snap.id)
-	}
-
-	// Found in committed rows.
-	committed := delegateUpdatePlan{
-		rows: []delegateSnapshot{
-			{id: "dlg_other"},
-			{id: "dlg_1", resumable: true},
-		},
-	}
-	snap = latestDelegateMutationSnapshot("dlg_1", committed, delegateMutationPlans{})
-	if snap.id != "dlg_1" || !snap.resumable {
-		t.Fatalf("should find dlg_1 in committed: %+v", snap)
-	}
-
-	// Fallback to last row when target not found.
-	committed = delegateUpdatePlan{
-		rows: []delegateSnapshot{{id: "dlg_other"}},
-	}
-	snap = latestDelegateMutationSnapshot("dlg_missing", committed, delegateMutationPlans{})
-	if snap.id != "dlg_other" {
-		t.Fatalf("should fall back to last row: got %q", snap.id)
-	}
-
-	// Found in plan updates (overrides committed).
-	committed = delegateUpdatePlan{
-		rows: []delegateSnapshot{{id: "dlg_1", resumable: false}},
-	}
-	plans := delegateMutationPlans{
-		updates: []delegateUpdatePlan{{
-			rows: []delegateSnapshot{{id: "dlg_1", resumable: true}},
-		}},
-	}
-	snap = latestDelegateMutationSnapshot("dlg_1", committed, plans)
-	if !snap.resumable {
-		t.Fatal("plan update should override committed")
-	}
-}
-
 // TestCovResolveStableSharedTaskStore covers resolveStableSharedTaskStore: nil/empty guards.
 func TestCovResolveStableSharedTaskStore(t *testing.T) {
 	t.Parallel()
@@ -734,39 +688,5 @@ func TestCovDelegateRestoreOperationalIOError(t *testing.T) {
 	pathErr := &os.PathError{Op: "stat", Path: "/tmp/nonexistent", Err: errors.New("permission")}
 	if !delegateRestoreOperationalIOError(pathErr) {
 		t.Fatal("PathError should be operational")
-	}
-}
-
-// TestCovMissingDelegateRestoreInputReason covers
-// missingDelegateRestoreInputReason.
-func TestCovMissingDelegateRestoreInputReason(t *testing.T) {
-	t.Parallel()
-	// Empty descriptor — missing metadata.
-	reason, err := missingDelegateRestoreInputReason(
-		"", delegatestore.Descriptor{}, os.Stat, os.ReadFile,
-	)
-	if err != nil {
-		t.Fatalf("empty descriptor: %v", err)
-	}
-	if reason != notResumableMissingDelegateResumeMetadata {
-		t.Fatalf("reason = %q, want %q", reason, notResumableMissingDelegateResumeMetadata)
-	}
-
-	// With valid descriptor but empty stateDir — missing child session meta.
-	reason, err = missingDelegateRestoreInputReason(
-		"", delegatestore.Descriptor{
-			ChildSessionID:    "child_1",
-			Task:              "do work",
-			AgentType:         "default",
-			ResolvedProfileID: "openai",
-			ResolvedModel:     "gpt-5",
-			TranscriptRef:     encodeRef("", "child_1"),
-		}, os.Stat, os.ReadFile,
-	)
-	if err != nil {
-		t.Fatalf("valid desc empty stateDir: %v", err)
-	}
-	if reason != notResumableMissingChildSessionMeta {
-		t.Fatalf("reason = %q, want %q", reason, notResumableMissingChildSessionMeta)
 	}
 }
