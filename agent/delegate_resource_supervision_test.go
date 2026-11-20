@@ -4957,7 +4957,9 @@ func TestDelegateResourceSupervision_WatchFilteredFoldDoesNotDuplicateHistory(t 
 //
 // The rule is stated deterministically through the fold-read seam: a read that
 // finds attentionMu takeable is a read running without it. The seam wraps every
-// read this path makes, so no ordering trick is needed to prove the hold.
+// read this path makes, so no ordering trick is needed to prove the hold. The
+// projection carries one pending watch row, because a projection with no watch
+// row is answered by the prescan and reads no fold at all.
 func TestDelegateResourceSupervision_UnleasedWatchFilterReadsTheFoldUnderTheAttentionLock(t *testing.T) {
 	fixture := newColdDelegateFixture(t, "")
 	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
@@ -4967,7 +4969,11 @@ func TestDelegateResourceSupervision_UnleasedWatchFilterReadsTheFoldUnderTheAtte
 	sub := warmStableSupervisionDelegate(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
 
-	// Phase one: the read must run under attentionMu.
+	const watchRowID = "watch:lock-proof-row:1"
+	if appended, err := sub.sess.appendDelegateNotificationDurably(watchRowID, "row "+watchRowID); err != nil || !appended {
+		t.Fatalf("append attention row %q = appended:%t err:%v", watchRowID, appended, err)
+	}
+
 	var reads, unlocked atomic.Int64
 	updateSessionTestConfig(sub.sess, func(cfg *testConfig) {
 		cfg.delegateAttentionReadFold = func(path, sessionID string) (delegateAttentionFold, error) {
@@ -4979,14 +4985,20 @@ func TestDelegateResourceSupervision_UnleasedWatchFilterReadsTheFoldUnderTheAtte
 			return readDelegateAttentionFold(path, sessionID)
 		}
 	})
-	sub.sess.pendingDeferredWatchAttention()
+	defer updateSessionTestConfig(sub.sess, func(cfg *testConfig) { cfg.delegateAttentionReadFold = nil })
+	kept, droppedAt := sub.sess.dropUnleasedWatchAttentionTurns(context.Background(), []schema.Turn{
+		{Kind: schema.TurnSteering, AttentionID: watchRowID, Message: llm.User("row " + watchRowID)},
+		{Kind: schema.TurnUserInput, Message: llm.User("ordinary resident turn")},
+	})
 	if reads.Load() == 0 {
-		t.Fatal("the pending-watch read never reached the fold: this proof needs the read it guards")
+		t.Fatal("the pending-watch filter never reached the fold: this proof needs the read it guards")
 	}
 	if unlocked.Load() != 0 {
 		t.Fatalf("%d fold read(s) ran with attentionMu takeable, want every read under the lock", unlocked.Load())
 	}
-	updateSessionTestConfig(sub.sess, func(cfg *testConfig) { cfg.delegateAttentionReadFold = nil })
+	if !slices.Equal(droppedAt, []int{0}) || len(kept) != 1 {
+		t.Fatalf("filtered projection = kept %d turn(s), dropped %v, want the pending watch row withheld and the ordinary turn kept", len(kept), droppedAt)
+	}
 }
 
 // TestDelegateResourceSupervision_UnleasedProjectionWithholdsBothWatchRowProducers
@@ -5435,8 +5447,12 @@ func TestDelegateResourceSupervision_ForcedFoldWithholdsAPendingWatchRow(t *test
 	if kept := applyUnleasedWatchSplit(t, sub.sess); len(kept) != 0 {
 		t.Fatalf("notices carried by the split = %v, want the watch notice deferred and nothing else", carriedNotificationJobIDs(kept))
 	}
-	if pending := sub.sess.pendingDeferredWatchAttention(); !pending[attentionID] {
-		t.Fatalf("pending watch rows = %v, want %q", pending, attentionID)
+	deferredFold, err := readDelegateAttentionFold(transcriptPath(sub.sess.stateDir, sub.sess.id), sub.sess.id)
+	if err != nil {
+		t.Fatalf("read the child's attention fold: %v", err)
+	}
+	if !slices.Contains(deferredFold.pendingIDs(), attentionID) {
+		t.Fatalf("pending attention rows = %v, want %q", deferredFold.pendingIDs(), attentionID)
 	}
 
 	// Ordinary turns on both sides make the withhold an interior removal, not a
@@ -5790,6 +5806,163 @@ func TestDelegateResourceSupervision_RestartCancelledCallbackWatchBecomesLeasedA
 	}
 	if sub.sess.hasPendingSteering() {
 		t.Fatal("the cancellation landed in the child's steering queue, where an unleased turn would present it")
+	}
+}
+
+// TestDelegateResourceSupervision_StableAncestorReceiverTakesRestartCancellationAsLeasedAttention
+// pins the receiver set a restart's callback-watch cancellation resolves
+// against. A callback watch on a DESCENDANT's shell job lives in the
+// descendant's job manager and names the ANCESTOR as its receiver, so the
+// notice reaches the descendant's route while the receiver sits above it. A
+// walk down the descendant's own subtree cannot find that receiver, and the
+// fallback it leaves is steering — which an unleased turn presents, beside a
+// claim no watch is behind, and with no durable row for the generation that may
+// present it.
+func TestDelegateResourceSupervision_StableAncestorReceiverTakesRestartCancellationAsLeasedAttention(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_parent", "")
+	seedDelegateControllerIdle(t, c, "dlg_child", "dlg_parent")
+	const (
+		parentSessionID = "child-dlg_parent"
+		childSessionID  = "child-dlg_child"
+	)
+	parent := newBareStableRuntimeSession(t, c, "dlg_parent", parentSessionID)
+	child := newBareStableRuntimeSession(t, c, "dlg_child", childSessionID)
+	// A receiver that is no live stable delegate keeps the steering fallback the
+	// caller installs; this is the control that proves the positive case below
+	// is routing on the receiver's kind rather than on any session id at all.
+	if child.routeStableWatchAttention("sess_plain_subagent", "watch:plain:1", callbackWatchesCancelledAtRestartMessage) {
+		t.Fatal("a receiver that is not a stable delegate was routed to durable attention, want the steering fallback")
+	}
+
+	attentionID := restartCancelledCallbackWatchAttentionID(parentSessionID, []*jobstore.WatchRecord{{
+		WatchID:           "watch_descendant_shell",
+		Generation:        "1",
+		Target:            "job_descendant_shell",
+		ReceiverSessionID: parentSessionID,
+	}})
+	if !child.routeStableWatchAttention(parentSessionID, attentionID, callbackWatchesCancelledAtRestartMessage) {
+		t.Fatal("a stable ancestor receiver was not resolved from the descendant's watch sources: the notice falls back to steering an unleased turn presents")
+	}
+
+	fold, err := readDelegateAttentionFold(transcriptPath(c.stateDir, parentSessionID), parentSessionID)
+	if err != nil {
+		t.Fatalf("read the receiver's attention fold: %v", err)
+	}
+	if !slices.Contains(fold.pendingIDs(), attentionID) {
+		t.Fatalf("receiver attention rows = %v, want the cancellation pending under %q", fold.pendingIDs(), attentionID)
+	}
+	if !isWatchNoticeAttentionID(attentionID) {
+		t.Fatalf("attention identity %q does not read as a watch notice: an unleased projection would present it", attentionID)
+	}
+	// The leased half: the receiver's controller holds a published wake for the
+	// row, which is what a generation drives from.
+	c.mu.Lock()
+	state := c.attention["dlg_parent"]
+	committed := false
+	if state != nil {
+		_, committed = state.committedWakeIDs[attentionID]
+	}
+	c.mu.Unlock()
+	if !committed {
+		t.Fatalf("controller committed no wake for %q: the row would wait for a drive that never comes", attentionID)
+	}
+	for _, receiver := range []*Session{parent, child} {
+		if receiver.hasPendingSteering() {
+			t.Fatalf("session %q holds the cancellation in its steering queue, where an unleased turn would present it", receiver.id)
+		}
+		if got := receiver.peekNotifications(); got != 0 {
+			t.Fatalf("session %q queued %d notifications, want the cancellation carried as durable attention alone", receiver.id, got)
+		}
+	}
+}
+
+// newBareStableRuntimeSession is a live stable delegate runtime carrying only
+// what this file's routes and the attention fold read: its identity, its
+// controller, its owning delegate and a transcript in the controller's state
+// directory. It is registered in the controller's live set, which is the set
+// the watch-source lookup answers from.
+func newBareStableRuntimeSession(t *testing.T, c *delegateTreeController, delegateID, sessionID string) *Session {
+	t.Helper()
+	writer, err := transcript.NewWriter(transcriptPath(c.stateDir, sessionID), transcript.Header{SessionID: sessionID})
+	if err != nil {
+		t.Fatalf("create runtime transcript %q: %v", sessionID, err)
+	}
+	t.Cleanup(func() { _ = writer.Close() })
+	runtime := &Session{
+		id:                    sessionID,
+		stateDir:              c.stateDir,
+		delegateController:    c,
+		delegateRootSessionID: c.rootSessionID,
+		owningDelegateID:      delegateID,
+		state:                 SessionIdle,
+	}
+	runtime.attachTranscript(writer, nil)
+	c.mu.Lock()
+	c.live[delegateID] = &delegateLiveState{runtime: runtime}
+	c.mu.Unlock()
+	return runtime
+}
+
+// TestDelegateResourceSupervision_UnleasedProjectionSkipsTheFoldWithoutWatchRows
+// pins the cost side of the unleased watch filter: a projection holding no
+// watch row at all is answered from the turns in hand, with no attention fold
+// read. The fold read is the expensive half (it resumes from a resident cursor
+// under attentionMu), and an unleased turn's ordinary history pays it on every
+// request otherwise.
+//
+// The second phase is the guard against a vacuous proof: the SAME session and
+// seam must read the fold once a watch row is present, so a zero count above
+// can only be the prescan's answer.
+func TestDelegateResourceSupervision_UnleasedProjectionSkipsTheFoldWithoutWatchRows(t *testing.T) {
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
+	})
+	root := restoreSupervisionRoot(t, fixture, nil)
+	sub := warmStableSupervisionDelegate(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	if !sub.sess.stableChildTurnNeedsLease(context.Background()) {
+		t.Fatal("the child is not the unleased stable-turn case this test needs")
+	}
+
+	var reads atomic.Int64
+	updateSessionTestConfig(sub.sess, func(cfg *testConfig) {
+		cfg.delegateAttentionReadFold = func(path, sessionID string) (delegateAttentionFold, error) {
+			reads.Add(1)
+			return readDelegateAttentionFold(path, sessionID)
+		}
+	})
+	defer updateSessionTestConfig(sub.sess, func(cfg *testConfig) { cfg.delegateAttentionReadFold = nil })
+
+	// An unleased snapshot with ordinary history and a settled delegate row, and
+	// no watch row of either producer.
+	kept, droppedAt := sub.sess.dropUnleasedWatchAttentionTurns(context.Background(), []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("ordinary resident turn")},
+		{Kind: schema.TurnSteering, AttentionID: "delegate:settled-report", Message: llm.User("delegate report")},
+	})
+	if reads.Load() != 0 {
+		t.Fatalf("fold reads for a projection with no watch row = %d, want 0: the filter opened the fold it did not need", reads.Load())
+	}
+	if len(droppedAt) != 0 || len(kept) != 2 {
+		t.Fatalf("filtered projection = kept %d turn(s), dropped %v, want the snapshot untouched", len(kept), droppedAt)
+	}
+
+	// The same projection with a pending watch row does read the fold, and holds
+	// that row back.
+	const watchRowID = "watch:prescan-proof-row:1"
+	if appended, err := sub.sess.appendDelegateNotificationDurably(watchRowID, "row "+watchRowID); err != nil || !appended {
+		t.Fatalf("append attention row %q = appended:%t err:%v", watchRowID, appended, err)
+	}
+	kept, droppedAt = sub.sess.dropUnleasedWatchAttentionTurns(context.Background(), []schema.Turn{
+		{Kind: schema.TurnSteering, AttentionID: watchRowID, Message: llm.User("row " + watchRowID)},
+		{Kind: schema.TurnSteering, AttentionID: "delegate:settled-report", Message: llm.User("delegate report")},
+	})
+	if reads.Load() == 0 {
+		t.Fatal("the filter never read the fold for a projection holding a pending watch row: the zero count above proves nothing")
+	}
+	if !slices.Equal(droppedAt, []int{0}) || len(kept) != 1 || kept[0].AttentionID != "delegate:settled-report" {
+		t.Fatalf("filtered projection = kept %#v, dropped %v, want the pending watch row withheld and the settled row kept", kept, droppedAt)
 	}
 }
 

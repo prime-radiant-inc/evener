@@ -3388,27 +3388,56 @@ func attentionTransparentRecentCutoff(history []schema.Turn, preserveRecent int)
 // rows are still pending. Settled history -- including an item a leased
 // generation already presented -- is preserved untouched.
 //
+// A projection with no watch row in it is the common case, and it needs no fold
+// read at all: the prescan below answers it from the turns already in hand, so
+// an unleased turn whose history holds no watch row costs nothing.
+//
 // A leased turn drops nothing: it IS the presentation the notice waits for.
 func (s *Session) dropUnleasedWatchAttentionTurns(ctx context.Context, turns []schema.Turn) (kept []schema.Turn, droppedAt []int) {
 	if !s.stableChildTurnNeedsLease(ctx) {
 		return turns, nil
 	}
-	pending := s.pendingDeferredWatchAttention()
-	if len(pending) == 0 {
-		return turns, nil
-	}
 	if !slices.ContainsFunc(turns, func(turn schema.Turn) bool {
-		return turn.AttentionID != "" && pending[turn.AttentionID]
+		return isWatchNoticeAttentionID(turn.AttentionID)
 	}) {
 		return turns, nil
 	}
-	kept = make([]schema.Turn, 0, len(turns))
+	// The fold cursor behind this read is guarded by attentionMu: every append
+	// and resolution that moves it holds that lock, so the read is taken under
+	// it.
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	fold, err := s.delegateAttentionFoldLocked()
+	if err != nil {
+		return turns, nil
+	}
+	unresolved := func(turn schema.Turn) bool {
+		if !isWatchNoticeAttentionID(turn.AttentionID) {
+			return false
+		}
+		if _, known := fold.content[turn.AttentionID]; !known {
+			// Not one of the fold's rows: nothing durable is waiting behind it,
+			// so there is nothing to withhold.
+			return false
+		}
+		_, resolved := fold.resolutions[turn.AttentionID]
+		return !resolved
+	}
 	for i, turn := range turns {
-		if turn.AttentionID != "" && pending[turn.AttentionID] {
+		if unresolved(turn) {
+			if kept == nil {
+				kept = make([]schema.Turn, i, len(turns)-1)
+				copy(kept, turns[:i])
+			}
 			droppedAt = append(droppedAt, i)
 			continue
 		}
-		kept = append(kept, turn)
+		if kept != nil {
+			kept = append(kept, turn)
+		}
+	}
+	if kept == nil {
+		return turns, nil
 	}
 	return kept, droppedAt
 }
@@ -3425,37 +3454,4 @@ const watchSendAttentionPrefix = "watch:"
 // prefixes are decided in one place.
 func isWatchNoticeAttentionID(id string) bool {
 	return strings.HasPrefix(id, watchSendAttentionPrefix) || strings.HasPrefix(id, deferredWatchAttentionPrefix)
-}
-
-// pendingDeferredWatchAttention reports which watch rows are still unresolved,
-// so an unleased projection holds exactly those back.
-func (s *Session) pendingDeferredWatchAttention() map[string]bool {
-	if s == nil {
-		return map[string]bool{}
-	}
-	// The fold cursor behind this read is guarded by attentionMu: every append
-	// and resolution that moves it holds that lock, so a read taken outside it
-	// races a concurrent watch delivery or parent wake read.
-	s.attentionMu.Lock()
-	defer s.attentionMu.Unlock()
-	return s.pendingWatchAttentionLocked()
-}
-
-// pendingWatchAttentionLocked is pendingDeferredWatchAttention under the
-// caller's hold of attentionMu.
-func (s *Session) pendingWatchAttentionLocked() map[string]bool {
-	pending := make(map[string]bool)
-	if s.delegateController == nil {
-		return pending
-	}
-	fold, err := s.delegateAttentionFoldLocked()
-	if err != nil {
-		return pending
-	}
-	for _, id := range fold.pendingIDs() {
-		if isWatchNoticeAttentionID(id) {
-			pending[id] = true
-		}
-	}
-	return pending
 }

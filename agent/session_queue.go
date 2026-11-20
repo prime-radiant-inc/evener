@@ -300,16 +300,18 @@ func (s *Session) routeStableWatchAttention(receiverSessionID, attentionID, cont
 }
 
 // stableDelegateReceiver resolves receiverSessionID to a live STABLE delegate
-// session in this subtree, or nil. An ancestor receiver above this session has
-// no session handle to inspect here and keeps the steering fallback its own
-// manager installs.
+// session, or nil. The controller's watch sources are the authority for "live
+// delegate runtime", not this session's own subtree: a watch on a descendant's
+// shell job is held in the DESCENDANT's job manager and names the ancestor as
+// its receiver, so an ancestor is a receiver this session may have to resolve
+// from below.
 func (s *Session) stableDelegateReceiver(receiverSessionID string) *Session {
-	if s.id == receiverSessionID && stableDelegateChild(s) {
-		return s
+	if s == nil || receiverSessionID == "" || s.delegateController == nil {
+		return nil
 	}
-	for _, descendant := range s.liveDescendantSessions() {
-		if descendant.id == receiverSessionID && stableDelegateChild(descendant) {
-			return descendant
+	for _, receiver := range s.delegateController.watchSourceSessions() {
+		if receiver.id == receiverSessionID && stableDelegateChild(receiver) {
+			return receiver
 		}
 	}
 	return nil
