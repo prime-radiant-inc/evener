@@ -476,6 +476,7 @@ describe("adopting a source identity reaches the ref's activity store", () => {
         new WireError("thread history failed", -32000, {
           evenerErrorInfo: "transcriptHistoryFailed",
           bootGeneration: DAEMONLESS_BOOT_GENERATION,
+          absenceAttested: true,
         }),
       );
       await upgrading.catch(() => undefined);

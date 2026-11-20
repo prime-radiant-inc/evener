@@ -131,6 +131,7 @@ import type {
   SessionDelegate,
   SessionDelegatesResponse,
   SessionJobsResponse,
+  ThreadReadResponse,
 } from "./types.gen";
 
 const owners: SessionActivityStore[] = [];
@@ -3625,6 +3626,100 @@ test("a replacement's lean resync read lets its newer hold frame outrank its old
 
   expect(store.getSnapshot().delegates.rows[0]?.holdSequence).toBe(9);
   expect(store.bootGeneration).toBe(BOOT_TWO);
+});
+
+// The replacement's identity can reach the store through its own frame before
+// any read names that daemon. A relay recovery hands the client a new daemon
+// whose newer hold edge is addressed to the observed thread and stamped with
+// the boot it now serves; adopting that stamp is what lets the older page the
+// same daemon's refresh still serves -- sampled before the edge, and landing
+// before the lean thread read -- order against the wait the frame published.
+// Without the adoption the page is not comparable to the frame and wipes a
+// newer wait, which nothing restores: an unchanged hold emits no update of its
+// own.
+test("a replacement's hold frame adopts its boot, so its older page cannot wipe the wait", async () => {
+  const client = pushClient();
+  // The switch that makes the resync's own delegates refresh serve a page
+  // sampled before the frame below.
+  let holdRefresh = false;
+  let threadReads = 0;
+  const olderPage = deferred<SessionDelegatesResponse>();
+  const refreshIssued = deferred<void>();
+  const leanRead = deferred<ThreadReadResponse>();
+  const context = pushContext();
+  client.on("thread/read", () => {
+    threadReads += 1;
+    // The subscription's own acquisition answers at once; the resync's lean
+    // read is the one that names the replacement and answers last.
+    if (threadReads === 1) return { ...threadFixture(), bootGeneration: BOOT_ONE };
+    return leanRead.promise;
+  });
+  client.on("evener/thread/delegates/list", ({ scope }) => {
+    if (holdRefresh) {
+      refreshIssued.resolve();
+      return olderPage.promise;
+    }
+    return {
+      context,
+      scope: scope ?? "session",
+      page: { complete: true, issues: [] },
+      delegates: [delegateRow({ projectionRevision: 2 })],
+    };
+  });
+  const store = owner(client);
+  store.start();
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().summary !== null && store.getSnapshot().delegates.complete);
+  store.adoptBootGeneration(BOOT_ONE);
+
+  // Relay recovery on the same connection: the replacement's lean thread read
+  // answers last, while the delegates refresh it also issues is in flight.
+  holdRefresh = true;
+  client.emitNotification({
+    method: "evener/thread/resync",
+    params: { ref: activityRef, threadId: "session" },
+  });
+  await refreshIssued.promise;
+  // The refreshed live context is what re-enables the pushed-frame merge.
+  await activityState(store, () => !store.getSnapshot().summaryState.loading);
+
+  // The replacement's own newer hold edge lands first: its stamp is the only
+  // identity the store has for the daemon now serving the thread.
+  client.emitNotification(
+    pushedFrameFrom(
+      BOOT_TWO,
+      frameInfo({
+        projectionRevision: 2,
+        holdSequence: 9,
+        drainHeldByJobs: true,
+        runningJobCount: 1,
+        oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
+      }),
+    ),
+  );
+  expect(store.bootGeneration).toBe(BOOT_TWO);
+  expect(store.getSnapshot().delegates.rows[0]?.holdSequence).toBe(9);
+
+  // The refresh page was sampled before that edge and carries no sample of its
+  // own. It is the same replacement daemon's, so the two order against each
+  // other, and the older page must not wipe the wait the frame published.
+  olderPage.resolve({
+    context,
+    scope: "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ projectionRevision: 2 })],
+  });
+  await activityState(store, () => !store.getSnapshot().delegates.loading);
+
+  expect(store.getSnapshot().delegates.rows[0]?.holdSequence).toBe(9);
+  expect(store.getSnapshot().delegates.rows[0]?.drainHeldByJobs).toBe(true);
+
+  // The lean read that names the replacement lands last and changes nothing.
+  leanRead.resolve({ ...threadFixture(), bootGeneration: BOOT_TWO });
+  await activityState(store, () => !store.getSnapshot().summaryState.loading);
+
+  expect(store.bootGeneration).toBe(BOOT_TWO);
+  expect(store.getSnapshot().delegates.rows[0]?.holdSequence).toBe(9);
 });
 
 // The resync adoption reads a SUCCESS, so it takes `liveBootGeneration`'s rule

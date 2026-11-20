@@ -1144,17 +1144,21 @@ export class SessionActivityStore {
    * `bootGeneration` is the identity the frame's own publisher stamped on it
    * -- not the store's: a frame from a daemon the store has moved past
    * is dropped, and a frame that names a generation the store has not adopted
-   * is what adopts it. */
+   * is what adopts it. One such frame may move an ordering the store already
+   * holds: a provably newer generation of the SAME owner, on a frame
+   * addressed to this thread, names the daemon serving the thread now. */
   private applyDelegateFrame(frame: EvenerDelegateInfo, bootGeneration: string | undefined): void {
     if (!this.delegateFrameInScope(frame)) return;
     if (this.bootGenerationRetired(bootGeneration)) return;
-    // A frame names the daemon that published it, so the first stamp the store
-    // sees names the source it is reading. Later generations arrive through the
-    // caller that holds the thread's source identity: a subtree store
-    // serves several owners, and letting every frame move the ordering would
-    // retire one owner's holds for another's.
-    if (bootGeneration !== undefined && this.delegateBootGeneration === undefined) {
-      this.adoptBootGeneration(bootGeneration);
+    // Adopt a live frame stamp on first sight or when it proves the same owner
+    // advanced (retiresBootGeneration in reverse), before merging — otherwise a
+    // replacement daemon's older page can wipe a wait its first frame published.
+    const frameBoot = liveBootGeneration(bootGeneration);
+    if (
+      frameBoot !== undefined &&
+      (this.delegateBootGeneration === undefined || retiresBootGeneration(frameBoot, this.delegateBootGeneration))
+    ) {
+      this.adoptBootGeneration(frameBoot);
     }
     const rows = this.state.delegates.rows;
     if (frame.childRef === undefined) {
