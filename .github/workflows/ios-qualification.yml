@@ -107,6 +107,7 @@ jobs:
             scripts/native/ios/build-simulator.sh \
             scripts/native/ios/qualification \
             scripts/native/ios/run-ui-tests.sh \
+            scripts/native/ios/qualification/simulator_preboot.go \
             scripts/native/ios/run-ui-journeys.sh >> "$GITHUB_OUTPUT"
       - name: Check out the chosen tree
         env:
@@ -269,6 +270,7 @@ jobs:
             scripts/native/ios/build-simulator.sh \
             scripts/native/ios/qualification \
             scripts/native/ios/run-ui-tests.sh \
+            scripts/native/ios/qualification/simulator_preboot.go \
             scripts/native/ios/run-ui-journeys.sh >> "$GITHUB_OUTPUT"
       - name: Check out the chosen tree
         env:
@@ -369,6 +371,7 @@ jobs:
             scripts/native/ios/build-simulator.sh \
             scripts/native/ios/qualification \
             scripts/native/ios/run-ui-tests.sh \
+            scripts/native/ios/qualification/simulator_preboot.go \
             scripts/native/ios/run-ui-journeys.sh >> "$GITHUB_OUTPUT"
       - name: Check out the chosen tree
         env:
