@@ -1208,18 +1208,17 @@ func TestRunAudit_ExplicitUnsafeSelectorEmitsSafeEvidence(t *testing.T) {
 	}
 }
 
-// TestRunAudit_ExplicitAmbiguousUnsafeBucketOmitsNonReproducingToken is the
-// roborev fix round 5 RED case: when a bucket name fails safeTokenForRepro
-// (e.g. a space that word-breaks a shell line) AND the same session id
-// exists in multiple such buckets, an explicit --sessions proj:<unsafe-name>:<sid>
-// audit reads the session fine (Locate resolves the proj: selector via
-// locateInBucket) but evidenceSel downgrades to the bare sid — which is
-// ambiguous across the buckets. The DoctorCommand reproduction line carries
-// that bare sid, which cannot reproduce the selected session (Locate
-// returns an ambiguity error). The fix must omit the misleading token from
-// DoctorCommand and disclose the non-reproducibility honestly (bucket names
-// as context, never as fake refs — mirroring FU3 round 2's ambiguity-as-
-// context pattern).
+// TestRunAudit_ExplicitAmbiguousUnsafeBucketOmitsNonReproducingToken pins
+// that when a bucket name fails safeTokenForRepro (e.g. a space that
+// word-breaks a shell line) AND the same session id exists in multiple such
+// buckets, an explicit --sessions proj:<unsafe-name>:<sid> audit reads the
+// session fine (Locate resolves the proj: selector via locateInBucket) but
+// evidenceSel downgrades to the bare sid — which is ambiguous across the
+// buckets. The DoctorCommand reproduction line carries that bare sid, which
+// cannot reproduce the selected session (Locate returns an ambiguity error).
+// The audit must omit the misleading token from DoctorCommand and disclose
+// the non-reproducibility honestly (bucket names as context, never as fake
+// refs).
 func TestRunAudit_ExplicitAmbiguousUnsafeBucketOmitsNonReproducingToken(t *testing.T) {
 	base := t.TempDir()
 	// Two buckets whose names pass projectTokenOK (so parseSelector and
@@ -1319,14 +1318,13 @@ func TestRunAudit_AllNonReproducibleOmitsEmptySessionsFlag(t *testing.T) {
 	}
 }
 
-// TestRunAudit_DistinctSessionsSharingSIDAcrossUnsafeBucketsEachCounted is
-// the roborev fix round 6 finding-2 RED case: distinct sessions sharing one
-// SID across multiple shell-unsafe buckets all downgrade to the same bare
-// SID in evidenceSel, and appendUniqueString collapses them — the audit
-// checked two sessions while SessionRefs (and the summary count) show one,
-// and the disclosure comment names the SID once. The fix tracks each
-// non-reproducible session individually (with bucket context) so the count
-// and disclosure reflect both.
+// TestRunAudit_DistinctSessionsSharingSIDAcrossUnsafeBucketsEachCounted pins
+// that distinct sessions sharing one SID across multiple shell-unsafe buckets
+// all downgrade to the same bare SID in evidenceSel, and appendUniqueString
+// collapses them — the audit checked two sessions while SessionRefs (and the
+// summary count) show one, and the disclosure comment names the SID once. The
+// audit must track each non-reproducible session individually (with bucket
+// context) so the count and disclosure reflect both.
 func TestRunAudit_DistinctSessionsSharingSIDAcrossUnsafeBucketsEachCounted(t *testing.T) {
 	base := t.TempDir()
 	// Two unsafe buckets with the same sid: both explicitly selected, both
@@ -1411,15 +1409,11 @@ func TestRunAudit_SessionRefsHonestFormForNonCanonicalBuckets(t *testing.T) {
 	}
 }
 
-// TestRunAudit_DoctorCommandCappedAtEvidenceSessionRefCap is the roborev
-// fix round 7 finding-1 RED case: DoctorCommand is built from
-// doctorRefsBySig, which is never capped. Before round 6 it was built from
-// f.Evidence.SessionRefs AFTER the evidenceSessionRefCap truncation, so it
-// was bounded to 200 refs. A fleet-wide finding (evidenceSessionRefCap+5
-// sessions in one canonical bucket, each with a distinct proj: ref) now
-// emits a DoctorCommand with all 205 comma-joined selectors — the mid-JSON
-// overflow the cap exists to prevent. The fix must cap reproRefs at
-// evidenceSessionRefCap before joining, with an honest omission note.
+// TestRunAudit_DoctorCommandCappedAtEvidenceSessionRefCap pins that
+// DoctorCommand carries at most evidenceSessionRefCap comma-joined selectors
+// in its --sessions value even when the finding covers cap+5 sessions, and
+// that Description discloses the omitted refs — the cap exists to prevent the
+// mid-JSON overflow those extra selectors would cause.
 func TestRunAudit_DoctorCommandCappedAtEvidenceSessionRefCap(t *testing.T) {
 	base := t.TempDir()
 	// One canonical bucket (ValidateProjectID-valid) with cap+5 distinct

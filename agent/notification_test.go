@@ -623,7 +623,7 @@ func TestNotificationTurnWithoutLaterArrivalsRunsItsOwnBatchOnly(t *testing.T) {
 // TestAcceptNotificationInput_PersistsNotificationKind verifies the durable
 // notification reminder turn carries SteeringKind on schema.Turn, not only on
 // the live SteeringInjectedData event, so a reload labels it the same way the
-// live transcript did (review round 2: this direct-append site bypasses the
+// live transcript did (this direct-append site bypasses the
 // steerKind/consumeSteeringMessage queue path that already persisted its
 // kind). Uses the same minimal durable-record construction as
 // TestAcceptNotificationInputAdoptsNotificationProvenance

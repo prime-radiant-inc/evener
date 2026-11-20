@@ -427,7 +427,7 @@ func TestManagerWatchContinuationRecoveryStaleCutReAsksFreshCut(t *testing.T) {
 
 // A transient failure reading the fresh cut must use the same bounded retry
 // budget as the verdict call: the candidate stays intact and is only re-asked
-// after a valid cut is acquired (issue #5669 review round 2).
+// after a valid cut is acquired (issue #5669).
 func TestManagerWatchContinuationRecoveryFreshCutRetriesTransient(t *testing.T) {
 	t.Parallel()
 	for _, replay := range []bool{true, false} {
