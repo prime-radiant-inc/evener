@@ -405,13 +405,13 @@ This replacement supersedes PR #6345. Do not merge or close #6345 until this rep
 | Case | Authoritative result |
 |---|---|
 | Pick 1 accepted pending; pick 2 directly refused | Snapshot remains on pending pick 1; pick 2's caller receives refusal |
-| Pick 1 accepted; pick 2 accepted | One newer snapshot contains pick 2; pick 1 can no longer affect shared state |
+| Pick 1 accepted; pick 2 accepted | Acceptance replaces the desired record: one newer snapshot carries pick 2's desired identity, displacing pick 1's; pick 2's acceptance alone does not bar pick 1 from later applying |
 | Accepted pick rejects at boundary or quota retry | New snapshot keeps active metadata and marks that exact desired mutation rejected; display falls back active |
 | Older validation finishes after a newer swap commits | Older call is superseded and cannot publish a snapshot transition |
 | Older validation finishes after a newer request is issued but before it commits | Older call still commits if it gets there first, advancing the watermark to its own issue; the newer pick's issue is higher, so it may still commit afterwards if it passes its own validation and no higher-sequence request has committed |
 | Immediate application fails validation while a newer request has been issued | That call settles superseded without publishing; the snapshot is unchanged and no rejection lifecycle is written |
-| Queue preflight fails validation (the deferred pick re-resolves before dispatch) | The same non-deferred failure handler runs as for immediate application: that pick settles rejected on its own desired record, and an older queued pick behind it is unaffected |
-| Newer queued pick accepted, older queued pick still pending | Accepting the newer pick replaces the desired record, so the older pick no longer names the held desired identity; but committing the newer swap is what prevents the older pick from applying — a newer acceptance alone does not, because if the newer pick then fails its own deferred validation, the older pick can still be chosen by the boundary applier and become active |
+| Queue preflight fails validation (the deferred pick re-resolves before acceptance) | The same non-deferred failure handler runs as for immediate application, before any desired record of this pick exists: the snapshot is unchanged, the pick settles superseded when a newer request has been issued and rejected by the validation otherwise, and the code's existing rejection lifecycle handles any earlier desired record the pick was about to replace |
+| Newer queued pick accepted, older queued pick still pending | Only the newer swap's committed application bars the older pick from applying: the watermark advances at commit, never at acceptance, so if the newer pick fails its own deferred validation the boundary applier can still choose the older pick and it becomes active |
 | Older deferred result arrives after newer acceptance | Desired identity no longer matches, so it cannot change the newer snapshot |
 | Same-model pick is accepted | Revision advances and desired becomes applied even without a canonical model-change event |
 | Old active-model event arrives after a newer snapshot | Capable reducer cannot use it to overwrite snapshot-owned metadata |
