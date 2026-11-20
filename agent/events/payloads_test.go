@@ -286,34 +286,29 @@ func TestToolCallEndDataMarshalsOutputRef(t *testing.T) {
 	}
 }
 
-// Every kind the UI can label must exist as a constant. This list is the
-// contract Task 3's call sites are checked against.
+// Every kind the UI can label must appear in AllSteeringKinds. This list is
+// the contract Task 3's call sites are checked against.
 func TestSteeringKindConstants(t *testing.T) {
-	want := map[string]string{
-		"interrupted":         SteeringKindInterrupted,
-		"interrupted-salvage": SteeringKindInterruptedSalvage,
-		"hook-context":        SteeringKindHookContext,
-		"precompact-hook":     SteeringKindPrecompactHook,
-		"compact-nudge":       SteeringKindCompactNudge,
-		"image-description":   SteeringKindImageDescription,
-		"no-tool-calls":       SteeringKindNoToolCalls,
-		"loop-detected":       SteeringKindLoopDetected,
-		"tasks-done":          SteeringKindTasksDone,
-		"task-inactive":       SteeringKindTaskInactive,
-		"note-handoff":        SteeringKindNoteHandoff,
-		"goal-objective":      SteeringKindGoalObjective,
-		"transcript-pointer":  SteeringKindTranscriptPointer,
-		"current-task":        SteeringKindCurrentTask,
-		"task-list":           SteeringKindTaskList,
-		"notification":        SteeringKindNotification,
-		"provider-failure":    SteeringKindProviderFailure,
-		"human-note":          SteeringKindHumanNote,
-		"delegate-nudge":      SteeringKindDelegateNudge,
-	}
-	for literal, got := range want {
-		if got != literal {
-			t.Errorf("constant for %q = %q, want %q", literal, got, literal)
-		}
+	want := map[string]struct{}{
+		"interrupted":         {},
+		"interrupted-salvage": {},
+		"hook-context":        {},
+		"precompact-hook":     {},
+		"compact-nudge":       {},
+		"image-description":   {},
+		"no-tool-calls":       {},
+		"loop-detected":       {},
+		"tasks-done":          {},
+		"task-inactive":       {},
+		"note-handoff":        {},
+		"goal-objective":      {},
+		"transcript-pointer":  {},
+		"current-task":        {},
+		"task-list":           {},
+		"notification":        {},
+		"provider-failure":    {},
+		"human-note":          {},
+		"delegate-nudge":      {},
 	}
 	if len(AllSteeringKinds) != len(want) {
 		t.Errorf("AllSteeringKinds has %d entries, want %d", len(AllSteeringKinds), len(want))
