@@ -970,13 +970,16 @@ jobs:
 
   # The repository's Actions cache holds 10GB and evicts the least recently
   # accessed entries beyond it. Every main push saves a new entry for each Go
-  # cache kind, the golangci-lint analysis caches and the shared module cache,
-  # all keyed by commit, and runs restore only the newest entry per key
-  # prefix. This job keeps main at that one generation: once every lane has
+  # cache kind, the golangci-lint analysis caches, the shared module cache and
+  # the iOS qualification workflow's DerivedData build tree, all keyed by
+  # commit, and runs restore only the newest entry per key prefix. This job
+  # keeps main at that one generation: once every lane of this workflow has
   # finished it deletes each such entry on main that a newer entry with the
-  # same prefix supersedes. It never deletes the newest entry of a prefix, so
-  # a lane that saved nothing this run keeps its last entry; an entry another
-  # main run deleted first is already gone, which is not a failure.
+  # same prefix supersedes. A separate workflow's save may land after this
+  # job; the next main push trims that generation. It never deletes the newest
+  # entry of a prefix, so a lane that saved nothing this run keeps its last
+  # entry; an entry another main run deleted first is already gone, which is
+  # not a failure.
   cache-prune:
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     needs: [web, tests, static, race-root, race-modules, fuzz]
@@ -993,7 +996,7 @@ jobs:
           set -euo pipefail
           entries="$(gh cache list --repo "$GITHUB_REPOSITORY" --ref refs/heads/main \
             --sort created_at --order desc --limit 1000 --json id,key \
-            --jq '.[] | select(.key | test("^(go|gomod|golangci-lint)-.*-[0-9a-f]{40}$")) | "\(.id) \(.key | sub("[0-9a-f]{40}$"; ""))"')"
+            --jq '.[] | select(.key | test("^(go|gomod|golangci-lint|ios-deriveddata)-.*-[0-9a-f]{40}$")) | "\(.id) \(.key | sub("[0-9a-f]{40}$"; ""))"')"
           # Newest first, so the first entry of each prefix is the one kept.
           superseded="$(printf '%s\n' "$entries" | awk 'NF == 2 && seen[$2]++ { print $1 }')"
           deleted=0

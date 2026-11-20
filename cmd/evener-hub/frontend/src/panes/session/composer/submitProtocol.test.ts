@@ -5,6 +5,8 @@ import {
   pushRecoveryRefusal,
   pushSelectionRefusal,
   selectionRefusal,
+  spelledImageMarkers,
+  unbackedImageMarkersIn,
 } from "./submitProtocol";
 
 describe("selectionRefusal", () => {
@@ -40,6 +42,26 @@ describe("refusal toasts", () => {
       ["info", "changed"],
       ["info", "consumed"],
     ]);
+  });
+});
+
+describe("unbacked image markers", () => {
+  it("reads every marker the text spells, deduplicated and ascending", () => {
+    expect(spelledImageMarkers("no anchors here")).toEqual([]);
+    expect(spelledImageMarkers("[image 2] then [image 1] then [image 2]")).toEqual([1, 2]);
+    // A near miss is not a marker: the pattern is the one markerText renders.
+    expect(spelledImageMarkers("[image two] [image ] image 3")).toEqual([]);
+  });
+
+  it("reports adopted markers the outgoing text still spells, and nothing else", () => {
+    expect(unbackedImageMarkersIn("Cascade reader draft[image 1]", [1])).toEqual([1]);
+    // Typed prose is never adopted, so it is never refused.
+    expect(unbackedImageMarkersIn("look at [image 1]", [])).toEqual([]);
+    // The person deleted the adopted reference: the anchor is gone with it.
+    expect(unbackedImageMarkersIn("Cascade reader draft", [1])).toEqual([]);
+    // An adopted marker that no longer appears is not reported, while one that
+    // still does is - the pair is read as it stands.
+    expect(unbackedImageMarkersIn("[image 2][image 3]", [1, 3])).toEqual([3]);
   });
 });
 
