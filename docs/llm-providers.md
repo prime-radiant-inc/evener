@@ -97,8 +97,15 @@ disowns a call the terminal left alone. Recovery keeps a phase the terminal
 stated on an empty message and a search only it reported. Streamed reasoning
 items settle their completion from their own item status or matching terminal
 repeat, while terminal-only reasoning items without an item status inherit the
-response-wide `incomplete` status. Live decoding and API-log
-recomputation apply the same rule.
+response-wide `incomplete` status. An argument frame that names a call by
+`call_id` while its `item_id` belongs to another issued call is disputed: its
+bytes wait for the call the frame names and settle only when that call is
+issued, so the item's owner keeps its own arguments. An explicit `call_id`
+always wins; otherwise the item's state stands in only while it has not learned
+a different call ID. A finished terminal call that supplied no arguments takes
+the bytes held for it under that rule, except for a filtered response, which
+never borrows retracted bytes. Live decoding and API-log recomputation apply
+the same rule.
 
 An explicit incomplete response settles the output, including an empty result.
 If the adapter supplies no settled tool calls, streamed argument deltas remain partial.

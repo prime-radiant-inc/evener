@@ -334,7 +334,7 @@ func (acc *responsesOutputAccumulator) noteIssuedCallID(st *responsesToolState, 
 	if callID == "" {
 		return
 	}
-	if callID != st.id && !(st.issuedCallID == "" && st.id == itemID) {
+	if callID != st.id && (st.issuedCallID != "" || st.id != itemID) {
 		return
 	}
 	st.issuedCallID = callID
