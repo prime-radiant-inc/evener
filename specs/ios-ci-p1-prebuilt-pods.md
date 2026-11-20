@@ -784,3 +784,53 @@ build-results --path … --format json` succeeded and wrote 483 KB, but the
 document carries only action-level fields (`startTime`, `endTime`, `status`,
 `warnings`) and the report printed `build-timings: 0 duration entries from
 xcresulttool`. The timestamp table is the instrument that works.
+
+## 14. The 89 s app-target tail, phase by phase
+
+Same run (44735786110), same timestamped log. The tail runs 689.0 → 777.8 s:
+
+| seconds | phase | needs pod output? |
+| --- | --- | --- |
+| 0.04 | `[CP] Check Pods Manifest.lock` | no |
+| 1.38 | `[Expo] Configure project` (node) | no |
+| 4.46 | `GenerateAssetSymbols` + resource prep | no |
+| 5.71 | `CompileStoryboard` | no |
+| 5.64 | `CompileAssetCatalogVariant thinned` | no |
+| 6.27 | `SwiftExplicitDependencyGeneratePcm` wave + `LinkStoryboards` | partly |
+| 1.14 | bridging-header PCH + emit module | yes |
+| 2.59 | app Swift compile + `Ld` | yes |
+| **42.56** | **`Bundle React Native code and images` (Metro)** | **no** |
+| 2.06 | `[CP] Copy Pods Resources` | yes |
+| 1.23 | `[CP] Embed Pods Frameworks`, strip, ad-hoc sign | yes |
+| **11.82** | **`GenerateDSYMFile`** | yes |
+| 3.90 | `CodeSign`, AppIntents, `CopySwiftLibs`, `ValidateEmbeddedBinary` | yes |
+
+**What gates 689.0.** The app target's first phase starts 0.02 s after the last
+pod's `Libtool` (688.98), which follows the last pod target to finish
+(`ExpoCameraBarcodeScanning`, 687.7). The gate is the `Pods-Evener` aggregate
+target, not any data the early phases need: Metro depends on JS sources only,
+and the asset catalog, storyboards and resource copies depend on app resources
+only. Roughly 59.8 s of the 88.8 s is blocked by target-level ordering rather
+than by a real input.
+
+**Proposal, by expected seconds.**
+
+1. **Hoist the Metro bundle — 42.6 s.** Either run the same bundle command in
+   the prelude and neutralise the phase (verify the guard the installed
+   react-native script honours before relying on it), or move it to a
+   dependency-free aggregate target so xcodebuild runs it beside the compile
+   wave. At 716 s the box is idle — all compiles are done — so this is close to
+   pure serial addition today. Expected 35–42 s.
+2. **Skip dSYM generation — 11.8 s.** `DEBUG_INFORMATION_FORMAT=dwarf` for the
+   qualification configuration. This trades crash symbolication of the built
+   app for time; journeys still assert everything they assert today. Flagged as
+   a fidelity trade, not a guarantee change.
+3. **`[Expo] Configure project` — 1.4 s.** Movable into the prelude. Small, but
+   free once the Metro hoist exists.
+4. **Asset catalog + storyboards — 11.4 s.** Box-speed bound and only
+   addressable with a separate target; poor value for the change risk.
+5. **CodeSign/AppIntents/Validate — 3.9 s.** Required for a runnable, validated
+   bundle. Leave it.
+
+Ceiling ≈ 55 s of a 780 s cold build (7 %), and a much larger share of a warm
+build, where this tail is most of what remains.
