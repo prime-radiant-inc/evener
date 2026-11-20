@@ -10,7 +10,7 @@ import {
   resolveDelegateParents,
   type SessionDelegate,
 } from "@evener/appwire-client";
-import { Fragment, type ReactNode, useMemo } from "react";
+import { Fragment, type ReactNode, useEffect, useMemo, useRef } from "react";
 import { openTranscript } from "../../panes/session/transcript/openTranscript";
 import { enterAgentCascade } from "../../panes/zoom/actions";
 import { useSessionActivity } from "../../stores/sessionActivity";
@@ -120,6 +120,8 @@ function AgentBranch({
   node,
   foldPrefix,
   defaultExpanded,
+  revealedInactive,
+  revealedBranches,
   mode,
   depth,
   now,
@@ -128,14 +130,21 @@ function AgentBranch({
   node: DelegateTreeNode;
   foldPrefix: string;
   defaultExpanded: boolean;
+  revealedInactive: Set<string>;
+  revealedBranches: ReadonlySet<string>;
   mode: "active" | "inactive";
   depth: number;
   now: number;
   onDrill: (sub: SessionDelegate, chain: readonly SessionDelegate[]) => void;
 }) {
   const foldKey = branchFoldID(foldPrefix, node);
-  const expanded = isDisclosureOpen(foldKey, defaultExpanded);
   const visibleChildren = visibleChildrenOf(node, mode);
+  // A settled row the reader could already see must not fold away when a later
+  // page delivers its ancestors.
+  const expanded = isDisclosureOpen(foldKey, defaultExpanded || revealedBranches.has(node.id));
+  useEffect(() => {
+    if (mode === "inactive") revealedInactive.add(node.id);
+  }, [mode, node.id, revealedInactive]);
   const hasChildren = visibleChildren.length > 0;
   // Group headers fold their children into a disclosure of their own, so only a
   // row path needs the visible-row count behind omitSubagentWait.
@@ -154,6 +163,8 @@ function AgentBranch({
       node={child}
       foldPrefix={foldPrefix}
       defaultExpanded={defaultExpanded}
+      revealedInactive={revealedInactive}
+      revealedBranches={revealedBranches}
       mode={mode}
       depth={depth + 1}
       now={now}
@@ -220,6 +231,8 @@ export function AgentsTab({ scope, now, onDrill }: ActivityTabBodyProps) {
   const handleDrill = onDrill ?? drillInto(scope.leaf.ref);
   const foldID = `${scope.leaf.ref}\0inactive-delegates`;
   const activeBranchPrefix = `${scope.leaf.ref}\0active`;
+  // Rows already rendered in the inactive tree, for this mounted tab.
+  const revealedInactive = useRef(new Set<string>()).current;
   const { snapshot, loadMore } = useSessionActivity(scope.leaf.ref, "subtree", "delegates");
   const collection = snapshot?.delegates;
   const summary = snapshot?.summary?.delegates;
@@ -232,6 +245,19 @@ export function AgentsTab({ scope, now, onDrill }: ActivityTabBodyProps) {
   );
   const activeRoots = roots.filter((node) => node.hasActive);
   const settledRoots = roots.filter((node) => node.hasSettled);
+  // Inactive branches whose subtree holds a row the reader has already seen.
+  // Rolled up the tree, so one page that delivers several ancestors at once
+  // still leaves the revealed row in view.
+  const revealedBranches = new Set<string>();
+  const markRevealedBranches = (node: DelegateTreeNode): boolean => {
+    let revealed = false;
+    for (const child of visibleChildrenOf(node, "inactive")) {
+      if (markRevealedBranches(child) || revealedInactive.has(child.id)) revealed = true;
+    }
+    if (revealed) revealedBranches.add(node.id);
+    return revealed;
+  };
+  for (const root of settledRoots) markRevealedBranches(root);
   const scrollIds = useMemo(() => rows.map((sub) => activityNodeID({ ...sub, kind: "delegate" })), [rows]);
   useActivityScrollProgress(scrollIds, collection?.complete ?? false, collection?.hasMore ?? false);
   if (collection?.permanent && collection.rows.length === 0)
@@ -250,6 +276,8 @@ export function AgentsTab({ scope, now, onDrill }: ActivityTabBodyProps) {
           node={node}
           foldPrefix={activeBranchPrefix}
           defaultExpanded={true}
+          revealedInactive={revealedInactive}
+          revealedBranches={revealedBranches}
           mode="active"
           depth={0}
           now={now}
@@ -274,6 +302,8 @@ export function AgentsTab({ scope, now, onDrill }: ActivityTabBodyProps) {
                 node={node}
                 foldPrefix={foldID}
                 defaultExpanded={false}
+                revealedInactive={revealedInactive}
+                revealedBranches={revealedBranches}
                 mode="inactive"
                 depth={0}
                 now={now}
