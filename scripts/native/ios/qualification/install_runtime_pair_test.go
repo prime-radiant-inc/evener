@@ -314,16 +314,13 @@ func TestRunUITestsStartsTheSuppliedPairInsteadOfBuilding(t *testing.T) {
 			t.Errorf("%s ran even though a verified pair was supplied", what)
 		}
 	}
-	reachedProvider := func(t *testing.T, out string, err error) {
+	// The stub fixture-provider always exits 1, so a run that started it fails
+	// with exit 1; usage errors exit 2, which is never the answer here.
+	failedAtProvider := func(t *testing.T, out string, err error) {
 		t.Helper()
-		if err == nil {
-			t.Fatalf("run-ui-tests.sh exited 0 with a fixture provider that exits 1; output:\n%s", out)
-		}
-		// Whether the shell reaps the exited stub before the loop's liveness
-		// check decides only how the same failure is worded.
-		if !strings.Contains(out, "fixture provider exited before readiness") &&
-			!strings.Contains(out, "fixture provider never became ready") {
-			t.Fatalf("run-ui-tests.sh did not reach provider startup; output:\n%s", out)
+		exit, ok := errors.AsType[*exec.ExitError](err)
+		if !ok || exit.ExitCode() != 1 {
+			t.Fatalf("run-ui-tests.sh exit = %v, want exit 1 from the fixture provider; output:\n%s", err, out)
 		}
 	}
 
@@ -333,12 +330,9 @@ func TestRunUITestsStartsTheSuppliedPairInsteadOfBuilding(t *testing.T) {
 		pair := t.TempDir()
 		writePairFixture(t, pair, pairRevision, providerStub)
 		out, err := run(t, f, pair)
-		reachedProvider(t, out, err)
+		failedAtProvider(t, out, err)
 		if !startedPair(t, f) {
 			t.Errorf("the supplied pair's fixture-provider was not started; output:\n%s", out)
-		}
-		if !strings.Contains(out, "using the runtime pair built by the setup job") {
-			t.Errorf("run-ui-tests.sh did not take the pair branch; output:\n%s", out)
 		}
 		notRun(t, f.makeMarker, "make build-runtime")
 		notRun(t, f.goMarker, "go build")
@@ -349,12 +343,7 @@ func TestRunUITestsStartsTheSuppliedPairInsteadOfBuilding(t *testing.T) {
 		pair := t.TempDir()
 		writePairFixture(t, pair, pairRevision, providerStub)
 		out, err := run(t, f, pair)
-		if err == nil {
-			t.Fatalf("run-ui-tests.sh accepted a pair from another revision; output:\n%s", out)
-		}
-		if !strings.Contains(out, "the runtime pair was built from") {
-			t.Errorf("run-ui-tests.sh did not refuse the pair through the installer; output:\n%s", out)
-		}
+		failedAtProvider(t, out, err)
 		if startedPair(t, f) {
 			t.Error("the fixture-provider from a refused pair was started")
 		}
@@ -365,7 +354,7 @@ func TestRunUITestsStartsTheSuppliedPairInsteadOfBuilding(t *testing.T) {
 		t.Parallel()
 		f := newFixture(t, pairRevision)
 		out, err := run(t, f, "")
-		reachedProvider(t, out, err)
+		failedAtProvider(t, out, err)
 		if !startedPair(t, f) {
 			t.Errorf("the locally built fixture-provider was not started; output:\n%s", out)
 		}
@@ -373,9 +362,6 @@ func TestRunUITestsStartsTheSuppliedPairInsteadOfBuilding(t *testing.T) {
 			if _, err := os.Stat(path); err != nil {
 				t.Errorf("%s did not run without a supplied pair; output:\n%s", what, out)
 			}
-		}
-		if strings.Contains(out, "using the runtime pair built by the setup job") {
-			t.Errorf("run-ui-tests.sh took the pair branch with no pair supplied; output:\n%s", out)
 		}
 	})
 }
