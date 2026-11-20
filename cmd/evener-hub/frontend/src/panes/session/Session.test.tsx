@@ -38,6 +38,7 @@ import type { SessionPaneParams } from "./Session";
 import "./index";
 import { settleActivityDiscovery } from "./testing/activityDiscovery";
 import { CommittedSession as Session } from "./testing/CommittedSession";
+import { selectEditorText } from "./testing/editor";
 import { installControlledImageEncoding } from "./testing/imageEncoding";
 import { installMobileViewport } from "./testing/mobileViewport";
 import { captureTranscriptView } from "./transcript/flow/transcriptViewRegistry";
@@ -273,11 +274,7 @@ test("the real Session consumer retains its structured editor and pending images
     { name: "success.png", pending: true },
     { name: "failure.png", pending: true },
   ]);
-  const routeSelection = document.createRange();
-  routeSelection.setStart(editor.firstChild ?? editor, 5);
-  routeSelection.collapse(true);
-  window.getSelection()?.removeAllRanges();
-  window.getSelection()?.addRange(routeSelection);
+  selectEditorText(editor, 5);
 
   act(() => openAttentionSession("destination"));
   await screen.findByRole("textbox", { name: "Message" });

@@ -2,8 +2,95 @@ package llm
 
 import (
 	"encoding/json"
+	"slices"
 	"testing"
 )
+
+// A reasoning item the terminal repeats by ID merges into one, keeping what the repeat omitted.
+func TestMergeFallbackReasoningMergesByID(t *testing.T) {
+	t.Parallel()
+	native := ContentPart{Kind: ContentThinking, Thinking: &ThinkingData{ID: "rs_1", Text: "step one\n\nstep two", EncryptedContent: "blob", ResponsesContentParts: []ResponsesReasoningPart{{Type: "reasoning_text", Text: "step one"}}, ResponsesSummaryParts: []ResponsesReasoningPart{{Type: "summary_text", Text: "step one"}}}}
+	repeat := ContentPart{Kind: ContentThinking, Thinking: &ThinkingData{ID: "rs_1", Summary: []string{"step one", "summary"}}}
+	search := ContentPart{Kind: ContentWebSearch, WebSearch: &WebSearchData{Query: "q"}}
+	sources := []ContentPart{repeat, search}
+	got := MergeFallbackReasoning([]ContentPart{native, search, {Kind: ContentText, Text: "answer"}}, sources)
+	if len(got) != 3 || got[0].Thinking == nil || got[1].Kind != ContentWebSearch || got[2].Text != "answer" {
+		t.Fatalf("merge = %#v, want one reasoning part ahead of the single search and answer", got)
+	}
+	if got[0].Thinking.Text != native.Thinking.Text || !slices.Equal(got[0].Thinking.Summary, []string{"summary"}) ||
+		!slices.Equal(got[0].Thinking.ResponsesContentParts, native.Thinking.ResponsesContentParts) ||
+		!slices.Equal(got[0].Thinking.ResponsesSummaryParts, native.Thinking.ResponsesSummaryParts) ||
+		got[0].Thinking.EncryptedContent != "blob" {
+		t.Fatalf("reasoning = %+v, want every native field kept and only the stated summary dropped", got[0].Thinking)
+	}
+	if !slices.Equal(sources[0].Thinking.Summary, []string{"step one", "summary"}) || sources[0].Thinking.Text != "" {
+		t.Fatalf("source = %+v, want the caller's slices untouched", sources[0].Thinking)
+	}
+	if got := MergeFallbackReasoning(nil, []ContentPart{{Kind: ContentThinking, Thinking: &ThinkingData{Text: "t"}}}); len(got) != 1 || got[0].Thinking.Text != "t" {
+		t.Fatalf("empty-content merge = %#v, want the reasoning part alone", got)
+	}
+}
+
+// A repeat merges where the streamed thought already sits, and the caller's slice is left alone.
+func TestMergeFallbackReasoningKeepsPositionAndCallerSlice(t *testing.T) {
+	t.Parallel()
+	streamed := ContentPart{Kind: ContentThinking, Thinking: &ThinkingData{ID: "rs_1", Text: "step"}}
+	content := []ContentPart{{Kind: ContentText, Text: "said"}, streamed, {Kind: ContentText, Text: "answer"}}
+	got := MergeFallbackReasoning(content, []ContentPart{{Kind: ContentThinking, Thinking: &ThinkingData{ID: "rs_1", Summary: []string{"step"}}}})
+	if len(got) != 3 || got[1].Thinking == nil || got[1].Thinking.ID != "rs_1" || got[0].Text != "said" || got[2].Text != "answer" {
+		t.Fatalf("merge = %#v, want the thought merged at its own index", got)
+	}
+	if content[1].Thinking.Summary != nil || got[0].Text != "said" {
+		t.Fatalf("caller slice = %#v, want it unmodified", content)
+	}
+	// Anonymous thoughts (empty ID) stay distinct, while display-summary deduplication still drops
+	// summaries already shown in content without mutating typed summary parts.
+	anon := MergeFallbackReasoning(
+		[]ContentPart{{Kind: ContentThinking, Thinking: &ThinkingData{Text: "tb"}}},
+		[]ContentPart{{Kind: ContentThinking, Thinking: &ThinkingData{
+			Summary:               []string{"tb", "extra"},
+			ResponsesSummaryParts: []ResponsesReasoningPart{{Type: "summary_text", Text: "tb"}, {Type: "summary_text", Text: "extra"}},
+		}}},
+	)
+	if len(anon) != 2 || !slices.Equal(anon[0].Thinking.Summary, []string{"extra"}) || len(anon[0].Thinking.ResponsesSummaryParts) != 2 {
+		t.Fatalf("merge = %#v, want anonymous thoughts kept distinct with display summary deduped", anon)
+	}
+	// Matched ID preserves content's resolved ResponsesIncomplete status in both directions.
+	completed := MergeFallbackReasoning(
+		[]ContentPart{{Kind: ContentThinking, Thinking: &ThinkingData{ID: "rs_done", Text: "ok", ResponsesIncomplete: false}}},
+		[]ContentPart{{Kind: ContentThinking, Thinking: &ThinkingData{ID: "rs_done", Summary: []string{"ok"}, ResponsesIncomplete: true}}},
+	)
+	incomplete := MergeFallbackReasoning(
+		[]ContentPart{{Kind: ContentThinking, Thinking: &ThinkingData{ID: "rs_cut", Text: "cut", ResponsesIncomplete: true}}},
+		[]ContentPart{{Kind: ContentThinking, Thinking: &ThinkingData{ID: "rs_cut", Summary: []string{"cut"}, ResponsesIncomplete: false}}},
+	)
+	if completed[0].Thinking.ResponsesIncomplete || !incomplete[0].Thinking.ResponsesIncomplete {
+		t.Fatalf("incomplete flags = (%v, %v), want (false, true)",
+			completed[0].Thinking.ResponsesIncomplete, incomplete[0].Thinking.ResponsesIncomplete)
+	}
+	// Each displayed occurrence suppresses at most one matching summary across fallback items.
+	shared := MergeFallbackReasoning(
+		[]ContentPart{{Kind: ContentThinking, Thinking: &ThinkingData{Text: "step"}}},
+		[]ContentPart{
+			{Kind: ContentThinking, Thinking: &ThinkingData{Summary: []string{"step"}}},
+			{Kind: ContentThinking, Thinking: &ThinkingData{Summary: []string{"step"}}},
+		},
+	)
+	if len(shared) != 3 || len(shared[0].Thinking.Summary) != 0 || !slices.Equal(shared[1].Thinking.Summary, []string{"step"}) {
+		t.Fatalf("shared suppression = %#v, want first summary suppressed and second kept", shared)
+	}
+	// Shared suppression debits across ID-matched and unmatched fallback items too.
+	crossBranch := MergeFallbackReasoning(
+		[]ContentPart{{Kind: ContentThinking, Thinking: &ThinkingData{ID: "rs_1", Text: "step"}}},
+		[]ContentPart{
+			{Kind: ContentThinking, Thinking: &ThinkingData{ID: "rs_1", Summary: []string{"step"}}},
+			{Kind: ContentThinking, Thinking: &ThinkingData{ID: "rs_2", Summary: []string{"step"}}},
+		},
+	)
+	if len(crossBranch) != 2 || len(crossBranch[1].Thinking.Summary) != 0 || !slices.Equal(crossBranch[0].Thinking.Summary, []string{"step"}) {
+		t.Fatalf("cross-branch suppression = %#v, want ID-matched item to consume the single displayed occurrence", crossBranch)
+	}
+}
 
 func TestStreamAccumulator_FinishWithResponse_UsesIt(t *testing.T) {
 	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.

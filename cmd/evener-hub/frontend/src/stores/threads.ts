@@ -1,6 +1,7 @@
 import {
   type ComposerMention,
   canWriteSharedNotes,
+  type ImageMarkerRange,
   isTurnError,
   retryEligibility,
   TURN_CONTINUATION_TEXT,
@@ -4060,6 +4061,8 @@ export async function updateRecoveryMutation(
   expectedRecoveryRevisions?: Readonly<Record<string, number>>,
   compositionOwnerId?: string,
   composerText?: string,
+  adoptedImageMarkers?: readonly number[],
+  adoptedImageRanges?: readonly ImageMarkerRange[],
 ): Promise<MutationRecoveryRecord | undefined> {
   const runtime = requireMutationRuntime();
   await runtime.start;
@@ -4074,6 +4077,8 @@ export async function updateRecoveryMutation(
     expectedCompositionRevision,
     expectedRecoveryRevisions,
     compositionOwnerId,
+    adoptedImageMarkers,
+    adoptedImageRanges,
   );
   if (!record) return undefined;
   notifyMutationPersistence([targetRef]);
@@ -4093,6 +4098,8 @@ export async function preserveRecoveryMutation(
   mentions?: readonly ComposerMention[],
   compositionOwnerId?: string,
   localDraftRevisionId?: string,
+  adoptedImageMarkers?: readonly number[],
+  adoptedImageRanges?: readonly ImageMarkerRange[],
 ): Promise<MutationRecoveryRecord | undefined> {
   const runtime = requireMutationRuntime();
   await runtime.start;
@@ -4104,6 +4111,8 @@ export async function preserveRecoveryMutation(
     mentions,
     compositionOwnerId,
     localDraftRevisionId,
+    adoptedImageMarkers,
+    adoptedImageRanges,
   );
   if (!record) return undefined;
   notifyMutationPersistence([targetRef]);
@@ -4690,12 +4699,25 @@ interface ComposerSubmission {
   skillNames?: readonly string[];
   commandNames?: readonly string[];
   mentions?: readonly ComposerMention[];
+  /** The adopted anchors this composition's text spells with no bytes behind
+   * them, by exact position, so a bounced row's repair deletes the adopted
+   * spelling and not an identical literal beside it. */
+  adoptedImageMarkers?: readonly number[];
+  adoptedImageRanges?: readonly ImageMarkerRange[];
 }
 
 function composerMutationIntent(
   ref: string,
   route: ComposerMutationRoute,
-  { text, attachments, skillNames, commandNames, mentions }: ComposerSubmission,
+  {
+    text,
+    attachments,
+    skillNames,
+    commandNames,
+    mentions,
+    adoptedImageMarkers,
+    adoptedImageRanges,
+  }: ComposerSubmission,
   compositionOwnerId?: string,
 ): MutationIntent {
   const model = trackedThreadModel(ref);
@@ -4729,6 +4751,11 @@ function composerMutationIntent(
     attachments: durableAttachments(attachments),
     composerText: text,
     composerMentions: mentions,
+    // The missing-reference provenance rides the row: a record that restores
+    // the text but not this fact would send the adopted anchor as prose, and
+    // a number list alone would mark an identical literal beside it too.
+    ...(adoptedImageMarkers?.length ? { adoptedImageMarkers: [...adoptedImageMarkers] } : {}),
+    ...(adoptedImageRanges?.length ? { adoptedImageRanges: adoptedImageRanges.map((range) => ({ ...range })) } : {}),
     // The acting composer pane's seat, so a refusal's bounced row restores
     // into the pane that wrote it and no other.
     compositionOwnerId,

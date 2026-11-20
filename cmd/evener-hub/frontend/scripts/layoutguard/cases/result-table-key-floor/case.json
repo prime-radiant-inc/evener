@@ -1,0 +1,17 @@
+{
+  "name": "result-table-key-floor",
+  "description": "notification card: the structured result's key column keeps a readable label floor when a value cell carries a huge max-content line - a JSON.stringify'd nested object collapsed 'Artifacts'/'Data'/'Message' to ~2 characters per line in the live hub (2026-11-19, the pr-c2 delegate report)",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "styles/railseat.module.css",
+    "panes/session/transcript/messages/notificationcard.module.css"
+  ],
+  "widthMatrix": [{ "width": 456 }, { "width": 700 }],
+  "mutation": {
+    "declaration": "notificationcard.module.css: .resultKey { min-width: 10ch } removed - a JSON.stringify'd data value (~550 characters, one line) collapses the key column to ~30px again",
+    "verified": "2026-11-19",
+    "expect": "fail",
+    "note": "Measured 2026-11-19: the live hub rendered the same result table's key column at 30px ([30, 426]); the standalone repro measured 35px before the fix and 94px after it, with 'Artifacts' back on one line."
+  }
+}

@@ -37,7 +37,7 @@ import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store
 import { toastKinds } from "../../../widgets/toast/toastTestUtils";
 import { settleActivityDiscovery } from "../testing/activityDiscovery";
 import { createTestComposerSource } from "../testing/composerSource";
-import { pastePngInto, replaceEditorText, selectEditorText } from "../testing/editor";
+import { insertEditorTextAt, pastePngInto, replaceEditorText, selectEditorText } from "../testing/editor";
 import { installControlledImageEncoding } from "../testing/imageEncoding";
 import { PendingRowStack } from "../transcript/messages/PendingRowStack";
 import { askDockStore, resetAskDockStoreForTests } from "./askDock/askDockStore";
@@ -712,7 +712,7 @@ test("a source encode failure after remount keeps text typed in its current view
   cleanup();
   render(<Composer ref="root" source={source} focused={false} />);
   await settleActivityDiscovery("root");
-  replaceEditorText(screen.getByRole("textbox", { name: "Message" }), "[image 1] keep this edit");
+  insertEditorTextAt(screen.getByRole("textbox", { name: "Message" }), "[image 1]".length, " keep this edit");
   await act(async () => encoding.reject());
   await waitFor(() => expect(readComposerDraft("root").text).toBe(" keep this edit"));
   expect(screen.getByRole("textbox", { name: "Message" }).textContent).toBe(" keep this edit");

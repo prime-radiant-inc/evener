@@ -31,3 +31,12 @@ test("a result key wraps anywhere rather than widening the table", () => {
 test("a result value keeps wrapping anywhere", () => {
   expect(ruleBody("resultValue")).toContain("overflow-wrap: anywhere");
 });
+
+// A long value must not merely fail to WIDEN the table - under auto layout
+// a huge max-content value line (a JSON.stringify'd nested object) also
+// COLLAPSES the key column to its ~1-character min-content floor. The floor
+// keeps the label column readable; the geometry is pinned by the
+// result-table-key-floor layoutguard case, this pins the declaration.
+test("a result key keeps a readable width floor when a value's max-content dwarfs it", () => {
+  expect(ruleBody("resultKey")).toContain("min-width: 10ch");
+});
