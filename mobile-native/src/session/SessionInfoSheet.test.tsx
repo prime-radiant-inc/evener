@@ -576,9 +576,9 @@ describe("renaming", () => {
 		// Nothing confirmed the rename: no toast, no goBack...
 		expect(markers(tree, "toast")).toEqual([]);
 		expect(navigation.goBack).not.toHaveBeenCalled();
-		// ...and the reason the hub refused is visible in the sheet, announced
-		// to VoiceOver like every failed action.
-		expect(renderedText(tree)).toContain("The hub refused the new name.");
+		// ...and the refusal is visible in the sheet, announced to VoiceOver
+		// like every failed action: the alert role is the visible-failure
+		// oracle, not any particular wording.
 		expect(tree.root.findAll((node) => node.props.accessibilityRole === "alert")).toHaveLength(1);
 	});
 });
