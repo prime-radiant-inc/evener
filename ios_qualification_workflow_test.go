@@ -294,13 +294,35 @@ func TestIOSQualificationOverlapsTheRuntimeSetupWithTheBuild(t *testing.T) {
 	if got := fmt.Sprint(upload.With["name"]); !strings.HasPrefix(got, "ios-runtime-pair-") {
 		t.Errorf("runtime pair artifact name = %q, want a per-run ios-runtime-pair- name", got)
 	}
+	if name := fmt.Sprint(upload.With["name"]); strings.Contains(name, "github.run_attempt") {
+		t.Errorf("runtime pair artifact name = %q, want a run-scoped name a failed-jobs re-run can still find", name)
+	}
 	if got := fmt.Sprint(upload.With["if-no-files-found"]); got != "error" {
 		t.Errorf("runtime pair if-no-files-found = %q, want error: a missing pair must fail the job", got)
+	}
+	if got := fmt.Sprint(upload.With["overwrite"]); got != "true" {
+		t.Errorf("runtime pair overwrite = %q, want true so a re-run replaces the earlier attempt's pair", got)
 	}
 
 	build, ok := workflow.Jobs["simulator-build"]
 	if !ok {
 		t.Fatal("ios-qualification is missing the simulator-build job")
+	}
+	var products *githubActionStep
+	for i := range build.Steps {
+		if strings.HasPrefix(build.Steps[i].Uses, "actions/upload-artifact@") {
+			products = &build.Steps[i]
+			break
+		}
+	}
+	if products == nil {
+		t.Fatal("simulator-build does not upload the build products")
+	}
+	if name := fmt.Sprint(products.With["name"]); strings.Contains(name, "github.run_attempt") {
+		t.Errorf("products artifact name = %q, want a run-scoped name the journeys job can find after a rerun", name)
+	}
+	if got := fmt.Sprint(products.With["overwrite"]); got != "true" {
+		t.Errorf("products overwrite = %q, want true so a re-run replaces the earlier attempt's products", got)
 	}
 	journeys, ok := workflow.Jobs["ui-journeys"]
 	if !ok {
@@ -324,6 +346,15 @@ func TestIOSQualificationOverlapsTheRuntimeSetupWithTheBuild(t *testing.T) {
 	}
 	// Same inputs must select the same tree in both jobs; the revision guard
 	// covers whatever the selector still cannot pin.
+	first := journeys.Steps[0]
+	for _, want := range []string{"needs.simulator-build.result", "needs.journey-setup.result"} {
+		if !strings.Contains(first.If, want) {
+			t.Errorf("first journeys step if = %q, want it to test %s", first.If, want)
+		}
+	}
+	if !strings.Contains(first.Run, "exit 1") {
+		t.Errorf("first journeys step does not fail the job on a failed prerequisite:\n%s", first.Run)
+	}
 	selector := "scripts/native/ios/qualification/checkout-ref.sh"
 	if got, want := runStep(setup, selector), runStep(journeys, selector); got == "" || got != want {
 		t.Errorf("journey-setup selects its tree with %q, want ui-journeys' %q", got, want)
@@ -349,7 +380,13 @@ func TestIOSQualificationOverlapsTheRuntimeSetupWithTheBuild(t *testing.T) {
 	for _, want := range []string{"ios-build-products-", "ios-runtime-pair-"} {
 		found := false
 		for name := range downloaded {
-			found = found || strings.HasPrefix(name, want)
+			if !strings.HasPrefix(name, want) {
+				continue
+			}
+			found = true
+			if strings.Contains(name, "github.run_attempt") {
+				t.Errorf("download name = %q, want the run-scoped name its producer uploads", name)
+			}
 		}
 		if !found {
 			t.Errorf("ui-journeys does not download the %s artifact: %v", want, downloaded)

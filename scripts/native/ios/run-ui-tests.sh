@@ -252,16 +252,22 @@ if [ -n "$runtime_pair" ]; then
 		echo "$SCRIPT_NAME: the runtime pair was built from '${pair_revision:-no revision file}', not this tree's '${head_revision:-no sourceRevision in the build identity}'" >&2
 		exit 1
 	fi
+	if [ ! -f "$runtime_pair/SHA256SUMS" ]; then
+		echo "$SCRIPT_NAME: the runtime pair has no SHA256SUMS manifest in $runtime_pair" >&2
+		exit 1
+	fi
 	for binary in evener fixture-provider; do
 		if [ ! -x "$runtime_pair/$binary" ]; then
 			echo "$SCRIPT_NAME: the runtime pair has no executable $binary in $runtime_pair" >&2
 			exit 1
 		fi
+		# shasum -c only proves the entries it finds; a manifest that omits a
+		# binary would leave that binary unverified.
+		if ! grep -Eq "^[0-9a-f]{64} [ *]$binary$" "$runtime_pair/SHA256SUMS"; then
+			echo "$SCRIPT_NAME: the runtime pair's SHA256SUMS manifest has no checksum for $binary" >&2
+			exit 1
+		fi
 	done
-	if [ ! -f "$runtime_pair/SHA256SUMS" ]; then
-		echo "$SCRIPT_NAME: the runtime pair has no SHA256SUMS manifest in $runtime_pair" >&2
-		exit 1
-	fi
 	if ! checksums="$( cd "$runtime_pair" && shasum -a 256 -c SHA256SUMS 2>&1 )"; then
 		echo "$SCRIPT_NAME: the runtime pair does not match its SHA256SUMS manifest in $runtime_pair:" >&2
 		echo "$checksums" >&2
