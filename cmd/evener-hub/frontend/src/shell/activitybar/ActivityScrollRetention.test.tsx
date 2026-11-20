@@ -607,14 +607,14 @@ test("retained agent history stays revealed after viewport restoration is cancel
   setDisclosureOpen(`${ref}\0inactive-delegates`, true);
   const client = activityClient();
   let finish: (() => void) | undefined;
-  client.on("evener/thread/delegates/list", async ({ cursor }) => {
+  client.on("evener/thread/delegates/list", async ({ cursor, scope }) => {
     if (cursor)
       await new Promise<void>((resolve) => {
         finish = resolve;
       });
     return {
       context: activityContext(),
-      scope: "session",
+      scope: scope ?? "session",
       delegates: cursor ? delegates.slice(10) : delegates.slice(0, 10),
       page: { complete: !!cursor, issues: [], ...(!cursor ? { nextCursor: "next" } : {}) },
     };

@@ -1121,6 +1121,8 @@ Underlying Go kind: `string` (no struct fields).
 | `drainHeldByJobs` | bool | yes |  |
 | `runningJobCount` | int | yes |  |
 | `oldestRunningJobStartedAt` | string | yes |  |
+| `drainHeldBySubagents` | bool | yes |  |
+| `runningSubagentCount` | int | yes |  |
 | `holdSequence` | uint64 | yes |  |
 | `latestIntent` | string | yes |  |
 | `runningForMs` | \*int64 | yes |  |
@@ -3955,6 +3957,8 @@ Underlying Go kind: `string` (no struct fields).
 | `drainHeldByJobs` | bool | yes |  |
 | `runningJobCount` | int | yes |  |
 | `oldestRunningJobStartedAt` | string | yes |  |
+| `drainHeldBySubagents` | bool | yes |  |
+| `runningSubagentCount` | int | yes |  |
 | `holdSequence` | uint64 | yes |  |
 | `usage` | \*[appwire.EvenerUsage](#evenerusage) | yes |  |
 | `worktree` | \*[appwire.JobActivityWorktree](#jobactivityworktree) | yes |  |
