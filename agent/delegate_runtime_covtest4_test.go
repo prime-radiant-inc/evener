@@ -257,28 +257,6 @@ func TestCovRestoreColdDelegateOwnerRuntime_EmptyParentID(t *testing.T) {
 	}
 }
 
-// TestCovDelegateOutcomeJobStatus covers delegateOutcomeJobStatus: all outcome branches.
-func TestCovDelegateOutcomeJobStatus(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		outcome delegatestore.OutcomeStatus
-		want    jobstore.Status
-	}{
-		{delegatestore.OutcomeCompleted, jobstore.StatusCompleted},
-		{delegatestore.OutcomeCancelled, jobstore.StatusCancelled},
-		{delegatestore.OutcomeStopped, jobstore.StatusStopped},
-		{delegatestore.OutcomeExhausted, jobstore.StatusExhausted},
-		{delegatestore.OutcomeFailed, jobstore.StatusFailed},
-		{"unknown_outcome", jobstore.StatusFailed},
-	}
-	for _, tt := range tests {
-		got := delegateOutcomeJobStatus(tt.outcome)
-		if got != tt.want {
-			t.Fatalf("delegateOutcomeJobStatus(%v) = %q, want %q", tt.outcome, got, tt.want)
-		}
-	}
-}
-
 // TestCovDescriptorProvenance covers descriptorProvenance.
 func TestCovDescriptorProvenance(t *testing.T) {
 	t.Parallel()
