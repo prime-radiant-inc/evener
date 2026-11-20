@@ -45,20 +45,22 @@ for path in "$pair" "$dest"; do
 	fi
 done
 
+# One physically resolved directory for every read and the copy: with a
+# logical cd, a path holding a symlink before `..` would let the revision come
+# from one directory and the binaries from another.
+cd -P -- "$pair"
+
 head_revision="$(jq -r '.sourceRevision // empty' "$identity")"
-pair_revision="$(cat "$pair/revision" 2>/dev/null || true)"
+pair_revision="$(cat revision 2>/dev/null || true)"
 if [ -z "$head_revision" ] || [ "$pair_revision" != "$head_revision" ]; then
 	echo "$script_name: the runtime pair was built from '${pair_revision:-no revision file}', not this tree's '${head_revision:-no sourceRevision in the build identity}'" >&2
 	exit 1
 fi
-if [ ! -f "$pair/SHA256SUMS" ]; then
+if [ ! -f SHA256SUMS ]; then
 	echo "$script_name: the runtime pair has no SHA256SUMS manifest in $pair" >&2
 	exit 1
 fi
 
-# One directory for every step below: the manifest is compared and the copy is
-# taken from the same place.
-cd "$pair"
 for binary in evener fixture-provider; do
 	if [ ! -x "$binary" ]; then
 		echo "$script_name: the runtime pair has no executable $binary in $pair" >&2
