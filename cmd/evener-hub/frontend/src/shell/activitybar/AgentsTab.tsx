@@ -165,7 +165,8 @@ function AgentBranch({
     if (!hasChildren) return null;
     return (
       <Disclosure
-        id={`${foldPrefix}\0settled-under\0${node.id}`}
+        open={expanded}
+        onOpenChange={(next) => setDisclosureOpen(foldKey, next)}
         summary={<span>{`${name} (${node.settledCount})`}</span>}
       >
         <div className={indentClass ?? CLASS.stack}>{renderedChildren}</div>
