@@ -68,6 +68,13 @@ func TestStreamMixedReasoningMatchesNonStreaming(t *testing.T) {
 		// appearance even when its text is empty, so later unindexed text keeps
 		// the position of its earlier empty appearance.
 		{"empty-unindexed-first-orders-by-appearance", `{"reasoning_details":[{"type":"reasoning.text","text":""},{"type":"reasoning.text","text":"forecast","index":1},{"type":"reasoning.text","text":"plan"}]}`, "plan\nforecast", "forecast|\nplan", `{"reasoning_details":[{"type":"reasoning.text","text":""}]}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"forecast","index":1}]}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"plan"}]}`},
+		// After divergence a fragment equal to the pane's suffix is still new
+		// text: the pane already ends with "ha", and the next "ha" extends the
+		// item rather than repeating text the pane has shown.
+		{"divergent-repeat-is-new-text", `{"reasoning_content":"x","reasoning_details":[{"type":"reasoning.text","text":"haha","index":0}]}`, "haha", "ha|ha", `{"reasoning_content":"x","reasoning_details":[{"type":"reasoning.text","text":"ha","index":0}]}` + "\x00" + `{"reasoning_details":[{"type":"reasoning.text","text":"ha","index":0}]}`},
+		// An indexed encrypted entry carries no text, so it must not reserve an
+		// order position ahead of the text items.
+		{"encrypted-index-does-not-order-text", `{"reasoning_details":[{"type":"reasoning.encrypted","id":"r1","data":"blob","index":1},{"type":"reasoning.text","text":"plan","index":0},{"type":"reasoning.text","text":"forecast","index":1}]}`, "plan\nforecast", "plan\nforecast", `{"reasoning_details":[{"type":"reasoning.encrypted","id":"r1","data":"blob","index":1},{"type":"reasoning.text","text":"plan","index":0},{"type":"reasoning.text","text":"forecast","index":1}]}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			resp, err := ExtractRecordedResponse([]byte(`{"choices":[{"message":`+tc.msg+`}]}`), "m")

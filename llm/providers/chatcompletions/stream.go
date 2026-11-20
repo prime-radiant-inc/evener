@@ -280,20 +280,17 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 						if len(d) > len(s) {
 							longer = d
 						}
-						if len(longer) > shown.Len() && strings.HasPrefix(longer, shown.String()) {
+						if len(longer) > shown.Len() {
 							send = longer[shown.Len():]
 							shown.WriteString(send)
 						}
 					}
 				}
-				if diverged && send == "" {
-					// Per-frame precedence: the structured candidate when the
-					// frame has one, else the scalar fragment. A fragment the
-					// pane already ends with is a repeat, not new text.
-					if !strings.HasSuffix(shown.String(), delta) {
-						send = delta
-						shown.WriteString(send)
-					}
+				if diverged {
+					// Per-frame precedence: the structured candidate when the frame has
+					// one, else the scalar fragment. Divergence is permanent, and a repeat
+					// of the pane's suffix is still new text here.
+					send = delta
 				}
 				if send != "" {
 					if !reasoningStarted {
@@ -432,11 +429,11 @@ func (a *detailAssembly) appendChunk(details []reasoningDetailItem) string {
 		if text == "" {
 			// An item's identity starts at its first appearance, even when
 			// that appearance carries no text: empty items contribute nothing
-			// to the display, but later text must keep this position. A
-			// text-bearing entry registers its item this way, indexed or
+			// to the display, but later text must keep this position. Every
+			// non-encrypted entry registers its item this way, indexed or
 			// unindexed; metadata-only entries (encrypted) stay out.
 			key := detailKeyOf(d)
-			if key.indexed || d.Type == "reasoning.text" || d.Type == "thinking" {
+			if d.Type != "reasoning.encrypted" {
 				if _, ok := a.byKey[key]; !ok {
 					a.byKey[key] = &strings.Builder{}
 					a.order = append(a.order, key)
