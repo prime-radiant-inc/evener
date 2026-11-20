@@ -17,21 +17,46 @@ export function delegateStatedIntent(delegate: StableDelegateState & { latestInt
   return !delegate.terminal && delegate.latestIntent ? delegate.latestIntent : "";
 }
 
-/** A working row's live wait on its own running job, or "".
+/** The two facts a finalization-drain hold reports: the delegate's own running
+ * jobs and the descendant subagents still open below it. Both are one hold
+ * sample at the wire level (`holdSequence`), and both mean the same thing to a
+ * reader -- the run is parked, and this is what it waits on. */
+export interface DelegateWaitFields extends StableDelegateState {
+  drainHeldByJobs?: boolean;
+  runningJobCount?: number;
+  drainHeldBySubagents?: boolean;
+  runningSubagentCount?: number;
+}
+
+/** How a caller wants a drain wait phrased.
  *
- * The hold gates this, not the count. A delegate that starts a background
- * shell and keeps working has one running job and is not waiting on it; only
- * `drainHeldByJobs` says the finalization drain is holding the run open, which
- * is the state whose intent and activity clock both stop moving. The count
- * then only phrases the wait. A row carrying neither fact (a retained read, an
- * older daemon) says nothing, which is not the same claim as "known idle". */
-export function delegateWaitText(
-  delegate: StableDelegateState & { drainHeldByJobs?: boolean; runningJobCount?: number },
-): string {
-  if (delegate.terminal || !delegate.drainHeldByJobs) return "";
-  const count = delegate.runningJobCount ?? 0;
-  if (count <= 0) return "";
-  return count === 1 ? "Waiting on 1 running job" : `Waiting on ${count} running jobs`;
+ * `omitSubagents` is for a surface that already renders the waiting subagents
+ * expanded beneath the row: naming them again would repeat the same fact one
+ * line up. It never brings the frozen pre-drain intent back (see
+ * delegateWorkText). */
+export interface DelegateWaitOptions {
+  omitSubagents?: boolean;
+}
+
+/** A working row's live drain wait, or "".
+ *
+ * The hold gates this, not the counts. A delegate that starts a background
+ * shell or a child delegate and keeps working has running work and is not
+ * waiting on it; only `drainHeldByJobs` / `drainHeldBySubagents` say the
+ * finalization drain is holding the run open, which is the state whose intent
+ * and activity clock both stop moving. The counts then only phrase the wait. A
+ * row carrying neither fact (a retained read, an older daemon) says nothing,
+ * which is not the same claim as "known idle". */
+export function delegateWaitText(delegate: DelegateWaitFields, options?: DelegateWaitOptions): string {
+  if (delegate.terminal) return "";
+  const subagents = !options?.omitSubagents && delegate.drainHeldBySubagents ? (delegate.runningSubagentCount ?? 0) : 0;
+  const jobs = delegate.drainHeldByJobs ? (delegate.runningJobCount ?? 0) : 0;
+  if (subagents <= 0 && jobs <= 0) return "";
+  const subagentText = subagents === 1 ? "Waiting on 1 subagent" : `Waiting on ${subagents} subagents`;
+  const jobText = jobs === 1 ? "1 running job" : `${jobs} running jobs`;
+  if (subagents > 0 && jobs > 0) return `${subagentText}, ${jobText}`;
+  if (subagents > 0) return subagentText;
+  return `Waiting on ${jobText}`;
 }
 
 // A working row's newest tool intent stands in for the status word; every
@@ -40,14 +65,28 @@ export function delegateWaitText(
 // the surfaces cannot drift. The intent is display-only: the status still
 // drives sorting, aggregation, and accessibility.
 export function delegateWorkText(
-  delegate: StableDelegateState & { latestIntent?: string; drainHeldByJobs?: boolean; runningJobCount?: number },
+  delegate: DelegateWaitFields & { latestIntent?: string },
   status: string,
+  options?: DelegateWaitOptions,
 ): string {
   // The wait outranks both the intent and the status word, but only while the
   // drain actually holds the run: a delegate still working keeps its intent
-  // and its status word even with a running job of its own.
-  const wait = delegateWaitText(delegate);
+  // and its status word even with running work of its own.
+  const wait = delegateWaitText(delegate, options);
   if (wait !== "") return wait;
+  // The caller is rendering the waiting subagents itself, so this row says
+  // nothing -- but it must not fall back to the intent or the status word
+  // either: the delegate is still parked in its drain, and the intent stopped
+  // moving when the drain took the run. Repeating it is the freeze this whole
+  // hold exists to replace.
+  if (
+    !delegate.terminal &&
+    options?.omitSubagents &&
+    delegate.drainHeldBySubagents &&
+    (delegate.runningSubagentCount ?? 0) > 0
+  ) {
+    return "";
+  }
   const intent = delegateStatedIntent(delegate);
   return intent !== "" ? intent : status;
 }
