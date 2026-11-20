@@ -425,15 +425,18 @@ func (a *detailAssembly) appendChunk(details []reasoningDetailItem) string {
 	// implicit item even when an indexed piece arrives between them.
 	unindexedSeen := false
 	for _, d := range details {
+		// Encrypted blocks are opaque replay material, never display text;
+		// collectEncryptedDetails carries them for continuation.
+		if d.Type == "reasoning.encrypted" {
+			continue
+		}
 		text := detailItemText(d)
 		if text == "" {
-			// An item's identity starts at its first appearance, even when
-			// that appearance carries no text: empty items contribute nothing
-			// to the display, but later text must keep this position. Every
-			// non-encrypted entry registers its item this way, indexed or
-			// unindexed; metadata-only entries (encrypted) stay out.
+			// An item's identity starts at its first appearance for text-bearing
+			// entries (indexed or unindexed) and indexed placeholders, so later
+			// text keeps this position. Null and encrypted entries stay out.
 			key := detailKeyOf(d)
-			if d.Type != "reasoning.encrypted" {
+			if key.indexed || d.Type == "reasoning.text" || d.Type == "thinking" {
 				if _, ok := a.byKey[key]; !ok {
 					a.byKey[key] = &strings.Builder{}
 					a.order = append(a.order, key)

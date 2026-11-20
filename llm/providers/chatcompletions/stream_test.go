@@ -75,6 +75,8 @@ func TestStreamMixedReasoningMatchesNonStreaming(t *testing.T) {
 		// An indexed encrypted entry carries no text, so it must not reserve an
 		// order position ahead of the text items.
 		{"encrypted-index-does-not-order-text", `{"reasoning_details":[{"type":"reasoning.encrypted","id":"r1","data":"blob","index":1},{"type":"reasoning.text","text":"plan","index":0},{"type":"reasoning.text","text":"forecast","index":1}]}`, "plan\nforecast", "plan\nforecast", `{"reasoning_details":[{"type":"reasoning.encrypted","id":"r1","data":"blob","index":1},{"type":"reasoning.text","text":"plan","index":0},{"type":"reasoning.text","text":"forecast","index":1}]}`},
+		{"null-entry-does-not-take-implicit-slot", `{"reasoning_details":[null,{"type":"reasoning.text","text":"forecast","index":1},{"type":"reasoning.text","text":"plan"}]}`, "forecast\nplan", "forecast\nplan", `{"reasoning_details":[null,{"type":"reasoning.text","text":"forecast","index":1},{"type":"reasoning.text","text":"plan"}]}`},
+		{"encrypted-text-stays-out-of-display", `{"reasoning_details":[{"type":"reasoning.encrypted","id":"r1","data":"blob","index":1,"text":"SECRET"},{"type":"reasoning.text","text":"plan","index":0},{"type":"reasoning.text","text":"forecast","index":1}]}`, "plan\nforecast", "plan\nforecast", `{"reasoning_details":[{"type":"reasoning.encrypted","id":"r1","data":"blob","index":1,"text":"SECRET"},{"type":"reasoning.text","text":"plan","index":0},{"type":"reasoning.text","text":"forecast","index":1}]}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			resp, err := ExtractRecordedResponse([]byte(`{"choices":[{"message":`+tc.msg+`}]}`), "m")
