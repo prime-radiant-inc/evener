@@ -171,12 +171,6 @@ func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model st
 		wait.wake <- struct{}{}
 	}
 	s.mu.Unlock()
-	// The warning is emitted only once the wait is published: a configured
-	// Notification hook runs inside the emit, and nothing it does may find the
-	// wait still invisible while the call is already waiting.
-	if saveErr != nil {
-		s.emit(events.WarningData{Message: fmt.Sprintf("auto-save failed: %v", saveErr)})
-	}
 	end := sync.OnceFunc(func() {
 		s.mu.Lock()
 		if s.quotaWait == wait {
@@ -188,6 +182,13 @@ func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model st
 
 	s.noteParentJobActivity(jobPhaseModelRetrying)
 	s.emitQuotaRetry(callErr, model, resetAt.Sub(now), wait.stamp, resetAt.UnixMilli(), callElapsed, &wait.failure)
+	// The failed-save warning follows the start announcement: a configured
+	// Notification hook runs inside an emit, and the roster samples the wait on
+	// the start event, so the wait must already be announced before the warning
+	// can run that hook.
+	if saveErr != nil {
+		s.emit(events.WarningData{Message: fmt.Sprintf("auto-save failed: %v", saveErr)})
+	}
 	select {
 	case <-ctx.Done():
 		return false, ctx.Err()
