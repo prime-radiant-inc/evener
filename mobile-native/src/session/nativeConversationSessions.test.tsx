@@ -1012,6 +1012,114 @@ describe("client binding lifetime", () => {
 		expect(unsubscribes()).toEqual([{ ref: "ref-1" }, { ref: resolved }]);
 	});
 
+	it("sends the pick after the identity change releases the initiating screen's attachment", async () => {
+		// The composer the /model was typed in follows the identity the resume
+		// resolved: the publication replaces its route (screens.tsx's
+		// replaceForIdentity), and the unmounted screen releases its attachment
+		// right then. That release used to retire the entry between the
+		// publication and the dispatch — the service closed holding the fresh
+		// authority, and the daemon never saw the pick. The pick must hold one
+		// reference of its own through the dispatch, so the screen's release on
+		// the publication still sends exactly one mutation on the resolved ref.
+		const resolved = "ref-1-resolved";
+		const authority = { instanceId: "instance-resolved", bootGeneration: "test-boot" };
+		let accepted: ModelControlSnapshot | null = null;
+		const client = hub("ref-1");
+		client.on("thread/resume", () => ({ thread: thread(resolved) }));
+		client.on("thread/read", (params) => {
+			const ref = String((params as { ref: string }).ref);
+			if (ref !== resolved) {
+				const cold = thread("ref-1");
+				return {
+					thread: {
+						...cold,
+						status: { type: "notLoaded" },
+						evener: { ...cold.evener, capabilities: PAST_CAPABILITIES },
+					},
+				};
+			}
+			const live = thread(resolved);
+			return {
+				thread: {
+					...live,
+					evener: {
+						...live.evener,
+						instanceId: authority.instanceId,
+						capabilities: { ...PAST_CAPABILITIES, modelControlVersion: 1 },
+						modelControl: accepted ?? {
+							authority,
+							revision: 1,
+							active: {
+								modelProvider: "anthropic",
+								model: "claude-sonnet-5",
+								reasoningEffortLevels: [],
+								supportsReasoning: false,
+							},
+						},
+					},
+				},
+				bootGeneration: authority.bootGeneration,
+			};
+		});
+		client.on("thread/model/set", (params) => {
+			const response = acceptedModelControl(params);
+			accepted = response.modelControl ?? null;
+			return response;
+		});
+
+		connected(client);
+		const a = sessions.attach("hub-1", "ref-1");
+		await vi.waitFor(() => expect(a.entry.store.getState().status).toBe("open"));
+		const cold = a.entry.store.getState().conversation;
+		if (!cold) throw new Error("the cold read did not publish");
+		expect(cold.modelControlState.kind).toBe("unsupported");
+
+		// The reconnect a resume performs: the entry loses its binding and
+		// rebinds to the same client.
+		const resume = client.resumeThread.bind(client);
+		client.resumeThread = async (ref, options) => {
+			client.emitStateChange("reconnecting");
+			sessions.setConnection("hub-1", null);
+			client.emitStateChange("ready");
+			sessions.setConnection("hub-1", client);
+			return resume(ref, options);
+		};
+		// The mounted conversation's identity subscription (screens.tsx): the
+		// initiating screen follows the change by releasing its attachment, as
+		// the route replace unmounting it does.
+		onTestFinished(
+			runtime.subscribeIdentities((change) => {
+				if (change.hubId === "hub-1" && change.from === "ref-1") a.release();
+			}),
+		);
+		const controls = new SessionControls(
+			a.entry.service!,
+			async () => {},
+			() => {},
+			() => true,
+			() => cold,
+			() => true,
+			{
+				data: [
+					{
+						provider: "anthropic",
+						model: "claude-haiku-5",
+						displayName: "Claude Haiku 5",
+						supportsVision: false,
+					},
+				],
+				recent: [],
+			},
+		);
+
+		const outcome = await controls.changeModel("anthropic", "claude-haiku-5");
+		const setCalls = client.calls.filter((call) => call.method === "thread/model/set");
+		expect(setCalls).toHaveLength(1);
+		expect(setCalls[0]?.params).toMatchObject({ ref: resolved });
+		expect(outcome).toMatchObject({ disposition: "accepted" });
+		await a.entry.readSettled();
+	});
+
 	it("settles a cold pick whose resume keeps the same ref", async () => {
 		// The common resume resolves the ref it was asked about: nothing follows,
 		// and the pick dispatches on the binding the reconnect already started

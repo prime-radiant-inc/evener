@@ -10475,6 +10475,20 @@ export function pendingThreadHydrationBaseModelsForTests(): readonly ThreadModel
   return [...pendingThreadHydrations.values()].flatMap((pending) => (pending.baseModel ? [pending.baseModel] : []));
 }
 
+/** @internal Observe the module-level model-control read bookkeeping: which
+ * refs hold a read sequence entry, and which hold a live mutation-binding
+ * entry. Read-only — a test asserts which closed conversations' entries the
+ * final release retired; the maps themselves stay module-private. */
+export function modelControlReadStateForTests(): {
+  sequences: ReadonlyMap<string, number>;
+  bindingRefs: readonly string[];
+} {
+  return {
+    sequences: modelControlReadSequences,
+    bindingRefs: [...modelControlReadBindings.keys()],
+  };
+}
+
 export function acquireBackgroundThread(ref: string): BackgroundThreadLease {
   beginCanonicalThreadClaim(ref);
   holdBackground(ref);

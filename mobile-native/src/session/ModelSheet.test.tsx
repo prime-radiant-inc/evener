@@ -671,6 +671,33 @@ describe("choosing a model (spec 8.5)", () => {
 		await settle();
 		expect(navigation.goBack).not.toHaveBeenCalled();
 	});
+
+	it("does not toast a pick that settles after the reader dismissed the sheet", async () => {
+		// The reader swipes the picker away while the pick is still out. The
+		// daemon then accepts the change: the mutation and its readback still
+		// land in the store, but the reader has left this sheet, so the toast
+		// (and the accessibility announcement it carries) must not fire for a
+		// route nobody is looking at.
+		const calls: string[] = [];
+		const answer = Promise.withResolvers<ActionOutcome>();
+		const controls = fakeControls(calls);
+		controls.changeModel.mockImplementation(async (provider: string, model: string) => {
+			calls.push(`changeModel:${provider}/${model}`);
+			return answer.promise;
+		});
+		const { host } = provide(conversation(), {}, { controls: controls as unknown as SessionControls });
+		const tree = sheet();
+		act(() => pressable(tree, "Claude Haiku 5")?.props.onPress());
+		// The dismissal: the sheet's own route is gone from the top of the stack.
+		navigation.top = "conversation";
+		answer.resolve({ disposition: "accepted", notice: "Model updated." });
+		await settle();
+		expect(calls).toEqual(["changeModel:anthropic/claude-haiku-5"]);
+		expect(navigation.goBack).not.toHaveBeenCalled();
+		// The toast is the reader's confirmation; a reader who left the sheet
+		// is not owed one.
+		expect(host.toast).not.toHaveBeenCalled();
+	});
 });
 
 const PAST_CAPABILITIES = SHARED_PAST_CAPABILITIES;
