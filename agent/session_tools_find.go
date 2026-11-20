@@ -1049,8 +1049,17 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 			continue
 		}
 		recorded = identifier.ResolveClean(recorded)
-		if _, laneRoot, _, managedProjectID, isLane := r.stateWorktreeOwner(recorded, bucketDir); isLane {
-			if root := resolveMainRootWithin(recorded, laneRoot); root != "" {
+		// A lane is classified where the path really is first. A symlink inside one
+		// lane can point into another, and the recorded spelling's boundary would
+		// then refuse the very checkout the path sits in. A pruned lane resolves to
+		// nothing, so its own spelling is still classified second.
+		resolved := resolveExistingPrefix(recorded)
+		laneCandidate := resolved
+		if _, _, _, _, isLane := r.stateWorktreeOwner(laneCandidate, bucketDir); !isLane {
+			laneCandidate = recorded
+		}
+		if _, laneRoot, _, managedProjectID, isLane := r.stateWorktreeOwner(laneCandidate, bucketDir); isLane {
+			if root := resolveMainRootWithin(laneCandidate, laneRoot); root != "" {
 				return filepath.Base(root)
 			}
 			if !laneSeen {
@@ -1062,7 +1071,7 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 				// fields after this one, and its own record may still name the
 				// project; asking the fallback here would do that work before either
 				// question was put, and the work is what an unavailable mount stalls.
-				lanePath = recorded
+				lanePath = laneCandidate
 			}
 			continue
 		}
@@ -1108,7 +1117,6 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 		// It is asked before the marker below because that marker names whatever
 		// precedes ".worktrees", which can be an enclosing checkout while a
 		// surviving nested one is the row's project.
-		resolved := resolveExistingPrefix(recorded)
 		if _, laneRoot, _, managedProjectID, isLane := r.stateWorktreeOwner(resolved, bucketDir); isLane {
 			if root := resolveMainRootWithin(resolved, laneRoot); root != "" {
 				return filepath.Base(root)
@@ -1187,10 +1195,14 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 	// The spelling read is the one with the SURVIVING PREFIX resolved. A recorded
 	// path that reaches a worktree through a symlinked ancestor and names a
 	// subdirectory of it cannot be resolved as a whole once the subdirectory is
-	// gone, and the alias itself spells no marker.
-	if name, repoDir, isWorktree := inRepoWorktreeProjectPath(resolveExistingPrefix(wd)); isWorktree {
-		if !directoryExists(repoDir) || (ownProject == "" && !bucketKnown) || r.checkoutIsRows(repoDir, ownProject, bucketProject, bucketKnown) {
-			return name
+	// gone, and the alias itself spells no marker. The recorded spelling is read
+	// when the resolved one no longer spells one, which a ".worktrees" directory
+	// that is itself a symlink to external storage produces.
+	for _, spelling := range []string{resolveExistingPrefix(wd), identifier.ResolveClean(wd)} {
+		if name, repoDir, isWorktree := inRepoWorktreeProjectPath(spelling); isWorktree {
+			if !directoryExists(repoDir) || (ownProject == "" && !bucketKnown) || r.checkoutIsRows(repoDir, ownProject, bucketProject, bucketKnown) {
+				return name
+			}
 		}
 	}
 

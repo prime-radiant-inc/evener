@@ -1505,6 +1505,78 @@ func TestFind_ProjectName_AliasedWorktreeMarkerKeepsTheRepo(t *testing.T) {
 	}
 }
 
+// TestFind_ProjectName_SymlinkedWorktreesDirKeepsTheMarker covers a checkout
+// whose ".worktrees" directory is a symlink to external storage. Resolving the
+// recorded path as a whole follows that link, so the resolved spelling no longer
+// spells a marker; the recorded spelling still does, and the checkout it names
+// is the row's own project.
+func TestFind_ProjectName_SymlinkedWorktreesDirKeepsTheMarker(t *testing.T) {
+	repo := newNamedCheckout(t, "symlinked-worktrees-repo")
+	external := t.TempDir()
+	if err := os.Symlink(external, filepath.Join(repo, ".worktrees")); err != nil {
+		t.Fatalf("symlink .worktrees: %v", err)
+	}
+	feature := filepath.Join(external, "feature")
+	gittest.Run(t, repo, "worktree", "add", "-q", feature, "-b", "feature")
+	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repo))
+	// The worktree's own pointer goes, so no Git walk can name the checkout.
+	if err := os.Remove(filepath.Join(feature, ".git")); err != nil {
+		t.Fatalf("remove worktree pointer: %v", err)
+	}
+
+	row := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	row.Config.MemoryProjectID = project.ID
+	row.EnvInfo.WorkingDir = filepath.Join(repo, ".worktrees", "feature", "pkg")
+
+	if got, want := newProjectNameResolver().projectName(row, filepath.Join(t.TempDir(), "unrelated-bucket")), filepath.Base(repo); got != want {
+		t.Fatalf("projectName(deleted subdirectory %q under a symlinked .worktrees directory) = %q, want the recorded spelling's checkout %q", row.EnvInfo.WorkingDir, got, want)
+	}
+}
+
+// TestFind_ProjectName_SymlinkInsideOneLaneIntoAnother covers a recorded path
+// that starts in one managed lane and continues through a symlink into a second,
+// live lane, naming a directory of the second that was removed. The recorded
+// spelling names the first lane, whose bounded walk refuses the resolved path;
+// the lane the path really sits in is the second, and its pointer names the
+// checkout.
+func TestFind_ProjectName_SymlinkInsideOneLaneIntoAnother(t *testing.T) {
+	stateHome := pinStateHome(t)
+
+	mainA := newNamedCheckout(t, "lane-a-repo")
+	projectA := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(mainA))
+	bucketA, err := RuntimeDirForProjectWithStateHome(projectA, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucketA, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket A: %v", err)
+	}
+	laneA := filepath.Join(bucketA, "worktrees", projectA.ID, "dlg_lane_a")
+	gittest.Run(t, mainA, "worktree", "add", "-q", laneA, "-b", "lane-a")
+
+	mainB := newNamedCheckout(t, "lane-b-repo")
+	projectB := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(mainB))
+	bucketB, err := RuntimeDirForProjectWithStateHome(projectB, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucketB, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket B: %v", err)
+	}
+	laneB := filepath.Join(bucketB, "worktrees", projectB.ID, "dlg_lane_b")
+	gittest.Run(t, mainB, "worktree", "add", "-q", laneB, "-b", "lane-b")
+	if err := os.Symlink(laneB, filepath.Join(laneA, "link")); err != nil {
+		t.Fatalf("symlink into lane B: %v", err)
+	}
+
+	row := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	row.EnvInfo.WorkingDir = filepath.Join(laneA, "link", "pkg")
+
+	if got, want := newProjectNameResolver().projectName(row, bucketA), filepath.Base(mainB); got != want {
+		t.Fatalf("projectName(path through a symlink into lane B %q) = %q, want lane B's checkout %q", row.EnvInfo.WorkingDir, got, want)
+	}
+}
+
 // TestFind_ProjectName_StateLaneStopsGitWalkAtLaneRoot covers a shared --state-dir
 // that lives inside checkout A while holding a managed delegate lane for
 // checkout B. Deleting the originless lane leaves nothing at the lane path, so a
