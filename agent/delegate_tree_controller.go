@@ -97,6 +97,11 @@ type delegateTreeController struct {
 	holdSequences        uint64
 	holdSamples          map[string]delegateHoldEntry
 	publishedHoldSamples map[string]delegateHoldSample
+	// drainAbandoned mirrors the drain's generation-scoped abandonment stamps,
+	// keyed by delegate id. The hold sample walks descendants that may belong
+	// to several sessions, so one controller-keyed copy is what lets a single
+	// walk skip the branches their drains gave up on. Guarded by mu.
+	drainAbandoned map[string]uint64
 
 	rootSessionID       string
 	stateDir            string
@@ -988,7 +993,8 @@ func (c *delegateTreeController) delegateOwnerOfSessionLocked(sessionID string) 
 //   - its own managed shells (runningOwnedShellJobs, filtered by the drain's
 //     isOwnedDrainJob), and
 //   - the descendant delegates still open below it, from this delegate's own
-//     subtree minus any run that is terminal.
+//     subtree minus any run that is terminal and minus any branch the drain
+//     abandoned at its current generation.
 //
 // A delegate mid-turn that merely started a background shell or a subagent has
 // the counts and no hold — it is still working, and its row must keep saying
@@ -1023,15 +1029,29 @@ func (c *delegateTreeController) sampleDrainHoldLocked(delegateID string) delega
 		}
 	}
 	running := 0
-	for id := range c.subtreeMembersLocked(delegateID) {
-		if id == delegateID {
-			continue
-		}
-		aggregate := c.durable[id]
-		if aggregate != nil && !delegateRunTerminal(aggregate.LatestOutcome, aggregate.CurrentRunOpen) {
-			running++
+	// The seen set is the guard subtreeMembersLocked carries: a corrupt
+	// journal's parent loop must not recurse without bound under c.mu.
+	seen := make(map[string]struct{})
+	var countBranch func(parentID string)
+	countBranch = func(parentID string) {
+		for id := range c.delegateChildren[parentID] {
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			aggregate := c.durable[id]
+			if aggregate != nil && c.drainAbandoned[id] == aggregate.Generation {
+				// Match treeHasOutstandingWorkBesidesOwnJobs: an abandoned
+				// branch is not a wait.
+				continue
+			}
+			if aggregate != nil && !delegateRunTerminal(aggregate.LatestOutcome, aggregate.CurrentRunOpen) {
+				running++
+			}
+			countBranch(id)
 		}
 	}
+	countBranch(delegateID)
 	if running > 0 {
 		sample.heldSubagents, sample.subagentCount = true, running
 	}
@@ -1741,6 +1761,31 @@ func (c *delegateTreeController) publishDelegateHold(sessionID, delegateID strin
 func (c *delegateTreeController) holdOutstandingLocked(delegateID string) bool {
 	return c.holdSamples[delegateID].sample != (delegateHoldSample{}) ||
 		c.publishedHoldSamples[delegateID] != (delegateHoldSample{})
+}
+
+// markDrainAbandoned records that the drain gave up waiting on delegateID's
+// generation, so the hold sample stops counting its branch.
+func (c *delegateTreeController) markDrainAbandoned(delegateID string, generation uint64) {
+	if c == nil || delegateID == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.drainAbandoned == nil {
+		c.drainAbandoned = make(map[string]uint64)
+	}
+	c.drainAbandoned[delegateID] = generation
+}
+
+// clearDrainAbandoned removes delegateID's abandonment mark so a revived
+// generation is waited on again.
+func (c *delegateTreeController) clearDrainAbandoned(delegateID string) {
+	if c == nil || delegateID == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.drainAbandoned, delegateID)
 }
 
 func (c *delegateTreeController) appendResumabilityClosureLocked(delegateID string, events ...delegatestore.Event) (delegateUpdatePlan, error) {
