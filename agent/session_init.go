@@ -30,7 +30,6 @@ import (
 	"primeradiant.com/evener/agent/internal/modelavailability"
 	"primeradiant.com/evener/agent/internal/sessionlog"
 	"primeradiant.com/evener/agent/internal/tool"
-	"primeradiant.com/evener/agent/internal/toolname"
 	"primeradiant.com/evener/agent/mcpconfig"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provider"
@@ -2721,7 +2720,7 @@ func (s *Session) initMCP() error {
 	// its own startup (see DiscoverWithCLIOnlyAndEvidenceForProjectEnv).
 	env := s.currentEnv()
 	sandboxed := s.mcpProjectLayerIsSandboxedWithoutLaunchTrust(env)
-	configs, cliOnly, configEvidence, cfgWarnings, err := mcpconfig.DiscoverWithCLIOnlyAndEvidenceForProjectEnv(
+	configs, reach, configEvidence, cfgWarnings, err := mcpconfig.DiscoverWithCLIOnlyAndEvidenceForProjectEnv(
 		env, s.cfg.MCPConfigFiles, s.cfg.MCPInline,
 		s.cfg.StartupMCPProjectEvidence, sandboxed,
 		s.mcpHostNetworkDisabled(env))
@@ -2794,15 +2793,14 @@ func (s *Session) initMCP() error {
 	// is connected for this: the classification comes from discovery metadata
 	// alone, because a shadowed entry must never be dialled (see
 	// recordCLIMCPServers).
-	//
-	s.recordCLIMCPServers(cliOnly, configEvidence)
+	s.recordCLIMCPServers(reach.CLIServers, configEvidence)
 	// The namespaces the OTHER layers supply, in the form MCP registration
 	// derives. cliMCPToolNames needs them to answer whether a CLI tool's full
 	// registered name could also come from a non-CLI server the child loads:
 	// registration sanitizes the whole "server__tool" join, so comparing server
 	// names alone cannot see that a project "team" exposing "docs__lookup" and a
 	// CLI "team__docs" exposing "lookup" both register "team__docs__lookup".
-	s.setShadowedLayerNamespaces(otherLayerMCPNamespaces(configs, cliOnly, s.pluginMCPConfigs))
+	s.setShadowedLayerNamespaces(reach.OtherLayerNamespaces)
 	s.recordCLIMCPTools(mgr)
 	return nil
 }
@@ -2855,65 +2853,6 @@ func (s *Session) mcpHostNetworkDisabled(env execenv.ExecutionEnvironment) bool 
 	return false
 }
 
-// otherLayerMCPNamespaces is the set of registered-name PREFIXES the non-CLI
-// configuration layers supply.
-//
-// configs is the effective set this session connects, so a CLI entry's tools
-// are in it too. The CLI entries are removed here by name, leaving only what a
-// child — which clears the CLI layers — could rediscover on its own.
-//
-// A CLI entry that OVERRIDES another layer's server is not removed: the child
-// clears the CLI layers and discovers the server it replaces, so that
-// namespace is reachable by the child even though this session connects the
-// override. Dropping it made an override hide the very namespace it replaces,
-// and a project server "team" exposing "docs__lookup" then lost
-// "team__docs__lookup" to a CLI "team__docs" that merely registered the same
-// name.
-//
-// pluginConfigs are added unconditionally, and they are the reason this
-// function cannot rely on CLIOnlyServer.Fallback alone. Discovery runs BEFORE
-// the plugin layers are merged, so a CLI entry that overrides a PLUGIN server
-// has no fallback recorded — yet the child clears the CLI layers and reloads
-// that plugin itself. The plugin namespace is therefore reachable whether or
-// not any CLI entry shadows it in this session.
-func otherLayerMCPNamespaces(configs []mcpconfig.ServerConfig, cliOnly []mcpconfig.CLIOnlyServer, pluginConfigs []mcpconfig.ServerConfig) []string {
-	if len(configs) == 0 {
-		return nil
-	}
-	cliNames := make(map[string]bool, len(cliOnly))
-	for _, entry := range cliOnly {
-		if entry.Fallback != nil {
-			continue
-		}
-		cliNames[toolname.SanitizeMCPToolName(entry.Config.Name)] = true
-	}
-	namespaces := make([]string, 0, len(configs))
-	seen := make(map[string]bool, len(configs))
-	for _, cfg := range configs {
-		namespace := toolname.SanitizeMCPToolName(cfg.Name)
-		if cliNames[namespace] {
-			continue
-		}
-		if seen[namespace] {
-			continue
-		}
-		seen[namespace] = true
-		namespaces = append(namespaces, namespace)
-	}
-	// A plugin server the child reloads from disk is reachable even when this
-	// session's CLI layers replace it, so its namespace joins the set whatever
-	// the merge order made of the effective configs above.
-	for _, cfg := range pluginConfigs {
-		namespace := toolname.SanitizeMCPToolName(cfg.Name)
-		if namespace == "" || seen[namespace] {
-			continue
-		}
-		seen[namespace] = true
-		namespaces = append(namespaces, namespace)
-	}
-	return namespaces
-}
-
 // effectiveChildToolCeiling is the ceiling a child session should enforce: the
 // frozen role ceiling, plus any name that ceiling dropped only for REACHABILITY
 // and that this session's registry can register right now.
@@ -2949,54 +2888,24 @@ func effectiveChildToolCeiling(ceiling, reachabilityExcluded []string, reg *tool
 }
 
 // recordCLIMCPServers records, from discovery metadata alone, the servers the
-// CLI layers supply and whether another layer declares the same name.
+// CLI layers supply.
 //
-// It connects nothing. A shadowed entry is one precedence says this session does
-// NOT use, so dialling it would run a command (or send expanded credential
-// headers) for a reputation the ceiling does not need — and would do it whether
-// or not a delegate is ever spawned.
-//
-// What this buys is honesty about ignorance. A CLI-supplied server whose name
-// only the CLI layers declare is unreachable by a child, which clears those
-// layers. A CLI entry that shadows another layer's server is NOT a proven
-// exclusion: the child may rediscover the fallback and register tools under it,
-// so those names must stay eligible for the child to try. Unknown reachability
-// therefore means "let the child try", never "exclude it" — excluding on
-// ignorance hides tools the child can call, which is the defect this change
-// exists to fix.
-func (s *Session) recordCLIMCPServers(cliOnly []mcpconfig.CLIOnlyServer, evidence mcpconfig.ConfigEvidence) {
-	if len(cliOnly) == 0 {
-		s.setCLIMCPServers(nil, nil, evidence)
+// It connects nothing. A name another layer also declares is not an exclusion at
+// all, and it needs no separate bookkeeping here: cliMCPToolNames keeps a name
+// eligible whenever another layer's namespace could produce it, which covers a
+// server this session's CLI entry shadows. What remains is the honest exclusion —
+// a server only the CLI layers declare, which a child, having cleared those
+// layers, cannot register.
+func (s *Session) recordCLIMCPServers(cliServers []string, evidence mcpconfig.ConfigEvidence) {
+	if len(cliServers) == 0 {
+		s.setCLIMCPServers(nil, evidence)
 		return
 	}
-	servers := make(map[string]bool, len(cliOnly))
-	shadowed := make(map[string]bool, len(cliOnly))
-	for _, entry := range cliOnly {
-		servers[entry.Config.Name] = true
-		if entry.Fallback != nil {
-			shadowed[entry.Config.Name] = true
-		}
+	servers := make(map[string]bool, len(cliServers))
+	for _, name := range cliServers {
+		servers[name] = true
 	}
-	// A name a plugin config also declares is a name a child rediscovers, for
-	// the same reason: plugin configs are not a discovery layer this package
-	// sees, so they arrive here as neither Fallback nor exclusion.
-	//
-	// The comparison uses the namespace MCP registration derives, not the raw
-	// configured string: registration namespaces tools as "<server>__<tool>"
-	// after replacing hyphens with underscores, so a plugin server
-	// "plugin_team-tools_svc" and a CLI alias "plugin_team_tools_svc" register
-	// the SAME tool names. Comparing raw names left such an entry unshadowed, so
-	// the ceiling excluded its tools and the child lost a name it registers
-	// through the plugin.
-	for _, cfg := range s.pluginMCPConfigs {
-		namespace := toolname.SanitizeMCPToolName(cfg.Name)
-		for name := range servers {
-			if toolname.SanitizeMCPToolName(name) == namespace {
-				shadowed[name] = true
-			}
-		}
-	}
-	s.setCLIMCPServers(servers, shadowed, evidence)
+	s.setCLIMCPServers(servers, evidence)
 }
 
 // recordCLIMCPTools re-derives the CLI-only MCP tool names from the manager's
@@ -3004,12 +2913,12 @@ func (s *Session) recordCLIMCPServers(cliOnly []mcpconfig.CLIOnlyServer, evidenc
 // server both describe the same set. It is the single authority for the TOOL
 // names, and every path that changes either input calls it.
 func (s *Session) recordCLIMCPTools(mgr *mcp.Manager) {
-	servers, shadowed := s.cliMCPServersSnapshot()
+	servers := s.cliMCPServersSnapshot()
 	if len(servers) == 0 || mgr == nil || s.reg == nil {
 		s.setCLIMCPToolNames(nil)
 		return
 	}
-	s.setCLIMCPToolNames(cliMCPToolNames(servers, shadowed, s.cliMCPOtherNamespacesSnapshot(), mgr.Servers(), s.reg))
+	s.setCLIMCPToolNames(cliMCPToolNames(servers, s.cliMCPOtherNamespacesSnapshot(), mgr.Servers(), s.reg))
 }
 
 // cliMCPToolNames is the one place that says which of a parent's tool names a
@@ -3027,12 +2936,6 @@ func (s *Session) recordCLIMCPTools(mgr *mcp.Manager) {
 //     server registered first would otherwise be attributed to the failed CLI
 //     server. "degraded" keeps contributing, because a dropped transport leaves
 //     the tools it registered in place.
-//   - A name a shadowed CLI entry supplies is not excluded. A CLI entry that
-//     shadows another layer's server replaces that ENTRY, not the name: the
-//     child clears the CLI layers and may rediscover the fallback. Reachability
-//     there is unknown without connecting a server this session does not use,
-//     and unknown means "let the child try" — the events at spawn decide, and
-//     the ceiling never forecasts them.
 //   - A name whose FULL registered form another layer's server could also
 //     produce is not excluded, even when no server name matches. Registration
 //     sanitizes the complete "<server>__<tool>" join, so a project server
@@ -3042,13 +2945,18 @@ func (s *Session) recordCLIMCPTools(mgr *mcp.Manager) {
 //     strips it from the child's ceiling — while the child discovers the same
 //     name from the project server. The check is which NAMESPACES another layer
 //     supplies, from configuration evidence only: nothing is connected.
-func cliMCPToolNames(servers map[string]bool, shadowed map[string]bool, otherPrefixes []string, infos []mcpconfig.ServerInfo, reg *tool.Registry) map[string]bool {
+//
+// A name another layer declares in the SAME namespace — a CLI entry shadowing a
+// project or plugin server — is covered by that same prefix check: the other
+// layer's sanitized server name is a prefix of the tool's registered name, so it
+// stays eligible. That is why no separate shadowed-server set is needed.
+func cliMCPToolNames(servers map[string]bool, otherPrefixes []string, infos []mcpconfig.ServerInfo, reg *tool.Registry) map[string]bool {
 	if len(servers) == 0 || reg == nil {
 		return nil
 	}
 	names := make(map[string]bool)
 	for _, info := range infos {
-		if !servers[info.Name] || info.Status == "failed" || shadowed[info.Name] {
+		if !servers[info.Name] || info.Status == "failed" {
 			continue
 		}
 		for _, name := range info.Tools {

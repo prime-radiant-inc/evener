@@ -77,7 +77,7 @@ func TestDelegatingSessionStillProbes(t *testing.T) {
 	// Evidence captured from a DIFFERENT workspace, so a probe that runs answers
 	// "not current" — the observable half of having probed at all.
 	evidence := evidenceForOtherWorkspace(t)
-	s.setCLIMCPServers(map[string]bool{"svc": true}, nil, evidence)
+	s.setCLIMCPServers(map[string]bool{"svc": true}, evidence)
 	// The decision starts applied, so the probe's "not current" answer must CLEAR
 	// it: a session that skipped the probe would leave the stale denial standing.
 	s.setRosterExclusion(true)
@@ -124,7 +124,7 @@ func TestPluginMCPSourceSkipsTheFreshnessProbe(t *testing.T) {
 	s.setManagerOnlyTools(map[string]bool{"session_control": true})
 	// Evidence that would answer "not current" if it were ever consulted, so a
 	// probe's effect would be visible as a cleared decision.
-	s.setCLIMCPServers(map[string]bool{"svc": true}, nil, evidenceForOtherWorkspace(t))
+	s.setCLIMCPServers(map[string]bool{"svc": true}, evidenceForOtherWorkspace(t))
 	s.setRosterExclusion(true)
 
 	// The ceiling is asserted BEFORE the refresh, because the refresh rebuilds the

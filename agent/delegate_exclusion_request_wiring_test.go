@@ -48,7 +48,7 @@ func TestModelRequestRefreshesTheExclusionCachesWithoutASpawn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.setCLIMCPServers(map[string]bool{"svc": true}, nil, evidence)
+	s.setCLIMCPServers(map[string]bool{"svc": true}, evidence)
 	s.setCLIMCPToolNames(map[string]bool{cliTool: true})
 	// Settle the caches on the startup answer, so the edit below is the only
 	// thing that can move them.

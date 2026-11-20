@@ -57,7 +57,7 @@ func TestUnresolvableGitRootKeepsCLINamesEligible(t *testing.T) {
 	// would pass for the wrong reason.
 	confirmed := &Session{env: local}
 	confirmed.setManagerOnlyTools(nil)
-	confirmed.setCLIMCPServers(map[string]bool{"svc": true}, nil, evidence)
+	confirmed.setCLIMCPServers(map[string]bool{"svc": true}, evidence)
 	confirmed.setCLIMCPToolNames(map[string]bool{"svc__echo": true})
 	if !confirmed.probeCLIEvidenceFresh(context.Background(), confirmed.currentEnv()) {
 		t.Fatal("fixture is wrong: the evidence did not verify in the confirmed non-repository it was captured from")
@@ -75,7 +75,7 @@ func TestUnresolvableGitRootKeepsCLINamesEligible(t *testing.T) {
 	}
 	s := &Session{env: unresolvable}
 	s.setManagerOnlyTools(nil)
-	s.setCLIMCPServers(map[string]bool{"svc": true}, nil, evidence)
+	s.setCLIMCPServers(map[string]bool{"svc": true}, evidence)
 	s.setCLIMCPToolNames(map[string]bool{"svc__echo": true})
 	exclude := s.probeCLIEvidenceFresh(context.Background(), s.currentEnv())
 	if exclude {

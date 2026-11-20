@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"primeradiant.com/evener/identifier"
 )
@@ -264,6 +266,127 @@ func (w *Wrapper) Confine(cmd *exec.Cmd, dir string) {
 // network-severed under net=off — this method must never be used for those.
 func (w *Wrapper) ConfineTrustedInfra(cmd *exec.Cmd, dir string) {
 	w.withNetworkAllowed().Confine(cmd, dir)
+}
+
+// childEnvBinary is the program the Seatbelt backend runs immediately after its
+// "--" separator to apply the configured environment. bwrap needs no helper: it
+// applies assignments with --setenv. The path is absolute because the confined
+// process's PATH is the session's, not the launcher's.
+const childEnvBinary = "/usr/bin/env"
+
+// ConfineWithChildEnv confines cmd exactly like Confine and delivers childEnv to
+// the CONFINED process instead of to the backend launcher.
+//
+// The distinction is load-bearing. cmd.Env is the environment of bwrap or
+// sandbox-exec themselves, and their dynamic loader reads LD_PRELOAD,
+// LD_LIBRARY_PATH, DYLD_INSERT_LIBRARIES and friends BEFORE any namespace,
+// mount, or Seatbelt policy exists. A configured environment whose contents come
+// from a config layer a repository can write therefore must not ride there.
+// bwrap's --setenv pairs and an /usr/bin/env prefix after the backend's "--"
+// separator give the child the same variables on the far side of the
+// confinement: the namespaces and mounts are in place before the assignment is
+// applied, and the loader that reads it is the child's own.
+//
+// Assignments are ordered by name so the generated argv is deterministic. A nil
+// wrapper has no backend to apply them behind, so they join cmd.Env: an
+// unconfined spawn's own environment IS the child's.
+func (w *Wrapper) ConfineWithChildEnv(cmd *exec.Cmd, dir string, childEnv map[string]string) {
+	w.confineWithChildEnv(cmd, dir, childEnv, false)
+}
+
+// ConfineTrustedInfraWithChildEnv is ConfineWithChildEnv with
+// ConfineTrustedInfra's network carve-out: identical confinement except that
+// egress is never severed, for trusted-infrastructure spawns.
+func (w *Wrapper) ConfineTrustedInfraWithChildEnv(cmd *exec.Cmd, dir string, childEnv map[string]string) {
+	w.confineWithChildEnv(cmd, dir, childEnv, true)
+}
+
+// confineWithChildEnv is the shared body: it wraps cmd.Args and splices
+// childEnv into the wrapped argv on the child's side of the separator.
+func (w *Wrapper) confineWithChildEnv(cmd *exec.Cmd, dir string, childEnv map[string]string, trustedInfra bool) {
+	if w == nil {
+		cmd.Env = mergeChildEnvAssignments(cmd.Env, childEnv)
+		return
+	}
+	target := w
+	if trustedInfra {
+		target = w.withNetworkAllowed()
+	}
+	if target.policy.Backend == BackendSeatbelt && dir != "" {
+		cmd.Dir = dir
+	}
+	original := cmd.Args
+	argv := childEnvArgv(target.policy.Backend, target.Wrap(original, dir), len(original), childEnv)
+	cmd.Path = argv[0]
+	cmd.Args = argv
+}
+
+// childEnvNames returns childEnv's variable names in sorted order, so every
+// generated environment or argv is deterministic.
+func childEnvNames(childEnv map[string]string) []string {
+	return slices.Sorted(maps.Keys(childEnv))
+}
+
+// childEnvArgv splices childEnv into a wrapped argv so the assignments apply to
+// the confined process, never to the backend that starts it. n is the length of
+// the ORIGINAL argv, which both backends place unchanged at the end of the
+// wrapped vector, so the separator's position is arithmetic rather than a
+// search: bwrap's "--setenv" pairs go just before the "--", and Seatbelt's
+// /usr/bin/env prefix just after it.
+//
+// A wrapped argv that does not end in the original argv behind a separator would
+// put the assignments on the wrong side of the confinement, so it panics rather
+// than deliver them to the launcher's loader — the same fail-closed posture Wrap
+// takes for an unconfirmed policy.
+func childEnvArgv(backend Backend, argv []string, n int, childEnv map[string]string) []string {
+	if len(childEnv) == 0 {
+		return argv
+	}
+	split := len(argv) - n
+	if split < 1 || argv[split-1] != "--" {
+		panic("sandbox: wrapped argv does not end in the original argv behind the backend separator")
+	}
+	names := childEnvNames(childEnv)
+	var insert []string
+	at := split
+	switch backend {
+	case BackendBwrap:
+		at = split - 1
+		for _, name := range names {
+			insert = append(insert, "--setenv", name, childEnv[name])
+		}
+	case BackendSeatbelt:
+		insert = append(insert, childEnvBinary)
+		for _, name := range names {
+			insert = append(insert, name+"="+childEnv[name])
+		}
+	}
+	out := make([]string, 0, len(argv)+len(insert))
+	out = append(out, argv[:at]...)
+	out = append(out, insert...)
+	out = append(out, argv[at:]...)
+	return out
+}
+
+// mergeChildEnvAssignments layers childEnv over env by NAME, dropping an entry
+// childEnv overrides. It never mutates env.
+func mergeChildEnvAssignments(env []string, childEnv map[string]string) []string {
+	if len(childEnv) == 0 {
+		return env
+	}
+	out := make([]string, 0, len(env)+len(childEnv))
+	for _, kv := range env {
+		if name, _, ok := strings.Cut(kv, "="); ok {
+			if _, overridden := childEnv[name]; overridden {
+				continue
+			}
+		}
+		out = append(out, kv)
+	}
+	for _, name := range childEnvNames(childEnv) {
+		out = append(out, name+"="+childEnv[name])
+	}
+	return out
 }
 
 // withNetworkAllowed returns a Wrapper identical to w except its policy's

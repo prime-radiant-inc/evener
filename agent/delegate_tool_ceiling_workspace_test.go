@@ -49,7 +49,7 @@ func TestChildUnreachableToolsFollowTheDelegateWorkspace(t *testing.T) {
 		s := &Session{env: env}
 		s.setManagerOnlyTools(map[string]bool{managerTool: true})
 		s.setCLIMCPToolNames(map[string]bool{cliTool: true})
-		s.setCLIMCPServers(map[string]bool{"svc": true}, nil, evidence)
+		s.setCLIMCPServers(map[string]bool{"svc": true}, evidence)
 		return s
 	}
 	ceiling := []string{managerTool, cliTool, ordinary}
@@ -100,7 +100,7 @@ func TestChildUnreachableToolsFollowTheDelegateWorkspace(t *testing.T) {
 			t.Errorf("a workspace change must not re-admit the Manager-only tool %q: %v", managerTool, got)
 		}
 		// And the classification survives, so the exclusion can come back.
-		if servers, _ := moved.cliMCPServersSnapshot(); len(servers) == 0 {
+		if servers := moved.cliMCPServersSnapshot(); len(servers) == 0 {
 			t.Errorf("the workspace change erased the classification, so returning to the original workspace could not recover it")
 		}
 		if names := moved.cliMCPToolNamesSnapshot(); len(names) == 0 {

@@ -83,7 +83,7 @@ func TestCLIMCPToolNamesFollowsTheRegistryNotTheStatus(t *testing.T) {
 			{Name: server, Status: status, Tools: []string{registered, unregistered, sharedTool}},
 			{Name: otherServer, Status: "connected", Tools: []string{otherTool}},
 		}
-		got := cliMCPToolNames(servers, nil, nil, infos, reg)
+		got := cliMCPToolNames(servers, nil, infos, reg)
 		if !got[registered] {
 			t.Errorf("status %q: %q is registered but not excluded, so a delegate would advertise it", status, registered)
 		}
@@ -104,7 +104,6 @@ func TestCLIMCPToolNamesFollowsTheRegistryNotTheStatus(t *testing.T) {
 	failed := cliMCPToolNames(
 		map[string]bool{server: true},
 		nil,
-		nil,
 		[]mcpconfig.ServerInfo{{Name: server, Status: "failed", Tools: []string{registered, unregistered, sharedTool}}},
 		reg,
 	)
@@ -113,12 +112,12 @@ func TestCLIMCPToolNamesFollowsTheRegistryNotTheStatus(t *testing.T) {
 	}
 
 	// A CLI entry that shadows another layer's server: the child may rediscover
-	// that name, so nothing the entry registered is excluded. The exclusion must
-	// not guess, and it may not connect the shadowed server to stop guessing.
+	// that name, so nothing the entry registered is excluded. That is now the
+	// prefix check's answer — the other layer's namespace is a prefix of the
+	// names the entry registered — rather than a separate shadowed set.
 	shadowed := cliMCPToolNames(
 		map[string]bool{server: true},
-		map[string]bool{server: true},
-		nil,
+		[]string{server},
 		[]mcpconfig.ServerInfo{{Name: server, Status: "connected", Tools: []string{registered, sharedTool}}},
 		reg,
 	)
@@ -164,16 +163,16 @@ func TestCLIToolAnotherLayerAlsoSuppliesStaysEligible(t *testing.T) {
 		{Name: soloServer, Status: "connected", Tools: []string{soloTool}},
 	}
 
-	// The effective configuration a child would load: both CLI entries are
-	// classified CLI-only, and the project layer contributes "team".
-	prefixes := otherLayerMCPNamespaces(
-		[]mcpconfig.ServerConfig{{Name: cliServer}, {Name: soloServer}, {Name: "team"}},
-		[]mcpconfig.CLIOnlyServer{{Config: mcpconfig.ServerConfig{Name: cliServer}}, {Config: mcpconfig.ServerConfig{Name: soloServer}}}, nil)
+	// What discovery reports for this workspace: both entries are CLI-only, and
+	// the project layer contributes the "team" namespace. Discovery collects
+	// those namespaces from the global/project layers themselves, so a CLI entry
+	// shadowing one of them cannot remove it from the set.
+	prefixes := []string{"team"}
 	if !slices.Contains(prefixes, "team") {
 		t.Fatalf("the project namespace is missing from %v; this test would pass without exercising the collision", prefixes)
 	}
 
-	got := cliMCPToolNames(servers, nil, prefixes, infos, reg)
+	got := cliMCPToolNames(servers, prefixes, infos, reg)
 	if got[collidingTool] {
 		t.Errorf("%q is excluded, but a project server named team exposing docs__lookup registers that same name, so the child can call it", collidingTool)
 	}
@@ -184,7 +183,7 @@ func TestCLIToolAnotherLayerAlsoSuppliesStaysEligible(t *testing.T) {
 	// Without the project layer the name really is CLI-only. This is what makes
 	// the eligibility above a consequence of the namespace rather than of any
 	// name escaping classification.
-	bare := cliMCPToolNames(servers, nil, nil, infos, reg)
+	bare := cliMCPToolNames(servers, nil, infos, reg)
 	if !bare[collidingTool] {
 		t.Errorf("%q is not excluded with no other layer configured, so the assertion above would hold for any name", collidingTool)
 	}
@@ -218,36 +217,21 @@ func TestCLIOverrideDoesNotHideTheNamespaceItReplaces(t *testing.T) {
 	// the CLI server is the one that reports it.
 	infos := []mcpconfig.ServerInfo{{Name: cliServer, Status: "connected", Tools: []string{collision}}}
 
-	// The effective configuration is the CLI's, so both entries appear in it.
-	// "team" carries a Fallback because another layer declares it.
-	fallback := mcpconfig.ServerConfig{Name: overridden}
-	cliOnly := []mcpconfig.CLIOnlyServer{
-		{Config: mcpconfig.ServerConfig{Name: overridden}, Fallback: &fallback},
-		{Config: mcpconfig.ServerConfig{Name: cliServer}},
-	}
-	prefixes := otherLayerMCPNamespaces(
-		[]mcpconfig.ServerConfig{{Name: overridden}, {Name: cliServer}},
-		cliOnly, nil)
-	if cliMCPToolNames(servers, nil, prefixes, infos, reg)[collision] {
+	// Another layer declares "team", so discovery reports its namespace and the
+	// child rediscovers the server the CLI overrode.
+	prefixes := []string{overridden}
+	if cliMCPToolNames(servers, prefixes, infos, reg)[collision] {
 		t.Errorf("%q is excluded, but the project server team that the CLI overrides registers that same name for the child", collision)
 	}
 	if !slices.Contains(prefixes, overridden) {
 		t.Fatalf("%q is missing from %v; an overridden server is one the child rediscovers, so the assertion above proves nothing", overridden, prefixes)
 	}
 
-	// Without the fallback there is nothing for the child to rediscover, so the
-	// name really is CLI-only. That is what makes the eligibility above a
-	// consequence of the override rather than of the name escaping classification.
-	unshadowed := otherLayerMCPNamespaces(
-		[]mcpconfig.ServerConfig{{Name: overridden}, {Name: cliServer}},
-		[]mcpconfig.CLIOnlyServer{
-			{Config: mcpconfig.ServerConfig{Name: overridden}},
-			{Config: mcpconfig.ServerConfig{Name: cliServer}},
-		}, nil)
-	if slices.Contains(unshadowed, overridden) {
-		t.Fatalf("%q is a prefix with no fallback configured, so nothing the child keeps supplies it", overridden)
-	}
-	if !cliMCPToolNames(servers, nil, unshadowed, infos, reg)[collision] {
+	// When NO other layer declares it, nothing the child keeps supplies the
+	// namespace and the name really is CLI-only. That is what makes the
+	// eligibility above a consequence of the other layer rather than of the name
+	// escaping classification.
+	if !cliMCPToolNames(servers, nil, infos, reg)[collision] {
 		t.Errorf("%q is not excluded with no overridden server, so the assertion above would hold for any name", collision)
 	}
 }
@@ -278,25 +262,16 @@ func TestShadowedNamespaceSurvivesASeparateCLICollision(t *testing.T) {
 	infos := []mcpconfig.ServerInfo{{Name: cliServer, Status: "connected", Tools: []string{collision}}}
 
 	// The parent merges the CLI override of "team" over the project server, and
-	// connects "team__docs" as well. The override's tools differ from the
-	// project server's; the child sees the project server's.
-	fallback := mcpconfig.ServerConfig{Name: projectServer}
-	cliOnly := []mcpconfig.CLIOnlyServer{
-		{Config: mcpconfig.ServerConfig{Name: overrideOwner}, Fallback: &fallback},
-		{Config: mcpconfig.ServerConfig{Name: cliServer}},
-	}
-	prefixes := otherLayerMCPNamespaces(
-		[]mcpconfig.ServerConfig{{Name: overrideOwner}, {Name: cliServer}},
-		cliOnly, nil)
+	// connects "team__docs" as well. Discovery reports the PROJECT layer's
+	// namespace, which the merge cannot delete: that is the difference from a set
+	// reconstructed from the merged result.
+	prefixes := []string{projectServer}
 
-	if cliMCPToolNames(servers, nil, prefixes, infos, reg)[collision] {
+	if cliMCPToolNames(servers, prefixes, infos, reg)[collision] {
 		t.Errorf("%q is excluded, but the child discovers the project server team behind the CLI override and that server supplies the name", collision)
 	}
 	if !slices.Contains(prefixes, projectServer) {
 		t.Fatalf("%q is missing from %v; the child rediscovers it through the overridden server, so the assertion above proves nothing", projectServer, prefixes)
-	}
-	if slices.Contains(prefixes, cliServer) {
-		t.Errorf("%q is in %v, but nothing the child keeps declares that server", cliServer, prefixes)
 	}
 }
 
@@ -342,20 +317,20 @@ func TestNamespacePrefixUsesRegistrationSeparator(t *testing.T) {
 	// name the child reaches through the project server is not.
 	servers := map[string]bool{cliServer: true}
 	infos := []mcpconfig.ServerInfo{{Name: cliServer, Status: "connected", Tools: []string{neighbour}}}
-	got := cliMCPToolNames(servers, nil, []string{plainProject}, infos, reg)
+	got := cliMCPToolNames(servers, []string{plainProject}, infos, reg)
 	if !got[neighbour] {
 		t.Errorf("%q is not excluded, but only the CLI server %q supplies it", neighbour, cliServer)
 	}
 }
 
 // TestPluginNamespaceSurvivesACLIOverride is the plugin half of the override
-// rule, and it is the case CLIOnlyServer.Fallback cannot cover.
+// rule, and it is the case the namespace set cannot cover: discovery runs before
+// the plugin layers are merged, so it has no plugin namespace to report.
 //
-// Discovery runs BEFORE the plugin layers are merged, so a CLI entry that
-// overrides a PLUGIN server has no fallback recorded for it. The child clears
-// the CLI layers and reloads that plugin itself, so the plugin namespace is
-// reachable regardless — and a CLI server whose registered name collides with
-// it must not take the name away.
+// The protection is a different mechanism, and this test pins it: any plugin MCP
+// source makes reachability unverified, and unverified reachability is not an
+// exclusion, so the whole CLI half is withheld and the name stays eligible. That
+// is why no plugin bookkeeping is needed beside the namespace set.
 //
 // Registration sanitizes the whole "<server>__<tool>" join, so the plugin
 // server "plugin_team_svc" exposing "docs__lookup" and the CLI server
@@ -375,27 +350,33 @@ func TestPluginNamespaceSurvivesACLIOverride(t *testing.T) {
 	servers := map[string]bool{pluginServer: true, cliServer: true}
 	infos := []mcpconfig.ServerInfo{{Name: cliServer, Status: "connected", Tools: []string{collision}}}
 
-	// The CLI overrides the plugin server, so the effective configs hold the
-	// CLI copy. Discovery never saw a fallback for it.
-	cliOnly := []mcpconfig.CLIOnlyServer{
-		{Config: mcpconfig.ServerConfig{Name: pluginServer}},
-		{Config: mcpconfig.ServerConfig{Name: cliServer}},
-	}
-	pluginConfigs := []mcpconfig.ServerConfig{{Name: pluginServer}}
-	effective := []mcpconfig.ServerConfig{{Name: pluginServer}, {Name: cliServer}}
-
-	prefixes := otherLayerMCPNamespaces(effective, cliOnly, pluginConfigs)
-	if cliMCPToolNames(servers, nil, prefixes, infos, reg)[collision] {
-		t.Errorf("%q is excluded, but the child reloads plugin server %q, which exposes docs__lookup and so registers that same name", collision, pluginServer)
-	}
-	if !slices.Contains(prefixes, pluginServer) {
-		t.Fatalf("%q is missing from %v; the child reloads it from disk, so the assertion above proves nothing", pluginServer, prefixes)
+	// The classification alone excludes the name — which is exactly why the
+	// plugin gate must withhold it.
+	if !cliMCPToolNames(servers, nil, infos, reg)[collision] {
+		t.Fatalf("%q is not excluded by the classification alone, so the plugin gate below would pass vacuously", collision)
 	}
 
-	// Without the plugin layer the name really is CLI-only, so eligibility
-	// follows the plugin rather than the name escaping classification.
-	bare := otherLayerMCPNamespaces(effective, cliOnly, nil)
-	if !cliMCPToolNames(servers, nil, bare, infos, reg)[collision] {
-		t.Errorf("%q is not excluded with no plugin config, so the assertion above would hold for any name", collision)
+	// A session that loads the plugin rediscovers the server itself, so the CLI
+	// half is withheld and the name survives the ceiling.
+	withPlugin := &Session{pluginMCPConfigs: []mcpconfig.ServerConfig{{Name: pluginServer}}}
+	withPlugin.setCLIMCPToolNames(map[string]bool{collision: true})
+	if got := withPlugin.removeChildUnreachableTools([]string{collision, "read_file"}, "", true); !slices.Contains(got, collision) {
+		t.Errorf("a session loading plugin server %q excluded %q, which its child rediscovers: %v", pluginServer, collision, got)
+	}
+
+	// A configured plugin directory that declared NO MCP entries is unverified
+	// for the same reason: it can gain one mid-session.
+	emptyPlugin := &Session{cfg: SessionConfig{PluginDirs: []string{t.TempDir()}}}
+	emptyPlugin.setCLIMCPToolNames(map[string]bool{collision: true})
+	if got := emptyPlugin.removeChildUnreachableTools([]string{collision}, "", true); !slices.Contains(got, collision) {
+		t.Errorf("a session with an unverified plugin directory excluded %q, which a child can rediscover: %v", collision, got)
+	}
+
+	// Without any plugin source the exclusion applies, so the eligibility above is
+	// the plugin gate's doing rather than a name always escaping classification.
+	noPlugins := &Session{}
+	noPlugins.setCLIMCPToolNames(map[string]bool{collision: true})
+	if got := noPlugins.removeChildUnreachableTools([]string{collision}, "", true); slices.Contains(got, collision) {
+		t.Errorf("with no plugin source, %q must stay excluded: %v", collision, got)
 	}
 }

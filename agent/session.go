@@ -124,12 +124,7 @@ type Session struct {
 	// clears MCPConfigFiles and MCPInline, so a child never discovers those
 	// servers, and the delegate tool ceiling must not advertise their tools. The
 	// server names are kept so a retry that heals one re-derives the tools.
-	cliMCPServers map[string]bool
-	// cliMCPShadowed names the CLI-supplied servers whose name another layer
-	// also declares, or a plugin config does. A child may rediscover such a
-	// name, so its tools stay eligible rather than being excluded on a guess —
-	// nothing is connected to find out (see recordCLIMCPServers).
-	cliMCPShadowed  map[string]bool
+	cliMCPServers   map[string]bool
 	cliMCPToolNames map[string]bool
 	// cliMCPEvidence is the project-configuration evidence the classification
 	// above was derived from: the file the layer-2 project config resolves to,

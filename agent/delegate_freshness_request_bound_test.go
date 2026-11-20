@@ -88,7 +88,7 @@ func TestRequestFreshnessRefreshIsBoundedByTheTurnContext(t *testing.T) {
 	s.env = env
 	s.mu.Unlock()
 	s.setCLIMCPToolNames(map[string]bool{"svc__echo": true})
-	s.setCLIMCPServers(map[string]bool{"svc": true}, nil, evidence)
+	s.setCLIMCPServers(map[string]bool{"svc": true}, evidence)
 	// The startup answer was the exclusion, which is the ordinary case this bound
 	// protects: a session that has something to lose.
 	s.setRosterExclusion(true)
@@ -144,7 +144,7 @@ func TestSpawnProbeIsBoundedByTheCallersContext(t *testing.T) {
 
 	s := &Session{env: env}
 	s.setCLIMCPToolNames(map[string]bool{"svc__echo": true})
-	s.setCLIMCPServers(map[string]bool{"svc": true}, nil, evidence)
+	s.setCLIMCPServers(map[string]bool{"svc": true}, evidence)
 
 	// The waiter's own bound is short. A probe through Background() ignores it and
 	// blocks here instead.

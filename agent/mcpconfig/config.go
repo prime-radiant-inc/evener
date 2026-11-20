@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 
@@ -877,7 +878,7 @@ func DiscoverWithLaunchEnv(env execenv.ExecutionEnvironment, extraFiles, inlineS
 // keep the process environment, and so do the inline specs, which are not
 // expanded at all. sandboxed=false is the ordinary session contract,
 // byte-for-byte Discover's; noNet is then ignored.
-func DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []string, authorizedProject *LayerEvidence, sandboxed, noNet bool) ([]ServerConfig, []CLIOnlyServer, ConfigEvidence, []string, error) {
+func DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []string, authorizedProject *LayerEvidence, sandboxed, noNet bool) ([]ServerConfig, CLIReachability, ConfigEvidence, []string, error) {
 	return discoverLayers(discoverOptions{
 		env:               env,
 		extraFiles:        extraFiles,
@@ -1088,7 +1089,7 @@ func usesNetworkTransport(cfg ServerConfig) bool {
 // fails that entry alone. Otherwise the whole layer is answered by
 // o.untrustedEnv, which is what the settings probe and the ordinary session
 // need.
-func discoverLayers(o discoverOptions) ([]ServerConfig, []CLIOnlyServer, ConfigEvidence, []string, error) {
+func discoverLayers(o discoverOptions) ([]ServerConfig, CLIReachability, ConfigEvidence, []string, error) {
 	env := o.env
 	extraFiles := o.extraFiles
 	inlineSpecs := o.inlineSpecs
@@ -1096,6 +1097,10 @@ func discoverLayers(o discoverOptions) ([]ServerConfig, []CLIOnlyServer, ConfigE
 	var layers [][]ServerConfig
 	var warnings []string
 	var evidence ConfigEvidence
+	// The namespaces of the layers a CHILD still discovers once it clears the
+	// two CLI layers, collected from those layers directly instead of being
+	// reconstructed from the merged result. See CLIReachability.
+	var reach CLIReachability
 
 	// Layer 1: Global config. The tool-fluency harness sets EVENER_NO_USER_SKILLS
 	// so an eval round depends only on the revision under test; the operator's
@@ -1118,6 +1123,7 @@ func discoverLayers(o discoverOptions) ([]ServerConfig, []CLIOnlyServer, ConfigE
 				// Missing global file is not an error.
 			} else {
 				layers = append(layers, configs)
+				reach.addOtherLayer(configs)
 			}
 		}
 	}
@@ -1168,6 +1174,7 @@ func discoverLayers(o discoverOptions) ([]ServerConfig, []CLIOnlyServer, ConfigE
 				admitted, netWarnings := o.admitProjectServers(read)
 				warnings = append(warnings, netWarnings...)
 				layers = append(layers, admitted)
+				reach.addOtherLayer(admitted)
 			}
 		}
 	}
@@ -1177,70 +1184,59 @@ func discoverLayers(o discoverOptions) ([]ServerConfig, []CLIOnlyServer, ConfigE
 	for _, path := range extraFiles {
 		configs, err := loadFileWithEnv(path, trustedEnv)
 		if err != nil {
-			return nil, nil, ConfigEvidence{}, nil, fmt.Errorf("--mcp-config %s: %w", path, err)
+			return nil, CLIReachability{}, ConfigEvidence{}, nil, fmt.Errorf("--mcp-config %s: %w", path, err)
 		}
 		cliLayer = append(cliLayer, configs...)
 	}
 	for _, spec := range inlineSpecs {
 		cfg, err := ParseInline(spec)
 		if err != nil {
-			return nil, nil, ConfigEvidence{}, nil, fmt.Errorf("--mcp %q: %w", spec, err)
+			return nil, CLIReachability{}, ConfigEvidence{}, nil, fmt.Errorf("--mcp %q: %w", spec, err)
 		}
 		cliLayer = append(cliLayer, cfg)
 	}
-	// The layers the child still discovers when it clears the two CLI ones.
-	// Captured before the CLI layer is appended so cliOnly compares against
-	// exactly those, rather than slicing the merged list back apart.
-	shared := append([][]ServerConfig(nil), layers...)
+	for _, cfg := range cliLayer {
+		reach.CLIServers = append(reach.CLIServers, cfg.Name)
+	}
 	if len(cliLayer) > 0 {
 		layers = append(layers, cliLayer)
 	}
 
-	return Merge(layers...), cliOnly(cliLayer, shared), evidence, warnings, nil
+	return Merge(layers...), reach, evidence, warnings, nil
 }
 
-// CLIOnlyServer is a CLI-layer server plus, when another layer declares a server
-// of the same NAME NAMESPACE, the config that layer would contribute. Fallback
-// is nil when the CLI layers are the only declarers: the child clears them and
-// discovers nothing by that name. When Fallback is set, the CLI entry shadows
-// that config for this session and the child, having cleared the CLI layers,
-// discovers the fallback instead.
+// CLIReachability is what discovery reports about the CLI config layers' servers
+// and the layers a child still loads, so a caller can tell which of this
+// session's tool names a child cannot register.
 //
-// The match is on the namespace MCP registration derives, not on the raw
-// configured string: registration namespaces every tool as
-// "<server>__<tool>" and replaces hyphens with underscores, so a project server
-// "team-tools" and a CLI server "team_tools" register into one namespace and
-// serve the same tool names. Comparing raw names would report the CLI entry as
-// unshadowed, and a caller that then excluded its names would hide a tool the
-// child registers through the project entry.
-type CLIOnlyServer struct {
-	Config   ServerConfig
-	Fallback *ServerConfig
+// Every spawn path clears the CLI layers, so a server only they declare is
+// unreachable by a child. A name another layer declares in the same namespace is
+// reachable anyway, which is what OtherLayerNamespaces records. Both are
+// collected from the layers themselves, before the merge, rather than
+// reconstructed from the merged result: a same-namespace server a CLI entry
+// shadows survives nowhere in that result, and any set derived from it cannot
+// see the server the child rediscovers.
+type CLIReachability struct {
+	// CLIServers are the server names the CLI layers — --mcp-config files and
+	// --mcp inline specs — supply, which this session connects.
+	CLIServers []string
+	// OtherLayerNamespaces are the namespaces (SanitizeMCPToolName of the
+	// server name, which is what MCP registration prefixes every tool with) the
+	// global and project layers supply. A tool whose registered name starts
+	// with one of these could come from a server the child keeps.
+	OtherLayerNamespaces []string
 }
 
-// cliOnly reports the CLI-layer servers, each with the config another layer
-// declares in the same normalized name namespace (nil when no other layer
-// does). Later layers win the fallback, matching Merge's precedence.
-func cliOnly(cliLayer []ServerConfig, shared [][]ServerConfig) []CLIOnlyServer {
-	if len(cliLayer) == 0 {
-		return nil
-	}
-	elsewhere := make(map[string]ServerConfig, len(shared))
-	for _, layer := range shared {
-		for _, cfg := range layer {
-			// Later layers shadow earlier ones, matching Merge.
-			elsewhere[toolname.SanitizeMCPToolName(cfg.Name)] = cfg
-		}
-	}
-	var out []CLIOnlyServer
-	for _, cfg := range cliLayer {
-		if fallback, ok := elsewhere[toolname.SanitizeMCPToolName(cfg.Name)]; ok {
-			out = append(out, CLIOnlyServer{Config: cfg, Fallback: &fallback})
+// addOtherLayer records layer's server namespaces, skipping a namespace an
+// earlier layer already supplied.
+func (c *CLIReachability) addOtherLayer(layer []ServerConfig) {
+	for _, cfg := range layer {
+		namespace := toolname.SanitizeMCPToolName(cfg.Name)
+		if namespace == "" || slices.Contains(c.OtherLayerNamespaces, namespace) {
 			continue
 		}
-		out = append(out, CLIOnlyServer{Config: cfg})
+		c.OtherLayerNamespaces = append(c.OtherLayerNamespaces, namespace)
 	}
-	return out
 }
 
 // DiscoverTrusted is Discover restricted to the layers the session's MODEL cannot

@@ -1875,7 +1875,7 @@ func TestDiscoverForProjectEnv_ParseFailedProjectLayerIsInconclusive(t *testing.
 	}
 	env := &agenttest.FakeEnv{WorkDir: root, GitRoot: root}
 
-	configs, cliOnly, evidence, warnings, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, []string{cliPath}, nil, nil, false, false)
+	configs, reach, evidence, warnings, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, []string{cliPath}, nil, nil, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1888,8 +1888,13 @@ func TestDiscoverForProjectEnv_ParseFailedProjectLayerIsInconclusive(t *testing.
 	if got := serverConfigByName(configs)["shared"]; got.Command != "shared-from-cli" {
 		t.Fatalf("configs = %+v; want the CLI entry to win, since the parent dropped the whole project layer", configs)
 	}
-	if len(cliOnly) != 1 || cliOnly[0].Config.Name != "shared" || cliOnly[0].Fallback != nil {
-		t.Fatalf("cliOnly = %+v; want the CLI server classified as unreachable (no fallback), which is the exclusion this evidence guards", cliOnly)
+	if !slices.Equal(reach.CLIServers, []string{"shared"}) {
+		t.Fatalf("CLIServers = %v; want the CLI server recorded as the exclusion this evidence guards", reach.CLIServers)
+	}
+	// The dropped project layer must contribute NO namespace: discovery never
+	// read it, so it cannot claim the CLI name stays reachable through it.
+	if slices.Contains(reach.OtherLayerNamespaces, "shared") {
+		t.Fatalf("OtherLayerNamespaces = %v; the project layer was never parsed, so it supplies nothing the child could rediscover here", reach.OtherLayerNamespaces)
 	}
 
 	// The defect: the layer was never parsed, so its fingerprint cannot say what

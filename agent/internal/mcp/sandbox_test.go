@@ -75,17 +75,100 @@ func TestMCPStdioServerConfined(t *testing.T) {
 	if sep < 0 || !slices.Equal(ct.Command.Args[sep+1:], []string{"my-mcp-server", "--flag"}) {
 		t.Errorf("original MCP command must follow --: %v", ct.Command.Args)
 	}
-	// Env floor: the ssh-agent handle is dropped, ordinary config env survives.
+	// Env floor: the ssh-agent handle is dropped from BOTH the launcher and the
+	// confined child, and ordinary config env still reaches the child — through
+	// --setenv, never through the launcher's own environment.
 	for _, kv := range ct.Command.Env {
 		if strings.HasPrefix(kv, "SSH_AUTH_SOCK=") {
 			t.Errorf("env floor must drop SSH_AUTH_SOCK from a sandboxed MCP server: %v", ct.Command.Env)
 		}
 	}
-	if !slices.Contains(ct.Command.Env, "EXTRA=1") {
-		t.Errorf("configured MCP env must survive the floor: %v", ct.Command.Env)
+	if _, ok := bwrapSetenvValue(ct.Command.Args, "SSH_AUTH_SOCK"); ok {
+		t.Errorf("env floor must drop SSH_AUTH_SOCK from the confined server too: %v", ct.Command.Args)
+	}
+	if got, ok := bwrapSetenvValue(ct.Command.Args, "EXTRA"); !ok || got != "1" {
+		t.Errorf("configured MCP env must survive the floor and reach the confined server: %v", ct.Command.Args)
 	}
 	if ct.Command.ExtraFiles != nil {
 		t.Errorf("fd hygiene: a sandboxed MCP server must inherit no extra fds")
+	}
+}
+
+// bwrapSetenvValue returns the value the wrapped argv sets name to INSIDE the
+// sandbox, via bwrap's own --setenv NAME VALUE. It searches only the flags
+// before the "--" separator, because everything after it is the confined
+// command's own argv.
+func bwrapSetenvValue(args []string, name string) (string, bool) {
+	sep := slices.Index(args, "--")
+	if sep < 0 {
+		return "", false
+	}
+	for i := 0; i+2 < len(args[:sep]); i++ {
+		if args[i] == "--setenv" && args[i+1] == name {
+			return args[i+2], true
+		}
+	}
+	return "", false
+}
+
+// TestMCPStdioServerAppliesConfigEnvInsideTheSandbox is High finding #1's proof.
+//
+// A stdio server's cfg.Env is repository- or user-controlled configuration. The
+// launcher's environment is bwrap's OWN dynamic-loader environment, so a
+// cfg.Env LD_PRELOAD (or LD_LIBRARY_PATH, DYLD_INSERT_LIBRARIES, ...) would run
+// repository-controlled code before the namespaces and the filesystem
+// confinement exist. cmd.Env must therefore carry the scrubbed base plus the
+// sandbox floor and NEVER cfg.Env, while cfg.Env still reaches the confined
+// server itself — bwrap's --setenv applies a variable to the child only.
+//
+// Both confinement decisions are covered: the trusted-infrastructure carve-out
+// (DenyNetworkException false) and the ordinary confinement an unauthorized
+// project server gets (true). The env rule is the same either way.
+func TestMCPStdioServerAppliesConfigEnvInsideTheSandbox(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		deny bool
+	}{
+		{name: "trusted infra", deny: false},
+		{name: "deny network exception", deny: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := stdioCfg()
+			cfg.DenyNetworkException = tc.deny
+			cfg.Env = map[string]string{"LD_PRELOAD": "/tmp/evil.so", "MY_SERVER_FLAG": "1"}
+
+			dial := productionDial(cfg, testWrapper(t))
+			tr, err := dial(context.Background())
+			if err != nil {
+				t.Fatalf("dial: %v", err)
+			}
+			ct, ok := tr.(*mcpsdk.CommandTransport)
+			if !ok || ct.Command == nil {
+				t.Fatalf("expected a *CommandTransport with a command, got %T", tr)
+			}
+
+			// 1. The launcher's own environment never holds repository-controlled
+			// config: bwrap inherits cmd.Env, and its loader reads it before any
+			// confinement exists.
+			for _, kv := range ct.Command.Env {
+				name, _, ok := strings.Cut(kv, "=")
+				if ok && (name == "LD_PRELOAD" || name == "MY_SERVER_FLAG") {
+					t.Errorf("cfg.Env entry %q is in the sandbox LAUNCHER's environment, where the loader honours it before confinement: %v", kv, ct.Command.Env)
+				}
+			}
+			// 2. The confined server still receives it: bwrap --setenv applies to
+			// the child, after the namespaces and mounts are in place.
+			for name, want := range cfg.Env {
+				got, ok := bwrapSetenvValue(ct.Command.Args, name)
+				if !ok {
+					t.Errorf("cfg.Env entry %s=%s is not delivered to the confined server (no --setenv before --): %v", name, want, ct.Command.Args)
+					continue
+				}
+				if got != want {
+					t.Errorf("--setenv %s = %q, want %q", name, got, want)
+				}
+			}
+		})
 	}
 }
 
@@ -112,12 +195,13 @@ func TestMCPStdioServerScrubsAmbientSecrets(t *testing.T) {
 		t.Errorf("an ambient API key must be scrubbed from a confined MCP server: %v", ct.Command.Env)
 	}
 	// A cfg.Env var whose NAME looks secret is explicit configuration, not an
-	// ambient leak, so it must survive the scrub.
-	if !slices.Contains(ct.Command.Env, "MCP_SERVER_TOKEN=configured-keep") {
-		t.Errorf("a configured cfg.Env secret must survive the scrub: %v", ct.Command.Env)
+	// ambient leak, so it must survive the scrub and reach the confined server —
+	// through the child-env channel, which is the only place cfg.Env may appear.
+	if got, ok := bwrapSetenvValue(ct.Command.Args, "MCP_SERVER_TOKEN"); !ok || got != "configured-keep" {
+		t.Errorf("a configured cfg.Env secret must reach the confined server: %v", ct.Command.Args)
 	}
-	if !slices.Contains(ct.Command.Env, "EXTRA=1") {
-		t.Errorf("ordinary configured MCP env must survive: %v", ct.Command.Env)
+	if got, ok := bwrapSetenvValue(ct.Command.Args, "EXTRA"); !ok || got != "1" {
+		t.Errorf("ordinary configured MCP env must reach the confined server: %v", ct.Command.Args)
 	}
 }
 

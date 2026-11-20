@@ -900,11 +900,10 @@ func (s *Session) setCLIMCPToolNames(names map[string]bool) {
 // the file again would pair a classification from one read with a digest from
 // another, and a file edited in between then verifies forever against a
 // classification it no longer describes (see mcpconfig.ConfigEvidence).
-func (s *Session) setCLIMCPServers(names map[string]bool, shadowed map[string]bool, evidence mcpconfig.ConfigEvidence) {
+func (s *Session) setCLIMCPServers(names map[string]bool, evidence mcpconfig.ConfigEvidence) {
 	s.delegateExclusionsMu.Lock()
 	defer s.delegateExclusionsMu.Unlock()
 	s.cliMCPServers = names
-	s.cliMCPShadowed = shadowed
 	s.cliMCPEvidence = cliMCPClassificationEvidence{layers: evidence}
 	// New evidence, so the roster decision derived from the old evidence is not
 	// carried forward: unknown reachability keeps the names eligible until a
@@ -1035,13 +1034,11 @@ func (s *Session) resetRosterExclusionForWorkspaceChange() {
 	s.setRosterExclusion(false)
 }
 
-// cliMCPServersSnapshot returns the CLI-supplied server names and the subset a
-// child may rediscover through another layer or a plugin. Both are read under
-// the one lock so a ceiling build cannot see half of a rebuild.
-func (s *Session) cliMCPServersSnapshot() (map[string]bool, map[string]bool) {
+// cliMCPServersSnapshot returns the CLI-supplied server names.
+func (s *Session) cliMCPServersSnapshot() map[string]bool {
 	s.delegateExclusionsMu.RLock()
 	defer s.delegateExclusionsMu.RUnlock()
-	return s.cliMCPServers, s.cliMCPShadowed
+	return s.cliMCPServers
 }
 
 // setShadowedLayerNamespaces records the registered-name prefixes the non-CLI

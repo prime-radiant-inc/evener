@@ -59,7 +59,7 @@ func TestStaleProbeCannotEraseANewerWorkspaceDecision(t *testing.T) {
 	const cliTool = "svc__echo"
 	s := newSession(t, withEnv(envB))
 	s.setCLIMCPToolNames(map[string]bool{cliTool: true})
-	s.setCLIMCPServers(map[string]bool{"svc": true}, nil, evidenceB)
+	s.setCLIMCPServers(map[string]bool{"svc": true}, evidenceB)
 	s.setRosterExclusion(true)
 	// B's own answer really is "exclude", so the request path below has a
 	// standing decision to preserve rather than one it would clear anyway.
@@ -111,7 +111,7 @@ func TestTimedOutProbeLeavesTheRosterDecisionStanding(t *testing.T) {
 
 	s := &Session{env: env}
 	s.setCLIMCPToolNames(map[string]bool{"svc__echo": true})
-	s.setCLIMCPServers(map[string]bool{"svc": true}, nil, evidence)
+	s.setCLIMCPServers(map[string]bool{"svc": true}, evidence)
 	s.setRosterExclusion(true)
 
 	// A bound far below the stall, so the probe returns while the read is stuck.
@@ -153,7 +153,7 @@ func TestProbeReturnsTheAnswerToItsCaller(t *testing.T) {
 
 	s := &Session{env: env}
 	s.setCLIMCPToolNames(map[string]bool{"svc__echo": true})
-	s.setCLIMCPServers(map[string]bool{"svc": true}, nil, evidence)
+	s.setCLIMCPServers(map[string]bool{"svc": true}, evidence)
 
 	if !s.probeCLIEvidenceFresh(context.Background(), env) {
 		t.Fatal("the probe did not report current evidence for the workspace the evidence describes")
@@ -229,7 +229,7 @@ func TestProbeAgainstAChangedWorkspaceAnswersFalse(t *testing.T) {
 
 	s := &Session{env: env}
 	s.setCLIMCPToolNames(map[string]bool{"svc__echo": true})
-	s.setCLIMCPServers(map[string]bool{"svc": true}, nil, evidence)
+	s.setCLIMCPServers(map[string]bool{"svc": true}, evidence)
 	if !s.probeCLIEvidenceFresh(context.Background(), env) {
 		t.Fatal("fixture is wrong: the probe did not verify unchanged evidence, so the negative below proves nothing")
 	}

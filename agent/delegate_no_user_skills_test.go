@@ -46,7 +46,7 @@ func TestNoUserSkillsSuppressionKeepsCLIExclusionWorking(t *testing.T) {
 	s := &Session{env: env}
 	s.setManagerOnlyTools(nil)
 	s.setCLIMCPToolNames(map[string]bool{"svc__echo": true})
-	s.setCLIMCPServers(map[string]bool{"svc": true}, nil, evidence)
+	s.setCLIMCPServers(map[string]bool{"svc": true}, evidence)
 
 	exclude := s.probeCLIEvidenceFresh(context.Background(), s.currentEnv())
 	if !exclude {

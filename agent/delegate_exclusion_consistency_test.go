@@ -27,7 +27,7 @@ func TestWorkspaceChangeResetKeepsTheClassificationWithoutTheSessionLock(t *test
 	s := &Session{}
 	s.setManagerOnlyTools(map[string]bool{"session_control": true})
 	s.setCLIMCPToolNames(map[string]bool{"svc__echo": true})
-	s.setCLIMCPServers(map[string]bool{"svc": true}, nil, mcpconfig.ConfigEvidence{
+	s.setCLIMCPServers(map[string]bool{"svc": true}, mcpconfig.ConfigEvidence{
 		Project: mcpconfig.LayerEvidence{Path: "/repo/.evener/mcp.json", Digest: "abc"},
 	})
 	s.setRosterExclusion(true)
@@ -204,7 +204,7 @@ func TestExclusionDecisionFlipRebuildsBothRosterSurfaces(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.setCLIMCPServers(map[string]bool{"svc": true}, nil, evidence)
+	s.setCLIMCPServers(map[string]bool{"svc": true}, evidence)
 	s.setCLIMCPToolNames(map[string]bool{cliTool: true})
 
 	// Settle both caches on the startup answer.
@@ -271,7 +271,7 @@ func TestNarrowRebuildCannotLeaveTheRostersDisagreeing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.setCLIMCPServers(map[string]bool{"svc": true}, nil, evidence)
+	s.setCLIMCPServers(map[string]bool{"svc": true}, evidence)
 	s.setCLIMCPToolNames(map[string]bool{cliTool: true})
 	s.refreshCachesForExclusionChangeContext(context.Background())
 	if !s.rosterExclusion() {
@@ -309,12 +309,12 @@ func TestAbsentProjectLayerStillVerifiesItsEvidence(t *testing.T) {
 	runInfraGit(t, root, "init", "-q")
 	env := execenv.NewLocalExecutionEnvironment(root)
 
-	configs, cliOnly, evidence, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, nil, nil, nil, false, false)
+	configs, reach, evidence, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env, nil, nil, nil, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(configs) != 0 || len(cliOnly) != 0 {
-		t.Fatalf("fixture expected no config layers: configs=%v cliOnly=%v", configs, cliOnly)
+	if len(configs) != 0 || len(reach.CLIServers) != 0 || len(reach.OtherLayerNamespaces) != 0 {
+		t.Fatalf("fixture expected no config layers: configs=%v reach=%+v", configs, reach)
 	}
 	wantPath := filepath.Join(root, ".evener", "mcp.json")
 	if evidence.Project.Path != wantPath {
@@ -447,7 +447,7 @@ func TestConfigEditAloneInvalidatesTheCachedAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.setCLIMCPServers(map[string]bool{"svc": true}, nil, evidence)
+	s.setCLIMCPServers(map[string]bool{"svc": true}, evidence)
 	s.setCLIMCPToolNames(map[string]bool{cliTool: true})
 
 	// The startup answer, reached through the request path itself.
@@ -503,7 +503,7 @@ func TestWorktreeSpawnIsAPerSpawnExceptionNotARosterChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.setCLIMCPServers(map[string]bool{"svc": true}, nil, evidence)
+	s.setCLIMCPServers(map[string]bool{"svc": true}, evidence)
 	s.setCLIMCPToolNames(map[string]bool{cliTool: true})
 
 	// Settle the roster decision on the shared-workspace answer.

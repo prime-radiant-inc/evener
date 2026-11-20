@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -147,6 +148,110 @@ func TestConfineTrustedInfraNilIsIdentity(t *testing.T) {
 	w.ConfineTrustedInfra(cmd, "/somewhere")
 	if !slices.Equal(cmd.Args, want) || cmd.Dir != "" {
 		t.Errorf("nil wrapper must be identity, got args=%v dir=%q", cmd.Args, cmd.Dir)
+	}
+}
+
+// setenvPairs returns the NAME=VALUE assignments carried as bwrap --setenv flags
+// before the separator. Everything after the separator is the child's argv and
+// is deliberately not searched.
+func setenvPairs(args []string) map[string]string {
+	sep := slices.Index(args, "--")
+	if sep < 0 {
+		return nil
+	}
+	out := map[string]string{}
+	for i := 0; i+2 < len(args[:sep]); i++ {
+		if args[i] == "--setenv" {
+			out[args[i+1]] = args[i+2]
+		}
+	}
+	return out
+}
+
+// TestConfineWithChildEnvAppliesConfigBehindBwrap is the backend half of the
+// rule that a server's configured environment must never reach the sandbox
+// LAUNCHER: bwrap is dynamically linked, so LD_PRELOAD et al. in its own
+// environment run before any namespace or mount exists. The assignments ride
+// --setenv instead, which bwrap applies to the child after confinement is in
+// place, and the argv after "--" stays the original command.
+func TestConfineWithChildEnvAppliesConfigBehindBwrap(t *testing.T) {
+	rp, cwd, _ := resolveFixture(t, ModeWorkspaceWrite, true)
+	w, err := NewWrapper(rp, "/usr/bin/bwrap", "/tmp/evener-session")
+	if err != nil {
+		t.Fatalf("NewWrapper: %v", err)
+	}
+	cmd := exec.Command("/bin/bash", "-c", "echo hi") //nolint:noctx // test-only cmd, never run
+	orig := slices.Clone(cmd.Args)
+	w.ConfineWithChildEnv(cmd, cwd, map[string]string{"LD_PRELOAD": "/tmp/evil.so", "MY_SERVER_FLAG": "1"})
+
+	if cmd.Path != "/usr/bin/bwrap" {
+		t.Errorf("ConfineWithChildEnv must still prepend the backend: path=%q", cmd.Path)
+	}
+	// The command itself is untouched and still last.
+	sep := slices.Index(cmd.Args, "--")
+	if sep < 0 || !slices.Equal(cmd.Args[sep+1:], orig) {
+		t.Fatalf("original command must survive after --: %v", cmd.Args)
+	}
+	got := setenvPairs(cmd.Args)
+	for name, want := range map[string]string{"LD_PRELOAD": "/tmp/evil.so", "MY_SERVER_FLAG": "1"} {
+		if got[name] != want {
+			t.Errorf("--setenv %s = %q, want %q (argv: %v)", name, got[name], want, cmd.Args)
+		}
+	}
+	// The trusted-infra entry point carries the same child env and the network
+	// carve-out, so a net=off policy still delivers config to the server.
+	rpOff, cwdOff, _ := resolveFixture(t, ModeWorkspaceWrite, false)
+	wOff, err := NewWrapper(rpOff, "/usr/bin/bwrap", "/tmp/evener-session")
+	if err != nil {
+		t.Fatalf("NewWrapper: %v", err)
+	}
+	infra := exec.Command("/bin/bash", "-c", "echo hi") //nolint:noctx // test-only cmd, never run
+	wOff.ConfineTrustedInfraWithChildEnv(infra, cwdOff, map[string]string{"MY_SERVER_FLAG": "1"})
+	if slices.Contains(infra.Args, "--unshare-net") {
+		t.Errorf("trusted-infrastructure child env must keep the network carve-out: %v", infra.Args)
+	}
+	if setenvPairs(infra.Args)["MY_SERVER_FLAG"] != "1" {
+		t.Errorf("trusted-infrastructure child env must still be delivered: %v", infra.Args)
+	}
+}
+
+// TestChildEnvArgvSeatbeltUsesEnvAfterSeparator pins the Seatbelt half: that
+// backend has no --setenv, so the assignments become an /usr/bin/env prefix on
+// the confined side of the "--". sandbox-exec itself keeps the launcher env.
+func TestChildEnvArgvSeatbeltUsesEnvAfterSeparator(t *testing.T) {
+	argv := []string{"/usr/bin/sandbox-exec", "-p", "(version 1)", "--", "/bin/bash", "-c", "echo hi"}
+	got := childEnvArgv(BackendSeatbelt, argv, 3, map[string]string{"LD_PRELOAD": "/tmp/evil.so", "MY_SERVER_FLAG": "1"})
+	want := []string{
+		"/usr/bin/sandbox-exec", "-p", "(version 1)", "--",
+		"/usr/bin/env", "LD_PRELOAD=/tmp/evil.so", "MY_SERVER_FLAG=1",
+		"/bin/bash", "-c", "echo hi",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("childEnvArgv =\n%v\nwant\n%v", got, want)
+	}
+	// Empty child env is a no-op, so no backend pays for an unused helper.
+	if same := childEnvArgv(BackendSeatbelt, argv, 3, nil); !slices.Equal(same, argv) {
+		t.Errorf("empty child env must leave the argv unchanged, got %v", same)
+	}
+}
+
+// TestConfineWithChildEnvNilWrapperJoinsCmdEnv pins the unconfined case: with no
+// backend there is no launcher, so the child's own environment is cmd.Env and
+// the assignments belong there. A nil wrapper must not panic on the missing
+// separator.
+func TestConfineWithChildEnvNilWrapperJoinsCmdEnv(t *testing.T) {
+	var w *Wrapper
+	cmd := exec.Command("/bin/echo", "hi") //nolint:noctx // test-only cmd, never run
+	cmd.Env = []string{"KEEP=1", "OVERRIDE=old"}
+	wantArgs := slices.Clone(cmd.Args)
+	w.ConfineWithChildEnv(cmd, "/somewhere", map[string]string{"OVERRIDE": "new", "ADDED": "2"})
+
+	if !slices.Equal(cmd.Args, wantArgs) {
+		t.Errorf("an unsandboxed spawn must not gain argv: %v", cmd.Args)
+	}
+	joined := strings.Join(cmd.Env, "\n")
+	if !strings.Contains(joined, "KEEP=1") || !strings.Contains(joined, "ADDED=2") || strings.Contains(joined, "OVERRIDE=old") || !strings.Contains(joined, "OVERRIDE=new") {
+		t.Errorf("nil-wrapper child env = %v", cmd.Env)
 	}
 }
 

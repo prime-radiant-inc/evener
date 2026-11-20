@@ -213,11 +213,17 @@ func TestShadowedCLIMCPEntryIsNeverContacted(t *testing.T) {
 	}
 
 	// The test must have created a real shadow, or it proves nothing: the name
-	// has to be a CLI-supplied server AND one another layer declares, and the
-	// parent must be connected to the CLI entry that won.
-	servers, shadowed := root.cliMCPServersSnapshot()
-	if !servers["svc"] || !shadowed["svc"] {
-		t.Fatalf("fixture did not shadow a CLI entry: servers=%v shadowed=%v", servers, shadowed)
+	// has to be a CLI-supplied server that the PROJECT layer also declares, so the
+	// child rediscovers it there, and the parent must be connected to the CLI
+	// entry that won.
+	if servers := root.cliMCPServersSnapshot(); !servers["svc"] {
+		t.Fatalf("fixture did not classify a CLI entry: servers=%v", servers)
+	}
+	// The project layer's namespace is reported, which is what keeps "svc"'s
+	// tools eligible for the child. A merged-view set could not see this server:
+	// the CLI entry replaced it.
+	if prefixes := root.cliMCPOtherNamespacesSnapshot(); !slices.Contains(prefixes, "svc") {
+		t.Fatalf("fixture did not shadow a CLI entry: other-layer namespaces=%v", prefixes)
 	}
 	if root.reg.Get("svc__echo") == nil {
 		t.Fatalf("root did not register the effective CLI entry's tool, so the shadow never existed")
