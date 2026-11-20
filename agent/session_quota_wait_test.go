@@ -1465,6 +1465,12 @@ func TestQuotaWaitAnnouncementsCarryTheWaitIdentity(t *testing.T) {
 	if err := s.ensureClientMutationStore(); err != nil {
 		t.Fatalf("ensureClientMutationStore: %v", err)
 	}
+	// Name the session up front: the background prompt namer otherwise runs a
+	// concurrent meta save, and a try-save that meets it publishes the wait
+	// unstamped, which this test's recorder drops.
+	if err := s.Rename("quota wait announcements test"); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
 	trip := tripwireCtx(t).Done()
 	run := startInput(context.Background(), s, "start the work", EntryUserInput)
 	run.awaitQuotaWait(t, s)
@@ -1716,6 +1722,73 @@ func TestQuotaWaitIsNotVisibleBeforeItsStampIsSaved(t *testing.T) {
 	}
 }
 
+// A Close that starts while the stamp save is in flight ends the turn as a
+// cancellation, not as the provider's quota error: a turn that ends on a
+// cancellation lets its goal resume, while the quota error leaves it blocked.
+func TestCloseDuringTheStampSaveCancelsTheWait(t *testing.T) {
+	s, _, _, _ := newAttentionLivelockSession(t, usageLimitError(t, "openai", quotaResetAt))
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if err := s.Rename("quota wait close test"); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+	stagedPath := schema.SessionMetaPath(s.stateDir, s.ID()) + ".tmp"
+	gate := &notesRenameFailureFS{Fs: afero.NewOsFs()}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var held atomic.Bool
+	var enterOnce, releaseOnce sync.Once
+	gate.before = func() {
+		data, err := os.ReadFile(stagedPath)
+		if err != nil || !bytes.Contains(data, []byte(`"quota_wait_stamps"`)) {
+			return
+		}
+		if !held.CompareAndSwap(false, true) {
+			return
+		}
+		enterOnce.Do(func() { close(entered) })
+		<-release
+	}
+	closeRelease := func() { releaseOnce.Do(func() { close(release) }) }
+	defer closeRelease()
+	s.cfg.testOnly.metaFS = gate
+
+	trip := tripwireCtx(t).Done()
+	run := startInput(context.Background(), s, "start the work", EntryUserInput)
+	testwait.Until(t, "the wait's metadata save begins", func() bool {
+		select {
+		case <-entered:
+			return true
+		default:
+			return false
+		}
+	})
+	// Close waits for the turn, which is held inside the save, so run it in
+	// the background and release the save once it has marked the session
+	// closing.
+	closed := make(chan struct{})
+	go func() {
+		s.Close()
+		close(closed)
+	}()
+	testwait.Until(t, "the session is closing", func() bool {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.closing
+	})
+	closeRelease()
+	run.awaitEnd(t, trip, "Close ends the waiting turn")
+	if !errors.Is(run.err, context.Canceled) {
+		t.Fatalf("turn ended with %v, want a cancellation: a close under the wait must not leave the provider's quota error", run.err)
+	}
+	select {
+	case <-closed:
+	case <-trip:
+		t.Fatal("Close never returned")
+	}
+}
+
 // A failed stamp save must not publish a stamp: the counter never reached disk,
 // so a restore can mint the same number again, and a pane that saw it would
 // reject the next runtime's wait. The wait itself still runs and still retries.
@@ -1956,6 +2029,12 @@ func TestWaitElapsedSampleIsTheQuotaGroupsOwnNotThePhases(t *testing.T) {
 	}))
 	var announcements quotaWaitAnnouncements
 	s.ConsumeEventsLossless(announcements.consume, func() {})
+	// Name the session up front: the background prompt namer otherwise runs a
+	// concurrent meta save, and a try-save that meets it publishes the wait
+	// unstamped, which this test's recorder drops.
+	if err := s.Rename("quota wait elapsed sample test"); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
 	trip := tripwireCtx(t).Done()
 	run := startInput(context.Background(), s, "start the work", EntryUserInput)
 	select {
@@ -2041,6 +2120,12 @@ func TestSubMillisecondWaitStartStillAnnouncesAWait(t *testing.T) {
 	s, clk, _, _ := newAttentionLivelockSession(t, usageLimitError(t, "openai", quotaResetAt))
 	var announcements quotaWaitAnnouncements
 	s.ConsumeEventsLossless(announcements.consume, func() {})
+	// Name the session up front: the background prompt namer otherwise runs a
+	// concurrent meta save, and a try-save that meets it publishes the wait
+	// unstamped, which this test's recorder drops.
+	if err := s.Rename("quota wait sub-millisecond test"); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
 	trip := tripwireCtx(t).Done()
 	// Half a millisecond before the reset: a positive wait whose delay
 	// truncates to zero on the wire.
@@ -2086,6 +2171,12 @@ func TestWaitStartAnnouncesTheCallsRealElapsedSample(t *testing.T) {
 	s, clk, _, adapter := newAttentionLivelockSession(t, nil)
 	var announcements quotaWaitAnnouncements
 	s.ConsumeEventsLossless(announcements.consume, func() {})
+	// Name the session up front: the background prompt namer otherwise runs a
+	// concurrent meta save, and a try-save that meets it publishes the wait
+	// unstamped, which this test's recorder drops.
+	if err := s.Rename("quota wait start elapsed test"); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
 	// The call streams content, then meets the limit mid-stream once the test
 	// has let the clock run: the elapsed sample must span the streamed work.
 	streamed := make(chan struct{})

@@ -132,7 +132,7 @@ func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model st
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
-		return false, nil
+		return false, closingWaitError(ctx)
 	}
 	// A drive's slot is given back and its hung-turn bound paused before the
 	// wait is published, so whoever sees the session waiting sees a drive
@@ -157,7 +157,7 @@ func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model st
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
-		return false, nil
+		return false, closingWaitError(ctx)
 	}
 	if saved {
 		wait.stamp = stamp
@@ -227,6 +227,18 @@ func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model st
 	}
 	s.injectDrainedSteering()
 	return true, nil
+}
+
+// closingWaitError is the error a wait returns when the session closes under
+// it: the turn's own cancellation when it has one, so the round ends as an
+// ordinary stop rather than retaining the provider's quota error. A goal whose
+// turn ends on a cancellation can resume; one that ends on the quota error
+// cannot.
+func closingWaitError(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return context.Canceled
 }
 
 // applyModelSwitchPickedDuringWait applies a switch picked while the call
