@@ -627,7 +627,7 @@ func TestCrossInstanceResponsesStripsOpaqueBlobKeepsNativePlaintext(t *testing.T
 	if issuer == wireNativePlain {
 		t.Fatalf("the issuer must keep its own blobs, not the bare plaintext: %s", issuer)
 	}
-	if !strings.Contains(issuer, "rs_foreign") {
-		t.Fatalf("the issuer must keep its reasoning item id: %s", issuer)
+	if !strings.Contains(issuer, `"id":"rs_foreign"`) || !strings.Contains(issuer, `"encrypted_content":"enc_A"`) {
+		t.Fatalf("the issuer must keep its own item id and blob: %s", issuer)
 	}
 }
