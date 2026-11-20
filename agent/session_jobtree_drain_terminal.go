@@ -45,12 +45,16 @@ func (s *Session) discardTerminalWatchLeftovers() {
 	}
 	s.pendingJobNotifs = kept
 	s.pendingJobNotifsMu.Unlock()
-	if len(dropped) == 0 {
-		return
+	if len(dropped) > 0 {
+		s.emit(events.WarningData{Message: fmt.Sprintf(
+			"terminal communicate ended this run; discarding %d watch notification(s) queued before the final answer: %s",
+			len(dropped), strings.Join(dropped, ", "))})
 	}
-	s.emit(events.WarningData{Message: fmt.Sprintf(
-		"terminal communicate ended this run; discarding %d watch notification(s) queued before the final answer: %s",
-		len(dropped), strings.Join(dropped, ", "))})
+	// The same cutoff for watch notices that are durable attention rather than
+	// queue entries: a stable delegate child's notice never reaches the queue
+	// above, and the drain's own turn gate would present it after the model
+	// ended the run. A caller send is not cut -- it is a pending obligation.
+	s.discardTerminalStableWatchPending()
 }
 
 func describeWatchLeftover(n jobNotification) string {

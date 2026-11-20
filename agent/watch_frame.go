@@ -208,6 +208,60 @@ func isStableWatchReminderAttentionID(attentionID string) bool {
 	return strings.HasPrefix(attentionID, stableWatchReminderAttentionIDPrefix)
 }
 
+// isStableWatchSendAttentionID reports whether attentionID names the durable
+// row of a caller watch send rather than a notice the model could decline.
+//
+// A caller send's occurrence is "send:" plus its delivery id
+// (resolveStableWatchSend); timer ticks carry "tick:", reminder snapshots
+// "reminder:", runaway stops "runaway:", and no-send condition fires
+// "delivery:". Checking the ":send:" occurrence marker rather than splitting on
+// a fixed colon count keeps colon-bearing targets (such as hub:roster) from
+// misclassifying a caller send as declinable news.
+func isStableWatchSendAttentionID(attentionID string) bool {
+	return isStableWatchAttentionID(attentionID) && strings.Contains(attentionID, ":send:")
+}
+
+// discardTerminalStableWatchPending resolves the durable watch attention a
+// terminal communicate leaves pending, so the drain does not run a model turn
+// for news the model already declined to wait for.
+//
+// A stable delegate's watch notice is durable attention, not a queued
+// notification, so discardTerminalWatchLeftovers' queue cut cannot see it. The
+// drain's own turn gate can: a pending watch row there is exactly what makes
+// hasUndrivenStableWatchAttention owe a notification turn. Without this, a
+// notice that arrived before the final answer -- a self watch the model armed
+// on its own work, or a send-rail diagnostic -- reopens a paid turn after the
+// run declared itself over.
+//
+// A caller send is kept: it is the caller's pending obligation, not news about
+// one, and the model still owes it an answer. The cutoff runs once at drain
+// entry, so a notice a drain turn arms later is untouched.
+func (s *Session) discardTerminalStableWatchPending() {
+	if s == nil || s.owningDelegateID == "" {
+		return
+	}
+	pending, err := s.pendingDelegateAttentionIDs()
+	if err != nil || len(pending) == 0 {
+		return
+	}
+	discard := make([]string, 0, len(pending))
+	for _, attentionID := range pending {
+		if !isStableWatchAttentionID(attentionID) || isStableWatchSendAttentionID(attentionID) {
+			continue
+		}
+		discard = append(discard, attentionID)
+	}
+	if len(discard) == 0 {
+		return
+	}
+	if err := s.resolveAttentionDurably(discard, delegateAttentionDiscarded); err != nil {
+		// The row stays pending if the discard cannot be written: a presented
+		// stale notice is better than a silently lost one, and the next drive
+		// retries the same discard.
+		s.emit(warningDataFromError("discard terminal stable watch attention", err))
+	}
+}
+
 // watchAttentionFilterState reads the session's attention ledger ONCE and
 // reports which watch identities are still pending and which were resolved as
 // discarded.
