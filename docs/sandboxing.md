@@ -217,12 +217,12 @@ stops between bounded directory reads and before further removals; an incomplete
 listing does not authorize deletion, and a later pass can retry unfinished work.
 An individual filesystem call already in progress may still block until it returns.
 
-| Mode | File-tool reads | File-tool writes | Spawned-process reads | Spawned-process writes | Network (`net=on`) |
+| Mode | File-tool reads | File-tool writes | Spawned-process reads | Spawned-process writes | Network (`net=on`, macOS) |
 |---|---|---|---|---|---|
 | `off` (default) | anywhere | anywhere | anywhere | anywhere | unrestricted |
 | `read-only` | anywhere minus the denylist | denied (temp only) | anywhere minus the denylist | temp only | all outbound (permissive) |
 | `workspace-write` | anywhere minus the denylist | worktree + temp + contained caches | anywhere minus the denylist | worktree + temp + caches + git metadata (not config/hooks) | all outbound (permissive) |
-| `restricted` | worktree + Evener content (read-only) | worktree + temp | worktree + system read roots + developer toolchain + global git config files + hook/MCP paths + Evener content + temp | worktree + temp + git metadata (not config/hooks) | on macOS: TCP/UDP + mDNSResponder socket, AF_UNIX only under granted read roots |
+| `restricted` | worktree + Evener content (read-only) | worktree + temp | worktree + system read roots + developer toolchain + global git config files + hook/MCP paths + Evener content + temp | worktree + temp + git metadata (not config/hooks) | TCP/UDP + mDNSResponder socket, AF_UNIX only under granted read roots |
 
 - **`off`** applies no sandbox confinement.
 - **`read-only`** cannot commit or write project files; only the session temp is
