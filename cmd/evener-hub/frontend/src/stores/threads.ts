@@ -59,6 +59,7 @@ import {
   isStaleCursorError,
   issueLatestWindowRead,
   isTranscriptHistoryFailedError,
+  isTranscriptIndexLockedError,
   isTranscriptIndexRebuildingError,
   mergeOlderItemPage,
   mutationErrorData,
@@ -1799,6 +1800,12 @@ interface OwnedHydration {
   generation: number;
   retryAttempt: number;
   cancelRetry: (() => void) | null;
+  // This lifecycle's latest tracked read answered the hub's transcriptIndexLocked
+  // discriminant and armed the retry below: the destination has no answer yet,
+  // so a waiting claim keeps waiting rather than refusing. Cleared by the read
+  // that answers otherwise and by the lifecycle closing (settle or retire), so
+  // it never outlives the pacing it describes.
+  locked: boolean;
   // Settles with the model this lifecycle publishes, or null once the
   // lifecycle is retired (release, client swap, new ready generation) so a
   // waiting owner re-arms against the current generation instead of hanging.
@@ -4461,6 +4468,32 @@ function publishThreadRepairing(
   setThreadRepairing(ref, repairing);
 }
 
+// retryOwesAnswer reports that the ref's latest read answered with a retry the
+// store's owned lifecycle is pacing, so a waiting destination claim must wait
+// for that attempt instead of reading again over it. The rebuilding answer
+// publishes a repair status of its own; the hub's transcriptIndexLocked answer
+// authorizes the same automatic retry without reporting a repair
+// (docs/appwire-protocol.md, "Error model"), so it rides the lifecycle record
+// (OwnedHydration.locked) rather than `repairingRefs` - the loading surface
+// keeps saying only what transcriptIndexRebuilding means.
+function retryOwesAnswer(ref: string): boolean {
+  if (threadsStore.getState().repairingRefs.has(ref)) return true;
+  return ownedThreadHydrations.get(ref)?.locked === true;
+}
+
+// recordLockedRetry notes whether the ref's latest tracked read answered the
+// hub's lock. It runs once the outcome's own retry was scheduled, so the record
+// it writes to is the lifecycle that owns the pacing: closing that lifecycle
+// (a publication, a release, a client swap, the deletion fence) is what ends
+// the wait, and one no retry was armed for never records at all.
+function recordLockedRetry(ref: string, pending: PendingThreadHydration, locked: boolean): void {
+  if (!attemptConnectionIsCurrent(pending)) return;
+  if ((threadReadSequences.get(ref) ?? 0) !== pending.readSequence) return;
+  const owned = ownedThreadHydrations.get(ref);
+  if (!owned) return;
+  owned.locked = locked && owned.cancelRetry !== null;
+}
+
 // The repair flag never outlives its owners: the release that drops the ref's
 // last holder of either kind clears it, because no read that could answer it
 // honestly is still in flight — this release already fenced the pending
@@ -4667,6 +4700,9 @@ async function readThreadHydration(
     } else {
       scheduleOwnedHydrationRetry(read.kind, ref, pending);
     }
+    // Recorded last: scheduling the retry is what retires this read's pending
+    // entry, and the flag names whether a retry is now pacing the ref.
+    if (read.kind === "thread") recordLockedRetry(ref, pending, isTranscriptIndexLockedError(err));
     throw err;
   } finally {
     signal?.removeEventListener("abort", releaseLease);
@@ -4679,6 +4715,7 @@ async function readThreadHydration(
   // can answer without touching it saw nothing about the repair, so its
   // success must not clear a status a tracked read owns.
   if (includeTurns) publishThreadRepairing(read.kind, ref, pending, false);
+  if (read.kind === "thread") recordLockedRetry(ref, pending, false);
   // A retry that dropped the held snapshot asked for, and must be treated
   // as, a full latest-window replacement: applyReadResponse would still
   // merge it (same incarnation/epoch, length >= held's), leaving every held
@@ -7553,7 +7590,14 @@ function openOwnedHydration(kind: HydrationOwnerKind, ref: string): OwnedHydrati
   const firstHydration = new Promise<ThreadModel | null>((resolve) => {
     settle = resolve;
   });
-  const owned: OwnedHydration = { generation, retryAttempt: 0, cancelRetry: null, firstHydration, settle };
+  const owned: OwnedHydration = {
+    generation,
+    retryAttempt: 0,
+    cancelRetry: null,
+    locked: false,
+    firstHydration,
+    settle,
+  };
   lifecycles.set(ref, owned);
   return owned;
 }
@@ -10219,6 +10263,14 @@ export function acquireBackgroundThread(ref: string): BackgroundThreadLease {
   const retired = new Promise<void>((resolve) => {
     settleRetired = resolve;
   });
+  // Whether this lease has been released. `retired` resolves at the same
+  // instant, but it resolves as a promise: a released lease that re-enters the
+  // acquisition loop would race that already-resolved promise, and every pass
+  // it took would finish in microtasks the browser never breaks for a task.
+  // The remaining pane holder's retry could then never run, and neither could
+  // any input. The flag is synchronous, so every check below sees the release
+  // the moment it happens, however deep in the loop the lease was.
+  let released = false;
   // The acquisition is one store-side read lifecycle for this ref, with this
   // lease as its owner. It joins the tracked read this connection already owes
   // the ref - a pane's open, the ready fan-out's re-read, a paced retry - and
@@ -10228,6 +10280,7 @@ export function acquireBackgroundThread(ref: string): BackgroundThreadLease {
   // the hub authorizes recovery the store is already pacing.
   const acquisition = (async () => {
     for (;;) {
+      if (released) return;
       // Each pass either verifies the destination, stops on the connection's
       // answer, or waits for the ref's read lifecycle to answer. Only that
       // lifecycle owns pacing; this never reads over it.
@@ -10238,17 +10291,21 @@ export function acquireBackgroundThread(ref: string): BackgroundThreadLease {
       let epoch: number;
       try {
         client = await requireReadyClient();
+        if (released) return;
         epoch = getReadyEpoch();
       } catch {
         // The connection never came back inside the store's own deadline. The
         // claim refuses rather than parking the resend behind a hub that is gone.
         return;
       }
-      // The hub answered the ref's read with an index it is rebuilding. That
-      // answer authorizes a retry, and the store's owned retry lifecycle is
-      // already pacing it: waiting on that attempt costs nothing, and the retry
-      // that verifies the destination is what grants this lease.
-      if (threadsStore.getState().repairingRefs.has(ref)) {
+      // The hub answered the ref's read with an index it is repairing
+      // (transcriptIndexRebuilding) or one a writer holds (transcriptIndexLocked).
+      // Both answers are automatic-retry signals the store's owned lifecycle is
+      // already pacing; waiting on that attempt costs nothing, and the retry
+      // that verifies the destination is what grants this lease. Only the
+      // rebuilding answer has a surface of its own, so the lock is tracked
+      // separately and never reaches repairingRefs.
+      if (retryOwesAnswer(ref)) {
         await awaitTrackedSettlement(ref, retired, epoch);
         continue;
       }
@@ -10260,6 +10317,7 @@ export function acquireBackgroundThread(ref: string): BackgroundThreadLease {
         // its publication rather than superseding it. Its settlement carries no
         // answer of its own - the state it left behind does.
         await joined;
+        if (released) return;
       } else {
         try {
           await refreshTrackedThread(client, epoch, ref, false, { reportFailure: true, intent: "background" });
@@ -10267,6 +10325,7 @@ export function acquireBackgroundThread(ref: string): BackgroundThreadLease {
           // Recovery is the owned read lifecycle's job: its paced retry, the
           // replacement connection's re-read, or the hub's terminal answer.
         }
+        if (released) return;
         // The refresh joined a read the lifecycle had already issued instead of
         // starting one, so nothing here has answered yet: the next pass waits
         // that read out like any other.
@@ -10274,9 +10333,9 @@ export function acquireBackgroundThread(ref: string): BackgroundThreadLease {
       }
       if (threadsStore.getState().deletedRefs.has(ref)) return;
       if (threadRoutingVerified(ref)) return;
-      // The read this pass waited on answered with the hub's rebuild. The next
-      // pass waits on the retry that answer authorized.
-      if (threadsStore.getState().repairingRefs.has(ref)) continue;
+      // The read this pass waited on answered with the hub's rebuild or its
+      // lock. The next pass waits on the retry that answer authorized.
+      if (retryOwesAnswer(ref)) continue;
       // A read that ends with its socket answered nothing: the hub never saw
       // it, so it is the replacement connection's read that is owed, and that
       // connection re-reads every ref this tab still holds.
@@ -10293,6 +10352,7 @@ export function acquireBackgroundThread(ref: string): BackgroundThreadLease {
     ready,
     release(): Promise<undefined | TranscriptRetirementOutcome> {
       if (releasePromise) return releasePromise;
+      released = true;
       settleRetired?.();
       const remaining = releaseBackground(ref);
       syncTranscriptResidencyOwners(ref);

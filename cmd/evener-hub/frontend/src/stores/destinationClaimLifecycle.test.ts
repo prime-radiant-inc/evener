@@ -28,6 +28,7 @@ import { createEntryCacheFixture } from "./testing/entryCacheFixture";
 import { pumpIndexedDBUntil } from "./testing/indexedDBPump";
 import { backgroundHolds, foregroundHolds, holdHistory, releaseHistory } from "./threadOwners";
 import {
+  acquireBackgroundThread,
   installHydrationRetrySchedulerForTests,
   markCacheSessionsDeleted,
   resetThreadsStoreForTests,
@@ -72,6 +73,14 @@ function historyFailedRejection(): WireError {
 function rebuildingRejection(): WireError {
   return new WireError("thread history is being rebuilt in the background", -32000, {
     evenerErrorInfo: "transcriptIndexRebuilding",
+  });
+}
+
+// The hub's other automatic-retry answer: a writer or a foreign rebuild holds
+// the index, and no repair is in flight for it.
+function lockedRejection(): WireError {
+  return new WireError("thread history is locked by a writer", -32000, {
+    evenerErrorInfo: "transcriptIndexLocked",
   });
 }
 
@@ -808,6 +817,130 @@ test("a deletion during a rebuilding wait releases the claim's lease", async () 
   await pump();
   expect(reads, "no read follows the fence").toBe(1);
   expect(threadsStore.getState().threads.has(ref)).toBe(false);
+  restore();
+}, 20_000);
+
+// A background lease that gives up while a pane keeps the same rebuilding ref
+// must stop its own acquisition, not spin through microtasks. `retired`
+// resolves the instant the lease is released, so an acquisition that kept
+// racing that resolved promise would finish every pass without ever yielding a
+// task: the pane's paced retry could not run and neither could the person's
+// next input. The released lease exits at its next check, and the retry the
+// pane still owns is what hydrates it.
+test("a released background lease stops its acquisition while the pane's rebuild retry still hydrates it", async () => {
+  const ref = "local:released-lease-rebuilding";
+  const fake = connectMutationClient();
+  let reads = 0;
+  fake.on("thread/read", () => {
+    reads += 1;
+    if (reads === 1) throw rebuildingRejection();
+    return readResponse(ref, { name: "Recovered" });
+  });
+  const { retry, restore } = captureRetryScheduler();
+  // The pane opens first and owns the ref; the claim joins its read, so both
+  // holders share the rebuild the hub answers and the one retry it arms.
+  const pane = threadsStore.getState().ensureThread(ref);
+  await flushUntil(() => reads === 1);
+  const lease = acquireBackgroundThread(ref);
+  await flushUntil(() => retry.fire !== undefined);
+  expect(threadsStore.getState().repairingRefs.has(ref), "the store reports the rebuild it is recovering from").toBe(
+    true,
+  );
+
+  void lease.release();
+  // The lease's `ready` settles on the release, and the loop behind it must be
+  // gone: a lease that kept looping would leave `ready` resolved while the
+  // microtask chain it abandoned still ran. A task that never gets to run is
+  // what proves the chain ended, so this waits a task, not more microtasks.
+  expect(await lease.ready, "the released lease's wait ends").toBeUndefined();
+  await nextMacrotask();
+
+  retry.fire?.();
+  await pane;
+
+  expect(reads, "the pane's retry is the only read after the rebuild").toBe(2);
+  expect(threadsStore.getState().threads.get(ref)?.name, "the pane's retry hydrated its view").toBe("Recovered");
+  expect(backgroundHolds(ref), "the released lease left no hold behind").toBe(0);
+  restore();
+}, 20_000);
+
+// The hub's transcriptIndexLocked answer is the other automatic retry
+// (docs/appwire-protocol.md, "Error model"): a writer holds the index and no
+// repair is in flight, so the store's tracked retry is what converges the
+// destination. A claim that started that read must keep waiting on the retry
+// it armed rather than refusing a resend the hub explicitly authorized.
+test("a locked index on a claim's own read keeps the claim waiting and grants the lease when the lock clears", async () => {
+  const ref = "local:locked-destination";
+  const fake = connectMutationClient();
+  let reads = 0;
+  fake.on("thread/read", () => {
+    reads += 1;
+    if (reads === 1) throw lockedRejection();
+    return readResponse(ref);
+  });
+  const { retry, restore } = captureRetryScheduler();
+  const claim = acquireUnreadThreadClaim(ref);
+  await flushUntil(() => retry.fire !== undefined);
+  expect(reads, "the claim's own read is the one the hub answered with its lock").toBe(1);
+  expect(await settleOutcome(claim), "the claim waits on the paced retry").toBe("pending");
+  expect(
+    threadsStore.getState().repairingRefs.has(ref),
+    "a lock is not a rebuild: the loading surface keeps its own meaning",
+  ).toBe(false);
+
+  retry.fire?.();
+  const lease = await claim;
+
+  expect(reads, "the retry's read is the claim's verification, not a duplicate").toBe(2);
+  expect(threadsStore.getState().threads.has(ref), "the verified destination is resident for the resend").toBe(true);
+  expect(backgroundHolds(ref), "a granted claim keeps exactly its own lease").toBe(1);
+  lease.release();
+  await vi.waitFor(() => expect(threadsStore.getState().threads.has(ref)).toBe(false));
+  restore();
+}, 20_000);
+
+// The same lock, on a read the claim joined instead of starting: the pane's
+// open is the ref's one read on this connection, and the retry it arms answers
+// for both owners. Joining must not turn the hub's retry authorization into a
+// refusal for the resend behind it.
+test("a locked index on a joined read keeps the claim waiting and grants the lease when the lock clears", async () => {
+  const ref = "local:locked-joined-read";
+  const fake = connectMutationClient();
+  const joined = deferred<void>();
+  let reads = 0;
+  fake.on("thread/read", async () => {
+    reads += 1;
+    if (reads > 1) return readResponse(ref, { name: "Unlocked" });
+    await joined.promise;
+    throw lockedRejection();
+  });
+  const { retry, restore } = captureRetryScheduler();
+  const pane = threadsStore.getState().ensureThread(ref);
+  await flushUntil(() => reads === 1);
+  // The claim arrives while the pane's read is still on the wire, so it joins
+  // that read rather than issuing its own.
+  const claim = acquireUnreadThreadClaim(ref);
+  await pump();
+  expect(reads, "the claim joined the pane's outstanding read").toBe(1);
+  const claimOutcome = settleOutcome(claim);
+
+  joined.resolve();
+  await flushUntil(() => retry.fire !== undefined);
+  expect(await claimOutcome, "the claim waits out the lock's retry instead of refusing").toBe("pending");
+  expect(
+    threadsStore.getState().repairingRefs.has(ref),
+    "a lock is not a rebuild: the loading surface keeps its own meaning",
+  ).toBe(false);
+
+  retry.fire?.();
+  const lease = await claim;
+  await pane;
+
+  expect(reads, "the retry's read is both owners' verification, not a duplicate").toBe(2);
+  expect(threadsStore.getState().threads.get(ref)?.name, "the retry hydrated the pane that joined").toBe("Unlocked");
+  expect(backgroundHolds(ref), "a granted claim keeps exactly its own lease").toBe(1);
+  lease.release();
+  threadsStore.getState().releaseThread(ref);
   restore();
 }, 20_000);
 
