@@ -1,25 +1,14 @@
-// Pure formatting helpers for the dense activity tree rows. Kept React-free so
-// each is trivially unit-testable (same contract as protocol/displayFormat).
+// Pure formatting helpers for the activity surfaces: the Overview sidebar's
+// rows, the session chrome's Overview label, and the transcript's entity
+// views. Kept React-free so each is trivially unit-testable (same contract as
+// protocol/displayFormat).
 
 import {
-  type ActivityDelegate,
   type ActivityUsage,
   formatTokenCount,
   isActivityFailure,
   type SessionActivitySummary,
 } from "@evener/appwire-client";
-
-export function delegateName(delegate: ActivityDelegate): string {
-  return (
-    delegate.name?.trim() ||
-    (delegate.mandate ??
-      delegate.task ??
-      delegate.description ??
-      delegate.child?.label ??
-      delegate.childSessionId ??
-      delegate.childRef)
-  );
-}
 
 /** "Overview · N active": subagents running at every depth (the subtree
  * count, useSubagentCounts) plus the session's own running jobs, once both
@@ -27,11 +16,10 @@ export function delegateName(delegate: ActivityDelegate): string {
 export function activityActionLabel(
   summary: SessionActivitySummary | null | undefined,
   subagents: SessionActivitySummary["delegates"] | null,
-  label: "Activity" | "Overview" = "Activity",
 ): string {
   return subagents?.known && summary?.jobs.known
-    ? `${label} · ${subagents.active + summary.jobs.active} active`
-    : label;
+    ? `Overview · ${subagents.active + summary.jobs.active} active`
+    : "Overview";
 }
 
 // formatUsagePair renders a delegate row's token cluster ("↑41.2K ↓6.1K"), or null
@@ -45,19 +33,9 @@ export function formatUsagePair(usage: ActivityUsage | undefined): string | null
   return parts.length ? parts.join(" ") : null;
 }
 
-// quietAnchorMillis is the instant a live row's quiet clock measures from:
-// the last observed output when known, else the job's start. 0 when neither
-// parses, which renders the dishonest-huge-age case as a visible bug rather
-// than a hidden one.
-export function quietAnchorMillis(job: { lastOutputAt?: string; startedAt: string }): number {
-  const anchor = job.lastOutputAt ?? job.startedAt;
-  const parsed = Date.parse(anchor);
-  return Number.isNaN(parsed) ? 0 : parsed;
-}
-
 // isFailedStatus is the danger set for the status dot: it reads a displayed
-// status string, not an entry's verdict. Terminal failure - fold-row counts and
-// terminal meta text - comes from the outcome instead, through jobIsFailed.
+// status string, not an entry's verdict. Terminal failure - a settled row's
+// glyph - comes from the outcome instead, through jobIsFailed.
 export function isFailedStatus(status: string): boolean {
   return isActivityFailure(undefined, status);
 }
@@ -84,5 +62,5 @@ export function jobStatusDotState(
 }
 
 // The shared package owns the job-status display words; re-export keeps the
-// web importers (rail, activity tree, job tools) on their existing path.
+// web importers (entity refs, job tools) on their existing path.
 export { jobStatusDisplay } from "@evener/appwire-client";

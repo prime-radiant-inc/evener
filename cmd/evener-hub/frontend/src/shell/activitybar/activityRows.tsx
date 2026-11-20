@@ -4,7 +4,7 @@
 // run is open — while job and watch rows keep glyph tones (alive/attention/
 // danger; a settled row stays in the quiet glyph ink); the wording comes from
 // the app's own formatters (jobStatusDisplay, watchMeta, watchName) so the
-// sidebar can never drift from the rail or the activity panel.
+// sidebar can never drift from the rail.
 
 import type { ActivityWatchRow, JobActivityJob, SessionDelegate } from "@evener/appwire-client";
 import {
@@ -19,7 +19,7 @@ import {
   watchName,
 } from "@evener/appwire-client";
 import type { ReactNode } from "react";
-import { ActivityWatchDetail } from "../../panes/session/chrome/ActivityRowDetail";
+import { ActivityWatchDetail } from "../../panes/session/chrome/ActivityWatchDetail";
 import { jobStatusDotState } from "../../panes/session/chrome/activityFormat";
 import { ActivityTime } from "../../panes/session/chrome/activityTime";
 import { Disclosure, ListRow, SubagentDot, ToolIcon, type ToolIconTone } from "../../widgets";

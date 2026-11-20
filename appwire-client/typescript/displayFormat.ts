@@ -192,8 +192,8 @@ export function formatElapsed(ms: number): string {
 }
 
 // Split a markdown mandate into the first paragraph (visible) and the rest
-// (behind a disclosure). Shared by ActivityRowDetail and DelegateStatusBody
-// so the paragraph-split rule lives in one place.
+// (behind a disclosure). DelegateStatusBody's mandate line reads it, so the
+// paragraph-split rule lives in one place.
 export function splitMandate(task: string | undefined): { first: string; rest: string } | undefined {
   if (!task || task.trim() === "") return undefined;
   const paragraphs = task.split(/\n\s*\n/);

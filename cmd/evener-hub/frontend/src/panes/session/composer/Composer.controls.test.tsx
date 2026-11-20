@@ -12,7 +12,6 @@ import { ClientProvider } from "../../../shell/clientContext";
 import { paletteStore } from "../../../shell/palette/paletteController";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
-import { activityPanelStore, resetActivityPanelStoreForTests } from "../../../stores/activityPanel";
 import { useCommandCatalog } from "../../../stores/commandCatalog";
 import { resetConnectionStoreForTests } from "../../../stores/connection";
 import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
@@ -71,7 +70,6 @@ beforeEach(() => {
   resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
-  resetActivityPanelStoreForTests();
   resetPendingTurnsStoreForTests();
   // askDockStore reconciles reactively off threadsStore (registered once at
   // module load - askDockStore.ts's own header comment), so its byRef map
@@ -101,7 +99,6 @@ afterEach(() => {
   vi.useRealTimers();
   resetActivitySidebarStoreForTests();
   resetWorkspaceStoreForTests();
-  resetActivityPanelStoreForTests();
   // A narrow-layout test leaves its stub installed; jsdom has no real
   // ResizeObserver, so the honest baseline for the next test is none at all.
   delete (globalThis as { ResizeObserver?: typeof ResizeObserver }).ResizeObserver;
@@ -331,7 +328,6 @@ test("the real live Composer mount discovers initial activity without a test-sup
     return answerActivityRead(params);
   });
   await threadsStore.getState().ensureThread(ref);
-  expect(activityPanelStore.getState().entries.has(ref)).toBe(false);
   expect(sessionActivitySnapshot(fake, ref, "session")?.summary).toBeUndefined();
 
   render(

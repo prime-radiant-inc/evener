@@ -25,9 +25,7 @@ func newOODATestManager(client *llm.Client, contextWindow int, checkpoint, summa
 	return cm
 }
 
-func TestOODAStrategy_SatisfiesInterface(t *testing.T) {
-	var _ Strategy = (*OODAStrategy)(nil)
-}
+var _ Strategy = (*OODAStrategy)(nil)
 
 func TestOODAStrategy_Name(t *testing.T) {
 	s := &OODAStrategy{}

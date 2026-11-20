@@ -41,9 +41,7 @@ func (h *fakeStrategyHost) StateDir() string           { return h.stateDir }
 func (h *fakeStrategyHost) ID() string                 { return h.id }
 func (h *fakeStrategyHost) Profile() *provider.Profile { return h.profile }
 
-func TestStrategyHost_FakeSatisfiesInterface(t *testing.T) {
-	var _ Host = (*fakeStrategyHost)(nil)
-}
+var _ Host = (*fakeStrategyHost)(nil)
 
 // TestSessionLogStrategy_OperatesWithFakeHost proves a strategy can be
 // constructed from and drive its work through a fake strategyHost: the log

@@ -26,7 +26,7 @@ import {
 } from "../../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { EntityViewsProvider } from "../../../transcriptDisplay/entityViews";
-import { ActivityWatchDetail } from "./ActivityRowDetail";
+import { ActivityWatchDetail } from "./ActivityWatchDetail";
 
 afterEach(() => {
   cleanup();
@@ -416,6 +416,66 @@ describe("ActivityWatchDetail timeline", () => {
     expect(text).not.toMatch(/dropped/i);
     expect(text).not.toMatch(/\bnext\b/i);
     expect(text).not.toMatch(/countdown/i);
+  });
+});
+
+describe("ActivityWatchDetail watch facts", () => {
+  test("an output watch states its target and match", () => {
+    render(
+      <ActivityWatchDetail
+        row={row({ target: "job_ab12cd", outputMatch: "/DONE/", cadence: [{ kind: "output" }], deliveries: 0 })}
+        now={NOW}
+      />,
+    );
+    const facts = screen.getByTestId("watch-facts").textContent ?? "";
+    expect(facts).toContain("job_ab12cd");
+    expect(facts).toContain("/DONE/");
+  });
+
+  test("an event watch states the joined event names", () => {
+    render(
+      <ActivityWatchDetail
+        row={row({ events: ["job.completed", "job.failed"], cadence: [{ kind: "events" }], deliveries: 7 })}
+        now={NOW}
+      />,
+    );
+    const facts = screen.getByTestId("watch-facts").textContent ?? "";
+    expect(facts).toContain("job.completed");
+    expect(facts).toContain("job.failed");
+    expect(facts).toContain("7");
+  });
+
+  test("a wildcard event watch adds condition evidence to an empty event list", () => {
+    const { rerender } = render(
+      <ActivityWatchDetail
+        row={row({ wildcardEvents: false, events: [], cadence: [{ kind: "events" }], deliveries: 0 })}
+        now={NOW}
+      />,
+    );
+    const without = screen.getByTestId("watch-facts").textContent;
+    rerender(
+      <ActivityWatchDetail
+        row={row({ wildcardEvents: true, events: [], cadence: [{ kind: "events" }], deliveries: 0 })}
+        now={NOW}
+      />,
+    );
+    const withWildcard = screen.getByTestId("watch-facts").textContent ?? "";
+    expect(withWildcard).not.toBe(without);
+    expect(withWildcard).not.toContain("job.");
+  });
+
+  test("a scheduled watch's newest delivery instant renders as local HH:MM", () => {
+    render(
+      <ActivityWatchDetail
+        row={row({
+          cadence: [{ kind: "every", seconds: 600 }],
+          deliveries: 3,
+          deliveryTimes: ["2026-08-05T14:50:00Z", "2026-08-05T14:58:00Z"],
+        })}
+        now={NOW}
+      />,
+    );
+    expect(screen.getByTestId("watch-facts").textContent).toContain(formatClockTime("2026-08-05T14:58:00Z"));
   });
 });
 

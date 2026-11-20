@@ -29,7 +29,7 @@
 // went wrong at the transport level. A thread with no live local daemon
 // behind it (a one-shot CLI session that already exited, or one never
 // resumed) rejects ListTasks the same way its ref lookup fails: "thread not
-// found" (isThreadNotFound, sessionErrors.ts - shared with ActivityPanel).
+// found" (isThreadNotFound, sessionErrors.ts).
 // Whether that folds into an empty list or
 // a distinct terminal state depends on model.tasks: null means the frontend
 // truly has no way to distinguish "never had tasks" from "can't currently

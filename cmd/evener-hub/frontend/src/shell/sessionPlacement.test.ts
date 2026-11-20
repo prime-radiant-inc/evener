@@ -72,13 +72,13 @@ describe("openTopLevelSession", () => {
   // REMOUNTS the pane rather than re-rendering it with new params.
   //
   // The session chrome depends on that remount and nothing else: Session
-  // passes its ref straight down to SessionChrome, which passes it to
-  // ActivityPanel/TasksPanel, none of them keyed - and those panels hold the
-  // fetched list, the trigger's badge count, and the "which bump did I last
-  // fetch for" marker in component-local state that only a fresh mount
-  // clears. A re-pointed pane would leave the previous session's panel state on
-  // screen, and its badge count there until the next open (katas pcx5/tmyw:
-  // premise checked here, since it is this rule that makes it unreachable).
+  // passes its ref straight down to SessionChrome and to the composer's
+  // TasksPanel, neither keyed - and TasksPanel holds the fetched list, the
+  // trigger's badge count, and the "which bump did I last fetch for" marker in
+  // component-local state that only a fresh mount clears. A re-pointed pane
+  // would leave the previous session's panel state on screen, and its badge
+  // count there until the next open (katas pcx5/tmyw: premise checked here,
+  // since it is this rule that makes it unreachable).
   //
   // replacePrimary CAN update a main pane's params in place - that is how a
   // singleton settings section changes without losing the pane. A session

@@ -1,7 +1,7 @@
 import { sessionActivitySnapshot } from "../../../stores/sessionActivity";
 // The composer holds its draft in state, so every keystroke re-renders
-// Composer. The inline SessionChrome it mounts (status row, menu, and the
-// hidden Details/Activity panels) depends on none of that draft, so a
+// Composer. The inline SessionChrome it mounts (status row and menu) depends
+// on none of that draft, so a
 // keystroke must not re-render it. StatusRow renders once per SessionChrome
 // render, so counting StatusRow renders observes the chrome's own renders
 // while the real StatusRow still draws.
@@ -111,7 +111,7 @@ test("typing in the composer does not re-render its inline session chrome", asyn
   );
   const textbox = screen.getByRole("textbox", { name: /^message$/i });
   expect(screen.getByTestId("session-chrome-inline-status")).toBeTruthy();
-  // The chrome's hidden ActivityPanel fetches the summary its menu label
+  // The chrome's own useSessionActivity fetches the summary its menu label
   // reads; that settle re-renders the chrome on its own, so the baseline is
   // taken once it lands.
   await waitFor(() => expect(sessionActivitySnapshot(fake, REF, "session")?.summaryState.loading).toBe(false));

@@ -95,9 +95,6 @@ import { initPrefs } from "../stores/prefs";
 initPrefs();
 initTranscriptDisplay();
 
-// Wires the activity summary store to the activity panel store: the panel
-// requires it before it fetches a continuation page.
-
 // Workspace-only notification election and attention chrome start at module
 // evaluation.
 initNotifications();

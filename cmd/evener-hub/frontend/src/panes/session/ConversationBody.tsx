@@ -683,9 +683,7 @@ function LiveConversationBody({
           (ref.startsWith("local:") || isMobile) &&
           !restartPending &&
           !controlsFor(model).send &&
-          seat.sessionMenu && (
-            <SessionChrome ref={ref} paneId={seat.viewFallbackId} placement="menu" discoverActivity />
-          )}
+          seat.sessionMenu && <SessionChrome ref={ref} paneId={seat.viewFallbackId} placement="menu" />}
         {/* The pending chips no longer render here: an in-flight send is a
             transcript row in the live-edge trailing region (the
             one-rendering rule), so the composer's measure row carries no

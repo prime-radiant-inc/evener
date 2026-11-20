@@ -20,9 +20,7 @@ import (
 var errStreamWrite = errors.New("stream write failed")
 
 // Compile-time assertion that the local env implements the optional interface.
-func TestLocalEnvImplementsStreamingExecutor(t *testing.T) {
-	var _ StreamingExecutor = (*LocalExecutionEnvironment)(nil)
-}
+var _ StreamingExecutor = (*LocalExecutionEnvironment)(nil)
 
 func TestStreamCommandCapturesOutputAndExit(t *testing.T) {
 	env := &LocalExecutionEnvironment{RootDir: t.TempDir()}
