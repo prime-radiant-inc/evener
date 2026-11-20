@@ -1,16 +1,8 @@
-// Model-control read bookkeeping is module state keyed by ref: the per-ref
-// sequence counter a mutation fence reads, and the one terminal promise a
-// pick's authority wait holds. The view lifecycle's final release drops the
-// ref's model; the bookkeeping both maps hold for that departed lifetime must
-// leave with it — otherwise browsing distinct conversations grows both maps
-// for the tab's lifetime, and a settled failed read keeps a closed thread's
-// slot (with its client and terminal promise) alive.
-//
-// The maps are module-private and only consulted through sequence-gated
-// equality checks, so no store behavior can expose a retained entry: the
-// store's `*ForTests` observers are the sanctioned seam for module-state
-// lifecycles (pendingThreadHydrationUpdatesForTests observes the pending map
-// the same way), and modelControlReadStateForTests is that observer here.
+// The final release of a conversation's last view must retire the module
+// maps model-control reads keep (observed through modelControlReadStateForTests,
+// the store's sanctioned seam for module-state lifecycles): browsing distinct
+// conversations must not grow them for the tab's lifetime, and a settled
+// failed read must not keep a closed thread's slot alive.
 import "fake-indexeddb/auto";
 import { type ModelControlSnapshot, type ThreadReadResponse, WireError } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";

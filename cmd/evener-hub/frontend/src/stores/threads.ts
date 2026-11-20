@@ -2450,9 +2450,6 @@ function dropUnpinnedModel(ref: string, flush = true): void {
   // it (see putThreadModel/removeThreadModel — the membership paths).
   const dropped = threadsStore.getState().threads.get(ref);
   if (dropped) removeThreadModelIndex(threadsIndex, dropped);
-  // A ref whose model is leaving owned nothing when it arrived here: the
-  // model-control bookkeeping its reads kept goes with it (see
-  // retireModelControlReadBookkeeping).
   retireModelControlReadBookkeeping(ref);
   // The clear's suppression and its lease end with this same final release
   // (removeThreadModel's own rule): premature suppression decays here too,
@@ -10525,7 +10522,7 @@ export function modelControlReadStateForTests(): {
   bindingRefs: readonly string[];
 } {
   return {
-    sequences: modelControlReadSequences,
+    sequences: new Map(modelControlReadSequences),
     bindingRefs: [...modelControlReadBindings.keys()],
   };
 }

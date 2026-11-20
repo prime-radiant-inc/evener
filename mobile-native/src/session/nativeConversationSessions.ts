@@ -352,7 +352,13 @@ class SessionEntry implements NativeConversationSession {
 
 	#applyFollowing(): void {
 		if (this.#retired) return;
-		this.store.getState().setFollowingLiveEnd([...this.#attachments.values()].every((state) => state.following));
+		this.store.getState().setFollowingLiveEnd(this.#combinedFollowing());
+	}
+
+	/** Whether every attached reader follows the live end; true when none is
+	 * attached, the state a fresh entry starts in. */
+	#combinedFollowing(): boolean {
+		return [...this.#attachments.values()].every((state) => state.following);
 	}
 
 	#applyDisplayConfig(): void {
@@ -506,7 +512,7 @@ class SessionEntry implements NativeConversationSession {
 	 * state rather than flipping the store's following off while it is held;
 	 * release() restores whatever the remaining readers say. */
 	#holdForOwnWork(): NativeConversationAttachment {
-		const inherited = [...this.#attachments.values()].every((state) => state.following);
+		const inherited = this.#combinedFollowing();
 		const hold = this.attach();
 		hold.setFollowingLiveEnd(inherited);
 		return hold;
