@@ -166,7 +166,6 @@ import {
   backgroundHeldRefs,
   backgroundHolds,
   backgroundLeaseSequence,
-  bodyOwners,
   bumpOwnerGeneration,
   canonicalThreadOwnerActive,
   clearFinalReleaseOwner,
@@ -192,7 +191,6 @@ import {
   releaseHistory,
   resetThreadOwnersForTests,
   setFinalReleaseOwner,
-  threadBodyOwned,
   unpinMutation,
 } from "./threadOwners";
 import { appendFrameTime, isStorageFailure, isStorageTimeout, mapConflict, StopCanceledError } from "./threadsErrors";
@@ -599,8 +597,24 @@ export interface ThreadsStoreState {
   resolveEscalation(ref: string, escalationId: string, approve: boolean): Promise<void>;
 }
 
+/** What the lease's own bounded attempt learned, which is not the same question
+ * as what its destination's routing state is.
+ *
+ * `answered` means the attempt settled on the connection that is still current
+ * and the ref has no verified model to show for it: the hub's answer, whatever
+ * it was, is this connection's answer, and a second read would only repeat it.
+ * `connection-lost` means the read died with its socket: the hub never answered,
+ * so the replacement connection's read is still owed. `skipped` means the lease
+ * found a resident model it did not spend a read on - a cached shell, whose
+ * capabilities are the shell's, not the source's. */
+export type BackgroundLeaseAttempt = "published" | "answered" | "connection-lost" | "skipped";
+
 export interface BackgroundThreadLease {
   readonly ready: Promise<void>;
+  /** What the lease's own attempt learned (see BackgroundLeaseAttempt). Read it
+   * after `ready` settles; a lease released before its attempt ran reports
+   * `skipped`. */
+  readonly attempt: BackgroundLeaseAttempt;
   release(): Promise<undefined | TranscriptRetirementOutcome>;
 }
 
@@ -690,7 +704,7 @@ async function endHistoryHold(ref: string): Promise<void> {
 function hydrationIntentFor(ref: string): HydrationIntent {
   // Body owners, not keep-alive holders: a routing hold never owns the bodies a
   // foreground refresh restores.
-  return bodyOwners(ref) > 0 || isMutationPinned(ref) ? "foreground" : "background";
+  return foregroundHolds(ref) > 0 || isMutationPinned(ref) ? "foreground" : "background";
 }
 // A generation changes at every local human-note request and every accepted
 // notes authority (a matching evener/notes/updated or full hydration). Same
@@ -815,7 +829,7 @@ async function runEntryHistoryRequest<T>(
     await residency
       .scheduleHydration(
         fixture.ref,
-        threadBodyOwned(fixture.ref) ? "foreground" : "background",
+        heldCountsAtStore(fixture.ref) ? "foreground" : "background",
         async (scheduledSignal) => {
           activated = true;
           if (!current() || scheduledSignal.aborted) throw new Error("entry history request was retired");
@@ -1162,7 +1176,7 @@ async function acceptEntryTranscriptHydration(
   // the cleared marker except the accept itself.
   fixture.cachedUnverified = false;
   fixture.unsubscribeRepository ??= repository.subscribe(() => publishEntryTranscriptModel(ref));
-  if (productionRoute && threadBodyOwned(ref) && !fixture.reader) fixture.reader = repository.attachReader();
+  if (productionRoute && heldCountsAtStore(ref) && !fixture.reader) fixture.reader = repository.attachReader();
   if (productionRoute && authorities && lifetime?.freshForegroundLifetime) settleCacheLifetimeAfterHydration(ref);
   // Wait starts the POST-CUT tail already installed live into this
   // repository while the hydration was pending (their buffered updates carry
@@ -5963,7 +5977,7 @@ function ensureCacheLease(ref: string): void {
 function syncCacheLifetimeForeground(ref: string): void {
   // Body-owned, not keep-alive: a routing hold must not look like a pre-Clear
   // holder whose release opens the next acquisition's fresh lifetime.
-  const nowHeld = threadBodyOwned(ref);
+  const nowHeld = heldCountsAtStore(ref);
   const wasHeld = cacheLifetimeHeld.get(ref) ?? false;
   cacheLifetimeHeld.set(ref, nowHeld);
   if (wasHeld === nowHeld) return;
@@ -6003,7 +6017,7 @@ function acquireCacheLifetimeForeground(ref: string): void {
 function settleCacheLifetimeAfterHydration(ref: string): void {
   threadsStore.setState((state) => {
     const lifetime = state.cacheLifetimes.get(ref);
-    if (lifetime?.clearSuppressed && lifetime.freshForegroundLifetime && threadBodyOwned(ref)) {
+    if (lifetime?.clearSuppressed && lifetime.freshForegroundLifetime && heldCountsAtStore(ref)) {
       const cacheLifetimes = new Map(state.cacheLifetimes);
       cacheLifetimes.set(ref, { leaseEpoch: observedCacheEpoch() ?? 0 });
       return { cacheLifetimes };
@@ -6019,7 +6033,7 @@ function settleCacheLifetimeAfterHydration(ref: string): void {
 // path is untouched (no clear suppression, no fresh lifetime).
 function needsClearLifetimeReconciliation(ref: string): boolean {
   const lifetime = threadsStore.getState().cacheLifetimes.get(ref);
-  return lifetime?.clearSuppressed === true && lifetime.freshForegroundLifetime === true && threadBodyOwned(ref);
+  return lifetime?.clearSuppressed === true && lifetime.freshForegroundLifetime === true && heldCountsAtStore(ref);
 }
 
 // Final release removes every part of the lifetime, but only after the
@@ -8354,11 +8368,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
 
   async ensureThread(ref, opts) {
     let client = requireClient();
-    const count = foregroundHolds(ref);
     // The mounted panes as they stand BEFORE this call's own hold: a history
     // hold and a mutation pin keep the ref alive without being panes, so
     // neither may count as one here.
-    const bodyOwnersBefore = bodyOwners(ref);
+    const count = foregroundHolds(ref);
     if (count === 0) {
       ensureGenerations.set(ref, (ensureGenerations.get(ref) ?? 0) + 1);
       beginCanonicalThreadClaim(ref, true);
@@ -8386,13 +8399,13 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     syncTranscriptResidencyOwners(ref);
     // Retention alone grants no write permission: only an explicit pane open
     // begins the fresh foreground lifetime that lifts a Clear's suppression.
-    if (bodyOwnersBefore === 0) acquireCacheLifetimeForeground(ref);
+    if (count === 0) acquireCacheLifetimeForeground(ref);
     syncThreadSubscription(ref, client);
     // Already hydrated: no re-read. The exception is a clear-suppressed ref
     // whose new explicit foreground lifetime owes an authoritative hydration
     // even while its stale display model is still resident.
     if (threadsStore.getState().threads.has(ref) && !needsClearLifetimeReconciliation(ref)) {
-      if (bodyOwnersBefore > 0) return; // Another mounted pane already owns the live bodies.
+      if (count > 0) return; // Another mounted pane already owns the live bodies.
       if (await openEntryTranscript(ref)) return;
       if (!claimStanding()) return;
       // Missing or unwritten backing rows cannot establish the captured view.
@@ -8524,7 +8537,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
             // that pane's own open found a published display and deferred, so
             // nothing else would establish it. Only the absence of every pane
             // owner ends the work.
-            if (bodyOwners(ref) === 0) return;
+            if (foregroundHolds(ref) === 0) return;
             const opened = await openEntryTranscript(
               ref,
               false,
@@ -8534,7 +8547,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
             // Asked again after the await: the open itself publishes and
             // reattaches the reader, so a departure during it must not arm the
             // recovery that follows.
-            if (bodyOwners(ref) === 0) return;
+            if (foregroundHolds(ref) === 0) return;
             if (!opened) scheduleEntryOpeningRecovery(ref);
             return;
           }
@@ -8654,17 +8667,11 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
 
   releaseThreadAfterHoldDrop(ref, count) {
     syncTranscriptResidencyOwners(ref);
-    if (count > 0) {
-      // Another holder keeps the ref alive, so nothing below is this release's
-      // to do — except the bodies. When this was the last body owner, the pane
-      // that owned the display is gone even though a background lease, a
-      // history hold or a mutation pin still keeps the model and the
-      // subscription. Disposing the reader and pruning keeps the pane's
-      // transcript bodies from outliving the pane that rendered them; the
-      // routing fields stay.
-      if (bodyOwners(ref) === 0) releaseEntryTranscriptReader(ref, true);
-      return;
-    }
+    // Another pane keeps the ref alive, so nothing below is this release's to
+    // do. The reader is not this branch's question either: the sync above
+    // already settled it against every body owner, panes and history holds and
+    // mutation pins alike.
+    if (count > 0) return;
     const retirement = retireEntryTranscriptIfUnowned(ref);
     if (retirement) {
       releaseSubagentRows(ref);
@@ -9676,7 +9683,7 @@ installEntryRouteHost({
 function onCacheEpochObserved(observed: number): void {
   if (!observeCacheEpoch(observed)) return;
   threadsStore.setState((s) => ({
-    cacheLifetimes: suppressCacheLifetimesBefore(s.cacheLifetimes, observed, threadBodyOwned),
+    cacheLifetimes: suppressCacheLifetimesBefore(s.cacheLifetimes, observed, heldCountsAtStore),
   }));
 }
 
@@ -9881,7 +9888,7 @@ export async function clearCachedSessions(): Promise<{ committed: boolean }> {
   // same set the marker refused during the flight, re-derived at commit so a
   // lease captured mid-flight is covered too.
   threadsStore.setState((s) => {
-    const cacheLifetimes = suppressCacheLifetimesBefore(s.cacheLifetimes, result.epoch, threadBodyOwned);
+    const cacheLifetimes = suppressCacheLifetimesBefore(s.cacheLifetimes, result.epoch, heldCountsAtStore);
     return s.clearInFlight === armed ? { cacheLifetimes, clearInFlight: undefined } : { cacheLifetimes };
   });
   postCacheChannelMessage({ kind: "clear", epoch: result.epoch });
@@ -9929,7 +9936,7 @@ function syncTranscriptResidencyOwners(ref: string): void {
   // the already-published display. Pane release drops its display separately.
   // Body ownership, not the keep-alive count: a routing lease keeps the model
   // and subscription for dispatch and never reads the bodies.
-  if (threadBodyOwned(ref)) route.reader ??= route.repository.attachReader();
+  if (heldCountsAtStore(ref)) route.reader ??= route.repository.attachReader();
   else if (route.reader) releaseEntryTranscriptReader(ref);
 }
 
@@ -9979,6 +9986,102 @@ export function pendingThreadHydrationBaseModelsForTests(): readonly ThreadModel
   return [...pendingThreadHydrations.values()].flatMap((pending) => (pending.baseModel ? [pending.baseModel] : []));
 }
 
+/** A destination's routing state is verified when its model is resident and its
+ * source read has landed. A cached shell a pane's open published keeps the
+ * route's `cachedUnverified` marker, and its capabilities are the shell's, not
+ * the source's - so the model's presence alone is not the answer. */
+export function threadRoutingVerified(ref: string): boolean {
+  return threadsStore.getState().threads.has(ref) && existingEntryRoute(ref)?.cachedUnverified !== true;
+}
+
+/** What a destination claim learned about its destination. */
+export type ThreadRoutingVerification = "verified" | "unverified" | "deleted";
+
+// A claim follows at most this many connection generations. A hub that keeps
+// dropping the socket while a resend waits should refuse the send and let the
+// person press again, rather than park the composer on a read that never lands.
+const CLAIM_VERIFICATION_GENERATIONS = 3;
+
+/** A tracked read already in flight for the ref on the connection current now,
+ * or undefined when this connection has none. A live read from an earlier
+ * connection is not one: its publication fence is closed, so waiting on it
+ * would answer for a socket this tab has left. */
+function joinableTrackedRead(ref: string, client: AppwireClientLike, epoch: number): Promise<unknown> | undefined {
+  const pending = pendingThreadHydrations.get(ref);
+  if (pending && pending.client === client && pending.epoch === epoch) {
+    const completion = trackedHydrationCompletions.get(ref);
+    if (completion) return completion;
+  }
+  if (inflightHydrates.client(ref) === client && inflightHydrates.epoch(ref) === epoch) {
+    return inflightHydrates.get(ref)?.catch(() => null);
+  }
+  return undefined;
+}
+
+/** The connection generation this verification attempt runs on has ended if
+ * either the ready epoch moved or the client that carried the read is no
+ * longer ready. A read that ends with its socket answered nothing: the hub
+ * never saw it, so the destination is not unverified - it is unanswered. */
+function connectionEndedSince(client: AppwireClientLike, epoch: number): boolean {
+  return getReadyEpoch() !== epoch || getWiredClient() !== client || client.state !== "ready";
+}
+
+/** Verifies a destination's routing state for a resend's claim, joining a
+ * tracked read already in flight for the ref on the current connection and
+ * issuing at most one read per connection generation.
+ *
+ * A claim's destination is often already being read: a pane opening it, or the
+ * reconnect fan-out that re-reads every held ref. Issuing a second tracked read
+ * for that ref would supersede the first read's publication claim - and a
+ * pane's own certification of it - so this joins what exists and reads only
+ * when the current connection has nothing for the ref.
+ *
+ * A WebSocket drop rejects the pending read with no answer from the hub. The
+ * replacement connection reads every ref this tab still holds, and this waits
+ * for that read (joining it when it is already in flight) instead of reporting
+ * a transport failure as an unverified destination. Terminal answers are
+ * returned, never retried: a durable deletion fence and the hub's typed history
+ * refusal both end the ref's read lifecycle. */
+export async function verifyThreadRouting(ref: string): Promise<ThreadRoutingVerification> {
+  const deadline = Date.now() + REQUIRE_READY_TIMEOUT_MS;
+  for (let generation = 0; generation < CLAIM_VERIFICATION_GENERATIONS; generation += 1) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return "unverified";
+    let client: AppwireClientLike;
+    try {
+      client = await requireReadyClient(remaining);
+    } catch {
+      // The connection never came back inside the store's own deadline. The
+      // claim refuses rather than parking the resend behind a hub that is gone.
+      return "unverified";
+    }
+    const epoch = getReadyEpoch();
+    if (threadsStore.getState().deletedRefs.has(ref)) return "deleted";
+    if (threadRoutingVerified(ref)) return "verified";
+    const joined = joinableTrackedRead(ref, client, epoch);
+    try {
+      if (joined) await joined;
+      else await refreshTrackedThread(client, epoch, ref, false, { reportFailure: true, intent: "background" });
+    } catch (error) {
+      if (threadsStore.getState().deletedRefs.has(ref)) return "deleted";
+      // The hub's typed refusal is terminal for the ref's reads, and it is the
+      // same answer a second read would receive.
+      if (isTranscriptHistoryFailedError(error)) return "unverified";
+      // Any other rejection on a connection that is still current answered
+      // nothing this claim can use, and reading again on the same connection
+      // would only repeat it. A rejection after the connection ended is the
+      // socket's, so the replacement's read is still owed.
+      if (!connectionEndedSince(client, epoch)) return "unverified";
+    }
+    if (threadsStore.getState().deletedRefs.has(ref)) return "deleted";
+    if (threadRoutingVerified(ref)) return "verified";
+    // The read landed but the route still serves an unverified shell: that is
+    // the destination's answer on this connection, not a transport failure.
+    if (!connectionEndedSince(client, epoch)) return "unverified";
+  }
+  return "unverified";
+}
+
 export function acquireBackgroundThread(ref: string): BackgroundThreadLease {
   beginCanonicalThreadClaim(ref);
   holdBackground(ref);
@@ -9989,31 +10092,55 @@ export function acquireBackgroundThread(ref: string): BackgroundThreadLease {
 
   let settleRetired: (() => void) | undefined;
   let stopWatchingReadyGeneration: (() => void) | undefined;
+  let attempt: BackgroundLeaseAttempt = "skipped";
   const retired = new Promise<void>((resolve) => {
     settleRetired = resolve;
   });
+  // What this attempt's own read achieved, asked of the same state the claim
+  // reads: a published model is `published` and an unverified ref on a live
+  // connection is that connection's answer, whatever the read's promise said.
+  const settledAttempt = (attemptClient: AppwireClientLike, attemptEpoch: number): BackgroundLeaseAttempt => {
+    if (threadRoutingVerified(ref)) return "published";
+    return connectionEndedSince(attemptClient, attemptEpoch) ? "connection-lost" : "answered";
+  };
   const acquisition = (async () => {
     if (threadsStore.getState().deletedRefs.has(ref) || threadsStore.getState().threads.has(ref)) return;
+    let client: AppwireClientLike | undefined;
+    let epoch = 0;
     try {
-      const client = await requireReadyClient();
-      const epoch = getReadyEpoch();
+      client = await requireReadyClient();
+      epoch = getReadyEpoch();
       if (client !== getWiredClient()) return;
       stopWatchingReadyGeneration = watchReadyGenerationRetirement(epoch, () => settleRetired?.());
       if (ownerGeneration(ref) !== ownerGenerationAtAcquire || !canonicalThreadOwnerActive(ref)) return;
       const completion = trackedHydrationCompletions.get(ref);
       if (completion) {
         await completion;
+        // This connection's own tracked read answered - publishing, or refusing
+        // - and either way the answer stands for the ref: the claim never
+        // re-reads on top of it.
+        attempt = settledAttempt(client, epoch);
         return;
       }
       const inflight = inflightHydrates.get(ref);
       if (inflight) {
         await inflight.catch(() => null);
+        attempt = settledAttempt(client, epoch);
         return;
       }
       await refreshTrackedThread(client, epoch, ref, false, { intent: "background" });
+      // The store swallows an ordinary read failure here (recovery is the owned
+      // lifecycle's job), so the attempt's verdict is read off the state the
+      // read left behind, not off whether this call threw.
+      attempt = settledAttempt(client, epoch);
     } catch {
       // `ready` settles after its first bounded attempt, not as a currentness
       // certificate. The existing owner-scoped retry scheduler owns recovery.
+      // A read that died with its socket (`client === undefined`, or a client
+      // the connection left behind) leaves the replacement connection's read
+      // still owed, and an answer this connection gave stands.
+      if (client === undefined) attempt = "connection-lost";
+      else attempt = settledAttempt(client, epoch);
     }
   })();
   const ready = Promise.race([acquisition, retired]).finally(() => stopWatchingReadyGeneration?.());
@@ -10021,6 +10148,9 @@ export function acquireBackgroundThread(ref: string): BackgroundThreadLease {
   let releasePromise: Promise<undefined | TranscriptRetirementOutcome> | undefined;
   return {
     ready,
+    get attempt() {
+      return attempt;
+    },
     release(): Promise<undefined | TranscriptRetirementOutcome> {
       if (releasePromise) return releasePromise;
       settleRetired?.();

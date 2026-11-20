@@ -28,7 +28,6 @@ import {
   isFinalReleaseOwner,
   nextBackgroundLeaseSequence,
   setFinalReleaseOwner,
-  threadBodyOwned,
 } from "./threadOwners";
 import type { TranscriptReader, TranscriptRepository, TranscriptRetirementOutcome } from "./transcriptRepository";
 import { getReadyEpoch } from "./wiredClient";
@@ -653,7 +652,7 @@ export async function openEntryTranscript(
     // nor have the local read run behind the closed pane. The open below is the
     // pane's work, and with no pane left there is nothing here to restore - the
     // "nothing to do" answer, as when the route has no repository at all.
-    const bodyOwned = threadBodyOwned(ref);
+    const bodyOwned = heldCountsAtStore(ref);
     if (recovery && fixture.reader) {
       const fenced = fixture.reader;
       fixture.reader = bodyOwned ? fixture.repository.attachReader() : undefined;
@@ -709,7 +708,7 @@ export async function openEntryTranscript(
               // has none, and the next publication would then replace that
               // display with the body-suppressed model.
               if (fixture.reader === reader) {
-                fixture.reader = threadBodyOwned(ref) ? repository.attachReader() : undefined;
+                fixture.reader = heldCountsAtStore(ref) ? repository.attachReader() : undefined;
               }
               reader.dispose();
               resolve(undefined);
@@ -964,7 +963,7 @@ export async function openCachedEntryTranscript(ref: string, generation: number)
       // was opened for. A background lease that outlives that pane keeps the
       // model and the subscription alive, and it must not be what installs a
       // repository and attaches a reader behind the closed pane.
-      threadBodyOwned(ref) &&
+      heldCountsAtStore(ref) &&
       routeHost().ensureGeneration(ref) === generation &&
       (entryRouteRetirements.get(ref) ?? 0) === retirement &&
       !state.deletedRefs.has(ref) &&
@@ -1320,7 +1319,7 @@ export function releaseEntryTranscriptReader(ref: string, releaseDisplay = false
   // last pane closing under that lease must still detach its reader and prune
   // its display. A history hold or a mutation pin does own the bodies, and
   // still keeps both.
-  if (threadBodyOwned(ref)) return;
+  if (heldCountsAtStore(ref)) return;
   const fixture = entryTranscriptRoute(ref);
   if (!fixture || fixture.ref !== ref) return;
   clearEntryTranscriptLocalOpening(ref);

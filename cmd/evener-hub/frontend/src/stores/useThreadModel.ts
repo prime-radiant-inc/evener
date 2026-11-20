@@ -8,9 +8,14 @@ import { useEffect } from "react";
 import type { TranscriptReadView } from "../panes/session/transcript/transcriptReadView";
 import { connectionStore } from "./connection";
 import { hasConversationHandoff, registerConversationClaim } from "./conversationClaimHandoff";
-import { existingEntryRoute } from "./entryTranscriptRoutes";
 import type { ForegroundHold } from "./threadOwners";
-import { acquireBackgroundThread, threadsStore, useThreadsStore } from "./threads";
+import {
+  acquireBackgroundThread,
+  threadRoutingVerified,
+  threadsStore,
+  useThreadsStore,
+  verifyThreadRouting,
+} from "./threads";
 
 // useThreadClaim holds one ensureThread(ref) claim while the caller is
 // mounted, starting it once the connection is ready, and releases it on
@@ -79,17 +84,6 @@ const ThreadClaimRefusal = {
   unverified: "The destination was not verified for routing",
 } as const;
 
-// Routable state is what a resend can address a row with: the destination's
-// identity, status and capabilities, read from a model whose source read has
-// landed. The route's `cachedUnverified` marker is the one real record of
-// whether that read has answered - a shell a cached open published advertises
-// neither Send nor Queue - and a ref with no production route has no shell to
-// wait out. existingEntryRoute, not entryTranscriptRoute: asking must not be
-// what creates a route.
-function residentRoutable(ref: string): boolean {
-  return threadsStore.getState().threads.has(ref) && existingEntryRoute(ref)?.cachedUnverified !== true;
-}
-
 /** The recovery Send's destination, held for the resend's duration. The claim
  * is the store's own background ownership - the same counted lease a
  * background download keeps a model and its subscription under - reused here
@@ -113,24 +107,29 @@ export async function acquireUnreadThreadClaim(ref: string): Promise<ThreadClaim
   };
   const missing = (): boolean => threadsStore.getState().deletedRefs.has(ref);
   try {
-    // The lease's own acquisition joins a read already in flight for the ref
-    // and otherwise issues one bounded attempt, so an unopened destination is
-    // verified there and never read twice.
+    // The lease keeps the destination's model and subscription alive for the
+    // whole verification, including across a reconnect: releasing it on a
+    // socket loss would retire the model the replacement connection's read is
+    // about to publish into, and refuse a resend the hub never answered.
     await lease.ready;
     if (missing()) throw new Error(ThreadClaimRefusal.deleted);
-    // The acquisition's own bounded attempt verified everything it could: an
-    // unopened destination published from that read, and a destination the hub
-    // refused left nothing to hand out. The one case it could not verify is a
-    // resident cached shell - the acquisition returned on it without reading,
-    // and its capabilities are the shell's, not the source's - so that shell is
-    // verified by one bounded tracked read. A ref with no model at all is not
-    // re-read here: its one attempt already ran, and a second read would turn a
-    // terminal answer into a retry loop the claim has no recovery surface for.
-    if (!residentRoutable(ref) && threadsStore.getState().threads.has(ref)) {
-      await threadsStore.getState().refreshThread(ref);
-      if (missing()) throw new Error(ThreadClaimRefusal.deleted);
+    // A verified destination is handed out as it stands: no read is spent on an
+    // answer already known. Anything else - an unopened destination, a cached
+    // shell, a read a socket loss cut short - is verified through the store's
+    // bounded tracked read, which joins a read already in flight on this
+    // connection and issues one only when this connection has none. A
+    // destination the hub confirmed deleted, or one that stays unverified, is
+    // not handed out: the lease is released before rejecting, so a refused
+    // resend leaves no hold behind.
+    if (!threadRoutingVerified(ref)) {
+      // The lease's own attempt already answered for this connection: whatever
+      // the hub said, re-reading it here would turn that answer into a retry
+      // loop the claim has no recovery surface for.
+      if (lease.attempt === "answered") throw new Error(ThreadClaimRefusal.unverified);
+      const verification = await verifyThreadRouting(ref);
+      if (verification === "deleted") throw new Error(ThreadClaimRefusal.deleted);
+      if (verification !== "verified") throw new Error(ThreadClaimRefusal.unverified);
     }
-    if (!residentRoutable(ref)) throw new Error(ThreadClaimRefusal.unverified);
   } catch (error) {
     release();
     throw error;

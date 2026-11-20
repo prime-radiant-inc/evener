@@ -24,7 +24,7 @@ import { entryHistoryKey, setSessionCacheLookupDeadlineForTests } from "./sessio
 import type { SessionEntryCache } from "./sessionEntryCache";
 import { createEntryCacheFixture } from "./testing/entryCacheFixture";
 import { pumpIndexedDBUntil } from "./testing/indexedDBPump";
-import { backgroundHolds, bodyOwners, foregroundHolds, holdHistory, releaseHistory } from "./threadOwners";
+import { backgroundHolds, foregroundHolds, holdHistory, releaseHistory } from "./threadOwners";
 import {
   installHydrationRetrySchedulerForTests,
   markCacheSessionsDeleted,
@@ -165,7 +165,7 @@ test("a deletion during a claim's read rejects the claim instead of handing out 
   expect(await outcome, "the deletion fence refuses the waiting claim").toBe("rejected");
   expect(reads, "the refused claim leaves no read behind it").toBe(1);
   expect(backgroundHolds(ref), "a refused claim leaves no lease behind").toBe(holdsBefore);
-  expect(bodyOwners(ref), "a refused claim leaves no body hold behind").toBe(0);
+  expect(foregroundHolds(ref), "a refused claim leaves no pane hold behind").toBe(0);
 }, 20_000);
 
 // A claim's background lease keeps the model, the subscription and the route alive
@@ -178,7 +178,7 @@ test("the last pane closing during a resend detaches its reader and prunes its d
   fake.on("thread/read", () => readResponse(ref, { name: "Body" }));
   await threadsStore.getState().ensureThread(ref);
   const route = entryRouteOf(ref);
-  expect(bodyOwners(ref), "a pane's acquisition owns the bodies").toBe(1);
+  expect(foregroundHolds(ref), "a pane's acquisition owns the bodies").toBe(1);
   expect(route.reader, "a body owner keeps a reader").toBeDefined();
   // The resend's claim, taken over the same destination.
   const lease = await acquireUnreadThreadClaim(ref);
@@ -186,7 +186,7 @@ test("the last pane closing during a resend detaches its reader and prunes its d
   // The pane closes: its body ownership and its hold are gone, the lease stays.
   threadsStore.getState().releaseThread(ref);
 
-  expect(bodyOwners(ref), "the pane's body ownership is gone").toBe(0);
+  expect(foregroundHolds(ref), "the pane's body ownership is gone").toBe(0);
   expect(route.reader, "a background lease does not keep a reader").toBeUndefined();
   // The route and its repository survive: the resend dispatches on them.
   expect(route.repository, "the background lease keeps the repository").toBeDefined();
@@ -208,7 +208,7 @@ test("a history hold keeps the reader a background lease alone would release", a
   threadsStore.getState().releaseThread(ref);
 
   expect(route.reader, "a history hold owns the live bodies").toBeDefined();
-  expect(bodyOwners(ref), "the pane's body ownership is gone").toBe(0);
+  expect(foregroundHolds(ref), "the pane's body ownership is gone").toBe(0);
   releaseHistory(ref);
   releaseEntryTranscriptReader(ref, true);
   expect(route.reader, "with no body owner left the reader is released").toBeUndefined();
@@ -288,7 +288,7 @@ test("a pane that closes during a shared read does not reattach its reader after
   // The pane closes mid-read: its body ownership and its reader are gone, and
   // only the resend's background lease keeps the destination alive.
   threadsStore.getState().releaseThread(ref);
-  expect(bodyOwners(ref), "the pane's body ownership is gone").toBe(0);
+  expect(foregroundHolds(ref), "the pane's body ownership is gone").toBe(0);
   expect(entryRouteOf(ref).reader, "the released pane's reader is detached").toBeUndefined();
 
   // The shared read lands, resolving both the closed pane's acquisition and the
@@ -298,7 +298,7 @@ test("a pane that closes during a shared read does not reattach its reader after
   const lease = await claim;
   await pump();
 
-  expect(bodyOwners(ref), "the closed pane never takes body ownership back").toBe(0);
+  expect(foregroundHolds(ref), "the closed pane never takes body ownership back").toBe(0);
   expect(entryRouteOf(ref).reader, "the closed pane's post-read open does not reattach the reader").toBeUndefined();
   lease.release();
   await vi.waitFor(() => expect(threadsStore.getState().threads.has(ref)).toBe(false));
@@ -390,7 +390,6 @@ test("a mounted pane without a model retries a history-failed first read and hyd
   expect(reads, "the pane's first read answered with the hub's refusal").toBe(1);
   expect(threadsStore.getState().threads.has(ref), "no model exists to carry the diagnostic").toBe(false);
   expect(foregroundHolds(ref), "the mounted pane keeps the only hold it took").toBe(1);
-  expect(bodyOwners(ref), "the mounted pane keeps owning its bodies").toBe(1);
 
   retry.fire?.();
   await pane;
@@ -450,7 +449,101 @@ test("a claim on an unopened destination rejects on the hub's terminal answer an
   expect(backgroundHolds(ref), "a rejected claim leaves no lease behind").toBe(holdsBefore);
   await pump();
   expect(reads, "the rejected claim leaves no read behind it").toBe(1);
-  expect(bodyOwners(ref), "a rejected claim leaves no body hold behind").toBe(0);
+  expect(foregroundHolds(ref), "a rejected claim leaves no pane hold behind").toBe(0);
+}, 20_000);
+
+// A WebSocket drop is not an answer. The client rejects every pending request
+// with the socket's own error, and the lease's bounded attempt ends there - but
+// the hub never saw the destination's read, so the claim must not read that
+// rejection as "not verified" and refuse a resend the replacement connection
+// can still authorize. It keeps the lease, waits for the replacement
+// connection, and joins its re-read of the still-held ref: the resend goes
+// through, and the destination is read exactly once per connection.
+test("a socket loss during the destination read lets the claim finish on the replacement connection's read", async () => {
+  const ref = "local:socket-drop-during-claim";
+  const fake = connectMutationClient();
+  const firstRead = deferred<ThreadReadResponse>();
+  const reads: number[] = [];
+  fake.on("thread/read", () => {
+    reads.push(reads.length + 1);
+    if (reads.length === 1) return firstRead.promise;
+    return readResponse(ref);
+  });
+  const claim = acquireUnreadThreadClaim(ref);
+  let outcome: "pending" | "resolved" | "rejected" = "pending";
+  void claim.then(
+    () => {
+      outcome = "resolved";
+    },
+    () => {
+      outcome = "rejected";
+    },
+  );
+  await flushUntil(() => reads.length === 1);
+
+  // The socket drops mid-read: the client rejects the pending read, and the
+  // same client schedules its own reconnect.
+  fake.emitStateChange("reconnecting");
+  firstRead.reject(new Error("AppwireClient: socket closed (code 1006)"));
+  await pump();
+  expect(outcome, "the claim is still waiting out the reconnect, not refusing").toBe("pending");
+
+  // The reconnect lands and the store re-reads every ref it still holds. That
+  // read is the claim's verification, and the claim joins it rather than
+  // issuing one of its own.
+  fake.emitReady();
+  await flushUntil(() => outcome !== "pending");
+  expect(outcome, "the replacement connection's read hands the destination out").toBe("resolved");
+  expect(reads.length, "the dropped connection's read and the replacement's, and no duplicate").toBe(2);
+  expect(backgroundHolds(ref), "the granted claim keeps exactly its own lease").toBe(1);
+  expect(threadsStore.getState().threads.has(ref), "the destination is resident for the resend").toBe(true);
+}, 20_000);
+
+// The same reconnect, with the destination already being read for a reason of
+// its own: a cached pane restoration holds a replacement read open when the
+// claim arrives. A claim that issued its own tracked read would supersede that
+// read's publication claim and spend a second wire round trip on one
+// destination. It joins the read that exists instead.
+test("a claim joins a replacement read already in flight instead of issuing a duplicate", async () => {
+  const ref = "local:claim-joins-replacement-read";
+  const cache = createEntryCacheFixture();
+  setProductionEntryCacheForTests(cache.cache);
+  setSessionCacheLookupDeadlineForTests(30_000);
+  const seed = await seedCachedShell(cache.cache, ref, 0);
+  expect(seed.outcome, "the pane's cached shell is seeded durably").toBe("committed");
+  const fake = connectMutationClient();
+  let reads = 0;
+  const replacementRead = deferred<ThreadReadResponse>();
+  fake.on("thread/read", () => {
+    reads += 1;
+    if (reads === 1) return replacementRead.promise;
+    return readResponse(ref);
+  });
+  // The pane opens and its replacement read is the one on the wire; the shell
+  // it restores is unverified, so the claim behind it has nothing to hand out.
+  const pane = threadsStore.getState().ensureThread(ref);
+  await flushUntil(() => reads === 1);
+  const shellInstalled = await pumpIndexedDBUntil({
+    turns: 40,
+    until: () => entryRouteOf(ref).repository !== undefined,
+  });
+  expect(shellInstalled, "the pane restored its cached shell").toBe(true);
+  expect(entryRouteOf(ref).cachedUnverified, "the shell advertises no verified capabilities").toBe(true);
+
+  // The resend claims the destination while that read is outstanding.
+  const claim = acquireUnreadThreadClaim(ref);
+  await pump();
+  expect(reads, "the claim joined the read already in flight").toBe(1);
+
+  replacementRead.resolve(freshIncarnationAnswer(ref));
+  await pane;
+  const lease = await claim;
+  expect(reads, "no duplicate read was issued behind the in-flight one").toBe(1);
+  expect(entryRouteOf(ref).cachedUnverified, "the joined read verified the route").toBe(false);
+  expect(threadsStore.getState().threads.has(ref), "the joined read published the destination").toBe(true);
+  lease.release();
+  threadsStore.getState().releaseThread(ref);
+  await cache.dispose();
 }, 20_000);
 
 // The two owners of one refused first read want opposite things: the pane has
@@ -493,7 +586,6 @@ test("a claim sharing a pane's refused first read rejects while the pane keeps i
   );
   expect(reads, "the refusal is still the only read").toBe(1);
   expect(foregroundHolds(ref), "the claim's rollback leaves only the mounted pane's hold").toBe(1);
-  expect(bodyOwners(ref), "the mounted pane still owns its bodies").toBe(1);
 
   retry.fire?.();
   await pane;
@@ -534,12 +626,12 @@ test("a cached lookup finishing after the last pane closes does not attach a rea
   // A resend claims the same destination while the pane's lookup is pending.
   const claim = acquireUnreadThreadClaim(ref);
   await pump();
-  expect(bodyOwners(ref), "the pane owns the live bodies").toBe(1);
+  expect(foregroundHolds(ref), "the pane owns the live bodies").toBe(1);
 
   // The pane closes: its body ownership and its hold are gone, and only the
   // resend's background lease keeps the ref alive.
   threadsStore.getState().releaseThread(ref);
-  expect(bodyOwners(ref), "the pane's body ownership is gone").toBe(0);
+  expect(foregroundHolds(ref), "the pane's body ownership is gone").toBe(0);
   expect(backgroundHolds(ref), "the claim's lease is all that holds the ref").toBe(1);
 
   // The held lookup answers now, after the pane it was opened for has closed.

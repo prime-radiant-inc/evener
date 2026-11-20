@@ -163,42 +163,6 @@ test("a claim on a destination the hub reports deleted rejects and drops its hol
   expect(foregroundHolds("local:claim-deleted"), "a rejected acquisition leaves no count behind").toBe(holdsBefore);
 }, 20_000);
 
-// The hub's typed history failure is terminal for the attempt, and the claim
-// has no diagnostic surface to wait out a recovery for. It must reject rather
-// than park the resend on a destination whose history the hub has refused, and
-// the lease it took must be gone before the rejection reaches its caller.
-test("a hub history failure rejects the claim and releases the hold", async () => {
-  const ref = "local:retry-deleted";
-  const fake = connectMutationClient();
-  let reads = 0;
-  fake.on("thread/read", () => {
-    reads += 1;
-    throw new WireError(`thread history failed at entry 3: ${ref}`, -32000, {
-      evenerErrorInfo: "transcriptHistoryFailed",
-    });
-  });
-  const holdsBefore = backgroundHolds(ref);
-  const claim = acquireUnreadThreadClaim(ref);
-  // Bounded, not `await claim`: a claim parked on an unsettled lifecycle is
-  // exactly the defect, and a test timeout would report it as a slow test
-  // rather than as a hang.
-  let outcome: "pending" | "resolved" | "rejected" = "pending";
-  void claim.then(
-    () => {
-      outcome = "resolved";
-    },
-    () => {
-      outcome = "rejected";
-    },
-  );
-  for (let turn = 0; turn < 60 && outcome === "pending"; turn += 1) await nextMacrotask();
-  expect(outcome, "the hub's terminal answer rejects the claim rather than parking it").toBe("rejected");
-  expect(reads, "the refusal is the claim's only read").toBe(1);
-  expect(backgroundHolds(ref), "a rejected acquisition leaves no count behind").toBe(holdsBefore);
-  for (let turn = 0; turn < 20; turn += 1) await nextMacrotask();
-  expect(reads, "no read follows the terminal answer").toBe(1);
-}, 20_000);
-
 // The pane face of the same read, unchanged: a pane acquisition returns and
 // shows the deleted-session state rather than rejecting.
 test("a pane acquisition over a deleted destination still returns", async () => {

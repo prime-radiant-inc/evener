@@ -101,12 +101,6 @@ export function releaseForeground(ref: string): number {
   return releaseForegroundHold(newest);
 }
 
-/** Foreground holders that own the live transcript bodies: the mounted panes,
- * derived from the pane handle array (see the module invariant). */
-export function bodyOwners(ref: string): number {
-  return paneForegroundHolds.get(ref)?.length ?? 0;
-}
-
 export function backgroundHolds(ref: string): number {
   return backgroundCounts.get(ref) ?? 0;
 }
@@ -162,17 +156,12 @@ export function ownedOnlyByMutationPin(ref: string): boolean {
   return foregroundHolds(ref) === 0 && backgroundHolds(ref) === 0 && isMutationPinned(ref);
 }
 
-// A live foreground/history/pin holder. Background membership is not one: it
-// must never be what lifts a clear's suppression.
+// A holder that owns the live transcript bodies: a mounted pane (foreground
+// holder), a history hold or a mutation pin. Background membership is not one:
+// it never attaches a reader and must never be what lifts a clear's
+// suppression.
 export function heldCountsAtStore(ref: string): boolean {
   return foregroundHolds(ref) > 0 || historyHolds(ref) > 0 || isMutationPinned(ref);
-}
-
-// The one answer to "is this thread body-owned": a mounted pane, a history
-// hold or a mutation pin owns the live transcript bodies. Every site that asks
-// whether someone is already showing what a body read would restore calls this.
-export function threadBodyOwned(ref: string): boolean {
-  return bodyOwners(ref) > 0 || historyHolds(ref) > 0 || isMutationPinned(ref);
 }
 
 export function ownerGeneration(ref: string): number {

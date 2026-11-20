@@ -18,7 +18,7 @@ import { connectReadyFakeClient } from "../testing/connectionTestUtils";
 import { connectionStore, resetConnectionStoreForTests } from "./connection";
 import { entryTranscriptRoute } from "./entryTranscriptRoutes";
 import { blurHumanNote, editHumanNote, focusHumanNote, syncHumanNote } from "./humanNoteDrafts";
-import { bodyOwners, type ForegroundHold, foregroundHoldStanding, foregroundHolds } from "./threadOwners";
+import { type ForegroundHold, foregroundHoldStanding, foregroundHolds } from "./threadOwners";
 import { resetThreadsStoreForTests, threadsStore } from "./threads";
 import { readResponse } from "./threadsSessionActionsTestUtils";
 import { useThreadClaim } from "./useThreadModel";
@@ -98,11 +98,10 @@ test("the older pane's unmount drops its own hold, not the newer pane's", async 
     entryTranscriptRoute(ref)?.reader,
     "the pane still on screen finishes its open and keeps the reader",
   ).toBeDefined();
-  expect(bodyOwners(ref), "the newer pane's acquisition owns the bodies").toBe(1);
+  expect(foregroundHolds(ref), "the newer pane's acquisition owns the bodies").toBe(1);
 
   newer.unmount();
   expect(foregroundHolds(ref), "the newer pane's own release drops its hold").toBe(0);
-  expect(bodyOwners(ref), "the newer pane's release drops its body ownership").toBe(0);
 }, 20_000);
 
 // The same overlap once both panes are open: the older pane's unmount drops its
@@ -120,15 +119,12 @@ test("two open panes release one hold each, newest last", async () => {
 
   const newer = render(<Pane ref={ref} />);
   await vi.waitFor(() => expect(foregroundHolds(ref), "both panes hold the destination").toBe(2));
-  expect(bodyOwners(ref), "both panes own the bodies").toBe(2);
 
   older.unmount();
   expect(foregroundHolds(ref), "the newer pane still holds the destination").toBe(1);
-  expect(bodyOwners(ref), "the newer pane still owns the bodies").toBe(1);
 
   newer.unmount();
   expect(foregroundHolds(ref), "the last pane's release leaves nothing standing").toBe(0);
-  expect(bodyOwners(ref), "the last pane's release drops its body ownership").toBe(0);
 }, 20_000);
 
 // A debounced note save holds the destination it is about to write at. That
@@ -149,11 +145,11 @@ test("a note save's own exit drops its own hold, not a pane that remounted over 
 
   // The pane remounts over the same ref while the save waits out its debounce.
   const holds = captureHolds();
-  const bodiesBefore = bodyOwners(ref);
+  const bodiesBefore = foregroundHolds(ref);
   const pane = render(<Pane ref={ref} />);
   await vi.waitFor(() => expect(holds.length, "the replacement pane takes its own hold").toBe(1));
   expect(foregroundHolds(ref), "the save's hold and the pane's both stand").toBe(2);
-  const bodiesWithPane = bodyOwners(ref);
+  const bodiesWithPane = foregroundHolds(ref);
   expect(bodiesWithPane, "the pane owns the live bodies").toBe(bodiesBefore + 1);
 
   // The save's debounce is cancelled (the same exit path a completed save
@@ -165,7 +161,6 @@ test("a note save's own exit drops its own hold, not a pane that remounted over 
     "the save drops only its own hold, so the replacement pane's still stands",
   ).toEqual([true]);
   expect(foregroundHolds(ref), "the mounted pane is the only holder left").toBe(1);
-  expect(bodyOwners(ref), "the mounted pane keeps the bodies its reader renders").toBe(bodiesBefore);
   expect(entryTranscriptRoute(ref), "the mounted pane's destination survives the save's exit").toBeDefined();
   pane.unmount();
   expect(foregroundHolds(ref), "the pane's own unmount is what finally retires the destination").toBe(0);
