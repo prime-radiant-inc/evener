@@ -229,6 +229,11 @@ func (s *Server) appRootIdentityLocked() (threadID, ref string) {
 func (s *Server) recordAppNotifications(rootThreadID string, pending []pendingAppNotification) []appserver.SequencedNotification {
 	committed := make([]appserver.SequencedNotification, 0, len(pending))
 	rootNotificationTarget := s.appNotificationTarget(rootThreadID)
+	// A batch can carry several stamped frames - an overlay and a delegate
+	// update for the same thread among them - and the thread's generation
+	// cannot change under a projection commit, so one lookup per thread
+	// answers for the whole batch.
+	bootGenerations := make(map[string]string, 1)
 	for _, item := range pending {
 		params := item.params
 		notificationTarget := item.threadID
@@ -238,6 +243,19 @@ func (s *Server) recordAppNotifications(rootThreadID string, pending []pendingAp
 			params = s.stampAskPendingOnStatusChange(item.method, params)
 			params = s.stampActiveTurnOnStatusChange(item.method, params)
 			notificationTarget = rootNotificationTarget
+		}
+		// The two frames a client keeps beside history/updated carry the same
+		// boot generation it does. Every caller of this method releases
+		// s.mu before recording, and bootGenerationFor takes its own read lock,
+		// so the memoized lookup below can never double-lock.
+		switch item.method {
+		case appwire.NotifyEvenerDelegateUpdated, appwire.NotifyOverlayUpserted:
+			generation, known := bootGenerations[item.threadID]
+			if !known {
+				generation = s.bootGenerationFor(item.threadID)
+				bootGenerations[item.threadID] = generation
+			}
+			params = stampBootGeneration(params, generation)
 		}
 		params = stampAppNotificationTarget(params, item.threadID, item.ref)
 		committed = append(committed, s.appNotifier.Record(notificationTarget, item.method, params))

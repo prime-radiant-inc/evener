@@ -298,6 +298,9 @@ type ThinkingData struct {
 	ResponsesContentParts []ResponsesReasoningPart `json:"responses_content_parts,omitempty"`
 	ResponsesSummaryParts []ResponsesReasoningPart `json:"responses_summary_parts,omitempty"`
 	// ResponsesIncomplete marks a reasoning item the provider cut off.
+	// Older transcripts can carry typed ResponsesContentParts and
+	// ResponsesSummaryParts without this flag; those items decode as complete
+	// and replay as finished.
 	ResponsesIncomplete bool `json:"responses_incomplete,omitempty"`
 }
 

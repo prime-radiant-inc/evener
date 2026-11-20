@@ -107,7 +107,7 @@ func TestAllowsPastFallbackAfterLiveReadFailureSubscribeNilSource(t *testing.T) 
 // of a saved-history read's failure. Both are machine values: the boot
 // generation a client compares, and the error info it acts on. No message copy
 // is read (Copy Is Not a Test Oracle).
-func requireSavedHistoryFailureStamp(t *testing.T, err error, wantGeneration string) {
+func requireSavedHistoryFailureStamp(t *testing.T, err error, wantGeneration string) appwire.HistoryReadErrorData {
 	t.Helper()
 	wire, ok := errors.AsType[appwire.WireError](err)
 	if !ok {
@@ -128,6 +128,7 @@ func requireSavedHistoryFailureStamp(t *testing.T, err error, wantGeneration str
 	if data.EvenerErrorInfo != appwire.ErrorTranscriptHistoryFailed {
 		t.Fatalf("saved-history failure info = %q, want %q", data.EvenerErrorInfo, appwire.ErrorTranscriptHistoryFailed)
 	}
+	return data
 }
 
 // dispatchThreadReadOver dispatches one thread/read through the hub's real
@@ -410,7 +411,15 @@ func TestPastFallbackWithoutServingSourceStampsDaemonless(t *testing.T) {
 	err := dispatchThreadReadOver(t, cfg, appsource.NewRegistry(), appwire.ThreadReadParams{
 		Ref: "local:" + entry.Meta.ID, IncludeTurns: true, ItemLimit: 40, RequestGeneration: 1,
 	})
-	requireSavedHistoryFailureStamp(t, err, appwire.DaemonlessBootGeneration)
+	data := requireSavedHistoryFailureStamp(t, err, appwire.DaemonlessBootGeneration)
+	// The hub established the absence, so the stamp must say so. A forwarding
+	// hub demotes an UNATTESTED `daemonless` to unknown-owner (it cannot tell it
+	// from a legacy peer's blanket stamp), and the browser would then keep a
+	// wait on a daemon that really exited until the saved history became
+	// readable again.
+	if !data.AbsenceAttested {
+		t.Fatal("saved-history failure does not attest the absence it claims; a forwarding hub would demote it to unknown-owner")
+	}
 }
 
 // TestSuccessfulSavedFallbackAfterRelayOutageStaysDaemonless is the case that
