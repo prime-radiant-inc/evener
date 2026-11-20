@@ -234,19 +234,57 @@ ln -sfn "$workspace" "$workspace_link"
 
 provider_binary="$run_dir/fixture-provider"
 evener_binary="$run_dir/evener"
+# The workflow's setup job builds this tree's runtime pair on its own runner
+# while the app build runs, and hands the directory over here. A pair built
+# from another revision must never run: the revision file is compared with
+# this tree before either binary is copied into the run directory.
+runtime_pair="${EVENER_QUALIFICATION_RUNTIME_BINARIES:-}"
 
 cd "$repo_root"
 
-log "building the runtime pair (make build-runtime)"
-make build-runtime >"$output/build-runtime.log" 2>&1 || {
-	echo "build-runtime failed; see $output/build-runtime.log" >&2
-	tail -30 "$output/build-runtime.log" >&2
-	exit 1
-}
+if [ -n "$runtime_pair" ]; then
+	# The identity the qualification runner wrote for this run names the tree it
+	# checked out, so the pair is compared with the runner's own revision rather
+	# than a second read of HEAD.
+	head_revision="$(jq -r '.sourceRevision // empty' "$identity")"
+	pair_revision="$(cat "$runtime_pair/revision" 2>/dev/null || true)"
+	if [ -z "$head_revision" ] || [ "$pair_revision" != "$head_revision" ]; then
+		echo "$SCRIPT_NAME: the runtime pair was built from '${pair_revision:-no revision file}', not this tree's '${head_revision:-no sourceRevision in the build identity}'" >&2
+		exit 1
+	fi
+	for binary in evener fixture-provider; do
+		if [ ! -x "$runtime_pair/$binary" ]; then
+			echo "$SCRIPT_NAME: the runtime pair has no executable $binary in $runtime_pair" >&2
+			exit 1
+		fi
+	done
+	if [ ! -f "$runtime_pair/SHA256SUMS" ]; then
+		echo "$SCRIPT_NAME: the runtime pair has no SHA256SUMS manifest in $runtime_pair" >&2
+		exit 1
+	fi
+	if ! checksums="$( cd "$runtime_pair" && shasum -a 256 -c SHA256SUMS 2>&1 )"; then
+		echo "$SCRIPT_NAME: the runtime pair does not match its SHA256SUMS manifest in $runtime_pair:" >&2
+		echo "$checksums" >&2
+		exit 1
+	fi
+	# The hub's daemons are exec'd from $evener_binary and carry the run
+	# directory's basename in argv, which is how cleanup proves it owns them;
+	# copy instead of running from the pair so that ownership tag stays.
+	cp "$runtime_pair/evener" "$evener_binary"
+	cp "$runtime_pair/fixture-provider" "$provider_binary"
+	log "using the runtime pair built by the setup job at $runtime_pair"
+else
+	log "building the runtime pair (make build-runtime)"
+	make build-runtime >"$output/build-runtime.log" 2>&1 || {
+		echo "build-runtime failed; see $output/build-runtime.log" >&2
+		tail -30 "$output/build-runtime.log" >&2
+		exit 1
+	}
 
-log "building the evener and fixture-provider binaries"
-go build -o "$evener_binary" ./cmd/evener >"$output/build-evener.log" 2>&1
-go build -o "$provider_binary" ./scripts/native/ios/fixture-provider >>"$output/build-evener.log" 2>&1
+	log "building the evener and fixture-provider binaries"
+	go build -o "$evener_binary" ./cmd/evener >"$output/build-evener.log" 2>&1
+	go build -o "$provider_binary" ./scripts/native/ios/fixture-provider >>"$output/build-evener.log" 2>&1
+fi
 
 # The operator's shell can carry EVENER_* overrides — an Evener agent session
 # exports them — and EVENER_STATE_DIR or EVENER_CREDENTIALS_CONFIG outrank the
