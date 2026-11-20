@@ -86,14 +86,23 @@ func TestReachabilityRefreshHonorsAnAppendThatWentUnreadable(t *testing.T) {
 
 	// The file goes away between rounds. The ordinary rebuild reads again, so it
 	// renders without the instructions and discloses the omission.
+	//
+	// The launch render froze the session's prompt (#6959), so the rebuild is
+	// driven through the render seam directly — the same way the rest of this
+	// file does — rather than through refreshSystemPromptCache, which is now the
+	// launch caller's path only and appends an environment-context diff instead
+	// of re-reading anything once frozen.
 	if err := os.Remove(appendPath); err != nil {
 		t.Fatal(err)
 	}
-	warning, _ := sess.refreshSystemPromptCache(sess.env)
+	rendered, warning, failed := sess.renderSystemPromptWithAppends(sess.env, false)
+	if failed {
+		t.Fatalf("the rebuild reported a render failure instead of an omitted append file: %s", rendered)
+	}
 	if warning == "" {
 		t.Fatal("the ordinary rebuild skipped an unreadable append file without disclosing it")
 	}
-	if strings.Contains(sess.cachedSystemPrompt, body) {
+	if strings.Contains(rendered, body) {
 		t.Fatal("the ordinary rebuild rendered the append file it had just failed to read")
 	}
 

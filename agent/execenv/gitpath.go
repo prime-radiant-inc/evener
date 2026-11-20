@@ -194,6 +194,28 @@ func ResolveMainRepoRoot(env ExecutionEnvironment, cwd string) string {
 	return root
 }
 
+// ResolveMainRepoRootFresh is ResolveMainRepoRoot WITHOUT the per-environment
+// memo, for a caller asking what the workspace is NOW rather than what it was
+// when the environment last asked.
+//
+// The memo is keyed by directory, and a directory's identity can change under a
+// running session: `git init` in a subdirectory of a checkout makes that
+// subdirectory its own repository, and every later question about it has a new
+// answer. A caller that compares identities across a launch — was this layer's
+// repository the one the launch authorized? — must not answer it from the
+// launch's memo, or a repository created since the launch inherits the enclosing
+// repository's identity and with it the enclosing repository's trust.
+//
+// The cost is one structural walk, or a git fork when the walk cannot decide,
+// and callers are those already resolving a project config path afresh.
+func ResolveMainRepoRootFresh(env ExecutionEnvironment, cwd string) string {
+	if env == nil {
+		return ""
+	}
+	root, _ := mainRepoRootUncached(env, cwd)
+	return root
+}
+
 // mainRepoRootUncached resolves cwd's main repository root, reporting whether
 // the answer is definitive on the same terms gitRootUncached does: it shares
 // the cache, so a resolution error must not be memoized here either.

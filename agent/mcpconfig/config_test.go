@@ -1256,7 +1256,7 @@ func TestDiscoverForProjectEnv_WorktreeOfSameRepositoryKeepsAuthorizedLayer(t *t
 	if wtPath == "" || wtPath == startup.Path {
 		t.Fatalf("fixture is wrong: worktree project path = %q, startup path = %q", wtPath, startup.Path)
 	}
-	if got := projectRepoRoot(wtEnv); got != startup.RepoRoot {
+	if got := projectRepoRoot(wtEnv, wt); got != startup.RepoRoot {
 		t.Fatalf("fixture is wrong: worktree repository identity = %q, want the startup's %q", got, startup.RepoRoot)
 	}
 
@@ -1343,7 +1343,7 @@ func TestDiscoverForProjectEnv_UnrelatedRepositoryWithIdenticalBytesIsRefused(t 
 	}
 	startup := startupEvidence.Project
 	otherEnv := execenv.NewLocalExecutionEnvironment(other)
-	if got := projectRepoRoot(otherEnv); got == "" || got == startup.RepoRoot {
+	if got := projectRepoRoot(otherEnv, other); got == "" || got == startup.RepoRoot {
 		t.Fatalf("fixture is wrong: unrelated repository identity = %q, startup's = %q", got, startup.RepoRoot)
 	}
 	if otherPath := ProjectConfigPath(otherEnv); otherPath == "" || otherPath == startup.Path {
@@ -2173,5 +2173,189 @@ func TestProjectLayerEvidenceRecordsPerServerDigests(t *testing.T) {
 	}
 	if got["a"] != ConfigDigest(mustServerMap(t, modified)["a"]) {
 		t.Fatal("the entry digest moved when a DIFFERENT entry was added, so per-server matching could never authorize an unchanged server")
+	}
+}
+
+// TestDiscoverForProjectEnv_NestedRepositoryInsideSandboxedSessionIsRefused is
+// the High finding's proof at the discovery boundary.
+//
+// Trigger: a sandboxed session with network disabled runs from a repository
+// subdirectory. An independent git repository is initialized there, with an
+// .evener/mcp.json copied unchanged from the enclosing project. A shared-
+// workspace delegate's fresh Git-root lookup finds the NESTED repo's file — and
+// the enclosing repository's identity came from the shared environment's
+// startup memo (execenv.ResolveMainRepoRoot memoizes per environment), so the
+// two compared equal. The entry then received host environment expansion and
+// the network exception, although its repository was never launch-authorized.
+//
+// The fix resolves the identity afresh from the checkout that supplied the
+// project config path. The test asserts all three consequences on one fixture:
+// no host expansion, no network exception for stdio, and refusal of the remote
+// entry — then repeats the read at the ENCLOSING path to show the authorization
+// rule itself still grants what the launch read.
+func TestDiscoverForProjectEnv_NestedRepositoryInsideSandboxedSessionIsRefused(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // no global layer
+
+	const secretName = "MCP_NESTED_REPO_SECRET"
+	const secretValue = "nested-repo-credential"
+	t.Setenv(secretName, secretValue)
+
+	body := `{"mcpServers":{
+		"stdio-literal":{"command":"absolute-tool"},
+		"stdio-secret":{"command":"${` + secretName + `}"},
+		"remote-authorization":{"type":"http","url":"https://trusted.example/mcp","headers":{"Authorization":"Bearer ${` + secretName + `}"}}
+	}}`
+	main := projectLayerRepo(t, body)
+
+	// The session launched here, in a subdirectory of the enclosing repo, and
+	// its environment memoized the enclosing repository's identity at startup.
+	sessionDir := filepath.Join(main, "sub", "work")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sharedEnv := execenv.NewLocalExecutionEnvironment(sessionDir)
+
+	// Startup discovery runs against the ENCLOSING repository's layer.
+	_, _, startupEvidence, _, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(sharedEnv, nil, nil, nil, false, false)
+	if err != nil {
+		t.Fatalf("startup discovery: %v", err)
+	}
+	startup := startupEvidence.Project
+	if startup.Path == "" || startup.RepoRoot == "" {
+		t.Fatalf("fixture is wrong: startup project evidence = %+v, want a path and a repository identity", startup)
+	}
+	// Warm the memo exactly as a real session's startup would: this is the
+	// startup cache the buggy lookup read the ENCLOSING identity out of.
+	if got := execenv.ResolveMainRepoRoot(sharedEnv, sessionDir); got != startup.RepoRoot {
+		t.Fatalf("fixture is wrong: memoized main root = %q, want the enclosing %q", got, startup.RepoRoot)
+	}
+
+	// An independent repository is initialized AT the session's own
+	// subdirectory — the exact trigger. That directory was part of the enclosing
+	// repository when the session started, so the shared environment's memo says
+	// "enclosing root" for it, while a FRESH git-root lookup now finds a
+	// repository of its own holding a byte-identical copy of the enclosing
+	// project's file.
+	if err := os.MkdirAll(filepath.Join(sessionDir, ".evener"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gittest.Run(t, sessionDir, "init", "-q")
+	if err := os.WriteFile(filepath.Join(sessionDir, ".evener", "mcp.json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := projectRepoRoot(sharedEnv, sessionDir); got == "" || got == startup.RepoRoot {
+		t.Fatalf("fixture is wrong: nested repository identity = %q, startup's = %q", got, startup.RepoRoot)
+	}
+	// The memo still answers for the enclosing repository, which is the trap.
+	if got := execenv.ResolveMainRepoRoot(sharedEnv, sessionDir); got != startup.RepoRoot {
+		t.Fatalf("fixture is wrong: the shared environment's memo = %q, want the stale enclosing %q", got, startup.RepoRoot)
+	}
+
+	// The delegate is constructed from the SESSION's own environment: the shared
+	// one whose memo holds the enclosing identity. Its working directory is the
+	// subdirectory that has since become its own repository.
+	configs, _, _, warnings, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(sharedEnv, nil, nil, &startup, true, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	byName := serverConfigByName(configs)
+
+	// A literal stdio entry is ADMITTED so its local tools still work, but it
+	// must NOT get the trusted-infrastructure carve-out: the repository that
+	// holds it was never launch-authorized, so it runs under ordinary sandbox
+	// confinement and net=off severs its egress.
+	stdio, ok := byName["stdio-literal"]
+	if !ok {
+		t.Fatalf("configs = %+v; the nested literal stdio entry was dropped instead of confined", configs)
+	}
+	if !stdio.DenyNetworkException {
+		t.Errorf("a nested repository's stdio entry kept the trusted-infrastructure carve-out; its repository was never launch-authorized")
+	}
+	// No host environment expansion: the entry that references the secret is
+	// refused, and the refusal names the reference.
+	if _, ok := byName["stdio-secret"]; ok {
+		t.Errorf("configs = %+v; a nested repository's entry expanded a host secret", configs)
+	}
+	if !warnedAbout(warnings, secretName) {
+		t.Errorf("warnings = %v; want an expansion failure naming %q", warnings, secretName)
+	}
+	// The remote entry is refused outright while the sandbox has no network.
+	if _, ok := byName["remote-authorization"]; ok {
+		t.Errorf("configs = %+v; a nested repository's remote entry was admitted while the sandbox has network disabled", configs)
+	}
+	if !warnedAbout(warnings, "remote-authorization") {
+		t.Errorf("warnings = %v; want a refusal naming the nested repository's remote entry", warnings)
+	}
+
+	// Positive control on the SAME evidence: the enclosing repository's own
+	// layer is still authorized, or the test would pass for a broken
+	// authorization rule rather than for the nested-identity fix.
+	mainConfigs, _, _, _, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(
+		execenv.NewLocalExecutionEnvironment(main), nil, nil, &startup, true, true)
+	if err != nil {
+		t.Fatalf("enclosing discovery: %v", err)
+	}
+	mainByName := serverConfigByName(mainConfigs)
+	if got, ok := mainByName["stdio-secret"]; !ok || got.Command != secretValue || got.DenyNetworkException {
+		t.Fatalf("the enclosing repository's own authorized entry lost its expansion or carve-out: %+v", got)
+	}
+	if _, ok := mainByName["remote-authorization"]; !ok {
+		t.Fatalf("configs = %+v; the enclosing repository's authorized remote entry was refused", mainConfigs)
+	}
+}
+
+// TestDiscoverForProjectEnv_LinkedWorktreeOfSessionRepositoryKeepsAuthorization
+// is the same rule's other half, and the reason the fix may not simply drop the
+// identity comparison: a linked worktree of the repository the session launched
+// in holds the SAME committed file at a different path. That is not a change in
+// the layer, so an unchanged entry keeps the launch's authorization — even when
+// the session's own environment memoized a different (subdirectory) root.
+func TestDiscoverForProjectEnv_LinkedWorktreeOfSessionRepositoryKeepsAuthorization(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // no global layer
+
+	const secretName = "MCP_LINKED_WT_SECRET"
+	const secretValue = "linked-worktree-credential"
+	t.Setenv(secretName, secretValue)
+
+	body := `{"mcpServers":{"committed":{"command":"${` + secretName + `}"}}}`
+	main := projectLayerRepo(t, body)
+
+	// The session launches from a subdirectory, as it does for the nested case.
+	sessionDir := filepath.Join(main, "sub", "work")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sharedEnv := execenv.NewLocalExecutionEnvironment(sessionDir)
+	_, _, startupEvidence, _, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(sharedEnv, nil, nil, nil, false, false)
+	if err != nil {
+		t.Fatalf("startup discovery: %v", err)
+	}
+	startup := startupEvidence.Project
+	if startup.Path == "" || startup.RepoRoot == "" {
+		t.Fatalf("fixture is wrong: startup project evidence = %+v, want a path and a repository identity", startup)
+	}
+	if got := execenv.ResolveMainRepoRoot(sharedEnv, sessionDir); got != startup.RepoRoot {
+		t.Fatalf("fixture is wrong: memoized main root = %q, want the enclosing %q", got, startup.RepoRoot)
+	}
+
+	wt := linkedWorktreeOf(t, main)
+	wtPath := filepath.Join(wt, ".evener", "mcp.json")
+	if wtPath == startup.Path {
+		t.Fatalf("fixture is wrong: worktree layer resolved to the startup path %q", wtPath)
+	}
+	if got := projectRepoRoot(sharedEnv, wt); got != startup.RepoRoot {
+		t.Fatalf("fixture is wrong: worktree repository identity = %q, want the startup's %q", got, startup.RepoRoot)
+	}
+
+	configs, _, _, warnings, err := DiscoverWithCLIOnlyAndEvidenceForProjectEnv(
+		execenv.NewLocalExecutionEnvironment(wt), nil, nil, &startup, true, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v, want none: the linked worktree holds the exact bytes the launch read", warnings)
+	}
+	if got, ok := serverConfigByName(configs)["committed"]; !ok || got.Command != secretValue {
+		t.Fatalf("configs = %+v, want the committed server expanded from the process environment", configs)
 	}
 }

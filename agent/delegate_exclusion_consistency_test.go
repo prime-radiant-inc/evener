@@ -219,6 +219,14 @@ func TestExclusionDecisionFlipRebuildsBothRosterSurfaces(t *testing.T) {
 	if strings.Contains(before.delegateRoster, cliTool) {
 		t.Fatalf("the settled delegate schema already advertises %s", cliTool)
 	}
+	// The settle above runs the same frozen-prompt refresh, so it must have
+	// armed a diff already. Clear it: the flip below is then the only thing that
+	// can arm one, and "the frozen prompt never rebuilt" cannot pass by
+	// inheriting a flag some earlier step left set.
+	if !s.systemPromptFrozen {
+		t.Fatal("fixture is wrong: the session's launch prompt is not frozen, so this test cannot show the immutable-prompt rule")
+	}
+	s.envContextPending.Store(false)
 
 	// The project layer changes so the classification no longer describes it: the
 	// probe answers "not current", the decision must flip, and BOTH surfaces must
@@ -229,11 +237,19 @@ func TestExclusionDecisionFlipRebuildsBothRosterSurfaces(t *testing.T) {
 		t.Fatal("the request path kept the exclusion after the layer it was derived from changed")
 	}
 	after := prepareRequestSnapshot(t, s)
-	if !strings.Contains(after.systemPrompt, cliTool) {
-		t.Error("the prompt roster still omits the newly reachable tool: the decision flipped and the prompt cache was not rebuilt from it")
-	}
 	if !strings.Contains(after.delegateRoster, cliTool) {
 		t.Error("the delegate schema still omits the newly reachable tool: the decision flipped and the tool definitions were not rebuilt from it")
+	}
+	// The launch system prompt is Turn 0 and immutable (#6959), so the roster
+	// change must NOT rewrite it: the refresh rebuilds what it may and arms an
+	// environment-context diff for what it may not. Asserting the diff here is
+	// what keeps "the prompt was not rebuilt" from being indistinguishable from
+	// "the change was dropped".
+	if after.systemPrompt != before.systemPrompt {
+		t.Error("the frozen launch system prompt changed when the roster decision flipped")
+	}
+	if !s.envContextPending.Load() {
+		t.Error("the frozen launch prompt was kept but no environment-context diff was armed, so the newly reachable tool never reaches the model")
 	}
 }
 
@@ -278,21 +294,39 @@ func TestNarrowRebuildCannotLeaveTheRostersDisagreeing(t *testing.T) {
 		t.Fatal("fixture is wrong: the exclusion was not applied, so the flip below proves nothing")
 	}
 
+	before := prepareRequestSnapshot(t, s)
+	if !s.systemPromptFrozen {
+		t.Fatal("fixture is wrong: the session's launch prompt is not frozen, so this test cannot show the immutable-prompt rule")
+	}
+	// Clear the diff the startup refresh armed: the flip and narrow rebuild below
+	// are then the only things that can arm one.
+	s.envContextPending.Store(false)
+
 	// The layer changes, then the user changes the vision model — a rebuild that
 	// touches the tool definitions only — all BEFORE the next request.
 	writeInfraFile(t, projectPath, `{"mcpServers":{"svc":{"command":"/bin/b"}}}`, 0o644)
 	if err := s.SetVisionModel("off"); err != nil {
 		t.Fatalf("SetVisionModel: %v", err)
 	}
+	// SetVisionModel refreshes the prompt cache too, and that refresh is equally
+	// frozen and equally arms a diff. Clear it here so the flag asserted below
+	// can only come from the NEXT request's exclusion refresh.
+	s.envContextPending.Store(false)
 
-	// The next request must carry the new answer on both surfaces. A prompt cache
-	// that considered itself current would still omit the tool here.
+	// The next request must carry the new answer on the surface a rebuild may
+	// change. The launch system prompt is Turn 0 and immutable (#6959), so the
+	// prompt roster travels as an armed environment-context diff instead: a
+	// refresh that considered itself current would neither rebuild the schema nor
+	// arm the diff, and the model would never learn the tool is reachable.
 	next := prepareRequestSnapshot(t, s)
-	if !strings.Contains(next.systemPrompt, cliTool) {
-		t.Error("the prompt roster still omits the tool the layer now makes reachable: the narrow definitions rebuild left the prompt cache serving the old answer")
-	}
 	if !strings.Contains(next.delegateRoster, cliTool) {
 		t.Error("the delegate schema still omits the tool the layer now makes reachable")
+	}
+	if next.systemPrompt != before.systemPrompt {
+		t.Error("the frozen launch system prompt changed when the roster decision flipped")
+	}
+	if !s.envContextPending.Load() {
+		t.Error("the frozen launch prompt was kept but no environment-context diff was armed, so the newly reachable tool never reaches the model")
 	}
 }
 

@@ -808,8 +808,11 @@ The grant is tightly bounded:
   sits inside the model's own write surface — a grant derived from it would let a
   session widen its own box (plant the file, spawn a delegate with
   `sandbox=restricted`, read whatever you named), breaking the rule that the policy
-  is fixed for the life of the session. A project-declared MCP server still connects
-  normally; it just cannot hand itself filesystem roots.
+  is fixed for the life of the session. This exclusion is only about filesystem
+  roots: a project-declared MCP server hands itself no roots either way, and
+  whether it connects at all is the [connection policy](#hooks-and-mcp-under-a-sandbox)
+  above, which withholds the network exception from entries the launch did not
+  authorize.
 - **Adds read and exec access, not write access.** Existing write permissions
   remain: a hook directory already under a writable root, such as the worktree
   in `workspace-write`, stays writable.

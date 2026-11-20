@@ -12,6 +12,9 @@ import (
 	"slices"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/envvars"
 )
 
 // A spawned child's delegate tool ceiling must describe what the child can
@@ -64,6 +67,16 @@ func TestDelegateToolCeilingOmitsToolsTheChildCannotRegister(t *testing.T) {
 		if slices.Contains(descriptor.ToolNameCeiling, name) {
 			t.Errorf("child ceiling names %q, which the child can never register: %v", name, descriptor.ToolNameCeiling)
 		}
+	}
+	// The ceiling alone does not say WHY a name is absent, and the two reasons
+	// have different lifetimes. Production must therefore COMMIT the
+	// reachability half on the descriptor: a cold restore re-admits a name from
+	// this list once the child can register it, and a name missing from both
+	// lists can never come back. The CLI tool must be recorded here or the
+	// recovery test below has no data to recover from.
+	if !slices.Contains(descriptor.CeilingReachabilityExcluded, cliTool) {
+		t.Errorf("the committed descriptor does not record %q as reachability-excluded, so a cold restore could never re-admit it: %v",
+			cliTool, descriptor.CeilingReachabilityExcluded)
 	}
 	// Ordinary tools survive: the exclusion is not a blanket strip.
 	if !slices.Contains(descriptor.ToolNameCeiling, "read_file") {
@@ -307,4 +320,104 @@ func TestDelegateToolCeilingKeepsPluginToolACLIEntryShadows(t *testing.T) {
 	// covers that direction, with a plugin agent whose tools map names the tool.
 	// What this test owns is the classification: the server the child still
 	// discovers must not be bucketed as CLI-only.
+}
+
+// TestColdRestoreRecoversAReachabilityExcludedCLITool is the cold-restore half
+// of the same rule, and it exists because the live test above cannot see the
+// difference between "the ceiling dropped the name" and "the descriptor never
+// recorded why".
+//
+// It uses a descriptor produced by the REAL delegate creation path — the same
+// call the live test makes — rather than one hand-built with the field already
+// populated. With the production write to descriptor.CeilingReachabilityExcluded
+// omitted, nothing records that the CLI tool was excluded only for
+// reachability, so a cold-restored child re-registering that tool would be
+// judged as exceeding its committed ceiling.
+//
+// The operator's half is simulated exactly as documented: the CLI-only server
+// is added to the GLOBAL layer, which a child still loads. The child then
+// registers the tool, and the restore must accept the name the descriptor
+// recorded as reachability-excluded.
+func TestColdRestoreRecoversAReachabilityExcludedCLITool(t *testing.T) {
+	hermeticInfraEnv(t)
+	bin := intg_buildMCPServer(t)
+
+	stateDir := t.TempDir()
+	root := newSession(t, withConfig(SessionConfig{
+		Manager:          true,
+		StateDir:         stateDir,
+		MCPInline:        []string{"ceilingmcp:" + bin},
+		MaxSubagentDepth: 1,
+		testOnly:         testConfig{minimalSystemPrompt: true, noSyncJobStore: true},
+	}))
+
+	const cliTool = "ceilingmcp__echo"
+	if root.reg.Get(cliTool) == nil {
+		t.Fatalf("Manager root did not register the CLI MCP tool %q, so nothing would be excluded", cliTool)
+	}
+
+	result := root.createDelegate(context.Background(), delegateArgs{Task: "child-input", DelegationAllowance: new(0)})
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	descriptor := delegateAggregateSnapshot(t, root.delegateController, result.DelegateID).Descriptor
+	if slices.Contains(descriptor.ToolNameCeiling, cliTool) {
+		t.Fatalf("fixture is wrong: the created ceiling already names %q: %v", cliTool, descriptor.ToolNameCeiling)
+	}
+	if !slices.Contains(descriptor.CeilingReachabilityExcluded, cliTool) {
+		t.Fatalf("the created descriptor did not record %q as reachability-excluded, so this test has nothing to recover: %v",
+			cliTool, descriptor.CeilingReachabilityExcluded)
+	}
+
+	// Persist the root meta the cold restore reads, then close the whole tree so
+	// the child is genuinely cold: no resident runtime to reuse.
+	meta := root.Meta()
+	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+		t.Fatalf("save root meta: %v", err)
+	}
+	workspace := root.currentEnv().WorkingDirectory()
+	root.Close()
+
+	// The operator adds the CLI-only server to the global layer, which every
+	// child loads. This is the documented way a reachability exclusion stops
+	// holding.
+	globalDir := filepath.Join(t.TempDir(), "evener")
+	writeInfraFile(t, filepath.Join(globalDir, "mcp.json"),
+		`{"mcpServers":{"ceilingmcp":{"command":"`+bin+`"}}}`, 0o644)
+	t.Setenv(envvars.XDGConfigHome.Name, filepath.Dir(globalDir))
+
+	restored, err := restoreDelegateResourceBootstrapSessionWithTestConfig(
+		root.client, root.profile, workspace, meta, stateDir,
+		testConfig{minimalSystemPrompt: true, noSyncJobStore: true})
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	t.Cleanup(restored.Close)
+	reservation, err := restored.delegateController.ReserveStart(rootDelegateActor(restored.id), result.DelegateID)
+	if err != nil {
+		t.Fatalf("ReserveStart: %v", err)
+	}
+	started, err := restored.delegateController.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("CommitStart: %v", err)
+	}
+	sub, fresh, err := (delegateRuntime{owner: restored}).restoreIdle(started)
+	if err != nil {
+		t.Fatalf("cold restore rejected a name the child registers and the committed descriptor recorded as reachability-excluded: %v", err)
+	}
+	if !fresh || sub == nil || sub.sess == nil {
+		t.Fatalf("cold restore = sub=%v restored=%t, want a reconstructed child", sub, fresh)
+	}
+	t.Cleanup(sub.sess.discardRestoredCandidate)
+
+	// The tool was genuinely unreachable at creation and genuinely registrable
+	// now: without both halves, the restore could succeed for the wrong reason.
+	if !sub.sess.reg.RegisteredNames()[cliTool] {
+		t.Fatalf("the restored child did not register %q from the global layer, so the recovery case never ran: %v",
+			cliTool, sub.sess.reg.RegisteredNames())
+	}
+	if !slices.Contains(effectiveChildToolCeiling(descriptor.ToolNameCeiling, descriptor.CeilingReachabilityExcluded, sub.sess.reg), cliTool) {
+		t.Errorf("the restored child registers %q but its effective ceiling excludes it, so the tool it holds is not callable: ceiling=%v excluded=%v",
+			cliTool, descriptor.ToolNameCeiling, descriptor.CeilingReachabilityExcluded)
+	}
 }

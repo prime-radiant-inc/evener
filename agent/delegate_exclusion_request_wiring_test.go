@@ -71,6 +71,13 @@ func TestModelRequestRefreshesTheExclusionCachesWithoutASpawn(t *testing.T) {
 	if strings.Contains(before.delegateRoster, cliTool) {
 		t.Fatalf("the startup request's delegate schema already advertises %s, so the edit cannot change what the model sees", cliTool)
 	}
+	// The startup refresh runs the same frozen-prompt path, so a diff is already
+	// owed for it. Clear that one: the config edit is then the only thing that
+	// can arm the diff asserted below.
+	if !s.systemPromptFrozen {
+		t.Fatal("fixture is wrong: the session's launch prompt is not frozen, so this test cannot show the immutable-prompt rule")
+	}
+	s.envContextPending.Store(false)
 
 	// The branch switches in place: the project layer now declares the server
 	// the CLI entry replaces, which makes the tool reachable for a child. No
@@ -84,16 +91,25 @@ func TestModelRequestRefreshesTheExclusionCachesWithoutASpawn(t *testing.T) {
 	if after.rosterExcludesCLIMCP {
 		t.Fatal("the model request still carries the startup roster decision after a config edit, so the refresh is not wired into the request path")
 	}
-	// Both provider-facing surfaces must now carry the name, read from the
-	// RETURNED request. Recomputing the roster from live session state is what
-	// let an earlier version of this test pass while the request itself was
-	// stale: the session can be right and the wire wrong, and the wire is what
-	// the model acts on.
-	if !strings.Contains(after.systemPrompt, cliTool) {
-		t.Error("the next model request's system prompt still omits the newly reachable tool, so the prompt cache was not rebuilt from the new answer")
-	}
+	// The delegate schema must now carry the name, read from the RETURNED
+	// request. Recomputing the roster from live session state is what let an
+	// earlier version of this test pass while the request itself was stale: the
+	// session can be right and the wire wrong, and the wire is what the model
+	// acts on.
+	//
+	// The system prompt is the one surface that must NOT change: it is the
+	// immutable launch prompt from Turn 0 (#6959). The roster answer reaches the
+	// model as an appended <environment_context> diff instead, which is what the
+	// armed flag records — a refresh that simply returned early would leave both
+	// stale.
 	if !strings.Contains(after.delegateRoster, cliTool) {
 		t.Error("the next model request's delegate schema still omits the newly reachable tool, so the tool-definition cache was not rebuilt from the new answer")
+	}
+	if after.systemPrompt != before.systemPrompt {
+		t.Error("the config edit rewrote the frozen launch system prompt instead of delivering the roster change as an appended diff")
+	}
+	if !s.envContextPending.Load() {
+		t.Error("the request path kept the frozen launch prompt but armed no environment-context diff, so the newly reachable tool never reaches the model")
 	}
 }
 

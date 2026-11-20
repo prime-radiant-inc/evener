@@ -610,8 +610,8 @@ func ProjectConfigPathFreshDefinitive(env execenv.ExecutionEnvironment) (string,
 	return filepath.Join(root, ".evener", "mcp.json"), true
 }
 
-// projectRepoRoot is the canonical main repository root the workspace belongs
-// to, or "" when the workspace is not inside a resolvable repository.
+// projectRepoRoot is the canonical main repository root the checkout holding dir
+// belongs to, or "" when dir is not inside a resolvable repository.
 //
 // It is the identity two checkouts of ONE repository share: the main checkout
 // and every linked worktree of it resolve here, while an unrelated repository
@@ -619,12 +619,31 @@ func ProjectConfigPathFreshDefinitive(env execenv.ExecutionEnvironment) (string,
 // so an authorization check can tell "the same committed file, read in a
 // worktree" from "the same bytes, planted in a different repository".
 //
-// Delegates to execenv.ResolveMainRepoRoot (memoized per environment).
-func projectRepoRoot(env execenv.ExecutionEnvironment) string {
-	if env == nil {
+// The resolution is FRESH, never the per-environment memo. The question is what
+// this directory is NOW, and a directory's answer changes: `git init` in a
+// subdirectory of a checkout makes that subdirectory its own repository. Reading
+// the memo the environment filled at startup would answer for the enclosing
+// repository the session launched in, so the nested repository's own
+// .evener/mcp.json would be mistaken for the launch's copy at a second path —
+// and the entries in a repository the launch never saw would be expanded
+// through the process environment and keep the network exception.
+func projectRepoRoot(env execenv.ExecutionEnvironment, dir string) string {
+	if env == nil || dir == "" {
 		return ""
 	}
-	return execenv.ResolveMainRepoRoot(env, env.WorkingDirectory())
+	return execenv.ResolveMainRepoRootFresh(env, dir)
+}
+
+// projectRepoRootForConfigPath is projectRepoRoot for a resolved project config
+// path: the checkout that supplied it is the directory two levels up, since the
+// layer always lives at <checkout>/.evener/mcp.json. Resolving from there rather
+// than from the environment's working directory is what makes the answer the
+// identity of the repository the FILE came from.
+func projectRepoRootForConfigPath(env execenv.ExecutionEnvironment, path string) string {
+	if path == "" {
+		return ""
+	}
+	return projectRepoRoot(env, filepath.Dir(filepath.Dir(path)))
 }
 
 // LayerEvidence is one configuration layer as discovery read it: the path the
@@ -917,21 +936,30 @@ func DiscoverWithCLIOnlyAndEvidenceForProjectEnv(env execenv.ExecutionEnvironmen
 // Everything else — no startup record, a launch outside any repository, an
 // unresolvable current path, an unrelated repository — is ineligible, and every
 // entry of the layer then expands through the restricted environment.
-func projectLayerEligible(authorized *LayerEvidence, env execenv.ExecutionEnvironment) bool {
+//
+// The repository identity is resolved afresh from THE CHECKOUT THAT SUPPLIED
+// projPath (the caller's already-resolved project config path), not from the
+// environment's startup memo. The memo answers for the directory the session
+// launched in, and the layer can come from a repository created since: `git
+// init` in a sandboxed session's subdirectory makes that subdirectory its own
+// repository, and its .evener/mcp.json is a different repository's file however
+// identical the bytes. Reading the memo would resolve the ENCLOSING repository's
+// identity for it and extend the launch's authorization to a repository the
+// launch never saw.
+func projectLayerEligible(authorized *LayerEvidence, projPath, repoRoot string) bool {
 	if authorized == nil || authorized.Path == "" {
 		return false
 	}
-	currentPath := ProjectConfigPath(env)
-	if currentPath == "" {
+	if projPath == "" {
 		return false
 	}
-	if currentPath == authorized.Path {
+	if projPath == authorized.Path {
 		return true
 	}
 	if authorized.RepoRoot == "" {
 		return false
 	}
-	return projectRepoRoot(env) == authorized.RepoRoot
+	return repoRoot == authorized.RepoRoot
 }
 
 // authorizedServerDigest returns the startup digest recorded for one server
@@ -982,10 +1010,16 @@ type discoverOptions struct {
 // is marked authorized; anything else expands through launchOverlayOnlyEnv(nil)
 // and is not.
 //
+// projPath is the ALREADY-RESOLVED project config path discovery is about to
+// read. It is passed in rather than resolved here so the layer path and the
+// checkout whose identity the eligibility check resolves can never be two
+// different answers to the same question — and so the identity is resolved from
+// the checkout the file actually came from.
+//
 // The per-server digests are always recorded, whatever the caller: that map is
 // what a DELEGATE this session constructs will match against, so a root session
 // has to produce it even though it uses none of it itself.
-func (o discoverOptions) projectLayerReadOptions(env execenv.ExecutionEnvironment) layerReadOptions {
+func (o discoverOptions) projectLayerReadOptions(projPath, repoRoot string) layerReadOptions {
 	if !o.sandboxed {
 		return layerReadOptions{
 			expand: func(s string) (string, error) {
@@ -994,7 +1028,7 @@ func (o discoverOptions) projectLayerReadOptions(env execenv.ExecutionEnvironmen
 			recordServerDigests: true,
 		}
 	}
-	eligible := projectLayerEligible(o.authorizedProject, env)
+	eligible := projectLayerEligible(o.authorizedProject, projPath, repoRoot)
 	restrictedEnv := launchOverlayOnlyEnv(nil)
 	restricted := func(s string) (string, error) {
 		return expandEnvVarsUntrustedInEnv(s, restrictedEnv)
@@ -1158,13 +1192,16 @@ func discoverLayers(o discoverOptions) ([]ServerConfig, CLIReachability, ConfigE
 	// skip-with-warning as any other project-layer parse failure.
 	if env != nil {
 		if projPath := ProjectConfigPath(env); projPath != "" {
-			opts := o.projectLayerReadOptions(env)
+			repoRoot := projectRepoRootForConfigPath(env, projPath)
+			opts := o.projectLayerReadOptions(projPath, repoRoot)
 			read, err := readLayer(projPath, opts)
 			// The repository the layer belongs to is recorded on every arm,
 			// absence included: it is what a sandboxed delegate's worktree
 			// compares against when the same committed bytes resolve at a
-			// different path (see projectLayerEligible).
-			read.Evidence.RepoRoot = projectRepoRoot(env)
+			// different path (see projectLayerEligible). It is resolved from
+			// the checkout that supplied projPath, afresh, so the identity
+			// recorded is the one the file actually came from.
+			read.Evidence.RepoRoot = repoRoot
 			evidence.Project = read.Evidence
 			if err != nil {
 				if !errors.Is(err, os.ErrNotExist) {
