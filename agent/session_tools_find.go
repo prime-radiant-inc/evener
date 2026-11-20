@@ -971,7 +971,10 @@ func newProjectNameResolver(bucketMetas ...map[string][]schema.SessionMeta) *pro
 //     records one.
 //  3. Bucket-wide inference from siblings. It describes the bucket, not the
 //     lane, so it only answers once nothing row-specific did.
-//  4. The path's own basename.
+//  4. The path's own basename. A DELETED path instead takes the name of the
+//     surviving checkout above it when that checkout is exactly the project the
+//     bucket records: that ID check does not depend on the walk, which is what
+//     lets it lift the existence gate steps 1 and 2 apply.
 //
 // Two properties hold at every site:
 //
@@ -1131,7 +1134,11 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 	// checkout of its own. Walking "." resolves against THIS process, so a legacy
 	// row that saved --dir . would take the label of whichever repository the
 	// search happens to be running in.
-	if filepath.IsAbs(wd) && directoryExists(wd) {
+	//
+	// The existence verdict is taken once: step 4 asks the same question, and no
+	// step between the two writes.
+	wdExists := filepath.IsAbs(wd) && directoryExists(wd)
+	if wdExists {
 		if root := r.resolveMainRoot(wd); root != "" {
 			return filepath.Base(root)
 		}
@@ -1149,6 +1156,21 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 	// and one that every relative record shares.
 	if !filepath.IsAbs(wd) {
 		return ""
+	}
+	// A DELETED ordinary path may still take the name of the surviving checkout
+	// that encloses it, and only when the bucket records a project and the walk
+	// finds exactly that project's root above the missing path. This is a display
+	// fallback only: projectAt, projectRecord and recordedOrdinaryProject still
+	// report no project for a deleted ordinary path, and an existing directory is
+	// never relabelled. A legacy or shared bucket records no project, so nothing
+	// verifies the ancestor there and the recorded basename stays.
+	if !wdExists {
+		if bucketID, known := r.bucketProjectID(bucketDir); known {
+			if root := r.resolveMainRoot(wd); root != "" &&
+				identifier.ProjectFromCanonicalPath(identifier.ResolveClean(root)).ID == bucketID {
+				return filepath.Base(root)
+			}
+		}
 	}
 	return filepath.Base(wd)
 }

@@ -1075,6 +1075,62 @@ func TestFind_ProjectName_SameProjectManagedLaneKeepsSiblingOrigin(t *testing.T)
 	}
 }
 
+// TestFind_ProjectName_DeletedSubdirKeepsSurvivingRepoAncestor covers a session
+// started in an originless repository's subdirectory and later deleted. The
+// bucket still records the repository's project and the repository survives, so
+// the display label is the surviving ancestor's basename — not the deleted
+// directory's. A bucket that records another project keeps the recorded
+// basename, and an existing non-repository directory keeps its own.
+func TestFind_ProjectName_DeletedSubdirKeepsSurvivingRepoAncestor(t *testing.T) {
+	stateHome := pinStateHome(t)
+
+	checkout := newNamedCheckout(t, "deleted-subdir-repo")
+	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(checkout))
+	bucket, err := RuntimeDirForProjectWithStateHome(project, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+
+	// The row recorded a subdirectory of the checkout that does not exist on
+	// disk, so only the spelling survives.
+	row := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	row.EnvInfo.WorkingDir = filepath.Join(checkout, "pkg")
+
+	wantRepo := filepath.Base(checkout)
+	if got := newProjectNameResolver().projectName(row, bucket); got != wantRepo {
+		t.Fatalf("projectName(deleted subdirectory %q of a surviving checkout) = %q, want the surviving checkout's %q", row.EnvInfo.WorkingDir, got, wantRepo)
+	}
+
+	// The same row under a bucket that records a DIFFERENT project keeps the
+	// recorded basename: the surviving ancestor is not this row's project.
+	other := newNamedCheckout(t, "other-unique-name")
+	otherProject := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(other))
+	otherBucket, err := RuntimeDirForProjectWithStateHome(otherProject, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper for the other project: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(otherBucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir other bucket: %v", err)
+	}
+	if got := newProjectNameResolver().projectName(row, otherBucket); got != "pkg" {
+		t.Fatalf("projectName(deleted subdirectory under a foreign project's bucket) = %q, want the recorded basename %q", got, "pkg")
+	}
+
+	// An existing non-repository directory is not relabelled by this fallback.
+	notes := filepath.Join(t.TempDir(), "my-notes")
+	if err := os.MkdirAll(notes, 0o755); err != nil {
+		t.Fatalf("mkdir notes: %v", err)
+	}
+	notesRow := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	notesRow.EnvInfo.WorkingDir = notes
+	if got := newProjectNameResolver().projectName(notesRow, bucket); got != "my-notes" {
+		t.Fatalf("projectName(existing non-repository directory) = %q, want %q", got, "my-notes")
+	}
+}
+
 // TestFind_ProjectName_StateLaneStopsGitWalkAtLaneRoot covers a shared --state-dir
 // that lives inside checkout A while holding a managed delegate lane for
 // checkout B. Deleting the originless lane leaves nothing at the lane path, so a
