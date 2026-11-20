@@ -238,3 +238,34 @@ func TestResponsesLateCallIDDoesNotRepeatAnnouncement(t *testing.T) {
 	want := []call{{"c9", "fc_first", "f", goodArgs}}
 	assertSettledCalls(t, live, recorded, want)
 }
+
+// A disputed output_item.done must not rebind the item's issued owner, or a
+// later item-only completion resolves to the disputed call and the first call
+// is lost.
+func TestResponsesDisputedItemDoneKeepsOwnerMapping(t *testing.T) {
+	t.Parallel()
+	disputedEnd := `{"type":"response.output_item.done","output_index":3,"item":{"type":"function_call","id":"fc_first","call_id":"c2","name":"f","arguments":"{ \"b\" : 2 }"}}`
+	itemOnlyEnd := `{"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","id":"fc_first","name":"write_file"}}`
+	frames := []string{addedFirst, firstDelta, firstDone, disputedDone(badArgs), disputedEnd, itemOnlyEnd, noOutput}
+	ends := []call{{"c2", "", "f", badArgs}, {"c1", "fc_first", "write_file", goodArgs}}
+	want := []call{{"c1", "fc_first", "write_file", goodArgs}, {"c2", "", "f", badArgs}}
+	events, live, recorded := decodeBoth(t, frames...)
+	if got := callEvents(events, llm.StreamEventToolCallEnd); !slices.Equal(got, ends) {
+		t.Errorf("live ends = %+v, want %+v", got, ends)
+	}
+	assertSettledCalls(t, live, recorded, want)
+}
+
+// A call ID learned from a frame is the item state's own: later frames naming
+// it must keep appending there, not open a provisional bucket that drops the
+// prefix.
+func TestResponsesLateCallIDKeepsAppendingFrames(t *testing.T) {
+	t.Parallel()
+	added := `{"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_first","name":"f"}}`
+	first := `{"type":"response.function_call_arguments.delta","item_id":"fc_first","call_id":"c9","delta":"{ \"a\""}`
+	second := `{"type":"response.function_call_arguments.delta","item_id":"fc_first","call_id":"c9","delta":" : 1 }"}`
+	itemEnd := `{"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","id":"fc_first","call_id":"c9","name":"f"}}`
+	starts := []call{{"fc_first", "fc_first", "f", ""}}
+	want := []call{{"fc_first", "fc_first", "f", goodArgs}}
+	testResponsesDisputedCallSettles(t, []string{added, first, second, itemEnd, noOutput}, starts, want)
+}

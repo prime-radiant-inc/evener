@@ -316,8 +316,10 @@ func (st *responsesToolState) noteIssuedCallID(callID, itemID string) {
 // the stream has not issued while its item_id already belongs to another call.
 // An item-keyed state has no issued call ID yet, so the explicit ID is that
 // call's real one: the frame records it on that state instead of disputing.
+// State filed under the explicit ID does not settle the question: it may be the
+// provisional bucket the dispute itself created.
 func (acc *responsesOutputAccumulator) disputesIssuedOwner(callID, itemID string) bool {
-	if callID == "" || itemID == "" || acc.toolStates[callID] != nil {
+	if callID == "" || itemID == "" {
 		return false
 	}
 	owner := acc.itemToCallID[itemID]
@@ -325,7 +327,7 @@ func (acc *responsesOutputAccumulator) disputesIssuedOwner(callID, itemID string
 		return false
 	}
 	st := acc.toolStates[owner]
-	return st != nil && st.issuedCallID != ""
+	return st != nil && st.issuedCallID != "" && st.issuedCallID != callID
 }
 
 // bufferObservedArguments records one argument observation for a call the
