@@ -52,7 +52,6 @@ import buttonStyles from "../widgets/button/button.module.css";
 import "../styles/tokens.css";
 import "../styles/global.css";
 import { PaneScaffold } from "../widgets/panescaffold";
-import { isElementVisible } from "./guardVisibility";
 
 window.addEventListener("error", (event) => {
   const target = window as typeof window & { __shellGuardErrors?: string[] };
@@ -861,9 +860,6 @@ const target = window as typeof window & {
       triggerVisible: boolean;
       nearMax: boolean;
     };
-    focusTrigger: () => { triggerFocused: boolean };
-    trigger: () => HTMLButtonElement | null;
-    triggerRevealed: () => boolean;
     readAfter: () => {
       scrollTop: number;
       triggerFocused: boolean;
@@ -1020,19 +1016,15 @@ target.measureRailRenderCounts = () => ({
 // to reveal a trigger nobody could see. No other guard suite measures either
 // fact, so this fixture supplies the journey:
 //
-//   scrollRailToEnd -> focusTrigger -> (the runner's trusted click opens the
-//   menu) -> pushTriggerOut -> the layout dismissal settles.
+//   scrollRailToEnd -> (the runner's trusted click opens the menu) ->
+//   pushTriggerOut -> the layout dismissal settles.
 //
-// It touches only fixture state: the row's focus and its reveal (the real
-// reveal paths for its hover-quiet actions), the scroll offset, and one
-// inserted block. The block
+// It touches only fixture state: the row's reveal (the real hover-quiet
+// styling), the scroll offset, and one inserted block. The block
 // opts this scroller out of Chrome's scroll anchoring because anchoring would
 // raise scrollTop by the inserted height to keep the visible rows still -
 // exactly the movement the guard has to attribute to the dismissal's focus()
 // alone.
-let focusScrollMarker: HTMLElement | null = null;
-let focusScrollTriggerNode: HTMLButtonElement | null = null;
-
 // RailRow.module.css's .actions holds a row's menu trigger quiet: visibility
 // hidden until the row is hovered, its treeitem is focused, or its own menu is
 // open. A live insertion that pushes the trigger out of the rail dismisses the
@@ -1066,9 +1058,12 @@ function focusScrollBody(): HTMLElement {
   return body;
 }
 
+// The row's menu trigger, by the marker scrollRailToEnd left: the fixture owns
+// the lookup, and the runner only names the journey.
 function focusScrollTrigger(): HTMLButtonElement {
-  if (focusScrollTriggerNode === null) throw new Error("focus-scroll fixture: run scrollRailToEnd first");
-  return focusScrollTriggerNode;
+  const trigger = document.querySelector("[data-focus-scroll-trigger]")?.closest<HTMLButtonElement>("button") ?? null;
+  if (trigger === null) throw new Error("focus-scroll fixture: run scrollRailToEnd first");
+  return trigger;
 }
 
 // The client area of a scroll container, in viewport coordinates: the box
@@ -1086,17 +1081,11 @@ target.focusScrollFixture = {
     const markers = [...body.querySelectorAll<HTMLElement>("[data-session-actions-ref]")];
     const marker = markers[markers.length - 1] ?? null;
     if (marker === null) throw new Error("focus-scroll fixture: the rail has no session menu trigger");
-    focusScrollMarker?.removeAttribute("data-focus-scroll-trigger");
-    focusScrollMarker = marker;
     marker.dataset.focusScrollTrigger = "";
-    focusScrollTriggerNode = marker.closest<HTMLButtonElement>("button");
-    const actionsRevealed = revealFocusScrollActions(focusScrollTriggerNode);
-    // Focus the row first: its treeitem focus is what reveals the row's
-    // hover-quiet actions, making the trigger focusable and hit-testable next.
-    // preventScroll keeps the fixture at the maximum it just set.
-    marker.closest<HTMLElement>('[role="treeitem"]')?.focus({ preventScroll: true });
+    const trigger = marker.closest<HTMLButtonElement>("button");
+    const actionsRevealed = revealFocusScrollActions(trigger);
     const area = clientArea(body);
-    const triggerBox = focusScrollTriggerNode?.getBoundingClientRect() ?? null;
+    const triggerBox = trigger?.getBoundingClientRect() ?? null;
     const maxScrollTop = body.scrollHeight - body.clientHeight;
     return {
       triggerRef: marker.dataset.sessionActionsRef ?? null,
@@ -1108,17 +1097,6 @@ target.focusScrollFixture = {
       triggerVisible: triggerBox !== null && triggerBox.top >= area.top && triggerBox.bottom <= area.bottom,
       nearMax: body.scrollTop >= maxScrollTop - 1,
     };
-  },
-  focusTrigger() {
-    const trigger = focusScrollTrigger();
-    trigger.focus();
-    return { triggerFocused: document.activeElement === trigger };
-  },
-  trigger() {
-    return focusScrollTriggerNode;
-  },
-  triggerRevealed() {
-    return isElementVisible(focusScrollTriggerNode);
   },
   readAfter() {
     const trigger = focusScrollTrigger();

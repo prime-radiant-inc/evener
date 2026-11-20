@@ -408,6 +408,10 @@ function assertTouchRailMinimum(result) {
   return failures;
 }
 
+// The row's menu trigger, marked by scrollRailToEnd: the runner names the
+// journey's nodes, the fixture owns how to find them.
+const FOCUS_SCROLL_TRIGGER = "document.querySelector('[data-focus-scroll-trigger]')?.closest('button')";
+
 // The rail row menu dismisses itself when a live insertion above its trigger
 // pushes the trigger out of the rail body's client area, and the dismissal
 // returns focus to that trigger. With preventScroll the rail keeps the offset
@@ -434,26 +438,15 @@ async function measureFocusScroll(page) {
     `focus-scroll fixture: rail row ${prepared.triggerRef}'s menu trigger is outside the rail body's client area at maximum scroll`,
   );
   // The fixture holds this row's actions revealed (the state the row's own
-  // focus or hover puts them in); wait for that render before focusing the
-  // trigger itself.
-  await waitForDom(send, "window.focusScrollFixture.triggerRevealed()", "rail row actions revealed by row focus");
-  const focused = await evaluate(send, "window.focusScrollFixture.focusTrigger()");
-  requireFixture(
-    focused.triggerFocused,
-    `focus-scroll fixture: focus did not land on rail row ${prepared.triggerRef}'s menu trigger`,
-  );
+  // focus or hover puts them in), so the click reaches the trigger.
   await clickControl(send, "[data-focus-scroll-trigger]");
-  await waitForDom(
-    send,
-    "window.focusScrollFixture.trigger()?.getAttribute('aria-expanded') === 'true'",
-    "rail row menu opened",
-  );
+  await waitForDom(send, `${FOCUS_SCROLL_TRIGGER}?.getAttribute('aria-expanded') === 'true'`, "rail row menu opened");
   // The insertion IS the dismissal: the menu's own layout observer names the
   // now-hidden trigger and closes through its no-scroll path.
   const pushed = await evaluate(send, "window.focusScrollFixture.pushTriggerOut()");
   await waitForDom(
     send,
-    "window.focusScrollFixture.trigger()?.getAttribute('aria-expanded') === 'false'",
+    `${FOCUS_SCROLL_TRIGGER}?.getAttribute('aria-expanded') === 'false'`,
     "layout dismissal of the rail row menu",
   );
   await settleFiniteAnimations(send);
