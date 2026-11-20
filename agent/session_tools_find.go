@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
@@ -2521,16 +2522,27 @@ func resolveMainRootWithin(dir, root string) string {
 }
 
 // mainRootAt answers for one directory from its own .git entry. found is false
-// only when that entry is absent: an entry that exists and is refused answers
+// when that entry is absent, and when a component of dir is not a directory so
+// there is no directory to ask: a recorded path below a lane can have a
+// component replaced by a regular file — a branch switch does exactly that —
+// and probing "<dir>/.git" then fails with ENOTDIR. ENOTDIR establishes that
+// there is no directory here to ask, so there is no checkout that was found and
+// refused; the walk must pass it by and climb to the lane root, whose own
+// pointer still names the checkout. An entry that exists and is refused answers
 // with the empty root and found true, so no caller climbs past a checkout whose
-// shape has already been decided. Absence is os.IsNotExist, never any other
-// error, because a read that failed did not establish that nothing is there.
+// shape has already been decided. Absence is os.ErrNotExist or ENOTDIR, never
+// any other error, because a read that failed did not establish that nothing is
+// there.
 func mainRootAt(dir string) (root string, found bool) {
 	gitPath := filepath.Join(dir, ".git")
 	info, err := os.Lstat(gitPath)
 	switch {
 	case err != nil:
-		return "", !os.IsNotExist(err)
+		// ENOTDIR proves a component of dir is not a directory, so there is no
+		// directory to ask and no checkout that was found and refused.
+		// os.ErrNotExist likewise says nothing is there. Every other error is a
+		// read that failed without establishing absence, so it stays a refusal.
+		return "", !(errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR))
 	case info.IsDir():
 		return identifier.ResolveClean(dir), true
 	case info.Mode()&os.ModeSymlink != 0:

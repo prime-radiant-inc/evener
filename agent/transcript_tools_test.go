@@ -5527,3 +5527,71 @@ func TestFind_ProjectName_DanglingSymlinkUnderAnAliasedLane(t *testing.T) {
 		t.Fatalf("projectName(%q through a dangling symlink under an aliased lane) = %q, want the live lane's checkout %q", row.EnvInfo.WorkingDir, got, want)
 	}
 }
+
+// TestFind_ProjectName_RecordedFileUnderALiveLaneKeepsTheProject covers a live
+// managed lane reached through a symlink alias whose recorded subdirectory is
+// now a regular file, as a branch switch can do. Probing "<file>/.git"
+// fails with ENOTDIR, which is not absence of a checkout, so the bounded walk
+// must pass the file by and keep climbing to the lane root: the lane's own Git
+// pointer still names the checkout, and this row has no restore root, owner,
+// parent or sibling that could name it instead.
+func TestFind_ProjectName_RecordedFileUnderALiveLaneKeepsTheProject(t *testing.T) {
+	repo := newNamedCheckout(t, "live-lane-file-repo")
+	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repo))
+	stateDir := filepath.Join(repo, "flat-state")
+	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir state dir sessions: %v", err)
+	}
+	lane := filepath.Join(stateDir, "worktrees", project.ID, "dlg_recorded_file")
+	gittest.Run(t, repo, "worktree", "add", "-q", lane, "-b", "lane-recorded-file")
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(lane, alias); err != nil {
+		t.Fatalf("symlink alias: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(lane, "sub"), []byte("not a directory\n"), 0o644); err != nil {
+		t.Fatalf("write a file at the recorded subdirectory path: %v", err)
+	}
+
+	row := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	row.EnvInfo.WorkingDir = filepath.Join(alias, "sub")
+
+	if got, want := projectName(row, stateDir), filepath.Base(repo); got != want {
+		t.Fatalf("projectName(%q, recorded subdirectory replaced by a file under a live lane) = %q, want the lane's checkout %q", row.EnvInfo.WorkingDir, got, want)
+	}
+}
+
+// TestFind_ProjectName_RecordedFileAboveTheRecordedLeafKeepsTheLaneProject
+// covers a live managed lane reached through a symlink alias whose recorded path
+// sits BELOW a component that is now a regular file: <lane>/pkg is a file, and
+// the recorded directory is <alias>/pkg/cmd, where cmd does not exist. Resolving
+// the existing prefix hands back <lane>/pkg/cmd, so probing "<dir>/.git" fails
+// with ENOTDIR at every step down to the lane root. ENOTDIR establishes that a
+// component of dir is not a directory, so there is no directory there to ask and
+// no checkout that was found and refused; the bounded walk must pass it by and
+// keep climbing to the lane root, whose own Git pointer still names the
+// checkout. This row has no restore root, owner, parent or sibling that could
+// name it instead.
+func TestFind_ProjectName_RecordedFileAboveTheRecordedLeafKeepsTheLaneProject(t *testing.T) {
+	repo := newNamedCheckout(t, "live-lane-file-leaf-repo")
+	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repo))
+	stateDir := filepath.Join(repo, "flat-state")
+	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir state dir sessions: %v", err)
+	}
+	lane := filepath.Join(stateDir, "worktrees", project.ID, "dlg_recorded_leaf")
+	gittest.Run(t, repo, "worktree", "add", "-q", lane, "-b", "lane-recorded-leaf")
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(lane, alias); err != nil {
+		t.Fatalf("symlink alias: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(lane, "pkg"), []byte("not a directory\n"), 0o644); err != nil {
+		t.Fatalf("write a file above the recorded leaf: %v", err)
+	}
+
+	row := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	row.EnvInfo.WorkingDir = filepath.Join(alias, "pkg", "cmd")
+
+	if got, want := projectName(row, stateDir), filepath.Base(repo); got != want {
+		t.Fatalf("projectName(%q, recorded leaf below a regular file under a live lane) = %q, want the lane's checkout %q", row.EnvInfo.WorkingDir, got, want)
+	}
+}
