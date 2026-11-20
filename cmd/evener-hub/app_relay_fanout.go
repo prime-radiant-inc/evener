@@ -234,10 +234,18 @@ func (r *hubRelay) startAcknowledgedFanout(
 			}
 			acknowledge(delivery)
 		}
-		routesPending := func() bool {
+		// retainDelivery reports whether the retained departure still has a
+		// route that needs it. A route that bound during this pass is absent
+		// from the snapshot the pass served, and its read can bind and
+		// release before this decision, leaving no command owner and nothing
+		// deferred. Every binding replaces the wait channel, so a replaced
+		// channel proves the snapshot is stale and hands the departure to the
+		// pass that change already woke.
+		retainDelivery := func() bool {
 			r.mu.Lock()
 			defer r.mu.Unlock()
-			return handle.commandOwners != 0 && !handle.stopping
+			return (handle.commandOwners != 0 && !handle.stopping) ||
+				handle.routeChanged != routeChangeWait
 		}
 		// serveDaemonGone publishes a daemon-gone delivery to every current
 		// route it has not reached yet. It reports whether a route still
@@ -300,7 +308,7 @@ func (r *hubRelay) startAcknowledgedFanout(
 			if observe := observeHubRelayDaemonGoneRetention.Load(); observe != nil {
 				(*observe)()
 			}
-			return routesPending() || deferred
+			return retainDelivery() || deferred
 		}
 		processPending := func() {
 			captureRouteChange()
