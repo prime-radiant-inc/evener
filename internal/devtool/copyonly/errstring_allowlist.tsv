@@ -86,7 +86,6 @@ agent/jobs_cov_test.go	1
 agent/jobs_covtest2_test.go	2
 agent/jobs_nested_seed100_more_test.go	1
 agent/jobs_pure_covtest_test.go	2
-agent/mcpconfig/config_test.go	1
 agent/nil_guards_covtest_test.go	4
 agent/plugin/agents_test.go	1
 agent/plugin/json_depth_regression_test.go	1

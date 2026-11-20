@@ -218,42 +218,57 @@ func responsesTerminalDisowned(terminal []any, id, callID string) bool {
 }
 
 // adoptTerminalPhases gives each streamed message the phase its own terminal placeholder announced.
-// Messages pair by non-empty item ID, and otherwise by message ordinal (when neither side names a
-// conflicting ID), so the first placeholder's
+// Explicit item-ID matches reserve their placeholders first, and the message ordinal pairs the rest
+// (when neither side names a conflicting ID and that slot is still free), so the first placeholder's
 // phase never lands on every recovered message. Unmatched terminal phased messages and web_search_call
 // items are appended directly so stream() converts them once.
 func adoptTerminalPhases(streamed []any, streamedRaw []json.RawMessage, terminal []any) ([]any, []json.RawMessage) {
-	var phased []map[string]any // terminal message items, in order
-	for _, raw := range terminal {
-		item, _ := raw.(map[string]any)
-		if kind, _ := item["type"].(string); kind == "message" {
-			phased = append(phased, item)
-		}
-	}
-	matched := make([]bool, len(phased))
-	ordinal := 0
-	for _, raw := range streamed {
-		item, _ := raw.(map[string]any)
-		if kind, _ := item["type"].(string); kind != "message" {
-			continue
-		}
-		k := ordinal
-		ordinal++
-		id, _ := item["id"].(string)
-		match := slices.IndexFunc(phased, func(m map[string]any) bool { return id != "" && m["id"] == id })
-		if match < 0 && k < len(phased) {
-			theirID, _ := phased[k]["id"].(string)
-			if id == "" || theirID == "" {
-				match = k // no conflicting IDs, so the message ordinal decides
-			}
-		}
-		if match >= 0 && match < len(phased) {
-			matched[match] = true
-			if p, _ := item["phase"].(string); p == "" {
-				if phase, _ := phased[match]["phase"].(string); phase != "" {
-					item["phase"] = phase
+	messageItems := func(items []any) []map[string]any {
+		var out []map[string]any
+		for _, raw := range items {
+			if item, _ := raw.(map[string]any); item != nil {
+				if kind, _ := item["type"].(string); kind == "message" {
+					out = append(out, item)
 				}
 			}
+		}
+		return out
+	}
+	phased := messageItems(terminal)   // terminal message items, in order
+	messages := messageItems(streamed) // streamed message items, in message order
+	matched := make([]bool, len(phased))
+	adopt := func(item, placeholder map[string]any) {
+		if p, _ := item["phase"].(string); p != "" {
+			return
+		}
+		if phase, _ := placeholder["phase"].(string); phase != "" {
+			item["phase"] = phase
+		}
+	}
+	// A message that names a terminal placeholder by item ID reserves it first, so the
+	// ordinal fallback can never hand that placeholder's phase to another message.
+	reserved := make([]bool, len(messages))
+	for i, item := range messages {
+		id, _ := item["id"].(string)
+		if id == "" {
+			continue
+		}
+		if match := slices.IndexFunc(phased, func(m map[string]any) bool { return m["id"] == id }); match >= 0 {
+			matched[match], reserved[i] = true, true
+			adopt(item, phased[match])
+		}
+	}
+	// A still-unmatched message pairs with the placeholder at its own ordinal, but only
+	// when neither side names a conflicting ID and no ID already reserved that slot.
+	for k, item := range messages {
+		if reserved[k] || k >= len(phased) || matched[k] {
+			continue
+		}
+		id, _ := item["id"].(string)
+		theirID, _ := phased[k]["id"].(string)
+		if id == "" || theirID == "" {
+			matched[k] = true
+			adopt(item, phased[k])
 		}
 	}
 	for i, m := range phased {
@@ -306,12 +321,17 @@ func settleResponsesTerminalOutput(r *llm.Response, rawResp map[string]any, acc 
 		// a call: a settled response keeps every call the stream completed, so Finish stays tool_calls.
 		accumulatedOutput, accumulatedRawOutput := acc.recoveredOutput(terminalOutput)
 		if inc {
-			for _, rawItem := range accumulatedOutput {
-				item, _ := rawItem.(map[string]any)
-				id, _ := item["id"].(string)
-				callID, _ := item["call_id"].(string)
-				if responsesTerminalDisowned(terminalOutput, id, callID) {
-					item["status"] = "incomplete"
+			// A recovered call named only by item ID carries that ID as its call_id, so
+			// pass the issued id (empty there) and let the item ID decide. A provider
+			// call_id is still compared as a call_id, keeping distinct calls apart.
+			for i := range acc.entries {
+				e := &acc.entries[i]
+				if e.item["type"] != "function_call" {
+					continue
+				}
+				id, _ := e.item["id"].(string)
+				if responsesTerminalDisowned(terminalOutput, id, e.issuedCallID) {
+					e.item["status"] = "incomplete"
 				}
 			}
 		}

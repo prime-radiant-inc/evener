@@ -858,7 +858,7 @@ func packItemCandidates[T any](
 			return zero, fmt.Errorf("canonicalize transcript item candidates: %w", err)
 		}
 	}
-	if _, err := appitempaging.RegroupTurnFragments(candidates); err != nil {
+	if err := appitempaging.ValidateCandidates(candidates); err != nil {
 		return zero, fmt.Errorf("invalid transcript item candidates: %w", err)
 	}
 	if err := validateSourceItemContinuation(result, candidates); err != nil {

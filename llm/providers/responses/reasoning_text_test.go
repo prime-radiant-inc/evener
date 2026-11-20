@@ -23,6 +23,7 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 		`{"type":"response.reasoning_part.added","item_id":"rs_1","output_index":0,"content_index":0,"part":{"type":"reasoning_text","text":""}}`,
 		`{"type":"response.reasoning_text.delta","item_id":"rs_1","output_index":0,"content_index":0,"delta":"Let me "}`,
 		`{"type":"response.reasoning_text.delta","item_id":"rs_1","output_index":0,"content_index":0,"delta":"think."}`,
+		`{"type":"response.reasoning_part.added","item_id":"rs_1","output_index":0,"content_index":0,"part":{"type":"reasoning_text","text":""}}`,
 		`{"type":"response.reasoning_part.added","item_id":"rs_1","output_index":0,"content_index":1,"part":{"type":"reasoning_text","text":""}}`,
 		`{"type":"response.reasoning_text.delta","item_id":"rs_1","output_index":0,"content_index":1,"delta":"Then verify."}`,
 		`{"type":"response.output_text.delta","delta":"Answer"}`,
@@ -45,6 +46,56 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 	}
 	if got := reasoning.String(); got != "Let me think.\n\nThen verify." {
 		t.Fatalf("reasoning stream = %q, want %q", got, "Let me think.\n\nThen verify.")
+	}
+}
+
+// A second reasoning item starts a fresh accumulator entry, but the live preview is one
+// running thought, so a blank line still separates it from the first item's text. The
+// recovered parts stay scoped to their own item.
+func TestSecondReasoningItemKeepsLiveSeparator(t *testing.T) {
+	t.Parallel()
+	const nl = "\n\n"
+	cases := []struct{ name, part string }{
+		{"indexed", `{"type":"response.reasoning_summary_part.added","item_id":"rs_2","output_index":2,"summary_index":0}`},
+		{"unindexed", `{"type":"response.reasoning_summary_part.added","item_id":"rs_2","output_index":2}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			frames := `{"type":"response.reasoning_summary_text.delta","item_id":"rs_1","output_index":0,"delta":"first"}` + nl +
+				tc.part + nl +
+				`{"type":"response.reasoning_summary_text.delta","item_id":"rs_2","output_index":2,"delta":"second"}` + nl +
+				`{"type":"response.output_text.delta","output_index":3,"delta":"answer"}` + nl +
+				`{"type":"response.completed","response":{"id":"r","status":"completed","output":[]}}`
+			events, settled := settledBothEvents(t, frames)
+			var reasoning strings.Builder
+			for _, ev := range events {
+				if ev.Type == llm.StreamEventReasoningDelta {
+					reasoning.WriteString(ev.ReasoningDelta)
+				}
+			}
+			if got, want := reasoning.String(), "first\n\nsecond"; got != want {
+				t.Errorf("live reasoning = %q, want %q across the two items", got, want)
+			}
+			for _, r := range settled {
+				var thinking []*llm.ThinkingData
+				for _, p := range r.Message.Content {
+					if p.Thinking != nil {
+						thinking = append(thinking, p.Thinking)
+					}
+				}
+				if len(thinking) != 2 {
+					t.Fatalf("thinking parts = %d, want one per reasoning item", len(thinking))
+				}
+				wantParts := [][]llm.ResponsesReasoningPart{
+					{{Type: "summary_text", Text: "first"}},
+					{{Type: "summary_text", Text: "second"}},
+				}
+				if thinking[0].ID != "rs_1" || thinking[0].Text != "first" || !slices.Equal(thinking[0].ResponsesSummaryParts, wantParts[0]) ||
+					thinking[1].ID != "rs_2" || thinking[1].Text != "second" || !slices.Equal(thinking[1].ResponsesSummaryParts, wantParts[1]) {
+					t.Errorf("settled thinking = %+v, want each item's parts scoped to it", thinking)
+				}
+			}
+		})
 	}
 }
 

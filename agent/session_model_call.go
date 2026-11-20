@@ -123,6 +123,15 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// --- Phase: SystemPrompt ---
 	tPhaseStart := s.sclock().Now()
 
+	// Re-derive the CLI-MCP exclusion before the prompt and tool definitions are
+	// snapshotted below. A project or global config edited after startup can make
+	// a name the startup classification excluded reachable again, and nothing
+	// else on the request path notices: the caches are otherwise rebuilt only
+	// when a delegate ceiling build happens to move the version. Refreshing here
+	// is what makes the EDIT the trigger, so the next request's roster and
+	// delegate schema agree with the configuration on disk.
+	s.refreshCachesForExclusionChangeContext(ctx)
+
 	effortOverride := ""
 	// A resumed session may have a persisted task store without having loaded
 	// it in this process yet. The once-guarded accessor also avoids racing a

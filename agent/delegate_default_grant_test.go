@@ -72,10 +72,19 @@ func TestCreateDelegate_DefaultGrantIsOneBelowTheGranter(t *testing.T) {
 			if durable == nil || durable.Descriptor.DelegationAllowance != tc.wantAllowance {
 				t.Fatalf("descriptor allowance = %+v, want %d", durable, tc.wantAllowance)
 			}
-			if live == nil || live.binding == nil || live.binding.runtime == nil {
-				t.Fatal("no live child session")
+			// Read the child through the subagent registration, not through
+			// live.binding: createDelegate launches the run, and a child that
+			// finishes before this line reaches releaseGenerationLocked, which
+			// nils the binding. That is a normal settle, not a missing child, so
+			// the binding is not the handle this test may depend on.
+			if live == nil {
+				t.Fatal("no live delegate state")
 			}
-			names := live.binding.runtime.reg.RegisteredNames()
+			sub := root.getSub(result.ChildSessionID)
+			if sub == nil || sub.sess == nil {
+				t.Fatal("no child session registered for the delegate")
+			}
+			names := sub.sess.reg.RegisteredNames()
 			if names["delegate"] != tc.wantDelegate {
 				t.Errorf("child delegate=%v, want %v", names["delegate"], tc.wantDelegate)
 			}
