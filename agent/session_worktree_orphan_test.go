@@ -1768,10 +1768,11 @@ func (l *sharedDescendantLane) driveUntil(stop <-chan struct{}) func() error {
 // callbacks signal: the daemon reaches a presentation on its wake edge, not on
 // a cadence, and a refused drive arms the root's paced retry. A callback the
 // test itself wired is its own driver and is left alone. stop outranks a
-// buffered wake — once the caller closes it, no further pass runs, or a pass
-// after the stop would drive a runtime the test has already moved past and
-// bypass whatever resident path it arms next. The worker ends on the test's own
-// context too, so a failed wait cannot leave it driving past test end.
+// buffered wake: once the caller closes it, no new pass starts. A pass already
+// admitted when stop closes can still be in flight, so a caller that must not
+// drive a runtime it has moved past joins the returned done channel. The worker
+// ends on the test's own context too, so a failed wait cannot leave it driving
+// past test end.
 func (l *sharedDescendantLane) startDrive(stop <-chan struct{}) (func() error, <-chan struct{}) {
 	var flushMu sync.Mutex
 	var flushErr error
@@ -1943,11 +1944,9 @@ func TestDelegateAttentionFailedStartReopensConsumedReport(t *testing.T) {
 	// the presentation from running now.
 	wtGit(t, r.mainRoot, "worktree", "unlock", lane.lanePath)
 
-	// The recovery needs its own driver window: the first loop's budget was
-	// set before the refusal wait, so a slow refusal under load leaves that
-	// loop little or no time to re-drive after the unlock — the exact load
-	// shape this test pins. This second driver runs to its own fresh budget,
-	// so the refusal's duration cannot starve the recovery.
+	// The recovery needs its own driver window: the setup worker was stopped
+	// and joined before the unlock, so the recovery's wait below starts from a
+	// fresh budget rather than one consumed by the refusal.
 	recoveryFlush := lane.driveUntil(entered)
 
 	// The recovery window has its own budget: a slow refusal under load must
