@@ -85,9 +85,9 @@ func (l *activityJobList) withLive(live map[string]*jobstore.JobRecord) *activit
 //   - stranded holds the live IDs the list does not name at all. Those records
 //     are kept — the job is still running, its process is alive, and the
 //     manager's own listing still shows it, so dropping it would report a
-//     running job as gone — in their own chunk after the durable ones. The row
-//     that placed them earlier is exactly what the rebuild took, so there is no
-//     position left to put them back at.
+//     running job as gone — appended after the durable ones, filling their last
+//     chunk when it is partial. The row that placed them earlier is exactly what
+//     the rebuild took, so there is no position left to put them back at.
 //   - changed holds the rows whose projection the live record alters: a class or
 //     an owner that differs from the durable row's. A truncation past a running
 //     job's start can leave its completion as the only durable row, and that row
@@ -178,23 +178,14 @@ func (l *activityJobList) withLiveRebuilt(live map[string]*jobstore.JobRecord, s
 		}
 		return strings.Compare(a.JobID, b.JobID)
 	})
-	chunk := &activityJobChunk{records: kept, owners: make(map[string]activityJobCounts, len(kept))}
+	// Append through the builder: it fills the last chunk when it is partial,
+	// so "every chunk but the last is full" holds and len() stays exact and
+	// constant-time.
+	b := newActivityJobListBuilder(next, nil)
 	for _, rec := range kept {
-		chunk.count(rec, 1)
+		b.push(rec)
 	}
-	// Capped at its length before appending, for the same reason the chunk
-	// pointers above are copied rather than Clipped: a slice with spare
-	// capacity shares its backing array with the list it came from, so an
-	// append writes a stranded chunk INTO the published fold's own slice.
-	//
-	// Nothing is visible until a slot past the fold's length is written, and
-	// then two things go wrong at once: the fold every other reader holds grows
-	// a chunk it never built, and a second request over the same fold with a
-	// different live snapshot overwrites that slot with its own stranded set.
-	// A page built from either list then renders the other request's jobs.
-	// Clip caps the capacity at the length, which makes the append below
-	// allocate rather than write into the array this slice still shares.
-	next.chunks = append(slices.Clip(next.chunks), chunk)
+	next.chunks = b.chunks
 	return next
 }
 

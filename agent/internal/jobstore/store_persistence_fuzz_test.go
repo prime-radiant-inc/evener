@@ -291,7 +291,7 @@ func reloadFold(t *testing.T, l *lane) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	records, err := s.LoadOrdered()
+	records, err := loadOrderedForTest(s)
 	if err != nil {
 		return nil, err
 	}
