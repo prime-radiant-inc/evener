@@ -19,8 +19,11 @@ import (
 
 type responsesToolState struct {
 	id, itemID, name string
-	started          bool
-	args             bytes.Buffer
+	// issuedCallID is the provider's own call_id for this call. A call the stream
+	// named only by item ID leaves it empty, so settlement still matches it by item ID.
+	issuedCallID string
+	started      bool
+	args         bytes.Buffer
 }
 
 // responsesOutputAccumulator tracks response.output_item.added/done and
@@ -36,6 +39,9 @@ type responsesOutputAccumulator struct {
 	toolStates   map[string]*responsesToolState
 	itemToCallID map[string]string
 	entries      []responsesAccumEntry
+	// reasoningTextSeen records that some reasoning item has already emitted text, so a
+	// later item's first part still needs the blank line the live preview renders.
+	reasoningTextSeen bool
 }
 
 type responsesAccumPart struct {
@@ -45,13 +51,15 @@ type responsesAccumPart struct {
 }
 
 type responsesAccumEntry struct {
-	index     int    // output_index, or -1 until a frame supplies it
-	id        string // the wire item id, which identifies a slot that carries no output_index
-	item      map[string]any
-	parts     []responsesAccumPart
-	raw       json.RawMessage
-	settled   bool
-	summaries bool // reasoning deltas were summaries, which replay as summaries, never as content
+	index        int    // output_index, or -1 until a frame supplies it
+	id           string // the wire item id, which identifies a slot that carries no output_index
+	issuedCallID string // the provider-issued call_id behind a recovered call, empty when synthesized
+	item         map[string]any
+	parts        []responsesAccumPart
+	raw          json.RawMessage
+	settled      bool
+	summaries    bool // reasoning deltas were summaries, which replay as summaries, never as content
+	separated    bool // the live preview already emitted a separator in front of this item
 }
 
 func (e *responsesAccumEntry) hasPartContent() bool {
@@ -228,6 +236,7 @@ func (acc *responsesOutputAccumulator) HandleDelta(payload map[string]any, kind 
 	entry := acc.pending(payload, kind)
 	slot := len(entry.parts) - 1
 	if kind == "reasoning" {
+		acc.reasoningTextSeen = true
 		if idx, ok := responsesReasoningPartIndex(payload, summary); ok {
 			slot, _ = entry.ensurePartSlot(idx)
 		}
@@ -240,14 +249,18 @@ func (acc *responsesOutputAccumulator) HandleReasoningPart(payload map[string]an
 	entry := acc.pending(payload, "reasoning")
 	hasContent := entry.hasPartContent()
 	if idx, ok := responsesReasoningPartIndex(payload, summary); ok {
-		_, created := entry.ensurePartSlot(idx)
-		return created && hasContent
+		_, _ = entry.ensurePartSlot(idx)
+	} else if hasContent {
+		entry.parts = append(entry.parts, responsesAccumPart{})
 	}
-	if !hasContent {
-		return false
+	// A part boundary inside an item that already has text separates it. A newly begun
+	// reasoning item has no text of its own, but the live preview is one running
+	// thought, so text an earlier item emitted still needs separating -- once per item.
+	if hasContent || (acc.reasoningTextSeen && !entry.separated) {
+		entry.separated = true
+		return true
 	}
-	entry.parts = append(entry.parts, responsesAccumPart{})
-	return true
+	return false
 }
 
 // toolStateFor is the accumulated state for one function call: the entry
@@ -267,6 +280,15 @@ func (acc *responsesOutputAccumulator) toolStateFor(callID, itemID, name string)
 	st := &responsesToolState{id: callID, name: name}
 	acc.toolStates[callID] = st
 	return st
+}
+
+// noteIssuedCallID records a call_id the provider itself sent for this call. A call the
+// stream named only by item ID keeps an empty issued id, and a foreign call_id addressed
+// to a different state is not this call's to record.
+func (st *responsesToolState) noteIssuedCallID(callID string) {
+	if callID != "" && callID == st.id {
+		st.issuedCallID = callID
+	}
 }
 
 // HandleOutputItemAdded pre-registers a function_call tool state from a
@@ -297,6 +319,7 @@ func (acc *responsesOutputAccumulator) HandleOutputItemAdded(payload, item map[s
 	}
 	if callID != "" {
 		st.id = callID
+		st.noteIssuedCallID(callID)
 		acc.toolStates[callID] = st
 	}
 	if itemID != "" {
@@ -323,7 +346,8 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDelta(payload 
 	if delta == "" {
 		delta, _ = payload["arguments"].(string)
 	}
-	callID, _ := payload["call_id"].(string)
+	issuedCallID, _ := payload["call_id"].(string)
+	callID := issuedCallID
 	itemID, _ := payload["item_id"].(string)
 	if callID == "" && itemID != "" {
 		callID = acc.itemToCallID[itemID]
@@ -339,6 +363,7 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDelta(payload 
 		return nil, "", false
 	}
 	st := acc.toolStateFor(callID, itemID, name)
+	st.noteIssuedCallID(issuedCallID)
 	if st.name == "" && name != "" {
 		st.name = name
 	}
@@ -364,7 +389,8 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDelta(payload 
 // caller should pass the raw payload through.
 func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDone(payload map[string]any, eventData []byte) (state *responsesToolState, ok bool) {
 	argsStr, _ := payload["arguments"].(string)
-	callID, _ := payload["call_id"].(string)
+	issuedCallID, _ := payload["call_id"].(string)
+	callID := issuedCallID
 	itemID, _ := payload["item_id"].(string)
 	if callID == "" && itemID != "" {
 		callID = acc.itemToCallID[itemID]
@@ -376,6 +402,7 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDone(payload m
 		return nil, false
 	}
 	st := acc.toolStateFor(callID, itemID, "")
+	st.noteIssuedCallID(issuedCallID)
 	if itemID != "" {
 		st.itemID = itemID
 		acc.itemToCallID[itemID] = st.id
@@ -442,7 +469,8 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 	if responsesFunctionCallUnfinished(item) {
 		return item, nil, "", false
 	}
-	callID, _ := item["call_id"].(string)
+	issuedCallID, _ := item["call_id"].(string)
+	callID := issuedCallID
 	itemID, _ := item["id"].(string)
 	name, _ := item["name"].(string)
 	argsStr, _ = item["arguments"].(string)
@@ -458,6 +486,7 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 		return item, nil, "", false
 	}
 	st := acc.toolStateFor(callID, itemID, name)
+	st.noteIssuedCallID(issuedCallID)
 	if itemID != "" {
 		st.itemID = itemID
 		acc.itemToCallID[itemID] = st.id
@@ -474,7 +503,8 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 		argsStr = st.args.String()
 	}
 	acc.entries = append(acc.entries, responsesAccumEntry{index: index, settled: true, raw: rawItemToken,
-		item: map[string]any{"type": "function_call", "call_id": st.id, "id": st.itemID, "name": st.name, "arguments": argsStr}})
+		issuedCallID: st.issuedCallID,
+		item:         map[string]any{"type": "function_call", "call_id": st.id, "id": st.itemID, "name": st.name, "arguments": argsStr}})
 	return item, st, argsStr, true
 }
 
