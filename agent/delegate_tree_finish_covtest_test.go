@@ -107,17 +107,6 @@ func TestCompleteSettlement_StaleClaim(t *testing.T) {
 	}
 }
 
-// TestReportActivity_NilController covers the nil-controller guard
-// in ReportActivity (lines 85-87).
-func TestReportActivity_NilController(t *testing.T) {
-	t.Parallel()
-	var c *delegateTreeController
-	err := c.ReportActivity(delegateLease{}, testTime)
-	if err == nil {
-		t.Fatal("expected error for nil controller")
-	}
-}
-
 // TestReportActivity_ZeroAt covers the at.IsZero() path (lines 88-90).
 func TestReportActivity_ZeroAt(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
@@ -126,27 +115,5 @@ func TestReportActivity_ZeroAt(t *testing.T) {
 	err := c.ReportActivity(delegateLease{delegateID: "dlg_target", generation: 1}, time.Time{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-// TestBeginQuietAttention_NilController covers the nil-controller guard
-// (lines 177-178).
-func TestBeginQuietAttention_NilController(t *testing.T) {
-	t.Parallel()
-	var c *delegateTreeController
-	_, err := c.BeginQuietAttention(nil, delegateLease{}, time.Time{})
-	if err == nil {
-		t.Fatal("expected error for nil controller")
-	}
-}
-
-// TestCompleteQuietAttention_NilController covers the nil-controller guard
-// (lines 231-232).
-func TestCompleteQuietAttention_NilController(t *testing.T) {
-	t.Parallel()
-	var c *delegateTreeController
-	err := c.CompleteQuietAttention(nil, false)
-	if err == nil {
-		t.Fatal("expected error for nil controller")
 	}
 }

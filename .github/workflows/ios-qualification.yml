@@ -232,6 +232,7 @@ jobs:
             ${{ env.QUALIFICATION_OUTPUT }}/*.exit
             ${{ env.QUALIFICATION_OUTPUT }}/Podfile.lock.candidate
             ${{ env.QUALIFICATION_OUTPUT }}/Podfile.lock.diff
+          retention-days: 7
           if-no-files-found: warn
 
   # The journeys job's build-independent work: the runtime pair (make
@@ -432,4 +433,5 @@ jobs:
             ${{ env.JOURNEY_OUTPUT }}/ui/*.json
             ${{ env.JOURNEY_OUTPUT }}/ui/*.exit
             ${{ env.JOURNEY_OUTPUT }}/ui/ui.xcresult
+          retention-days: 7
           if-no-files-found: warn

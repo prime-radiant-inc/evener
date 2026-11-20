@@ -242,49 +242,6 @@ func TestHeadOutput(t *testing.T) {
 	}
 }
 
-// TestBoundedStructuredResult covers all branches of boundedStructuredResult: nil value with captureFailed, nil value with schema,
-// nil value without schema, marshal error/too large, schema validation fail,
-// and the happy path.
-func TestBoundedStructuredResult(t *testing.T) {
-	t.Parallel()
-	// nil value with captureFailed=true.
-	got, valid, reason := boundedStructuredResult(nil, nil, true)
-	if got != nil || valid == nil || *valid != false || reason != structuredResultReasonSchemaCaptureFailed {
-		t.Fatalf("captureFailed: got=%v valid=%v reason=%q", got, valid, reason)
-	}
-
-	// nil value with schema requested, no captureFailed.
-	got, valid, reason = boundedStructuredResult(nil, "someSchema", false)
-	if got != nil || valid == nil || *valid != false || reason != structuredResultReasonSchemaResultMissing {
-		t.Fatalf("schema+nil: got=%v valid=%v reason=%q", got, valid, reason)
-	}
-
-	// nil value without schema.
-	got, valid, reason = boundedStructuredResult(nil, nil, false)
-	if got != nil || valid != nil || reason != "" {
-		t.Fatalf("nil no schema: got=%v valid=%v reason=%q", got, valid, reason)
-	}
-
-	// Value too large: create a value that marshals to > maxPersistedStructuredResultJSONBytes.
-	large := strings.Repeat("x", maxPersistedStructuredResultJSONBytes+100)
-	got, valid, reason = boundedStructuredResult(large, nil, false)
-	if got != nil || valid == nil || *valid != false || reason != structuredResultReasonSchemaResultTooLarge {
-		t.Fatalf("too large: got=%v valid=%v reason=%q", got, valid, reason)
-	}
-
-	// Happy path: small value, no schema.
-	got, valid, reason = boundedStructuredResult(map[string]any{"ok": true}, nil, false)
-	if got == nil || valid == nil || *valid != true || reason != "" {
-		t.Fatalf("happy path: got=%v valid=%v reason=%q", got, valid, reason)
-	}
-
-	// Value that cannot be marshaled (channel).
-	got, valid, reason = boundedStructuredResult(make(chan int), nil, false)
-	if got != nil || valid == nil || *valid != false || reason != structuredResultReasonSchemaCaptureFailed {
-		t.Fatalf("marshal error: got=%v valid=%v reason=%q", got, valid, reason)
-	}
-}
-
 // TestBoundedStructuredResultSchemaValidation covers the schema validation
 // failure branch.
 func TestBoundedStructuredResultSchemaValidation(t *testing.T) {

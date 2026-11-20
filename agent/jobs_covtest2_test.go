@@ -705,6 +705,15 @@ func TestCovBoundedStructuredResult(t *testing.T) {
 	if reason != structuredResultReasonSchemaResultTooLarge {
 		t.Fatalf("reason = %q, want %q", reason, structuredResultReasonSchemaResultTooLarge)
 	}
+
+	// Value that cannot be marshaled (a channel) — returns nil, false, capture_failed.
+	v, valid, reason = boundedStructuredResult(make(chan int), nil, false)
+	if v != nil || valid == nil || *valid != false {
+		t.Fatal("marshal error should return valid=false")
+	}
+	if reason != structuredResultReasonSchemaCaptureFailed {
+		t.Fatalf("reason = %q, want %q", reason, structuredResultReasonSchemaCaptureFailed)
+	}
 }
 
 // TestCovJobStopReceiptWait covers jobStopReceipt.wait:

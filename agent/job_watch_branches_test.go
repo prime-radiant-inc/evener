@@ -3,7 +3,6 @@ package agent
 import (
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -33,22 +32,6 @@ func TestFormatQuietWindow(t *testing.T) {
 		if got := formatQuietWindow(tc.window); got != tc.want {
 			t.Errorf("formatQuietWindow(%v) = %q, want %q", tc.window, got, tc.want)
 		}
-	}
-}
-
-// ---------------------------------------------------------------------------
-// quietWatchdogMessage
-// ---------------------------------------------------------------------------
-
-func TestQuietWatchdogMessage(t *testing.T) {
-	t.Parallel()
-	now := time.Date(2025, 6, 15, 10, 30, 0, 0, time.UTC)
-	msg := quietWatchdogMessage(10*time.Minute, now)
-	if !strings.Contains(msg, "10m") {
-		t.Fatalf("expected '10m' in message: %q", msg)
-	}
-	if !strings.Contains(msg, "quiet for") {
-		t.Fatalf("expected 'quiet for' in message: %q", msg)
 	}
 }
 
@@ -277,34 +260,6 @@ func TestWatchTargetTerminalError(t *testing.T) {
 	if !strings.Contains(err.Error(), "target_terminal") {
 		t.Fatalf("expected 'target_terminal' in error: %v", err)
 	}
-}
-
-// ---------------------------------------------------------------------------
-// watchArgsHasCondition
-// ---------------------------------------------------------------------------
-
-func TestWatchArgsHasCondition(t *testing.T) {
-	t.Parallel()
-	t.Run("output_match", func(t *testing.T) {
-		if !watchArgsHasCondition(watchArgs{OutputMatch: "ERROR"}) {
-			t.Fatalf("expected true for output_match")
-		}
-	})
-	t.Run("progress_interval", func(t *testing.T) {
-		if !watchArgsHasCondition(watchArgs{ProgressIntervalMS: 5000}) {
-			t.Fatalf("expected true for progress_interval")
-		}
-	})
-	t.Run("events", func(t *testing.T) {
-		if !watchArgsHasCondition(watchArgs{Events: []string{"job.notification"}}) {
-			t.Fatalf("expected true for events")
-		}
-	})
-	t.Run("no condition", func(t *testing.T) {
-		if watchArgsHasCondition(watchArgs{}) {
-			t.Fatalf("expected false for no condition")
-		}
-	})
 }
 
 // ---------------------------------------------------------------------------
@@ -570,30 +525,6 @@ func TestWatchEventFilterSnapshot(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// cloneWatchSendArgs
-// ---------------------------------------------------------------------------
-
-func TestCloneWatchSendArgs(t *testing.T) {
-	t.Parallel()
-	t.Run("nil", func(t *testing.T) {
-		if cloneWatchSendArgs(nil) != nil {
-			t.Fatalf("expected nil for nil send")
-		}
-	})
-	t.Run("clone", func(t *testing.T) {
-		send := &watchSendArgs{To: "dlg_1", Message: "hello", IncludeExcerpt: true}
-		clone := cloneWatchSendArgs(send)
-		if clone == nil || clone.To != "dlg_1" {
-			t.Fatalf("clone wrong: %+v", clone)
-		}
-		clone.To = "modified"
-		if send.To == "modified" {
-			t.Fatalf("expected original to be unaffected")
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
 // stableWatchSourceID
 // ---------------------------------------------------------------------------
 
@@ -715,44 +646,6 @@ func TestWatchSendKeyLess(t *testing.T) {
 		t.Fatalf("expected b >= a")
 	}
 }
-
-// ---------------------------------------------------------------------------
-// watchKeyMatchesClearRequest
-// ---------------------------------------------------------------------------
-
-func TestWatchKeyMatchesClearRequest(t *testing.T) {
-	t.Parallel()
-	t.Run("exact match", func(t *testing.T) {
-		candidate := watchKey{VisibleSessionID: "s1", Target: "job_1", SendTo: "dlg_1"}
-		request := watchKey{VisibleSessionID: "s1", Target: "job_1", SendTo: "dlg_1"}
-		if !watchKeyMatchesClearRequest(candidate, request) {
-			t.Fatalf("expected true for exact match")
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
-// availableEventKindNames
-// ---------------------------------------------------------------------------
-
-func TestAvailableEventKindNames(t *testing.T) {
-	t.Parallel()
-	names := availableEventKindNames()
-	if len(names) == 0 {
-		t.Fatalf("expected non-empty event kind names")
-	}
-	// Should be a copy
-	sort.Strings(names)
-	original := availableEventKindNames()
-	if sort.SearchStrings(names, original[0]) < 0 { //nolint:staticcheck // intentional: verifies event kinds exist
-		// just verify they exist
-		_ = original
-	}
-}
-
-// ---------------------------------------------------------------------------
-// availableEventKindNames returns a copy
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // watchSendArgs struct

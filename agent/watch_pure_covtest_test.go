@@ -79,32 +79,6 @@ func TestCovFormatQuietDuration(t *testing.T) {
 	}
 }
 
-// TestCovFormatQuietWindow covers formatQuietWindow.
-func TestCovFormatQuietWindow(t *testing.T) {
-	t.Parallel()
-	if got := formatQuietWindow(10 * time.Minute); got != "10m" {
-		t.Fatalf("10m = %q", got)
-	}
-	if got := formatQuietWindow(time.Minute); got != "1m" {
-		t.Fatalf("1m = %q", got)
-	}
-	if got := formatQuietWindow(90 * time.Second); got != "1m30s" {
-		t.Fatalf("1m30s = %q", got)
-	}
-	if got := formatQuietWindow(50 * time.Millisecond); got != "50ms" {
-		t.Fatalf("50ms = %q", got)
-	}
-}
-
-// TestCovWatchEndedUnfiredMessage covers watchEndedUnfiredMessage.
-func TestCovWatchEndedUnfiredMessage(t *testing.T) {
-	t.Parallel()
-	got := watchEndedUnfiredMessage("job_1", jobstore.StatusCompleted, "done", 4096)
-	if !strings.Contains(got, "job_1") || !strings.Contains(got, "completed") || !strings.Contains(got, "done") || !strings.Contains(got, "4096") {
-		t.Fatalf("watchEndedUnfiredMessage = %q", got)
-	}
-}
-
 // TestCovWatchArgsHasCondition covers watchArgsHasCondition.
 func TestCovWatchArgsHasCondition(t *testing.T) {
 	t.Parallel()
@@ -131,29 +105,6 @@ func TestCovWatchArgsHasCondition(t *testing.T) {
 	// Receiver session target → true (target must be a session target).
 	if !watchArgsHasCondition(watchArgs{ReceiverSessionID: "sess1", Target: "caller"}) {
 		t.Fatal("receiver session target should be a condition")
-	}
-}
-
-// TestCovWatchArgsIsOutputMatchOnly covers watchArgsIsOutputMatchOnly.
-func TestCovWatchArgsIsOutputMatchOnly(t *testing.T) {
-	t.Parallel()
-	if !watchArgsIsOutputMatchOnly(watchArgs{OutputMatch: "READY"}) {
-		t.Fatal("output_match only should be true")
-	}
-	if watchArgsIsOutputMatchOnly(watchArgs{OutputMatch: "READY", Events: []string{"assistant.tool"}}) {
-		t.Fatal("with events should be false")
-	}
-	if watchArgsIsOutputMatchOnly(watchArgs{OutputMatch: "READY", Clear: true}) {
-		t.Fatal("with clear should be false")
-	}
-	if watchArgsIsOutputMatchOnly(watchArgs{OutputMatch: "READY", Every: 2}) {
-		t.Fatal("with every should be false")
-	}
-	if watchArgsIsOutputMatchOnly(watchArgs{OutputMatch: "READY", ProgressIntervalMS: 1000}) {
-		t.Fatal("with progress should be false")
-	}
-	if watchArgsIsOutputMatchOnly(watchArgs{}) {
-		t.Fatal("empty should be false")
 	}
 }
 
@@ -268,26 +219,6 @@ func TestCovNormalizeWatchArgs(t *testing.T) {
 	}
 	if a.EventFilter != nil {
 		t.Fatal("nil filter should stay nil")
-	}
-}
-
-// TestCovCloneWatchEventFilter covers cloneWatchEventFilter.
-func TestCovCloneWatchEventFilter(t *testing.T) {
-	t.Parallel()
-	// Nil → nil.
-	if got := cloneWatchEventFilter(nil); got != nil {
-		t.Fatal("nil should return nil")
-	}
-
-	// Non-nil → clone.
-	orig := &watchEventFilter{ToolName: "exec", Status: "ok"}
-	clone := cloneWatchEventFilter(orig)
-	if clone.ToolName != "exec" || clone.Status != "ok" {
-		t.Fatalf("clone = %+v", clone)
-	}
-	clone.ToolName = "modified"
-	if orig.ToolName == "modified" {
-		t.Fatal("clone should be independent")
 	}
 }
 
@@ -794,35 +725,6 @@ func TestCovLiveShellHandles(t *testing.T) {
 	got = jm.liveShellHandles()
 	if len(got) != 1 {
 		t.Fatalf("no-workdir shell excluded = %v", got)
-	}
-}
-
-// ---- delegate_runtime.go pure functions ----
-
-// TestCovDelegateQuietAttentionID covers delegateQuietAttentionID and
-// delegateQuietAttentionIDForStretch.
-func TestCovDelegateQuietAttentionID(t *testing.T) {
-	t.Parallel()
-	lease := delegateLease{delegateID: "dlg_1", generation: 2}
-	got := delegateQuietAttentionID(lease)
-	if got != "quiet:dlg_1:2:1" {
-		t.Fatalf("got = %q", got)
-	}
-
-	got = delegateQuietAttentionIDForStretch(lease, 3)
-	if got != "quiet:dlg_1:2:3" {
-		t.Fatalf("stretch = %q", got)
-	}
-}
-
-// TestCovDelegateQuietAttentionContent covers delegateQuietAttentionContent.
-func TestCovDelegateQuietAttentionContent(t *testing.T) {
-	t.Parallel()
-	lease := delegateLease{delegateID: "dlg_1", generation: 1}
-	now := time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC)
-	got := delegateQuietAttentionContent(lease, delegateQuietWindow, now)
-	if !strings.Contains(got, "dlg_1") || !strings.Contains(got, "delegate-notification") {
-		t.Fatalf("content = %q", got)
 	}
 }
 
