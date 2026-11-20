@@ -965,15 +965,14 @@ func newProjectNameResolver(bucketMetas ...map[string][]schema.SessionMeta) *pro
 // each site below is an instance of it rather than a rule of its own:
 //
 //  1. What the ROW itself states: its own saved origin, then its own record's
-//     project ID (a managed lane's path), then a live checkout it names. A
-//     surviving checkout whose canonical ID is that recorded project ID names
-//     it, and belongs to this item rather than item 3.
+//     project ID (a managed lane's path), then a live checkout it names.
 //  2. What a record the row is TIED TO states: its owner, then its verified
 //     parent. Row-specific evidence must name the lane's project when the lane
 //     records one.
-//  3. A GONE path whose surviving checkout is this row's project: the project the
-//     row saved for itself, and otherwise the one the bucket records. That ID
-//     check is what lets the checkout answer for a path that no longer exists.
+//  3. A GONE path whose surviving checkout is the required project — a lane's
+//     recorded project ID, else the row's saved project — and otherwise the one
+//     the bucket records. That ID check is what lets the checkout answer for a
+//     path that no longer exists.
 //  4. Bucket-wide inference from siblings. It describes the bucket, not the
 //     lane, so it only answers once nothing row-specific did.
 //  5. The path's own basename.
@@ -1107,7 +1106,7 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 			// directory is what a lane under it records, and the display name is not
 			// part of that comparison.
 			if !hasGitRoot {
-				if name, isWorktree := inRepoWorktreeProject(checkout); isWorktree {
+				if name, _, isWorktree := inRepoWorktreeProjectPath(checkout); isWorktree {
 					return name
 				}
 			}
@@ -1151,31 +1150,46 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 		// the label. This is the same claim the sibling and parent scans accept, so
 		// refusing it only here loses a label the rest of the resolver keeps.
 		//
-		// It is asked BEFORE the lane fallback because the two are not the same kind
-		// of claim. A matching restore root is the row's own record positively
-		// identifying the project its lane path names. The fallback is bucket-wide
-		// inference — an origin another session in the bucket saved — and a bucket
-		// that has served more than one repository still holds that origin after the
-		// sibling that saved it is gone. Letting the unverified inference answer first
-		// is what replaced a label backed by the row's own record with an unrelated
-		// sibling's. The fallback still answers when no matching evidence supplies a
-		// name, which is what keeps a lane whose only evidence is a sibling labelled.
+		// A session-owned lane at <stateDir>/sessions/<sid>/worktrees/<lane>
+		// records no project segment, and a legacy bucket records no project
+		// either. The row may still have saved the project it belongs to, and that
+		// saved project is then what the row's evidence is checked against.
+		required := laneProjectID
+		if required == "" {
+			required = ownProject
+		}
+		// 1. The row's own recorded ordinary path. A matching restore root is the
+		// row's own record positively identifying the required project — the lane's
+		// recorded project, or the row's own saved one when the lane records none.
 		//
 		// The lane's own leaf stays out of the result: it is a lane name, and only
-		// an ordinary restore root names a repository. A lane with no recorded
-		// project has nothing to match against, so it keeps the empty answer.
-		if laneProjectID != "" {
-			if gone, projectID := r.recordedOrdinaryProject(m, bucketDir); projectID != "" && projectID == laneProjectID {
+		// an ordinary restore root names a repository. A lane with neither a
+		// recorded nor a saved project has nothing to match against here, so this
+		// item is skipped and the ties and prefix walk below decide.
+		if required != "" {
+			if gone, projectID := r.recordedOrdinaryProject(m, bucketDir); projectID != "" && projectID == required {
 				return filepath.Base(gone)
 			}
-			if root := r.verifiedPrefixRoot(prefixCandidates, laneProjectID, bucketProject, bucketKnown); root != "" {
-				return filepath.Base(root)
-			}
 		}
-		// Only now, with every field of the row's own record asked and none of
+		// 2. The records the row is TIED TO: its owner, then its verified parent.
+		// These outrank the surviving checkout below because they are records of
+		// this lane, while that checkout describes only the space a gone path
+		// occupied. The owner's bare home directory is the one candidate here that
+		// is a name rather than a project claim, and it still answers first.
+		// Only bucket-wide sibling inference is withheld here, and it is withheld
+		// until item 4: the row's own gone path still gets its surviving checkout
+		// read first.
+		if tied, _ := r.worktreeFallback(lanePath, bucketDir, m.ParentSessionID, false); tied != "" {
+			return tied
+		}
+		// 3. A gone path whose surviving checkout verifies the required project.
+		if root := r.verifiedPrefixRoot(prefixCandidates, required, bucketProject, bucketKnown); root != "" {
+			return filepath.Base(root)
+		}
+		// 4. Only now, with every field of the row's own record asked and none of
 		// them answering, does bucket-wide inference run. It is the weakest
 		// evidence the resolver has, so it answers last rather than first.
-		laneFallback, _ := r.worktreePathFallback(lanePath, bucketDir, m.ParentSessionID)
+		laneFallback, _ := r.worktreeFallback(lanePath, bucketDir, m.ParentSessionID, true)
 		return laneFallback
 	}
 	if prefixRoot := r.verifiedPrefixRoot(prefixCandidates, ownProject, bucketProject, bucketKnown); prefixRoot != "" {
@@ -1297,16 +1311,15 @@ func inRepoWorktreeProjectPath(clean string) (name, repoDir string, isWorktree b
 	return "", "", false
 }
 
-// inRepoWorktreeProject answers only the label; see inRepoWorktreeProjectPath.
-func inRepoWorktreeProject(clean string) (name string, isWorktree bool) {
-	name, _, isWorktree = inRepoWorktreeProjectPath(clean)
-	return name, isWorktree
-}
-
-// worktreePathFallback answers a state worktree's project label. It evaluates
+// worktreeFallback answers a state worktree's project label. It evaluates
 // every candidate interpretation of the evidence independently and returns the
 // strongest: returning on the first structural match would let a candidate that
 // is rejected take the still-valid evidence down with it.
+//
+// includeSiblings decides whether item 4 is consulted at all. A caller that has
+// not yet read the row's own gone path through the surviving-checkout walk asks
+// with it false, so bucket-wide inference cannot answer before that walk; the
+// sources above it are always considered.
 //
 // Evidence, strongest first:
 //
@@ -1315,7 +1328,6 @@ func inRepoWorktreeProject(clean string) (name string, isWorktree bool) {
 //  2. the worktree owner's metadata: its saved origin, then its restore root
 //  3. the verified parent row's saved origin, then its resolved checkout
 //  4. a sibling session's saved origin, then its resolved main checkout
-//  5. the path's own basename, which says nothing about projects
 //
 // A candidate that is absent, unreadable or refused is NO evidence: it neither
 // answers nor vetoes the others. Only a candidate that positively names a
@@ -1331,7 +1343,7 @@ func inRepoWorktreeProject(clean string) (name string, isWorktree bool) {
 // bucket and not the lane, so a sibling that records only an origin still
 // answers; that fallback is why deleting a worktree does not lose its label.
 // Ranking then decides only among candidates that were already admissible.
-func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionID string) (string, bool) {
+func (r *projectNameResolver) worktreeFallback(wd, bucketDir, parentSessionID string, includeSiblings bool) (string, bool) {
 	// A relative record names no checkout: the markers below are matched against
 	// the path's SPELLING, so `old-repo/.worktrees/lane` would report `old-repo`
 	// as a project from a directory this process has never seen. Absoluteness is
@@ -1360,7 +1372,7 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 	// (b) In-repo worktrees (/.worktrees/<name>, /.claude/worktrees/<name>, /.git/worktrees/<name>)
 	// are considered only for paths that are not recognized state lanes.
 	if !isStateWorktree {
-		if name, isWorktree := inRepoWorktreeProject(clean); isWorktree {
+		if name, _, isWorktree := inRepoWorktreeProjectPath(clean); isWorktree {
 			return name, true
 		}
 	}
@@ -1593,7 +1605,7 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 	// cost is one checkout resolution per sibling; paying that for a row an owner
 	// or a verified parent has already answered is what turned a 1,000-sibling
 	// bucket into 1,000 walks per result.
-	siblingsAllowed := sameBucket(stateDir, bound) && r.classifyBucket(bound) != bucketUnrelated
+	siblingsAllowed := includeSiblings && sameBucket(stateDir, bound) && r.classifyBucket(bound) != bucketUnrelated
 	if siblingsAllowed && evidenceWins(found, admissible, evidenceRankSiblingOrigin) {
 		siblingsAllowed = false
 	}
@@ -2185,7 +2197,7 @@ func (r *projectNameResolver) stateWorktreeOwner(wd, bucketDir string) (stateDir
 // is the home this process computes from its own configuration (stateRoots).
 //
 // Identification decides only whether a path is a state worktree at all. It does
-// not grant a metadata read: worktreePathFallback reads from the row's own
+// not grant a metadata read: worktreeFallback reads from the row's own
 // validated bucket and nowhere else.
 func (r *projectNameResolver) isStateBucket(candidate, bucket string) bool {
 	if candidate == "" || !filepath.IsAbs(candidate) {
@@ -2288,17 +2300,26 @@ func nearestSurvivingDir(path string) string {
 // existingPrefix alone cannot do this: EvalSymlinks fails for the whole path as
 // soon as one component is missing, so passing the joined result through
 // ResolveClean leaves even the ancestor in its original spelling. Splitting the
-// two gives the ancestor the resolution it deserves.
+// two gives the ancestor the resolution it deserves. A component that exists but
+// does not resolve is treated as part of the tail, so the alias above it still
+// resolves.
 func resolveExistingPrefix(path string) string {
 	clean := filepath.Clean(path)
 	var missing []string
 	for {
 		if _, err := os.Lstat(clean); err == nil {
-			resolved := identifier.ResolveClean(clean)
-			if len(missing) == 0 {
-				return resolved
+			// Only a prefix that really RESOLVES is a stopping point. A dangling
+			// symlink exists, so Lstat finds it, but ResolveClean would fall back
+			// to its lexical spelling and keep the alias above it unresolved. The
+			// lane classification then misses the lane the alias points into. Such
+			// a component belongs to the missing tail, exactly like one that does
+			// not exist, so the walk continues upward and resolves the alias.
+			if resolved, ok := identifier.ResolveCleanOK(clean); ok {
+				if len(missing) == 0 {
+					return resolved
+				}
+				return filepath.Join(append([]string{resolved}, missing...)...)
 			}
-			return filepath.Join(append([]string{resolved}, missing...)...)
 		}
 		parent := filepath.Dir(clean)
 		if parent == clean {

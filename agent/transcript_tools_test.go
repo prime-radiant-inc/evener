@@ -5399,3 +5399,131 @@ func TestFind_ProjectName_RelativeFallbacksNeverLabelADot(t *testing.T) {
 		t.Fatalf("projectName(lane whose owner records a relative home directory) = %q, want %q", got, want)
 	}
 }
+
+// TestFind_ProjectName_TiedParentOutranksThePrefixWalk covers a pruned managed
+// lane whose own recorded ordinary path is a removed subdirectory of a checkout
+// that is itself gone. The stored parent row still records that checkout, and its
+// absolute recording hashes to the lane's project ID; the enclosing repository
+// survives above it. The parent is a record the row is TIED TO, so it outranks
+// the surviving checkout of the gone path. The label is the parent's checkout,
+// and the enclosing repository's Git metadata is never read to find it.
+func TestFind_ProjectName_TiedParentOutranksThePrefixWalk(t *testing.T) {
+	outer := newNamedCheckout(t, "tied-outer-repo")
+	inner := filepath.Join(outer, "vendor", "nested")
+	gittest.Run(t, outer, "init", "-q", filepath.Join("vendor", "nested"))
+	gittest.Run(t, inner, "commit", "-q", "--allow-empty", "-m", "init")
+
+	stateHome := pinStateHome(t)
+	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(inner))
+	bucket, err := RuntimeDirForProjectWithStateHome(project, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket sessions: %v", err)
+	}
+
+	lane := filepath.Join(bucket, "worktrees", project.ID, "dlg_tied")
+	gittest.Run(t, inner, "worktree", "add", "-q", lane, "-b", "lane-tied")
+	if err := os.RemoveAll(lane); err != nil {
+		t.Fatalf("remove lane: %v", err)
+	}
+	if err := os.RemoveAll(inner); err != nil {
+		t.Fatalf("remove parent checkout: %v", err)
+	}
+
+	parentID := identifier.MustNewSessionID()
+	parent := schema.SessionMeta{ID: parentID}
+	parent.WorktreeRestoreRoot = inner
+	parent.EnvInfo.WorkingDir = inner
+	if err := schema.SaveSessionMeta(bucket, parent); err != nil {
+		t.Fatal(err)
+	}
+
+	row := schema.SessionMeta{
+		ID:                  identifier.MustNewSessionID(),
+		ParentSessionID:     parentID,
+		WorktreePath:        lane,
+		WorktreeRestoreRoot: filepath.Join(inner, "pkg"),
+	}
+	row.EnvInfo.WorkingDir = filepath.Join(inner, "pkg")
+
+	r := newProjectNameResolver()
+	if got, want := r.projectName(row, bucket), filepath.Base(inner); got != want {
+		t.Fatalf("projectName(lane %q whose parent records the pruned checkout %q) = %q, want the parent's %q", lane, inner, got, want)
+	}
+	if r.mainRootLookups != 0 {
+		t.Fatalf("labelling the lane took %d structural lookups, want 0: the parent named the lane, so the enclosing repository's Git metadata must not be read", r.mainRootLookups)
+	}
+}
+
+// TestFind_ProjectName_SessionOwnedLaneUsesTheRowsSavedProject covers a delegate
+// lane at <stateDir>/sessions/<sid>/worktrees/<lane>, whose path records no
+// project segment. The state dir is flat, so it records no project of its own and
+// cannot accept the surviving checkout; only the project the row saved can. That
+// project's checkout survives, and its recorded restore root is a removed
+// subdirectory of it, so the surviving checkout verifies the saved project and
+// names it.
+func TestFind_ProjectName_SessionOwnedLaneUsesTheRowsSavedProject(t *testing.T) {
+	repo := newNamedCheckout(t, "session-owned-repo")
+	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repo))
+	stateDir := filepath.Join(repo, "flat-state")
+	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir state dir sessions: %v", err)
+	}
+
+	pkg := filepath.Join(repo, "pkg")
+	if err := os.MkdirAll(pkg, 0o755); err != nil {
+		t.Fatalf("mkdir pkg: %v", err)
+	}
+	lane := filepath.Join(stateDir, "sessions", identifier.MustNewSessionID(), "worktrees", "dlg_owned")
+	gittest.Run(t, repo, "worktree", "add", "-q", lane, "-b", "lane-owned")
+	if err := os.RemoveAll(pkg); err != nil {
+		t.Fatalf("remove pkg: %v", err)
+	}
+	if err := os.RemoveAll(lane); err != nil {
+		t.Fatalf("remove lane: %v", err)
+	}
+
+	row := schema.SessionMeta{
+		ID:                  identifier.MustNewSessionID(),
+		WorktreePath:        lane,
+		WorktreeRestoreRoot: pkg,
+	}
+	row.Config.MemoryProjectID = project.ID
+	row.EnvInfo.WorkingDir = pkg
+
+	if got, want := projectName(row, stateDir), filepath.Base(repo); got != want {
+		t.Fatalf("projectName(session-owned lane %q whose row saved project %q) = %q, want the surviving checkout's %q", lane, project.ID, got, want)
+	}
+}
+
+// TestFind_ProjectName_DanglingSymlinkUnderAnAliasedLane covers a recorded path
+// that reaches a live managed lane through a symlinked ancestor and then names a
+// subdirectory that is now a DANGLING symlink. The prefix must resolve through
+// the alias to the lane: the lane's own Git pointer still names the checkout, and
+// the dangling component is part of the missing tail rather than a stopping point.
+func TestFind_ProjectName_DanglingSymlinkUnderAnAliasedLane(t *testing.T) {
+	repo := newNamedCheckout(t, "alias-dangling-repo")
+	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repo))
+	stateDir := filepath.Join(repo, "flat-state")
+	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir state dir sessions: %v", err)
+	}
+	lane := filepath.Join(stateDir, "worktrees", project.ID, "dlg_alias")
+	gittest.Run(t, repo, "worktree", "add", "-q", lane, "-b", "lane-alias")
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(lane, alias); err != nil {
+		t.Fatalf("symlink alias: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(t.TempDir(), "gone-target"), filepath.Join(lane, "pkg")); err != nil {
+		t.Fatalf("symlink dangling pkg: %v", err)
+	}
+
+	row := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	row.EnvInfo.WorkingDir = filepath.Join(alias, "pkg")
+
+	if got, want := projectName(row, stateDir), filepath.Base(repo); got != want {
+		t.Fatalf("projectName(%q through a dangling symlink under an aliased lane) = %q, want the live lane's checkout %q", row.EnvInfo.WorkingDir, got, want)
+	}
+}
