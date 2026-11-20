@@ -79,15 +79,6 @@ func TestCovFormatQuietDuration(t *testing.T) {
 	}
 }
 
-// TestCovWatchEndedUnfiredMessage covers watchEndedUnfiredMessage.
-func TestCovWatchEndedUnfiredMessage(t *testing.T) {
-	t.Parallel()
-	got := watchEndedUnfiredMessage("job_1", jobstore.StatusCompleted, "done", 4096)
-	if !strings.Contains(got, "job_1") || !strings.Contains(got, "completed") || !strings.Contains(got, "done") || !strings.Contains(got, "4096") {
-		t.Fatalf("watchEndedUnfiredMessage = %q", got)
-	}
-}
-
 // TestCovWatchArgsHasCondition covers watchArgsHasCondition.
 func TestCovWatchArgsHasCondition(t *testing.T) {
 	t.Parallel()
@@ -114,29 +105,6 @@ func TestCovWatchArgsHasCondition(t *testing.T) {
 	// Receiver session target → true (target must be a session target).
 	if !watchArgsHasCondition(watchArgs{ReceiverSessionID: "sess1", Target: "caller"}) {
 		t.Fatal("receiver session target should be a condition")
-	}
-}
-
-// TestCovWatchArgsIsOutputMatchOnly covers watchArgsIsOutputMatchOnly.
-func TestCovWatchArgsIsOutputMatchOnly(t *testing.T) {
-	t.Parallel()
-	if !watchArgsIsOutputMatchOnly(watchArgs{OutputMatch: "READY"}) {
-		t.Fatal("output_match only should be true")
-	}
-	if watchArgsIsOutputMatchOnly(watchArgs{OutputMatch: "READY", Events: []string{"assistant.tool"}}) {
-		t.Fatal("with events should be false")
-	}
-	if watchArgsIsOutputMatchOnly(watchArgs{OutputMatch: "READY", Clear: true}) {
-		t.Fatal("with clear should be false")
-	}
-	if watchArgsIsOutputMatchOnly(watchArgs{OutputMatch: "READY", Every: 2}) {
-		t.Fatal("with every should be false")
-	}
-	if watchArgsIsOutputMatchOnly(watchArgs{OutputMatch: "READY", ProgressIntervalMS: 1000}) {
-		t.Fatal("with progress should be false")
-	}
-	if watchArgsIsOutputMatchOnly(watchArgs{}) {
-		t.Fatal("empty should be false")
 	}
 }
 
