@@ -2,11 +2,21 @@ package agent
 
 import (
 	"slices"
+	"sync/atomic"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 )
+
+// ObserveExecutionFrontierWake is the observation seam for the recorded
+// execution announcement (#6816): it runs on the recording goroutine at the
+// frontier wake, after the announced entry became readable and before the
+// emitter can emit it, with the newest announced turn. Tests store it to prove
+// a subscriber's history read already returns that turn; nil in production. An
+// atomic pointer keeps the read race-free against a test storing or clearing
+// it, the same convention as observeDelegateStopWait.
+var ObserveExecutionFrontierWake atomic.Pointer[func(sessionID, turnID string)]
 
 // LatestExecutionTurnID is the newest recorded execution, including an entry
 // whose durability is still owed. Completion never clears the recorded frontier.
@@ -59,22 +69,59 @@ func (s *Session) installTranscriptRecordedLocked() {
 	s.executionFrontierMu.Unlock()
 	external := s.transcriptRecorded
 	s.transcript.OnRecorded(func(rec transcript.Record) {
-		if rec.Recorded && rec.Turn.OriginalOrdinal == nil && rec.Turn.TurnKind == schema.TurnSpanExecution {
+		execution := rec.Recorded && rec.Turn.OriginalOrdinal == nil && rec.Turn.TurnKind == schema.TurnSpanExecution
+		announce := false
+		if execution {
+			// Once the history has paired, a record that carries conversation
+			// provenance or a frontier delta is fenced behind the producer's
+			// publication handoff, which advances the readable boundary only
+			// when the complete snapshot arrives. Such a record is announced
+			// from that handoff (publishTranscriptLocked), never from here.
+			deferred := rec.Turn.ConversationFrontier != nil || rec.Turn.ConversationProvenance != nil
 			s.executionFrontierMu.Lock()
 			s.executionFrontier = events.ExecutionFrontier{TurnID: rec.Turn.TurnID, Sequence: s.executionFrontier.Sequence + 1}
 			if !s.frontierStopped && wake != nil {
 				s.frontierPending = append(s.frontierPending, rec.Turn.TurnID)
-				select {
-				case wake <- struct{}{}:
-				default:
-				}
+				announce = !deferred
 			}
 			s.executionFrontierMu.Unlock()
 		}
 		if external != nil {
 			external(rec)
 		}
+		// external staged the record; a record the history can already read may
+		// be announced now. Deferred records wait for their publication.
+		if announce {
+			s.announceFrontier(wake, rec.Turn.TurnID)
+		}
 	})
+}
+
+// announceFrontier reports the wake to the test seam and signals the
+// recorded-execution emitter. The caller passes the turn the wake covers and
+// the wake channel it sampled while appending to frontierPending.
+func (s *Session) announceFrontier(wake chan struct{}, turnID string) {
+	if observe := ObserveExecutionFrontierWake.Load(); observe != nil {
+		(*observe)(s.id, turnID)
+	}
+	select {
+	case wake <- struct{}{}:
+	default:
+	}
+}
+
+// wakeFrontierPending wakes the recorded-execution emitter once the publication
+// handoff has made the newest pending execution readable. For a deferred record
+// this is the only announcement; for one the hook already announced it is a
+// redundant re-wake that the emitter's pending drain absorbs (#6816).
+func (s *Session) wakeFrontierPending() {
+	s.executionFrontierMu.Lock()
+	pending, stopped, wake := s.frontierPending, s.frontierStopped, s.frontierWake
+	s.executionFrontierMu.Unlock()
+	if stopped || len(pending) == 0 || wake == nil {
+		return
+	}
+	s.announceFrontier(wake, pending[len(pending)-1])
 }
 
 // emitRecordedExecutions takes no append lock and releases the leaf before

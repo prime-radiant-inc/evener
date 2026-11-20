@@ -241,6 +241,9 @@ func (s *Session) publishTranscriptLocked(length int64) {
 	if fn != nil {
 		fn(length, s.ConversationProvenance())
 	}
+	// The readable boundary now covers what was just recorded, so the recorded
+	// executions may be announced (#6816).
+	s.wakeFrontierPending()
 }
 
 // TranscriptPublicationHooks binds publication and frontier registration to one
