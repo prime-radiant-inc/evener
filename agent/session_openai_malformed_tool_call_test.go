@@ -384,9 +384,6 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 		if calls != 1 {
 			t.Fatalf("request %d replayed the corrected call %d times, want once", requestIndex+1, calls)
 		}
-		if len(reasoningIDs) != len(wantThinking)-1 {
-			t.Errorf("request %d replayed %d reasoning items, want every stored one that has typed parts", requestIndex+1, len(reasoningIDs))
-		}
 		if want := []string{"rs_mixed", "rs_plain", "rs_blank", "rs_summary"}; !slices.Equal(reasoningIDs, want) {
 			t.Errorf("request %d replayed reasoning IDs = %q, want exactly %q", requestIndex+1, reasoningIDs, want)
 		}

@@ -298,10 +298,9 @@ type ThinkingData struct {
 	ResponsesContentParts []ResponsesReasoningPart `json:"responses_content_parts,omitempty"`
 	ResponsesSummaryParts []ResponsesReasoningPart `json:"responses_summary_parts,omitempty"`
 	// ResponsesIncomplete marks a reasoning item the provider cut off.
-	// Transcripts written by main between #6900 (2bb71ffbfc) and #6950 stored
-	// typed ResponsesContentParts/ResponsesSummaryParts without this field, so
-	// an incomplete item from that window decodes false on resume and replays
-	// as finished.
+	// Older transcripts can carry typed ResponsesContentParts and
+	// ResponsesSummaryParts without this flag; those items decode as complete
+	// and replay as finished.
 	ResponsesIncomplete bool `json:"responses_incomplete,omitempty"`
 }
 
