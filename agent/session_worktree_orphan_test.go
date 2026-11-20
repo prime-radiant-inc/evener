@@ -3897,24 +3897,13 @@ func TestDelegateAttentionUserStopHoldSurvivesIdleReleaseRestore(t *testing.T) {
 	// flipped short grace. The reclaim is the state the cold restore rides —
 	// the live map drops the resident runtime pointer the same way the
 	// release's own tests observe it.
-	released := false
-	// TRIPWIRE: the release fires within the flipped sub-second grace of the
-	// stopped run's settle, plus whatever a loaded shard stretches the
-	// teardown and its retries; the bound only fires on a genuine hang.
-	for deadline := time.After(30 * time.Second); !released; {
-		select {
-		case <-deadline:
-			t.Fatalf("the idle release never reclaimed the stopped delegate's runtime (%s)", stateDump())
-		default:
-		}
+	testwait.Until(t, "the idle release to reclaim the stopped delegate's runtime", func() bool {
 		tree.mu.Lock()
 		live := tree.live[lane.fixture.delegateID]
-		released = live == nil || live.runtime == nil
+		released := live == nil || live.runtime == nil
 		tree.mu.Unlock()
-		if !released {
-			time.Sleep(50 * time.Millisecond)
-		}
-	}
+		return released
+	})
 	select {
 	case <-releaseSettled:
 	// TRIPWIRE: the member teardown settles within moments of the unhook
@@ -3931,36 +3920,11 @@ func TestDelegateAttentionUserStopHoldSurvivesIdleReleaseRestore(t *testing.T) {
 	// pass through the cold restore; the release unhooked the resident sub
 	// record the earlier drives used, so the pass is the wake-path drive
 	// that owns the restore.
-	staleWakeProbe := make(chan struct{})
-	defer close(staleWakeProbe)
-	go func() {
-		deadline := time.Now().Add(30 * time.Second)
-		for time.Now().Before(deadline) {
-			lane.root.drivePendingDelegateAttention()
-			time.Sleep(200 * time.Millisecond)
-			select {
-			case <-staleWakeProbe:
-				return
-			default:
-			}
-		}
-	}()
-	otherPresented := false
-	// TRIPWIRE: the cold-restored drive presents within a couple of probe
-	// passes of the release; the bound only fires on a genuine hang, not a
-	// loaded shard's scheduling delay.
-	for deadline := time.After(30 * time.Second); !otherPresented; {
-		select {
-		case <-deadline:
-			t.Fatalf("the released delegate's cold-restored drive never presented the other row (%s)", stateDump())
-		default:
-		}
+	testwait.Until(t, "the released delegate's cold-restored drive to present the other row", func() bool {
+		lane.root.drivePendingDelegateAttention()
 		live, err := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
-		otherPresented = err == nil && live.resolutions[otherID] != ""
-		if !otherPresented {
-			time.Sleep(50 * time.Millisecond)
-		}
-	}
+		return err == nil && live.resolutions[otherID] != ""
+	})
 
 	// The proof the presentation rode the cold restore: the delegate's live
 	// runtime is a session the release did not know — the resident runtime
@@ -3985,22 +3949,11 @@ func TestDelegateAttentionUserStopHoldSurvivesIdleReleaseRestore(t *testing.T) {
 	// attention — presents it on a generation of its own. The wait tolerates
 	// the recovery having fired before the other row's resolution was even
 	// observed; the generation comparison separates the two either way.
-	reopenedResolved := false
-	// TRIPWIRE: the reopened row resolves within a couple of drive passes of
-	// the other row's settle, whichever wake presents it; the bound only
-	// fires on a genuine hang, not a loaded shard's scheduling delay.
-	for deadline := time.After(30 * time.Second); !reopenedResolved; {
-		select {
-		case <-deadline:
-			t.Fatalf("the reopened report never resolved after the cold-restored presentation (%s)", stateDump())
-		default:
-		}
+	testwait.Until(t, "the reopened report to resolve after the cold-restored presentation", func() bool {
+		lane.root.drivePendingDelegateAttention()
 		live, err := readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
-		reopenedResolved = err == nil && live.resolutions[reopenedID] != ""
-		if !reopenedResolved {
-			time.Sleep(50 * time.Millisecond)
-		}
-	}
+		return err == nil && live.resolutions[reopenedID] != ""
+	})
 	fold, foldErr = readDelegateAttentionFold(lane.delegateSess.TranscriptPath(), lane.delegateSess.id)
 	if foldErr != nil {
 		t.Fatalf("read the delegate's attention fold after the reopened row resolved: %v", foldErr)
