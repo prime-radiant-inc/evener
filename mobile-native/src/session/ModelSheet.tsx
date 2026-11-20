@@ -6,6 +6,7 @@
 // its controls through modelHosts.
 import {
 	type ModelDescriptor,
+	type ModelControlDisplay,
 	modelControlDisplay,
 	holdsUnappliedPick,
 	sessionEffortLevels,
@@ -34,26 +35,30 @@ const NOTHING_UNREAD: Unread = { model: null, vision: null };
 /** The qualified "provider/model" the sheet's rows compare against.
  *
  * A ready snapshot's display target comes from the daemon, which names the
- * provider instance in the target's own modelProvider field even when the pair
- * is equal: the bundled target kimi-for-coding/kimi-for-coding carries its
- * instance name as the bare id, so the identity joins from the explicit fields
- * - and a pending target must join from its own, since the profile the
- * projection keeps beside the raw fields belongs to the ACTIVE model, not the
- * pick. A slash in an equal pair is the one ready shape already whole:
- * instance names cannot carry one. Every other display - a saved read's single
+ * provider instance in the target's own modelProvider field even when the
+ * pair is equal (snapshotProfile's rule in the shared client), so the identity
+ * joins from the explicit fields - and a pending target must join from its
+ * own, since the profile the projection keeps beside the raw fields belongs to
+ * the ACTIVE model, not the pick. Every other display - a saved read's single
  * model field, a recovery's copy of one - keeps the profile-based rule: the id
  * stands bare there, and the instance the read named beside it (modelProfile)
  * is what qualifies it.
  */
 function sheetModelIdentity(
 	session: Pick<MobileConversation, "modelControlState" | "modelProfile">,
-	target: ReturnType<typeof modelControlDisplay>,
+	target: ModelControlDisplay,
 ): string {
-	if (target.modelProvider !== target.model) return `${target.modelProvider}/${target.model}`;
-	if (session.modelControlState.kind === "ready" && !target.modelProvider.includes("/")) {
+	if (
+		target.modelProvider !== target.model ||
+		(session.modelControlState.kind === "ready" && !target.modelProvider.includes("/"))
+	) {
 		return `${target.modelProvider}/${target.model}`;
 	}
-	return qualifiedModelIdentity({ ...session, modelProvider: target.modelProvider, model: target.model });
+	return qualifiedModelIdentity({
+		modelProfile: session.modelProfile,
+		modelProvider: target.modelProvider,
+		model: target.model,
+	});
 }
 
 export interface ModelHost {

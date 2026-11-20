@@ -494,13 +494,10 @@ describe("choosing a model (spec 8.5)", () => {
 		},
 	);
 
-	// The bundled kimi-for-coding target resolves with the instance name equal
-	// to the bare model id, so the daemon's snapshot carries "kimi-for-coding"
-	// in both active fields. An equal pair is not "already whole" there: the
-	// catalog's key is "kimi-for-coding/kimi-for-coding", and the bare id alone
-	// matches no row. Both the running row and a pending pick of the same
-	// target must draw checked, and a tap on the running row must not send a
-	// setter.
+	// The bundled kimi-for-coding target's snapshot carries the instance name
+	// in both active fields (the shared snapshotProfile rule keeps the
+	// instance), so the sheet must check its row from the explicit fields - and
+	// a tap on the running row must not send a setter.
 	const KIMI_CATALOG: ModelListResponse = {
 		data: [{ provider: "kimi-for-coding", model: "kimi-for-coding", displayName: "Kimi for Coding" }],
 	};

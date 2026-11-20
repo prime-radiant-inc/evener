@@ -541,14 +541,11 @@ describe("whole-snapshot reconciliation", () => {
     });
   });
 
-  // The bundled kimi-for-coding target resolves with the instance name equal to
-  // the bare model id, so the daemon's snapshot carries "kimi-for-coding" in
-  // both active fields. The equal pair is not "no provider named apart" here —
-  // it is the instance named beside an id that happens to equal it — and the
-  // phone's identity rule needs the instance preserved to qualify the id: the
-  // catalog's key is "kimi-for-coding/kimi-for-coding", while the bare id alone
-  // matches nothing. Dropping the instance leaves the running row unchecked and
-  // a tap on it sends a second setter.
+  // The bundled kimi-for-coding target resolves with the instance name equal
+  // to the bare model id, so the snapshot's equal pair is an instance beside an
+  // id that happens to equal it, not an already-whole identity: the projection
+  // must keep the instance (snapshotProfile's rule) or the phone's qualified
+  // comparison reads the bare id and matches no catalog row.
   test("an equal-fields snapshot preserves the provider instance so the qualified identity matches", () => {
     const initial = model();
     const result = reduceModelControl(initial, {

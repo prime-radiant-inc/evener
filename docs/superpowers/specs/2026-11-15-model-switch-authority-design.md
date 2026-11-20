@@ -405,7 +405,7 @@ This replacement supersedes PR #6345. Do not merge or close #6345 until this rep
 | Case | Authoritative result |
 |---|---|
 | Pick 1 accepted pending; pick 2 directly refused | Snapshot remains on pending pick 1; pick 2's caller receives refusal |
-| Pick 1 accepted; pick 2 accepted | Acceptance replaces the desired record: one newer snapshot carries pick 2's desired identity, displacing pick 1's; pick 2's acceptance alone does not bar pick 1 from later applying |
+| Pick 1 accepted; pick 2 accepted | Acceptance replaces the desired record: one newer snapshot carries pick 2's desired identity, displacing pick 1's |
 | Accepted pick rejects at boundary or quota retry | New snapshot keeps active metadata and marks that exact desired mutation rejected; display falls back active |
 | Older validation finishes after a newer swap commits | Older call is superseded and cannot publish a snapshot transition |
 | Older validation finishes after a newer request is issued but before it commits | Older call still commits if it gets there first, advancing the watermark to its own issue; the newer pick's issue is higher, so it may still commit afterwards if it passes its own validation and no higher-sequence request has committed |
