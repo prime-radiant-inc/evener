@@ -57,12 +57,11 @@ const (
 	// refusal to name: a fork failure, a host at its process limit, and the
 	// like.
 	probeNoStart probeStart = "no-start"
-	// probeNoVerdict means the invocation produced no verdict the check could act
-	// on: its time bound ran out, or the host could not start it for want of a
-	// resource. Those are exactly the conditions production's checkOutcome calls
-	// CheckInconclusive, and naming them from the same call is what keeps this
-	// file's diagnostic from disagreeing with production about the run it
-	// explains.
+	// probeNoVerdict means a process existed and checkOutcome found the result
+	// inconclusive — the time bound had expired — rather than an answer. Naming
+	// it from that same call keeps this file's diagnostic from disagreeing with
+	// production. A launch that never produced a process is one of
+	// probeNoProgram, probeRefused, or probeNoStart.
 	probeNoVerdict probeStart = "no-verdict"
 )
 
@@ -118,17 +117,12 @@ func (o probeOutcome) ok() bool { return o.Start == probeRan && o.Exit == 0 }
 // invocation this file records — the control's, and the diagnostic re-run of
 // the probe's argv — classifies it the same way.
 //
-// The "no answer" verdict is production's own checkOutcome rather than a second
-// rule, so the diagnostic cannot disagree with production about the run it is
-// explaining: both a probe the time bound killed and one the host could not
-// start for want of a resource are CheckInconclusive in production.
-//
-// The two must still not read alike, so *exec.ExitError is asked first. os/exec
-// builds one only from a reaped ProcessState, so an ExitError is proof that a
-// process existed and its bound was what ended it. Everything else — a fork the
-// host starved of a process slot, a context that ended before the launch —
-// produced no process at all, and production's retry is the right response for a
-// launch that never happened.
+// The "no answer" verdict is production's own checkOutcome (probe.go) rather
+// than a second rule, so the diagnostic cannot disagree with production about
+// the run it is explaining. *exec.ExitError is asked first because os/exec
+// builds one only from a reaped ProcessState: it proves a process existed, so
+// the outcome is either that call's inconclusive verdict or the exit status,
+// never a launch failure.
 func outcomeFromRun(ctx context.Context, err error, stderr string) probeOutcome {
 	out := probeOutcome{Start: probeRan, Exit: -1, Stderr: stderr}
 	if err == nil {
@@ -370,7 +364,7 @@ const (
 	// failure is the launch's.
 	culpritLaunch probeCulprit = "production-launch"
 	// culpritNoVerdict means the production invocation produced no verdict at
-	// all: a bound expired, or the host could not start it for want of a resource.
+	// all: a bound expired on a process that existed.
 	culpritNoVerdict probeCulprit = "production-no-verdict"
 	// culpritProbeRan means the production invocation ran and answered; the
 	// verdict is the probe's, and any rerun failure belongs to the rerun alone.
@@ -493,10 +487,12 @@ func TestProbeOutcomeSeparatesFailedLaunchFromSilentExit(t *testing.T) {
 		case tc.start == probeNoVerdict:
 			out = runCutShortProbeArgv(t, tc.argv)
 		case tc.name == starvedLaunch:
-			out = roundTripOutcome(t, outcomeFromRun(t.Context(), starvedForkError(), ""))
+			out = outcomeFromRun(t.Context(), starvedForkError(), "")
 		default:
-			out = roundTripOutcome(t, runProbeArgvContext(t.Context(), tc.argv))
+			out = runProbeArgvContext(t.Context(), tc.argv)
 		}
+		// Round-trip every row: the table must see what the parent decodes.
+		out = roundTripOutcome(t, out)
 		outcomes[tc.name] = out
 		t.Logf("%s: %s", tc.name, out.fate())
 		if out.Start != tc.start || out.Exit != tc.exit {
@@ -740,20 +736,21 @@ func sameShape(a, b probeOutcome) bool {
 	return a.Exit == b.Exit
 }
 
-// roundTripOutcome encodes and decodes an outcome the way the helper hands it
-// to the parent test, so a classification the report cannot carry fails here
-// rather than reading as "no diagnostic" in the parent.
+// roundTripOutcome encodes and decodes an outcome inside bwrapProbeOrphanReport,
+// the way the helper hands it to the parent test, so a classification the report
+// cannot carry — including one lost at the probe_launch tag — fails here rather
+// than reading as "no diagnostic" in the parent.
 func roundTripOutcome(t *testing.T, out probeOutcome) probeOutcome {
 	t.Helper()
-	data, err := json.Marshal(out)
+	data, err := json.Marshal(bwrapProbeOrphanReport{ProbeLaunch: out})
 	if err != nil {
 		t.Fatalf("encode the outcome: %v", err)
 	}
-	var decoded probeOutcome
+	var decoded bwrapProbeOrphanReport
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("decode the outcome: %v", err)
 	}
-	return decoded
+	return decoded.ProbeLaunch
 }
 
 // reapAdopted drains every child this subreaper adopted and returns their pids.
