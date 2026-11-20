@@ -416,6 +416,20 @@ const pushContext = () => ({ ...activityContext(), reportPreview: true });
 const delegateReads = (client: ReturnType<typeof activityClient>) =>
   client.calls.filter((call) => call.method === "evener/thread/delegates/list").length;
 
+// Find disclosures by their summary's structure, never by its copy: a
+// reader-facing wording change must not fail a behavior test.
+const disclosuresWhere = (container: HTMLElement, matches: (summary: string) => boolean): HTMLDetailsElement[] =>
+  [...container.querySelectorAll<HTMLDetailsElement>("details")].filter((details) =>
+    matches((details.querySelector("summary")?.textContent ?? "").trim()),
+  );
+
+/** The bottom inactive fold, found by the count its summary leads with. */
+const inactiveFold = (container: HTMLElement, count: number): HTMLDetailsElement => {
+  const [fold] = disclosuresWhere(container, (summary) => summary.startsWith(`${count} `));
+  if (!fold) throw new Error(`no inactive fold whose summary leads with ${count}`);
+  return fold;
+};
+
 it("a pushed delegate frame patches a loaded row with zero collection reads when the source advertises the preview", async () => {
   const client = activityClient();
   client.on("evener/thread/activity/read", ({ ref, scope }) => ({
@@ -540,7 +554,7 @@ it("reconciles a two-level subtree with collapsible branches, drain-hold suppres
   }));
   connectionStore.getState().connect(client);
   const rootPane = workspaceStore.getState().openPane("session", { ref: activityRef });
-  render(<AgentsTab now={NOW} scope={scope()} />);
+  const { container } = render(<AgentsTab now={NOW} scope={scope()} />);
 
   const coordAnchorSelector = `[data-activity-anchor=${JSON.stringify('delegate:["remote:coord","coord-1"]')}]`;
   const childAnchorSelector = `[data-activity-anchor=${JSON.stringify('delegate:["remote:worker-live","worker-live"]')}]`;
@@ -584,16 +598,19 @@ it("reconciles a two-level subtree with collapsible branches, drain-hold suppres
   });
 
   // Bottom inactive fold reflects total - active (2) and groups settled direct + settled-under-coordinator runs.
-  const foldSummary = screen.getByText("2 inactive subagents");
-  const foldDetails = foldSummary.closest("details")!;
+  const foldDetails = inactiveFold(container, 2);
   expect(foldDetails.open).toBe(false);
   expect(within(foldDetails).queryByRole("button", { name: /direct-done/ })).toBeNull();
-  fireEvent.click(foldSummary);
+  fireEvent.click(foldDetails.querySelector("summary")!);
   expect(foldDetails.open).toBe(true);
   expect(within(foldDetails).getByRole("button", { name: /direct-done/ })).toBeTruthy();
   expect(within(foldDetails).queryByRole("button", { name: /worker-done/ })).toBeNull();
-  const groupSummary = within(foldDetails).getByText("coordinator (1)");
-  fireEvent.click(groupSummary);
+  const [groupDetails] = disclosuresWhere(
+    foldDetails,
+    (summary) => summary.includes("coordinator") && /\b1\b/.test(summary),
+  );
+  expect(groupDetails).toBeTruthy();
+  fireEvent.click(groupDetails!.querySelector("summary")!);
   expect(within(foldDetails).getByRole("button", { name: /worker-done/ })).toBeTruthy();
 });
 
@@ -714,7 +731,7 @@ it("collapses settled top-level nodes with settled descendants by default and ca
     page: { complete: true, issues: [] },
   }));
   connectionStore.getState().connect(client);
-  render(<AgentsTab now={NOW} scope={scope()} />);
+  const { container } = render(<AgentsTab now={NOW} scope={scope()} />);
 
   const deepestAnchor = `[data-activity-anchor=${JSON.stringify('delegate:["remote:d4","d4"]')}]`;
   await waitFor(() => expect(document.querySelector(deepestAnchor)).not.toBeNull());
@@ -726,9 +743,8 @@ it("collapses settled top-level nodes with settled descendants by default and ca
   }
   expect(branchDepth).toBe(3);
 
-  const foldSummary = screen.getByText("2 inactive subagents");
-  const foldDetails = foldSummary.closest("details")!;
-  fireEvent.click(foldSummary);
+  const foldDetails = inactiveFold(container, 2);
+  fireEvent.click(foldDetails.querySelector("summary")!);
   expect(within(foldDetails).getByRole("button", { name: /^settled-parent/ })).toBeTruthy();
   const expandSettled = within(foldDetails).getByRole("button", { name: "Expand settled-parent" });
   expect(expandSettled.getAttribute("aria-expanded")).toBe("false");
@@ -862,4 +878,78 @@ it("reveals ancestor wait when a nested child branch collapses and hides counted
   const metaBAfterCollapse = rowBAfterCollapse.querySelector("[data-activity-meta]")?.textContent;
   expect(metaBAfterCollapse).toBeTruthy();
   expect(metaBAfterCollapse).toContain("1");
+});
+
+it("keeps a settled coordinator as an active group header with its one selectable row in inactive history", async () => {
+  const client = activityClient();
+  const coord = activityDelegate({
+    delegateId: "settled-coord-id",
+    name: "settled-coord",
+    ownerRef: activityRef,
+    rootRef: activityRef,
+    childRef: "remote:settled-coord",
+    terminal: true,
+    outcome: "completed",
+    status: "completed",
+    lifecycle: "idle",
+  });
+  const resumed = activityDelegate({
+    delegateId: "resumed-worker-id",
+    name: "resumed-worker",
+    ownerRef: "remote:settled-coord",
+    rootRef: activityRef,
+    childRef: "remote:resumed-worker",
+    parentDelegateId: "settled-coord-id",
+    terminal: false,
+  });
+  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref, scope),
+    delegates: { known: true, total: 2, active: 1, completed: 1, failed: 0 },
+  }));
+  client.on("evener/thread/delegates/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    delegates: [coord, resumed],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  const rootPane = workspaceStore.getState().openPane("session", { ref: activityRef });
+  const { container } = render(<AgentsTab now={NOW} scope={scope()} />);
+
+  const coordAnchor = `[data-activity-anchor=${JSON.stringify('delegate:["remote:settled-coord","settled-coord-id"]')}]`;
+  const workerAnchor = `[data-activity-anchor=${JSON.stringify('delegate:["remote:resumed-worker","resumed-worker-id"]')}]`;
+  await waitFor(() => expect(container.querySelector(workerAnchor)).not.toBeNull());
+
+  // The settled run is selectable exactly once, and that one row lives in the
+  // history fold rather than being duplicated in the active section above it.
+  const fold = inactiveFold(container, 1);
+  expect(fold.open).toBe(false);
+  fireEvent.click(fold.querySelector("summary")!);
+  expect(fold.open).toBe(true);
+  expect(container.querySelectorAll(coordAnchor)).toHaveLength(1);
+  expect(fold.contains(container.querySelector(coordAnchor))).toBe(true);
+
+  // Above the fold the active section names the settled coordinator as a
+  // collapsible group header, open by default, holding its live descendant.
+  const [groupHeader] = disclosuresWhere(container, (summary) => summary.includes("settled-coord"));
+  expect(groupHeader).toBeTruthy();
+  expect(groupHeader!.open).toBe(true);
+  expect(groupHeader!.contains(container.querySelector(workerAnchor))).toBe(true);
+  fireEvent.click(groupHeader!.querySelector("summary")!);
+  expect(container.querySelector(workerAnchor)).toBeNull();
+  fireEvent.click(groupHeader!.querySelector("summary")!);
+  expect(container.querySelector(workerAnchor)).not.toBeNull();
+
+  // A descendant selected under the group header keeps the full cascade path.
+  await act(async () => fireEvent.click(container.querySelector<HTMLElement>(workerAnchor)!));
+  const cascade = workspaceStore.getState().panes.find((pane) => pane.type === "sessionZoom");
+  expect(cascade?.params).toEqual({
+    ref: "remote:resumed-worker",
+    source: { type: "session", params: { ref: activityRef } },
+    edges: [
+      { ownerRef: activityRef, childRef: "remote:settled-coord", delegateId: "settled-coord-id" },
+      { ownerRef: "remote:settled-coord", childRef: "remote:resumed-worker", delegateId: "resumed-worker-id" },
+    ],
+    inspection: { origin: { paneId: rootPane, type: "session", ref: activityRef } },
+  });
 });
