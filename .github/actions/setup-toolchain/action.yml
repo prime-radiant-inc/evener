@@ -10,6 +10,11 @@ inputs:
       The go-cache-restore kind for this job's Go caches. Leave it out to skip
       Go caching, as the release build does.
     required: false
+  go-cache-fallback-kind:
+    description: >-
+      A go-cache-restore kind this job used before it moved to go-cache-kind.
+      Restored only when go-cache-kind has no matching entry.
+    required: false
 runs:
   using: composite
   steps:
@@ -22,6 +27,7 @@ runs:
       uses: ./.github/actions/go-cache-restore
       with:
         kind: ${{ inputs.go-cache-kind }}
+        fallback-kind: ${{ inputs.go-cache-fallback-kind }}
 
     # No npm cache: see "CI Caches" in docs/developing-evener/testing.md.
     - uses: actions/setup-node@v7
