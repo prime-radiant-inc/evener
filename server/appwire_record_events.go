@@ -516,7 +516,10 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 				// wake must clear it, so a pane opened or reloaded mid-wait
 				// sees what the row already knows and stops seeing it the
 				// moment the retry goes out.
-				if failure, ok := event.Data.(events.ModelRetryData); ok && failure.WaitFailure != nil {
+				// An unstamped start is not cached here, so the row's live
+				// roster sample shows the wait until the retry starts, and the
+				// unstamped wake cannot strand a cached wait.
+				if failure, ok := event.Data.(events.ModelRetryData); ok && failure.WaitFailure != nil && failure.WaitStartedAt != 0 {
 					projection.thread.Evener.Failure = appwire.CloneThreadFailure(failure.WaitFailure)
 				} else if params.ResumesAt == 0 && params.WaitStartedAt != 0 {
 					projection.thread.Evener.Failure = nil

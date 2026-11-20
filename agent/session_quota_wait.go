@@ -151,16 +151,15 @@ func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model st
 	// restore could mint this number again, and a pane must not be handed a
 	// stamp its next runtime can reuse. The wait, its timer and its wakes run
 	// the same either way.
-	if err := s.autoSaveMeta(); err != nil {
-		s.emit(events.WarningData{Message: fmt.Sprintf("auto-save failed: %v", err)})
-	} else {
-		wait.stamp = stamp
-		wait.failure.WaitStartedAt = stamp
-	}
+	saveErr := s.autoSaveMeta()
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		return false, nil
+	}
+	if saveErr == nil {
+		wait.stamp = stamp
+		wait.failure.WaitStartedAt = stamp
 	}
 	s.quotaWait = wait
 	// A wake that came while the request was in flight, a switch already
@@ -172,6 +171,12 @@ func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model st
 		wait.wake <- struct{}{}
 	}
 	s.mu.Unlock()
+	// The warning is emitted only once the wait is published: a configured
+	// Notification hook runs inside the emit, and nothing it does may find the
+	// wait still invisible while the call is already waiting.
+	if saveErr != nil {
+		s.emit(events.WarningData{Message: fmt.Sprintf("auto-save failed: %v", saveErr)})
+	}
 	end := sync.OnceFunc(func() {
 		s.mu.Lock()
 		if s.quotaWait == wait {

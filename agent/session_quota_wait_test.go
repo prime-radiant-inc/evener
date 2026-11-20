@@ -1480,6 +1480,15 @@ func TestQuotaWaitAnnouncementsCarryTheWaitIdentity(t *testing.T) {
 	if failure.WaitStartedAt != started[0].WaitStartedAt {
 		t.Fatalf("read summary stamp %d, want the start announcement's %d", failure.WaitStartedAt, started[0].WaitStartedAt)
 	}
+	// The stamp the wait is published and announced with is the one on disk:
+	// the save lands before the announcement, so a pane's stamp is durable.
+	meta, err := schema.LoadSessionMeta(s.stateDir, s.ID())
+	if err != nil {
+		t.Fatalf("LoadSessionMeta: %v", err)
+	}
+	if meta.QuotaWaitStamps != started[0].WaitStartedAt {
+		t.Fatalf("persisted QuotaWaitStamps = %d, want the visible wait's %d", meta.QuotaWaitStamps, started[0].WaitStartedAt)
+	}
 
 	// A steer wakes the first wait; the provider still meets the limit, so
 	// the call waits again within the same turn.
@@ -1615,39 +1624,6 @@ func TestQuotaWaitStampDurableBeforeAnnouncement(t *testing.T) {
 	run.awaitEnd(t, trip, "the call resumes at the reset")
 }
 
-// gatedMetaFS blocks the first session-metadata write whose payload carries a
-// wait stamp, so a test can sample what a read serves while that save is still
-// in flight.
-type gatedMetaFS struct {
-	afero.Fs
-	entered chan struct{}
-	release chan struct{}
-	block   sync.Once
-}
-
-func (g *gatedMetaFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
-	f, err := g.Fs.OpenFile(name, flag, perm)
-	if err != nil {
-		return nil, err
-	}
-	return &gatedMetaFile{File: f, gate: g}, nil
-}
-
-type gatedMetaFile struct {
-	afero.File
-	gate *gatedMetaFS
-}
-
-func (f *gatedMetaFile) Write(p []byte) (int, error) {
-	if bytes.Contains(p, []byte(`"quota_wait_stamps"`)) {
-		f.gate.block.Do(func() {
-			close(f.gate.entered)
-			<-f.gate.release
-		})
-	}
-	return f.File.Write(p)
-}
-
 // A read or an event bridge can sample the session while its wait's stamp is
 // being saved. The wait must not be published until the minted stamp is
 // durable: a read that served the wait before the write committed would hand a
@@ -1664,9 +1640,28 @@ func TestQuotaWaitIsNotVisibleBeforeItsStampIsSaved(t *testing.T) {
 	if err := s.Rename("quota wait publish gate test"); err != nil {
 		t.Fatalf("Rename: %v", err)
 	}
-	gate := &gatedMetaFS{Fs: afero.NewOsFs(), entered: make(chan struct{}), release: make(chan struct{})}
-	var releaseOnce sync.Once
-	closeRelease := func() { releaseOnce.Do(func() { close(gate.release) }) }
+	// The gate holds the rename of the staged metadata whose payload carries the
+	// wait stamp: the save writes that payload before it renames, so reading the
+	// temp file inside before reads exactly what the blocked rename would
+	// publish.
+	stagedPath := schema.SessionMetaPath(s.stateDir, s.ID()) + ".tmp"
+	gate := &notesRenameFailureFS{Fs: afero.NewOsFs()}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var held atomic.Bool
+	var enterOnce, releaseOnce sync.Once
+	gate.before = func() {
+		data, err := os.ReadFile(stagedPath)
+		if err != nil || !bytes.Contains(data, []byte(`"quota_wait_stamps"`)) {
+			return
+		}
+		if !held.CompareAndSwap(false, true) {
+			return
+		}
+		enterOnce.Do(func() { close(entered) })
+		<-release
+	}
+	closeRelease := func() { releaseOnce.Do(func() { close(release) }) }
 	defer closeRelease()
 	s.cfg.testOnly.metaFS = gate
 
@@ -1674,7 +1669,7 @@ func TestQuotaWaitIsNotVisibleBeforeItsStampIsSaved(t *testing.T) {
 	run := startInput(context.Background(), s, "start the work", EntryUserInput)
 	testwait.Until(t, "the wait's metadata save begins", func() bool {
 		select {
-		case <-gate.entered:
+		case <-entered:
 			return true
 		default:
 			return false
@@ -1717,36 +1712,6 @@ func TestQuotaWaitIsNotVisibleBeforeItsStampIsSaved(t *testing.T) {
 	}
 }
 
-// failingMetaFS fails the session-metadata write whose payload carries a wait
-// stamp, so a test can assert what the session publishes when the stamp never
-// reaches disk.
-type failingMetaFS struct {
-	afero.Fs
-	failed chan struct{}
-	once   sync.Once
-}
-
-func (f *failingMetaFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
-	file, err := f.Fs.OpenFile(name, flag, perm)
-	if err != nil {
-		return nil, err
-	}
-	return &failingMetaFile{File: file, gate: f}, nil
-}
-
-type failingMetaFile struct {
-	afero.File
-	gate *failingMetaFS
-}
-
-func (f *failingMetaFile) Write(p []byte) (int, error) {
-	if bytes.Contains(p, []byte(`"quota_wait_stamps"`)) {
-		f.gate.once.Do(func() { close(f.gate.failed) })
-		return 0, errors.New("injected metadata write failure")
-	}
-	return f.File.Write(p)
-}
-
 // A failed stamp save must not publish a stamp: the counter never reached disk,
 // so a restore can mint the same number again, and a pane that saw it would
 // reject the next runtime's wait. The wait itself still runs and still retries.
@@ -1760,14 +1725,27 @@ func TestQuotaWaitPublishesUnstampedWhenItsStampCannotBeSaved(t *testing.T) {
 	if err := s.Rename("quota wait save failure test"); err != nil {
 		t.Fatalf("Rename: %v", err)
 	}
-	fail := &failingMetaFS{Fs: afero.NewOsFs(), failed: make(chan struct{})}
+	// Fail only the rename whose staged payload carries the wait stamp: the
+	// save writes that payload before it renames, so the temp file names the
+	// save a read must not see a stamp from.
+	stagedPath := schema.SessionMetaPath(s.stateDir, s.ID()) + ".tmp"
+	fail := &notesRenameFailureFS{Fs: afero.NewOsFs(), err: errors.New("injected metadata write failure")}
+	failed := make(chan struct{})
+	var failedOnce sync.Once
+	fail.before = func() {
+		data, err := os.ReadFile(stagedPath)
+		fail.fail = err == nil && bytes.Contains(data, []byte(`"quota_wait_stamps"`))
+		if fail.fail {
+			failedOnce.Do(func() { close(failed) })
+		}
+	}
 	s.cfg.testOnly.metaFS = fail
 
 	trip := tripwireCtx(t).Done()
 	run := startInput(context.Background(), s, "start the work", EntryUserInput)
 	testwait.Until(t, "the wait's metadata write fails", func() bool {
 		select {
-		case <-fail.failed:
+		case <-failed:
 			return true
 		default:
 			return false
