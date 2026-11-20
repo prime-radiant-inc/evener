@@ -301,8 +301,8 @@ func TestModelSwitchWhileWaitingForGoalContinuationQuotaKeepsGoalPromptLast(t *t
 	run.awaitQuotaWait(t, s)
 
 	recoverProvider(adapter)
-	if err := s.SetModel("gpt-5.4"); err != nil {
-		t.Fatalf("SetModel: %v", err)
+	if err := setModel(s, "gpt-5.4"); err != nil {
+		t.Fatalf("setModel: %v", err)
 	}
 	run.awaitEnd(t, trip, "the switch resumes the goal continuation call")
 	if run.err != nil {

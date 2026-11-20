@@ -1660,8 +1660,8 @@ func TestJobNotificationAfterIdleSetModelCarriesEnvironmentDiff(t *testing.T) {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 	enqueueCompletedJobNotification(t, sess, "job_idle_model_switch")
-	if err := sess.SetModel("anthropic/claude-opus-4-6"); err != nil {
-		t.Fatalf("SetModel: %v", err)
+	if err := setModel(sess, "anthropic/claude-opus-4-6"); err != nil {
+		t.Fatalf("setModel: %v", err)
 	}
 	if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
 		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
