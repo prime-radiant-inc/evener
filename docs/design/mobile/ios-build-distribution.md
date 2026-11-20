@@ -112,9 +112,9 @@ running either binary, and creates and later deletes its own simulator.
 `scripts/native/ios/run-ui-tests.sh` then starts the scripted loopback provider
 and an isolated hub under private XDG directories with `HOME` inherited, and
 injects the fixture-only connection data into the restored test-run
-configuration in place; when the variable carrying the pair is unset, as on a
-local run or a head whose harness predates the handoff, it builds the pair
-itself. The result bundle must
+configuration in place; when the variable carrying the pair is unset (a local
+run) or the selected harness does not read it (a head older than the
+handoff), it builds the pair itself. The result bundle must
 show all three intended journeys executed with zero failures and none skipped;
 a partial, unreadable or absent result fails, and the child's exit is the job's
 own result. Each job is the sole owner of its own simulator, and cleanup runs

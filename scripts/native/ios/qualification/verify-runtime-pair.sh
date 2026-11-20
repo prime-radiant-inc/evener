@@ -21,6 +21,14 @@ fi
 pair="$1"
 identity="$2"
 
+if [ ! -d "$pair" ]; then
+	echo "$script_name: no runtime pair directory at $pair" >&2
+	exit 1
+fi
+# Verify the same directory the caller copies from: a relative path must not
+# resolve through an exported CDPATH somewhere else.
+pair="$(CDPATH='' cd -- "$pair" && pwd)"
+
 head_revision="$(jq -r '.sourceRevision // empty' "$identity")"
 pair_revision="$(cat "$pair/revision" 2>/dev/null || true)"
 if [ -z "$head_revision" ] || [ "$pair_revision" != "$head_revision" ]; then

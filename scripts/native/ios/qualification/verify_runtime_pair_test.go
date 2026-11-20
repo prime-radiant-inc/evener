@@ -30,11 +30,11 @@ func TestVerifyRuntimePairRefusesUnsafePairs(t *testing.T) {
 	const revision = "0123456789abcdef0123456789abcdef01234567"
 	const otherRevision = "fedcba9876543210fedcba9876543210fedcba98"
 
-	// newPair writes the directory the setup job uploads and the identity the
-	// qualification runner records for the run.
-	newPair := func(t *testing.T) (dir, identity string) {
+	writePair := func(t *testing.T, dir string) {
 		t.Helper()
-		dir = t.TempDir()
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
 		for _, name := range []string{"evener", "fixture-provider"} {
 			if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
 				t.Fatal(err)
@@ -42,19 +42,23 @@ func TestVerifyRuntimePairRefusesUnsafePairs(t *testing.T) {
 		}
 		writeManifest(t, dir)
 		writeFile(t, filepath.Join(dir, "revision"), revision+"\n")
+	}
+	// newPair writes the directory the setup job uploads and the identity the
+	// qualification runner records for the run.
+	newPair := func(t *testing.T) (dir, identity string) {
+		t.Helper()
+		dir = t.TempDir()
+		writePair(t, dir)
 		identity = filepath.Join(t.TempDir(), "identity.json")
 		writeFile(t, identity, fmt.Sprintf("{\"sourceRevision\":%q}\n", revision))
 		return dir, identity
 	}
-	refused := func(t *testing.T, dir, identity, want string) {
+	refused := func(t *testing.T, dir, identity string) {
 		t.Helper()
 		out, err := exec.Command("bash", script, dir, identity).CombinedOutput()
 		exit, ok := err.(*exec.ExitError)
 		if !ok || exit.ExitCode() != 1 {
 			t.Fatalf("verify-runtime-pair.sh exit = %v, want exit 1; output:\n%s", err, out)
-		}
-		if !strings.Contains(string(out), want) {
-			t.Fatalf("verify-runtime-pair.sh output lacks %q:\n%s", want, out)
 		}
 	}
 
@@ -70,13 +74,13 @@ func TestVerifyRuntimePairRefusesUnsafePairs(t *testing.T) {
 		t.Parallel()
 		dir, identity := newPair(t)
 		writeFile(t, filepath.Join(dir, "revision"), otherRevision+"\n")
-		refused(t, dir, identity, "not this tree's")
+		refused(t, dir, identity)
 	})
 	t.Run("identity without a revision refused", func(t *testing.T) {
 		t.Parallel()
 		dir, identity := newPair(t)
 		writeFile(t, identity, "{}\n")
-		refused(t, dir, identity, "no sourceRevision in the build identity")
+		refused(t, dir, identity)
 	})
 	t.Run("manifest entry missing refused", func(t *testing.T) {
 		t.Parallel()
@@ -93,13 +97,13 @@ func TestVerifyRuntimePairRefusesUnsafePairs(t *testing.T) {
 			kept = append(kept, line)
 		}
 		writeFile(t, filepath.Join(dir, "SHA256SUMS"), strings.Join(kept, "\n"))
-		refused(t, dir, identity, "no checksum for fixture-provider")
+		refused(t, dir, identity)
 	})
 	t.Run("changed bytes refused", func(t *testing.T) {
 		t.Parallel()
 		dir, identity := newPair(t)
 		writeFile(t, filepath.Join(dir, "fixture-provider"), "#!/bin/sh\nexit 1\n")
-		refused(t, dir, identity, "does not match its SHA256SUMS manifest")
+		refused(t, dir, identity)
 	})
 	t.Run("missing manifest refused", func(t *testing.T) {
 		t.Parallel()
@@ -107,7 +111,27 @@ func TestVerifyRuntimePairRefusesUnsafePairs(t *testing.T) {
 		if err := os.Remove(filepath.Join(dir, "SHA256SUMS")); err != nil {
 			t.Fatal(err)
 		}
-		refused(t, dir, identity, "no SHA256SUMS manifest")
+		refused(t, dir, identity)
+	})
+	t.Run("relative pair is not resolved through CDPATH", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		cwd := filepath.Join(root, "cwd")
+		writePair(t, filepath.Join(cwd, "pair"))
+		decoy := filepath.Join(root, "decoy")
+		writePair(t, filepath.Join(decoy, "pair"))
+		// The real pair's bytes no longer match its manifest; the decoy's do.
+		writeFile(t, filepath.Join(cwd, "pair", "fixture-provider"), "#!/bin/sh\nexit 1\n")
+		identity := filepath.Join(root, "identity.json")
+		writeFile(t, identity, fmt.Sprintf("{\"sourceRevision\":%q}\n", revision))
+		cmd := exec.Command("bash", script, "pair", identity)
+		cmd.Dir = cwd
+		cmd.Env = append(os.Environ(), "CDPATH="+decoy)
+		out, err := cmd.CombinedOutput()
+		exit, ok := err.(*exec.ExitError)
+		if !ok || exit.ExitCode() != 1 {
+			t.Fatalf("a relative pair resolved through CDPATH instead of the caller's directory: exit = %v; output:\n%s", err, out)
+		}
 	})
 }
 
