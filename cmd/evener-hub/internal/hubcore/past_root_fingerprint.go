@@ -48,7 +48,7 @@ var notShownMetaFields = []string{
 	"DivergenceTurn", "Goal", "PinnedNote", "Skills", "MemorySaveUnavailable", "HumanNote", "AgentNote",
 	"SessionURLs", "EnvContext", "ReasoningEffortEscalated", "CumulativeUsage",
 	"WorkMillis", "JobTreeRevision", "ScratchTempDir", "ScratchTreeRootID",
-	"ScratchDirSessionID",
+	"ScratchDirSessionID", "LaunchEnvBaseline",
 	"EnvInfo.Platform", "EnvInfo.OSVersion", "EnvInfo.Today", "EnvInfo.KnowledgeCutoff",
 	"EnvInfo.IsGitRepo", "EnvInfo.GitOriginURL", "EnvInfo.GitModifiedFiles",
 	"EnvInfo.GitUntrackedFiles", "EnvInfo.GitStatusUnknown", "EnvInfo.GitRecentCommitTitles",

@@ -6216,6 +6216,10 @@ test("Tab from the focused popup lands on an enabled row and keeps Escape reacha
     await user.keyboard(" ");
     expect(onStop).not.toHaveBeenCalled();
     expect(onFind).not.toHaveBeenCalled();
+    // Inert is not unhandled: Space is still consumed there, so the browser
+    // does not scroll the popup under the reader (dispatch reports false for
+    // a cancelled default).
+    expect(fireEvent.keyDown(popup, { key: " " })).toBe(false);
     expect(screen.getByRole("menu")).toBeTruthy();
 
     // Shift+Tab wraps backwards to the LAST enabled row, which is what a

@@ -43,10 +43,15 @@ type buildIdentity struct {
 
 type runner struct {
 	root, native, output string
-	uiRunner             string
-	identity             buildIdentity
-	statusReads          int
-	unlockLogs           int
+	// derived is the DerivedData root the workflow hands over through
+	// IOS_DERIVED_DATA. It sits outside the run-owned output so a restored
+	// build cache lands where xcodebuild reads it; empty means
+	// output/DerivedData.
+	derived     string
+	uiRunner    string
+	identity    buildIdentity
+	statusReads int
+	unlockLogs  int
 }
 
 func main() {
@@ -71,7 +76,7 @@ func runCLI() int {
 	var err error
 	switch *mode {
 	case "build":
-		err = qualify(ctx, *output)
+		err = qualify(ctx, *output, derivedDataFromEnv())
 	case "journeys":
 		if *products == "" {
 			flag.Usage()
@@ -95,18 +100,22 @@ func runCLI() int {
 // qualify builds and verifies the real app, then prepares the UI test products
 // against the same DerivedData: the red absent-target pass, the generated test
 // target, build-for-testing and the product-completeness check.
-func qualify(ctx context.Context, output string) (result error) {
+func qualify(ctx context.Context, output, derivedData string) (result error) {
 	if runtime.GOOS != "darwin" {
 		return errMacRequired
 	}
 	if !filepath.IsAbs(output) || filepath.Clean(output) != output {
 		return errors.New("--output must be a new, clean absolute path")
 	}
+	if derivedData != "" && (!filepath.IsAbs(derivedData) || filepath.Clean(derivedData) != derivedData) {
+		return errors.New("IOS_DERIVED_DATA must be a clean absolute path")
+	}
 	root, err := os.Getwd()
 	if err != nil {
 		return err
 	}
 	r := newRunner(root, output)
+	r.derived = derivedData
 	if _, err := os.Lstat(filepath.Join(r.native, "ios")); !errors.Is(err, os.ErrNotExist) {
 		return errors.New("mobile-native/ios already exists; use a fresh qualification checkout to preserve generated work")
 	}
@@ -152,10 +161,11 @@ func qualify(ctx context.Context, output string) (result error) {
 		return err
 	}
 	return r.withOwnedSimulator(ctx, simulatorName(output), func(udid string) error {
-		if _, err := r.commandOutput(ctx, "xcodebuild-release", false, releaseBuildCommand(udid, filepath.Join(output, "DerivedData"))...); err != nil {
+		derived := r.derivedDataDir()
+		if _, err := r.commandOutput(ctx, "xcodebuild-release", false, releaseBuildCommand(udid, derived)...); err != nil {
 			return err
 		}
-		r.identity.AppPath = filepath.Join(output, "DerivedData", "Build", "Products", "Release-iphonesimulator", "Evener.app")
+		r.identity.AppPath = filepath.Join(derived, "Build", "Products", "Release-iphonesimulator", "Evener.app")
 		if err := r.verifyApp(ctx, r.identity.AppPath, "built"); err != nil {
 			return err
 		}
@@ -226,6 +236,23 @@ func newRunner(root, output string) *runner {
 	}
 }
 
+// derivedDataFromEnv is the workflow's handoff: it exports the stable cache
+// path as IOS_DERIVED_DATA. A pull-request head from before the cache change
+// carries this script and ignores the variable, building in its own output.
+func derivedDataFromEnv() string {
+	return os.Getenv("IOS_DERIVED_DATA")
+}
+
+// derivedDataDir is the build mode's DerivedData root. The workflow's
+// IOS_DERIVED_DATA names a stable path it restores a cache into; the default
+// keeps ordinary local runs inside their run-owned output.
+func (r *runner) derivedDataDir() string {
+	if r.derived != "" {
+		return r.derived
+	}
+	return filepath.Join(r.output, "DerivedData")
+}
+
 func simulatorName(output string) string {
 	return "Evener-qualification-" + filepath.Base(output)
 }
@@ -261,7 +288,7 @@ func (r *runner) uiJourney(ctx context.Context) error {
 // means the harness cannot be trusted about what it runs.
 func (r *runner) buildForJourneys(ctx context.Context) error {
 	udid := r.identity.SimulatorUDID
-	derived := filepath.Join(r.output, "DerivedData")
+	derived := r.derivedDataDir()
 	_, redErr := r.commandOutput(ctx, "absent-target-red", false, redPassCommand(udid, derived)...)
 	if err := ctx.Err(); err != nil {
 		return err
@@ -386,7 +413,7 @@ func (r *runner) requireJourneyProducts(ctx context.Context) error {
 	if err := r.logDerivedDataSizes(ctx); err != nil {
 		return err
 	}
-	_, err := journeyProducts(filepath.Join(r.output, "DerivedData"))
+	_, err := journeyProducts(r.derivedDataDir())
 	return err
 }
 
@@ -394,7 +421,7 @@ func (r *runner) requireJourneyProducts(ctx context.Context) error {
 // directory size in the build job's output, for the caching change that
 // follows this split.
 func (r *runner) logDerivedDataSizes(ctx context.Context) error {
-	derived := filepath.Join(r.output, "DerivedData")
+	derived := r.derivedDataDir()
 	paths := []string{filepath.Join(derived, "Build", "Products")}
 	entries, err := os.ReadDir(derived)
 	if err != nil {
