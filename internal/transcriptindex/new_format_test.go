@@ -660,6 +660,54 @@ func TestFullReadKeepsAnInterruptedSteeringGapCompleted(t *testing.T) {
 	}
 }
 
+// The index addresses a call by its FIRST content part in the announcing
+// entry: a provider that emits one id twice gets its first row settled and
+// its second left alone, and the full read must pick the same rows.
+func TestFullReadSettlesADuplicatedCallIDLikeTheIndex(t *testing.T) {
+	announced := func() schema.Turn {
+		return inTurn("turn_dup1", inRound(assistant(text("calling"), call("dup1", "read_file", `{}`), call("dup1", "read_file", `{}`)), "r_dup"))
+	}
+	cases := map[string][]fixtureLine{
+		"unanswered": {
+			entryLine(opens("turn_dup1", schema.TurnSpanExecution, user("start"))),
+			entryLine(announced()),
+			entryLine(completion("turn_dup1", schema.TurnInterrupted, 90, 10)),
+		},
+		"answered": {
+			entryLine(opens("turn_dup1", schema.TurnSpanExecution, user("start"))),
+			entryLine(announced()),
+			entryLine(inTurn("turn_dup1", results(result("dup1", "read_file", "ok")))),
+			entryLine(completion("turn_dup1", schema.TurnCompleted, 91, 10)),
+		},
+	}
+	for name, lines := range cases {
+		t.Run(name, func(t *testing.T) {
+			fx := newFormatFixture(t, "interrupted call")
+			fx.lines = lines
+			var full []string
+			for _, turn := range fullReadTurns(t, fx) {
+				if turn.ID != "turn_dup1" {
+					continue
+				}
+				for _, item := range turn.Items {
+					if item.Type == "commandExecution" {
+						full = append(full, item.CallID+"|"+item.Status)
+					}
+				}
+			}
+			var indexed []string
+			for _, item := range itemsOf(indexedCandidates(t, fx, -1), "turn_dup1") {
+				if item.Type == "commandExecution" {
+					indexed = append(indexed, item.CallID+"|"+item.Status)
+				}
+			}
+			if !reflect.DeepEqual(full, indexed) {
+				t.Fatalf("full read call rows = %v, indexed = %v", full, indexed)
+			}
+		})
+	}
+}
+
 // fullReadTurns projects a fixture through the whole-file reader with one
 // tool-call registry, the way the hub's past-turn merge projects a saved
 // session.

@@ -536,10 +536,12 @@ func executionItems(acc *logicalTurnAccumulator, turnID string, runs []int, grou
 	// and TOOL entries, never for an announcement), not from the item's status,
 	// so this asks the same question.
 	entryKind := map[int]schema.TurnKind{}
+	entryByIndex := map[int]schema.Turn{}
 	for _, run := range runs {
 		for k, entryIndex := range groups[run].entryIndexes {
 			if k < len(groups[run].entries) {
 				entryKind[entryIndex] = groups[run].entries[k].Kind
+				entryByIndex[entryIndex] = groups[run].entries[k]
 			}
 		}
 	}
@@ -571,6 +573,17 @@ func executionItems(acc *logicalTurnAccumulator, turnID string, runs []int, grou
 
 	out := make(map[int][]appwire.ThreadItem, len(runs))
 	announcements := map[string][]announcement{}
+	// firstCallRow is the first row a call id opened in entry: the index
+	// addresses a call by its first content part, so a duplicated id means
+	// that row.
+	firstCallRow := func(callID string, entry int) (announcement, bool) {
+		for _, call := range announcements[callID] {
+			if call.entry == entry {
+				return call, true
+			}
+		}
+		return announcement{}, false
+	}
 	// settled marks the result items that merged into an announcement, by their
 	// position in the run's own item list, so they are dropped at the end
 	// without shifting any index that was already recorded.
@@ -621,6 +634,11 @@ func executionItems(acc *logicalTurnAccumulator, turnID string, runs []int, grou
 				continue // that entry opened no row for this call: keep the position
 			}
 			target := calls[at-1]
+			// The index addresses a call by its first content part in the
+			// announcing entry, so a duplicated id settles that row.
+			for k := at - 1; k > 0 && calls[k-1].entry == calls[k].entry; k-- {
+				target = calls[k-1]
+			}
 			// Keep the opener's item and round identity while merging the
 			// result's payload and status. The merge derives conversation
 			// provenance from the incoming item ID. The projected opener may
@@ -657,13 +675,17 @@ func executionItems(acc *logicalTurnAccumulator, turnID string, runs []int, grou
 		if awaiting < 0 {
 			continue
 		}
-		for _, calls := range announcements {
-			for _, call := range calls {
-				if call.entry != awaiting || answered[[2]int{call.run, call.at}] {
-					continue
-				}
-				out[call.run][call.at].Status = appwire.TurnStatusInterrupted
+		seen := map[string]bool{}
+		for _, part := range entryByIndex[awaiting].Message.Content {
+			if part.Kind != llm.ContentToolCall || part.ToolCall == nil || seen[part.ToolCall.ID] {
+				continue
 			}
+			seen[part.ToolCall.ID] = true
+			call, ok := firstCallRow(part.ToolCall.ID, awaiting)
+			if !ok || answered[[2]int{call.run, call.at}] {
+				continue
+			}
+			out[call.run][call.at].Status = appwire.TurnStatusInterrupted
 		}
 	}
 	for _, run := range runs {
