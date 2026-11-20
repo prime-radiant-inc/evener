@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/provenance"
 )
 
 // longRunningJobReminderInterval is both the age at which a shell job counts as
@@ -76,10 +77,24 @@ func (jm *jobManager) fireLongRunningReminder() {
 	if len(due) == 0 {
 		return
 	}
-	jm.enqueueNotifications([]jobNotification{longRunningJobsNotification(due, now)})
+	jm.enqueueNotifications([]jobNotification{longRunningJobsNotification(due, now, jobstore.NewWatchSendDeliveryID())})
 }
 
-func longRunningJobsNotification(jobs []*jobstore.JobRecord, now time.Time) jobNotification {
+// longRunningJobsNotification builds the reminder for one cadence fire.
+// deliveryID is that fire's own identity and rides the notice's lineage, so
+// deferredWatchAttentionID derives this fire's durable attention identity from
+// it: every fire says the same thing about the same jobs, so without a
+// per-fire identity two fires would derive one durable attention identity and
+// the second would be dropped as a replay of the first.
+//
+// It must be a per-fire value, not a position in a cadence this manager
+// counted: a restored manager starts counting again, and the pre-restore
+// reminder's durable row still names the old position, so a restarted count
+// would reuse that identity for different content and the append would refuse
+// it as conflicting. A delivery ID minted per fire is unique across restarts,
+// and a retry of the SAME notice keeps the ID it was built with, so the retry
+// still deduplicates against its own row.
+func longRunningJobsNotification(jobs []*jobstore.JobRecord, now time.Time, deliveryID string) jobNotification {
 	sort.Slice(jobs, func(i, j int) bool {
 		if !jobs[i].StartedAt.Equal(jobs[j].StartedAt) {
 			return jobs[i].StartedAt.Before(jobs[j].StartedAt)
@@ -98,6 +113,7 @@ func longRunningJobsNotification(jobs []*jobstore.JobRecord, now time.Time) jobN
 	}
 	n := watchNotification("", longRunningJobsReason)
 	n.Note = b.String()
+	n.Provenance = provenance.WithMessage(n.Provenance, "", deliveryID)
 	return n
 }
 

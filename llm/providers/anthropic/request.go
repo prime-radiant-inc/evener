@@ -227,25 +227,11 @@ func betaHeaderFromProviderOptions(opts map[string]any) string {
 func toAnthropicTools(tools []llm.ToolDefinition) []map[string]any {
 	out := make([]map[string]any, 0, len(tools))
 	for _, t := range tools {
-		params := t.Parameters
-		if params == nil {
-			params = map[string]any{"type": "object", "properties": map[string]any{}}
-		}
-		// Anthropic rejects input_schema with oneOf/anyOf/allOf at the top level.
-		// Copy-on-write: only allocate if we need to strip keys.
-		for _, key := range []string{"anyOf", "oneOf", "allOf"} {
-			if _, has := params[key]; has {
-				params = shallowCopyMap(params)
-				delete(params, "anyOf")
-				delete(params, "oneOf")
-				delete(params, "allOf")
-				break
-			}
-		}
+		schema, _ := wireInputSchema(t)
 		out = append(out, map[string]any{
 			"name":         t.Name,
 			"description":  t.Description,
-			"input_schema": params,
+			"input_schema": schema,
 		})
 	}
 	return out

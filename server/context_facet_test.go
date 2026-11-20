@@ -8,7 +8,7 @@ package server
 // The no-measurement state is constructed, not assumed:
 //   - SessionConfig.OpenAIResponsesContinuation is "off" (the accepted
 //     disabling value, agent/session_config.go:247-250), so
-//     applyResponsesContinuationAnchorPlanning takes its != auto early return
+//     planResponsesContinuation takes its != auto early return
 //     and never applies a continuation shadow estimate.
 //   - the scripted adapter returns a response with zero llm.Usage and records
 //     that returned response's usage, so response usage contributes no input

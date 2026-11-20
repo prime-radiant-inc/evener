@@ -532,7 +532,7 @@ func armStableWatchAttention(controller *delegateTreeController, receiver delega
 }
 
 func stableWatchAttentionID(state jobstore.WatchSendState) string {
-	return "watch:" + state.DeliveryID + ":" + strconv.FormatUint(state.UpdateSeq, 10)
+	return watchSendAttentionPrefix + state.DeliveryID + ":" + strconv.FormatUint(state.UpdateSeq, 10)
 }
 
 // renderWatchSendFrame is the frame text cfg's pending state delivers to a

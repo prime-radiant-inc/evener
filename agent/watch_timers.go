@@ -12,9 +12,9 @@ func (jm *jobManager) startProgressTimer(key watchKey, cfg *watchConfig, stop <-
 		return
 	}
 	interval := time.Duration(cfg.progressIntervalMS) * time.Millisecond
+	ticker := jm.clock.NewTicker(interval)
 
 	go func() {
-		ticker := jm.clock.NewTicker(interval)
 		defer ticker.Stop()
 
 		for {
@@ -216,6 +216,16 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 			}
 		}
 		n := jm.watchNotificationFromWatch(cfg, dec.notifyJobID, reason, root.Provenance)
+		// The identity of this fire, taken before countWatchDeliveryLocked below
+		// counts it, and 1-based because deferredWatchAttentionID reads a
+		// non-positive ordinal as "no ordinal". Every progress tick is its own
+		// delivery, timer or not: two ticks of one watch differ here and nowhere
+		// else, so without this a second tick re-derives the first tick's
+		// durable attention identity -- same watch, same job, same reason -- and
+		// the reuse is either a silent no-op or a conflicting-content error. A
+		// coalesced batch keeps the first fire's value because the queue entry
+		// is the survivor (appendOrFoldJobNotificationLocked).
+		n.OriginWatchID, n.DeliveryOrdinal = cfg.watchID, cfg.deliveries+1
 		if cfg.timer {
 			n.WatchID, n.Fires, n.IntervalSeconds, n.Terminal = cfg.watchID, 1, cfg.timerSeconds, cfg.oneShot
 		}

@@ -192,16 +192,13 @@ func reconcileOutputField(body map[string]any, admitted, outputCap *int) error {
 func toGeminiFunctionDecls(tools []llm.ToolDefinition) []map[string]any {
 	out := make([]map[string]any, 0, len(tools))
 	for _, t := range tools {
-		params := t.Parameters
-		if params == nil {
-			params = map[string]any{"type": "object", "properties": map[string]any{}}
-		}
 		out = append(out, map[string]any{
 			"name":        t.Name,
 			"description": t.Description,
-			// Gemini's Schema is a restricted subset; strip JSON-schema-only fields
-			// (e.g., additionalProperties) so requests don't fail validation.
-			"parameters": sanitizeGeminiSchema(params),
+			// Gemini's Schema is a restricted subset; wireFunctionParameters strips
+			// JSON-schema-only fields (e.g., additionalProperties) so requests don't
+			// fail validation.
+			"parameters": wireFunctionParameters(t),
 		})
 	}
 	return out

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/llm/registry"
@@ -42,6 +43,53 @@ type Authenticator interface {
 type RequestPreparer interface {
 	PrepareRequest(ctx context.Context, req *http.Request, body map[string]any, r Request, res registry.Resolved) error
 	RequiresStreamingComplete() bool
+}
+
+// ToolSchemaDeriver is implemented by a wire protocol whose builder changes a
+// tool definition's parameter schema before sending it.
+//
+// The local estimate bills a request by its tool bytes, and a builder that
+// states an explicit type or closes a parameterless tool's schema changes those
+// bytes. Pricing the definitions as they were received therefore prices a list
+// other than the one that dispatches: near the input cap that difference admits
+// a request the budget would have rejected, or refuses one that fits. The
+// protocol owns the answer because the protocol owns the builder —
+// EmitToolSchemas must reach the same per-tool decision the builder reaches, so
+// the priced list and the emitted list are one list.
+type ToolSchemaDeriver interface {
+	// EmitToolSchemas returns baseline as this protocol's builder will send it,
+	// reporting whether any definition changed. baseline is the list the
+	// builder itself is handed, nil Parameters included: a parameterless tool
+	// and an explicitly open one are different inputs, and only the first gains
+	// the synthesized schema.
+	//
+	// An unchanged list returns nil and false, so a caller holding a count over
+	// baseline reuses it rather than re-measuring the catalog.
+	EmitToolSchemas(baseline []ToolDefinition, res registry.Resolved) ([]ToolDefinition, bool)
+}
+
+// ProjectToolSchemas is the loop every EmitToolSchemas implementation runs: it
+// maps baseline through project, which returns the schema tool i is sent with
+// and reports whether that is the caller's own map.
+//
+// An untouched tool keeps the definition it arrived as, so the bytes the caller
+// measured over baseline still describe it. The first tool that is not leaves a
+// clone of the list behind, and the remaining tools write into that clone. A
+// list none of which changed returns nil and false, so its caller keeps the
+// count it already holds rather than re-measuring the catalog.
+func ProjectToolSchemas(baseline []ToolDefinition, project func(t ToolDefinition) (params map[string]any, untouched bool)) ([]ToolDefinition, bool) {
+	var sent []ToolDefinition
+	for i, t := range baseline {
+		params, untouched := project(t)
+		if untouched {
+			continue
+		}
+		if sent == nil {
+			sent = slices.Clone(baseline)
+		}
+		sent[i].Parameters = params
+	}
+	return sent, sent != nil
 }
 
 // samplingPaths names the prunable paths that carry the request-level
