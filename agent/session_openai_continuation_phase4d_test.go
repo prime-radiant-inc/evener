@@ -315,6 +315,9 @@ func TestSession_OpenAIResponsesContinuationRegistryClientV2AnchorCutover(t *tes
 				if _, ok := second["previous_response_id"]; ok {
 					t.Fatalf("v2-prefixed anchor must not send previous_response_id: %s", string(bodies[1]))
 				}
+				if gotStore, ok := second["store"].(bool); !ok || !gotStore {
+					t.Fatalf("fallback-capable full-history request store = %#v, want continuation-owned true: %s", second["store"], string(bodies[1]))
+				}
 				for _, marker := range []string{"real openai first user marker", "real openai second user marker"} {
 					if !responsesInputContainsText(secondInput, marker) {
 						t.Fatalf("full-history request missing %q in input: %#v", marker, secondInput)
