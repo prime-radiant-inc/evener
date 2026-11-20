@@ -2561,7 +2561,10 @@ func TestRecursiveSchemaIsCopiedWithoutUnboundedRecursion(t *testing.T) {
 		props["self"] = schema
 		child["description"] = "unrelated"
 		done := make(chan map[string]any, 1)
-		go func() { done <- SupplyDerivedTypes(schema) }()
+		go func() {
+			out := SupplyDerivedTypes(schema)
+			done <- out
+		}()
 		select {
 		case out := <-done:
 			self, ok := out["properties"].(map[string]any)["self"].(map[string]any)

@@ -1038,7 +1038,9 @@ type SettingsHubOverview struct {
 	PastIndex *SettingsPastIndexOverview `json:"pastIndex,omitempty"`
 	// OperationStoreQuarantine is present exactly when the hub's operation
 	// store carries a quarantine signal: a corrupt store file took the
-	// custody-first quarantine and a custody file holds what it carried.
+	// custody-first quarantine and a custody file holds the selected recovery
+	// records used to build the replacement store, not a backup of the
+	// original journal.
 	// Absent on a hub with no quarantine, and on an older hub that has no
 	// field at all.
 	//
@@ -1058,10 +1060,11 @@ type SettingsHubOverview struct {
 
 // SettingsOperationStoreQuarantine is the operation store's quarantine signal
 // as the hub reports it to clients: the corrupt file renamed aside, the custody
-// file that snapshot what it carried, and the quarantine epoch the set-aside
-// advanced to. These are hostops.QuarantineSignal's fields, named as that type
-// names them, and they describe a completed quarantine — never a pending or
-// refused one, which leaves no signal.
+// file holding the recovery records used to build the replacement, and the
+// quarantine epoch the set-aside advanced to. These are
+// hostops.QuarantineSignal's fields, named as that type names them, and they
+// describe a completed quarantine — never a pending or refused one, which
+// leaves no signal.
 type SettingsOperationStoreQuarantine struct {
 	// QuarantinedFile is the store path the quarantine replaced: the corrupt
 	// file lived there, was renamed aside, and the replacement now occupies it.

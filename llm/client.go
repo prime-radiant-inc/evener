@@ -418,26 +418,28 @@ func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 	return newProviderStampStream(st, t.name), nil
 }
 
+// shapeAndApplyTokenBudget shapes req and admits it against res's budget.
+//
+// override says whether an adapter override serves the request. A protocol
+// route's builder replaces a tool schema before sending it, so the count is
+// taken over the list that builder emits rather than over the one the request
+// arrived with. An override marshals the definition it was handed, so the list
+// it received is its wire list and the catalog's own count is the price.
 func shapeAndApplyTokenBudget(req Request, res registry.Resolved, override bool) (Request, error) {
 	req = ShapeRequest(req, res)
-	budgeted, _, err := applyTokenBudgetForTarget(req, res, override)
+	budgeted, _, err := ApplyTokenBudgetForRoute(req, res, override)
 	return budgeted, err
 }
 
-// applyTokenBudgetForTarget runs ApplyTokenBudget with the resolved adapter's
-// parameterless-schema byte adjustment applied once to a shallow copy, keeping
-// req.ToolsJSONBytes equal to the caller's declared-catalog stamp.
-func applyTokenBudgetForTarget(req Request, res registry.Resolved, override bool) (Request, TokenBudget, error) {
-	budgetReq := req
-	if len(budgetReq.Tools) > 0 {
-		budgetReq.ToolsJSONBytes = effectiveToolsJSONBytes(budgetReq, res, override)
-	}
-	budgeted, budget, err := ApplyTokenBudget(budgetReq, res)
-	if err != nil {
-		return req, budget, err
-	}
-	budgeted.ToolsJSONBytes = req.ToolsJSONBytes
-	return budgeted, budget, nil
+// ApplyTokenBudgetForRoute runs ApplyTokenBudget over the tool list res's route
+// emits (EffectiveToolsJSONBytes) without writing that count into the request:
+// the returned request carries the stamp the caller set, so a later price by
+// another route starts from the catalog rather than from this route's emission.
+//
+// override says an adapter override serves the request, so the catalog it is
+// handed is the list it dispatches.
+func ApplyTokenBudgetForRoute(req Request, res registry.Resolved, override bool) (Request, TokenBudget, error) {
+	return ApplyTokenBudgetWithToolBytes(req, res, EffectiveToolsJSONBytes(req, res, override))
 }
 
 // ModelListing is what Models returns: the instance's visible live-authoritative
@@ -552,6 +554,27 @@ func (c *Client) isOverride(name string) bool {
 	c.overridesMu.RLock()
 	defer c.overridesMu.RUnlock()
 	return c.overrides[name] != nil
+}
+
+// ServesOverride reports whether an adapter override serves requests for the
+// named provider, resolving an empty name through the default provider the way
+// a dispatch does.
+//
+// A caller that prices a request before dispatch needs this because the two
+// halves of a target do not bill the same list: a protocol route's builder
+// rewrites tool schemas before sending them, and an override marshals the
+// definition it was handed. A price taken over the protocol's emitted list and
+// then applied to a request an override serves bills schemas that never reach
+// the wire.
+func (c *Client) ServesOverride(provider string) bool {
+	if c == nil {
+		return false
+	}
+	name := normalizeProviderName(provider)
+	if name == "" {
+		name = c.DefaultProvider()
+	}
+	return c.isOverride(name)
 }
 
 // ListLive fetches one instance's raw live rows without touching the

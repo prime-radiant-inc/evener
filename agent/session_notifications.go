@@ -46,13 +46,13 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 	s.enqueueOwnCallerWatchSendTokens()
 	jobNotifs, retryJobNotifs, injectedJobNotifs := s.filterDeliverableJobNotifications(s.drainJobNotifications())
 	jobNotifs, injectedJobNotifs = s.withoutAwaitingRequest(jobNotifs), s.withoutAwaitingRequest(injectedJobNotifs)
-	// A watch notice this turn may not carry goes back to the queue before the
-	// reminder is written: an unleased stable-child turn presents no watch
-	// notice, and the reminder would otherwise ride the transcript into it. The
-	// requeued notice keeps folding where it was, and the leased drive that
-	// reserves its generation claims it.
-	jobNotifs, deferredWatch := s.splitUnleasedWatchNotices(ctx, jobNotifs)
-	s.requeueJobNotifications(jobNotifications(deferredWatch))
+	// THE RULE (LIFE-01, #2340) at the OPENING write. A watch notice this turn
+	// has no lease to carry is deferred to durable attention; the ordinary
+	// completions in the same batch stay and ride this turn. Deferring only the
+	// watch notices matters: a batch that holds a recovered shell completion
+	// beside one would otherwise requeue whole and retry forever, because every
+	// retry sees the same pair.
+	jobNotifs = s.deferUnleasedWatchNotices(ctx, jobNotifs)
 	if sessionLifecycleFault(ctx, "inject_watch_notification") != nil {
 		jobNotifs = append(jobNotifs, deliverableJobNotification{
 			notification: jobNotification{Kind: jobNotificationKindWatch, JobID: "injected-watch", Status: jobNotificationEventWatch},
@@ -192,8 +192,11 @@ func (s *Session) injectLaterJobNotifications(ctx context.Context) {
 	jobNotifs, injectedJobNotifs = s.withoutAwaitingRequest(jobNotifs), s.withoutAwaitingRequest(injectedJobNotifs)
 	s.requeueJobNotifications(retryJobNotifs)
 	s.requeueJobNotifications(s.markJobNotificationsDelivered(injectedJobNotifs))
-	jobNotifs, deferred := s.splitUnleasedWatchNotices(ctx, jobNotifs)
-	s.requeueJobNotifications(jobNotifications(deferred))
+	// A watch notice can arrive after the opening drain and before this round's
+	// request is prepared. Writing it here would put it into history outside a
+	// leased generation, so defer it to durable attention while letting ordinary
+	// completions in the same batch ride this round.
+	jobNotifs = s.deferUnleasedWatchNotices(ctx, jobNotifs)
 	if len(jobNotifs) == 0 {
 		return
 	}

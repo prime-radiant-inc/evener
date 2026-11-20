@@ -73,25 +73,30 @@ func EstimateInputTokens(req Request) InputTokenCount {
 
 // EstimateInputTokensForResolved returns the local estimate with the
 // unsigned-thinking rule decided by the target's resolved row — its protocol
-// and reasoning capabilities — rather than by name. Callers that have resolved
-// the request's target should prefer this.
+// and reasoning capabilities — rather than by name, pricing the request's
+// declared tool catalog. Callers that know the serving route should use
+// EstimateInputTokensForRoute instead so route-specific schema emissions and
+// tool replacements are priced accurately.
 func EstimateInputTokensForResolved(res registry.Resolved, req Request) InputTokenCount {
 	return estimateInputTokens(targetFromResolved(res, req.Provider, req.Model), req)
 }
 
 func estimateInputTokens(t targetInfo, req Request) InputTokenCount {
+	return estimateInputTokensWithToolBytes(t, req, declaredToolJSONBytes(req))
+}
+
+// estimateInputTokensWithToolBytes is the local estimate with the tool list's
+// wire byte count supplied by the caller, because only the caller knows which
+// list dispatches: the declared catalog where there is no route, the route's
+// emission where there is one. A count passed here is billed as it stands, so a
+// replacement that arrives with no catalog is still charged.
+func estimateInputTokensWithToolBytes(t targetInfo, req Request, toolBytes int) InputTokenCount {
 	options, _ := req.ProviderOptions[registry.ProtocolOpenAIChat].(map[string]any)
 	if _, ok := options["reasoning"]; ok && !t.reasoningOff {
 		t.chatUsesDetails = true
 	}
 	tokens := estimateMessagesInputTokens(t, req.Messages)
-	if len(req.Tools) > 0 {
-		toolBytes := req.ToolsJSONBytes
-		if toolBytes <= 0 {
-			toolBytes = ToolsJSONBytes(req.Tools)
-		}
-		tokens += toolBytes / 4
-	}
+	tokens += toolBytes / 4
 	if req.ResponseFormat != nil {
 		b, _ := json.Marshal(req.ResponseFormat)
 		tokens += len(b) / 4
@@ -103,6 +108,119 @@ func estimateInputTokens(t targetInfo, req Request) InputTokenCount {
 		Provider: req.Provider,
 		Model:    req.Model,
 	}
+}
+
+// declaredToolJSONBytes is the catalog's own count: the caller's stamp when it
+// measured the list, else a measurement of the list. It describes req.Tools as
+// the caller handed them, with no route's schema decision applied.
+func declaredToolJSONBytes(req Request) int {
+	if len(req.Tools) == 0 {
+		return 0
+	}
+	if req.ToolsJSONBytes > 0 {
+		return req.ToolsJSONBytes
+	}
+	return ToolsJSONBytes(req.Tools)
+}
+
+// EffectiveToolsJSONBytes returns the byte length of the tool list res's route
+// puts on the wire for req, or 0 when the route sends no tools.
+//
+// A builder rewrites a tool schema before sending it: a closed value set gains
+// the explicit type its provider requires, a parameterless tool gains a
+// synthesized schema, and a strict-capable route closes an empty one. Pricing
+// the definitions as they were received therefore prices a list other than the
+// one that dispatches, and near the input cap that difference decides admission
+// in both directions: a request can be admitted over budget, or refused while it
+// fits. The protocol owns the answer because the protocol owns the builder, so
+// this asks it (ToolSchemaDeriver) rather than restating its rules.
+//
+// The list a route writes over its catalog wins over the catalog, because it is
+// what dispatches. A transport body "tools" constant is applied after the
+// builder and after the ProviderOptions overlay (protocolhttp.Prepare), so it
+// overrides the option at the same path; the option is read only when the
+// transport leaves tools alone (providerToolsReplacement). The replacement is
+// measured where it lies, by its encoded length: it is a wire value, not a
+// catalog, and there is no normalizing it into one.
+//
+// An override-served route marshals the definitions it is handed, so for it the
+// catalog's own count is the wire count and neither a deriver nor a replacement
+// applies.
+//
+// A protocol that implements no deriver sends the definitions it is handed, so
+// its answer is the catalog's own count.
+func EffectiveToolsJSONBytes(req Request, res registry.Resolved, override bool) int {
+	if override {
+		return declaredToolJSONBytes(req)
+	}
+	if replacement, ok := providerToolsReplacement(req, res); ok {
+		if measured := encodeJSONLength(replacement); measured >= 0 {
+			return measured
+		}
+		// The encoder rejects the replacement, so it has no wire form to
+		// price; the catalog's own count stands, exactly as ToolsJSONBytes
+		// bills nothing for a list the encoder rejects.
+	}
+	if len(req.Tools) == 0 {
+		return 0
+	}
+	if p, ok := ProtocolFor(res.Protocol); ok {
+		if deriver, ok := p.(ToolSchemaDeriver); ok {
+			if emitted, changed := deriver.EmitToolSchemas(req.Tools, res); changed {
+				return ToolsJSONBytes(emitted)
+			}
+		}
+	}
+	return declaredToolJSONBytes(req)
+}
+
+// providerToolsReplacement returns the tool list res's route writes over the
+// catalog, and whether there is one: the row's transport body constant when it
+// pins tools, else the request's ProviderOptions value.
+//
+// Every builder whose protocol's options carry tools writes the request's own
+// tools and then copies ProviderOptions over the body: Chat Completions, the
+// standard Responses route, Anthropic (name, description, input_schema), and
+// Google (functionDeclarations). An explicit option is therefore a list that
+// dispatches on all four. The transport's body constants are applied after the
+// builder and after the option (protocolhttp.Prepare), and they override
+// whatever stands at the same path, so a row that pins tools replaces the
+// option: the constant is the wire list, and pricing the option charges bytes
+// the request never sends.
+//
+// The constant is read from the literal "tools" key, because that is the path
+// whose value is a tool list. A dotted path such as "tools.0" makes the body
+// constant layer create a parent object instead, which no route reads as a list.
+//
+// A Codex Responses Lite route is excluded: its tools ride inside the input as
+// an additional_tools item, and a top-level tools value is not the catalog that
+// endpoint reads.
+func providerToolsReplacement(req Request, res registry.Resolved) (any, bool) {
+	switch res.Protocol {
+	case registry.ProtocolOpenAIChat, registry.ProtocolOpenAIResponses,
+		registry.ProtocolAnthropic, registry.ProtocolGoogle:
+	default:
+		return nil, false
+	}
+	if res.Protocol == registry.ProtocolOpenAIResponses && registry.BoolValue(res.Caps.ResponsesLite) {
+		return nil, false
+	}
+	if pinned, ok := res.Transport.Body["tools"]; ok {
+		return pinned, true
+	}
+	options, _ := req.ProviderOptions[res.Protocol].(map[string]any)
+	replacement, ok := options["tools"]
+	return replacement, ok
+}
+
+// encodeJSONLength returns the encoded length of v, or a negative value when the
+// encoder rejects it.
+func encodeJSONLength(v any) int {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return -1
+	}
+	return len(b)
 }
 
 // ToolsJSONBytes returns the byte length of defs' serialized form: the length
@@ -120,87 +238,28 @@ func ToolsJSONBytes(defs []ToolDefinition) int {
 	return len(b)
 }
 
-// closedEmptyToolParameters is the closed empty object schema emitted by
-// strict-capable built-in OpenAI adapters for a parameterless tool that has not
-// opted out of strict mode.
-func closedEmptyToolParameters() map[string]any {
-	return map[string]any{
-		"type":                 "object",
-		"additionalProperties": false,
-		"properties":           map[string]any{},
-		"required":             []string{},
-	}
+// EstimateInputTokensWithToolBytes returns the local estimate for req over a
+// tool-list byte count the caller already measured, either with
+// EffectiveToolsJSONBytes for the serving route or with ToolsJSONBytes over a
+// list that route sends unchanged.
+//
+// A caller that prices many requests over one configured route request measures
+// the list once and passes the count here, so initial admission, the
+// continuation shadow, and final admission bill one measurement instead of
+// re-deriving and re-marshalling the emitted schemas each time.
+func EstimateInputTokensWithToolBytes(res registry.Resolved, req Request, toolBytes int) InputTokenCount {
+	return estimateInputTokensWithToolBytes(targetFromResolved(res, req.Provider, req.Model), req, toolBytes)
 }
 
-// protocolClosesStrictParameterlessTools reports whether the built-in adapter
-// for res emits closedEmptyToolParameters for non-opted-out parameterless tools.
-func protocolClosesStrictParameterlessTools(res registry.Resolved) bool {
-	if !registry.BoolValue(res.Caps.StrictTools) {
-		return false
-	}
-	switch res.Protocol {
-	case registry.ProtocolOpenAIResponses, registry.ProtocolOpenAIChat:
-		return true
-	default:
-		return false
-	}
-}
-
-// emittedParameterlessParameters returns the schema a built-in adapter emits
-// for a tool with no declared parameters, or nil when the adapter leaves
-// t.Parameters unchanged (including omitting a direct caller's nil).
-func emittedParameterlessParameters(t ToolDefinition, res registry.Resolved) map[string]any {
-	if !t.DeclaresNoParameters() && t.Parameters != nil {
-		return nil
-	}
-	if protocolClosesStrictParameterlessTools(res) && (t.Strict == nil || *t.Strict) {
-		return closedEmptyToolParameters()
-	}
-	if t.Parameters == nil {
-		switch res.Protocol {
-		case registry.ProtocolOpenAIResponses, registry.ProtocolAnthropic, registry.ProtocolGoogle:
-			return defaultToolParameters()
-		}
-	}
-	return nil
-}
-
-// parameterlessToolsJSONDelta returns the net serialized byte delta introduced
-// by the resolved built-in adapter substituting closed or open empty schemas for
-// parameterless tools in defs. Overrides return 0.
-func parameterlessToolsJSONDelta(defs []ToolDefinition, res registry.Resolved, override bool) int {
-	if len(defs) == 0 || override {
-		return 0
-	}
-	delta := 0
-	for i := range defs {
-		emitted := emittedParameterlessParameters(defs[i], res)
-		if emitted == nil {
-			continue
-		}
-		declaredBytes := ToolsJSONBytes(defs[i : i+1])
-		adjusted := defs[i]
-		adjusted.Parameters = emitted
-		emittedBytes := ToolsJSONBytes([]ToolDefinition{adjusted})
-		if declaredBytes > 0 && emittedBytes > 0 {
-			delta += emittedBytes - declaredBytes
-		}
-	}
-	return delta
-}
-
-// effectiveToolsJSONBytes returns the tool-catalog byte length priced against
-// the resolved adapter's wire emission. Both caller-stamped declared-catalog
-// lengths and unstamped requests receive the parameterless-schema delta once.
-func effectiveToolsJSONBytes(req Request, res registry.Resolved, override bool) int {
-	if len(req.Tools) == 0 {
-		return 0
-	}
-	base := req.ToolsJSONBytes
-	if base <= 0 {
-		base = ToolsJSONBytes(req.Tools)
-	}
-	return base + parameterlessToolsJSONDelta(req.Tools, res, override)
+// EstimateInputTokensForRoute returns the local estimate for req as res's route
+// serves it, billing the tool list that route puts on the wire
+// (EffectiveToolsJSONBytes). override says an adapter override serves the
+// request, so the catalog it is handed is its wire list.
+//
+// It is the estimate for callers that know the serving route: a request priced
+// here and dispatched through the same route prices one list.
+func EstimateInputTokensForRoute(res registry.Resolved, req Request, override bool) InputTokenCount {
+	return EstimateInputTokensWithToolBytes(res, req, EffectiveToolsJSONBytes(req, res, override))
 }
 
 // EstimateMessagesInputTokens estimates only a message list. It is useful for
@@ -309,6 +368,15 @@ func (c *Client) CountInputTokens(ctx context.Context, req Request) (InputTokenC
 		req = ShapeRequest(req, t.res)
 	}
 	localEstimate := func() InputTokenCount {
+		// The local reading is the fallback for a route with no exact counter,
+		// which is exactly the caller who sizes a request from it and then
+		// dispatches. A protocol's builder rewrites the tool list before sending
+		// it, so measuring the advertised list here would answer with a number
+		// smaller than the request that dispatches, and a caller who fits its
+		// request to that number meets the shortfall as a context-budget
+		// rejection from Complete. The emitted list is the one to price, and
+		// only a protocol route has one: an override marshals the definition it
+		// was handed, so its catalog is its wire list.
 		return localInputEstimate(req, callerProvider, t)
 	}
 
@@ -1149,10 +1217,7 @@ func localInputEstimate(req Request, callerProvider string, t dispatchTarget) In
 	}
 	estimateReq := req
 	estimateReq.Provider = callerProvider
-	if len(estimateReq.Tools) > 0 {
-		estimateReq.ToolsJSONBytes = effectiveToolsJSONBytes(estimateReq, t.res, t.override != nil)
-	}
-	return EstimateInputTokensForResolved(t.res, estimateReq)
+	return EstimateInputTokensForRoute(t.res, estimateReq, t.override != nil)
 }
 
 // EstimatorTargetsEquivalent reports whether two resolved rows are one estimator

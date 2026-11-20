@@ -68,8 +68,14 @@ func TestDrainRunsANotificationTurnForAPendingStableWatchNotice(t *testing.T) {
 // A leased turn carries a watch notice: the notice waits on the session's
 // ordinary queue, and a turn under a committed generation is allowed to take it
 // as ordinary notification steering, because that turn consumes what it
-// presents. An unleased turn on the same session is refused instead, so the
-// notice reaches the provider exactly once and only inside a generation.
+// presents. An unleased turn is refused and defers the notice to durable
+// attention instead, so the notice reaches the provider exactly once and only
+// inside a generation.
+//
+// The two directions run on their own fixtures. They are not one queue over two
+// turns: the unleased half DEFERS the notice (THE RULE, #2340), which takes it
+// off the ordinary rail for good, so a leased accept afterwards has nothing left
+// to carry and legitimately stands down.
 func TestStableWatchAttentionIsAdmittedForALeasedTurn(t *testing.T) {
 	t.Parallel()
 	child, _, _ := stableWatchSendChild(t)
@@ -86,27 +92,47 @@ func TestStableWatchAttentionIsAdmittedForALeasedTurn(t *testing.T) {
 		t.Fatal("a queued notice already reads as durable watch attention: it becomes durable only when a reservation presents it")
 	}
 
-	// The unleased attempt hands the notice back untouched: nothing it could
-	// carry may present the notice, and consuming it here would lose the tick.
+	// DIRECTION ONE -- an unleased turn cannot carry the notice, so it DEFERS it
+	// to durable attention rather than presenting it: the row it writes is what a
+	// leased generation presents, and the unleased projection withholds it by
+	// identity.
 	if child.acceptNotificationInput(context.Background(), "unleased-turn") {
 		t.Fatal("an unleased notification drive was admitted for a watch notice it cannot present")
 	}
-	if queued := child.peekNotifications(); queued != 1 {
-		t.Fatalf("the unleased drive left %d item(s) queued, want 1: the notice must stay for the leased drive", queued)
+	if queued := child.peekNotifications(); queued != 0 {
+		t.Fatalf("the unleased drive left %d item(s) queued, want 0: the notice was deferred off the ordinary rail", queued)
+	}
+	foldAfterUnleased, foldErr := readDelegateAttentionFold(child.TranscriptPath(), child.id)
+	if foldErr != nil {
+		t.Fatalf("read the child's attention fold after the unleased turn: %v", foldErr)
+	}
+	if !slices.ContainsFunc(foldAfterUnleased.order, isWatchNoticeAttentionID) {
+		t.Fatalf("child attention rows = %v, want the deferred watch notice: it must stay owed to a leased generation", foldAfterUnleased.order)
+	}
+
+	// DIRECTION TWO -- a LEASED turn on a fresh fixture carries a queued notice as
+	// ordinary notification steering, because that turn consumes what it presents.
+	leasedChild, _, _ := stableWatchSendChild(t)
+	leasedChild.jobManager.enqueue = leasedChild.enqueueJobNotificationAndNotify
+	leasedChild.jobManager.enqueueWatchNotifications([]jobNotification{
+		watchSendDiagnosticNotification("watch:accept-notice", "job:accept-notice", "watch send failed: delivery_id=accept-notice"),
+	})
+	if queued := leasedChild.peekNotifications(); queued != 1 {
+		t.Fatalf("the watch notice left %d item(s) on the ordinary queue, want 1: a notice waits there for the leased handoff", queued)
 	}
 	leased := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, delegateLease{delegateID: child.owningDelegateID, generation: 1})
-	if !child.acceptNotificationInput(leased, "leased-turn") {
+	if !leasedChild.acceptNotificationInput(leased, "leased-turn") {
 		t.Fatal("the delegate's own leased turn was not admitted for its watch notice")
 	}
-	if queued := child.peekNotifications(); queued != 0 {
+	if queued := leasedChild.peekNotifications(); queued != 0 {
 		t.Fatalf("the leased turn left %d item(s) queued, want 0: the turn that carries the notice consumes it", queued)
 	}
-	if child.hasAwaitingWatchNotification() {
+	if leasedChild.hasAwaitingWatchNotification() {
 		t.Fatal("the leased turn left the notice assigned to a request that will never carry it")
 	}
-	child.mu.Lock()
-	history := append([]schema.Turn{}, child.history...)
-	child.mu.Unlock()
+	leasedChild.mu.Lock()
+	history := append([]schema.Turn{}, leasedChild.history...)
+	leasedChild.mu.Unlock()
 	presented := 0
 	for _, turn := range history {
 		if turn.Kind == schema.TurnSteering && strings.Contains(turn.Message.Text(), "delivery_id=accept-notice") {

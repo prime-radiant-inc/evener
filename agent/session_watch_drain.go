@@ -149,6 +149,14 @@ func (s *Session) redriveLiveChild(childSessionID string) {
 	}
 }
 
+// stableDelegateChild reports whether sess belongs to a STABLE delegate child: a
+// delegate whose runs are exact generations under a controller lease. Ephemeral
+// subagents carry no owning delegate id (subagents.go sets it empty), so they are
+// not covered and keep the notification-turn fallback they legitimately use.
+func stableDelegateChild(sess *Session) bool {
+	return sess != nil && sess.owningDelegateID != "" && sess.delegateController != nil
+}
+
 // driveChildIfNotStopGated is the wake-edge drive: it skips a stop-gated child so
 // a deliberately stopped child is not resurrected by its own pre-stop notify
 // (spec §3 stop-gating), and a child the one-shot drain has abandoned for the
@@ -185,14 +193,6 @@ func (s *Session) driveChildIfNotStopGated(sub *subagent) {
 	if s.driveSubagentNotificationTurn(sub) {
 		s.settleDrivenChildForwardedPendings(sub.sess.id)
 	}
-}
-
-// stableDelegateChild reports whether sess belongs to a STABLE delegate child: a
-// delegate whose runs are exact generations under a controller lease. Ephemeral
-// subagents carry no owning delegate id (subagents.go sets it empty), so they are
-// not covered and keep the notification-turn fallback they legitimately use.
-func stableDelegateChild(sess *Session) bool {
-	return sess != nil && sess.owningDelegateID != "" && sess.delegateController != nil
 }
 
 // renderUnreachableChildPendings is the failure fallback (spec §3): a forwarded
