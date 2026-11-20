@@ -450,6 +450,10 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 	skills := s.skillLifecycle.Clone()
 	skills.PinnedNoteGen = s.pinnedNoteGen
 	contextWindow, contextWindowSource := budgetingWindow(s.profile)
+	fallbackPrompt := ""
+	if s.persistFallbackPrompt && s.systemPromptFrozen {
+		fallbackPrompt = s.cachedSystemPrompt
+	}
 	return schema.SessionMeta{
 		ID:                       s.id,
 		ProfileID:                s.profile.ID(),
@@ -498,6 +502,7 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 		JobTreeRevision:          jobTreeRevision,
 		EnvContext:               s.envContextState,
 		LaunchEnvBaseline:        s.launchEnvBaseline,
+		LaunchSystemPrompt:       fallbackPrompt, // only a header that carries none needs this
 	}
 }
 

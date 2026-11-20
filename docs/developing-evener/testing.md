@@ -1980,6 +1980,14 @@ mutation queue when the test needs it. After the inputs finish, `s.Close()`,
 then `<-drained`, then read the slice under the mutex. Never combine
 `captureEvents` with a serve helper in one test.
 
+## Provider Replay Prefix Byte Tests
+
+`agent/session_prefix_replay_http_test.go` drives the real Responses and Chat
+Completions clients against a loopback `httptest.Server` and compares the raw
+request bytes, so a change to request shaping names the exact item that moved.
+Across turns, a cold restore, an env swap, a model switch-back and a root fork,
+the launch prompt, the tools and every earlier item must go out unchanged.
+
 ## A Disposable Hub Needs Its Own HOME
 
 The hub is a host singleton guarded by an exclusive flock on

@@ -1350,6 +1350,8 @@ describe("current transcript checkpoints", () => {
       holdSequence: 7,
       runningJobCount: 2,
       oldestRunningJobStartedAt: "2026-10-25T10:00:30Z",
+      drainHeldBySubagents: true,
+      runningSubagentCount: 3,
       latestIntent: "Reading the board.",
       runningForMs: 1,
       quietForMs: 2,
@@ -1410,13 +1412,19 @@ describe("current transcript checkpoints", () => {
       return JSON.parse(JSON.stringify(encoded));
     };
     expect(decodeCurrentTranscriptState(checkpoint(base))).toBeDefined();
-    // The omission stays valid: an older checkpoint carries none of the three.
+    // The omission stays valid: an older checkpoint carries none of the hold.
     expect(decodeCurrentTranscriptState(checkpoint({ ...base, runningJobCount: 2 }))).toBeDefined();
+    expect(
+      decodeCurrentTranscriptState(checkpoint({ ...base, drainHeldBySubagents: true, runningSubagentCount: 2 })),
+    ).toBeDefined();
     for (const malformed of [
       { runningJobCount: "2" },
       { oldestRunningJobStartedAt: 17 },
       { runningJobCount: -1 },
       { drainHeldByJobs: "true" },
+      { runningSubagentCount: "2" },
+      { runningSubagentCount: -1 },
+      { drainHeldBySubagents: "true" },
     ]) {
       expect(decodeCurrentTranscriptState(checkpoint({ ...base, ...malformed } as never))).toBeUndefined();
     }

@@ -10,7 +10,7 @@ import {
   watchFacts,
 } from "./activityRows";
 import { buildEntityView, findEntityView } from "./entityView";
-import { projectSessionActivity } from "./sessionActivityPresentation";
+import { projectSessionActivity, resolveDelegateParents } from "./sessionActivityPresentation";
 import { type SessionActivitySnapshot, SessionActivityStore } from "./sessionActivityStore";
 import {
   activityClient,
@@ -400,4 +400,26 @@ test.each([
   expect(findEntityView(entities, "delegate", "dlg_reported", "local:root")).toMatchObject({
     row: { defaultDetailOpen: false, delegate: { runGeneration: generation, reportPreview: report } },
   });
+});
+
+test("resolveDelegateParents links nested descendants, respects rootRefs, and flags cycles", () => {
+  const rootChild = delegate("d1", activityRef, "remote:p1");
+  const nested = delegate("d2", "remote:p1", "remote:p2", "d1");
+  const altRooted = delegate("d3", "scope-alias", "remote:p3");
+  const rootCollision = delegate("d-collision", "remote:root-alias", "scope-alias");
+  const cycleA = delegate("ca", "remote:cb", "remote:ca", "cb");
+  const cycleB = delegate("cb", "remote:ca", "remote:cb", "ca");
+
+  const { parentOf, cyclic } = resolveDelegateParents(
+    [rootChild, nested, altRooted, rootCollision, cycleA, cycleB],
+    [activityRef, "scope-alias"],
+  );
+
+  expect(parentOf.get(rootChild)).toBeUndefined();
+  expect(parentOf.get(nested)).toBe(rootChild);
+  expect(parentOf.get(altRooted)).toBeUndefined();
+  expect(cyclic.has(rootChild)).toBe(false);
+  expect(cyclic.has(nested)).toBe(false);
+  expect(cyclic.has(cycleA)).toBe(true);
+  expect(cyclic.has(cycleB)).toBe(true);
 });

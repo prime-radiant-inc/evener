@@ -39,6 +39,7 @@ type Snapshot struct {
 	ScratchDir      string `json:"scratch_dir,omitempty"`
 	CallableTools   string `json:"callable_tools,omitempty"`
 	AvailableSkills string `json:"available_skills,omitempty"`
+	RunLifetime     string `json:"run_lifetime,omitempty"`
 }
 
 // State is the Tracker's persistable form, stored in session meta so resume
@@ -50,27 +51,39 @@ type State struct {
 
 // Tracker diffs successive Snapshots into rendered context blocks.
 type Tracker struct {
-	st   State
-	base Snapshot // the runtime facts the model already knows, so State replays purely
+	st            State
+	base          Snapshot // the runtime facts the model already knows, so State replays purely
+	fullInventory bool     // emit authoritative tools:/skills: once (legacy restore without baseline)
 }
 
 func NewTracker(st State) *Tracker { return &Tracker{st: st} }
 
 func (t *Tracker) ResetState() { t.st = State{} }
 
+// RequireFullInventory asks the next RenderDiff to emit authoritative tools:
+// and skills: lines, superseding a legacy launch prompt whose baseline was
+// never recorded. Cleared once emitted or replayed.
+func (t *Tracker) RequireFullInventory() {
+	if t != nil {
+		t.fullInventory = true
+	}
+}
+
 // State returns the persistable tracker state.
 func (t *Tracker) State() State { return t.st }
 
 func (t *Tracker) SeedRuntime(rt Snapshot) {
 	b := &t.base
+	b.GitBranch = cmp.Or(b.GitBranch, rt.GitBranch)
 	b.Model, b.KnowledgeCutoff = cmp.Or(b.Model, rt.Model), cmp.Or(b.KnowledgeCutoff, rt.KnowledgeCutoff)
 	b.CommitTrailer, b.ScratchDir = cmp.Or(b.CommitTrailer, rt.CommitTrailer), cmp.Or(b.ScratchDir, rt.ScratchDir)
 	b.CallableTools, b.AvailableSkills = cmp.Or(b.CallableTools, rt.CallableTools), cmp.Or(b.AvailableSkills, rt.AvailableSkills)
+	b.RunLifetime = cmp.Or(b.RunLifetime, rt.RunLifetime)
 }
 
 // RuntimeDrifted reports whether cur holds a runtime fact base does not.
 func (t *Tracker) RuntimeDrifted(cur Snapshot) bool {
-	return (&Tracker{st: State{Last: cur, HasSent: true}, base: t.base}).RenderDiff(cur) != ""
+	return (&Tracker{st: State{Last: cur, HasSent: true}, base: t.base, fullInventory: t.fullInventory}).RenderDiff(cur) != ""
 }
 
 // ReplayBlock folds one durable environment block into the tracker state.
@@ -127,9 +140,15 @@ func (t *Tracker) ReplayBlock(block string) bool {
 }
 
 func (t *Tracker) applyNameLine(line string) {
-	fields := map[string]*string{"model": &t.base.Model, "knowledge cutoff": &t.base.KnowledgeCutoff, "commit trailer": &t.base.CommitTrailer, "scratch dir": &t.base.ScratchDir, "tools": &t.base.CallableTools, "skills": &t.base.AvailableSkills}
+	fields := map[string]*string{"model": &t.base.Model, "knowledge cutoff": &t.base.KnowledgeCutoff, "commit trailer": &t.base.CommitTrailer, "scratch dir": &t.base.ScratchDir, "tools": &t.base.CallableTools, "skills": &t.base.AvailableSkills, "run lifetime": &t.base.RunLifetime}
 	if label, value, ok := strings.Cut(line, ": "); ok && fields[label] != nil {
+		if (label == "tools" || label == "skills") && value == "(none)" {
+			value = ""
+		}
 		*fields[label] = value // a one-value fact, not a delta
+		if label == "tools" || label == "skills" {
+			t.fullInventory = false
+		}
 		return
 	}
 	verb, rest, _ := strings.Cut(line, " ")
@@ -160,6 +179,7 @@ func pressureValue(line, name string) string {
 // caller must deliver the rendered block to the model.
 func (t *Tracker) RenderDiff(cur Snapshot) string {
 	first := !t.st.HasSent
+	full := t.fullInventory
 	prev := t.st.Last
 	var lines []string
 	add := func(changed bool, line string) {
@@ -173,7 +193,7 @@ func (t *Tracker) RenderDiff(cur Snapshot) string {
 	switch {
 	case cur.GitBranch != "":
 		add(cur.GitBranch != prev.GitBranch, "git branch: "+cur.GitBranch)
-	case !first && prev.GitBranch != "":
+	case prev.GitBranch != "" || (first && t.base.GitBranch != ""):
 		lines = append(lines, "git branch: (not in a git repository)")
 	}
 	for _, p := range []struct{ label, cur, prev string }{
@@ -201,14 +221,28 @@ func (t *Tracker) RenderDiff(cur Snapshot) string {
 	say("knowledge cutoff: ", cur.KnowledgeCutoff, "(none)", &t.base.KnowledgeCutoff)
 	say("scratch dir: ", cur.ScratchDir, "(none)", &t.base.ScratchDir)
 	say("commit trailer: ", cur.CommitTrailer, "(disabled)", &t.base.CommitTrailer)
+	say("run lifetime: ", cur.RunLifetime, "(none)", &t.base.RunLifetime)
+	if full && cur.CommitTrailer == "" && t.base.CommitTrailer == "" {
+		lines = append(lines, "commit trailer: (disabled)")
+		t.base.CommitTrailer = "(disabled)"
+	}
 	for _, n := range []struct {
 		label, cur string
 		dst        *string
 	}{{"tools", cur.CallableTools, &t.base.CallableTools}, {"skills", cur.AvailableSkills, &t.base.AvailableSkills}} {
+		if t.fullInventory {
+			val := n.cur
+			if val == "" {
+				val = "(none)"
+			}
+			lines, *n.dst = append(lines, n.label+": "+val), n.cur
+			continue
+		}
 		if d := nameDelta(n.label, n.cur, *n.dst); len(d) > 0 {
 			lines, *n.dst = append(lines, d...), n.cur
 		}
 	}
+	t.fullInventory = false
 
 	if len(lines) == 0 {
 		return ""

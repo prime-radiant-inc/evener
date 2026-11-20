@@ -1,4 +1,9 @@
-import type { SessionActivityContext, SessionActivitySummary, ThreadReadResponse } from "@evener/appwire-client";
+import type {
+  SessionActivityContext,
+  SessionActivityScope,
+  SessionActivitySummary,
+  ThreadReadResponse,
+} from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
@@ -53,9 +58,9 @@ function fixture(contextOverride: (ref: string) => SessionActivityContext | unde
     contextOverride(ref) ??
     cascadeContext(ref, ref === "grandchild" ? ["root", "child"] : ref === "root" ? [] : ["root"]);
   const client = cascadeClient(context);
-  const delegatesPage = (ref: string) => ({
+  const delegatesPage = (ref: string, scope: SessionActivityScope = "session") => ({
     context: context(ref),
-    scope: "session" as const,
+    scope,
     delegates: [
       activityDelegate({
         ownerRef: ref,
@@ -66,7 +71,7 @@ function fixture(contextOverride: (ref: string) => SessionActivityContext | unde
     ],
     page: { complete: true, issues: [] },
   });
-  client.on("evener/thread/delegates/list", ({ ref }) => delegatesPage(ref));
+  client.on("evener/thread/delegates/list", ({ ref, scope }) => delegatesPage(ref, scope));
   const params: SessionZoomParams = {
     ref: "grandchild",
     source: { type: "session", params: { ref: "root" } },
@@ -299,9 +304,9 @@ test("an ancestor peek drills its explicit owner and truncates the branch while 
   act(() => workspaceStore.setState((state) => ({ panes: [...state.panes, other], focusedPaneId: other.id })));
   // The root peek's rows arrive late, as on a loaded host, so the find below
   // overlaps them on every run and pins its find-before-act order (#3928).
-  client.on("evener/thread/delegates/list", async ({ ref }) => {
+  client.on("evener/thread/delegates/list", async ({ ref, scope }) => {
     if (ref === "root") await new Promise((resolve) => setTimeout(resolve, 50));
-    return delegatesPage(ref);
+    return delegatesPage(ref, scope);
   });
   const peek = await openPeek("root");
   expect(leaf()).toBe("grandchild");
@@ -331,14 +336,23 @@ test("closing a leaf peek releases only its collection while the same-ref sideba
     client.calls.filter(
       (call) => call.method === "evener/thread/delegates/list" && (call.params as { ref: string }).ref === "grandchild",
     ).length;
+  const subtreeReads = () =>
+    client.calls.filter(
+      (call) =>
+        call.method === "evener/thread/delegates/list" &&
+        (call.params as { ref: string; scope?: string }).ref === "grandchild" &&
+        (call.params as { scope?: string }).scope === "subtree",
+    ).length;
+  const beforePeek = reads();
   await openPeek("grandchild");
-  expect(reads()).toBe(1);
+  expect(subtreeReads()).toBe(1);
+  expect(reads()).toBe(beforePeek);
   await act(async () =>
     fireEvent.click(within(screen.getByTestId("activity-peek")).getByRole("button", { name: "Close activity peek" })),
   );
-  client.on("evener/thread/delegates/list", ({ ref }) => ({
+  client.on("evener/thread/delegates/list", ({ ref, scope }) => ({
     context: context(ref),
-    scope: "session",
+    scope: scope ?? "session",
     delegates: [activityDelegate({ ownerRef: ref, description: "Fresh sidebar row" })],
     page: { complete: true, issues: [] },
   }));
@@ -350,7 +364,7 @@ test("closing a leaf peek releases only its collection while the same-ref sideba
     ),
   );
   await within(screen.getByTestId("activity-sidebar")).findByRole("button", { name: /Fresh sidebar row/ });
-  expect(reads()).toBe(2);
+  expect(subtreeReads()).toBe(2);
   // The readable transcript also observes delegates. Remove that independent
   // reader before checking release of the sidebar's final collection demand.
   rerender(contents(false));
@@ -372,9 +386,9 @@ test("closing a leaf peek releases only its collection while the same-ref sideba
 test("an initially empty incomplete parent page retains its real continuation and scroll does not dismiss it", async () => {
   vi.stubGlobal("IntersectionObserver", ActivityBoundaryObserver);
   const { client, context, mount } = fixture();
-  client.on("evener/thread/delegates/list", ({ ref, cursor }) => ({
+  client.on("evener/thread/delegates/list", ({ ref, cursor, scope }) => ({
     context: context(ref),
-    scope: "session",
+    scope: scope ?? "session",
     delegates:
       cursor === "page-two"
         ? Array.from({ length: 20 }, (_, index) =>
@@ -400,8 +414,8 @@ test("an initially empty incomplete parent page retains its real continuation an
       )
       .map((call) => call.params);
   expect(reads()).toEqual([
-    { ref: "root", scope: "session" },
-    { ref: "root", scope: "session", cursor: "page-two" },
+    { ref: "root", scope: "subtree" },
+    { ref: "root", scope: "subtree", cursor: "page-two" },
   ]);
   await within(peek).findByRole("status", { name: "Loading" });
   fireEvent.scroll(peek);
@@ -410,9 +424,9 @@ test("an initially empty incomplete parent page retains its real continuation an
   await within(peek).findByRole("button", { name: /Direct page row 20/ });
   expect(within(peek).getAllByRole("button", { name: /Direct page row/ })).toHaveLength(21);
   expect(reads()).toEqual([
-    { ref: "root", scope: "session" },
-    { ref: "root", scope: "session", cursor: "page-two" },
-    { ref: "root", scope: "session", cursor: "page-three" },
+    { ref: "root", scope: "subtree" },
+    { ref: "root", scope: "subtree", cursor: "page-two" },
+    { ref: "root", scope: "subtree", cursor: "page-three" },
   ]);
   expect(leaf()).toBe("grandchild");
 });

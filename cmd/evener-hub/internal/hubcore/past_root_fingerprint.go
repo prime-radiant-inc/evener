@@ -49,6 +49,7 @@ var notShownMetaFields = []string{
 	"SessionURLs", "EnvContext", "ReasoningEffortEscalated", "CumulativeUsage",
 	"WorkMillis", "JobTreeRevision", "ScratchTempDir", "ScratchTreeRootID",
 	"ScratchDirSessionID", "LaunchEnvBaseline",
+	"LaunchSystemPrompt",
 	"EnvInfo.Platform", "EnvInfo.OSVersion", "EnvInfo.Today", "EnvInfo.KnowledgeCutoff",
 	"EnvInfo.IsGitRepo", "EnvInfo.GitOriginURL", "EnvInfo.GitModifiedFiles",
 	"EnvInfo.GitUntrackedFiles", "EnvInfo.GitStatusUnknown", "EnvInfo.GitRecentCommitTitles",

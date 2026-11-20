@@ -20,6 +20,7 @@ import {
 } from "./inspectionOrigin";
 import {
   type CascadePath,
+  type CascadeScope,
   type DelegateEdgeIntent,
   deriveCascadePath,
   drillZoomIntent,
@@ -105,47 +106,126 @@ function updateIntent(pane: OpenPaneRecord, params: SessionZoomParams, userTrans
   return workspaceStore.getState().retypePane(pane, "sessionZoom", params);
 }
 
-export function enterAgentCascade(sub: SessionDelegate, sourcePaneId?: string): string {
+/** `Array.isArray` does not narrow a `readonly` array out of a union in the
+ * false branch, so the chain test is a declared predicate. */
+function isDelegateChain(value: SessionDelegate | readonly SessionDelegate[]): value is readonly SessionDelegate[] {
+  return Array.isArray(value);
+}
+
+function edgesForChain(chain: readonly SessionDelegate[], firstOwnerRef?: string): DelegateEdgeIntent[] {
+  return chain.map((step, index) => ({
+    ownerRef: index === 0 && firstOwnerRef !== undefined ? firstOwnerRef : step.ownerRef,
+    childRef: step.childRef,
+    delegateId: step.delegateId,
+  }));
+}
+
+function deepestRenderedScope(
+  scopes: readonly CascadeScope[],
+  chain: readonly SessionDelegate[],
+): { index: number; owner: CascadeScope } | undefined {
+  for (let index = chain.length - 1; index >= 0; index -= 1) {
+    const step = chain[index];
+    if (!step) continue;
+    const owner = scopes.find((scope) => requestedOwner(scope.requestedRef, step.ownerRef));
+    if (owner) return { index, owner };
+  }
+  return undefined;
+}
+
+/** Fold the chain's hops from `start` onto `intent`. The first hop rebases
+ * onto the scope the cascade already renders (an aliased requested ref), so
+ * the recorded edge names the same ref the path draws. */
+function drillChain(
+  intent: SessionZoomParams,
+  chain: readonly SessionDelegate[],
+  start: number,
+  firstOwnerRef: string,
+): SessionZoomParams {
+  let next = intent;
+  for (const edge of edgesForChain(chain.slice(start), firstOwnerRef)) {
+    next = drillZoomIntent(next, edge);
+  }
+  return next;
+}
+
+/** Enter a delegate's cascade, or a nested delegate's whole parent-to-child
+ * chain: a caller that knows the nesting passes every hop, so a depth-2 child
+ * opens the full path (root -> parent -> child) with its origin pane still
+ * recorded. */
+export function enterAgentCascade(
+  targetOrChain: SessionDelegate | readonly SessionDelegate[],
+  sourcePaneId?: string,
+  scopeRef?: string,
+): string {
+  const chain: readonly SessionDelegate[] = isDelegateChain(targetOrChain) ? targetOrChain : [targetOrChain];
+  const first = chain[0];
+  const target = chain[chain.length - 1];
+  if (first === undefined || target === undefined) {
+    throw new Error("enterAgentCascade requires at least one delegate");
+  }
   const workspace = workspaceStore.getState();
   const source = presentedPanes(workspace.panes).find((pane) => pane.id === (sourcePaneId ?? workspace.focusedPaneId));
-  const edge = { ownerRef: sub.ownerRef, childRef: sub.childRef, delegateId: sub.delegateId };
   if (source) {
     const intent = intentFor(source);
     if (intent) {
-      const owner = pathFor(intent).scopes.find((scope) => requestedOwner(scope.requestedRef, sub.ownerRef));
-      if (owner) {
-        updateIntent(source, drillZoomIntent(intent, { ...edge, ownerRef: owner.requestedRef }), true);
+      // Deepest first: a chain whose parent is already a rendered scope drills
+      // from the parent straight to the child, while one anchored at the root
+      // rebuilds every hop from it.
+      const scopes = pathFor(intent).scopes;
+      const deepest = deepestRenderedScope(scopes, chain);
+      if (deepest) {
+        updateIntent(source, drillChain(intent, chain, deepest.index, deepest.owner.requestedRef), true);
+        return source.id;
+      }
+      if (scopeRef !== undefined && scopes.some((scope) => requestedOwner(scope.requestedRef, scopeRef))) {
+        updateIntent(source, { ...intent, ref: target.childRef, edges: edgesForChain(chain) }, true);
         return source.id;
       }
     }
     const ref = refParam(source.params);
-    if (ref && source.type === "session" && requestedOwner(ref, sub.ownerRef)) {
-      const existing = associatedCascade(source);
-      if (existing) {
-        const intent = intentFor(existing);
-        if (!intent) throw new Error("Associated cascade has invalid intent");
-        updateIntent(existing, drillZoomIntent(intent, { ...edge, ownerRef: ref }), true);
-        workspaceStore.getState().focusPane(existing.id);
-        return existing.id;
+    if (ref && source.type === "session") {
+      const matchesDirectOwner = requestedOwner(ref, first.ownerRef);
+      const matchesScope = scopeRef !== undefined && requestedOwner(ref, scopeRef);
+      if (matchesDirectOwner || matchesScope) {
+        const edges = edgesForChain(chain, matchesDirectOwner ? ref : undefined);
+        const existing = associatedCascade(source);
+        if (existing) {
+          const existingIntent = intentFor(existing);
+          if (!existingIntent) throw new Error("Associated cascade has invalid intent");
+          let next: SessionZoomParams;
+          if (matchesDirectOwner) {
+            next = existingIntent;
+            for (const edge of edges) next = drillZoomIntent(next, edge);
+          } else {
+            const deepest = deepestRenderedScope(pathFor(existingIntent).scopes, chain);
+            next = deepest
+              ? drillChain(existingIntent, chain, deepest.index, deepest.owner.requestedRef)
+              : { ...existingIntent, ref: target.childRef, edges };
+          }
+          updateIntent(existing, next, true);
+          workspaceStore.getState().focusPane(existing.id);
+          return existing.id;
+        }
+        const params: SessionZoomParams = {
+          ref: target.childRef,
+          source: { type: "session", params: { ref } },
+          edges,
+          inspection: { origin: { paneId: source.id, type: "session", ref } },
+        };
+        userTransitions.add(params);
+        const id = workspace.openPane("sessionZoom", params, { slot: "secondary" });
+        const inspector = workspaceStore.getState().panes.find((pane) => pane.id === id);
+        if (!inspector) throw new Error("Opened cascade was not committed");
+        recordCascadeOrigin(inspector, source);
+        return id;
       }
-      const params: SessionZoomParams = {
-        ref: sub.childRef,
-        source: { type: "session", params: { ref } },
-        edges: [{ ...edge, ownerRef: ref }],
-        inspection: { origin: { paneId: source.id, type: "session", ref } },
-      };
-      userTransitions.add(params);
-      const id = workspace.openPane("sessionZoom", params, { slot: "secondary" });
-      const inspector = workspaceStore.getState().panes.find((pane) => pane.id === id);
-      if (!inspector) throw new Error("Opened cascade was not committed");
-      recordCascadeOrigin(inspector, source);
-      return id;
     }
   }
   const params: SessionZoomParams = {
-    ref: sub.childRef,
-    source: { type: "session", params: { ref: sub.ownerRef } },
-    edges: [edge],
+    ref: target.childRef,
+    source: { type: "session", params: { ref: first.ownerRef } },
+    edges: edgesForChain(chain),
     inspection: { origin: null },
   };
   userTransitions.add(params);

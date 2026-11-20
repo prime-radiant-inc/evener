@@ -183,25 +183,30 @@ func (read *sessionActivityRead) captureDelegateCandidates(ctx context.Context, 
 			}
 			// The wait the row cannot otherwise show. A delegate's finalization
 			// drain holds its run open while its child session runs a managed
-			// shell, and no durable aggregate or activity clock carries that
-			// hold: the job itself does. The controller already holds its own
-			// lock here, so the join reads the child runtime it resolved and
-			// the job manager's running map (see runningJobsForDelegateLocked).
-			// Only a real hold fills the fields; the count alone would also
-			// match a delegate still working with a background shell, which
+			// shell or while descendant delegates are still open, and no durable
+			// aggregate or activity clock carries that hold: the job and the
+			// open descendants do. The controller already holds its own lock
+			// here, so the join reads the child runtime it resolved and the
+			// subtree below it (see sampleDrainHoldLocked). Only a real hold
+			// fills the fields; the counts alone would also match a delegate
+			// still working with a background shell or running children, which
 			// must keep reading as working.
-			held, count, oldest, sequence := controller.runningJobsForDelegateLocked(key.ID)
+			sample, sequence := controller.drainHoldForDelegateLocked(key.ID)
 			// The sequence rides even a cleared hold: a client that saw the wait
 			// must be able to tell this clearing is newer than it, not an older
 			// sample arriving late. A delegate whose hold never moved carries 0,
 			// which the wire omits.
 			candidate.row.HoldSequence = sequence
-			if held {
+			if sample.heldJobs {
 				candidate.row.DrainHeldByJobs = true
-				candidate.row.RunningJobCount = count
-				if !oldest.IsZero() {
-					candidate.row.OldestRunningJobStartedAt = oldest.UTC().Format(time.RFC3339Nano)
+				candidate.row.RunningJobCount = sample.jobCount
+				if !sample.oldestJob.IsZero() {
+					candidate.row.OldestRunningJobStartedAt = sample.oldestJob.UTC().Format(time.RFC3339Nano)
 				}
+			}
+			if sample.heldSubagents {
+				candidate.row.DrainHeldBySubagents = true
+				candidate.row.RunningSubagentCount = sample.subagentCount
 			}
 		}
 		candidates = append(candidates, candidate)

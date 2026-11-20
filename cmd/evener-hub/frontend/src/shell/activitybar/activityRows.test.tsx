@@ -1,8 +1,9 @@
 import { buildWatchRows } from "@evener/appwire-client";
-import { act, cleanup, type RenderResult, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, type RenderResult, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
 import { activityDelegate, activityJob, activityWatch } from "../../stores/sessionActivityTestUtils";
+import { Chevron, IconButton } from "../../widgets";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
 import { AgentRow, JobRow, WatchRow } from "./activityRows";
 
@@ -43,7 +44,21 @@ test("a fresh running delegate shows the alive dot", () => {
   expect(screen.getByRole("img").getAttribute("aria-label")).toMatch(/\S/);
 });
 
-test("a running delegate's dot dims at the quiet threshold", () => {
+// The web keeps an open run's working ring until terminal settlement. A >20s
+// tool call, reasoning turn or child wait is still active work, so the shared
+// quiet state renders as fresh here instead of dimming the row.
+test("an open delegate past the quiet threshold keeps its working dot", () => {
+  const view = render(
+    <AgentRow now={NOW} sub={activityDelegate({ latestActivityAt: new Date(NOW - 5 * 60_000).toISOString() })} />,
+  );
+  const alive = dot(view);
+  expect(alive.getAttribute("data-state")).toBe("fresh");
+  expect(alive.getAttribute("data-shape")).toBe("dot");
+  expect(alive.className).toContain("alive");
+  expect(alive.className).toContain("working");
+});
+
+test("an open delegate's working dot survives timer advances past the threshold", () => {
   vi.useFakeTimers();
   const now = Date.now();
   const view = render(
@@ -59,14 +74,19 @@ test("a running delegate's dot dims at the quiet threshold", () => {
   act(() => {
     vi.advanceTimersByTime(20_001);
   });
-  const quiet = dot(view);
-  expect(quiet.getAttribute("data-state")).toBe("quiet");
-  expect(quiet.className).toContain("neutral");
-  // The spinner stops once the row goes quiet.
-  expect(quiet.className).not.toContain("working");
+  const alive = dot(view);
+  expect(alive.getAttribute("data-state")).toBe("fresh");
+  expect(alive.getAttribute("data-shape")).toBe("dot");
+  expect(alive.className).toContain("alive");
+  expect(alive.className).toContain("working");
+  act(() => {
+    vi.advanceTimersByTime(60_000);
+  });
+  expect(dot(view).getAttribute("data-state")).toBe("fresh");
+  expect(dot(view).className).toContain("working");
 });
 
-test("a running delegate's dot still flips when the daemon's clock runs ahead", () => {
+test("a delegate whose activity anchor runs ahead of the clock keeps its working dot", () => {
   vi.useFakeTimers();
   const now = Date.now();
   const view = render(
@@ -74,33 +94,13 @@ test("a running delegate's dot still flips when the daemon's clock runs ahead", 
   );
   expect(dot(view).getAttribute("data-state")).toBe("fresh");
   act(() => {
-    vi.advanceTimersByTime(20_001);
+    vi.advanceTimersByTime(55_000);
   });
-  // The anchor is still in the future, so the measured silence reads zero:
-  // the wake re-arms instead of leaving the dot fresh forever.
-  expect(dot(view).getAttribute("data-state")).toBe("fresh");
-  act(() => {
-    vi.advanceTimersByTime(35_000);
-  });
-  expect(dot(view).getAttribute("data-state")).toBe("quiet");
-});
-
-test("a delegate that crosses the threshold between its render and its effect still flips", () => {
-  vi.useFakeTimers();
-  const anchor = Date.now() - 20_000;
-  // The render measures under the threshold; the effect measures it crossed -
-  // and a quiet row gets no publish that would ever re-render it again. Only
-  // the effect's own forced retell can move the dot, and with it the row is
-  // quiet by the time render returns.
-  const nowSpy = vi
-    .spyOn(Date, "now")
-    .mockReturnValueOnce(anchor + 19_999)
-    .mockReturnValue(anchor + 20_001);
-  const view = render(
-    <AgentRow now={NOW} sub={activityDelegate({ latestActivityAt: new Date(anchor).toISOString() })} />,
-  );
-  expect(dot(view).getAttribute("data-state")).toBe("quiet");
-  nowSpy.mockRestore();
+  const alive = dot(view);
+  expect(alive.getAttribute("data-state")).toBe("fresh");
+  expect(alive.getAttribute("data-shape")).toBe("dot");
+  expect(alive.className).toContain("alive");
+  expect(alive.className).toContain("working");
 });
 
 test("a delegate awaiting input keeps the attention dot", () => {
@@ -393,4 +393,59 @@ test("a fractional timestamp with a timezone offset retains its original wire va
   const view = render(<AgentRow now={NOW} sub={activityDelegate({ latestActivityAt: at })} />);
   expect(timestamp(view).dateTime).toBe(at);
   expect(timestamp(view).dataset.meaning).toBe("activity");
+});
+
+test("omitSubagentWait suppresses subagent-only drain hold meta while preserving job wait and suppressing frozen intent", () => {
+  const heldBySubagent = activityDelegate({
+    terminal: false,
+    drainHeldBySubagents: true,
+    runningSubagentCount: 1,
+    latestIntent: "FROZEN_COORD_INTENT",
+  });
+  const view = render(<AgentRow now={NOW} sub={heldBySubagent} omitSubagentWait />);
+  expect(view.container.querySelector("[data-activity-meta]")).toBeNull();
+  expect(view.container.textContent).not.toContain("FROZEN_COORD_INTENT");
+
+  view.rerender(<AgentRow now={NOW} sub={heldBySubagent} omitSubagentWait={false} />);
+  const subagentWaitMeta = view.container.querySelector("[data-activity-meta]")?.textContent;
+  expect(subagentWaitMeta).toBeTruthy();
+  expect(subagentWaitMeta).toContain("1");
+  expect(view.container.textContent).not.toContain("FROZEN_COORD_INTENT");
+
+  view.rerender(
+    <AgentRow now={NOW} sub={{ ...heldBySubagent, drainHeldByJobs: true, runningJobCount: 2 }} omitSubagentWait />,
+  );
+  const jobWaitMeta = view.container.querySelector("[data-activity-meta]")?.textContent;
+  expect(jobWaitMeta).toBeTruthy();
+  expect(jobWaitMeta).toContain("2");
+  expect(jobWaitMeta).not.toContain("1");
+  expect(jobWaitMeta).not.toBe(subagentWaitMeta);
+  expect(view.container.textContent).not.toContain("FROZEN_COORD_INTENT");
+});
+
+test("AgentRow with trailingAction splits row selection from the trailing toggle", () => {
+  const onDrill = vi.fn();
+  const onToggle = vi.fn();
+  render(
+    <AgentRow
+      now={NOW}
+      sub={activityDelegate({ name: "coord" })}
+      onDrill={onDrill}
+      trailingAction={
+        <IconButton
+          size="xs"
+          variant="quiet"
+          label="Collapse coord"
+          aria-expanded={true}
+          onClick={onToggle}
+          icon={<Chevron direction="down" size={12} />}
+        />
+      }
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Collapse coord" }));
+  expect(onToggle).toHaveBeenCalledOnce();
+  expect(onDrill).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByText("coord").closest("button")!);
+  expect(onDrill).toHaveBeenCalledOnce();
 });

@@ -173,3 +173,78 @@ func TestRenderDiffRuntimeFactsAndReplay(t *testing.T) {
 		t.Fatalf("cleared facts do not replay quietly:\n%s", b)
 	}
 }
+
+func TestRequireFullInventoryEmitsAndReplays(t *testing.T) {
+	t.Parallel()
+	cur := fullSnap()
+	cur.Model, cur.CallableTools, cur.AvailableSkills = "gpt-5.2", "apply_patch, read_file", ""
+
+	tr := NewTracker(State{Last: fullSnap(), HasSent: true})
+	tr.RequireFullInventory()
+	if !tr.RuntimeDrifted(cur) {
+		t.Fatal("RuntimeDrifted = false with RequireFullInventory set")
+	}
+	got := tr.RenderDiff(cur)
+	if !strings.Contains(got, "tools: apply_patch, read_file") || !strings.Contains(got, "skills: (none)") || !strings.Contains(got, "commit trailer: (disabled)") {
+		t.Fatalf("expected authoritative tools:/skills: and commit trailer: (disabled) lines:\n%s", got)
+	}
+	if strings.Contains(got, "added tools:") || strings.Contains(got, "added skills:") {
+		t.Fatalf("unexpected delta lines when fullInventory was required:\n%s", got)
+	}
+	if tr.RuntimeDrifted(cur) || tr.RenderDiff(cur) != "" {
+		t.Fatal("fullInventory was not cleared after emission")
+	}
+
+	replayed := NewTracker(State{Last: fullSnap(), HasSent: true})
+	replayed.RequireFullInventory()
+	if !replayed.ReplayBlock(got) || replayed.RuntimeDrifted(cur) || replayed.RenderDiff(cur) != "" {
+		t.Fatal("replayed authoritative inventory did not clear fullInventory and match empty skills (none)")
+	}
+}
+
+func TestRenderDiffRunLifetimeTransitionAndReplay(t *testing.T) {
+	t.Parallel()
+	launch := fullSnap()
+	launch.RunLifetime = "persistent"
+	tr := NewTracker(State{})
+	tr.SeedRuntime(launch)
+	if first := tr.RenderDiff(launch); strings.Contains(first, "run lifetime:") {
+		t.Fatalf("first block restated launch run lifetime:\n%s", first)
+	}
+	oneShot := launch
+	oneShot.RunLifetime = "one-shot (process exits when turn drains; background shell jobs require job_watch to survive the turn and are stopped at exit)"
+	if !tr.RuntimeDrifted(oneShot) {
+		t.Fatal("RuntimeDrifted = false after RunLifetime changed")
+	}
+	diff := tr.RenderDiff(oneShot)
+	if !strings.Contains(diff, "run lifetime: "+oneShot.RunLifetime) {
+		t.Fatalf("expected run lifetime diff, got:\n%s", diff)
+	}
+	replayed := NewTracker(State{Last: launch, HasSent: true})
+	replayed.SeedRuntime(launch)
+	if !replayed.ReplayBlock(diff) || replayed.RuntimeDrifted(oneShot) || replayed.RenderDiff(oneShot) != "" {
+		t.Fatal("replayed run lifetime diff did not quiet subsequent turns")
+	}
+}
+
+func TestRenderDiffFirstAfterGitLaunchOutsideGitEmitsNotInRepo(t *testing.T) {
+	t.Parallel()
+	launch := fullSnap()
+	tr := NewTracker(State{})
+	tr.SeedRuntime(launch)
+
+	nonGit := fullSnap()
+	nonGit.GitBranch = ""
+	diff := tr.RenderDiff(nonGit)
+	if !strings.Contains(diff, "git branch: (not in a git repository)") {
+		t.Fatalf("expected git branch: (not in a git repository) on first non-git block after git launch, got:\n%s", diff)
+	}
+	if tr.RenderDiff(nonGit) != "" {
+		t.Fatal("subsequent unchanged non-git turn re-emitted block")
+	}
+	replayed := NewTracker(State{})
+	replayed.SeedRuntime(launch)
+	if !replayed.ReplayBlock(diff) || replayed.RenderDiff(nonGit) != "" {
+		t.Fatal("replayed block did not keep subsequent non-git turn quiet")
+	}
+}
