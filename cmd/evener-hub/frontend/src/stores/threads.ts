@@ -1435,6 +1435,12 @@ const pendingWatchedHydrations = new Map<string, PendingThreadHydration>();
 // display independently; they never re-arm or replay a mutation whose binding
 // already settled.
 const modelControlReadBindings = new Map<string, ModelControlReadBinding>();
+// The high-water mark of every model-control read sequence whose ref lost its
+// last owner. A fresh opening of a closed ref stamps above it, so the read
+// tokens a reopen issues are unique across reopenings: a fence captured while
+// the closed lifetime held the ref can never read as current again (every
+// consumer compares the sequence for equality, never order).
+let retiredModelControlReadSequenceFloor = 0;
 // Clear retires response ownership, not the mounted owner's need for a read.
 const clearHydrationDemands = new Map<HydrationOwnerKind, Map<string, number>>();
 
@@ -1686,6 +1692,7 @@ function removeThreadModel(ref: string): void {
   cacheLifetimeHeld.delete(ref);
   const removed = threadsStore.getState().threads.get(ref);
   if (removed) removeThreadModelIndex(threadsIndex, removed);
+  retireModelControlReadBookkeeping(ref);
   // The shell-only cache metadata leaves with the model: the fields' whole
   // meaning is "this ref's CURRENT model is an unverified cached shell", so a
   // final release must not leave a ref named with no model behind (Tasks 6/7
@@ -1716,6 +1723,7 @@ function removeThreadModel(ref: string): void {
 function removeWatchedThreadModel(ref: string): void {
   const removed = threadsStore.getState().watchedThreads.get(ref);
   if (removed) removeThreadModelIndex(watchedThreadsIndex, removed);
+  retireModelControlReadBookkeeping(ref);
   threadsStore.setState((s) => {
     if (!s.watchedThreads.has(ref)) return s;
     return { watchedThreads: shardedMap(s.watchedThreads).without(ref) };
@@ -2442,6 +2450,7 @@ function dropUnpinnedModel(ref: string, flush = true): void {
   // it (see putThreadModel/removeThreadModel — the membership paths).
   const dropped = threadsStore.getState().threads.get(ref);
   if (dropped) removeThreadModelIndex(threadsIndex, dropped);
+  retireModelControlReadBookkeeping(ref);
   // The clear's suppression and its lease end with this same final release
   // (removeThreadModel's own rule): premature suppression decays here too,
   // so a ref the pinned drain retires never stays suppressed with no model.
@@ -4793,6 +4802,13 @@ function settleModelControlRead(binding: ModelControlReadBinding | undefined, ou
   binding.settle(outcome);
 }
 
+// The next read token a history-requesting read of `ref` stamps: never below
+// the floor every retired lifetime reached, so a ref that lost its last owner
+// and reopened cannot reissue a value an earlier lifetime already fenced on.
+function nextModelControlReadSequence(ref: string): number {
+  return Math.max(modelControlReadSequences.get(ref) ?? 0, retiredModelControlReadSequenceFloor) + 1;
+}
+
 function installModelControlReadBinding(
   ref: string,
   pending: PendingThreadHydration,
@@ -4825,6 +4841,28 @@ function retireModelControlReadBinding(ref: string, error: unknown): void {
   if (!binding) return;
   settleModelControlRead(binding, { kind: "failed", error });
   modelControlReadBindings.delete(ref);
+}
+
+// A ref that no owner of either kind holds any more has no view whose read
+// could establish model-control authority, so its bookkeeping retires with
+// the model the same release drops. Callers are the three model-drop paths
+// (removeThreadModel, removeWatchedThreadModel, dropUnpinnedModel), each of
+// which only runs when the last owner of every kind is already gone — the
+// same condition clearThreadRepairingIfUnowned fences the repair flag with.
+// Settling the binding failed frees an awaiting waitForCurrentModelControl
+// rather than parking it on a terminal promise no read can settle; the
+// sequence entry's value folds into the floor so a reopen stamps strictly
+// newer read tokens than the closed lifetime ever did.
+function retireModelControlReadBookkeeping(ref: string): void {
+  if (canonicalThreadOwnerActive(ref) || (watchRefCounts.get(ref) ?? 0) > 0) return;
+  const held = modelControlReadSequences.get(ref);
+  if (held !== undefined) {
+    modelControlReadSequences.delete(ref);
+    if (held > retiredModelControlReadSequenceFloor) retiredModelControlReadSequenceFloor = held;
+  }
+  if (modelControlReadBindings.get(ref)) {
+    retireModelControlReadBinding(ref, new Error("Model-control read was retired with its last owner"));
+  }
 }
 
 function modelControlFenceCurrent(ref: string, client: AppwireClientLike, fence: ModelControlRequestFence): boolean {
@@ -6462,7 +6500,7 @@ function beginThreadHydration(
   if (previousPending) retirePendingHydration(ref, previousPending, pendingThreadHydrations);
   const readSequence = (threadReadSequences.get(ref) ?? 0) + 1;
   threadReadSequences.set(ref, readSequence);
-  const modelControlReadSequence = (modelControlReadSequences.get(ref) ?? 0) + 1;
+  const modelControlReadSequence = nextModelControlReadSequence(ref);
   modelControlReadSequences.set(ref, modelControlReadSequence);
   const { baseModel, requestGeneration } = issuedGenerationFor(model);
   if (baseModel && baseModel !== model) putThreadModel(ref, baseModel);
@@ -6521,7 +6559,7 @@ function beginWatchedHydration(
   if (canonicalOwner) {
     modelControlReadSequence = modelControlReadSequences.get(ref) ?? 0;
   } else {
-    modelControlReadSequence = (modelControlReadSequences.get(ref) ?? 0) + 1;
+    modelControlReadSequence = nextModelControlReadSequence(ref);
     modelControlReadSequences.set(ref, modelControlReadSequence);
   }
   const { baseModel, requestGeneration } = issuedGenerationFor(model);
@@ -10475,6 +10513,20 @@ export function pendingThreadHydrationBaseModelsForTests(): readonly ThreadModel
   return [...pendingThreadHydrations.values()].flatMap((pending) => (pending.baseModel ? [pending.baseModel] : []));
 }
 
+/** @internal Observe the module-level model-control read bookkeeping: which
+ * refs hold a read sequence entry, and which hold a live mutation-binding
+ * entry. Read-only — a test asserts which closed conversations' entries the
+ * final release retired; the maps themselves stay module-private. */
+export function modelControlReadStateForTests(): {
+  sequences: ReadonlyMap<string, number>;
+  bindingRefs: readonly string[];
+} {
+  return {
+    sequences: new Map(modelControlReadSequences),
+    bindingRefs: [...modelControlReadBindings.keys()],
+  };
+}
+
 export function acquireBackgroundThread(ref: string): BackgroundThreadLease {
   beginCanonicalThreadClaim(ref);
   holdBackground(ref);
@@ -10640,6 +10692,15 @@ export function resetThreadsStoreForTests(): void {
   notesUpdateGenerations.clear();
   inflightHydrates.clear();
   resetCacheLifetimeForTests();
+  // Model-control read bookkeeping is per-ref module state the store's own
+  // release paths retire with the ref's model; a reset must do the same for
+  // refs a test never released. Settle (never silently drop) the bindings so
+  // a waiter parked on one's terminal promise rejects instead of hanging.
+  for (const [ref, binding] of modelControlReadBindings) {
+    settleModelControlRead(binding, { kind: "failed", error: new Error("Model-control read was reset") });
+    modelControlReadBindings.delete(ref);
+  }
+  modelControlReadSequences.clear();
   trackedHydrationCompletions.clear();
   pendingThreadHydrations.clear();
   pendingMutationReconciliations.clear();

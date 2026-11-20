@@ -352,7 +352,13 @@ class SessionEntry implements NativeConversationSession {
 
 	#applyFollowing(): void {
 		if (this.#retired) return;
-		this.store.getState().setFollowingLiveEnd([...this.#attachments.values()].every((state) => state.following));
+		this.store.getState().setFollowingLiveEnd(this.#combinedFollowing());
+	}
+
+	/** Whether every attached reader follows the live end; true when none is
+	 * attached, the state a fresh entry starts in. */
+	#combinedFollowing(): boolean {
+		return [...this.#attachments.values()].every((state) => state.following);
 	}
 
 	#applyDisplayConfig(): void {
@@ -448,6 +454,12 @@ class SessionEntry implements NativeConversationSession {
 	 * ref this entry was opened on. */
 	async #runModelPick(client: AppwireClientLike, threadRef: string, pick: ModelPickRequest): Promise<void> {
 		let service: NativeConversationService;
+		// The identity publication below can move the initiating screen off this
+		// entry (screens.tsx replaces its route, and the unmount releases its
+		// attachment). That release must not close the service the pick is about
+		// to dispatch on, so the pick holds one reference of its own from the
+		// publication through the dispatch.
+		let held: NativeConversationAttachment | null = null;
 		try {
 			if (this.#retired) throw new Error("This session is no longer open.");
 			if (this.#dispatchingPick) throw new Error("The session is still cold after its resume.");
@@ -460,6 +472,7 @@ class SessionEntry implements NativeConversationSession {
 				// The authoritative read installs the resumed identity's authority
 				// on this binding, so the dispatch below is fenced on the daemon that
 				// will accept it.
+				held = this.#holdForOwnWork();
 				await this.store.getState().openProjected(service, resolvedRef);
 				this.#runtime().publishIdentityChange({ hubId: this.hubId, from: threadRef, to: resolvedRef });
 			} else {
@@ -479,6 +492,7 @@ class SessionEntry implements NativeConversationSession {
 		} catch (error) {
 			// Nothing has been written yet: the resume, the binding and the read
 			// that establishes the resumed authority all precede the frame.
+			held?.release();
 			throw new ModelPickNotSentError(error instanceof Error ? error.message : String(error));
 		}
 		// Outside the try: a failure here may be a dispatched pick the daemon
@@ -488,7 +502,20 @@ class SessionEntry implements NativeConversationSession {
 			await service.changeModel(pick.modelProvider, pick.model);
 		} finally {
 			this.#dispatchingPick = false;
+			held?.release();
 		}
+	}
+
+	/** One retention-only attachment for work the entry itself runs: a pick
+	 * whose identity publication can move the initiating screen off this entry.
+	 * The hold is not a reader, so it inherits the combined live-end following
+	 * state rather than flipping the store's following off while it is held;
+	 * release() restores whatever the remaining readers say. */
+	#holdForOwnWork(): NativeConversationAttachment {
+		const inherited = this.#combinedFollowing();
+		const hold = this.attach();
+		hold.setFollowingLiveEnd(inherited);
+		return hold;
 	}
 
 	#bindPending(): void {
