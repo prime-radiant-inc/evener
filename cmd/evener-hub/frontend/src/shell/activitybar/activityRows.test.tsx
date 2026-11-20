@@ -1,8 +1,9 @@
 import { buildWatchRows } from "@evener/appwire-client";
-import { act, cleanup, type RenderResult, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, type RenderResult, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
 import { activityDelegate, activityJob, activityWatch } from "../../stores/sessionActivityTestUtils";
+import { Chevron, IconButton } from "../../widgets";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
 import { AgentRow, JobRow, WatchRow } from "./activityRows";
 
@@ -392,4 +393,52 @@ test("a fractional timestamp with a timezone offset retains its original wire va
   const view = render(<AgentRow now={NOW} sub={activityDelegate({ latestActivityAt: at })} />);
   expect(timestamp(view).dateTime).toBe(at);
   expect(timestamp(view).dataset.meaning).toBe("activity");
+});
+
+test("omitSubagentWait suppresses subagent-only drain hold meta while preserving job wait and suppressing frozen intent", () => {
+  const heldBySubagent = activityDelegate({
+    terminal: false,
+    drainHeldBySubagents: true,
+    runningSubagentCount: 1,
+    latestIntent: "FROZEN_COORD_INTENT",
+  });
+  const view = render(<AgentRow now={NOW} sub={heldBySubagent} omitSubagentWait />);
+  expect(view.container.querySelector("[data-activity-meta]")).toBeNull();
+  expect(view.container.textContent).not.toContain("FROZEN_COORD_INTENT");
+
+  view.rerender(<AgentRow now={NOW} sub={heldBySubagent} omitSubagentWait={false} />);
+  expect(view.container.querySelector("[data-activity-meta]")?.textContent).toBe("Waiting on 1 subagent");
+  expect(view.container.textContent).not.toContain("FROZEN_COORD_INTENT");
+
+  view.rerender(
+    <AgentRow now={NOW} sub={{ ...heldBySubagent, drainHeldByJobs: true, runningJobCount: 2 }} omitSubagentWait />,
+  );
+  expect(view.container.querySelector("[data-activity-meta]")?.textContent).toBe("Waiting on 2 running jobs");
+});
+
+test("AgentRow with trailingAction splits row selection from the trailing toggle", () => {
+  const onDrill = vi.fn();
+  const onToggle = vi.fn();
+  render(
+    <AgentRow
+      now={NOW}
+      sub={activityDelegate({ name: "coord" })}
+      onDrill={onDrill}
+      trailingAction={
+        <IconButton
+          size="xs"
+          variant="quiet"
+          label="Collapse coord"
+          aria-expanded={true}
+          onClick={onToggle}
+          icon={<Chevron direction="down" size={12} />}
+        />
+      }
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Collapse coord" }));
+  expect(onToggle).toHaveBeenCalledOnce();
+  expect(onDrill).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByText("coord").closest("button")!);
+  expect(onDrill).toHaveBeenCalledOnce();
 });

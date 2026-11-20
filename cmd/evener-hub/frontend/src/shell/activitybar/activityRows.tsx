@@ -18,6 +18,7 @@ import {
   watchMeta,
   watchName,
 } from "@evener/appwire-client";
+import type { ReactNode } from "react";
 import { ActivityWatchDetail } from "../../panes/session/chrome/ActivityRowDetail";
 import { jobStatusDotState } from "../../panes/session/chrome/activityFormat";
 import { ActivityTime } from "../../panes/session/chrome/activityTime";
@@ -68,42 +69,62 @@ function RowStatus({ wireStatus }: { wireStatus: string }) {
   return <span aria-hidden="true" data-activity-status data-status={wireStatus} hidden />;
 }
 
-export function AgentRow({ sub, onDrill, now }: { sub: SessionDelegate; onDrill?: () => void; now: number }) {
+export function delegateRowName(sub: SessionDelegate): string {
+  return sub.name?.trim() || sub.description || sub.task || sub.delegateId;
+}
+
+export function AgentRow({
+  sub,
+  onDrill,
+  now,
+  omitSubagentWait = false,
+  trailingAction,
+  anchorId,
+}: {
+  sub: SessionDelegate;
+  onDrill?: () => void;
+  now: number;
+  omitSubagentWait?: boolean;
+  trailingAction?: ReactNode;
+  anchorId?: string;
+}) {
   const successful = agentIsSuccessful(sub);
   const failed = sub.terminal ? isFailedDelegateOutcome(sub.outcome) : false;
   const status = agentStateText(sub);
   // A row held open by the delegate's own running job says so instead of the
   // bare running word, on the visible meta and in the accessible description.
   const wait = delegateWaitText(sub);
-  const name = sub.name?.trim() || sub.description || sub.task || sub.delegateId;
-  return (
-    <ListRow
-      variant="plain"
-      aria-description={wait || status}
-      leading={
-        <span className={CLASS.rowGlyph}>
-          <SubagentDot delegate={sub} now={now} labeled />
+  const work = delegateWorkText(sub, status, omitSubagentWait ? { omitSubagents: true } : undefined);
+  const name = delegateRowName(sub);
+  const commonProps = {
+    variant: "plain" as const,
+    "aria-description": wait || status,
+    leading: (
+      <span className={CLASS.rowGlyph}>
+        <SubagentDot delegate={sub} now={now} labeled />
+      </span>
+    ),
+    label: (
+      <span title={`${name} · ${status}`}>
+        <RowStatus wireStatus={sub.status} />
+        {name}
+      </span>
+    ),
+    chips: <ActivityTime value={agentActivityTime(sub)} now={now} />,
+    // The intent replaces the status word here; the label's title keeps the
+    // word reachable, JobRow's pattern for a value the meta line hides.
+    meta:
+      successful || work === "" ? undefined : (
+        <span data-activity-meta data-failed={failed || undefined}>
+          {work}
         </span>
-      }
-      label={
-        <span title={`${name} · ${status}`}>
-          <RowStatus wireStatus={sub.status} />
-          {name}
-        </span>
-      }
-      chips={<ActivityTime value={agentActivityTime(sub)} now={now} />}
-      // The intent replaces the status word here; the label's title keeps the
-      // word reachable, JobRow's pattern for a value the meta line hides.
-      meta={
-        successful ? undefined : (
-          <span data-activity-meta data-failed={failed || undefined}>
-            {delegateWorkText(sub, status)}
-          </span>
-        )
-      }
-      onSelect={onDrill}
-      data-activity-anchor={activityNodeID({ ...sub, kind: "delegate" })}
-    />
+      ),
+    "data-activity-anchor": anchorId ?? activityNodeID({ ...sub, kind: "delegate" }),
+  };
+  return onDrill ? (
+    <ListRow {...commonProps} onSelect={onDrill} trailingAction={trailingAction} />
+  ) : (
+    <ListRow {...commonProps} />
   );
 }
 

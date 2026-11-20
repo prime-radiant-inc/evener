@@ -344,9 +344,9 @@ test.each([
       ...answerActivityRead(params),
       context: context(params.ref),
     }));
-    client.on("evener/thread/delegates/list", ({ ref }) => ({
+    client.on("evener/thread/delegates/list", ({ ref, scope }) => ({
       context: context(ref),
-      scope: "session",
+      scope: scope ?? "session",
       delegates:
         ref === "local:grandchild"
           ? []
