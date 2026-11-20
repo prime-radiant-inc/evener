@@ -726,6 +726,11 @@ is available. Authority comes from the owner the job ID encodes
 forwarded copy carries the owner's own claim and is indistinguishable from the
 original by its fields, so only the journal the bytes were read from separates
 them. A row whose claim contradicts the identifier is not authoritative at all.
+When the resolved owner is fenced, that fence is checked before any owner
+journal is consulted: the saved metadata read answers from the scoped copy's
+retained metadata, and output owned by the fenced owner is not served at all —
+the read answers not-found, because the fenced owner's state is not this read's
+to state. An unfenced owner's journal is consulted under the ranking rule below.
 
 Authority alone does not decide a read, because a record can be the owner's and
 still not establish the job's state. One rule covers both: **a record that is

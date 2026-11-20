@@ -4520,7 +4520,9 @@ export interface SettingsHubOverview {
   /**
    * OperationStoreQuarantine is present exactly when the hub's operation
    * store carries a quarantine signal: a corrupt store file took the
-   * custody-first quarantine and a custody file holds what it carried.
+   * custody-first quarantine and a custody file holds the selected recovery
+   * records used to build the replacement store, not a backup of the
+   * original journal.
    * Absent on a hub with no quarantine, and on an older hub that has no
    * field at all.
    *
