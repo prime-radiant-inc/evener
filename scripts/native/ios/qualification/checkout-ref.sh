@@ -11,8 +11,8 @@
 # harness the workflow needs, and falls back to the merge ref — naming the
 # missing path — when it does not.
 #
-# The repository must already contain both commits (the workflow checks out the
-# merge ref with full history, so the head is an ancestor and already local).
+# The repository must already contain both commits (the workflow fetches the
+# merge ref deep enough for both of its parents, so the head is already local).
 # Prints `ref=<sha>` and `reason=<text>` in GITHUB_OUTPUT form.
 set -euo pipefail
 

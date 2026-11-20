@@ -79,6 +79,8 @@ func TestBudgetModelDispatchUsesEffectiveContextWindowOverride(t *testing.T) {
 	resolved := profile.Resolved()
 	resolved.Caps.ContextWindow = new(10_000)
 	profile = withContextWindow(profile.WithResolved(resolved), 2_000)
+	sess := newSession(t, withProfile(profile), withDir(t.TempDir()), withConfig(SessionConfig{}))
+	defer sess.Close()
 	req := llm.Request{
 		Provider:            profile.ID(),
 		Model:               profile.Model(),
@@ -86,7 +88,7 @@ func TestBudgetModelDispatchUsesEffectiveContextWindowOverride(t *testing.T) {
 		InputTokensEstimate: 1_000,
 		MaxTokens:           new(1),
 	}
-	if _, _, err := budgetModelDispatchRequestWithBudget(profile, req); err == nil {
+	if _, _, err := sess.priceRoundRoute(profile, req).admit(req); err == nil {
 		t.Fatal("dispatch admission ignored the effective 2000-token context-window override")
 	}
 }
@@ -114,7 +116,7 @@ func TestSessionContinuationTokenBudgetShadowBlocksUnsafeDelta(t *testing.T) {
 		PreviousResponseID:             "resp-anchor",
 		FullHistoryInputTokensEstimate: 524_000,
 	}
-	req = sess.applyResponsesContinuationShadowEstimate(profile, req)
+	req = sess.applyResponsesContinuationShadowEstimate(sess.priceRoundRoute(profile, req), req)
 	t.Logf("continuation request full=%d input=%d max=%d", req.FullHistoryInputTokensEstimate, req.InputTokensEstimate, *req.MaxTokens)
 	if _, _, _, _, err := sess.callModelWithFallback(context.Background(), profile, req, nil, "", 0); err == nil {
 		t.Fatal("unsafe continuation delta was accepted")
@@ -146,7 +148,7 @@ func TestSessionContinuationTokenBudgetPreClientCarriesAdmittedShadow(t *testing
 	defer sess.Close()
 	sess.cfg.testOnly.responsesContinuationShadowEstimateFunc = func(llm.Request) (int, bool) { return 400_000, true }
 	req := llm.Request{Provider: profile.ID(), Model: profile.Model(), Messages: []llm.Message{llm.User("tiny delta")}, MaxTokens: new(131_072), HistoryMode: llm.HistoryModeResponsesDelta, PreviousResponseID: "resp-anchor"}
-	req = sess.applyResponsesContinuationShadowEstimate(profile, req)
+	req = sess.applyResponsesContinuationShadowEstimate(sess.priceRoundRoute(profile, req), req)
 	if _, _, _, _, err := sess.callModelWithFallback(context.Background(), profile, req, nil, "", 0); err != nil {
 		t.Fatalf("callModelWithFallback: %v", err)
 	}
@@ -176,7 +178,8 @@ func TestSessionAnchorTokenBudgetRecoveryClearsPrimaryAllocation(t *testing.T) {
 		PreviousResponseID: "resp-anchor",
 	}
 	fullHistory := []llm.Message{llm.User(strings.Repeat("history ", 100))}
-	fallback := responsesContinuationFullHistoryFallbackRequest(registry.Resolved{Instance: "budget-gw", ModelID: "test"}, req, fullHistory)
+	fallback := responsesContinuationFullHistoryFallbackRequest(
+		routeForRow(registry.Resolved{Instance: "budget-gw", ModelID: "test"}, req, false), req, fullHistory)
 	if fallback.MaxTokens != nil {
 		t.Fatalf("anchor recovery MaxTokens = %d, want cleared before re-budgeting", *fallback.MaxTokens)
 	}
@@ -186,6 +189,10 @@ func TestSessionAnchorTokenBudgetRecoveryClearsPrimaryAllocation(t *testing.T) {
 // produces is the one the fallback model dispatches, so billing it by the names
 // it carries would undercount exactly the rows whose adapter replays unsigned
 // thinking while their names say nothing.
+//
+// The estimate is taken once, by the session, after it projects the messages for
+// the fallback's row; the rebuild itself carries the identity and the history and
+// clears the primary's shadows.
 func TestContinuationFallbackRebuildEstimatesAgainstItsResolvedRow(t *testing.T) {
 	t.Parallel()
 	res := registry.Resolved{
@@ -200,7 +207,10 @@ func TestContinuationFallbackRebuildEstimatesAgainstItsResolvedRow(t *testing.T)
 			{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: strings.Repeat("unsigned reasoning text ", 40)}},
 		}}},
 	}
-	got, ok := responsesContinuationModelFallbackRequest(res, req, nil)
+	profile := testOpenAICompatProfile(res.Instance, res.ModelID, 0).WithResolved(res)
+	sess := newSession(t, withProfile(profile), withDir(t.TempDir()), withConfig(SessionConfig{}))
+	defer sess.Close()
+	got, _, ok := sess.responsesContinuationFallbackRequest(profile, req, nil, "")
 	if !ok {
 		t.Fatal("model fallback rebuild refused a full-history request")
 	}
@@ -635,7 +645,7 @@ func TestSessionFallbackRecomputesProviderSensitiveFullHistoryEstimate(t *testin
 // together with the names the request carries, and the primary's names would
 // claim a media family (here Google's 1032-token tile rule) the fallback never
 // speaks and the generic fallback (258) does not.
-func TestResponsesContinuationModelFallbackRequestStampsTheFallbacksIdentity(t *testing.T) {
+func TestTheFallbackRequestStampsTheFallbacksIdentity(t *testing.T) {
 	t.Parallel()
 	fullHistory := []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
 		{Kind: llm.ContentImage, Image: &llm.ImageData{Data: task4LargePNG(), MediaType: "image/png"}},
@@ -645,8 +655,11 @@ func TestResponsesContinuationModelFallbackRequestStampsTheFallbacksIdentity(t *
 		HistoryMode: llm.HistoryModeResponsesDelta,
 	}
 	fallback := registry.Resolved{Instance: "gateway", ModelID: "gateway-zz"}
+	profile := testOpenAICompatProfile(fallback.Instance, fallback.ModelID, 0).WithResolved(fallback)
+	sess := newSession(t, withProfile(profile), withDir(t.TempDir()), withConfig(SessionConfig{}))
+	defer sess.Close()
 
-	got, ok := responsesContinuationModelFallbackRequest(fallback, primary, fullHistory)
+	got, _, ok := sess.responsesContinuationFallbackRequest(profile, primary, fullHistory, "")
 	if !ok {
 		t.Fatal("the round retained its full history, so the fallback request is constructible")
 	}
@@ -747,7 +760,7 @@ func TestSessionStreamTokenBudgetAdmissionMatchesComplete(t *testing.T) {
 	sess := newSession(t, withClient(client), withProfile(profile), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	defer sess.Close()
 	req := llm.Request{Provider: profile.ID(), Model: profile.Model(), Messages: []llm.Message{llm.User("task")}, InputTokensEstimate: 100, MaxTokens: new(8)}
-	if _, err := sess.callModel(context.Background(), llm.DefaultRetryPolicy(), profile, req, &groupRecord{}); err == nil {
+	if _, err := sess.callModel(context.Background(), llm.DefaultRetryPolicy(), sess.priceRoundRoute(profile, req), req, &groupRecord{}); err == nil {
 		t.Fatal("Stream succeeded despite local token-budget overflow")
 	}
 	if complete, stream := adapter.Counts(); complete != 0 || stream != 0 {
@@ -906,7 +919,7 @@ func TestSessionContinuationShadowEstimateUsesTheHandedProfile(t *testing.T) {
 		t.Fatalf("control: handed row %d must exceed the name rule %d and the live row %d", resolvedTokens, nameTokens, liveTokens)
 	}
 
-	got := sess.applyResponsesContinuationShadowEstimate(requestProfile, req)
+	got := sess.applyResponsesContinuationShadowEstimate(sess.priceRoundRoute(requestProfile, req), req)
 	if got.InputTokensEstimate != resolvedTokens {
 		t.Fatalf("InputTokensEstimate = %d, want the handed profile's estimate %d (the name rule would bill %d, the live row %d)",
 			got.InputTokensEstimate, resolvedTokens, nameTokens, liveTokens)

@@ -808,6 +808,15 @@ func projectName(m schema.SessionMeta, bucketDir ...string) string {
 	return newProjectNameResolver().projectName(m, bDir)
 }
 
+// mainRootResult is one directory's complete structural answer. The refusal is
+// stored as its own field, not folded into an empty root, because "no repository
+// here" and "a repository here that could not be read" are different answers and
+// only the first licenses treating the directory as a project of its own.
+type mainRootResult struct {
+	root    string
+	refused bool
+}
+
 type projectNameResolver struct {
 	stateRootCache []string
 	// bucketMetas is the session metadata candidate discovery already read for
@@ -831,6 +840,15 @@ type projectNameResolver struct {
 	// asserts on this rather than on the answer, which cannot tell the two orders
 	// apart.
 	pathResolutions int
+	// mainRoots is each directory's complete structural answer, for the life of
+	// one search. A search labels its rows in one loop, so a plain map is enough.
+	mainRoots map[string]mainRootResult
+	// mainRootLookups counts the structural walks this resolver ran. It is
+	// diagnostic, not bookkeeping: a repeated walk rewrites the same mainRoots
+	// key, so the map's length cannot tell a reused answer from a repeated walk,
+	// and the LABEL cannot tell them apart either. A test that has to prove the
+	// walk was reused asserts on this.
+	mainRootLookups int
 }
 
 // siblingEvidenceKey names one bucket's sibling snapshot. needProjectID is part
@@ -930,7 +948,10 @@ func newProjectNameResolver(bucketMetas ...map[string][]schema.SessionMeta) *pro
 	// other writing to a nil map, which panics rather than merely mislabelling.
 	// Allocating once at construction removes the ordering dependency instead of
 	// adding a second early return that a later edit can miss.
-	r := &projectNameResolver{siblingEvidence: make(map[siblingEvidenceKey][]projectEvidence)}
+	r := &projectNameResolver{
+		siblingEvidence: make(map[siblingEvidenceKey][]projectEvidence),
+		mainRoots:       make(map[string]mainRootResult),
+	}
 	if len(bucketMetas) > 0 {
 		r.bucketMetas = bucketMetas[0]
 	}
@@ -1101,7 +1122,7 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 	}
 
 	// 2. Resolve the main checkout from the .git layout. A label never needs a
-	// process: see resolveMainRootOutcome. Gated on the directory existing for the
+	// process: see mainRootOutcomeClean. Gated on the directory existing for the
 	// reason step 1 gives: a walk from a path that is gone describes its
 	// surroundings, not the checkout that used to sit there.
 	//
@@ -1942,7 +1963,10 @@ func (r *projectNameResolver) projectAt(recorded, bucketDir string) (checkout, p
 	// surviving directory is then canonicalized as if it were a project of its
 	// own. Walking where the path really points keeps a sibling's saved origin from
 	// being rejected as conflicting evidence.
-	clean := identifier.ResolveClean(recorded)
+	//
+	// A path that cannot be resolved as a whole falls back to its lexical Clean,
+	// which can still name a link; resolveFullyClean resolves that spelling too.
+	clean := resolveFullyClean(recorded)
 	if _, laneRoot, _, managedProjectID, isLane := r.stateWorktreeOwner(clean, bucketDir); isLane {
 		if root := resolveMainRootWithin(clean, laneRoot); root != "" {
 			return root, identifier.ProjectFromCanonicalPath(identifier.ResolveClean(root)).ID, true, true, true
@@ -1965,7 +1989,7 @@ func (r *projectNameResolver) projectAt(recorded, bucketDir string) (checkout, p
 	if statErr != nil || !exists.IsDir() {
 		return "", "", false, false, false
 	}
-	root, refused := resolveMainRootOutcome(clean)
+	root, refused := r.mainRootOutcomeClean(clean)
 	if root != "" {
 		return root, identifier.ProjectFromCanonicalPath(identifier.ResolveClean(root)).ID, true, false, true
 	}
@@ -1984,57 +2008,6 @@ func (r *projectNameResolver) projectAt(recorded, bucketDir string) (checkout, p
 	// canonical path names.
 	canonical := identifier.ResolveClean(clean)
 	return canonical, identifier.ProjectFromCanonicalPath(canonical).ID, true, false, false
-}
-
-// resolveMainRootOutcome is the one main-root lookup. Every caller goes through
-// it so no caller can lose the absent-versus-refused distinction: refused
-// reports that the walk stopped at a .git entry it found and could not use,
-// which is a different answer from "nothing above this directory is a checkout".
-// An entry that was read and refused is terminal, and it never collapses into
-// "no repository here".
-//
-// The walk resolves dir's main checkout from the .git layout alone, never by
-// running Git. Transcript search is read-only and its inputs are
-// workspace-controlled: a recorded restore root can sit inside a repository the
-// user checked out, and the command runner prepends workspace directories to
-// PATH, so any `git` invocation here would run a repository-supplied executable
-// with the daemon's permissions. None of that is acceptable for a label, so
-// there is no fall-through to a second resolver: this answers, or it reports a
-// refusal, or it reports absence. Every ".git" shape has one row here.
-//
-//   - .git directory, or a symlink whose target is a directory: the checkout's
-//     own Git directory, so the directory is its own main root. os.Stat follows
-//     the link, so a symlink to a directory arrives as the directory case.
-//   - regular pointer file, or a symlink to one: a linked-worktree pointer
-//     names the main checkout, a submodule pointer names this checkout. Both
-//     are validated against the layout before either answer is used.
-//   - symlink that does not resolve, FIFO, socket, device: refused.
-//   - pointer larger than any pointer, or unreadable: refused.
-//   - no .git in this directory or any ancestor: absent.
-//
-// It is deliberately uncached. A cache keyed by the directory has to carry the
-// refusal as a second field that every future caller must remember to read, and
-// a cache entry that drops it does not cost time — it produces a wrong label on
-// a later row. Refusal has to survive separate from absence for the same reason:
-// "there is no repository here" and "there is a repository here that I could not
-// read" are different answers, and only the first licenses treating the surviving
-// directory as a project of its own. Nothing here decodes a bucket or reruns a
-// walk, so the reuse lives where the cost was: bucketMetaSnapshot.
-func resolveMainRootOutcome(dir string) (root string, refused bool) {
-	// The alias is resolved here rather than at each caller: a walk over a
-	// symlink's own parents describes the link, not the checkout, and can miss the
-	// repository's .git entirely. One place does it, so no walk can forget.
-	clean := identifier.ResolveClean(dir)
-	for {
-		if resolved, found := mainRootAt(clean); found {
-			return resolved, resolved == ""
-		}
-		parent := filepath.Dir(clean)
-		if parent == clean {
-			return "", false
-		}
-		clean = parent
-	}
 }
 
 // stateWorktreeOwner classifies wd against the layouts an Evener state dir
@@ -2265,14 +2238,84 @@ func (r *projectNameResolver) loadOwnedSessionMeta(stateDir, sessionID string) (
 
 func (r *projectNameResolver) resolveMainRoot(dir string) string {
 	// Delegated, not duplicated: this wrapper exists for callers that only want
-	// the display name, and it must not get its own cache or its own walk, or the
-	// absent-versus-refused distinction would survive in one path and vanish in
-	// the other.
-	root, _ := resolveMainRootOutcome(dir)
+	// the display name, and it must not get its own cache or its own walk. The
+	// resolver's memo is the one cache, so refusal survives in one place.
+	root, _ := r.mainRootOutcome(dir)
 	return root
 }
 
-// resolveMainRootWithin is resolveMainRootOutcome confined to root: it asks
+// resolveFullyClean resolves path through its symlinks, including the spelling
+// identifier.ResolveClean falls back to when the whole path cannot be resolved.
+// That fallback is a plain Clean, and it can still name a symlink itself: a
+// recorded path ending in a removed component followed by ".." cleans to the
+// link, and a walk started there climbs the link's lexical parents instead of
+// the checkout the link points into. A path that resolves on the first attempt
+// is returned unchanged.
+func resolveFullyClean(path string) string {
+	for {
+		clean, resolved := identifier.ResolveCleanOK(path)
+		if resolved || clean == path {
+			return clean
+		}
+		path = clean
+	}
+}
+
+// mainRootOutcome answers dir's main checkout, resolving the spelling fully
+// first so a caller may pass the recorded path as it was written.
+func (r *projectNameResolver) mainRootOutcome(dir string) (root string, refused bool) {
+	return r.mainRootOutcomeClean(resolveFullyClean(dir))
+}
+
+// mainRootOutcomeClean answers a fully resolved directory's main checkout through
+// this search's per-directory reuse, walking from clean upward on a miss. clean
+// must be resolveFullyClean output: a spelling that only resolved lexically can
+// still name a link. The key is the resolved spelling, so two spellings of one
+// directory share one entry.
+//
+// The walk resolves the main checkout from the .git layout alone, never by
+// running Git. Transcript search is read-only and its inputs are
+// workspace-controlled: a recorded restore root can sit inside a repository the
+// user checked out, and the command runner prepends workspace directories to
+// PATH, so any `git` invocation here would run a repository-supplied executable
+// with the daemon's permissions. None of that is acceptable for a label, so
+// there is no fall-through to a second resolver: this answers, or it reports a
+// refusal, or it reports absence. Every ".git" shape has one row in mainRootAt.
+//
+//   - .git directory, or a symlink whose target is a directory: the checkout's
+//     own Git directory, so the directory is its own main root.
+//   - regular pointer file, or a symlink to one: a linked-worktree pointer
+//     names the main checkout, a submodule pointer names this checkout. Both
+//     are validated against the layout before either answer is used.
+//   - symlink that does not resolve, FIFO, socket, device: refused.
+//   - pointer larger than any pointer, or unreadable: refused.
+//   - no .git in this directory or any ancestor: absent.
+//
+// An entry that was read and refused is terminal: it never collapses into "no
+// repository here", because only absence licenses treating the directory as a
+// project of its own. Refusal is stored beside the root, never folded into it.
+func (r *projectNameResolver) mainRootOutcomeClean(clean string) (root string, refused bool) {
+	if outcome, ok := r.mainRoots[clean]; ok {
+		return outcome.root, outcome.refused
+	}
+	dir := clean
+	for {
+		if resolved, found := mainRootAt(dir); found {
+			root, refused = resolved, resolved == ""
+			break
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	r.mainRootLookups++
+	r.mainRoots[clean] = mainRootResult{root: root, refused: refused}
+	return root, refused
+}
+
+// resolveMainRootWithin is mainRootOutcomeClean's walk confined to root: it asks
 // root and the directories beneath it and never climbs past root. A
 // state-managed lane stops here, because the lane's identity is recorded in the
 // state directory, not in whichever repository happens to enclose it: once the
