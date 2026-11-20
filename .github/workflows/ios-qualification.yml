@@ -53,6 +53,14 @@ on:
       - "go.work.sum"
       - ".github/workflows/ios-qualification.yml"
   workflow_dispatch:
+    inputs:
+      # Lab scaffold: dispatch runs exist to measure the build job, so the
+      # journeys job is opt-in. Never appears in a product change.
+      run-journeys:
+        description: "Run the UI journeys job"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -229,6 +237,9 @@ jobs:
   ui-journeys:
     name: UI journeys
     needs: [simulator-build]
+    # Lab scaffold: a dispatch run that does not ask for journeys stops after
+    # the build job and does not hold a second macOS runner.
+    if: github.event_name != 'workflow_dispatch' || inputs.run-journeys == true
     runs-on: macos-26
     timeout-minutes: 60
     steps:

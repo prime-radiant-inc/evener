@@ -261,7 +261,7 @@ func simulatorName(output string) string {
 // simulator, so ONLY_ACTIVE_ARCH builds the one slice the journeys exercise
 // instead of compiling the whole native dependency graph for both.
 func releaseBuildCommand(udid, derivedData string) []string {
-	return []string{"xcodebuild", "-workspace", "ios/Evener.xcworkspace", "-scheme", "Evener", "-configuration", "Release", "-sdk", "iphonesimulator", "-destination", "platform=iOS Simulator,id=" + udid, "-derivedDataPath", derivedData, "build", "ONLY_ACTIVE_ARCH=YES"}
+	return []string{"xcodebuild", "-workspace", "ios/Evener.xcworkspace", "-scheme", "Evener", "-configuration", "Release", "-sdk", "iphonesimulator", "-destination", "platform=iOS Simulator,id=" + udid, "-derivedDataPath", derivedData, "-showBuildTimingSummary", "build", "ONLY_ACTIVE_ARCH=YES"}
 }
 
 // uiJourney runs the installed-app qualification journeys as a child inside

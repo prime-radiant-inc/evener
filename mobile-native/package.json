@@ -6,7 +6,6 @@
     "autolinking": {
       "ios": {
         "buildFromSource": [
-          "expo-modules-core",
           "expo-camera"
         ],
         "exclude": [

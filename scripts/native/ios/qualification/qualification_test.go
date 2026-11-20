@@ -845,7 +845,8 @@ func TestReleaseBuildUsesOnlyActiveArchitecture(t *testing.T) {
 		"-workspace", "ios/Evener.xcworkspace", "-scheme", "Evener",
 		"-configuration", "Release", "-sdk", "iphonesimulator",
 		"-destination", "platform=iOS Simulator,id=" + udid,
-		"-derivedDataPath", derived, "build", "ONLY_ACTIVE_ARCH=YES",
+		"-derivedDataPath", derived, "-showBuildTimingSummary",
+		"build", "ONLY_ACTIVE_ARCH=YES",
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("release build argv = %v, want %v", got, want)
