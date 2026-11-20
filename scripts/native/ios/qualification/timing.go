@@ -195,7 +195,24 @@ func (r *runner) buildTimingReport(ctx context.Context, logPath, bundle string) 
 		fmt.Fprintf(os.Stderr, "%-46s %8d %9.1f %9.1f %9.1f\n", row.Name, row.Compiles, row.First, row.Last, end-row.Last)
 	}
 	printTimingSummary(os.Stderr, data)
+	printHoistWindow(os.Stderr, data)
 	r.probeBuildResults(ctx, bundle)
+}
+
+// printHoistWindow echoes the E16 hoist markers with their elapsed seconds, so
+// the tail comparison (hoisted bundle during the compile wave, copy in the app
+// target) reads straight out of the job log.
+func printHoistWindow(w io.Writer, data []byte) {
+	for _, line := range strings.Split(string(data), "\n") {
+		if !strings.Contains(line, "E16 metro-") {
+			continue
+		}
+		stamp, text, ok := strings.Cut(line, "\t")
+		if !ok {
+			continue
+		}
+		fmt.Fprintf(w, "build-timings: hoist %s %s\n", stamp, strings.TrimSpace(text))
+	}
 }
 
 // printTimingSummary echoes the -showBuildTimingSummary block into the job log.

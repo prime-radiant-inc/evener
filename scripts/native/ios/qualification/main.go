@@ -160,6 +160,11 @@ func qualify(ctx context.Context, output, derivedData string) (result error) {
 	if err := r.generatedMetadata(ctx); err != nil {
 		return err
 	}
+	// E16 lab: move the Metro phase off the app target's serial tail and onto a
+	// pod target that finishes early, so the bundle overlaps the compile wave.
+	if err := r.hoistMetroBundle(ctx); err != nil {
+		return err
+	}
 	return r.withOwnedSimulator(ctx, simulatorName(output), func(udid string) error {
 		derived := r.derivedDataDir()
 		resultBundle := filepath.Join(r.output, "build-timing.xcresult")
