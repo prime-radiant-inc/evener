@@ -4118,45 +4118,16 @@ func TestDelegateAttentionStopAdmittedDuringReopenResolvesFreshRow(t *testing.T)
 	})
 
 	// Drive the presentation: the busy arm reopens the consumed report, the
-	// seam admits the stop mid-window, and the loop's own drives end once the
-	// reopened row is no longer pending.
-	// Flush a report delivery the spawn deferred past its last drain cut
-	// before the first drive: the loop returns on the drive's false, which a
-	// stranded deferred row would report as nothing owed (an empty queue is a
-	// no-op).
-	var flushMu sync.Mutex
-	var flushErr error
-	flush := func() {
-		lane.delegateSub.mu.Lock()
-		busy := lane.delegateSub.running || lane.delegateSub.driving || lane.delegateSub.finalizing
-		lane.delegateSub.mu.Unlock()
-		if busy {
-			return
-		}
-		if err := lane.delegateSess.flushPendingDelegateDeliveries(); err != nil {
-			flushMu.Lock()
-			flushErr = err
-			flushMu.Unlock()
-		}
-	}
-	go func() {
-		deadline := time.Now().Add(30 * time.Second)
-		for time.Now().Before(deadline) {
-			flush()
-			if !lane.root.driveDelegateAttention(lane.delegateSub) {
-				return
-			}
-			time.Sleep(200 * time.Millisecond)
-		}
-	}()
+	// seam admits the stop mid-window, and the first drive is enough — its
+	// flush pumps the delivery the spawn deferred past its last drain cut, so
+	// a stranded deferred row still presents.
+	flushErr := lane.driveUntil(stopAdmitted)
 	select {
 	case <-stopAdmitted:
 	// TRIPWIRE: the seam admits the stop inside the first reopen window, a
 	// couple of drive passes in; the bound only fires on a genuine hang.
 	case <-time.After(30 * time.Second):
-		flushMu.Lock()
-		lastFlushErr := flushErr
-		flushMu.Unlock()
+		lastFlushErr := flushErr()
 		deferred := lane.delegateSess.hasPendingDelegateDeliveries()
 		pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs()
 		t.Fatalf("the reopen window never admitted the stop (pending attention=%d (%v); deferred deliveries=%v flush=%v)",
