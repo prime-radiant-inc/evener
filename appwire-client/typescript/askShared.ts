@@ -5,7 +5,7 @@
 // if_unanswered?}]}, 1-4 questions - and the registry additionally accepts
 // the single-question shorthand {question, options, header?, multi_select?,
 // why?, if_unanswered?} at the top level (agent/internal/tool/registry.go's
-// normalizeAskUserArgs wraps it into the batch form at the dispatch
+// NormalizeAskUserArgs wraps it into the batch form at the dispatch
 // boundary). The transcript records a call's arguments as the model sent
 // them, so a recorded shorthand call carries no questions array and both
 // shapes must parse here. This used to live private to the web
@@ -75,7 +75,7 @@ function parseQuestion(raw: unknown, index: number): AskUserQuestion | undefined
 // array can't legitimately occur (DefAskUser requires minItems:1) but is
 // treated the same as undefined defensively either way. The shorthand form
 // is wrapped into a one-element questions array before the per-question
-// shape check, mirroring normalizeAskUserArgs, so a call the tool accepted
+// shape check, mirroring NormalizeAskUserArgs, so a call the tool accepted
 // never reads as unavailable data. Callers that need to draw their own
 // absent-vs-malformed distinction (e.g. AskUserBody's fallback wording) do
 // so with their own check alongside this one.
@@ -83,7 +83,7 @@ export function parseAskUserQuestions(item: Pick<ItemModel, "argumentsJSON">): A
   const args = parseArgs(item.argumentsJSON);
   let raw: unknown = args.questions;
   if (!Array.isArray(raw) && typeof args.question === "string" && Array.isArray(args.options)) {
-    // Copy the wrapped fields with normalizeAskUserArgs' own rules rather
+    // Copy the wrapped fields with NormalizeAskUserArgs' own rules rather
     // than passing the raw object through: Go's wrap drops a non-string or
     // empty header (and empty why/if_unanswered), while parseQuestion's
     // shape check treats a present-but-non-string header as a malformed

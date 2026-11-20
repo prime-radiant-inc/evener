@@ -167,7 +167,10 @@ func (s *Session) dispatchedToolArguments(call llm.ToolCallData) []byte {
 	if ok {
 		return raw
 	}
-	return call.Arguments
+	if call.ArgumentsSpelling == "" {
+		return call.Arguments
+	}
+	return []byte(call.WireArguments())
 }
 
 // batchToolInput decodes one dispatched call's arguments for PostToolBatch,
@@ -201,8 +204,11 @@ func (s *Session) batchToolCalls(calls []llm.ToolCallData, results []tool.ExecRe
 		}
 		// batchToolInput applies the same raw-argument bound and the same
 		// per-tool decoder as dispatch, so a rejected byte sequence yields no
-		// input and an exact integer keeps its value.
-		input := s.batchToolInput(llm.ToolCallData{Name: call.Name, ID: callID, Arguments: call.Arguments})
+		// input and an exact integer keeps its value. The full call rides so a
+		// denied call with no dispatch record falls back to its wire spelling,
+		// not the canonical bytes.
+		call.ID = callID
+		input := s.batchToolInput(call)
 		response := ""
 		if i < len(results) {
 			response = results[i].Output

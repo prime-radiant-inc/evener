@@ -1059,6 +1059,14 @@ func TestChangedDrainHoldAncestorsSurvivesInterleavedRead(t *testing.T) {
 	t.Parallel()
 	tree := newRealDelegateTree(t, nil)
 	c := tree.c
+	// newRealDelegateTree returns when the tree's first generations finish,
+	// but the grandchild's result then starts a successor generation of the
+	// parent whose own drain edge clears drainHeld and publishes the parent's
+	// row. Join the tree's detached senders so the holds this test drives are
+	// the only publications in play; otherwise a loaded runner lands that one
+	// between the baseline emission and the recompute, and the recompute sees
+	// the cleared sample already published.
+	tree.s.sendersWG.Wait()
 
 	// Reopen the grandchild and park the middle parent in its drain, then
 	// publish the parent's one-subagent hold so the baseline matches a live run.

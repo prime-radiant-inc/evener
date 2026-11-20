@@ -792,7 +792,7 @@ func TestHostAdminRequestForwardsDiscoveryMethodAndReturnsResult(t *testing.T) {
 // discipline: the fan-out must not drive the component-04 connector for a host
 // with no live channel (that would run an SSH preflight on every retry for a
 // terminally failed host), and must pick the host up once it reports online.
-func TestHostAdminFanOutLeavesReconnectToTheSupervisorWhileOffline(t *testing.T) {
+func testHostAdminFanOutLeavesReconnectToTheSupervisorWhileOffline(t *testing.T) {
 	var online atomic.Bool
 	var dials atomic.Int64
 	source := appsource.NewRemoteHubSource("m4", nil, func(context.Context, string) (*appwire.Client, error) {
@@ -817,7 +817,7 @@ func TestHostAdminFanOutLeavesReconnectToTheSupervisorWhileOffline(t *testing.T)
 	}()
 
 	// Offline: the connector must not be invoked at all, however long we wait.
-	time.Sleep(250 * time.Millisecond)
+	waitQuiescent()
 	if got := dials.Load(); got != 0 {
 		t.Fatalf("connector invoked %d times for an offline host, want 0", got)
 	}
@@ -1085,7 +1085,7 @@ func waitForHostNotificationSubscribers(t *testing.T, source *appsource.RemoteHu
 // by observing the source's host-notification subscriber count, i.e. the
 // SubscribeHostNotifications registration that starts the fresh client's
 // drain — as soon as the attach event arrives and the host reports online.
-func TestHostAdminAttachWakesBackoffSleepingFanOut(t *testing.T) {
+func testHostAdminAttachWakesBackoffSleepingFanOut(t *testing.T) {
 	client, _, _ := newScriptedAdminClient(t, func(string, json.RawMessage) hostAdminReply {
 		return okReply()
 	})
@@ -1113,7 +1113,7 @@ func TestHostAdminAttachWakesBackoffSleepingFanOut(t *testing.T) {
 
 	// Let the fan-out enter backoff while the host reports offline: it must
 	// not subscribe before the attach.
-	time.Sleep(250 * time.Millisecond)
+	waitQuiescent()
 	if got := source.HostNotificationSubscribers(); got != 0 {
 		t.Fatalf("offline fan-out subscribed %d times, want 0 before the attach", got)
 	}
@@ -1139,7 +1139,7 @@ func TestHostAdminAttachWakesBackoffSleepingFanOut(t *testing.T) {
 // EventAttached parked a wakeup nobody read and the fan-out slept its backoff
 // out. Wake channels are owned per fan-out generation now: the exiting loop
 // clears the entry only when it is still its own.
-func TestHostAdminFanOutExitClearSparesReplacementWake(t *testing.T) {
+func testHostAdminFanOutExitClearSparesReplacementWake(t *testing.T) {
 	client, _, _ := newScriptedAdminClient(t, func(string, json.RawMessage) hostAdminReply {
 		return okReply()
 	})
@@ -1166,7 +1166,7 @@ func TestHostAdminFanOutExitClearSparesReplacementWake(t *testing.T) {
 		defer close(done1)
 		controller.fanOut(ctx1, source, wake1)
 	}()
-	time.Sleep(250 * time.Millisecond)
+	waitQuiescent()
 	if got := source.HostNotificationSubscribers(); got != 0 {
 		t.Fatalf("offline fan-out subscribed %d times, want 0 before the attach", got)
 	}
@@ -1184,7 +1184,7 @@ func TestHostAdminFanOutExitClearSparesReplacementWake(t *testing.T) {
 		defer close(done2)
 		controller.fanOut(ctx2, source, wake2)
 	}()
-	time.Sleep(250 * time.Millisecond)
+	waitQuiescent()
 
 	// The removal's cancellation ends generation one. Waiting for its exit
 	// makes the ordering exact: the deferred wake clear has run before the

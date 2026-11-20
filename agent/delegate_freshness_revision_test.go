@@ -4,11 +4,18 @@ import (
 	"context"
 	"path/filepath"
 	"slices"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/mcpconfig"
 )
+
+// staleProbeHoldTripwire bounds the wait for the held probe to reach its check.
+// The hold itself is deliberate; this only fires when the fixture never ran it.
+const staleProbeHoldTripwire = 10 * time.Second
 
 // TestStaleProbeCannotEraseANewerWorkspaceDecision is the regression test for
 // the whole spiraling finding.
@@ -61,10 +68,33 @@ func TestStaleProbeCannotEraseANewerWorkspaceDecision(t *testing.T) {
 	s.setCLIMCPToolNames(map[string]bool{cliTool: true})
 	s.setCLIMCPServers(map[string]bool{"svc": true}, evidenceB)
 	s.setRosterExclusion(true)
+	// Hold B's first probe after its check has answered, before its caller
+	// collects the answer. The claim covers the check, not the delivery: a
+	// completed check must release it before publishing, because the request
+	// path below can ask the workspace again in this window. It must ask the
+	// workspace again rather than read the probe's bookkeeping as "unknown" and
+	// clear the standing decision.
+	checked := make(chan struct{})
+	release := make(chan struct{})
+	var held atomic.Bool
+	s.cfg.testOnly.evidenceProbeChecked = func() {
+		if held.CompareAndSwap(false, true) {
+			close(checked)
+			<-release
+		}
+	}
+	var releaseOnce sync.Once
+	releaseProbe := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseProbe)
+
 	// B's own answer really is "exclude", so the request path below has a
 	// standing decision to preserve rather than one it would clear anyway.
-	if !s.probeCLIEvidenceFresh(context.Background(), envB) {
-		t.Fatal("fixture is wrong: B's evidence does not verify against B, so there is no current answer to preserve")
+	firstAnswer := make(chan bool, 1)
+	go func() { firstAnswer <- s.probeCLIEvidenceFresh(context.Background(), envB) }()
+	select {
+	case <-checked:
+	case <-time.After(staleProbeHoldTripwire): // TRIPWIRE: the probe never reached its check
+		t.Fatal("the first probe never finished its check, so this fixture did not exercise the held window")
 	}
 
 	// The obsolete caller finishes its own question about A.
@@ -84,6 +114,10 @@ func TestStaleProbeCannotEraseANewerWorkspaceDecision(t *testing.T) {
 	}
 	if got := s.removeChildUnreachableTools([]string{cliTool, "read_file"}, "", s.rosterExclusion()); slices.Contains(got, cliTool) {
 		t.Errorf("the roster re-admitted %q after an obsolete probe ran: %v", cliTool, got)
+	}
+	releaseProbe()
+	if !<-firstAnswer {
+		t.Fatal("fixture is wrong: B's evidence does not verify against B, so there is no current answer to preserve")
 	}
 }
 
