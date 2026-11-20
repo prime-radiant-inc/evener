@@ -408,6 +408,34 @@ func TestApplyAttentionHoldReleasedNamesThePrecedingSettledGeneration(t *testing
 		t.Fatalf("released generation = %d, want 1", got)
 	}
 
+	// A delivery's claim carries the generation it was admitted in, and a
+	// successor run can settle before its acknowledgment lands. The release then
+	// names a settled generation behind the newest one, which is accepted: the
+	// monotone field keeps the newer stop's quiet outside the record, and only a
+	// release newer than the settled generation is refused.
+	reported := reportedPacket("done")
+	if err := Apply(state, finishedEvent("dlg_alpha", 2, OutcomeCompleted, DispositionReported, "dlg_alpha/delivery/2", &reported)); err != nil {
+		t.Fatalf("settle generation 2: %v", err)
+	}
+	if got := state["dlg_alpha"].SettledGeneration(); got != 2 {
+		t.Fatalf("premise broken: settled generation %d, want 2", got)
+	}
+	if err := release(1); err != nil {
+		t.Fatalf("release the settled generation a delivery was admitted in after generation 2 settled: %v", err)
+	}
+	if got := state["dlg_alpha"].AttentionHoldReleasedGeneration; got != 1 {
+		t.Fatalf("released generation = %d, want 1: a replayed older release moved the floor", got)
+	}
+	if err := release(3); err == nil {
+		t.Fatal("a release newer than the settled generation was accepted")
+	}
+	if err := release(2); err != nil {
+		t.Fatalf("release the newest settled generation: %v", err)
+	}
+	if got := state["dlg_alpha"].AttentionHoldReleasedGeneration; got != 2 {
+		t.Fatalf("released generation = %d, want 2", got)
+	}
+
 	// A delegate with no settled generation has no quiet a wake can release.
 	never := applyEvents(t, createdEvent("dlg_beta", ""))
 	if err := Apply(never, Event{
