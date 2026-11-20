@@ -138,12 +138,12 @@ range width plus a count of the waits the runtime has issued, so no metadata
 write stands between the usage limit and a reset, a model switch or a Stop. The
 boot generation is minted once, before a runtime serves input — delegate
 creation and idle restore mint it too — so a restored delegate's first wait
-stamps greater than any wait the previous runtime issued, and the pane's held
-ended stamp admits the next wait as greater. A changed instance id or boot
-generation still voids the client's previous stamps, the compatibility rule for
-a daemon that restarts its numbering; dropping that rule needs a continuity
-signal on the wire. The restart still interrupts the active wait; the summary
-clears with its turn.
+stamps greater than any wait the previous runtime issued, up to the range's
+saturation at the exact-integer bound. A changed instance id or boot generation
+still voids the client's previous stamps, the compatibility rule for a daemon
+that restarts its numbering; dropping that rule needs a continuity signal on
+the wire. The restart still interrupts the active wait; the summary clears with
+its turn.
 
 Question resolution returns to working presentation while children run. Once
 the last running child settles, each client resumes its normal parent-state and

@@ -33,7 +33,8 @@ type quotaWait struct {
 	// failure is what the session's row says while the call waits: the
 	// usage limit, and when the call resumes by itself.
 	failure appwire.ThreadFailure
-	// stamp is the wait's identity (quotaWaitStamps at the wait's start):
+	// stamp is the wait's identity (the value nextQuotaWaitStampLocked
+	// mints):
 	// the same value on its start announcement, its zero-delay wake, and
 	// the failure summary a read serves. Strictly increasing per session,
 	// never a wall-clock instant, so a later wait of the same turn always
@@ -236,8 +237,10 @@ const (
 // generation was minted durably once, before the runtime served input, and a
 // restore can only mint from a later generation's range. A session with no
 // installed generation (a test, or one that never mints) serves generation 1,
-// and a generation high enough to overflow the exact range saturates, so the
-// stamp never leaves the range a client compares.
+// as does a token that does not parse. A generation above the exact range's
+// capacity saturates at the last generation that fits, so the stamp never
+// leaves the range a client compares; a session that many boots deep
+// (millions) would reuse that range and stop increasing across restores.
 func (s *Session) nextQuotaWaitStampLocked() uint64 {
 	generation := uint64(1)
 	if s.bootGeneration != "" {
